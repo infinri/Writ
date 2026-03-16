@@ -256,29 +256,266 @@ This is the thesis validation gate. The ranking weights (w1-w4) are tuning param
 
 ---
 
-## Phases 6-9: Post-Validation Extensions (Sketches Only)
+## Phase 6: Authoring Tools
 
-These phases are designed only after Phase 5 passes its thesis gate. Full deliverables and acceptance criteria will be written at that time.
+**Status**: Not started
+**Started**: --
+**Completed**: --
+**Blocked by**: Phase 5 complete
 
-### Phase 6: Authoring Tools
+### Objective
 
-**Intent:** `writ add` command with relationship suggestion, conflict detection, and redundancy warnings at authoring time.
-**Key question:** Multi-author conflict resolution governance.
+Build a CLI authoring workflow that makes adding and editing rules safe. When a contributor adds a rule, Writ should suggest relationships, warn on conflicts, flag redundancy, and validate schema -- before the rule enters the graph. This phase also introduces graph-neighbor scoring to the ranking formula, closing the MRR@5 gap documented in PHASE5_RESULTS.md.
 
-### Phase 7: Generated Artifacts
+### Deliverables
 
-**Intent:** `writ export` regenerates all Markdown docs from the graph. `bible/` becomes a generated view. Fallback path uses exported files.
-**Key question:** Round-trip fidelity -- can generated Markdown reproduce the original rules?
+- [ ] `writ add` CLI command -- interactive rule authoring flow:
+  - Prompts for required fields (rule_id, domain, severity, scope, trigger, statement, violation, pass_example, enforcement, rationale)
+  - Validates against Pydantic schema before write
+  - Suggests relationships: runs the new rule's trigger+statement through the retrieval pipeline, presents top-5 similar rules as candidates for DEPENDS_ON, SUPPLEMENTS, or CONFLICTS_WITH edges
+  - Warns if any candidate exceeds redundancy similarity threshold (0.95)
+  - Warns if any candidate has a CONFLICTS_WITH path to the new rule
+  - Writes to Neo4j and triggers `writ export` automatically (Phase 7 dependency -- stub until Phase 7 lands)
+- [ ] `writ edit <rule_id>` CLI command -- modify an existing rule:
+  - Loads current rule from graph, opens fields for editing
+  - Re-runs relationship suggestion on modified text
+  - Re-runs conflict and redundancy checks
+  - Updates Neo4j via MERGE (idempotent)
+- [ ] Graph-neighbor scoring boost in ranking formula:
+  - New weight `w5 * graph_proximity` added to `compute_score()`
+  - `graph_proximity`: 1.0 if the candidate is a 1-hop neighbor of a top-3 scoring rule, 0.5 for 2-hop, 0.0 otherwise
+  - Weights rebalanced: w1-w5 must sum to 1.0. Starting point: 0.15/0.55/0.1/0.1/0.1
+  - Validated against 83-query ground-truth set. MRR@5 must not regress below 0.78. Target: 0.85.
+- [ ] `CONTRIBUTING.md` -- multi-author conflict resolution governance:
+  - Process for resolving CONFLICTS_WITH edges: human review required, no automatic merge
+  - Process for proposing new rules: PR with `writ add` output, reviewed by rule domain owner
+  - Process for deprecating rules: SUPERSEDES edge, old rule retained for audit
+- [ ] `tests/test_authoring.py` -- authoring workflow tests
 
-### Phase 8: Compression Layer
+### Acceptance Criteria
 
-**Intent:** Rule clustering into abstraction nodes. Summary mode retrieval returns abstractions when context budget is low.
-**Key question:** Which clustering algorithm (k-means vs HDBSCAN) produces coherent groups?
+`writ add` creates a valid rule in Neo4j with suggested relationships. Conflict and redundancy warnings fire on crafted test inputs. Graph-neighbor boost improves MRR@5 on the ambiguous query set without regressing hit rate. CONTRIBUTING.md documents the governance process.
 
-### Phase 9: Agentic Retrieval Loop
+### Test Checklist
 
-**Intent:** Agent-driven uncertainty resolution. Mid-session drill-down without re-running the full pipeline. This is the actual production usage pattern.
-**Key question:** Server-side session state vs. client-side tracking. Semantic gap detection.
+- [ ] `writ add` with valid input creates rule in Neo4j, all fields present
+- [ ] `writ add` rejects invalid input (missing fields, bad rule_id format) with actionable error
+- [ ] Relationship suggestion returns top-5 similar rules for a new rule's trigger+statement
+- [ ] Redundancy warning fires when a candidate exceeds 0.95 similarity
+- [ ] Conflict warning fires when a CONFLICTS_WITH path exists to the new rule
+- [ ] `writ edit` loads existing rule, modifies it, writes back without duplication
+- [ ] `writ edit` on nonexistent rule_id exits with error
+- [ ] Graph-neighbor boost: MRR@5 >= 0.78 on ambiguous set (regression gate)
+- [ ] Graph-neighbor boost: hit rate >= 90% on all 83 queries (regression gate)
+- [ ] Benchmark suite (`bench_targets.py`) still passes after ranking formula change
+- [ ] `writ add` triggers export automatically (stubbed until Phase 7)
+
+### Dependencies
+
+- Phase 5 complete (retrieval pipeline operational, ground-truth queries available for regression testing)
+- Neo4j running with migrated rules
+
+### Notes
+
+The graph-neighbor boost is the architectural fix for the MRR@5 gap. Q77 (FW-M2-RT-002 is a neighbor of #1 result FW-M2-RT-001 but has zero BM25 signal) and Q72 (ARCH-ORG-001 at rank 5) are the test cases. If the boost pushes MRR@5 above 0.85 on the automated test, update the threshold in `bench_targets.py` and the deviation log.
+
+---
+
+## Phase 7: Generated Artifacts
+
+**Status**: Not started
+**Started**: --
+**Completed**: --
+**Blocked by**: Phase 6 complete
+
+### Objective
+
+Make `bible/` a generated view of the graph, not the source of truth. `writ export` regenerates Markdown from Neo4j with full round-trip fidelity. The skill's fallback path (handbook Section 7.3) loads exported files when the service is down. `writ ingest` triggers `writ export` as its final step so fallback files are always current.
+
+### Deliverables
+
+- [ ] `writ export <path>` CLI command -- fully operational (currently a stub):
+  - Reads all Rule nodes from Neo4j
+  - Generates one Markdown file per domain directory (matching current `bible/` structure)
+  - Each rule block wrapped in `<!-- RULE START: {rule_id} -->` / `<!-- RULE END: {rule_id} -->` markers
+  - Metadata block: Domain, Severity, Scope
+  - Section headings: Trigger, Statement, Violation, Pass, Enforcement, Rationale
+  - Cross-references regenerated from graph edges (DEPENDS_ON, SUPPLEMENTS, CONFLICTS_WITH, RELATED_TO)
+  - Output directory configurable, defaults to `bible/`
+- [ ] Round-trip fidelity validation:
+  - Export, then re-ingest the exported files, then export again. Diff must be empty (structural equivalence, not byte-identical -- whitespace normalization allowed).
+  - Automated test: `test_export_roundtrip` runs export -> ingest -> export -> diff
+- [ ] `writ ingest` auto-export integration:
+  - After successful ingestion, automatically run `writ export` to keep fallback files current
+  - Log message: "Exported {n} rules to {path}"
+- [ ] `writ serve` staleness check:
+  - At startup, compare export file timestamps against last ingest timestamp in graph
+  - If exports are stale, log warning: "Export files are older than last ingest. Run: writ export"
+- [ ] `/health` endpoint extended:
+  - New field: `export_timestamp` -- last export run time
+  - New field: `export_stale` -- boolean, true if export is older than last ingest
+- [ ] `tests/test_export.py` -- export and round-trip tests
+
+### Acceptance Criteria
+
+`writ export` produces Markdown files that `writ ingest` can consume without error. Round-trip produces structurally equivalent output. Auto-export runs after every ingest. Staleness warning fires when exports are outdated.
+
+### Test Checklist
+
+- [ ] `writ export` generates files matching the `bible/` directory structure
+- [ ] Each generated file contains valid `<!-- RULE START/END -->` markers
+- [ ] Generated metadata (Domain, Severity, Scope) matches graph data
+- [ ] Generated sections (Trigger, Statement, etc.) match graph data
+- [ ] Cross-references in generated files match graph edges
+- [ ] Round-trip: export -> ingest -> export produces no structural diff
+- [ ] `writ ingest` automatically runs export after successful ingestion
+- [ ] `writ serve` logs warning when export files are stale
+- [ ] `/health` returns `export_timestamp` and `export_stale` fields
+- [ ] Exported files can be loaded by the skill as fallback (file exists, valid Markdown)
+- [ ] Rule count in exported files matches rule count in graph
+- [ ] Mandatory rules (ENF-*) are exported alongside domain rules
+
+### Dependencies
+
+- Phase 6 complete (`writ add` and `writ edit` write to graph; export must handle rules added via authoring tools)
+- Neo4j running with migrated rules
+
+### Notes
+
+The handbook (Section 7.3) specifies that post-Phase 7, the skill's fallback path loads `bible/` files generated by `writ export`, not the original hand-authored files. This means round-trip fidelity is a hard requirement -- if exported files lose information, the fallback path degrades. The ingest parser (`writ/graph/ingest.py`) is the reference for what the exporter must produce. If the ingest parser can't consume the exporter's output, the round-trip is broken.
+
+---
+
+## Phase 8: Compression Layer
+
+**Status**: Not started
+**Started**: --
+**Completed**: --
+**Blocked by**: Phase 7 complete
+
+### Objective
+
+Cluster rules into abstraction nodes that summarize groups of related rules. When the context budget is tight (< 2K tokens), the retrieval pipeline returns abstraction summaries instead of individual rules. The agent reads the summary, then drills down into specific rules if needed. This replaces the current degraded summary mode (statement+trigger only) with semantically meaningful compressed representations.
+
+### Deliverables
+
+- [ ] `writ/compression/clusters.py` -- rule clustering (currently a stub):
+  - Cluster domain rules by embedding similarity using HDBSCAN (preferred) or k-means
+  - Evaluate both algorithms on the 80-rule corpus. Metric: human review of cluster coherence (do the rules in each cluster share a clear theme?)
+  - Decision gate: choose algorithm, document rationale in decision log
+  - Output: cluster assignments (rule_id -> cluster_id) and cluster metadata (size, centroid, coherence score)
+- [ ] `writ/compression/abstractions.py` -- abstraction node generation (currently a stub):
+  - For each cluster, generate a summary text that captures the shared principle
+  - Summary generation: find the rule statement nearest to the cluster's embedding centroid. Use that statement as the abstraction summary, prefixed with the shared domain. This is deterministic, offline, and requires no external dependency. If summaries prove unreadable at scale, LLM-assisted summarization is a future upgrade -- not an implementation-time decision.
+  - Create Abstraction nodes in Neo4j with: summary, rule_ids[], domain, compression_ratio
+  - Create ABSTRACTS edges from Abstraction -> Rule for each member
+- [ ] `writ compress` CLI command:
+  - Runs clustering + abstraction generation on current graph state
+  - Reports: number of clusters, average cluster size, compression ratio, any singleton clusters (rules that don't fit a group)
+- [ ] Pipeline summary mode upgrade:
+  - When `budget_tokens < 2000`, return Abstraction node summaries instead of raw statement+trigger
+  - Each summary includes: abstraction_id, summary text, member rule_ids, compression_ratio
+  - Agent can drill down via `/rule/{rule_id}` on any member
+- [ ] `/abstractions` endpoint:
+  - GET: returns all abstraction nodes with member counts
+  - GET `/abstractions/{abstraction_id}`: returns full abstraction with member rule details
+- [ ] `tests/test_compression.py` -- clustering and abstraction tests
+
+### Acceptance Criteria
+
+Clustering produces coherent groups (human review). Abstraction summaries are readable and accurately represent member rules. Summary mode returns abstractions instead of raw truncated rules. Compression ratio (tokens saved) is measurable and reported.
+
+### Test Checklist
+
+- [ ] Clustering assigns every non-mandatory rule to exactly one cluster
+- [ ] No cluster has fewer than 2 members (singletons are ungrouped, not their own cluster)
+- [ ] Abstraction summary text is non-empty and under 200 tokens per cluster
+- [ ] ABSTRACTS edges in Neo4j match cluster assignments
+- [ ] `writ compress` reports cluster count, sizes, and compression ratio
+- [ ] Pipeline summary mode (budget < 2K) returns abstraction summaries, not raw statement+trigger
+- [ ] Pipeline standard/full modes are unchanged (no regression)
+- [ ] `/abstractions` endpoint returns all abstraction nodes
+- [ ] `/abstractions/{id}` returns abstraction with member details
+- [ ] Round-trip: re-running `writ compress` on unchanged graph produces equivalent clusters
+- [ ] Benchmark suite still passes (latency, MRR@5, hit rate unaffected in standard/full modes)
+
+### Dependencies
+
+- Phase 7 complete (export must handle Abstraction nodes if they exist in the graph)
+- `sentence-transformers` for embedding-based clustering
+- Neo4j running with migrated rules and edges
+
+### Notes
+
+The handbook (Section 9) lists this as a "Post-Phase 5" question: "What clustering algorithm produces the most coherent abstraction nodes for rule compression?" At 80 rules, clusters will be small (likely 5-10 groups). The real value appears at 500+ rules where the agent can't read even the top-10 results. The clustering algorithm decision is resolved during this phase, not before it -- both HDBSCAN and k-means must be evaluated on the actual corpus. HDBSCAN is preferred because it discovers cluster count automatically; k-means requires a predetermined k.
+
+---
+
+## Phase 9: Agentic Retrieval Loop
+
+**Status**: Not started
+**Started**: --
+**Completed**: --
+**Blocked by**: Phase 8 complete
+
+### Objective
+
+Build the multi-query session pattern: an agent mid-coding-session makes sequential queries, each informed by what's already loaded. The service tracks no state -- the client (skill) manages session context and passes it on each request. This phase delivers the session tracker, extends `/query` with `loaded_rule_ids`, extends `/rule/{rule_id}` with abstraction membership, and documents the skill integration pattern. Per handbook Section 7.4: "This is the actual production usage pattern, not a nice-to-have."
+
+### Deliverables
+
+- [ ] `/query` endpoint extended with session-aware parameter:
+  - `loaded_rule_ids: list[str]` -- rules already in agent context. Functionally equivalent to `exclude_rule_ids` but semantically distinct: loaded rules are excluded from results and their embeddings inform future complement mode (Phase 10).
+  - `exclude_rule_ids` remains for explicit exclusion (rules the agent actively doesn't want, not just rules already loaded)
+  - When both are provided, the union is excluded
+- [ ] `/rule/{rule_id}` endpoint extended:
+  - When the rule is a member of an abstraction (Phase 8), include `abstraction_id` and `sibling_rule_ids` in the response
+  - This replaces the need for a separate drilldown endpoint -- the existing `include_graph=true` already returns 1-hop context
+- [ ] `writ/retrieval/session.py` -- client-side session context tracker:
+  - Tracks `loaded_rule_ids` and remaining `budget_tokens` across multiple queries in a session
+  - Provides `next_query(query_text)` method that automatically passes accumulated session state to `/query`
+  - Provides `load_results(query_response)` method that updates loaded_rule_ids and decrements budget from a query response
+  - This is a helper for the skill integration, not server-side state. Per handbook Section 7.4: "Writ is stateless per request."
+- [ ] Skill integration documentation:
+  - How the skill should initialize a session tracker at task start
+  - How to call `/query` with session state via the tracker
+  - When to use `/rule/{rule_id}?include_graph=true` for mid-session exploration
+  - Example 3-query session flow demonstrating non-overlapping results
+- [ ] `tests/test_session.py` -- session-aware retrieval tests
+
+### What Phase 9 Does NOT Deliver
+
+**Semantic gap detection / complement mode** is deferred to a future milestone. At 80 rules, embeddings cluster too tightly for meaningful gap detection -- the "distance from loaded centroid" signal is noise at this corpus size. The mechanism becomes viable at 500+ rules where domain clusters are distinct enough that gaps between them are detectable. Until then, `exclude_rule_ids` / `loaded_rule_ids` exclusion is the mechanism for avoiding duplicates across sequential queries. This is sufficient for the current corpus.
+
+### Acceptance Criteria
+
+Session tracker correctly accumulates loaded_rule_ids and decrements budget across queries. `/query` with `loaded_rule_ids` excludes loaded rules. `/rule/{rule_id}` returns abstraction membership when applicable. A 3-query simulated session demonstrates non-overlapping results.
+
+### Test Checklist
+
+- [ ] `/query` with `loaded_rule_ids` excludes loaded rules from results
+- [ ] `/query` with both `loaded_rule_ids` and `exclude_rule_ids` excludes the union
+- [ ] `/rule/{rule_id}` returns `abstraction_id` and `sibling_rule_ids` for abstraction members
+- [ ] `/rule/{rule_id}` for non-abstraction member returns null abstraction fields (no regression)
+- [ ] Session tracker: `next_query` passes accumulated loaded_rule_ids
+- [ ] Session tracker: `load_results` updates loaded_rule_ids from query response
+- [ ] Session tracker: budget decrements correctly across queries
+- [ ] 3-query simulation: all returned rules are distinct (no duplicates across queries)
+- [ ] 3-query simulation: combined results cover more domains than a single query
+- [ ] Backward compatibility: `/query` without `loaded_rule_ids` works as before
+- [ ] Benchmark suite still passes (no regression on single-query metrics)
+
+### Dependencies
+
+- Phase 8 complete (abstraction nodes exist for `/rule` extension)
+- All previous phases operational
+- Neo4j running with migrated rules, edges, and abstraction nodes
+
+### Notes
+
+The handbook (Section 7.4) is explicit: "Writ is stateless per request. Session state is managed by the skill (client side), not the server." The `session.py` helper enforces this -- it's a client-side convenience, not server state.
+
+**Future: Complement Mode.** When the corpus reaches 500+ rules, revisit semantic gap detection. The mechanism: given `loaded_rule_ids` and a query, compute the embedding centroid of loaded rules. Prioritize candidates that are relevant to the query AND distant from the loaded centroid. This is the "what rules would complement what I already have?" problem from Section 7.4. It requires a corpus large enough that domain clusters are separable -- not viable at 80 rules.
 
 ---
 
@@ -291,10 +528,10 @@ Pulled from handbook Section 9. Tracked to resolution.
 | 1 | Neo4j traversal performance: < 3ms at 1K/10K/100K/1M nodes? | Phase 2 | **Resolved** | Neo4j live queries exceed budget (1K 1-hop p95=6.4ms, 10K 1-hop p95=9.7ms). Mitigation confirmed: pre-computed adjacency lists cached in memory at startup. In-memory lookup is sub-0.1ms per handbook pre-implementation benchmarks. Implementation in Phase 5 pipeline. 100K/1M benchmarks deferred -- mitigation path validated; live queries won't be used in hot path. |
 | 2 | Which embedding model (MiniLM vs mpnet) produces better retrieval precision? | Phase 5 | **Resolved** | MiniLM selected. MRR@5 = 0.7842 (automated strict), hit rate 97.59% on 83-query set. mpnet reserved as upgrade path if quality degrades at scale. |
 | 3 | Ranking formula weights (w1-w4): what values maximize MRR@5? | Phase 5 | **Resolved** | Locked at 0.2/0.6/0.1/0.1 after two tuning rounds: initial 0.4/0.4 -> 0.3/0.5 (Phase 5 manual eval) -> 0.2/0.6 (Phase 5 automated sweep, 2026-03-16). |
-| 4 | Graph-level versioning: how do agents reference a stable graph version? | Phase 5 | Open | Design immutable snapshots tagged by ingest timestamp. Pin at session start via /health. |
-| 5 | Rule-level versioning: what happens to old versions when a rule is edited? | Phase 5 | Open | Snapshot model for intra-session. Cross-session drift is governance, not tooling. |
-| 6 | Clustering algorithm for abstraction nodes? | Post-Phase 5 | Deferred | k-means vs HDBSCAN. Evaluated after Phase 5. |
-| 7 | Multi-author conflict resolution governance? | Post-Phase 5 | Deferred | CONTRIBUTING.md process. Human resolution required. |
+| 4 | Graph-level versioning: how do agents reference a stable graph version? | Phase 9 | Open | Design immutable snapshots tagged by ingest timestamp. Agent pins to snapshot at session start via /health. Re-gated from Phase 5 to Phase 9 -- not needed until agentic multi-query sessions are implemented. |
+| 5 | Rule-level versioning: what happens to old versions when a rule is edited? | Phase 7 | Open | Snapshot model for intra-session. Cross-session drift is governance, not tooling. Re-gated from Phase 5 to Phase 7 -- relevant when export/import round-trip handles rule edits. |
+| 6 | Clustering algorithm for abstraction nodes? | Phase 8 | Open | k-means vs HDBSCAN. Both evaluated on 80-rule corpus during Phase 8 implementation. HDBSCAN preferred (auto-discovers cluster count). |
+| 7 | Multi-author conflict resolution governance? | Phase 6 | Open | CONTRIBUTING.md process. Human resolution required. Resolved during Phase 6 authoring tools implementation. |
 
 **Closed questions (for reference):**
 - Vector search engine: hnswlib for Phases 1-5, Qdrant at scale. **Closed.**
