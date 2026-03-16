@@ -1,0 +1,60 @@
+[service]
+host = "localhost"
+port = 8765
+timeout_ms = 50
+log_level = "INFO"
+
+[neo4j]
+uri = "bolt://localhost:7687"
+user = "neo4j"
+password = "writdevpass"
+database = "neo4j"
+
+[embedding]
+model = "all-MiniLM-L6-v2"
+dimensions = 384
+cache_dir = "~/.cache/writ/models"
+
+[vector]
+backend = "hnswlib"
+ef_construction = 200
+ef_search = 50
+M = 16
+
+[vector.qdrant]
+url = "http://localhost:6333"
+collection = "writ_rules"
+
+[tantivy]
+index_dir = "~/.cache/writ/tantivy"
+fields = ["trigger", "statement", "tags"]
+
+[ranking]
+w_bm25 = 0.3
+w_vector = 0.5
+w_severity = 0.1
+w_confidence = 0.1
+
+[ranking.severity_values]
+critical = 1.0
+high = 0.75
+medium = 0.5
+low = 0.25
+
+[ranking.confidence_values]
+battle-tested = 1.0
+production-validated = 0.8
+peer-reviewed = 0.6
+speculative = 0.3
+
+[context_budget]
+summary_threshold = 2000
+standard_threshold = 8000
+
+[ingestion]
+bible_dir = "bible/"
+auto_export = true
+
+[validation]
+query_rule_ratio_warning = 10
+staleness_default_days = 365
