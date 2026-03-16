@@ -131,7 +131,7 @@ class TestRanking:
             severity="critical",
             confidence="battle-tested",
         )
-        # 0.3*1.0 + 0.5*1.0 + 0.1*1.0 + 0.1*1.0 = 1.0
+        # 0.2*1.0 + 0.6*1.0 + 0.1*1.0 + 0.1*1.0 = 1.0
         assert abs(score - 1.0) < 0.001
 
     def test_weights_sum_to_one(self) -> None:

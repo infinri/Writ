@@ -166,11 +166,15 @@ async def build_pipeline(
     db: Neo4jConnection,
     model_name: str = DEFAULT_EMBEDDING_MODEL,
     weights: RankingWeights | None = None,
+    embedding_model: SentenceTransformer | None = None,
 ) -> RetrievalPipeline:
     """Build the full pipeline with pre-warmed indexes.
 
     Called once at service startup. Per PERF-LAZY-001: expensive loading
     happens here, not at query time.
+
+    Pass a pre-loaded embedding_model to avoid repeated model deserialization
+    across rebuilds. When None, a new model is loaded from model_name.
     """
     # Load all non-mandatory rules from Neo4j.
     query = """
@@ -192,7 +196,7 @@ async def build_pipeline(
     keyword_index.build(rules)
 
     # Build vector index (Stage 3).
-    model = SentenceTransformer(model_name)
+    model = embedding_model or SentenceTransformer(model_name)
     texts = [f"{r.get('trigger', '')} {r.get('statement', '')}" for r in rules]
     embeddings = model.encode(texts).tolist()
     rule_ids = [r["rule_id"] for r in rules]

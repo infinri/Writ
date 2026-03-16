@@ -30,8 +30,8 @@ index_dir = "~/.cache/writ/tantivy"
 fields = ["trigger", "statement", "tags"]
 
 [ranking]
-w_bm25 = 0.3
-w_vector = 0.5
+w_bm25 = 0.2
+w_vector = 0.6
 w_severity = 0.1
 w_confidence = 0.1
 

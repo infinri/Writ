@@ -10,12 +10,16 @@ the rule's activation condition over incidental keywords in statement text.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import tantivy
 
 # Per ARCH-CONST-001: named constants for field boost.
 TRIGGER_BOOST = 2.0
+
+# Characters that break Tantivy's query parser. Stripped before parse_query().
+_TANTIVY_SPECIAL = re.compile(r"""['":\\\/\(\)\[\]\{\}\!\?\~\^\+\-\&\|]""")
 
 
 class KeywordIndex:
@@ -77,7 +81,10 @@ class KeywordIndex:
         Returns list of dicts with rule_id and score, ordered by relevance.
         """
         searcher = self._index.searcher()
-        query = self._index.parse_query(query_text, ["trigger", "statement", "tags"])
+        sanitized = _TANTIVY_SPECIAL.sub(" ", query_text).strip()
+        if not sanitized:
+            return []
+        query = self._index.parse_query(sanitized, ["trigger", "statement", "tags"])
         results = searcher.search(query, limit).hits
         output: list[dict] = []
         for score, doc_address in results:

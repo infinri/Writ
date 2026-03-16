@@ -49,8 +49,11 @@ _startup_time: datetime | None = None
 async def lifespan(app: FastAPI):
     """Pre-warm all indexes at startup per PERF-IO-001."""
     global _pipeline, _db, _startup_time
+    from sentence_transformers import SentenceTransformer
+
     _db = Neo4jConnection(DEFAULT_NEO4J_URI, DEFAULT_NEO4J_USER, DEFAULT_NEO4J_PASSWORD)
-    _pipeline = await build_pipeline(_db)
+    model = SentenceTransformer("all-MiniLM-L6-v2")
+    _pipeline = await build_pipeline(_db, embedding_model=model)
     _startup_time = datetime.now()
     yield
     if _db is not None:

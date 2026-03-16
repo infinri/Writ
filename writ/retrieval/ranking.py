@@ -16,8 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # Per ARCH-CONST-001: named constants for defaults.
-DEFAULT_W_BM25 = 0.3
-DEFAULT_W_VECTOR = 0.5
+DEFAULT_W_BM25 = 0.2
+DEFAULT_W_VECTOR = 0.6
 DEFAULT_W_SEVERITY = 0.1
 DEFAULT_W_CONFIDENCE = 0.1
 
