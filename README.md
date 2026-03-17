@@ -10,7 +10,7 @@ Context-stuffing all rules into the prompt does not scale:
 
 ```
 Context-stuffing: 15,812 tokens (46 domain rules)
-Writ retrieval:   1,417 tokens (5 rules, 5.8ms)
+Writ retrieval:   1,411 tokens (5 rules, 6.3ms)
 Ratio:            11x reduction
 ```
 
@@ -61,6 +61,8 @@ curl -X POST http://localhost:8765/query \
 | `writ serve` | Start the local service. Pre-warms indexes. Binds to localhost:8765. |
 | `writ ingest <path>` | Parse Markdown rules and ingest into the graph. Validates schema. |
 | `writ validate` | Run integrity checks: conflicts, orphans, staleness, redundancy. |
+| `writ add` | Interactive rule authoring with relationship suggestion and conflict detection. |
+| `writ edit <rule_id>` | Edit an existing rule with re-validation and relationship re-analysis. |
 | `writ export <path>` | Regenerate Markdown from graph. (Phase 7) |
 | `writ migrate` | One-time migration of existing rules into graph. |
 | `writ query "..."` | CLI rule query for testing retrieval quality. |
@@ -74,7 +76,7 @@ Five-stage hybrid retrieval pipeline:
 2. **BM25 Keyword** -- Tantivy sparse retrieval on trigger, statement, tags
 3. **ANN Vector** -- hnswlib in-process semantic search
 4. **Graph Traversal** -- Pre-computed adjacency cache for DEPENDS_ON, CONFLICTS_WITH, SUPPLEMENTS
-5. **Ranking** -- RRF with configurable BM25/vector/severity/confidence weights, context budget applied
+5. **Ranking** -- Two-pass RRF: first pass scores BM25/vector/severity/confidence, second pass adds graph-neighbor proximity from top-3 results. Context budget applied.
 
 Mandatory enforcement rules (`ENF-*`) are never ranked -- they are loaded by the skill directly, outside the retrieval pipeline.
 
@@ -88,11 +90,11 @@ Run with: `pytest benchmarks/bench_targets.py -v -s`
 
 | Stage | Component | p95 | Budget | Headroom |
 |---|---|---|---|---|
-| 2 | BM25 (Tantivy) | 0.163ms | 2.0ms | 12x |
-| 3 | Vector (hnswlib) | 0.086ms | 3.0ms | 35x |
+| 2 | BM25 (Tantivy) | 0.110ms | 2.0ms | 18x |
+| 3 | Vector (hnswlib) | 0.110ms | 3.0ms | 27x |
 | 4 | Adjacency cache | 0.002ms | 3.0ms | 1500x |
-| 5 | Ranking | 0.056ms | 1.0ms | 18x |
-| -- | **End-to-end** | **6.8ms** | **10.0ms** | **1.5x** |
+| 5 | Ranking (two-pass) | 0.060ms | 1.0ms | 17x |
+| -- | **End-to-end** | **5.9ms** | **10.0ms** | **1.7x** |
 
 ### Retrieval Quality
 
@@ -106,26 +108,27 @@ Run with: `pytest benchmarks/bench_targets.py -v -s`
 
 | Metric | Value | Budget |
 |---|---|---|
-| Cold start (build_pipeline) | 0.47s | < 3s |
-| Memory footprint (RSS) | 1,171 MB | < 2 GB |
-| Integrity check (80 rules) | 5.7ms p95 | < 500ms |
-| Single rule ingestion | 0.018s p95 | < 2s |
+| Cold start (build_pipeline) | 0.38s | < 3s |
+| Memory footprint (RSS) | 1,181 MB | < 2 GB |
+| Integrity check (80 rules) | 5.5ms p95 | < 500ms |
+| Single rule ingestion | 0.032s p95 | < 2s |
 
 ### Ranking Configuration
 
-Weights tuned via sweep against 83-query ground-truth set:
+Weights tuned via sweep against 83-query ground-truth set. Phase 5 ratios preserved, scaled by 0.99 for graph proximity:
 
 | Component | Weight |
 |---|---|
-| BM25 keyword rank | 0.2 |
-| Vector semantic rank | 0.6 |
-| Severity | 0.1 |
-| Confidence | 0.1 |
+| BM25 keyword rank | 0.198 |
+| Vector semantic rank | 0.594 |
+| Severity | 0.099 |
+| Confidence | 0.099 |
+| Graph proximity | 0.01 |
 
 ## Testing
 
 ```bash
-# Unit and integration tests (77 tests)
+# Unit and integration tests (107 tests)
 pytest tests/ -q
 
 # Performance benchmarks (12 tests, requires Neo4j with migrated rules)
@@ -141,9 +144,9 @@ All settings in `writ.toml`, overridable via `WRIT_` environment variables.
 
 ## Project Status
 
-Phases 1-5 complete. Phases 6-9 (authoring tools, generated artifacts, compression layer, agentic retrieval loop) pending specification.
+Phases 1-6 complete. Phases 7-9 (generated artifacts, compression layer, agentic retrieval loop) specified and ready for implementation.
 
-See [EXECUTION_PLAN.md](EXECUTION_PLAN.md) for phase details and decision/deviation logs.
+See [EXECUTION_PLAN.md](EXECUTION_PLAN.md) for phase details and decision/deviation logs. See [CONTRIBUTING.md](CONTRIBUTING.md) for the multi-author rule governance process.
 
 ## Full Specification
 

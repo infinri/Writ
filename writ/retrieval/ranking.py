@@ -1,9 +1,9 @@
-"""Reciprocal Rank Fusion of BM25 + vector scores, weighted by severity and confidence.
+"""Reciprocal Rank Fusion of BM25 + vector scores, weighted by severity, confidence, and graph proximity.
 
-score = (w1 * bm25_norm) + (w2 * vector_norm) + (w3 * severity_weight) + (w4 * confidence_weight)
+score = (w1 * bm25_norm) + (w2 * vector_norm) + (w3 * severity_weight) + (w4 * confidence_weight) + (w5 * graph_proximity)
 
-Weights are configurable via writ.toml. Constraint: w1 + w2 + w3 + w4 = 1.0.
-Tuned values: 0.3 / 0.5 / 0.1 / 0.1. Shifted toward vector to reduce BM25 keyword noise.
+Weights are configurable via writ.toml. Constraint: w1 + w2 + w3 + w4 + w5 = 1.0.
+Tuned values: 0.198 / 0.594 / 0.099 / 0.099 / 0.01. Phase 5 ratios (2:6:1:1) scaled by 0.99, graph proximity added in Phase 6.
 
 Context budget modes (Phase 5 degraded -- abstractions are Phase 8):
 - Summary (< 2K tokens): statement + trigger only
@@ -16,10 +16,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # Per ARCH-CONST-001: named constants for defaults.
-DEFAULT_W_BM25 = 0.2
-DEFAULT_W_VECTOR = 0.6
-DEFAULT_W_SEVERITY = 0.1
-DEFAULT_W_CONFIDENCE = 0.1
+# Phase 5 ratios (2:6:1:1) scaled by 0.99 to make room for w_graph.
+# Graph proximity uses discrete values (0.0/0.5/1.0), so even w_graph=0.01
+# creates meaningful rank shifts (12/83 queries affected) without MRR@5 regression.
+DEFAULT_W_BM25 = 0.198
+DEFAULT_W_VECTOR = 0.594
+DEFAULT_W_SEVERITY = 0.099
+DEFAULT_W_CONFIDENCE = 0.099
+DEFAULT_W_GRAPH = 0.01
 
 SUMMARY_THRESHOLD = 2000
 STANDARD_THRESHOLD = 8000
@@ -48,11 +52,27 @@ class RankingWeights:
     w_vector: float = DEFAULT_W_VECTOR
     w_severity: float = DEFAULT_W_SEVERITY
     w_confidence: float = DEFAULT_W_CONFIDENCE
+    w_graph: float = DEFAULT_W_GRAPH
 
     def validate(self) -> None:
-        total = self.w_bm25 + self.w_vector + self.w_severity + self.w_confidence
+        total = self.w_bm25 + self.w_vector + self.w_severity + self.w_confidence + self.w_graph
         if abs(total - 1.0) > 0.001:
             raise ValueError(f"Weights must sum to 1.0, got {total}")
+
+    def first_pass_weights(self) -> tuple[float, float, float, float]:
+        """Return w1-w4 renormalized to sum 1.0 for first-pass ranking (INV-4).
+
+        Preserves the ratio between w1-w4 regardless of w_graph value.
+        """
+        total = self.w_bm25 + self.w_vector + self.w_severity + self.w_confidence
+        if total < 0.001:
+            return (0.25, 0.25, 0.25, 0.25)
+        return (
+            self.w_bm25 / total,
+            self.w_vector / total,
+            self.w_severity / total,
+            self.w_confidence / total,
+        )
 
 
 def compute_score(
@@ -60,6 +80,7 @@ def compute_score(
     vector_norm: float,
     severity: str,
     confidence: str,
+    graph_proximity: float = 0.0,
     weights: RankingWeights | None = None,
 ) -> float:
     """Compute final ranking score for a single rule candidate."""
@@ -74,6 +95,7 @@ def compute_score(
         + weights.w_vector * vector_norm
         + weights.w_severity * sev_w
         + weights.w_confidence * conf_w
+        + weights.w_graph * graph_proximity
     )
 
 

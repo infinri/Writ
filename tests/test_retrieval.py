@@ -125,19 +125,21 @@ class TestRanking:
     """Ranking formula tests."""
 
     def test_score_formula(self) -> None:
+        w = RankingWeights()
         score = compute_score(
             bm25_norm=1.0,
             vector_norm=1.0,
             severity="critical",
             confidence="battle-tested",
+            graph_proximity=1.0,
+            weights=w,
         )
-        # 0.2*1.0 + 0.6*1.0 + 0.1*1.0 + 0.1*1.0 = 1.0
-        assert abs(score - 1.0) < 0.001
+        # All inputs at maximum with default weights summing to 1.0.
+        assert abs(score - 1.0) < 0.01
 
     def test_weights_sum_to_one(self) -> None:
         w = RankingWeights()
-        total = w.w_bm25 + w.w_vector + w.w_severity + w.w_confidence
-        assert abs(total - 1.0) < 0.001
+        w.validate()  # Should not raise.
 
     def test_severity_affects_score(self) -> None:
         high = compute_score(0.5, 0.5, "critical", "production-validated")

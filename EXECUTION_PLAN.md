@@ -258,9 +258,9 @@ This is the thesis validation gate. The ranking weights (w1-w4) are tuning param
 
 ## Phase 6: Authoring Tools
 
-**Status**: Not started
-**Started**: --
-**Completed**: --
+**Status**: Complete
+**Started**: 2026-03-16
+**Completed**: 2026-03-16
 **Blocked by**: Phase 5 complete
 
 ### Objective
@@ -531,7 +531,7 @@ Pulled from handbook Section 9. Tracked to resolution.
 | 4 | Graph-level versioning: how do agents reference a stable graph version? | Phase 9 | Open | Design immutable snapshots tagged by ingest timestamp. Agent pins to snapshot at session start via /health. Re-gated from Phase 5 to Phase 9 -- not needed until agentic multi-query sessions are implemented. |
 | 5 | Rule-level versioning: what happens to old versions when a rule is edited? | Phase 7 | Open | Snapshot model for intra-session. Cross-session drift is governance, not tooling. Re-gated from Phase 5 to Phase 7 -- relevant when export/import round-trip handles rule edits. |
 | 6 | Clustering algorithm for abstraction nodes? | Phase 8 | Open | k-means vs HDBSCAN. Both evaluated on 80-rule corpus during Phase 8 implementation. HDBSCAN preferred (auto-discovers cluster count). |
-| 7 | Multi-author conflict resolution governance? | Phase 6 | Open | CONTRIBUTING.md process. Human resolution required. Resolved during Phase 6 authoring tools implementation. |
+| 7 | Multi-author conflict resolution governance? | Phase 6 | **Resolved** | CONTRIBUTING.md documents the process: all rule additions/edits require PR review, CONFLICTS_WITH edges require human resolution by domain owner, deprecation uses SUPERSEDES edges. No automatic merging. |
 
 **Closed questions (for reference):**
 - Vector search engine: hnswlib for Phases 1-5, Qdrant at scale. **Closed.**
@@ -553,6 +553,8 @@ Pulled from handbook Section 9. Tracked to resolution.
 | 2026-03-15 | Ranking weights tuned: 0.3/0.5/0.1/0.1 + trigger 2x BM25 boost | Shifted from 0.4/0.4 to 0.3 BM25 / 0.5 vector to reduce keyword noise. Trigger field boosted 2x in Tantivy index to prioritize activation condition matching. |
 | 2026-03-15 | Phase 5 thesis gate: MRR@5 = 0.8558 on 20-query ambiguous held-out set | 85 queries total. Keyword held-out MRR@5 = 1.0 (too easy). Ambiguous held-out MRR@5 = 0.8558 (canonical metric). 20/20 hits in top 5, positions range from #1 to #5. p95 latency 6.3ms. |
 | 2026-03-16 | Ranking weights re-tuned: 0.3/0.5 -> 0.2/0.6 (BM25/vector), severity and confidence unchanged at 0.1/0.1 | Weight sweep across 6 configurations against 83-query ground-truth set. BM25 noise from broad-trigger rules (PY-ASYNC-001, ARCH-SSOT-001) pushed expected rules to rank 3-5 on ambiguous queries. Reducing BM25 weight improved Q77 (rank 4 -> 2) and Q79 (rank 3 -> 2) with zero regression on keyword/symptom sets. Hit rate stable at 97.59% (81/83). MRR@5 improved from 0.7781 to 0.7842. writ.toml and ranking.py defaults updated to match. |
+| 2026-03-16 | Graph-neighbor scoring: two-pass ranking with w_graph=0.01 | Phase 5 ratios (2:6:1:1) scaled by 0.99: w_bm25=0.198, w_vector=0.594, w_severity=0.099, w_confidence=0.099, w_graph=0.01. Sweep tested w_graph in {0.0, 0.01, 0.02, 0.05}. w_graph=0.02+ regresses Q72 (ARCH-ORG-001 drops from rank 5). w_graph=0.01 reshuffles 12/83 queries with zero MRR@5 regression. Mechanism validated; impact scales with corpus size and edge density. |
+| 2026-03-16 | Authoring module separated from CLI | `writ/authoring.py` contains domain logic (suggest_relationships, check_redundancy, check_conflicts). CLI commands in `cli.py` are thin dispatch. Same pattern as pipeline.py/integrity.py. |
 
 ---
 
@@ -565,5 +567,6 @@ Any departure from the handbook, with justification. Deviations without justific
 | 2026-03-15 | Section 6.1: `scripts/migrate_68.py` | Renamed to `scripts/migrate.py` | Script ingests all rules dynamically, not a hardcoded 68. Name reflects actual behavior. |
 | 2026-03-15 | Section 2.2: Scope enum `file/module/slice/PR` | Added `session` to Scope enum | Enforcement rules use `scope: session` in the actual Bible files. Handbook Section 2.2 omits it. |
 | 2026-03-16 | Section 10: "Retrieval precision (MRR@5) > 0.85" | Automated benchmark threshold set to 0.78, not 0.85 | The handbook's 0.85 target was calibrated to manual holistic evaluation where any top-5 presence scores 1.0. Automated strict 1/rank MRR penalizes rules at rank 3-5 (contributing 0.33-0.20 instead of 1.0). On the same 19 ambiguous queries, manual evaluation scores 0.8558, automated scores 0.7842 -- same retrieval quality, different measurement scale. Threshold set to 0.78 (the consistent automated floor). Remaining gap to 0.85 requires graph-neighbor scoring boost (Phase 6 feature, documented in PHASE5_RESULTS.md). |
+| 2026-03-16 | Phase 6 spec: "Graph-neighbor boost improves MRR@5... Target: 0.85" | Graph proximity mechanism operational but MRR@5 unchanged at 0.7842 | At 80 rules with 147 skeleton RELATED_TO edges, the graph is too well-connected for proximity to create net improvement. w_graph >= 0.02 regresses Q72 (borderline rank-5 rule displaced by boosted neighbor). The mechanism reshuffles 12/83 queries at w_graph=0.01 without regression -- it works, but the corpus is too small for measurable MRR improvement. Revisit when corpus reaches 500+ rules with typed edges (DEPENDS_ON, SUPPLEMENTS) beyond skeleton RELATED_TO. |
 
 ---

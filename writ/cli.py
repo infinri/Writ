@@ -128,6 +128,197 @@ def validate(
 
 
 @app.command()
+def add() -> None:
+    """Add a new rule to the graph with relationship suggestion and validation."""
+    from datetime import date
+
+    from writ.authoring import check_conflicts, check_redundancy, suggest_relationships
+    from writ.graph.db import Neo4jConnection
+    from writ.graph.schema import Rule
+    from writ.retrieval.pipeline import build_pipeline
+    from writ.retrieval.traversal import AdjacencyCache
+
+    async def _run() -> None:
+        # Collect required fields.
+        rule_id = typer.prompt("rule_id (e.g., ARCH-NEW-001)")
+        domain = typer.prompt("domain")
+        severity = typer.prompt("severity (critical/high/medium/low)")
+        scope = typer.prompt("scope (file/module/slice/pr/session)")
+        trigger = typer.prompt("trigger")
+        statement = typer.prompt("statement")
+        violation = typer.prompt("violation")
+        pass_example = typer.prompt("pass_example")
+        enforcement = typer.prompt("enforcement")
+        rationale = typer.prompt("rationale")
+
+        rule_data = {
+            "rule_id": rule_id,
+            "domain": domain,
+            "severity": severity,
+            "scope": scope,
+            "trigger": trigger,
+            "statement": statement,
+            "violation": violation,
+            "pass_example": pass_example,
+            "enforcement": enforcement,
+            "rationale": rationale,
+            "last_validated": date.today().isoformat(),
+        }
+
+        # INV-6: Validate against schema before any graph write.
+        try:
+            Rule(**rule_data)
+        except Exception as e:
+            typer.echo(f"Validation error: {e}")
+            raise typer.Exit(code=1)
+
+        db = Neo4jConnection("bolt://localhost:7687", "neo4j", "writdevpass")
+        try:
+            typer.echo("Building pipeline for relationship analysis...")
+            pipeline = await build_pipeline(db)
+            cache = AdjacencyCache()
+            await cache.build_from_db(db)
+
+            # Redundancy check.
+            redundant = check_redundancy(rule_data, pipeline)
+            if redundant:
+                typer.echo("\nRedundancy warning (>= 0.95 cosine similarity):")
+                for r in redundant:
+                    typer.echo(f"  {r['rule_id']} (similarity: {r['similarity']})")
+                    typer.echo(f"    {r['statement'][:100]}")
+
+            # Relationship suggestions.
+            suggestions = suggest_relationships(rule_data, pipeline)
+            if suggestions:
+                typer.echo("\nSuggested relationships:")
+                for i, s in enumerate(suggestions, 1):
+                    typer.echo(f"  {i}. {s['rule_id']} (score: {s['score']})")
+                    typer.echo(f"     {s['statement'][:100]}")
+
+            # Write rule to graph.
+            await db.create_rule(rule_data)
+            typer.echo(f"\nCreated rule: {rule_id}")
+
+            # Offer to create edges for accepted suggestions.
+            if suggestions:
+                for s in suggestions:
+                    edge_types = ["DEPENDS_ON", "SUPPLEMENTS", "CONFLICTS_WITH", "RELATED_TO"]
+                    create = typer.confirm(f"Create edge to {s['rule_id']}?", default=False)
+                    if create:
+                        edge_type = typer.prompt(
+                            f"Edge type ({'/'.join(edge_types)})",
+                            default="RELATED_TO",
+                        )
+                        if edge_type in edge_types:
+                            await db.create_edge(edge_type, rule_id, s["rule_id"])
+                            typer.echo(f"  Created {edge_type} -> {s['rule_id']}")
+                        else:
+                            typer.echo(f"  Unknown edge type: {edge_type}, skipped.")
+
+            # Conflict check after edges are created.
+            await cache.build_from_db(db)
+            conflicts = check_conflicts(rule_id, cache)
+            if conflicts:
+                typer.echo("\nConflict warning:")
+                for c in conflicts:
+                    typer.echo(f"  CONFLICTS_WITH {c['rule_id']}")
+
+            # Phase 7 stub.
+            typer.echo("\nExport stub -- will auto-export in Phase 7.")
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+@app.command()
+def edit(
+    rule_id: str = typer.Argument(..., help="ID of the rule to edit."),
+) -> None:
+    """Edit an existing rule in the graph."""
+    from writ.authoring import check_conflicts, check_redundancy, suggest_relationships
+    from writ.graph.db import Neo4jConnection
+    from writ.graph.schema import Rule
+    from writ.retrieval.pipeline import build_pipeline
+    from writ.retrieval.traversal import AdjacencyCache
+
+    async def _run() -> None:
+        db = Neo4jConnection("bolt://localhost:7687", "neo4j", "writdevpass")
+        try:
+            existing = await db.get_rule(rule_id)
+            if existing is None:
+                typer.echo(f"Rule not found: {rule_id}")
+                raise typer.Exit(code=1)
+
+            typer.echo(f"Editing rule: {rule_id}")
+            typer.echo("Press Enter to keep current value.\n")
+
+            fields = ["domain", "severity", "scope", "trigger", "statement",
+                       "violation", "pass_example", "enforcement", "rationale"]
+            updated = dict(existing)
+            for field in fields:
+                current = existing.get(field, "")
+                display = str(current)[:80] if current else "(empty)"
+                new_val = typer.prompt(f"{field} [{display}]", default=str(current))
+                updated[field] = new_val
+
+            # INV-6: Validate before write.
+            try:
+                Rule(**updated)
+            except Exception as e:
+                typer.echo(f"Validation error: {e}")
+                raise typer.Exit(code=1)
+
+            typer.echo("Building pipeline for relationship analysis...")
+            pipeline = await build_pipeline(db)
+            cache = AdjacencyCache()
+            await cache.build_from_db(db)
+
+            # Redundancy check on updated text.
+            redundant = check_redundancy(updated, pipeline)
+            # Filter out self from redundancy results.
+            redundant = [r for r in redundant if r["rule_id"] != rule_id]
+            if redundant:
+                typer.echo("\nRedundancy warning:")
+                for r in redundant:
+                    typer.echo(f"  {r['rule_id']} (similarity: {r['similarity']})")
+
+            # Re-suggest relationships.
+            suggestions = suggest_relationships(updated, pipeline)
+            if suggestions:
+                typer.echo("\nSuggested relationships:")
+                for i, s in enumerate(suggestions, 1):
+                    typer.echo(f"  {i}. {s['rule_id']} (score: {s['score']})")
+
+            # INV-7: MERGE = idempotent update.
+            await db.create_rule(updated)
+            typer.echo(f"\nUpdated rule: {rule_id}")
+
+            # Offer edges.
+            if suggestions:
+                for s in suggestions:
+                    create = typer.confirm(f"Create edge to {s['rule_id']}?", default=False)
+                    if create:
+                        edge_type = typer.prompt("Edge type", default="RELATED_TO")
+                        await db.create_edge(edge_type, rule_id, s["rule_id"])
+                        typer.echo(f"  Created {edge_type} -> {s['rule_id']}")
+
+            # Conflict check.
+            await cache.build_from_db(db)
+            conflicts = check_conflicts(rule_id, cache)
+            if conflicts:
+                typer.echo("\nConflict warning:")
+                for c in conflicts:
+                    typer.echo(f"  CONFLICTS_WITH {c['rule_id']}")
+
+            typer.echo("\nExport stub -- will auto-export in Phase 7.")
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+@app.command()
 def export(
     output: Path = typer.Argument(Path(DEFAULT_BIBLE_DIR), help="Output directory for generated Markdown."),
 ) -> None:

@@ -1,10 +1,12 @@
-"""Orchestrates all 5 retrieval stages in sequence.
+"""Orchestrates all retrieval stages in sequence.
 
 Stage 1: Domain Filter -- pre-filter to relevant domain subgraph.
 Stage 2: BM25 Keyword Filter -- Tantivy sparse retrieval on trigger, statement, tags.
 Stage 3: ANN Vector Search -- hnswlib in-process ANN on pre-computed embeddings.
 Stage 4: Graph Traversal -- adjacency cache lookup from top-K results.
-Stage 5: Ranking & Return -- RRF + metadata weighting, context budget applied.
+Stage 5a: First-pass ranking -- RRF + metadata weighting (no graph proximity).
+Stage 5b: Graph proximity -- compute proximity scores from top-3 first-pass results.
+Stage 5c: Final ranking -- re-score with graph proximity, context budget applied.
 
 The pipeline operates on domain rules only. Mandatory rules (ENF-*, mandatory: true)
 are excluded before Stage 1.
@@ -37,6 +39,51 @@ if TYPE_CHECKING:
 BM25_CANDIDATE_LIMIT = 50
 VECTOR_CANDIDATE_LIMIT = 10
 DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+FIRST_PASS_TOP_N = 3
+
+
+def compute_graph_proximity(
+    candidate_ids: list[str],
+    top3_ids: list[str],
+    cache: AdjacencyCache,
+) -> dict[str, float]:
+    """Compute graph proximity scores for candidates relative to top-3 rules.
+
+    Returns dict[rule_id, proximity] where proximity is in {0.0, 0.5, 1.0}.
+    Per INV-2: 1.0 = 1-hop neighbor of a top-3 rule, 0.5 = 2-hop only, 0.0 = none.
+    Per INV-4: top-3 rules themselves get 0.0 (no self-boost).
+    If a candidate is 1-hop to one top-3 and 2-hop to another, max wins.
+    """
+    top3_set = set(top3_ids)
+    proximity: dict[str, float] = {}
+
+    # Collect 1-hop neighbors of all top-3 rules.
+    top3_1hop: set[str] = set()
+    top3_2hop: set[str] = set()
+    for tid in top3_ids:
+        for neighbor in cache.get_neighbors(tid):
+            nid = neighbor["rule_id"]
+            if nid not in top3_set:
+                top3_1hop.add(nid)
+
+    # Collect 2-hop neighbors (neighbors of 1-hop, excluding 1-hop and top-3).
+    for nid in top3_1hop:
+        for neighbor in cache.get_neighbors(nid):
+            n2id = neighbor["rule_id"]
+            if n2id not in top3_set and n2id not in top3_1hop:
+                top3_2hop.add(n2id)
+
+    for rid in candidate_ids:
+        if rid in top3_set:
+            proximity[rid] = 0.0
+        elif rid in top3_1hop:
+            proximity[rid] = 1.0
+        elif rid in top3_2hop:
+            proximity[rid] = 0.5
+        else:
+            proximity[rid] = 0.0
+
+    return proximity
 
 
 class RetrievalPipeline:
@@ -124,7 +171,31 @@ class RetrievalPipeline:
         # Stage 4: Graph traversal enrichment (from adjacency cache).
         enrichment = self._cache.get_enrichment(list(candidate_ids.keys()))
 
-        # Stage 5: Ranking.
+        # Stage 5a: First-pass ranking (without graph proximity, INV-4).
+        fp_bm25, fp_vec, fp_sev, fp_conf = self._weights.first_pass_weights()
+        first_pass_weights = RankingWeights(
+            w_bm25=fp_bm25, w_vector=fp_vec, w_severity=fp_sev, w_confidence=fp_conf, w_graph=0.0,
+        )
+        first_pass_scores: list[tuple[str, float]] = []
+        for rid, scores in candidate_ids.items():
+            meta = self._metadata.get(rid, {})
+            fp_score = compute_score(
+                bm25_norm=scores.get("bm25_norm", 0.0),
+                vector_norm=scores.get("vector_norm", 0.0),
+                severity=meta.get("severity", "medium"),
+                confidence=meta.get("confidence", "production-validated"),
+                weights=first_pass_weights,
+            )
+            first_pass_scores.append((rid, fp_score))
+
+        first_pass_scores.sort(key=lambda x: x[1], reverse=True)
+        top3_ids = [rid for rid, _ in first_pass_scores[:FIRST_PASS_TOP_N]]
+
+        # Stage 5b: Compute graph proximity from top-3.
+        all_candidate_list = list(candidate_ids.keys())
+        proximity = compute_graph_proximity(all_candidate_list, top3_ids, self._cache)
+
+        # Stage 5c: Final ranking with graph proximity.
         scored_rules: list[dict] = []
         for rid, scores in candidate_ids.items():
             meta = self._metadata.get(rid, {})
@@ -133,6 +204,7 @@ class RetrievalPipeline:
                 vector_norm=scores.get("vector_norm", 0.0),
                 severity=meta.get("severity", "medium"),
                 confidence=meta.get("confidence", "production-validated"),
+                graph_proximity=proximity.get(rid, 0.0),
                 weights=self._weights,
             )
             rule_entry = {
