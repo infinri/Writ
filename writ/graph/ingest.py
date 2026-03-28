@@ -88,6 +88,9 @@ def _parse_rule_block(rule_id: str, block: str) -> dict | None:
         result["mandatory"] = rule_id.startswith("ENF-")
     result["confidence"] = "production-validated"
     result["authority"] = "human"
+    result["times_seen_positive"] = 0
+    result["times_seen_negative"] = 0
+    result["last_seen"] = None
     result["evidence"] = EVIDENCE_DEFAULT
     result["staleness_window"] = STALENESS_WINDOW_DEFAULT
     result["last_validated"] = date.today().isoformat()

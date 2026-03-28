@@ -180,6 +180,32 @@ class Neo4jConnection:
             record = await result.single()
             return record is not None
 
+    async def increment_positive(self, rule_id: str) -> bool:
+        """Increment times_seen_positive and update last_seen. Returns True if found."""
+        query = """
+            MATCH (r:Rule {rule_id: $rule_id})
+            SET r.times_seen_positive = coalesce(r.times_seen_positive, 0) + 1,
+                r.last_seen = datetime()
+            RETURN r.rule_id AS rule_id
+        """
+        async with self._driver.session(database=self._database) as session:
+            result = await session.run(query, rule_id=rule_id)
+            record = await result.single()
+            return record is not None
+
+    async def increment_negative(self, rule_id: str) -> bool:
+        """Increment times_seen_negative and update last_seen. Returns True if found."""
+        query = """
+            MATCH (r:Rule {rule_id: $rule_id})
+            SET r.times_seen_negative = coalesce(r.times_seen_negative, 0) + 1,
+                r.last_seen = datetime()
+            RETURN r.rule_id AS rule_id
+        """
+        async with self._driver.session(database=self._database) as session:
+            result = await session.run(query, rule_id=rule_id)
+            record = await result.single()
+            return record is not None
+
     async def delete_rule(self, rule_id: str) -> bool:
         """Delete a Rule node and all its edges. Returns True if found."""
         query = """

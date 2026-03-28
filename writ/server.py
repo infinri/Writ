@@ -51,6 +51,13 @@ class ProposeRequest(BaseModel):
     query_that_triggered: str | None = None
 
 
+class FeedbackRequest(BaseModel):
+    """Request body for /feedback endpoint."""
+
+    rule_id: str
+    signal: str
+
+
 class ConflictsRequest(BaseModel):
     """Request body for /conflicts endpoint."""
 
@@ -146,6 +153,24 @@ async def propose_rule_endpoint(request: ProposeRequest) -> dict[str, Any]:
         query_that_triggered=request.query_that_triggered,
     )
     return result
+
+
+@app.post("/feedback")
+async def record_feedback(request: FeedbackRequest) -> dict[str, Any]:
+    """Record positive or negative feedback for a rule."""
+    if _db is None:
+        return {"error": "Database not connected."}
+    if request.signal not in ("positive", "negative"):
+        return {"error": f"Invalid signal: {request.signal}. Must be 'positive' or 'negative'."}
+
+    if request.signal == "positive":
+        found = await _db.increment_positive(request.rule_id)
+    else:
+        found = await _db.increment_negative(request.rule_id)
+
+    if not found:
+        return {"error": f"Rule {request.rule_id} not found."}
+    return {"rule_id": request.rule_id, "signal": request.signal, "recorded": True}
 
 
 @app.post("/conflicts")

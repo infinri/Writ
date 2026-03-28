@@ -73,5 +73,10 @@ redundancy_threshold = 0.95
 unreviewed_warning_percentage = 0.10
 unreviewed_warning_floor = 5
 
+[frequency]
+graduation_threshold = 50
+graduation_ratio_minimum = 0.75
+zero_frequency_window_days = 90
+
 [origin_context]
 db_path = "~/.cache/writ/origin_context.db"

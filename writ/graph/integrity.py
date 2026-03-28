@@ -188,6 +188,57 @@ class IntegrityChecker:
             }
         return None
 
+    async def detect_frequency_stale(self, window_days: int = 90) -> list[dict]:
+        """Find rules with zero frequency over rolling window."""
+        query = """
+            MATCH (r:Rule)
+            WHERE (coalesce(r.times_seen_positive, 0) + coalesce(r.times_seen_negative, 0)) = 0
+              AND (r.last_seen IS NULL
+                   OR r.last_seen < datetime() - duration({days: $window_days}))
+            RETURN r.rule_id AS rule_id, r.last_seen AS last_seen
+            ORDER BY rule_id
+        """
+        async with self._driver.session(database=self._database) as session:
+            result = await session.run(query, window_days=window_days)
+            return [record.data() async for record in result]
+
+    async def detect_graduation_flags(self) -> list[dict]:
+        """Find rules that reached graduation threshold with ratio below minimum."""
+        from writ.frequency import (
+            DEFAULT_GRADUATION_RATIO_MIN,
+            DEFAULT_GRADUATION_THRESHOLD,
+            evaluate_graduation,
+        )
+
+        query = """
+            MATCH (r:Rule)
+            WHERE (coalesce(r.times_seen_positive, 0) + coalesce(r.times_seen_negative, 0))
+                  >= $threshold
+            RETURN r.rule_id AS rule_id,
+                   coalesce(r.times_seen_positive, 0) AS pos,
+                   coalesce(r.times_seen_negative, 0) AS neg
+        """
+        async with self._driver.session(database=self._database) as session:
+            result = await session.run(
+                query, threshold=DEFAULT_GRADUATION_THRESHOLD,
+            )
+            records = [record.data() async for record in result]
+
+        flagged: list[dict] = []
+        for rec in records:
+            grad = evaluate_graduation(
+                rec["pos"], rec["neg"],
+                DEFAULT_GRADUATION_THRESHOLD,
+                DEFAULT_GRADUATION_RATIO_MIN,
+            )
+            if grad.flagged:
+                flagged.append({
+                    "rule_id": rec["rule_id"],
+                    "ratio": round(grad.ratio, 4),
+                    "n": grad.n,
+                })
+        return flagged
+
     async def run_all_checks(self, skip_redundancy: bool = False) -> dict:
         """Run all integrity checks. Returns findings dict.
 
@@ -205,6 +256,8 @@ class IntegrityChecker:
             findings["redundant"] = []
 
         findings["unreviewed"] = await self.check_unreviewed_count()
+        findings["frequency_stale"] = await self.detect_frequency_stale()
+        findings["graduation_flags"] = await self.detect_graduation_flags()
 
         has_issues = any(
             findings[k] for k in ("conflicts", "orphans", "stale", "redundant")

@@ -77,6 +77,9 @@ class Rule(BaseModel):
     mandatory: bool = False
     confidence: Confidence = Confidence.PRODUCTION_VALIDATED
     authority: str = "human"
+    times_seen_positive: int = 0
+    times_seen_negative: int = 0
+    last_seen: str | None = None
     evidence: str = EVIDENCE_DEFAULT
     staleness_window: int = STALENESS_WINDOW_DEFAULT
     last_validated: date

@@ -75,6 +75,22 @@ class RankingWeights:
         )
 
 
+def compute_confidence_weight(
+    static_confidence: str,
+    times_positive: int,
+    times_negative: int,
+    threshold: int = 50,
+    ratio_min: float = 0.75,
+) -> float:
+    """Return confidence weight, using empirical ratio when graduated."""
+    from writ.frequency import evaluate_graduation
+
+    grad = evaluate_graduation(times_positive, times_negative, threshold, ratio_min)
+    if grad.graduated:
+        return grad.ratio
+    return CONFIDENCE_WEIGHTS.get(static_confidence, 0.8)
+
+
 def compute_score(
     bm25_norm: float,
     vector_norm: float,

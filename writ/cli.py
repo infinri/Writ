@@ -109,6 +109,16 @@ def validate(
                 u = findings["unreviewed"]
                 typer.echo(f"\nUnreviewed AI-provisional: {u['message']}")
 
+            if findings.get("frequency_stale"):
+                typer.echo(f"\nFrequency stale ({len(findings['frequency_stale'])}):")
+                for fs in findings["frequency_stale"][:10]:
+                    typer.echo(f"  {fs['rule_id']} (last_seen: {fs.get('last_seen', 'never')})")
+
+            if findings.get("graduation_flags"):
+                typer.echo(f"\nGraduation flags ({len(findings['graduation_flags'])}):")
+                for gf in findings["graduation_flags"]:
+                    typer.echo(f"  {gf['rule_id']} (ratio: {gf['ratio']}, n={gf['n']})")
+
             if review_confidence:
                 defaults = await checker.detect_confidence_defaults()
                 typer.echo(f"\nRules at default confidence ({len(defaults)}):")
@@ -371,6 +381,36 @@ def query(
                 if "statement" in rule:
                     typer.echo(f"     {rule['statement'][:100]}")
                 typer.echo()
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+@app.command()
+def feedback(
+    rule_id: str = typer.Argument(..., help="Rule ID to record feedback for."),
+    signal: str = typer.Argument(..., help="Signal: 'positive' or 'negative'."),
+) -> None:
+    """Record positive or negative feedback for a rule (hook integration)."""
+    from writ.graph.db import Neo4jConnection
+
+    if signal not in ("positive", "negative"):
+        typer.echo(f"Invalid signal: {signal}. Must be 'positive' or 'negative'.")
+        raise typer.Exit(code=1)
+
+    async def _run() -> None:
+        db = Neo4jConnection("bolt://localhost:7687", "neo4j", "writdevpass")
+        try:
+            if signal == "positive":
+                found = await db.increment_positive(rule_id)
+            else:
+                found = await db.increment_negative(rule_id)
+
+            if not found:
+                typer.echo(f"Rule not found: {rule_id}")
+                raise typer.Exit(code=1)
+            typer.echo(f"Recorded {signal} feedback for {rule_id}")
         finally:
             await db.close()
 
