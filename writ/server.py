@@ -33,6 +33,24 @@ class QueryRequest(BaseModel):
     exclude_rule_ids: list[str] | None = None
 
 
+class ProposeRequest(BaseModel):
+    """Request body for /propose endpoint."""
+
+    rule_id: str
+    domain: str
+    severity: str
+    scope: str
+    trigger: str
+    statement: str
+    violation: str
+    pass_example: str
+    enforcement: str
+    rationale: str
+    last_validated: str
+    task_description: str = ""
+    query_that_triggered: str | None = None
+
+
 class ConflictsRequest(BaseModel):
     """Request body for /conflicts endpoint."""
 
@@ -94,6 +112,40 @@ async def get_rule(rule_id: str, include_graph: bool = False) -> dict[str, Any]:
         neighbors = await _db.traverse_neighbors(rule_id, hops=1)
         response["graph_context"] = neighbors
     return response
+
+
+@app.post("/propose")
+async def propose_rule_endpoint(request: ProposeRequest) -> dict[str, Any]:
+    """Propose an AI-generated rule. Runs structural gate, ingests if accepted."""
+    if _pipeline is None or _db is None:
+        return {"error": "Pipeline not initialized. Run writ serve."}
+
+    from writ.gate import propose_rule
+    from writ.origin_context import DEFAULT_DB_PATH
+
+    candidate = {
+        "rule_id": request.rule_id,
+        "domain": request.domain,
+        "severity": request.severity,
+        "scope": request.scope,
+        "trigger": request.trigger,
+        "statement": request.statement,
+        "violation": request.violation,
+        "pass_example": request.pass_example,
+        "enforcement": request.enforcement,
+        "rationale": request.rationale,
+        "last_validated": request.last_validated,
+    }
+
+    result = await propose_rule(
+        candidate,
+        _pipeline,
+        _db,
+        origin_db_path=DEFAULT_DB_PATH,
+        task_description=request.task_description,
+        query_that_triggered=request.query_that_triggered,
+    )
+    return result
 
 
 @app.post("/conflicts")

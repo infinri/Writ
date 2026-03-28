@@ -186,3 +186,64 @@ def _check_conflicts(candidate: dict, pipeline: RetrievalPipeline) -> list[str]:
             )
 
     return conflicts
+
+
+async def propose_rule(
+    candidate: dict,
+    pipeline: RetrievalPipeline,
+    db: object,
+    *,
+    origin_db_path: object | None = None,
+    task_description: str = "",
+    query_that_triggered: str | None = None,
+    novelty_threshold: float = NOVELTY_THRESHOLD,
+    redundancy_threshold: float = REDUNDANCY_THRESHOLD,
+) -> dict:
+    """End-to-end AI rule proposal: gate -> ingest -> origin context.
+
+    Returns dict with accepted, rule_id, authority, confidence, reasons.
+    """
+    # Enforce authority and confidence ceiling.
+    candidate["authority"] = "ai-provisional"
+    candidate["confidence"] = "speculative"
+
+    # Run structural gate.
+    gate_result = structural_gate(
+        candidate, pipeline,
+        novelty_threshold=novelty_threshold,
+        redundancy_threshold=redundancy_threshold,
+    )
+
+    if not gate_result.accepted:
+        return {
+            "accepted": False,
+            "rule_id": candidate.get("rule_id", ""),
+            "reasons": gate_result.reasons,
+            "similar_rules": gate_result.similar_rules,
+        }
+
+    # Ingest into graph.
+    clean = {k: v for k, v in candidate.items() if not k.startswith("_")}
+    await db.create_rule(clean)
+
+    # Write origin context.
+    if origin_db_path is not None:
+        from writ.origin_context import OriginContextStore
+
+        store = OriginContextStore(origin_db_path)
+        consulted = candidate.get("_consulted_rules", [])
+        store.write(
+            candidate["rule_id"],
+            task_description,
+            query_that_triggered,
+            consulted,
+        )
+        store.close()
+
+    return {
+        "accepted": True,
+        "rule_id": candidate["rule_id"],
+        "authority": "ai-provisional",
+        "confidence": "speculative",
+        "reasons": [],
+    }

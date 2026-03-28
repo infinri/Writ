@@ -18,6 +18,9 @@ SCOPE_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*$")
 STALENESS_WINDOW_DEFAULT = 365
 EVIDENCE_DEFAULT = "doc:original-bible"
 
+# Phase 3a: valid authority values for Rule nodes.
+VALID_AUTHORITIES = ("human", "ai-provisional", "ai-promoted")
+
 # Phase 1d: documented enforcement field conventions for rule authors.
 ENFORCEMENT_CONVENTIONS = (
     "human-review",
@@ -73,6 +76,7 @@ class Rule(BaseModel):
     rationale: str
     mandatory: bool = False
     confidence: Confidence = Confidence.PRODUCTION_VALIDATED
+    authority: str = "human"
     evidence: str = EVIDENCE_DEFAULT
     staleness_window: int = STALENESS_WINDOW_DEFAULT
     last_validated: date
@@ -110,6 +114,15 @@ class Rule(BaseModel):
             raise ValueError(
                 f"scope '{v}' must be lowercase, start with a letter, "
                 "and match [a-z][a-z0-9_-]*"
+            )
+        return v
+
+    @field_validator("authority")
+    @classmethod
+    def validate_authority(cls, v: str) -> str:
+        if v not in VALID_AUTHORITIES:
+            raise ValueError(
+                f"authority '{v}' must be one of: {', '.join(VALID_AUTHORITIES)}"
             )
         return v
 

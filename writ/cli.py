@@ -378,6 +378,68 @@ def query(
 
 
 @app.command()
+def propose(
+    rule_id: str = typer.Option(..., help="Rule ID for the proposed rule."),
+    domain: str = typer.Option(..., help="Domain of the rule."),
+    severity: str = typer.Option(..., help="Severity (critical/high/medium/low)."),
+    scope: str = typer.Option(..., help="Scope of the rule."),
+    trigger: str = typer.Option(..., help="When this rule applies."),
+    statement: str = typer.Option(..., help="What the rule requires."),
+    violation: str = typer.Option(..., help="Example violation."),
+    pass_example: str = typer.Option(..., help="Example of passing."),
+    enforcement: str = typer.Option(..., help="How the rule is enforced."),
+    rationale: str = typer.Option(..., help="Why this rule exists."),
+    task_description: str = typer.Option("", help="What the AI was doing when it proposed this rule."),
+) -> None:
+    """Propose an AI-generated rule. Runs structural gate before ingestion."""
+    from datetime import date
+
+    from writ.gate import propose_rule
+    from writ.graph.db import Neo4jConnection
+    from writ.origin_context import DEFAULT_DB_PATH
+    from writ.retrieval.pipeline import build_pipeline
+
+    candidate = {
+        "rule_id": rule_id,
+        "domain": domain,
+        "severity": severity,
+        "scope": scope,
+        "trigger": trigger,
+        "statement": statement,
+        "violation": violation,
+        "pass_example": pass_example,
+        "enforcement": enforcement,
+        "rationale": rationale,
+        "last_validated": date.today().isoformat(),
+    }
+
+    async def _run() -> None:
+        db = Neo4jConnection("bolt://localhost:7687", "neo4j", "writdevpass")
+        try:
+            typer.echo("Building pipeline...")
+            pipeline = await build_pipeline(db)
+
+            result = await propose_rule(
+                candidate,
+                pipeline,
+                db,
+                origin_db_path=DEFAULT_DB_PATH,
+                task_description=task_description,
+            )
+
+            if result["accepted"]:
+                typer.echo(f"Accepted: {result['rule_id']} (authority: ai-provisional)")
+            else:
+                typer.echo(f"Rejected: {result['rule_id']}")
+                for reason in result.get("reasons", []):
+                    typer.echo(f"  - {reason}")
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+@app.command()
 def review(
     rule_id: str = typer.Argument(None, help="Rule ID to inspect. Omit to list all unreviewed."),
     promote: bool = typer.Option(False, "--promote", help="Promote AI-provisional to ai-promoted."),

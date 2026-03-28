@@ -114,6 +114,55 @@ def normalize_ranks(scores: list[float]) -> list[float]:
     return normalized
 
 
+def apply_authority_preference(
+    scored_rules: list[dict],
+    threshold: float,
+) -> list[dict]:
+    """Hard preference: human/ai-promoted outranks ai-provisional within threshold.
+
+    For each adjacent pair, if an ai-provisional rule ranks above a
+    human/ai-promoted rule and the score gap is within threshold, swap them.
+    Threshold of 0.0 disables the preference (no swaps).
+    """
+    if threshold <= 0.0:
+        return scored_rules
+
+    result = list(scored_rules)
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(result) - 1):
+            upper = result[i]
+            lower = result[i + 1]
+            gap = upper.get("score", 0.0) - lower.get("score", 0.0)
+            if gap > threshold:
+                continue
+            upper_auth = upper.get("authority", "human")
+            lower_auth = lower.get("authority", "human")
+            if upper_auth == "ai-provisional" and lower_auth != "ai-provisional":
+                result[i], result[i + 1] = result[i + 1], result[i]
+                changed = True
+    return result
+
+
+def filter_proximity_seeds(
+    first_pass_scores: list[tuple[str, float, str]],
+    top_n: int = 3,
+) -> list[str]:
+    """Select top-N rule IDs for graph proximity seeding, excluding ai-provisional.
+
+    first_pass_scores: list of (rule_id, score, authority) tuples, sorted by score desc.
+    Returns up to top_n rule IDs. No backfill with ai-provisional.
+    """
+    seeds: list[str] = []
+    for rid, _score, authority in first_pass_scores:
+        if authority != "ai-provisional":
+            seeds.append(rid)
+            if len(seeds) >= top_n:
+                break
+    return seeds
+
+
 def apply_context_budget(
     rules: list[dict],
     budget_tokens: int | None,

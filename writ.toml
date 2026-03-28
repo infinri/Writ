@@ -60,6 +60,11 @@ auto_export = true
 query_rule_ratio_warning = 10
 staleness_default_days = 365
 
+[authority]
+preference_threshold = 0.0
+ai_provisional_confidence_ceiling = "speculative"
+ai_promoted_confidence_ceiling = "peer-reviewed"
+
 [gate]
 novelty_threshold = 0.85
 redundancy_threshold = 0.95

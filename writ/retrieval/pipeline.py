@@ -26,8 +26,10 @@ from writ.retrieval.embeddings import HnswlibStore, ScoredResult
 from writ.retrieval.keyword import KeywordIndex
 from writ.retrieval.ranking import (
     RankingWeights,
+    apply_authority_preference,
     apply_context_budget,
     compute_score,
+    filter_proximity_seeds,
     normalize_ranks,
 )
 from writ.retrieval.traversal import AdjacencyCache
@@ -100,6 +102,7 @@ class RetrievalPipeline:
         embedding_model: SentenceTransformer,
         rule_metadata: dict[str, dict],
         weights: RankingWeights | None = None,
+        authority_preference_threshold: float = 0.0,
     ) -> None:
         self._keyword = keyword_index
         self._vector = vector_store
@@ -107,6 +110,7 @@ class RetrievalPipeline:
         self._model = embedding_model
         self._metadata = rule_metadata
         self._weights = weights or RankingWeights()
+        self._authority_preference_threshold = authority_preference_threshold
 
     def query(
         self,
@@ -189,7 +193,13 @@ class RetrievalPipeline:
             first_pass_scores.append((rid, fp_score))
 
         first_pass_scores.sort(key=lambda x: x[1], reverse=True)
-        top3_ids = [rid for rid, _ in first_pass_scores[:FIRST_PASS_TOP_N]]
+
+        # Phase 3c: exclude ai-provisional from proximity seeding.
+        first_pass_with_auth = [
+            (rid, score, self._metadata.get(rid, {}).get("authority", "human"))
+            for rid, score in first_pass_scores
+        ]
+        top3_ids = filter_proximity_seeds(first_pass_with_auth, FIRST_PASS_TOP_N)
 
         # Stage 5b: Compute graph proximity from top-3.
         all_candidate_list = list(candidate_ids.keys())
@@ -210,6 +220,7 @@ class RetrievalPipeline:
             rule_entry = {
                 "rule_id": rid,
                 "score": round(final_score, 4),
+                "authority": meta.get("authority", "human"),
                 "statement": meta.get("statement", ""),
                 "trigger": meta.get("trigger", ""),
                 "violation": meta.get("violation", ""),
@@ -221,6 +232,11 @@ class RetrievalPipeline:
 
         # Sort by score descending.
         scored_rules.sort(key=lambda r: r["score"], reverse=True)
+
+        # Phase 3b: hard authority preference -- human outranks ai-provisional.
+        scored_rules = apply_authority_preference(
+            scored_rules, self._authority_preference_threshold,
+        )
 
         # Apply context budget.
         trimmed, mode = apply_context_budget(scored_rules, budget_tokens)
