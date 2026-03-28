@@ -149,6 +149,45 @@ class IntegrityChecker:
             }
         return None
 
+    async def check_unreviewed_count(
+        self,
+        warning_percentage: float = 0.10,
+        warning_floor: int = 5,
+    ) -> dict | None:
+        """Warn if unreviewed AI-provisional rules exceed threshold.
+
+        Threshold: max(warning_floor, warning_percentage * total_rules).
+        Returns warning dict if exceeded, None otherwise.
+        """
+        total_query = "MATCH (r:Rule) RETURN count(r) AS total"
+        unreviewed_query = """
+            MATCH (r:Rule)
+            WHERE r.authority = 'ai-provisional'
+            RETURN count(r) AS unreviewed
+        """
+        async with self._driver.session(database=self._database) as session:
+            total_result = await session.run(total_query)
+            total_record = await total_result.single()
+            total = total_record["total"]
+
+            unreviewed_result = await session.run(unreviewed_query)
+            unreviewed_record = await unreviewed_result.single()
+            unreviewed = unreviewed_record["unreviewed"]
+
+        if unreviewed == 0:
+            return None
+
+        threshold = max(warning_floor, int(warning_percentage * total))
+        if unreviewed >= threshold:
+            return {
+                "unreviewed": unreviewed,
+                "total": total,
+                "threshold": threshold,
+                "message": f"{unreviewed} unreviewed AI-provisional rules "
+                           f"(threshold: {threshold})",
+            }
+        return None
+
     async def run_all_checks(self, skip_redundancy: bool = False) -> dict:
         """Run all integrity checks. Returns findings dict.
 
@@ -165,6 +204,10 @@ class IntegrityChecker:
         else:
             findings["redundant"] = []
 
-        has_issues = any(findings[k] for k in ("conflicts", "orphans", "stale", "redundant"))
+        findings["unreviewed"] = await self.check_unreviewed_count()
+
+        has_issues = any(
+            findings[k] for k in ("conflicts", "orphans", "stale", "redundant")
+        )
         findings["exit_code"] = 1 if has_issues else 0
         return findings

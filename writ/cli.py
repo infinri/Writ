@@ -105,6 +105,10 @@ def validate(
                 for r in findings["redundant"]:
                     typer.echo(f"  {r['rule_a']} ~ {r['rule_b']} ({r['similarity']})")
 
+            if findings.get("unreviewed"):
+                u = findings["unreviewed"]
+                typer.echo(f"\nUnreviewed AI-provisional: {u['message']}")
+
             if review_confidence:
                 defaults = await checker.detect_confidence_defaults()
                 typer.echo(f"\nRules at default confidence ({len(defaults)}):")
@@ -367,6 +371,112 @@ def query(
                 if "statement" in rule:
                     typer.echo(f"     {rule['statement'][:100]}")
                 typer.echo()
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+@app.command()
+def review(
+    rule_id: str = typer.Argument(None, help="Rule ID to inspect. Omit to list all unreviewed."),
+    promote: bool = typer.Option(False, "--promote", help="Promote AI-provisional to ai-promoted."),
+    reject: bool = typer.Option(False, "--reject", help="Delete AI-provisional rule from graph."),
+    downweight: bool = typer.Option(False, "--downweight", help="Set confidence floor (speculative)."),
+    stats: bool = typer.Option(False, "--stats", help="Show review queue statistics."),
+) -> None:
+    """Review AI-proposed rules. List, inspect, promote, reject, or downweight."""
+    from writ.graph.db import Neo4jConnection
+
+    async def _run() -> None:
+        db = Neo4jConnection("bolt://localhost:7687", "neo4j", "writdevpass")
+        try:
+            if stats:
+                counts = await db.count_by_authority()
+                total = sum(counts.values())
+                typer.echo("Review queue statistics:")
+                for authority, count in sorted(counts.items()):
+                    typer.echo(f"  {authority}: {count}")
+                typer.echo(f"  total: {total}")
+                return
+
+            if rule_id is None:
+                rules = await db.get_rules_by_authority("ai-provisional")
+                if not rules:
+                    typer.echo("No AI-provisional rules in queue.")
+                    return
+                typer.echo(f"Unreviewed AI-provisional rules ({len(rules)}):\n")
+                for r in rules:
+                    typer.echo(f"  {r.get('rule_id', '?')}")
+                    typer.echo(f"    trigger: {str(r.get('trigger', ''))[:80]}")
+                    typer.echo(f"    statement: {str(r.get('statement', ''))[:80]}")
+                    typer.echo()
+                return
+
+            existing = await db.get_rule(rule_id)
+            if existing is None:
+                typer.echo(f"Rule not found: {rule_id}")
+                raise typer.Exit(code=1)
+
+            if promote:
+                if existing.get("authority") != "ai-provisional":
+                    typer.echo(f"Cannot promote: {rule_id} has authority '{existing.get('authority', 'human')}'")
+                    raise typer.Exit(code=1)
+                confirm = typer.confirm(f"Promote {rule_id} to ai-promoted?")
+                if not confirm:
+                    typer.echo("Cancelled.")
+                    return
+                await db.update_rule_authority(rule_id, "ai-promoted")
+                await db.update_rule_confidence(rule_id, "peer-reviewed")
+                typer.echo(f"Promoted: {rule_id} (authority: ai-promoted, confidence: peer-reviewed)")
+                return
+
+            if reject:
+                if existing.get("authority") != "ai-provisional":
+                    typer.echo(f"Cannot reject: {rule_id} has authority '{existing.get('authority', 'human')}'")
+                    raise typer.Exit(code=1)
+                confirm = typer.confirm(f"Delete {rule_id} from graph?")
+                if not confirm:
+                    typer.echo("Cancelled.")
+                    return
+                await db.delete_rule(rule_id)
+                typer.echo(f"Rejected and deleted: {rule_id}")
+                return
+
+            if downweight:
+                confirm = typer.confirm(f"Downweight {rule_id} to speculative confidence?")
+                if not confirm:
+                    typer.echo("Cancelled.")
+                    return
+                await db.update_rule_confidence(rule_id, "speculative")
+                typer.echo(f"Downweighted: {rule_id} (confidence: speculative)")
+                return
+
+            typer.echo(f"Rule: {rule_id}")
+            typer.echo(f"  authority: {existing.get('authority', 'human')}")
+            typer.echo(f"  domain: {existing.get('domain', '')}")
+            typer.echo(f"  severity: {existing.get('severity', '')}")
+            typer.echo(f"  confidence: {existing.get('confidence', '')}")
+            typer.echo(f"  trigger: {existing.get('trigger', '')}")
+            typer.echo(f"  statement: {existing.get('statement', '')}")
+
+            try:
+                from writ.origin_context import OriginContextStore
+
+                store = OriginContextStore()
+                ctx = store.get(rule_id)
+                store.close()
+                if ctx:
+                    typer.echo("\n  Origin context:")
+                    typer.echo(f"    task: {ctx['task_description']}")
+                    typer.echo(f"    query: {ctx.get('query_that_triggered', 'N/A')}")
+                    typer.echo(f"    consulted: {', '.join(ctx.get('existing_rules_consulted', []))}")
+                    typer.echo(f"    created: {ctx['created_at']}")
+                else:
+                    typer.echo("\n  Origin context: not recorded")
+            except Exception:
+                typer.echo("\n  Origin context: not available")
+
         finally:
             await db.close()
 

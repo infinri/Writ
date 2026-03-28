@@ -59,3 +59,14 @@ auto_export = true
 [validation]
 query_rule_ratio_warning = 10
 staleness_default_days = 365
+
+[gate]
+novelty_threshold = 0.85
+redundancy_threshold = 0.95
+
+[review]
+unreviewed_warning_percentage = 0.10
+unreviewed_warning_floor = 5
+
+[origin_context]
+db_path = "~/.cache/writ/origin_context.db"

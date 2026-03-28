@@ -144,6 +144,65 @@ class Neo4jConnection:
             result = await session.run("SHOW INDEXES")
             return [record.data() async for record in result]
 
+    async def get_rules_by_authority(self, authority: str) -> list[dict]:
+        """Fetch all Rule nodes with a given authority value."""
+        query = """
+            MATCH (r:Rule)
+            WHERE r.authority = $authority
+            RETURN r
+            ORDER BY r.last_validated DESC
+        """
+        async with self._driver.session(database=self._database) as session:
+            result = await session.run(query, authority=authority)
+            return [dict(record["r"]) async for record in result]
+
+    async def update_rule_authority(self, rule_id: str, authority: str) -> bool:
+        """Update the authority property on a Rule node. Returns True if found."""
+        query = """
+            MATCH (r:Rule {rule_id: $rule_id})
+            SET r.authority = $authority
+            RETURN r.rule_id AS rule_id
+        """
+        async with self._driver.session(database=self._database) as session:
+            result = await session.run(query, rule_id=rule_id, authority=authority)
+            record = await result.single()
+            return record is not None
+
+    async def update_rule_confidence(self, rule_id: str, confidence: str) -> bool:
+        """Update the confidence property on a Rule node. Returns True if found."""
+        query = """
+            MATCH (r:Rule {rule_id: $rule_id})
+            SET r.confidence = $confidence
+            RETURN r.rule_id AS rule_id
+        """
+        async with self._driver.session(database=self._database) as session:
+            result = await session.run(query, rule_id=rule_id, confidence=confidence)
+            record = await result.single()
+            return record is not None
+
+    async def delete_rule(self, rule_id: str) -> bool:
+        """Delete a Rule node and all its edges. Returns True if found."""
+        query = """
+            MATCH (r:Rule {rule_id: $rule_id})
+            DETACH DELETE r
+            RETURN count(r) AS deleted
+        """
+        async with self._driver.session(database=self._database) as session:
+            result = await session.run(query, rule_id=rule_id)
+            record = await result.single()
+            return record["deleted"] > 0
+
+    async def count_by_authority(self) -> dict[str, int]:
+        """Count rules grouped by authority value."""
+        query = """
+            MATCH (r:Rule)
+            RETURN coalesce(r.authority, 'human') AS authority, count(r) AS count
+            ORDER BY authority
+        """
+        async with self._driver.session(database=self._database) as session:
+            result = await session.run(query)
+            return {record["authority"]: record["count"] async for record in result}
+
     async def clear_all(self) -> None:
         """Delete all nodes and edges. For test cleanup only."""
         async with self._driver.session(database=self._database) as session:
