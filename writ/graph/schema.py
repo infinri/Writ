@@ -12,8 +12,20 @@ from pydantic import BaseModel, field_validator
 # Matches: ARCH-ORG-001, FW-M2-RT-003, ENF-GATE-FINAL, DB-SQL-001, SEC-UNI-001
 RULE_ID_PATTERN = re.compile(r"^[A-Z][A-Z0-9]*(-[A-Z][A-Z0-9]*)+(-\d{3}|(-[A-Z][A-Z0-9]*))$")
 
+# Phase 1c: scope values are format-validated, not membership-validated.
+SCOPE_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*$")
+
 STALENESS_WINDOW_DEFAULT = 365
 EVIDENCE_DEFAULT = "doc:original-bible"
+
+# Phase 1d: documented enforcement field conventions for rule authors.
+ENFORCEMENT_CONVENTIONS = (
+    "human-review",
+    "judgment-gate",
+    "training-feedback",
+    "audit-log",
+    "advisory-only",
+)
 
 
 # --- Enums ---
@@ -24,14 +36,6 @@ class Severity(str, Enum):
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
-
-
-class Scope(str, Enum):
-    FILE = "file"
-    MODULE = "module"
-    SLICE = "slice"
-    PR = "pr"
-    SESSION = "session"
 
 
 class Confidence(str, Enum):
@@ -60,7 +64,7 @@ class Rule(BaseModel):
     rule_id: str
     domain: str
     severity: Severity
-    scope: Scope
+    scope: str
     trigger: str
     statement: str
     violation: str
@@ -97,6 +101,16 @@ class Rule(BaseModel):
     def validate_domain(cls, v: str) -> str:
         if not v or not v.strip():
             raise ValueError("domain must not be empty")
+        return v
+
+    @field_validator("scope")
+    @classmethod
+    def validate_scope(cls, v: str) -> str:
+        if not SCOPE_PATTERN.match(v):
+            raise ValueError(
+                f"scope '{v}' must be lowercase, start with a letter, "
+                "and match [a-z][a-z0-9_-]*"
+            )
         return v
 
 

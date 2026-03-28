@@ -121,6 +121,29 @@ class Neo4jConnection:
             record = await result.single()
             return record["count"]
 
+    async def apply_constraints(self) -> None:
+        """Apply uniqueness constraint and performance indexes. Idempotent via IF NOT EXISTS."""
+        statements = [
+            "CREATE CONSTRAINT rule_id_unique IF NOT EXISTS FOR (r:Rule) REQUIRE r.rule_id IS UNIQUE",
+            "CREATE INDEX rule_domain IF NOT EXISTS FOR (r:Rule) ON (r.domain)",
+            "CREATE INDEX rule_mandatory IF NOT EXISTS FOR (r:Rule) ON (r.mandatory)",
+        ]
+        async with self._driver.session(database=self._database) as session:
+            for stmt in statements:
+                await session.run(stmt)
+
+    async def list_constraints(self) -> list[dict]:
+        """Return all constraints. For verification/testing."""
+        async with self._driver.session(database=self._database) as session:
+            result = await session.run("SHOW CONSTRAINTS")
+            return [record.data() async for record in result]
+
+    async def list_indexes(self) -> list[dict]:
+        """Return all indexes. For verification/testing."""
+        async with self._driver.session(database=self._database) as session:
+            result = await session.run("SHOW INDEXES")
+            return [record.data() async for record in result]
+
     async def clear_all(self) -> None:
         """Delete all nodes and edges. For test cleanup only."""
         async with self._driver.session(database=self._database) as session:

@@ -111,6 +111,92 @@ SAMPLE_TWO_RULES = dedent("""\
     <!-- RULE END: DB-SQL-002 -->
 """)
 
+SAMPLE_MANDATORY_TRUE = dedent("""\
+    <!-- RULE START: ARCH-TEST-001 -->
+    ## Rule ARCH-TEST-001: Test Rule
+
+    **Domain**: Testing
+    **Severity**: High
+    **Scope**: file
+    **Mandatory**: true
+
+    ### Trigger
+    When testing.
+
+    ### Statement
+    Must test.
+
+    ### Violation (bad)
+    Bad code.
+
+    ### Pass (good)
+    Good code.
+
+    ### Enforcement
+    Code review.
+
+    ### Rationale
+    Because testing.
+    <!-- RULE END: ARCH-TEST-001 -->
+""")
+
+SAMPLE_ENF_MANDATORY_FALSE = dedent("""\
+    <!-- RULE START: ENF-TEST-001 -->
+    ## Rule ENF-TEST-001: Override Test
+
+    **Domain**: AI Enforcement
+    **Severity**: Critical
+    **Scope**: session
+    **Mandatory**: false
+
+    ### Trigger
+    When testing override.
+
+    ### Statement
+    Mandatory can be overridden.
+
+    ### Violation (bad)
+    No override.
+
+    ### Pass (good)
+    Override works.
+
+    ### Enforcement
+    Code review.
+
+    ### Rationale
+    Explicit overrides convention.
+    <!-- RULE END: ENF-TEST-001 -->
+""")
+
+SAMPLE_CUSTOM_SCOPE = dedent("""\
+    <!-- RULE START: ARCH-SCOPE-001 -->
+    ## Rule ARCH-SCOPE-001: Scope Test
+
+    **Domain**: Testing
+    **Severity**: High
+    **Scope**: policy
+
+    ### Trigger
+    When testing scope extensibility.
+
+    ### Statement
+    Custom scopes should validate.
+
+    ### Violation (bad)
+    Rejected scope.
+
+    ### Pass (good)
+    Accepted scope.
+
+    ### Enforcement
+    Code review.
+
+    ### Rationale
+    Extensible scope enum.
+    <!-- RULE END: ARCH-SCOPE-001 -->
+""")
+
 SAMPLE_ENF_RULE = dedent("""\
     <!-- RULE START: ENF-GATE-001 -->
     ## Rule ENF-GATE-001: Phase A Gate
@@ -175,6 +261,27 @@ def tmp_enf_file(tmp_path: Path) -> Path:
 def tmp_no_markers(tmp_path: Path) -> Path:
     f = tmp_path / "no_markers.md"
     f.write_text(NO_MARKERS)
+    return f
+
+
+@pytest.fixture()
+def tmp_mandatory_true(tmp_path: Path) -> Path:
+    f = tmp_path / "mandatory_true.md"
+    f.write_text(SAMPLE_MANDATORY_TRUE)
+    return f
+
+
+@pytest.fixture()
+def tmp_enf_mandatory_false(tmp_path: Path) -> Path:
+    f = tmp_path / "enf_mandatory_false.md"
+    f.write_text(SAMPLE_ENF_MANDATORY_FALSE)
+    return f
+
+
+@pytest.fixture()
+def tmp_custom_scope(tmp_path: Path) -> Path:
+    f = tmp_path / "custom_scope.md"
+    f.write_text(SAMPLE_CUSTOM_SCOPE)
     return f
 
 
@@ -248,6 +355,95 @@ class TestMarkdownParser:
         rules = parse_rules_from_file(tmp_rule_file)
         validated = validate_parsed_rule(rules[0])
         assert validated.rule_id == "ARCH-ORG-001"
+
+
+class TestMandatoryParsing:
+    """Phase 1b: Mandatory field parsing from Markdown metadata."""
+
+    def test_explicit_mandatory_true(self, tmp_mandatory_true: Path) -> None:
+        rules = parse_rules_from_file(tmp_mandatory_true)
+        assert rules[0]["mandatory"] is True
+        assert not rules[0]["rule_id"].startswith("ENF-")
+
+    def test_explicit_mandatory_false_overrides_enf(self, tmp_enf_mandatory_false: Path) -> None:
+        rules = parse_rules_from_file(tmp_enf_mandatory_false)
+        assert rules[0]["mandatory"] is False
+        assert rules[0]["rule_id"].startswith("ENF-")
+
+    def test_absent_mandatory_enf_defaults_true(self, tmp_enf_file: Path) -> None:
+        rules = parse_rules_from_file(tmp_enf_file)
+        assert rules[0]["mandatory"] is True
+
+    def test_absent_mandatory_non_enf_defaults_false(self, tmp_rule_file: Path) -> None:
+        rules = parse_rules_from_file(tmp_rule_file)
+        assert rules[0]["mandatory"] is False
+
+    def test_explicit_mandatory_validates(self, tmp_mandatory_true: Path) -> None:
+        rules = parse_rules_from_file(tmp_mandatory_true)
+        validated = validate_parsed_rule(rules[0])
+        assert validated.mandatory is True
+
+
+class TestScopeExtensibility:
+    """Phase 1c: Ingest passes arbitrary scope values through to schema validation."""
+
+    def test_custom_scope_parses(self, tmp_custom_scope: Path) -> None:
+        rules = parse_rules_from_file(tmp_custom_scope)
+        assert rules[0]["scope"] == "policy"
+
+    def test_custom_scope_validates(self, tmp_custom_scope: Path) -> None:
+        rules = parse_rules_from_file(tmp_custom_scope)
+        validated = validate_parsed_rule(rules[0])
+        assert validated.scope == "policy"
+
+
+class TestNeo4jConstraints:
+    """Phase 1a: Neo4j uniqueness constraint and indexes."""
+
+    @pytest.mark.asyncio
+    async def test_apply_constraints_idempotent(self, db: Neo4jConnection) -> None:
+        await db.apply_constraints()
+        await db.apply_constraints()
+
+    @pytest.mark.asyncio
+    async def test_merge_idempotent_with_constraints(self, db: Neo4jConnection) -> None:
+        await db.apply_constraints()
+        rule_data = {
+            "rule_id": "TEST-CONST-001",
+            "domain": "Testing",
+            "severity": "high",
+            "scope": "file",
+            "trigger": "test",
+            "statement": "test",
+            "violation": "test",
+            "pass_example": "test",
+            "enforcement": "test",
+            "rationale": "test",
+            "mandatory": False,
+            "confidence": "production-validated",
+            "evidence": "doc:original-bible",
+            "staleness_window": 365,
+            "last_validated": "2026-03-28",
+        }
+        await db.create_rule(rule_data)
+        await db.create_rule(rule_data)
+        count = await db.count_rules()
+        assert count == 1
+
+    @pytest.mark.asyncio
+    async def test_constraints_exist(self, db: Neo4jConnection) -> None:
+        await db.apply_constraints()
+        constraints = await db.list_constraints()
+        names = [c["name"] for c in constraints]
+        assert "rule_id_unique" in names
+
+    @pytest.mark.asyncio
+    async def test_indexes_exist(self, db: Neo4jConnection) -> None:
+        await db.apply_constraints()
+        indexes = await db.list_indexes()
+        names = [i["name"] for i in indexes]
+        assert "rule_domain" in names
+        assert "rule_mandatory" in names
 
 
 class TestMigrationIntegration:

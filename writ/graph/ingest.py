@@ -73,6 +73,8 @@ def _parse_rule_block(rule_id: str, block: str) -> dict | None:
             result["severity"] = value.lower()
         elif key == "scope":
             result["scope"] = value.lower()
+        elif key == "mandatory":
+            result["mandatory"] = value.lower() == "true"
 
     # Extract sections by heading.
     for field_name, heading_prefix in SECTION_HEADERS.items():
@@ -80,8 +82,10 @@ def _parse_rule_block(rule_id: str, block: str) -> dict | None:
         if content:
             result[field_name] = content
 
-    # Apply graph-only defaults (handbook Section 2.3).
-    result["mandatory"] = rule_id.startswith("ENF-")
+    # Phase 1b: explicit Mandatory field overrides convention.
+    # Convention fallback: ENF-* rules default to mandatory, others do not.
+    if "mandatory" not in result:
+        result["mandatory"] = rule_id.startswith("ENF-")
     result["confidence"] = "production-validated"
     result["evidence"] = EVIDENCE_DEFAULT
     result["staleness_window"] = STALENESS_WINDOW_DEFAULT

@@ -91,8 +91,8 @@ class TestEnumValidation:
         with pytest.raises(ValidationError):
             Rule(**valid_rule_data)
 
-    def test_invalid_scope(self, valid_rule_data: dict) -> None:
-        valid_rule_data["scope"] = "repository"
+    def test_invalid_scope_uppercase(self, valid_rule_data: dict) -> None:
+        valid_rule_data["scope"] = "MODULE"
         with pytest.raises(ValidationError):
             Rule(**valid_rule_data)
 
@@ -131,6 +131,78 @@ class TestRuleIdFormat:
         valid_rule_data["rule_id"] = ""
         with pytest.raises(ValidationError):
             Rule(**valid_rule_data)
+
+
+class TestScopeValidation:
+    """Phase 1c: scope accepts any lowercase string matching [a-z][a-z0-9_-]*."""
+
+    def test_existing_scope_file(self, valid_rule_data: dict) -> None:
+        valid_rule_data["scope"] = "file"
+        rule = Rule(**valid_rule_data)
+        assert rule.scope == "file"
+
+    def test_existing_scope_module(self, valid_rule_data: dict) -> None:
+        valid_rule_data["scope"] = "module"
+        rule = Rule(**valid_rule_data)
+        assert rule.scope == "module"
+
+    def test_new_domain_scope_policy(self, valid_rule_data: dict) -> None:
+        valid_rule_data["scope"] = "policy"
+        rule = Rule(**valid_rule_data)
+        assert rule.scope == "policy"
+
+    def test_hyphenated_scope(self, valid_rule_data: dict) -> None:
+        valid_rule_data["scope"] = "code-review"
+        rule = Rule(**valid_rule_data)
+        assert rule.scope == "code-review"
+
+    def test_scope_with_digits(self, valid_rule_data: dict) -> None:
+        valid_rule_data["scope"] = "tier2"
+        rule = Rule(**valid_rule_data)
+        assert rule.scope == "tier2"
+
+    def test_underscore_scope(self, valid_rule_data: dict) -> None:
+        valid_rule_data["scope"] = "code_review"
+        rule = Rule(**valid_rule_data)
+        assert rule.scope == "code_review"
+
+    def test_uppercase_scope_rejected(self, valid_rule_data: dict) -> None:
+        valid_rule_data["scope"] = "MODULE"
+        with pytest.raises(ValidationError):
+            Rule(**valid_rule_data)
+
+    def test_leading_digit_scope_rejected(self, valid_rule_data: dict) -> None:
+        valid_rule_data["scope"] = "123abc"
+        with pytest.raises(ValidationError):
+            Rule(**valid_rule_data)
+
+    def test_empty_scope_rejected(self, valid_rule_data: dict) -> None:
+        valid_rule_data["scope"] = ""
+        with pytest.raises(ValidationError):
+            Rule(**valid_rule_data)
+
+    def test_space_in_scope_rejected(self, valid_rule_data: dict) -> None:
+        valid_rule_data["scope"] = "code review"
+        with pytest.raises(ValidationError):
+            Rule(**valid_rule_data)
+
+
+class TestMandatoryField:
+    """Phase 1b: mandatory field schema validation."""
+
+    def test_mandatory_default_false(self, valid_rule_data: dict) -> None:
+        rule = Rule(**valid_rule_data)
+        assert rule.mandatory is False
+
+    def test_mandatory_explicit_true(self, valid_rule_data: dict) -> None:
+        valid_rule_data["mandatory"] = True
+        rule = Rule(**valid_rule_data)
+        assert rule.mandatory is True
+
+    def test_mandatory_explicit_false_on_enf(self, valid_enf_rule_data: dict) -> None:
+        valid_enf_rule_data["mandatory"] = False
+        rule = Rule(**valid_enf_rule_data)
+        assert rule.mandatory is False
 
 
 class TestEdgeModels:

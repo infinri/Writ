@@ -67,6 +67,10 @@ async def run_migration(bible_dir: Path, dry_run: bool = False) -> None:
 
     db = Neo4jConnection(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
     try:
+        # Phase 1a: apply uniqueness constraint and performance indexes.
+        await db.apply_constraints()
+        print("Applied Neo4j constraints and indexes")
+
         created = 0
         for rule_data in all_rules:
             clean = {k: v for k, v in rule_data.items() if not k.startswith("_")}
