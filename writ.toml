@@ -61,7 +61,7 @@ query_rule_ratio_warning = 10
 staleness_default_days = 365
 
 [authority]
-preference_threshold = 0.0
+preference_threshold = 0.0749
 ai_provisional_confidence_ceiling = "speculative"
 ai_promoted_confidence_ceiling = "peer-reviewed"
 
