@@ -5,6 +5,40 @@ from __future__ import annotations
 import pytest
 
 
+def pytest_sessionfinish(session, exitstatus):
+    """Re-migrate rules after test suite completes so CLI queries work immediately."""
+    import asyncio
+    from pathlib import Path
+
+    from writ.graph.db import Neo4jConnection
+    from writ.graph.ingest import discover_rule_files, parse_rules_from_file, validate_parsed_rule
+
+    async def _remigrate():
+        bible = Path("bible/")
+        if not bible.exists():
+            return
+        try:
+            db = Neo4jConnection("bolt://localhost:7687", "neo4j", "writdevpass")
+            count = await db.count_rules()
+            if count == 0:
+                for f in discover_rule_files(bible):
+                    for rd in parse_rules_from_file(f):
+                        try:
+                            validate_parsed_rule(rd)
+                            clean = {k: v for k, v in rd.items() if not k.startswith("_")}
+                            await db.create_rule(clean)
+                        except ValueError:
+                            pass
+            await db.close()
+        except Exception:
+            pass  # Neo4j may not be running; silently skip.
+
+    try:
+        asyncio.run(_remigrate())
+    except Exception:
+        pass
+
+
 @pytest.fixture()
 def valid_rule_data() -> dict:
     """A well-formed rule with all required fields."""

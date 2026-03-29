@@ -15,7 +15,8 @@ if TYPE_CHECKING:
     from writ.retrieval.pipeline import RetrievalPipeline
     from writ.retrieval.traversal import AdjacencyCache
 
-REDUNDANCY_THRESHOLD = 0.95
+from writ.graph.schema import REDUNDANCY_SIMILARITY_THRESHOLD as REDUNDANCY_THRESHOLD
+
 SUGGESTION_LIMIT = 5
 
 

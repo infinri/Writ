@@ -121,6 +121,115 @@ class Neo4jConnection:
             record = await result.single()
             return record["count"]
 
+    async def get_all_rules(self) -> list[dict]:
+        """Fetch all Rule nodes. Returns list of property dicts."""
+        query = "MATCH (r:Rule) RETURN r ORDER BY r.rule_id"
+        async with self._driver.session(database=self._database) as session:
+            result = await session.run(query)
+            return [dict(record["r"]) async for record in result]
+
+    async def get_all_edges(self) -> list[dict]:
+        """Fetch all edges between Rule nodes.
+
+        Returns list of dicts with from_id, to_id, edge_type.
+        """
+        query = """
+            MATCH (a:Rule)-[rel]->(b:Rule)
+            RETURN a.rule_id AS from_id, b.rule_id AS to_id, type(rel) AS edge_type
+            ORDER BY a.rule_id, b.rule_id
+        """
+        async with self._driver.session(database=self._database) as session:
+            result = await session.run(query)
+            return [record.data() async for record in result]
+
+    async def create_abstraction(self, data: dict) -> str:
+        """Create or update an Abstraction node. Idempotent via MERGE."""
+        query = """
+            MERGE (a:Abstraction {abstraction_id: $abstraction_id})
+            SET a += $props
+            RETURN a.abstraction_id AS abstraction_id
+        """
+        props = {k: v for k, v in data.items() if k != "abstraction_id"}
+        async with self._driver.session(database=self._database) as session:
+            result = await session.run(
+                query, abstraction_id=data["abstraction_id"], props=props
+            )
+            record = await result.single()
+            return record["abstraction_id"]
+
+    async def create_abstracts_edge(self, abstraction_id: str, rule_id: str) -> None:
+        """Create ABSTRACTS edge from Abstraction to Rule. Idempotent via MERGE."""
+        query = """
+            MATCH (a:Abstraction {abstraction_id: $abstraction_id})
+            MATCH (r:Rule {rule_id: $rule_id})
+            MERGE (a)-[:ABSTRACTS]->(r)
+        """
+        async with self._driver.session(database=self._database) as session:
+            await session.run(query, abstraction_id=abstraction_id, rule_id=rule_id)
+
+    async def get_all_abstractions(self) -> list[dict]:
+        """Fetch all Abstraction nodes with member rule_ids."""
+        query = """
+            MATCH (a:Abstraction)
+            OPTIONAL MATCH (a)-[:ABSTRACTS]->(r:Rule)
+            RETURN a, collect(r.rule_id) AS member_ids
+            ORDER BY a.abstraction_id
+        """
+        async with self._driver.session(database=self._database) as session:
+            result = await session.run(query)
+            abstractions = []
+            async for record in result:
+                data = dict(record["a"])
+                data["member_ids"] = record["member_ids"]
+                abstractions.append(data)
+            return abstractions
+
+    async def get_abstraction(self, abstraction_id: str) -> dict | None:
+        """Fetch a single Abstraction with member rule details."""
+        query = """
+            MATCH (a:Abstraction {abstraction_id: $abstraction_id})
+            OPTIONAL MATCH (a)-[:ABSTRACTS]->(r:Rule)
+            RETURN a, collect(r {.*}) AS members
+        """
+        async with self._driver.session(database=self._database) as session:
+            result = await session.run(query, abstraction_id=abstraction_id)
+            record = await result.single()
+            if record is None:
+                return None
+            data = dict(record["a"])
+            data["members"] = [dict(m) for m in record["members"]]
+            return data
+
+    async def delete_abstractions(self) -> int:
+        """Delete all Abstraction nodes and their ABSTRACTS edges. Rules unaffected."""
+        query = "MATCH (a:Abstraction) DETACH DELETE a RETURN count(a) AS deleted"
+        async with self._driver.session(database=self._database) as session:
+            result = await session.run(query)
+            record = await result.single()
+            return record["deleted"]
+
+    async def get_rule_abstraction(self, rule_id: str) -> dict | None:
+        """Return abstraction membership for a rule: abstraction_id + sibling rule_ids.
+
+        Returns None if the rule is not a member of any abstraction.
+        """
+        query = """
+            MATCH (a:Abstraction)-[:ABSTRACTS]->(r:Rule {rule_id: $rule_id})
+            OPTIONAL MATCH (a)-[:ABSTRACTS]->(sibling:Rule)
+            WHERE sibling.rule_id <> $rule_id
+            RETURN a.abstraction_id AS abstraction_id,
+                   collect(sibling.rule_id) AS sibling_rule_ids
+        """
+        async with self._driver.session(database=self._database) as session:
+            result = await session.run(query, rule_id=rule_id)
+            record = await result.single()
+            if record is None or record["abstraction_id"] is None:
+                return None
+            return {
+                "abstraction_id": record["abstraction_id"],
+                "sibling_rule_ids": sorted(record["sibling_rule_ids"]),
+            }
+
     async def apply_constraints(self) -> None:
         """Apply uniqueness constraint and performance indexes. Idempotent via IF NOT EXISTS."""
         statements = [

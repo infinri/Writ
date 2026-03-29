@@ -82,7 +82,12 @@ def compute_confidence_weight(
     threshold: int = 50,
     ratio_min: float = 0.75,
 ) -> float:
-    """Return confidence weight, using empirical ratio when graduated."""
+    """Return confidence weight, using empirical ratio when graduated.
+
+    If the rule has sufficient frequency data (n >= threshold) and a passing
+    ratio (>= ratio_min), the empirical ratio replaces the static confidence.
+    Otherwise, the static enum value is used.
+    """
     from writ.frequency import evaluate_graduation
 
     grad = evaluate_graduation(times_positive, times_negative, threshold, ratio_min)
@@ -144,6 +149,7 @@ def apply_authority_preference(
         return scored_rules
 
     result = list(scored_rules)
+    # Bubble pass: swap adjacent pairs where preference applies.
     changed = True
     while changed:
         changed = False
@@ -182,8 +188,12 @@ def filter_proximity_seeds(
 def apply_context_budget(
     rules: list[dict],
     budget_tokens: int | None,
+    abstractions: list[dict] | None = None,
 ) -> tuple[list[dict], str]:
     """Apply context budget constraints to the result set.
+
+    When abstractions are available and budget < 2K, returns abstraction summaries
+    instead of raw statement+trigger (Phase 8 upgrade).
 
     Returns (trimmed_rules, mode_name).
     """
@@ -191,9 +201,11 @@ def apply_context_budget(
         budget_tokens = STANDARD_THRESHOLD + 1
 
     if budget_tokens < SUMMARY_THRESHOLD:
+        if abstractions:
+            return _summary_with_abstractions(rules, abstractions), "summary"
+        # Fallback: statement + trigger only (pre-Phase 8 behavior).
         mode = "summary"
         limit = SUMMARY_LIMIT
-        # Summary: statement + trigger only.
         trimmed = []
         for rule in rules[:limit]:
             trimmed.append({
@@ -235,3 +247,46 @@ def apply_context_budget(
                 "relationships": rule.get("relationships", []),
             })
         return trimmed, mode
+
+
+def _summary_with_abstractions(
+    rules: list[dict],
+    abstractions: list[dict],
+) -> list[dict]:
+    """Return abstraction summaries that cover the top-ranked rules.
+
+    For each top rule, find the abstraction that contains it. Deduplicate
+    so each abstraction appears at most once. Ungrouped rules fall back
+    to statement+trigger.
+    """
+    # Build rule_id -> abstraction lookup.
+    rid_to_abs: dict[str, dict] = {}
+    for abst in abstractions:
+        for rid in abst.get("rule_ids", abst.get("member_ids", [])):
+            rid_to_abs[rid] = abst
+
+    seen_abs: set[str] = set()
+    result: list[dict] = []
+
+    for rule in rules[:SUMMARY_LIMIT]:
+        rid = rule["rule_id"]
+        abst = rid_to_abs.get(rid)
+        if abst and abst["abstraction_id"] not in seen_abs:
+            seen_abs.add(abst["abstraction_id"])
+            result.append({
+                "abstraction_id": abst["abstraction_id"],
+                "summary": abst.get("summary", ""),
+                "rule_ids": abst.get("rule_ids", abst.get("member_ids", [])),
+                "compression_ratio": abst.get("compression_ratio", 1.0),
+                "domain": abst.get("domain", ""),
+            })
+        elif not abst:
+            # Ungrouped rule: fall back to statement+trigger.
+            result.append({
+                "rule_id": rid,
+                "score": rule.get("score", 0.0),
+                "statement": rule.get("statement", ""),
+                "trigger": rule.get("trigger", ""),
+            })
+
+    return result

@@ -13,8 +13,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from neo4j import AsyncDriver
 
-# Per ARCH-CONST-001: named constants for detection thresholds.
-REDUNDANCY_SIMILARITY_THRESHOLD = 0.95
+from writ.graph.schema import REDUNDANCY_SIMILARITY_THRESHOLD
 
 
 class IntegrityChecker:
@@ -189,7 +188,12 @@ class IntegrityChecker:
         return None
 
     async def detect_frequency_stale(self, window_days: int = 90) -> list[dict]:
-        """Find rules with zero frequency over rolling window."""
+        """Find rules with zero frequency over rolling window.
+
+        Rules where (times_seen_positive + times_seen_negative) == 0
+        AND (last_seen is NULL OR last_seen < now - window_days).
+        Supplements the existing staleness_window / last_validated check.
+        """
         query = """
             MATCH (r:Rule)
             WHERE (coalesce(r.times_seen_positive, 0) + coalesce(r.times_seen_negative, 0)) = 0
@@ -203,7 +207,10 @@ class IntegrityChecker:
             return [record.data() async for record in result]
 
     async def detect_graduation_flags(self) -> list[dict]:
-        """Find rules that reached graduation threshold with ratio below minimum."""
+        """Find rules that reached graduation threshold with ratio below minimum.
+
+        These rules need human review per evolution plan Phase 4c.
+        """
         from writ.frequency import (
             DEFAULT_GRADUATION_RATIO_MIN,
             DEFAULT_GRADUATION_THRESHOLD,

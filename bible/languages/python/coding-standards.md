@@ -14,7 +14,7 @@ This document defines **Python-specific coding standards** for the Phaselock cod
 **Scope**: module
 
 ### Trigger
-Mixing sync and async in the same call chain. Any `await` caller that calls a sync function performing I/O.
+Calling a sync I/O function (requests.get, neo4j.Session.run, open(), subprocess.run) inside an async def function, or using a sync DB driver in an async call chain.
 
 ### Statement
 Async call chains must use async I/O end-to-end. A sync I/O call inside an async function blocks the event loop, defeating the purpose of async and violating PERF-IO-001.

@@ -13,15 +13,18 @@ from pydantic import BaseModel, field_validator
 RULE_ID_PATTERN = re.compile(r"^[A-Z][A-Z0-9]*(-[A-Z][A-Z0-9]*)+(-\d{3}|(-[A-Z][A-Z0-9]*))$")
 
 # Phase 1c: scope values are format-validated, not membership-validated.
+# Any lowercase string matching this pattern is a valid scope.
 SCOPE_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*$")
 
 STALENESS_WINDOW_DEFAULT = 365
 EVIDENCE_DEFAULT = "doc:original-bible"
+REDUNDANCY_SIMILARITY_THRESHOLD = 0.95
 
 # Phase 3a: valid authority values for Rule nodes.
 VALID_AUTHORITIES = ("human", "ai-provisional", "ai-promoted")
 
 # Phase 1d: documented enforcement field conventions for rule authors.
+# Not enforced in code -- exists for discoverability.
 ENFORCEMENT_CONVENTIONS = (
     "human-review",
     "judgment-gate",

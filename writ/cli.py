@@ -58,6 +58,13 @@ def ingest(
                         typer.echo(f"  Error: {e}")
                         errors += 1
             typer.echo(f"Ingested {count} rules ({errors} errors)")
+
+            # Auto-export after successful ingest (Phase 7).
+            if count > 0 and errors == 0:
+                from writ.export import export_rules_to_markdown
+
+                export_result = await export_rules_to_markdown(db, path)
+                typer.echo(f"Exported {export_result['rules_exported']} rules to {path}")
         finally:
             await db.close()
 
@@ -237,8 +244,11 @@ def add() -> None:
                 for c in conflicts:
                     typer.echo(f"  CONFLICTS_WITH {c['rule_id']}")
 
-            # Phase 7 stub.
-            typer.echo("\nExport stub -- will auto-export in Phase 7.")
+            # Auto-export after add (Phase 7).
+            from writ.export import export_rules_to_markdown
+
+            export_result = await export_rules_to_markdown(db, Path(DEFAULT_BIBLE_DIR))
+            typer.echo(f"\nExported {export_result['rules_exported']} rules to {DEFAULT_BIBLE_DIR}")
         finally:
             await db.close()
 
@@ -325,7 +335,11 @@ def edit(
                 for c in conflicts:
                     typer.echo(f"  CONFLICTS_WITH {c['rule_id']}")
 
-            typer.echo("\nExport stub -- will auto-export in Phase 7.")
+            # Auto-export after edit (Phase 7).
+            from writ.export import export_rules_to_markdown
+
+            export_result = await export_rules_to_markdown(db, Path(DEFAULT_BIBLE_DIR))
+            typer.echo(f"\nExported {export_result['rules_exported']} rules to {DEFAULT_BIBLE_DIR}")
         finally:
             await db.close()
 
@@ -337,8 +351,72 @@ def export(
     output: Path = typer.Argument(Path(DEFAULT_BIBLE_DIR), help="Output directory for generated Markdown."),
 ) -> None:
     """Regenerate Markdown from graph. Overwrites output directory."""
-    typer.echo("Not implemented -- Phase 7")
-    raise typer.Exit(code=1)
+    from writ.export import export_rules_to_markdown
+    from writ.graph.db import Neo4jConnection
+
+    async def _run() -> None:
+        db = Neo4jConnection("bolt://localhost:7687", "neo4j", "writdevpass")
+        try:
+            result = await export_rules_to_markdown(db, output)
+            typer.echo(f"Exported {result['rules_exported']} rules to {output}")
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+@app.command()
+def compress() -> None:
+    """Cluster rules into abstraction nodes for compressed retrieval."""
+    import numpy as np
+    from sentence_transformers import SentenceTransformer
+
+    from writ.compression.abstractions import generate_abstractions, write_abstractions_to_graph
+    from writ.compression.clusters import evaluate_both
+    from writ.graph.db import Neo4jConnection
+
+    async def _run() -> None:
+        db = Neo4jConnection("bolt://localhost:7687", "neo4j", "writdevpass")
+        try:
+            # Load non-mandatory rules.
+            all_rules = await db.get_all_rules()
+            domain_rules = [r for r in all_rules if not r.get("mandatory", False)]
+            if not domain_rules:
+                typer.echo("No domain rules to cluster.")
+                raise typer.Exit(code=0)
+
+            typer.echo(f"Clustering {len(domain_rules)} domain rules...")
+            model = SentenceTransformer("all-MiniLM-L6-v2")
+            texts = [f"{r.get('trigger', '')} {r.get('statement', '')}" for r in domain_rules]
+            embeddings = np.array(model.encode(texts), dtype=np.float32)
+
+            comparison = evaluate_both(
+                [r["rule_id"] for r in domain_rules], embeddings,
+            )
+            typer.echo(f"\nHDBSCAN: {len(comparison.hdbscan.clusters)} clusters, "
+                       f"silhouette={comparison.hdbscan.silhouette:.3f}")
+            typer.echo(f"k-means: {len(comparison.kmeans.clusters)} clusters, "
+                       f"silhouette={comparison.kmeans.silhouette:.3f}")
+            typer.echo(f"Chosen: {comparison.chosen} ({comparison.reason})")
+
+            chosen_result = (
+                comparison.hdbscan if comparison.chosen == "hdbscan" else comparison.kmeans
+            )
+
+            abstractions = generate_abstractions(chosen_result, domain_rules)
+            count = await write_abstractions_to_graph(db, abstractions)
+
+            avg_ratio = 0.0
+            if abstractions:
+                avg_ratio = sum(a["compression_ratio"] for a in abstractions) / len(abstractions)
+
+            typer.echo(f"\nCreated {count} abstractions")
+            typer.echo(f"Ungrouped rules: {len(chosen_result.ungrouped)}")
+            typer.echo(f"Average compression ratio: {avg_ratio:.1f}x")
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
 
 
 @app.command()
@@ -503,6 +581,7 @@ def review(
                 return
 
             if rule_id is None:
+                # List all ai-provisional rules.
                 rules = await db.get_rules_by_authority("ai-provisional")
                 if not rules:
                     typer.echo("No AI-provisional rules in queue.")
@@ -515,6 +594,7 @@ def review(
                     typer.echo()
                 return
 
+            # Inspect or act on a specific rule.
             existing = await db.get_rule(rule_id)
             if existing is None:
                 typer.echo(f"Rule not found: {rule_id}")
@@ -554,6 +634,7 @@ def review(
                 typer.echo(f"Downweighted: {rule_id} (confidence: speculative)")
                 return
 
+            # Default: inspect the rule.
             typer.echo(f"Rule: {rule_id}")
             typer.echo(f"  authority: {existing.get('authority', 'human')}")
             typer.echo(f"  domain: {existing.get('domain', '')}")
@@ -562,6 +643,7 @@ def review(
             typer.echo(f"  trigger: {existing.get('trigger', '')}")
             typer.echo(f"  statement: {existing.get('statement', '')}")
 
+            # Show origin context if available.
             try:
                 from writ.origin_context import OriginContextStore
 
