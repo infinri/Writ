@@ -20,9 +20,13 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
-from sentence_transformers import SentenceTransformer
-
-from writ.retrieval.embeddings import HnswlibStore, ScoredResult
+from writ.retrieval.embeddings import (
+    DEFAULT_ONNX_DIR,
+    CachedEncoder,
+    HnswlibStore,
+    OnnxEmbeddingModel,
+    ScoredResult,
+)
 from writ.retrieval.keyword import KeywordIndex
 from writ.retrieval.ranking import (
     RankingWeights,
@@ -36,6 +40,9 @@ from writ.retrieval.traversal import AdjacencyCache
 
 if TYPE_CHECKING:
     from writ.graph.db import Neo4jConnection
+
+# Preferred ONNX model directory.
+_ONNX_DIR = DEFAULT_ONNX_DIR
 
 # Per ARCH-CONST-001
 BM25_CANDIDATE_LIMIT = 50
@@ -99,7 +106,7 @@ class RetrievalPipeline:
         keyword_index: KeywordIndex,
         vector_store: HnswlibStore,
         adjacency_cache: AdjacencyCache,
-        embedding_model: SentenceTransformer,
+        embedding_model: CachedEncoder,
         rule_metadata: dict[str, dict],
         weights: RankingWeights | None = None,
         authority_preference_threshold: float = 0.0,
@@ -254,15 +261,15 @@ async def build_pipeline(
     db: Neo4jConnection,
     model_name: str = DEFAULT_EMBEDDING_MODEL,
     weights: RankingWeights | None = None,
-    embedding_model: SentenceTransformer | None = None,
+    embedding_model: object | None = None,
 ) -> RetrievalPipeline:
     """Build the full pipeline with pre-warmed indexes.
 
     Called once at service startup. Per PERF-LAZY-001: expensive loading
     happens here, not at query time.
 
-    Pass a pre-loaded embedding_model to avoid repeated model deserialization
-    across rebuilds. When None, a new model is loaded from model_name.
+    Model selection: ONNX Runtime preferred (no PyTorch dependency).
+    Falls back to SentenceTransformer if ONNX model not exported.
     """
     # Load all non-mandatory rules from Neo4j.
     query = """
@@ -284,10 +291,42 @@ async def build_pipeline(
     keyword_index.build(rules)
 
     # Build vector index (Stage 3).
-    model = embedding_model or SentenceTransformer(model_name)
     texts = [f"{r.get('trigger', '')} {r.get('statement', '')}" for r in rules]
-    embeddings = model.encode(texts).tolist()
     rule_ids = [r["rule_id"] for r in rules]
+
+    # Auto-detect ONNX model when no model is passed.
+    onnx_model = None
+    if embedding_model is None:
+        try:
+            onnx_model = OnnxEmbeddingModel(_ONNX_DIR)
+        except (FileNotFoundError, ImportError):
+            pass
+
+    if onnx_model is not None:
+        # ONNX for everything: bulk encode at startup + cached single encode at query time.
+        # No PyTorch/sentence-transformers in the runtime path.
+        embeddings = onnx_model.encode_batch(texts)
+        query_encoder = CachedEncoder(onnx_model)
+    elif embedding_model is not None:
+        # Pre-loaded model passed in (tests, server reuse).
+        raw_model = embedding_model
+        if isinstance(embedding_model, CachedEncoder):
+            raw_model = embedding_model._model
+        if isinstance(raw_model, OnnxEmbeddingModel):
+            embeddings = raw_model.encode_batch(texts)
+        else:
+            embeddings = raw_model.encode(texts).tolist()
+        query_encoder = (
+            embedding_model if isinstance(embedding_model, CachedEncoder)
+            else CachedEncoder(embedding_model)
+        )
+    else:
+        # Fallback: SentenceTransformer (imports PyTorch -- avoid in production).
+        from sentence_transformers import SentenceTransformer
+
+        model = SentenceTransformer(model_name)
+        embeddings = model.encode(texts).tolist()
+        query_encoder = CachedEncoder(model)
 
     vector_store = HnswlibStore(dimensions=len(embeddings[0]) if embeddings else 384)
     vector_store.build_index(rule_ids, embeddings)
@@ -300,7 +339,7 @@ async def build_pipeline(
         keyword_index=keyword_index,
         vector_store=vector_store,
         adjacency_cache=adjacency_cache,
-        embedding_model=model,
+        embedding_model=query_encoder,
         rule_metadata=rule_metadata,
         weights=weights,
     )
