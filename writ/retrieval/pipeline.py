@@ -125,13 +125,14 @@ class RetrievalPipeline:
         domain: str | None = None,
         budget_tokens: int | None = None,
         exclude_rule_ids: list[str] | None = None,
+        loaded_rule_ids: list[str] | None = None,
     ) -> dict:
         """Execute the full 5-stage pipeline.
 
         Returns dict with rules, mode, total_candidates, latency_ms.
         """
         start = time.perf_counter()
-        exclude = set(exclude_rule_ids or [])
+        exclude = set(exclude_rule_ids or []) | set(loaded_rule_ids or [])
 
         # Stage 1: Domain filter.
         # Applied as post-filter on BM25/vector results since indexes

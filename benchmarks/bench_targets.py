@@ -19,7 +19,6 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
-from sentence_transformers import SentenceTransformer
 
 from writ.graph.db import Neo4jConnection
 from writ.graph.ingest import validate_parsed_rule
@@ -120,7 +119,13 @@ class TestIntegrityBenchmark:
 class TestIngestionBenchmark:
 
     async def test_single_rule_ingestion(self, db) -> None:
-        model = SentenceTransformer("all-MiniLM-L6-v2")
+        from writ.retrieval.embeddings import CachedEncoder, DEFAULT_ONNX_DIR, OnnxEmbeddingModel
+
+        try:
+            model = CachedEncoder(OnnxEmbeddingModel(DEFAULT_ONNX_DIR))
+        except (FileNotFoundError, ImportError):
+            from sentence_transformers import SentenceTransformer
+            model = SentenceTransformer("all-MiniLM-L6-v2")
 
         synthetic_rule = {
             "rule_id": "BENCH-INGEST-001",
@@ -150,6 +155,11 @@ class TestIngestionBenchmark:
             elapsed_s = time.perf_counter() - start
             latencies.append(elapsed_s)
 
+        # Clean up synthetic rule so it doesn't leak into the production graph.
+        query = "MATCH (r:Rule {rule_id: $rule_id}) DETACH DELETE r"
+        async with db._driver.session(database=db._database) as session:
+            await session.run(query, rule_id="BENCH-INGEST-001")
+
         latencies.sort()
         p95_idx = int(len(latencies) * 0.95)
         p95 = latencies[p95_idx]
@@ -167,20 +177,18 @@ class TestIngestionBenchmark:
 class TestColdStartBenchmark:
 
     async def test_cold_start(self, db) -> None:
-        # Pre-load model once (matches server.py lifespan pattern).
-        model = SentenceTransformer("all-MiniLM-L6-v2")
-
+        # Measures production cold start path (auto-detects ONNX or SentenceTransformer).
         latencies: list[float] = []
         for _ in range(3):
             start = time.perf_counter()
-            await build_pipeline(db, embedding_model=model)
+            await build_pipeline(db)
             elapsed_s = time.perf_counter() - start
             latencies.append(elapsed_s)
 
         latencies.sort()
         best = latencies[0]
         worst = latencies[-1]
-        print(f"\nCold start (build_pipeline, model reused): best={best:.2f}s, worst={worst:.2f}s (budget: {COLD_START_BUDGET_S}s)")
+        print(f"\nCold start (build_pipeline): best={best:.2f}s, worst={worst:.2f}s (budget: {COLD_START_BUDGET_S}s)")
         assert worst < COLD_START_BUDGET_S, (
             f"Cold start {worst:.2f}s exceeds {COLD_START_BUDGET_S}s budget"
         )
