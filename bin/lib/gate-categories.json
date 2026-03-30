@@ -1,0 +1,466 @@
+{
+  "version": 2,
+  "framework_detection": {
+    "magento2": ["app/etc/env.php", "bin/magento"],
+    "laravel": ["artisan", "bootstrap/app.php"],
+    "django": ["manage.py"],
+    "rails": ["config/routes.rb", "bin/rails"],
+    "spring": ["pom.xml", "build.gradle"],
+    "nestjs": ["nest-cli.json"],
+    "express": ["node_modules/express"]
+  },
+  "exclusions": [
+    "*__init__.py",
+    "*__init__.pyi",
+    "*conftest.py",
+    "*/test/*",
+    "*/tests/*",
+    "*_test.*",
+    "*.test.*",
+    "*Test.php",
+    "*Test.java",
+    "*_spec.py",
+    "*_spec.js",
+    "*_spec.ts",
+    "*.spec.js",
+    "*.spec.ts",
+    "*_spec.rb",
+    "*/migrations/*",
+    "*/alembic/*",
+    "*/.claude/*"
+  ],
+  "categories": [
+    {
+      "id": "event_wiring",
+      "gate": "phase-a",
+      "rule": "ENF-GATE-001",
+      "message": "Event wiring files require Phase A (call-path declaration) approval",
+      "prior_gates": [],
+      "patterns": {
+        "_any": [
+          "*/events/*",
+          "*/signals/*",
+          "*/listeners/*",
+          "*/subscribers/*",
+          "*/observers/*"
+        ],
+        "php": [
+          "*Observer*.php",
+          "*Listener*.php",
+          "*EventSubscriber*.php"
+        ],
+        "python": [
+          "*_observer.py",
+          "*_listener.py",
+          "*_subscriber.py",
+          "*_signal.py"
+        ],
+        "javascript": [
+          "*.listener.js",
+          "*.observer.js",
+          "*.subscriber.js"
+        ],
+        "typescript": [
+          "*.listener.ts",
+          "*.observer.ts",
+          "*.subscriber.ts"
+        ],
+        "go": [
+          "*_listener.go",
+          "*_observer.go",
+          "*_subscriber.go"
+        ],
+        "rust": [
+          "*_listener.rs",
+          "*_observer.rs",
+          "*_subscriber.rs"
+        ],
+        "java": [
+          "*Observer*.java",
+          "*Listener*.java",
+          "*EventHandler*.java",
+          "*Subscriber*.java"
+        ],
+        "ruby": [
+          "*_observer.rb",
+          "*_listener.rb",
+          "*_subscriber.rb"
+        ],
+        "magento2": [
+          "*Plugin*.php",
+          "*/etc/events.xml",
+          "*/etc/di.xml"
+        ],
+        "laravel": [
+          "*/Events/*.php",
+          "*/Listeners/*.php"
+        ],
+        "django": [
+          "*/signals.py",
+          "*/receivers.py"
+        ],
+        "rails": [
+          "*/callbacks/*"
+        ],
+        "spring": [
+          "*EventListener*.java",
+          "*ApplicationListener*.java"
+        ],
+        "nestjs": [
+          "*.gateway.ts"
+        ]
+      }
+    },
+    {
+      "id": "validation",
+      "gate": "phase-b",
+      "rule": "ENF-GATE-002",
+      "message": "Validation logic requires Phase B (domain invariant) approval",
+      "prior_gates": [
+        "phase-a"
+      ],
+      "patterns": {
+        "_any": [
+          "*/validators/*",
+          "*/validation/*",
+          "*/rules/*",
+          "*/specifications/*",
+          "*/constraints/*"
+        ],
+        "php": [
+          "*Validator*.php",
+          "*Validation*.php",
+          "*Specification*.php"
+        ],
+        "python": [
+          "*_validator.py",
+          "*_validation.py",
+          "*_rule.py",
+          "*_specification.py",
+          "*_constraint.py"
+        ],
+        "javascript": [
+          "*.validator.js",
+          "*.validation.js",
+          "*.rule.js"
+        ],
+        "typescript": [
+          "*.validator.ts",
+          "*.validation.ts",
+          "*.rule.ts"
+        ],
+        "go": [
+          "*_validator.go",
+          "*_validation.go",
+          "*_rule.go"
+        ],
+        "rust": [
+          "*_validator.rs",
+          "*_validation.rs",
+          "*_rule.rs"
+        ],
+        "java": [
+          "*Validator*.java",
+          "*Validation*.java",
+          "*Rule*.java",
+          "*Specification*.java"
+        ],
+        "ruby": [
+          "*_validator.rb",
+          "*_validation.rb"
+        ],
+        "magento2": [
+          "*/Rule/*.php",
+          "*/Rules/*.php"
+        ],
+        "laravel": [
+          "*/Rules/*.php"
+        ],
+        "django": [
+          "*/validators.py"
+        ],
+        "nestjs": [
+          "*.pipe.ts"
+        ]
+      }
+    },
+    {
+      "id": "integration_point",
+      "gate": "phase-c",
+      "rule": "ENF-GATE-003",
+      "message": "API/integration files require Phase C (seam justification) approval",
+      "prior_gates": [
+        "phase-a",
+        "phase-b"
+      ],
+      "patterns": {
+        "_any": [
+          "*/routes/*",
+          "*/endpoints/*",
+          "*/controllers/*",
+          "*/resolvers/*"
+        ],
+        "php": [
+          "*Controller*.php"
+        ],
+        "python": [
+          "*_route.py",
+          "*_routes.py",
+          "*_endpoint.py",
+          "*_controller.py",
+          "*_resolver.py",
+          "*_api.py"
+        ],
+        "javascript": [
+          "*.controller.js",
+          "*.route.js",
+          "*.routes.js",
+          "*.resolver.js",
+          "*.endpoint.js"
+        ],
+        "typescript": [
+          "*.controller.ts",
+          "*.route.ts",
+          "*.routes.ts",
+          "*.resolver.ts",
+          "*.endpoint.ts"
+        ],
+        "go": [
+          "*_route.go",
+          "*_routes.go",
+          "*_controller.go",
+          "*_endpoint.go",
+          "*_handler.go"
+        ],
+        "rust": [
+          "*_route.rs",
+          "*_routes.rs",
+          "*_controller.rs",
+          "*_endpoint.rs",
+          "*_handler.rs"
+        ],
+        "java": [
+          "*Controller*.java",
+          "*Resource*.java",
+          "*Endpoint*.java",
+          "*Resolver*.java"
+        ],
+        "ruby": [
+          "*_controller.rb"
+        ],
+        "magento2": [
+          "*Plugin*.php",
+          "*/Api/*.php",
+          "*/etc/di.xml",
+          "*/etc/webapi.xml",
+          "*/etc/extension_attributes.xml",
+          "*schema.graphqls"
+        ],
+        "laravel": [
+          "*/routes/*.php",
+          "*/Middleware/*.php"
+        ],
+        "django": [
+          "*urls.py",
+          "*_view.py",
+          "*/views.py",
+          "*/viewsets.py",
+          "*/serializers.py"
+        ],
+        "rails": [
+          "config/routes.rb",
+          "*_controller.rb"
+        ],
+        "spring": [
+          "*Controller*.java",
+          "*RestController*.java",
+          "*RequestMapping*.java"
+        ],
+        "nestjs": [
+          "*.controller.ts",
+          "*.guard.ts",
+          "*.interceptor.ts",
+          "*.module.ts"
+        ],
+        "express": [
+          "*.router.js",
+          "*.router.ts",
+          "*/middleware/*"
+        ]
+      }
+    },
+    {
+      "id": "concurrency",
+      "gate": "phase-d",
+      "rule": "ENF-GATE-005",
+      "message": "Concurrency/queue files require Phase D (concurrency modeling) approval",
+      "prior_gates": [
+        "phase-a",
+        "phase-b",
+        "phase-c"
+      ],
+      "patterns": {
+        "_any": [
+          "*/consumers/*",
+          "*/workers/*",
+          "*/jobs/*",
+          "*/queues/*",
+          "*/processors/*"
+        ],
+        "php": [
+          "*Consumer*.php"
+        ],
+        "python": [
+          "*_consumer.py",
+          "*_worker.py",
+          "*_job.py",
+          "*_task.py",
+          "*_processor.py"
+        ],
+        "javascript": [
+          "*.worker.js",
+          "*.consumer.js",
+          "*.job.js",
+          "*.processor.js"
+        ],
+        "typescript": [
+          "*.worker.ts",
+          "*.consumer.ts",
+          "*.job.ts",
+          "*.processor.ts"
+        ],
+        "go": [
+          "*_worker.go",
+          "*_consumer.go",
+          "*_job.go",
+          "*_processor.go"
+        ],
+        "rust": [
+          "*_worker.rs",
+          "*_consumer.rs",
+          "*_job.rs",
+          "*_processor.rs"
+        ],
+        "java": [
+          "*Consumer*.java",
+          "*Worker*.java",
+          "*Job*.java",
+          "*Processor*.java"
+        ],
+        "ruby": [
+          "*_worker.rb",
+          "*_job.rb"
+        ],
+        "magento2": [
+          "*/etc/queue_*.xml",
+          "*/etc/communication.xml"
+        ],
+        "laravel": [
+          "*/Jobs/*.php"
+        ],
+        "django": [
+          "*/tasks.py"
+        ],
+        "rails": [
+          "*/jobs/*"
+        ],
+        "spring": [
+          "*MessageListener*.java",
+          "*QueueConsumer*.java"
+        ],
+        "nestjs": [
+          "*.processor.ts",
+          "*.queue.ts"
+        ]
+      }
+    },
+    {
+      "id": "implementation",
+      "gate": "test-skeletons",
+      "rule": "ENF-GATE-007",
+      "message": "Implementation files require approved test skeletons",
+      "prior_gates": [
+        "phase-a",
+        "phase-b",
+        "phase-c"
+      ],
+      "patterns": {
+        "_any": [
+          "*/models/*",
+          "*/services/*",
+          "*/repositories/*",
+          "*/domain/*",
+          "*/entities/*",
+          "*/usecases/*"
+        ],
+        "php": [
+          "*/Service/*.php",
+          "*/Repository/*.php"
+        ],
+        "python": [
+          "*_model.py",
+          "*_service.py",
+          "*_repository.py",
+          "*_entity.py",
+          "*_usecase.py"
+        ],
+        "javascript": [
+          "*.service.js",
+          "*.model.js",
+          "*.repository.js",
+          "*.entity.js"
+        ],
+        "typescript": [
+          "*.service.ts",
+          "*.model.ts",
+          "*.repository.ts",
+          "*.entity.ts"
+        ],
+        "go": [
+          "*_service.go",
+          "*_model.go",
+          "*_repository.go",
+          "*_entity.go"
+        ],
+        "rust": [
+          "*_service.rs",
+          "*_model.rs",
+          "*_repository.rs",
+          "*_entity.rs"
+        ],
+        "java": [
+          "*Service*.java",
+          "*Repository*.java",
+          "*Entity*.java"
+        ],
+        "ruby": [
+          "*_service.rb",
+          "*_repository.rb"
+        ],
+        "magento2": [
+          "*/Model/*.php",
+          "*/ResourceModel/*.php"
+        ],
+        "django": [
+          "*/models.py",
+          "*/managers.py"
+        ],
+        "laravel": [
+          "*/Models/*.php"
+        ],
+        "rails": [
+          "app/models/*.rb"
+        ],
+        "spring": [
+          "*ServiceImpl*.java",
+          "*RepositoryImpl*.java"
+        ],
+        "nestjs": [
+          "*.service.ts",
+          "*.repository.ts",
+          "*.entity.ts"
+        ]
+      }
+    }
+  ]
+}

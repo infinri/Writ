@@ -57,6 +57,127 @@ curl -X POST http://localhost:8765/query \
   -d '{"query": "async blocking event loop"}'
 ```
 
+## Claude Code Integration
+
+Writ integrates with Claude Code via hooks that automatically inject relevant rules
+into Claude's context on every turn. No manual rule loading required.
+
+### Setup
+
+```bash
+# 1. Start Neo4j (if not already running)
+docker start writ-neo4j
+
+# 2. Ingest rules and start the server
+python scripts/migrate.py       # first time only
+writ serve                      # runs on localhost:8765
+
+# 3. Install hooks into Claude Code
+bash scripts/install-skill.sh   # patches ~/.claude/settings.json
+
+# 4. Restart Claude Code
+```
+
+After setup, every Claude Code session automatically queries Writ for relevant rules.
+The hooks handle injection, deduplication, budget tracking, and context pressure.
+
+### How it works
+
+1. **UserPromptSubmit hook** fires at the start of every user turn
+2. Hook POSTs the user's prompt to `localhost:8765/query`
+3. Writ's hybrid pipeline ranks rules by relevance (BM25 + vector + graph proximity)
+4. Rules are injected into Claude's context as a `--- WRIT RULES ---` block
+5. A session cache deduplicates rules across turns and tracks a token budget (8000 tokens)
+6. When context exceeds 75% or budget is exhausted, injection silently skips
+
+### What Claude sees
+
+```
+--- WRIT RULES (3 rules, standard mode) ---
+
+[PY-ASYNC-001] (high, human, python) score=0.892
+WHEN: Writing async Python code
+RULE: All I/O operations must be async. Never use sync I/O in hot paths.
+VIOLATION: Using requests.get() in an async handler
+CORRECT: Using httpx.AsyncClient within async context
+
+--- END WRIT RULES ---
+```
+
+### Feedback loop
+
+The integration includes a complete feedback cycle:
+
+- **Automatic feedback** -- the Stop hook correlates which rules were in context
+  with static analysis outcomes (pass/fail) and auto-POSTs feedback to Writ.
+  This feeds the frequency tracking system so rules can graduate from
+  `ai-provisional` to `ai-promoted`.
+- **Rule proposals** -- when no matching rules are found (or scores are low),
+  the hook appends a proposal nudge to Claude's context. Claude can propose
+  new rules via `POST /propose` when it discovers patterns not in the knowledge base.
+- **Coverage tracking** -- the session cache records which files were written
+  and which rule domains covered them, logged to `/tmp/writ-coverage-*.log`.
+
+### Ensuring Writ starts with Claude Code
+
+Writ requires two services running before Claude Code starts: Neo4j and the Writ server.
+The simplest approach is a startup script:
+
+```bash
+#!/usr/bin/env bash
+# ~/bin/start-writ.sh -- run before opening Claude Code
+
+# Start Neo4j if not running
+if ! docker ps --format '{{.Names}}' | grep -q writ-neo4j; then
+    docker start writ-neo4j
+    echo "Waiting for Neo4j..."
+    sleep 5
+fi
+
+# Start Writ server if not running
+if ! curl -s --connect-timeout 0.1 http://localhost:8765/health > /dev/null 2>&1; then
+    cd ~/workspaces/Writ  # adjust to your Writ install path
+    source .venv/bin/activate
+    nohup writ serve > /tmp/writ-serve.log 2>&1 &
+    echo "Writ server starting (PID $!), log at /tmp/writ-serve.log"
+    sleep 2
+fi
+
+# Verify
+curl -s http://localhost:8765/health | python3 -m json.tool
+```
+
+Add this to your shell profile or run it manually before opening Claude Code.
+If Writ is not running, the hooks fall back gracefully -- Claude sees
+`[Writ: server unavailable, proceeding without rules]` and proceeds normally.
+
+### Hooks and agents
+
+The `claude/` directory (rename to `.claude/` for auto-discovery) contains:
+
+**Hooks (8):**
+
+| Hook | Event | Purpose |
+|------|-------|---------|
+| `writ-rag-inject.sh` | UserPromptSubmit | Query Writ, inject rules into context |
+| `writ-context-tracker.sh` | Stop | Track context pressure, auto-feedback, coverage |
+| `check-gate-approval.sh` | PreToolUse | Gate sequencing (Phases A-D) |
+| `enforce-final-gate.sh` | PreToolUse | Block completion until ENF-GATE-FINAL |
+| `pre-validate-file.sh` | PreToolUse | Static analysis before write |
+| `validate-file.sh` | PostToolUse | Static analysis after write |
+| `validate-handoff.sh` | PostToolUse | Handoff JSON validation |
+| `log-session-metrics.sh` | Stop | Gate metrics logging |
+
+**Agents (3):**
+
+| Agent | Purpose |
+|-------|---------|
+| `plan-guardian` | Verify code slices against approved plan (read-only) |
+| `static-analysis` | Run static analysis in isolated context |
+| `slice-builder` | Generate one implementation slice in isolation |
+
+All hooks and agents are project-agnostic -- they work with any language or framework.
+
 ## CLI Commands
 
 | Command | Description |
@@ -197,7 +318,7 @@ All settings in `writ.toml`, overridable via `WRIT_` environment variables.
 
 ## Project Status
 
-All 9 original phases complete. Evolution plan Phases 1-4 complete. ONNX inference optimization applied.
+All 9 original phases complete. Evolution plan Phases 1-4 complete. ONNX inference optimization applied. Claude Code integration complete (RAG bridge, feedback loop, proposal triggers).
 
 **Evolution plan (Dwarf in the Glass):**
 
@@ -216,6 +337,7 @@ Future work:
 - Graph-level versioning -- immutable snapshots. Relevant when corpus scales and graph mutations during sessions could cause inconsistency.
 - Qdrant migration -- swap hnswlib at 10K+ rules. VectorStore Protocol already in place. Would also eliminate the 10K cold start problem by persisting embeddings.
 - Phase 5 -- domain generalization. Conditional on generalizability test with a concrete non-coding domain.
+- PreToolUse hook -- narrow, file-context-specific rule injection before writes. Deferred pending measurement of whether the broad UserPromptSubmit query covers file-specific needs.
 
 See [EVOLUTION_PLAN.md](EVOLUTION_PLAN.md) for the evolution plan specification. See [CONTRIBUTING.md](CONTRIBUTING.md) for the multi-author rule governance process. See [SCALE_BENCHMARK_RESULTS.md](SCALE_BENCHMARK_RESULTS.md) for detailed scale benchmarks.
 
