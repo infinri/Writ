@@ -18,7 +18,7 @@ echo "Settings file:  $SETTINGS_FILE"
 echo ""
 
 # Verify hook files exist
-for hook in claude/hooks/writ-rag-inject.sh claude/hooks/writ-context-tracker.sh; do
+for hook in .claude/hooks/writ-rag-inject.sh .claude/hooks/writ-context-tracker.sh; do
     if [ ! -f "$WRIT_DIR/$hook" ]; then
         echo "ERROR: Missing hook: $WRIT_DIR/$hook" >&2
         exit 1
@@ -62,8 +62,8 @@ settings.setdefault("hooks", {})
 # --- Permissions ---
 
 new_permissions = [
-    f"Bash(bash {writ_dir}/claude/hooks/writ-rag-inject.sh)",
-    f"Bash(bash {writ_dir}/claude/hooks/writ-context-tracker.sh)",
+    f"Bash(bash {writ_dir}/.claude/hooks/writ-rag-inject.sh)",
+    f"Bash(bash {writ_dir}/.claude/hooks/writ-context-tracker.sh)",
 ]
 
 existing = set(settings["permissions"]["allow"])
@@ -77,7 +77,7 @@ for perm in new_permissions:
 
 # UserPromptSubmit hook
 ups_hooks = settings["hooks"].setdefault("UserPromptSubmit", [])
-writ_rag_cmd = f"bash {writ_dir}/claude/hooks/writ-rag-inject.sh"
+writ_rag_cmd = f"bash {writ_dir}/.claude/hooks/writ-rag-inject.sh"
 
 # Check if already registered
 rag_exists = False
@@ -100,7 +100,7 @@ if not rag_exists:
 
 # Stop hook
 stop_hooks = settings["hooks"].setdefault("Stop", [])
-writ_ctx_cmd = f"bash {writ_dir}/claude/hooks/writ-context-tracker.sh"
+writ_ctx_cmd = f"bash {writ_dir}/.claude/hooks/writ-context-tracker.sh"
 
 ctx_exists = False
 for entry in stop_hooks:
