@@ -18,7 +18,17 @@ echo "Settings file:  $SETTINGS_FILE"
 echo ""
 
 # Verify hook files exist
-for hook in claude/hooks/writ-rag-inject.sh claude/hooks/writ-context-tracker.sh; do
+HOOKS=(
+    .claude/hooks/writ-rag-inject.sh
+    .claude/hooks/writ-context-tracker.sh
+    .claude/hooks/check-gate-approval.sh
+    .claude/hooks/pre-validate-file.sh
+    .claude/hooks/enforce-final-gate.sh
+    .claude/hooks/validate-file.sh
+    .claude/hooks/validate-handoff.sh
+    .claude/hooks/log-session-metrics.sh
+)
+for hook in "${HOOKS[@]}"; do
     if [ ! -f "$WRIT_DIR/$hook" ]; then
         echo "ERROR: Missing hook: $WRIT_DIR/$hook" >&2
         exit 1
@@ -62,8 +72,14 @@ settings.setdefault("hooks", {})
 # --- Permissions ---
 
 new_permissions = [
-    f"Bash(bash {writ_dir}/claude/hooks/writ-rag-inject.sh)",
-    f"Bash(bash {writ_dir}/claude/hooks/writ-context-tracker.sh)",
+    f"Bash(bash {writ_dir}/.claude/hooks/writ-rag-inject.sh)",
+    f"Bash(bash {writ_dir}/.claude/hooks/writ-context-tracker.sh)",
+    f"Bash(bash {writ_dir}/.claude/hooks/check-gate-approval.sh)",
+    f"Bash(bash {writ_dir}/.claude/hooks/pre-validate-file.sh)",
+    f"Bash(bash {writ_dir}/.claude/hooks/enforce-final-gate.sh)",
+    f"Bash(bash {writ_dir}/.claude/hooks/validate-file.sh)",
+    f"Bash(bash {writ_dir}/.claude/hooks/validate-handoff.sh)",
+    f"Bash(bash {writ_dir}/.claude/hooks/log-session-metrics.sh)",
 ]
 
 existing = set(settings["permissions"]["allow"])
@@ -75,50 +91,45 @@ for perm in new_permissions:
 
 # --- Hooks ---
 
-# UserPromptSubmit hook
-ups_hooks = settings["hooks"].setdefault("UserPromptSubmit", [])
-writ_rag_cmd = f"bash {writ_dir}/claude/hooks/writ-rag-inject.sh"
-
-# Check if already registered
-rag_exists = False
-for entry in ups_hooks:
-    for h in entry.get("hooks", []):
-        if h.get("command") == writ_rag_cmd:
-            rag_exists = True
-            break
-
-if not rag_exists:
-    ups_hooks.append({
-        "matcher": "",
-        "hooks": [
-            {
-                "type": "command",
-                "command": writ_rag_cmd,
-            }
-        ]
+# Helper: register a hook if not already present
+def register_hook(event, command, matcher=""):
+    event_hooks = settings["hooks"].setdefault(event, [])
+    for entry in event_hooks:
+        for h in entry.get("hooks", []):
+            if h.get("command") == command:
+                return True  # already exists
+    event_hooks.append({
+        "matcher": matcher,
+        "hooks": [{"type": "command", "command": command}]
     })
+    return False  # newly added
 
-# Stop hook
-stop_hooks = settings["hooks"].setdefault("Stop", [])
-writ_ctx_cmd = f"bash {writ_dir}/claude/hooks/writ-context-tracker.sh"
+# Hook definitions: (event, script, tool_matcher)
+hook_defs = [
+    # RAG injection -- every prompt
+    ("UserPromptSubmit", "writ-rag-inject.sh", ""),
+    # Context tracking -- every response
+    ("Stop", "writ-context-tracker.sh", ""),
+    # Gate enforcement -- before file writes
+    ("PreToolUse", "check-gate-approval.sh", "Write|Edit"),
+    # Pre-write static analysis
+    ("PreToolUse", "pre-validate-file.sh", "Write|Edit"),
+    # Final gate enforcement
+    ("PreToolUse", "enforce-final-gate.sh", "Write|Edit"),
+    # Post-write static analysis
+    ("PostToolUse", "validate-file.sh", "Write|Edit"),
+    # Handoff validation
+    ("PostToolUse", "validate-handoff.sh", "Write|Edit"),
+    # Session metrics -- every response
+    ("Stop", "log-session-metrics.sh", ""),
+]
 
-ctx_exists = False
-for entry in stop_hooks:
-    for h in entry.get("hooks", []):
-        if h.get("command") == writ_ctx_cmd:
-            ctx_exists = True
-            break
-
-if not ctx_exists:
-    stop_hooks.append({
-        "matcher": "",
-        "hooks": [
-            {
-                "type": "command",
-                "command": writ_ctx_cmd,
-            }
-        ]
-    })
+results = []
+for event, script, matcher in hook_defs:
+    cmd = f"bash {writ_dir}/.claude/hooks/{script}"
+    existed = register_hook(event, cmd, matcher)
+    status = "already registered" if existed else "added"
+    results.append(f"  {event} -> {script}: {status}")
 
 # Write updated settings
 with open(settings_file, "w") as f:
@@ -126,8 +137,9 @@ with open(settings_file, "w") as f:
     f.write("\n")
 
 print(f"Added {added_perms} permission(s)")
-print(f"UserPromptSubmit hook: {'already registered' if rag_exists else 'added'}")
-print(f"Stop hook: {'already registered' if ctx_exists else 'added'}")
+print("Hooks:")
+for line in results:
+    print(line)
 PYEOF
 
 echo ""
