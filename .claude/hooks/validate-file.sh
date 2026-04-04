@@ -10,10 +10,16 @@
 SKILL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 source "$SKILL_DIR/bin/lib/common.sh"
 
-FILE=$(echo "$CLAUDE_TOOL_INPUT" | python3 -c \
-  "import sys,json; d=json.load(sys.stdin); print(d.get('file_path',''))" 2>/dev/null)
+# Parse the Claude Code hook stdin envelope (consumes stdin once)
+PARSED=$(parse_hook_stdin)
+FILE=$(parsed_field "$PARSED" "file_path")
 
 if [ -z "$FILE" ]; then exit 0; fi
+
+# Skip validation if the write itself failed (tool_result_is_error = true).
+# No point validating old file content when the write didn't land.
+if parsed_bool "$PARSED" "is_error"; then exit 0; fi
+
 if [ ! -f "$FILE" ]; then exit 0; fi
 
 # Check if the file type is one we analyze

@@ -76,7 +76,10 @@ Writ requires:
 - Neo4j running at `bolt://localhost:7687`
 - Writ server: `writ serve` (default: `localhost:8765`)
 - Bible rules ingested: `writ ingest`
-- Install hooks: `bash scripts/install-skill.sh`
+- Install hooks: `bash scripts/install-skill.sh` (or use the `.claude-plugin/` manifest for auto-discovery)
+
+When loaded as a plugin, the `ensure-server.sh` Init lifecycle script starts
+Neo4j (Docker) and the Writ server automatically. No manual startup required.
 
 ## Proposing new rules
 
@@ -92,6 +95,10 @@ rules enter as `ai-provisional` and must pass the structural gate before ingesti
 - Session: `writ/retrieval/session.py` (client-side budget tracker)
 - Config: `writ.toml` (all tunable parameters)
 - Hooks: `.claude/hooks/` (RAG injection, gate enforcement, validation)
+- Hook parser: `bin/lib/parse-hook-stdin.py` (normalizes Claude Code stdin envelope)
+- Session helper: `bin/lib/writ-session.py` (client-side budget/dedup cache)
 - Verification: `bin/` (static analysis, gate checks, dependency scanning)
 - Gate categories: `bin/lib/gate-categories.json` (language/framework patterns)
+- Plugin manifest: `.claude-plugin/plugin.json` (auto-discovery, lifecycle)
+- Lifecycle: `scripts/ensure-server.sh`, `scripts/stop-server.sh`
 - Full spec: `RAG_arch_handbook.md`

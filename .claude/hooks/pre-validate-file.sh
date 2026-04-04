@@ -9,11 +9,17 @@
 SKILL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 source "$SKILL_DIR/bin/lib/common.sh"
 
+# Parse the Claude Code hook stdin envelope (consumes stdin once)
+PARSED=$(parse_hook_stdin)
+FILE=$(parsed_field "$PARSED" "file_path")
+
+if [ -z "$FILE" ]; then exit 0; fi
+
 TMPFILE=""
 cleanup() { [ -n "$TMPFILE" ] && rm -f "$TMPFILE"; }
 trap cleanup EXIT
 
-TMPFILE=$(echo "$CLAUDE_TOOL_INPUT" | python3 -c "
+TMPFILE=$(echo "$PARSED" | python3 -c "
 import sys, json, os, tempfile
 
 data = json.load(sys.stdin)
@@ -22,13 +28,14 @@ if not fp:
     sys.exit(0)
 
 ext = os.path.splitext(fp)[1]
+ti = data.get('tool_input', {})
 
-if 'content' in data:
+if data.get('content'):
     content = data['content']
-elif 'old_string' in data and os.path.exists(fp):
+elif ti.get('old_string') and os.path.exists(fp):
     with open(fp) as f:
         content = f.read()
-    content = content.replace(data['old_string'], data.get('new_string', ''), 1)
+    content = content.replace(ti['old_string'], ti.get('new_string', ''), 1)
 else:
     sys.exit(0)
 
@@ -39,9 +46,6 @@ print(tf)
 " 2>/dev/null)
 
 if [ -z "$TMPFILE" ] || [ ! -f "$TMPFILE" ]; then exit 0; fi
-
-FILE=$(echo "$CLAUDE_TOOL_INPUT" | python3 -c \
-  "import sys,json; d=json.load(sys.stdin); print(d.get('file_path',''))" 2>/dev/null)
 
 # Check if the file type is one we analyze
 lang=$(detect_language "$FILE")
@@ -78,7 +82,7 @@ except (json.JSONDecodeError, Exception):
         'fix': 'Check proposed content for errors'
     }))
 " 2>/dev/null
-  exit 1
+  exit 2  # deny: block the write before it happens
 fi
 
 exit 0

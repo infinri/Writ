@@ -59,8 +59,9 @@ curl -X POST http://localhost:8765/query \
 
 ## Claude Code Integration
 
-Writ integrates with Claude Code via hooks that automatically inject relevant rules
-into Claude's context on every turn. No manual rule loading required.
+Writ integrates with Claude Code via hooks and a plugin manifest that automatically
+inject relevant rules into Claude's context on every turn. No manual rule loading
+required.
 
 ### Setup
 
@@ -80,6 +81,19 @@ bash scripts/install-skill.sh   # patches ~/.claude/settings.json
 
 After setup, every Claude Code session automatically queries Writ for relevant rules.
 The hooks handle injection, deduplication, budget tracking, and context pressure.
+
+### Plugin mode
+
+Writ also ships a `.claude-plugin/plugin.json` manifest. When Claude Code discovers
+the plugin, it registers hooks and lifecycle scripts automatically -- no manual
+`install-skill.sh` step required.
+
+The plugin lifecycle handles server startup:
+- **Init** (`scripts/ensure-server.sh`) -- starts Neo4j (Docker) and `writ serve`
+  if they are not already running. Non-fatal: if Docker is missing or startup
+  times out, hooks fall back gracefully.
+- **Shutdown** (`scripts/stop-server.sh`) -- stops the Writ server. Neo4j is left
+  running since it may be shared with other tools.
 
 ### How it works
 
@@ -120,53 +134,41 @@ The integration includes a complete feedback cycle:
 
 ### Ensuring Writ starts with Claude Code
 
-Writ requires two services running before Claude Code starts: Neo4j and the Writ server.
-The simplest approach is a startup script:
+**Plugin mode (recommended):** If Claude Code discovers the `.claude-plugin/plugin.json`
+manifest, the `ensure-server.sh` Init lifecycle script starts Neo4j and the Writ
+server automatically. No manual setup needed.
+
+**Manual mode:** If not using the plugin, run `scripts/ensure-server.sh` before
+opening Claude Code, or start the services yourself:
 
 ```bash
-#!/usr/bin/env bash
-# ~/bin/start-writ.sh -- run before opening Claude Code
-
-# Start Neo4j if not running
-if ! docker ps --format '{{.Names}}' | grep -q writ-neo4j; then
-    docker start writ-neo4j
-    echo "Waiting for Neo4j..."
-    sleep 5
-fi
-
-# Start Writ server if not running
-if ! curl -s --connect-timeout 0.1 http://localhost:8765/health > /dev/null 2>&1; then
-    cd ~/workspaces/Writ  # adjust to your Writ install path
-    source .venv/bin/activate
-    nohup writ serve > /tmp/writ-serve.log 2>&1 &
-    echo "Writ server starting (PID $!), log at /tmp/writ-serve.log"
-    sleep 2
-fi
-
-# Verify
-curl -s http://localhost:8765/health | python3 -m json.tool
+docker start writ-neo4j           # start Neo4j
+source .venv/bin/activate && writ serve   # start Writ
 ```
 
-Add this to your shell profile or run it manually before opening Claude Code.
 If Writ is not running, the hooks fall back gracefully -- Claude sees
 `[Writ: server unavailable, proceeding without rules]` and proceeds normally.
 
 ### Hooks and agents
 
-The `claude/` directory (rename to `.claude/` for auto-discovery) contains:
-
 **Hooks (8):**
 
-| Hook | Event | Purpose |
-|------|-------|---------|
-| `writ-rag-inject.sh` | UserPromptSubmit | Query Writ, inject rules into context |
-| `writ-context-tracker.sh` | Stop | Track context pressure, auto-feedback, coverage |
-| `check-gate-approval.sh` | PreToolUse | Gate sequencing (Phases A-D) |
-| `enforce-final-gate.sh` | PreToolUse | Block completion until ENF-GATE-FINAL |
-| `pre-validate-file.sh` | PreToolUse | Static analysis before write |
-| `validate-file.sh` | PostToolUse | Static analysis after write |
-| `validate-handoff.sh` | PostToolUse | Handoff JSON validation |
-| `log-session-metrics.sh` | Stop | Gate metrics logging |
+All hooks parse Claude Code's stdin JSON envelope via a shared parser
+(`bin/lib/parse-hook-stdin.py`) with `$CLAUDE_TOOL_INPUT` env var fallback.
+PreToolUse hooks that deny a write exit with code 2 (hard block per Claude Code's
+internal hook contract). PostToolUse hooks skip validation when the write itself
+failed (`tool_result_is_error`), preventing confusing cascading errors.
+
+| Hook | Event | Matcher | Exit | Purpose |
+|------|-------|---------|------|---------|
+| `writ-rag-inject.sh` | UserPromptSubmit | all | 0 | Query Writ, inject rules into context |
+| `writ-context-tracker.sh` | Stop | all | 0 | Track context pressure, auto-feedback, coverage |
+| `check-gate-approval.sh` | PreToolUse | Write\|Edit | 0/2 | Gate sequencing (Phases A-D) |
+| `enforce-final-gate.sh` | PreToolUse | Write\|Edit | 0/2 | Block completion until ENF-GATE-FINAL |
+| `pre-validate-file.sh` | PreToolUse | Write\|Edit | 0/2 | Static analysis before write |
+| `validate-file.sh` | PostToolUse | Write\|Edit | 0/1 | Static analysis after write |
+| `validate-handoff.sh` | PostToolUse | Write\|Edit | 0/1 | Handoff JSON validation |
+| `log-session-metrics.sh` | Stop | all | 0 | Gate metrics logging |
 
 **Agents (3):**
 

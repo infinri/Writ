@@ -4,10 +4,17 @@
 # Validates required keys, non-empty files, no unresolved ENF-POST-006 violations.
 # Exit non-zero = blocks the write receipt, Claude must fix before proceeding.
 
-FILE=$(echo "$CLAUDE_TOOL_INPUT" | python3 -c \
-  "import sys,json; d=json.load(sys.stdin); print(d.get('file_path',''))" 2>/dev/null)
+SKILL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+source "$SKILL_DIR/bin/lib/common.sh"
+
+# Parse the Claude Code hook stdin envelope (consumes stdin once)
+PARSED=$(parse_hook_stdin)
+FILE=$(parsed_field "$PARSED" "file_path")
 
 if [ -z "$FILE" ]; then exit 0; fi
+
+# Skip validation if the write itself failed
+if parsed_bool "$PARSED" "is_error"; then exit 0; fi
 
 # Only validate handoff JSON files
 case "$FILE" in

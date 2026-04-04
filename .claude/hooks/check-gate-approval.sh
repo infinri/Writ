@@ -15,8 +15,9 @@
 SKILL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 source "$SKILL_DIR/bin/lib/common.sh"
 
-FILE=$(echo "$CLAUDE_TOOL_INPUT" | python3 -c \
-  "import sys,json; d=json.load(sys.stdin); print(d.get('file_path',''))" 2>/dev/null)
+# Parse the Claude Code hook stdin envelope (consumes stdin once)
+PARSED=$(parse_hook_stdin)
+FILE=$(parsed_field "$PARSED" "file_path")
 
 if [ -z "$FILE" ]; then exit 0; fi
 
@@ -159,7 +160,7 @@ PYTHON_SCRIPT
 EXIT_CODE=$?
 if [ $EXIT_CODE -ne 0 ]; then
   echo "$RESULT"
-  exit 1
+  exit 2  # exit 2 = deny (blocks tool execution per Claude Code hook contract)
 fi
 
 exit 0

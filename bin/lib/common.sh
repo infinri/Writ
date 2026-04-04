@@ -2,6 +2,40 @@
 # Shared library for phaselock bin/ scripts and hooks.
 # Source this file: source "$(dirname "$0")/lib/common.sh"
 
+# ── Hook stdin envelope parser ──────────────────────────────────────────────
+# Reads the Claude Code hook stdin envelope and normalizes it into a JSON
+# object with flattened fields (file_path, content, tool_name, is_error, etc.).
+# Falls back to CLAUDE_TOOL_INPUT env var when envelope is missing.
+#
+# Usage (call ONCE per hook, stdin is consumed):
+#   PARSED=$(parse_hook_stdin)
+#   FILE=$(echo "$PARSED" | jq -r '.file_path // empty')
+#   TOOL=$(echo "$PARSED" | jq -r '.tool_name // empty')
+#
+# If jq is unavailable, use python3:
+#   FILE=$(echo "$PARSED" | python3 -c "import sys,json; print(json.load(sys.stdin).get('file_path',''))")
+_PARSE_HOOK_STDIN_PY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/parse-hook-stdin.py"
+
+parse_hook_stdin() {
+    python3 "$_PARSE_HOOK_STDIN_PY" 2>/dev/null || echo '{}'
+}
+
+# Convenience: extract a single string field from parsed JSON.
+# Usage: FILE=$(parsed_field "$PARSED" "file_path")
+parsed_field() {
+    local json="$1" field="$2"
+    echo "$json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('$field',''))" 2>/dev/null
+}
+
+# Convenience: extract a boolean field from parsed JSON.
+# Usage: if parsed_bool "$PARSED" "is_error"; then ...
+parsed_bool() {
+    local json="$1" field="$2"
+    local val
+    val=$(echo "$json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('$field', False))" 2>/dev/null)
+    [ "$val" = "True" ]
+}
+
 # ── Project root detection ────────────────────────────────────────────────────
 # Walks up from a given path to find the project root by marker files.
 # Usage: PROJECT_ROOT=$(detect_project_root "/path/to/some/file.php")

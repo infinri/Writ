@@ -1,0 +1,22 @@
+{
+  "name": "writ",
+  "version": "0.1.0",
+  "description": "Hybrid RAG rule retrieval -- injects relevant coding rules into every turn via a 5-stage pipeline (BM25 + vector + graph traversal + RRF ranking)",
+  "permissions": ["read"],
+  "defaultEnabled": true,
+  "hooks": {
+    "PreToolUse": [
+      "./.claude/hooks/check-gate-approval.sh",
+      "./.claude/hooks/enforce-final-gate.sh",
+      "./.claude/hooks/pre-validate-file.sh"
+    ],
+    "PostToolUse": [
+      "./.claude/hooks/validate-file.sh",
+      "./.claude/hooks/validate-handoff.sh"
+    ]
+  },
+  "lifecycle": {
+    "Init": ["./scripts/ensure-server.sh"],
+    "Shutdown": ["./scripts/stop-server.sh"]
+  }
+}
