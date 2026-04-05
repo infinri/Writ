@@ -16,8 +16,58 @@ SESSION_HELPER="$WRIT_DIR/bin/lib/writ-session.py"
 WRIT_HOST="${WRIT_HOST:-localhost}"
 WRIT_PORT="${WRIT_PORT:-8765}"
 WRIT_URL="http://${WRIT_HOST}:${WRIT_PORT}/query"
+WRIT_HEALTH_URL="http://${WRIT_HOST}:${WRIT_PORT}/health"
+WRIT_LOCKFILE="/tmp/writ-server-starting.lock"
 
 MIN_QUERY_LENGTH=10
+
+# Auto-start: ensure Neo4j and Writ server are running.
+# Uses a lockfile to prevent multiple hooks from racing to start the server.
+if ! curl -sf --connect-timeout 0.1 "$WRIT_HEALTH_URL" >/dev/null 2>&1; then
+    # Acquire lock (non-blocking; if another hook is already starting, wait for it)
+    if ( set -o noclobber; echo $$ > "$WRIT_LOCKFILE" ) 2>/dev/null; then
+        trap 'rm -f "$WRIT_LOCKFILE"' EXIT
+
+        # Ensure Neo4j is running (docker restart is a no-op if already up)
+        if command -v docker >/dev/null 2>&1; then
+            docker start writ-neo4j >/dev/null 2>&1 || true
+            # Wait up to 8s for Neo4j bolt port
+            for _i in $(seq 1 16); do
+                if curl -sf --connect-timeout 0.1 http://localhost:7474 >/dev/null 2>&1; then
+                    break
+                fi
+                sleep 0.5
+            done
+        fi
+
+        # Start Writ server in background
+        if [ -f "$WRIT_DIR/.venv/bin/activate" ]; then
+            (
+                cd "$WRIT_DIR"
+                source .venv/bin/activate
+                nohup writ serve >>/tmp/writ-server.log 2>&1 &
+            )
+            # Wait up to 5s for Writ health endpoint
+            for _i in $(seq 1 10); do
+                if curl -sf --connect-timeout 0.1 "$WRIT_HEALTH_URL" >/dev/null 2>&1; then
+                    break
+                fi
+                sleep 0.5
+            done
+        fi
+
+        rm -f "$WRIT_LOCKFILE"
+        trap - EXIT
+    else
+        # Another process is starting the server; wait for it
+        for _i in $(seq 1 20); do
+            if curl -sf --connect-timeout 0.1 "$WRIT_HEALTH_URL" >/dev/null 2>&1; then
+                break
+            fi
+            sleep 0.5
+        done
+    fi
+fi
 
 # Session ID: grandparent PID = the claude process.
 # $PPID is the ephemeral bash shell; its parent is the stable claude PID.
