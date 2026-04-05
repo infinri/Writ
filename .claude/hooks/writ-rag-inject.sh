@@ -87,7 +87,7 @@ PROMPT=$(python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
-    print(data.get('message', data.get('content', '')))
+    print(data.get('prompt', data.get('message', data.get('content', ''))))
 except Exception:
     print('')
 " 2>/dev/null)
