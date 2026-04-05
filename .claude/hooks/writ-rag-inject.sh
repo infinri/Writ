@@ -18,12 +18,22 @@ WRIT_PORT="${WRIT_PORT:-8765}"
 WRIT_URL="http://${WRIT_HOST}:${WRIT_PORT}/query"
 WRIT_HEALTH_URL="http://${WRIT_HOST}:${WRIT_PORT}/health"
 WRIT_LOCKFILE="/tmp/writ-server-starting.lock"
+WRIT_DEBUG_LOG="/tmp/writ-rag-debug.log"
 
 MIN_QUERY_LENGTH=10
 
+debug() {
+    echo "[$(date '+%H:%M:%S')] $*" >> "$WRIT_DEBUG_LOG"
+}
+
+# Capture stdin once -- Claude Code sends JSON with prompt, session_id, etc.
+STDIN_JSON=$(cat)
+debug "stdin: ${STDIN_JSON:0:200}"
+
 # Auto-start: ensure Neo4j and Writ server are running.
 # Uses a lockfile to prevent multiple hooks from racing to start the server.
-if ! curl -sf --connect-timeout 0.1 "$WRIT_HEALTH_URL" >/dev/null 2>&1; then
+if ! curl -sf --connect-timeout 0.2 "$WRIT_HEALTH_URL" >/dev/null 2>&1; then
+    debug "server down, attempting auto-start"
     # Acquire lock (non-blocking; if another hook is already starting, wait for it)
     if ( set -o noclobber; echo $$ > "$WRIT_LOCKFILE" ) 2>/dev/null; then
         trap 'rm -f "$WRIT_LOCKFILE"' EXIT
@@ -31,7 +41,7 @@ if ! curl -sf --connect-timeout 0.1 "$WRIT_HEALTH_URL" >/dev/null 2>&1; then
         # Ensure Neo4j is running (docker restart is a no-op if already up)
         if command -v docker >/dev/null 2>&1; then
             docker start writ-neo4j >/dev/null 2>&1 || true
-            # Wait up to 8s for Neo4j bolt port
+            # Wait up to 8s for Neo4j HTTP port
             for _i in $(seq 1 16); do
                 if curl -sf --connect-timeout 0.1 http://localhost:7474 >/dev/null 2>&1; then
                     break
@@ -49,7 +59,8 @@ if ! curl -sf --connect-timeout 0.1 "$WRIT_HEALTH_URL" >/dev/null 2>&1; then
             )
             # Wait up to 5s for Writ health endpoint
             for _i in $(seq 1 10); do
-                if curl -sf --connect-timeout 0.1 "$WRIT_HEALTH_URL" >/dev/null 2>&1; then
+                if curl -sf --connect-timeout 0.2 "$WRIT_HEALTH_URL" >/dev/null 2>&1; then
+                    debug "server started"
                     break
                 fi
                 sleep 0.5
@@ -61,7 +72,7 @@ if ! curl -sf --connect-timeout 0.1 "$WRIT_HEALTH_URL" >/dev/null 2>&1; then
     else
         # Another process is starting the server; wait for it
         for _i in $(seq 1 20); do
-            if curl -sf --connect-timeout 0.1 "$WRIT_HEALTH_URL" >/dev/null 2>&1; then
+            if curl -sf --connect-timeout 0.2 "$WRIT_HEALTH_URL" >/dev/null 2>&1; then
                 break
             fi
             sleep 0.5
@@ -69,40 +80,50 @@ if ! curl -sf --connect-timeout 0.1 "$WRIT_HEALTH_URL" >/dev/null 2>&1; then
     fi
 fi
 
-# Session ID: grandparent PID = the claude process.
-# $PPID is the ephemeral bash shell; its parent is the stable claude PID.
-SESSION_ID=$(ps -o ppid= -p $PPID 2>/dev/null | tr -d ' ')
-if [ -z "$SESSION_ID" ]; then
-    # Fallback: project+date hash
-    SESSION_ID=$(echo "${PWD}:${USER}" | md5sum | cut -c1-12)-$(date +%Y%m%d)
-fi
-
-# 1. Check skip conditions (budget exhausted or context pressure > 75%)
-if python3 "$SESSION_HELPER" should-skip "$SESSION_ID" 2>/dev/null; then
-    exit 0
-fi
-
-# 2. Extract prompt from stdin JSON
-PROMPT=$(python3 -c "
+# Extract session_id and prompt from the captured stdin JSON.
+# Claude Code provides: session_id, prompt, cwd, hook_event_name, etc.
+PARSED=$(echo "$STDIN_JSON" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
-    print(data.get('prompt', data.get('message', data.get('content', ''))))
-except Exception:
-    print('')
-" 2>/dev/null)
+    sid = data.get('session_id', '')
+    prompt = data.get('prompt', data.get('message', data.get('content', '')))
+    print(f'{sid}\n{prompt}')
+except Exception as e:
+    print(f'\n')
+" 2>/dev/null) || true
 
-# 3. Minimum query length gate
-if [ ${#PROMPT} -lt $MIN_QUERY_LENGTH ]; then
+SESSION_ID=$(echo "$PARSED" | head -1)
+PROMPT=$(echo "$PARSED" | tail -n +2)
+
+# Fallback session ID if not provided by Claude Code
+if [ -z "$SESSION_ID" ]; then
+    SESSION_ID=$(ps -o ppid= -p $PPID 2>/dev/null | tr -d ' ')
+fi
+if [ -z "$SESSION_ID" ]; then
+    SESSION_ID=$(echo "${PWD}:${USER}" | md5sum | cut -c1-12)-$(date +%Y%m%d)
+fi
+
+debug "session=$SESSION_ID prompt_len=${#PROMPT}"
+
+# 1. Check skip conditions (budget exhausted or context pressure > 75%)
+if python3 "$SESSION_HELPER" should-skip "$SESSION_ID" 2>/dev/null; then
+    debug "skipped: budget or context pressure"
     exit 0
 fi
 
-# 4. Read session cache
+# 2. Minimum query length gate
+if [ ${#PROMPT} -lt $MIN_QUERY_LENGTH ]; then
+    debug "skipped: prompt too short (${#PROMPT} < $MIN_QUERY_LENGTH)"
+    exit 0
+fi
+
+# 3. Read session cache
 CACHE=$(python3 "$SESSION_HELPER" read "$SESSION_ID" 2>/dev/null || echo '{"loaded_rule_ids":[],"remaining_budget":8000}')
 LOADED_RULE_IDS=$(echo "$CACHE" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin).get('loaded_rule_ids',[])))" 2>/dev/null || echo '[]')
 REMAINING_BUDGET=$(echo "$CACHE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('remaining_budget',8000))" 2>/dev/null || echo '8000')
 
-# 5. Build request JSON
+# 4. Build request JSON
 REQUEST=$(python3 -c "
 import json, sys
 print(json.dumps({
@@ -113,31 +134,53 @@ print(json.dumps({
 " "$PROMPT" "$REMAINING_BUDGET" "$LOADED_RULE_IDS" 2>/dev/null)
 
 if [ -z "$REQUEST" ]; then
+    debug "skipped: failed to build request JSON"
     exit 0
 fi
 
-# 6. POST to Writ server
-# --connect-timeout 0.05: 50ms catches "server not running" instantly
-# --max-time 0.2: 200ms total for slow queries (Writ p95 is <1ms)
-RESPONSE=$(curl -s --connect-timeout 0.05 --max-time 0.2 \
+# 5. POST to Writ server
+# --connect-timeout 0.5: 500ms for connection (generous for localhost)
+# --max-time 2: 2s total timeout (covers cold-start query warming)
+RESPONSE=$(curl -s --connect-timeout 0.5 --max-time 2 \
     -X POST "$WRIT_URL" \
     -H "Content-Type: application/json" \
     -d "$REQUEST" 2>/dev/null) || true
 
 if [ -z "$RESPONSE" ]; then
+    debug "failed: empty response from server"
     echo "[Writ: server unavailable, proceeding without rules]"
     exit 0
 fi
 
+debug "response_len=${#RESPONSE}"
+
 # Check for error response
-HAS_ERROR=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print('yes' if 'error' in d else 'no')" 2>/dev/null || echo "yes")
-if [ "$HAS_ERROR" = "yes" ]; then
+HAS_ERROR=$(echo "$RESPONSE" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print('yes' if 'error' in d else 'no')
+except Exception as e:
+    # JSON parse failure -- likely truncated response
+    print('parse_error: ' + str(e), file=sys.stderr)
+    print('yes')
+" 2>&1)
+
+# Separate stderr debug info from the actual result
+ERROR_RESULT=$(echo "$HAS_ERROR" | grep -v '^parse_error:' | head -1)
+ERROR_DEBUG=$(echo "$HAS_ERROR" | grep '^parse_error:' || true)
+
+if [ -n "$ERROR_DEBUG" ]; then
+    debug "error check: $ERROR_DEBUG response_preview=${RESPONSE:0:200}"
+fi
+
+if [ "${ERROR_RESULT:-yes}" = "yes" ]; then
+    debug "failed: error in response or parse failure"
     echo "[Writ: query failed, proceeding without rules]"
     exit 0
 fi
 
-# 7. Check for low-relevance response (proposal trigger)
-# If no rules returned or all scores below threshold, append a proposal nudge.
+# 6. Check for low-relevance response (proposal trigger)
 LOW_RELEVANCE_THRESHOLD=0.3
 PROPOSAL_NUDGE=$(echo "$RESPONSE" | python3 -c "
 import sys, json
@@ -155,7 +198,7 @@ except Exception:
     print('')
 " "$LOW_RELEVANCE_THRESHOLD" 2>/dev/null || echo "")
 
-# 8. Format response and capture metadata
+# 7. Format response and capture metadata
 FORMAT_OUTPUT=$(echo "$RESPONSE" | python3 "$SESSION_HELPER" format 2>/dev/null) || true
 
 # Split: everything before WRIT_META: goes to stdout (Claude sees it).
@@ -167,12 +210,13 @@ if [ -n "$FORMAT_OUTPUT" ]; then
     META_LINE=$(echo "$FORMAT_OUTPUT" | grep "^WRIT_META:" | head -1)
 fi
 
-# 9. Inject rules into Claude's context
+# 8. Inject rules into Claude's context
 if [ -n "$RULES_TEXT" ]; then
     echo "$RULES_TEXT"
+    debug "injected rules"
 fi
 
-# 10. Append proposal nudge if low relevance
+# 9. Append proposal nudge if low relevance
 if [ "$PROPOSAL_NUDGE" = "NO_RULES" ]; then
     echo ""
     echo "[Writ: no matching rules found for this task. If you discover a pattern, constraint, or gotcha during this work that would help future tasks, propose it via POST /propose. See .claude/CLAUDE.md for the format and trigger conditions.]"
@@ -181,7 +225,7 @@ elif [ "$PROPOSAL_NUDGE" = "LOW_SCORES" ]; then
     echo "[Writ: retrieved rules have low relevance scores (< $LOW_RELEVANCE_THRESHOLD). The knowledge base may not cover this area well. If you discover a pattern worth codifying, propose it via POST /propose.]"
 fi
 
-# 11. Update session cache
+# 10. Update session cache
 if [ -n "$META_LINE" ]; then
     META_JSON="${META_LINE#WRIT_META:}"
     NEW_RULE_IDS=$(echo "$META_JSON" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin).get('rule_ids',[])))" 2>/dev/null || echo '[]')
