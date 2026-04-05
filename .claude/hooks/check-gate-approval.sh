@@ -158,9 +158,34 @@ PYTHON_SCRIPT
 )
 
 EXIT_CODE=$?
-if [ $EXIT_CODE -ne 0 ]; then
-  echo "$RESULT"
-  exit 2  # exit 2 = deny (blocks tool execution per Claude Code hook contract)
+if [ $EXIT_CODE -ne 0 ] && [ -n "$RESULT" ]; then
+  # Extract the message from the JSON finding for the denial reason
+  REASON=$(echo "$RESULT" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    msg = d.get('message', 'Gate approval required')
+    fix = d.get('fix', '')
+    rule = d.get('rule', '')
+    parts = []
+    if rule: parts.append('[' + rule + ']')
+    parts.append(msg)
+    if fix: parts.append('Fix: ' + fix)
+    print(' '.join(parts))
+except Exception:
+    print('Gate approval required')
+" 2>/dev/null)
+  python3 -c "
+import json, sys
+print(json.dumps({
+    'hookSpecificOutput': {
+        'hookEventName': 'PreToolUse',
+        'permissionDecision': 'deny',
+        'permissionDecisionReason': sys.argv[1]
+    }
+}))
+" "$REASON"
+  exit 0
 fi
 
 exit 0

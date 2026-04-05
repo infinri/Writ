@@ -58,31 +58,35 @@ OUTPUT=$("$SKILL_DIR/bin/run-analysis.sh" --project-root "$PROJECT_ROOT" "$TMPFI
 EXIT_CODE=$?
 
 if [ $EXIT_CODE -ne 0 ]; then
-  # Rewrite temp file paths back to the real file path in output
-  echo "$OUTPUT" | python3 -c "
+  # Build denial reason from analysis output
+  REASON=$(echo "$OUTPUT" | python3 -c "
 import json, sys
 try:
     findings = json.load(sys.stdin)
+    errors = []
     for f in findings:
         if f.get('severity') == 'error':
+            tool = f.get('tool', 'unknown')
             msg = f.get('message', '').replace('$TMPFILE', '$FILE')
-            print(json.dumps({
-                'error': True,
-                'rule': f.get('rule', 'ENF-POST-007'),
-                'message': f'{f.get(\"tool\", \"unknown\")}: {msg}',
-                'file': '$FILE',
-                'fix': 'Fix all errors before writing this file'
-            }))
-except (json.JSONDecodeError, Exception):
-    print(json.dumps({
-        'error': True,
-        'rule': 'ENF-POST-007',
-        'message': 'Pre-write validation failed',
-        'file': '$FILE',
-        'fix': 'Check proposed content for errors'
-    }))
-" 2>/dev/null
-  exit 2  # deny: block the write before it happens
+            errors.append(f'{tool}: {msg}')
+    if errors:
+        print('[ENF-POST-007] Pre-write validation errors in $FILE: ' + '; '.join(errors[:5]))
+    else:
+        print('[ENF-POST-007] Pre-write validation failed for $FILE')
+except Exception:
+    print('[ENF-POST-007] Pre-write validation failed for $FILE')
+" 2>/dev/null)
+  python3 -c "
+import json, sys
+print(json.dumps({
+    'hookSpecificOutput': {
+        'hookEventName': 'PreToolUse',
+        'permissionDecision': 'deny',
+        'permissionDecisionReason': sys.argv[1]
+    }
+}))
+" "${REASON:-Pre-write validation failed}"
+  exit 0
 fi
 
 exit 0

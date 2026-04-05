@@ -46,39 +46,25 @@ python3 "$SKILL_DIR/bin/lib/writ-session.py" update "$SESSION_ID" \
     --add-file-result "$FILE" "$ANALYSIS_RESULT" 2>/dev/null || true
 
 if [ $EXIT_CODE -ne 0 ]; then
-  # Convert the structured JSON array into the hook's expected format
-  # (one JSON object per line for Claude Code to consume)
-  echo "$OUTPUT" | python3 -c "
+  # Build error summary and send to stderr (PostToolUse exit 1 = error context)
+  ERRORS=$(echo "$OUTPUT" | python3 -c "
 import json, sys
 try:
     findings = json.load(sys.stdin)
+    errors = []
     for f in findings:
         if f.get('severity') == 'error':
-            print(json.dumps({
-                'error': True,
-                'rule': f.get('rule', 'ENF-POST-007'),
-                'message': f'{f.get(\"tool\", \"unknown\")}: {f.get(\"message\", \"\")}',
-                'file': f.get('file', ''),
-                'fix': 'Fix all static analysis errors'
-            }))
-        elif f.get('severity') == 'warning':
-            print(json.dumps({
-                'error': False,
-                'rule': f.get('rule', 'ENF-POST-007'),
-                'message': f'{f.get(\"tool\", \"unknown\")}: {f.get(\"message\", \"\")}',
-                'file': f.get('file', ''),
-                'fix': f.get('message', '')
-            }))
-except (json.JSONDecodeError, Exception) as e:
-    # Fallback: pass through raw output
-    print(json.dumps({
-        'error': True,
-        'rule': 'ENF-POST-007',
-        'message': 'Static analysis failed (could not parse output)',
-        'file': '$FILE',
-        'fix': 'Check bin/run-analysis.sh output manually'
-    }))
-" 2>/dev/null
+            tool = f.get('tool', 'unknown')
+            msg = f.get('message', '')
+            errors.append(f'{tool}: {msg}')
+    if errors:
+        print('[ENF-POST-007] Static analysis errors in $FILE: ' + '; '.join(errors[:5]) + '. Fix all errors before proceeding.')
+    else:
+        print('[ENF-POST-007] Static analysis failed for $FILE. Fix all errors before proceeding.')
+except Exception:
+    print('[ENF-POST-007] Static analysis failed for $FILE. Check bin/run-analysis.sh output.')
+" 2>/dev/null)
+  echo "${ERRORS:-Static analysis failed}" >&2
   exit 1
 fi
 

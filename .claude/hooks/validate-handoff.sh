@@ -118,5 +118,12 @@ sys.exit(0)
 
 EXIT_CODE=$?
 
-echo "$RESULT"
-exit $EXIT_CODE
+if [ $EXIT_CODE -ne 0 ]; then
+  # Send errors to stderr for PostToolUse error context
+  echo "$RESULT" >&2
+  exit 1
+else
+  # Success info goes to stdout
+  echo "$RESULT"
+  exit 0
+fi
