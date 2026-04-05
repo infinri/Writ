@@ -5,6 +5,80 @@ You do not need to load rules manually. The hooks handle it.
 
 ---
 
+## Development workflow -- MANDATORY
+
+Every task that produces code MUST follow this phased workflow. Do NOT skip to writing
+code. The phases are sequential. Complete each phase and present it to the user before
+moving to the next. Gates exist as failsafes -- if a gate blocks you, it means you
+skipped a phase.
+
+### Phase A: Design and call-path declaration
+
+Before writing any code, produce a plan in the module directory (`{module}/plan.md`):
+- What the feature/fix does and why
+- Which files will be created or modified
+- Call-path: how data flows through the system (entry point -> service -> repository -> output)
+- Which Writ rules apply and how you will satisfy them
+- Dependencies on existing code (interfaces, framework APIs)
+
+Present the plan to the user. **Do not proceed until the user approves.**
+The user creates `{PROJECT_ROOT}/.claude/gates/phase-a.approved` to signal approval.
+
+### Phase B: Domain invariants and validation
+
+After Phase A approval:
+- Define interfaces and type contracts
+- Identify validation rules and domain constraints
+- Declare what must be true for the feature to be correct (invariants)
+
+Present to the user. **Do not proceed until the user approves.**
+The user creates `phase-b.approved`.
+
+### Phase C: Integration points and seam justification
+
+After Phase B approval:
+- Define API contracts, DI wiring, plugin/observer declarations
+- Justify each integration seam (why this extension point, not another)
+- Declare how this integrates with existing modules
+
+Present to the user. **Do not proceed until the user approves.**
+The user creates `phase-c.approved`.
+
+### Phase D: Concurrency modeling (when applicable)
+
+Only required when the task involves queues, consumers, async workers, or parallel processing:
+- Declare concurrency model (single consumer, competing consumers, etc.)
+- Identify race conditions and how they are prevented
+- Define retry/dead-letter behavior
+
+Present to the user. **Do not proceed until the user approves.**
+The user creates `phase-d.approved`.
+
+### Test skeletons
+
+After Phase C (or D if applicable):
+- Write test class skeletons with method signatures and docstrings describing what each test verifies
+- No implementation yet -- just the structure
+
+Present to the user. **Do not proceed until the user approves.**
+The user creates `test-skeletons.approved`.
+
+### Implementation
+
+Only after all required gates are approved:
+- Write the actual code following the approved plan
+- Apply all Writ rules from the injected `--- WRIT RULES ---` block
+- Run static analysis after each file
+
+### Critical rules
+
+- **NEVER create gate files yourself.** Gate files (`{PROJECT_ROOT}/.claude/gates/*.approved`) are created exclusively by the user. If a gate is missing, present the phase deliverables and ask the user to approve.
+- **NEVER `touch` gate files.** This bypasses the review process.
+- If a gate hook blocks a write, it means you are ahead of the workflow. Go back and complete the required phase.
+- Present phase deliverables clearly so the user can evaluate and approve.
+
+---
+
 ## How it works
 
 1. **UserPromptSubmit hook** fires at the start of every turn

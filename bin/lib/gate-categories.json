@@ -34,7 +34,7 @@
       "id": "event_wiring",
       "gate": "phase-a",
       "rule": "ENF-GATE-001",
-      "message": "Event wiring files require Phase A (call-path declaration) approval",
+      "message": "Phase A not approved. Complete the design plan (plan.md with call-path declaration, file list, applicable rules) and present it to the user for approval before writing event wiring files.",
       "prior_gates": [],
       "patterns": {
         "_any": [
@@ -115,7 +115,7 @@
       "id": "validation",
       "gate": "phase-b",
       "rule": "ENF-GATE-002",
-      "message": "Validation logic requires Phase B (domain invariant) approval",
+      "message": "Phase B not approved. Define interfaces, type contracts, and domain invariants, then present to the user for approval before writing validation logic.",
       "prior_gates": [
         "phase-a"
       ],
@@ -188,7 +188,7 @@
       "id": "integration_point",
       "gate": "phase-c",
       "rule": "ENF-GATE-003",
-      "message": "API/integration files require Phase C (seam justification) approval",
+      "message": "Phase C not approved. Define API contracts, DI wiring, and justify each integration seam, then present to the user for approval before writing API/integration files.",
       "prior_gates": [
         "phase-a",
         "phase-b"
@@ -293,7 +293,7 @@
       "id": "concurrency",
       "gate": "phase-d",
       "rule": "ENF-GATE-005",
-      "message": "Concurrency/queue files require Phase D (concurrency modeling) approval",
+      "message": "Phase D not approved. Declare the concurrency model, identify race conditions, and define retry behavior, then present to the user for approval before writing concurrency/queue files.",
       "prior_gates": [
         "phase-a",
         "phase-b",
@@ -378,7 +378,7 @@
       "id": "implementation",
       "gate": "test-skeletons",
       "rule": "ENF-GATE-007",
-      "message": "Implementation files require approved test skeletons",
+      "message": "Test skeletons not approved. Write test class skeletons with method signatures and descriptions of what each test verifies, then present to the user for approval before writing implementation files.",
       "prior_gates": [
         "phase-a",
         "phase-b",
