@@ -27,9 +27,30 @@
     "*_spec.rb",
     "*/migrations/*",
     "*/alembic/*",
-    "*/.claude/*"
+    "*/.claude/*",
+    "*plan.md"
   ],
   "categories": [
+    {
+      "id": "any_source_file",
+      "gate": "phase-a",
+      "rule": "ENF-GATE-000",
+      "message": "Phase A not approved. You must create a design plan FIRST. Write plan.md in the module directory with: (1) what the feature does and why, (2) which files will be created/modified, (3) call-path from entry to output, (4) applicable Writ rules. Present the plan to the user and wait for approval. Do NOT write any code until the user approves Phase A.",
+      "prior_gates": [],
+      "patterns": {
+        "_any": [],
+        "php": ["*.php"],
+        "python": ["*.py"],
+        "javascript": ["*.js", "*.jsx"],
+        "typescript": ["*.ts", "*.tsx"],
+        "go": ["*.go"],
+        "rust": ["*.rs"],
+        "java": ["*.java"],
+        "ruby": ["*.rb"],
+        "xml": ["*.xml"],
+        "graphql": ["*.graphqls", "*.graphql"]
+      }
+    },
     {
       "id": "event_wiring",
       "gate": "phase-a",
