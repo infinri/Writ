@@ -95,14 +95,31 @@ The plugin lifecycle handles server startup:
 - **Shutdown** (`scripts/stop-server.sh`) -- stops the Writ server. Neo4j is left
   running since it may be shared with other tools.
 
+### Tier routing
+
+Writ classifies every task into a complexity tier (0-3) before work begins. The tier
+controls ceremony (how many approval gates), not knowledge (which rules are injected).
+
+| Tier | Label | Ceremony |
+|------|-------|----------|
+| 0 | Research | No gates. Read-only tasks. |
+| 1 | Patch | No gates. 1-3 file changes, static analysis only. |
+| 2 | Standard | Phases A-C combined (one gate) + test skeletons. |
+| 3 | Complex | Full sequential gates (A, B, C, [D], test skeletons, final). |
+
+The RAG inject hook prompts Claude to classify on the first turn. Gate hooks read the
+declared tier from the session cache and adjust enforcement accordingly. If no tier is
+declared, hooks default to Tier 3 (maximum ceremony). Tiers escalate up only, never down.
+
 ### How it works
 
 1. **UserPromptSubmit hook** fires at the start of every user turn
 2. Hook POSTs the user's prompt to `localhost:8765/query`
 3. Writ's hybrid pipeline ranks rules by relevance (BM25 + vector + graph proximity)
 4. Rules are injected into Claude's context as a `--- WRIT RULES ---` block
-5. A session cache deduplicates rules across turns and tracks a token budget (8000 tokens)
-6. When context exceeds 75% or budget is exhausted, injection silently skips
+5. If no tier is declared, a classification directive is also injected
+6. A session cache deduplicates rules across turns and tracks a token budget (8000 tokens)
+7. When context exceeds 75% or budget is exhausted, injection silently skips
 
 ### What Claude sees
 
@@ -298,7 +315,7 @@ Weights tuned via sweep against 83-query ground-truth set. Phase 5 ratios preser
 ## Testing
 
 ```bash
-# Unit and integration tests (302 tests across 15 test files)
+# Unit and integration tests (314 tests across 16 test files)
 pytest tests/ -q
 
 # Performance benchmarks (12 tests, requires Neo4j with migrated rules)

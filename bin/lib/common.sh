@@ -53,6 +53,18 @@ print('')
 " 2>/dev/null
 }
 
+# ── Session ID detection ────────────────────────────────────────────────────
+# Derives a stable session ID from the process tree.
+# Usage: SESSION_ID=$(detect_session_id)
+detect_session_id() {
+  local sid
+  sid=$(ps -o ppid= -p $PPID 2>/dev/null | tr -d ' ')
+  if [ -z "$sid" ]; then
+    sid=$(echo "${PWD}:${USER}" | md5sum | cut -c1-12)-$(date +%Y%m%d)
+  fi
+  echo "$sid"
+}
+
 # ── JSON output helpers ──────────────────────────────────────────────────────
 # Produces a single JSON finding object. All values are passed as arguments.
 # Usage: json_finding true "ENF-POST-007" "PHPStan error" "src/Foo.php" "Fix it"

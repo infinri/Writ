@@ -33,6 +33,7 @@ def _read_cache(session_id: str) -> dict:
         "remaining_budget": DEFAULT_SESSION_BUDGET,
         "context_percent": 0,
         "queries": 0,
+        "tier": None,
         "files_written": [],
         "analysis_results": {},
         "feedback_sent": [],
@@ -42,6 +43,7 @@ def _read_cache(session_id: str) -> dict:
     try:
         with open(path) as f:
             data = json.load(f)
+        data.setdefault("tier", None)
         data.setdefault("files_written", [])
         data.setdefault("analysis_results", {})
         data.setdefault("feedback_sent", [])
@@ -377,10 +379,62 @@ def cmd_coverage(session_id: str) -> None:
     sys.stdout.write("\n")
 
 
+VALID_TIERS = {0, 1, 2, 3}
+
+
+def cmd_tier(session_id: str, subcmd: str, value_str: str | None = None) -> None:
+    """Get or set the task complexity tier (0-3) with up-only enforcement."""
+    cache = _read_cache(session_id)
+
+    if subcmd == "get":
+        tier = cache.get("tier")
+        if tier is not None:
+            sys.stdout.write(str(tier))
+        sys.stdout.write("\n")
+        return
+
+    if subcmd != "set":
+        print(f"Unknown tier subcommand: {subcmd}", file=sys.stderr)
+        sys.exit(2)
+
+    if value_str is None:
+        print("Usage: writ-session.py tier set <0-3> <session_id>", file=sys.stderr)
+        sys.exit(2)
+
+    try:
+        new_tier = int(value_str)
+    except ValueError:
+        print(f"Invalid tier value: {value_str} (must be 0-3)", file=sys.stderr)
+        sys.exit(1)
+
+    if new_tier not in VALID_TIERS:
+        print(f"Invalid tier value: {new_tier} (must be 0-3)", file=sys.stderr)
+        sys.exit(1)
+
+    current = cache.get("tier")
+
+    if current is not None:
+        if new_tier < current:
+            print(
+                f"Cannot downgrade tier: {current} -> {new_tier} (escalation is one-way)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if new_tier == current:
+            sys.stdout.write(f"set: {new_tier}\n")
+            return
+        sys.stdout.write(f"escalated: {current} -> {new_tier}\n")
+    else:
+        sys.stdout.write(f"set: {new_tier}\n")
+
+    cache["tier"] = new_tier
+    _write_cache(session_id, cache)
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         print("Usage: writ-session.py <command> [args]", file=sys.stderr)
-        print("Commands: read, update, format, should-skip, coverage, auto-feedback", file=sys.stderr)
+        print("Commands: read, update, format, should-skip, tier, coverage, auto-feedback", file=sys.stderr)
         sys.exit(2)
 
     cmd = sys.argv[1]
@@ -416,6 +470,22 @@ def main() -> None:
             print("Usage: writ-session.py coverage <session_id>", file=sys.stderr)
             sys.exit(2)
         cmd_coverage(sys.argv[2])
+
+    elif cmd == "tier":
+        if len(sys.argv) < 4:
+            print("Usage: writ-session.py tier <get|set> <session_id|value> [session_id]", file=sys.stderr)
+            sys.exit(2)
+        subcmd = sys.argv[2]
+        if subcmd == "get":
+            cmd_tier(sys.argv[3], "get")
+        elif subcmd == "set":
+            if len(sys.argv) < 5:
+                print("Usage: writ-session.py tier set <0-3> <session_id>", file=sys.stderr)
+                sys.exit(2)
+            cmd_tier(sys.argv[4], "set", sys.argv[3])
+        else:
+            print(f"Unknown tier subcommand: {subcmd}", file=sys.stderr)
+            sys.exit(2)
 
     elif cmd == "auto-feedback":
         if len(sys.argv) < 3:

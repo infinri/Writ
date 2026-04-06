@@ -7,75 +7,116 @@ You do not need to load rules manually. The hooks handle it.
 
 ## Development workflow -- MANDATORY
 
-Every task that produces code MUST follow this phased workflow. Do NOT skip to writing
-code. The phases are sequential. Complete each phase and present it to the user before
-moving to the next. Gates exist as failsafes -- if a gate blocks you, it means you
-skipped a phase.
+Before any task, classify its complexity tier. The tier controls ceremony (how many
+gates), not knowledge (which rules are loaded). All tiers receive the same injected
+rules from the `--- WRIT RULES ---` block.
 
-### Phase A: Design and call-path declaration
+### Step 1: Classify the task tier
 
-Before writing any code, produce a plan in the module directory (`{module}/plan.md`):
+Read the task description. Count: files affected, new interfaces, state transitions,
+endpoints, concurrency concerns. Declare the tier in one sentence, then register it:
+
+```bash
+python3 <writ>/bin/lib/writ-session.py tier set <0-3> <session_id>
+```
+
+The RAG inject hook provides the exact command with paths filled in.
+
+### Tier definitions
+
+| Tier | Label | Criteria | Ceremony |
+|------|-------|----------|----------|
+| 0 | Research | No code generation. Auditing, investigating, explaining, reviewing. | Rules injected. Deliver findings. No phases, no gates, no plan.md. |
+| 1 | Patch | 1-3 files changed. No new interfaces or contracts. No new state transitions. No new endpoints. | Rules injected. Write code. Static analysis. No phases, no gates, no plan.md. |
+| 2 | Standard | New class/interface, or modifying existing contracts/signatures. Single domain. No concurrency, no queues, no multi-actor writes. | Phases A-C combined (one approval gate: `phase-a.approved`). Test skeletons. Implementation. Static analysis. |
+| 3 | Complex | Multi-domain. Concurrency, state machines, queues, new endpoints, or multi-actor writes. | Full protocol: separate A, B, C, [D] gates. Test skeletons. Slices. ENF-GATE-FINAL. |
+
+**Escalation rule:** Tiers only go UP, never down. If during a Patch you discover a new
+interface is needed, escalate to Standard. If Standard triggers concurrency concerns,
+escalate to Complex. The session helper enforces up-only.
+
+**No tier declared?** Gate hooks fall back to Tier 3 behavior (full gates). Declaring a
+tier makes things easier, never harder.
+
+### Tier 0 -- Research
+
+- Read code, investigate, explain, audit, answer questions.
+- No code files are written. No gates.
+
+### Tier 1 -- Patch
+
+- Fix bugs, change config, small refactors (1-3 files).
+- Write code directly. Run static analysis after each file.
+- No plan.md, no phases, no gates.
+
+### Tier 2 -- Standard
+
+Present Phases A-C as a single combined analysis:
+- What the feature does and why, which files change (Phase A)
+- Interfaces, type contracts, domain invariants (Phase B)
+- API contracts, DI wiring, integration seam justification (Phase C)
+
+One approval gate: the user creates `{PROJECT_ROOT}/.claude/gates/phase-a.approved`.
+
+Then: test skeletons (user creates `test-skeletons.approved`). Then: implementation.
+
+If Phase D concerns arise (concurrency, queues), escalate to Tier 3.
+
+### Tier 3 -- Complex
+
+Full sequential phases, each with its own gate:
+
+**Phase A: Design and call-path declaration**
+Produce a plan in the module directory (`{module}/plan.md`):
 - What the feature/fix does and why
 - Which files will be created or modified
-- Call-path: how data flows through the system (entry point -> service -> repository -> output)
+- Call-path: entry point -> service -> repository -> output
 - Which Writ rules apply and how you will satisfy them
 - Dependencies on existing code (interfaces, framework APIs)
 
-Present the plan to the user. **Do not proceed until the user approves.**
-The user creates `{PROJECT_ROOT}/.claude/gates/phase-a.approved` to signal approval.
+User creates `phase-a.approved`.
 
-### Phase B: Domain invariants and validation
-
-After Phase A approval:
+**Phase B: Domain invariants and validation**
 - Define interfaces and type contracts
 - Identify validation rules and domain constraints
-- Declare what must be true for the feature to be correct (invariants)
+- Declare what must be true for the feature to be correct
 
-Present to the user. **Do not proceed until the user approves.**
-The user creates `phase-b.approved`.
+User creates `phase-b.approved`.
 
-### Phase C: Integration points and seam justification
-
-After Phase B approval:
+**Phase C: Integration points and seam justification**
 - Define API contracts, DI wiring, plugin/observer declarations
 - Justify each integration seam (why this extension point, not another)
 - Declare how this integrates with existing modules
 
-Present to the user. **Do not proceed until the user approves.**
-The user creates `phase-c.approved`.
+User creates `phase-c.approved`.
 
-### Phase D: Concurrency modeling (when applicable)
-
-Only required when the task involves queues, consumers, async workers, or parallel processing:
-- Declare concurrency model (single consumer, competing consumers, etc.)
-- Identify race conditions and how they are prevented
+**Phase D: Concurrency modeling (when applicable)**
+Only when the task involves queues, consumers, async workers, or parallel processing:
+- Declare concurrency model
+- Identify race conditions and prevention
 - Define retry/dead-letter behavior
 
-Present to the user. **Do not proceed until the user approves.**
-The user creates `phase-d.approved`.
+User creates `phase-d.approved`.
 
-### Test skeletons
+**Test skeletons**
+- Test class skeletons with method signatures and docstrings
+- No implementation yet
 
-After Phase C (or D if applicable):
-- Write test class skeletons with method signatures and docstrings describing what each test verifies
-- No implementation yet -- just the structure
+User creates `test-skeletons.approved`.
 
-Present to the user. **Do not proceed until the user approves.**
-The user creates `test-skeletons.approved`.
-
-### Implementation
-
-Only after all required gates are approved:
-- Write the actual code following the approved plan
-- Apply all Writ rules from the injected `--- WRIT RULES ---` block
+**Implementation**
+- Write code following the approved plan
+- Apply all Writ rules from the injected block
 - Run static analysis after each file
+- ENF-GATE-FINAL required before marking complete
 
 ### Critical rules
 
-- **NEVER create gate files yourself.** Gate files (`{PROJECT_ROOT}/.claude/gates/*.approved`) are created exclusively by the user. If a gate is missing, present the phase deliverables and ask the user to approve.
+- **NEVER create gate files yourself.** Gate files (`{PROJECT_ROOT}/.claude/gates/*.approved`) are created exclusively by the user.
 - **NEVER `touch` gate files.** This bypasses the review process.
 - If a gate hook blocks a write, it means you are ahead of the workflow. Go back and complete the required phase.
 - Present phase deliverables clearly so the user can evaluate and approve.
+- Classify the tier FIRST. If you skip classification, the hooks default to Tier 3 (maximum ceremony).
 
 ---
 

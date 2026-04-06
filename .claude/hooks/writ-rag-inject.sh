@@ -112,6 +112,11 @@ if python3 "$SESSION_HELPER" should-skip "$SESSION_ID" 2>/dev/null; then
     exit 0
 fi
 
+# 1b. Check if tier is declared (for post-rules directive injection)
+CURRENT_TIER=$(python3 "$SESSION_HELPER" tier get "$SESSION_ID" 2>/dev/null || echo "")
+CURRENT_TIER=$(echo "$CURRENT_TIER" | tr -d '[:space:]')
+debug "tier=$CURRENT_TIER"
+
 # 2. Minimum query length gate
 if [ ${#PROMPT} -lt $MIN_QUERY_LENGTH ]; then
     debug "skipped: prompt too short (${#PROMPT} < $MIN_QUERY_LENGTH)"
@@ -216,7 +221,20 @@ if [ -n "$RULES_TEXT" ]; then
     debug "injected rules"
 fi
 
-# 9. Append proposal nudge if low relevance
+# 9. Inject tier classification directive if no tier declared yet
+if [ -z "$CURRENT_TIER" ]; then
+    cat << TIER_DIRECTIVE
+
+[Writ: classify this task before proceeding]
+Tier 0 (Research): no code generation. Tier 1 (Patch): <=3 files, no new contracts.
+Tier 2 (Standard): new class/interface, single domain. Tier 3 (Complex): multi-domain, concurrency, queues.
+Declare: python3 $SESSION_HELPER tier set <0-3> $SESSION_ID
+Full definitions: see .claude/CLAUDE.md "Tier definitions" section.
+TIER_DIRECTIVE
+    debug "injected tier classification directive"
+fi
+
+# 10. Append proposal nudge if low relevance (only when tier is set -- don't mix directives)
 if [ "$PROPOSAL_NUDGE" = "NO_RULES" ]; then
     echo ""
     echo "[Writ: no matching rules found for this task. If you discover a pattern, constraint, or gotcha during this work that would help future tasks, propose it via POST /propose. See .claude/CLAUDE.md for the format and trigger conditions.]"
@@ -225,7 +243,7 @@ elif [ "$PROPOSAL_NUDGE" = "LOW_SCORES" ]; then
     echo "[Writ: retrieved rules have low relevance scores (< $LOW_RELEVANCE_THRESHOLD). The knowledge base may not cover this area well. If you discover a pattern worth codifying, propose it via POST /propose.]"
 fi
 
-# 10. Update session cache
+# 11. Update session cache
 if [ -n "$META_LINE" ]; then
     META_JSON="${META_LINE#WRIT_META:}"
     NEW_RULE_IDS=$(echo "$META_JSON" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin).get('rule_ids',[])))" 2>/dev/null || echo '[]')

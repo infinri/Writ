@@ -25,10 +25,22 @@ PROJECT_ROOT=$(detect_project_root "$FILE")
 GATE_DIR="$PROJECT_ROOT/.claude/gates"
 mkdir -p "$GATE_DIR"
 
+# Read tier from session cache (empty string = not declared = tier 3 behavior)
+SESSION_HELPER="$SKILL_DIR/bin/lib/writ-session.py"
+SESSION_ID=$(detect_session_id)
+TIER=$(python3 "$SESSION_HELPER" tier get "$SESSION_ID" 2>/dev/null || echo "")
+TIER=$(echo "$TIER" | tr -d '[:space:]')
+
+# Tier 0 (Research) and Tier 1 (Patch): bypass all gates
+if [ "$TIER" = "0" ] || [ "$TIER" = "1" ]; then
+    exit 0
+fi
+
 export _FILE="$FILE"
 export _GATE_DIR="$GATE_DIR"
 export _PROJECT_ROOT="$PROJECT_ROOT"
 export _CATEGORIES_PATH="$SKILL_DIR/bin/lib/gate-categories.json"
+export _TIER="${TIER:-}"
 
 RESULT=$(python3 << 'PYTHON_SCRIPT'
 import json, os, re, sys
@@ -37,6 +49,8 @@ file_path = os.environ['_FILE']
 gate_dir = os.environ['_GATE_DIR']
 project_root = os.environ['_PROJECT_ROOT']
 categories_path = os.environ['_CATEGORIES_PATH']
+tier_str = os.environ.get('_TIER', '')
+tier = int(tier_str) if tier_str.isdigit() else None
 
 # ── Load category definitions ────────────────────────────────────────────────
 with open(categories_path) as f:
@@ -90,6 +104,27 @@ else:
             if os.path.exists(os.path.join(project_root, marker)):
                 detected_frameworks.append(fw)
                 break
+
+# ── Tier 2 gate remapping ───────────────────────────────────────────────────
+# Tier 2 (Standard): Phases A-C combined into one approval (phase-a gate).
+# Only phase-a and test-skeletons gates are required.
+# Concurrency category auto-escalates to tier 3 (not remapped).
+import copy
+
+if tier == 2:
+    config = copy.deepcopy(config)
+    for cat in config['categories']:
+        if cat['id'] == 'concurrency':
+            # Concurrency in tier 2 means the task should be tier 3.
+            # Don't remap -- let the full gate sequence block it with
+            # a message that naturally prompts escalation.
+            pass
+        elif cat['id'] == 'implementation':
+            cat['gate'] = 'test-skeletons'
+            cat['prior_gates'] = ['phase-a']
+        else:
+            cat['gate'] = 'phase-a'
+            cat['prior_gates'] = []
 
 # ── Classify and gate ───────────────────────────────────────────────────────
 # Categories are ordered by gate sequence (A -> B -> C -> D -> test-skeletons).

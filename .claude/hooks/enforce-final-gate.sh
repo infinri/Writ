@@ -31,6 +31,15 @@ FILE=$(parsed_field "$PARSED" "file_path")
 
 if [ -z "$FILE" ]; then exit 0; fi
 
+# ENF-GATE-FINAL only applies to Tier 3. Skip for Tier 0-2.
+SESSION_HELPER="$SKILL_DIR/bin/lib/writ-session.py"
+SESSION_ID=$(detect_session_id)
+TIER=$(python3 "$SESSION_HELPER" tier get "$SESSION_ID" 2>/dev/null || echo "")
+TIER=$(echo "$TIER" | tr -d '[:space:]')
+if [ -n "$TIER" ] && [ "$TIER" != "3" ]; then
+    exit 0
+fi
+
 PROJECT_ROOT=$(detect_project_root "$FILE")
 
 # Files with COMPLETE in the path are always gated
