@@ -14,6 +14,10 @@ from typing import Any
 from fastapi import FastAPI
 from pydantic import BaseModel
 
+from writ.analysis import AnalyzeRequest, AnalyzeResponse
+from writ.analysis.analyzer import run_analysis
+from writ.analysis.instrumentation import Instrumentation
+from writ.analysis.llm import LlmAnalyzer
 from writ.graph.db import Neo4jConnection
 from writ.retrieval.pipeline import RetrievalPipeline, build_pipeline
 
@@ -68,15 +72,19 @@ class ConflictsRequest(BaseModel):
 _pipeline: RetrievalPipeline | None = None
 _db: Neo4jConnection | None = None
 _startup_time: datetime | None = None
+_llm_client: LlmAnalyzer | None = None
+_instrumentation: Instrumentation | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Pre-warm all indexes at startup per PERF-IO-001."""
-    global _pipeline, _db, _startup_time
+    global _pipeline, _db, _startup_time, _llm_client, _instrumentation
 
     _db = Neo4jConnection(DEFAULT_NEO4J_URI, DEFAULT_NEO4J_USER, DEFAULT_NEO4J_PASSWORD)
     _pipeline = await build_pipeline(_db)
+    _llm_client = LlmAnalyzer()
+    _instrumentation = Instrumentation()
     _startup_time = datetime.now()
     yield
     if _db is not None:
@@ -102,6 +110,22 @@ async def query_rules(request: QueryRequest) -> dict[str, Any]:
         exclude_rule_ids=request.exclude_rule_ids,
     )
     return result
+
+
+@app.post("/analyze")
+async def analyze_code(request: AnalyzeRequest) -> AnalyzeResponse | dict[str, Any]:
+    """Analyze code against retrieved rules. Returns structured compliance verdict."""
+    if _pipeline is None or _llm_client is None or _instrumentation is None:
+        return {"error": "Pipeline not initialized. Run writ serve."}
+    return await run_analysis(
+        code=request.code,
+        file_path=request.file_path,
+        phase=request.phase,
+        context=request.context,
+        pipeline=_pipeline,
+        llm_client=_llm_client,
+        instrumentation=_instrumentation,
+    )
 
 
 @app.get("/rule/{rule_id}")

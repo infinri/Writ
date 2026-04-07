@@ -88,7 +88,13 @@ class KeywordIndex:
         sanitized = _TANTIVY_RESERVED.sub(lambda m: m.group(0).lower(), sanitized).strip()
         if not sanitized:
             return []
-        query = self._index.parse_query(sanitized, ["trigger", "statement", "tags"])
+        try:
+            query = self._index.parse_query(sanitized, ["trigger", "statement", "tags"])
+        except ValueError:
+            # Tantivy rejects some patterns we can't anticipate (range queries,
+            # malformed boolean expressions). Fall back to empty results --
+            # vector search will still run in the pipeline.
+            return []
         results = searcher.search(query, limit).hits
         output: list[dict] = []
         for score, doc_address in results:

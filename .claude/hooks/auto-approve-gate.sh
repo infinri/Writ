@@ -245,19 +245,37 @@ else:
         fi
 
         # Test skeleton files must exist before test-skeletons approval
+        # Scoped to the module directory (derived from plan.md location)
         if [ "$gate" = "test-skeletons" ]; then
             TEST_FOUND=$(python3 -c "
 import os, glob, sys
+
 root = sys.argv[1]
-# Search for test files in common locations
+
+# Find plan.md to determine module directory
+candidates = []
+candidates += glob.glob(os.path.join(root, 'app/code/*/*/plan.md'))
+candidates += glob.glob(os.path.join(root, 'src/*/plan.md'))
+candidates += glob.glob(os.path.join(root, 'bin/plan.md'))
+candidates += glob.glob(os.path.join(root, '*/plan.md'))
+plan_files = [c for c in candidates if os.path.isfile(c)]
+
+if not plan_files:
+    # No plan.md -- fall back to project-wide search but exclude vendor/setup
+    print('no')
+    sys.exit(0)
+
+plan_files.sort(key=os.path.getmtime, reverse=True)
+module_dir = os.path.dirname(plan_files[0])
+
+# Search for test files scoped to the module directory
 patterns = [
-    os.path.join(root, '**/Test/**/*Test.php'),
-    os.path.join(root, '**/tests/**/*test*.py'),
-    os.path.join(root, '**/test/**/*test*.py'),
-    os.path.join(root, '**/__tests__/**/*.test.*'),
-    os.path.join(root, '**/tests/**/*_test.go'),
-    os.path.join(root, '**/test/**/*_test.rs'),
-    os.path.join(root, 'tests/**/*test*.py'),
+    os.path.join(module_dir, '**/Test/**/*Test.php'),
+    os.path.join(module_dir, '**/tests/**/*test*.py'),
+    os.path.join(module_dir, '**/test/**/*test*.py'),
+    os.path.join(module_dir, '**/__tests__/**/*.test.*'),
+    os.path.join(module_dir, '**/tests/**/*_test.go'),
+    os.path.join(module_dir, '**/test/**/*_test.rs'),
 ]
 found = False
 for p in patterns:

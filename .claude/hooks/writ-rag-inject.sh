@@ -51,11 +51,10 @@ if ! curl -sf --connect-timeout 0.2 "$WRIT_HEALTH_URL" >/dev/null 2>&1; then
         fi
 
         # Start Writ server in background
-        if [ -f "$WRIT_DIR/.venv/bin/activate" ]; then
+        if [ -f "$WRIT_DIR/.venv/bin/python3" ]; then
             (
                 cd "$WRIT_DIR"
-                source .venv/bin/activate
-                nohup writ serve >>/tmp/writ-server.log 2>&1 &
+                nohup .venv/bin/python3 -m uvicorn writ.server:app --host 0.0.0.0 --port "$WRIT_PORT" >>/tmp/writ-server.log 2>&1 &
             )
             # Wait up to 5s for Writ health endpoint
             for _i in $(seq 1 10); do
@@ -87,39 +86,71 @@ fi
 PARSED=$(echo "$STDIN_JSON" | python3 -c "
 import sys, json, re
 
-MAX_QUERY_LENGTH = 1000
+MAX_KEYWORDS = 25
 
-def clean_prompt(raw: str) -> str:
-    # Strip fenced code blocks but keep language hints as signal.
-    langs = re.findall(r'\`\`\`(\w+)', raw)
-    text = re.sub(r'\`\`\`[\s\S]*?\`\`\`', ' ', raw)
+# Common English stopwords + conversational filler
+STOPWORDS = frozenset(
+    'a an the is are was were be been being have has had do does did will would '
+    'shall should may might can could of in to for on with at by from as into '
+    'through during before after above below between out off over under again '
+    'further then once here there when where why how all each every both few '
+    'more most other some such no nor not only own same so than too very just '
+    'also about up its it i me my we our you your he him his she her they them '
+    'their what which who whom this that these those am let get got if but and '
+    'or because until while although since even though however still yet already '
+    'please dont im ive weve youre theyre doesnt didnt wont cant isnt arent '
+    'seems like think want need know see look make sure something anything '
+    'everything nothing really actually probably maybe already going doing '
+    'using used way things stuff lot much many well right now here there '
+    'also another first last next new old good bad big small long short give '
+    'take come go say tell ask try keep start stop run work help show move '
+    'yes no ok okay hey hi hello thanks thank sorry'.split()
+)
+
+def extract_keywords(raw: str) -> str:
+    # Strip fenced code blocks but keep language hints.
+    langs = re.findall(r'\x60\x60\x60(\w+)', raw)
+    text = re.sub(r'\x60\x60\x60[\s\S]*?\x60\x60\x60', ' ', raw)
     # Strip inline code spans.
-    text = re.sub(r'\`[^\`]+\`', ' ', text)
-    # Strip markdown table chrome (pipes, dashes, box-drawing).
+    text = re.sub(r'\x60[^\x60]+\x60', ' ', text)
+    # Strip markdown/table/tool chrome.
     text = re.sub(r'[│┌┐└┘├┤┬┴┼─━┃╌╍╎╏═║╔╗╚╝╠╣╦╩╬|]', ' ', text)
-    text = re.sub(r'^[\s\-|:]+$', ' ', text, flags=re.MULTILINE)
-    # Strip Claude Code tool output markers.
     text = re.sub(r'●[^\n]*', ' ', text)
     text = re.sub(r'⎿.*', ' ', text)
-    # Strip common transcript noise.
     text = re.sub(r'[✻◆▐▛▜▌▝▘]+[^\n]*', ' ', text)
-    text = re.sub(r'ctrl\+o to expand', ' ', text, flags=re.IGNORECASE)
-    # Collapse whitespace.
-    text = re.sub(r'\s+', ' ', text).strip()
-    # Re-append language hints extracted from code fences.
-    if langs:
-        text = text + ' ' + ' '.join(set(langs))
-    # Truncate: keep first and last portions (intent is usually there).
-    if len(text) > MAX_QUERY_LENGTH:
-        half = MAX_QUERY_LENGTH // 2
-        text = text[:half] + ' ' + text[-half:]
-    return text
+    # Strip URLs
+    text = re.sub(r'https?://\S+', ' ', text)
+    # Strip non-alphanumeric except hyphens and underscores (preserve technical terms)
+    text = re.sub(r'[^a-zA-Z0-9_\-/.\s]', ' ', text)
+    # Tokenize
+    words = text.split()
+    # Filter: keep technical terms, remove stopwords and short noise
+    keywords = []
+    seen = set()
+    for w in words:
+        lower = w.lower().strip('.-/')
+        if not lower or len(lower) < 3:
+            continue
+        if lower in STOPWORDS:
+            continue
+        if lower in seen:
+            continue
+        seen.add(lower)
+        # Prefer: capitalized words, words with underscores/hyphens, file-like patterns
+        keywords.append(w if (w[0].isupper() or '_' in w or '-' in w or '.' in w) else lower)
+    # Add language hints from code fences
+    for lang in set(langs):
+        if lang.lower() not in seen:
+            keywords.append(lang)
+            seen.add(lang.lower())
+    # Cap and join
+    return ' '.join(keywords[:MAX_KEYWORDS])
 
 try:
     data = json.load(sys.stdin)
     sid = data.get('session_id', '')
     raw = data.get('prompt', data.get('message', data.get('content', '')))
-    prompt = clean_prompt(raw)
+    prompt = extract_keywords(raw) if len(raw) > 300 else raw
     print(f'{sid}\n{prompt}')
 except Exception as e:
     print(f'\n')
