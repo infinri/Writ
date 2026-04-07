@@ -1,0 +1,65 @@
+{
+  "planning": {
+    "tier_min": 2,
+    "exit_criteria": [
+      {
+        "id": "plan-files-listed",
+        "check": "plan.md contains ## Files section with at least one file path"
+      },
+      {
+        "id": "plan-callpath",
+        "check": "plan.md contains ## Call-path or ## Call-paths section"
+      },
+      {
+        "id": "plan-rules-applied",
+        "check": "plan.md contains ## Rules Applied or ## Rules applied section with at least one rule_id pattern matching [A-Z]+-[A-Z]+-[0-9]+"
+      },
+      {
+        "id": "plan-exit-criteria",
+        "check": "plan.md contains ## Capabilities section with at least one checkbox item"
+      }
+    ]
+  },
+  "code_generation": {
+    "tier_min": 1,
+    "exit_criteria": [
+      {
+        "id": "all-planned-files-written",
+        "check": "files_written in session is superset of plan.md file list"
+      },
+      {
+        "id": "no-pending-violations",
+        "check": "pending_violations in session is empty"
+      },
+      {
+        "id": "static-analysis-pass",
+        "check": "analysis_results in session has no fail entries for planned files"
+      }
+    ]
+  },
+  "testing": {
+    "tier_min": 3,
+    "exit_criteria": [
+      {
+        "id": "test-files-exist",
+        "check": "at least one test file in files_written"
+      },
+      {
+        "id": "public-methods-covered",
+        "check": "every public method in planned source files has at least one test method referencing it (name-based heuristic)"
+      },
+      {
+        "id": "violation-patterns-tested",
+        "check": "test files reference at least one rule_id from loaded_rules (comment or method name)"
+      }
+    ],
+    "public_method_patterns": {
+      "php": "public\\s+function\\s+(\\w+)",
+      "python": "^\\s{4}def\\s+([a-z]\\w*)",
+      "typescript": "^\\s+(public\\s+)?(async\\s+)?\\w+\\s*\\(",
+      "javascript": "^\\s+(async\\s+)?\\w+\\s*\\(",
+      "go": "^func\\s+\\(\\w+\\s+\\*?\\w+\\)\\s+(\\w+)",
+      "rust": "^\\s+pub\\s+(async\\s+)?fn\\s+(\\w+)"
+    }
+  }
+}

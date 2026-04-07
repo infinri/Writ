@@ -82,12 +82,44 @@ fi
 
 # Extract session_id and prompt from the captured stdin JSON.
 # Claude Code provides: session_id, prompt, cwd, hook_event_name, etc.
+# The prompt is cleaned before use: code blocks, markdown chrome, and tool
+# output are stripped so the RAG query contains only the user's intent.
 PARSED=$(echo "$STDIN_JSON" | python3 -c "
-import sys, json
+import sys, json, re
+
+MAX_QUERY_LENGTH = 1000
+
+def clean_prompt(raw: str) -> str:
+    # Strip fenced code blocks but keep language hints as signal.
+    langs = re.findall(r'\`\`\`(\w+)', raw)
+    text = re.sub(r'\`\`\`[\s\S]*?\`\`\`', ' ', raw)
+    # Strip inline code spans.
+    text = re.sub(r'\`[^\`]+\`', ' ', text)
+    # Strip markdown table chrome (pipes, dashes, box-drawing).
+    text = re.sub(r'[│┌┐└┘├┤┬┴┼─━┃╌╍╎╏═║╔╗╚╝╠╣╦╩╬|]', ' ', text)
+    text = re.sub(r'^[\s\-|:]+$', ' ', text, flags=re.MULTILINE)
+    # Strip Claude Code tool output markers.
+    text = re.sub(r'●[^\n]*', ' ', text)
+    text = re.sub(r'⎿.*', ' ', text)
+    # Strip common transcript noise.
+    text = re.sub(r'[✻◆▐▛▜▌▝▘]+[^\n]*', ' ', text)
+    text = re.sub(r'ctrl\+o to expand', ' ', text, flags=re.IGNORECASE)
+    # Collapse whitespace.
+    text = re.sub(r'\s+', ' ', text).strip()
+    # Re-append language hints extracted from code fences.
+    if langs:
+        text = text + ' ' + ' '.join(set(langs))
+    # Truncate: keep first and last portions (intent is usually there).
+    if len(text) > MAX_QUERY_LENGTH:
+        half = MAX_QUERY_LENGTH // 2
+        text = text[:half] + ' ' + text[-half:]
+    return text
+
 try:
     data = json.load(sys.stdin)
     sid = data.get('session_id', '')
-    prompt = data.get('prompt', data.get('message', data.get('content', '')))
+    raw = data.get('prompt', data.get('message', data.get('content', '')))
+    prompt = clean_prompt(raw)
     print(f'{sid}\n{prompt}')
 except Exception as e:
     print(f'\n')
@@ -234,6 +266,160 @@ TIER_DIRECTIVE
     debug "injected tier classification directive"
 fi
 
+# 9b. Inject workflow reminder when tier is declared but gates are still pending
+if [ -n "$CURRENT_TIER" ] && [ "$CURRENT_TIER" -ge 2 ] 2>/dev/null; then
+    # Detect project root from cwd to find gate files
+    _PROJECT_ROOT=$(python3 -c "
+import os, sys
+markers = ['composer.json','package.json','Cargo.toml','go.mod','pyproject.toml','.git']
+path = os.getcwd()
+while path != '/':
+    if any(os.path.exists(os.path.join(path, m)) for m in markers):
+        print(path); sys.exit(0)
+    path = os.path.dirname(path)
+print('')
+" 2>/dev/null)
+
+    if [ -n "$_PROJECT_ROOT" ]; then
+        _GATE_DIR="$_PROJECT_ROOT/.claude/gates"
+        _PHASE_A="$_GATE_DIR/phase-a.approved"
+        _TEST_SKEL="$_GATE_DIR/test-skeletons.approved"
+
+        if [ "$CURRENT_TIER" = "2" ] && [ ! -f "$_PHASE_A" ]; then
+            cat << 'WORKFLOW_T2_PLAN'
+
+[Writ: Tier 2 workflow -- phase-a gate pending]
+Before writing ANY code, present a combined Phase A-C analysis:
+  A) What the feature does and why, files to create/modify, call path
+  B) Interfaces, type contracts, domain invariants
+  C) API contracts, DI wiring, integration seam justification
+Include: applicable Writ rules and query budget (if DB calls involved).
+Write plan.md in the module directory. Present to user and STOP.
+Tell the user: "Say **approved** to proceed."
+Do NOT write code or create gate files yourself.
+WORKFLOW_T2_PLAN
+            debug "injected tier 2 workflow reminder (plan)"
+        elif [ "$CURRENT_TIER" = "2" ] && [ ! -f "$_TEST_SKEL" ]; then
+            cat << 'WORKFLOW_T2_TEST'
+
+[Writ: Tier 2 workflow -- test-skeletons gate pending]
+Phase A-C approved. Next: write test skeletons (class + method signatures, no implementation).
+Present skeletons to user and STOP. Tell the user: "Say **approved** to proceed to implementation."
+Do NOT write implementation code or create gate files yourself.
+WORKFLOW_T2_TEST
+            debug "injected tier 2 workflow reminder (test-skeletons)"
+        fi
+
+        if [ "$CURRENT_TIER" = "3" ]; then
+            # Tier 3: check each gate in sequence, remind for the first missing one
+            _PHASE_B="$_GATE_DIR/phase-b.approved"
+            _PHASE_C="$_GATE_DIR/phase-c.approved"
+            _PHASE_D="$_GATE_DIR/phase-d.approved"
+
+            if [ ! -f "$_PHASE_A" ]; then
+                cat << 'WORKFLOW_T3_A'
+
+[Writ: Tier 3 workflow -- phase-a gate pending]
+Before writing ANY code, produce Phase A (Design and call-path declaration):
+  - What the feature/fix does and why
+  - Which files will be created or modified
+  - Call-path: entry point -> service -> repository -> output
+  - Which Writ rules apply and how you will satisfy them
+  - Query budget plan (if DB calls involved)
+Write plan.md in the module directory. Present to user and STOP.
+Tell the user: "Say **approved** to proceed to Phase B."
+Do NOT write code or create gate files yourself.
+WORKFLOW_T3_A
+                debug "injected tier 3 workflow reminder (phase-a)"
+            elif [ ! -f "$_PHASE_B" ]; then
+                cat << 'WORKFLOW_T3_B'
+
+[Writ: Tier 3 workflow -- phase-b gate pending]
+Phase A approved. Next: Phase B (Domain invariants and validation):
+  - Define interfaces and type contracts
+  - Identify validation rules and domain constraints
+  - Declare what must be true for the feature to be correct
+Present to user and STOP. Tell the user: "Say **approved** to proceed to Phase C."
+Do NOT write code or create gate files yourself.
+WORKFLOW_T3_B
+                debug "injected tier 3 workflow reminder (phase-b)"
+            elif [ ! -f "$_PHASE_C" ]; then
+                cat << 'WORKFLOW_T3_C'
+
+[Writ: Tier 3 workflow -- phase-c gate pending]
+Phase B approved. Next: Phase C (Integration points and seam justification):
+  - Define API contracts, DI wiring, plugin/observer declarations
+  - Justify each integration seam
+  - Declare how this integrates with existing modules
+Present to user and STOP. Tell the user: "Say **approved** to proceed."
+Do NOT write code or create gate files yourself.
+WORKFLOW_T3_C
+                debug "injected tier 3 workflow reminder (phase-c)"
+            elif [ ! -f "$_TEST_SKEL" ]; then
+                # Check if phase-d is needed but missing (only remind if no test-skeletons yet)
+                cat << 'WORKFLOW_T3_POST'
+
+[Writ: Tier 3 workflow -- test-skeletons gate pending]
+Phases A-C approved. If concurrency/queues are involved and phase-d.approved is missing, present Phase D first.
+Otherwise: write test skeletons (class + method signatures, no implementation).
+Present to user and STOP. Tell the user: "Say **approved** to proceed to implementation."
+Do NOT write implementation code or create gate files yourself.
+WORKFLOW_T3_POST
+                debug "injected tier 3 workflow reminder (test-skeletons)"
+            fi
+        fi
+    fi
+fi
+
+# 9c. Inject phase-specific checklist from checklists.json
+CHECKLISTS_FILE="$WRIT_DIR/bin/lib/checklists.json"
+if [ -n "$CURRENT_TIER" ] && [ -f "$CHECKLISTS_FILE" ]; then
+    CHECKLIST_OUTPUT=$(python3 -c "
+import sys, json
+
+tier = int(sys.argv[1])
+checklist_path = sys.argv[2]
+
+try:
+    with open(checklist_path) as f:
+        checklists = json.load(f)
+except Exception:
+    sys.exit(0)
+
+# Determine current phase from gate state
+import os
+gate_dir = sys.argv[3] if len(sys.argv) > 3 else ''
+phase = 'planning'
+if gate_dir:
+    if os.path.exists(os.path.join(gate_dir, 'test-skeletons.approved')):
+        phase = 'code_generation'
+    elif os.path.exists(os.path.join(gate_dir, 'phase-a.approved')):
+        phase = 'code_generation'  # between plan approval and test skeletons
+    # After implementation files are done, testing checklist applies
+
+checklist = checklists.get(phase, {})
+tier_min = checklist.get('tier_min', 99)
+if tier < tier_min:
+    sys.exit(0)
+
+criteria = checklist.get('exit_criteria', [])
+if not criteria:
+    sys.exit(0)
+
+lines = [f'[Writ: {phase} exit criteria]']
+lines.append(f'Before this phase is complete, verify:')
+for c in criteria:
+    lines.append(f'  - {c[\"id\"]}: {c[\"check\"]}')
+print('\n'.join(lines))
+" "$CURRENT_TIER" "$CHECKLISTS_FILE" "${_GATE_DIR:-}" 2>/dev/null || true)
+
+    if [ -n "$CHECKLIST_OUTPUT" ]; then
+        echo ""
+        echo "$CHECKLIST_OUTPUT"
+        debug "injected phase checklist"
+    fi
+fi
+
 # 10. Append proposal nudge if low relevance (only when tier is set -- don't mix directives)
 if [ "$PROPOSAL_NUDGE" = "NO_RULES" ]; then
     echo ""
@@ -243,7 +429,7 @@ elif [ "$PROPOSAL_NUDGE" = "LOW_SCORES" ]; then
     echo "[Writ: retrieved rules have low relevance scores (< $LOW_RELEVANCE_THRESHOLD). The knowledge base may not cover this area well. If you discover a pattern worth codifying, propose it via POST /propose.]"
 fi
 
-# 11. Update session cache
+# 11. Update session cache (rule IDs + full rule objects)
 if [ -n "$META_LINE" ]; then
     META_JSON="${META_LINE#WRIT_META:}"
     NEW_RULE_IDS=$(echo "$META_JSON" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin).get('rule_ids',[])))" 2>/dev/null || echo '[]')
@@ -253,6 +439,197 @@ if [ -n "$META_LINE" ]; then
         --add-rules "$NEW_RULE_IDS" \
         --cost "$COST" \
         --inc-queries 2>/dev/null || true
+
+    # C1: Store full rule objects for downstream compliance checking
+    RULE_OBJECTS=$(echo "$RESPONSE" | python3 -c "
+import sys, json
+try:
+    resp = json.load(sys.stdin)
+    rules = resp.get('rules', [])
+    # Extract the fields needed for violation pattern matching
+    objects = []
+    for r in rules:
+        objects.append({
+            'rule_id': r.get('rule_id', ''),
+            'trigger': r.get('trigger', ''),
+            'statement': r.get('statement', ''),
+            'violation': r.get('violation', ''),
+            'pass_example': r.get('pass_example', ''),
+            'enforcement': r.get('enforcement', ''),
+            'domain': r.get('domain', ''),
+            'severity': r.get('severity', ''),
+        })
+    print(json.dumps(objects))
+except Exception:
+    print('[]')
+" 2>/dev/null || echo '[]')
+
+    if [ "$RULE_OBJECTS" != "[]" ]; then
+        python3 "$SESSION_HELPER" update "$SESSION_ID" \
+            --add-rule-objects "$RULE_OBJECTS" 2>/dev/null || true
+        debug "stored ${#RULE_OBJECTS} bytes of rule objects"
+    fi
+fi
+
+# 12. Read session cache for escalation and backward context checks
+CACHE=$(python3 "$SESSION_HELPER" read "$SESSION_ID" 2>/dev/null || echo '{}')
+
+# Check for escalation and inject backward context
+ESCALATION=$(python3 "$SESSION_HELPER" check-escalation "$SESSION_ID" 2>/dev/null || echo '{"needed":false}')
+ESC_NEEDED=$(echo "$ESCALATION" | python3 -c "import sys,json; print('yes' if json.load(sys.stdin).get('needed') else 'no')" 2>/dev/null || echo "no")
+
+if [ "$ESC_NEEDED" = "yes" ]; then
+    ESC_GATE=$(echo "$ESCALATION" | python3 -c "import sys,json; print(json.load(sys.stdin).get('gate','?'))" 2>/dev/null)
+    ESC_DIAG=$(echo "$ESCALATION" | python3 -c "import sys,json; print(json.load(sys.stdin).get('diagnosis','?'))" 2>/dev/null)
+    ESC_CYCLES=$(echo "$ESCALATION" | python3 -c "import sys,json; print(json.load(sys.stdin).get('cycles',0))" 2>/dev/null)
+
+    # Build failure history from invalidation records
+    FAILURE_HISTORY=$(python3 -c "
+import sys, json
+
+cache_str = sys.argv[1]
+gate = sys.argv[2]
+diagnosis = sys.argv[3]
+
+try:
+    cache = json.loads(cache_str)
+except Exception:
+    cache = {}
+
+records = cache.get('invalidation_history', {}).get(gate, [])
+lines = []
+for r in records:
+    lines.append(f\"  Cycle {r['cycle']}: {r['rule_id']} violated in {r['file']} ({r.get('evidence', 'no evidence')[:120]})\")
+
+if diagnosis == 'same-rule':
+    lines.append('')
+    lines.append('  Same rule triggered all cycles. Possible causes:')
+    lines.append('    1. Plan repeatedly fails to address this rule')
+    lines.append('    2. Rule violation pattern is over-broad for this context')
+    lines.append('    3. Task requires an exception to this rule')
+elif diagnosis == 'different-rules':
+    lines.append('')
+    lines.append('  Different rule each cycle. Plan is broadly missing rule coverage.')
+else:
+    lines.append('')
+    lines.append('  Mixed pattern. Specific gaps in the plan.')
+
+print('\n'.join(lines))
+" "$CACHE" "$ESC_GATE" "$ESC_DIAG" 2>/dev/null)
+
+    cat << ESCALATION_MSG
+
+[Writ: ESCALATION -- ${ESC_GATE} invalidated ${ESC_CYCLES} times]
+
+Failure history:
+${FAILURE_HISTORY}
+
+User action needed: review the rule definitions or re-scope the task.
+Do NOT proceed with automated work until the user responds.
+ESCALATION_MSG
+    debug "injected escalation for $ESC_GATE ($ESC_DIAG, $ESC_CYCLES cycles)"
+
+    # C10: Post enriched negative feedback (once per escalation)
+    ESC_FB_SENT=$(echo "$ESCALATION" | python3 -c "import sys,json; d=json.load(sys.stdin); print('yes' if d.get('feedback_sent') else 'no')" 2>/dev/null || echo "no")
+    if [ "$ESC_FB_SENT" != "yes" ]; then
+        python3 -c "
+import sys, json
+
+cache_str = sys.argv[1]
+gate = sys.argv[2]
+
+try:
+    cache = json.loads(cache_str)
+except Exception:
+    sys.exit(0)
+
+records = cache.get('invalidation_history', {}).get(gate, [])
+rule_ids = set(r['rule_id'] for r in records)
+
+import urllib.request, urllib.error
+for rid in rule_ids:
+    payload = json.dumps({'rule_id': rid, 'signal': 'negative'}).encode()
+    req = urllib.request.Request(
+        'http://localhost:8765/feedback',
+        data=payload,
+        headers={'Content-Type': 'application/json'},
+        method='POST',
+    )
+    try:
+        urllib.request.urlopen(req, timeout=0.3)
+    except (urllib.error.URLError, OSError):
+        break
+" "$CACHE" "$ESC_GATE" 2>/dev/null || true
+
+        # Mark feedback as sent in escalation
+        python3 -c "
+import sys, json, os, tempfile
+
+session_id = sys.argv[1]
+cache_dir = tempfile.gettempdir()
+path = os.path.join(cache_dir, f'writ-session-{session_id}.json')
+try:
+    with open(path) as f:
+        cache = json.load(f)
+    cache.setdefault('escalation', {})['feedback_sent'] = True
+    tmp = path + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(cache, f)
+    os.rename(tmp, path)
+except Exception:
+    pass
+" "$SESSION_ID" 2>/dev/null || true
+        debug "sent enriched negative feedback for escalation"
+    fi
+
+    exit 0
+fi
+
+# 13. Check for gate invalidation (backward context without escalation)
+if [ -n "$CURRENT_TIER" ] && [ "$CURRENT_TIER" -ge 2 ] 2>/dev/null; then
+    if [ -n "$_PROJECT_ROOT" ]; then
+        _GATE_DIR="$_PROJECT_ROOT/.claude/gates"
+
+        # Check if any gate was invalidated (records exist but .approved file missing)
+        BACKWARD_CTX=$(python3 -c "
+import sys, json, os
+
+cache_str = sys.argv[1]
+gate_dir = sys.argv[2]
+
+try:
+    cache = json.loads(cache_str)
+except Exception:
+    sys.exit(0)
+
+history = cache.get('invalidation_history', {})
+for gate_name, records in history.items():
+    if not records:
+        continue
+    gate_file = os.path.join(gate_dir, f'{gate_name}.approved')
+    if not os.path.exists(gate_file):
+        # Gate was invalidated and not yet re-approved
+        latest = records[-1]
+        cycle = len(records)
+        max_cycles = 3
+        plan_hash = latest.get('prior_plan_hash', 'unknown')
+        lines = []
+        lines.append(f'[Writ: {gate_name} INVALIDATED -- cycle {cycle} of {max_cycles}]')
+        lines.append('Previous plan failed validation:')
+        for r in records:
+            lines.append(f'  - {r[\"rule_id\"]} violated in {r[\"file\"]} ({r.get(\"evidence\", \"\")[:120]})')
+        lines.append(f'Revise the plan to address these gaps.')
+        lines.append(f'Previous plan hash: {plan_hash} (do not resubmit unchanged)')
+        print('\n'.join(lines))
+        break  # Only inject for the first invalidated gate
+" "$CACHE" "$_GATE_DIR" 2>/dev/null)
+
+        if [ -n "$BACKWARD_CTX" ]; then
+            echo ""
+            echo "$BACKWARD_CTX"
+            debug "injected backward context for invalidated gate"
+        fi
+    fi
 fi
 
 exit 0

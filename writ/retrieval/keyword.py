@@ -21,6 +21,9 @@ TRIGGER_BOOST = 2.0
 # Characters that break Tantivy's query parser. Stripped before parse_query().
 _TANTIVY_SPECIAL = re.compile(r"""['":\\\/\(\)\[\]\{\}\!\?\~\^\+\-\&\|]""")
 
+# Tantivy reserved keywords treated as boolean operators when uppercase.
+_TANTIVY_RESERVED = re.compile(r"\b(AND|OR|NOT|IN|TO)\b")
+
 
 class KeywordIndex:
     """Tantivy BM25 keyword search index.
@@ -81,7 +84,8 @@ class KeywordIndex:
         Returns list of dicts with rule_id and score, ordered by relevance.
         """
         searcher = self._index.searcher()
-        sanitized = _TANTIVY_SPECIAL.sub(" ", query_text).strip()
+        sanitized = _TANTIVY_SPECIAL.sub(" ", query_text)
+        sanitized = _TANTIVY_RESERVED.sub(lambda m: m.group(0).lower(), sanitized).strip()
         if not sanitized:
             return []
         query = self._index.parse_query(sanitized, ["trigger", "statement", "tags"])

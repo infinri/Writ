@@ -33,10 +33,7 @@ OUTPUT=$("$SKILL_DIR/bin/run-analysis.sh" --project-root "$PROJECT_ROOT" "$FILE"
 EXIT_CODE=$?
 
 # Track file write for coverage analysis
-SESSION_ID=$(ps -o ppid= -p $PPID 2>/dev/null | tr -d ' ')
-if [ -z "$SESSION_ID" ]; then
-    SESSION_ID=$(echo "${PWD}:${USER}" | md5sum | cut -c1-12)-$(date +%Y%m%d)
-fi
+SESSION_ID=$(detect_session_id "$PARSED")
 ANALYSIS_RESULT="pass"
 if [ $EXIT_CODE -ne 0 ]; then
     ANALYSIS_RESULT="fail"

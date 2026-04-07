@@ -21,18 +21,38 @@ FILE=$(parsed_field "$PARSED" "file_path")
 
 if [ -z "$FILE" ]; then exit 0; fi
 
+# Skip gate checks for Writ skill infrastructure and global settings
+case "$FILE" in
+    "$SKILL_DIR"/*|"$HOME/.claude/settings"*) exit 0 ;;
+esac
+
 PROJECT_ROOT=$(detect_project_root "$FILE")
 GATE_DIR="$PROJECT_ROOT/.claude/gates"
 mkdir -p "$GATE_DIR"
 
-# Read tier from session cache (empty string = not declared = tier 3 behavior)
+# Read tier from session cache
 SESSION_HELPER="$SKILL_DIR/bin/lib/writ-session.py"
-SESSION_ID=$(detect_session_id)
+SESSION_ID=$(detect_session_id "$PARSED")
 TIER=$(python3 "$SESSION_HELPER" tier get "$SESSION_ID" 2>/dev/null || echo "")
 TIER=$(echo "$TIER" | tr -d '[:space:]')
 
 # Tier 0 (Research) and Tier 1 (Patch): bypass all gates
 if [ "$TIER" = "0" ] || [ "$TIER" = "1" ]; then
+    exit 0
+fi
+
+# No tier declared: block writes and require classification first
+if [ -z "$TIER" ]; then
+    python3 -c "
+import json, sys
+print(json.dumps({
+    'hookSpecificOutput': {
+        'hookEventName': 'PreToolUse',
+        'permissionDecision': 'deny',
+        'permissionDecisionReason': sys.argv[1]
+    }
+}))
+" "[ENF-GATE-TIER] No task tier declared. You must classify the task tier BEFORE writing any code. Run: python3 $SESSION_HELPER tier set <0-3> $SESSION_ID -- Tier 0 (Research): no code generation. Tier 1 (Patch): <=3 files, no new contracts. Tier 2 (Standard): new class/interface, single domain. Tier 3 (Complex): multi-domain, concurrency, queues. After setting the tier, follow the workflow for that tier (plan.md, gates, etc.) before writing code."
     exit 0
 fi
 
@@ -145,6 +165,7 @@ def emit_finding(rule, message, fix_gate):
         'rule': rule,
         'message': message,
         'file': file_path,
+        'gate': fix_gate,
         'fix': 'touch ' + os.path.join(gate_dir, fix_gate + '.approved')
     }))
 
@@ -196,7 +217,8 @@ EXIT_CODE=$?
 if [ $EXIT_CODE -ne 0 ] && [ -n "$RESULT" ]; then
   # Extract the message from the JSON finding for the denial reason
   REASON=$(echo "$RESULT" | python3 -c "
-import sys, json
+import sys, json, os
+
 try:
     d = json.load(sys.stdin)
     msg = d.get('message', 'Gate approval required')
@@ -206,10 +228,29 @@ try:
     if rule: parts.append('[' + rule + ']')
     parts.append(msg)
     if fix: parts.append('Fix: ' + fix)
+
+    # Check for invalidation context
+    gate_name = d.get('gate', '')
+    session_id = sys.argv[1] if len(sys.argv) > 1 else ''
+    helper = sys.argv[2] if len(sys.argv) > 2 else ''
+    if gate_name and session_id and helper:
+        import subprocess
+        result = subprocess.run(
+            ['python3', helper, 'read', session_id],
+            capture_output=True, text=True, timeout=1,
+        )
+        if result.returncode == 0:
+            cache = json.loads(result.stdout)
+            records = cache.get('invalidation_history', {}).get(gate_name, [])
+            if records:
+                latest = records[-1]
+                parts.append(
+                    f'Gate was invalidated: {latest[\"rule_id\"]} violated in {latest[\"file\"]} ({latest.get(\"evidence\", \"\")[:100]}). Revise the plan to address this gap.'
+                )
     print(' '.join(parts))
 except Exception:
     print('Gate approval required')
-" 2>/dev/null)
+" "$SESSION_ID" "$SESSION_HELPER" 2>/dev/null)
   python3 -c "
 import json, sys
 print(json.dumps({

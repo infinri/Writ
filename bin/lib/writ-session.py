@@ -30,6 +30,7 @@ def _read_cache(session_id: str) -> dict:
     path = _cache_path(session_id)
     default = {
         "loaded_rule_ids": [],
+        "loaded_rules": [],
         "remaining_budget": DEFAULT_SESSION_BUDGET,
         "context_percent": 0,
         "queries": 0,
@@ -37,6 +38,9 @@ def _read_cache(session_id: str) -> dict:
         "files_written": [],
         "analysis_results": {},
         "feedback_sent": [],
+        "pending_violations": [],
+        "invalidation_history": {},
+        "escalation": {"gate": None, "needed": False, "diagnosis": None, "feedback_sent": False},
     }
     if not os.path.exists(path):
         return default
@@ -47,6 +51,10 @@ def _read_cache(session_id: str) -> dict:
         data.setdefault("files_written", [])
         data.setdefault("analysis_results", {})
         data.setdefault("feedback_sent", [])
+        data.setdefault("loaded_rules", [])
+        data.setdefault("pending_violations", [])
+        data.setdefault("invalidation_history", {})
+        data.setdefault("escalation", {"gate": None, "needed": False, "diagnosis": None, "feedback_sent": False})
         return data
     except (json.JSONDecodeError, OSError):
         return default
@@ -102,6 +110,23 @@ def cmd_update(session_id: str, args: list[str]) -> None:
             sent = set(cache.get("feedback_sent", []))
             sent.add(args[i + 1])
             cache["feedback_sent"] = sorted(sent)
+            i += 2
+        elif args[i] == "--add-rule-objects" and i + 1 < len(args):
+            new_rules = json.loads(args[i + 1])
+            existing_ids = {r["rule_id"] for r in cache.get("loaded_rules", [])}
+            for rule in new_rules:
+                if rule.get("rule_id") and rule["rule_id"] not in existing_ids:
+                    cache["loaded_rules"].append({
+                        "rule_id": rule["rule_id"],
+                        "trigger": rule.get("trigger", ""),
+                        "statement": rule.get("statement", ""),
+                        "violation": rule.get("violation", ""),
+                        "pass_example": rule.get("pass_example", ""),
+                        "enforcement": rule.get("enforcement", ""),
+                        "domain": rule.get("domain", ""),
+                        "severity": rule.get("severity", ""),
+                    })
+                    existing_ids.add(rule["rule_id"])
             i += 2
         else:
             i += 1
@@ -379,6 +404,168 @@ def cmd_coverage(session_id: str) -> None:
     sys.stdout.write("\n")
 
 
+MAX_CYCLES_BEFORE_ESCALATION = 3
+
+
+def cmd_add_pending_violation(session_id: str, args: list[str]) -> None:
+    """Append a pending violation to the session. Deduplicates by (rule_id, file, line)."""
+    cache = _read_cache(session_id)
+    rule_id = file = evidence = ""
+    line: int | None = None
+
+    i = 0
+    while i < len(args):
+        if args[i] == "--rule" and i + 1 < len(args):
+            rule_id = args[i + 1]; i += 2
+        elif args[i] == "--file" and i + 1 < len(args):
+            file = args[i + 1]; i += 2
+        elif args[i] == "--line" and i + 1 < len(args):
+            line = int(args[i + 1]); i += 2
+        elif args[i] == "--evidence" and i + 1 < len(args):
+            evidence = args[i + 1]; i += 2
+        else:
+            i += 1
+
+    if not rule_id or not file:
+        print("Required: --rule and --file", file=sys.stderr)
+        sys.exit(1)
+
+    violations = cache.get("pending_violations", [])
+    triple = (rule_id, file, line)
+    for v in violations:
+        if (v["rule_id"], v["file"], v.get("line")) == triple:
+            return  # exact triple already exists
+
+    violations.append({"rule_id": rule_id, "file": file, "line": line, "evidence": evidence})
+    cache["pending_violations"] = violations
+    _write_cache(session_id, cache)
+
+
+def cmd_clear_pending_violations(session_id: str) -> None:
+    """Clear all pending violations (called at phase-boundary)."""
+    cache = _read_cache(session_id)
+    cache["pending_violations"] = []
+    _write_cache(session_id, cache)
+
+
+def cmd_invalidate_gate(session_id: str, args: list[str]) -> None:
+    """Invalidate a gate: write record, delete .approved file, check escalation.
+
+    Exit 0: success. Exit 1: bad arguments. Exit 2: cache error.
+    Caller should run check-escalation afterward to determine next steps.
+    """
+    gate_name = args[0] if args else ""
+    rule_id = file = evidence = trace = plan_hash = ""
+    project_root = ""
+
+    i = 1
+    while i < len(args):
+        if args[i] == "--rule" and i + 1 < len(args):
+            rule_id = args[i + 1]; i += 2
+        elif args[i] == "--file" and i + 1 < len(args):
+            file = args[i + 1]; i += 2
+        elif args[i] == "--evidence" and i + 1 < len(args):
+            evidence = args[i + 1]; i += 2
+        elif args[i] == "--trace" and i + 1 < len(args):
+            trace = args[i + 1]; i += 2
+        elif args[i] == "--plan-hash" and i + 1 < len(args):
+            plan_hash = args[i + 1]; i += 2
+        elif args[i] == "--project-root" and i + 1 < len(args):
+            project_root = args[i + 1]; i += 2
+        else:
+            i += 1
+
+    if not gate_name or not rule_id or not file:
+        print("Required: <gate_name> --rule <id> --file <path>", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        cache = _read_cache(session_id)
+    except Exception as e:
+        print(f"Cache error: {e}", file=sys.stderr)
+        sys.exit(2)
+
+    history = cache.get("invalidation_history", {})
+    records = history.get(gate_name, [])
+    cycle = len(records) + 1
+
+    records.append({
+        "cycle": cycle,
+        "rule_id": rule_id,
+        "file": file,
+        "line": None,
+        "evidence": evidence,
+        "trace": trace,
+        "prior_plan_hash": plan_hash,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+    history[gate_name] = records
+    cache["invalidation_history"] = history
+
+    # Check escalation threshold
+    if cycle >= MAX_CYCLES_BEFORE_ESCALATION:
+        rule_ids_in_cycles = [r["rule_id"] for r in records]
+        unique_rules = set(rule_ids_in_cycles)
+        if len(unique_rules) == 1:
+            diagnosis = "same-rule"
+        elif len(unique_rules) == len(rule_ids_in_cycles):
+            diagnosis = "different-rules"
+        else:
+            diagnosis = "mixed"
+        cache["escalation"] = {
+            "gate": gate_name,
+            "needed": True,
+            "diagnosis": diagnosis,
+            "feedback_sent": False,
+        }
+
+    try:
+        _write_cache(session_id, cache)
+    except Exception as e:
+        print(f"Cache write error: {e}", file=sys.stderr)
+        sys.exit(2)
+
+    # Delete gate file (best-effort -- record already written)
+    if project_root:
+        gate_file = os.path.join(project_root, ".claude", "gates", f"{gate_name}.approved")
+        try:
+            os.remove(gate_file)
+        except OSError:
+            pass  # File missing or not deletable; next boundary check retries
+
+
+def cmd_check_escalation(session_id: str) -> None:
+    """Read-only query: is escalation needed? Always exits 0."""
+    cache = _read_cache(session_id)
+    esc = cache.get("escalation", {"gate": None, "needed": False, "diagnosis": None})
+    gate = esc.get("gate")
+    cycles = 0
+    if gate:
+        cycles = len(cache.get("invalidation_history", {}).get(gate, []))
+    else:
+        # Report max cycles across all gates even when escalation hasn't triggered
+        history = cache.get("invalidation_history", {})
+        for gate_name, records in history.items():
+            if len(records) > cycles:
+                cycles = len(records)
+                gate = gate_name
+    result = {
+        "needed": esc.get("needed", False),
+        "gate": gate,
+        "diagnosis": esc.get("diagnosis"),
+        "cycles": cycles,
+    }
+    json.dump(result, sys.stdout)
+    sys.stdout.write("\n")
+
+
+def cmd_pending_violations(session_id: str) -> None:
+    """Output pending violations as JSON array."""
+    cache = _read_cache(session_id)
+    json.dump(cache.get("pending_violations", []), sys.stdout)
+    sys.stdout.write("\n")
+
+
 VALID_TIERS = {0, 1, 2, 3}
 
 
@@ -492,6 +679,36 @@ def main() -> None:
             print("Usage: writ-session.py auto-feedback <session_id>", file=sys.stderr)
             sys.exit(2)
         cmd_auto_feedback(sys.argv[2])
+
+    elif cmd == "add-pending-violation":
+        if len(sys.argv) < 3:
+            print("Usage: writ-session.py add-pending-violation <session_id> --rule R --file F [--line N] [--evidence E]", file=sys.stderr)
+            sys.exit(2)
+        cmd_add_pending_violation(sys.argv[2], sys.argv[3:])
+
+    elif cmd == "clear-pending-violations":
+        if len(sys.argv) < 3:
+            print("Usage: writ-session.py clear-pending-violations <session_id>", file=sys.stderr)
+            sys.exit(2)
+        cmd_clear_pending_violations(sys.argv[2])
+
+    elif cmd == "invalidate-gate":
+        if len(sys.argv) < 4:
+            print("Usage: writ-session.py invalidate-gate <session_id> <gate> --rule R --file F [--evidence E] [--trace T] [--plan-hash H] [--project-root P]", file=sys.stderr)
+            sys.exit(2)
+        cmd_invalidate_gate(sys.argv[2], sys.argv[3:])
+
+    elif cmd == "check-escalation":
+        if len(sys.argv) < 3:
+            print("Usage: writ-session.py check-escalation <session_id>", file=sys.stderr)
+            sys.exit(2)
+        cmd_check_escalation(sys.argv[2])
+
+    elif cmd == "pending-violations":
+        if len(sys.argv) < 3:
+            print("Usage: writ-session.py pending-violations <session_id>", file=sys.stderr)
+            sys.exit(2)
+        cmd_pending_violations(sys.argv[2])
 
     else:
         print(f"Unknown command: {cmd}", file=sys.stderr)

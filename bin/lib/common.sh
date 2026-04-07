@@ -54,11 +54,21 @@ print('')
 }
 
 # ── Session ID detection ────────────────────────────────────────────────────
-# Derives a stable session ID from the process tree.
-# Usage: SESSION_ID=$(detect_session_id)
+# Extracts session ID from parsed hook envelope, falling back to PID.
+# Usage: SESSION_ID=$(detect_session_id "$PARSED")
+#   where PARSED is the output of parse_hook_stdin.
+#   If called without args, falls back to PID detection (less reliable).
 detect_session_id() {
-  local sid
-  sid=$(ps -o ppid= -p $PPID 2>/dev/null | tr -d ' ')
+  local parsed="${1:-}"
+  local sid=""
+  # Prefer session_id from Claude Code envelope
+  if [ -n "$parsed" ]; then
+    sid=$(echo "$parsed" | python3 -c "import sys,json; print(json.load(sys.stdin).get('session_id',''))" 2>/dev/null)
+  fi
+  # Fallback: PID-based detection
+  if [ -z "$sid" ]; then
+    sid=$(ps -o ppid= -p $PPID 2>/dev/null | tr -d ' ')
+  fi
   if [ -z "$sid" ]; then
     sid=$(echo "${PWD}:${USER}" | md5sum | cut -c1-12)-$(date +%Y%m%d)
   fi
