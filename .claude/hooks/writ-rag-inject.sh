@@ -188,7 +188,18 @@ fi
 
 # 3. Read session cache
 CACHE=$(python3 "$SESSION_HELPER" read "$SESSION_ID" 2>/dev/null || echo '{"loaded_rule_ids":[],"remaining_budget":8000}')
-LOADED_RULE_IDS=$(echo "$CACHE" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin).get('loaded_rule_ids',[])))" 2>/dev/null || echo '[]')
+# Phase 3: only exclude current-phase rule IDs (historical IDs can be re-injected)
+LOADED_RULE_IDS=$(echo "$CACHE" | python3 -c "
+import sys, json
+cache = json.load(sys.stdin)
+by_phase = cache.get('loaded_rule_ids_by_phase', {})
+current_phase = cache.get('current_phase', '')
+if by_phase and current_phase:
+    print(json.dumps(by_phase.get(current_phase, [])))
+else:
+    # Fallback: use flat list for pre-Phase-3 sessions
+    print(json.dumps(cache.get('loaded_rule_ids', [])))
+" 2>/dev/null || echo '[]')
 REMAINING_BUDGET=$(echo "$CACHE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('remaining_budget',8000))" 2>/dev/null || echo '8000')
 
 # 4. Build request JSON
@@ -297,7 +308,15 @@ TIER_DIRECTIVE
     debug "injected tier classification directive"
 fi
 
-# 9b. Inject workflow reminder when tier is declared but gates are still pending
+# 9b. Inject workflow reminder for Tier 0 (research mode)
+if [ "$CURRENT_TIER" = "0" ]; then
+    echo ""
+    echo "[Writ: Research mode. Rules injected as context. No code generation expected.]"
+    debug "injected tier 0 research reminder"
+fi
+
+# 9c. Inject workflow reminder when tier is declared but gates are still pending
+# Tier 1 has no gates -- reminders start at Tier 2.
 if [ -n "$CURRENT_TIER" ] && [ "$CURRENT_TIER" -ge 2 ] 2>/dev/null; then
     # Detect project root from cwd to find gate files
     _PROJECT_ROOT=$(python3 -c "

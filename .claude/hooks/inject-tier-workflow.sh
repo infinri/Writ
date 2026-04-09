@@ -39,8 +39,10 @@ if [ -z "$TIER" ]; then
     exit 0
 fi
 
-# Tier 0-1: no gates, no workflow reminder needed
-if [ "$TIER" = "0" ] || [ "$TIER" = "1" ]; then
+# Tier 0: research only, no workflow needed
+if [ "$TIER" = "0" ]; then
+    echo ""
+    echo "[Writ: Tier 0 -- Research mode. Rules injected for context. No code generation expected.]"
     exit 0
 fi
 
@@ -55,6 +57,15 @@ if [ -n "$PROJECT_ROOT" ]; then
 fi
 
 # Inject workflow instructions immediately
+if [ "$TIER" = "1" ]; then
+    cat << 'WORKFLOW'
+
+[Writ: Tier 1 declared -- Patch mode]
+No gates. No plan.md required. Write code directly.
+Static analysis runs automatically after each file write.
+WORKFLOW
+fi
+
 if [ "$TIER" = "2" ]; then
     cat << 'WORKFLOW'
 

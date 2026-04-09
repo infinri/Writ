@@ -36,3 +36,7 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# Writ enforcement runtime artifacts
+workflow-friction.log
+.claude/gates/

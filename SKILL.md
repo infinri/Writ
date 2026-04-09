@@ -11,23 +11,35 @@ description: >
   only determines the level of ceremony, not whether Writ activates.
 metadata:
   author: lucio-saldivar
-  version: "1.0"
+  version: "2.0"
 ---
 
-# Writ -- Hybrid RAG Rule Retrieval
+# Writ -- Hybrid RAG Rule Retrieval + Enforcement
+
+## Two layers, one system
+
+**Knowledge layer (Writ server):** A stateless RAG service. Answers "what rules
+apply to this context?" via a five-stage pipeline (BM25 + vector + graph traversal
++ RRF ranking). Rules are facts -- they don't change based on workflow state.
+
+**Enforcement layer (hooks + writ-session.py):** A session-aware workflow engine.
+Owns phase state, gate criteria, file classification, and tier routing. Hooks are
+thin clients that delegate decisions to `writ-session.py`.
 
 ## How rules reach you
 
-Rules are injected automatically by the `writ-rag-inject.sh` hook on every user turn.
-You do not need to read rule files manually. The hook:
+Rules are injected automatically by `writ-rag-inject.sh` on every user turn:
 
 1. Takes the user's prompt as a natural language query
 2. POSTs to `http://localhost:8765/query` with session state (budget, loaded IDs)
-3. Writ's pipeline ranks rules by relevance (BM25 + semantic + graph proximity)
+3. Writ's pipeline ranks rules by relevance
 4. Returns rules formatted as a `--- WRIT RULES ---` block in your context
 
 If no rules appear, either the server is down (you'll see a warning) or the prompt
 was too short (< 10 chars) or budget was exhausted.
+
+Rules are phase-aware: only current-phase rule IDs are excluded from re-injection.
+When a phase advances, previously loaded rules can be re-injected for the new phase.
 
 ## What the rules look like
 
@@ -51,54 +63,126 @@ CORRECT: example of doing it right
 
 Human rules outrank AI rules at equal relevance (hard preference rule).
 
-## Session deduplication
+## Tier system
 
-A session cache tracks which rules have already been loaded. Subsequent turns
-exclude previously loaded rules via `exclude_rule_ids`. The token budget starts
-at 8000 and decrements per query. When exhausted, the hook silently skips.
+Every task must be classified before code is written. The tier controls ceremony
+(how many gates), not knowledge (which rules are loaded). All tiers receive rules.
 
-## Development enforcement
+| Tier | Label | Gates | Ceremony |
+|------|-------|-------|----------|
+| 0 | Research | None | Deliver findings. No code. |
+| 1 | Patch | None | Write code directly. Static analysis runs. |
+| 2 | Standard | phase-a, test-skeletons | Plan -> approve -> test skeletons -> approve -> implement. |
+| 3 | Complex | phase-a through gate-final | Full sequential phases (A, B, C, [D]), test skeletons, implementation. |
 
-Writ ships a complete hook-based development framework that works with any language
-or framework. Hooks enforce gate sequencing (Phases A-D), static analysis, handoff
-validation, and context hygiene. See `.claude/CLAUDE.md` for the full hook inventory.
+Tiers only escalate, never downgrade. No tier declared = all writes blocked (except plan.md).
+
+Classify via: `python3 <writ>/bin/lib/writ-session.py tier set <0-3> <session_id>`
+(the RAG inject hook prints the exact command with paths filled in).
+
+## Gate enforcement
+
+`writ-session.py` is the sole authority on phase state:
+
+- **can-write**: Decides whether a file write is allowed. Reads the tool input envelope,
+  classifies the file against `gate-categories.json`, checks the session's approved gates.
+  Returns allow/deny. The shell hook (`check-gate-approval.sh`) is a thin client.
+
+- **advance-phase**: Validates artifacts (plan.md sections, test files), creates gate
+  files, clears current-phase rule IDs, logs the transition to the audit trail.
+  The shell hook (`auto-approve-gate.sh`) detects approval patterns and delegates.
+
+- **current-phase**: Returns the authoritative current phase from session state.
+
+Gate files (`.claude/gates/*.approved`) are artifacts created by `advance-phase`.
+They contain the session ID. Stale gates from previous sessions are rejected.
+
+### Gate criteria (what the validator checks)
+
+**phase-a** (Tier 2+): plan.md with `## Files`, `## Analysis`, `## Rules Applied`
+(rule IDs or "No matching rules" declaration), `## Capabilities` (checkboxes).
+
+**phase-b** (Tier 3): plan.md with `## Domain Invariants`.
+
+**phase-c** (Tier 3): plan.md with `## Integration Points`.
+
+**phase-d** (Tier 3, optional): plan.md with `## Concurrency`. Skipped by default.
+
+**test-skeletons** (Tier 2+): At least one test file with a test method signature.
+
+## Session management
+
+`bin/lib/writ-session.py` manages per-session state in temp files:
+
+- **Tier** (0-3, up-only)
+- **Current phase** (planning, testing, implementation, etc.)
+- **Gates approved** (source of truth, not inferred from disk)
+- **Loaded rule IDs by phase** (for exclude-list scoping)
+- **Phase transitions** (audit trail with timestamps and triggers)
+- **Token budget** (starts at 8000, decrements per query)
+- **Context pressure** (skips RAG queries when context > 75%)
+- **Analysis results** (per-file pass/fail from static analysis)
+- **Pending violations** (rule violations awaiting phase-boundary routing)
+- **Invalidation history** (gate invalidation records for escalation detection)
+
+## Hooks inventory
+
+| Hook | Event | Role |
+|------|-------|------|
+| `writ-rag-inject.sh` | UserPromptSubmit | RAG query, rule injection, tier/workflow reminders |
+| `auto-approve-gate.sh` | UserPromptSubmit | Approval pattern detection, delegates to advance-phase |
+| `check-gate-approval.sh` | PreToolUse(Write/Edit) | Thin client for can-write |
+| `pre-validate-file.sh` | PreToolUse(Write/Edit) | Static analysis before write |
+| `enforce-final-gate.sh` | PreToolUse(Write/Edit) | Blocks completion markers (Tier 3) |
+| `inject-tier-workflow.sh` | PostToolUse(Bash) | Immediate workflow injection after tier set |
+| `validate-file.sh` | PostToolUse(Write/Edit) | Static analysis after write |
+| `validate-rules.sh` | PostToolUse(Write/Edit) | Rule compliance validation via /analyze |
+| `validate-handoff.sh` | PostToolUse(Write/Edit) | Handoff JSON schema validation |
+| `friction-logger.sh` | Stop | Friction capture (gate denials, tier escalations, phase transitions) |
+| `writ-context-tracker.sh` | Stop | Context pressure + auto-feedback |
+| `log-session-metrics.sh` | Stop | Gate approval context metrics |
+
+## Supported languages and frameworks
 
 Gate categories support: PHP, Python, JavaScript, TypeScript, Go, Rust, Java, Ruby,
-and framework-specific patterns for Magento 2, Django, Rails, Spring, NestJS, Express,
-Laravel. New languages and frameworks are added via `bin/lib/gate-categories.json`.
+GraphQL, XML. Framework-specific patterns: Magento 2, Django, Rails, Spring, NestJS,
+Express, Laravel. Add new patterns via `bin/lib/gate-categories.json`.
 
 Static analysis routes by file extension: PHPStan, ESLint, ruff, xmllint, cargo check,
-go vet. New analyzers are added via `bin/run-analysis.sh`.
-
-## Server requirements
-
-Writ requires:
-- Neo4j running at `bolt://localhost:7687`
-- Writ server: `writ serve` (default: `localhost:8765`)
-- Bible rules ingested: `writ ingest`
-- Install hooks: `bash scripts/install-skill.sh` (or use the `.claude-plugin/` manifest for auto-discovery)
-
-When loaded as a plugin, the `ensure-server.sh` Init lifecycle script starts
-Neo4j (Docker) and the Writ server automatically. No manual startup required.
+go vet. Add new analyzers via `bin/run-analysis.sh`.
 
 ## Proposing new rules
 
 When you encounter a pattern not covered by existing rules, propose it via
-`POST /propose`. See `.claude/CLAUDE.md` for the full request format. Proposed
-rules enter as `ai-provisional` and must pass the structural gate before ingestion.
+`POST http://localhost:8765/propose`. See `.claude/CLAUDE.md` for the full request
+format and trigger conditions. Proposed rules enter as `ai-provisional` and must pass
+the structural gate (schema, specificity, redundancy, novelty, conflict checks).
+
+## Server requirements
+
+Writ requires:
+- Neo4j at `bolt://localhost:7687`
+- Writ server: `writ serve` (default: `localhost:8765`)
+- Bible rules ingested: `writ ingest`
+- Hooks installed: `bash scripts/install-skill.sh`
+
+When loaded as a plugin, `ensure-server.sh` starts Neo4j (Docker) and the Writ
+server automatically via the Init lifecycle hook.
 
 ## Architecture reference
 
 - Server: `writ/server.py` (FastAPI, async)
 - Pipeline: `writ/retrieval/pipeline.py` (5-stage hybrid)
 - Schema: `writ/graph/schema.py` (Rule, Abstraction, Edge models)
-- Session: `writ/retrieval/session.py` (client-side budget tracker)
 - Config: `writ.toml` (all tunable parameters)
-- Hooks: `.claude/hooks/` (RAG injection, gate enforcement, validation)
+- Session engine: `bin/lib/writ-session.py` (phase state, gate management, audit trail)
 - Hook parser: `bin/lib/parse-hook-stdin.py` (normalizes Claude Code stdin envelope)
-- Session helper: `bin/lib/writ-session.py` (client-side budget/dedup cache)
-- Verification: `bin/` (static analysis, gate checks, dependency scanning)
-- Gate categories: `bin/lib/gate-categories.json` (language/framework patterns)
+- Gate categories: `bin/lib/gate-categories.json` (language/framework file patterns)
+- Checklists: `bin/lib/checklists.json` (phase exit criteria)
+- Static analysis: `bin/run-analysis.sh` (multi-language router)
+- Verification: `bin/verify-matrix.sh` (capabilities completion), `bin/verify-files.sh` (batch existence)
+- Hooks: `.claude/hooks/` (12 hooks, see inventory above)
 - Plugin manifest: `.claude-plugin/plugin.json` (auto-discovery, lifecycle)
 - Lifecycle: `scripts/ensure-server.sh`, `scripts/stop-server.sh`
+- Install: `scripts/install-skill.sh` (hook wiring into settings.json)
 - Full spec: `RAG_arch_handbook.md`

@@ -537,7 +537,7 @@ The retrieval pipeline (Section 4) is not authoritative for which rules the AI s
 
 **Why this distinction is load-bearing:**
 
-The hooks (`check-gate-approval.sh`, `enforce-final-gate.sh`) enforce mechanically by checking filesystem state. They block writes whether or not the AI understands why. But an AI that hits a hook block without ever seeing the rule that explains the gate cannot reason about what to do next. It sees "write blocked" with no context for resolution. The enforcement model requires the AI to know the gates exist before it encounters them.
+The hooks (`check-gate-approval.sh`, `enforce-final-gate.sh`) enforce mechanically -- `check-gate-approval.sh` delegates to `writ-session.py can-write`, which checks session state (tier, approved gates, file classification). They block writes whether or not the AI understands why. But an AI that hits a hook block without ever seeing the rule that explains the gate cannot reason about what to do next. It sees "write blocked" with no context for resolution. The enforcement model requires the AI to know the gates exist before it encounters them.
 
 If `ENF-GATE-001` is subject to retrieval ranking and the ranking algorithm does not surface it for a given query, the AI proceeds as if no gate exists, writes a file, and gets blocked by the hook. The hook saved the output, but the session is now in a confused state -- the AI will retry, guess, or hallucinate an explanation. That is not enforcement. That is a trap.
 

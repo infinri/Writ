@@ -109,7 +109,7 @@ controls ceremony (how many approval gates), not knowledge (which rules are inje
 
 The RAG inject hook prompts Claude to classify on the first turn. Gate hooks read the
 declared tier from the session cache and adjust enforcement accordingly. If no tier is
-declared, hooks default to Tier 3 (maximum ceremony). Tiers escalate up only, never down.
+declared, hooks deny all writes (except plan.md). Tiers escalate up only, never down.
 
 ### How it works
 
@@ -166,36 +166,30 @@ source .venv/bin/activate && writ serve   # start Writ
 If Writ is not running, the hooks fall back gracefully -- Claude sees
 `[Writ: server unavailable, proceeding without rules]` and proceeds normally.
 
-### Hooks and agents
-
-**Hooks (8):**
+### Hooks (12)
 
 All hooks parse Claude Code's stdin JSON envelope via a shared parser
 (`bin/lib/parse-hook-stdin.py`) with `$CLAUDE_TOOL_INPUT` env var fallback.
-PreToolUse hooks that deny a write exit with code 2 (hard block per Claude Code's
-internal hook contract). PostToolUse hooks skip validation when the write itself
-failed (`tool_result_is_error`), preventing confusing cascading errors.
+Gate enforcement is centralized in `bin/lib/writ-session.py` -- hooks are thin
+clients that delegate decisions and enforce the result. PostToolUse hooks skip
+validation when the write itself failed (`tool_result_is_error`).
 
-| Hook | Event | Matcher | Exit | Purpose |
-|------|-------|---------|------|---------|
-| `writ-rag-inject.sh` | UserPromptSubmit | all | 0 | Query Writ, inject rules into context |
-| `writ-context-tracker.sh` | Stop | all | 0 | Track context pressure, auto-feedback, coverage |
-| `check-gate-approval.sh` | PreToolUse | Write\|Edit | 0/2 | Gate sequencing (Phases A-D) |
-| `enforce-final-gate.sh` | PreToolUse | Write\|Edit | 0/2 | Block completion until ENF-GATE-FINAL |
-| `pre-validate-file.sh` | PreToolUse | Write\|Edit | 0/2 | Static analysis before write |
-| `validate-file.sh` | PostToolUse | Write\|Edit | 0/1 | Static analysis after write |
-| `validate-handoff.sh` | PostToolUse | Write\|Edit | 0/1 | Handoff JSON validation |
-| `log-session-metrics.sh` | Stop | all | 0 | Gate metrics logging |
+| Hook | Event | Matcher | Purpose |
+|------|-------|---------|---------|
+| `writ-rag-inject.sh` | UserPromptSubmit | all | Query Writ, inject rules, tier/workflow reminders |
+| `auto-approve-gate.sh` | UserPromptSubmit | all | Detect approval patterns, delegate to advance-phase |
+| `check-gate-approval.sh` | PreToolUse | Write\|Edit | Thin client for writ-session.py can-write |
+| `pre-validate-file.sh` | PreToolUse | Write\|Edit | Static analysis before write |
+| `enforce-final-gate.sh` | PreToolUse | Write\|Edit | Block completion until ENF-GATE-FINAL (Tier 3) |
+| `inject-tier-workflow.sh` | PostToolUse | Bash | Immediate workflow injection after tier set |
+| `validate-file.sh` | PostToolUse | Write\|Edit | Static analysis after write |
+| `validate-rules.sh` | PostToolUse | Write\|Edit | Rule compliance validation via /analyze |
+| `validate-handoff.sh` | PostToolUse | Write\|Edit | Handoff JSON schema validation |
+| `friction-logger.sh` | Stop | all | Friction capture (gate denials, tier escalations, phase transitions) |
+| `writ-context-tracker.sh` | Stop | all | Context pressure, auto-feedback, coverage |
+| `log-session-metrics.sh` | Stop | all | Gate approval context metrics |
 
-**Agents (3):**
-
-| Agent | Purpose |
-|-------|---------|
-| `plan-guardian` | Verify code slices against approved plan (read-only) |
-| `static-analysis` | Run static analysis in isolated context |
-| `slice-builder` | Generate one implementation slice in isolation |
-
-All hooks and agents are project-agnostic -- they work with any language or framework.
+All hooks are project-agnostic -- they work with any language or framework.
 
 ## CLI Commands
 
