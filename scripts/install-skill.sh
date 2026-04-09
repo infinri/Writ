@@ -20,12 +20,16 @@ echo ""
 # Verify hook files exist
 HOOKS=(
     .claude/hooks/writ-rag-inject.sh
-    .claude/hooks/writ-context-tracker.sh
+    .claude/hooks/auto-approve-gate.sh
     .claude/hooks/check-gate-approval.sh
+    .claude/hooks/inject-tier-workflow.sh
+    .claude/hooks/friction-logger.sh
+    .claude/hooks/writ-context-tracker.sh
     .claude/hooks/pre-validate-file.sh
     .claude/hooks/enforce-final-gate.sh
     .claude/hooks/validate-file.sh
     .claude/hooks/validate-handoff.sh
+    .claude/hooks/validate-rules.sh
     .claude/hooks/log-session-metrics.sh
 )
 for hook in "${HOOKS[@]}"; do
@@ -73,12 +77,16 @@ settings.setdefault("hooks", {})
 
 new_permissions = [
     f"Bash(bash {writ_dir}/.claude/hooks/writ-rag-inject.sh)",
-    f"Bash(bash {writ_dir}/.claude/hooks/writ-context-tracker.sh)",
+    f"Bash(bash {writ_dir}/.claude/hooks/auto-approve-gate.sh)",
     f"Bash(bash {writ_dir}/.claude/hooks/check-gate-approval.sh)",
+    f"Bash(bash {writ_dir}/.claude/hooks/inject-tier-workflow.sh)",
+    f"Bash(bash {writ_dir}/.claude/hooks/friction-logger.sh)",
+    f"Bash(bash {writ_dir}/.claude/hooks/writ-context-tracker.sh)",
     f"Bash(bash {writ_dir}/.claude/hooks/pre-validate-file.sh)",
     f"Bash(bash {writ_dir}/.claude/hooks/enforce-final-gate.sh)",
     f"Bash(bash {writ_dir}/.claude/hooks/validate-file.sh)",
     f"Bash(bash {writ_dir}/.claude/hooks/validate-handoff.sh)",
+    f"Bash(bash {writ_dir}/.claude/hooks/validate-rules.sh)",
     f"Bash(bash {writ_dir}/.claude/hooks/log-session-metrics.sh)",
 ]
 
@@ -108,8 +116,14 @@ def register_hook(event, command, matcher=""):
 hook_defs = [
     # RAG injection -- every prompt
     ("UserPromptSubmit", "writ-rag-inject.sh", ""),
+    # Gate approval -- every prompt (checks for "approved" pattern)
+    ("UserPromptSubmit", "auto-approve-gate.sh", ""),
+    # Tier workflow injection -- after tier set commands
+    ("PostToolUse", "inject-tier-workflow.sh", "Bash"),
     # Context tracking -- every response
     ("Stop", "writ-context-tracker.sh", ""),
+    # Friction logger -- every response
+    ("Stop", "friction-logger.sh", ""),
     # Gate enforcement -- before file writes
     ("PreToolUse", "check-gate-approval.sh", "Write|Edit"),
     # Pre-write static analysis
@@ -118,6 +132,8 @@ hook_defs = [
     ("PreToolUse", "enforce-final-gate.sh", "Write|Edit"),
     # Post-write static analysis
     ("PostToolUse", "validate-file.sh", "Write|Edit"),
+    # Rule compliance validation
+    ("PostToolUse", "validate-rules.sh", "Write|Edit"),
     # Handoff validation
     ("PostToolUse", "validate-handoff.sh", "Write|Edit"),
     # Session metrics -- every response

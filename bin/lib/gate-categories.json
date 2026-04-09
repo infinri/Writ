@@ -27,8 +27,7 @@
     "*_spec.rb",
     "*/migrations/*",
     "*/alembic/*",
-    "*/.claude/*",
-    "*plan.md"
+    "*/.claude/*"
   ],
   "categories": [
     {
