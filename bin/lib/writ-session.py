@@ -13,6 +13,34 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 
+def _log_friction_event(session_id: str, tier: int | None, event: str, **extra: object) -> None:
+    """Append a JSON line to workflow-friction.log in the project root."""
+    # Find project root
+    markers = ['composer.json', 'package.json', 'Cargo.toml', 'go.mod', 'pyproject.toml', '.git']
+    path = os.getcwd()
+    project_root = ""
+    while path != '/':
+        if any(os.path.exists(os.path.join(path, m)) for m in markers):
+            project_root = path
+            break
+        path = os.path.dirname(path)
+    if not project_root:
+        return
+    entry = {
+        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "session": session_id,
+        "tier": tier,
+        "event": event,
+        **extra,
+    }
+    try:
+        log_path = os.path.join(project_root, "workflow-friction.log")
+        with open(log_path, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except OSError:
+        pass
+
+
 # Mirrored from writ/retrieval/session.py
 DEFAULT_SESSION_BUDGET = 8000
 APPROX_TOKENS_PER_RULE_FULL = 200
@@ -41,6 +69,7 @@ def _read_cache(session_id: str) -> dict:
         "pending_violations": [],
         "invalidation_history": {},
         "escalation": {"gate": None, "needed": False, "diagnosis": None, "feedback_sent": False},
+        "pretool_queried_files": [],
     }
     if not os.path.exists(path):
         return default
@@ -60,6 +89,7 @@ def _read_cache(session_id: str) -> dict:
         data.setdefault("gates_approved", [])
         data.setdefault("loaded_rule_ids_by_phase", {})
         data.setdefault("phase_transitions", [])
+        data.setdefault("pretool_queried_files", [])
         return data
     except (json.JSONDecodeError, OSError):
         return default
@@ -122,6 +152,11 @@ def cmd_update(session_id: str, args: list[str]) -> None:
             sent = set(cache.get("feedback_sent", []))
             sent.add(args[i + 1])
             cache["feedback_sent"] = sorted(sent)
+            i += 2
+        elif args[i] == "--add-pretool-file" and i + 1 < len(args):
+            files = set(cache.get("pretool_queried_files", []))
+            files.add(args[i + 1])
+            cache["pretool_queried_files"] = sorted(files)
             i += 2
         elif args[i] == "--add-rule-objects" and i + 1 < len(args):
             new_rules = json.loads(args[i + 1])
@@ -585,7 +620,7 @@ VALID_TIERS = {0, 1, 2, 3}
 # ---------------------------------------------------------------------------
 
 GATE_SEQUENCE_TIER_2 = ["phase-a", "test-skeletons"]
-GATE_SEQUENCE_TIER_3 = ["phase-a", "phase-b", "phase-c", "phase-d", "test-skeletons"]
+GATE_SEQUENCE_TIER_3 = ["phase-a", "phase-b", "phase-c", "phase-d", "test-skeletons", "gate-final"]
 
 # Maps the last approved gate to the resulting phase name
 _PHASE_AFTER_GATE = {
@@ -815,6 +850,12 @@ def cmd_can_write(session_id: str, skill_dir: str = "") -> None:
         sys.stdout.write("\n")
         return
 
+    # capabilities.md: always allowed (used to track capability checkboxes post-implementation)
+    if basename == "capabilities.md":
+        json.dump({"decision": "allow"}, sys.stdout)
+        sys.stdout.write("\n")
+        return
+
     # plan.md blocked during implementation phase (Tier 2+)
     if basename == "plan.md" and tier is not None and tier >= 2:
         if current_phase == "implementation":
@@ -937,12 +978,17 @@ def _find_plan_md(project_root: str) -> str | None:
     return found[0]
 
 
-def _validate_phase_a(project_root: str) -> str | None:
+def _validate_phase_a(project_root: str, session_id: str = "") -> str | None:
     """Validate plan.md for phase-a gate. Returns error message or None."""
     import re
     plan_path = _find_plan_md(project_root)
     if not plan_path:
-        return "plan.md not found. Write plan.md with: ## Files, ## Analysis, ## Rules Applied, ## Capabilities."
+        return ("plan.md not found. Write plan.md with ALL of these sections: "
+                "## Files (list every file to create/modify), "
+                "## Analysis (what and why, contracts, integration points), "
+                "## Rules Applied (cite rule IDs from the injected WRIT RULES block), "
+                "## Capabilities (use - [ ] checkbox format for each testable behavior). "
+                "All four sections are required in a single write. Do not present partial plans.")
     with open(plan_path) as f:
         content = f.read()
     missing = []
@@ -962,18 +1008,44 @@ def _validate_phase_a(project_root: str) -> str | None:
         has_no_match = bool(re.search(r'[Nn]o matching rules', section_text))
         if not has_rule_id and not has_no_match:
             missing.append('rule ID or "No matching rules" in ## Rules Applied')
+        # Validate cited rule IDs against session's loaded_rule_ids
+        elif has_rule_id and session_id:
+            cited_ids = set(re.findall(r'[A-Z]+-[A-Z]+-\d{3}', section_text))
+            cache = _read_cache(session_id)
+            # Collect all rule IDs loaded across all phases
+            loaded_ids = set(cache.get("loaded_rule_ids", []))
+            by_phase = cache.get("loaded_rule_ids_by_phase", {})
+            for phase_ids in by_phase.values():
+                loaded_ids.update(phase_ids)
+            if loaded_ids:
+                hallucinated = cited_ids - loaded_ids
+                if hallucinated:
+                    _log_friction_event(
+                        session_id, cache.get("tier"),
+                        "hallucinated_rule_ids",
+                        cited=sorted(cited_ids),
+                        loaded=sorted(loaded_ids),
+                        hallucinated=sorted(hallucinated),
+                    )
+                    missing.append(
+                        f'hallucinated rule IDs in ## Rules Applied: {", ".join(sorted(hallucinated))}. '
+                        f'Only cite rules from the injected --- WRIT RULES --- block'
+                    )
     caps_match = re.search(r'^##\s+Capabilities', content, re.MULTILINE)
     if not caps_match:
-        missing.append('## Capabilities')
+        missing.append('## Capabilities (use checkbox format: - [ ] description)')
     else:
         section_start = caps_match.end()
         rest = content[section_start:]
         next_section = re.search(r'^## ', rest, re.MULTILINE)
         section_text = rest[:next_section.start()] if next_section else rest
         if not re.search(r'\[[ x]\]', section_text):
-            missing.append('checkbox items in ## Capabilities')
+            missing.append('## Capabilities must use checkbox format: - [ ] description (not dashes or bullets)')
+        # Capabilities must start unchecked -- pre-checked boxes bypass verification
+        elif re.search(r'\[x\]', section_text):
+            missing.append('capabilities must start as [ ] (unchecked), not [x]. They are checked after implementation')
     if missing:
-        return f"plan.md missing: {'; '.join(missing)}"
+        return f"plan.md validation failed: {'; '.join(missing)}. Fix ALL issues in one edit."
     return None
 
 
@@ -987,6 +1059,61 @@ def _validate_plan_section(project_root: str, heading_pattern: str, label: str) 
         content = f.read()
     if not re.search(heading_pattern, content, re.MULTILINE):
         return f"plan.md missing {label} section"
+    return None
+
+
+def _validate_gate_final(project_root: str) -> str | None:
+    """Validate that capabilities.md has all checkboxes checked and all planned files exist."""
+    import re
+    import glob as globmod
+
+    # Check capabilities.md
+    caps_path = os.path.join(project_root, "capabilities.md")
+    if not os.path.exists(caps_path):
+        # Fall back to plan.md Capabilities section
+        plan_path = _find_plan_md(project_root)
+        if plan_path:
+            with open(plan_path) as f:
+                content = f.read()
+            caps_match = re.search(r'^##\s+Capabilities', content, re.MULTILINE)
+            if caps_match:
+                section_start = caps_match.end()
+                rest = content[section_start:]
+                next_section = re.search(r'^## ', rest, re.MULTILINE)
+                section_text = rest[:next_section.start()] if next_section else rest
+                unchecked = re.findall(r'\[ \]', section_text)
+                if unchecked:
+                    return f"gate-final: {len(unchecked)} unchecked capabilities. Update capabilities.md (or plan.md ## Capabilities) to mark completed items as [x]."
+        else:
+            return "gate-final: neither capabilities.md nor plan.md found."
+    else:
+        with open(caps_path) as f:
+            content = f.read()
+        unchecked = re.findall(r'\[ \]', content)
+        if unchecked:
+            return f"gate-final: {len(unchecked)} unchecked capabilities in capabilities.md. Mark completed items as [x]."
+
+    # Check all planned files exist
+    plan_path = _find_plan_md(project_root)
+    if plan_path:
+        with open(plan_path) as f:
+            plan_content = f.read()
+        files_match = re.search(r'^##\s+Files', plan_content, re.MULTILINE)
+        if files_match:
+            section_start = files_match.end()
+            rest = plan_content[section_start:]
+            next_section = re.search(r'^## ', rest, re.MULTILINE)
+            section_text = rest[:next_section.start()] if next_section else rest
+            # Extract file paths from backtick-quoted paths or table rows
+            paths = re.findall(r'`([^`]+\.\w+)`', section_text)
+            missing_files = []
+            for p in paths:
+                full = os.path.join(project_root, p)
+                if not os.path.exists(full):
+                    missing_files.append(p)
+            if missing_files:
+                return f"gate-final: planned files missing: {', '.join(missing_files)}"
+
     return None
 
 
@@ -1024,16 +1151,40 @@ def _validate_test_skeletons(project_root: str) -> str | None:
 _GATE_VALIDATORS: dict[str, object] = {}  # populated after function definitions
 
 
-def cmd_advance_phase(session_id: str, project_root: str = "") -> None:
+def cmd_advance_phase(session_id: str, project_root: str = "", token: str = "") -> None:
     """Validate artifacts and advance to the next phase gate.
 
     Reads user prompt from stdin (for phase-d skip logic).
     Creates gate file on disk as artifact. Updates session cache as source of truth.
     Clears current-phase loaded_rule_ids. Logs transition to audit trail.
 
+    Requires a --token matching the gate token created by auto-approve-gate.sh.
+    This prevents the agent from calling advance-phase directly via Bash.
+
     Output: JSON {"advanced": true, "gate": "...", "phase": "..."} or
             {"advanced": false, "reason": "..."}
     """
+    # Validate caller token
+    token_path = os.path.join(tempfile.gettempdir(), f"writ-gate-token-{session_id}")
+    expected_token = ""
+    try:
+        with open(token_path) as f:
+            expected_token = f.read().strip()
+    except FileNotFoundError:
+        pass
+
+    if not token or not expected_token or token != expected_token:
+        cache = _read_cache(session_id)
+        _log_friction_event(
+            session_id, cache.get("tier"),
+            "agent_self_approval_blocked",
+            had_token=bool(token),
+            had_expected=bool(expected_token),
+        )
+        json.dump({"advanced": False, "reason": "Invalid or missing gate token. Gates can only be advanced by the approval hook, not by the agent."}, sys.stdout)
+        sys.stdout.write("\n")
+        return
+
     raw = sys.stdin.read()
     prompt_lower = raw.strip().lower() if raw else ""
 
@@ -1082,7 +1233,7 @@ def cmd_advance_phase(session_id: str, project_root: str = "") -> None:
     # Validate artifacts for the target gate
     error = None
     if target_gate == "phase-a":
-        error = _validate_phase_a(project_root)
+        error = _validate_phase_a(project_root, session_id)
     elif target_gate == "phase-b":
         error = _validate_plan_section(project_root, r'^##\s+Domain\s+Invariants', '## Domain Invariants')
     elif target_gate == "phase-c":
@@ -1091,6 +1242,8 @@ def cmd_advance_phase(session_id: str, project_root: str = "") -> None:
         error = _validate_plan_section(project_root, r'^##\s+Concurrency', '## Concurrency')
     elif target_gate == "test-skeletons":
         error = _validate_test_skeletons(project_root)
+    elif target_gate == "gate-final":
+        error = _validate_gate_final(project_root)
 
     if error:
         json.dump({"advanced": False, "reason": error, "gate": target_gate}, sys.stdout)
@@ -1169,10 +1322,146 @@ def cmd_current_phase(session_id: str) -> None:
     sys.stdout.write("\n")
 
 
+def cmd_metrics(log_path: str = "") -> None:
+    """Analyze workflow-friction.log and produce confidence metrics report.
+
+    Reads friction events and computes:
+    - Clean run rate (sessions without gate invalidations)
+    - Phase transition time statistics (avg, p50, p90)
+    - Friction event frequency by type
+    - Tier distribution (sessions counted at final tier)
+    - Approval pattern miss rate
+
+    Output: JSON to stdout.
+    """
+    import statistics as _stats
+
+    # Find friction log
+    if not log_path:
+        markers = ['composer.json', 'package.json', 'Cargo.toml', 'go.mod', 'pyproject.toml', '.git']
+        path = os.getcwd()
+        while path != '/':
+            if any(os.path.exists(os.path.join(path, m)) for m in markers):
+                log_path = os.path.join(path, "workflow-friction.log")
+                break
+            path = os.path.dirname(path)
+
+    if not log_path or not os.path.exists(log_path):
+        json.dump({"error": "No friction log found"}, sys.stdout)
+        sys.stdout.write("\n")
+        sys.exit(1)
+
+    # Parse events
+    events: list[dict] = []
+    try:
+        with open(log_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        json.dump({"error": f"Cannot read {log_path}"}, sys.stdout)
+        sys.stdout.write("\n")
+        sys.exit(1)
+
+    if not events:
+        json.dump({"error": "No events in friction log"}, sys.stdout)
+        sys.stdout.write("\n")
+        sys.exit(1)
+
+    # Group by session
+    sessions: dict[str, list[dict]] = {}
+    for e in events:
+        sid = e.get("session", "unknown")
+        sessions.setdefault(sid, []).append(e)
+
+    total_sessions = len(sessions)
+
+    # 1. Clean run rate
+    sessions_with_invalidations = {
+        e.get("session") for e in events
+        if e.get("event") == "gate_denied_then_approved"
+    }
+    clean_sessions = total_sessions - len(sessions_with_invalidations)
+    clean_run_rate = round(clean_sessions / total_sessions * 100, 1) if total_sessions > 0 else None
+
+    # 2. Phase transition times
+    transition_times = [
+        e["elapsed_seconds"] for e in events
+        if e.get("event") == "phase_transition_time" and "elapsed_seconds" in e
+    ]
+
+    transition_stats = None
+    if transition_times:
+        sorted_times = sorted(transition_times)
+        n = len(sorted_times)
+        transition_stats = {
+            "count": n,
+            "avg": round(_stats.mean(sorted_times), 1),
+            "p50": sorted_times[n // 2],
+            "p90": sorted_times[int(n * 0.9)] if n >= 10 else sorted_times[-1],
+            "min": sorted_times[0],
+            "max": sorted_times[-1],
+        }
+
+    # 3. Event frequency by type
+    known_types = [
+        "approval_pattern_miss",
+        "gate_denied_then_approved",
+        "tier_escalated",
+        "phase_transition_time",
+        "phase_transition",
+        "hallucinated_rule_ids",
+        "agent_self_approval_blocked",
+    ]
+    event_frequency: dict[str, int] = {t: 0 for t in known_types}
+    for e in events:
+        evt = e.get("event", "unknown")
+        event_frequency[evt] = event_frequency.get(evt, 0) + 1
+
+    # 4. Tier distribution (each session counted at final tier)
+    tier_distribution: dict[str, int] = {"0": 0, "1": 0, "2": 0, "3": 0}
+    session_final_tier: dict[str, int] = {}
+    for e in events:
+        sid = e.get("session", "unknown")
+        tier = e.get("tier")
+        if tier is not None:
+            current = session_final_tier.get(sid)
+            if current is None or tier > current:
+                session_final_tier[sid] = tier
+    for tier in session_final_tier.values():
+        tier_distribution[str(tier)] = tier_distribution.get(str(tier), 0) + 1
+
+    # 5. Approval pattern miss rate
+    miss_count = event_frequency.get("approval_pattern_miss", 0)
+    transition_count = event_frequency.get("phase_transition", 0)
+    total_approval_attempts = miss_count + transition_count
+    approval_miss_rate = (
+        round(miss_count / total_approval_attempts * 100, 1)
+        if total_approval_attempts > 0 else None
+    )
+
+    report = {
+        "total_sessions": total_sessions,
+        "total_events": len(events),
+        "clean_run_rate": clean_run_rate,
+        "transition_times": transition_stats,
+        "event_frequency": event_frequency,
+        "tier_distribution": tier_distribution,
+        "approval_miss_rate": approval_miss_rate,
+    }
+    json.dump(report, sys.stdout, indent=2)
+    sys.stdout.write("\n")
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         print("Usage: writ-session.py <command> [args]", file=sys.stderr)
-        print("Commands: read, update, format, should-skip, tier, coverage, auto-feedback, can-write, advance-phase, current-phase", file=sys.stderr)
+        print("Commands: read, update, format, should-skip, tier, coverage, auto-feedback, can-write, advance-phase, current-phase, metrics", file=sys.stderr)
         sys.exit(2)
 
     cmd = sys.argv[1]
@@ -1275,20 +1564,33 @@ def main() -> None:
 
     elif cmd == "advance-phase":
         if len(sys.argv) < 3:
-            print("Usage: writ-session.py advance-phase <session_id> [--project-root PATH]", file=sys.stderr)
+            print("Usage: writ-session.py advance-phase <session_id> [--project-root PATH] [--token TOKEN]", file=sys.stderr)
             sys.exit(2)
         project_root = ""
         if "--project-root" in sys.argv:
             idx = sys.argv.index("--project-root")
             if idx + 1 < len(sys.argv):
                 project_root = sys.argv[idx + 1]
-        cmd_advance_phase(sys.argv[2], project_root)
+        token = ""
+        if "--token" in sys.argv:
+            idx = sys.argv.index("--token")
+            if idx + 1 < len(sys.argv):
+                token = sys.argv[idx + 1]
+        cmd_advance_phase(sys.argv[2], project_root, token)
 
     elif cmd == "current-phase":
         if len(sys.argv) < 3:
             print("Usage: writ-session.py current-phase <session_id>", file=sys.stderr)
             sys.exit(2)
         cmd_current_phase(sys.argv[2])
+
+    elif cmd == "metrics":
+        log_path = ""
+        if "--log" in sys.argv:
+            idx = sys.argv.index("--log")
+            if idx + 1 < len(sys.argv):
+                log_path = sys.argv[idx + 1]
+        cmd_metrics(log_path)
 
     else:
         print(f"Unknown command: {cmd}", file=sys.stderr)

@@ -41,6 +41,9 @@ if [ -z "$SESSION_ID" ]; then
     SESSION_ID=$(echo "${PWD}:${USER}" | md5sum | cut -c1-12)-$(date +%Y%m%d)
 fi
 
+# Publish session ID as backup (writ-rag-inject.sh is primary)
+echo "$SESSION_ID" > /tmp/writ-current-session
+
 # Check approval pattern
 PROMPT_LOWER=$(echo "$PROMPT" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
@@ -60,6 +63,16 @@ clean = re.sub(r'[.!,]+$', '', prompt.strip())
 if clean in exact:
     print('yes'); sys.exit(0)
 
+# Strip common prefix words and re-check exact match
+prefixes = ('ok ', 'okay ', 'sure ', 'yeah ', 'yes ', 'yep ', 'alright ')
+stripped = clean
+for p in prefixes:
+    if clean.startswith(p):
+        stripped = re.sub(r'^' + re.escape(p) + r'[,]?\s*', '', clean)
+        break
+if stripped != clean and stripped in exact:
+    print('yes'); sys.exit(0)
+
 def levenshtein(s1, s2):
     if len(s1) < len(s2): return levenshtein(s2, s1)
     if len(s2) == 0: return len(s1)
@@ -77,12 +90,16 @@ if len(clean) <= 12:
         if levenshtein(clean, target) <= 2:
             print('yes'); sys.exit(0)
 
-if len(prompt) < 60:
+if len(prompt) < 120:
+    approval_words = r'(?:approved?|proceed|go ahead|continue|accept(?:ed)?|lgtm|looks? good|ship it)'
+    prefix_words = r'(?:ok|okay|sure|yeah|yes|yep|alright)'
     patterns = [
-        r'^(?:yes|yep|yeah),?\s*(?:approved?|proceed|go ahead|looks? good|lgtm)',
-        r'^(?:approved?|proceed|go ahead)\s*[.!]*$',
+        r'^(?:yes|yep|yeah),?\s*' + approval_words,
+        r'^' + approval_words + r'\s*[.!]*$',
         r'^(?:phase\s*[a-d]|test.skeletons?)\s*(?:approved?|lgtm)\s*[.!]*$',
         r'^(?:approve|create)\s+(?:phase|gate)',
+        # Prefix word + optional comma/space + approval word (+ optional trailing context)
+        r'^' + prefix_words + r'[,.]?\s+' + approval_words,
     ]
     for p in patterns:
         if re.match(p, prompt):
@@ -92,7 +109,7 @@ print('no')
 " "$PROMPT_LOWER" 2>/dev/null || echo "no")
 
 # Friction logging: approval_pattern_miss
-if [ "$IS_APPROVAL" != "yes" ] && [ ${#PROMPT} -gt 0 ] && [ ${#PROMPT} -lt 60 ]; then
+if [ "$IS_APPROVAL" != "yes" ] && [ ${#PROMPT} -gt 0 ] && [ ${#PROMPT} -lt 120 ]; then
     LOOKS_LIKE_APPROVAL=$(python3 -c "
 import sys
 prompt = sys.argv[1].lower()
@@ -134,8 +151,16 @@ if [ "$IS_APPROVAL" != "yes" ]; then
     exit 0
 fi
 
+# Ensure gate token exists (created once per session, used to block agent self-approval)
+GATE_TOKEN_FILE="/tmp/writ-gate-token-${SESSION_ID}"
+if [ ! -f "$GATE_TOKEN_FILE" ]; then
+    python3 -c "import secrets; print(secrets.token_hex(16))" > "$GATE_TOKEN_FILE" 2>/dev/null
+    chmod 600 "$GATE_TOKEN_FILE" 2>/dev/null || true
+fi
+GATE_TOKEN=$(cat "$GATE_TOKEN_FILE" 2>/dev/null)
+
 # Delegate to advance-phase -- pass prompt via stdin for phase-d detection
-RESULT=$(echo "$PROMPT_LOWER" | python3 "$SESSION_HELPER" advance-phase "$SESSION_ID" 2>/dev/null) || true
+RESULT=$(echo "$PROMPT_LOWER" | python3 "$SESSION_HELPER" advance-phase "$SESSION_ID" --token "$GATE_TOKEN" 2>/dev/null) || true
 
 if [ -z "$RESULT" ]; then
     exit 0

@@ -1,0 +1,17 @@
+- [x] Approval detector matches "ok proceed with remaining work"
+- [x] Approval detector matches "sure, go ahead"
+- [x] Approval detector matches "yeah approved, continue with implementation"
+- [x] Approval detector rejects non-approval prompts that happen to contain approval substrings
+- [x] PostToolUse hook skips files already covered by PreToolUse (gap-only firing)
+- [x] PreToolUse hook records queried file paths in session cache
+- [x] PostToolUse hook extracts code content from Write envelope
+- [x] PostToolUse hook extracts code content from Edit envelope
+- [x] PostToolUse hook builds keyword query from source code patterns
+- [x] PostToolUse hook builds keyword query from XML config patterns (class refs, routes, plugins)
+- [x] PostToolUse hook queries Writ and injects relevant rules
+- [x] PostToolUse hook respects session budget and skip conditions
+- [x] PostToolUse hook skips non-source files
+- [x] Metrics command computes clean run rate from friction log
+- [x] Metrics command computes phase transition time statistics
+- [x] Metrics command reports friction event frequency by type
+- [x] Metrics command reports tier distribution
