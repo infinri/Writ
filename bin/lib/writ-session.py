@@ -1004,13 +1004,13 @@ def _validate_phase_a(project_root: str, session_id: str = "") -> str | None:
         rest = content[section_start:]
         next_section = re.search(r'^## ', rest, re.MULTILINE)
         section_text = rest[:next_section.start()] if next_section else rest
-        has_rule_id = bool(re.search(r'[A-Z]+-[A-Z]+-\d{3}', section_text))
+        has_rule_id = bool(re.search(r'[A-Z][A-Z0-9]+(?:-[A-Z][A-Z0-9]+)*-\d{3}', section_text))
         has_no_match = bool(re.search(r'[Nn]o matching rules', section_text))
         if not has_rule_id and not has_no_match:
             missing.append('rule ID or "No matching rules" in ## Rules Applied')
         # Validate cited rule IDs against session's loaded_rule_ids
         elif has_rule_id and session_id:
-            cited_ids = set(re.findall(r'[A-Z]+-[A-Z]+-\d{3}', section_text))
+            cited_ids = set(re.findall(r'[A-Z][A-Z0-9]+(?:-[A-Z][A-Z0-9]+)*-\d{3}', section_text))
             cache = _read_cache(session_id)
             # Collect all rule IDs loaded across all phases
             loaded_ids = set(cache.get("loaded_rule_ids", []))

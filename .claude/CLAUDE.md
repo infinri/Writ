@@ -55,19 +55,23 @@ Write code directly. Static analysis runs automatically after each file.
 No plan.md required. No gates. No approval steps.
 
 **Tier 2 -- Standard**
-1. Write plan.md with a combined Phase A-C analysis. See "Gate criteria" below for
-   required sections.
-2. Present the plan to the user. STOP. Tell the user: "Say **approved** to proceed."
+1. Write plan.md FIRST with ALL four required sections (## Files, ## Analysis,
+   ## Rules Applied, ## Capabilities). Write capabilities.md with the same checkbox
+   items. Both files in one step -- plan.md is locked after approval, capabilities.md
+   stays editable. The gate validates plan.md completeness before approval can proceed.
+2. Present a summary of the plan to the user. STOP. Tell the user: "Say **approved**
+   to proceed."
 3. After phase-a approval: write test skeleton file(s) with method signatures.
 4. Present test skeletons. STOP. Tell the user: "Say **approved** to proceed to
    implementation."
 5. After test-skeletons approval: write implementation code.
+6. After implementation: update capabilities.md to check off completed items (`[x]`).
 
 **Tier 3 -- Complex**
 Full sequential phases, each requiring its own approval:
 
-1. **Phase A** -- Write plan.md with design and call-path declaration.
-   See "Gate criteria" for required sections. Present, STOP, wait for approval.
+1. **Phase A** -- Write plan.md FIRST with ALL required sections AND capabilities.md
+   with checkbox items. Both files in one step. Present summary, STOP, wait for approval.
 2. **Phase B** -- Update plan.md with domain invariants and validation contracts.
    See "Gate criteria" for required section. Present, STOP, wait for approval.
 3. **Phase C** -- Update plan.md with integration points and seam justification.
@@ -78,7 +82,8 @@ Full sequential phases, each requiring its own approval:
 5. **Test skeletons** -- Write test files with method signatures.
    Present, STOP, wait for approval.
 6. **Implementation** -- Write code. Static analysis runs automatically.
-7. **gate-final** -- All capabilities checked, all planned files exist.
+7. After implementation: update capabilities.md to check off completed capabilities.
+8. **gate-final** -- All capabilities in capabilities.md checked, all planned files exist.
 
 ---
 
@@ -98,11 +103,14 @@ plan.md must contain all four of these sections:
   - Interfaces, type contracts, invariants
   - Integration points, DI wiring, seam justification
 - **`## Rules Applied`** -- at least one rule ID from the injected `--- WRIT RULES ---`
-  block (matching pattern `[A-Z]+-[A-Z]+-\d{3}`), with a sentence on how each applies.
+  block (matching pattern `[A-Z][A-Z0-9]+(?:-[A-Z][A-Z0-9]+)*-\d{3}`), with a sentence on how each applies.
   If Writ returned no rules or all scores were below 0.3, write instead:
   `No matching rules. Domain: <domain description>`.
 - **`## Capabilities`** -- checkbox items (`- [ ] description`) mapping to testable
-  behaviors.
+  behaviors. Must use `- [ ]` format, not dashes or bullets. Must start unchecked.
+  Also write these same items to a separate `capabilities.md` file at plan creation
+  time. plan.md is locked after approval; capabilities.md stays editable for checking
+  off items during implementation.
 
 ### phase-b (Tier 3 only)
 
@@ -129,7 +137,8 @@ Empty test files do not count.
 
 ### gate-final (Tier 3 only)
 
-All capabilities from `## Capabilities` are checked. All files from `## Files` exist.
+All capabilities in `capabilities.md` are checked (`[x]`). All files from `## Files`
+in plan.md exist.
 
 ---
 
