@@ -20,31 +20,24 @@ def _run_session_cmd(*args: str, stdin: str = "") -> str:
     return result.stdout.strip()
 
 
-# -- Gap-only firing ----------------------------------------------------------
+# -- Always-fire behavior -----------------------------------------------------
 
-class TestGapOnlyFiring:
-    def test_skip_when_pretool_already_queried(self):
-        """PostToolUse should skip if PreToolUse already queried this file."""
-        sid = "test-gap-skip"
-        # Simulate PreToolUse recording a file
-        _run_session_cmd("update", sid, "--add-pretool-file", "/src/Foo.php")
+class TestAlwaysFire:
+    def test_posttool_fires_regardless_of_pretool(self):
+        """PostToolUse always fires -- no gap-only check. PreToolUse queries by
+        file path, PostToolUse queries by code content. Different queries, both
+        add value."""
+        sid = "test-always-fire"
         cache = json.loads(_run_session_cmd("read", sid))
-        assert "/src/Foo.php" in cache["pretool_queried_files"]
+        assert "pretool_queried_files" in cache
 
-    def test_fire_when_pretool_did_not_query(self):
-        """PostToolUse should fire if file path is not in pretool_queried_files."""
-        sid = "test-gap-fire"
-        _run_session_cmd("update", sid, "--add-pretool-file", "/src/Foo.php")
-        cache = json.loads(_run_session_cmd("read", sid))
-        assert "/src/Bar.php" not in cache["pretool_queried_files"]
-
-    def test_pretool_records_file_path(self):
-        """PreToolUse adds to pretool_queried_files via --add-pretool-file."""
-        sid = "test-gap-record"
+    def test_pretool_file_tracking_still_available(self):
+        """The --add-pretool-file flag still works (backward compat) even though
+        PostToolUse no longer checks it."""
+        sid = "test-pretool-compat"
         _run_session_cmd("update", sid, "--add-pretool-file", "/a.py")
-        _run_session_cmd("update", sid, "--add-pretool-file", "/b.py")
         cache = json.loads(_run_session_cmd("read", sid))
-        assert set(cache["pretool_queried_files"]) == {"/a.py", "/b.py"}
+        assert "/a.py" in cache["pretool_queried_files"]
 
 
 # -- Content extraction -------------------------------------------------------

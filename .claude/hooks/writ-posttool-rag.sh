@@ -146,20 +146,9 @@ if [ -z "$FILE_PATH" ] || [ -z "$QUERY" ]; then
     exit 0
 fi
 
-# Gap-only firing: skip if PreToolUse already queried this file
+# Read session cache for budget and exclusion list
 CACHE=$(python3 "$SESSION_HELPER" read "$SESSION_ID" 2>/dev/null || echo '{}')
-ALREADY_QUERIED=$(echo "$CACHE" | python3 -c "
-import sys, json
-cache = json.load(sys.stdin)
-files = set(cache.get('pretool_queried_files', []))
-print('yes' if sys.argv[1] in files else 'no')
-" "$FILE_PATH" 2>/dev/null || echo "no")
 
-if [ "$ALREADY_QUERIED" = "yes" ]; then
-    exit 0
-fi
-
-# Read budget and exclusion list
 LOADED_RULE_IDS=$(echo "$CACHE" | python3 -c "
 import sys, json
 cache = json.load(sys.stdin)

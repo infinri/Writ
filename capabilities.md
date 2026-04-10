@@ -2,8 +2,8 @@
 - [x] Approval detector matches "sure, go ahead"
 - [x] Approval detector matches "yeah approved, continue with implementation"
 - [x] Approval detector rejects non-approval prompts that happen to contain approval substrings
-- [x] PostToolUse hook skips files already covered by PreToolUse (gap-only firing)
-- [x] PreToolUse hook records queried file paths in session cache
+- [x] PostToolUse always fires on Write/Edit (code-content query supplements PreToolUse path query)
+- [x] PreToolUse and PostToolUse use different query strategies (path vs content)
 - [x] PostToolUse hook extracts code content from Write envelope
 - [x] PostToolUse hook extracts code content from Edit envelope
 - [x] PostToolUse hook builds keyword query from source code patterns

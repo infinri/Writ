@@ -275,10 +275,6 @@ except Exception:
         python3 "$SESSION_HELPER" update "$SESSION_ID" \
             --add-rule-objects "$RULE_OBJECTS" 2>/dev/null || true
     fi
-
-    # Record file path for PostToolUse gap-only firing
-    python3 "$SESSION_HELPER" update "$SESSION_ID" \
-        --add-pretool-file "$FILE_PATH" 2>/dev/null || true
 fi
 
 exit 0
