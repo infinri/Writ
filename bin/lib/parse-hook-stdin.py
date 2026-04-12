@@ -56,6 +56,8 @@ def parse() -> None:
     # Normalize output -- flatten common fields for hook convenience
     result = {
         "session_id": envelope.get("session_id", ""),
+        "agent_id": envelope.get("agent_id", ""),
+        "agent_type": envelope.get("agent_type", ""),
         "event": envelope.get("hook_event_name", os.environ.get("HOOK_EVENT", "")),
         "tool_name": envelope.get("tool_name", os.environ.get("HOOK_TOOL_NAME", "")),
         "tool_input": tool_input,

@@ -23,7 +23,7 @@ apply to this context?" via a five-stage pipeline (BM25 + vector + graph travers
 + RRF ranking). Rules are facts -- they don't change based on workflow state.
 
 **Enforcement layer (hooks + writ-session.py):** A session-aware workflow engine.
-Owns phase state, gate criteria, file classification, and tier routing. Hooks are
+Owns phase state, gate criteria, file classification, and mode routing. Hooks are
 thin clients that delegate decisions to `writ-session.py`.
 
 ## How rules reach you
@@ -63,22 +63,25 @@ CORRECT: example of doing it right
 
 Human rules outrank AI rules at equal relevance (hard preference rule).
 
-## Tier system
+## Mode system
 
-Every task must be classified before code is written. The tier controls ceremony
-(how many gates), not knowledge (which rules are loaded). All tiers receive rules.
+Every session operates in one of four modes. The mode determines workflow ceremony,
+RAG strategy, and whether code generation is allowed. All modes receive rules.
 
-| Tier | Label | Gates | Ceremony |
-|------|-------|-------|----------|
-| 0 | Research | None | Deliver findings. No code. |
-| 1 | Patch | None | Write code directly. Static analysis runs. |
-| 2 | Standard | phase-a, test-skeletons | Plan -> approve -> test skeletons -> approve -> implement. |
-| 3 | Complex | phase-a through gate-final | Full sequential phases (A, B, C, [D]), test skeletons, implementation. |
+| Mode | Purpose | Gates | Code generation |
+|------|---------|-------|-----------------|
+| Conversation | Discussion, brainstorming | None | No |
+| Debug | Investigating a problem | None | No |
+| Review | Evaluating code against rules | None | No |
+| Work | Building/modifying code | plan + test-skeletons | Yes |
 
-Tiers only escalate, never downgrade. No tier declared = all writes blocked (except plan.md).
+No mode declared = all writes blocked (except plan.md).
 
-Classify via: `python3 <writ>/bin/lib/writ-session.py tier set <0-3> <session_id>`
+Set via: `python3 <writ>/bin/lib/writ-session.py mode set <conversation|debug|review|work> <session_id>`
 (the RAG inject hook prints the exact command with paths filled in).
+
+The `tier` command is still supported as a facade for backward compatibility.
+Tier 0 maps to Conversation, tiers 1-3 map to Work.
 
 ## Gate enforcement
 
@@ -99,23 +102,18 @@ They contain the session ID. Stale gates from previous sessions are rejected.
 
 ### Gate criteria (what the validator checks)
 
-**phase-a** (Tier 2+): plan.md with `## Files`, `## Analysis`, `## Rules Applied`
-(rule IDs or "No matching rules" declaration), `## Capabilities` (checkboxes).
+**plan (phase-a)** (Work mode): plan.md with `## Files`, `## Analysis`,
+`## Rules Applied` (rule IDs or "No matching rules" declaration),
+`## Capabilities` (checkboxes). Validated automatically by ExitPlanMode hook.
 
-**phase-b** (Tier 3): plan.md with `## Domain Invariants`.
-
-**phase-c** (Tier 3): plan.md with `## Integration Points`.
-
-**phase-d** (Tier 3, optional): plan.md with `## Concurrency`. Skipped by default.
-
-**test-skeletons** (Tier 2+): At least one test file with a test method signature.
+**test-skeletons** (Work mode): At least one test file with a test method signature.
 
 ## Session management
 
 `bin/lib/writ-session.py` manages per-session state in temp files:
 
-- **Tier** (0-3, up-only)
-- **Current phase** (planning, testing, implementation, etc.)
+- **Mode** (conversation, debug, review, work)
+- **Current phase** (planning, testing, implementation -- Work mode only)
 - **Gates approved** (source of truth, not inferred from disk)
 - **Loaded rule IDs by phase** (for exclude-list scoping)
 - **Phase transitions** (audit trail with timestamps and triggers)
@@ -129,16 +127,17 @@ They contain the session ID. Stale gates from previous sessions are rejected.
 
 | Hook | Event | Role |
 |------|-------|------|
-| `writ-rag-inject.sh` | UserPromptSubmit | RAG query, rule injection, tier/workflow reminders |
+| `writ-rag-inject.sh` | UserPromptSubmit | RAG query, rule injection, mode/workflow reminders |
 | `auto-approve-gate.sh` | UserPromptSubmit | Approval pattern detection, delegates to advance-phase |
 | `check-gate-approval.sh` | PreToolUse(Write/Edit) | Thin client for can-write |
 | `pre-validate-file.sh` | PreToolUse(Write/Edit) | Static analysis before write |
-| `enforce-final-gate.sh` | PreToolUse(Write/Edit) | Blocks completion markers (Tier 3) |
-| `inject-tier-workflow.sh` | PostToolUse(Bash) | Immediate workflow injection after tier set |
+| `validate-exit-plan.sh` | PreToolUse(ExitPlanMode) | Plan format validation + auto gate advance |
+| `enforce-final-gate.sh` | PreToolUse(Write/Edit) | Blocks completion markers (Work mode) |
+| `inject-tier-workflow.sh` | PostToolUse(Bash) | Immediate workflow injection after mode/tier set |
 | `validate-file.sh` | PostToolUse(Write/Edit) | Static analysis after write |
 | `validate-rules.sh` | PostToolUse(Write/Edit) | Rule compliance validation via /analyze |
 | `validate-handoff.sh` | PostToolUse(Write/Edit) | Handoff JSON schema validation |
-| `friction-logger.sh` | Stop | Friction capture (gate denials, tier escalations, phase transitions) |
+| `friction-logger.sh` | Stop | Friction capture (gate denials, mode changes, phase transitions) |
 | `writ-context-tracker.sh` | Stop | Context pressure + auto-feedback |
 | `log-session-metrics.sh` | Stop | Gate approval context metrics |
 
@@ -153,10 +152,56 @@ go vet. Add new analyzers via `bin/run-analysis.sh`.
 
 ## Proposing new rules
 
-When you encounter a pattern not covered by existing rules, propose it via
-`POST http://localhost:8765/propose`. See `.claude/CLAUDE.md` for the full request
-format and trigger conditions. Proposed rules enter as `ai-provisional` and must pass
-the structural gate (schema, specificity, redundancy, novelty, conflict checks).
+Propose a rule when any of these occur:
+
+1. **Bug fix reveals a missing guard** -- you fixed a bug that a rule should have
+   prevented. Propose for the root cause pattern, not the symptom.
+2. **Architectural decision with no prior art** -- you made a design choice with no
+   matching rule in the injected set, and it would benefit future tasks.
+3. **User corrects your approach** -- the user says "don't do X" or "always do Y" and
+   no injected rule covers it.
+4. **Framework/library gotcha** -- a non-obvious constraint that would trap future agents.
+
+Do NOT propose for: one-off project decisions (use project memory), obvious language
+usage, or duplicates of already-injected rules.
+
+```bash
+curl -X POST http://localhost:8765/propose -H 'Content-Type: application/json' -d '{
+  "rule_id": "DOMAIN-CATEGORY-NNN",
+  "domain": "architecture",
+  "severity": "medium",
+  "scope": "function",
+  "trigger": "when this situation occurs",
+  "statement": "what must be done",
+  "violation": "example of doing it wrong",
+  "pass_example": "example of doing it right",
+  "enforcement": "how to verify compliance",
+  "rationale": "why this matters",
+  "last_validated": "YYYY-MM-DD",
+  "task_description": "what you were doing when you discovered this",
+  "query_that_triggered": "the prompt that led here"
+}'
+```
+
+Rule ID convention: `{DOMAIN}-{CATEGORY}-{NNN}` where DOMAIN is a broad area
+(ARCH, PY, PHP, FW, DB, TEST, PERF, SEC, ENF, OPS). Check existing rules to avoid
+ID collisions.
+
+Proposed rules enter as `ai-provisional` and must pass the structural gate (schema,
+specificity, redundancy, novelty, conflict checks).
+
+### Recording feedback
+
+When a rule directly influenced your implementation (you followed it, or it prevented
+an error), record positive feedback:
+
+```bash
+curl -X POST http://localhost:8765/feedback -H 'Content-Type: application/json' \
+  -d '{"rule_id": "RULE-ID-HERE", "signal": "positive"}'
+```
+
+Negative feedback (rule was present but didn't prevent an error) is recorded
+automatically by the enforcement hooks.
 
 ## Server requirements
 

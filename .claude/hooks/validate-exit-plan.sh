@@ -8,8 +8,9 @@
 # ## Rules Applied, ## Capabilities). If validation fails, the hook
 # denies the exit and Claude stays in plan mode to fix the plan.
 #
-# This replaces the manual phase-a approval cycle. The user no longer
-# needs to say "approved" -- the hook validates automatically.
+# This hook validates FORMAT only. It does NOT create the phase-a gate.
+# The user must say "approved" after reviewing the plan's substance.
+# auto-approve-gate.sh creates the gate on user approval.
 
 set -euo pipefail
 
@@ -24,7 +25,7 @@ SESSION_ID=$(echo "$STDIN_JSON" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
-    print(data.get('session_id', ''))
+    print(data.get('agent_id', '') or data.get('session_id', ''))
 except Exception:
     print('')
 " 2>/dev/null) || true
@@ -39,18 +40,13 @@ if [ -z "$SESSION_ID" ]; then
     SESSION_ID=$(echo "${PWD}:${USER}" | md5sum | cut -c1-12)-$(date +%Y%m%d)
 fi
 
-# Check if a tier is declared. If no tier, allow exit -- Writ enforcement
-# isn't active and we shouldn't block unrelated /plan usage.
-CURRENT_TIER=$(python3 "$SESSION_HELPER" tier get "$SESSION_ID" 2>/dev/null || echo "")
-CURRENT_TIER=$(echo "$CURRENT_TIER" | tr -d '[:space:]')
+# Check if mode is Work. Only Work mode requires plan validation.
+# If no mode or non-work mode, allow exit -- Writ doesn't gate /plan usage.
+CURRENT_MODE=$(python3 "$SESSION_HELPER" mode get "$SESSION_ID" 2>/dev/null || echo "")
+CURRENT_MODE=$(echo "$CURRENT_MODE" | tr -d '[:space:]')
 
-if [ -z "$CURRENT_TIER" ]; then
-    # No tier declared -- allow exit, Writ isn't managing this session
-    exit 0
-fi
-
-# Tier 0 and 1 have no plan requirement
-if [ "$CURRENT_TIER" -lt 2 ] 2>/dev/null; then
+if [ "$CURRENT_MODE" != "work" ]; then
+    # Not in Work mode -- allow exit, no plan validation needed
     exit 0
 fi
 
@@ -83,6 +79,30 @@ if error:
 " 2>/dev/null) || true
 
 if [ -n "$VALIDATION_ERROR" ]; then
+    # Log exitplanmode_denial
+    python3 -c "
+import json, sys, os
+from datetime import datetime, timezone
+entry = json.dumps({
+    'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'session': sys.argv[1],
+    'mode': 'work',
+    'event': 'exitplanmode_denial',
+    'reason': sys.argv[2][:200],
+})
+markers = ['composer.json','package.json','Cargo.toml','go.mod','pyproject.toml','.git']
+path = os.getcwd()
+while path != '/':
+    if any(os.path.exists(os.path.join(path, m)) for m in markers):
+        try:
+            with open(os.path.join(path, 'workflow-friction.log'), 'a') as f:
+                f.write(entry + '\n')
+        except OSError:
+            pass
+        break
+    path = os.path.dirname(path)
+" "$SESSION_ID" "$VALIDATION_ERROR" 2>/dev/null || true
+
     # Deny exit -- Claude stays in plan mode to fix the plan
     python3 -c "
 import json, sys
@@ -98,15 +118,39 @@ print(json.dumps(result))
     exit 0
 fi
 
-# Plan is valid -- allow exit and advance the phase-a gate
-GATE_TOKEN_FILE="/tmp/writ-gate-token-${SESSION_ID}"
-if [ ! -f "$GATE_TOKEN_FILE" ]; then
-    python3 -c "import secrets; print(secrets.token_hex(16))" > "$GATE_TOKEN_FILE" 2>/dev/null
-    chmod 600 "$GATE_TOKEN_FILE" 2>/dev/null || true
-fi
-GATE_TOKEN=$(cat "$GATE_TOKEN_FILE" 2>/dev/null)
+# Log exitplanmode_allow
+python3 -c "
+import json, sys, os
+from datetime import datetime, timezone
+entry = json.dumps({
+    'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'session': sys.argv[1],
+    'mode': 'work',
+    'event': 'exitplanmode_allow',
+})
+markers = ['composer.json','package.json','Cargo.toml','go.mod','pyproject.toml','.git']
+path = os.getcwd()
+while path != '/':
+    if any(os.path.exists(os.path.join(path, m)) for m in markers):
+        try:
+            with open(os.path.join(path, 'workflow-friction.log'), 'a') as f:
+                f.write(entry + '\n')
+        except OSError:
+            pass
+        break
+    path = os.path.dirname(path)
+" "$SESSION_ID" 2>/dev/null || true
 
-# Advance phase-a gate automatically
-RESULT=$(echo "approved" | python3 "$SESSION_HELPER" advance-phase "$SESSION_ID" --token "$GATE_TOKEN" 2>/dev/null) || true
+# Plan is valid -- allow exit from /plan mode.
+# The phase-a gate is NOT created here. The user must review the plan
+# and say "approved" for auto-approve-gate.sh to create the gate.
+cat <<'WRIT_DIRECTIVE'
+[WRIT WORKFLOW -- MANDATORY] Plan format validated. You are NOT approved to write code.
+NEXT STEPS IN ORDER:
+1. Present a brief plan summary to the user
+2. Say "Say approved to proceed"
+3. WAIT -- do not call Write or Edit until the user says "approved"
+Attempting to write before approval WILL be denied.
+WRIT_DIRECTIVE
 
 exit 0

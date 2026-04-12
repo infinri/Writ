@@ -26,7 +26,7 @@ Ranked rules (respecting token budget)
 ```
 
 All indexes are pre-warmed at startup. No I/O in the hot path (PERF-IO-001).
-
+ 
 ### Module map
 
 | Module | Lines | Role | Load-bearing? |

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# PostToolUse RAG query -- fires after every Write/Edit
+# PreToolUse RAG query -- fires before every Read
 #
-# Queries Writ with code-derived patterns from the content Claude just wrote.
-# Only fires when PreToolUse did NOT already query for the same file (gap-only).
+# Queries Writ with file-context rules when Claude reads a file in Review
+# or Debug mode. Skips in all other modes (Conversation, Work, no mode).
 #
-# Hook type: PostToolUse (matcher: Write|Edit)
+# Hook type: PreToolUse (matcher: Read)
 # Exit: always 0 (advisory injection only, never blocks)
 
 set -euo pipefail
@@ -18,8 +18,6 @@ WRIT_HOST="${WRIT_HOST:-localhost}"
 WRIT_PORT="${WRIT_PORT:-8765}"
 WRIT_URL="http://${WRIT_HOST}:${WRIT_PORT}/query"
 
-HOOK_START_NS=$(hook_timer_start)
-
 # Read stdin once
 STDIN_DATA=$(cat)
 
@@ -29,128 +27,120 @@ if [ -z "$SESSION_ID" ]; then
     SESSION_ID=$(detect_session_id "")
 fi
 
+# Mode filter: only fire in review and debug modes
+MODE=$(python3 "$SESSION_HELPER" mode get "$SESSION_ID" 2>/dev/null || echo "")
+MODE=$(echo "$MODE" | tr -d '[:space:]')
+if [ "$MODE" != "review" ] && [ "$MODE" != "debug" ]; then
+    exit 0
+fi
+
 # Skip if budget exhausted or context pressure high
 if python3 "$SESSION_HELPER" should-skip "$SESSION_ID" 2>/dev/null; then
     exit 0
 fi
 
-# Extract file path, check language, check gap-only, and build query in one Python call.
-# Outputs two lines: file_path and query. Exits non-zero to signal skip.
-QUERY_RESULT=$(echo "$STDIN_DATA" | python3 -c "
-import sys, json, re, os
-
-MAX_KEYWORDS = 20
-
+# Extract file path from the envelope
+FILE_PATH=$(echo "$STDIN_DATA" | python3 -c "
+import sys, json
 try:
     data = json.load(sys.stdin)
+    ti = data.get('tool_input', {})
+    fp = ti.get('file_path', '')
+    if not fp:
+        fp = data.get('file_path', '')
+    print(fp)
 except Exception:
-    sys.exit(1)
+    print('')
+" 2>/dev/null)
 
-ti = data.get('tool_input', {})
-if isinstance(ti, str):
-    try:
-        ti = json.loads(ti)
-    except (json.JSONDecodeError, ValueError):
-        sys.exit(1)
-
-file_path = ti.get('file_path', '')
-content = ti.get('content', '') or ti.get('new_string', '')
-
-if not file_path or not content:
-    sys.exit(1)
-
-# Detect language
-ext_map = {
-    '.php': 'php', '.xml': 'xml',
-    '.js': 'javascript', '.jsx': 'javascript',
-    '.ts': 'typescript', '.tsx': 'typescript',
-    '.py': 'python', '.rs': 'rust', '.go': 'go',
-    '.java': 'java', '.rb': 'ruby',
-    '.graphqls': 'graphql', '.graphql': 'graphql',
-}
-ext = os.path.splitext(file_path)[1]
-lang = ext_map.get(ext, 'unknown')
-if lang == 'unknown':
-    sys.exit(1)
-
-# Build query from content
-signals = [lang]
-
-if lang == 'xml':
-    # Class references in XML attributes
-    class_refs = re.findall(r'(?:class|type|instance|name)=\x22([^\x22]+)\x22', content)
-    for ref in class_refs:
-        parts = ref.replace('\\\\\\\\', '\\\\').split('\\\\')
-        if len(parts) > 1:
-            signals.append(parts[-1])
-            for p in parts[:-1]:
-                if len(p) > 3 and p[0].isupper():
-                    signals.append(p)
-    # Plugin method names
-    methods = re.findall(r'method=\x22(\w+)\x22', content)
-    signals.extend(methods)
-    # Event names
-    events = re.findall(r'<event\s+name=\x22([^\x22]+)\x22', content)
-    signals.extend(events)
-    # Route URLs
-    routes = re.findall(r'url=\x22([^\x22]+)\x22', content)
-    for r in routes:
-        signals.extend(p for p in r.strip('/').split('/') if len(p) > 3)
-else:
-    # Source code: class names, function names
-    classes = re.findall(r'class\s+(\w+)', content)
-    signals.extend(classes)
-    functions = re.findall(r'(?:function|def|func|fn)\s+(\w+)', content)
-    signals.extend(f for f in functions if len(f) > 3)
-
-    # Import lines: extract capitalized words (class/module names)
-    for line in content.split('\n'):
-        if re.match(r'\s*(?:import|use|from|require)', line):
-            words = re.findall(r'[A-Z]\w{2,}', line)
-            signals.extend(words)
-
-    # Type references
-    type_refs = re.findall(r':\s*([A-Z]\w{2,})', content)
-    signals.extend(type_refs)
-
-    # PHP repository/factory patterns
-    if lang == 'php':
-        repo_calls = re.findall(r'->(\w+Repository|\w+Factory)\b', content)
-        signals.extend(repo_calls)
-
-    # Python decorators
-    if lang == 'python':
-        decorators = re.findall(r'@(\w+)', content)
-        signals.extend(d for d in decorators if len(d) > 3)
-
-# Deduplicate and cap
-seen = set()
-unique = []
-for s in signals:
-    lower = s.lower()
-    if lower in seen or len(lower) < 3:
-        continue
-    seen.add(lower)
-    unique.append(s)
-
-query = ' '.join(unique[:MAX_KEYWORDS])
-if len(query) < 5:
-    sys.exit(1)
-
-print(file_path)
-print(query)
-" 2>/dev/null) || exit 0
-
-FILE_PATH=$(echo "$QUERY_RESULT" | head -1)
-QUERY=$(echo "$QUERY_RESULT" | tail -n +2)
-
-if [ -z "$FILE_PATH" ] || [ -z "$QUERY" ]; then
+if [ -z "$FILE_PATH" ]; then
     exit 0
 fi
 
-# Read session cache for budget and exclusion list
-CACHE=$(python3 "$SESSION_HELPER" read "$SESSION_ID" 2>/dev/null || echo '{}')
+# Skip non-source files
+LANG=$(detect_language "$FILE_PATH")
+if [ "$LANG" = "unknown" ]; then
+    exit 0
+fi
 
+# Build a file-context query from the path
+QUERY=$(python3 -c "
+import sys, os, re
+
+file_path = sys.argv[1]
+lang = sys.argv[2]
+
+parts = file_path.split('/')
+basename = os.path.basename(file_path)
+name_no_ext = os.path.splitext(basename)[0]
+
+signals = [lang]
+
+# Magento-specific path signals
+magento_patterns = {
+    'Controller': 'controller endpoint',
+    'Model': 'model service',
+    'Api': 'interface contract',
+    'Observer': 'event observer',
+    'Plugin': 'plugin interceptor',
+    'Block': 'view block',
+    'Helper': 'helper class',
+    'Setup': 'database schema migration',
+    'Cron': 'cron job',
+    'Console': 'CLI command',
+    'Queue': 'message queue consumer',
+    'etc': 'module configuration',
+}
+for pattern, signal in magento_patterns.items():
+    if f'/{pattern}/' in file_path or file_path.endswith(f'/{pattern}'):
+        signals.append(signal)
+        break
+
+# Python-specific signals
+if lang == 'python':
+    if 'server' in basename.lower() or 'endpoint' in basename.lower():
+        signals.append('FastAPI endpoint')
+    if 'test' in basename.lower():
+        signals.append('test')
+
+# XML config signals
+if lang == 'xml':
+    xml_types = {
+        'di.xml': 'dependency injection',
+        'webapi.xml': 'REST API endpoint',
+        'crontab.xml': 'cron schedule',
+        'system.xml': 'admin configuration',
+        'communication.xml': 'message queue',
+        'queue_topology.xml': 'queue topology',
+        'queue_consumer.xml': 'queue consumer',
+        'events.xml': 'event observer',
+        'db_schema.xml': 'database schema',
+    }
+    for xml_file, signal in xml_types.items():
+        if basename == xml_file:
+            signals.append(signal)
+            break
+
+# Class/file name (split CamelCase)
+words = re.findall(r'[A-Z][a-z]+|[a-z]+', name_no_ext)
+signals.extend(w.lower() for w in words if len(w) > 3)
+
+seen = set()
+unique = []
+for s in signals:
+    if s not in seen:
+        seen.add(s)
+        unique.append(s)
+
+print(' '.join(unique[:15]))
+" "$FILE_PATH" "$LANG" 2>/dev/null)
+
+if [ -z "$QUERY" ] || [ ${#QUERY} -lt 5 ]; then
+    exit 0
+fi
+
+# Read session cache for exclusion and budget
+CACHE=$(python3 "$SESSION_HELPER" read "$SESSION_ID" 2>/dev/null || echo '{"loaded_rule_ids":[],"remaining_budget":8000}')
 LOADED_RULE_IDS=$(echo "$CACHE" | python3 -c "
 import sys, json
 cache = json.load(sys.stdin)
@@ -163,10 +153,11 @@ else:
 " 2>/dev/null || echo '[]')
 REMAINING_BUDGET=$(echo "$CACHE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('remaining_budget',8000))" 2>/dev/null || echo '8000')
 
-MAX_POSTTOOL_BUDGET=1500
-POSTTOOL_BUDGET=$((REMAINING_BUDGET < MAX_POSTTOOL_BUDGET ? REMAINING_BUDGET : MAX_POSTTOOL_BUDGET))
+# Cap budget (at most 1/4 of remaining per query)
+MAX_PRETOOL_BUDGET=1500
+PRETOOL_BUDGET=$((REMAINING_BUDGET < MAX_PRETOOL_BUDGET ? REMAINING_BUDGET : MAX_PRETOOL_BUDGET))
 
-if [ "$POSTTOOL_BUDGET" -lt 200 ]; then
+if [ "$PRETOOL_BUDGET" -lt 200 ]; then
     exit 0
 fi
 
@@ -179,13 +170,13 @@ print(json.dumps({
     'exclude_rule_ids': json.loads(sys.argv[3]),
     'top_k': 3,
 }))
-" "$QUERY" "$POSTTOOL_BUDGET" "$LOADED_RULE_IDS" 2>/dev/null)
+" "$QUERY" "$PRETOOL_BUDGET" "$LOADED_RULE_IDS" 2>/dev/null)
 
 if [ -z "$REQUEST" ]; then
     exit 0
 fi
 
-# Query Writ -- tight timeout (in the write path)
+# Query Writ -- tight timeout since this is in the read path
 RESPONSE=$(curl -s --connect-timeout 0.3 --max-time 1 \
     -X POST "$WRIT_URL" \
     -H "Content-Type: application/json" \
@@ -209,7 +200,7 @@ if [ "$HAS_ERROR" = "yes" ]; then
     exit 0
 fi
 
-# Check relevance threshold
+# Check if any results have scores above threshold
 HAS_RELEVANT=$(echo "$RESPONSE" | python3 -c "
 import sys, json
 try:
@@ -237,7 +228,7 @@ fi
 
 if [ -n "$RULES_TEXT" ]; then
     echo ""
-    echo "[Writ: post-write rules for $(basename "$FILE_PATH")]"
+    echo "[Writ: file-context rules for $(basename "$FILE_PATH")]"
     echo "$RULES_TEXT"
 fi
 
@@ -252,7 +243,6 @@ if [ -n "$META_LINE" ]; then
         --cost "$COST" \
         --inc-queries 2>/dev/null || true
 
-    # Store full rule objects for compliance checking
     RULE_OBJECTS=$(echo "$RESPONSE" | python3 -c "
 import sys, json
 try:
@@ -280,22 +270,21 @@ except Exception:
             --add-rule-objects "$RULE_OBJECTS" 2>/dev/null || true
     fi
 
-    # Log rag_query event (direct Python call to avoid shell quoting issues with JSON arrays)
+    # Log rag_query event
     CURRENT_MODE=$(python3 "$SESSION_HELPER" mode get "$SESSION_ID" 2>/dev/null || echo "")
     CURRENT_MODE=$(echo "$CURRENT_MODE" | tr -d '[:space:]')
     python3 -c "
 import json, sys, os
 from datetime import datetime, timezone
-rule_ids = json.loads(sys.argv[4])
 entry = json.dumps({
     'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'session': sys.argv[1],
     'mode': sys.argv[2] if sys.argv[2] else None,
     'event': 'rag_query',
-    'query_source': 'file-write-post',
+    'query_source': 'file-read',
     'tokens_injected': int(sys.argv[3]),
-    'rules_returned_count': len(rule_ids),
-    'rule_ids': rule_ids,
+    'rules_returned_count': len(json.loads(sys.argv[4])),
+    'rule_ids': json.loads(sys.argv[4]),
 })
 markers = ['composer.json','package.json','Cargo.toml','go.mod','pyproject.toml','.git']
 path = os.getcwd()
@@ -311,5 +300,4 @@ while path != '/':
 " "$SESSION_ID" "${CURRENT_MODE:-}" "$COST" "$NEW_RULE_IDS" 2>/dev/null || true
 fi
 
-hook_timer_end "$HOOK_START_NS" "writ-posttool-rag" "$SESSION_ID" ""
 exit 0

@@ -15,6 +15,8 @@
 SKILL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 source "$SKILL_DIR/bin/lib/common.sh"
 
+HOOK_START_NS=$(hook_timer_start)
+
 SESSION_HELPER="$SKILL_DIR/bin/lib/writ-session.py"
 WRIT_HOST="${WRIT_HOST:-localhost}"
 WRIT_PORT="${WRIT_PORT:-8765}"
@@ -34,10 +36,10 @@ if [ ! -f "$FILE" ]; then exit 0; fi
 SESSION_ID=$(detect_session_id "$PARSED")
 if [ -z "$SESSION_ID" ]; then exit 0; fi
 
-# Check tier -- skip for Tier 0 (research, no code)
-TIER=$(python3 "$SESSION_HELPER" tier get "$SESSION_ID" 2>/dev/null || echo "")
-TIER=$(echo "$TIER" | tr -d '[:space:]')
-if [ "$TIER" = "0" ]; then exit 0; fi
+# Skip for non-work modes (no code generation)
+MODE=$(python3 "$SESSION_HELPER" mode get "$SESSION_ID" 2>/dev/null || echo "")
+MODE=$(echo "$MODE" | tr -d '[:space:]')
+if [ "$MODE" != "work" ]; then exit 0; fi
 
 # Read session cache
 CACHE=$(python3 "$SESSION_HELPER" read "$SESSION_ID" 2>/dev/null || echo '{}')
@@ -223,6 +225,7 @@ print('no')
         fi
     fi
 
+    hook_timer_end "$HOOK_START_NS" "validate-rules" "$SESSION_ID" "$MODE"
     exit 0
 fi
 
@@ -291,6 +294,7 @@ fi
 
 if [ -z "$PLAN_FILE" ]; then
     # No plan.md -> warning mode only (Tier 1 behavior)
+    hook_timer_end "$HOOK_START_NS" "validate-rules" "$SESSION_ID" "$MODE"
     exit 1
 fi
 
@@ -402,4 +406,5 @@ for f in findings:
 # Clear pending violations after phase-boundary scan
 python3 "$SESSION_HELPER" clear-pending-violations "$SESSION_ID" 2>/dev/null || true
 
+hook_timer_end "$HOOK_START_NS" "validate-rules" "$SESSION_ID" "$MODE"
 exit 1

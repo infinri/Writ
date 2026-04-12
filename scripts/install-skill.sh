@@ -31,6 +31,12 @@ HOOKS=(
     .claude/hooks/validate-handoff.sh
     .claude/hooks/validate-rules.sh
     .claude/hooks/log-session-metrics.sh
+    .claude/hooks/writ-pretool-rag.sh
+    .claude/hooks/writ-posttool-rag.sh
+    .claude/hooks/writ-read-rag.sh
+    .claude/hooks/validate-exit-plan.sh
+    .claude/hooks/writ-subagent-start.sh
+    .claude/hooks/writ-subagent-stop.sh
 )
 for hook in "${HOOKS[@]}"; do
     if [ ! -f "$WRIT_DIR/$hook" ]; then
@@ -88,6 +94,12 @@ new_permissions = [
     f"Bash(bash {writ_dir}/.claude/hooks/validate-handoff.sh)",
     f"Bash(bash {writ_dir}/.claude/hooks/validate-rules.sh)",
     f"Bash(bash {writ_dir}/.claude/hooks/log-session-metrics.sh)",
+    f"Bash(bash {writ_dir}/.claude/hooks/writ-pretool-rag.sh)",
+    f"Bash(bash {writ_dir}/.claude/hooks/writ-posttool-rag.sh)",
+    f"Bash(bash {writ_dir}/.claude/hooks/writ-read-rag.sh)",
+    f"Bash(bash {writ_dir}/.claude/hooks/validate-exit-plan.sh)",
+    f"Bash(bash {writ_dir}/.claude/hooks/writ-subagent-start.sh)",
+    f"Bash(bash {writ_dir}/.claude/hooks/writ-subagent-stop.sh)",
 ]
 
 existing = set(settings["permissions"]["allow"])
@@ -118,7 +130,7 @@ hook_defs = [
     ("UserPromptSubmit", "writ-rag-inject.sh", ""),
     # Gate approval -- every prompt (checks for "approved" pattern)
     ("UserPromptSubmit", "auto-approve-gate.sh", ""),
-    # Tier workflow injection -- after tier set commands
+    # Mode/tier workflow injection -- after mode/tier set commands
     ("PostToolUse", "inject-tier-workflow.sh", "Bash"),
     # Context tracking -- every response
     ("Stop", "writ-context-tracker.sh", ""),
@@ -130,14 +142,25 @@ hook_defs = [
     ("PreToolUse", "pre-validate-file.sh", "Write|Edit"),
     # Final gate enforcement
     ("PreToolUse", "enforce-final-gate.sh", "Write|Edit"),
+    # Plan validation -- before exiting /plan mode
+    ("PreToolUse", "validate-exit-plan.sh", "ExitPlanMode"),
+    # Per-file RAG on Write/Edit (Work mode)
+    ("PreToolUse", "writ-pretool-rag.sh", "Write|Edit"),
+    # Per-file RAG on Read (Review/Debug modes)
+    ("PreToolUse", "writ-read-rag.sh", "Read"),
     # Post-write static analysis
     ("PostToolUse", "validate-file.sh", "Write|Edit"),
     # Rule compliance validation
     ("PostToolUse", "validate-rules.sh", "Write|Edit"),
+    # Post-write RAG (gap detection)
+    ("PostToolUse", "writ-posttool-rag.sh", "Write|Edit"),
     # Handoff validation
     ("PostToolUse", "validate-handoff.sh", "Write|Edit"),
     # Session metrics -- every response
     ("Stop", "log-session-metrics.sh", ""),
+    # Sub-agent lifecycle -- session isolation and metrics
+    ("SubagentStart", "writ-subagent-start.sh", ""),
+    ("SubagentStop", "writ-subagent-stop.sh", ""),
 ]
 
 results = []
@@ -157,6 +180,40 @@ print("Hooks:")
 for line in results:
     print(line)
 PYEOF
+
+# --- Rules files (symlinks) ---
+echo ""
+echo "Rules files:"
+mkdir -p "$HOME/.claude/rules"
+for rule in "$WRIT_DIR/rules/"*.md; do
+    if [ -f "$rule" ]; then
+        name=$(basename "$rule")
+        target="$HOME/.claude/rules/$name"
+        if [ -L "$target" ] || [ ! -e "$target" ]; then
+            ln -sf "$rule" "$target"
+            echo "  $name: linked"
+        else
+            echo "  $name: skipped (non-symlink file exists)"
+        fi
+    fi
+done
+
+# --- Agent definitions (symlinks) ---
+echo ""
+echo "Agent definitions:"
+mkdir -p "$HOME/.claude/agents"
+for agent in "$WRIT_DIR/.claude/agents/"*.md; do
+    if [ -f "$agent" ]; then
+        name=$(basename "$agent")
+        target="$HOME/.claude/agents/$name"
+        if [ -L "$target" ] || [ ! -e "$target" ]; then
+            ln -sf "$agent" "$target"
+            echo "  $name: linked"
+        else
+            echo "  $name: skipped (non-symlink file exists)"
+        fi
+    fi
+done
 
 echo ""
 echo "Done. Restart Claude Code for hooks to take effect."

@@ -132,46 +132,50 @@ class TestTierSet:
 
 
 # ---------------------------------------------------------------------------
-# Up-only escalation enforcement
+# Tier facade: v2 maps tiers to modes, no escalation enforcement
 # ---------------------------------------------------------------------------
 
 class TestTierEscalation:
 
-    def test_escalate_1_to_2_succeeds(self, session_id, capsys):
-        """Escalating from Tier 1 to Tier 2 is allowed."""
+    def test_tier_1_to_2_succeeds(self, session_id, capsys):
+        """Tier facade: setting 1 then 2 is allowed (both map to work)."""
         writ_session.cmd_tier(session_id, "set", "1")
         capsys.readouterr()
         writ_session.cmd_tier(session_id, "set", "2")
         out = capsys.readouterr().out
-        assert "escalated" in out
+        assert "set: 2" in out
 
-    def test_escalate_1_to_3_succeeds(self, session_id, capsys):
-        """Escalating from Tier 1 to Tier 3 is allowed (skip tiers)."""
+    def test_tier_1_to_3_succeeds(self, session_id, capsys):
+        """Tier facade: setting 1 then 3 is allowed."""
         writ_session.cmd_tier(session_id, "set", "1")
         capsys.readouterr()
         writ_session.cmd_tier(session_id, "set", "3")
         out = capsys.readouterr().out
-        assert "escalated: 1 -> 3" in out
+        assert "set: 3" in out
 
-    def test_escalate_outputs_message(self, session_id, capsys):
-        """Escalation should output 'escalated: 1 -> 2'."""
+    def test_tier_outputs_set_message(self, session_id, capsys):
+        """Tier facade: always outputs 'set: N'."""
         writ_session.cmd_tier(session_id, "set", "1")
         capsys.readouterr()
         writ_session.cmd_tier(session_id, "set", "2")
         out = capsys.readouterr().out
-        assert out.strip() == "escalated: 1 -> 2"
+        assert "set: 2" in out
 
-    def test_downgrade_2_to_1_rejected(self, session_id):
-        """Downgrading from Tier 2 to Tier 1 must fail with exit code 1."""
+    def test_downgrade_2_to_1_allowed(self, session_id, capsys):
+        """Tier facade: no escalation enforcement -- downgrades are allowed."""
         writ_session.cmd_tier(session_id, "set", "2")
-        with pytest.raises(SystemExit, match="1"):
-            writ_session.cmd_tier(session_id, "set", "1")
+        capsys.readouterr()
+        writ_session.cmd_tier(session_id, "set", "1")
+        out = capsys.readouterr().out
+        assert "set: 1" in out
 
-    def test_downgrade_3_to_0_rejected(self, session_id):
-        """Downgrading from Tier 3 to Tier 0 must fail with exit code 1."""
+    def test_downgrade_3_to_0_allowed(self, session_id, capsys):
+        """Tier facade: no escalation enforcement -- any tier to any tier."""
         writ_session.cmd_tier(session_id, "set", "3")
-        with pytest.raises(SystemExit, match="1"):
-            writ_session.cmd_tier(session_id, "set", "0")
+        capsys.readouterr()
+        writ_session.cmd_tier(session_id, "set", "0")
+        out = capsys.readouterr().out
+        assert "set: 0" in out
 
     def test_set_same_tier_is_noop(self, session_id, capsys):
         """Setting the same tier again should succeed silently (no error)."""
@@ -188,7 +192,7 @@ class TestTierEscalation:
         writ_session.cmd_update(session_id, ["--add-rules", '["ARCH-ORG-001"]'])
         writ_session.cmd_tier(session_id, "set", "2")
         data = _read_raw_cache(tmp_path, session_id)
-        assert data["tier"] == 2
+        assert data["mode"] == "work"
         assert "ARCH-ORG-001" in data["loaded_rule_ids"]
 
 
@@ -198,12 +202,12 @@ class TestTierEscalation:
 
 class TestTierCacheIntegration:
 
-    def test_tier_field_present_in_cache_after_set(self, session_id, tmp_path):
-        """Cache JSON must contain 'tier' key after tier set."""
+    def test_mode_field_present_in_cache_after_tier_set(self, session_id, tmp_path):
+        """Cache JSON must contain 'mode' key after tier set (facade maps to mode)."""
         writ_session.cmd_tier(session_id, "set", "1")
         data = _read_raw_cache(tmp_path, session_id)
-        assert "tier" in data
-        assert data["tier"] == 1
+        assert "mode" in data
+        assert data["mode"] == "work"
 
     def test_existing_cache_fields_preserved_after_tier_set(self, session_id, tmp_path):
         """Setting tier must not clobber loaded_rule_ids, remaining_budget, etc."""
@@ -225,12 +229,12 @@ class TestTierCacheIntegration:
         cache = writ_session._read_cache(session_id)
         assert cache["tier"] is None
 
-    def test_update_command_preserves_tier(self, session_id, tmp_path):
-        """Running 'update --add-rules' after 'tier set' must not erase tier."""
+    def test_update_command_preserves_mode(self, session_id, tmp_path):
+        """Running 'update --add-rules' after 'tier set' must not erase mode."""
         writ_session.cmd_tier(session_id, "set", "3")
         writ_session.cmd_update(session_id, ["--add-rules", '["ARCH-DRY-001"]'])
         data = _read_raw_cache(tmp_path, session_id)
-        assert data["tier"] == 3
+        assert data["mode"] == "work"
         assert "ARCH-DRY-001" in data["loaded_rule_ids"]
 
     def test_tier_survives_multiple_updates(self, session_id, tmp_path):

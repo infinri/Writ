@@ -1,7 +1,7 @@
-"""Tests for Phase 3 centralization commands in bin/lib/writ-session.py.
+"""Tests for mode-based centralization commands in bin/lib/writ-session.py.
 
 Tests cmd_can_write, cmd_advance_phase, cmd_current_phase, and
-phase-aware loaded_rule_ids.
+phase-aware loaded_rule_ids -- updated for v2 mode system.
 
 Per TEST-TDD-001: skeletons approved before implementation.
 """
@@ -12,7 +12,9 @@ import importlib.util
 import io
 import json
 import os
+import secrets
 import sys
+import tempfile
 
 import pytest
 
@@ -48,7 +50,12 @@ def project_root(tmp_path):
     return root
 
 
+def _set_mode(session_id: str, mode: str) -> None:
+    writ_session.cmd_mode(session_id, "set", mode)
+
+
 def _set_tier(session_id: str, tier: int) -> None:
+    """Tier facade -- maps to mode internally."""
     writ_session.cmd_tier(session_id, "set", str(tier))
 
 
@@ -71,10 +78,16 @@ def _call_can_write(
 def _call_advance_phase(
     session_id: str, prompt: str, project_root: str, monkeypatch, capsys
 ) -> dict:
-    """Call cmd_advance_phase with a prompt and return the JSON result."""
+    """Call cmd_advance_phase with a gate token and return the JSON result."""
+    # Create gate token (simulates auto-approve-gate.sh)
+    token = secrets.token_hex(16)
+    token_path = os.path.join(tempfile.gettempdir(), f"writ-gate-token-{session_id}")
+    with open(token_path, "w") as f:
+        f.write(token)
+
     capsys.readouterr()  # clear any prior output
     monkeypatch.setattr("sys.stdin", io.StringIO(prompt))
-    writ_session.cmd_advance_phase(session_id, project_root)
+    writ_session.cmd_advance_phase(session_id, project_root, token)
     out = capsys.readouterr().out.strip()
     return json.loads(out)
 
@@ -113,6 +126,12 @@ models, queries the repository, and returns filtered results.
 - [ ] No sync I/O in request handler
 """
 
+import re as _re
+# Extract rule IDs from the plan fixture so tests don't hardcode them separately
+VALID_PLAN_RULE_IDS = _re.findall(
+    r'[A-Z][A-Z0-9]+(?:-[A-Z][A-Z0-9]+)*-\d{3}', VALID_PLAN_MD
+)
+
 PLAN_MD_NO_MATCH = """\
 # Test Plan
 
@@ -140,37 +159,43 @@ def _write_plan(project_root, content: str = VALID_PLAN_MD) -> None:
     (project_root / "plan.md").write_text(content)
 
 
+def _load_plan_rules(session_id: str) -> None:
+    """Load rule IDs that VALID_PLAN_MD references so validation passes."""
+    writ_session.cmd_update(session_id, ["--add-rules", json.dumps(VALID_PLAN_RULE_IDS)])
+
+
 def _approve_gate(session_id: str, gate: str) -> None:
     """Directly add a gate to the session cache (simulates advance-phase)."""
     cache = writ_session._read_cache(session_id)
     approved = set(cache.get("gates_approved", []))
     approved.add(gate)
     cache["gates_approved"] = sorted(approved)
-    phase = writ_session._PHASE_AFTER_GATE.get(gate, "implementation")
+    phase = writ_session._PHASE_AFTER_GATE_WORK.get(gate, "implementation")
     cache["current_phase"] = phase
     writ_session._write_cache(session_id, cache)
 
 
 # ===========================================================================
-# cmd_can_write
+# cmd_can_write (via tier facade -- hooks still use tier set)
 # ===========================================================================
 
 class TestCanWrite:
 
     def test_allow_any_file_tier_0(self, session_id, project_root, monkeypatch, capsys):
-        """Tier 0 (research): all writes allowed, no gates."""
+        """Tier 0 -> conversation mode: all writes allowed, no gates."""
         _set_tier(session_id, 0)
         result = _call_can_write(session_id, str(project_root / "anything.py"), monkeypatch, capsys)
         assert result["decision"] == "allow"
 
     def test_allow_any_file_tier_1(self, session_id, project_root, monkeypatch, capsys):
-        """Tier 1 (patch): all writes allowed, no gates."""
+        """Tier 1 -> work mode: source files denied (need gates)."""
         _set_tier(session_id, 1)
+        # In v2, tier 1 maps to work mode which has gates
         result = _call_can_write(session_id, str(project_root / "service.py"), monkeypatch, capsys)
-        assert result["decision"] == "allow"
+        assert result["decision"] == "deny"
 
-    def test_deny_no_tier_except_plan_md(self, session_id, project_root, monkeypatch, capsys):
-        """No tier declared: deny all files except plan.md."""
+    def test_deny_no_mode_except_plan_md(self, session_id, project_root, monkeypatch, capsys):
+        """No mode declared: deny all files except plan.md."""
         # plan.md is allowed
         result = _call_can_write(session_id, str(project_root / "plan.md"), monkeypatch, capsys)
         assert result["decision"] == "allow"
@@ -178,11 +203,11 @@ class TestCanWrite:
         # .py file is denied
         result = _call_can_write(session_id, str(project_root / "main.py"), monkeypatch, capsys)
         assert result["decision"] == "deny"
-        assert "ENF-GATE-TIER" in result["reason"]
+        assert "ENF-GATE-MODE" in result["reason"]
 
     def test_deny_plan_md_during_implementation_phase(self, session_id, project_root, monkeypatch, capsys):
-        """Post test-skeletons gate, plan.md writes are blocked (Tier 2+)."""
-        _set_tier(session_id, 2)
+        """Post test-skeletons gate, plan.md writes are blocked in Work mode."""
+        _set_mode(session_id, "work")
         capsys.readouterr()
         _approve_gate(session_id, "phase-a")
         _approve_gate(session_id, "test-skeletons")
@@ -191,28 +216,28 @@ class TestCanWrite:
         assert result["decision"] == "deny"
         assert "ENF-GATE-PLAN" in result["reason"]
 
-    def test_tier_2_deny_without_phase_a(self, session_id, project_root, monkeypatch, capsys):
-        """Tier 2: source file denied before phase-a gate exists."""
-        _set_tier(session_id, 2)
+    def test_work_deny_without_phase_a(self, session_id, project_root, monkeypatch, capsys):
+        """Work mode: source file denied before phase-a gate."""
+        _set_mode(session_id, "work")
         capsys.readouterr()
 
         result = _call_can_write(session_id, str(project_root / "service.py"), monkeypatch, capsys)
         assert result["decision"] == "deny"
-        assert "Phase A" in result["reason"] or "phase-a" in result["reason"].lower()
+        assert "ENF-GATE-PLAN" in result["reason"]
 
-    def test_tier_2_allow_after_phase_a(self, session_id, project_root, monkeypatch, capsys):
-        """Tier 2: source file allowed after phase-a gate in session cache."""
-        _set_tier(session_id, 2)
+    def test_work_deny_after_plan_before_test_skeletons(self, session_id, project_root, monkeypatch, capsys):
+        """Work mode: source file denied after phase-a but before test-skeletons."""
+        _set_mode(session_id, "work")
         capsys.readouterr()
         _approve_gate(session_id, "phase-a")
 
-        # .py files match any_source_file -> phase-a gate (remapped for tier 2)
         result = _call_can_write(session_id, str(project_root / "service.py"), monkeypatch, capsys)
-        assert result["decision"] == "allow"
+        assert result["decision"] == "deny"
+        assert "ENF-GATE-TEST" in result["reason"]
 
-    def test_tier_2_deny_stale_gate(self, session_id, project_root, monkeypatch, capsys):
-        """Tier 2: gates_approved in cache is the authority -- no disk fallback."""
-        _set_tier(session_id, 2)
+    def test_work_deny_stale_gate(self, session_id, project_root, monkeypatch, capsys):
+        """Work mode: gates_approved in cache is the authority -- no disk fallback."""
+        _set_mode(session_id, "work")
         capsys.readouterr()
 
         # Write a gate file on disk but DON'T add to cache
@@ -222,28 +247,26 @@ class TestCanWrite:
         result = _call_can_write(session_id, str(project_root / "service.py"), monkeypatch, capsys)
         assert result["decision"] == "deny"
 
-    def test_tier_3_sequential_gate_enforcement(self, session_id, project_root, monkeypatch, capsys):
-        """Tier 3: validation files denied without phase-b, even if phase-a exists."""
-        _set_tier(session_id, 3)
+    def test_work_two_gate_enforcement(self, session_id, project_root, monkeypatch, capsys):
+        """Work mode: source files allowed only after both gates."""
+        _set_mode(session_id, "work")
         capsys.readouterr()
         _approve_gate(session_id, "phase-a")
+        _approve_gate(session_id, "test-skeletons")
 
-        # A validator file requires phase-b (which isn't approved)
-        validator_path = str(project_root / "validators" / "input_validator.py")
-        result = _call_can_write(session_id, validator_path, monkeypatch, capsys)
-        assert result["decision"] == "deny"
-        assert "phase-b" in result["reason"].lower() or "ENF-GATE" in result["reason"]
+        result = _call_can_write(session_id, str(project_root / "service.py"), monkeypatch, capsys)
+        assert result["decision"] == "allow"
 
     def test_skip_writ_infrastructure(self, session_id, monkeypatch, capsys):
         """Files in the skill directory bypass gate checks."""
-        # No tier set -- would normally deny
+        # No mode set -- would normally deny
         skill_file = os.path.join(SKILL_DIR, "bin", "lib", "writ-session.py")
         result = _call_can_write(session_id, skill_file, monkeypatch, capsys)
         assert result["decision"] == "allow"
 
     def test_exclusions_from_categories(self, session_id, project_root, monkeypatch, capsys):
         """Test files and conftest.py bypass gate checks."""
-        _set_tier(session_id, 2)
+        _set_mode(session_id, "work")
         capsys.readouterr()
         # No gates approved -- but test files are excluded from gate checks
 
@@ -264,7 +287,8 @@ class TestAdvancePhase:
         self, session_id, project_root, monkeypatch, capsys
     ):
         """advance-phase writes session ID into the gate file."""
-        _set_tier(session_id, 2)
+        _set_mode(session_id, "work")
+        _load_plan_rules(session_id)
         capsys.readouterr()
         _write_plan(project_root)
 
@@ -278,7 +302,7 @@ class TestAdvancePhase:
 
     def test_advance_fails_without_plan_md(self, session_id, project_root, monkeypatch, capsys):
         """phase-a advance fails when plan.md doesn't exist."""
-        _set_tier(session_id, 2)
+        _set_mode(session_id, "work")
         capsys.readouterr()
 
         result = _call_advance_phase(session_id, "approved", str(project_root), monkeypatch, capsys)
@@ -287,7 +311,8 @@ class TestAdvancePhase:
 
     def test_advance_fails_missing_section(self, session_id, project_root, monkeypatch, capsys):
         """phase-a advance fails when plan.md is missing ## Analysis."""
-        _set_tier(session_id, 2)
+        _set_mode(session_id, "work")
+        _load_plan_rules(session_id)
         capsys.readouterr()
 
         incomplete_plan = """\
@@ -308,7 +333,7 @@ class TestAdvancePhase:
 
     def test_advance_accepts_no_match_declaration(self, session_id, project_root, monkeypatch, capsys):
         """## Rules Applied with 'No matching rules. Domain: ...' passes validation."""
-        _set_tier(session_id, 2)
+        _set_mode(session_id, "work")
         capsys.readouterr()
         _write_plan(project_root, PLAN_MD_NO_MATCH)
 
@@ -317,14 +342,15 @@ class TestAdvancePhase:
 
     def test_advance_clears_current_phase_rule_ids(self, session_id, project_root, monkeypatch, capsys):
         """Phase transition moves current loaded_rule_ids to historical set."""
-        _set_tier(session_id, 2)
+        _set_mode(session_id, "work")
         capsys.readouterr()
 
-        # Add rules to the planning phase
-        writ_session.cmd_update(session_id, ["--add-rules", '["PERF-IO-001", "ARCH-ORG-001"]'])
+        # Add rules that match the plan fixture
+        _load_plan_rules(session_id)
 
         cache = _read_cache(session_id)
-        assert "PERF-IO-001" in cache["loaded_rule_ids_by_phase"].get("planning", [])
+        for rid in VALID_PLAN_RULE_IDS:
+            assert rid in cache["loaded_rule_ids_by_phase"].get("planning", [])
 
         # Advance phase
         _write_plan(project_root)
@@ -335,19 +361,20 @@ class TestAdvancePhase:
         assert cache["loaded_rule_ids_by_phase"].get("planning", []) == []
         # Historical set should have the old IDs
         historical = cache["loaded_rule_ids_by_phase"].get("_historical", [])
-        assert "PERF-IO-001" in historical
-        assert "ARCH-ORG-001" in historical
+        for rid in VALID_PLAN_RULE_IDS:
+            assert rid in historical
 
     def test_advance_logs_transition_to_audit_trail(self, session_id, project_root, monkeypatch, capsys):
         """Audit trail entry created with from, to, ts, trigger, artifacts."""
-        _set_tier(session_id, 2)
+        _set_mode(session_id, "work")
+        _load_plan_rules(session_id)
         capsys.readouterr()
         _write_plan(project_root)
         _call_advance_phase(session_id, "approved", str(project_root), monkeypatch, capsys)
 
         cache = _read_cache(session_id)
         transitions = cache["phase_transitions"]
-        # First is tier-set, second is the advance
+        # First is mode-set, second is the advance
         assert len(transitions) >= 2
         advance = transitions[-1]
         assert advance["trigger"] == "user-approved"
@@ -356,44 +383,11 @@ class TestAdvancePhase:
         assert "ts" in advance
         assert advance.get("gate") == "phase-a"
 
-    def test_advance_skips_phase_d_by_default(self, session_id, project_root, monkeypatch, capsys):
-        """Tier 3: 'approved' after phase-c skips to test-skeletons."""
-        _set_tier(session_id, 3)
-        capsys.readouterr()
-        _approve_gate(session_id, "phase-a")
-        _approve_gate(session_id, "phase-b")
-        _approve_gate(session_id, "phase-c")
-
-        # Write a test file so test-skeletons validation passes
-        test_dir = project_root / "tests"
-        test_dir.mkdir()
-        (test_dir / "test_foo.py").write_text("def test_placeholder():\n    pass\n")
-
-        result = _call_advance_phase(session_id, "approved", str(project_root), monkeypatch, capsys)
-        assert result["advanced"] is True
-        assert result["gate"] == "test-skeletons"
-
-    def test_advance_phase_d_when_explicit(self, session_id, project_root, monkeypatch, capsys):
-        """Tier 3: 'phase d approved' creates phase-d gate."""
-        _set_tier(session_id, 3)
-        capsys.readouterr()
-        _approve_gate(session_id, "phase-a")
-        _approve_gate(session_id, "phase-b")
-        _approve_gate(session_id, "phase-c")
-
-        # Write plan.md with ## Concurrency
-        plan_with_concurrency = VALID_PLAN_MD + "\n## Concurrency\n\nSingle-threaded consumer model.\n"
-        _write_plan(project_root, plan_with_concurrency)
-
-        result = _call_advance_phase(session_id, "phase d approved", str(project_root), monkeypatch, capsys)
-        assert result["advanced"] is True
-        assert result["gate"] == "phase-d"
-
     def test_advance_test_skeletons_requires_test_file(
         self, session_id, project_root, monkeypatch, capsys
     ):
         """test-skeletons advance requires at least one test file with method sig."""
-        _set_tier(session_id, 2)
+        _set_mode(session_id, "work")
         capsys.readouterr()
         _approve_gate(session_id, "phase-a")
 
@@ -404,7 +398,7 @@ class TestAdvancePhase:
 
     def test_advance_no_op_when_all_gates_approved(self, session_id, project_root, monkeypatch, capsys):
         """Advancing when all gates exist returns a no-op result."""
-        _set_tier(session_id, 2)
+        _set_mode(session_id, "work")
         capsys.readouterr()
         _approve_gate(session_id, "phase-a")
         _approve_gate(session_id, "test-skeletons")
@@ -420,69 +414,54 @@ class TestAdvancePhase:
 
 class TestCurrentPhase:
 
-    def test_no_tier_returns_unclassified(self, session_id, capsys):
-        """No tier set: phase is 'unclassified'."""
+    def test_no_mode_returns_unclassified(self, session_id, capsys):
+        """No mode set: phase is 'unclassified'."""
         result = _call_current_phase(session_id, capsys)
         assert result["phase"] == "unclassified"
-        assert result["tier"] is None
+        assert result["mode"] is None
 
-    def test_tier_0_returns_research(self, session_id, capsys):
-        """Tier 0: phase is always 'research'."""
-        _set_tier(session_id, 0)
+    def test_conversation_returns_no_phase(self, session_id, capsys):
+        """Conversation mode: phase is None (returned as unclassified)."""
+        _set_mode(session_id, "conversation")
         capsys.readouterr()
         result = _call_current_phase(session_id, capsys)
-        assert result["phase"] == "research"
+        assert result["phase"] == "unclassified"
 
-    def test_tier_1_returns_implementation(self, session_id, capsys):
-        """Tier 1: phase is always 'implementation' (no gates)."""
-        _set_tier(session_id, 1)
-        capsys.readouterr()
-        result = _call_current_phase(session_id, capsys)
-        assert result["phase"] == "implementation"
-
-    def test_tier_2_planning_before_phase_a(self, session_id, project_root, capsys):
-        """Tier 2 without phase-a: phase is 'planning'."""
-        _set_tier(session_id, 2)
+    def test_work_planning_before_phase_a(self, session_id, project_root, capsys):
+        """Work mode without phase-a: phase is 'planning'."""
+        _set_mode(session_id, "work")
         capsys.readouterr()
         result = _call_current_phase(session_id, capsys)
         assert result["phase"] == "planning"
 
-    def test_tier_2_testing_after_phase_a(self, session_id, project_root, capsys):
-        """Tier 2 with phase-a but no test-skeletons: phase is 'testing'."""
-        _set_tier(session_id, 2)
+    def test_work_testing_after_phase_a(self, session_id, project_root, capsys):
+        """Work mode with phase-a but no test-skeletons: phase is 'testing'."""
+        _set_mode(session_id, "work")
         capsys.readouterr()
         _approve_gate(session_id, "phase-a")
         result = _call_current_phase(session_id, capsys)
         assert result["phase"] == "testing"
 
-    def test_tier_2_implementation_after_test_skeletons(
+    def test_work_implementation_after_test_skeletons(
         self, session_id, project_root, capsys
     ):
-        """Tier 2 with both gates: phase is 'implementation'."""
-        _set_tier(session_id, 2)
+        """Work mode with both gates: phase is 'implementation'."""
+        _set_mode(session_id, "work")
         capsys.readouterr()
         _approve_gate(session_id, "phase-a")
         _approve_gate(session_id, "test-skeletons")
         result = _call_current_phase(session_id, capsys)
         assert result["phase"] == "implementation"
 
-    def test_tier_3_phase_progression(self, session_id, project_root, capsys):
-        """Tier 3: phase progresses through planning -> testing -> implementation."""
-        _set_tier(session_id, 3)
+    def test_work_phase_progression(self, session_id, project_root, capsys):
+        """Work mode: phase progresses planning -> testing -> implementation."""
+        _set_mode(session_id, "work")
         capsys.readouterr()
 
         result = _call_current_phase(session_id, capsys)
         assert result["phase"] == "planning"
 
         _approve_gate(session_id, "phase-a")
-        result = _call_current_phase(session_id, capsys)
-        assert result["phase"] == "testing"
-
-        _approve_gate(session_id, "phase-b")
-        result = _call_current_phase(session_id, capsys)
-        assert result["phase"] == "integration"
-
-        _approve_gate(session_id, "phase-c")
         result = _call_current_phase(session_id, capsys)
         assert result["phase"] == "testing"
 
@@ -499,7 +478,7 @@ class TestPhaseAwareRuleIds:
 
     def test_rule_ids_stored_by_phase(self, session_id):
         """Rule IDs added via update are tagged with the current phase."""
-        _set_tier(session_id, 2)
+        _set_mode(session_id, "work")
         writ_session.cmd_update(session_id, ["--add-rules", '["PERF-IO-001"]'])
 
         cache = _read_cache(session_id)
@@ -508,7 +487,7 @@ class TestPhaseAwareRuleIds:
 
     def test_current_phase_ids_returned(self, session_id):
         """Reading loaded_rule_ids_by_phase[current_phase] gives current IDs."""
-        _set_tier(session_id, 2)
+        _set_mode(session_id, "work")
         writ_session.cmd_update(session_id, ["--add-rules", '["PERF-IO-001", "ARCH-ORG-001"]'])
 
         cache = _read_cache(session_id)
@@ -519,11 +498,11 @@ class TestPhaseAwareRuleIds:
 
     def test_historical_ids_not_excluded(self, session_id, project_root, monkeypatch, capsys):
         """After phase transition, historical IDs are not in the current-phase exclude list."""
-        _set_tier(session_id, 2)
+        _set_mode(session_id, "work")
         capsys.readouterr()
 
         # Add rules in planning phase
-        writ_session.cmd_update(session_id, ["--add-rules", '["PERF-IO-001"]'])
+        writ_session.cmd_update(session_id, ["--add-rules", '["PERF-IO-001", "ARCH-ORG-001"]'])
 
         # Advance to testing
         _write_plan(project_root)
@@ -543,10 +522,10 @@ class TestPhaseAwareRuleIds:
 
     def test_rule_ids_cleared_on_advance(self, session_id, project_root, monkeypatch, capsys):
         """advance-phase moves current IDs to historical, starts fresh."""
-        _set_tier(session_id, 2)
+        _set_mode(session_id, "work")
         capsys.readouterr()
 
-        writ_session.cmd_update(session_id, ["--add-rules", '["SEC-UNI-002", "ARCH-DRY-001"]'])
+        _load_plan_rules(session_id)
         _write_plan(project_root)
         _call_advance_phase(session_id, "approved", str(project_root), monkeypatch, capsys)
 
@@ -555,10 +534,11 @@ class TestPhaseAwareRuleIds:
         assert cache["loaded_rule_ids_by_phase"].get("planning", []) == []
         # Historical has them
         hist = cache["loaded_rule_ids_by_phase"]["_historical"]
-        assert "SEC-UNI-002" in hist
-        assert "ARCH-DRY-001" in hist
+        for rid in VALID_PLAN_RULE_IDS:
+            assert rid in hist
         # Flat list still has all (for feedback/coverage)
-        assert "SEC-UNI-002" in cache["loaded_rule_ids"]
+        for rid in VALID_PLAN_RULE_IDS:
+            assert rid in cache["loaded_rule_ids"]
 
 
 # ===========================================================================
@@ -567,32 +547,34 @@ class TestPhaseAwareRuleIds:
 
 class TestAuditTrail:
 
-    def test_tier_set_creates_initial_transition(self, session_id):
-        """Setting a tier logs the first transition (null -> phase)."""
-        _set_tier(session_id, 2)
+    def test_mode_set_creates_initial_transition(self, session_id):
+        """Setting a mode logs the first transition (None -> phase)."""
+        _set_mode(session_id, "work")
 
         cache = _read_cache(session_id)
         transitions = cache["phase_transitions"]
         assert len(transitions) == 1
         assert transitions[0]["from"] is None
         assert transitions[0]["to"] == "planning"
-        assert transitions[0]["trigger"] == "tier-set"
-        assert transitions[0]["tier"] == 2
+        assert transitions[0]["trigger"] == "mode-set"
+        assert transitions[0]["mode"] == "work"
 
     def test_advance_appends_transition(self, session_id, project_root, monkeypatch, capsys):
         """Each advance-phase appends to phase_transitions list."""
-        _set_tier(session_id, 2)
+        _set_mode(session_id, "work")
+        _load_plan_rules(session_id)
         capsys.readouterr()
         _write_plan(project_root)
         _call_advance_phase(session_id, "approved", str(project_root), monkeypatch, capsys)
 
         cache = _read_cache(session_id)
         transitions = cache["phase_transitions"]
-        assert len(transitions) == 2  # tier-set + advance
+        assert len(transitions) == 2  # mode-set + advance
 
     def test_transition_contains_required_fields(self, session_id, project_root, monkeypatch, capsys):
-        """Each transition has: from, to, ts, trigger, tier."""
-        _set_tier(session_id, 2)
+        """Each transition has: from, to, ts, trigger, mode."""
+        _set_mode(session_id, "work")
+        _load_plan_rules(session_id)
         capsys.readouterr()
         _write_plan(project_root)
         _call_advance_phase(session_id, "approved", str(project_root), monkeypatch, capsys)
@@ -603,11 +585,12 @@ class TestAuditTrail:
         assert "to" in advance_transition
         assert "ts" in advance_transition
         assert "trigger" in advance_transition
-        assert "tier" in advance_transition
+        assert "mode" in advance_transition
 
     def test_artifacts_validated_field_present(self, session_id, project_root, monkeypatch, capsys):
         """Transitions from user-approved advances include artifacts_validated."""
-        _set_tier(session_id, 2)
+        _set_mode(session_id, "work")
+        _load_plan_rules(session_id)
         capsys.readouterr()
         _write_plan(project_root)
         _call_advance_phase(session_id, "approved", str(project_root), monkeypatch, capsys)

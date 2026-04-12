@@ -23,15 +23,17 @@ PARSED=$(echo "$STDIN_JSON" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
-    sid = data.get('session_id', '')
+    sid = data.get('agent_id', '') or data.get('session_id', '')
+    agent_id = data.get('agent_id', '')
     prompt = data.get('prompt', data.get('message', data.get('content', '')))
-    print(f'{sid}\n{prompt}')
+    print(f'{sid}\n{prompt}\n{agent_id}')
 except Exception:
-    print('\n')
+    print('\n\n')
 " 2>/dev/null) || true
 
 SESSION_ID=$(echo "$PARSED" | head -1)
-PROMPT=$(echo "$PARSED" | tail -n +2)
+PROMPT=$(echo "$PARSED" | sed -n '2p')
+AGENT_ID=$(echo "$PARSED" | sed -n '3p')
 
 # Fallback session ID
 if [ -z "$SESSION_ID" ]; then
@@ -41,8 +43,10 @@ if [ -z "$SESSION_ID" ]; then
     SESSION_ID=$(echo "${PWD}:${USER}" | md5sum | cut -c1-12)-$(date +%Y%m%d)
 fi
 
-# Publish session ID as backup (writ-rag-inject.sh is primary)
-echo "$SESSION_ID" > /tmp/writ-current-session
+# Publish session ID as backup -- skip inside sub-agents
+if [ -z "$AGENT_ID" ]; then
+    echo "$SESSION_ID" > /tmp/writ-current-session
+fi
 
 # Check approval pattern
 PROMPT_LOWER=$(echo "$PROMPT" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -128,21 +132,21 @@ while path != '/':
     path = os.path.dirname(path)
 " 2>/dev/null)
         if [ -n "$PROJECT_ROOT" ]; then
-            CURRENT_TIER=$(python3 "$SESSION_HELPER" tier get "$SESSION_ID" 2>/dev/null || echo "")
-            CURRENT_TIER=$(echo "$CURRENT_TIER" | tr -d '[:space:]')
+            CURRENT_MODE=$(python3 "$SESSION_HELPER" mode get "$SESSION_ID" 2>/dev/null || echo "")
+            CURRENT_MODE=$(echo "$CURRENT_MODE" | tr -d '[:space:]')
             python3 -c "
 import json, sys
 from datetime import datetime, timezone
 entry = json.dumps({
     'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'session': sys.argv[1],
-    'tier': int(sys.argv[2]) if sys.argv[2] else None,
+    'mode': sys.argv[2] if sys.argv[2] else None,
     'event': 'approval_pattern_miss',
     'prompt': sys.argv[3][:120],
 })
 with open(sys.argv[4], 'a') as f:
     f.write(entry + '\n')
-" "$SESSION_ID" "${CURRENT_TIER:-}" "$PROMPT" "$PROJECT_ROOT/workflow-friction.log" 2>/dev/null || true
+" "$SESSION_ID" "${CURRENT_MODE:-}" "$PROMPT" "$PROJECT_ROOT/workflow-friction.log" 2>/dev/null || true
         fi
     fi
 fi
@@ -171,11 +175,55 @@ GATE=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).
 REASON=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('reason', ''))" 2>/dev/null || echo "")
 
 if [ "$ADVANCED" = "True" ]; then
-    echo "[Gate approved: $GATE] Phase advanced."
+    # Log approval_pattern_match
+    CURRENT_MODE=$(python3 "$SESSION_HELPER" mode get "$SESSION_ID" 2>/dev/null || echo "")
+    CURRENT_MODE=$(echo "$CURRENT_MODE" | tr -d '[:space:]')
+    PROJECT_ROOT=$(python3 -c "
+import os
+markers = ['composer.json','package.json','Cargo.toml','go.mod','pyproject.toml','.git']
+path = os.getcwd()
+while path != '/':
+    if any(os.path.exists(os.path.join(path, m)) for m in markers):
+        print(path); break
+    path = os.path.dirname(path)
+" 2>/dev/null)
+    if [ -n "$PROJECT_ROOT" ]; then
+        python3 -c "
+import json, sys
+from datetime import datetime, timezone
+entry = json.dumps({
+    'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'session': sys.argv[1],
+    'mode': sys.argv[2] if sys.argv[2] else None,
+    'event': 'approval_pattern_match',
+    'matched_prompt': sys.argv[3][:120],
+    'gate': sys.argv[4],
+})
+with open(sys.argv[5], 'a') as f:
+    f.write(entry + '\n')
+" "$SESSION_ID" "${CURRENT_MODE:-}" "$PROMPT" "$GATE" "$PROJECT_ROOT/workflow-friction.log" 2>/dev/null || true
+    fi
+
+    # Phase-specific next-step messages
+    if [ "$GATE" = "phase-a" ]; then
+        cat <<'PHASE_MSG'
+[Writ: Plan approved. Phase: testing]
+NEXT STEP: Write test skeleton files, present them, and say "Say approved to proceed."
+Do NOT write implementation files yet -- they will be denied.
+PHASE_MSG
+    elif [ "$GATE" = "test-skeletons" ]; then
+        echo "[Writ: Test skeletons approved. Phase: implementation] You may now write implementation files."
+    else
+        echo "[Gate approved: $GATE] Phase advanced."
+    fi
 else
     if [ -n "$REASON" ]; then
         echo "[Gate blocked: $GATE] $REASON"
     fi
 fi
+
+# Permanent debug prompt log (zero-cost observation tool)
+echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') session=$SESSION_ID prompt=$(echo "$PROMPT" | head -c 200)" \
+    >> "/tmp/writ-prompt-debug.log" 2>/dev/null || true
 
 exit 0

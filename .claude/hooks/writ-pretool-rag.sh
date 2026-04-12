@@ -20,11 +20,13 @@ WRIT_HOST="${WRIT_HOST:-localhost}"
 WRIT_PORT="${WRIT_PORT:-8765}"
 WRIT_URL="http://${WRIT_HOST}:${WRIT_PORT}/query"
 
+HOOK_START_NS=$(hook_timer_start)
+
 # Read stdin once
 STDIN_DATA=$(cat)
 
 # Extract session ID
-SESSION_ID=$(echo "$STDIN_DATA" | python3 -c "import sys,json; print(json.load(sys.stdin).get('session_id',''))" 2>/dev/null)
+SESSION_ID=$(echo "$STDIN_DATA" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('agent_id','') or d.get('session_id',''))" 2>/dev/null)
 if [ -z "$SESSION_ID" ]; then
     SESSION_ID=$(detect_session_id "")
 fi
@@ -275,6 +277,37 @@ except Exception:
         python3 "$SESSION_HELPER" update "$SESSION_ID" \
             --add-rule-objects "$RULE_OBJECTS" 2>/dev/null || true
     fi
+
+    # Log rag_query event (direct Python call to avoid shell quoting issues with JSON arrays)
+    CURRENT_MODE=$(python3 "$SESSION_HELPER" mode get "$SESSION_ID" 2>/dev/null || echo "")
+    CURRENT_MODE=$(echo "$CURRENT_MODE" | tr -d '[:space:]')
+    python3 -c "
+import json, sys, os
+from datetime import datetime, timezone
+rule_ids = json.loads(sys.argv[4])
+entry = json.dumps({
+    'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'session': sys.argv[1],
+    'mode': sys.argv[2] if sys.argv[2] else None,
+    'event': 'rag_query',
+    'query_source': 'file-write-pre',
+    'tokens_injected': int(sys.argv[3]),
+    'rules_returned_count': len(rule_ids),
+    'rule_ids': rule_ids,
+})
+markers = ['composer.json','package.json','Cargo.toml','go.mod','pyproject.toml','.git']
+path = os.getcwd()
+while path != '/':
+    if any(os.path.exists(os.path.join(path, m)) for m in markers):
+        try:
+            with open(os.path.join(path, 'workflow-friction.log'), 'a') as f:
+                f.write(entry + '\n')
+        except OSError:
+            pass
+        break
+    path = os.path.dirname(path)
+" "$SESSION_ID" "${CURRENT_MODE:-}" "$COST" "$NEW_RULE_IDS" 2>/dev/null || true
 fi
 
+hook_timer_end "$HOOK_START_NS" "writ-pretool-rag" "$SESSION_ID" ""
 exit 0

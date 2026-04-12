@@ -411,7 +411,7 @@ writ/
 │   ├── migrate.py              # One-time rule migration with Neo4j constraint application
 │   ├── export_onnx.py          # Export embedding model to ONNX via HuggingFace optimum
 │   └── profile_hotpath.py      # pyinstrument profiling for pipeline hot path
-├── tests/                      # 302 tests across 15 test files
+├── tests/                      # ~320 tests across 30 test files
 │   ├── conftest.py             # Shared fixtures (mock rules, mock DB, mock pipeline)
 │   ├── fixtures/               # Sample rules, ground-truth queries (83 queries)
 │   ├── test_schema.py          # 42 tests -- Pydantic model validation, scope extensibility, mandatory, authority
@@ -477,16 +477,15 @@ Writ runs as a local FastAPI service at localhost:8765. The skill file at `~/.cl
 The skill file instructs Claude to call Writ at the start of any coding task. The skill uses httpx for async HTTP. The loading sequence has two phases: mandatory rules first (enforcement skeleton), then retrieved rules (domain knowledge). See Section 7.5 for the full mandatory vs. retrieved distinction.
 
 ```
-# Phase 1: Service check + mandatory rules
-# At session start -- called by the skill automatically
+# Phase 1: Service check + mode classification
+# At session start -- the UserPromptSubmit hook (writ-rag-inject.sh) fires automatically.
 GET http://localhost:8765/health
--> Confirms service is running. If down, skill falls back to loading enforcement/ and bible/ files directly.
+-> Confirms service is running. If down, hooks fall back gracefully.
 
-# Skill loads ENF-ROUTE-001 and ENF-CTX-004 unconditionally (from file or via /rule endpoint).
-# AI classifies task into tier. Skill loads tier-appropriate ENF-* rules.
-# These are mandatory -- they bypass retrieval entirely (Section 7.5).
-GET http://localhost:8765/rule/ENF-GATE-001
--> Returns full enforcement rule. Loaded before Phase A, not subject to ranking.
+# Hook prompts AI to set a mode (conversation/debug/review/work).
+# Mode determines ceremony: Work mode requires plan + test-skeleton gates.
+# Gate enforcement is handled by check-gate-approval.sh (PreToolUse on Write/Edit).
+# ENF-* rules are loaded by the skill, not by the retrieval pipeline (Section 7.5).
 
 # Phase 2: Domain rule retrieval (budget = total - mandatory tokens consumed)
 POST http://localhost:8765/query
@@ -537,26 +536,25 @@ The retrieval pipeline (Section 4) is not authoritative for which rules the AI s
 
 **Why this distinction is load-bearing:**
 
-The hooks (`check-gate-approval.sh`, `enforce-final-gate.sh`) enforce mechanically -- `check-gate-approval.sh` delegates to `writ-session.py can-write`, which checks session state (tier, approved gates, file classification). They block writes whether or not the AI understands why. But an AI that hits a hook block without ever seeing the rule that explains the gate cannot reason about what to do next. It sees "write blocked" with no context for resolution. The enforcement model requires the AI to know the gates exist before it encounters them.
+The hooks (`check-gate-approval.sh`, `enforce-final-gate.sh`) enforce mechanically -- `check-gate-approval.sh` delegates to `writ-session.py can-write`, which checks session state (mode, approved gates, file classification). They return JSON `permissionDecision` (deny with `additionalContext`, or ask to force user dialog on repeated violations). An AI that hits a hook denial sees the reason and workflow instructions in the `additionalContext` field. The deny-to-ask escalation ensures repeated violations force human intervention -- the AI physically cannot proceed until the user responds.
 
 If `ENF-GATE-001` is subject to retrieval ranking and the ranking algorithm does not surface it for a given query, the AI proceeds as if no gate exists, writes a file, and gets blocked by the hook. The hook saved the output, but the session is now in a confused state -- the AI will retry, guess, or hallucinate an explanation. That is not enforcement. That is a trap.
 
 **The two rule tiers:**
 
-| Tier | Rules | Loading Mechanism | Subject to Retrieval? | Subject to Context Budget? |
+| Set | Rules | Loading Mechanism | Subject to Retrieval? | Subject to Context Budget? |
 |---|---|---|---|---|
-| **Mandatory (enforcement skeleton)** | All `ENF-*` rules: routing, gates, pre-checks, post-checks, context discipline, system dynamics, security boundaries, operational claims | Skill injects at session start. Tier-appropriate subset per `ENF-ROUTE-001`. | No. Never ranked. Never filtered. Never omitted. | Partially. Summary mode (Section 4.4) may compress mandatory rules to statement + trigger only, omitting rationale. But the rule ID, statement, and trigger are always present. |
+| **Mandatory (enforcement skeleton)** | All `ENF-*` rules: routing, gates, pre-checks, post-checks, context discipline, system dynamics, security boundaries, operational claims | Loaded by the skill/hooks at session start. Mode-appropriate subset. | No. Never ranked. Never filtered. Never omitted. | Partially. Summary mode (Section 4.4) may compress mandatory rules to statement + trigger only, omitting rationale. But the rule ID, statement, and trigger are always present. |
 | **Retrieved (domain knowledge)** | All `ARCH-*`, `DB-SQL-*`, `FW-M2-*`, `FW-M2-RT-*`, `SEC-UNI-*`, `PERF-*`, `TEST-*`, `PY-*`, `PHP-*` rules | Retrieval pipeline via `/query` endpoint | Yes. Ranked by BM25 + vector + severity + confidence. | Yes. Context budget governs how many domain rules are returned. |
 
-**Mandatory rule loading sequence (performed by the skill, not the service):**
+**Mandatory rule loading sequence (performed by hooks, not the service):**
 
-1. Skill loads `ENF-ROUTE-001` and `ENF-CTX-004` unconditionally at session start.
-2. AI classifies the task into a tier (0-3).
-3. Skill loads the tier-appropriate enforcement subset:
-   - **Tier 0-1**: No additional enforcement rules. Domain rules loaded via `/query` or fallback.
-   - **Tier 2**: `ENF-PRE-001` through `ENF-PRE-004` (combined phases A-C). `ENF-POST-006`, `ENF-POST-007` (findings + static analysis).
-   - **Tier 3**: Full enforcement set loaded incrementally per phase. `ENF-GATE-001` before Phase A. `ENF-GATE-002` before Phase B. And so on through `ENF-GATE-FINAL`.
-4. Skill queries `/query` for domain-specific rules relevant to the task description. These are additive -- they fill the remaining context budget after mandatory rules are loaded.
+1. `writ-rag-inject.sh` (UserPromptSubmit) fires on every turn, prompting mode classification if not set.
+2. AI sets the mode (conversation/debug/review/work). Modes replace the old tier 0-3 system.
+3. Mode-appropriate enforcement applies:
+   - **Conversation/Debug/Review**: No write gates. Domain rules loaded via `/query`. RAG injection per turn.
+   - **Work**: Two-gate enforcement (plan + test-skeletons). `check-gate-approval.sh` blocks writes via JSON `permissionDecision`. Per-file RAG injection via `writ-pretool-rag.sh` and `writ-posttool-rag.sh`.
+4. Hooks query `/query` for domain-specific rules relevant to the current file context. These are additive -- they fill the remaining context budget. Each sub-agent worker gets a fresh 8000-token RAG budget.
 
 **The service knows about mandatory rules but does not serve them on `/query`:**
 
@@ -570,7 +568,7 @@ Setting `severity: Critical` on enforcement rules and trusting the ranking formu
 
 **Context budget interaction:**
 
-Mandatory rules consume context budget before the retrieval pipeline runs. The skill calculates `remaining_budget = total_budget - mandatory_tokens` and passes `remaining_budget` as `budget_tokens` to `/query`. This means domain rule retrieval operates within whatever budget remains after enforcement rules are loaded. At Tier 3, mandatory rules consume more budget (full gate sequence), leaving less room for domain rules. This is correct -- a Complex task needs more enforcement scaffolding, and the retrieval pipeline adapts by returning fewer but higher-ranked domain rules.
+Mandatory rules consume context budget before the retrieval pipeline runs. The hooks calculate `remaining_budget = total_budget - mandatory_tokens` and pass `remaining_budget` as `budget_tokens` to `/query`. In the sub-agent architecture, each worker gets a fresh 8000-token budget, so mandatory rules do not compete with domain rules across phase boundaries. Within a single worker, domain rule retrieval operates within whatever budget remains after enforcement rules are loaded.
 
 **Fallback behavior:**
 
@@ -607,7 +605,7 @@ All phases completed 2026-03-20. Full deliverables and acceptance criteria in [E
 | 8 | Compression Layer | HDBSCAN + k-means evaluation via `writ compress`. Abstraction nodes with centroid-nearest summaries (no LLM). Summary mode returns abstractions. `/abstractions` endpoints. 31 tests. | **Complete** |
 | 9 | Agentic Retrieval Loop | Client-side `SessionTracker` (next_query, load_results). `loaded_rule_ids` exclusion on `/query`. Abstraction membership on `/rule/{rule_id}`. 3-query session simulation. 22 tests. | **Complete** |
 
-> **THESIS VALIDATED:** Phase 5 gate passed. MRR@5 = 0.7842 (> 0.78 threshold), hit rate = 97.59%, p95 latency = 6.7ms (< 10ms budget). Phases 6-9 proceeded and completed successfully. 183 tests + 12 benchmarks = 195 total, all passing.
+> **THESIS VALIDATED:** Phase 5 gate passed. MRR@5 = 0.7842 (> 0.78 threshold), hit rate = 97.59%, p95 latency = 6.7ms (< 10ms budget). Phases 6-9 proceeded and completed successfully. Current: ~320 tests across 30 test files + 12 benchmarks, all passing. V2 hardening and v3 sub-agent isolation added ~140 tests for enforcement layer and session management.
 
 ---
 

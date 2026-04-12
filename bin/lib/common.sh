@@ -61,9 +61,17 @@ print('')
 detect_session_id() {
   local parsed="${1:-}"
   local sid=""
-  # Prefer session_id from Claude Code envelope
+  # Prefer agent_id for sub-agent isolation (each worker gets its own session cache)
   if [ -n "$parsed" ]; then
-    sid=$(echo "$parsed" | python3 -c "import sys,json; print(json.load(sys.stdin).get('session_id',''))" 2>/dev/null)
+    sid=$(echo "$parsed" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+aid=d.get('agent_id')
+sid=d.get('session_id')
+aid = str(aid).strip() if aid is not None else ''
+sid = str(sid).strip() if sid is not None else ''
+print(aid or sid)
+" 2>/dev/null)
   fi
   # Fallback: PID-based detection
   if [ -z "$sid" ]; then
@@ -137,6 +145,82 @@ detect_language() {
     *.graphqls|*.graphql) echo "graphql" ;;
     *)                   echo "unknown" ;;
   esac
+}
+
+# ── Friction event logging ──────────────────────────────────────────────────
+# Appends a JSON event to workflow-friction.log. Fire-and-forget.
+# Usage: log_friction_event "$SESSION_ID" "$MODE" "event_name" '{"key":"val"}'
+# Extra fields arg is optional JSON object to merge.
+log_friction_event() {
+  local session_id="$1" mode="$2" event="$3" extra="${4:-{}}"
+  python3 -c "
+import json, sys, os
+from datetime import datetime, timezone
+entry = {
+    'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'session': sys.argv[1],
+    'mode': sys.argv[2] if sys.argv[2] else None,
+    'event': sys.argv[3],
+}
+try:
+    entry.update(json.loads(sys.argv[4]))
+except (json.JSONDecodeError, ValueError):
+    pass
+markers = ['composer.json','package.json','Cargo.toml','go.mod','pyproject.toml','.git']
+path = os.getcwd()
+while path != '/':
+    if any(os.path.exists(os.path.join(path, m)) for m in markers):
+        try:
+            with open(os.path.join(path, 'workflow-friction.log'), 'a') as f:
+                f.write(json.dumps(entry) + '\n')
+        except OSError:
+            pass
+        break
+    path = os.path.dirname(path)
+" "$session_id" "$mode" "$event" "$extra" 2>/dev/null || true
+}
+
+# ── Hook timing ─────────────────────────────────────────────────────────────
+# Records start time. Call at the beginning of a hook.
+# Usage: HOOK_START_NS=$(hook_timer_start)
+hook_timer_start() {
+  date +%s%N 2>/dev/null || python3 -c "import time; print(int(time.time()*1e9))"
+}
+
+# Logs hook_execution event with duration. Call before exit.
+# Bypasses log_friction_event to avoid shell quoting issues with JSON.
+# Usage: hook_timer_end "$HOOK_START_NS" "hook_name" "$SESSION_ID" "$MODE"
+hook_timer_end() {
+  local start_ns="$1" hook_name="$2" session_id="$3" mode="$4"
+  python3 -c "
+import json, time, os, sys
+from datetime import datetime, timezone
+try:
+    start_ns = int(sys.argv[1])
+except (ValueError, IndexError):
+    start_ns = 0
+end_ns = int(time.time() * 1e9)
+duration_ms = max(0, (end_ns - start_ns) // 1_000_000)
+entry = {
+    'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'session': sys.argv[2],
+    'mode': sys.argv[3] if sys.argv[3] else None,
+    'event': 'hook_execution',
+    'hook_name': sys.argv[4],
+    'duration_ms': duration_ms,
+}
+markers = ['composer.json','package.json','Cargo.toml','go.mod','pyproject.toml','.git']
+path = os.getcwd()
+while path != '/':
+    if any(os.path.exists(os.path.join(path, m)) for m in markers):
+        try:
+            with open(os.path.join(path, 'workflow-friction.log'), 'a') as f:
+                f.write(json.dumps(entry) + '\n')
+        except OSError:
+            pass
+        break
+    path = os.path.dirname(path)
+" "$start_ns" "$session_id" "$mode" "$hook_name" 2>/dev/null || true
 }
 
 # ── Config readers ───────────────────────────────────────────────────────────

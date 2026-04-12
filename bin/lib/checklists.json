@@ -1,27 +1,27 @@
 {
   "planning": {
-    "tier_min": 2,
+    "mode": "work",
     "exit_criteria": [
       {
         "id": "plan-files-listed",
         "check": "plan.md contains ## Files section with at least one file path"
       },
       {
-        "id": "plan-callpath",
-        "check": "plan.md contains ## Call-path or ## Call-paths section"
+        "id": "plan-analysis",
+        "check": "plan.md contains ## Analysis section"
       },
       {
         "id": "plan-rules-applied",
-        "check": "plan.md contains ## Rules Applied or ## Rules applied section with at least one rule_id pattern matching [A-Z]+-[A-Z]+-[0-9]+"
+        "check": "plan.md contains ## Rules Applied section with at least one rule_id pattern matching [A-Z]+-[A-Z]+-[0-9]+ or 'No matching rules' declaration"
       },
       {
-        "id": "plan-exit-criteria",
+        "id": "plan-capabilities",
         "check": "plan.md contains ## Capabilities section with at least one checkbox item"
       }
     ]
   },
   "code_generation": {
-    "tier_min": 1,
+    "mode": "work",
     "exit_criteria": [
       {
         "id": "all-planned-files-written",
@@ -38,7 +38,7 @@
     ]
   },
   "testing": {
-    "tier_min": 3,
+    "mode": "work",
     "exit_criteria": [
       {
         "id": "test-files-exist",

@@ -95,21 +95,21 @@ The plugin lifecycle handles server startup:
 - **Shutdown** (`scripts/stop-server.sh`) -- stops the Writ server. Neo4j is left
   running since it may be shared with other tools.
 
-### Tier routing
+### Mode system
 
-Writ classifies every task into a complexity tier (0-3) before work begins. The tier
-controls ceremony (how many approval gates), not knowledge (which rules are injected).
+Every session operates in one of four modes that control ceremony and code generation:
 
-| Tier | Label | Ceremony |
-|------|-------|----------|
-| 0 | Research | No gates. Read-only tasks. |
-| 1 | Patch | No gates. 1-3 file changes, static analysis only. |
-| 2 | Standard | Phases A-C combined (one gate) + test skeletons. |
-| 3 | Complex | Full sequential gates (A, B, C, [D], test skeletons, final). |
+| Mode | Purpose | Gates | Code generation |
+|------|---------|-------|-----------------|
+| Conversation | Discussion, brainstorming | None | No |
+| Debug | Investigating a problem | None | No |
+| Review | Evaluating code against rules | None | No |
+| Work | Building/modifying code | plan + test-skeletons | Yes |
 
-The RAG inject hook prompts Claude to classify on the first turn. Gate hooks read the
-declared tier from the session cache and adjust enforcement accordingly. If no tier is
-declared, hooks deny all writes (except plan.md). Tiers escalate up only, never down.
+The RAG inject hook prompts Claude to set a mode on the first turn. Gate hooks read
+the mode from the session cache and adjust enforcement accordingly. If no mode is
+declared, hooks deny all writes (except plan.md). A legacy tier facade (0-3) is
+supported for backward compatibility.
 
 ### How it works
 
@@ -117,7 +117,7 @@ declared, hooks deny all writes (except plan.md). Tiers escalate up only, never 
 2. Hook POSTs the user's prompt to `localhost:8765/query`
 3. Writ's hybrid pipeline ranks rules by relevance (BM25 + vector + graph proximity)
 4. Rules are injected into Claude's context as a `--- WRIT RULES ---` block
-5. If no tier is declared, a classification directive is also injected
+5. If no mode is declared, a classification directive is also injected
 6. A session cache deduplicates rules across turns and tracks a token budget (8000 tokens)
 7. When context exceeds 75% or budget is exhausted, injection silently skips
 
@@ -126,9 +126,9 @@ declared, hooks deny all writes (except plan.md). Tiers escalate up only, never 
 ```
 --- WRIT RULES (3 rules, standard mode) ---
 
-[PY-ASYNC-001] (high, human, python) score=0.892
-WHEN: Writing async Python code
-RULE: All I/O operations must be async. Never use sync I/O in hot paths.
+[PY-ASYNC-001] (?, ?, ?) score=0.892
+WHEN: Calling a sync I/O function inside an async def function.
+RULE: Async call chains must use async I/O end-to-end.
 VIOLATION: Using requests.get() in an async handler
 CORRECT: Using httpx.AsyncClient within async context
 
@@ -166,7 +166,7 @@ source .venv/bin/activate && writ serve   # start Writ
 If Writ is not running, the hooks fall back gracefully -- Claude sees
 `[Writ: server unavailable, proceeding without rules]` and proceeds normally.
 
-### Hooks (12)
+### Hooks (18)
 
 All hooks parse Claude Code's stdin JSON envelope via a shared parser
 (`bin/lib/parse-hook-stdin.py`) with `$CLAUDE_TOOL_INPUT` env var fallback.
@@ -176,20 +176,28 @@ validation when the write itself failed (`tool_result_is_error`).
 
 | Hook | Event | Matcher | Purpose |
 |------|-------|---------|---------|
-| `writ-rag-inject.sh` | UserPromptSubmit | all | Query Writ, inject rules, tier/workflow reminders |
+| `writ-rag-inject.sh` | UserPromptSubmit | all | Query Writ, inject rules, mode/workflow state |
 | `auto-approve-gate.sh` | UserPromptSubmit | all | Detect approval patterns, delegate to advance-phase |
-| `check-gate-approval.sh` | PreToolUse | Write\|Edit | Thin client for writ-session.py can-write |
+| `check-gate-approval.sh` | PreToolUse | Write\|Edit | Thin client for can-write; deny-to-ask escalation |
 | `pre-validate-file.sh` | PreToolUse | Write\|Edit | Static analysis before write |
-| `enforce-final-gate.sh` | PreToolUse | Write\|Edit | Block completion until ENF-GATE-FINAL (Tier 3) |
-| `inject-tier-workflow.sh` | PostToolUse | Bash | Immediate workflow injection after tier set |
+| `enforce-final-gate.sh` | PreToolUse | Write\|Edit | Block completion until ENF-GATE-FINAL |
+| `writ-pretool-rag.sh` | PreToolUse | Write\|Edit | File-context RAG injection before writes |
+| `writ-read-rag.sh` | PreToolUse | Read | File-context RAG injection for Review/Debug reads |
+| `validate-exit-plan.sh` | PreToolUse | ExitPlanMode | Plan format validation on /plan exit |
+| `inject-tier-workflow.sh` | PostToolUse | Bash | Immediate workflow injection after mode/tier set |
 | `validate-file.sh` | PostToolUse | Write\|Edit | Static analysis after write |
 | `validate-rules.sh` | PostToolUse | Write\|Edit | Rule compliance validation via /analyze |
 | `validate-handoff.sh` | PostToolUse | Write\|Edit | Handoff JSON schema validation |
-| `friction-logger.sh` | Stop | all | Friction capture (gate denials, tier escalations, phase transitions) |
-| `writ-context-tracker.sh` | Stop | all | Context pressure, auto-feedback, coverage |
+| `writ-posttool-rag.sh` | PostToolUse | Write\|Edit | Post-write RAG injection from code patterns |
+| `friction-logger.sh` | Stop | all | Friction capture (gate denials, phase transitions, hook timing) |
+| `writ-context-tracker.sh` | Stop | all | Context pressure, auto-feedback, token snapshots |
 | `log-session-metrics.sh` | Stop | all | Gate approval context metrics |
+| `writ-subagent-start.sh` | SubagentStart | all | Create isolated session cache, inject Writ rules |
+| `writ-subagent-stop.sh` | SubagentStop | all | Log sub-agent completion metrics |
 
 All hooks are project-agnostic -- they work with any language or framework.
+Hooks fire inside sub-agents with `agent_id` and `agent_type` in the payload.
+Each sub-agent gets its own session cache (isolated RAG budget and gate state).
 
 ## CLI Commands
 
@@ -309,7 +317,7 @@ Weights tuned via sweep against 83-query ground-truth set. Phase 5 ratios preser
 ## Testing
 
 ```bash
-# Unit and integration tests (314 tests across 16 test files)
+# Unit and integration tests (~320 tests across 30 test files)
 pytest tests/ -q
 
 # Performance benchmarks (12 tests, requires Neo4j with migrated rules)
@@ -345,12 +353,19 @@ All 9 original phases complete. Evolution plan Phases 1-4 complete. ONNX inferen
 
 **ONNX optimization:** PyTorch/sentence-transformers eliminated from runtime. Embedding inference via ONNX Runtime + Rust tokenizers. 15-29x query latency improvement. Ranking-identical to PyTorch (0/83 queries diverge).
 
+**Sub-agent architecture (complete):**
+- 4 custom agent definitions: writ-explorer (sonnet, read-only), writ-planner (opus, writes plan), writ-test-writer (sonnet, writes tests), writ-implementer (opus, full tools)
+- Session isolation via agent_id-based cache -- each worker gets fresh RAG budget
+- SubagentStart hook creates isolated session, queries Writ, injects rules via additionalContext
+- SubagentStop hook logs completion metrics (files written, rules loaded, budget consumed)
+- Orchestrator rules file dispatches phases to named agent types
+- install-skill.sh creates agent definition symlinks in ~/.claude/agents/
+
 Future work:
 - Complement mode -- semantic gap detection for multi-query sessions. Viable at 500+ rules.
 - Graph-level versioning -- immutable snapshots. Relevant when corpus scales and graph mutations during sessions could cause inconsistency.
 - Qdrant migration -- swap hnswlib at 10K+ rules. VectorStore Protocol already in place. Would also eliminate the 10K cold start problem by persisting embeddings.
 - Phase 5 -- domain generalization. Conditional on generalizability test with a concrete non-coding domain.
-- PreToolUse hook -- narrow, file-context-specific rule injection before writes. Deferred pending measurement of whether the broad UserPromptSubmit query covers file-specific needs.
 
 See [EVOLUTION_PLAN.md](EVOLUTION_PLAN.md) for the evolution plan specification. See [CONTRIBUTING.md](CONTRIBUTING.md) for the multi-author rule governance process. See [SCALE_BENCHMARK_RESULTS.md](SCALE_BENCHMARK_RESULTS.md) for detailed scale benchmarks.
 

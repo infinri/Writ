@@ -148,16 +148,18 @@ def extract_keywords(raw: str) -> str:
 
 try:
     data = json.load(sys.stdin)
-    sid = data.get('session_id', '')
+    sid = data.get('agent_id', '') or data.get('session_id', '')
+    agent_id = data.get('agent_id', '')
     raw = data.get('prompt', data.get('message', data.get('content', '')))
     prompt = extract_keywords(raw) if len(raw) > 300 else raw
-    print(f'{sid}\n{prompt}')
+    print(f'{sid}\n{prompt}\n{agent_id}')
 except Exception as e:
-    print(f'\n')
+    print(f'\n\n')
 " 2>/dev/null) || true
 
 SESSION_ID=$(echo "$PARSED" | head -1)
-PROMPT=$(echo "$PARSED" | tail -n +2)
+PROMPT=$(echo "$PARSED" | sed -n '2p')
+AGENT_ID=$(echo "$PARSED" | sed -n '3p')
 
 # Fallback session ID if not provided by Claude Code
 if [ -z "$SESSION_ID" ]; then
@@ -165,6 +167,12 @@ if [ -z "$SESSION_ID" ]; then
 fi
 if [ -z "$SESSION_ID" ]; then
     SESSION_ID=$(echo "${PWD}:${USER}" | md5sum | cut -c1-12)-$(date +%Y%m%d)
+fi
+
+# Publish session ID so Stop hooks (friction-logger) can find it
+# Do NOT overwrite when inside a sub-agent -- protect parent's session file
+if [ -z "$AGENT_ID" ]; then
+    echo "$SESSION_ID" > /tmp/writ-current-session
 fi
 
 debug "session=$SESSION_ID prompt_len=${#PROMPT}"
@@ -175,10 +183,10 @@ if python3 "$SESSION_HELPER" should-skip "$SESSION_ID" 2>/dev/null; then
     exit 0
 fi
 
-# 1b. Check if tier is declared (for post-rules directive injection)
-CURRENT_TIER=$(python3 "$SESSION_HELPER" tier get "$SESSION_ID" 2>/dev/null || echo "")
-CURRENT_TIER=$(echo "$CURRENT_TIER" | tr -d '[:space:]')
-debug "tier=$CURRENT_TIER"
+# 1b. Check current mode (for post-rules directive injection)
+CURRENT_MODE=$(python3 "$SESSION_HELPER" mode get "$SESSION_ID" 2>/dev/null || echo "")
+CURRENT_MODE=$(echo "$CURRENT_MODE" | tr -d '[:space:]')
+debug "mode=$CURRENT_MODE"
 
 # 2. Minimum query length gate
 if [ ${#PROMPT} -lt $MIN_QUERY_LENGTH ]; then
@@ -295,31 +303,39 @@ if [ -n "$RULES_TEXT" ]; then
     debug "injected rules"
 fi
 
-# 9. Inject tier classification directive if no tier declared yet
-if [ -z "$CURRENT_TIER" ]; then
-    cat << TIER_DIRECTIVE
+# 9. Inject mode classification directive if no mode set yet
+if [ -z "$CURRENT_MODE" ]; then
+    cat << MODE_DIRECTIVE
 
-[Writ: classify this task before proceeding]
-Tier 0 (Research): no code generation. Tier 1 (Patch): <=3 files, no new contracts.
-Tier 2 (Standard): new class/interface, single domain. Tier 3 (Complex): multi-domain, concurrency, queues.
-Declare: python3 $SESSION_HELPER tier set <0-3> $SESSION_ID
-Full definitions: see .claude/CLAUDE.md "Tier definitions" section.
-TIER_DIRECTIVE
-    debug "injected tier classification directive"
+[Writ: set mode before proceeding]
+Conversation: discussion, no code. Debug: investigating a problem, no code.
+Review: evaluating code against rules, no code. Work: building/modifying code (full workflow).
+Declare: python3 $SESSION_HELPER mode set <conversation|debug|review|work> $SESSION_ID
+Full definitions: see SKILL.md "Mode system" section.
+MODE_DIRECTIVE
+    debug "injected mode classification directive"
 fi
 
-# 9b. Inject workflow reminder for Tier 0 (research mode)
-if [ "$CURRENT_TIER" = "0" ]; then
-    echo ""
-    echo "[Writ: Research mode. Rules injected as context. No code generation expected.]"
-    debug "injected tier 0 research reminder"
-fi
-
-# 9c. Inject workflow reminder when tier is declared but gates are still pending
-# Tier 1 has no gates -- reminders start at Tier 2.
-if [ -n "$CURRENT_TIER" ] && [ "$CURRENT_TIER" -ge 2 ] 2>/dev/null; then
-    # Detect project root from cwd to find gate files
-    _PROJECT_ROOT=$(python3 -c "
+# 9b. Inject mode-specific reminders
+case "$CURRENT_MODE" in
+    conversation)
+        echo ""
+        echo "[Writ: Conversation mode. Rules injected as context. No code generation expected.]"
+        debug "injected conversation mode reminder"
+        ;;
+    debug)
+        echo ""
+        echo "[Writ: Debug mode. Rules injected for investigation. No code generation -- recommend Work mode when fix is identified.]"
+        debug "injected debug mode reminder"
+        ;;
+    review)
+        echo ""
+        echo "[Writ: Review mode. Evaluate code against injected rules. Output structured findings per file.]"
+        debug "injected review mode reminder"
+        ;;
+    work)
+        # Work mode: inject workflow reminder based on gate state
+        _PROJECT_ROOT=$(python3 -c "
 import os, sys
 markers = ['composer.json','package.json','Cargo.toml','go.mod','pyproject.toml','.git']
 path = os.getcwd()
@@ -330,150 +346,28 @@ while path != '/':
 print('')
 " 2>/dev/null)
 
-    if [ -n "$_PROJECT_ROOT" ]; then
-        _GATE_DIR="$_PROJECT_ROOT/.claude/gates"
-        _PHASE_A="$_GATE_DIR/phase-a.approved"
-        _TEST_SKEL="$_GATE_DIR/test-skeletons.approved"
-
-        if [ "$CURRENT_TIER" = "2" ] && [ ! -f "$_PHASE_A" ]; then
-            cat << 'WORKFLOW_T2_PLAN'
-
-[Writ: Tier 2 workflow -- phase-a gate pending]
-Before writing ANY code, present a combined Phase A-C analysis:
-  A) What the feature does and why, files to create/modify, call path
-  B) Interfaces, type contracts, domain invariants
-  C) API contracts, DI wiring, integration seam justification
-Include: applicable Writ rules and query budget (if DB calls involved).
-Write plan.md in the module directory. Present to user and STOP.
-Tell the user: "Say **approved** to proceed."
-Do NOT write code or create gate files yourself.
-WORKFLOW_T2_PLAN
-            debug "injected tier 2 workflow reminder (plan)"
-        elif [ "$CURRENT_TIER" = "2" ] && [ ! -f "$_TEST_SKEL" ]; then
-            cat << 'WORKFLOW_T2_TEST'
-
-[Writ: Tier 2 workflow -- test-skeletons gate pending]
-Phase A-C approved. Next: write test skeletons (class + method signatures, no implementation).
-Present skeletons to user and STOP. Tell the user: "Say **approved** to proceed to implementation."
-Do NOT write implementation code or create gate files yourself.
-WORKFLOW_T2_TEST
-            debug "injected tier 2 workflow reminder (test-skeletons)"
-        fi
-
-        if [ "$CURRENT_TIER" = "3" ]; then
-            # Tier 3: check each gate in sequence, remind for the first missing one
-            _PHASE_B="$_GATE_DIR/phase-b.approved"
-            _PHASE_C="$_GATE_DIR/phase-c.approved"
-            _PHASE_D="$_GATE_DIR/phase-d.approved"
+        if [ -n "$_PROJECT_ROOT" ]; then
+            _GATE_DIR="$_PROJECT_ROOT/.claude/gates"
+            _PHASE_A="$_GATE_DIR/phase-a.approved"
+            _TEST_SKEL="$_GATE_DIR/test-skeletons.approved"
 
             if [ ! -f "$_PHASE_A" ]; then
-                cat << 'WORKFLOW_T3_A'
-
-[Writ: Tier 3 workflow -- phase-a gate pending]
-Before writing ANY code, produce Phase A (Design and call-path declaration):
-  - What the feature/fix does and why
-  - Which files will be created or modified
-  - Call-path: entry point -> service -> repository -> output
-  - Which Writ rules apply and how you will satisfy them
-  - Query budget plan (if DB calls involved)
-Write plan.md in the module directory. Present to user and STOP.
-Tell the user: "Say **approved** to proceed to Phase B."
-Do NOT write code or create gate files yourself.
-WORKFLOW_T3_A
-                debug "injected tier 3 workflow reminder (phase-a)"
-            elif [ ! -f "$_PHASE_B" ]; then
-                cat << 'WORKFLOW_T3_B'
-
-[Writ: Tier 3 workflow -- phase-b gate pending]
-Phase A approved. Next: Phase B (Domain invariants and validation):
-  - Define interfaces and type contracts
-  - Identify validation rules and domain constraints
-  - Declare what must be true for the feature to be correct
-Present to user and STOP. Tell the user: "Say **approved** to proceed to Phase C."
-Do NOT write code or create gate files yourself.
-WORKFLOW_T3_B
-                debug "injected tier 3 workflow reminder (phase-b)"
-            elif [ ! -f "$_PHASE_C" ]; then
-                cat << 'WORKFLOW_T3_C'
-
-[Writ: Tier 3 workflow -- phase-c gate pending]
-Phase B approved. Next: Phase C (Integration points and seam justification):
-  - Define API contracts, DI wiring, plugin/observer declarations
-  - Justify each integration seam
-  - Declare how this integrates with existing modules
-Present to user and STOP. Tell the user: "Say **approved** to proceed."
-Do NOT write code or create gate files yourself.
-WORKFLOW_T3_C
-                debug "injected tier 3 workflow reminder (phase-c)"
+                echo ""
+                echo "[Writ: Work mode -- plan gate pending. Enter /plan, write plan.md, exit, present, wait for approval.]"
+                debug "injected work mode state (plan)"
             elif [ ! -f "$_TEST_SKEL" ]; then
-                # Check if phase-d is needed but missing (only remind if no test-skeletons yet)
-                cat << 'WORKFLOW_T3_POST'
-
-[Writ: Tier 3 workflow -- test-skeletons gate pending]
-Phases A-C approved. If concurrency/queues are involved and phase-d.approved is missing, present Phase D first.
-Otherwise: write test skeletons (class + method signatures, no implementation).
-Present to user and STOP. Tell the user: "Say **approved** to proceed to implementation."
-Do NOT write implementation code or create gate files yourself.
-WORKFLOW_T3_POST
-                debug "injected tier 3 workflow reminder (test-skeletons)"
+                echo ""
+                echo "[Writ: Work mode -- test-skeletons gate pending. Write test files to disk, present, wait for approval.]"
+                debug "injected work mode state (test-skeletons)"
             fi
         fi
-    fi
-fi
-
-# 9c. Inject phase-specific checklist from checklists.json
-CHECKLISTS_FILE="$WRIT_DIR/bin/lib/checklists.json"
-if [ -n "$CURRENT_TIER" ] && [ -f "$CHECKLISTS_FILE" ]; then
-    CHECKLIST_OUTPUT=$(python3 -c "
-import sys, json
-
-tier = int(sys.argv[1])
-checklist_path = sys.argv[2]
-
-try:
-    with open(checklist_path) as f:
-        checklists = json.load(f)
-except Exception:
-    sys.exit(0)
-
-# Determine current phase from gate state
-import os
-gate_dir = sys.argv[3] if len(sys.argv) > 3 else ''
-phase = 'planning'
-if gate_dir:
-    if os.path.exists(os.path.join(gate_dir, 'test-skeletons.approved')):
-        phase = 'code_generation'
-    elif os.path.exists(os.path.join(gate_dir, 'phase-a.approved')):
-        phase = 'code_generation'  # between plan approval and test skeletons
-    # After implementation files are done, testing checklist applies
-
-checklist = checklists.get(phase, {})
-tier_min = checklist.get('tier_min', 99)
-if tier < tier_min:
-    sys.exit(0)
-
-criteria = checklist.get('exit_criteria', [])
-if not criteria:
-    sys.exit(0)
-
-lines = [f'[Writ: {phase} exit criteria]']
-lines.append(f'Before this phase is complete, verify:')
-for c in criteria:
-    lines.append(f'  - {c[\"id\"]}: {c[\"check\"]}')
-print('\n'.join(lines))
-" "$CURRENT_TIER" "$CHECKLISTS_FILE" "${_GATE_DIR:-}" 2>/dev/null || true)
-
-    if [ -n "$CHECKLIST_OUTPUT" ]; then
-        echo ""
-        echo "$CHECKLIST_OUTPUT"
-        debug "injected phase checklist"
-    fi
-fi
+        ;;
+esac
 
 # 10. Append proposal nudge if low relevance (only when tier is set -- don't mix directives)
 if [ "$PROPOSAL_NUDGE" = "NO_RULES" ]; then
     echo ""
-    echo "[Writ: no matching rules found for this task. If you discover a pattern, constraint, or gotcha during this work that would help future tasks, propose it via POST /propose. See .claude/CLAUDE.md for the format and trigger conditions.]"
+    echo "[Writ: no matching rules found for this task. If you discover a pattern, constraint, or gotcha during this work that would help future tasks, propose it via POST /propose. See SKILL.md for the format and trigger conditions.]"
 elif [ "$PROPOSAL_NUDGE" = "LOW_SCORES" ]; then
     echo ""
     echo "[Writ: retrieved rules have low relevance scores (< $LOW_RELEVANCE_THRESHOLD). The knowledge base may not cover this area well. If you discover a pattern worth codifying, propose it via POST /propose.]"
@@ -519,6 +413,33 @@ except Exception:
             --add-rule-objects "$RULE_OBJECTS" 2>/dev/null || true
         debug "stored ${#RULE_OBJECTS} bytes of rule objects"
     fi
+
+    # Log rag_query event
+    python3 -c "
+import json, sys, os
+from datetime import datetime, timezone
+entry = json.dumps({
+    'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'session': sys.argv[1],
+    'mode': sys.argv[2] if sys.argv[2] else None,
+    'event': 'rag_query',
+    'query_source': 'broad',
+    'tokens_injected': int(sys.argv[3]),
+    'rules_returned_count': len(json.loads(sys.argv[4])),
+    'rule_ids': json.loads(sys.argv[4]),
+})
+markers = ['composer.json','package.json','Cargo.toml','go.mod','pyproject.toml','.git']
+path = os.getcwd()
+while path != '/':
+    if any(os.path.exists(os.path.join(path, m)) for m in markers):
+        try:
+            with open(os.path.join(path, 'workflow-friction.log'), 'a') as f:
+                f.write(entry + '\n')
+        except OSError:
+            pass
+        break
+    path = os.path.dirname(path)
+" "$SESSION_ID" "${CURRENT_MODE:-}" "$COST" "$NEW_RULE_IDS" 2>/dev/null || true
 fi
 
 # 12. Read session cache for escalation and backward context checks
@@ -636,9 +557,10 @@ except Exception:
 fi
 
 # 13. Check for gate invalidation (backward context without escalation)
-if [ -n "$CURRENT_TIER" ] && [ "$CURRENT_TIER" -ge 2 ] 2>/dev/null; then
+# Only relevant in Work mode
+if [ "$CURRENT_MODE" = "work" ]; then
     if [ -n "$_PROJECT_ROOT" ]; then
-        _GATE_DIR="$_PROJECT_ROOT/.claude/gates"
+        _GATE_DIR="${_GATE_DIR:-$_PROJECT_ROOT/.claude/gates}"
 
         # Check if any gate was invalidated (records exist but .approved file missing)
         BACKWARD_CTX=$(python3 -c "

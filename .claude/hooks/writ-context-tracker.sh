@@ -20,9 +20,46 @@ if [ -z "$SESSION_ID" ]; then
 fi
 
 CONTEXT_PCT="${CLAUDE_CONTEXT_PERCENT:-0}"
+CONTEXT_TOKENS="${CLAUDE_CONTEXT_TOKENS:-0}"
+
+# Diagnostic: log available CLAUDE_* env vars once per session
+DIAG_FLAG="/tmp/writ-env-diag-${SESSION_ID}"
+if [ ! -f "$DIAG_FLAG" ]; then
+    env | grep -i "^CLAUDE" > "/tmp/writ-env-diag-${SESSION_ID}.log" 2>/dev/null || true
+    touch "$DIAG_FLAG" 2>/dev/null || true
+fi
 
 python3 "$SESSION_HELPER" update "$SESSION_ID" \
     --context-percent "$CONTEXT_PCT" 2>/dev/null || true
+
+# Log token_snapshot and store in session cache (always -- zeros are data)
+SNAPSHOT_JSON="{\"context_percent\":$CONTEXT_PCT,\"context_tokens\":$CONTEXT_TOKENS}"
+python3 "$SESSION_HELPER" update "$SESSION_ID" \
+    --token-snapshot "$SNAPSHOT_JSON" 2>/dev/null || true
+
+python3 -c "
+import json, sys, os
+from datetime import datetime, timezone
+entry = json.dumps({
+    'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'session': sys.argv[1],
+    'mode': None,
+    'event': 'token_snapshot',
+    'context_percent': int(sys.argv[2]),
+    'context_tokens': int(sys.argv[3]),
+})
+markers = ['composer.json','package.json','Cargo.toml','go.mod','pyproject.toml','.git']
+path = os.getcwd()
+while path != '/':
+    if any(os.path.exists(os.path.join(path, m)) for m in markers):
+        try:
+            with open(os.path.join(path, 'workflow-friction.log'), 'a') as f:
+                f.write(entry + '\n')
+        except OSError:
+            pass
+        break
+    path = os.path.dirname(path)
+" "$SESSION_ID" "$CONTEXT_PCT" "$CONTEXT_TOKENS" 2>/dev/null || true
 
 # Auto-feedback: correlate rules-in-context with analysis outcomes, POST to Writ.
 # Runs every stop, but only sends feedback when there are new analysis results
