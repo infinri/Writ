@@ -1,6 +1,6 @@
 # Writ Scale Benchmark Results
 
-**Date:** 2026-03-29 21:33 UTC
+**Date:** 2026-04-13 14:56 UTC
 **Scales tested:** 80, 500, 1,000, 10,000
 
 ---
@@ -11,20 +11,20 @@
 |---|---|---|---|---|
 | Domain rules | 45 | 465 | 965 | 9965 |
 | Mandatory rules | 35 | 35 | 35 | 35 |
-| Ingest time | 0.38s | 1.72s | 2.33s | 13.18s |
-| Ingest rate | 212/s | 290/s | 430/s | 759/s |
-| Cold start (median) | 0.584s | 3.638s | 7.744s | 70.19s |
-| Memory (RSS) | 1564 MB | 2337 MB | 2695 MB | 2951 MB |
-| BM25 p95 | 0.075ms | 0.238ms | 0.279ms | 0.178ms |
-| Vector p95 | 0.055ms | 0.077ms | 0.089ms | 0.115ms |
-| Cache p95 | 0.001ms | 0.001ms | 0.001ms | 0.002ms |
-| Ranking p95 | 0.091ms | 0.2ms | 0.233ms | 0.29ms |
-| **E2E p95** | **0.193ms** | **0.476ms** | **0.567ms** | **0.55ms** |
-| E2E median | 0.136ms | 0.351ms | 0.406ms | 0.398ms |
+| Ingest time | 0.59s | 1.53s | 1.71s | 10.76s |
+| Ingest rate | 135/s | 327/s | 585/s | 930/s |
+| Cold start (median) | 0.494s | 3.452s | 5.782s | 70.788s |
+| Memory (RSS) | 1570 MB | 2349 MB | 2674 MB | 2943 MB |
+| BM25 p95 | 0.162ms | 0.182ms | 0.201ms | 0.262ms |
+| Vector p95 | 0.046ms | 0.056ms | 0.057ms | 0.108ms |
+| Cache p95 | 0.001ms | 0.001ms | 0.001ms | 0.001ms |
+| Ranking p95 | 0.103ms | 0.139ms | 0.161ms | 0.218ms |
+| **E2E p95** | **0.278ms** | **0.359ms** | **0.399ms** | **0.557ms** |
+| E2E median | 0.178ms | 0.245ms | 0.325ms | 0.407ms |
 | Domain hit rate | 100.0% | 90.0% | 90.0% | 90.0% |
 | Context tokens (all) | 13,876 | 63,003 | 121,473 | 1,174,142 |
-| Context tokens (retrieved) | 3,155 | 1,604 | 1,603 | 1,615 |
-| **Context reduction** | **4.4x** | **39.3x** | **75.8x** | **727.0x** |
+| Context tokens (retrieved) | 3,155 | 1,600 | 1,602 | 1,617 |
+| **Context reduction** | **4.4x** | **39.4x** | **75.8x** | **726.1x** |
 | Clusters | 13 | 70 | 419 | 519 |
 | Ungrouped | 6 | 60 | 73 | 24 |
 | Silhouette | 0.1149 | 0.2554 | 0.8882 | 0.9981 |
@@ -41,41 +41,41 @@
 
 | Stage | Median | p95 | p99 | Min | Max |
 |---|---|---|---|---|---|
-| BM25 | 0.044ms | 0.075ms | 0.17ms | 0.031ms | 0.405ms |
-| Vector | 0.035ms | 0.055ms | 0.114ms | 0.03ms | 1.347ms |
-| Cache | 0.0ms | 0.001ms | 0.003ms | 0.0ms | 0.007ms |
-| Ranking | 0.054ms | 0.091ms | 14.304ms | 0.001ms | 20.625ms |
-| **End-to-end** | 0.136ms | 0.193ms | 14.627ms | 0.105ms | 21.149ms |
+| BM25 | 0.107ms | 0.162ms | 0.422ms | 0.09ms | 1.128ms |
+| Vector | 0.027ms | 0.046ms | 0.102ms | 0.025ms | 0.206ms |
+| Cache | 0.0ms | 0.001ms | 0.003ms | 0.0ms | 0.005ms |
+| Ranking | 0.038ms | 0.103ms | 6.817ms | 0.001ms | 9.074ms |
+| **End-to-end** | 0.178ms | 0.278ms | 7.192ms | 0.148ms | 9.622ms |
 
 ### 500 rules
 
 | Stage | Median | p95 | p99 | Min | Max |
 |---|---|---|---|---|---|
-| BM25 | 0.181ms | 0.238ms | 0.393ms | 0.114ms | 8.65ms |
-| Vector | 0.055ms | 0.077ms | 0.085ms | 0.045ms | 0.251ms |
-| Cache | 0.001ms | 0.001ms | 0.003ms | 0.0ms | 0.005ms |
-| Ranking | 0.106ms | 0.2ms | 11.06ms | 0.001ms | 11.839ms |
-| **End-to-end** | 0.351ms | 0.476ms | 11.757ms | 0.202ms | 13.681ms |
+| BM25 | 0.136ms | 0.182ms | 0.307ms | 0.092ms | 0.575ms |
+| Vector | 0.038ms | 0.056ms | 0.085ms | 0.037ms | 0.121ms |
+| Cache | 0.0ms | 0.001ms | 0.002ms | 0.0ms | 0.002ms |
+| Ranking | 0.075ms | 0.139ms | 5.569ms | 0.001ms | 7.102ms |
+| **End-to-end** | 0.245ms | 0.359ms | 6.018ms | 0.16ms | 7.8ms |
 
 ### 1,000 rules
 
 | Stage | Median | p95 | p99 | Min | Max |
 |---|---|---|---|---|---|
-| BM25 | 0.197ms | 0.279ms | 0.413ms | 0.112ms | 0.632ms |
-| Vector | 0.056ms | 0.089ms | 0.111ms | 0.046ms | 0.229ms |
-| Cache | 0.001ms | 0.001ms | 0.004ms | 0.0ms | 0.005ms |
-| Ranking | 0.147ms | 0.233ms | 11.738ms | 0.001ms | 13.502ms |
-| **End-to-end** | 0.406ms | 0.567ms | 12.213ms | 0.2ms | 14.368ms |
+| BM25 | 0.159ms | 0.201ms | 0.337ms | 0.095ms | 0.656ms |
+| Vector | 0.042ms | 0.057ms | 0.087ms | 0.039ms | 0.135ms |
+| Cache | 0.0ms | 0.001ms | 0.002ms | 0.0ms | 0.003ms |
+| Ranking | 0.119ms | 0.161ms | 7.728ms | 0.001ms | 8.07ms |
+| **End-to-end** | 0.325ms | 0.399ms | 8.145ms | 0.168ms | 8.864ms |
 
 ### 10,000 rules
 
 | Stage | Median | p95 | p99 | Min | Max |
 |---|---|---|---|---|---|
-| BM25 | 0.131ms | 0.178ms | 0.315ms | 0.038ms | 0.69ms |
-| Vector | 0.073ms | 0.115ms | 0.138ms | 0.051ms | 0.188ms |
-| Cache | 0.001ms | 0.002ms | 0.002ms | 0.0ms | 0.003ms |
-| Ranking | 0.185ms | 0.29ms | 11.844ms | 0.001ms | 14.418ms |
-| **End-to-end** | 0.398ms | 0.55ms | 12.123ms | 0.147ms | 15.299ms |
+| BM25 | 0.195ms | 0.262ms | 0.485ms | 0.101ms | 0.703ms |
+| Vector | 0.064ms | 0.108ms | 0.155ms | 0.045ms | 0.218ms |
+| Cache | 0.001ms | 0.001ms | 0.002ms | 0.0ms | 0.007ms |
+| Ranking | 0.131ms | 0.218ms | 6.554ms | 0.001ms | 8.386ms |
+| **End-to-end** | 0.407ms | 0.557ms | 7.032ms | 0.189ms | 9.309ms |
 
 ---
 
@@ -84,7 +84,7 @@
 Key questions answered by this benchmark:
 
 1. **Does latency stay under 10ms at scale?** Check E2E p95 column.
-2. **Does context reduction improve at scale?** At 80 rules ~11x; at 10K should be ~140x+.
+2. **Does context reduction improve at scale?** At 80 rules ~4x; at 10K ~700x.
 3. **Does memory stay under 2GB?** Check RSS column.
 4. **Does cold start stay under 3s?** Check cold start column.
 5. **Does compression improve at scale?** More rules = more clusters = higher compression.
@@ -92,4 +92,4 @@ Key questions answered by this benchmark:
 
 ---
 
-Generated by `benchmarks/scale_benchmark.py` on 2026-03-29 21:33 UTC
+Generated by `benchmarks/scale_benchmark.py` on 2026-04-13 14:56 UTC

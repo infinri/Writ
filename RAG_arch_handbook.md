@@ -641,7 +641,7 @@ These are contractual targets, not aspirational ones. If any target is missed in
 | Memory footprint (warm service) | < 2 GB RAM | 1,075 MB | 1,469 MB | **Pass** |
 | Integrity check duration (80 rules) | < 500ms | 3.5ms median, 38.8ms p95 | -- | **Pass** |
 | Rule ingestion (single rule) | < 2 seconds | 0.008s median, 0.012s p95 | -- | **Pass** |
-| Context reduction | > 1x | 11x (80 rules) | 726x (10K rules) | **Pass** |
+| Context reduction | > 1x | 4.4x (80 rules) | 726x (10K rules) | **Pass** |
 
 > **BENCHMARK REFERENCE:** Phase 5 baseline in `PHASE5_RESULTS.md`. Scale benchmark in `SCALE_BENCHMARK_RESULTS.md`. Evolution plan in `EVOLUTION_PLAN.md`. ONNX optimization reduces E2E p95 from 6.6ms to 0.19ms at 80 rules. Cold start at 10K (70s) is a known tradeoff of ONNX bulk encoding -- Qdrant with persistent vectors is the defined mitigation.
 

@@ -422,7 +422,7 @@ def write_report(results: dict) -> None:
         "Key questions answered by this benchmark:",
         "",
         "1. **Does latency stay under 10ms at scale?** Check E2E p95 column.",
-        "2. **Does context reduction improve at scale?** At 80 rules ~11x; at 10K should be ~140x+.",
+        "2. **Does context reduction improve at scale?** At 80 rules ~4x; at 10K ~700x.",
         "3. **Does memory stay under 2GB?** Check RSS column.",
         "4. **Does cold start stay under 3s?** Check cold start column.",
         "5. **Does compression improve at scale?** More rules = more clusters = higher compression.",
