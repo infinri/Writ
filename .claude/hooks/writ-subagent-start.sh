@@ -34,12 +34,12 @@ fi
 
 # Read parent's current state
 if [ -n "$PARENT_SESSION" ]; then
-    PARENT_STATE=$(python3 "$SESSION_HELPER" read "$PARENT_SESSION" 2>/dev/null || echo '{}')
+    PARENT_STATE=$(_writ_session read "$PARENT_SESSION" 2>/dev/null || echo '{}')
 else
     # Try the published session file
     if [ -f /tmp/writ-current-session ]; then
         PARENT_SESSION=$(cat /tmp/writ-current-session 2>/dev/null | tr -d '[:space:]')
-        PARENT_STATE=$(python3 "$SESSION_HELPER" read "$PARENT_SESSION" 2>/dev/null || echo '{}')
+        PARENT_STATE=$(_writ_session read "$PARENT_SESSION" 2>/dev/null || echo '{}')
     else
         PARENT_STATE='{}'
     fi
@@ -116,7 +116,7 @@ print(json.dumps({
                 -d @- 2>/dev/null) || true
 
         if [ -n "$RESPONSE" ]; then
-            RULES_TEXT=$(echo "$RESPONSE" | python3 "$SESSION_HELPER" format 2>/dev/null) || true
+            RULES_TEXT=$(echo "$RESPONSE" | _writ_session format 2>/dev/null) || true
             if [ -n "$RULES_TEXT" ]; then
                 RULES_ONLY=$(echo "$RULES_TEXT" | grep -v "^WRIT_META:")
                 ADDITIONAL_CONTEXT="$RULES_ONLY"
@@ -153,7 +153,7 @@ fi
 
 # Log sub-agent start to friction log
 source "$WRIT_DIR/bin/lib/common.sh"
-CURRENT_MODE=$(python3 "$SESSION_HELPER" mode get "$AGENT_ID" 2>/dev/null || echo "")
+CURRENT_MODE=$(_writ_session "mode get" "$AGENT_ID" 2>/dev/null || echo "")
 CURRENT_MODE=$(echo "$CURRENT_MODE" | tr -d '[:space:]')
 log_friction_event "$AGENT_ID" "$CURRENT_MODE" "subagent_start" \
     "{\"agent_type\":\"$AGENT_TYPE\",\"parent_session\":\"$PARENT_SESSION\"}"

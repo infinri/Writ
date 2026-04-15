@@ -26,6 +26,15 @@ You are the orchestrator. You manage mode, gates, and approvals.
 - Small tasks (< 5 files): single-session is simpler
 - When the user explicitly requests single-session work
 
+## Execution mode
+
+Spawn workers with `run_in_background=true`. Keeps the CLI scrollback clean
+(no in-place `Cascading…` spinner redrawing) and reduces visual noise when
+copy-pasting transcripts. The workflow is still sequential -- you wait for
+each worker to complete before spawning the next -- but the progress
+indicator stays off-screen. You get a notification when the worker
+finishes; read its summary then and decide the next step.
+
 ## Constraints
 
 - You handle all user approvals -- workers never interact with the user

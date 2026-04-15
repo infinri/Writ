@@ -52,6 +52,23 @@ CORRECT: Using httpx.AsyncClient within async context
 
 Installation, hook wiring, mode system, CLI, and HTTP reference live in [docs/integration.md](docs/integration.md).
 
+## Install on a new machine
+
+Bootstrap Writ's harness config (`~/.claude/settings.json` + `~/.claude/CLAUDE.md`) from the committed templates:
+
+```bash
+git clone <repo> ~/.claude/skills/writ
+bash ~/.claude/skills/writ/scripts/install-harness-config.sh
+```
+
+The installer:
+- Renders `templates/settings.json` and `templates/CLAUDE.md` with `$HOME` substitution (works under any username).
+- Backs up existing files to `<name>.bak.<timestamp>` before overwriting.
+- Is idempotent: re-running produces no new backup when the target already matches the rendered template.
+- Supports `--dry-run` to preview the rendered output without writing.
+
+After install, start Neo4j + Writ, then `writ import-markdown` to populate rules from `bible/`.
+
 ## Architecture
 
 Five-stage hybrid retrieval pipeline:

@@ -34,7 +34,7 @@ if [ -z "$FILE" ]; then exit 0; fi
 # ENF-GATE-FINAL: only applies in Work mode. Skip for other modes.
 SESSION_HELPER="$SKILL_DIR/bin/lib/writ-session.py"
 SESSION_ID=$(detect_session_id "$PARSED")
-MODE=$(python3 "$SESSION_HELPER" mode get "$SESSION_ID" 2>/dev/null || echo "")
+MODE=$(_writ_session "mode get" "$SESSION_ID" 2>/dev/null || echo "")
 MODE=$(echo "$MODE" | tr -d '[:space:]')
 if [ "$MODE" != "work" ]; then
     exit 0

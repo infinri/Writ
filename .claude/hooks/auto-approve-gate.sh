@@ -14,6 +14,7 @@ set -euo pipefail
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 WRIT_DIR="$(cd "$HOOK_DIR/../.." && pwd)"
 SESSION_HELPER="$WRIT_DIR/bin/lib/writ-session.py"
+source "$WRIT_DIR/bin/lib/common.sh"
 
 # Read stdin once
 STDIN_JSON=$(cat)
@@ -132,7 +133,7 @@ while path != '/':
     path = os.path.dirname(path)
 " 2>/dev/null)
         if [ -n "$PROJECT_ROOT" ]; then
-            CURRENT_MODE=$(python3 "$SESSION_HELPER" mode get "$SESSION_ID" 2>/dev/null || echo "")
+            CURRENT_MODE=$(_writ_session "mode get" "$SESSION_ID" 2>/dev/null || echo "")
             CURRENT_MODE=$(echo "$CURRENT_MODE" | tr -d '[:space:]')
             python3 -c "
 import json, sys
@@ -164,7 +165,7 @@ fi
 GATE_TOKEN=$(cat "$GATE_TOKEN_FILE" 2>/dev/null)
 
 # Delegate to advance-phase -- pass prompt via stdin for phase-d detection
-RESULT=$(echo "$PROMPT_LOWER" | python3 "$SESSION_HELPER" advance-phase "$SESSION_ID" --token "$GATE_TOKEN" 2>/dev/null) || true
+RESULT=$(echo "$PROMPT_LOWER" | _writ_session advance-phase "$SESSION_ID" --token "$GATE_TOKEN" 2>/dev/null) || true
 
 if [ -z "$RESULT" ]; then
     exit 0
@@ -176,7 +177,7 @@ REASON=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin
 
 if [ "$ADVANCED" = "True" ]; then
     # Log approval_pattern_match
-    CURRENT_MODE=$(python3 "$SESSION_HELPER" mode get "$SESSION_ID" 2>/dev/null || echo "")
+    CURRENT_MODE=$(_writ_session "mode get" "$SESSION_ID" 2>/dev/null || echo "")
     CURRENT_MODE=$(echo "$CURRENT_MODE" | tr -d '[:space:]')
     PROJECT_ROOT=$(python3 -c "
 import os

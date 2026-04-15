@@ -20,13 +20,13 @@ if [ -z "$SESSION_ID" ]; then
     SESSION_ID=$(detect_session_id "")
 fi
 
-RESULT=$(echo "$STDIN_DATA" | python3 "$SESSION_HELPER" can-write "$SESSION_ID" --skill-dir "$SKILL_DIR" 2>/dev/null)
+RESULT=$(echo "$STDIN_DATA" | _writ_session can-write "$SESSION_ID" --skill-dir "$SKILL_DIR" 2>/dev/null)
 
 DECISION=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('decision','allow'))" 2>/dev/null || echo "allow")
 
 if [ "$DECISION" = "deny" ]; then
     # Read denial count from can-write result (set by _log_gate_denial in writ-session.py)
-    DENIAL_COUNT=$(python3 "$SESSION_HELPER" read "$SESSION_ID" 2>/dev/null | python3 -c "
+    DENIAL_COUNT=$(_writ_session read "$SESSION_ID" 2>/dev/null | python3 -c "
 import sys, json
 cache = json.load(sys.stdin)
 counts = cache.get('denial_counts', {})

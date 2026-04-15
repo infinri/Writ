@@ -12,6 +12,7 @@ set -euo pipefail
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 WRIT_DIR="$(cd "$HOOK_DIR/../.." && pwd)"
 SESSION_HELPER="$WRIT_DIR/bin/lib/writ-session.py"
+source "$WRIT_DIR/bin/lib/common.sh"
 
 WRIT_HOST="${WRIT_HOST:-localhost}"
 WRIT_PORT="${WRIT_PORT:-8765}"
@@ -178,15 +179,62 @@ fi
 debug "session=$SESSION_ID prompt_len=${#PROMPT}"
 
 # 1. Check skip conditions (budget exhausted or context pressure > 75%)
-if python3 "$SESSION_HELPER" should-skip "$SESSION_ID" 2>/dev/null; then
+if _writ_session should-skip "$SESSION_ID" 2>/dev/null; then
     debug "skipped: budget or context pressure"
     exit 0
 fi
 
+# 1a. Compaction recovery runs on the real PostCompact event via
+# writ-postcompact.sh. The previous heuristic here relied on a
+# non-existent env var and was removed.
+
 # 1b. Check current mode (for post-rules directive injection)
-CURRENT_MODE=$(python3 "$SESSION_HELPER" mode get "$SESSION_ID" 2>/dev/null || echo "")
+CURRENT_MODE=$(_writ_session "mode get" "$SESSION_ID" 2>/dev/null || echo "")
 CURRENT_MODE=$(echo "$CURRENT_MODE" | tr -d '[:space:]')
 debug "mode=$CURRENT_MODE"
+
+# 1c. Orchestrator suppression: skip /query, emit compact status line only
+IS_ORCHESTRATOR=$(python3 -c "
+import sys, json, os, tempfile
+cache_dir = os.environ.get('WRIT_CACHE_DIR', tempfile.gettempdir())
+path = os.path.join(cache_dir, f'writ-session-${SESSION_ID}.json')
+try:
+    with open(path) as f:
+        print('true' if json.load(f).get('is_orchestrator') else 'false')
+except Exception:
+    print('false')
+" 2>/dev/null || echo "false")
+
+if [ "$IS_ORCHESTRATOR" = "true" ]; then
+    debug "orchestrator mode: skipping /query, emitting status line"
+    # Still emit mode-classification directive if no mode set
+    if [ -z "$CURRENT_MODE" ]; then
+        cat << MODE_DIRECTIVE
+
+[Writ: set mode before proceeding]
+Conversation: discussion, no code. Debug: investigating a problem, no code.
+Review: evaluating code against rules, no code. Work: building/modifying code (full workflow).
+Declare: python3 $SESSION_HELPER mode set <conversation|debug|review|work> $SESSION_ID
+Full definitions: see SKILL.md "Mode system" section.
+MODE_DIRECTIVE
+    fi
+    # Compact status line for orchestrator
+    CACHE_DATA=$(_writ_session read "$SESSION_ID" 2>/dev/null || echo '{}')
+    STATUS_LINE=$(echo "$CACHE_DATA" | python3 -c "
+import sys, json
+try:
+    c = json.load(sys.stdin)
+    phase = c.get('current_phase', 'unknown')
+    gates = c.get('gates_approved', [])
+    violations = len(c.get('pending_violations', []))
+    mode = c.get('mode', 'unknown')
+    print(f'[Writ: mode={mode}, phase={phase}, gates={gates}, violations={violations}]')
+except Exception:
+    print('[Writ: orchestrator mode active]')
+" 2>/dev/null)
+    echo "$STATUS_LINE"
+    exit 0
+fi
 
 # 2. Minimum query length gate
 if [ ${#PROMPT} -lt $MIN_QUERY_LENGTH ]; then
@@ -195,7 +243,7 @@ if [ ${#PROMPT} -lt $MIN_QUERY_LENGTH ]; then
 fi
 
 # 3. Read session cache
-CACHE=$(python3 "$SESSION_HELPER" read "$SESSION_ID" 2>/dev/null || echo '{"loaded_rule_ids":[],"remaining_budget":8000}')
+CACHE=$(_writ_session read "$SESSION_ID" 2>/dev/null || echo '{"loaded_rule_ids":[],"remaining_budget":8000}')
 # Phase 3: only exclude current-phase rule IDs (historical IDs can be re-injected)
 LOADED_RULE_IDS=$(echo "$CACHE" | python3 -c "
 import sys, json
@@ -210,15 +258,46 @@ else:
 " 2>/dev/null || echo '[]')
 REMAINING_BUDGET=$(echo "$CACHE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('remaining_budget',8000))" 2>/dev/null || echo '8000')
 
+# 3b. Extract sticky rules preference (Cycle C)
+PREFER_RULE_IDS=$(echo "$CACHE" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin).get('last_injected_rule_ids',[])))" 2>/dev/null || echo '[]')
+
+# 3c. Extract detected domain from CwdChanged hook (Cycle C)
+DETECTED_DOMAIN=$(echo "$CACHE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('detected_domain','') or '')" 2>/dev/null || echo '')
+
+# 3d. Extract instructions_rule_ids from InstructionsLoaded hook (Cycle C)
+# Merge into the exclusion list to avoid re-injecting rules already in CLAUDE.md
+INSTRUCTIONS_RULE_IDS=$(echo "$CACHE" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin).get('instructions_rule_ids',[])))" 2>/dev/null || echo '[]')
+
 # 4. Build request JSON
 REQUEST=$(python3 -c "
 import json, sys
-print(json.dumps({
-    'query': sys.argv[1],
-    'budget_tokens': int(sys.argv[2]),
-    'exclude_rule_ids': json.loads(sys.argv[3])
-}))
-" "$PROMPT" "$REMAINING_BUDGET" "$LOADED_RULE_IDS" 2>/dev/null)
+
+query = sys.argv[1]
+budget = int(sys.argv[2])
+exclude_ids = json.loads(sys.argv[3])
+prefer_ids = json.loads(sys.argv[4])
+detected_domain = sys.argv[5]
+instructions_ids = json.loads(sys.argv[6])
+
+# Merge instructions_rule_ids into exclude list (deduplicated)
+all_excludes = list(set(exclude_ids) | set(instructions_ids))
+
+req = {
+    'query': query,
+    'budget_tokens': budget,
+    'exclude_rule_ids': all_excludes,
+}
+
+# Sticky rules: pass previous injection order as preference
+if prefer_ids:
+    req['prefer_rule_ids'] = prefer_ids
+
+# Domain hint from CwdChanged: only pass non-null, non-universal values
+if detected_domain and detected_domain != 'universal':
+    req['domain'] = detected_domain
+
+print(json.dumps(req))
+" "$PROMPT" "$REMAINING_BUDGET" "$LOADED_RULE_IDS" "$PREFER_RULE_IDS" "$DETECTED_DOMAIN" "$INSTRUCTIONS_RULE_IDS" 2>/dev/null)
 
 if [ -z "$REQUEST" ]; then
     debug "skipped: failed to build request JSON"
@@ -286,7 +365,7 @@ except Exception:
 " "$LOW_RELEVANCE_THRESHOLD" 2>/dev/null || echo "")
 
 # 7. Format response and capture metadata
-FORMAT_OUTPUT=$(echo "$RESPONSE" | python3 "$SESSION_HELPER" format 2>/dev/null) || true
+FORMAT_OUTPUT=$(echo "$RESPONSE" | _writ_session format 2>/dev/null) || true
 
 # Split: everything before WRIT_META: goes to stdout (Claude sees it).
 # The WRIT_META: line is parsed for cache updates.
@@ -379,10 +458,29 @@ if [ -n "$META_LINE" ]; then
     NEW_RULE_IDS=$(echo "$META_JSON" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin).get('rule_ids',[])))" 2>/dev/null || echo '[]')
     COST=$(echo "$META_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('cost',0))" 2>/dev/null || echo '0')
 
-    python3 "$SESSION_HELPER" update "$SESSION_ID" \
+    _writ_session update "$SESSION_ID" \
         --add-rules "$NEW_RULE_IDS" \
         --cost "$COST" \
         --inc-queries 2>/dev/null || true
+
+    # 11b. Save returned rule IDs as sticky preference for next turn (Cycle C)
+    python3 -c "
+import sys, json, os, tempfile
+session_id = sys.argv[1]
+new_rule_ids = json.loads(sys.argv[2])
+cache_dir = os.environ.get('WRIT_CACHE_DIR', tempfile.gettempdir())
+path = os.path.join(cache_dir, f'writ-session-{session_id}.json')
+try:
+    with open(path) as f:
+        cache = json.load(f)
+    cache['last_injected_rule_ids'] = new_rule_ids
+    tmp = path + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(cache, f)
+    os.rename(tmp, path)
+except Exception:
+    pass
+" "$SESSION_ID" "$NEW_RULE_IDS" 2>/dev/null || true
 
     # C1: Store full rule objects for downstream compliance checking
     RULE_OBJECTS=$(echo "$RESPONSE" | python3 -c "
@@ -409,7 +507,7 @@ except Exception:
 " 2>/dev/null || echo '[]')
 
     if [ "$RULE_OBJECTS" != "[]" ]; then
-        python3 "$SESSION_HELPER" update "$SESSION_ID" \
+        _writ_session update "$SESSION_ID" \
             --add-rule-objects "$RULE_OBJECTS" 2>/dev/null || true
         debug "stored ${#RULE_OBJECTS} bytes of rule objects"
     fi
@@ -443,10 +541,10 @@ while path != '/':
 fi
 
 # 12. Read session cache for escalation and backward context checks
-CACHE=$(python3 "$SESSION_HELPER" read "$SESSION_ID" 2>/dev/null || echo '{}')
+CACHE=$(_writ_session read "$SESSION_ID" 2>/dev/null || echo '{}')
 
 # Check for escalation and inject backward context
-ESCALATION=$(python3 "$SESSION_HELPER" check-escalation "$SESSION_ID" 2>/dev/null || echo '{"needed":false}')
+ESCALATION=$(_writ_session check-escalation "$SESSION_ID" 2>/dev/null || echo '{"needed":false}')
 ESC_NEEDED=$(echo "$ESCALATION" | python3 -c "import sys,json; print('yes' if json.load(sys.stdin).get('needed') else 'no')" 2>/dev/null || echo "no")
 
 if [ "$ESC_NEEDED" = "yes" ]; then

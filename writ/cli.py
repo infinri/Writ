@@ -8,6 +8,8 @@ from pathlib import Path
 
 import typer
 
+from writ.config import get_neo4j_uri, get_neo4j_user, get_neo4j_password
+
 DEFAULT_BIBLE_DIR = "bible/"
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 8765
@@ -33,16 +35,16 @@ def serve(
     uvicorn.run(fastapi_app, host=host, port=port, log_level="info")
 
 
-@app.command()
-def ingest(
-    path: Path = typer.Argument(Path(DEFAULT_BIBLE_DIR), help="Path to rule source directory."),
+@app.command(name="import-markdown")
+def import_markdown(
+    path: Path = typer.Argument(Path(DEFAULT_BIBLE_DIR), help="Path to Markdown rule source directory."),
 ) -> None:
-    """Parse Markdown rules and ingest into graph. Validates schema. Triggers export."""
+    """Import rules from Markdown files into the graph. Validates schema. Triggers export."""
     from writ.graph.db import Neo4jConnection
     from writ.graph.ingest import discover_rule_files, parse_rules_from_file, validate_parsed_rule
 
     async def _run() -> None:
-        db = Neo4jConnection("bolt://localhost:7687", "neo4j", "writdevpass")
+        db = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
         try:
             files = discover_rule_files(path)
             count = 0
@@ -57,7 +59,7 @@ def ingest(
                     except ValueError as e:
                         typer.echo(f"  Error: {e}")
                         errors += 1
-            typer.echo(f"Ingested {count} rules ({errors} errors)")
+            typer.echo(f"Imported {count} rules ({errors} errors)")
 
             # Auto-export after successful ingest (Phase 7).
             if count > 0 and errors == 0:
@@ -85,7 +87,7 @@ def validate(
     from writ.graph.integrity import IntegrityChecker
 
     async def _run() -> int:
-        db = Neo4jConnection("bolt://localhost:7687", "neo4j", "writdevpass")
+        db = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
         try:
             checker = IntegrityChecker(db._driver, db._database)
             start = time.perf_counter()
@@ -193,7 +195,7 @@ def add() -> None:
             typer.echo(f"Validation error: {e}")
             raise typer.Exit(code=1)
 
-        db = Neo4jConnection("bolt://localhost:7687", "neo4j", "writdevpass")
+        db = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
         try:
             typer.echo("Building pipeline for relationship analysis...")
             pipeline = await build_pipeline(db)
@@ -267,7 +269,7 @@ def edit(
     from writ.retrieval.traversal import AdjacencyCache
 
     async def _run() -> None:
-        db = Neo4jConnection("bolt://localhost:7687", "neo4j", "writdevpass")
+        db = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
         try:
             existing = await db.get_rule(rule_id)
             if existing is None:
@@ -355,7 +357,7 @@ def export(
     from writ.graph.db import Neo4jConnection
 
     async def _run() -> None:
-        db = Neo4jConnection("bolt://localhost:7687", "neo4j", "writdevpass")
+        db = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
         try:
             result = await export_rules_to_markdown(db, output)
             typer.echo(f"Exported {result['rules_exported']} rules to {output}")
@@ -376,7 +378,7 @@ def compress() -> None:
     from writ.graph.db import Neo4jConnection
 
     async def _run() -> None:
-        db = Neo4jConnection("bolt://localhost:7687", "neo4j", "writdevpass")
+        db = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
         try:
             # Load non-mandatory rules.
             all_rules = await db.get_all_rules()
@@ -443,7 +445,7 @@ def query(
     from writ.retrieval.pipeline import build_pipeline
 
     async def _run() -> None:
-        db = Neo4jConnection("bolt://localhost:7687", "neo4j", "writdevpass")
+        db = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
         try:
             typer.echo("Building pipeline (loading indexes)...")
             pipeline = await build_pipeline(db)
@@ -478,7 +480,7 @@ def feedback(
         raise typer.Exit(code=1)
 
     async def _run() -> None:
-        db = Neo4jConnection("bolt://localhost:7687", "neo4j", "writdevpass")
+        db = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
         try:
             if signal == "positive":
                 found = await db.increment_positive(rule_id)
@@ -532,7 +534,7 @@ def propose(
     }
 
     async def _run() -> None:
-        db = Neo4jConnection("bolt://localhost:7687", "neo4j", "writdevpass")
+        db = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
         try:
             typer.echo("Building pipeline...")
             pipeline = await build_pipeline(db)
@@ -569,7 +571,7 @@ def review(
     from writ.graph.db import Neo4jConnection
 
     async def _run() -> None:
-        db = Neo4jConnection("bolt://localhost:7687", "neo4j", "writdevpass")
+        db = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
         try:
             if stats:
                 counts = await db.count_by_authority()

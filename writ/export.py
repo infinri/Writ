@@ -1,5 +1,9 @@
 """Markdown export from graph -- generates bible/ as a derived view.
 
+bible/ is a derived exported view of the canonical Neo4j graph, not a source
+of truth. The graph is canonical. Use `writ import-markdown` only for initial
+bootstrap or when re-importing after manual Markdown edits.
+
 Per ARCH-SSOT-001: the graph is the canonical source; exported Markdown is derived.
 Per ARCH-ORG-001: export is a separate concern from ingest and retrieval.
 

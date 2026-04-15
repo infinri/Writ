@@ -11,17 +11,22 @@ Mandatory rules (mandatory: true) are excluded at index build time.
 from __future__ import annotations
 
 import functools
+import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Protocol
 
 import hnswlib
 import numpy as np
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # Per ARCH-CONST-001: named constants for HNSW defaults.
 DEFAULT_EF_CONSTRUCTION = 200
 DEFAULT_M = 16
 DEFAULT_EF_SEARCH = 50
+
+DEFAULT_HNSW_CACHE_DIR = str(Path.home() / ".cache" / "writ" / "hnsw")
 
 # LRU cache size for query-time embeddings. ~1.5MB at 1024 entries (384-dim float32).
 EMBEDDING_CACHE_SIZE = 1024
@@ -33,6 +38,22 @@ DEFAULT_ONNX_DIR = Path.home() / ".cache" / "writ" / "models" / "onnx"
 class ScoredResult(BaseModel):
     rule_id: str
     score: float
+
+
+class HnswSidecar(BaseModel):
+    """Pydantic model for the HNSW sidecar JSON file.
+
+    Per PY-PYDANTIC-001: validates sidecar schema at load time.
+    """
+
+    model_config = {"populate_by_name": True}
+
+    corpus_hash: str
+    rule_count: int
+    dims: int
+    ef_construction: int
+    M: int
+    id_to_rule: dict[str, str] = Field(alias="_id_to_rule")
 
 
 class EmbeddingModel(Protocol):
@@ -177,6 +198,7 @@ class HnswlibStore:
     """In-process HNSW vector search via hnswlib.
 
     Satisfies VectorStore protocol structurally (PY-PROTO-001).
+    Per ARCH-DI-001: cache_dir injected via constructor parameter.
     """
 
     def __init__(
@@ -185,11 +207,13 @@ class HnswlibStore:
         ef_construction: int = DEFAULT_EF_CONSTRUCTION,
         m: int = DEFAULT_M,
         ef_search: int = DEFAULT_EF_SEARCH,
+        cache_dir: str | None = None,
     ) -> None:
         self._dimensions = dimensions
         self._ef_construction = ef_construction
         self._m = m
         self._ef_search = ef_search
+        self._cache_dir = cache_dir or DEFAULT_HNSW_CACHE_DIR
         self._index: hnswlib.Index | None = None
         self._id_to_rule: dict[int, str] = {}
 
@@ -224,3 +248,121 @@ class HnswlibStore:
             score = 1.0 - float(distance)
             results.append(ScoredResult(rule_id=rule_id, score=score))
         return results
+
+    def save_index(self, corpus_hash: str) -> None:
+        """Save HNSW index to disk with a JSON sidecar.
+
+        Writes atomically via tempfile + rename to prevent partial files on crash.
+        Per ARCH-ERR-001: errors include the cache path for context.
+        """
+        if self._index is None:
+            return
+
+        cache_dir = Path(self._cache_dir)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        bin_path = cache_dir / "writ_hnsw.bin"
+        sidecar_path = cache_dir / "writ_hnsw.json"
+
+        # Build sidecar data
+        sidecar_data = {
+            "corpus_hash": corpus_hash,
+            "rule_count": len(self._id_to_rule),
+            "dims": self._dimensions,
+            "ef_construction": self._ef_construction,
+            "M": self._m,
+            "_id_to_rule": {str(k): v for k, v in self._id_to_rule.items()},
+        }
+
+        # Atomic write: sidecar JSON via tempfile + rename
+        fd, tmp_sidecar = tempfile.mkstemp(dir=str(cache_dir), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(sidecar_data, f)
+            os.rename(tmp_sidecar, str(sidecar_path))
+        except Exception:
+            # Clean up temp file on failure
+            try:
+                os.unlink(tmp_sidecar)
+            except OSError:
+                pass
+            raise
+
+        # Atomic write: binary index via tempfile + rename
+        fd2, tmp_bin = tempfile.mkstemp(dir=str(cache_dir), suffix=".tmp")
+        os.close(fd2)
+        try:
+            self._index.save_index(tmp_bin)
+            os.rename(tmp_bin, str(bin_path))
+        except Exception:
+            try:
+                os.unlink(tmp_bin)
+            except OSError:
+                pass
+            raise
+
+    def load_index(self, corpus_hash: str) -> None:
+        """Load HNSW index from disk, verifying corpus hash.
+
+        Per ARCH-ERR-001: errors include sidecar path and specific mismatch.
+        Per plan: resize_index to count * 1.2 for growth headroom.
+        """
+        cache_dir = Path(self._cache_dir)
+        sidecar_path = cache_dir / "writ_hnsw.json"
+        bin_path = cache_dir / "writ_hnsw.bin"
+
+        if not sidecar_path.exists():
+            raise FileNotFoundError(
+                f"HNSW sidecar not found at {sidecar_path} "
+                f"(cache_dir={self._cache_dir})"
+            )
+
+        try:
+            raw = sidecar_path.read_text()
+            sidecar_data = json.loads(raw)
+        except (json.JSONDecodeError, OSError) as exc:
+            raise ValueError(
+                f"Corrupted HNSW sidecar at {sidecar_path}: {exc}"
+            ) from exc
+
+        # Validate via Pydantic model
+        try:
+            HnswSidecar(**sidecar_data)
+        except Exception as exc:
+            raise ValueError(
+                f"Invalid HNSW sidecar schema at {sidecar_path}: {exc}"
+            ) from exc
+
+        # Verify corpus hash
+        stored_hash = sidecar_data.get("corpus_hash", "")
+        if stored_hash != corpus_hash:
+            self._index = None
+            raise ValueError(
+                f"HNSW corpus hash mismatch at {sidecar_path}: "
+                f"stored={stored_hash!r}, expected={corpus_hash!r}"
+            )
+
+        if not bin_path.exists():
+            self._index = None
+            raise FileNotFoundError(
+                f"HNSW binary index not found at {bin_path} "
+                f"(cache_dir={self._cache_dir})"
+            )
+
+        # Load the index
+        rule_count = sidecar_data["rule_count"]
+        dims = sidecar_data["dims"]
+
+        idx = hnswlib.Index(space="cosine", dim=dims)
+        idx.load_index(str(bin_path), max_elements=rule_count)
+        idx.set_ef(self._ef_search)
+
+        # Resize for growth headroom (1.2x)
+        new_max = max(int(rule_count * 1.2), rule_count + 1)
+        idx.resize_index(new_max)
+
+        self._index = idx
+        self._dimensions = dims
+        self._ef_construction = sidecar_data.get("ef_construction", self._ef_construction)
+        self._m = sidecar_data.get("M", self._m)
+        self._id_to_rule = {int(k): v for k, v in sidecar_data["_id_to_rule"].items()}

@@ -1,0 +1,9 @@
+repos:
+  - repo: local
+    hooks:
+      - id: bench
+        name: writ benchmarks
+        entry: make bench
+        language: system
+        stages: [pre-push]
+        pass_filenames: false

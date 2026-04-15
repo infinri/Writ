@@ -47,7 +47,7 @@ APPROX_TOKENS_PER_RULE_FULL = 200
 APPROX_TOKENS_PER_RULE_STANDARD = 120
 APPROX_TOKENS_PER_RULE_SUMMARY = 40
 
-CACHE_DIR = tempfile.gettempdir()
+CACHE_DIR = os.environ.get("WRIT_CACHE_DIR", tempfile.gettempdir())
 
 
 def _cache_path(session_id: str) -> str:
@@ -72,6 +72,11 @@ def _read_cache(session_id: str) -> dict:
         "escalation": {"gate": None, "needed": False, "diagnosis": None, "feedback_sent": False},
         "pretool_queried_files": [],
         "paused_work_state": None,
+        "failed_writes": [],
+        "is_orchestrator": False,
+        "last_injected_rule_ids": [],
+        "detected_domain": None,
+        "instructions_rule_ids": [],
     }
     if not os.path.exists(path):
         return default
@@ -93,6 +98,11 @@ def _read_cache(session_id: str) -> dict:
         data.setdefault("phase_transitions", [])
         data.setdefault("pretool_queried_files", [])
         data.setdefault("paused_work_state", None)
+        data.setdefault("failed_writes", [])
+        data.setdefault("is_orchestrator", False)
+        data.setdefault("last_injected_rule_ids", [])
+        data.setdefault("detected_domain", None)
+        data.setdefault("instructions_rule_ids", [])
         return data
     except (json.JSONDecodeError, OSError):
         return default
@@ -184,6 +194,10 @@ def cmd_update(session_id: str, args: list[str]) -> None:
             snapshot_data["phase"] = cache.get("current_phase")
             snapshot_data["mode"] = cache.get("mode")
             cache.setdefault("token_snapshots", []).append(snapshot_data)
+            i += 2
+        elif args[i] == "--add-failed-write" and i + 1 < len(args):
+            record = json.loads(args[i + 1])
+            cache.setdefault("failed_writes", []).append(record)
             i += 2
         else:
             i += 1
@@ -406,6 +420,64 @@ EXT_TO_DOMAIN = {
 }
 
 
+def cmd_detect_compaction(session_id: str, current_context_percent: int) -> dict:
+    """Detect context window compaction via context_percent drop.
+
+    Compares the previous context_percent snapshot in the session cache with the
+    current value. A drop of >20% triggers recovery: clearing the current phase's
+    exclusion list and resetting remaining_budget to DEFAULT_SESSION_BUDGET.
+
+    Returns a dict with {compacted, context_drop_percent, rules_cleared}.
+    """
+    cache = _read_cache(session_id)
+    previous_pct = cache.get("context_percent", 0)
+    drop = previous_pct - current_context_percent
+
+    if drop > 20:
+        current_phase = cache.get("current_phase", "unknown")
+        by_phase = cache.get("loaded_rule_ids_by_phase", {})
+        rules_cleared = list(by_phase.get(current_phase, []))
+
+        # Clear exclusion list for current phase only
+        by_phase[current_phase] = []
+        cache["loaded_rule_ids_by_phase"] = by_phase
+
+        # Reset budget
+        cache["remaining_budget"] = DEFAULT_SESSION_BUDGET
+
+        # Clear sticky rules preference (stale after compaction)
+        cache["last_injected_rule_ids"] = []
+
+        _write_cache(session_id, cache)
+
+        # Log friction event
+        _log_friction_event(
+            session_id, cache.get("mode"), "compaction_detected",
+            context_drop_percent=drop,
+            previous_context_percent=previous_pct,
+            current_context_percent=current_context_percent,
+            rules_cleared=rules_cleared,
+            phase=current_phase,
+        )
+
+        result = {
+            "compacted": True,
+            "context_drop_percent": drop,
+            "rules_cleared": rules_cleared,
+        }
+        json.dump(result, sys.stdout)
+        sys.stdout.write("\n")
+        return result
+
+    result = {
+        "compacted": False,
+        "context_drop_percent": drop,
+    }
+    json.dump(result, sys.stdout)
+    sys.stdout.write("\n")
+    return result
+
+
 def cmd_coverage(session_id: str) -> None:
     """Report coverage: which file domains had rules vs which didn't."""
     cache = _read_cache(session_id)
@@ -458,6 +530,44 @@ def cmd_coverage(session_id: str) -> None:
         "coverage_pct": round(len(covered) / len(file_domains) * 100) if file_domains else 100,
     }
     json.dump(report, sys.stdout, indent=2)
+    sys.stdout.write("\n")
+
+
+def cmd_clear_rules_for_compaction(session_id: str) -> None:
+    """Clear loaded_rules (full objects) from cache, keep IDs. For PreCompact hook."""
+    cache = _read_cache(session_id)
+    rules = cache.get("loaded_rules", [])
+    rules_cleared = len(rules)
+    bytes_freed = rules_cleared * APPROX_TOKENS_PER_RULE_FULL  # ~200 tokens per rule object
+    cache["loaded_rules"] = []
+    _write_cache(session_id, cache)
+    _log_friction_event(
+        session_id, cache.get("mode"), "pre_compaction",
+        rules_cleared=rules_cleared, bytes_freed=bytes_freed,
+    )
+    result = {"rules_cleared": rules_cleared, "bytes_freed": bytes_freed}
+    json.dump(result, sys.stdout)
+    sys.stdout.write("\n")
+
+
+def cmd_reset_after_compaction(session_id: str) -> None:
+    """Clear current phase's exclusion list and reset budget. For PostCompact hook."""
+    cache = _read_cache(session_id)
+    current_phase = cache.get("current_phase", "unknown")
+    by_phase = cache.get("loaded_rule_ids_by_phase", {})
+    cleared = list(by_phase.get(current_phase, []))
+    by_phase[current_phase] = []
+    cache["loaded_rule_ids_by_phase"] = by_phase
+    cache["remaining_budget"] = DEFAULT_SESSION_BUDGET
+    # Clear sticky rules preference (stale after compaction)
+    cache["last_injected_rule_ids"] = []
+    _write_cache(session_id, cache)
+    _log_friction_event(
+        session_id, cache.get("mode"), "post_compaction",
+        rules_cleared=cleared, budget_reset=True, phase=current_phase,
+    )
+    result = {"rules_cleared": cleared, "budget_reset": True}
+    json.dump(result, sys.stdout)
     sys.stdout.write("\n")
 
 
@@ -667,7 +777,7 @@ def _next_pending_gate(cache: dict) -> str | None:
     return None
 
 
-def _mode_set(session_id: str, mode: str) -> None:
+def _mode_set(session_id: str, mode: str, is_orchestrator: bool = False) -> None:
     """Set mode with fresh state. Internal -- called by cmd_mode and tier facade."""
     cache = _read_cache(session_id)
     old_mode = cache.get("mode")
@@ -675,6 +785,8 @@ def _mode_set(session_id: str, mode: str) -> None:
 
     cache["mode"] = mode
     cache["tier"] = _MODE_TO_TIER.get(mode)
+    if is_orchestrator:
+        cache["is_orchestrator"] = True
 
     # Fresh workflow state
     new_phase = _initial_phase_for_mode(mode)
@@ -761,7 +873,7 @@ def _mode_switch(session_id: str, mode: str) -> None:
     )
 
 
-def cmd_mode(session_id: str, subcmd: str, value: str | None = None) -> None:
+def cmd_mode(session_id: str, subcmd: str, value: str | None = None, is_orchestrator: bool = False) -> None:
     """Get, set, or switch the session mode."""
     if subcmd == "get":
         cache = _read_cache(session_id)
@@ -785,7 +897,7 @@ def cmd_mode(session_id: str, subcmd: str, value: str | None = None) -> None:
         sys.exit(1)
 
     if subcmd == "set":
-        _mode_set(session_id, mode)
+        _mode_set(session_id, mode, is_orchestrator=is_orchestrator)
         sys.stdout.write(f"set: {mode}\n")
     else:
         _mode_switch(session_id, mode)
@@ -931,6 +1043,99 @@ def _log_gate_denial(session_id: str, cache: dict, gate: str, file_path: str, re
                             gate=gate, denial_count=count, file_path=file_path, phase=phase)
 
 
+def _can_write_check(session_id: str, envelope: dict, skill_dir: str = "") -> dict:
+    """Reusable gate check logic. Returns {"can_write": bool, "reason": str|None}.
+
+    Used by both cmd_can_write (CLI) and /pre-write-check (HTTP endpoint).
+    """
+    file_path = _parse_file_path_from_envelope(envelope)
+    if not file_path:
+        return {"can_write": True, "reason": None}
+
+    # Skip skill infrastructure and global settings
+    if skill_dir and file_path.startswith(skill_dir + "/"):
+        return {"can_write": True, "reason": None}
+    home = os.environ.get("HOME", "")
+    if home and file_path.startswith(os.path.join(home, ".claude", "settings")):
+        return {"can_write": True, "reason": None}
+
+    cache = _read_cache(session_id)
+    mode = cache.get("mode")
+    basename = os.path.basename(file_path)
+    current_phase = cache.get("current_phase")
+
+    # plan.md exception: allowed pre-mode
+    if basename == "plan.md" and mode is None:
+        return {"can_write": True, "reason": None}
+
+    # capabilities.md: always allowed
+    if basename == "capabilities.md":
+        return {"can_write": True, "reason": None}
+
+    # plan.md in Work mode: allowed during planning/testing, blocked during implementation
+    if basename == "plan.md" and mode == "work":
+        if current_phase == "implementation":
+            return {
+                "can_write": False,
+                "reason": "[ENF-GATE-PLAN] plan.md cannot be modified during implementation phase. "
+                          "Invalidate the current gate to return to planning if the plan needs changes.",
+            }
+        return {"can_write": True, "reason": None}
+
+    # No mode: deny everything (plan.md handled above)
+    if mode is None:
+        return {
+            "can_write": False,
+            "reason": "[ENF-GATE-MODE] No mode declared. Set a mode before writing code. "
+                      "Modes: conversation, debug, review, work.",
+        }
+
+    # Non-work modes: allow all writes (no gates)
+    if mode != "work":
+        _log_friction_event(session_id, mode, "write_attempt",
+                            file_path=file_path, result="allow", gate_status="no_gates")
+        return {"can_write": True, "reason": None}
+
+    # Work mode: two-gate enforcement
+    categories_path = os.path.join(skill_dir, "bin", "lib", "gate-categories.json") if skill_dir else ""
+    if not categories_path or not os.path.isfile(categories_path):
+        categories_path = os.path.join(os.path.dirname(__file__), "gate-categories.json")
+    config = _load_categories(categories_path)
+
+    if _matches_any(file_path, config.get('exclusions', [])):
+        _log_friction_event(session_id, mode, "write_attempt",
+                            file_path=file_path, result="allow", gate_status="excluded")
+        return {"can_write": True, "reason": None}
+
+    approved_gates = set(cache.get("gates_approved", []))
+
+    if "phase-a" not in approved_gates:
+        reason = (
+            "[ENF-GATE-PLAN] ALL writes blocked -- plan not yet approved. "
+            "DO NOT attempt more writes.\n"
+            "Present your plan to the user and say: \"Say approved to proceed.\"\n"
+            "Wait for the user to say \"approved\" before attempting ANY file writes."
+        )
+        _log_gate_denial(session_id, cache, "phase-a", file_path, reason)
+        return {"can_write": False, "reason": reason}
+
+    if "test-skeletons" not in approved_gates:
+        reason = (
+            "[ENF-GATE-TEST] ALL writes blocked -- test skeletons not yet approved. "
+            "DO NOT attempt more writes.\n"
+            "Write test skeleton files first (test files ARE allowed), "
+            "present them to the user, and say: \"Say approved to proceed.\""
+        )
+        _log_gate_denial(session_id, cache, "test-skeletons", file_path, reason)
+        return {"can_write": False, "reason": reason}
+
+    # Both gates approved
+    _log_friction_event(session_id, mode, "write_attempt",
+                        file_path=file_path, result="allow", gate_status="all_approved",
+                        phase=current_phase)
+    return {"can_write": True, "reason": None}
+
+
 def cmd_can_write(session_id: str, skill_dir: str = "") -> None:
     """Decide whether a file write is allowed. Reads tool envelope from stdin.
 
@@ -947,118 +1152,14 @@ def cmd_can_write(session_id: str, skill_dir: str = "") -> None:
     except (json.JSONDecodeError, ValueError):
         envelope = {}
 
-    file_path = _parse_file_path_from_envelope(envelope)
-    if not file_path:
+    result = _can_write_check(session_id, envelope, skill_dir)
+
+    if result["can_write"]:
         json.dump({"decision": "allow"}, sys.stdout)
         sys.stdout.write("\n")
-        return
-
-    # Skip skill infrastructure and global settings
-    if skill_dir and file_path.startswith(skill_dir + "/"):
-        json.dump({"decision": "allow"}, sys.stdout)
+    else:
+        json.dump({"decision": "deny", "reason": result["reason"]}, sys.stdout)
         sys.stdout.write("\n")
-        return
-    home = os.environ.get("HOME", "")
-    if home and file_path.startswith(os.path.join(home, ".claude", "settings")):
-        json.dump({"decision": "allow"}, sys.stdout)
-        sys.stdout.write("\n")
-        return
-
-    cache = _read_cache(session_id)
-    mode = cache.get("mode")
-    basename = os.path.basename(file_path)
-    current_phase = cache.get("current_phase")
-
-    # plan.md exception: allowed pre-mode (needed to write plan before mode is set)
-    if basename == "plan.md" and mode is None:
-        json.dump({"decision": "allow"}, sys.stdout)
-        sys.stdout.write("\n")
-        return
-
-    # capabilities.md: always allowed
-    if basename == "capabilities.md":
-        json.dump({"decision": "allow"}, sys.stdout)
-        sys.stdout.write("\n")
-        return
-
-    # plan.md in Work mode: allowed during planning/testing, blocked during implementation
-    if basename == "plan.md" and mode == "work":
-        if current_phase == "implementation":
-            json.dump({
-                "decision": "deny",
-                "reason": "[ENF-GATE-PLAN] plan.md cannot be modified during implementation phase. "
-                          "Invalidate the current gate to return to planning if the plan needs changes.",
-            }, sys.stdout)
-            sys.stdout.write("\n")
-            return
-        json.dump({"decision": "allow"}, sys.stdout)
-        sys.stdout.write("\n")
-        return
-
-    # No mode: deny everything (plan.md handled above)
-    if mode is None:
-        json.dump({
-            "decision": "deny",
-            "reason": "[ENF-GATE-MODE] No mode declared. Set a mode before writing code. "
-                      "Modes: conversation, debug, review, work.",
-        }, sys.stdout)
-        sys.stdout.write("\n")
-        return
-
-    # Non-work modes: allow all writes (no gates)
-    if mode != "work":
-        _log_friction_event(session_id, mode, "write_attempt",
-                            file_path=file_path, result="allow", gate_status="no_gates")
-        json.dump({"decision": "allow"}, sys.stdout)
-        sys.stdout.write("\n")
-        return
-
-    # Work mode: two-gate enforcement
-    # Check exclusions (test files, __init__.py, migrations, .claude/ files)
-    categories_path = os.path.join(skill_dir, "bin", "lib", "gate-categories.json") if skill_dir else ""
-    if not categories_path or not os.path.isfile(categories_path):
-        categories_path = os.path.join(os.path.dirname(__file__), "gate-categories.json")
-    config = _load_categories(categories_path)
-
-    if _matches_any(file_path, config.get('exclusions', [])):
-        _log_friction_event(session_id, mode, "write_attempt",
-                            file_path=file_path, result="allow", gate_status="excluded")
-        json.dump({"decision": "allow"}, sys.stdout)
-        sys.stdout.write("\n")
-        return
-
-    approved_gates = set(cache.get("gates_approved", []))
-
-    if "phase-a" not in approved_gates:
-        reason = (
-            "[ENF-GATE-PLAN] ALL writes blocked -- plan not yet approved. "
-            "DO NOT attempt more writes.\n"
-            "Present your plan to the user and say: \"Say approved to proceed.\"\n"
-            "Wait for the user to say \"approved\" before attempting ANY file writes."
-        )
-        _log_gate_denial(session_id, cache, "phase-a", file_path, reason)
-        json.dump({"decision": "deny", "reason": reason}, sys.stdout)
-        sys.stdout.write("\n")
-        return
-
-    if "test-skeletons" not in approved_gates:
-        reason = (
-            "[ENF-GATE-TEST] ALL writes blocked -- test skeletons not yet approved. "
-            "DO NOT attempt more writes.\n"
-            "Write test skeleton files first (test files ARE allowed), "
-            "present them to the user, and say: \"Say approved to proceed.\""
-        )
-        _log_gate_denial(session_id, cache, "test-skeletons", file_path, reason)
-        json.dump({"decision": "deny", "reason": reason}, sys.stdout)
-        sys.stdout.write("\n")
-        return
-
-    # Both gates approved
-    _log_friction_event(session_id, mode, "write_attempt",
-                        file_path=file_path, result="allow", gate_status="all_approved",
-                        phase=current_phase)
-    json.dump({"decision": "allow"}, sys.stdout)
-    sys.stdout.write("\n")
 
 
 def _find_plan_md(project_root: str) -> str | None:
@@ -1780,7 +1881,7 @@ def cmd_metrics(log_path: str = "") -> None:
 def main() -> None:
     if len(sys.argv) < 2:
         print("Usage: writ-session.py <command> [args]", file=sys.stderr)
-        print("Commands: read, update, format, should-skip, mode, tier, coverage, auto-feedback, can-write, advance-phase, current-phase, metrics", file=sys.stderr)
+        print("Commands: read, update, format, should-skip, mode, tier, coverage, auto-feedback, can-write, advance-phase, current-phase, detect-compaction, metrics", file=sys.stderr)
         sys.exit(2)
 
     cmd = sys.argv[1]
@@ -1828,7 +1929,8 @@ def main() -> None:
             if len(sys.argv) < 5:
                 print(f"Usage: writ-session.py mode {subcmd} <conversation|debug|review|work> <session_id>", file=sys.stderr)
                 sys.exit(2)
-            cmd_mode(sys.argv[4], subcmd, sys.argv[3])
+            orch = "--orchestrator" in sys.argv
+            cmd_mode(sys.argv[4], subcmd, sys.argv[3], is_orchestrator=orch)
         else:
             print(f"Unknown mode subcommand: {subcmd}", file=sys.stderr)
             sys.exit(2)
@@ -1918,6 +2020,29 @@ def main() -> None:
             print("Usage: writ-session.py current-phase <session_id>", file=sys.stderr)
             sys.exit(2)
         cmd_current_phase(sys.argv[2])
+
+    elif cmd == "detect-compaction":
+        if len(sys.argv) < 3:
+            print("Usage: writ-session.py detect-compaction <session_id> --context-percent N", file=sys.stderr)
+            sys.exit(2)
+        context_pct = 0
+        if "--context-percent" in sys.argv:
+            idx = sys.argv.index("--context-percent")
+            if idx + 1 < len(sys.argv):
+                context_pct = int(sys.argv[idx + 1])
+        cmd_detect_compaction(sys.argv[2], context_pct)
+
+    elif cmd == "clear-rules-for-compaction":
+        if len(sys.argv) < 3:
+            print("Usage: writ-session.py clear-rules-for-compaction <session_id>", file=sys.stderr)
+            sys.exit(2)
+        cmd_clear_rules_for_compaction(sys.argv[2])
+
+    elif cmd == "reset-after-compaction":
+        if len(sys.argv) < 3:
+            print("Usage: writ-session.py reset-after-compaction <session_id>", file=sys.stderr)
+            sys.exit(2)
+        cmd_reset_after_compaction(sys.argv[2])
 
     elif cmd == "metrics":
         log_path = ""

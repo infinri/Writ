@@ -1,5 +1,9 @@
 """Markdown parsing -> schema validation -> graph write.
 
+bible/*.md is the exported view of the canonical Neo4j graph, not the source
+of truth. Use `writ import-markdown` only for initial bootstrap or when
+re-importing after manual Markdown edits.
+
 Parses rule blocks delimited by <!-- RULE START/END --> markers.
 Files without markers are skipped (playbooks, checklists, etc.).
 

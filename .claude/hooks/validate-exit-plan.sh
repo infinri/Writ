@@ -17,6 +17,7 @@ set -euo pipefail
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 WRIT_DIR="$(cd "$HOOK_DIR/../.." && pwd)"
 SESSION_HELPER="$WRIT_DIR/bin/lib/writ-session.py"
+source "$WRIT_DIR/bin/lib/common.sh"
 
 # Read stdin envelope
 STDIN_JSON=$(cat)
@@ -42,7 +43,7 @@ fi
 
 # Check if mode is Work. Only Work mode requires plan validation.
 # If no mode or non-work mode, allow exit -- Writ doesn't gate /plan usage.
-CURRENT_MODE=$(python3 "$SESSION_HELPER" mode get "$SESSION_ID" 2>/dev/null || echo "")
+CURRENT_MODE=$(_writ_session "mode get" "$SESSION_ID" 2>/dev/null || echo "")
 CURRENT_MODE=$(echo "$CURRENT_MODE" | tr -d '[:space:]')
 
 if [ "$CURRENT_MODE" != "work" ]; then

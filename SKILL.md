@@ -208,7 +208,7 @@ automatically by the enforcement hooks.
 Writ requires:
 - Neo4j at `bolt://localhost:7687`
 - Writ server: `writ serve` (default: `localhost:8765`)
-- Bible rules ingested: `writ ingest`
+- Bible rules imported: `writ import-markdown`
 - Hooks installed: `bash scripts/install-skill.sh`
 
 When loaded as a plugin, `ensure-server.sh` starts Neo4j (Docker) and the Writ

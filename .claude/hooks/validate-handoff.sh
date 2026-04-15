@@ -1,5 +1,7 @@
 #!/bin/bash
-# Handoff JSON schema validation — PostToolUse
+# Exit codes: 0=pass, 1=warning (advisory -- deliberate, not blocking)
+#
+# Handoff JSON schema validation -- PostToolUse
 # Fires after any write to .claude/handoffs/*.json
 # Validates required keys, non-empty files, no unresolved ENF-POST-006 violations.
 # Exit non-zero = blocks the write receipt, Claude must fix before proceeding.

@@ -17,9 +17,12 @@ Per ARCH-DI-001: all dependencies injected via constructor.
 
 from __future__ import annotations
 
+import hashlib
+import logging
 import time
 from typing import TYPE_CHECKING
 
+from writ.config import get_hnsw_cache_dir
 from writ.retrieval.embeddings import (
     DEFAULT_ONNX_DIR,
     CachedEncoder,
@@ -27,6 +30,8 @@ from writ.retrieval.embeddings import (
     OnnxEmbeddingModel,
     ScoredResult,
 )
+
+_logger = logging.getLogger(__name__)
 from writ.retrieval.keyword import KeywordIndex
 from writ.retrieval.ranking import (
     RankingWeights,
@@ -95,6 +100,77 @@ def compute_graph_proximity(
     return proximity
 
 
+STICKY_TIEBREAK_THRESHOLD = 0.02
+
+# Small epsilon to handle floating point imprecision in threshold comparisons.
+# Without this, 0.92 - 0.90 = 0.020000000000000018 would exceed 0.02.
+_TIEBREAK_EPSILON = 1e-9
+
+
+def _apply_sticky_tiebreak(
+    scored_rules: list[dict],
+    prefer_rule_ids: list[str],
+) -> list[dict]:
+    """Reorder adjacent rules within STICKY_TIEBREAK_THRESHOLD to match prefer_rule_ids order.
+
+    This is a tie-breaker only: it never overrides genuine relevance differences
+    exceeding the threshold. Rules not present in the result set are ignored
+    (never promoted into the list).
+
+    The algorithm: build groups of consecutive rules whose scores are all within
+    the threshold of the group's maximum score, then sort each group by the
+    order in prefer_rule_ids (non-preferred rules keep their original position
+    within the group).
+    """
+    if not scored_rules or not prefer_rule_ids:
+        return scored_rules
+
+    pref_index = {rid: i for i, rid in enumerate(prefer_rule_ids)}
+    n = len(scored_rules)
+    result: list[dict] = []
+    i = 0
+
+    while i < n:
+        # Start a new tie group
+        group_start = i
+        group_max_score = scored_rules[i]["score"]
+        i += 1
+
+        # Extend the group: each next element must be within threshold of the
+        # previous element (adjacent pair comparison).
+        while i < n and (scored_rules[i - 1]["score"] - scored_rules[i]["score"]) <= STICKY_TIEBREAK_THRESHOLD + _TIEBREAK_EPSILON:
+            i += 1
+
+        group = scored_rules[group_start:i]
+
+        if len(group) > 1:
+            # Stable sort: preferred rules ordered by their position in
+            # prefer_rule_ids; non-preferred rules keep original relative order.
+            def sort_key(rule: dict) -> tuple[int, int]:
+                rid = rule["rule_id"]
+                if rid in pref_index:
+                    return (0, pref_index[rid])
+                # Non-preferred: preserve original order via enumeration
+                return (1, 0)
+
+            # We need to preserve original positions for non-preferred rules.
+            # Use a two-pass approach: extract preferred and non-preferred,
+            # then interleave.
+            preferred = [(r, pref_index[r["rule_id"]]) for r in group if r["rule_id"] in pref_index]
+            non_preferred = [r for r in group if r["rule_id"] not in pref_index]
+
+            # Sort preferred by their position in prefer_rule_ids
+            preferred.sort(key=lambda x: x[1])
+
+            # Merge: preferred first (by pref order), then non-preferred (original order)
+            merged = [r for r, _ in preferred] + non_preferred
+            result.extend(merged)
+        else:
+            result.extend(group)
+
+    return result
+
+
 class RetrievalPipeline:
     """Full 5-stage hybrid retrieval pipeline.
 
@@ -126,6 +202,7 @@ class RetrievalPipeline:
         budget_tokens: int | None = None,
         exclude_rule_ids: list[str] | None = None,
         loaded_rule_ids: list[str] | None = None,
+        prefer_rule_ids: list[str] | None = None,
     ) -> dict:
         """Execute the full 5-stage pipeline.
 
@@ -246,6 +323,12 @@ class RetrievalPipeline:
             scored_rules, self._authority_preference_threshold,
         )
 
+        # Sticky rules tie-breaking: reorder adjacent rules within 0.02 score
+        # of each other to match the prefer_rule_ids ordering. This stabilizes
+        # the injection order across turns for prompt-cache friendliness.
+        if prefer_rule_ids:
+            scored_rules = _apply_sticky_tiebreak(scored_rules, prefer_rule_ids)
+
         # Apply context budget.
         trimmed, mode = apply_context_budget(scored_rules, budget_tokens)
 
@@ -256,6 +339,13 @@ class RetrievalPipeline:
             "total_candidates": len(candidate_ids),
             "latency_ms": round(elapsed_ms, 3),
         }
+
+
+def _compute_corpus_hash(rule_ids: list[str], vectors: list[list[float]]) -> str:
+    """Compute a SHA-256 hash of the corpus for cache invalidation."""
+    pairs = sorted(zip(rule_ids, [str(v) for v in vectors]))
+    digest_input = "|".join(f"{rid}:{vec}" for rid, vec in pairs)
+    return hashlib.sha256(digest_input.encode()).hexdigest()
 
 
 async def build_pipeline(
@@ -329,8 +419,29 @@ async def build_pipeline(
         embeddings = model.encode(texts).tolist()
         query_encoder = CachedEncoder(model)
 
-    vector_store = HnswlibStore(dimensions=len(embeddings[0]) if embeddings else 384)
-    vector_store.build_index(rule_ids, embeddings)
+    # Compute corpus hash for HNSW cache lookup
+    dims = len(embeddings[0]) if embeddings else 384
+    cache_dir = get_hnsw_cache_dir()
+    corpus_hash = _compute_corpus_hash(rule_ids, embeddings)
+
+    vector_store = HnswlibStore(dimensions=dims, cache_dir=cache_dir)
+
+    # Try loading cached index; fall back to rebuild + save
+    loaded_from_cache = False
+    try:
+        vector_store.load_index(corpus_hash=corpus_hash)
+        loaded_from_cache = True
+        _logger.info("Loaded HNSW index from cache (hash=%s)", corpus_hash[:12])
+    except Exception as exc:
+        _logger.debug("HNSW cache miss: %s", exc)
+
+    if not loaded_from_cache:
+        vector_store.build_index(rule_ids, embeddings)
+        try:
+            vector_store.save_index(corpus_hash=corpus_hash)
+            _logger.info("Saved HNSW index to cache (hash=%s)", corpus_hash[:12])
+        except Exception as exc:
+            _logger.warning("Failed to save HNSW index: %s", exc)
 
     # Build adjacency cache (Stage 4).
     adjacency_cache = AdjacencyCache()

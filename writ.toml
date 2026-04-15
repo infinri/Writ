@@ -1,3 +1,7 @@
+[source]
+canonical = "neo4j"
+exported_view = "bible/"
+
 [service]
 host = "localhost"
 port = 8765
@@ -24,6 +28,9 @@ M = 16
 [vector.qdrant]
 url = "http://localhost:6333"
 collection = "writ_rules"
+
+[hnsw]
+cache_dir = "~/.cache/writ/hnsw"
 
 [tantivy]
 index_dir = "~/.cache/writ/tantivy"

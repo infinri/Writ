@@ -28,14 +28,14 @@ if [ -z "$SESSION_ID" ]; then
 fi
 
 # Mode filter: only fire in review and debug modes
-MODE=$(python3 "$SESSION_HELPER" mode get "$SESSION_ID" 2>/dev/null || echo "")
+MODE=$(_writ_session "mode get" "$SESSION_ID" 2>/dev/null || echo "")
 MODE=$(echo "$MODE" | tr -d '[:space:]')
 if [ "$MODE" != "review" ] && [ "$MODE" != "debug" ]; then
     exit 0
 fi
 
 # Skip if budget exhausted or context pressure high
-if python3 "$SESSION_HELPER" should-skip "$SESSION_ID" 2>/dev/null; then
+if _writ_session should-skip "$SESSION_ID" 2>/dev/null; then
     exit 0
 fi
 
@@ -140,7 +140,7 @@ if [ -z "$QUERY" ] || [ ${#QUERY} -lt 5 ]; then
 fi
 
 # Read session cache for exclusion and budget
-CACHE=$(python3 "$SESSION_HELPER" read "$SESSION_ID" 2>/dev/null || echo '{"loaded_rule_ids":[],"remaining_budget":8000}')
+CACHE=$(_writ_session read "$SESSION_ID" 2>/dev/null || echo '{"loaded_rule_ids":[],"remaining_budget":8000}')
 LOADED_RULE_IDS=$(echo "$CACHE" | python3 -c "
 import sys, json
 cache = json.load(sys.stdin)
@@ -217,7 +217,7 @@ if [ "$HAS_RELEVANT" != "yes" ]; then
 fi
 
 # Format and inject
-FORMAT_OUTPUT=$(echo "$RESPONSE" | python3 "$SESSION_HELPER" format 2>/dev/null) || true
+FORMAT_OUTPUT=$(echo "$RESPONSE" | _writ_session format 2>/dev/null) || true
 
 RULES_TEXT=""
 META_LINE=""
@@ -238,7 +238,7 @@ if [ -n "$META_LINE" ]; then
     NEW_RULE_IDS=$(echo "$META_JSON" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin).get('rule_ids',[])))" 2>/dev/null || echo '[]')
     COST=$(echo "$META_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('cost',0))" 2>/dev/null || echo '0')
 
-    python3 "$SESSION_HELPER" update "$SESSION_ID" \
+    _writ_session update "$SESSION_ID" \
         --add-rules "$NEW_RULE_IDS" \
         --cost "$COST" \
         --inc-queries 2>/dev/null || true
@@ -266,12 +266,12 @@ except Exception:
 " 2>/dev/null || echo '[]')
 
     if [ "$RULE_OBJECTS" != "[]" ]; then
-        python3 "$SESSION_HELPER" update "$SESSION_ID" \
+        _writ_session update "$SESSION_ID" \
             --add-rule-objects "$RULE_OBJECTS" 2>/dev/null || true
     fi
 
     # Log rag_query event
-    CURRENT_MODE=$(python3 "$SESSION_HELPER" mode get "$SESSION_ID" 2>/dev/null || echo "")
+    CURRENT_MODE=$(_writ_session "mode get" "$SESSION_ID" 2>/dev/null || echo "")
     CURRENT_MODE=$(echo "$CURRENT_MODE" | tr -d '[:space:]')
     python3 -c "
 import json, sys, os

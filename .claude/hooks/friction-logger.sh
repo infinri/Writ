@@ -19,6 +19,7 @@ set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 SESSION_HELPER="$SKILL_DIR/bin/lib/writ-session.py"
+source "$SKILL_DIR/bin/lib/common.sh"
 
 # Read session ID published by writ-rag-inject.sh (fires on every UserPromptSubmit)
 SESSION_ID=""
@@ -30,7 +31,7 @@ if [ -z "$SESSION_ID" ]; then
 fi
 
 # Read current mode
-MODE=$(python3 "$SESSION_HELPER" mode get "$SESSION_ID" 2>/dev/null || echo "")
+MODE=$(_writ_session "mode get" "$SESSION_ID" 2>/dev/null || echo "")
 MODE=$(echo "$MODE" | tr -d '[:space:]')
 
 # No mode = nothing to track yet
@@ -60,7 +61,7 @@ TS=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 # ── Event 1: gate_denied_then_approved ─────────────────────────────────────
 # If invalidation_history has records for a gate that now has an .approved file,
 # the gate was denied and then re-approved.
-CACHE=$(python3 "$SESSION_HELPER" read "$SESSION_ID" 2>/dev/null || echo '{}')
+CACHE=$(_writ_session read "$SESSION_ID" 2>/dev/null || echo '{}')
 
 python3 -c "
 import sys, json, os

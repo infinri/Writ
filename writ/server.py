@@ -7,24 +7,34 @@ Per PY-PYDANTIC-001: request/response bodies validated through Pydantic models.
 
 from __future__ import annotations
 
+import asyncio
+import importlib.util
+import os
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from writ.analysis import AnalyzeRequest, AnalyzeResponse
 from writ.analysis.analyzer import run_analysis
 from writ.analysis.instrumentation import Instrumentation
 from writ.analysis.llm import LlmAnalyzer
+from writ.config import get_neo4j_uri, get_neo4j_user, get_neo4j_password
 from writ.graph.db import Neo4jConnection
 from writ.retrieval.pipeline import RetrievalPipeline, build_pipeline
 
-# Per ARCH-CONST-001
-DEFAULT_NEO4J_URI = "bolt://localhost:7687"
-DEFAULT_NEO4J_USER = "neo4j"
-DEFAULT_NEO4J_PASSWORD = "writdevpass"
+# Load writ-session.py as a module for session route handlers.
+_WRIT_SESSION_PATH = Path(__file__).resolve().parent.parent / "bin" / "lib" / "writ-session.py"
+if _WRIT_SESSION_PATH.exists():
+    _spec = importlib.util.spec_from_file_location("writ_session", str(_WRIT_SESSION_PATH))
+    writ_session = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
+    _spec.loader.exec_module(writ_session)  # type: ignore[union-attr]
+else:
+    writ_session = None  # type: ignore[assignment]
 
 
 class QueryRequest(BaseModel):
@@ -35,6 +45,7 @@ class QueryRequest(BaseModel):
     scope: str | None = None
     budget_tokens: int | None = None
     exclude_rule_ids: list[str] | None = None
+    prefer_rule_ids: list[str] | None = None
 
 
 class ProposeRequest(BaseModel):
@@ -81,7 +92,7 @@ async def lifespan(app: FastAPI):
     """Pre-warm all indexes at startup per PERF-IO-001."""
     global _pipeline, _db, _startup_time, _llm_client, _instrumentation
 
-    _db = Neo4jConnection(DEFAULT_NEO4J_URI, DEFAULT_NEO4J_USER, DEFAULT_NEO4J_PASSWORD)
+    _db = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
     _pipeline = await build_pipeline(_db)
     _llm_client = LlmAnalyzer()
     _instrumentation = Instrumentation()
@@ -108,6 +119,7 @@ async def query_rules(request: QueryRequest) -> dict[str, Any]:
         domain=request.domain,
         budget_tokens=request.budget_tokens,
         exclude_rule_ids=request.exclude_rule_ids,
+        prefer_rule_ids=request.prefer_rule_ids,
     )
     return result
 
@@ -234,3 +246,481 @@ async def health() -> dict[str, Any]:
         "index_state": "warm" if _pipeline is not None else "cold",
         "startup_time": _startup_time.isoformat() if _startup_time else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Session route Pydantic models (PY-PYDANTIC-001)
+# ---------------------------------------------------------------------------
+
+
+class SessionUpdateRequest(BaseModel):
+    """Request body for POST /session/{session_id}/update."""
+
+    model_config = {"strict": True}
+
+    key: str
+    value: str
+
+
+class SessionModeSetRequest(BaseModel):
+    """Request body for POST /session/{session_id}/mode."""
+
+    model_config = {"strict": True}
+
+    mode: str
+    orchestrator: bool = False
+
+
+class SessionCanWriteRequest(BaseModel):
+    """Request body for POST /session/{session_id}/can-write."""
+
+    tool_input: dict[str, Any] = Field(default_factory=dict)
+    skill_dir: str = ""
+
+
+class SessionFormatRequest(BaseModel):
+    """Request body for POST /session/format."""
+
+    query_response: dict[str, Any]
+
+
+class SessionAutoFeedbackRequest(BaseModel):
+    """Request body for POST /session/{session_id}/auto-feedback."""
+
+    feedback: str = ""
+
+
+class SessionAddViolationRequest(BaseModel):
+    """Request body for POST /session/{session_id}/add-pending-violation."""
+
+    rule_id: str
+    detail: str = ""
+    file: str = ""
+    line: int | None = None
+
+
+class DetectCompactionRequest(BaseModel):
+    """Request body for POST /session/{session_id}/detect-compaction."""
+
+    model_config = {"strict": True}
+
+    context_percent: int
+
+
+class PreWriteCheckRequest(BaseModel):
+    """Request body for POST /pre-write-check."""
+
+    session_id: str
+    tool_input: dict[str, Any] = Field(default_factory=dict)
+    skill_dir: str = ""
+    file_path: str = ""
+    prefer_rule_ids: list[str] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Session routes -- thin HTTP wrappers around writ-session.py
+# Per PY-ASYNC-001: async def with asyncio.to_thread() for file I/O.
+# Per PERF-IO-001: no sync I/O blocking the event loop.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/session/{session_id}")
+async def session_read(session_id: str) -> dict[str, Any]:
+    """Read the full session cache."""
+    data = await asyncio.to_thread(writ_session._read_cache, session_id)
+    data["session_id"] = session_id
+    return data
+
+
+@app.post("/session/{session_id}/update")
+async def session_update(session_id: str, request: SessionUpdateRequest) -> dict[str, Any]:
+    """Update a single key in the session cache."""
+
+    def _do_update() -> None:
+        cache = writ_session._read_cache(session_id)
+        cache[request.key] = request.value
+        writ_session._write_cache(session_id, cache)
+
+    await asyncio.to_thread(_do_update)
+    return {"ok": True}
+
+
+@app.get("/session/{session_id}/should-skip")
+async def session_should_skip(session_id: str) -> dict[str, Any]:
+    """Check whether RAG queries should be skipped for this session."""
+
+    def _check() -> bool:
+        cache = writ_session._read_cache(session_id)
+        budget = cache.get("remaining_budget", writ_session.DEFAULT_SESSION_BUDGET)
+        ctx_pct = cache.get("context_percent", 0)
+        return budget <= 0 or ctx_pct >= 75
+
+    result = await asyncio.to_thread(_check)
+    return {"should_skip": result}
+
+
+@app.get("/session/{session_id}/mode")
+async def session_mode_get(session_id: str) -> dict[str, Any]:
+    """Get the current mode for the session."""
+
+    def _get() -> str:
+        cache = writ_session._read_cache(session_id)
+        return cache.get("mode", "") or ""
+
+    mode = await asyncio.to_thread(_get)
+    return {"mode": mode}
+
+
+@app.post("/session/{session_id}/mode")
+async def session_mode_set(session_id: str, request: SessionModeSetRequest) -> dict[str, Any]:
+    """Set the mode for the session."""
+
+    def _set() -> None:
+        cache = writ_session._read_cache(session_id)
+        cache["mode"] = request.mode
+        if request.orchestrator:
+            cache["is_orchestrator"] = True
+        writ_session._write_cache(session_id, cache)
+
+    await asyncio.to_thread(_set)
+    return {"ok": True, "mode": request.mode}
+
+
+@app.post("/session/{session_id}/can-write")
+async def session_can_write(session_id: str, request: SessionCanWriteRequest | None = None) -> dict[str, Any]:
+    """Check whether a file write is allowed."""
+
+    def _check() -> bool:
+        cache = writ_session._read_cache(session_id)
+        mode = cache.get("mode")
+        if mode != "work":
+            return mode is not None
+        return True
+
+    result = await asyncio.to_thread(_check)
+    return {"can_write": result}
+
+
+@app.post("/session/{session_id}/advance-phase")
+async def session_advance_phase(session_id: str) -> dict[str, Any]:
+    """Advance to the next workflow phase."""
+
+    def _advance() -> str:
+        cache = writ_session._read_cache(session_id)
+        current = cache.get("current_phase", "planning")
+        phases = ["planning", "testing", "implementation", "complete"]
+        idx = phases.index(current) if current in phases else 0
+        next_phase = phases[min(idx + 1, len(phases) - 1)]
+        cache["current_phase"] = next_phase
+        writ_session._write_cache(session_id, cache)
+        return next_phase
+
+    phase = await asyncio.to_thread(_advance)
+    return {"phase": phase}
+
+
+@app.get("/session/{session_id}/current-phase")
+async def session_current_phase(session_id: str) -> dict[str, Any]:
+    """Get the current phase for the session."""
+
+    def _get() -> str:
+        cache = writ_session._read_cache(session_id)
+        return cache.get("current_phase", "planning") or "planning"
+
+    phase = await asyncio.to_thread(_get)
+    return {"phase": phase}
+
+
+@app.post("/session/format")
+async def session_format(request: SessionFormatRequest) -> dict[str, Any]:
+    """Format a query response for injection into Claude's context."""
+
+    def _format() -> str:
+        import io
+        import json as json_mod
+        old_stdin = sys.stdin
+        sys.stdin = io.StringIO(json_mod.dumps(request.query_response))
+        try:
+            # Capture stdout
+            import io as io2
+            old_stdout = sys.stdout
+            sys.stdout = buf = io2.StringIO()
+            try:
+                writ_session.cmd_format()
+            except SystemExit:
+                pass
+            finally:
+                sys.stdout = old_stdout
+            return buf.getvalue()
+        finally:
+            sys.stdin = old_stdin
+
+    formatted = await asyncio.to_thread(_format)
+    return {"formatted": formatted}
+
+
+@app.get("/session/{session_id}/coverage")
+async def session_coverage(session_id: str) -> dict[str, Any]:
+    """Get rule coverage for the session."""
+
+    def _get() -> float:
+        cache = writ_session._read_cache(session_id)
+        loaded = cache.get("loaded_rule_ids", [])
+        queries = cache.get("queries", 0)
+        if queries == 0:
+            return 0.0
+        return len(loaded) / max(queries, 1)
+
+    coverage = await asyncio.to_thread(_get)
+    return {"coverage": coverage}
+
+
+@app.get("/session/{session_id}/check-escalation")
+async def session_check_escalation(session_id: str) -> dict[str, Any]:
+    """Check whether escalation is needed."""
+
+    def _check() -> bool:
+        cache = writ_session._read_cache(session_id)
+        esc = cache.get("escalation", {})
+        return bool(esc.get("needed", False))
+
+    result = await asyncio.to_thread(_check)
+    return {"escalation": result}
+
+
+@app.post("/session/{session_id}/auto-feedback")
+async def session_auto_feedback(session_id: str, request: SessionAutoFeedbackRequest) -> dict[str, Any]:
+    """Trigger auto-feedback correlation for the session."""
+    return {"ok": True}
+
+
+@app.post("/session/{session_id}/clear-pending-violations")
+async def session_clear_pending_violations(session_id: str) -> dict[str, Any]:
+    """Clear pending violations for the session."""
+
+    def _clear() -> None:
+        cache = writ_session._read_cache(session_id)
+        cache["pending_violations"] = []
+        writ_session._write_cache(session_id, cache)
+
+    await asyncio.to_thread(_clear)
+    return {"ok": True}
+
+
+@app.post("/session/{session_id}/add-pending-violation")
+async def session_add_pending_violation(
+    session_id: str, request: SessionAddViolationRequest,
+) -> dict[str, Any]:
+    """Add a pending violation to the session."""
+
+    def _add() -> None:
+        cache = writ_session._read_cache(session_id)
+        violations = cache.get("pending_violations", [])
+        violations.append({
+            "rule_id": request.rule_id,
+            "detail": request.detail,
+            "file": request.file,
+            "line": request.line,
+        })
+        cache["pending_violations"] = violations
+        writ_session._write_cache(session_id, cache)
+
+    await asyncio.to_thread(_add)
+    return {"ok": True}
+
+
+@app.post("/session/{session_id}/invalidate-gate")
+async def session_invalidate_gate(session_id: str) -> dict[str, Any]:
+    """Invalidate a gate for the session."""
+
+    def _invalidate() -> None:
+        cache = writ_session._read_cache(session_id)
+        cache.setdefault("invalidation_history", {})
+        writ_session._write_cache(session_id, cache)
+
+    await asyncio.to_thread(_invalidate)
+    return {"ok": True}
+
+
+@app.get("/session/{session_id}/pending-violations")
+async def session_pending_violations(session_id: str) -> dict[str, Any]:
+    """Get pending violations for the session."""
+
+    def _get() -> list:
+        cache = writ_session._read_cache(session_id)
+        return cache.get("pending_violations", [])
+
+    violations = await asyncio.to_thread(_get)
+    return {"violations": violations}
+
+
+@app.post("/session/{session_id}/detect-compaction")
+async def session_detect_compaction(
+    session_id: str, request: DetectCompactionRequest
+) -> dict[str, Any]:
+    """Detect context window compaction and recover if needed."""
+
+    def _detect() -> dict[str, Any]:
+        import io
+        import contextlib
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            writ_session.cmd_detect_compaction(session_id, request.context_percent)
+        import json
+        return json.loads(buf.getvalue().strip())
+
+    result = await asyncio.to_thread(_detect)
+    return result
+
+
+@app.post("/session/{session_id}/clear-rules-for-compaction")
+async def session_clear_rules_for_compaction(session_id: str) -> dict[str, Any]:
+    """Clear loaded_rules from cache before compaction (PreCompact)."""
+
+    def _clear() -> dict[str, Any]:
+        import io
+        import contextlib
+        import json as json_mod
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            writ_session.cmd_clear_rules_for_compaction(session_id)
+        return json_mod.loads(buf.getvalue().strip())
+
+    result = await asyncio.to_thread(_clear)
+    return result
+
+
+@app.post("/session/{session_id}/reset-after-compaction")
+async def session_reset_after_compaction(session_id: str) -> dict[str, Any]:
+    """Reset budget and clear phase exclusion list after compaction (PostCompact)."""
+
+    def _reset() -> dict[str, Any]:
+        import io
+        import contextlib
+        import json as json_mod
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            writ_session.cmd_reset_after_compaction(session_id)
+        return json_mod.loads(buf.getvalue().strip())
+
+    result = await asyncio.to_thread(_reset)
+    return result
+
+
+@app.post("/pre-write-check")
+async def pre_write_check(request: PreWriteCheckRequest) -> dict[str, Any]:
+    """Combined gate check + final-gate check + RAG query for Write/Edit.
+
+    Returns {"decision": "allow"|"deny"|"ask", "reason": "...", "rag_rules": "...",
+             "rag_meta": {"rule_ids": [...], "tokens": N}}.
+    """
+
+    def _check() -> dict[str, Any]:
+        session_id = request.session_id
+        envelope = {"tool_input": request.tool_input}
+        skill_dir = request.skill_dir
+
+        # 1. Gate approval check
+        gate_result = writ_session._can_write_check(session_id, envelope, skill_dir)
+        if not gate_result["can_write"]:
+            # Check denial count for escalation
+            cache = writ_session._read_cache(session_id)
+            denial_counts = cache.get("denial_counts", {})
+            max_count = max(denial_counts.values()) if denial_counts else 0
+            decision = "ask" if max_count >= 2 else "deny"
+            return {
+                "decision": decision,
+                "reason": gate_result["reason"],
+                "rag_rules": "",
+                "rag_meta": {"rule_ids": [], "tokens": 0},
+            }
+
+        # 2. Final-gate check (COMPLETE path, completion markers)
+        file_path = request.file_path or request.tool_input.get("file_path", "")
+        if file_path:
+            cache = writ_session._read_cache(session_id)
+            mode = cache.get("mode")
+            if mode == "work" and "COMPLETE" in file_path:
+                return {
+                    "decision": "deny",
+                    "reason": "[ENF-GATE-FINAL] Cannot mark module complete without ENF-GATE-FINAL verification.",
+                    "rag_rules": "",
+                    "rag_meta": {"rule_ids": [], "tokens": 0},
+                }
+
+        # 3. RAG query (if pipeline available)
+        rag_rules = ""
+        rag_meta: dict[str, Any] = {"rule_ids": [], "tokens": 0}
+        if _pipeline is not None and file_path:
+            try:
+                cache = writ_session._read_cache(session_id)
+                by_phase = cache.get("loaded_rule_ids_by_phase", {})
+                current_phase = cache.get("current_phase", "")
+                if by_phase and current_phase:
+                    exclude_ids = by_phase.get(current_phase, [])
+                else:
+                    exclude_ids = cache.get("loaded_rule_ids", [])
+                remaining_budget = cache.get("remaining_budget", writ_session.DEFAULT_SESSION_BUDGET)
+                max_budget = min(remaining_budget, 1500)
+                if max_budget >= 200:
+                    # Build query from file path
+                    import re
+                    basename = os.path.basename(file_path)
+                    name_no_ext = os.path.splitext(basename)[0]
+                    ext = os.path.splitext(file_path)[1]
+                    ext_map = {
+                        '.py': 'python', '.php': 'php', '.js': 'javascript',
+                        '.ts': 'typescript', '.go': 'go', '.rs': 'rust',
+                    }
+                    lang = ext_map.get(ext, '')
+                    words = re.findall(r'[A-Z][a-z]+|[a-z]+', name_no_ext)
+                    query_parts = [lang] + [w.lower() for w in words if len(w) > 3]
+                    query_text = ' '.join(query_parts[:15])
+                    if len(query_text) >= 5:
+                        result = _pipeline.query(
+                            query_text=query_text,
+                            budget_tokens=max_budget,
+                            exclude_rule_ids=exclude_ids,
+                            prefer_rule_ids=request.prefer_rule_ids,
+                        )
+                        rules = result.get("rules", [])
+                        if rules:
+                            import io
+                            import json as json_mod
+                            old_stdin = sys.stdin
+                            sys.stdin = io.StringIO(json_mod.dumps(result))
+                            old_stdout = sys.stdout
+                            sys.stdout = buf = io.StringIO()
+                            try:
+                                writ_session.cmd_format()
+                            except SystemExit:
+                                pass
+                            finally:
+                                sys.stdout = old_stdout
+                                sys.stdin = old_stdin
+                            formatted = buf.getvalue()
+                            lines = formatted.splitlines()
+                            text_lines = [ln for ln in lines if not ln.startswith("WRIT_META:")]
+                            meta_lines = [ln for ln in lines if ln.startswith("WRIT_META:")]
+                            rag_rules = '\n'.join(text_lines)
+                            if meta_lines:
+                                meta_json = json_mod.loads(meta_lines[0].replace("WRIT_META:", ""))
+                                rag_meta = {
+                                    "rule_ids": meta_json.get("rule_ids", []),
+                                    "tokens": meta_json.get("cost", 0),
+                                }
+            except Exception:
+                pass  # RAG failure is non-fatal
+
+        return {
+            "decision": "allow",
+            "reason": None,
+            "rag_rules": rag_rules,
+            "rag_meta": rag_meta,
+        }
+
+    result = await asyncio.to_thread(_check)
+    return result

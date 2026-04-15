@@ -10,15 +10,19 @@ def pytest_sessionfinish(session, exitstatus):
     import asyncio
     from pathlib import Path
 
-    from writ.graph.db import Neo4jConnection
-    from writ.graph.ingest import discover_rule_files, parse_rules_from_file, validate_parsed_rule
+    try:
+        from writ.config import get_neo4j_uri, get_neo4j_user, get_neo4j_password
+        from writ.graph.db import Neo4jConnection
+        from writ.graph.ingest import discover_rule_files, parse_rules_from_file, validate_parsed_rule
+    except (ImportError, ModuleNotFoundError):
+        return  # neo4j driver or other deps not installed; skip re-migration.
 
     async def _remigrate():
         bible = Path("bible/")
         if not bible.exists():
             return
         try:
-            db = Neo4jConnection("bolt://localhost:7687", "neo4j", "writdevpass")
+            db = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
             count = await db.count_rules()
             if count == 0:
                 for f in discover_rule_files(bible):

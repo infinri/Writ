@@ -1,4 +1,6 @@
 #!/bin/bash
+# Exit codes: 0=pass, 1=warning (advisory), 2=blocking (stops execution)
+#
 # Rule compliance validation hook -- calls POST /analyze on the Writ server.
 # PostToolUse: fires after every Write/Edit.
 #
@@ -37,12 +39,12 @@ SESSION_ID=$(detect_session_id "$PARSED")
 if [ -z "$SESSION_ID" ]; then exit 0; fi
 
 # Skip for non-work modes (no code generation)
-MODE=$(python3 "$SESSION_HELPER" mode get "$SESSION_ID" 2>/dev/null || echo "")
+MODE=$(_writ_session "mode get" "$SESSION_ID" 2>/dev/null || echo "")
 MODE=$(echo "$MODE" | tr -d '[:space:]')
 if [ "$MODE" != "work" ]; then exit 0; fi
 
 # Read session cache
-CACHE=$(python3 "$SESSION_HELPER" read "$SESSION_ID" 2>/dev/null || echo '{}')
+CACHE=$(_writ_session read "$SESSION_ID" 2>/dev/null || echo '{}')
 
 # Check analysis_results for this file -- skip if not yet passed static analysis
 ANALYSIS_STATUS=$(echo "$CACHE" | python3 -c "
@@ -404,7 +406,7 @@ for f in findings:
 " "$SESSION_ID" "$SESSION_HELPER" "$PLAN_FILE" "$PROJECT_ROOT" "$CACHE" "$FILE" 2>&1 >&2
 
 # Clear pending violations after phase-boundary scan
-python3 "$SESSION_HELPER" clear-pending-violations "$SESSION_ID" 2>/dev/null || true
+_writ_session clear-pending-violations "$SESSION_ID" 2>/dev/null || true
 
 hook_timer_end "$HOOK_START_NS" "validate-rules" "$SESSION_ID" "$MODE"
-exit 1
+exit 2

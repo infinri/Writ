@@ -1,5 +1,7 @@
 #!/bin/bash
-# Universal validation hook — routes by file extension.
+# Exit codes: 0=pass, 1=warning (advisory -- deliberate, not blocking)
+#
+# Universal validation hook -- routes by file extension.
 # PostToolUse: fires after every Write/Edit/MultiEdit.
 # Exit non-zero = Claude Code injects error into context. Must fix before continuing.
 # Output: structured JSON per finding.

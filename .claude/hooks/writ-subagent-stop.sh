@@ -27,7 +27,7 @@ if [ -z "$AGENT_ID" ]; then
 fi
 
 # Read the agent's session cache for summary metrics
-CACHE=$(python3 "$SESSION_HELPER" read "$AGENT_ID" 2>/dev/null || echo '{}')
+CACHE=$(_writ_session read "$AGENT_ID" 2>/dev/null || echo '{}')
 
 python3 -c "
 import sys, json, os

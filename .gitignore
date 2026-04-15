@@ -40,3 +40,7 @@ Thumbs.db
 # Writ enforcement runtime artifacts
 workflow-friction.log
 .claude/gates/
+
+# Per-Work-cycle workflow artifacts (overwritten each cycle)
+plan.md
+capabilities.md

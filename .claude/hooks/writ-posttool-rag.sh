@@ -29,8 +29,23 @@ if [ -z "$SESSION_ID" ]; then
     SESSION_ID=$(detect_session_id "")
 fi
 
+# Orchestrator suppression: no RAG for orchestrator writes (metadata only)
+IS_ORCHESTRATOR=$(python3 -c "
+import sys, json, os, tempfile
+cache_dir = os.environ.get('WRIT_CACHE_DIR', tempfile.gettempdir())
+path = os.path.join(cache_dir, f'writ-session-${SESSION_ID}.json')
+try:
+    with open(path) as f:
+        print('true' if json.load(f).get('is_orchestrator') else 'false')
+except Exception:
+    print('false')
+" 2>/dev/null || echo "false")
+if [ "$IS_ORCHESTRATOR" = "true" ]; then
+    exit 0
+fi
+
 # Skip if budget exhausted or context pressure high
-if python3 "$SESSION_HELPER" should-skip "$SESSION_ID" 2>/dev/null; then
+if _writ_session should-skip "$SESSION_ID" 2>/dev/null; then
     exit 0
 fi
 
@@ -149,7 +164,7 @@ if [ -z "$FILE_PATH" ] || [ -z "$QUERY" ]; then
 fi
 
 # Read session cache for budget and exclusion list
-CACHE=$(python3 "$SESSION_HELPER" read "$SESSION_ID" 2>/dev/null || echo '{}')
+CACHE=$(_writ_session read "$SESSION_ID" 2>/dev/null || echo '{}')
 
 LOADED_RULE_IDS=$(echo "$CACHE" | python3 -c "
 import sys, json
@@ -226,7 +241,7 @@ if [ "$HAS_RELEVANT" != "yes" ]; then
 fi
 
 # Format and inject
-FORMAT_OUTPUT=$(echo "$RESPONSE" | python3 "$SESSION_HELPER" format 2>/dev/null) || true
+FORMAT_OUTPUT=$(echo "$RESPONSE" | _writ_session format 2>/dev/null) || true
 
 RULES_TEXT=""
 META_LINE=""
@@ -247,7 +262,7 @@ if [ -n "$META_LINE" ]; then
     NEW_RULE_IDS=$(echo "$META_JSON" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin).get('rule_ids',[])))" 2>/dev/null || echo '[]')
     COST=$(echo "$META_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('cost',0))" 2>/dev/null || echo '0')
 
-    python3 "$SESSION_HELPER" update "$SESSION_ID" \
+    _writ_session update "$SESSION_ID" \
         --add-rules "$NEW_RULE_IDS" \
         --cost "$COST" \
         --inc-queries 2>/dev/null || true
@@ -276,12 +291,12 @@ except Exception:
 " 2>/dev/null || echo '[]')
 
     if [ "$RULE_OBJECTS" != "[]" ]; then
-        python3 "$SESSION_HELPER" update "$SESSION_ID" \
+        _writ_session update "$SESSION_ID" \
             --add-rule-objects "$RULE_OBJECTS" 2>/dev/null || true
     fi
 
     # Log rag_query event (direct Python call to avoid shell quoting issues with JSON arrays)
-    CURRENT_MODE=$(python3 "$SESSION_HELPER" mode get "$SESSION_ID" 2>/dev/null || echo "")
+    CURRENT_MODE=$(_writ_session "mode get" "$SESSION_ID" 2>/dev/null || echo "")
     CURRENT_MODE=$(echo "$CURRENT_MODE" | tr -d '[:space:]')
     python3 -c "
 import json, sys, os
