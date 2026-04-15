@@ -26,6 +26,14 @@ if [ -z "$AGENT_ID" ]; then
     exit 0
 fi
 
+# Fallback: some Claude Code versions / nested sub-agents omit agent_type.
+# Default to "general-purpose" and log the fallback so we can track frequency.
+if [ -z "$AGENT_TYPE" ]; then
+    AGENT_TYPE="general-purpose"
+    log_friction_event "$AGENT_ID" "" "subagent_type_fallback" \
+        "{\"hook\":\"writ-subagent-stop\",\"parent_session\":\"$PARENT_SESSION\"}"
+fi
+
 # Read the agent's session cache for summary metrics
 CACHE=$(_writ_session read "$AGENT_ID" 2>/dev/null || echo '{}')
 

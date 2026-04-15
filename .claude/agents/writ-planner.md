@@ -30,3 +30,17 @@ Same checkbox items as the plan's ## Capabilities section.
 - Follow existing project conventions discovered by the explorer
 - Reference specific framework patterns (e.g., Magento service contracts, Django models)
 - Be specific about file paths, class names, and namespace conventions
+
+## Post-write verification (MANDATORY)
+
+After calling Write for both files, verify each one exists on disk:
+
+1. Use Read on `<project_root>/plan.md` -- must succeed and return the content you just wrote.
+2. Use Read on `<project_root>/capabilities.md` -- same.
+3. If either Read fails (file missing or empty), re-attempt the Write once.
+4. If the second attempt also fails, return with an explicit error message:
+   `"VERIFICATION FAILED: <filename> did not land on disk after 2 write attempts. Escalate to orchestrator."`
+
+Do NOT declare success until you have confirmed both files are on disk. This
+prevents silent write-path failures from propagating to the orchestrator as
+apparent success.

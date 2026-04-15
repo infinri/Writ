@@ -21,20 +21,9 @@ neo4j_running() {
 }
 
 if ! neo4j_running; then
-    echo "[Writ] Neo4j not reachable on port $NEO4J_PORT -- attempting Docker start" >&2
+    echo "[Writ] Neo4j not reachable on port $NEO4J_PORT -- attempting docker compose up" >&2
     if command -v docker &>/dev/null; then
-        # Check if container exists but is stopped
-        if docker ps -a --format '{{.Names}}' | grep -q '^writ-neo4j$'; then
-            docker start writ-neo4j >/dev/null 2>&1 || true
-        else
-            docker run -d \
-                --name writ-neo4j \
-                -p 7474:7474 -p 7687:7687 \
-                -e NEO4J_AUTH=neo4j/writdevpass \
-                -e NEO4J_PLUGINS='[]' \
-                --restart unless-stopped \
-                neo4j:5 >/dev/null 2>&1 || true
-        fi
+        (cd "$WRIT_DIR" && docker compose up -d neo4j) >/dev/null 2>&1 || true
         # Wait up to 10s for Neo4j bolt port
         for i in $(seq 1 20); do
             if neo4j_running; then break; fi
@@ -44,6 +33,7 @@ if ! neo4j_running; then
             echo "[Writ] Neo4j started" >&2
         else
             echo "[Writ] Warning: Neo4j did not become reachable within 10s" >&2
+            echo "[Writ] Check logs: docker compose -f $WRIT_DIR/docker-compose.yml logs neo4j" >&2
         fi
     else
         echo "[Writ] Warning: docker not found, cannot start Neo4j" >&2

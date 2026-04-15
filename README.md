@@ -52,22 +52,36 @@ CORRECT: Using httpx.AsyncClient within async context
 
 Installation, hook wiring, mode system, CLI, and HTTP reference live in [docs/integration.md](docs/integration.md).
 
-## Install on a new machine
+## Quick Start
 
-Bootstrap Writ's harness config (`~/.claude/settings.json` + `~/.claude/CLAUDE.md`) from the committed templates:
+Three commands to go from zero to working Writ on a new machine:
 
 ```bash
-git clone <repo> ~/.claude/skills/writ
-bash ~/.claude/skills/writ/scripts/install-harness-config.sh
+git clone https://github.com/infinri/Writ ~/.claude/skills/writ
+cd ~/.claude/skills/writ
+bash scripts/bootstrap.sh
 ```
 
-The installer:
-- Renders `templates/settings.json` and `templates/CLAUDE.md` with `$HOME` substitution (works under any username).
-- Backs up existing files to `<name>.bak.<timestamp>` before overwriting.
-- Is idempotent: re-running produces no new backup when the target already matches the rendered template.
-- Supports `--dry-run` to preview the rendered output without writing.
+Then restart Claude Code. That's it.
 
-After install, start Neo4j + Writ, then `writ import-markdown` to populate rules from `bible/`.
+`bootstrap.sh` handles everything: prerequisite checks, Python virtualenv, dependency install, harness config (`~/.claude/settings.json` + `CLAUDE.md`), rule/agent symlinks, Neo4j container via Docker Compose, rule corpus ingestion, and Writ daemon startup. It's idempotent — safe to re-run.
+
+### Prerequisites
+
+- Python 3.11+
+- Docker (with the daemon running)
+- git, envsubst, curl
+
+If any of these are missing, `bootstrap.sh` prints a clear error with install hints and exits.
+
+### Troubleshooting
+
+- **"Docker daemon not reachable"** — start Docker Desktop, or `sudo systemctl start docker` on Linux, then re-run `bootstrap.sh`.
+- **"python3 version is 3.9; need >= 3.11"** — install a newer Python. `pyenv` is a clean way to manage versions without touching system Python.
+- **"port 7687 already in use"** — another Neo4j instance is running. Either stop it (`docker stop <container>` or equivalent) or change the `ports:` mapping in `docker-compose.yml`.
+- **"Neo4j did not become reachable within 60s"** — check logs: `docker compose -f ~/.claude/skills/writ/docker-compose.yml logs neo4j`. Common cause: insufficient memory allocated to Docker Desktop (Neo4j needs ~1GB).
+- **"daemon did not become healthy within 10s"** — check `/tmp/writ-server.log`. Usually means an import error in the Writ package; re-run `pip install -e .` from the skill directory with the venv activated.
+- **Default Neo4j credentials (`neo4j/writdevpass`) are a dev default.** For any non-local use, change `NEO4J_AUTH` in `docker-compose.yml` and the matching `[neo4j]` section in `writ.toml`.
 
 ## Architecture
 

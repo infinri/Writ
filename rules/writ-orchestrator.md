@@ -3,6 +3,21 @@
 In Work mode, delegate each phase to a named sub-agent worker.
 You are the orchestrator. You manage mode, gates, and approvals.
 
+## Set mode with --orchestrator
+
+Before dispatching any worker, set Work mode with the `--orchestrator` flag:
+
+```
+python3 $SKILL_DIR/bin/lib/writ-session.py mode set work $SESSION_ID --orchestrator
+```
+
+Why: the flag sets `is_orchestrator: true` in the master's session cache.
+`writ-rag-inject.sh` then suppresses the ~1400-token broad RAG injection on
+every UserPromptSubmit in the master session and emits a compact status line
+instead. Without the flag, the master accumulates ~3000+ tokens of rule
+injections it does not need (workers already have their own RAG budget) --
+you will see "broad" rag_query events in the friction log if this is wrong.
+
 ## Dispatch sequence
 
 1. **Explore**: Spawn `writ-explorer` with the user's task description.

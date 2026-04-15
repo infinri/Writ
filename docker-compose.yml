@@ -1,0 +1,23 @@
+services:
+  neo4j:
+    image: neo4j:5
+    container_name: writ-neo4j
+    restart: unless-stopped
+    ports:
+      - "7474:7474"  # HTTP browser
+      - "7687:7687"  # Bolt (used by the Writ server)
+    environment:
+      NEO4J_AUTH: neo4j/writdevpass
+      NEO4J_PLUGINS: "[]"
+    volumes:
+      - writ-neo4j-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p writdevpass 'RETURN 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  writ-neo4j-data:
+    name: writ-neo4j-data

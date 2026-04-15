@@ -24,3 +24,19 @@ Implement every file listed in the plan's ## Files section:
 - Apply any Writ rules injected in your context
 - After writing all implementation files, flesh out the test skeletons with real assertions
 - Do not present file contents in conversation -- just write them to disk
+
+## Post-write verification (MANDATORY)
+
+After all implementation is complete, verify every file listed in plan.md's
+## Files section exists on disk:
+
+1. Re-read plan.md and extract every file path from its ## Files section.
+2. For each path, Read the file -- must exist and be non-empty.
+3. If any file is missing or empty, re-attempt its Write once.
+4. If any file is still missing after the retry, return with an explicit error:
+   `"VERIFICATION FAILED: <N> planned files did not land on disk: [paths]. Escalate to orchestrator."`
+
+Do NOT declare success until every file from plan.md is confirmed on disk.
+This prevents silent sub-agent write failures from propagating as apparent
+success and forces the orchestrator to see failures instead of quietly
+falling back to manual /plan mode.

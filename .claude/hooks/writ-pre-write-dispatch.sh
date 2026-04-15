@@ -68,6 +68,21 @@ fi
 # Parse decision
 DECISION=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('decision','allow'))" 2>/dev/null || echo "allow")
 
+# Diagnostic: log decision + reason + file_path to friction log so silent write paths
+# leave a trail. Added after the Back-in-Stock audit where planner writes vanished
+# with no gate_denial or posttool-rag event -- now we can see allow/deny per attempt.
+DECISION_REASON=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('reason',''))" 2>/dev/null || echo "")
+DECISION_FILE=$(echo "$CHECK_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('file_path',''))" 2>/dev/null || echo "")
+DECISION_PAYLOAD=$(python3 -c "
+import json, sys
+print(json.dumps({
+    'decision': sys.argv[1],
+    'reason': sys.argv[2],
+    'file_path': sys.argv[3],
+}))
+" "$DECISION" "$DECISION_REASON" "$DECISION_FILE" 2>/dev/null || echo "{}")
+log_friction_event "$SESSION_ID" "" "pre_write_decision" "$DECISION_PAYLOAD"
+
 if [ "$DECISION" = "deny" ] || [ "$DECISION" = "ask" ]; then
     REASON=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('reason','Gate approval required'))" 2>/dev/null || echo "Gate approval required")
 
