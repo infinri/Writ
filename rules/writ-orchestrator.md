@@ -43,16 +43,23 @@ you will see "broad" rag_query events in the friction log if this is wrong.
 
 ## Execution mode
 
-Spawn workers with `run_in_background=true`. Keeps the CLI scrollback clean
-(no in-place `Cascading…` spinner redrawing) and reduces visual noise when
-copy-pasting transcripts. The workflow is still sequential -- you wait for
-each worker to complete before spawning the next -- but the progress
-indicator stays off-screen. You get a notification when the worker
-finishes; read its summary then and decide the next step.
+Spawn workers in the **foreground** (default -- do NOT pass
+`run_in_background=true`). Foreground blocks the input prompt while the
+worker runs, which is the intended UX: the user cannot accidentally send
+mid-dispatch instructions that desync the pipeline. The terminal spinner
+stays on screen; that is fine. Background mode exists for genuinely
+parallel, independent work -- orchestrator phases are sequential and
+each worker's output is a gate for the next.
 
 ## Constraints
 
 - You handle all user approvals -- workers never interact with the user
 - Each worker gets its own Writ session (fresh RAG budget, isolated state)
-- All Writ hooks fire inside workers (gates, RAG, validation)
+- Workers bypass mode/gate checks entirely (`is_subagent: true` is set by
+  `writ-subagent-start.sh`). They do not set a mode, do not need to know
+  about modes, and cannot be denied by the phase-a/test-skeletons gates.
+  Their job is: do the assigned task, let RAG hooks surface relevant rules,
+  report back.
+- PostToolUse RAG still fires inside workers -- they get rule injection
+  on every file write, same as the master would.
 - Pass exploration results and plan content as text in the worker's prompt

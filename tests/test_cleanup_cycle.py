@@ -93,6 +93,50 @@ class TestNoDuplicatedBudgetLiterals:
 # ---------------------------------------------------------------------------
 
 
+class TestSubagentGateBypass:
+    """Sub-agents must bypass mode/gate checks entirely.
+
+    An orchestrator dispatches a worker only after the human approves the
+    plan. The worker's session starts with no mode set; gate hooks must
+    not deny writes from such a session when is_subagent=True.
+    """
+
+    def test_subagent_write_allowed_without_mode(self, tmp_path: Path) -> None:
+        import io
+
+        mod = _load_bin_session_module()
+        mod.CACHE_DIR = str(tmp_path)
+        session_id = "planner-agent"
+        cache = mod._read_cache(session_id)
+        cache["is_subagent"] = True
+        # Explicitly no mode, no gates -- the failure mode we saw in prod.
+        cache["mode"] = None
+        cache["gates_approved"] = []
+        mod._write_cache(session_id, cache)
+
+        envelope = {"tool_input": {"file_path": str(tmp_path / "some_module" / "Service.php")}}
+        result = mod._can_write_check(session_id, envelope, "")
+        assert result["can_write"] is True, (
+            f"Sub-agent writes must be allowed without a mode; got deny with reason: "
+            f"{result.get('reason')!r}"
+        )
+
+    def test_subagent_write_allowed_without_gates(self, tmp_path: Path) -> None:
+        """Even in work mode without gates, sub-agents bypass."""
+        mod = _load_bin_session_module()
+        mod.CACHE_DIR = str(tmp_path)
+        session_id = "impl-agent"
+        cache = mod._read_cache(session_id)
+        cache["is_subagent"] = True
+        cache["mode"] = "work"
+        cache["gates_approved"] = []  # master hasn't propagated gates
+        mod._write_cache(session_id, cache)
+
+        envelope = {"tool_input": {"file_path": str(tmp_path / "app" / "code" / "X" / "Y" / "Model.php")}}
+        result = mod._can_write_check(session_id, envelope, "")
+        assert result["can_write"] is True
+
+
 class TestSubagentUnlimitedBudget:
     def test_subagent_start_marks_is_subagent(self) -> None:
         content = SUBAGENT_START_HOOK.read_text()

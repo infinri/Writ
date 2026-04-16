@@ -1039,6 +1039,17 @@ def _can_write_check(session_id: str, envelope: dict, skill_dir: str = "") -> di
     basename = os.path.basename(file_path)
     current_phase = cache.get("current_phase")
 
+    # Sub-agents bypass mode/gate checks. They are workers dispatched by an
+    # orchestrator that already passed the human-approval gate; their scope
+    # is narrowed by the agent definition + spawn prompt. Gates exist to stop
+    # the master from writing code before plan approval, not to re-police
+    # workers the orchestrator has already sanctioned. See rules/writ-orchestrator.md.
+    if cache.get("is_subagent"):
+        _log_friction_event(session_id, mode, "write_attempt",
+                            file_path=file_path, result="allow",
+                            gate_status="subagent_bypass")
+        return {"can_write": True, "reason": None}
+
     # plan.md exception: allowed pre-mode
     if basename == "plan.md" and mode is None:
         return {"can_write": True, "reason": None}
@@ -1114,10 +1125,12 @@ def _can_write_check(session_id: str, envelope: dict, skill_dir: str = "") -> di
 def cmd_can_write(session_id: str, skill_dir: str = "") -> None:
     """Decide whether a file write is allowed. Reads tool envelope from stdin.
 
-    Mode-based gating:
-    - No mode: deny all except plan.md and capabilities.md
-    - conversation/debug/review: allow all (no gates)
-    - work: two-gate enforcement (phase-a + test-skeletons)
+    Gating rules:
+    - Sub-agents (is_subagent=True): allow all writes. Workers are dispatched
+      by an orchestrator that already cleared the human-approval gate.
+    - No mode (master): deny all except plan.md and capabilities.md
+    - conversation/debug/review (master): allow all (no gates)
+    - work (master): two-gate enforcement (phase-a + test-skeletons)
 
     Output: JSON {"decision": "allow"} or {"decision": "deny", "reason": "..."}
     """
