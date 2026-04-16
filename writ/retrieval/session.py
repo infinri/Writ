@@ -10,11 +10,18 @@ calls -- it builds request payloads and processes response dicts.
 
 from __future__ import annotations
 
-# Per ARCH-CONST-001
-DEFAULT_SESSION_BUDGET = 8000
-APPROX_TOKENS_PER_RULE_FULL = 200
-APPROX_TOKENS_PER_RULE_STANDARD = 120
-APPROX_TOKENS_PER_RULE_SUMMARY = 40
+import json
+from pathlib import Path
+
+# Per ARCH-CONST-001 and ARCH-DRY-001: budget constants load from the
+# canonical JSON file shared with bin/lib/writ-session.py. Single source of truth.
+_BUDGET_JSON = Path(__file__).resolve().parent.parent / "shared" / "budget.json"
+_budget_data = json.loads(_BUDGET_JSON.read_text())
+
+DEFAULT_SESSION_BUDGET: int = _budget_data["default_budget"]
+APPROX_TOKENS_PER_RULE_FULL: int = _budget_data["rule_cost_full"]
+APPROX_TOKENS_PER_RULE_STANDARD: int = _budget_data["rule_cost_standard"]
+APPROX_TOKENS_PER_RULE_SUMMARY: int = _budget_data["rule_cost_summary"]
 
 
 class SessionTracker:

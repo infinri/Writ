@@ -158,6 +158,22 @@ class TestOverride:
         cache_dir = get_hnsw_cache_dir(minimal_toml)
         assert cache_dir == "/tmp/hnsw_test"
 
+    def test_hnsw_cache_dir_expands_tilde(self, tmp_path) -> None:
+        """A tilde override in writ.toml must be expanded, not left literal.
+
+        Regression: an unexpanded '~' made hnswlib create a literal '~/' dir
+        wherever the process ran. The getter must expand via expanduser.
+        """
+        import os
+
+        toml_file = tmp_path / "writ.toml"
+        toml_file.write_text('[hnsw]\ncache_dir = "~/my_writ_cache"\n')
+        cache_dir = get_hnsw_cache_dir(str(toml_file))
+        assert "~" not in cache_dir, (
+            f"tilde must be expanded, got: {cache_dir!r}"
+        )
+        assert cache_dir == os.path.expanduser("~/my_writ_cache")
+
 
 # ---------------------------------------------------------------------------
 # TestConsumers -- expected import surface for downstream modules

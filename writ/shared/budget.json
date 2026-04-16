@@ -1,0 +1,7 @@
+{
+  "default_budget": 8000,
+  "rule_cost_full": 200,
+  "rule_cost_standard": 120,
+  "rule_cost_summary": 40,
+  "subagent_budget": null
+}

@@ -36,7 +36,7 @@ All indexes are pre-warmed at startup. No I/O in the hot path (PERF-IO-001).
 | `writ/retrieval/embeddings.py` | 226 | ONNX embedding model, hnswlib vector store, LRU cache. | YES -- model or index changes affect vector search quality. |
 | `writ/retrieval/keyword.py` | 96 | Tantivy BM25 index wrapper. | Moderate -- field changes affect BM25 recall. |
 | `writ/retrieval/traversal.py` | 109 | Pre-computed adjacency cache (1-hop, 2-hop neighbors). | Moderate -- cache structure affects graph proximity scoring. |
-| `writ/retrieval/session.py` | 88 | Client-side session tracker (budget, dedup). | Low -- stateless helper. Changes here also need mirroring in `bin/lib/writ-session.py`. |
+| `writ/retrieval/session.py` | 88 | Client-side session tracker (budget, dedup). Constants loaded from `writ/shared/budget.json`. | Low -- stateless helper. Budget values live in `writ/shared/budget.json`; edit JSON, not Python. |
 | `writ/graph/db.py` | 348 | Neo4j connection pool, CRUD operations. | YES -- all data access goes through here. |
 | `writ/graph/schema.py` | 216 | Pydantic models (Rule, Abstraction, Edge types). | YES -- schema changes cascade to ingest, export, API responses. |
 | `writ/graph/ingest.py` | 152 | Markdown parser, field validation. | Moderate -- changes affect rule ingestion from Bible files. |
@@ -148,14 +148,15 @@ Run benchmarks AND pay special attention to MRR@5 and hit rate. These are the
 quality gate metrics. A ranking change that improves latency but drops MRR@5
 below 0.78 is a regression.
 
-### After modifying `writ/retrieval/session.py`
+### After modifying session budget values
 
-Also verify that `bin/lib/writ-session.py` mirrors the same constants:
-- `DEFAULT_SESSION_BUDGET = 8000`
-- Token costs: full=200, standard=120, summary=40
+Budget constants (`DEFAULT_SESSION_BUDGET`, full/standard/summary token costs,
+`subagent_budget`) live in one place: `writ/shared/budget.json`. Both
+`writ/retrieval/session.py` and `bin/lib/writ-session.py` load from that JSON
+at import time, so editing either Python file is unnecessary -- edit the JSON.
 
-These two files must stay in sync. The session helper is the hook-side mirror
-of the server-side session tracker.
+`subagent_budget: null` means unlimited; sub-agent sessions have `is_subagent`
+set on their cache and bypass the skip check in `cmd_should_skip`.
 
 ### After modifying `writ/server.py` response schema
 

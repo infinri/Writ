@@ -152,37 +152,6 @@ class TestEventFrequency:
             os.unlink(path)
 
 
-# -- Tier distribution --------------------------------------------------------
-
-class TestTierDistribution:
-    def test_counts_unique_sessions_per_tier(self):
-        events = [
-            {"session": "s1", "tier": 1, "event": "phase_transition"},
-            {"session": "s2", "tier": 2, "event": "phase_transition"},
-            {"session": "s3", "tier": 2, "event": "phase_transition"},
-        ]
-        path = _write_friction_log(events)
-        try:
-            report = _run_metrics(path)
-            assert report["tier_distribution"]["1"] == 1
-            assert report["tier_distribution"]["2"] == 2
-        finally:
-            os.unlink(path)
-
-    def test_escalated_session_counted_at_final_tier(self):
-        events = [
-            {"session": "s1", "tier": 1, "event": "phase_transition"},
-            {"session": "s1", "tier": 2, "event": "tier_escalated", "old_tier": 1, "new_tier": 2},
-        ]
-        path = _write_friction_log(events)
-        try:
-            report = _run_metrics(path)
-            assert report["tier_distribution"]["1"] == 0
-            assert report["tier_distribution"]["2"] == 1
-        finally:
-            os.unlink(path)
-
-
 # -- Output format ------------------------------------------------------------
 
 class TestOutputFormat:
@@ -204,7 +173,7 @@ class TestOutputFormat:
         path = _write_friction_log(events)
         try:
             report = _run_metrics(path)
-            for key in ["clean_run_rate", "transition_times", "event_frequency", "tier_distribution"]:
+            for key in ["clean_run_rate", "transition_times", "event_frequency"]:
                 assert key in report
         finally:
             os.unlink(path)

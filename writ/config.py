@@ -62,6 +62,12 @@ def get_neo4j_password(path: str | None = None) -> str:
 
 
 def get_hnsw_cache_dir(path: str | None = None) -> str:
-    """Return hnsw.cache_dir from config, falling back to DEFAULT_HNSW_CACHE_DIR."""
+    """Return hnsw.cache_dir from config, falling back to DEFAULT_HNSW_CACHE_DIR.
+
+    TOML strings like "~/.cache/writ/hnsw" are expanded to an absolute path.
+    Without this, Path() treats "~" as a literal dir name and creates a
+    stray "~" folder wherever the process runs.
+    """
     cfg = load_config(path)
-    return cfg.get("hnsw", {}).get("cache_dir", DEFAULT_HNSW_CACHE_DIR)
+    raw = cfg.get("hnsw", {}).get("cache_dir", DEFAULT_HNSW_CACHE_DIR)
+    return os.path.expanduser(raw)

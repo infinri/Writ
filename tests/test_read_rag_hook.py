@@ -79,25 +79,21 @@ class TestReadRagBudgetRespect:
     """The hook should respect budget and context pressure limits."""
 
     def test_budget_exhausted_should_skip(self, session_id):
-        """When remaining budget is 0, should-skip returns exit 0 (skip)."""
+        """When remaining budget is 0, cmd_should_skip returns True."""
         writ_session.cmd_mode(session_id, "set", "review")
         writ_session.cmd_update(session_id, ["--cost", "8000"])
-        # should-skip exits 0 when budget exhausted (meaning: skip)
-        with pytest.raises(SystemExit, match="0"):
-            writ_session.cmd_should_skip(session_id)
+        assert writ_session.cmd_should_skip(session_id) is True
 
     def test_context_pressure_high_should_skip(self, session_id):
-        """When context pressure > 75%, should-skip returns exit 0 (skip)."""
+        """When context pressure > 75%, cmd_should_skip returns True."""
         writ_session.cmd_mode(session_id, "set", "review")
         writ_session.cmd_update(session_id, ["--context-percent", "80"])
-        with pytest.raises(SystemExit, match="0"):
-            writ_session.cmd_should_skip(session_id)
+        assert writ_session.cmd_should_skip(session_id) is True
 
     def test_budget_available_should_proceed(self, session_id):
-        """When budget is available, should-skip returns exit 1 (proceed)."""
+        """When budget is available, cmd_should_skip returns False."""
         writ_session.cmd_mode(session_id, "set", "review")
-        with pytest.raises(SystemExit, match="1"):
-            writ_session.cmd_should_skip(session_id)
+        assert writ_session.cmd_should_skip(session_id) is False
 
 
 class TestReadRagHookSyntax:

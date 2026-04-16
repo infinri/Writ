@@ -54,11 +54,6 @@ def _set_mode(session_id: str, mode: str) -> None:
     writ_session.cmd_mode(session_id, "set", mode)
 
 
-def _set_tier(session_id: str, tier: int) -> None:
-    """Tier facade -- maps to mode internally."""
-    writ_session.cmd_tier(session_id, "set", str(tier))
-
-
 def _read_cache(session_id: str) -> dict:
     return writ_session._read_cache(session_id)
 
@@ -180,19 +175,6 @@ def _approve_gate(session_id: str, gate: str) -> None:
 # ===========================================================================
 
 class TestCanWrite:
-
-    def test_allow_any_file_tier_0(self, session_id, project_root, monkeypatch, capsys):
-        """Tier 0 -> conversation mode: all writes allowed, no gates."""
-        _set_tier(session_id, 0)
-        result = _call_can_write(session_id, str(project_root / "anything.py"), monkeypatch, capsys)
-        assert result["decision"] == "allow"
-
-    def test_allow_any_file_tier_1(self, session_id, project_root, monkeypatch, capsys):
-        """Tier 1 -> work mode: source files denied (need gates)."""
-        _set_tier(session_id, 1)
-        # In v2, tier 1 maps to work mode which has gates
-        result = _call_can_write(session_id, str(project_root / "service.py"), monkeypatch, capsys)
-        assert result["decision"] == "deny"
 
     def test_deny_no_mode_except_plan_md(self, session_id, project_root, monkeypatch, capsys):
         """No mode declared: deny all files except plan.md."""

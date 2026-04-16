@@ -48,39 +48,18 @@ class TestChecklistLoading:
             data = json.load(f)
         for phase_name in ("planning", "code_generation", "testing"):
             phase = data[phase_name]
-            assert "tier_min" in phase
+            assert "mode" in phase
             assert "exit_criteria" in phase
             for criterion in phase["exit_criteria"]:
                 assert "id" in criterion
                 assert "check" in criterion
 
-    def test_loads_planning_checklist_for_tier_2(self):
+    def test_all_phases_tied_to_work_mode(self):
+        """After tier removal, every phase runs in work mode only."""
         with open(CHECKLISTS_PATH) as f:
             data = json.load(f)
-        planning = data["planning"]
-        assert planning["tier_min"] <= 2
-        assert len(planning["exit_criteria"]) >= 1
-
-    def test_loads_planning_and_testing_for_tier_3(self):
-        with open(CHECKLISTS_PATH) as f:
-            data = json.load(f)
-        assert data["planning"]["tier_min"] <= 3
-        assert data["code_generation"]["tier_min"] <= 3
-        assert data["testing"]["tier_min"] <= 3
-
-    def test_skips_checklists_for_tier_0(self):
-        with open(CHECKLISTS_PATH) as f:
-            data = json.load(f)
-        # All phase tier_min values should be > 0
-        for phase in data.values():
-            assert phase["tier_min"] > 0
-
-    def test_skips_planning_checklist_for_tier_1(self):
-        with open(CHECKLISTS_PATH) as f:
-            data = json.load(f)
-        assert data["planning"]["tier_min"] > 1
-        # But code_generation should be available for tier 1
-        assert data["code_generation"]["tier_min"] <= 1
+        for phase_name in ("planning", "code_generation", "testing"):
+            assert data[phase_name]["mode"] == "work"
 
 
 # ── C9: Backward context injection ───────────────────────────────────────────

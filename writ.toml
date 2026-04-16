@@ -17,7 +17,8 @@ database = "neo4j"
 [embedding]
 model = "all-MiniLM-L6-v2"
 dimensions = 384
-cache_dir = "~/.cache/writ/models"
+# cache_dir default is ~/.cache/writ/models (see writ/retrieval/embeddings.py).
+# Override with an absolute path, not a tilde literal -- TOML does not expand ~.
 
 [vector]
 backend = "hnswlib"
@@ -30,10 +31,10 @@ url = "http://localhost:6333"
 collection = "writ_rules"
 
 [hnsw]
-cache_dir = "~/.cache/writ/hnsw"
+# cache_dir default is ~/.cache/writ/hnsw (see writ/config.py).
+# get_hnsw_cache_dir() expands ~ on read, but prefer an absolute path here.
 
 [tantivy]
-index_dir = "~/.cache/writ/tantivy"
 fields = ["trigger", "statement", "tags"]
 
 [ranking]

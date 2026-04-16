@@ -20,6 +20,30 @@ app = typer.Typer(
 )
 
 
+@app.command(name="analyze-friction")
+def analyze_friction(
+    log: Path = typer.Option(
+        Path("workflow-friction.log"),
+        help="Path to the friction log. Defaults to ./workflow-friction.log.",
+    ),
+    since: int = typer.Option(0, help="Only include events from the last N days (0 = all)."),
+    top: int = typer.Option(10, help="Cap top-N rankings."),
+    rotate: bool = typer.Option(False, help="Rotate log to .1 if it exceeds 5MB, then exit."),
+) -> None:
+    """Summarize workflow-friction.log: event counts, hook p95s, top rules, gate activity."""
+    from writ.analysis.friction import load_events, summarize, format_report, rotate_if_needed
+
+    if rotate:
+        rotated = rotate_if_needed(log)
+        typer.echo(f"{'rotated' if rotated else 'no rotation needed'}: {log}")
+        return
+
+    events = load_events(log)
+    since_days = since if since > 0 else None
+    summary = summarize(events, top=top, since_days=since_days)
+    typer.echo(format_report(summary))
+
+
 @app.command()
 def serve(
     port: int = typer.Option(DEFAULT_PORT, help="Port to bind the service to."),
@@ -155,7 +179,13 @@ def add() -> None:
     """Add a new rule to the graph with relationship suggestion and validation."""
     from datetime import date
 
-    from writ.authoring import check_conflicts, check_redundancy, suggest_relationships
+    from writ.authoring import (
+        RuleIdCollisionError,
+        check_conflicts,
+        check_id_collision,
+        check_redundancy,
+        suggest_relationships,
+    )
     from writ.graph.db import Neo4jConnection
     from writ.graph.schema import Rule
     from writ.retrieval.pipeline import build_pipeline
@@ -188,15 +218,27 @@ def add() -> None:
             "last_validated": date.today().isoformat(),
         }
 
-        # INV-6: Validate against schema before any graph write.
-        try:
-            Rule(**rule_data)
-        except Exception as e:
-            typer.echo(f"Validation error: {e}")
-            raise typer.Exit(code=1)
-
         db = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
         try:
+            # ID collision check runs before schema validation so an author
+            # re-using an existing rule_id fails fast without spending time
+            # on the rest of the gate. MERGE in create_rule would silently
+            # update the existing node otherwise.
+            try:
+                await check_id_collision(rule_id, db)
+            except RuleIdCollisionError as e:
+                typer.echo(f"rule_id already exists: {e.rule_id}")
+                typer.echo(f"  existing statement: {e.existing.get('statement', '')[:100]}")
+                typer.echo("Use `writ edit` to modify, or choose a different rule_id.")
+                raise typer.Exit(code=1)
+
+            # INV-6: Validate against schema before any graph write.
+            try:
+                Rule(**rule_data)
+            except Exception as e:
+                typer.echo(f"Validation error: {e}")
+                raise typer.Exit(code=1)
+
             typer.echo("Building pipeline for relationship analysis...")
             pipeline = await build_pipeline(db)
             cache = AdjacencyCache()

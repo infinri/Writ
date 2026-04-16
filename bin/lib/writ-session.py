@@ -41,11 +41,18 @@ def _log_friction_event(session_id: str, mode: str | None, event: str, **extra: 
         pass
 
 
-# Mirrored from writ/retrieval/session.py
-DEFAULT_SESSION_BUDGET = 8000
-APPROX_TOKENS_PER_RULE_FULL = 200
-APPROX_TOKENS_PER_RULE_STANDARD = 120
-APPROX_TOKENS_PER_RULE_SUMMARY = 40
+# Per ARCH-DRY-001: budget constants load from the canonical JSON shared with
+# writ/retrieval/session.py. Single source of truth. stdlib only.
+_BUDGET_JSON = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "writ", "shared", "budget.json",
+)
+with open(_BUDGET_JSON) as _budget_file:
+    _budget_data = json.load(_budget_file)
+DEFAULT_SESSION_BUDGET = _budget_data["default_budget"]
+APPROX_TOKENS_PER_RULE_FULL = _budget_data["rule_cost_full"]
+APPROX_TOKENS_PER_RULE_STANDARD = _budget_data["rule_cost_standard"]
+APPROX_TOKENS_PER_RULE_SUMMARY = _budget_data["rule_cost_summary"]
 
 CACHE_DIR = os.environ.get("WRIT_CACHE_DIR", tempfile.gettempdir())
 
@@ -63,7 +70,7 @@ def _read_cache(session_id: str) -> dict:
         "context_percent": 0,
         "queries": 0,
         "mode": None,
-        "tier": None,
+        "is_subagent": False,
         "files_written": [],
         "analysis_results": {},
         "feedback_sent": [],
@@ -84,7 +91,7 @@ def _read_cache(session_id: str) -> dict:
         with open(path) as f:
             data = json.load(f)
         data.setdefault("mode", None)
-        data.setdefault("tier", None)
+        data.setdefault("is_subagent", False)
         data.setdefault("files_written", [])
         data.setdefault("analysis_results", {})
         data.setdefault("feedback_sent", [])
@@ -205,13 +212,24 @@ def cmd_update(session_id: str, args: list[str]) -> None:
     _write_cache(session_id, cache)
 
 
-def cmd_should_skip(session_id: str, threshold: int = 75) -> None:
+def cmd_should_skip(session_id: str, threshold: int = 75) -> bool:
+    """Return True if the caller should skip its RAG query.
+
+    Sub-agents (is_subagent=True) are NEVER skipped by this check — they get
+    unlimited rule injection budget. Master sessions honor both budget and
+    context-pressure thresholds.
+
+    Returns a bool for programmatic callers; when invoked from the shell
+    dispatcher, the bool is translated into exit codes (0 = skip, 1 = proceed).
+    """
     cache = _read_cache(session_id)
+    if cache.get("is_subagent"):
+        return False  # sub-agents: unlimited budget, never skip
     if cache["remaining_budget"] <= 0:
-        sys.exit(0)  # skip: budget exhausted
+        return True  # skip: budget exhausted
     if cache["context_percent"] >= threshold:
-        sys.exit(0)  # skip: context pressure
-    sys.exit(1)  # don't skip: proceed with query
+        return True  # skip: context pressure
+    return False  # proceed
 
 
 def _estimate_cost(rules: list[dict], mode: str) -> int:
@@ -733,8 +751,6 @@ def cmd_pending_violations(session_id: str) -> None:
     sys.stdout.write("\n")
 
 
-VALID_TIERS = {0, 1, 2, 3}
-
 # ---------------------------------------------------------------------------
 # v2: mode-based workflow
 # ---------------------------------------------------------------------------
@@ -747,11 +763,6 @@ _PHASE_AFTER_GATE_WORK = {
     "phase-a": "testing",
     "test-skeletons": "implementation",
 }
-
-# Tier facade: maps tier numbers to modes for backward compatibility
-_TIER_TO_MODE = {0: "conversation", 1: "work", 2: "work", 3: "work"}
-_MODE_TO_TIER = {"conversation": 0, "debug": 0, "review": 0, "work": 2}
-
 
 def _initial_phase_for_mode(mode: str | None) -> str | None:
     if mode == "work":
@@ -778,13 +789,12 @@ def _next_pending_gate(cache: dict) -> str | None:
 
 
 def _mode_set(session_id: str, mode: str, is_orchestrator: bool = False) -> None:
-    """Set mode with fresh state. Internal -- called by cmd_mode and tier facade."""
+    """Set mode with fresh state. Internal -- called by cmd_mode."""
     cache = _read_cache(session_id)
     old_mode = cache.get("mode")
     old_phase = cache.get("current_phase")
 
     cache["mode"] = mode
-    cache["tier"] = _MODE_TO_TIER.get(mode)
     if is_orchestrator:
         cache["is_orchestrator"] = True
 
@@ -846,7 +856,6 @@ def _mode_switch(session_id: str, mode: str) -> None:
         new_phase = None
 
     cache["mode"] = mode
-    cache["tier"] = _MODE_TO_TIER.get(mode)
 
     # Audit trail -- collapse restore into single event, skip no-ops
     if restored:
@@ -902,40 +911,6 @@ def cmd_mode(session_id: str, subcmd: str, value: str | None = None, is_orchestr
     else:
         _mode_switch(session_id, mode)
         sys.stdout.write(f"switch: {mode}\n")
-
-
-def cmd_tier(session_id: str, subcmd: str, value_str: str | None = None) -> None:
-    """Tier facade -- maps tier numbers to modes for hook backward compatibility."""
-    if subcmd == "get":
-        cache = _read_cache(session_id)
-        mode = cache.get("mode")
-        if mode is not None:
-            tier_num = _MODE_TO_TIER.get(mode, 0)
-            sys.stdout.write(str(tier_num))
-        sys.stdout.write("\n")
-        return
-
-    if subcmd != "set":
-        print(f"Unknown tier subcommand: {subcmd}", file=sys.stderr)
-        sys.exit(2)
-
-    if value_str is None:
-        print("Usage: writ-session.py tier set <0-3> <session_id>", file=sys.stderr)
-        sys.exit(2)
-
-    try:
-        new_tier = int(value_str)
-    except ValueError:
-        print(f"Invalid tier value: {value_str} (must be 0-3)", file=sys.stderr)
-        sys.exit(1)
-
-    if new_tier not in VALID_TIERS:
-        print(f"Invalid tier value: {new_tier} (must be 0-3)", file=sys.stderr)
-        sys.exit(1)
-
-    mode = _TIER_TO_MODE[new_tier]
-    _mode_set(session_id, mode)
-    sys.stdout.write(f"set: {new_tier}\n")
 
 
 # ---------------------------------------------------------------------------
@@ -1219,7 +1194,7 @@ def _validate_phase_a(project_root: str, session_id: str = "") -> str | None:
                 hallucinated = cited_ids - loaded_ids
                 if hallucinated:
                     _log_friction_event(
-                        session_id, cache.get("tier"),
+                        session_id, cache.get("mode"),
                         "hallucinated_rule_ids",
                         cited=sorted(cited_ids),
                         loaded=sorted(loaded_ids),
@@ -1881,7 +1856,7 @@ def cmd_metrics(log_path: str = "") -> None:
 def main() -> None:
     if len(sys.argv) < 2:
         print("Usage: writ-session.py <command> [args]", file=sys.stderr)
-        print("Commands: read, update, format, should-skip, mode, tier, coverage, auto-feedback, can-write, advance-phase, current-phase, detect-compaction, metrics", file=sys.stderr)
+        print("Commands: read, update, format, should-skip, mode, coverage, auto-feedback, can-write, advance-phase, current-phase, detect-compaction, metrics", file=sys.stderr)
         sys.exit(2)
 
     cmd = sys.argv[1]
@@ -1910,7 +1885,8 @@ def main() -> None:
             idx = sys.argv.index("--threshold")
             if idx + 1 < len(sys.argv):
                 threshold = int(sys.argv[idx + 1])
-        cmd_should_skip(sys.argv[2], threshold)
+        # Translate bool return to shell exit code: True=skip (0), False=proceed (1)
+        sys.exit(0 if cmd_should_skip(sys.argv[2], threshold) else 1)
 
     elif cmd == "coverage":
         if len(sys.argv) < 3:
@@ -1933,22 +1909,6 @@ def main() -> None:
             cmd_mode(sys.argv[4], subcmd, sys.argv[3], is_orchestrator=orch)
         else:
             print(f"Unknown mode subcommand: {subcmd}", file=sys.stderr)
-            sys.exit(2)
-
-    elif cmd == "tier":
-        if len(sys.argv) < 4:
-            print("Usage: writ-session.py tier <get|set> <session_id|value> [session_id]", file=sys.stderr)
-            sys.exit(2)
-        subcmd = sys.argv[2]
-        if subcmd == "get":
-            cmd_tier(sys.argv[3], "get")
-        elif subcmd == "set":
-            if len(sys.argv) < 5:
-                print("Usage: writ-session.py tier set <0-3> <session_id>", file=sys.stderr)
-                sys.exit(2)
-            cmd_tier(sys.argv[4], "set", sys.argv[3])
-        else:
-            print(f"Unknown tier subcommand: {subcmd}", file=sys.stderr)
             sys.exit(2)
 
     elif cmd == "auto-feedback":

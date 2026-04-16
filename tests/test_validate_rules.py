@@ -143,12 +143,6 @@ class TestPhaseBoundaryDetection:
         cache = read_cache(session_id)
         assert len(cache["files_written"]) == 2
 
-    def test_warning_mode_when_no_plan_exists(self, session_id):
-        """Missing plan.md keeps system in warning mode (Tier 1 behavior)."""
-        run_session(["tier", "set", "1", session_id])
-        cache = read_cache(session_id)
-        assert cache["tier"] == 1
-
     def test_boundary_scans_all_written_files(self, session_id):
         """Phase-boundary mode should check every file in files_written."""
         setup_session_with_rules(session_id, [])

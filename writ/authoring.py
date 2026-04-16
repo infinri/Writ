@@ -12,12 +12,42 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from writ.graph.db import Neo4jConnection
     from writ.retrieval.pipeline import RetrievalPipeline
     from writ.retrieval.traversal import AdjacencyCache
 
 from writ.graph.schema import REDUNDANCY_SIMILARITY_THRESHOLD as REDUNDANCY_THRESHOLD
 
 SUGGESTION_LIMIT = 5
+
+
+class RuleIdCollisionError(Exception):
+    """Raised when a rule_id already exists in the graph.
+
+    Neo4j's MERGE would silently update an existing node, so the authoring
+    pipeline needs an explicit pre-check. The existing rule payload is
+    attached so callers can surface a useful diff to the user.
+    """
+
+    def __init__(self, rule_id: str, existing: dict) -> None:
+        super().__init__(f"rule_id already exists in graph: {rule_id}")
+        self.rule_id = rule_id
+        self.existing = existing
+
+
+async def check_id_collision(
+    rule_id: str,
+    db: Neo4jConnection,
+) -> None:
+    """Fail fast if `rule_id` already exists in Neo4j.
+
+    Runs `MATCH (r:Rule {rule_id: $id}) RETURN r`. Raises
+    `RuleIdCollisionError` on a hit. Call before schema validation in the
+    `writ add` gate so authors cannot clobber an existing rule via MERGE.
+    """
+    existing = await db.get_rule(rule_id)
+    if existing is not None:
+        raise RuleIdCollisionError(rule_id, existing)
 
 
 def suggest_relationships(
