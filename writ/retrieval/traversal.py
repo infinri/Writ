@@ -33,13 +33,29 @@ class AdjacencyCache:
     async def build_from_db(self, db: GraphConnection) -> int:
         """Load all edges from Neo4j into memory.
 
-        Returns the number of rules with at least one neighbor.
+        Phase 1 expansion: matches any labeled node (Rule, Skill, Playbook,
+        AntiPattern, etc.) so methodology edges surface during Stage 4
+        enrichment. Cache key is the node's primary id field value.
+
+        Returns the number of nodes with at least one neighbor.
         """
         start = time.perf_counter()
-        # Fetch all edges in a single query.
+        # Accept any label; project the primary id via coalesce across all
+        # known id fields. This handles the Phase 1 methodology labels without
+        # requiring a label-per-query Cypher expansion.
         query = """
-            MATCH (a:Rule)-[r]->(b:Rule)
-            RETURN a.rule_id AS source, type(r) AS edge_type, b.rule_id AS target
+            MATCH (a)-[r]->(b)
+            WITH a, r, b,
+                 coalesce(a.rule_id, a.skill_id, a.playbook_id, a.technique_id,
+                          a.antipattern_id, a.forbidden_id, a.phase_id,
+                          a.rationalization_id, a.scenario_id, a.example_id,
+                          a.role_id) AS src_id,
+                 coalesce(b.rule_id, b.skill_id, b.playbook_id, b.technique_id,
+                          b.antipattern_id, b.forbidden_id, b.phase_id,
+                          b.rationalization_id, b.scenario_id, b.example_id,
+                          b.role_id) AS tgt_id
+            WHERE src_id IS NOT NULL AND tgt_id IS NOT NULL
+            RETURN src_id AS source, type(r) AS edge_type, tgt_id AS target
         """
         async with db._driver.session(database=db._database) as session:
             result = await session.run(query)
@@ -72,6 +88,28 @@ class AdjacencyCache:
     def get_enrichment(self, rule_ids: list[str]) -> dict[str, list[dict]]:
         """For each candidate rule_id, return its neighbors from cache."""
         return {rid: self.get_neighbors(rid) for rid in rule_ids}
+
+    def get_bundle(self, rule_id: str, max_depth: int = 2) -> set[str]:
+        """Return all node IDs reachable within max_depth hops, including the seed.
+
+        Phase 1 addition per plan Section 3.1: methodology edges (TEACHES, GATES,
+        COUNTERS, PRESSURE_TESTS, CONTAINS, ATTACHED_TO, DISPATCHES, DEMONSTRATES)
+        form multi-hop rationalization-counter chains. 2-hop is the default
+        because a Playbook→AntiPattern→Skill pattern needs depth 2 to traverse.
+        """
+        bundle = {rule_id}
+        frontier = {rule_id}
+        for _ in range(max_depth):
+            nxt: set[str] = set()
+            for nid in frontier:
+                for neighbor in self._neighbors.get(nid, []):
+                    if neighbor["rule_id"] not in bundle:
+                        bundle.add(neighbor["rule_id"])
+                        nxt.add(neighbor["rule_id"])
+            frontier = nxt
+            if not frontier:
+                break
+        return bundle
 
     @property
     def build_time_ms(self) -> float:

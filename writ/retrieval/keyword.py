@@ -44,6 +44,10 @@ class KeywordIndex:
         schema_builder.add_text_field("trigger", stored=True)
         schema_builder.add_text_field("statement", stored=True)
         schema_builder.add_text_field("tags", stored=True)
+        # Phase 1 addition per plan Section 3.2: body indexed at 0.5x effective
+        # weight via every-other-token dilution (applied at build time). Empty
+        # for existing 80 coding rules, populated for methodology content.
+        schema_builder.add_text_field("body", stored=True)
         self._schema = schema_builder.build()
 
         if index_dir is not None:
@@ -67,11 +71,18 @@ class KeywordIndex:
             # Boost trigger field by repeating text to increase term frequency.
             trigger_text = rule.get("trigger", "")
             boosted_trigger = " ".join([trigger_text] * int(self._trigger_boost))
+            # 0.5x weight on body via every-other-token dilution. Matches the
+            # Phase 0 MethodologyIndex convention; empty string for rules that
+            # don't populate body (the existing 80 coding rules).
+            body_text = rule.get("body", "") or ""
+            body_tokens = body_text.split()
+            body_halved = " ".join(body_tokens[::2]) if body_tokens else ""
             writer.add_document(tantivy.Document(
                 rule_id=rule["rule_id"],
                 trigger=boosted_trigger,
                 statement=rule.get("statement", ""),
                 tags=rule.get("tags", ""),
+                body=body_halved,
             ))
             count += 1
         writer.commit()
@@ -89,7 +100,7 @@ class KeywordIndex:
         if not sanitized:
             return []
         try:
-            query = self._index.parse_query(sanitized, ["trigger", "statement", "tags"])
+            query = self._index.parse_query(sanitized, ["trigger", "statement", "tags", "body"])
         except ValueError:
             # Tantivy rejects some patterns we can't anticipate (range queries,
             # malformed boolean expressions). Fall back to empty results --

@@ -610,6 +610,136 @@ async def session_reset_after_compaction(session_id: str) -> dict[str, Any]:
     return result
 
 
+# --- Phase 1: session endpoints for playbook/verification/quality state (deliverable 6) ---
+
+
+@app.get("/session/{session_id}/active-playbook")
+async def session_active_playbook_get(session_id: str) -> dict[str, Any]:
+    """Read the session's active playbook + phase + history."""
+
+    def _read() -> dict[str, Any]:
+        cache = writ_session._read_cache(session_id)
+        return {
+            "active_playbook": cache.get("active_playbook"),
+            "active_phase": cache.get("active_phase"),
+            "playbook_phase_history": cache.get("playbook_phase_history", []),
+        }
+
+    return await asyncio.to_thread(_read)
+
+
+@app.post("/session/{session_id}/active-playbook")
+async def session_active_playbook_set(session_id: str, body: dict) -> dict[str, Any]:
+    """Set active playbook and phase. body: {playbook_id, phase_id}.
+
+    Appends the prior (playbook, phase) pair to history for audit trail.
+    """
+
+    def _set() -> dict[str, Any]:
+        cache = writ_session._read_cache(session_id)
+        prev = (cache.get("active_playbook"), cache.get("active_phase"))
+        if prev[0] is not None:
+            history = list(cache.get("playbook_phase_history", []))
+            history.append({"playbook": prev[0], "phase": prev[1],
+                            "ts": datetime.now().isoformat()})
+            cache["playbook_phase_history"] = history
+        cache["active_playbook"] = body.get("playbook_id")
+        cache["active_phase"] = body.get("phase_id")
+        writ_session._write_cache(session_id, cache)
+        return {"ok": True, "active_playbook": cache["active_playbook"], "active_phase": cache["active_phase"]}
+
+    return await asyncio.to_thread(_set)
+
+
+@app.post("/session/{session_id}/verification-evidence")
+async def session_verification_evidence_set(session_id: str, body: dict) -> dict[str, Any]:
+    """Record verification evidence for a completion claim.
+
+    body: {todo_id: str, command: str, output_excerpt: str, exit_code: int}
+    Gate 5 Tier 1 reads this to unblock TodoWrite completion claims.
+    """
+
+    def _set() -> dict[str, Any]:
+        cache = writ_session._read_cache(session_id)
+        evidence = dict(cache.get("verification_evidence") or {})
+        todo_id = body.get("todo_id")
+        if not todo_id:
+            return {"ok": False, "error": "todo_id required"}
+        evidence[todo_id] = {
+            "command": body.get("command", ""),
+            "output_excerpt": body.get("output_excerpt", ""),
+            "exit_code": body.get("exit_code", 0),
+            "recorded_at": datetime.now().isoformat(),
+        }
+        cache["verification_evidence"] = evidence
+        writ_session._write_cache(session_id, cache)
+        return {"ok": True, "todo_id": todo_id}
+
+    return await asyncio.to_thread(_set)
+
+
+@app.get("/session/{session_id}/verification-evidence")
+async def session_verification_evidence_get(session_id: str, todo_id: str | None = None) -> dict[str, Any]:
+    """Read verification evidence. Pass ?todo_id=X for a single entry, omit for all."""
+
+    def _read() -> dict[str, Any]:
+        cache = writ_session._read_cache(session_id)
+        evidence = cache.get("verification_evidence") or {}
+        if todo_id:
+            return {"todo_id": todo_id, "evidence": evidence.get(todo_id)}
+        return {"evidence": evidence}
+
+    return await asyncio.to_thread(_read)
+
+
+@app.post("/session/{session_id}/quality-judgment")
+async def session_quality_judgment_set(session_id: str, body: dict) -> dict[str, Any]:
+    """Record a Gate 5 Tier 2 (Haiku judge) quality score for an artifact.
+
+    body: {artifact_path: str, score: int (0-5), failing_section: str|None,
+           rationale: str, overridden: bool}
+    """
+
+    def _set() -> dict[str, Any]:
+        cache = writ_session._read_cache(session_id)
+        judgments = dict(cache.get("quality_judgment_state") or {})
+        path = body.get("artifact_path")
+        if not path:
+            return {"ok": False, "error": "artifact_path required"}
+        score = int(body.get("score", 0))
+        judgments[path] = {
+            "score": score,
+            "failing_section": body.get("failing_section"),
+            "rationale": body.get("rationale", ""),
+            "overridden": bool(body.get("overridden", False)),
+            "recorded_at": datetime.now().isoformat(),
+        }
+        cache["quality_judgment_state"] = judgments
+        if body.get("overridden"):
+            cache["quality_override_count"] = int(cache.get("quality_override_count", 0)) + 1
+        writ_session._write_cache(session_id, cache)
+        return {
+            "ok": True, "artifact_path": path, "score": score,
+            "override_count": cache.get("quality_override_count", 0),
+        }
+
+    return await asyncio.to_thread(_set)
+
+
+@app.get("/session/{session_id}/quality-judgment")
+async def session_quality_judgment_get(session_id: str) -> dict[str, Any]:
+    """Read all quality judgments plus the override count for the session."""
+
+    def _read() -> dict[str, Any]:
+        cache = writ_session._read_cache(session_id)
+        return {
+            "judgments": cache.get("quality_judgment_state") or {},
+            "override_count": cache.get("quality_override_count", 0),
+        }
+
+    return await asyncio.to_thread(_read)
+
+
 @app.post("/pre-write-check")
 async def pre_write_check(request: PreWriteCheckRequest) -> dict[str, Any]:
     """Combined gate check + final-gate check + RAG query for Write/Edit.
