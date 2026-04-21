@@ -4,6 +4,7 @@ _Dated 2026-04-21. Supersedes v1 and v2. Reflects nine accumulated items establi
 
 ## How to read this document
 
+- **Section 0:** preconditions and source pin — operational preamble that must hold before any phase starts.
 - **Sections 1-4:** why we are doing this — strategic context, design philosophy, architecture overview, review-shaped decisions.
 - **Sections 5-11:** what to build, in what order, with release-blocker gates per phase.
 - **Sections 12-18:** appendices — content map, token-budget math, embedding evaluation protocol, artifact-quality gate specifications, scope-boundary appendix, ENF-* audit protocol, open decisions.
@@ -19,6 +20,59 @@ _Dated 2026-04-21. Supersedes v1 and v2. Reflects nine accumulated items establi
 **Timeline:** 15 focused weeks, 6 phases. Every phase gated on concrete measurements; failures halt the phase instead of sailing past.
 
 **Minimum viable fallback:** if methodology retrieval fails Gate 2 after mitigations, Scope A (enforcement-only with new process rules) ships at week 7-8; methodology content (Scope B) waits until retrieval quality is proven or is permanently deferred. The worst case is documented, not theoretical.
+
+---
+
+## Section 0 — Preconditions and source pin
+
+Operational preamble. Every item here must hold before Phase 0 drafting starts, and several items are one-time decisions that persist through all six phases. This section is the closed-loop half of the plan — the why/what lives in Sections 1-18, the "is the floor solid" lives here.
+
+### 0.1 Source pin
+
+**All content extraction references Superpowers at version `5.0.7`, commit `b557648` (2026-04-16, message: "formatting"). Content changes in later releases are not absorbed unless the pin is explicitly bumped and the affected nodes re-evaluated.**
+
+This pin is load-bearing: if Superpowers ships a 5.1 or 6.0 during absorption, Writ's content is still sourced from `b557648`. Bumping the pin is a discrete decision (new commit, re-run of Phase 0 sanity checks on changed nodes), not an implicit drift.
+
+`~/workspaces/superpowers/` is the working location of the pinned tree during development. Treat it as **read-only reference** — never write back, never symlink, never import code from it. After Phase 5, deleting the directory must leave Writ fully functional. That self-containment is the litmus test for absorption completion.
+
+### 0.2 Attribution schema
+
+`source_attribution: str | None = None` on every absorbed node. Format: `"superpowers@5.0.7"`.
+
+Reserved sibling field: `source_commit: str | None = None`. Not populated in Phase 1 schema; added to the model so it can be used later without migration if finer-grained provenance becomes necessary.
+
+Attribution is metadata. Writ never dereferences it at runtime, test time, or CI time. It exists for credit, license tracking, and future re-absorption decisions.
+
+### 0.3 Preconditions
+
+Before Phase 0 drafting begins, and verified at every phase transition:
+
+- **Git hygiene:** work happens on a non-main branch (`phase-0-validation` through Phase 0). Branch-per-phase for subsequent phases. No direct commits to main.
+- **Test baseline captured:** `pytest` green, count recorded in `docs/phase-N-report.md`. Failures triaged to root cause before the phase begins, never pushed through.
+- **`bible/` backup present:** `bible.bak.<YYYYMMDD>` created before any ingest/migration work. Backup is not deleted during implementation.
+- **Feature flag off:** `enforcement.superpowers_absorb.enabled = false` in `writ.toml`. Stays false throughout all six phases. Flipping it on is a post-Phase-5 human decision, not an implementation step.
+- **Neo4j reachable:** `bolt://localhost:7687` accepts connections; HTTP `:7474` returns 200.
+- **`writ serve` healthy:** `/health` returns 200; `writ status` shows `index_state: warm` and expected `rule_count`.
+- **Superpowers tree at pinned commit:** `cd ~/workspaces/superpowers && git rev-parse HEAD` equals `b557648`. If HEAD has drifted, reset to pin before extracting.
+
+### 0.4 Resolved Section 18 decisions
+
+Items 1-4 resolved before Phase 2 start; items 5-6 defer to Phase 5:
+
+1. **Mandatory rules in non-work modes: NO.** Hooks enforcing ENF-PROC-* rules check `session.mode == "work"` and skip otherwise. Rules remain retrievable for citation in review/debug/conversation modes; they do not mechanically gate writes outside Work.
+2. **Prototype mode trigger: MANUAL ONLY.** `session.mode == "prototype"` entered by explicit user declaration. No keyword auto-detection from prompt text.
+3. **Always-on cap raised to 5,000 tokens (pre-emptive ceiling), replacing the universal 800 + work 1,500 + debug 600 decomposition.** Actual usage stays near current ~1,190 tokens. The 5k headroom prevents retroactive-audit-discovered mandatory rules from forcing scope demotion.
+4. **Quality-judge override threshold: 3 per session.** Fourth `--override-quality-judge` invocation writes a marker to `workflow-friction.log` for monthly-review attention. Does not block the override.
+
+Items 5 (N=3 voting criteria) and 6 (per-project config override) are Phase 5 decisions.
+
+### 0.5 Failure-mode policy
+
+Release-blockers halt phases. When a blocker fails, the maintainer writes `docs/phase-{N}-report.md` and escalates. Do not tune parameters in a loop until the number passes. Do not lower thresholds. Do not bypass gates. Gate 2 failure specifically invokes the Scope A fallback documented in Section 5.4 — the worst outcome is documented, not "kept iterating past the escalation point."
+
+### 0.6 Scope guardrails
+
+The plan is the scope. Do not add helpful-seeming extras, unrelated refactors, "future flexibility" abstractions, or dependency upgrades beyond what a phase requires. Ambiguity is resolved by flagging and asking, not by inference. Phase work lands as PR-per-phase, never as one monolithic PR.
 
 ---
 

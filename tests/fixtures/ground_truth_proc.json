@@ -1,0 +1,476 @@
+{
+  "_instructions": "Methodology ground-truth queries for Writ Phase 0 retrieval benchmark. Curated from ground_truth_proc.candidates.json via ground_truth_proc.curation-proposal.json on 2026-04-21. 40 queries, 7 with primary-expected relabels per maintainer approval. Source pin: superpowers@5.0.7 commit b557648.",
+  "_status": "signed-off",
+  "_source_pin": "superpowers@5.0.7 commit b557648",
+  "_curation_date": "2026-04-21",
+  "_curation_summary": {
+    "total": 40,
+    "kept_as_is": 33,
+    "relabeled_primary": 7,
+    "discarded": 0,
+    "rewritten": 0
+  },
+  "_node_id_legend": {
+    "SKL-PROC-*": "Skill (retrievable)",
+    "PBK-PROC-*": "Playbook (retrievable)",
+    "TEC-PROC-*": "Technique (retrievable)",
+    "ANT-PROC-*": "AntiPattern (retrievable)",
+    "FRB-COMMS-*": "ForbiddenResponse (retrievable, always-on)",
+    "ENF-PROC-*": "Rule with mechanical enforcement path (retrievable)",
+    "ENF-COMMS-*": "Rule, advisory severity (retrievable)",
+    "META-AUTH-*": "Rule about skill authoring (retrievable)"
+  },
+  "_set_legend": {
+    "direct": "Agent-natural query that directly names the skill/concept.",
+    "rationalization": "Agent excuse the methodology explicitly counters.",
+    "red_flag": "Phrase that signals the skill is being violated.",
+    "forbidden": "Phrase the agent must never utter (FRB-COMMS territory).",
+    "anti_pattern": "Named failure mode the methodology warns against.",
+    "cross_skill": "Situation spanning multiple skills' coverage."
+  },
+  "queries": [
+    {
+      "id": "P1",
+      "set": "direct",
+      "query": "should I design this feature before writing code",
+      "expected_node_ids": [
+        "SKL-PROC-BRAIN-001",
+        "PBK-PROC-BRAIN-001",
+        "ENF-PROC-BRAIN-001"
+      ],
+      "rationale": "Direct query about design-before-code discipline; brainstorm skill is primary, playbook expands process, enforcement rule states the hard gate.",
+      "source_trace": "skills/brainstorming/SKILL.md hard gate (lines 12-14)"
+    },
+    {
+      "id": "P2",
+      "set": "rationalization",
+      "query": "this project is too simple to need a design",
+      "expected_node_ids": [
+        "SKL-PROC-BRAIN-001",
+        "ENF-PROC-BRAIN-001",
+        "PBK-PROC-BRAIN-001"
+      ],
+      "rationale": "Canonical rationalization the brainstorming skill explicitly counters. Rationalization-counter on SKL-PROC-BRAIN-001 should win.",
+      "source_trace": "skills/brainstorming/SKILL.md anti-pattern 'This Is Too Simple To Need A Design'"
+    },
+    {
+      "id": "P3",
+      "set": "red_flag",
+      "query": "I've brainstormed enough let me start coding now",
+      "expected_node_ids": [
+        "SKL-PROC-BRAIN-001",
+        "ENF-PROC-BRAIN-001"
+      ],
+      "rationale": "Red-flag thought that indicates skipping the approval gate in brainstorming.",
+      "source_trace": "skills/brainstorming/SKILL.md approval-gate section"
+    },
+    {
+      "id": "P4",
+      "set": "direct",
+      "query": "how do I present visual options when brainstorming a UI feature",
+      "expected_node_ids": [
+        "SKL-PROC-VISUAL-001",
+        "SKL-PROC-BRAIN-001"
+      ],
+      "rationale": "Visual-companion technique is the dedicated skill; brainstorming is parent context.",
+      "source_trace": "skills/brainstorming/visual-companion.md decision tree (lines 5-26)"
+    },
+    {
+      "id": "P5",
+      "set": "direct",
+      "query": "create an implementation plan for this task",
+      "expected_node_ids": [
+        "SKL-PROC-PLAN-001",
+        "PBK-PROC-PLAN-001",
+        "ENF-PROC-PLAN-001"
+      ],
+      "rationale": "Direct intent to author a plan. Skill is primary, playbook structures the process, enforcement rule blocks placeholder-laden plans.",
+      "source_trace": "skills/writing-plans/SKILL.md"
+    },
+    {
+      "id": "P6",
+      "set": "rationalization",
+      "query": "I'll just put TBD in step 3 and fill it in later",
+      "expected_node_ids": [
+        "SKL-PROC-PLAN-001",
+        "ENF-PROC-PLAN-001"
+      ],
+      "rationale": "Placeholder rationalization; writing-plans explicitly forbids TBD/TODO/'fill in later'. Plan quality gate (Tier 1) should also surface on this trigger.",
+      "source_trace": "skills/writing-plans/SKILL.md no-placeholders section (lines 106-114)"
+    },
+    {
+      "id": "P7",
+      "set": "rationalization",
+      "query": "step 4 is similar to step 2 I don't need to spell it out",
+      "expected_node_ids": [
+        "SKL-PROC-PLAN-001",
+        "ENF-PROC-PLAN-001"
+      ],
+      "rationale": "Plan-authoring rationalization; 'Similar to Task N' is an explicit blocklist item in writing-plans.",
+      "source_trace": "skills/writing-plans/SKILL.md forbidden phrases list"
+    },
+    {
+      "id": "P8",
+      "set": "direct",
+      "query": "how do I execute an approved plan task by task",
+      "expected_node_ids": [
+        "SKL-PROC-EXEC-001",
+        "PBK-PROC-SDD-001"
+      ],
+      "rationale": "Execution skill is primary; SDD playbook is the canonical multi-task execution protocol.",
+      "source_trace": "skills/executing-plans/SKILL.md"
+    },
+    {
+      "id": "P9",
+      "set": "red_flag",
+      "query": "hit a blocker mid-task should I just work around it",
+      "expected_node_ids": [
+        "SKL-PROC-EXEC-001"
+      ],
+      "rationale": "Execution skill says STOP and ask on blockers; rationalizing around them is the red flag.",
+      "source_trace": "skills/executing-plans/SKILL.md blocker handling"
+    },
+    {
+      "id": "P10",
+      "set": "direct",
+      "query": "use subagents to split up this implementation",
+      "expected_node_ids": [
+        "PBK-PROC-SDD-001",
+        "ENF-PROC-SDD-001"
+      ],
+      "rationale": "Direct subagent-driven-development invocation.",
+      "source_trace": "skills/subagent-driven-development/SKILL.md"
+    },
+    {
+      "id": "P11",
+      "set": "direct",
+      "query": "which review comes first spec compliance or code quality",
+      "expected_node_ids": [
+        "PBK-PROC-SDD-001",
+        "ENF-PROC-SDD-001"
+      ],
+      "rationale": "Two-stage review ordering is a load-bearing rule in SDD (spec first, then code quality). Ordering enforcement is mandatory.",
+      "source_trace": "skills/subagent-driven-development/SKILL.md two-stage review (line 247)"
+    },
+    {
+      "id": "P12",
+      "set": "rationalization",
+      "query": "self-review by the implementer should be enough skip the reviewer subagent",
+      "expected_node_ids": [
+        "PBK-PROC-SDD-001",
+        "ENF-PROC-SDD-001"
+      ],
+      "rationale": "Classic SDD rationalization; skill explicitly rejects self-review-as-substitute.",
+      "source_trace": "skills/subagent-driven-development/SKILL.md rationalizations section"
+    },
+    {
+      "id": "P13",
+      "set": "cross_skill",
+      "query": "implementer subagent reported success can I move on",
+      "expected_node_ids": [
+        "ANT-PROC-VERIFY-001",
+        "PBK-PROC-SDD-001",
+        "SKL-PROC-VERIFY-001"
+      ],
+      "rationale": "SDD says verify independently, not trust success reports; verification skill enforces fresh-evidence claim discipline. Crosses two skills.",
+      "source_trace": "skills/subagent-driven-development/SKILL.md + skills/verification-before-completion/SKILL.md"
+    },
+    {
+      "id": "P14",
+      "set": "direct",
+      "query": "should I write the test first or the code first",
+      "expected_node_ids": [
+        "PBK-PROC-TDD-001",
+        "ENF-PROC-TDD-001"
+      ],
+      "rationale": "Direct TDD-vs-not query; RED-GREEN-REFACTOR playbook is the canonical answer.",
+      "source_trace": "skills/test-driven-development/SKILL.md"
+    },
+    {
+      "id": "P15",
+      "set": "rationalization",
+      "query": "I already manually tested it adding unit tests later is the same",
+      "expected_node_ids": [
+        "ANT-PROC-TDD-005",
+        "PBK-PROC-TDD-001",
+        "ENF-PROC-TDD-001"
+      ],
+      "rationale": "Canonical TDD rationalization; skill lists this verbatim as a red-flag thought.",
+      "source_trace": "skills/test-driven-development/SKILL.md rationalizations"
+    },
+    {
+      "id": "P16",
+      "set": "anti_pattern",
+      "query": "my test passed the first time I ran it",
+      "expected_node_ids": [
+        "ANT-PROC-TDD-001",
+        "PBK-PROC-TDD-001"
+      ],
+      "rationale": "Anti-pattern: didn't watch the test fail, so it isn't testing what you think. Named TDD anti-pattern.",
+      "source_trace": "skills/test-driven-development/SKILL.md + testing-anti-patterns.md"
+    },
+    {
+      "id": "P17",
+      "set": "anti_pattern",
+      "query": "the test mocks the function it's supposed to verify",
+      "expected_node_ids": [
+        "ANT-PROC-TDD-002",
+        "PBK-PROC-TDD-001"
+      ],
+      "rationale": "'Testing the mock' is one of the five TDD anti-patterns in testing-anti-patterns.md.",
+      "source_trace": "skills/test-driven-development/testing-anti-patterns.md"
+    },
+    {
+      "id": "P18",
+      "set": "rationalization",
+      "query": "I already spent four hours on this code deleting to start over is wasteful",
+      "expected_node_ids": [
+        "ANT-PROC-TDD-005",
+        "PBK-PROC-TDD-001",
+        "ENF-PROC-TDD-001"
+      ],
+      "rationale": "Sunk-cost rationalization; TDD skill specifically says delete-means-delete even with hours invested.",
+      "source_trace": "skills/test-driven-development/SKILL.md sunk-cost section"
+    },
+    {
+      "id": "P19",
+      "set": "direct",
+      "query": "I'm about to say the implementation is done",
+      "expected_node_ids": [
+        "SKL-PROC-VERIFY-001",
+        "ENF-PROC-VERIFY-001"
+      ],
+      "rationale": "Direct trigger for verification-before-completion discipline.",
+      "source_trace": "skills/verification-before-completion/SKILL.md"
+    },
+    {
+      "id": "P20",
+      "set": "red_flag",
+      "query": "linter passed so I can mark this complete",
+      "expected_node_ids": [
+        "SKL-PROC-VERIFY-001",
+        "ENF-PROC-VERIFY-001"
+      ],
+      "rationale": "Partial-verification red flag; verification skill requires the actual verification command, not proxies.",
+      "source_trace": "skills/verification-before-completion/SKILL.md partial verification anti-pattern"
+    },
+    {
+      "id": "P21",
+      "set": "forbidden",
+      "query": "should work now",
+      "expected_node_ids": [
+        "FRB-COMMS-002",
+        "SKL-PROC-VERIFY-001",
+        "FRB-COMMS-001"
+      ],
+      "rationale": "Explicit forbidden phrase per verification skill; 'should', 'probably', 'seems' are claim-without-evidence markers.",
+      "source_trace": "skills/verification-before-completion/SKILL.md forbidden responses (lines 42-50)"
+    },
+    {
+      "id": "P22",
+      "set": "direct",
+      "query": "bug keeps reappearing what's the systematic debugging process",
+      "expected_node_ids": [
+        "PBK-PROC-DEBUG-001",
+        "ENF-PROC-DEBUG-001"
+      ],
+      "rationale": "Direct intent; playbook's four-phase process is primary answer.",
+      "source_trace": "skills/systematic-debugging/SKILL.md"
+    },
+    {
+      "id": "P23",
+      "set": "red_flag",
+      "query": "I've tried three fixes already let me try one more",
+      "expected_node_ids": [
+        "PBK-PROC-DEBUG-001"
+      ],
+      "rationale": "3+ fix threshold red flag; skill says question architecture instead of attempting fix #4.",
+      "source_trace": "skills/systematic-debugging/SKILL.md red flags (lines 215-232)"
+    },
+    {
+      "id": "P24",
+      "set": "rationalization",
+      "query": "emergency just try something quickly to fix this",
+      "expected_node_ids": [
+        "PBK-PROC-DEBUG-001"
+      ],
+      "rationale": "Emergency-bypass rationalization; skill says process applies especially under pressure.",
+      "source_trace": "skills/systematic-debugging/SKILL.md rationalizations (lines 245-256)"
+    },
+    {
+      "id": "P25",
+      "set": "direct",
+      "query": "create a git worktree for this feature branch",
+      "expected_node_ids": [
+        "TEC-PROC-WORKTREE-001",
+        "ENF-PROC-WORKTREE-001"
+      ],
+      "rationale": "Direct worktree-creation intent; technique covers directory selection and gitignore safety.",
+      "source_trace": "skills/using-git-worktrees/SKILL.md"
+    },
+    {
+      "id": "P26",
+      "set": "red_flag",
+      "query": "skip the gitignore check I'm sure it's fine",
+      "expected_node_ids": [
+        "TEC-PROC-WORKTREE-001",
+        "ENF-PROC-WORKTREE-001"
+      ],
+      "rationale": "Worktree safety red flag; gitignore verification is mandatory for project-local worktrees.",
+      "source_trace": "skills/using-git-worktrees/SKILL.md safety check (line 64)"
+    },
+    {
+      "id": "P27",
+      "set": "direct",
+      "query": "tests pass what do I do to finish this branch",
+      "expected_node_ids": [
+        "PBK-PROC-FINISH-001"
+      ],
+      "rationale": "Direct 'how to finish' query; playbook presents the 4-options decision tree.",
+      "source_trace": "skills/finishing-a-development-branch/SKILL.md 4-options (lines 153-159)"
+    },
+    {
+      "id": "P28",
+      "set": "anti_pattern",
+      "query": "let me offer the user a custom merge workflow instead of the standard options",
+      "expected_node_ids": [
+        "PBK-PROC-FINISH-001"
+      ],
+      "rationale": "Anti-pattern: non-standard options. Playbook mandates exactly 4 options.",
+      "source_trace": "skills/finishing-a-development-branch/SKILL.md"
+    },
+    {
+      "id": "P29",
+      "set": "direct",
+      "query": "the task is done should I request a code review",
+      "expected_node_ids": [
+        "PBK-PROC-REVREQ-001"
+      ],
+      "rationale": "Direct code-review-dispatch intent; playbook owns the dispatch mechanics.",
+      "source_trace": "skills/requesting-code-review/SKILL.md"
+    },
+    {
+      "id": "P30",
+      "set": "direct",
+      "query": "dispatch the code reviewer subagent with the git SHA",
+      "expected_node_ids": [
+        "PBK-PROC-REVREQ-001"
+      ],
+      "rationale": "Direct subagent dispatch; reviewer role is a bundle member (not retrievable itself but surfaces via playbook bundle).",
+      "source_trace": "skills/requesting-code-review/SKILL.md reviewer template"
+    },
+    {
+      "id": "P31",
+      "set": "forbidden",
+      "query": "you're absolutely right great point let me implement that",
+      "expected_node_ids": [
+        "FRB-COMMS-001",
+        "SKL-PROC-REVRECV-001",
+        "ENF-COMMS-001"
+      ],
+      "rationale": "Canonical forbidden performative-agreement phrase from receiving-code-review. ForbiddenResponse node is always-on.",
+      "source_trace": "skills/receiving-code-review/SKILL.md forbidden responses (lines 27-38)"
+    },
+    {
+      "id": "P32",
+      "set": "rationalization",
+      "query": "external reviewer is authoritative just implement what they said",
+      "expected_node_ids": [
+        "SKL-PROC-REVRECV-001",
+        "ENF-COMMS-001"
+      ],
+      "rationale": "Rationalization counter; skill says verify against codebase, don't blindly implement external review.",
+      "source_trace": "skills/receiving-code-review/SKILL.md"
+    },
+    {
+      "id": "P33",
+      "set": "forbidden",
+      "query": "thanks for the excellent feedback",
+      "expected_node_ids": [
+        "FRB-COMMS-001",
+        "SKL-PROC-REVRECV-001"
+      ],
+      "rationale": "Gratitude-as-agreement forbidden phrase from receiving-code-review.",
+      "source_trace": "skills/receiving-code-review/SKILL.md forbidden responses"
+    },
+    {
+      "id": "P34",
+      "set": "direct",
+      "query": "can I run these independent investigations in parallel",
+      "expected_node_ids": [
+        "SKL-PROC-PARALLEL-001"
+      ],
+      "rationale": "Direct parallel-dispatch intent; skill's decision tree handles independence verification.",
+      "source_trace": "skills/dispatching-parallel-agents/SKILL.md decision tree (lines 17-34)"
+    },
+    {
+      "id": "P35",
+      "set": "anti_pattern",
+      "query": "one agent to fix all the failing tests",
+      "expected_node_ids": [
+        "ANT-PROC-PARALLEL-001",
+        "SKL-PROC-PARALLEL-001"
+      ],
+      "rationale": "Anti-pattern: broad scope per agent. Skill rejects this in favor of one-domain-per-agent.",
+      "source_trace": "skills/dispatching-parallel-agents/SKILL.md"
+    },
+    {
+      "id": "P36",
+      "set": "direct",
+      "query": "I want to author a new skill for this project",
+      "expected_node_ids": [
+        "META-AUTH-001",
+        "PBK-PROC-TDD-001"
+      ],
+      "rationale": "Meta-skill: skill authoring uses TDD-for-docs. Crosses into TDD playbook.",
+      "source_trace": "skills/writing-skills/SKILL.md"
+    },
+    {
+      "id": "P37",
+      "set": "rationalization",
+      "query": "I'll write the skill's description as a workflow summary",
+      "expected_node_ids": [
+        "META-AUTH-001"
+      ],
+      "rationale": "Anti-pattern the writing-skills doc specifically flags; description field is for triggering conditions, not workflow summary.",
+      "source_trace": "skills/writing-skills/SKILL.md description-triggering-conditions (lines 150-157)"
+    },
+    {
+      "id": "P38",
+      "set": "cross_skill",
+      "query": "I'll write the test after I confirm the fix works",
+      "expected_node_ids": [
+        "ANT-PROC-TDD-005",
+        "PBK-PROC-TDD-001",
+        "PBK-PROC-DEBUG-001",
+        "ENF-PROC-TDD-001"
+      ],
+      "rationale": "Crosses TDD (test-first) and systematic-debugging (failing test case before fix in Phase 4). Both should surface.",
+      "source_trace": "skills/test-driven-development/SKILL.md + skills/systematic-debugging/SKILL.md Phase 4"
+    },
+    {
+      "id": "P39",
+      "set": "cross_skill",
+      "query": "this simple task doesn't need a plan or a brainstorm",
+      "expected_node_ids": [
+        "SKL-PROC-BRAIN-001",
+        "SKL-PROC-PLAN-001",
+        "ENF-PROC-BRAIN-001"
+      ],
+      "rationale": "Multi-skill rationalization hitting both brainstorming and writing-plans anti-patterns.",
+      "source_trace": "skills/brainstorming/SKILL.md + skills/writing-plans/SKILL.md"
+    },
+    {
+      "id": "P40",
+      "set": "red_flag",
+      "query": "the subagent said it's done so I can mark complete",
+      "expected_node_ids": [
+        "ANT-PROC-VERIFY-001",
+        "SKL-PROC-VERIFY-001",
+        "PBK-PROC-SDD-001"
+      ],
+      "rationale": "Trusting subagent success reports is called out in both verification and SDD skills.",
+      "source_trace": "skills/verification-before-completion/SKILL.md + skills/subagent-driven-development/SKILL.md"
+    }
+  ]
+}
