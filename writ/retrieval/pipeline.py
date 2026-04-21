@@ -203,13 +203,45 @@ class RetrievalPipeline:
         exclude_rule_ids: list[str] | None = None,
         loaded_rule_ids: list[str] | None = None,
         prefer_rule_ids: list[str] | None = None,
+        retrieval_mode: str = "semantic",
+        node_types: list[str] | None = None,
     ) -> dict:
         """Execute the full 5-stage pipeline.
+
+        retrieval_mode: "semantic" (default) or "literal". Literal mode
+        rebalances BM25 and vector to equal weight, optimizing for exact-phrase
+        / rationalization queries where BM25 carries the distinguishing signal.
+        Semantic mode preserves the vector-dominant tune optimized for ambiguous
+        coding-rule queries. Caller chooses based on query characteristics.
+
+        node_types: optional whitelist of node_types to retrieve (e.g. ["Rule"]
+        for coding-only, ["Skill", "Playbook", "Technique", "AntiPattern",
+        "ForbiddenResponse"] for methodology-only, None for all). Stage 1 filter.
 
         Returns dict with rules, mode, total_candidates, latency_ms.
         """
         start = time.perf_counter()
         exclude = set(exclude_rule_ids or []) | set(loaded_rule_ids or [])
+        # Select ranking weights for this query per retrieval_mode.
+        if retrieval_mode == "literal":
+            active_weights = RankingWeights.literal()
+        else:
+            active_weights = self._weights
+        # Resolve allowed types. Explicit node_types wins. Otherwise:
+        # - semantic mode (default) restricts to coding-rule corpus: {Rule} with
+        #   domain NOT in methodology-domain set (process, communication, meta-authoring).
+        #   This preserves pre-Phase-1 ambiguous-coding MRR as methodology nodes
+        #   enter the graph but do not contaminate default queries.
+        # - literal mode unlocks the full candidate pool (Rule + methodology types).
+        if node_types is not None:
+            allowed_types = set(node_types)
+            methodology_domain_exclude = False
+        elif retrieval_mode == "literal":
+            allowed_types = None
+            methodology_domain_exclude = False
+        else:
+            allowed_types = {"Rule"}
+            methodology_domain_exclude = True
 
         # Stage 1: Domain filter.
         # Applied as post-filter on BM25/vector results since indexes
@@ -223,6 +255,16 @@ class RetrievalPipeline:
                 r for r in bm25_results
                 if self._metadata.get(r["rule_id"], {}).get("domain", "").lower() == domain.lower()
             ]
+        if allowed_types is not None:
+            bm25_results = [
+                r for r in bm25_results
+                if self._metadata.get(r["rule_id"], {}).get("node_type", "Rule") in allowed_types
+            ]
+        if methodology_domain_exclude:
+            bm25_results = [
+                r for r in bm25_results
+                if self._metadata.get(r["rule_id"], {}).get("domain", "").lower() not in {"process", "communication", "meta-authoring"}
+            ]
 
         # Stage 3: ANN vector search.
         query_vector = self._model.encode(query_text).tolist()
@@ -232,6 +274,16 @@ class RetrievalPipeline:
             vector_results = [
                 r for r in vector_results
                 if self._metadata.get(r.rule_id, {}).get("domain", "").lower() == domain.lower()
+            ]
+        if allowed_types is not None:
+            vector_results = [
+                r for r in vector_results
+                if self._metadata.get(r.rule_id, {}).get("node_type", "Rule") in allowed_types
+            ]
+        if methodology_domain_exclude:
+            vector_results = [
+                r for r in vector_results
+                if self._metadata.get(r.rule_id, {}).get("domain", "").lower() not in {"process", "communication", "meta-authoring"}
             ]
 
         # Merge candidates from both stages.
@@ -261,9 +313,10 @@ class RetrievalPipeline:
         enrichment = self._cache.get_enrichment(list(candidate_ids.keys()))
 
         # Stage 5a: First-pass ranking (without graph proximity, INV-4).
-        fp_bm25, fp_vec, fp_sev, fp_conf = self._weights.first_pass_weights()
+        fp_bm25, fp_vec, fp_sev, fp_conf = active_weights.first_pass_weights()
         first_pass_weights = RankingWeights(
-            w_bm25=fp_bm25, w_vector=fp_vec, w_severity=fp_sev, w_confidence=fp_conf, w_graph=0.0,
+            w_bm25=fp_bm25, w_vector=fp_vec, w_severity=fp_sev, w_confidence=fp_conf,
+            w_graph=0.0, w_bundle_cohesion=0.0,
         )
         first_pass_scores: list[tuple[str, float]] = []
         for rid, scores in candidate_ids.items():
@@ -290,7 +343,20 @@ class RetrievalPipeline:
         all_candidate_list = list(candidate_ids.keys())
         proximity = compute_graph_proximity(all_candidate_list, top3_ids, self._cache)
 
-        # Stage 5c: Final ranking with graph proximity.
+        # Stage 5b': Compute bundle cohesion per candidate (plan Section 3.2 deliverable 4).
+        # A candidate gets a bonus proportional to the fraction of its bundle
+        # members (1-hop neighbors) that are also in the top-N first-pass set.
+        top_n_set = set(rid for rid, _ in first_pass_scores[:FIRST_PASS_TOP_N])
+        bundle_cohesion: dict[str, float] = {}
+        for rid in all_candidate_list:
+            neighbors = self._cache.get_neighbors(rid)
+            if not neighbors:
+                bundle_cohesion[rid] = 0.0
+                continue
+            overlap = sum(1 for n in neighbors if n["rule_id"] in top_n_set)
+            bundle_cohesion[rid] = overlap / len(neighbors)
+
+        # Stage 5c: Final ranking with graph proximity + bundle cohesion.
         scored_rules: list[dict] = []
         for rid, scores in candidate_ids.items():
             meta = self._metadata.get(rid, {})
@@ -300,10 +366,12 @@ class RetrievalPipeline:
                 severity=meta.get("severity", "medium"),
                 confidence=meta.get("confidence", "production-validated"),
                 graph_proximity=proximity.get(rid, 0.0),
-                weights=self._weights,
+                bundle_cohesion=bundle_cohesion.get(rid, 0.0),
+                weights=active_weights,
             )
             rule_entry = {
                 "rule_id": rid,
+                "node_type": meta.get("node_type", "Rule"),
                 "score": round(final_score, 4),
                 "authority": meta.get("authority", "human"),
                 "statement": meta.get("statement", ""),
@@ -348,6 +416,38 @@ def _compute_corpus_hash(rule_ids: list[str], vectors: list[list[float]]) -> str
     return hashlib.sha256(digest_input.encode()).hexdigest()
 
 
+def _fold_auxiliary_text_into_body(node: dict, label: str) -> str:
+    """Concatenate type-specific searchable text into body for BM25 surfacing.
+
+    Mirrors the Phase 0 MethodologyIndex._collect_body_text logic so production
+    BM25 matches on the same text the Phase-0 benchmark validated against.
+    """
+    parts: list[str] = []
+    existing_body = node.get("body") or ""
+    if existing_body:
+        parts.append(existing_body)
+    if label == "ForbiddenResponse":
+        # Fields may arrive as JSON strings from Neo4j (since we json.dumps'd
+        # nested structures during ingest) or as native lists.
+        phrases = node.get("forbidden_phrases")
+        if isinstance(phrases, str):
+            try:
+                import json as _json
+                phrases = _json.loads(phrases)
+            except Exception:
+                phrases = [phrases]
+        if isinstance(phrases, list):
+            parts.extend(str(p) for p in phrases)
+        wts = node.get("what_to_say_instead")
+        if wts:
+            parts.append(str(wts))
+    elif label == "AntiPattern":
+        named = node.get("named_in")
+        if named:
+            parts.append(str(named))
+    return " ".join(p for p in parts if p)
+
+
 async def build_pipeline(
     db: Neo4jConnection,
     model_name: str = DEFAULT_EMBEDDING_MODEL,
@@ -361,6 +461,11 @@ async def build_pipeline(
 
     Model selection: ONNX Runtime preferred (no PyTorch dependency).
     Falls back to SentenceTransformer if ONNX model not exported.
+
+    Phase 1: loads Rule + all 5 retrievable methodology node types (Skill,
+    Playbook, Technique, AntiPattern, ForbiddenResponse). Non-retrievable types
+    (Phase, Rationalization, PressureScenario, WorkedExample, SubagentRole)
+    enter Stage 4 via the adjacency cache but do not appear as candidates.
     """
     # Load all non-mandatory rules from Neo4j.
     query = """
@@ -374,16 +479,56 @@ async def build_pipeline(
         async for record in result:
             rules.append(dict(record["r"]))
 
-    # Build metadata lookup.
-    rule_metadata: dict[str, dict] = {r["rule_id"]: r for r in rules}
+    # Load retrievable methodology nodes. Each becomes a candidate alongside Rules.
+    retrievable_methodology_labels = ("Skill", "Playbook", "Technique", "AntiPattern", "ForbiddenResponse")
+    retrievable_id_fields = {
+        "Skill": "skill_id",
+        "Playbook": "playbook_id",
+        "Technique": "technique_id",
+        "AntiPattern": "antipattern_id",
+        "ForbiddenResponse": "forbidden_id",
+    }
+    methodology_nodes: list[dict] = []
+    for label in retrievable_methodology_labels:
+        id_field = retrievable_id_fields[label]
+        q = f"MATCH (n:{label}) RETURN n"
+        async with db._driver.session(database=db._database) as session:
+            result = await session.run(q)
+            async for record in result:
+                node = dict(record["n"])
+                # Normalize: carry both the original id field AND a `rule_id`
+                # alias so BM25/vector stores (keyed on rule_id by convention)
+                # can accept it without schema changes.
+                node_id = node.get(id_field)
+                if not node_id:
+                    continue
+                node["rule_id"] = node_id
+                node["node_type"] = label
+                # Methodology nodes are never "mandatory" in the coding-rule sense;
+                # always_on governs the render path separately.
+                node["mandatory"] = False
+                # Phase 0 MethodologyIndex parity: fold type-specific text fields
+                # into `body` so BM25 surfaces them. Without this, queries matching
+                # a forbidden phrase literal (e.g. "you're absolutely right") miss
+                # the corresponding FRB node because the phrase lives in a list
+                # field, not the default indexed text.
+                node["body"] = _fold_auxiliary_text_into_body(node, label)
+                methodology_nodes.append(node)
 
-    # Build BM25 index (Stage 2).
+    all_candidates = rules + methodology_nodes
+    for r in rules:
+        r.setdefault("node_type", "Rule")
+
+    # Build metadata lookup (keyed by rule_id which now doubles as node_id).
+    rule_metadata: dict[str, dict] = {r["rule_id"]: r for r in all_candidates}
+
+    # Build BM25 index (Stage 2) -- includes methodology body per plan Section 3.2.
     keyword_index = KeywordIndex()
-    keyword_index.build(rules)
+    keyword_index.build(all_candidates)
 
     # Build vector index (Stage 3).
-    texts = [f"{r.get('trigger', '')} {r.get('statement', '')}" for r in rules]
-    rule_ids = [r["rule_id"] for r in rules]
+    texts = [f"{r.get('trigger', '')} {r.get('statement', '')}" for r in all_candidates]
+    rule_ids = [r["rule_id"] for r in all_candidates]
 
     # Auto-detect ONNX model when no model is passed.
     onnx_model = None

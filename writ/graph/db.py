@@ -16,6 +16,53 @@ if TYPE_CHECKING:
     from neo4j import AsyncDriver
 
 
+# --- Phase 1 additions: methodology node labels + expanded edge allowlist ---
+# Per plan Section 3.1 (15 edge types total: 6 existing + 8 new per schema proposal).
+
+METHODOLOGY_NODE_LABELS: frozenset[str] = frozenset({
+    "Skill", "Playbook", "Technique", "AntiPattern", "ForbiddenResponse",
+    "Phase", "Rationalization", "PressureScenario", "WorkedExample", "SubagentRole",
+})
+
+METHODOLOGY_NODE_ID_FIELDS: dict[str, str] = {
+    "Skill": "skill_id",
+    "Playbook": "playbook_id",
+    "Technique": "technique_id",
+    "AntiPattern": "antipattern_id",
+    "ForbiddenResponse": "forbidden_id",
+    "Phase": "phase_id",
+    "Rationalization": "rationalization_id",
+    "PressureScenario": "scenario_id",
+    "WorkedExample": "example_id",
+    "SubagentRole": "role_id",
+}
+
+ALLOWED_EDGE_TYPES: frozenset[str] = frozenset({
+    # Pre-existing
+    "DEPENDS_ON", "PRECEDES", "CONFLICTS_WITH", "SUPPLEMENTS",
+    "SUPERSEDES", "RELATED_TO", "APPLIES_TO", "ABSTRACTS", "JUSTIFIED_BY",
+    # Phase 1 additions per plan Section 3.1
+    "TEACHES", "COUNTERS", "DEMONSTRATES", "DISPATCHES",
+    "GATES", "PRESSURE_TESTS", "CONTAINS", "ATTACHED_TO",
+})
+
+
+def _coerce_neo4j_value(v):
+    """Convert Python objects to Neo4j-compatible property values.
+
+    Dates → ISO strings. Nested dicts → JSON strings (Neo4j doesn't store maps
+    as node properties). Lists of primitives pass through.
+    """
+    import json
+    if hasattr(v, "isoformat"):
+        return v.isoformat()
+    if isinstance(v, dict):
+        return json.dumps(v)
+    if isinstance(v, list) and v and isinstance(v[0], dict):
+        return json.dumps(v)
+    return v
+
+
 class GraphConnection(Protocol):
     """Connection interface for graph database operations.
 
@@ -51,17 +98,18 @@ class Neo4jConnection:
             return dict(record["r"])
 
     async def create_rule(self, rule_data: dict) -> str:
-        """Create or update a Rule node. Idempotent via MERGE on rule_id."""
+        """Create or update a Rule node. Idempotent via MERGE on rule_id.
+
+        Phase 1 Rule carries rationalization_counters (list[dict]) and nested
+        structures that Neo4j can't store natively; _coerce_neo4j_value serializes
+        those to JSON strings.
+        """
         query = """
             MERGE (r:Rule {rule_id: $rule_id})
             SET r += $props
             RETURN r.rule_id AS rule_id
         """
-        props = {k: v for k, v in rule_data.items() if k != "rule_id"}
-        # Convert date objects to ISO strings for Neo4j storage.
-        for key, val in props.items():
-            if hasattr(val, "isoformat"):
-                props[key] = val.isoformat()
+        props = {k: _coerce_neo4j_value(v) for k, v in rule_data.items() if k != "rule_id"}
         async with self._driver.session(database=self._database) as session:
             result = await session.run(
                 query, rule_id=rule_data["rule_id"], props=props
@@ -70,23 +118,58 @@ class Neo4jConnection:
             return record["rule_id"]
 
     async def create_edge(self, edge_type: str, source_id: str, target_id: str) -> None:
-        """Create a typed edge between two Rule nodes. Idempotent via MERGE."""
-        # Per ARCH-CONST-001: edge types are validated against allowed set.
-        allowed = {
-            "DEPENDS_ON", "PRECEDES", "CONFLICTS_WITH", "SUPPLEMENTS",
-            "SUPERSEDES", "RELATED_TO", "APPLIES_TO", "ABSTRACTS", "JUSTIFIED_BY",
-        }
-        if edge_type not in allowed:
+        """Create a typed edge between two nodes. Idempotent via MERGE.
+
+        Source/target nodes are matched by their `<type>_id` property; any node
+        label with the expected property key is eligible (Rule, Skill, Playbook,
+        etc.). This lets Phase 1 methodology edges link across node labels.
+        """
+        if edge_type not in ALLOWED_EDGE_TYPES:
             raise ValueError(f"Unknown edge type: {edge_type}")
-        # Cypher does not support parameterized relationship types,
-        # but edge_type is validated against the allowed set above.
+        # Cypher does not support parameterized relationship types, but edge_type
+        # is validated against the allowed set above. Match any labeled node that
+        # carries a primary-id property matching source_id / target_id.
         query = f"""
-            MATCH (a:Rule {{rule_id: $source_id}})
-            MATCH (b:Rule {{rule_id: $target_id}})
+            MATCH (a) WHERE a.rule_id = $source_id
+                OR a.skill_id = $source_id OR a.playbook_id = $source_id
+                OR a.technique_id = $source_id OR a.antipattern_id = $source_id
+                OR a.forbidden_id = $source_id OR a.phase_id = $source_id
+                OR a.rationalization_id = $source_id OR a.scenario_id = $source_id
+                OR a.example_id = $source_id OR a.role_id = $source_id
+            MATCH (b) WHERE b.rule_id = $target_id
+                OR b.skill_id = $target_id OR b.playbook_id = $target_id
+                OR b.technique_id = $target_id OR b.antipattern_id = $target_id
+                OR b.forbidden_id = $target_id OR b.phase_id = $target_id
+                OR b.rationalization_id = $target_id OR b.scenario_id = $target_id
+                OR b.example_id = $target_id OR b.role_id = $target_id
             MERGE (a)-[:{edge_type}]->(b)
         """
         async with self._driver.session(database=self._database) as session:
             await session.run(query, source_id=source_id, target_id=target_id)
+
+    async def create_methodology_node(self, node_type: str, data: dict) -> str:
+        """Create or update a methodology node (non-Rule type). Idempotent via MERGE.
+
+        node_type is the Pydantic class name (e.g. 'Skill'), which becomes the
+        Neo4j label. data must contain the type-specific primary id field.
+        """
+        if node_type not in METHODOLOGY_NODE_LABELS:
+            raise ValueError(f"Unknown methodology node_type: {node_type}")
+        id_field = METHODOLOGY_NODE_ID_FIELDS[node_type]
+        if id_field not in data:
+            raise ValueError(f"{node_type} data missing required {id_field}")
+        node_id = data[id_field]
+        # Drop id_field from props since it's matched on MERGE.
+        props = {k: _coerce_neo4j_value(v) for k, v in data.items() if k != id_field}
+        query = f"""
+            MERGE (n:{node_type} {{{id_field}: $node_id}})
+            SET n += $props
+            RETURN n.{id_field} AS id
+        """
+        async with self._driver.session(database=self._database) as session:
+            result = await session.run(query, node_id=node_id, props=props)
+            record = await result.single()
+            return record["id"]
 
     async def traverse_neighbors(self, rule_id: str, hops: int = 1) -> list[dict]:
         """Return neighbors within N hops, including edge types.
@@ -231,12 +314,27 @@ class Neo4jConnection:
             }
 
     async def apply_constraints(self) -> None:
-        """Apply uniqueness constraint and performance indexes. Idempotent via IF NOT EXISTS."""
+        """Apply uniqueness constraint and performance indexes. Idempotent via IF NOT EXISTS.
+
+        Includes Phase 1 constraints for all 10 new methodology labels.
+        """
         statements = [
             "CREATE CONSTRAINT rule_id_unique IF NOT EXISTS FOR (r:Rule) REQUIRE r.rule_id IS UNIQUE",
             "CREATE INDEX rule_domain IF NOT EXISTS FOR (r:Rule) ON (r.domain)",
             "CREATE INDEX rule_mandatory IF NOT EXISTS FOR (r:Rule) ON (r.mandatory)",
         ]
+        # Phase 1 uniqueness constraints per methodology label. Each label has its
+        # own *_id primary key per docs/phase-0-schema-proposal.md decision 2.
+        for label, id_field in METHODOLOGY_NODE_ID_FIELDS.items():
+            constraint_name = f"{label.lower()}_{id_field}_unique"
+            statements.append(
+                f"CREATE CONSTRAINT {constraint_name} IF NOT EXISTS "
+                f"FOR (n:{label}) REQUIRE n.{id_field} IS UNIQUE"
+            )
+            statements.append(
+                f"CREATE INDEX {label.lower()}_domain IF NOT EXISTS "
+                f"FOR (n:{label}) ON (n.domain)"
+            )
         async with self._driver.session(database=self._database) as session:
             for stmt in statements:
                 await session.run(stmt)

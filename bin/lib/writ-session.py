@@ -84,6 +84,17 @@ def _read_cache(session_id: str) -> dict:
         "last_injected_rule_ids": [],
         "detected_domain": None,
         "instructions_rule_ids": [],
+        # Phase 1 additions per plan Section 6.1 deliverable 5. Track playbook
+        # execution state for SDD/brainstorm workflows, verification evidence
+        # for Gate 5 Tier 1, review ordering for SDD two-stage review, and
+        # quality-judgment scores for Gate 5 Tier 2 (Haiku judge).
+        "active_playbook": None,
+        "active_phase": None,
+        "playbook_phase_history": [],
+        "review_ordering_state": {},
+        "verification_evidence": {},
+        "quality_judgment_state": {},
+        "quality_override_count": 0,
     }
     if not os.path.exists(path):
         return default
@@ -110,6 +121,14 @@ def _read_cache(session_id: str) -> dict:
         data.setdefault("last_injected_rule_ids", [])
         data.setdefault("detected_domain", None)
         data.setdefault("instructions_rule_ids", [])
+        # Phase 1 forward-compat defaults for old session caches.
+        data.setdefault("active_playbook", None)
+        data.setdefault("active_phase", None)
+        data.setdefault("playbook_phase_history", [])
+        data.setdefault("review_ordering_state", {})
+        data.setdefault("verification_evidence", {})
+        data.setdefault("quality_judgment_state", {})
+        data.setdefault("quality_override_count", 0)
         return data
     except (json.JSONDecodeError, OSError):
         return default
