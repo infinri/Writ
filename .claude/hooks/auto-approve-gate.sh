@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
-# Auto-approve gate -- thin client for writ-session.py advance-phase.
+# Auto-approve gate -- pattern-match defense-in-depth for approval detection.
 # UserPromptSubmit: fires at the start of every user turn.
 #
-# Phase 3: all artifact validation, gate file creation, and rule ID
-# clearing is handled by writ-session.py advance-phase. This hook
-# detects approval patterns and delegates.
+# Phase 3b (plan Section 8.1): pattern match does NOT advance the phase.
+# It only emits an ask-prompt directive that steers the assistant to the
+# /writ-approve slash command, which performs a tool-confirmed advance
+# with confirmation_source="tool" in the audit trail.
+#
+# Why: silent pattern-path advances left no auditable intent record and
+# could fire on ambiguous phrasing. The tool path requires the assistant
+# to positively confirm via a slash command. Pattern match remains as a
+# hint to the assistant, not the primary advance mechanism.
 #
 # Hook type: UserPromptSubmit
-# Exit: always 0 (never block user prompt)
+# Exit: always 0 (never block user prompt). Directive (if any) is on stdout.
 
 set -euo pipefail
 
@@ -113,17 +119,8 @@ if len(prompt) < 120:
 print('no')
 " "$PROMPT_LOWER" 2>/dev/null || echo "no")
 
-# Friction logging: approval_pattern_miss
-if [ "$IS_APPROVAL" != "yes" ] && [ ${#PROMPT} -gt 0 ] && [ ${#PROMPT} -lt 120 ]; then
-    LOOKS_LIKE_APPROVAL=$(python3 -c "
-import sys
-prompt = sys.argv[1].lower()
-approval_words = ['approv', 'proceed', 'accept', 'lgtm', 'good', 'go', 'yes', 'ok']
-print('yes' if any(w in prompt for w in approval_words) else 'no')
-" "$PROMPT_LOWER" 2>/dev/null || echo "no")
-
-    if [ "$LOOKS_LIKE_APPROVAL" = "yes" ]; then
-        PROJECT_ROOT=$(python3 -c "
+# Project root helper (used for friction logging)
+PROJECT_ROOT=$(python3 -c "
 import os
 markers = ['composer.json','package.json','Cargo.toml','go.mod','pyproject.toml','.git']
 path = os.getcwd()
@@ -132,10 +129,21 @@ while path != '/':
         print(path); break
     path = os.path.dirname(path)
 " 2>/dev/null)
-        if [ -n "$PROJECT_ROOT" ]; then
-            CURRENT_MODE=$(_writ_session "mode get" "$SESSION_ID" 2>/dev/null || echo "")
-            CURRENT_MODE=$(echo "$CURRENT_MODE" | tr -d '[:space:]')
-            python3 -c "
+
+CURRENT_MODE=$(_writ_session "mode get" "$SESSION_ID" 2>/dev/null || echo "")
+CURRENT_MODE=$(echo "$CURRENT_MODE" | tr -d '[:space:]')
+
+# Friction logging: approval_pattern_miss (unchanged)
+if [ "$IS_APPROVAL" != "yes" ] && [ ${#PROMPT} -gt 0 ] && [ ${#PROMPT} -lt 120 ]; then
+    LOOKS_LIKE_APPROVAL=$(python3 -c "
+import sys
+prompt = sys.argv[1].lower()
+approval_words = ['approv', 'proceed', 'accept', 'lgtm', 'good', 'go', 'yes', 'ok']
+print('yes' if any(w in prompt for w in approval_words) else 'no')
+" "$PROMPT_LOWER" 2>/dev/null || echo "no")
+
+    if [ "$LOOKS_LIKE_APPROVAL" = "yes" ] && [ -n "$PROJECT_ROOT" ]; then
+        python3 -c "
 import json, sys
 from datetime import datetime, timezone
 entry = json.dumps({
@@ -148,48 +156,29 @@ entry = json.dumps({
 with open(sys.argv[4], 'a') as f:
     f.write(entry + '\n')
 " "$SESSION_ID" "${CURRENT_MODE:-}" "$PROMPT" "$PROJECT_ROOT/workflow-friction.log" 2>/dev/null || true
-        fi
     fi
 fi
 
 if [ "$IS_APPROVAL" != "yes" ]; then
+    # Permanent debug prompt log (zero-cost observation tool)
+    echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') session=$SESSION_ID prompt=$(echo "$PROMPT" | head -c 200)" \
+        >> "/tmp/writ-prompt-debug.log" 2>/dev/null || true
     exit 0
 fi
 
-# Ensure gate token exists (created once per session, used to block agent self-approval)
+# ---- Pattern matched. Phase 3b: steer to /writ-approve, do NOT advance. ----
+
+# Ensure gate token exists. /writ-approve (via its Bash POST) reads this
+# token file to authenticate the advance request.
 GATE_TOKEN_FILE="/tmp/writ-gate-token-${SESSION_ID}"
 if [ ! -f "$GATE_TOKEN_FILE" ]; then
     python3 -c "import secrets; print(secrets.token_hex(16))" > "$GATE_TOKEN_FILE" 2>/dev/null
     chmod 600 "$GATE_TOKEN_FILE" 2>/dev/null || true
 fi
-GATE_TOKEN=$(cat "$GATE_TOKEN_FILE" 2>/dev/null)
 
-# Delegate to advance-phase -- pass prompt via stdin for phase-d detection
-RESULT=$(echo "$PROMPT_LOWER" | _writ_session advance-phase "$SESSION_ID" --token "$GATE_TOKEN" 2>/dev/null) || true
-
-if [ -z "$RESULT" ]; then
-    exit 0
-fi
-
-ADVANCED=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('advanced', False))" 2>/dev/null || echo "False")
-GATE=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('gate', ''))" 2>/dev/null || echo "")
-REASON=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('reason', ''))" 2>/dev/null || echo "")
-
-if [ "$ADVANCED" = "True" ]; then
-    # Log approval_pattern_match
-    CURRENT_MODE=$(_writ_session "mode get" "$SESSION_ID" 2>/dev/null || echo "")
-    CURRENT_MODE=$(echo "$CURRENT_MODE" | tr -d '[:space:]')
-    PROJECT_ROOT=$(python3 -c "
-import os
-markers = ['composer.json','package.json','Cargo.toml','go.mod','pyproject.toml','.git']
-path = os.getcwd()
-while path != '/':
-    if any(os.path.exists(os.path.join(path, m)) for m in markers):
-        print(path); break
-    path = os.path.dirname(path)
-" 2>/dev/null)
-    if [ -n "$PROJECT_ROOT" ]; then
-        python3 -c "
+# Friction log: approval_pattern_match (pattern detected; tool confirm pending)
+if [ -n "$PROJECT_ROOT" ]; then
+    python3 -c "
 import json, sys
 from datetime import datetime, timezone
 entry = json.dumps({
@@ -198,30 +187,24 @@ entry = json.dumps({
     'mode': sys.argv[2] if sys.argv[2] else None,
     'event': 'approval_pattern_match',
     'matched_prompt': sys.argv[3][:120],
-    'gate': sys.argv[4],
+    'confirmation_source': 'pattern',
+    'outcome': 'ask-prompt-emitted',
 })
-with open(sys.argv[5], 'a') as f:
+with open(sys.argv[4], 'a') as f:
     f.write(entry + '\n')
-" "$SESSION_ID" "${CURRENT_MODE:-}" "$PROMPT" "$GATE" "$PROJECT_ROOT/workflow-friction.log" 2>/dev/null || true
-    fi
-
-    # Phase-specific next-step messages
-    if [ "$GATE" = "phase-a" ]; then
-        cat <<'PHASE_MSG'
-[Writ: Plan approved. Phase: testing]
-NEXT STEP: Write test skeleton files, present them, and say "Say approved to proceed."
-Do NOT write implementation files yet -- they will be denied.
-PHASE_MSG
-    elif [ "$GATE" = "test-skeletons" ]; then
-        echo "[Writ: Test skeletons approved. Phase: implementation] You may now write implementation files."
-    else
-        echo "[Gate approved: $GATE] Phase advanced."
-    fi
-else
-    if [ -n "$REASON" ]; then
-        echo "[Gate blocked: $GATE] $REASON"
-    fi
+" "$SESSION_ID" "${CURRENT_MODE:-}" "$PROMPT" "$PROJECT_ROOT/workflow-friction.log" 2>/dev/null || true
 fi
+
+# Emit ask-prompt directive. The assistant must invoke /writ-approve to
+# actually advance the phase (confirmation_source="tool"). This directive
+# is injected into the next-turn context via UserPromptSubmit stdout.
+cat <<'DIRECTIVE'
+[Writ: approval pattern detected]
+Your last prompt reads as approval, but pattern-match is defense-in-depth only (plan Section 8.1).
+To advance the workflow phase, invoke the /writ-approve slash command. It records
+confirmation_source="tool" in the session's phase_transitions audit trail.
+If you did not intend to advance, ignore this directive.
+DIRECTIVE
 
 # Permanent debug prompt log (zero-cost observation tool)
 echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') session=$SESSION_ID prompt=$(echo "$PROMPT" | head -c 200)" \
