@@ -459,6 +459,8 @@ class SubagentRole(_NonRetrievableBase):
     prompt_template: str
     dispatched_by: list[str] = Field(default_factory=list)
     model_preference: str | None = None
+    tools: str | None = None
+    description: str | None = None
 
     _validate_role_id = field_validator("role_id")(_validate_node_id("role_id"))
 

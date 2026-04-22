@@ -86,6 +86,8 @@ def build_node(agent: dict) -> dict:
         "prompt_template": agent["prompt_template"],
         "dispatched_by": DISPATCHED_BY.get(agent["name"], []),
         "model_preference": agent.get("model"),
+        "tools": agent.get("tools"),
+        "description": agent.get("description"),
     }
 
 
