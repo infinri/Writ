@@ -29,7 +29,14 @@
       "Bash(bash $HOME/.claude/skills/writ/.claude/hooks/writ-session-end.sh)",
       "Bash(bash $HOME/.claude/skills/writ/.claude/hooks/writ-pre-write-dispatch.sh)",
       "Bash(bash $HOME/.claude/skills/writ/.claude/hooks/writ-cwd-changed.sh)",
-      "Bash(bash $HOME/.claude/skills/writ/.claude/hooks/writ-instructions-loaded.sh)"
+      "Bash(bash $HOME/.claude/skills/writ/.claude/hooks/writ-instructions-loaded.sh)",
+      "Bash(bash $HOME/.claude/skills/writ/.claude/hooks/writ-verify-before-claim.sh)",
+      "Bash(bash $HOME/.claude/skills/writ/.claude/hooks/writ-sdd-review-order.sh)",
+      "Bash(bash $HOME/.claude/skills/writ/.claude/hooks/writ-worktree-safety.sh)",
+      "Bash(bash $HOME/.claude/skills/writ/.claude/hooks/writ-pressure-audit.sh)",
+      "Bash(bash $HOME/.claude/skills/writ/.claude/hooks/writ-quality-judge.sh)",
+      "Bash(bash $HOME/.claude/skills/writ/.claude/hooks/validate-test-file.sh)",
+      "Bash(bash $HOME/.claude/skills/writ/.claude/hooks/validate-design-doc.sh)"
     ],
     "deny": [
       "Bash(touch */.claude/gates/*)",
@@ -114,6 +121,15 @@
             "command": "bash $HOME/.claude/skills/writ/.claude/hooks/enforce-violations.sh"
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $HOME/.claude/skills/writ/.claude/hooks/writ-verify-before-claim.sh"
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [
@@ -156,6 +172,15 @@
           {
             "type": "command",
             "command": "bash $HOME/.claude/skills/writ/.claude/hooks/writ-session-end.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $HOME/.claude/skills/writ/.claude/hooks/writ-pressure-audit.sh"
           }
         ]
       }
@@ -218,6 +243,51 @@
             "command": "bash $HOME/.claude/skills/writ/.claude/hooks/pre-validate-file.sh"
           }
         ]
+      },
+      {
+        "matcher": "TodoWrite",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $HOME/.claude/skills/writ/.claude/hooks/writ-verify-before-claim.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $HOME/.claude/skills/writ/.claude/hooks/writ-sdd-review-order.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $HOME/.claude/skills/writ/.claude/hooks/writ-worktree-safety.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $HOME/.claude/skills/writ/.claude/hooks/validate-test-file.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $HOME/.claude/skills/writ/.claude/hooks/validate-design-doc.sh"
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -263,6 +333,15 @@
           {
             "type": "command",
             "command": "bash $HOME/.claude/skills/writ/.claude/hooks/writ-posttool-rag.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $HOME/.claude/skills/writ/.claude/hooks/writ-quality-judge.sh"
           }
         ]
       }

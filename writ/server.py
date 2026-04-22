@@ -740,6 +740,89 @@ async def session_quality_judgment_get(session_id: str) -> dict[str, Any]:
     return await asyncio.to_thread(_read)
 
 
+# --- Phase 2: always-on rule bundle (plan Section 3.4) -----------------------
+
+
+@app.get("/always-on")
+async def always_on_bundle(mode: str | None = None) -> dict[str, Any]:
+    """Return rules flagged always_on=true for injection into every session.
+
+    Query params:
+    - mode: optional session mode (work, debug, review, conversation). When
+      provided, scopes the bundle to rules appropriate for that mode. When
+      omitted, returns the universal bundle (all always-on rules).
+
+    Response:
+    - rules: list of dicts with rule_id, trigger, statement, severity, scope,
+      rendered in SUMMARY form (short). Full content is available via /query
+      or bundle expansion per plan Section 3.4 conditional-render-depth policy.
+    - total_tokens: estimated token count for budget-audit purposes.
+    - cap: 5000 per plan Section 0.4 decision 3.
+    """
+    if _db is None:
+        return {"error": "Database not connected."}
+
+    query = """
+        MATCH (r:Rule)
+        WHERE r.always_on = true
+        RETURN r.rule_id AS rule_id, r.trigger AS trigger, r.statement AS statement,
+               r.severity AS severity, r.scope AS scope, r.domain AS domain
+        ORDER BY r.severity DESC, r.rule_id
+    """
+    async with _db._driver.session(database=_db._database) as session:
+        result = await session.run(query)
+        rows = [record.data() async for record in result]
+
+    # FRB-COMMS-* ForbiddenResponse nodes are also always-on.
+    frb_query = """
+        MATCH (n:ForbiddenResponse)
+        RETURN n.forbidden_id AS rule_id, n.trigger AS trigger,
+               n.statement AS statement, n.severity AS severity,
+               n.scope AS scope, n.domain AS domain
+        ORDER BY n.forbidden_id
+    """
+    async with _db._driver.session(database=_db._database) as session:
+        result = await session.run(frb_query)
+        frb_rows = [record.data() async for record in result]
+
+    combined = rows + frb_rows
+
+    # Mode scoping: when mode is "debug", include only rules with scope="session"
+    # or those explicitly tagged for debug context. When "work", the full set.
+    # Non-work modes exclude rules whose domain is process (they apply only when
+    # the agent is producing code).
+    if mode and mode.lower() not in ("work",):
+        combined = [
+            r for r in combined
+            if (r.get("domain") or "").lower() not in ("process",)
+        ]
+
+    # Summary-form render: trigger + statement only (plan Section 3.4).
+    summary_bundle = []
+    total_tokens = 0
+    for r in combined:
+        trigger = (r.get("trigger") or "").strip()
+        statement = (r.get("statement") or "").strip()
+        # Approximate tokens via 4-chars-per-token heuristic.
+        est = (len(trigger) + len(statement)) // 4
+        summary_bundle.append({
+            "rule_id": r["rule_id"],
+            "trigger": trigger,
+            "statement": statement,
+            "severity": r.get("severity"),
+            "est_tokens": est,
+        })
+        total_tokens += est
+
+    return {
+        "rules": summary_bundle,
+        "total_tokens": total_tokens,
+        "cap": 5000,  # plan Section 0.4 decision 3
+        "mode_scope": mode or "universal",
+        "render_mode": "summary",
+    }
+
+
 @app.post("/pre-write-check")
 async def pre_write_check(request: PreWriteCheckRequest) -> dict[str, Any]:
     """Combined gate check + final-gate check + RAG query for Write/Edit.
