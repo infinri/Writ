@@ -66,8 +66,8 @@ A companion `legitimate_artifacts/` fixture provides the false-positive side.
 This directory structure is scaffolded. The 50 artifacts are pending maintainer authoring.
 
 Current progress:
-- `trivially_bad/`: 0 of 15-20
-- `plausible_boilerplate/`: 0 of 15-20
-- `near_miss/`: 0 of 10-15
+- `trivially_bad/`: 10 of 15-20 seeded by Claude Code (plans, designs, tests; structural failures are mechanically verifiable and safer to bulk-produce)
+- `plausible_boilerplate/`: 0 of 15-20 — pending maintainer authorship
+- `near_miss/`: 0 of 10-15 — pending maintainer authorship
 
-Claude Code may draft candidate artifacts in `trivially_bad/` (structural failures are mechanically verifiable and safer to bulk-produce). Candidates in `plausible_boilerplate/` and `near_miss/` tiers require human authorship per plan Section 15.8.
+Candidates in `plausible_boilerplate/` and `near_miss/` tiers require human authorship per plan Section 15.8.

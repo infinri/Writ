@@ -13,18 +13,28 @@ def pytest_sessionfinish(session, exitstatus):
     try:
         from writ.config import get_neo4j_uri, get_neo4j_user, get_neo4j_password
         from writ.graph.db import Neo4jConnection
-        from writ.graph.ingest import discover_rule_files, parse_rules_from_file, validate_parsed_rule
+        from writ.graph.ingest import (
+            NODE_ID_FIELDS,
+            discover_rule_files,
+            parse_edges_from_file,
+            parse_nodes_from_file,
+            parse_rules_from_file,
+            validate_parsed_node,
+            validate_parsed_rule,
+        )
     except (ImportError, ModuleNotFoundError):
         return  # neo4j driver or other deps not installed; skip re-migration.
 
     async def _remigrate():
         bible = Path("bible/")
+        methodology = Path("tests/fixtures/synthetic_methodology")
         if not bible.exists():
             return
         try:
             db = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
             count = await db.count_rules()
             if count == 0:
+                # Re-ingest the core coding-rule corpus from bible/.
                 for f in discover_rule_files(bible):
                     for rd in parse_rules_from_file(f):
                         try:
@@ -32,6 +42,35 @@ def pytest_sessionfinish(session, exitstatus):
                             clean = {k: v for k, v in rd.items() if not k.startswith("_")}
                             await db.create_rule(clean)
                         except ValueError:
+                            pass
+                # Re-ingest the Phase 1 methodology corpus so methodology
+                # retrieval doesn't break after graph wipes. Nodes that
+                # already exist MERGE cleanly.
+                if methodology.exists():
+                    edges_to_create = []
+                    for f in sorted(methodology.glob("*.md")):
+                        try:
+                            for node in parse_nodes_from_file(f):
+                                try:
+                                    validate_parsed_node(node)
+                                except ValueError:
+                                    continue
+                                node_type = node.get("node_type", "Rule")
+                                clean = {
+                                    k: v for k, v in node.items()
+                                    if k != "node_type" and not k.startswith("_") and k != "edges"
+                                }
+                                if node_type == "Rule":
+                                    await db.create_rule(clean)
+                                else:
+                                    await db.create_methodology_node(node_type, clean)
+                            edges_to_create.extend(parse_edges_from_file(f))
+                        except Exception:
+                            continue
+                    for e in edges_to_create:
+                        try:
+                            await db.create_edge(e["type"], e["source"], e["target"])
+                        except Exception:
                             pass
             await db.close()
         except Exception:
