@@ -27,22 +27,34 @@ DENY_REASON=""
 if [ "$TOOL" = "TodoWrite" ]; then
     DENY_REASON=$(python3 <<PY
 import json, sys
-from pathlib import Path
-# Load session state
 sys.path.insert(0, "$WRIT_DIR/bin/lib")
 from importlib import util
 spec = util.spec_from_file_location('writ_session', "$SESSION_HELPER")
 mod = util.module_from_spec(spec); spec.loader.exec_module(mod)
 session = mod._read_cache("$SESSION_ID")
 evidence = session.get("verification_evidence") or {}
+judgments = session.get("quality_judgment_state") or {}
 parsed = json.loads('''$PARSED''')
 tool_input = parsed.get("tool_input") or {}
 todos = tool_input.get("todos") or []
 for t in todos:
     tid = t.get("id") or t.get("content", "")[:40]
     status = t.get("status") or ""
-    if status == "completed" and tid not in evidence:
-        print(f"ENF-PROC-VERIFY-001: completion claim for '{tid}' has no verification_evidence. Run the check, then POST /session/{sid}/verification-evidence before marking completed.")
+    if status != "completed":
+        continue
+    # Check 1: verification_evidence required (ENF-PROC-VERIFY-001).
+    if tid not in evidence:
+        print(f"ENF-PROC-VERIFY-001: completion claim for '{tid}' has no verification_evidence. Run the check, then POST /session/{{sid}}/verification-evidence before marking completed.")
+        break
+    # Check 2: any artifact with a Gate 5 quality judgment below 3 blocks
+    # completion unless explicitly overridden (Gate 5 Tier 2 — see
+    # docs/phase-2-self-review-decision.md).
+    failing_artifacts = [
+        path for path, j in judgments.items()
+        if isinstance(j, dict) and j.get("score", 5) < 3 and not j.get("overridden")
+    ]
+    if failing_artifacts:
+        print(f"Gate 5 Tier 2: cannot mark '{tid}' completed while the following artifacts have quality scores below 3 (fix or override): {failing_artifacts}")
         break
 PY
     )

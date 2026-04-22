@@ -76,6 +76,14 @@ def structural_gate(
     schema_reasons = _check_schema(candidate)
     reasons.extend(schema_reasons)
 
+    # 1b. Mechanical-enforcement-path policy (Phase 2, plan Section 2.1).
+    # Mandatory rules must cite a mechanical enforcement path. Rules without
+    # one must be advisory so the advisory-vs-mandatory distinction remains
+    # honest. Applies universally (existing mandatory rules audited via
+    # Section 17 retroactive-audit protocol).
+    mechanical_reasons = _check_mechanical_enforcement(candidate)
+    reasons.extend(mechanical_reasons)
+
     # 2. Specificity -- vague language in trigger or statement.
     specificity_reasons = _check_specificity(candidate)
     reasons.extend(specificity_reasons)
@@ -105,6 +113,31 @@ def _check_schema(candidate: dict) -> list[str]:
         Rule(**clean)
     except Exception as e:
         return [f"Schema validation failed: {e}"]
+    return []
+
+
+def _check_mechanical_enforcement(candidate: dict) -> list[str]:
+    """Reject mandatory rules without a non-empty mechanical_enforcement_path.
+
+    Plan Section 2.1 policy: rules with `mandatory: true` must cite a
+    mechanical enforcement path (hook file + matcher + deny condition).
+    Rules that can't be mechanically enforced must be declared advisory
+    (`mandatory: false`, severity may remain high/critical). This keeps the
+    advisory-vs-mandatory distinction honest. Retroactive audit of the
+    existing 35 mandatory rules lives in docs/mandatory-rule-audit.md.
+    """
+    mandatory = candidate.get("mandatory", False)
+    if not mandatory:
+        return []
+    path = candidate.get("mechanical_enforcement_path")
+    if path is None or not str(path).strip():
+        rid = candidate.get("rule_id", "<unknown>")
+        return [
+            f"Mechanical-enforcement policy (plan Section 2.1): rule '{rid}' "
+            f"is mandatory but has no mechanical_enforcement_path. Either "
+            f"name a hook + matcher + deny condition, or demote to "
+            f"mandatory=false (advisory)."
+        ]
     return []
 
 
