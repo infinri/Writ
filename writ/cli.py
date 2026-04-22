@@ -463,6 +463,49 @@ def compress() -> None:
     asyncio.run(_run())
 
 
+@app.command(name="role-prompt")
+def role_prompt(
+    role: str = typer.Argument(..., help="Subagent role name (writ-explorer, writ-planner, etc.) or ROL-* id."),
+) -> None:
+    """Print the graph-canonical prompt template for a SubagentRole.
+
+    Phase 3 Section 8.2 release blocker: `writ review prompt <role>` returns
+    graph-canonical text. Implemented as `writ role-prompt <role>` to avoid
+    collision with the existing `writ review <rule_id>` command. The graph
+    is the canonical source (plan Section 8.1 deliverable 2); .claude/agents
+    files are exported from the graph.
+    """
+    import asyncio
+    from writ.graph.db import Neo4jConnection
+
+    async def _fetch() -> None:
+        db = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
+        try:
+            async with db._driver.session(database=db._database) as session:
+                query = """
+                    MATCH (r:SubagentRole)
+                    WHERE r.name = $name
+                       OR r.role_id = $name
+                       OR r.role_id = 'ROL-' + toUpper(replace($name, 'writ-', '')) + '-001'
+                    RETURN r.role_id AS role_id, r.name AS name,
+                           r.prompt_template AS prompt,
+                           r.model_preference AS model
+                    LIMIT 1
+                """
+                result = await session.run(query, name=role)
+                rec = await result.single()
+                if rec is None:
+                    typer.echo(f"SubagentRole '{role}' not found in graph.", err=True)
+                    raise typer.Exit(code=1)
+                typer.echo(f"# {rec['role_id']}  (name={rec['name']}, model={rec['model']})")
+                typer.echo("")
+                typer.echo(rec["prompt"])
+        finally:
+            await db.close()
+
+    asyncio.run(_fetch())
+
+
 @app.command()
 def migrate() -> None:
     """One-time migration of existing rules into graph."""

@@ -93,6 +93,9 @@ def _read_cache(session_id: str) -> dict:
         "playbook_phase_history": [],
         "review_ordering_state": {},
         "verification_evidence": {},
+        # Phase 3: per-session phase-advance audit trail with confirmation_source
+        # per plan Section 8 deliverable 3.
+        "phase_transitions": [],
         "quality_judgment_state": {},
         "quality_override_count": 0,
     }

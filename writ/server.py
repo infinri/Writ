@@ -402,21 +402,63 @@ async def session_can_write(session_id: str, request: SessionCanWriteRequest | N
 
 
 @app.post("/session/{session_id}/advance-phase")
-async def session_advance_phase(session_id: str) -> dict[str, Any]:
-    """Advance to the next workflow phase."""
+async def session_advance_phase(session_id: str, body: dict | None = None) -> dict[str, Any]:
+    """Advance to the next workflow phase.
 
-    def _advance() -> str:
+    Phase 3 addition: body.confirmation_source explicitly names how the user
+    authorized the advance. Values: "tool" (/writ-approve or writ_approve MCP),
+    "pattern" (string-match on "approved"), "explicit" (direct endpoint call).
+    Recorded to session.phase_transitions for audit; emitted as friction-log
+    event so Phase 5 can tally by source.
+    """
+    source = (body or {}).get("confirmation_source", "explicit")
+    if source not in ("tool", "pattern", "explicit"):
+        return {"error": f"Invalid confirmation_source: {source}"}
+
+    def _advance() -> dict[str, Any]:
         cache = writ_session._read_cache(session_id)
         current = cache.get("current_phase", "planning")
         phases = ["planning", "testing", "implementation", "complete"]
         idx = phases.index(current) if current in phases else 0
         next_phase = phases[min(idx + 1, len(phases) - 1)]
         cache["current_phase"] = next_phase
+        transitions = list(cache.get("phase_transitions") or [])
+        transitions.append({
+            "from": current,
+            "to": next_phase,
+            "confirmation_source": source,
+            "ts": datetime.now().isoformat(),
+        })
+        cache["phase_transitions"] = transitions
         writ_session._write_cache(session_id, cache)
-        return next_phase
+        return {"from": current, "phase": next_phase, "confirmation_source": source}
 
-    phase = await asyncio.to_thread(_advance)
-    return {"phase": phase}
+    result = await asyncio.to_thread(_advance)
+
+    # Phase 5 telemetry: friction log gets an event per phase advance.
+    import json as _json
+    from pathlib import Path as _Path
+    try:
+        project_root = _Path.cwd()
+        for _ in range(8):
+            if any((project_root / m).exists() for m in [".git", "pyproject.toml", "package.json"]):
+                break
+            project_root = project_root.parent
+        log = project_root / "workflow-friction.log"
+        entry = {
+            "ts": datetime.now().isoformat(),
+            "session": session_id,
+            "event": "phase_advance",
+            "from_phase": result["from"],
+            "to_phase": result["phase"],
+            "confirmation_source": source,
+        }
+        with open(log, "a") as f:
+            f.write(_json.dumps(entry) + "\n")
+    except Exception:
+        pass
+
+    return {"phase": result["phase"], "confirmation_source": source}
 
 
 @app.get("/session/{session_id}/current-phase")
@@ -820,6 +862,41 @@ async def always_on_bundle(mode: str | None = None) -> dict[str, Any]:
         "cap": 5000,  # plan Section 0.4 decision 3
         "mode_scope": mode or "universal",
         "render_mode": "summary",
+    }
+
+
+@app.get("/subagent-role/{name}")
+async def subagent_role_get(name: str) -> dict[str, Any]:
+    """Return a SubagentRole node's canonical prompt template from the graph.
+
+    Phase 3 Section 8 deliverable 2: graph is canonical for subagent prompts;
+    .claude/agents/*.md files are exported from the graph. This endpoint
+    exposes the canonical text for CLI and test consumers.
+    """
+    if _db is None:
+        return {"error": "Database not connected."}
+    async with _db._driver.session(database=_db._database) as session:
+        query = """
+            MATCH (r:SubagentRole)
+            WHERE r.name = $name
+               OR r.role_id = $name
+               OR r.role_id = 'ROL-' + toUpper(replace($name, 'writ-', '')) + '-001'
+            RETURN r.role_id AS role_id, r.name AS name,
+                   r.prompt_template AS prompt_template,
+                   r.model_preference AS model_preference,
+                   r.dispatched_by AS dispatched_by
+            LIMIT 1
+        """
+        result = await session.run(query, name=name)
+        rec = await result.single()
+    if rec is None:
+        return {"error": f"SubagentRole '{name}' not found."}
+    return {
+        "role_id": rec["role_id"],
+        "name": rec["name"],
+        "prompt_template": rec["prompt_template"],
+        "model_preference": rec["model_preference"],
+        "dispatched_by": rec["dispatched_by"] or [],
     }
 
 
