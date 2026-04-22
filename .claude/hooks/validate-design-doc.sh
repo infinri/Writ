@@ -11,8 +11,6 @@ HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 WRIT_DIR="$(cd "$HOOK_DIR/../.." && pwd)"
 source "$WRIT_DIR/bin/lib/common.sh"
 
-is_superpowers_absorb_enabled || exit 0
-
 PARSED=$(parse_hook_stdin)
 SESSION_ID=$(detect_session_id "$PARSED")
 [ -z "$SESSION_ID" ] && exit 0

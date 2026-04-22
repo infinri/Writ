@@ -50,7 +50,7 @@ Before Phase 0 drafting begins, and verified at every phase transition:
 - **Git hygiene:** work happens on a non-main branch (`phase-0-validation` through Phase 0). Branch-per-phase for subsequent phases. No direct commits to main.
 - **Test baseline captured:** `pytest` green, count recorded in `docs/phase-N-report.md`. Failures triaged to root cause before the phase begins, never pushed through.
 - **`bible/` backup present:** `bible.bak.<YYYYMMDD>` created before any ingest/migration work. Backup is not deleted during implementation.
-- **Feature flag off:** `enforcement.superpowers_absorb.enabled = false` in `writ.toml`. Stays false throughout all six phases. Flipping it on is a post-Phase-5 human decision, not an implementation step.
+- **No feature flag.** Phase 2 originally introduced `enforcement.superpowers_absorb.enabled` as a runtime kill-switch. Removed on 2026-04-21 after implementation showed it was redundant with (a) `settings.json` hook registration (install-time gate) and (b) mode-scope checks (runtime gate). Activation is controlled by whether Phase 2 hooks are registered in `settings.json`; deactivation is un-registering them. No global flag to toggle.
 - **Neo4j reachable:** `bolt://localhost:7687` accepts connections; HTTP `:7474` returns 200.
 - **`writ serve` healthy:** `/health` returns 200; `writ status` shows `index_state: warm` and expected `rule_count`.
 - **Superpowers tree at pinned commit:** `cd ~/workspaces/superpowers && git rev-parse HEAD` equals `b557648`. If HEAD has drifted, reset to pin before extracting.
@@ -182,9 +182,17 @@ Every phase has release-blockers: concrete measurements that must pass before th
 8. Pressure-test compliance ≥70% on critical rules (Phase 4)
 9. Quality gates meet false-positive rate targets on legitimate-content fixture (Phase 2)
 
-### 2.6 Feature flag everything
+### 2.6 Gating via settings.json + mode-scope, not a feature flag
 
-All behavioral changes land behind `enforcement.superpowers_absorb.enabled` in `writ.toml`, default off. Per-rule flags allow granular rollout. Rollback is flipping flags.
+Original design: `enforcement.superpowers_absorb.enabled` in `writ.toml`, default off, with per-rule sub-flags for granular rollout.
+
+**Revised 2026-04-21 during Phase 2 build.** The flag added code tax (a check in every hook, tests to verify flag-off behavior) without delivering value beyond what `settings.json` hook registration + mode-scope checks already provide:
+
+- **Install-time gate:** hooks not registered in `.claude/settings.json` never fire. Adding / removing entries is the activation mechanism.
+- **Runtime gate:** `is_work_mode` short-circuits methodology enforcement outside Work mode (plan Section 0.4 decision 1).
+- **Advisory vs mandatory:** `mandatory: false` on a rule means it's retrievable and renderable but does not block writes mechanically, regardless of registration.
+
+Rollback is `git revert` for content changes, or un-register hooks in settings.json for enforcement changes. The "per-rule flags for granular rollout" from the original design never materialized and wasn't needed — rule-level granularity is achieved by registering only the hooks you want.
 
 ---
 
