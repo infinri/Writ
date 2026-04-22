@@ -377,6 +377,40 @@ if [ -n "$FORMAT_OUTPUT" ]; then
 fi
 
 # 8. Inject rules into Claude's context
+# 8a. Prepend always-on rules bundle (plan Section 3.4). The /always-on
+# endpoint returns always_on=true Rules plus ForbiddenResponse nodes,
+# mode-scoped and rendered in summary form. Empty response → no bundle.
+ALWAYS_ON_URL="http://${WRIT_HOST}:${WRIT_PORT}/always-on?mode=${CURRENT_MODE:-universal}"
+ALWAYS_ON_JSON=$(curl -s --connect-timeout 0.3 --max-time 1 "$ALWAYS_ON_URL" 2>/dev/null) || true
+if [ -n "$ALWAYS_ON_JSON" ]; then
+    ALWAYS_ON_BLOCK=$(echo "$ALWAYS_ON_JSON" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    rules = d.get('rules') or []
+    if not rules:
+        sys.exit(0)
+    lines = ['=== ALWAYS-ACTIVE RULES ===']
+    for r in rules:
+        rid = r.get('rule_id', '')
+        trig = (r.get('trigger') or '').strip()
+        stmt = (r.get('statement') or '').strip()
+        if not rid or not trig or not stmt:
+            continue
+        lines.append(f'[{rid}] WHEN: {trig}')
+        lines.append(f'  {stmt}')
+    lines.append('=== END ALWAYS-ACTIVE RULES ===')
+    print('\n'.join(lines))
+except Exception:
+    pass
+" 2>/dev/null)
+    if [ -n "$ALWAYS_ON_BLOCK" ]; then
+        echo "$ALWAYS_ON_BLOCK"
+        echo
+        debug "injected always-on bundle"
+    fi
+fi
+
 if [ -n "$RULES_TEXT" ]; then
     echo "$RULES_TEXT"
     debug "injected rules"

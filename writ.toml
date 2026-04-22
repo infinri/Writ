@@ -88,6 +88,3 @@ zero_frequency_window_days = 90
 
 [origin_context]
 db_path = "~/.cache/writ/origin_context.db"
-
-[enforcement]
-superpowers_absorb.enabled = true
