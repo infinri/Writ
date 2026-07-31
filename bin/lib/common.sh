@@ -6,6 +6,41 @@
 # Absolute path to the stdin-envelope parser invoked by load_hook_env (below).
 _PARSE_HOOK_STDIN_PY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/parse-hook-stdin.py"
 
+# ── Session-cache location (THE bash-side definition) ────────────────────────
+# Mirrors writ/session/cache.py: WRIT_CACHE_DIR wins, else <skill>/var/session
+# derived from this file's own location (bin/lib/common.sh -> bin/lib -> bin ->
+# <skill>), the same three-step walk the package does from writ/session/cache.py.
+#
+# Do NOT reintroduce a tempdir fallback here. Commit 152e722 moved session state off
+# /tmp because tmpfiles.d declares `D /tmp`, which EMPTIES it at boot. Three bash
+# copies of that old default outlived the move: the auto-route classifier's mode read
+# then always answered "no mode set" (it was looking in a directory that holds no
+# session caches at all), and a hook-started daemon was born pointed at the same empty
+# directory, which is how a gate decision came to be logged with "mode": null.
+# tests/test_session_cache_dir_parity.py pins this against the package's value.
+writ_session_cache_dir() {
+    if [ -n "${WRIT_CACHE_DIR:-}" ]; then
+        printf '%s' "$WRIT_CACHE_DIR"
+        return 0
+    fi
+    printf '%s' "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/var/session"
+}
+
+# The session's mode read STRAIGHT from the cache file: stdlib only, no writ import and
+# no daemon round-trip. The auto-route classifier needs this because a daemon `mode get`
+# can spuriously return empty under load, and acting on a false empty would let the
+# classifier fight an explicit choice. Prints the mode, or "" when absent/unset/unreadable.
+writ_session_mode_direct() {
+    python3 -c "
+import json, os, sys
+p = os.path.join(sys.argv[2], 'writ-session-' + sys.argv[1] + '.json')
+try:
+    print(json.load(open(p)).get('mode') or '')
+except Exception:
+    print('')
+" "$1" "$(writ_session_cache_dir)" 2>/dev/null | tr -d '[:space:]'
+}
+
 # ── Debug gating ─────────────────────────────────────────────────────────────
 # One shared gate for all opt-in debug sinks (the /tmp/*-debug.log files and the
 # WRIT_HOOK_LOG stderr breadcrumbs). Debug is OFF by default; WRIT_DEBUG=1 turns

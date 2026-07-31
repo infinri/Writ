@@ -12,6 +12,17 @@
 #                         default `writ serve --port $WRIT_PORT --host $WRIT_HOST`. Test injection.
 #   WRIT_HEALTH_CMD       override the health probe; default curls /health. Test injection.
 
+# writ_session_cache_dir lives in bin/lib/common.sh (the single bash-side definition of
+# the session-cache location). Callers that already sourced common.sh keep their copy; the
+# rest get it here, so the cache pin below cannot fall back to a stale local default.
+# Guarded because this file must stay side-effect-free, and common.sh is functions plus one
+# path derivation.
+if ! declare -F writ_session_cache_dir >/dev/null 2>&1; then
+    _WRIT_LIB_COMMON="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/bin/lib/common.sh"
+    # shellcheck source=bin/lib/common.sh
+    [ -f "$_WRIT_LIB_COMMON" ] && source "$_WRIT_LIB_COMMON"
+fi
+
 # True when the daemon answers /health (or the injected probe succeeds).
 writ_server_health() {
     : "${WRIT_HOST:=localhost}" "${WRIT_PORT:=8765}"
@@ -141,7 +152,10 @@ writ_ensure_server() {
     mkdir -p "$(dirname "$WRIT_LOG")" 2>/dev/null || true
     # FIX-2: pin the daemon's session-cache dir deterministically (not ambient TMPDIR), so every
     # start path agrees and /health can report it. Exported here so `writ serve` inherits it.
-    export WRIT_CACHE_DIR="${WRIT_CACHE_DIR:-$(python3 -c 'import tempfile; print(tempfile.gettempdir())' 2>/dev/null || echo /tmp)}"
+    # The value comes from the shared resolver: this line used to default to gettempdir(),
+    # which after 152e722 pinned the daemon to a directory holding no session caches at all,
+    # so it served mode=None for every session and re-created the boot-wipe.
+    export WRIT_CACHE_DIR="$(writ_session_cache_dir)"
 
     local lock="/tmp/writ-server-${WRIT_PORT}.lock"
     (
