@@ -72,6 +72,50 @@ class TestRenderAlwaysOn:
 
 
 # --------------------------------------------------------------------------- #
+# 1b. always_on_rule_ids -- what the session must record as injected
+#
+# The plan gate validates cited rule IDs against what the session recorded as loaded.
+# The always-on channel injected rules without recording them, so the gate called its
+# own injected rules hallucinated. Recording needs the ID list, and it must be exactly
+# the rules that reached the block: recording a filtered-out rule would tell the agent
+# it may cite something it never saw.
+# --------------------------------------------------------------------------- #
+class TestAlwaysOnRuleIds:
+    def test_returns_the_rendered_rule_ids_in_bundle_order(self):
+        pb = _imp("writ.retrieval.prompt_bundle")
+        ao = {"total_tokens": 42, "rules": [
+            {"rule_id": "R1", "trigger": "when x", "statement": "do y"},
+            {"rule_id": "R2", "trigger": "when a", "statement": "do b"},
+        ]}
+        assert pb.always_on_rule_ids(ao) == ["R1", "R2"]
+
+    def test_no_rules_means_no_ids(self):
+        pb = _imp("writ.retrieval.prompt_bundle")
+        assert pb.always_on_rule_ids({"rules": [], "total_tokens": 0}) == []
+
+    def test_it_agrees_with_what_render_put_in_the_block(self):
+        """The invariant that keeps the two from drifting: same filter, one definition."""
+        pb = _imp("writ.retrieval.prompt_bundle")
+        ao = {"rules": [
+            {"rule_id": "R1", "trigger": "", "statement": "y"},        # no trigger
+            {"rule_id": "R2", "trigger": "t", "statement": "s"},       # renders
+            {"rule_id": "", "trigger": "t", "statement": "s"},         # no id
+            {"rule_id": "R4", "trigger": "t", "statement": ""},        # no statement
+        ]}
+        block, _, _ = pb.render_always_on(ao)
+        ids = pb.always_on_rule_ids(ao)
+        assert ids == ["R2"]
+        for rid in ids:
+            assert f"[{rid}]" in block
+        for skipped in ("R1", "R4"):
+            assert f"[{skipped}]" not in block and skipped not in ids
+
+    def test_missing_rules_key_is_tolerated(self):
+        pb = _imp("writ.retrieval.prompt_bundle")
+        assert pb.always_on_rule_ids({}) == []
+
+
+# --------------------------------------------------------------------------- #
 # 2. compute_nudge
 # --------------------------------------------------------------------------- #
 class TestComputeNudge:

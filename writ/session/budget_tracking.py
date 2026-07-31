@@ -37,6 +37,20 @@ def _upd_add_rules(cache: dict, args: list[str], i: int) -> int:
     return i + 2
 
 
+def _upd_add_always_on_rules(cache: dict, args: list[str], i: int) -> int:
+    """Record the rules the always-on channel injected this turn.
+
+    Same set-union-and-sort shape as _upd_add_rules, but a SEPARATE field on purpose:
+    loaded_rule_ids doubles as the ranked query's exclude list, and 5 of the always-on
+    bundle's rules live in the ranked pool, so writing them there would silently stop
+    them being retrieved by relevance. This field feeds citation validation only.
+    """
+    existing = set(cache.get("always_on_rule_ids", []))
+    existing.update(json.loads(args[i + 1]))
+    cache["always_on_rule_ids"] = sorted(existing)
+    return i + 2
+
+
 def _upd_set_last_injected(cache: dict, args: list[str], i: int) -> int:
     # A3: replaces the rag-inject hook's separate raw read-modify-write of the
     # sticky-rules pointer. SET (replace); a malformed payload leaves it unchanged.
@@ -259,6 +273,7 @@ def _upd_set_detected_domain(cache: dict, args: list[str], i: int) -> int:
 # `and i+N < len(args)` guard. Built once at module load (this runs per cache write).
 _UPDATE_HANDLERS: dict = {
     "--add-rules": (_upd_add_rules, 1),
+    "--add-always-on-rules": (_upd_add_always_on_rules, 1),
     "--set-last-injected-rule-ids": (_upd_set_last_injected, 1),
     "--cost": (_upd_cost, 1),
     "--context-percent": (_upd_context_percent, 1),

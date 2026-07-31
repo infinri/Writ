@@ -176,6 +176,13 @@ def _default_cache() -> dict:
     """
     return {
         "loaded_rule_ids": [],
+        # Rules injected by the always-on channel. Kept SEPARATE from loaded_rule_ids
+        # because that field doubles as the ranked query's exclude list: 5 of the 12
+        # always-on rules live in the ranked pool, so recording them there would stop
+        # them being retrieved by relevance. _validate_phase_a unions both when checking
+        # cited rule IDs, which is what stops the gate calling its own injected rules
+        # hallucinated.
+        "always_on_rule_ids": [],
         "loaded_rules": [],
         "remaining_budget": DEFAULT_SESSION_BUDGET,
         "context_percent": 0,

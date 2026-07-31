@@ -394,6 +394,7 @@ ao = b.get('ao_meta')
 if ao is not None and int(ao.get('tokens', 0)) > 0:
     lines.append({'session': sid, 'mode': mode, 'event': 'always_on_inject',
                   'tokens': int(ao.get('tokens', 0)), 'rule_count': int(ao.get('count', 0)),
+                  'rule_ids': ao.get('rule_ids') or [],
                   'event_name': 'UserPromptSubmit', 'mechanism': 'stdout'})
 mm = b.get('method_meta')
 if mm is not None:
