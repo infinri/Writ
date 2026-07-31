@@ -157,7 +157,7 @@ Graduation uses a plain ratio threshold: at 50+ observations with at least 75 pe
 
 How Writ plugs into Claude Code with zero per-project config:
 
-1. **Install once globally.** `bash scripts/bootstrap.sh` from `~/.claude/skills/writ`. Verifies prerequisites, sets up a virtualenv, installs the `writ` console entry point, ingests `bible/` rules into Neo4j, starts the FastAPI server. Renders `templates/settings.json` and `templates/CLAUDE.md` into `~/.claude/` with `envsubst '$HOME'` substitution. Idempotent.
+1. **Install once globally.** `bash scripts/bootstrap.sh` from `~/.claude/skills/writ`. Verifies prerequisites, sets up a virtualenv, installs the `writ` console entry point, ingests `bible/` rules into Neo4j, starts the FastAPI server. Renders `templates/CLAUDE.md` into `~/.claude/` with `envsubst '$HOME'` substitution. Idempotent.
 
 2. **Plugin manifest auto-loads.** `.claude-plugin/plugin.json` declares `defaultEnabled: true`. Claude Code's plugin lifecycle invokes `scripts/ensure-server.sh` on Init (warms the server if absent) and `scripts/stop-server.sh` on Shutdown (graceful SIGTERM, leaves Neo4j alone since it may be shared).
 
@@ -200,7 +200,7 @@ Same as context stuffing, but worse: it pollutes the system prompt where it is h
 - Mode plus gate enforcement.
 - AI rule proposal through the 5-check structural gate.
 - Frequency-driven graduation logic plus origin context.
-- 30 hooks wired through Claude Code via `templates/settings.json`.
+- 38 hook scripts wired through Claude Code via `hooks/hooks.json` (12 registered hook events).
 - Sub-agent isolation (`is_subagent`) and orchestrator suppression (`is_orchestrator`).
 - ONNX-optimized embedding inference verified identical to PyTorch.
 - HNSW persistence with corpus-hash invalidation.

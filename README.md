@@ -34,10 +34,18 @@ claude plugin marketplace add infinri/Writ
 claude plugin install writ@writ
 ```
 
+**Find the install directory.** The next two commands need the path the plugin was installed to. Read it from `claude plugin list --json`, whose entry for Writ carries an `installPath`:
+
+```shell
+WRIT_DIR=$(claude plugin list --json \
+  | python3 -c "import json,sys; print(next(p['installPath'] for p in json.load(sys.stdin) if p['id'].split('@')[0] == 'writ'))")
+echo "$WRIT_DIR"
+```
+
 **One-time bootstrap.** Creates the venv at `${CLAUDE_PLUGIN_DATA:-$HOME/.cache/writ}/.venv`, brings up Neo4j, seeds the rule corpus from `writ-corpus.cypher`, and starts the FastAPI daemon:
 
 ```shell
-bash $(claude plugin path writ)/scripts/bootstrap-plugin.sh
+bash "$WRIT_DIR/scripts/bootstrap-plugin.sh"
 ```
 
 Restart Claude Code. Verify with:
@@ -50,11 +58,11 @@ curl http://localhost:8765/health
 **Patch global config (plugin mode only).** Plugin installs do not write to `~/.claude/settings.json` or `~/.claude/CLAUDE.md`. The Writ-specific Bash allowlist that suppresses permission prompts for read-only and onboarding commands is missing, and the mandatory-workflow instructions that Writ relies on are not installed either. Run this once after bootstrap to bring `~/.claude/` up to the state a standalone install would produce:
 
 ```shell
-bash $(claude plugin path writ)/scripts/patch-global-config.sh
+bash "$WRIT_DIR/scripts/patch-global-config.sh"
 # Use --dry-run first to preview the diff.
 ```
 
-The script does two things: merges the cross-mode allow and deny entries into `~/.claude/settings.json` (existing ordering preserved), and renders `templates/CLAUDE.md` into `~/.claude/CLAUDE.md`. Both steps are idempotent (no-op when already in sync) and back up any pre-existing file before writing. Standalone-install users do not need to run it; `scripts/install-harness-config.sh` already produces the same output.
+The script does two things: merges the cross-mode allow and deny entries into `~/.claude/settings.json` (existing ordering preserved), and renders `templates/CLAUDE.md` into `~/.claude/CLAUDE.md`. Both steps are idempotent (no-op when already in sync) and back up any pre-existing file before writing. Standalone-install users do not need to run it; `scripts/bootstrap.sh` already produces the same output.
 
 The plugin's hooks degrade gracefully until bootstrap completes. The SessionStart hook prints clear setup instructions on every fresh session where any prerequisite is missing, but the session itself is never blocked.
 
@@ -87,7 +95,7 @@ Query text
 
 Each retriever covers a blind spot the others have. BM25 catches exact keyword matches. Vectors catch paraphrase ("SQL" versus "database query"). Graph traversal catches rules that share neither but are causally related. The two-pass ranker fuses everything with severity, confidence, and graph-proximity weights.
 
-**The enforcement layer (the process keeper).** 30 hook scripts under `.claude/hooks/`, all wired into Claude Code via `templates/settings.json`, a session state machine in `bin/lib/writ-session.py`, slash commands, and 6 sub-agent role files. The state machine owns mode, phase, and gate state; hooks are thin clients that delegate to it.
+**The enforcement layer (the process keeper).** 38 hook scripts under `hooks/scripts/`, all wired into Claude Code via `hooks/hooks.json` (12 registered hook events), a session state machine in `bin/lib/writ-session.py`, slash commands, and 5 sub-agent role files. The state machine owns mode, phase, and gate state; hooks are thin clients that delegate to it.
 
 **Mandatory rules (the architectural invariant).** Rules with `mandatory: true` (30 in the live corpus, spanning ENF-* enforcement rules and SEC-*/PERF-*/SCALE-* invariants from the public rulebook) are excluded from the retrieval pipeline at index build time. They are loaded out of band by hooks with their own 5,000 token budget cap. No change to ranking weights, embedding model, BM25 tuning, or graph traversal can cause an enforcement rule to disappear from agent context.
 
@@ -277,9 +285,10 @@ Errors come back as HTTP 200 with `{"error": "..."}` for logical failures, 422 f
 |---|---|
 | `writ.toml` | Service configuration: Neo4j credentials, ranking weights, embedding model, context budgets, gate thresholds. |
 | `pyproject.toml` | Package metadata. Production deps: fastapi, uvicorn, neo4j, tantivy, sentence-transformers, hnswlib, pydantic, typer, rich, httpx. Entry point: `writ = "writ.cli:app"`. |
-| `.claude-plugin/plugin.json` | Plugin manifest. `defaultEnabled: true`. Lifecycle Init invokes `scripts/ensure-server.sh`; Shutdown invokes `scripts/stop-server.sh`. |
+| `.claude-plugin/plugin.json` | Plugin manifest: name, version, commands, agents. Declares no `hooks` path, because `hooks/hooks.json` is auto-discovered and declaring it collides. |
+| `.claude-plugin/marketplace.json` | Single-plugin marketplace so `claude plugin marketplace add infinri/Writ` resolves. Its version must match `plugin.json`. |
 | `docker-compose.yml` | Single `neo4j:5` service on ports 7474 and 7687, health-checked via cypher-shell. |
-| `templates/settings.json` | Canonical hook wiring (30 hooks). |
+| `hooks/hooks.json` | Canonical hook wiring (12 registered events over 38 scripts in `hooks/scripts/`). Auto-discovered by Claude Code; shared by the plugin and standalone install paths. |
 | `bin/lib/checklists.json` | Phase exit criteria. |
 | `bin/lib/gate-categories.json` | File classification glob patterns plus framework detection. |
 | `writ/shared/budget.json` | Single source of truth for budget constants (default 8000, summary cost 40, standard 120, full 200, always_on_cap 5000). |

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "writ",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Hybrid RAG rule retrieval + session-aware workflow enforcement. Injects relevant coding rules via a 5-stage pipeline (BM25 + vector + graph traversal + reciprocal-rank fusion) and enforces mode-based workflow gates (plan -> tests -> implementation).",
   "author": {
     "name": "Lucio Saldivar"
@@ -15,6 +15,5 @@
     "./.claude/agents/writ-planner.md",
     "./.claude/agents/writ-reviewer.md",
     "./.claude/agents/writ-test-writer.md"
-  ],
-  "hooks": "./hooks/hooks.json"
+  ]
 }

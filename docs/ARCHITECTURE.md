@@ -291,7 +291,8 @@ Two legacy shims to know: `detect_orphans()` is Rule-only and superseded by `det
 
 Three layers, distinct roles:
 
-- **`.claude-plugin/plugin.json`** — the plugin manifest (name, version `1.5.0`, and pointers to `commands`, `agents`, and `hooks`).
+- **`.claude-plugin/plugin.json`** — the plugin manifest (name, version, and pointers to `commands` and `agents`). It deliberately declares no `hooks` path: `hooks/hooks.json` is auto-discovered at the plugin root, and declaring it again collides and fails every hook.
+- **`.claude-plugin/marketplace.json`** — the same-repo marketplace that makes `claude plugin marketplace add infinri/Writ` resolve. Its entry version must match `plugin.json`.
 - **`hooks/hooks.json`** — the event-to-script registration (§12), located via `${CLAUDE_PLUGIN_ROOT}`.
 - **`.claude/`** — commands, agents (the five sub-agent role files), and the hook scripts themselves.
 

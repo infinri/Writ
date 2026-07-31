@@ -2,6 +2,26 @@
 
 All notable changes to Writ are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-07-31
+
+Writ has been published as a plugin since 1.4.x, and the plugin install path had never worked end to end. Three independent breakages, each verified against Claude Code 2.1.220 by installing from a local-path marketplace into a throwaway `HOME`.
+
+### Fixed
+
+- **`.claude-plugin/marketplace.json` was missing**, so the first command in the README's install section (`claude plugin marketplace add infinri/Writ`) failed with `Marketplace file not found`. No user could install Writ as a plugin at all. Added as a single-plugin marketplace whose entry sources the repository root (`"source": "./"`), which is the layout `claude plugin install writ@writ` already assumed.
+- **All 12 hooks failed to load on a marketplace install.** `plugin.json` declared `"hooks": "./hooks/hooks.json"`, which is the path Claude Code auto-discovers. The declaration collided with auto-discovery: `Duplicate hooks file detected: ./hooks/hooks.json resolves to already-loaded file ...`. A marketplace-installed Writ therefore had no write gate, no rule injection, and no enforcement, which is the silent-no-op failure mode Writ exists to prevent. The `hooks` key is removed; `manifest.hooks` is for additional hook files only, and Writ has none.
+- **`claude plugin path` does not exist** and never has. README.md and `scripts/bootstrap-plugin.sh` wrapped it in `$(...)`, so a copy-paste expanded to the empty string and ran `bash /scripts/bootstrap-plugin.sh`. All sites now resolve the install directory from the `installPath` field of `claude plugin list --json`.
+- Dead references in `README.md` to `templates/settings.json` (removed several releases ago), to `.claude/hooks/` (now `hooks/scripts/`), to `scripts/install-harness-config.sh` (removed), and to `plugin.json` lifecycle hooks and `defaultEnabled` that the manifest does not declare. Hook counts corrected to 38 scripts over 12 registered events.
+
+### Added
+
+- `tests/test_plugin_manifest.py`. Static invariants (marketplace exists and names the plugin, no declared hooks path resolves to the auto-discovered file, plugin and marketplace versions agree, every declared component path exists) plus `integration`-marked acceptance tests that install from a local-path marketplace into a temporary `HOME` and assert on `claude plugin list --json` errors and `claude plugin details` component counts.
+
+### Known issues
+
+- `claude plugin details writ` reports `Agents (0)` despite `plugin.json` declaring five agent files that exist on disk. Plugin agents must live at `agents/` in the plugin root; Writ's are at `.claude/agents/`, which Claude Code reads as *project* agents. The `writ-*` roles are therefore available when working inside the Writ repository and have never been available to anyone using Writ elsewhere. Fixing it is a coordinated move across the manifest, `scripts/ingest_subagent_roles.py`, `scripts/export_subagent_roles.py`, the graph-drift check, and the bare-name steering in `hooks/scripts/writ-dispatch-discipline.sh`, so it ships separately.
+- `claude plugin validate --strict` passes on manifests with this defect. Manifest validation checks shape, not whether declared components load, so it cannot substitute for a real install.
+
 ## [1.5.0] - 2026-05-21
 
 Two coordinated structural changes shipped together. (1) Static workflow content -- the mode-system tutorial, failure-mode rules, orchestrator dispatch playbook, and SKILL.md hook breadcrumbs -- migrates into Methodology nodes that the existing hybrid-RAG pipeline surfaces on demand. The six places that previously described the mode workflow collapse to one canonical source (Neo4j, surfaced via RAG); per-session static token cost drops from ~2000 to ~250 (CLAUDE.md trimmed to user preferences plus a server-down fallback paragraph). (2) `writ import-markdown` becomes the single canonical entry point for ingesting every node type under `bible/` (Rules plus methodology: Skill, Playbook, AntiPattern, Phase, Technique, Rationalization, SubagentRole, WorkedExample, ForbiddenResponse). The duplicate parse-validate-write loop that previously lived in both `writ/cli.py::import_markdown` (Rule-only) and `scripts/migrate.py` (methodology-aware) collapses into a single library module, `writ/graph/methodology_ingest.py`, that both the CLI and the migrate-shim consume (DRY-DUP-002). Per-node-type dispatch becomes a registry lookup instead of an if/elif chain (SOLID-OCP-002); validation failures surface as typed `IngestError(file, node_type, node_id, field, reason)` records instead of raw Pydantic tracebacks (API-ERROR-002).
@@ -185,7 +205,7 @@ Anyone reading this entry should take from it the framing that drove the work: r
 - Mutating `writ` subcommands (`add`, `edit`, `import-markdown`, `export`, `compress`, `migrate`, `propose`, `review`, `feedback`, `serve`) remain gated behind explicit human approval. They are intentionally not in the allowlist; only their idempotent or read-only counterparts are auto-allowed.
 - Combined with the explicit ONNX contract in commit `dae679a`, the production embedding path is now both declared (`pyproject.toml` lists `onnxruntime`) and enforced (`build_pipeline()` raises `RuntimeError` when `OnnxEmbeddingModel` cannot construct and the fallback override is unset). Existing installs that produced silently-degraded daemons will, after upgrade, either start correctly with ONNX or refuse to start with an actionable error message naming `scripts/export_onnx.py`, the override env var, and the venv install steps. This is desirable behavior, but it is a user-visible change: daemons that used to start by silently switching to the SentenceTransformer fallback will now require either the model file plus `onnxruntime` on the production path, or an explicit `WRIT_ALLOW_EMBEDDING_FALLBACK=1` plus `pip install -e '.[fallback]'` to permit the fallback.
 - **Behavior change for existing users** following the `[fallback]` move. Existing standalone installs whose `.venv` was built before this change already have `sentence-transformers` from the prior core-deps declaration; the daemon continues to work without explicit action. Users who recreate their venv (`rm -rf .venv && bash scripts/bootstrap.sh`) get the lean install: no `sentence-transformers`, no `torch`, no CUDA libraries. Users who explicitly relied on `WRIT_ALLOW_EMBEDDING_FALLBACK=1` and re-bootstrap need to additionally run `pip install -e '.[fallback]'` to restore the fallback path. The startup `RuntimeError` names this command if hit.
-- Plugin-mode users running `bash $(claude plugin path writ)/scripts/bootstrap-plugin.sh` get the same lean profile after re-bootstrap. Plugin install paths are unaffected for users who do not re-bootstrap.
+- Plugin-mode users re-running `scripts/bootstrap-plugin.sh` get the same lean profile after re-bootstrap. Plugin install paths are unaffected for users who do not re-bootstrap. (Command corrected in 1.5.1: this entry originally documented `$(claude plugin path writ)`, a subcommand that has never existed. Resolve the install directory from `claude plugin list --json` instead.)
 
 ## [1.0.1] - 2026-05-11
 
@@ -212,7 +232,7 @@ Patch release completing the v1 vision: Writ is now installable as a Claude Code
 
 ### Notes
 
-- `templates/settings.json` is still the source of truth for standalone installs. The plugin path uses `hooks/hooks.json` instead. Keep registrations in sync between the two if you edit either.
+- `templates/settings.json` is still the source of truth for standalone installs. The plugin path uses `hooks/hooks.json` instead. Keep registrations in sync between the two if you edit either. (No longer true as of a later release: `templates/settings.json` was removed and `hooks/hooks.json` is now the single hook-registration surface for both install paths.)
 - Existing standalone installs at `~/.claude/skills/writ/` continue working unchanged. See README "Switching from the standalone install to the plugin" if you'd rather move to the plugin path; the Neo4j named volume `writ-neo4j-data` is shared between modes, so the rule corpus survives the switch.
 
 ## [1.0.0] - 2026-05-10

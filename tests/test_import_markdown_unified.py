@@ -730,27 +730,9 @@ class TestMigrateScriptShimContract:
         )
 
 
-# ---------------------------------------------------------------------------
-# Class TestVersionBumpedTo150
-# ---------------------------------------------------------------------------
-
-class TestVersionBumpedTo150:
-    """All version strings must read 1.5.0 and CHANGELOG must have the new entry."""
-
-    def test_pyproject_version_is_1_5_0(self) -> None:
-        """pyproject.toml must declare version = "1.5.0"."""
-        pyproject = (SKILL_DIR / "pyproject.toml").read_text(encoding="utf-8")
-        assert 'version = "1.5.0"' in pyproject, (
-            "pyproject.toml does not contain version = \"1.5.0\""
-        )
-
-    def test_plugin_json_version_is_1_5_0(self) -> None:
-        """`.claude-plugin/plugin.json` must have version 1.5.0."""
-        import json as _json
-        plugin_json = SKILL_DIR / ".claude-plugin" / "plugin.json"
-        assert plugin_json.exists(), f"plugin.json not found at {plugin_json}"
-        manifest = _json.loads(plugin_json.read_text(encoding="utf-8"))
-        assert manifest.get("version") == "1.5.0", (
-            f"plugin.json version is {manifest.get('version')!r}; expected '1.5.0'"
-        )
+# Version-string agreement across pyproject.toml, plugin.json and marketplace.json is
+# owned by tests/test_version_consistency.py, which keeps the expected version in a single
+# EXPECTED_VERSION constant. A release-pinned duplicate lived here (TestVersionBumpedTo150,
+# hardcoding "1.5.0") and meant every version bump had to be applied in two test files;
+# removed in v1.5.1 so there is one place to change.
 
