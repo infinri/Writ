@@ -40,8 +40,9 @@ parity methods byte-identical.
   .predicates) once, and the mixins/facade pull from `_common`. An `__all__` marks
   the re-exports so the module is ruff-clean. This hub is more justified here than
   in the db split (five source modules vs the db split's two).
-- The pre-existing failure `test_phase6_sequencing_guard::test_integrity_imports_the_provenance_axis`
-  (red at HEAD because integrity never imports `GRAPH_FIRST_PROVENANCE`) is left
-  as-is: a behavior-preserving split neither adds nor removes that import.
+- The then-failing `test_phase6_sequencing_guard::test_integrity_imports_the_provenance_axis`
+  was left as-is by this split (behavior-preserving) and later fixed in `9fb481a`:
+  the test now asserts on `PARITY_EXEMPT_PROVENANCE`, the wider set integrity
+  actually re-exports, and passes.
 - One path-coupled test (`test_fix3_metrics.py`, which `read_text()` the old single
   file) was made layout-agnostic, mirroring `_db_source()` / `writ_server_source()`.

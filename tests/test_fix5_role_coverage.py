@@ -33,9 +33,14 @@ from writ.graph.ingest import (
 )
 from writ.graph.schema import SubagentRole
 
+from tests._bible_guard import requires_bible
+
+pytestmark = requires_bible
+
+
 WRIT_ROOT = Path(__file__).resolve().parent.parent
 BIBLE_METHODOLOGY = WRIT_ROOT / "bible" / "methodology"
-AGENTS_DIR = WRIT_ROOT / ".claude" / "agents"
+AGENTS_DIR = WRIT_ROOT / "agents"
 EXPORT_SCRIPT = WRIT_ROOT / "scripts" / "export_subagent_roles.py"
 WRIT_PY = WRIT_ROOT / ".venv" / "bin" / "python"
 

@@ -103,7 +103,7 @@ Run on the first Monday of each month. Goal: turn the friction log into actionab
    - Update authority and confidence fields via `writ edit`.
 
 5. Refine quality judge rubrics:
-   - Override rate above 25 percent on any rubric: the rubric is a false-positive generator. Edit the rubric prose in `.claude/hooks/writ-quality-judge.sh`.
+   - Override rate above 25 percent on any rubric: the rubric is a false-positive generator. Edit the rubric prose in `hooks/scripts/writ-quality-judge.sh`.
 
 6. File the review notes in `docs/monthly-reviews/YYYY-MM.md` (copy from `TEMPLATE.md`).
 
@@ -136,6 +136,6 @@ When raising or lowering an existing floor or budget:
 
 ## Related documents
 
-- `HANDBOOK.md` covers the architecture and the structural gate in detail.
+- `HANDBOOK.md` covers the architecture and the structural gate in detail; precise contracts live under `docs/reference/` (graph-schema, session-and-gates, testing).
 - `docs/monthly-reviews/TEMPLATE.md` is the template for monthly review notes.
-- `plan.md` format requirements are validated by `.claude/hooks/validate-exit-plan.sh` on `/plan` exit: required sections are `## Files`, `## Analysis`, `## Rules Applied`, `## Capabilities`.
+- `plan.md` format requirements are validated by `hooks/scripts/validate-exit-plan.sh` on `/plan` exit: required sections are `## Files`, `## Analysis`, `## Rules Applied`, `## Capabilities`.

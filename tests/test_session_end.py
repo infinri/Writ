@@ -193,6 +193,11 @@ class TestLogSessionMetricsRemoval:
         """settings.json Bash permission for log-session-metrics.sh must be removed."""
         home = os.path.expanduser("~")
         settings_path = os.path.join(home, ".claude", "settings.json")
+        if not os.path.exists(settings_path):
+            pytest.skip(
+                "asserts on the HOST's installed ~/.claude/settings.json; "
+                "absent on machines (CI) where Writ's global config was never patched"
+            )
         with open(settings_path) as f:
             settings = json.load(f)
         permissions = settings.get("permissions", {})

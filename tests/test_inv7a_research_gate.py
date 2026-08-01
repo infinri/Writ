@@ -16,6 +16,11 @@ from pathlib import Path
 
 import pytest
 
+from tests._bible_guard import requires_bible
+
+pytestmark = requires_bible
+
+
 HELPER_PATH = os.path.join(os.path.dirname(__file__), os.pardir, "bin", "lib", "writ-session.py")
 _spec = importlib.util.spec_from_file_location("writ_session_inv7a", HELPER_PATH)
 writ_session = importlib.util.module_from_spec(_spec)

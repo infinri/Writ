@@ -13,6 +13,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from tests._bible_guard import requires_bible
+
+pytestmark = requires_bible
+
+
 WRIT_ROOT = Path(__file__).resolve().parent.parent
 CORPUS_PY = WRIT_ROOT / "tests" / "_corpus.py"
 CONFTEST = WRIT_ROOT / "tests" / "conftest.py"

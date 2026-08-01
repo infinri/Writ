@@ -18,9 +18,14 @@ from pathlib import Path
 
 from writ.graph.ingest import parse_nodes_from_file
 
+from tests._bible_guard import requires_bible
+
+pytestmark = requires_bible
+
+
 WRIT_ROOT = Path(__file__).resolve().parent.parent
 METH = WRIT_ROOT / "bible" / "methodology"
-AGENTS_DIR = WRIT_ROOT / ".claude" / "agents"
+AGENTS_DIR = WRIT_ROOT / "agents"
 ROL = METH / "ROL-IMPLEMENTER-001.md"
 AGENT = AGENTS_DIR / "writ-implementer.md"
 SDD = METH / "PBK-PROC-SDD-001.md"

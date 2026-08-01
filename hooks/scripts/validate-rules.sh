@@ -130,6 +130,12 @@ except Exception:
     print('error')
 " 2>/dev/null || echo "error")
 
+# A server-side analysis error must not masquerade as a clean pass: say so once,
+# visibly, before taking the same non-blocking path (the check is best-effort).
+if [ "$VERDICT" = "error" ]; then
+    echo "[Writ] /analyze errored for this write; compliance check skipped (not a pass)." >&2
+fi
+
 if [ "$VERDICT" = "pass" ] || [ "$VERDICT" = "error" ]; then
     # Item 4b: helper already computed plan_file; reuse it.
     PLAN_FILE="$HELPER_PLAN_FILE"

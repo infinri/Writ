@@ -60,10 +60,20 @@ CLAUDE_MD_TEMPLATE="$TEMPLATES_DIR/CLAUDE.md"
 # the server is down, so an absolute-path invocation works in any context.
 SL_CMD="bash $SKILL_DIR/hooks/scripts/writ-statusline.sh"
 
+SETTINGS_TEMPLATE="$TEMPLATES_DIR/settings.json"
+
+# Flags are scanned across all positions: this used to inspect only $1, so any other
+# argument was silently ignored -- which is why --hooks had to be added here rather than
+# appearing to work while doing nothing.
 DRY_RUN=0
-if [ "${1:-}" = "--dry-run" ]; then
-    DRY_RUN=1
-fi
+SEED_HOOKS=0
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DRY_RUN=1 ;;
+        --hooks)   SEED_HOOKS=1 ;;
+        *) echo "[patch] Unknown argument: $arg (accepted: --dry-run, --hooks)" >&2; exit 1 ;;
+    esac
+done
 
 # Cross-mode allow rules. Wildcards match both standalone and plugin paths.
 ALLOW=(
@@ -262,9 +272,111 @@ patch_claude_md() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Run both phases. Each is independent; surface a non-zero exit if either fails.
+# 3. Seed hook registrations (--hooks only)
+#
+# ONLY for an install nothing auto-discovers. Hooks are already global for a normal
+# install: ~/.claude/skills/writ loads as the user-scope plugin writ@skills-dir, so its
+# 12 hooks fire in every project with no settings.json entry at all. Writ at any other
+# path, without a marketplace install, is discovered by nothing -- hooks/hooks.json is
+# never read and NO hooks load, so there is no gate, no rule injection, no enforcement.
+#
+# REFUSES when a loaded plugin resolves to this install. Two registration surfaces would
+# very likely fire all 12 events twice: doubled rule injection, doubled gate evaluation,
+# duplicated telemetry, and a single-use gate token one path could consume before the
+# other reads it. That double-fire is not empirically proven, so this fails safe --
+# refusing costs nothing if Claude Code deduplicates, and prevents a bad failure if not.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Install paths of currently loaded plugins, one per line. WRIT_PLUGIN_LIST_CMD is a test
+# injection seam (same pattern as WRIT_HEALTH_CMD / WRIT_SERVE_CMD in writ-server-lib.sh).
+loaded_plugin_paths() {
+    local raw
+    if [ -n "${WRIT_PLUGIN_LIST_CMD:-}" ]; then
+        raw=$(eval "$WRIT_PLUGIN_LIST_CMD" 2>/dev/null || echo "[]")
+    elif command -v claude >/dev/null 2>&1; then
+        raw=$(claude plugin list --json 2>/dev/null || echo "[]")
+    else
+        raw="[]"
+    fi
+    printf '%s' "$raw" | jq -r '.[]? | select(.enabled != false) | .installPath // empty' 2>/dev/null || true
+}
+
+patch_hooks() {
+    if [ ! -f "$SETTINGS_TEMPLATE" ]; then
+        echo "[hooks] ERROR: template not found: $SETTINGS_TEMPLATE" >&2
+        echo "[hooks] Generate it: python3 scripts/render-settings-template.py" >&2
+        return 1
+    fi
+    if [ ! -f "$SETTINGS_TARGET" ]; then
+        echo "[hooks] ERROR: target settings file not found: $SETTINGS_TARGET" >&2
+        return 1
+    fi
+
+    local loaded
+    loaded=$(loaded_plugin_paths)
+    if printf '%s\n' "$loaded" | grep -qxF "$SKILL_DIR"; then
+        echo "[hooks] REFUSING: this install ($SKILL_DIR) is already loaded as a Claude Code plugin," >&2
+        echo "[hooks] so its 12 hooks are registered by the plugin loader and fire in every project." >&2
+        echo "[hooks] Seeding settings.json too would register them a SECOND time." >&2
+        echo "[hooks] The --hooks step is only for an install that no marketplace or skills dir" >&2
+        echo "[hooks] discovers. Nothing was written." >&2
+        return 1
+    fi
+
+    # $WRIT_DIR is the only variable in the template; render it to this install's path.
+    local rendered
+    rendered=$(WRIT_DIR="$SKILL_DIR" envsubst '$WRIT_DIR' < "$SETTINGS_TEMPLATE")
+
+    local tmp
+    tmp=$(mktemp)
+    # Merge per event, appending only commands not already registered, so the step is
+    # idempotent and a user's own hook on the same event survives.
+    if ! jq -n --argjson cur "$(cat "$SETTINGS_TARGET")" --argjson tpl "$rendered" '
+        def merge_event($existing; $incoming):
+            ($existing // []) + ($incoming | map(
+                . as $group
+                | select(
+                    [($existing // [])[]?.hooks[]?.command] as $have
+                    | ([$group.hooks[]?.command] | all(. as $c | ($have | index($c)) | not))
+                  )
+            ));
+        $cur
+        | .hooks = (
+            reduce ($tpl.hooks | keys_unsorted[]) as $e
+              ((.hooks // {}); .[$e] = merge_event(.[$e]; $tpl.hooks[$e]))
+          )
+    ' > "$tmp" 2>/dev/null; then
+        echo "[hooks] ERROR: failed to merge hook registrations" >&2
+        rm -f "$tmp"
+        return 2
+    fi
+
+    if cmp -s "$tmp" "$SETTINGS_TARGET"; then
+        echo "[hooks] Already registered (12 events); no change."
+        rm -f "$tmp"
+        return 0
+    fi
+    if [ "$DRY_RUN" = "1" ]; then
+        echo "[hooks] [dry-run] would merge 12 hook events into $SETTINGS_TARGET. Diff:"
+        diff -u "$SETTINGS_TARGET" "$tmp" || true
+        rm -f "$tmp"
+        return 0
+    fi
+
+    local backup="${SETTINGS_TARGET}.bak.$(timestamp)"
+    cp "$SETTINGS_TARGET" "$backup" || { echo "[hooks] ERROR: backup failed" >&2; rm -f "$tmp"; return 2; }
+    mv "$tmp" "$SETTINGS_TARGET" || { echo "[hooks] ERROR: write failed" >&2; return 2; }
+    echo "[hooks] Registered 12 hook events in $SETTINGS_TARGET"
+    echo "[hooks] Backup: $backup"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Run the phases. Each is independent; surface a non-zero exit if any fails.
 # ─────────────────────────────────────────────────────────────────────────────
 overall=0
 patch_settings || overall=$?
 patch_claude_md || overall=$?
+if [ "$SEED_HOOKS" = "1" ]; then
+    patch_hooks || overall=$?
+fi
 exit $overall

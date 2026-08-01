@@ -89,6 +89,10 @@ def mock_writ_session():
     # mock must expose those callables with realistic shapes.
     mock._can_write_check = MagicMock(return_value={"can_write": True, "reason": None})
     mock.cmd_auto_feedback = MagicMock(return_value=None)
+    # /should-skip delegates to cmd_should_skip (single policy source) and derives
+    # `known` from the cache FILE's existence via _cache_path.
+    mock.cmd_should_skip = MagicMock(return_value=False)
+    mock._cache_path = MagicMock(return_value="/nonexistent/mock-session-cache.json")
     return mock
 
 

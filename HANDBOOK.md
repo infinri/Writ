@@ -1,10 +1,10 @@
 # The Writ Handbook
 
-The operating manual for Writ: what it is, what happens on a turn, and how to run it. This is the *how to use it* guide. For the *why it's built this way* design rationale, read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); this handbook points there for deep internals and does not duplicate them.
+The operating manual for Writ: what it is, what happens on a turn, and how to run it. This is the *how to use it* guide; [`docs/reference/architecture.md`](docs/reference/architecture.md) holds the deep internals and this handbook does not duplicate them.
 
 > **North star.** Writ relocates oversight; it does not remove it. The gate is the product. Writ never automates self-approval: a human token-gates any write of canon. Every "the agent could otherwise..." seam in this doc is closed by a human-held token, not by trust.
 
-Every load-bearing number below is anchored to a file, a line, or a command you can run. Where this handbook and the code disagree, the code wins. Live counts were measured against project `writ` on 2026-06-16.
+Every load-bearing number below is anchored to a file, a command you can run, or a dated measurement. Where this handbook and the code disagree, the code wins. Counts were taken from the shipped corpus dump and source tree on 2026-07-31.
 
 ---
 
@@ -14,115 +14,120 @@ Every load-bearing number below is anchored to a file, a line, or a command you 
 
 Two problems motivated it.
 
-- **Context stuffing does not scale.** Pasting a whole rulebook into every prompt works at ten rules and collapses at ten thousand: the model can't tell which rules are load-bearing, cache hit rates fall, and the bill scales with your rulebook instead of your work. Writ replaces stuffing with *relevance* - it retrieves only the rules that fit this file, this domain, this turn.
+- **Context stuffing does not scale.** Pasting a whole rulebook into every prompt works at ten rules and collapses at ten thousand: the model can't tell which rules are load-bearing, cache hit rates fall, and the bill scales with your rulebook instead of your work. Writ replaces stuffing with *relevance*: it retrieves only the rules that fit this file, this domain, this turn.
 - **Process discipline cannot live in a prompt.** A skill file can *say* "write the failing test first," but nothing stops the model from writing the implementation first anyway. Writ moves discipline to the boundary where Claude actually calls tools: a write that violates the workflow is *denied*, not just discouraged.
 
-**The four runtime pieces** (see ARCHITECTURE §1):
+**The four runtime pieces:**
 
 | Piece | Role | Where |
 |---|---|---|
-| FastAPI daemon | The single HTTP service all hooks talk to (retrieval, session state, gates, self-authoring). Binds `127.0.0.1:8765`. | `writ/server.py` |
-| Hooks + session state | Thin bash hooks intercept the Claude Code tool lifecycle; a Python package tracks mode/phase/budget/gates per session. | `hooks/`, `writ/session/` |
-| Neo4j canonical store | The graph is the source of truth for all rules and methodology. Runs in Docker (`writ-neo4j`). | `writ/graph/db.py` |
-| The CLI | Operator control surface: ingest, export, reconcile, validate, author, query, analyze. | `writ/cli.py` |
+| FastAPI daemon | The single HTTP service all hooks talk to (retrieval, session state, gates, self-authoring). Binds `127.0.0.1:8765`, 45 endpoints, no auth (localhost only). | `writ/server/` |
+| Hooks + session state | 37 thin bash hooks intercept the Claude Code tool lifecycle; a Python package tracks mode/phase/budget/gates per session. | `hooks/`, `writ/session/` |
+| Neo4j canonical store | The graph is the source of truth for all rules and methodology. Runs in Docker (`writ-neo4j`). | `writ/graph/db/` |
+| The CLI | Operator control surface: ingest, export, reconcile, validate, author, query, doctor, logs, decision memory. | `writ/cli.py` |
 
-**Canonical vs derived.** Neo4j is canonical. The `bible/` Markdown tree is a *derived, exported view* (think `dist/`). When they disagree, the graph wins on `reconcile`. Do not hand-edit exported Markdown expecting it to be authoritative - the exception is dual-location canonical files under `bible/methodology/` (§11).
+**Canonical vs derived.** Neo4j is canonical. The tracked, shipped form of the corpus is `writ-corpus.cypher` (a portable dump). The `bible/` Markdown tree is a *derived, local, untracked export* (think `dist/`): `writ export` materializes it, `writ import-markdown` pushes edits back, `writ export-cypher` refreshes the dump. When graph and markdown disagree, `writ reconcile` makes the source win. The exception is dual-location canonical files under `bible/methodology/` (§11).
 
 ---
 
 ## 2. A single turn, end to end
 
-You type a prompt. Claude Code fires `UserPromptSubmit`. Here is what runs, in order:
+You type a prompt. Claude Code fires `UserPromptSubmit`. In order:
 
-1. **Daemon ensure + RAG inject** (`writ-rag-inject.sh`, the primary path). It health-checks the daemon (`/health`), starts `writ-neo4j` and the server if needed, then POSTs your prompt to `/query` and `/always-on`.
-2. **Session read.** The hook reads the session cache: which mode, which phase, which rules are already loaded, how much of the turn's token budget is left (`default_budget=8000`). If no mode is set, the hook nudges Claude to declare one. If context is over ~75% full or budget is spent, the hook stays quiet.
-3. **Retrieval** (`/query`). The daemon runs the 5-stage pipeline (ARCHITECTURE §6) against pre-warmed in-memory indexes: domain/route filter → BM25 (Tantivy) → ANN (hnswlib) → graph traversal → rank + budget trim. It returns a ranked, budget-capped JSON list.
-4. **Always-on inject** (`/always-on`). A separate path returns the mandatory floor plus `ForbiddenResponse` nodes, on its own 5000-token budget so the floor can never be starved by retrieval (§10).
-5. **Methodology companion.** Skill/Playbook/Technique/AntiPattern guidance is *also* injected. Today the companion still rides the `/query` path; the deterministic `/methodology-companion` channel exists but is built-not-wired (§4, ARCHITECTURE §7).
-6. **Render.** The hook formats a compact `--- WRIT RULES ---` block, deducts its token cost from the turn budget, and prints it. Claude Code injects it ahead of the reply. A status line leads each turn:
+1. **Approval scan** (`auto-approve-gate.sh`). If your prompt matches an approval phrase, it mints the single-use gate token (§7) and, in Work mode with a pending gate, advances the phase. It also publishes your session id to `/tmp/writ-current-session` for everything downstream.
+2. **Daemon ensure + RAG inject** (`writ-rag-inject.sh`). Health-checks the daemon, starts Neo4j and the server if needed (unless `WRIT_NO_AUTOSTART=1`), and reads the session cache once: mode, phase, orchestrator flag, remaining budget (`default_budget=8000`).
+3. **Mode auto-route.** If no mode is set and the prompt is clearly audit/explore/research-shaped, the hook sets `investigate`; clearly build-shaped, `work`. Otherwise it asks you to declare one.
+4. **One warm bundle call** (`POST /prompt-bundle`). This single request runs the ranked query, the always-on floor, and the methodology companion in-process on the daemon and returns all three blocks. It replaced roughly sixteen cold Python spawns per turn with one warm call.
+5. **Retrieval** inside that call: the 5-stage pipeline (candidate filter, BM25, ANN vector, graph traversal, two-pass ranking) against pre-warmed in-memory indexes, with an abstention gate that returns nothing rather than noise when the best raw cosine is under 0.30.
+6. **Always-on floor** inside the same call: the mandatory bundle on its own 5,000-token budget, so the floor can never be starved by retrieval (§10).
+7. **Methodology companion** inside the same call: deterministic floor/push/pull matching of Skill/Playbook/Technique/AntiPattern nodes by workflow state, no embeddings (§9).
+8. **Render.** The hook prints the `--- WRIT RULES ---` block plus a status line, and deducts the token cost from the turn budget:
    ```
    [Writ: mode=work, phase=implementation, gates=[], violations=0]
    ```
-7. **Write gate** (`PreToolUse` → `writ-pre-write-dispatch.sh` → `POST /pre-write-check`). On a file write, the daemon consults session state and may deny with a `[RULE-ID]`-prefixed reason (e.g. a plan-gate denial in Work mode before `plan.md` is approved).
-8. **Stop hooks.** When Claude finishes a turn, Stop hooks run pending tests (in implementation/complete phase, `writ-run-pending-tests.sh`), self-review (`writ-quality-judge.sh`), and verification. Any *blocking* Stop hook must check `stop_hook_active` or Claude loops to its 9-turn block cap (§14).
-9. **Friction log.** Throughout, events append to `workflow-friction.log` (NDJSON): rule loads, gate denials, phase transitions, hook timing, sub-agent completions. This is the learning loop (§18).
+9. **Write gate** (`PreToolUse` on Write/Edit/NotebookEdit -> `writ-pre-write-dispatch.sh` -> `POST /pre-write-check`). One combined call: gate decision, denial escalation, and file-context RAG. Denials carry a `[RULE-ID]`-prefixed reason. Bash-mediated writes (`>`, `tee`, `cp`, `sed -i`, ...) go through the same `/can-write` check via `writ-bash-write-gate.sh`, and credential paths are denied in every mode.
+10. **Stop hooks.** When Claude finishes a turn: pending tests run (failures block only in implementation/complete phase), unresolved violations block, unverified quality scores block, and a deterministic punctuation gate rejects em-dash output. Blocking Stop hooks surface via stderr + non-zero exit, guarded by `stop_hook_active` so they cannot loop.
+11. **Telemetry.** Throughout, events land in the typed log streams under `<install>/var/logs/<project>/` (§18): audit for decisions, friction for things worth fixing, metrics for volume, errors for exceptions.
 
-That is one turn: relevant rules in, a hard gate on risky writes, and a telemetry trail out.
+That is one turn: relevant rules in, a hard gate on risky writes, and a durable trail out.
 
 ---
 
 ## 3. The mode system
 
-You declare a mode per session. The mode decides what state initializes and whether gates apply. There are **five modes** (`writ/session/mode_engine.py`, `VALID_MODES = set(MODE_CONFIG)`):
+You declare a mode per session. The mode decides what state initializes and whether gates apply. There are **five modes** (`writ/session/mode_engine.py`, `MODE_CONFIG` is the single source; a new mode is one dict entry, not new branches):
 
-| Mode | Purpose | Gates / source-edit block |
+| Mode | Purpose | Gates / blocks |
 |---|---|---|
 | `conversation` | Discussion, questions, brainstorming | None |
-| `debug` | Investigate one specific failure (runtime lens) | Root-cause source-edit gate (§5) |
-| `investigate` | Evidence-grounded audit / explore / research | Per-source-type gates (§4); advisory by default |
-| `review` | Evaluate code against rules, read-only | None |
+| `debug` | Investigate one specific failure (the runtime lens) | Root-cause source-edit gate; evidence-first read gate (§5) |
+| `investigate` | Evidence-grounded audit / explore / research | Per-lens gates (§4); advisory except web research |
+| `review` | Evaluate code against rules | None |
 | `work` | Build or modify code | Two phase gates (§6) |
 
-`MODE_CONFIG` is the single source for per-mode gate behavior - a new mode is one dict entry, not new branches.
+**`mode set` vs `mode switch` vs auto-route.** This distinction is load-bearing:
 
-**`mode set` vs `mode switch`.** This distinction is load-bearing:
+- **`mode set <mode>`** initializes *fresh* state: phase reset to the mode's initial phase, gates cleared, denial counts cleared. Use it when you start a new piece of work.
+- **`mode switch <mode>`** *preserves paused work state*. Mid-task in Work mode, switch to `debug` to chase a failure; switching back restores the paused phase and gates instead of resetting them.
+- **Auto-route** (`classify_mode_hint`, `bin/lib/writ_mode_hint.py`) only ever fires when no mode is set, and never overwrites a live session.
 
-- **`mode set <mode>`** initializes *fresh* state for that mode (clears phase, gates, budget for the new mode's lifecycle). Use it when you start a new piece of work.
-- **`mode switch <mode>`** *preserves paused work state*. If you're mid-task in Work mode and switch to `debug` to chase a failure, switching back resumes the paused Work phase/gates rather than resetting them.
-
-**Mode auto-routing.** `classify_mode_hint` (defined in `bin/lib/writ_mode_hint.py`, re-exported from `mode_engine.py` as the single definition) suggests a mode from the prompt text; you still confirm.
+**Session rotation.** If Claude Code assigns a new session id mid-conversation, the SessionStart hook carries the *mode only* forward into the fresh session, same project only. Gates are never inherited across a rotation: a rotated session re-earns its approvals.
 
 ---
 
 ## 4. Investigate mode
 
-`investigate` unifies audit, explore, and research into one evidence-grounded process (the "investigation engine," INV-1..9, in `writ/session/gates.py` and the session package). The differences between an audit, an exploration, and a research task are expressed as a **lens**, not as separate modes.
-
-**The source-type lens** (`source_type` on the mode config) selects what counts as evidence and how strict the gates are:
+`investigate` unifies audit, explore, and research into one evidence-grounded engine (`writ/session/investigations.py`). The differences between an audit, an exploration, and a research task are expressed as a **lens**, not separate modes.
 
 | Lens | `source_type` | Evidence | Gate strictness |
 |---|---|---|---|
-| Codebase / audit / explore | `code` (or `None` until set) | File reads, greps | advisory |
-| Research | `web` | Captured web sources | hard (overrides to fail-closed) |
-| Runtime | `runtime` | Command output (this is what `debug` mode is - the runtime lens) | INV-9 read gate (below) |
+| Codebase audit / explore | `code` | File reads, greps, recorded analyses | advisory |
+| Research | `web` | Captured web sources (auto-recorded from WebFetch/WebSearch) | **hard, fail-closed** |
+| Runtime | `runtime` | Command output (this is what `debug` mode is) | read gate (§5) |
 
 **Key invariants:**
 
-- **Coverage scope freeze (INV).** Once an investigation's scope is fixed, the coverage map is frozen; partitioning into worker assignments uses a first-fit-decreasing algorithm. You cannot silently widen scope mid-investigation.
-- **Synthesis gate (advisory).** Findings should be synthesized, not dumped; this gate warns but does not fail.
-- **Triangulation gate (hard, fail-closed).** A conclusion must be supported by ≥2 independent evidence domains. This one fails closed when strictness is hard (research). See `gates.py:109` (advisory baseline) and the strictness override.
-- **Evidence + Narrowing read gate (INV-9).** In the runtime lens, code reading and searching are *blocked* until both `## Evidence` and `## Narrowing` sections of the investigation/debug doc have real (non-placeholder) content (`_validate_evidence_narrowing`, `gates.py:152`). This forces you to record what you observed and how you narrowed before you go spelunking in source - the discipline that separates investigation from flailing.
-- **Staleness check.** Evidence excerpts are stamped with an `excerpt_hash`; if the underlying source changed, the citation is flagged stale.
+- **Coverage scope freeze.** You freeze the file scope once (`--freeze-scope`); the coverage denominator cannot silently grow or shrink afterward (re-freezing requires `--force`). Coverage is examined-in-scope over the *frozen* total, so it cannot be inflated by narrowing scope after the fact.
+- **Synthesis gate (advisory).** Warns when you try to conclude with zero coverage evidence. It checks presence of attention, not correctness, and says so.
+- **Triangulation gate (hard).** A web-research synthesis is *blocked* until citations span at least two independent source domains. Same-site sources collapse into one. Zero captured sources blocks outright.
+- **Staleness check.** Citations carry an `excerpt_hash`; two different hashes for the same source flag drift.
+- **Audit fan-out.** For large scopes, the engine partitions the frozen scope into worker-sized tiles (2,000 LOC / 30 files per worker), rolls worker coverage back up, aggregates findings with contradiction detection, and ranks partitions by an attention score so the highest-signal areas surface first.
 
-`aggregate_findings` ranks findings by an attention formula so the highest-signal items surface first.
+Only the triangulation gate fails closed. The code and runtime lenses are deliberately advisory: the reports state what was examined, never that the investigation is complete.
 
 ---
 
 ## 5. Debug mode
 
-`debug` is the runtime lens of the investigation engine (`MODE_CONFIG["debug"]` carries `source_type: "runtime"`). Its command citations are runtime evidence.
+`debug` is the runtime lens of the investigation engine (`MODE_CONFIG["debug"]` carries `source_type: "runtime"`).
 
-**Root-cause gate.** Source edits are *blocked* until `debug.md` has a populated `## Root cause` section. You investigate first, find the cause, write it down, and only then are you allowed to change code. This stops "fix by guessing."
+**Evidence-first read gate.** Code reading and searching (Read/Grep/Glob on source files) are blocked until `debug.md` has real, non-placeholder `## Evidence` and `## Narrowing` sections. Record what you observed and how you narrowed before spelunking in source; logs, docs, and Bash (the evidence-gathering tools) stay open. The gate fails open on any internal error: a gate bug must never wedge the agent.
 
-**INV-9 read gate also applies** (§4): in the runtime lens, code read/search is gated behind recorded Evidence + Narrowing.
+**Root-cause gate.** Source edits are blocked until `debug.md` has a populated `## Root cause`. Investigate first, write the cause down, then change code. This stops "fix by guessing." `debug.md` itself, `plan.md`, and the excluded paths stay writable.
 
-**Debug → Work handoff.** When you transition from `debug` to `work`, `_promote_root_cause_to_plan` seeds `plan.md` from `debug.md` (best-effort; it never raises). Your diagnosis becomes the starting point of the plan you'll then gate through Work mode.
+**Debug to Work handoff.** On the debug-to-work transition, the root cause is seeded into `plan.md` as `## Root Cause Evidence` (best-effort, idempotent, never fires when switching back into a paused implementation phase). Your diagnosis becomes the start of the plan you then gate through Work mode.
+
+In debug mode, every Bash command's output is auto-captured into the citation log as runtime evidence, so the gate reads observed data, not self-reported claims.
 
 ---
 
 ## 6. The Work-mode gates
 
-Work mode is the only mode that gates writes to source. The lifecycle is `planning → testing → implementation → complete`, with `gate_sequence: ["phase-a", "test-skeletons"]` and `phase_after_gate: {phase-a: testing, test-skeletons: implementation}`.
+Work mode is the only mode that gates writes to source. The lifecycle is `planning -> testing -> implementation`, with `gate_sequence: ["phase-a", "test-skeletons"]`.
 
-1. **`mode set work` → `planning`.** Writes to source are blocked.
-2. **Gate phase-a (the plan gate) → `testing`.** A `plan.md` must exist with four sections - `## Files`, `## Analysis`, `## Rules Applied`, `## Capabilities` - and the plan must cite *real* rule IDs from the rules loaded in the session, not invented ones. Test skeletons are also expected at this stage.
-3. **Gate test-skeletons → `implementation`.** At least one test file with real assertions (not empty bodies) must exist. After this gate, source writes flow freely.
+1. **`mode set work` -> `planning`.** Writes to source are blocked.
+2. **Gate `phase-a` (the plan gate) -> `testing`.** `plan.md` must exist with four sections: `## Files` (each entry a path, change type, and reason), `## Analysis`, `## Rules Applied` (citing *real* rule IDs from the rules actually loaded this session; invented IDs are flagged as hallucinated), and `## Capabilities` (unchecked `- [ ]` checkboxes; pre-checked boxes are rejected).
+3. **Gate `test-skeletons` -> `implementation`.** At least one test file with real assertions must exist. After this gate, source writes flow freely.
 
-**How you advance a phase.** When you (the human) approve - by typing an approval phrase - `auto-approve-gate.sh` writes the gate token (§7) and the phase advances. `/advance-phase` consumes the token.
+The validators are presence checks by design: they confirm the artifact exists in the expected shape. A regex cannot tell a real root cause or plan from a fabricated one; what makes the gate meaningful is that *you* read the artifact before typing the approval.
 
-**ExitPlanMode integration.** `validate-exit-plan.sh` validates the plan's *format* on a successful `ExitPlanMode` and resets the task phase (`--reset-task-phase`). It does **not** create the phase-a gate - that gate is created by `auto-approve-gate.sh` on genuine user approval. (A common misconception is that `ExitPlanMode` clears the gate; it only validates and resets phase.)
+**How you advance.** You approve by typing an approval phrase (pattern path: `auto-approve-gate.sh` mints the token and calls `/advance-phase`) or by `/writ-approve` (tool path: same endpoint, same token). One approval advances exactly one gate. A validation failure *spends* the token: a changed artifact needs a fresh approval.
 
-**Gate exemptions.** Sub-agents, the skill dir, settings files, `plan.md` before a mode is set, `capabilities.md`, and the paths listed in `gate-categories.json` `exclusions` (tests, migrations, `__init__.py`, etc.) are exempt from write blocking. Deny reasons carry a `[RULE-ID]` prefix. Under a `.claude/` directory only CONFIG is exempt (`settings.json`, `settings.local.json`, and `*.md`): a blanket `*/.claude/*` exclusion left every implementation file under `~/.claude/skills/<name>/` ungated, and directory globs like `*/.claude/agents/*` re-opened it at any depth (the matcher's `*` spans `/`, so `..` in a path escaped the directory entirely). Keep new patterns extension-anchored or exact filenames.
+**ExitPlanMode integration.** Leaving Claude Code's plan mode validates `plan.md` with the same validator the gate uses and resets the task phase so a stale `implementation` phase from a prior task cannot swallow the new task's first approval. It does **not** approve the gate; only your approval does.
+
+**Gate exemptions.** Sub-agents, the Writ install's own tree, `~/.claude/settings.json` / `settings.local.json` (exact basenames, symlink-resolved), `plan.md` before a mode is set, `capabilities.md`, and the `exclusions` globs in `bin/lib/gate-categories.json` (tests, migrations, `__init__.py`, `.claude/` config and markdown). Credential paths (`.env`, keys, `~/.ssh/`, ...) are denied in every mode and override every exemption. One matcher caution: glob `*` spans `/` and matches the raw path, so keep new exclusion patterns extension-anchored or exact filenames; a directory glob exempts any depth.
+
+**When a write slips through anyway.** Post-write validators analyze every written file. At the plan boundary, a confirmed violation of a rule that was loaded at planning time *invalidates* the phase-a gate: the next write is blocked until you re-approve a corrected plan. Three invalidation cycles escalate with a differential diagnosis of what kept failing.
 
 ---
 
@@ -131,9 +136,10 @@ Work mode is the only mode that gates writes to source. The lifecycle is `planni
 This is the keystone. Writ could otherwise let the agent approve its own writes. It cannot.
 
 - **The token.** A 32-hex-character secret at `/tmp/writ-gate-token-<session_id>` (chmod 600).
-- **Who writes it.** `auto-approve-gate.sh`, and *only* when the user's prompt matches an approval pattern (exact phrases, Levenshtein ≤2, length-bounded regex). This is input the agent cannot forge - it must come from the human's typed turn.
-- **Who consumes it.** `/advance-phase` (§6) and `/promote-candidate` (§12) - the only two routes that write canon. The token is consumed on success, so **one user approval authorizes exactly one advance**.
-- **What happens without it.** A phase advance or promotion attempted without a valid token logs an `agent_self_approval_blocked` friction event and is refused (`server.py` around the advance-phase handler).
+- **Who writes it.** `auto-approve-gate.sh`, and *only* when the user's typed prompt matches an approval pattern (exact phrases, small-edit fuzzy match, bounded regexes; single source `bin/lib/approval_match.py`). The agent cannot forge your keystroke.
+- **Who consumes it.** `/advance-phase` (§6) and `/promote-candidate` (§12), the only two routes that advance workflow or write canon. Claiming the token is an atomic filesystem rename, so two concurrent requests with the same token produce exactly one advance. Claiming *is* consuming: one approval, one advance.
+- **What spends it.** A successful advance, or a failed validation (the artifact changed; re-approve). A request that cannot even resolve the project root does not spend it.
+- **What happens without it.** The attempt is refused and logged as `agent_self_approval_blocked` on the audit stream.
 
 In one sentence: the agent can draft, propose, and lobby, but the *write of canon* requires a token only your keystroke produces.
 
@@ -141,63 +147,58 @@ In one sentence: the agent can draft, propose, and lobby, but the *write of cano
 
 ## 8. Sub-agents and orchestration
 
-Writ supports multi-session workflows (an orchestrator delegating to workers) as a first-class feature. There are **five named roles**, each both a `SubagentRole` graph node and a Claude Code agent file under `.claude/agents/`:
+Writ ships **five named roles**, each both a `SubagentRole` graph node and a Claude Code agent file under `agents/` at the plugin root (the auto-discovered location; declaring an `agents` key in the plugin manifest would load zero of them):
 
-| Role | Node id | Agent file | Default model |
-|---|---|---|---|
-| Explorer | `ROL-EXPLORER-001` | `writ-explorer.md` | per `model_preference` on the node |
-| Planner | `ROL-PLANNER-001` | `writ-planner.md` | per `model_preference` |
-| Test writer | `ROL-TEST-WRITER-001` | `writ-test-writer.md` | per `model_preference` |
-| Implementer | `ROL-IMPLEMENTER-001` | `writ-implementer.md` | per `model_preference` |
-| Reviewer | `ROL-REVIEWER-001` | `writ-reviewer.md` | per `model_preference` |
+| Role | Node id | Tools |
+|---|---|---|
+| Explorer | `ROL-EXPLORER-001` | Read, Glob, Grep, Bash (structurally read-only) |
+| Planner | `ROL-PLANNER-001` | Read, Glob, Grep, Write |
+| Test writer | `ROL-TEST-WRITER-001` | Read, Glob, Grep, Write, Bash |
+| Implementer | `ROL-IMPLEMENTER-001` | Read, Glob, Grep, Write, Edit, Bash |
+| Reviewer | `ROL-REVIEWER-001` | Read, Glob, Grep, Bash (read-only, JSON verdicts) |
 
-(`writ role-prompt <role>` prints the graph-canonical prompt template; the agent files are exported *from* the graph, so the graph is authoritative.)
+`writ role-prompt <role>` prints the graph-canonical prompt; the agent files are exported *from* the graph, and a drift check keeps them byte-identical.
 
-**Three behaviors that matter:**
+**Four behaviors that matter:**
 
-- **`is_subagent` bypasses gates.** When the orchestrator dispatches a worker, `writ-subagent-start.sh` creates an isolated session with `is_subagent: true`. The worker bypasses the Work gates - the orchestrator already cleared them, and re-policing the worker would just produce false denials. Sub-agents also get unlimited budget (`subagent_budget: null`).
-- **`is_orchestrator` suppresses broad RAG.** Set the orchestrator session with `--orchestrator` and `is_orchestrator: true` tells the daemon to suppress broad rule injection on the orchestrator (it coordinates; the workers need the rules) and emit a compact status line instead. This is the ~1400-token RAG saving.
-- **Mode is inherited FILE-DIRECT.** A worker reads its parent's mode from the session cache *file*, not daemon-first - this avoids a `mode=None` race where the daemon hasn't yet seen the parent's mode. Caches are keyed by `agent_id` for isolation (with one deliberate exception: `writ-mark-pending-test.sh` uses the RAW session id).
+- **`is_subagent` bypasses the write gates.** Workers are dispatched by an orchestrator that already passed the human gate; re-policing them would produce false denials. The trust boundary is the role definition (the explorer and reviewer physically lack Write) plus the spawn prompt. Workers also get unlimited RAG budget (`subagent_budget: null`).
+- **`is_orchestrator` suppresses broad RAG.** Set with `mode set work --orchestrator`; the dispatching session skips the ~1,400-token broad injection (workers need the rules, the coordinator doesn't) and still receives the methodology companion. The flag is manual; forget it and the orchestrator pays full injection every turn.
+- **Mode is inherited file-direct.** A worker reads its parent's mode from the session cache *file*, never daemon-first: a daemon whose in-memory view diverged once served `mode=None` to every worker. Worker caches are keyed by `agent_id` for isolation.
+- **Worker rule usage flows back.** At commit time, the rules each worker queried per file are merged into the decision-memory record, so `queried_rule_ids` on a FileChange reflects the whole fan-out, not just the parent session.
 
-Dispatch discipline (`writ-dispatch-discipline.sh`) steers generic dispatches toward the named roles in Work and Investigate modes; escape hatches are `[general-purpose]` and `[writ:dispatch-ok]`.
+Dispatch discipline (`writ-dispatch-discipline.sh`) governs Work, Investigate, and mode-unset sessions: a generic dispatch (`general-purpose`, `Explore`, empty) is *rewritten in place* to the matching `writ-*` role when the prompt classifies confidently, and denied-with-ask when ambiguous. Escape hatches: `[general-purpose]` or `[writ:dispatch-ok]` in the dispatch prompt.
 
 ---
 
 ## 9. The knowledge graph (operator view)
 
-**13 node types** (`writ/graph/schema.py`, `NODE_ID_FIELDS`):
-`Rule`, `Abstraction`, `Category`, `Skill`, `Playbook`, `Technique`, `AntiPattern`, `ForbiddenResponse`, `Phase`, `Rationalization`, `PressureScenario`, `WorkedExample`, `SubagentRole`.
+**13 node types** (`writ/graph/schema.py`): `Rule`, `Abstraction`, `Category`, `Skill`, `Playbook`, `Technique`, `AntiPattern`, `ForbiddenResponse`, `Phase`, `Rationalization`, `PressureScenario`, `WorkedExample`, `SubagentRole`. Decision-memory records (`Decision`, `FileChange`, `Commit`) are deliberately outside this registry: they never enter retrieval.
 
-**Live counts** (project `writ`, 2026-06-16; total **399 nodes / 1048 edges**; run `writ validate` for current):
+**Shipped corpus** (`writ-corpus.cypher`, 2026-07-31: **464 nodes / 731 edges**; run the census below for your live graph):
 
-| Node type | Count | Retrievable? |
+| Node type | Count | Retrieval path |
 |---|---:|---|
-| Rule | 286 | yes |
-| Category | 22 | bundle / routing |
-| Phase | 20 | bundle only |
-| Playbook | 15 | yes |
-| Skill | 15 | yes |
-| AntiPattern | 13 | yes |
-| Technique | 11 | yes |
-| SubagentRole | 5 | bundle only (via `/subagent-role/{name}`) |
-| Rationalization | 4 | bundle only |
-| WorkedExample | 3 | bundle only |
-| PressureScenario | 3 | bundle only |
-| ForbiddenResponse | 2 | yes (also in the always-on bundle) |
-| Abstraction | 0 | yes (generated on demand by `writ compress`) |
+| Rule | 287 (33 mandatory) | ranked pipeline; mandatory via `/always-on` only |
+| Abstraction | 62 | summary-mode substitution (generated by `writ compress`) |
+| Category | 22 | routing data, never retrieved |
+| Phase | 20 | graph neighbor only |
+| Skill / Playbook | 15 / 15 | companion channel + ranked pipeline |
+| AntiPattern | 13 | companion channel + ranked pipeline |
+| Technique | 11 | companion channel + ranked pipeline |
+| SubagentRole | 7 | `/subagent-role/{name}` only |
+| Rationalization / WorkedExample / PressureScenario | 4 / 3 / 3 | graph neighbor only |
+| ForbiddenResponse | 2 | always-on bundle + ranked pipeline |
 
-Census command:
 ```bash
 docker exec writ-neo4j cypher-shell -u neo4j -p writdevpass \
   "MATCH (n) WHERE n.project='writ' RETURN labels(n)[0] AS t, count(*) AS c ORDER BY c DESC;"
 ```
 
-"Retrievable" = the pipeline can return it directly. "Bundle only" = it surfaces only as a graph neighbor of a retrievable node (Stage 4 traversal).
+**Two retrieval channels.** Channel 1 is the ranked 5-stage pipeline plus the always-on floor (Rules and ForbiddenResponse). Channel 2 is the deterministic methodology companion: `floor_modes` (always injected in matching modes, never dropped for budget), `action_triggers` (pushed on observable actions like a gate denial or `git worktree add`, deliberately bypassing dedup because the timing is the value), and `trigger_keywords` (budget-flexible pull, trimmed first). Methodology nodes are also embedded in the ranked pool, so "methodology is never ranked" is only true of the companion channel itself.
 
-**17 edge types** (`writ/graph/db.py`, `ALLOWED_EDGE_TYPES`):
-`DEPENDS_ON`, `PRECEDES`, `CONFLICTS_WITH`, `SUPPLEMENTS`, `SUPERSEDES`, `RELATED_TO`, `ABSTRACTS`, `TEACHES`, `COUNTERS`, `DEMONSTRATES`, `DISPATCHES`, `GATES`, `PRESSURE_TESTS`, `CONTAINS`, `ATTACHED_TO`, `BELONGS_TO`, `INVOKES`.
+**24 edge types**: 17 corpus edges (`DEPENDS_ON`, `PRECEDES`, `CONFLICTS_WITH`, `SUPPLEMENTS`, `SUPERSEDES`, `RELATED_TO`, `ABSTRACTS`, `TEACHES`, `COUNTERS`, `DEMONSTRATES`, `DISPATCHES`, `GATES`, `PRESSURE_TESTS`, `CONTAINS`, `ATTACHED_TO`, `BELONGS_TO`, `INVOKES`) plus 7 decision-memory record edges (`HAS_DECISION`, `HAS_CHANGE`, `HAS_COMMIT`, `MOTIVATED_BY`, `GOVERNED_BY`, `INCLUDES`, `REALIZES`).
 
-Three directed invariants are enforced by `writ validate`: `DISPATCHES` targets `SubagentRole` only; `INVOKES` never targets `SubagentRole`; `TEACHES` never originates from a `Rule` (ARCHITECTURE §3).
+Directed invariants enforced by `writ validate`: `DISPATCHES` targets `SubagentRole` only; `INVOKES` never targets `SubagentRole`; `TEACHES` never originates from a `Rule`.
 
 ---
 
@@ -205,290 +206,244 @@ Three directed invariants are enforced by `writ validate`: `DISPATCHES` targets 
 
 A retrieval system that *ranks* safety rules is dangerous: a bad ranking day drops a critical rule off the list. Writ refuses that risk by splitting the rulebook into two pools, with **one source of truth** for the split: two Cypher predicates in `writ/graph/predicates.py`.
 
-- **Ranked pool** - `RANKED_INCLUDE_WHERE = "r.mandatory IS NULL OR r.mandatory = false"`. Domain guidance, indexed and ranked, surfaces when relevant.
-- **Injection (floor)** - `INJECTION_RULE_WHERE = "r.mandatory = true OR r.always_on = true"`. Reaches the agent every turn via `/always-on`, never ranked, cannot be ranked away. The two flags are orthogonal-but-overlapping: an advisory always-on rule (like `ENF-COMMS-001`) is injected without being mandatory.
+- **Ranked pool**: `RANKED_INCLUDE_WHERE = "r.mandatory IS NULL OR r.mandatory = false"`. Domain guidance, indexed and ranked, surfaces when relevant.
+- **Injection floor**: `INJECTION_RULE_WHERE = "r.mandatory = true OR r.always_on = true"`. Reaches the agent through `/always-on`, never ranked, cannot be ranked away. The two flags overlap but differ: an advisory always-on rule (like the communication rules) is injected without being mandatory.
 
-Both the `/always-on` endpoint and the integrity validator import these predicates, so selection and validation cannot drift. This closes the historical "stranded-mandatory" bug class, where two mechanisms keyed on different fields left mandatory rules reachable by *neither* path:
+Both the `/always-on` endpoint and the integrity validator import these predicates, so selection and validation cannot drift. This closed the historical stranded-mandatory bug class, where two mechanisms keyed on different fields left 29 of 32 mandatory rules reachable by *neither* path. `writ validate` fails on any stranded mandatory rule and on any mismatch between the ranked-pool complement and the mandatory set.
 
-- **`detect_stranded_mandatory`** fails `writ validate` on any mandatory rule reachable by neither the ranked pool nor injection (a UNION-predicate fix: the complement of the ranked pool must equal exactly `{mandatory}`, asserted by `detect_ranked_exclusion_mismatch`).
-- **`/always-on` post-1.7** returns the mandatory `Rule` set *plus* all `ForbiddenResponse` nodes (and any Skill/Playbook flagged always-on).
+The floor is also *scoped* so it doesn't spam: non-mandatory process rules only inject in `work` and `debug`; rules can declare an `applicability_scope` (prompt, write, bash, stop) and `trigger_keywords` so a write-time rule fires at write time against file content rather than on every prompt. A rule with no routing data is universal: nothing silently disappears for lacking metadata.
 
-**Budget cap = 5000 tokens** (`always_on_cap`, `budget.json`), measured on the *summary* render (trigger + statement). `detect_always_on_budget_breach` fails validate if the bundle exceeds it; corpus growth breaches near ~54 always-on rules.
+**Budget: 5,000 tokens** (`always_on_cap`, `writ/shared/budget.json`), measured on the summary render. `writ validate` fails when the bundle breaches it; the endpoint itself reports the cap but does not trim.
 
----
+**How a rule earns each tier** (the original public-rulebook criteria, preserved from its design doc):
 
-## 11. The corpus: `bible/` and `methodology/`
-
-**The graph is canonical; `bible/` is a derived export** (§1). Ingest reads three Markdown formats in strict precedence (ARCHITECTURE §4):
-
-1. **YAML front-matter** - one node per file (must begin exactly with `---\n`).
-2. **`<!-- NODE START type=X id=Y -->` block markers** - multi-node per file.
-3. **`<!-- RULE START: id -->` legacy markers** - routed as `Rule`.
-
-`writ/graph/methodology_ingest.py` is the unified ingest library (it replaced the old Rule-only loop in `cli.py` and the methodology loop in `scripts/migrate.py` - those are no longer the entry points).
-
-**Declaring typed edges in source.** A node declares its outgoing edges where it lives, and they round-trip through export:
-- **Front-matter nodes** use an `edges:` list: `- { target: <ID>, type: <TYPE> }`.
-- **`<!-- RULE START -->` rules** use an `### Edges` section whose body is lines `- <TYPE>: <ID>`.
-
-Only *declared* types persist this way. `RELATED_TO` is derived from rule-id mentions in prose, and `BELONGS_TO` from the `**Category**:` field - both are re-derived on ingest, so do **not** hand-declare them (export omits them from `### Edges` for the same reason). Edit the source, then `writ import-markdown bible/` to land the edges; `writ validate` (edge-parity) confirms the graph matches the source oracle. `ABSTRACTS` is the exception: it is machine-generated by `writ compress` (a graph-only materialized view, not authored in `bible/`).
-
-**Regenerating the abstraction layer.** `writ import-markdown bible/ --compress` re-runs the compression pipeline after ingest, regenerating the graph-only `Abstraction` layer in one step (maintainer-run; needs the `[fallback]` sentence-transformers dep, else it warns and continues without failing the ingest). Default is `--no-compress`: without the flag the abstraction layer is simply absent. The layer is a regenerable materialized view, **not** source in `bible/`.
-
-**Dual-location rules.** A small hand-maintained set of `Rule` ids (`_METHODOLOGY_CANONICAL_RULE_IDS`, `export.py`, e.g. `ENF-COMMS-001`) live canonically as front-matter under `bible/methodology/<ID>.md`. Export routes them there and excludes them from the domain `rules.md`, so there's no lossy duplicate. **Hand-editing these files is safe** - export will not overwrite them. New graduated canon must be added to this list or it will re-export to a domain file.
-
-**`methodology/` is hand-authored.** Methodology nodes (Skill, Playbook, etc.) are authored as source, not generated. They are not auto-exported the way derived Rule files are.
-
-**Fields that never round-trip** (`GRAPH_ONLY_FIELDS`): `confidence`, `evidence`, `staleness_window`, `last_validated`, `authority`, `times_seen_*`, `last_seen`, `source_origin`. They are stripped on export and re-derived to defaults on re-ingest. `mandatory` *is* written and round-trips. `provenance` is omitted from export only when it holds the default `hand-authored`.
+- Severity: **critical** = a violation creates an exploitable vulnerability, data loss, or system failure in production, no exceptions; **high** = bugs, maintenance debt, or security weakness that compounds over time, exceptions require documented justification; **medium** = degrades code quality or developer experience, exceptions acceptable with team agreement; **low** = style or hygiene, advisory only.
+- A rule is **mandatory** (always-on, never ranked) only when ALL four hold: severity is critical; a violation is exploitable or causes data loss in production; the rule is universal across languages and frameworks; and an AI agent can mechanically detect violations from code inspection.
 
 ---
 
-## 12. How rules grow: propose → graduate → promote
+## 11. The corpus: `writ-corpus.cypher` and `bible/`
 
-This replaces the older "run `writ review` to grant authority" narrative. The current model is a **four-state provenance lifecycle** with a frequency-driven flip and an *informed human gate* (ARCHITECTURE §14).
+**The graph is canonical; the tracked source is the Cypher dump.** `bible/` is a local, gitignored export. Ingest reads three Markdown formats in strict precedence:
 
-**Provenance states** (`schema.py`, `VALID_PROVENANCE`):
-`hand-authored` (the bible at rest) — or the graph-first arc: `proposed` → `graduation_pending` → **human gate** → `graduated` (exported to `bible/methodology/<id>.md`).
+1. **YAML front-matter**: one node per file (must begin exactly with `---`).
+2. **`<!-- NODE START type=X id=Y -->` block markers**: multi-node per file.
+3. **`<!-- RULE START: id -->` legacy markers**: routed as `Rule`.
 
-**Step 1 - propose** (`POST /propose`, `writ/gate.py` `structural_gate`, 5 checks in order):
-1. **Schema** - Pydantic `Rule` validity.
-2. **Mechanical-enforcement-path policy** - a `mandatory=True` rule with no `mechanical_enforcement_path` is rejected (the alternative is `mandatory=False`, advisory).
-3. **Specificity** - vague-language disqualifiers in trigger/statement are rejected.
-4. **Redundancy / novelty** - cosine similarity: reject ≥ `0.95` (redundant) or in the `0.85`–`0.95` novelty band (likely an undiscovered duplicate). Thresholds in `writ.toml [gate]`.
-5. **Conflict** - an unjustified `CONFLICTS_WITH` edge to an existing rule rejects.
+`writ/graph/methodology_ingest.py` is the unified ingest library; `scripts/migrate.py` is a deprecated shim.
 
-A passing proposal is force-stamped `authority="ai-provisional"`, `confidence="speculative"` - **no caller can raise these through the propose path** (`gate.py` `propose_rule`) - and ingested as graph-first (`source_origin="graph-authored"`, so reconcile won't delete a node with no Markdown home). For the graduation arc to engage, the candidate carries `provenance="proposed"`: the frequency flip (below) acts only on nodes where `r.provenance = 'proposed'` (`db.py:748-761`). The proposal context (task, triggering query, consulted rules) is recorded write-once in `OriginContextStore` for the human's later review.
+**Declaring typed edges in source.** Front-matter nodes use an `edges:` list; RULE-START blocks use an `### Edges` section (`- TYPE: ID` lines). Only declared types persist this way. `RELATED_TO` is derived from rule-id mentions in prose and `BELONGS_TO` from the category field; both are re-derived on ingest, so never hand-declare them. `ABSTRACTS` is machine-generated by `writ compress`.
 
-**Step 2 - graduate (statistical flip, not approval).** Hooks accumulate `times_seen_positive` / `times_seen_negative`. Frequency thresholds (`writ/frequency.py`, `writ.toml [frequency]`): `DEFAULT_GRADUATION_THRESHOLD = 50` total observations, `DEFAULT_GRADUATION_RATIO_MIN = 0.75` positive ratio. Below 50: no decision. Above 50 with ratio < 0.75: flagged for human review. Above 50 with ratio ≥ 0.75: the flip from `proposed` → `graduation_pending` **only**. It never changes authority and never writes to `bible/`.
+**Ingest is upsert-only; `writ reconcile` is the only prune.** Deleting or renaming a source node leaves an orphan until reconcile runs. Reconcile deletes graph nodes, edges, and managed properties absent from the source oracle, project-scoped, and always exempts graph-first nodes (`proposed`, `graduation_pending`) and `record` nodes, which have no markdown home by design. Run it against the *full* corpus root only: reconciling a partial source treats everything the partial omits as deleted.
 
-**Step 3 - promote (the informed human gate).** `build_promotion_review_artifact()` (`writ/promotion.py`) aggregates three conflict signals so the human is not rubber-stamping: `CONFLICTS_WITH` targets, same-category members, and high-similarity neighbors (cosine ≥ `0.7`). `promote_candidate()` is the edit-at-gate path: approve as-is (`graduated_via="human-approve-asis"`) or supply `edited_fields` (`graduated_via="human-edit"`, which **re-runs the structural gate** before export). Promotion goes through the token-gated `/promote-candidate` (§7) and exports the node to `bible/methodology/<id>.md`.
+**Dual-location rules.** A hand-maintained set of 13 rule ids (`_METHODOLOGY_CANONICAL_RULE_IDS`, `writ/export.py`) live canonically as front-matter under `bible/methodology/<ID>.md`. Export routes them there and excludes them from domain `rules.md`, so hand-editing those files is safe. New graduated canon must be added to that list or export produces a duplicate domain copy.
 
-> Known deferred gap: a substantive edit at the gate does **not** reset or fork the observation counts (`promotion.py` open question; ARCHITECTURE §20 #5).
+**Fields that never round-trip.** Runtime and derived fields (`confidence`, `authority`, `times_seen_*`, `evidence`, `staleness_window`, `last_validated`, `source_origin`, `provenance`) are stripped on export and restored to graph values or defaults on re-ingest; reconcile's property-clear phase is allowlisted so it can never wipe them. `mandatory` does round-trip.
+
+**Integrity.** `writ validate` runs roughly 30 checks: structure (conflicts, orphans, staleness, near-duplicates), reachability (stranded mandatory, floor completeness, trigger-keyword parity, push reachability), parity (graph vs source for nodes, edges, and property values), edge contracts, content lint (code examples must parse), and artifact freshness. Most findings fail the build; a few (unreviewed counts, frequency staleness, graduation flags) are advisory.
 
 ---
 
-## 13. Multi-project foundation
+## 12. How rules grow: propose, graduate, promote
 
-Writ is **one shared graph accumulating all projects** - it is meant to become the center of knowledge across everything you build, not a per-repo install.
+The lifecycle is a **provenance arc** with a frequency-driven flip and an *informed human gate*.
 
-- **Isolation by `project` property + composite `(id, project)` keys.** Two projects may hold the same logical id without collision (`apply_constraints()` creates a per-label composite uniqueness constraint).
-- **`:Project` registry** (`create_project` / `get_projects` / `resolve_project_for_cwd`) maps a project name to its `repo_root` and `bible_root`. Registry nodes carry no `project` property and survive project-scoped reconciles.
-- **Scoped reconcile** is project-scoped (default `project='writ'`) and never touches another project's data.
-- **Retrieval scopes to `{project, '_shared'}`** - the cross-project anti-leak guarantee. `create_edge` matches endpoints *within* `$project`, so an edge never resolves to another project's same-id node.
+**Provenance states** (`schema.py`, `VALID_PROVENANCE`): `hand-authored` (the corpus at rest), the graph-first arc `proposed` -> `graduation_pending` -> **human gate** -> `graduated` (exported to `bible/methodology/<id>.md`), and `record` (decision memory; permanent, never promoted).
 
-> **Data-integrity seams CLOSED (commit 912a29e).** The three latent multi-project seams are fixed before any second project: `Abstraction` is on the composite `(id, project)` key (and `create_abstracts_edge` / `delete_abstractions` / `write_abstractions_to_graph` are project-scoped); edge-resolution `known_ids` is project-scoped via `get_all_rules(project=)` (a cross-project id reference goes dangling, not silently resolved); and the `create_edge` OR-match is derived from `NODE_ID_FIELDS`. See ARCHITECTURE §15, §20.
+**Step 1: propose** (`POST /propose` or `writ propose`, through `structural_gate` in `writ/gate.py`), five checks in order: schema validity; the mechanical-enforcement policy (a `mandatory` rule must cite an enforcement path); specificity (hedge words like "consider" or "where appropriate" are rejected); redundancy and novelty by embedding cosine (reject at 0.95, flag the 0.85-0.95 band); and conflicts (an unjustified `CONFLICTS_WITH` edge rejects). A passing proposal is force-stamped `authority="ai-provisional"`, `confidence="speculative"`; no caller can raise these through the propose path. It lands graph-first (`source_origin="graph-authored"`, so reconcile will not delete it) with `provenance="proposed"`, and the proposal context (task, triggering query, consulted rules) is stored write-once for the human's later review.
+
+**Step 2: graduate (a statistical flip, not approval).** Hooks accumulate `times_seen_positive` / `times_seen_negative`. At 50+ observations with a 0.75+ positive ratio (`writ/frequency.py`), the node flips `proposed` -> `graduation_pending`, and nothing else: authority unchanged, no export, race-guarded so concurrent evaluations cannot double-flip.
+
+**Step 3: promote (the informed human gate).** `writ review` surfaces the candidate with its content and canon-fit context (conflict targets, same-category members, high-similarity neighbors), so approval is informed, not rubber-stamped. Promotion runs through the token-gated `/promote-candidate` (§7). Approve as-is (`graduated_via="human-approve-asis"`) or edit at the gate (`graduated_via="human-edit"`, which re-runs the structural gate and resets the observation counters when the statement materially changed). The node is stamped `graduated`, `authority="ai-promoted"`, and exported to `bible/methodology/`.
+
+---
+
+## 13. Decision memory
+
+Writ records *why files changed*, mechanically, and plays it back.
+
+- **Capture.** The post-commit git hook (installed automatically on first Work-mode entry into a repo, marker-delimited, never blocks a commit) posts each commit to the daemon. Capture joins the commit's files against the approved `plan.md` (written by the planner sub-agent, read from disk), the rules each session and sub-agent queried per file, and prior open decisions. It writes `Decision`, `FileChange`, and `Commit` records with content-hash ids, so re-capture and amends merge instead of duplicating. Capture refuses to run outside a real git repo: records are never scoped to a fallback name.
+- **Recall.** `writ recall` (and a once-per-session briefing on your first prompt) compiles recent decisions into a token-budgeted digest: titles and governing rules survive eviction; rationale and per-file reasons trim first. Recall is deliberately a separate query, never part of RAG ranking.
+- **PR sync.** `writ pr sync` posts one comment per changed file on the open Bitbucket PR: the captured reason, the rules the AI was shown, and the rules it cited. Idempotent (updates its own comments), fail-loud on API errors, SSRF-hardened, and it never logs the token. A parallel channel writes the same bodies as git notes on `refs/notes/writ-decisions`.
+
+**Multi-project.** One shared graph accumulates every project: composite `(id, project)` uniqueness keys, a `:Project` registry mapping names to repo roots, project-scoped reconcile, and retrieval scoped to `{project, "_shared"}` so rules never leak across projects.
 
 ---
 
 ## 14. Hooks layer (operator reference)
 
-**Single registration.** `hooks/hooks.json` (not `.claude/hooks/hooks.json`) binds every Claude Code event to a script via `${CLAUDE_PLUGIN_ROOT}`. It registers **41 hook scripts** across twelve events: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PreCompact`, `PostCompact`, `Stop`, `SubagentStart`, `SubagentStop`, `CwdChanged`, `SessionEnd`. (A standalone `~/.claude/settings.json` path is legacy and being sunset; the two must stay in sync until then.)
+**Single registration.** `hooks/hooks.json` binds 12 Claude Code events to 37 scripts via `${CLAUDE_PLUGIN_ROOT}` (41 registrations; some scripts serve multiple events). One more script, `writ-statusline.sh`, is wired through the `statusLine` settings channel, not hooks. Editing a script takes effect immediately; changing `hooks.json` needs a fresh Claude Code session.
 
-**Advisory vs blocking.** All hooks are advisory (`exit 0`) **except**:
-- Blocking `PreToolUse` gate denials: `writ-pre-write-dispatch.sh`, `writ-memory-policy-guard.sh`, `writ-verify-before-claim.sh`, `writ-worktree-safety.sh`, `writ-bash-write-gate.sh` (gates file writes done through Bash: `>`/`tee`/`dd`/`cp`/`mv`/`sed -i`; denies credential-path writes in any mode).
-- The `Stop` test-failure hook `writ-run-pending-tests.sh` (in implementation/complete phase).
+**What can block:**
 
-The full inventory (34 scripts), grouped by what they do:
+| Surface | Hook | Blocks when |
+|---|---|---|
+| PreToolUse Write/Edit/NotebookEdit | `writ-pre-write-dispatch.sh` | Work gates unapproved, debug root-cause missing, credential path (any mode) |
+| PreToolUse Bash | `writ-bash-write-gate.sh` | Bash-mediated write to a gated or credential path |
+| PreToolUse Bash | `writ-worktree-safety.sh` | `git worktree add` into an un-ignored project-local path |
+| PreToolUse Write | `pre-validate-file.sh` | Static analysis finds an error in the proposed content |
+| PreToolUse Write | `validate-test-file.sh` | New source has no assertion-bearing test (the TDD gate) |
+| PreToolUse Write | `validate-design-doc.sh` | A design doc misses required sections or substance |
+| PreToolUse Write | `writ-memory-policy-guard.sh` | A memory write tries to weaken verification rules |
+| PreToolUse Grep/Read/Glob | `writ-debug-code-gate.sh` | Runtime lens active and `debug.md` lacks Evidence + Narrowing |
+| PreToolUse Task | `writ-dispatch-discipline.sh` | Ambiguous generic dispatch (confident ones are rewritten, not blocked) |
+| PreToolUse ExitPlanMode | `validate-exit-plan.sh` | `plan.md` fails the phase-a validator (Work mode only) |
+| Stop | `enforce-violations.sh` | Unresolved rule violations in Work mode |
+| Stop | `writ-run-pending-tests.sh` | A marked test fails in implementation/complete phase |
+| Stop | `writ-verify-before-claim.sh` | A quality self-review scored under 3 and was not overridden |
+| Stop | `writ-comms-output-gate.sh` | The reply contains an em dash, en dash, or ` -- ` in prose |
 
-- **Prompt / RAG:** `writ-rag-inject.sh` (primary RAG + daemon auto-start), `writ-read-rag.sh`, `inject-tier-workflow.sh`, `session-start-bootstrap.sh`, `writ-cwd-changed.sh`.
-- **Write gating & validation** (grouped by function; only the `PreToolUse` ones *block* per "Advisory vs blocking" above -- the `PostToolUse` validators run after the write and are advisory): *PreToolUse (blocking):* `writ-pre-write-dispatch.sh` (consolidates gate-approval + final-gate + pretool-rag into one `/pre-write-check`), `writ-memory-policy-guard.sh`, `writ-worktree-safety.sh`, `writ-debug-code-gate.sh`, `pre-validate-file.sh`, `validate-test-file.sh` (TDD gate). *PostToolUse (advisory):* `validate-file.sh`, `validate-design-doc.sh`, `validate-handoff.sh`, `validate-rules.sh` (sentinel-driven `exit 2`), `validate-exit-plan.sh`, `writ-bible-authoring-push.sh`.
-- **Approval / gate:** `auto-approve-gate.sh` (writes the gate token, §7).
-- **PostTool / RAG / telemetry:** `writ-posttool-rag.sh` (1500-token cap, 0.4 score threshold, orchestrator-suppressed), `writ-mark-pending-test.sh`, `enforce-violations.sh`, `friction-logger.sh`, `writ-web-capture.sh`.
-- **Stop / verify:** `writ-run-pending-tests.sh`, `writ-quality-judge.sh`, `writ-verify-before-claim.sh`, `writ-pressure-audit.sh`.
-- **Sub-agents:** `writ-dispatch-discipline.sh`, `writ-subagent-start.sh`, `writ-subagent-stop.sh`.
-- **Compaction / lifecycle:** `writ-precompact.sh`, `writ-postcompact.sh`, `writ-session-end.sh`.
+Everything else is advisory or observational: the RAG injectors (`writ-rag-inject`, `writ-read-rag`, `writ-posttool-rag`, `writ-pre-write-dispatch`'s allow path), post-write validators (`validate-file`, `validate-rules`, `validate-handoff`), methodology pushes (`inject-tier-workflow`, `writ-bible-authoring-push`), lifecycle (`session-start-bootstrap`, `writ-precompact`, `writ-postcompact`, `writ-session-end`, `writ-pressure-audit`, `writ-cwd-changed`), sub-agent lifecycle (`writ-subagent-start/stop`), evidence capture (`writ-web-capture`), the observe-by-default read-junk gate, and the opt-in blackbox capture. One nuance: `validate-rules.sh` is advisory per write, but at the plan boundary a confirmed violation invalidates the phase-a gate, which the *next* run enforces with a blocking exit.
 
-**Patterns every hook follows:**
-- **`load_hook_env()`** - the single-spawn envelope parser. It distinguishes `HOOK_SESSION_ID_RAW` from `HOOK_SESSION_ID` (the latter prefers `agent_id`), which is load-bearing for sub-agent isolation.
-- **`_writ_session()`** - curl-first (0.1s connect timeout to `localhost:8765`), subprocess fallback. Three complex-arg subcommands (`add-pending-violation`, `invalidate-gate`, `update`) always use subprocess.
-- **`stop_hook_active`** - any *blocking* Stop hook must check `common.sh`'s `stop_hook_active()` helper, or Claude Code treats the Stop hook's `additionalContext` as a turn-block and loops to its 9-turn cap.
-
-> Editing a hook *script's content* takes effect immediately. Adding a *new event→script mapping* in `hooks.json` requires a fresh Claude Code session to register.
+**Patterns every hook follows:** one-spawn envelope parsing (`load_hook_env`), daemon-first with subprocess fallback (`_writ_session`, curl timeouts in the 100-500 ms range), fail-open when the daemon is down, an EXIT trap that logs every hook execution on every exit path, and delivery through `additionalContext` (bare stdout on Pre/PostToolUse never reaches the model). Blocking Stop hooks use stderr plus a non-zero exit and check `stop_hook_active`, because a Stop hook's `additionalContext` is treated as a turn-continue and loops.
 
 ---
 
 ## 15. Configuration
 
-**`writ.toml`** (`<package_root>/writ.toml`; readers in `writ/config.py`, all with coded `DEFAULT_*` fallbacks). The sections you'll touch:
+**`writ.toml`** (at the install root, gitignored; template `writ.toml.example`; readers in `writ/config.py`). It has exactly four sections:
 
-- **`[neo4j]`** - `uri = "bolt://localhost:7687"`, `user = "neo4j"`, `password = "writdevpass"`, `database = "neo4j"`. **`writdevpass` is a dev-only default** (`DEFAULT_NEO4J_PASSWORD`, `config.py:22`); any real deployment must override it.
-- **`[hnsw]`** - `cache_dir` (default `~/.cache/writ/hnsw`; `get_hnsw_cache_dir()` expands `~` on read - prefer an absolute path in the file, TOML does not expand `~`).
-- **`[ranking]`** - the six weights (semantic preset `w_bm25=0.198`, `w_vector=0.594`, `w_severity=0.099`, `w_confidence=0.099`, `w_graph=0.01`; `w_bundle_cohesion` defaults to 0). Plus `[ranking.severity_values]` and `[ranking.confidence_values]` lookup tables.
-- **`[gate]`** - `novelty_threshold = 0.85`, `redundancy_threshold = 0.95`.
-- **`[frequency]`** - `graduation_threshold = 50`, `graduation_ratio_minimum = 0.75`.
-- **`[context_budget]`** - `summary_threshold = 2000`, `standard_threshold = 8000`.
+- **`[neo4j]`**: `uri` (default `bolt://localhost:7687`), `user` (`neo4j`), `password` (**`writdevpass` is a dev-only default**, silently used when the file is absent; override for any real deployment).
+- **`[hnsw]`**: `cache_dir` for the vector-index cache (default `~/.cache/writ/hnsw`).
+- **`[bitbucket]`**: `email`, `token` for PR sync (absent means PR sync is off; the token is never logged).
+- **`[logs]`**: `backup_dest` for `writ logs backup`.
 
-**`writ/shared/budget.json`** - the token budget: `default_budget=8000`, per-rule render costs `full=200 / standard=120 / summary=40`, `subagent_budget=null` (unlimited), `always_on_cap=5000`.
+Everything else people expect to find in config is deliberately code: ranking weights (`writ/retrieval/ranking.py`: bm25 0.198, vector 0.594, severity 0.099, confidence 0.099, graph 0.01), the abstention threshold (0.30, `writ/retrieval/pipeline.py`), gate thresholds (redundancy 0.95, novelty band 0.85, `writ/gate.py` and `writ/graph/schema.py`), graduation thresholds (50 observations, 0.75 ratio, `writ/frequency.py`), and context-budget bands (summary under 2,000 tokens, standard to 8,000, full above; `writ/retrieval/ranking.py`).
 
-**`bin/lib/gate-categories.json`** - framework detection + the write-gate `exclusions` glob list (tests, migrations, `__init__.py`, and `.claude/` CONFIG only: `settings.json`, `settings.local.json`, `*.md`).
+**`writ/shared/budget.json`**: `default_budget=8000`, per-rule render costs full 200 / standard 120 / summary 40, `subagent_budget=null` (unlimited), `always_on_cap=5000`.
 
-**Env vars:**
-- `WRIT_CONTEXT_WINDOW_TOKENS` - validated 1000–10000000 at startup; the watcher hook uses it for the ~75% pressure threshold (default 200000 in the hook).
-- `WRIT_FRICTION_LOG` - override the friction log path.
-- `WRIT_ALLOW_EMBEDDING_FALLBACK=1` - permit the dev-only PyTorch `SentenceTransformer` fallback (production uses ONNX).
-- `WRIT_CACHE_DIR` - session cache location (else `/tmp`).
-
-Python 3.11+ uses stdlib `tomllib`; older needs `tomli`.
+**Env vars:** `WRIT_HOST`/`WRIT_PORT` (daemon target, default `localhost:8765`), `WRIT_CACHE_DIR` (session caches, default `<install>/var/session`; deliberately not `/tmp`, which systemd empties at boot), `WRIT_LOG_ROOT` (log streams, default `<install>/var/logs`), `WRIT_LOG_PROJECT`, `WRIT_FRICTION_LOG` (collapse all streams into one file), `WRIT_DEBUG` (debug sinks, default off), `WRIT_HOOK_LOG`, `WRIT_NO_AUTOSTART`, `WRIT_ALLOW_EMBEDDING_FALLBACK=1` (permit the sentence-transformers path when the ONNX model is absent), `WRIT_CONTEXT_WINDOW_TOKENS` (validated 1,000-10,000,000 at daemon startup), `WRIT_BLACKBOX=1` (raw payload capture). Neo4j credentials come from `writ.toml` only.
 
 ---
 
 ## 16. Operations: daemon lifecycle
 
-**Primary: systemd user service.** `scripts/install-server-service.sh` installs `writ-server.service` (`ExecStart = writ serve --port 8765 --host localhost`, with an `ExecStartPre` that waits up to 60s for Neo4j on `:7687`). It runs `systemctl --user enable --now writ-server.service`.
+**Primary: systemd user service.** `scripts/install-server-service.sh` installs `writ-server.service` (waits for Neo4j, `Restart=on-failure`) plus the daily `writ-logs-rotate.timer`.
 
-- **Restart after code changes:** `systemctl --user restart writ-server` — **not** `stop-server.sh` (that fights systemd's auto-restart).
-- **Status / logs:** `systemctl --user status writ-server` or `journalctl --user -u writ-server -f`.
-- **Boot start:** requires `sudo loginctl enable-linger $USER` (the installer prompts for this).
+- **Restart after code changes:** `systemctl --user restart writ-server`, **not** `stop-server.sh` (that fights systemd's auto-restart).
+- **Status / logs:** `systemctl --user status writ-server`, `journalctl --user -u writ-server -f`.
+- **Boot start:** `sudo loginctl enable-linger $USER`.
 
-**Fallback: `scripts/ensure-server.sh`.** For environments without the user service. It is flock-guarded and singleton-safe (the shared start lib must close the lock fd or the daemon holds the flock for life). The `writ-rag-inject.sh` hook calls this ensure path as a start-only fallback.
+**Fallback: on-demand start.** The SessionStart hook and `scripts/ensure-server.sh` both go through one flock-guarded singleton start routine (`scripts/lib/writ-server-lib.sh`), so concurrent sessions cannot race up two daemons. A healthy daemon is never restarted by these paths.
 
-**When a restart is required.** Module-level Python edits (anything imported at server import time - schema, predicates, server routes) need a restart to take effect. Editing a hook *script* does not. Adding a *new hooks.json mapping* needs a fresh Claude Code session.
+**When a restart is required.** Module-level Python changes (server routes, retrieval, schema). Hook script edits: never. New `hooks.json` mappings: a fresh Claude Code session.
 
-**Health.** `GET /health` returns `status`, `rule_count`, `mandatory_count`, `category_count`, `route_distribution`, `index_state`, `startup_time`, `cache_dir`, `friction_log`. `status: "degraded"` means the index warmed but `rule_count == 0` (the DB and the retrieval index disagree).
-
----
-
-## 17. The CLI in full
-
-`writ <command>` (Typer, entry point `writ.cli:app`). All 17 subcommands (`writ/cli.py`):
-
-| Command | What it does |
-|---|---|
-| `status` | `GET /health` summary (`cli.py:1496`). |
-| `query "<text>"` | Run retrieval and print ranked rules (`:1226`). |
-| `import-markdown <dir>` | Ingest Markdown into the graph. Auto-export guard fires only on a full `bible/` root import, not a subdir (`:374`). `--compress` (default off) regenerates the graph-only `Abstraction` layer after ingest (maintainer-only, needs the `[fallback]` dep; warns + continues if absent). |
-| `export` | Export the graph back to `bible/` Markdown (`:1059`). |
-| `migrate` | Backward-compat shim for the old methodology loop; **`import-markdown` is now the primary import** (`:1199`). |
-| `prune` | Remove nodes. Currently whole-graph (not project-scoped) (`:470`). |
-| `validate` | Run `run_all_checks` integrity validators (`:515`). See below. |
-| `add` | Interactive rule authoring; creates with the graph-protecting origin so reconcile won't delete it (`:829`). |
-| `edit` | Interactive edit; warns about graph-only edges reconcile would delete if not declared in front-matter (`:955`). |
-| `propose` | AI-rule proposal through the structural gate (`:1324`). |
-| `review <rule_id>` | Triage AI-provisional rules; shows origin context (`:1386`). |
-| `role-prompt <role>` | Print the graph-canonical `SubagentRole` prompt template (`:1156`). |
-| `feedback` | Record a rule observation (positive/negative) (`:1294`). |
-| `compress` | `[fallback]`-only: cluster non-mandatory rules into `Abstraction` nodes (`:1078`). Not a production-path command. |
-| `analyze-friction` | Six analytical lenses over the friction log (`:23`). See below. |
-| `audit-session` | Per-session friction breakdown, incl. `push_by_action` / `push_channels` (`:148`). |
-| `serve` | Run the FastAPI daemon (`:358`). |
-
-**`analyze-friction` — six mutually-exclusive lenses** (`cli.py:34-39`):
-`--rule-effectiveness` (per-rule denial stick-rate), `--skill-usage` (skill loads vs playbook completion), `--playbook-compliance` (per-playbook in-order compliance), `--graduation-candidates` (rules ready to graduate), `--trim-candidates` (low-activation rules/skills), `--quality-judge-false-positives` (per-rubric override rates). Log-path resolution order: explicit arg > `WRIT_FRICTION_LOG` > `./workflow-friction.log`.
-
-**`validate` — advisory vs hard-fail.** `run_all_checks` runs ~28 checks. **Hard-fail** (sets exit 1): conflicts, orphans, stale, redundant (when it ran), parity (node/edge/prop), dispatch/invokes/teaches invariants, floor completeness, trigger-keyword parity, push reachability, example lint, domain enum, counter-node parity, enforceable-severity coupling, forbidden-phrase overlap, shared code example, stranded mandatory, ranked-exclusion mismatch, always-on budget breach. **Advisory** (reported, never fails): redundancy *unavailability*, unreviewed count, frequency-stale, graduation flags. Redundancy *raises* (not returns empty) when the `[fallback]` extra is missing, so `validate` prints "Redundancy check skipped" rather than silently reporting clean.
+**Health.** `GET /health` returns status, rule and mandatory counts, category count, route distribution, index state, startup time, cache dir, and friction-log path. `status: "degraded"` means the index warmed but `rule_count == 0` (the DB and the index disagree, usually a daemon that outlived a re-seed). `writ doctor` runs 13 deeper checks and `--fix` repairs 6 of them.
 
 ---
 
-## 18. Friction log & dashboard
+## 17. The CLI
 
-**The log.** NDJSON appended to `workflow-friction.log` (one JSON object per line). Located via `$WRIT_FRICTION_LOG` or a project-marker walk; fail-soft on `OSError`. The base schema each line carries (`bin/lib/friction-append.py`, `writ/session/friction.py`): `ts` (ISO UTC), `session`, `mode` (one of the five mode names, or `null`), `event` (the event-type name), plus event-specific fields.
+`writ <command>` (Typer, entry point `writ.cli:app`), grouped:
 
-`mode: null` is *expected*, not dirty data, for events that fire before a mode is set (e.g. a `pre_write_decision` from the PreToolUse hook on the first write, or a `post_compaction` event - compaction is a Claude Code-level action, not mode-scoped). The dashboard treats the null bucket as its own category.
+- **Serve and query:** `serve`, `status`, `query` (server-first, in-process fallback).
+- **Corpus:** `import-cypher` / `export-cypher` (the tracked dump; import wipes and replays), `import-markdown` (upsert-only; `--only`, `--dry-run`, `--compress`), `export`, `reconcile` (the only prune), `prune` (misleadingly named: it only *reports* parity violations, deletes nothing), `validate` (~30 integrity checks), `compress`, `migrate` (deprecated shim).
+- **Authoring:** `add`, `edit`, `propose`, `review` (`--promote --reject --downweight --stats`), `feedback`, `role-prompt`.
+- **Decision memory:** `git-hooks install|uninstall|bootstrap`, `harvest` (backfill from git + transcripts), `recall`, `pr sync`.
+- **Operations:** `doctor` (13 checks, `--fix`, `--net`), `logs tail|stats|list|rotate|backup`.
+- **Analytics:** `analyze-friction` (six mutually-exclusive lenses: rule effectiveness, skill usage, playbook compliance, graduation candidates, trim candidates, quality-judge false positives), `audit-session`, `token-audit` (transcript cost scorecard), `corpus-footprint` (per-rule token cost), `efficacy-ab` (live A/B harness; dry-run by default, real `claude` spawns behind `--live`).
 
-**The dashboard.** `GET /dashboard` renders a self-refreshing (60s), no-JS HTML view computed by the `analyze_*` functions (ARCH-SSOT-001: the dashboard never recomputes; it always delegates). The six analytical lenses are the same as `analyze-friction` (§17).
-
-> **Caveat: test-synthetic contamination.** In the Writ self-repo, the friction log is ~86% test-synthetic (tests write events). Real project logs are clean but show a coverage gap: ~92% of dispatched sub-agents are general-purpose with 0 rules - i.e. Writ does not yet reach most dispatched work. Read self-repo friction numbers with that in mind.
+The hook-facing session CLI is separate: `bin/lib/writ-session.py <subcommand>` drives mode, gates, coverage, citations, and cache state; hooks call it when the daemon is unreachable.
 
 ---
 
-## 18b. Exploring the graph: `/explore` and Neo4j Browser
+## 18. Logging and observability
 
-Two ways to see and interact with the knowledge graph, for two audiences.
+**Typed streams** (`writ/shared/logging.py`), one directory per project under `<install>/var/logs/`:
 
-**`/explore` (everyone).** With the daemon running, open **`http://localhost:8765/explore`**. It is a single, data-backed page (served by the daemon, reading the live graph) that walks Writ from a specific rule up to the overview, in seven sections: the overview + north star, the three runtime pieces, the 5-stage pipeline with a **live query playground** (type a task -> `POST /query` -> the real ranked result), modes & gates, a **live graph explorer** (Cytoscape over `/graph` + `/node/{id}` - filter by node type / domain / provenance / mandatory, click a node for its statement/examples/neighbors, expand neighbors), the self-authoring/graduation lifecycle, and a requirements browser. Because it reads the live endpoints it never goes stale (it replaced the old hand-maintained HTML flowcharts). The graph view loads Cytoscape from a CDN (needs internet); everything else works offline. It is **read-only** - the backing endpoints (`/graph`, `/node`) expose no write or arbitrary-query surface.
+| Stream | Holds | Retention |
+|---|---|---|
+| `audit.jsonl` | Governance decisions: gate allow/deny, mode changes, phase advances, self-approval blocks, promotions, verification evidence, citations | 365 days |
+| `friction.jsonl` | Things worth fixing: repeated denials, hallucinated rule ids, capture failures, fallbacks | 365 days |
+| `metrics.jsonl` | Volume telemetry: hook timings, daemon requests, retrieval results, RAG injections | 90 days |
+| `errors.jsonl` | Exceptions (`emit_exception`), bounded tracebacks | 365 days |
 
-**Neo4j Browser (developers).** The Docker Community Neo4j ships its own UI at **`http://localhost:7474`** (Bolt `bolt://localhost:7687`; default dev creds `neo4j` / `writdevpass` from `writ.toml`). Use it for raw Cypher and free-form graph visualization the `/explore` page intentionally does not expose. Read-only starters:
+Every writer (Python and bash) funnels through one router that never raises: a failed write degrades to `_fallback.jsonl` rather than dropping a security event. Files rotate at 50 MB at the source, and a daily systemd timer sweeps, gzips, and prunes; the analyzers read archives plus live files, so rotation never blinds them. `writ logs tail|stats|list` is the read surface; `GET /dashboard` renders the same analyzer lenses as HTML.
+
+**Caveat for the Writ self-repo:** the pre-2026-07 legacy log is ~86% test-synthetic; real project streams are clean. Read historical self-repo friction numbers with that in mind.
+
+## 18b. Exploring the graph
+
+**`/explore` (everyone).** With the daemon up, open `http://localhost:8765/explore`: a live, data-backed page with a query playground (`POST /query` with real results) and a graph explorer over `/graph` and `/node/{id}` (filter by type, domain, provenance, mandatory; click for statements and neighbors). Read-only by construction. The static companion site with the architecture diagrams is `docs/architecture/index.html`.
+
+**Neo4j Browser (developers).** `http://localhost:7474` (Bolt `bolt://localhost:7687`, dev creds `neo4j`/`writdevpass`) for raw Cypher:
 
 ```cypher
-MATCH (n) WHERE n.project = 'writ' RETURN labels(n)[0] AS type, count(*) ORDER BY count(*) DESC;   // node census
-MATCH (r:Rule {rule_id: 'SEC-AUTH-TOKEN-001'})-[e]-(m) RETURN r, e, m;                              // a rule + its edges
-MATCH (n)-[e:CONFLICTS_WITH]-(m) RETURN n.rule_id, m.rule_id;                                       // conflicts
+MATCH (n) WHERE n.project = 'writ' RETURN labels(n)[0] AS type, count(*) ORDER BY count(*) DESC;
+MATCH (r:Rule {rule_id: 'SEC-INJ-SQL-001'})-[e]-(m) RETURN r, e, m;
 ```
-
-> **Not available on Community:** Neo4j **Bloom** (the no-code graph explorer) is an Enterprise/Aura feature; Neo4j **Aura** is cloud *hosting*, not a viz tool. Writ self-hosts Community, so neither applies - `/explore` (Writ-tailored, shows provenance/mandatory/channels) plus Neo4j Browser (raw Cypher) cover both needs without them.
 
 ---
 
-## 19. Testing & benchmarks
+## 19. Testing and benchmarks
 
 ```bash
-make test    # full pytest suite
-make bench   # contractual + scale + traversal + methodology benchmarks
-make check   # lint / type / format gate
+make test    # pytest tests/ -x -q
+make bench   # benchmarks/bench_targets.py, the contractual perf floors
+make check   # test + bench + writ validate
 ```
 
-The full suite is **2921 passed + 52 skipped** (~4.5 min) as of 2026-06-16 (a point-in-time count; run the command below for the current figure):
-```bash
-.venv/bin/python -m pytest    # use the venv interpreter (it has onnxruntime)
-```
-Run tests with `.venv/bin/python`, not the system Python - the system interpreter lacks `onnxruntime` and fails the embedding tests.
+367 test modules, ~5,700 collected tests. Always run with the venv interpreter (`.venv/bin/python`); the system interpreter lacks `onnxruntime` and fails the embedding tests. Roughly half the suite needs a reachable Neo4j: unreachable skips, but a reachable-and-empty graph *fails* by design, so a broken corpus can never masquerade as a skip. The suite runs on its own daemon port (8799), isolates caches and logs per test, and restores the shipped corpus from `writ-corpus.cypher` when it finishes.
 
-`conftest.py` restores the methodology corpus after tests that wipe the shared graph (a test that runs `pipeline_db` would otherwise leave the shared `writ` graph empty; teardown re-migrates via `migrate.py`).
+Benchmarks: `bench_targets.py` (14 pass/fail targets: cold start, memory, per-stage latency, retrieval floors), `scale_benchmark.py` (the synthetic 80/500/1K/10K curve; wipes and restores), `methodology_bench.py` (read-only), `run_benchmarks.py` (traversal latency at 1K/10K).
 
 ---
 
 ## 20. By the numbers
 
-Per-stage and scale figures come from `SCALE_BENCHMARK_RESULTS.md`. Treat them as the published synthetic curve, and flag pre-B5.2 figures as superseded (the batch-ingest and warmup reworks changed cold-start and per-query cost models; older single-number latency claims in stale docs do not match current benches).
+Per-stage and scale figures live in `SCALE_BENCHMARK_RESULTS.md` (dated measurements; both the synthetic curve and the live measurement below are 2026-08-01, at the 287-rule corpus, on the machine described in that file's "Measurement environment" section):
 
-**Per-stage retrieval p95** (synthetic curve, 73 → 10K rules; `SCALE_BENCHMARK_RESULTS.md`):
-
-| Stage | p95 @ 73 | p95 @ 10K |
+| Stage | p95 @ 287 rules (live) | p95 @ 10K rules (synthetic) |
 |---|---:|---:|
-| BM25 (Tantivy) | 0.162 ms | 0.262 ms |
-| Vector (hnswlib) | 0.046 ms | 0.108 ms |
-| Cache (adjacency) | 0.001 ms | 0.001 ms |
-| Ranking | 0.103 ms | 0.218 ms |
-| **End to end** | **0.278 ms** | **0.557 ms** |
+| BM25 (Tantivy) | 0.250 ms | 0.323 ms |
+| Vector (hnswlib) | 0.140 ms | 0.102 ms |
+| Adjacency cache | 0.004 ms | 0.002 ms |
+| Ranking | 0.112 ms | 0.418 ms |
+| **End to end** | **0.6 ms** | **0.827 ms** |
 
-The headline is **context reduction at scale**: retrieving only the relevant slice instead of stuffing the full corpus saves an order of magnitude or more in tokens per turn as the rulebook grows. The per-query latency stays sub-millisecond because every index (BM25, vector, adjacency) is pre-warmed in memory - retrieval does no sync I/O (the lifespan warms Neo4j → pipeline → trigger index → LLM before serving).
+The headline is **context reduction at scale**: retrieved tokens stay flat (~1,600-2,000) while stuffing scales linearly, a 749x reduction at 10,000 rules. Latency stays sub-millisecond because every index is pre-warmed in memory; retrieval does no synchronous I/O.
 
-> The exact corpus-size and quality numbers in older HANDBOOK/README versions (276 rules, MRR tables, etc.) are stale. For current scale behavior read `SCALE_BENCHMARK_RESULTS.md`; for the live corpus census run the command in §9.
+Retrieval quality gates are *floors*, not targets (MRR@5 >= 0.45 on the 47 ambiguous queries, hit rate >= 0.75 on all 193; measured 0.5681 / 0.7824 on 2026-08-01). The floors were deliberately walked down as the corpus grew 4x; the history and rationale live in `tests/fixtures/regression_floors.py`.
 
 ---
 
 ## 21. What's solid, what's still moving
 
-**Solid:**
-- The 5-stage retrieval pipeline, sub-millisecond p95 at every stage.
-- The five-mode / two-gate enforcement and the anti-self-approval token model.
-- The structural gate (5 checks) and frequency-driven graduation flip.
-- Mandatory-floor single-source predicates + stranded-mandatory validator.
-- Sub-agent isolation (`is_subagent`) and orchestrator RAG suppression (`is_orchestrator`).
-- ONNX embedding inference with verified ranking parity vs PyTorch; HNSW corpus-hash invalidation.
-- Friction analytics + dashboard.
+**Solid:** the 5-stage pipeline with abstention; the five-mode / two-gate model and the token-based anti-self-approval; sub-agent isolation and dispatch discipline; the mandatory-floor single-source predicates and their validators; decision memory end to end (capture, recall, PR sync); the typed logging program; ONNX inference with verified PyTorch ranking parity; HNSW persistence with corpus-hash and checksum guards; plugin install with auto-discovered hooks and agents.
 
-**Still moving (known seams; ARCHITECTURE §20):**
+**Still moving (true seams as of 2026-07-31):**
 
 | Seam | Status |
 |---|---|
-| Stage 1 route-filter branch | Dead path until `build_pipeline` loads category routes. |
-| Channel 2 `/methodology-companion` | Built-not-wired; hook still uses `/query` until the floor-authoring cutover. |
-| Substantive-edit observation-count fork | Deferred decision. |
-| `authority` `ai-provisional → ai-promoted` | Defined, no live path. |
-| `DEFAULT_NEO4J_PASSWORD='writdevpass'` | Dev default; override in production. |
-| `writ reconcile` referenced in CLI messages | No such CLI command (reconcile is library-only); cosmetic message bug. |
-
-*Closed this round (commit 912a29e):* the `NODE_ID_FIELDS`↔`create_edge` OR-match (now registry-derived), `Abstraction` multi-project identity, and `get_all_rules()` cross-project id resolution.
+| Authority-preference re-ranking | Implemented but always off (threshold 0.0, never configured); the sticky-tiebreak logic currently depends on it staying off. |
+| Bundle-cohesion ranking weight | Defined, defaults to 0, skipped entirely. |
+| `/analyze` LLM escalation | Real code, but the `anthropic` SDK is not a dependency; without installing it, escalation returns "SDK not installed" placeholders. |
+| BM25 index persistence | The vector index persists across restarts; the BM25 index rebuilds every start. |
+| `debug` log stream | Reserved retention entry, never written; debug output stays in gated `/tmp` sinks. |
+| Marketplace submission | Install works end to end; community-marketplace listing still pending. |
 
 ---
 
 ## 22. Glossary
 
-**Always-on bundle.** The mandatory `Rule` set plus all `ForbiddenResponse` nodes (plus any Skill/Playbook flagged always-on), injected every turn via `/always-on` on its own 5000-token cap. Never ranked.
+**Always-on bundle.** The mandatory rules plus ForbiddenResponse nodes (plus any Skill/Playbook flagged always-on), injected via `/always-on` on its own 5,000-token cap. Never ranked.
 
-**Category.** A node type that defines retrieval routing as *data* (its `routes` field: `semantic`, `scoped`, `state`, `action`, `always_on`, `pull`, `ride_along`) rather than via a central table. Categories form a tree via `BELONGS_TO`.
+**Abstention.** The pipeline returns nothing (`mode: "abstained"`) when the best raw vector cosine is under 0.30; injecting weak matches proved worse than injecting nothing. Gated at the daemon call site, on raw cosine, because the normalized score cannot separate off-domain queries.
 
-**`floor_modes` / `action_triggers` / `trigger_keywords`.** The deterministic Channel-2 matching fields on methodology nodes: `floor_modes` = modes where the node is an always-injected obligation; `action_triggers` = actions that *push* the node (bypassing dedup); `trigger_keywords` = curated keywords for budget-flexible *pull*.
+**Category.** A node type that defines retrieval routing as *data* (its `routes` field) rather than a central table. Categories form a tree via `BELONGS_TO`.
 
-**graduation_pending.** The provenance state a `proposed` node enters after crossing the frequency threshold - a statistical flip awaiting the human promotion gate. It is not approval.
+**Channel 1 / Channel 2.** Ranked retrieval plus the always-on floor (rules) versus deterministic floor/push/pull methodology matching (skills, playbooks, techniques, anti-patterns).
 
-**INVOKES.** An edge meaning the orchestrator applies a methodology *inline* (one level deep). Must never target a `SubagentRole` (that's `DISPATCHES`).
+**`floor_modes` / `action_triggers` / `trigger_keywords`.** The Channel-2 matching fields: modes where a node always injects; actions that push it (bypassing dedup); keywords for budget-flexible pull.
 
-**investigate mode.** The unified evidence-grounded mode (audit / explore / research) with a per-invocation source-type lens (`code` / `web` / `runtime`) and INV-1..9 gates (§4).
+**Gate token.** The single-use secret at `/tmp/writ-gate-token-<sid>` that only your typed approval mints; claiming it is an atomic rename, and claiming is consuming.
 
-**methodology-companion.** The deterministic Channel-2 endpoint (`/methodology-companion`) that matches methodology nodes by floor/push/pull without embeddings. Built-not-wired today (§4).
+**graduation_pending.** The provenance state after the frequency flip: a statistical signal awaiting the human promotion gate. It is not approval.
 
-**project.** The isolation key (`project` property + composite `(id, project)` keys) that lets one Writ graph accumulate many projects without collision (§13).
+**INVOKES.** An edge meaning the orchestrator applies a methodology inline, one level deep. Must never target a `SubagentRole` (that's `DISPATCHES`).
 
-**provenance.** A node's lifecycle state: `hand-authored`, `proposed`, `graduation_pending`, `graduated`. The graph-first states (`proposed`, `graduation_pending`) are parity-exempt because they have no Markdown home yet (§11, §12).
+**project.** The isolation key (composite `(id, project)` uniqueness) that lets one Writ graph accumulate many projects without collision.
+
+**provenance.** A node's lifecycle state: `hand-authored`, `proposed`, `graduation_pending`, `graduated`, or `record` (decision memory: permanent, parity-exempt, never promoted).
+
+**Sticky tiebreak.** Within a 0.02 score window of the group best, previously injected rules keep their order across turns, for prompt-cache friendliness.

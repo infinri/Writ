@@ -20,10 +20,17 @@ import pytest_asyncio
 from writ.config import get_neo4j_password, get_neo4j_uri, get_neo4j_user
 from writ.graph.db import Neo4jConnection
 from writ.graph.methodology_ingest import (
+
+
     _dedupe_dual_location,
     compute_expected_graph,
     ingest_path,
 )
+
+from tests._bible_guard import requires_bible
+
+pytestmark = requires_bible
+
 
 BIBLE = Path(__file__).resolve().parent.parent / "bible"
 

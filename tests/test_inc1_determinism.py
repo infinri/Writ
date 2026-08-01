@@ -20,12 +20,19 @@ from __future__ import annotations
 import pytest
 
 from tests._corpus import (
+
+
     classify_corpus_state,
     clear_label,
     ensure_corpus,
     methodology_counts,
     neo4j_reachable,
 )
+
+from tests._bible_guard import requires_bible
+
+pytestmark = requires_bible
+
 
 # Floor counts for the "corpus is present/complete" check (NOT an exact census -- exact
 # per-type counts are pinned by tests/test_phase6efg_corpus_promotion.py). Asserted with >=

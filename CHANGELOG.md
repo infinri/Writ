@@ -2,6 +2,53 @@
 
 All notable changes to Writ are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-08-01
+
+The trust release: every published number re-measured on disclosed hardware, the documentation rebuilt from a full code read, the hook system audited end to end with its failure posture made explicit, and the Claude Code contract re-pinned to 2.1.220.
+
+### Changed
+
+- Every published performance number re-measured on 2026-08-01 and reconciled across README, HANDBOOK, `docs/reference/`, and the marketplace packet: live e2e p95 0.6 ms at the 287-rule corpus; synthetic 10K curve now 0.827 ms p95 with 749x context reduction (was 0.557 ms / 726x from 2026-04-13); retrieval quality republished with exact values (MRR@5 0.5681, hit rate 0.7824, domain-hit 0.9323, nDCG@10 0.7071; methodology MRR@5 0.8271, hit 0.95). All 14 `bench_targets` contractual targets and all 4 methodology blockers pass.
+- `benchmarks/scale_benchmark.py` now writes a "Measurement environment" section into `SCALE_BENCHMARK_RESULTS.md` on every run (host CPU/threads/RAM, the Neo4j container's memory limit or the fact there is none, pagecache size, observed container usage, Python version), so scale numbers are never published without the machine that produced them.
+- The Claude Code black-box map (`docs/reference/claude-code-blackbox.md`) refreshed from build 2.1.183 to 2.1.220 via live capture filtered to real sessions: `prompt_id` is now universal; Stop, SessionEnd, PreCompact, and PostCompact moved from DOC-ONLY to observed (PostCompact carries the full `compact_summary`); SubagentStart confirmed to carry no task text (17/17 spawns); new tool_response fields recorded (Bash `persistedOutputPath`/`persistedOutputSize`, Edit/Write `memdirStamped`); `DirectoryAdded` (v2.1.219) added as doc-only. Un-re-measured claims keep explicit old-build tags.
+
+### Fixed
+
+- **Hook-system silent-failure defects** (full 37-script audit, liveness cross-checked against real-session capture): `writ-rag-inject.sh` could silently drop a whole turn's rule injection if any jq extraction failed under `set -e` (now guarded); `session-start-bootstrap.sh`'s Neo4j probe could hang SessionStart on a black-holed host (now `timeout 2`); `validate-rules.sh` treated a server-side `/analyze` error as a silent pass (now a visible stderr notice); `scripts/stop-server.sh` fought systemd auto-restart instead of stopping (now `systemctl --user stop` when the unit is active).
+- **Force-swap coverage extended**: `Plan` dispatches now governed by `writ-dispatch-discipline` role routing (`workflow-subagent` deliberately exempt); new interpreter force-swap in `writ-bash-write-gate.sh` rewrites bare `pytest`/`python3 -m pytest` to `.venv/bin/python -m pytest` when a venv exists, with an `additionalContext` disclosure (verified live on CC 2.1.220).
+- **Destructive benchmarks restored a degraded graph.** `_corpus_safety.restore_full_corpus` rebuilt from `bible/` markdown after wiping, which silently dropped all 62 Abstraction nodes (they have no markdown home), lost 2 SubagentRoles, derived a different RELATED_TO edge set, and inherited source-vs-graph flag drift (measured: 400 nodes / 1060 edges / 32 mandatory where the live graph had 464 / 731 / 33). The restore now snapshots the exact live graph to `var/benchmark-graph-snapshot.cypher` before the first wipe and replays it afterward; the snapshot file doubles as the crash-recovery artifact (`writ import-cypher <snapshot>`).
+- `benchmarks/methodology_bench.py` failed on import: it still pulled `bundle_for`/`retrieve` and the blocker thresholds from `tests/test_methodology_retrieval.py` after the POL-2 harness extraction moved them to `tests/fixtures/benchmark_harness.py`.
+- Stale docstrings the rewrite surfaced: `writ doctor` "10 checks" (13), `writ git-hooks install` claiming a prepare-commit-msg install (retired, strip-only), `bootstrap.sh`'s `/tmp` daemon-log banner (fix pending in the banner itself).
+
+### Changed (documentation rebuild, 2026-07-31)
+
+- Documentation rebuilt from a full code read (all production code line-by-line; the test suite swept at contract level). New structure: README + HANDBOOK rewritten in place; `docs/install.md` replaces `docs/install-writ.md`; a complete `docs/reference/` set (architecture, graph-schema, retrieval, session-and-gates, configuration, logging, decision-memory, testing, compression, efficacy-ab, the Claude Code black-box map, plus generated cli/http-api/hooks/rulebook pages via `make docs`); the marketplace packet at `docs/marketplace/SUBMISSION.md` absorbs PROMOTIONAL-BRIEF.md.
+- Documentation is no longer a test surface: doc-content assertions removed from the suite; generated pages drift-check via `make docs-check`, not pytest.
+
+### Removed
+
+- `docs/extraction/` (all 12 deep dives), `docs/ARCHITECTURE.md`, `docs/LOGGING-BLUEPRINT.md`, `docs/LOGGING-COVERAGE-AUDIT.md`, `docs/EFFICACY-AB-RUNBOOK.md`, `out-of-the-box-rules.md`, `PROMOTIONAL-BRIEF.md`, `RESUME.md`: superseded by the reference set and ground-truth rewrite; git history is the archive. Each was fully read for unique content first; the survivors (severity rubric, mandatory-selection criteria, and a dozen smaller rationale items) were folded into HANDBOOK and `docs/reference/`.
+
+## [1.5.1] - 2026-07-31
+
+Writ has been published as a plugin since 1.4.x, and the plugin install path had never worked end to end. Three independent breakages, each verified against Claude Code 2.1.220 by installing from a local-path marketplace into a throwaway `HOME`.
+
+### Fixed
+
+- **`.claude-plugin/marketplace.json` was missing**, so the first command in the README's install section (`claude plugin marketplace add infinri/Writ`) failed with `Marketplace file not found`. No user could install Writ as a plugin at all. Added as a single-plugin marketplace whose entry sources the repository root (`"source": "./"`), which is the layout `claude plugin install writ@writ` already assumed.
+- **All 12 hooks failed to load on a marketplace install.** `plugin.json` declared `"hooks": "./hooks/hooks.json"`, which is the path Claude Code auto-discovers. The declaration collided with auto-discovery: `Duplicate hooks file detected: ./hooks/hooks.json resolves to already-loaded file ...`. A marketplace-installed Writ therefore had no write gate, no rule injection, and no enforcement, which is the silent-no-op failure mode Writ exists to prevent. The `hooks` key is removed; `manifest.hooks` is for additional hook files only, and Writ has none.
+- **`claude plugin path` does not exist** and never has. README.md and `scripts/bootstrap-plugin.sh` wrapped it in `$(...)`, so a copy-paste expanded to the empty string and ran `bash /scripts/bootstrap-plugin.sh`. All sites now resolve the install directory from the `installPath` field of `claude plugin list --json`.
+- Dead references in `README.md` to `templates/settings.json` (removed several releases ago), to `.claude/hooks/` (now `hooks/scripts/`), to `scripts/install-harness-config.sh` (removed), and to `plugin.json` lifecycle hooks and `defaultEnabled` that the manifest does not declare. Hook counts corrected to 38 scripts over 12 registered events.
+
+### Added
+
+- `tests/test_plugin_manifest.py`. Static invariants (marketplace exists and names the plugin, no declared hooks path resolves to the auto-discovered file, plugin and marketplace versions agree, every declared component path exists) plus `integration`-marked acceptance tests that install from a local-path marketplace into a temporary `HOME` and assert on `claude plugin list --json` errors and `claude plugin details` component counts.
+
+### Known issues
+
+- `claude plugin details writ` reports `Agents (0)` despite `plugin.json` declaring five agent files that exist on disk. Plugin agents must live at `agents/` in the plugin root; Writ's are at `.claude/agents/`, which Claude Code reads as *project* agents. The `writ-*` roles are therefore available when working inside the Writ repository and have never been available to anyone using Writ elsewhere. Fixing it is a coordinated move across the manifest, `scripts/ingest_subagent_roles.py`, `scripts/export_subagent_roles.py`, the graph-drift check, and the bare-name steering in `hooks/scripts/writ-dispatch-discipline.sh`, so it ships separately. *(Resolved in the follow-up `a56ca1e`: roles moved to `agents/`, the `agents` manifest key removed entirely, measured `Agents (5)` on Claude Code 2.1.220; `writ-dispatch-discipline.sh` needed no change.)*
+- `claude plugin validate --strict` passes on manifests with this defect. Manifest validation checks shape, not whether declared components load, so it cannot substitute for a real install.
+
 ## [1.5.0] - 2026-05-21
 
 Two coordinated structural changes shipped together. (1) Static workflow content -- the mode-system tutorial, failure-mode rules, orchestrator dispatch playbook, and SKILL.md hook breadcrumbs -- migrates into Methodology nodes that the existing hybrid-RAG pipeline surfaces on demand. The six places that previously described the mode workflow collapse to one canonical source (Neo4j, surfaced via RAG); per-session static token cost drops from ~2000 to ~250 (CLAUDE.md trimmed to user preferences plus a server-down fallback paragraph). (2) `writ import-markdown` becomes the single canonical entry point for ingesting every node type under `bible/` (Rules plus methodology: Skill, Playbook, AntiPattern, Phase, Technique, Rationalization, SubagentRole, WorkedExample, ForbiddenResponse). The duplicate parse-validate-write loop that previously lived in both `writ/cli.py::import_markdown` (Rule-only) and `scripts/migrate.py` (methodology-aware) collapses into a single library module, `writ/graph/methodology_ingest.py`, that both the CLI and the migrate-shim consume (DRY-DUP-002). Per-node-type dispatch becomes a registry lookup instead of an if/elif chain (SOLID-OCP-002); validation failures surface as typed `IngestError(file, node_type, node_id, field, reason)` records instead of raw Pydantic tracebacks (API-ERROR-002).
@@ -185,7 +232,7 @@ Anyone reading this entry should take from it the framing that drove the work: r
 - Mutating `writ` subcommands (`add`, `edit`, `import-markdown`, `export`, `compress`, `migrate`, `propose`, `review`, `feedback`, `serve`) remain gated behind explicit human approval. They are intentionally not in the allowlist; only their idempotent or read-only counterparts are auto-allowed.
 - Combined with the explicit ONNX contract in commit `dae679a`, the production embedding path is now both declared (`pyproject.toml` lists `onnxruntime`) and enforced (`build_pipeline()` raises `RuntimeError` when `OnnxEmbeddingModel` cannot construct and the fallback override is unset). Existing installs that produced silently-degraded daemons will, after upgrade, either start correctly with ONNX or refuse to start with an actionable error message naming `scripts/export_onnx.py`, the override env var, and the venv install steps. This is desirable behavior, but it is a user-visible change: daemons that used to start by silently switching to the SentenceTransformer fallback will now require either the model file plus `onnxruntime` on the production path, or an explicit `WRIT_ALLOW_EMBEDDING_FALLBACK=1` plus `pip install -e '.[fallback]'` to permit the fallback.
 - **Behavior change for existing users** following the `[fallback]` move. Existing standalone installs whose `.venv` was built before this change already have `sentence-transformers` from the prior core-deps declaration; the daemon continues to work without explicit action. Users who recreate their venv (`rm -rf .venv && bash scripts/bootstrap.sh`) get the lean install: no `sentence-transformers`, no `torch`, no CUDA libraries. Users who explicitly relied on `WRIT_ALLOW_EMBEDDING_FALLBACK=1` and re-bootstrap need to additionally run `pip install -e '.[fallback]'` to restore the fallback path. The startup `RuntimeError` names this command if hit.
-- Plugin-mode users running `bash $(claude plugin path writ)/scripts/bootstrap-plugin.sh` get the same lean profile after re-bootstrap. Plugin install paths are unaffected for users who do not re-bootstrap.
+- Plugin-mode users re-running `scripts/bootstrap-plugin.sh` get the same lean profile after re-bootstrap. Plugin install paths are unaffected for users who do not re-bootstrap. (Command corrected in 1.5.1: this entry originally documented `$(claude plugin path writ)`, a subcommand that has never existed. Resolve the install directory from `claude plugin list --json` instead.)
 
 ## [1.0.1] - 2026-05-11
 
@@ -212,7 +259,7 @@ Patch release completing the v1 vision: Writ is now installable as a Claude Code
 
 ### Notes
 
-- `templates/settings.json` is still the source of truth for standalone installs. The plugin path uses `hooks/hooks.json` instead. Keep registrations in sync between the two if you edit either.
+- `templates/settings.json` is still the source of truth for standalone installs. The plugin path uses `hooks/hooks.json` instead. Keep registrations in sync between the two if you edit either. (No longer true as of a later release: `templates/settings.json` was removed and `hooks/hooks.json` is now the single hook-registration surface for both install paths.)
 - Existing standalone installs at `~/.claude/skills/writ/` continue working unchanged. See README "Switching from the standalone install to the plugin" if you'd rather move to the plugin path; the Neo4j named volume `writ-neo4j-data` is shared between modes, so the rule corpus survives the switch.
 
 ## [1.0.0] - 2026-05-10

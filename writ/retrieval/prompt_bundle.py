@@ -15,10 +15,33 @@ from __future__ import annotations
 import json
 
 
+def _renderable_always_on(ao_json: dict) -> list[dict]:
+    """The always-on rules that actually reach the injected block.
+
+    A rule missing its id, trigger, or statement has nothing to render, so it is
+    dropped. Both render_always_on and always_on_rule_ids derive from this one filter
+    (DRY-DUP-002), so the IDs the session records can never name a rule the agent was
+    not shown -- which would reintroduce the citation bug inverted, telling the agent
+    it may cite something absent from its context.
+    """
+    out = []
+    for r in ao_json.get("rules") or []:
+        rid = r.get("rule_id", "")
+        trig = (r.get("trigger") or "").strip()
+        stmt = (r.get("statement") or "").strip()
+        if not rid or not trig or not stmt:
+            continue
+        out.append({"rule_id": rid, "trigger": trig, "statement": stmt})
+    return out
+
+
 def render_always_on(ao_json: dict) -> tuple[str, int, int]:
     """Render the always-on bundle. Mirror of the ALWAYS_ON_PARSED heredoc that
     writ-rag-inject.sh used. Returns (block_text, total_tokens, rule_count); block is
-    "" when there are no renderable rules."""
+    "" when there are no renderable rules.
+
+    rule_count stays len(rules), NOT the renderable count, as in the bash version.
+    """
     rules = ao_json.get("rules") or []
     try:
         tokens = int(ao_json.get("total_tokens", 0) or 0)
@@ -28,16 +51,22 @@ def render_always_on(ao_json: dict) -> tuple[str, int, int]:
     if not rules:
         return "", tokens, count
     lines = ["=== ALWAYS-ACTIVE RULES ==="]
-    for r in rules:
-        rid = r.get("rule_id", "")
-        trig = (r.get("trigger") or "").strip()
-        stmt = (r.get("statement") or "").strip()
-        if not rid or not trig or not stmt:
-            continue
-        lines.append(f"[{rid}] WHEN: {trig}")
-        lines.append(f"  {stmt}")
+    for r in _renderable_always_on(ao_json):
+        lines.append(f"[{r['rule_id']}] WHEN: {r['trigger']}")
+        lines.append(f"  {r['statement']}")
     lines.append("=== END ALWAYS-ACTIVE RULES ===")
     return "\n".join(lines), tokens, count
+
+
+def always_on_rule_ids(ao_json: dict) -> list[str]:
+    """The rule IDs injected by the always-on channel, in bundle order.
+
+    The session must record these. Always-on was the only one of the three prompt-bundle
+    channels that injected rules without recording them, so the plan gate validated
+    citations against a record missing every always-on rule and reported the agent's
+    correct citations as hallucinated.
+    """
+    return [r["rule_id"] for r in _renderable_always_on(ao_json)]
 
 
 def compute_nudge(query_resp: dict, threshold: float = 0.3) -> str:

@@ -23,12 +23,19 @@ import pytest
 pytest.importorskip("onnxruntime")
 
 from tests.fixtures.benchmark_harness import (  # noqa: E402
+
+
     BLOCKER_COMPLETENESS,
     BLOCKER_HIT_RATE,
     BLOCKER_MRR,
     BLOCKER_P95_MS,
     benchmark_metrics,
 )
+
+from tests._bible_guard import requires_bible
+
+pytestmark = requires_bible
+
 
 
 @pytest.fixture(scope="session")

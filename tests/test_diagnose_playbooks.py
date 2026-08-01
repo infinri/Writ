@@ -30,6 +30,11 @@ from writ.graph.ingest import (
 
 from tests._daemon import _port
 
+from tests._bible_guard import requires_bible
+
+pytestmark = requires_bible
+
+
 SKILL_DIR = Path(__file__).resolve().parent.parent
 METHODOLOGY = SKILL_DIR / "bible" / "methodology"
 SPINE = METHODOLOGY / "PBK-PROC-DEBUG-001.md"

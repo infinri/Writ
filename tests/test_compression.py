@@ -10,6 +10,10 @@ import numpy as np
 import pytest
 import pytest_asyncio
 
+# The clustering path lives on the [fallback] dependency tier (writ compress is
+# maintainer-only); CI installs [dev] only, so skip rather than fail collection.
+pytest.importorskip("sklearn", reason="scikit-learn ([fallback] extra) not installed")
+
 from writ.compression.abstractions import generate_abstractions
 from writ.compression.clusters import (
     ClusterResult,

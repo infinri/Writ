@@ -1,6 +1,6 @@
 """Task #7A: classify_delivery -- single source of the verified delivery rule.
 
-Encodes the CC 2.1.183 contract (docs/WRIT-BLACKBOX-MAP.md): hook output reaches
+Encodes the CC 2.1.183 contract (docs/reference/claude-code-blackbox.md): hook output reaches
 the model only via additionalContext / permissionDecisionReason (any event) or
 plain stdout on UserPromptSubmit / UserPromptExpansion / SessionStart.
 """

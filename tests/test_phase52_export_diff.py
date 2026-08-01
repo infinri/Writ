@@ -30,6 +30,11 @@ from writ.export import DERIVED_EDGE_TYPES, export_rules_to_markdown
 from writ.graph.db import Neo4jConnection
 from writ.graph.ingest import parse_edges_from_file, parse_rules_from_file
 
+from tests._bible_guard import requires_bible
+
+pytestmark = requires_bible
+
+
 BIBLE = Path(__file__).resolve().parent.parent / "bible"
 
 

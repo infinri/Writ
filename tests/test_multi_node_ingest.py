@@ -28,12 +28,19 @@ from writ.graph.ingest import (
     validate_parsed_rule,
 )
 from writ.graph.schema import (
+
+
     AntiPattern,
     Phase,
     Playbook,
     Rule,
     Skill,
 )
+
+from tests._bible_guard import requires_bible
+
+pytestmark = requires_bible
+
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 SYNTHETIC_DIR = _REPO_ROOT / "bible" / "methodology"

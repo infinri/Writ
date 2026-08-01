@@ -70,7 +70,7 @@ if [ -z "${WRIT_NO_AUTOSTART:-}" ] && ! curl -sf --connect-timeout 0.2 "$WRIT_HE
     if [ -f "$WRIT_DIR/scripts/lib/writ-server-lib.sh" ]; then
         # FIX-2: pin the daemon's session-cache dir before delegating so a hook-started
         # daemon is born aligned (writ_ensure_server also pins it, defensively).
-        export WRIT_CACHE_DIR="${WRIT_CACHE_DIR:-$(python3 -c 'import tempfile; print(tempfile.gettempdir())' 2>/dev/null || echo /tmp)}"
+        export WRIT_CACHE_DIR="$(writ_session_cache_dir)"
         # shellcheck source=scripts/lib/writ-server-lib.sh
         source "$WRIT_DIR/scripts/lib/writ-server-lib.sh"
         WRIT_HOST="$WRIT_HOST" WRIT_PORT="$WRIT_PORT" WRIT_DIR="$WRIT_DIR" \
@@ -135,23 +135,30 @@ CURRENT_MODE=""
 # cannot flake the way the package read can). Only auto-set when that confirms no mode --
 # never override an explicit choice.
 if [ -z "$AGENT_ID" ] && [ -n "$MODE_HINT" ]; then
-    CONFIRMED_MODE=$(python3 -c "
-import json, os, sys, tempfile
-d = os.environ.get('WRIT_CACHE_DIR') or tempfile.gettempdir()
-p = os.path.join(d, 'writ-session-' + sys.argv[1] + '.json')
-try:
-    print(json.load(open(p)).get('mode') or '')
-except Exception:
-    print('')
-" "$SESSION_ID" 2>/dev/null || echo "")
-  CONFIRMED_MODE=$(echo "$CONFIRMED_MODE" | tr -d '[:space:]')
-  if [ -z "$CONFIRMED_MODE" ]; then
+  # Single-source resolver (common.sh). This read used to inline its own cache-dir
+  # resolution with a tempdir fallback, which pointed at a directory holding no session
+  # caches, so it answered "unset" for EVERY session and the branch below fired every turn.
+  PRIOR_MODE=$(writ_session_mode_direct "$SESSION_ID")
+  AUTOROUTED="no"
+  if [ -z "$PRIOR_MODE" ]; then
     # `mode init` (not `mode set`): authoritatively sets the mode ONLY if still
     # unset (checked inside the helper's own cache read), so a spurious re-fire on
-    # a transient empty CONFIRMED_MODE read can never reset a live gate cycle.
+    # a transient empty PRIOR_MODE read can never reset a live gate cycle.
     python3 "$SESSION_HELPER" mode init "$MODE_HINT" "$SESSION_ID" >/dev/null 2>&1 || true
-    CURRENT_MODE="$MODE_HINT"
-    debug "auto-routed unset mode -> $MODE_HINT"
+    # Re-read and act on the mode that is ACTUALLY set. `mode init` declines when a mode
+    # already exists (its own locked check is the authority, not ours) and prints
+    # "init: <mode>" either way, so its output cannot distinguish the two. Trusting the
+    # hint instead is how the hook came to tell the user "the mode is now 'work'" while
+    # the cache said conversation and the gate ran unarmed for the whole turn.
+    CONFIRMED_MODE=$(writ_session_mode_direct "$SESSION_ID")
+    if [ -n "$CONFIRMED_MODE" ]; then
+      CURRENT_MODE="$CONFIRMED_MODE"
+      [ "$CONFIRMED_MODE" = "$MODE_HINT" ] && AUTOROUTED="yes"
+    fi
+    debug "auto-route requested $MODE_HINT -> mode is now '${CONFIRMED_MODE:-unset}'"
+  fi
+  # Announce ONLY a change we actually made.
+  if [ "$AUTOROUTED" = "yes" ]; then
     if [ "$MODE_HINT" = "investigate" ]; then
       cat << AUTOROUTE
 
@@ -196,7 +203,7 @@ if parsed_bool "$CACHE" "is_orchestrator"; then IS_ORCHESTRATOR="true"; else IS_
 # 1c-2. Decision-memory Phase 2: once-per-session recall briefing. On the FIRST
 # UserPromptSubmit of a master session, surface the project's recent
 # rule-grounded decisions via additionalContext (the confirmed channel; see
-# WRIT-BLACKBOX-MAP.md -- SessionStart's only confirmed surface is
+# docs/reference/claude-code-blackbox.md -- SessionStart's only confirmed surface is
 # initialUserMessage, which would seed a fake user turn). Guarded by the
 # recall_briefed cache flag so it fires exactly once; fail-open + time-bounded so
 # a recall failure or a slow daemon never blocks the prompt.
@@ -355,10 +362,12 @@ if [ "${BUNDLE_ERR:-1}" = "1" ]; then
 fi
 
 # jq extracts each rendered piece (multi-line safe; ~6ms vs python ~15ms cold-start).
-AO_BLOCK=$(printf '%s' "$BUNDLE" | jq -r '.always_on_block // ""' 2>/dev/null)
-RULES_TEXT=$(printf '%s' "$BUNDLE" | jq -r '.rules_text // ""' 2>/dev/null)
-METHOD_BLOCK=$(printf '%s' "$BUNDLE" | jq -r '.methodology_block // ""' 2>/dev/null)
-NUDGE=$(printf '%s' "$BUNDLE" | jq -r '.nudge // ""' 2>/dev/null)
+# Each is || true guarded: under set -e an unguarded jq failure (binary missing,
+# exit 127) would abort the whole hook and silently drop EVERY injection this turn.
+AO_BLOCK=$(printf '%s' "$BUNDLE" | jq -r '.always_on_block // ""' 2>/dev/null) || true
+RULES_TEXT=$(printf '%s' "$BUNDLE" | jq -r '.rules_text // ""' 2>/dev/null) || true
+METHOD_BLOCK=$(printf '%s' "$BUNDLE" | jq -r '.methodology_block // ""' 2>/dev/null) || true
+NUDGE=$(printf '%s' "$BUNDLE" | jq -r '.nudge // ""' 2>/dev/null) || true
 # REMAINING_BUDGET (from the single $CACHE read at step 1c) still gates the
 # review-feedback push below; the endpoint owns the channel budgets itself.
 REMAINING_BUDGET=$(parsed_field "$CACHE" "remaining_budget"); REMAINING_BUDGET="${REMAINING_BUDGET:-8000}"
@@ -394,6 +403,7 @@ ao = b.get('ao_meta')
 if ao is not None and int(ao.get('tokens', 0)) > 0:
     lines.append({'session': sid, 'mode': mode, 'event': 'always_on_inject',
                   'tokens': int(ao.get('tokens', 0)), 'rule_count': int(ao.get('count', 0)),
+                  'rule_ids': ao.get('rule_ids') or [],
                   'event_name': 'UserPromptSubmit', 'mechanism': 'stdout'})
 mm = b.get('method_meta')
 if mm is not None:

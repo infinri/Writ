@@ -64,4 +64,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-writ
       - name: Run benchmarks
+        # Shared runners are several times slower than the reference machine on
+        # the genuinely hardware-bound cold-start target (measured 5.5s vs <1s,
+        # identical warm behavior). Scale only that budget; see bench_targets.py.
+        env:
+          WRIT_BENCH_BUDGET_SCALE: "3"
         run: make bench

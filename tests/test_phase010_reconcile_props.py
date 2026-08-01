@@ -35,6 +35,10 @@ from writ.graph.integrity import IntegrityChecker
 from writ.graph.methodology_ingest import ingest_path, reconcile
 from writ.graph.schema import MANAGED_PROP_NAMES
 
+from tests._bible_guard import requires_bible
+
+pytestmark = requires_bible
+
 BIBLE = Path(__file__).resolve().parent.parent / "bible"
 
 # A real Rule node. Rules never declare `action_triggers` in source (it is a

@@ -82,10 +82,11 @@ def test_prune_command_exists() -> None:
         f"'writ prune --help' must exit 0; got {result.exit_code}. "
         f"Output: {result.output!r}"
     )
-    assert "prune" in result.output, (
+    from tests._ansi import plain  # noqa: PLC0415
+    assert "prune" in plain(result.output), (
         f"'prune' must appear in help output; got: {result.output!r}"
     )
-    assert "--dry-run" in result.output, (
+    assert "--dry-run" in plain(result.output), (
         f"'--dry-run' option must appear in 'writ prune --help'; got: {result.output!r}"
     )
 
@@ -140,6 +141,7 @@ def test_validate_accepts_bible_dir_option() -> None:
             f"validate --help must exit 0; got {result.exit_code}. "
             f"Output: {result.output!r}"
         )
-        assert "--bible-dir" in result.output, (
+        from tests._ansi import plain  # noqa: PLC0415
+        assert "--bible-dir" in plain(result.output), (
             f"validate --help must list --bible-dir option; got: {result.output!r}"
         )

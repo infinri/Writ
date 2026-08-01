@@ -1,5 +1,14 @@
 # Always-on applicability classification + filter design
 
+> **HISTORICAL RECORD (archived 2026-07-31), do not read as current.** Two claims below are
+> superseded: (1) the doc says the `WRIT_ALWAYS_ON_FILTER` default flip is pending; the filter
+> has since shipped **default ON**. (2) "37 always-on rules" conflates
+> the node flag with endpoint reachability: only 6 Rules carry `always_on: true`; the other rows
+> reach `/always-on` because they are `mandatory` (the endpoint predicate is `mandatory OR
+> always_on`). Current behavior: `docs/reference/retrieval.md` section 4. This file is kept for
+> the design rationale (routing-as-node-data, the fail-open principle, the measured 37->10 prompt
+> and 37->5 write reductions) and as provenance for `scripts/migrate_always_on_applicability.py`.
+
 Goal: stop re-injecting all 37 always-on rules (3,556 tokens) on every UserPromptSubmit. Inject
 each rule only at the moment its WHEN matches. No weights: applicability decides, not ranking
 (WRIT-BLUEPRINT 3.5). Fail-open: when unsure, inject.

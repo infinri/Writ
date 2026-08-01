@@ -11,6 +11,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tests._bible_guard import requires_bible
+
+pytestmark = requires_bible
+
+
 WRIT_ROOT = Path(__file__).resolve().parent.parent
 TESTS = WRIT_ROOT / "tests"
 METH = WRIT_ROOT / "bible" / "methodology"

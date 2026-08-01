@@ -177,7 +177,8 @@ async def prompt_bundle(request: PromptBundleRequest) -> dict[str, Any]:
     """
     import json as _json
     from writ.retrieval.prompt_bundle import (
-        compute_nudge, extract_rule_objects, render_always_on, split_format,
+        always_on_rule_ids, compute_nudge, extract_rule_objects, render_always_on,
+        split_format,
     )
 
     if server._pipeline is None:
@@ -249,12 +250,20 @@ async def prompt_bundle(request: PromptBundleRequest) -> dict[str, Any]:
         at=("prompt" if request.always_on_filter else None),
         context=prompt,
     )
-    block, ao_tokens, ao_count = render_always_on(aoresp if isinstance(aoresp, dict) else {})
+    ao_json = aoresp if isinstance(aoresp, dict) else {}
+    block, ao_tokens, ao_count = render_always_on(ao_json)
     out["always_on_block"] = block
     if block and ao_tokens > 0:
-        await asyncio.to_thread(server.writ_session.cmd_update, sid,
-                                ["--add-always-on-tokens", str(ao_tokens)])
-        out["ao_meta"] = {"tokens": ao_tokens, "count": ao_count}
+        # Record the IDs, not just the token count. This channel injects rules into the
+        # prompt; recording only tokens left _validate_phase_a validating citations
+        # against a set with no always-on rule in it, so the gate reported the agent's
+        # correct citations as hallucinated and spent the user's approval token.
+        ao_ids = always_on_rule_ids(ao_json)
+        await asyncio.to_thread(server.writ_session.cmd_update, sid, [
+            "--add-always-on-tokens", str(ao_tokens),
+            "--add-always-on-rules", _json.dumps(ao_ids),
+        ])
+        out["ao_meta"] = {"tokens": ao_tokens, "count": ao_count, "rule_ids": ao_ids}
 
     # --- Channel 3: methodology companion ---
     qsource = {

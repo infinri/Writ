@@ -1,269 +1,107 @@
 # Writ Scale Benchmark Results
 
-> **Freshness (verified 2026-06-16):** the per-stage **latency** and **context-reduction** figures below remain representative. Two classes of number are now superseded and should be read as historical: (1) **cold-start and ingest timings predate the B5.2 batch-ingest rewrite** (ingest is now 3-7x faster); (2) the **"Mandatory rules: 35"** count predates the 3.6a corpus work (the live graph is 399 nodes / 1048 edges, project `writ`). Re-run `make bench` for current numbers.
-
-This document holds two things. First, a fresh measurement of the live production system, taken today on the actual rule corpus you would interact with. Second, a synthetic scale curve from 2026-04-13 that shows how Writ behaves as the rulebook grows from 80 to 10,000 rules.
-
-The live numbers tell you what the system feels like right now. The synthetic curve tells you what to expect at scale.
-
-## Live system measurement (2026-05-10)
-
-Hardware: 4-core laptop, ONNX Runtime, warm in-memory indexes.
-Corpus: 276 Rule nodes (246 retrievable, 30 mandatory, post Phase 1-5 public-rulebook expansion) plus 52 methodology nodes (Skill, Playbook, Technique, AntiPattern, ForbiddenResponse, and bundle-only types).
-Method: 10 representative queries x 50 iterations = 500 samples per stage.
+**Date:** 2026-08-01 13:54 UTC
+**Scales tested:** 80, 500, 1,000, 10,000
+
+---
+
+## Measurement environment
+
+All numbers below come from this machine; expect different absolute values elsewhere.
+Retrieval latency is CPU-bound (warm in-process indexes), and the Neo4j container
+here runs without a memory cap, so nothing below reflects a memory-constrained setup.
+
+- Host: AMD Ryzen 9 7940HS w/ Radeon 780M Graphics, 16 threads, 31 GiB RAM
+- Neo4j container `writ-neo4j`: no memory limit (whole host available); pagecache 512M; observed usage 1.271GiB at report time
+- Python 3.12.3
+
+---
+
+## Summary
+
+| Metric | 80 | 500 | 1,000 | 10,000 |
+|---|---|---|---|---|
+| Domain rules | 80 | 473 | 973 | 9973 |
+| Mandatory rules | 0 | 27 | 27 | 27 |
+| Ingest time | 0.16s | 0.81s | 1.55s | 10.71s |
+| Ingest rate | 496/s | 621/s | 646/s | 934/s |
+| Cold start (median) | 0.169s | 0.293s | 0.217s | 0.83s |
+| Memory (RSS) | 1438 MB | 2009 MB | 2290 MB | 2441 MB |
+| BM25 p95 | 0.17ms | 0.217ms | 0.267ms | 0.323ms |
+| Vector p95 | 0.065ms | 0.073ms | 0.081ms | 0.102ms |
+| Cache p95 | 0.001ms | 0.001ms | 0.001ms | 0.002ms |
+| Ranking p95 | 0.178ms | 0.242ms | 0.35ms | 0.418ms |
+| **E2E p95** | **0.383ms** | **0.486ms** | **0.662ms** | **0.827ms** |
+| E2E median | 0.235ms | 0.369ms | 0.494ms | 0.543ms |
+| Domain hit rate | 30.0% | 50.0% | 50.0% | 60.0% |
+| Context tokens (all) | 14,738 | 79,491 | 137,990 | 1,190,649 |
+| Context tokens (retrieved) | 2,056 | 1,898 | 1,686 | 1,590 |
+| **Context reduction** | **7.2x** | **41.9x** | **81.8x** | **748.8x** |
+| Clusters | 23 | 99 | 318 | 565 |
+| Ungrouped | 15 | 102 | 221 | 100 |
+| Silhouette | 0.111 | 0.2341 | 0.5842 | 0.9869 |
+| Compression ratio | 3.9x | 5.1x | 3.1x | 23.0x |
+| Session rules loaded | 20 | 20 | 20 | 20 |
+| Session duplicates | 0 | 0 | 0 | 0 |
+| Session budget remaining | 6,800 | 6,800 | 6,800 | 6,800 |
+
+---
+
+## Per-Stage Latency Detail
+
+### 80 rules
+
+| Stage | Median | p95 | p99 | Min | Max |
+|---|---|---|---|---|---|
+| BM25 | 0.112ms | 0.17ms | 0.329ms | 0.074ms | 1.321ms |
+| Vector | 0.039ms | 0.065ms | 0.113ms | 0.034ms | 0.132ms |
+| Cache | 0.001ms | 0.001ms | 0.004ms | 0.0ms | 0.042ms |
+| Ranking | 0.082ms | 0.178ms | 21.224ms | 0.001ms | 32.002ms |
+| **End-to-end** | 0.235ms | 0.383ms | 21.603ms | 0.171ms | 32.468ms |
+
+### 500 rules
+
+| Stage | Median | p95 | p99 | Min | Max |
+|---|---|---|---|---|---|
+| BM25 | 0.155ms | 0.217ms | 0.342ms | 0.111ms | 1.014ms |
+| Vector | 0.052ms | 0.073ms | 0.09ms | 0.046ms | 0.672ms |
+| Cache | 0.001ms | 0.001ms | 0.002ms | 0.0ms | 0.003ms |
+| Ranking | 0.155ms | 0.242ms | 12.574ms | 0.001ms | 18.588ms |
+| **End-to-end** | 0.369ms | 0.486ms | 12.997ms | 0.252ms | 19.174ms |
+
+### 1,000 rules
+
+| Stage | Median | p95 | p99 | Min | Max |
+|---|---|---|---|---|---|
+| BM25 | 0.19ms | 0.267ms | 0.549ms | 0.119ms | 1.027ms |
+| Vector | 0.056ms | 0.081ms | 0.145ms | 0.049ms | 0.169ms |
+| Cache | 0.001ms | 0.001ms | 0.002ms | 0.0ms | 0.003ms |
+| Ranking | 0.241ms | 0.35ms | 12.221ms | 0.001ms | 20.023ms |
+| **End-to-end** | 0.494ms | 0.662ms | 12.6ms | 0.264ms | 20.635ms |
+
+### 10,000 rules
+
+| Stage | Median | p95 | p99 | Min | Max |
+|---|---|---|---|---|---|
+| BM25 | 0.227ms | 0.323ms | 0.593ms | 0.122ms | 0.805ms |
+| Vector | 0.061ms | 0.102ms | 0.137ms | 0.045ms | 0.173ms |
+| Cache | 0.001ms | 0.002ms | 0.003ms | 0.0ms | 0.004ms |
+| Ranking | 0.249ms | 0.418ms | 14.8ms | 0.039ms | 19.894ms |
+| **End-to-end** | 0.543ms | 0.827ms | 15.288ms | 0.271ms | 20.82ms |
+
+---
+
+## Scaling Analysis
+
+Key questions answered by this benchmark:
+
+1. **Does latency stay under 10ms at scale?** Check E2E p95 column.
+2. **Does context reduction improve at scale?** Check the context reduction row.
+3. **Does memory stay under 2GB?** Check RSS column.
+4. **Does cold start stay under 3s?** Check cold start column.
+5. **Does compression improve at scale?** More rules = more clusters = higher compression.
+6. **Does session tracking prevent duplicates?** Check session duplicates = 0.
 
-### Per-stage latency
+---
 
-| Stage             | Median   | p95      | Budget   | Headroom at p95 |
-|-------------------|---------:|---------:|---------:|----------------:|
-| End to end        | 0.338 ms | 0.590 ms | 10.0 ms  | 17x             |
-
-The 0.176 ms p95 increase versus the 73-rule baseline reflects the larger BM25 candidate set the ranker must score. Per-stage breakdown (BM25, vector, adjacency) is structurally unchanged.
-
-### Context reduction at the live corpus
-
-Computed by summing the rendered text length of every rule (statement, trigger, violation, pass example, rationale) and dividing by 4 to approximate tokens.
-
-| Measurement                                 | Value           |
-|---------------------------------------------|----------------:|
-| Full corpus tokens (all 276 rules rendered) | ~83,000 (estimated)                       |
-| Retrieved tokens (sample query, top rules)  | ~1,600          |
-| **Reduction**                               | **~52x**        |
-
-The reduction ratio grows with corpus size; see the synthetic scale curve below.
-
-## Synthetic scale curve (2026-04-13)
-
-Generated by `benchmarks/scale_benchmark.py` running synthetic rules at four corpus sizes. The benchmark wipes the graph, ingests `n` synthetic rules, runs the pipeline against 10 representative queries, then restores the original Rule nodes from `bible/`.
-
-Note: the destructive benchmarks (`scale_benchmark.py`, `run_benchmarks.py`) now restore the **full** `bible/` corpus (Rule + methodology) in their teardown via `benchmarks/_corpus_safety.restore_full_corpus`, and refuse to run (`assert_safe_to_wipe`) if any graph-first node (`provenance` proposed/graduation_pending, which has no markdown home) exists. So a benchmark run no longer leaves the live graph empty or Rule-only. The historical curve below remains a stable reference.
-
-### Summary table
-
-| Metric                       | 80 rules | 500 rules | 1,000 rules | 10,000 rules |
-|------------------------------|---------:|----------:|------------:|-------------:|
-| Domain rules                 | 45       | 465       | 965         | 9,965        |
-| Mandatory rules              | 35       | 35        | 35          | 35           |
-| Ingest time                  | 0.59 s   | 1.53 s    | 1.71 s      | 10.76 s      |
-| Ingest rate                  | 135/s    | 327/s     | 585/s       | 930/s        |
-| Cold start (median)          | 0.494 s  | 3.452 s   | 5.782 s     | 70.788 s     |
-| Memory (RSS, peak)           | 1,570 MB | 2,349 MB  | 2,674 MB    | 2,943 MB     |
-| BM25 p95                     | 0.162 ms | 0.182 ms  | 0.201 ms    | 0.262 ms     |
-| Vector p95                   | 0.046 ms | 0.056 ms  | 0.057 ms    | 0.108 ms     |
-| Cache p95                    | 0.001 ms | 0.001 ms  | 0.001 ms    | 0.001 ms     |
-| Ranking p95                  | 0.103 ms | 0.139 ms  | 0.161 ms    | 0.218 ms     |
-| **End to end p95**           | **0.278 ms** | **0.359 ms** | **0.399 ms** | **0.557 ms** |
-| End to end median            | 0.178 ms | 0.245 ms  | 0.325 ms    | 0.407 ms     |
-| Domain hit rate              | 100.0 %  | 90.0 %    | 90.0 %      | 90.0 %       |
-| Tokens, full corpus          | 13,876   | 63,003    | 121,473     | 1,174,142    |
-| Tokens, retrieved            | 3,155    | 1,600     | 1,602       | 1,617        |
-| **Context reduction**        | **4.4x** | **39.4x** | **75.8x**   | **726.1x**   |
-| Clusters (HDBSCAN)           | 13       | 70        | 419         | 519          |
-| Ungrouped                    | 6        | 60        | 73          | 24           |
-| Silhouette score             | 0.1149   | 0.2554    | 0.8882      | 0.9981       |
-| Compression ratio            | 5.6x     | 7.6x      | 2.8x        | 25.2x        |
-| Session rules loaded         | 20       | 20        | 20          | 20           |
-| Session duplicates           | 0        | 0         | 0           | 0            |
-
-### Per-stage detail by scale
-
-#### 80 rules
-
-| Stage         | Median   | p95      | p99      | Min      | Max       |
-|---------------|---------:|---------:|---------:|---------:|----------:|
-| BM25          | 0.107 ms | 0.162 ms | 0.422 ms | 0.090 ms | 1.128 ms  |
-| Vector        | 0.027 ms | 0.046 ms | 0.102 ms | 0.025 ms | 0.206 ms  |
-| Cache         | 0.000 ms | 0.001 ms | 0.003 ms | 0.000 ms | 0.005 ms  |
-| Ranking       | 0.038 ms | 0.103 ms | 6.817 ms | 0.001 ms | 9.074 ms  |
-| **End to end**| 0.178 ms | **0.278 ms** | 7.192 ms | 0.148 ms | 9.622 ms  |
-
-#### 500 rules
-
-| Stage         | Median   | p95      | p99      | Min      | Max       |
-|---------------|---------:|---------:|---------:|---------:|----------:|
-| BM25          | 0.136 ms | 0.182 ms | 0.307 ms | 0.092 ms | 0.575 ms  |
-| Vector        | 0.038 ms | 0.056 ms | 0.085 ms | 0.037 ms | 0.121 ms  |
-| Cache         | 0.000 ms | 0.001 ms | 0.002 ms | 0.000 ms | 0.002 ms  |
-| Ranking       | 0.075 ms | 0.139 ms | 5.569 ms | 0.001 ms | 7.102 ms  |
-| **End to end**| 0.245 ms | **0.359 ms** | 6.018 ms | 0.160 ms | 7.800 ms  |
-
-#### 1,000 rules
-
-| Stage         | Median   | p95      | p99      | Min      | Max       |
-|---------------|---------:|---------:|---------:|---------:|----------:|
-| BM25          | 0.159 ms | 0.201 ms | 0.337 ms | 0.095 ms | 0.656 ms  |
-| Vector        | 0.042 ms | 0.057 ms | 0.087 ms | 0.039 ms | 0.135 ms  |
-| Cache         | 0.000 ms | 0.001 ms | 0.002 ms | 0.000 ms | 0.003 ms  |
-| Ranking       | 0.119 ms | 0.161 ms | 7.728 ms | 0.001 ms | 8.070 ms  |
-| **End to end**| 0.325 ms | **0.399 ms** | 8.145 ms | 0.168 ms | 8.864 ms  |
-
-#### 10,000 rules
-
-| Stage         | Median   | p95      | p99      | Min      | Max       |
-|---------------|---------:|---------:|---------:|---------:|----------:|
-| BM25          | 0.195 ms | 0.262 ms | 0.485 ms | 0.101 ms | 0.703 ms  |
-| Vector        | 0.064 ms | 0.108 ms | 0.155 ms | 0.045 ms | 0.218 ms  |
-| Cache         | 0.001 ms | 0.001 ms | 0.002 ms | 0.000 ms | 0.007 ms  |
-| Ranking       | 0.131 ms | 0.218 ms | 6.554 ms | 0.001 ms | 8.386 ms  |
-| **End to end**| 0.407 ms | **0.557 ms** | 7.032 ms | 0.189 ms | 9.309 ms  |
-
-## What the numbers mean
-
-### Latency stays under budget at every scale
-
-The contractual budgets in `benchmarks/bench_targets.py` are 2 ms for BM25, 3 ms for vector, 3 ms for cache, 1 ms for ranking, and 10 ms end to end. Every stage at every scale stays inside its budget at the 95th percentile, with most stages running an order of magnitude faster than the budget allows.
-
-### Context reduction grows with the rulebook
-
-At 80 rules you save 4.4 times the tokens. At the live 276-rule corpus, ~52 times. At 1,000 rules, 76 times. At 10,000 rules, 726 times. The retrieved token count stays roughly flat (around 1,600 tokens) regardless of corpus size because the budget caps the number of returned rules. What changes is the cost of the alternative (context stuffing), which scales linearly with rule count.
-
-### Memory has a 2 GiB ceiling
-
-The `bench_targets.py::TestMemoryBenchmark` test enforces a 2 GiB resident memory ceiling. The synthetic curve hits the ceiling around 1,000 rules and exceeds it at 10,000 rules (2,943 MB). The live system on the 276-rule post-expansion corpus uses roughly 1 GiB peak (well within budget).
-
-### Cold start scales sublinearly until the index gets big
-
-At 80 rules, cold start is half a second. At 1,000 rules, six seconds. At 10,000 rules, 71 seconds. The dominant cost at scale is HNSW index construction; this is exactly the scenario the persistence cache (`~/.cache/writ/hnsw/`) exists to mitigate. With a warm cache on subsequent restarts, the cold start drops back to under three seconds.
-
-### Compression behaves differently at small and large scale
-
-HDBSCAN auto-discovers cluster count, which produces non-monotonic compression ratios as the corpus grows. At 80 rules the silhouette score is low (0.115) because the corpus is dense; at 10,000 rules the silhouette is near-perfect (0.998) because synthetic rules cluster cleanly along their generated domain prefixes. The 25.2x compression ratio at 10,000 rules is the realistic upper bound for what summary mode can deliver when the budget is tight.
-
-### Session deduplication holds
-
-Across all four scales, the session simulation loaded 20 rules across multiple queries with zero duplicates. The exclude-list mechanism in `writ/retrieval/session.py` works as designed.
-
-## How to reproduce
-
-### The live measurement
-
-```bash
-cd ~/.claude/skills/writ
-.venv/bin/python -c "
-import asyncio, time
-from writ.graph.db import Neo4jConnection
-from writ.retrieval.pipeline import build_pipeline
-from writ.config import get_neo4j_uri, get_neo4j_user, get_neo4j_password
-
-async def main():
-    db = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
-    pipeline = await build_pipeline(db)
-    # warm up
-    for q in ['controller contains SQL query', 'dependency injection']:
-        pipeline.query(q)
-    # measure
-    samples = []
-    for _ in range(500):
-        t = time.perf_counter()
-        pipeline.query('controller contains SQL query')
-        samples.append((time.perf_counter() - t) * 1000)
-    samples.sort()
-    print(f'p95: {samples[int(len(samples)*0.95)]:.3f} ms')
-    await db.close()
-asyncio.run(main())
-"
-```
-
-### The full synthetic curve
-
-Note: `scale_benchmark.py` wipes the graph to build the synthetic scale corpus, then restores the **full** `bible/` corpus (Rule + methodology) in its `finally` (`_corpus_safety.restore_full_corpus`) and aborts up front if unsaved graph-first nodes exist. It is safe to run against the live graph; the synthetic data is replaced by the real corpus on teardown.
-
-```bash
-cd ~/.claude/skills/writ
-.venv/bin/python benchmarks/scale_benchmark.py
-# After it finishes, restore methodology nodes if needed:
-.venv/bin/python scripts/migrate.py --methodology-dir bible/methodology
-```
-
-### The contractual benchmarks
-
-```bash
-pytest benchmarks/bench_targets.py -v -s
-```
-
-Twelve targets, all pass/fail. The pipeline is not allowed to ship if any target is missed.
-
-## Real-vs-synthetic at matched scale (Item 2 investigation, 2026-05-15)
-
-The synthetic scale curve above measures BM25 + vector + cache + ranking under increasing rule counts, but the rules themselves come from `benchmarks/scale_benchmark.py`'s templated generator. The original v1.0.0 critique that motivated this section: live p95 at 276 real rules (0.590 ms recorded) was reported as higher than synthetic p95 at 10K rules (0.557 ms), implying the synthetic curve underpredicts real-corpus difficulty.
-
-The first re-measurement during the v1.1.0 work produced an E2E p95 of 10-11 ms, an apparent 18x regression. Per-query instrumentation (see `/tmp/e2e_per_query.py` pattern; effectively reproducible via the bench with the warmup removed) showed every cold-cache outlier was from iteration 0 of each query, 15-36x slower than warm iterations. The bench's E2E test was measuring "first 10 queries after daemon startup," not steady-state production latency. After adding a one-line warmup pass before the timed loop in `test_end_to_end_p95`, the E2E p95 is 0.5-0.6 ms across five sequential runs -- matching the originally-recorded 0.590 ms. The recorded number was always correct; the bench had regressed in what it measured, not what it observed.
-
-The per-stage gap (BM25, vector) below is the real signal. Those tests already amortize cold-cache by looping the same query 100 times, so iteration 0's outlier is one of 100 samples and does not dominate p95.
-
-`scripts/instrument-corpus-stats.py` tests four hypotheses for why the gap exists at matched corpus size (real 246 domain rules vs synthetic 246 generated rules). Run with `./.venv/bin/python3 scripts/instrument-corpus-stats.py`.
-
-### H1 -- Text length per rule (real is 2.2x longer)
-
-| Metric                              | Real (246) | Synthetic (246) |
-|-------------------------------------|------------|-----------------|
-| Trigger+statement chars, median     | 295        | 135             |
-| Trigger+statement chars, mean       | 303        | 134             |
-| Full rendered chars, median         | 734        | 242             |
-| Full rendered chars, mean           | 819        | 240             |
-
-Real rules are roughly 2.2x longer per rule than synthetic. Tantivy tokenizes every rule's full text into the BM25 inverted index; longer rule text means more tokens to score against per query. This directly explains the +63% BM25 p95 gap (real 0.278 ms vs synthetic-interp 0.171 ms at matched scale).
-
-### H2 -- Graph edge density (real 0.61 edges/node; synthetic zero)
-
-The real corpus has 169 edges across 276 nodes (`RELATED_TO`, `CONFLICTS_WITH`, `SUPERSEDES`, etc.). The synthetic generator produces Rule nodes only -- no edges. Stage 4 (adjacency cache + graph proximity) has zero work to do on synthetic, but real work on the live corpus. The recorded synthetic Cache p95 of 0.001 ms reflects an empty-graph short-circuit, not actual traversal cost.
-
-### H3 -- BM25 candidate-set size per query
-
-| Corpus     | Per-query candidates (top_k=50) on 5 test queries |
-|------------|---------------------------------------------------|
-| Real       | median 13, mean 12.0, samples [23, 13, 13, 7, 4]  |
-| Synthetic  | median 0, mean 6.0, samples [0, 0, 0, 15, 15]     |
-
-Real BM25 reliably returns a non-trivial working set (median 13 candidates) for every test query. Synthetic returns zero for queries whose vocab is disjoint from the templated rule text (`"controller SQL query"`, `"dependency injection"`, `"async event loop blocking"` all return 0); when the query happens to share vocab with the template (`"security authorization"` -> 15, `"performance optimization"` -> 15), synthetic returns a saturated set. The per-stage cost downstream of BM25 (vector scoring, ranking) is proportional to candidate-set size; the synthetic curve underestimates downstream cost by virtue of returning fewer candidates on average.
-
-### H4 -- Intra-domain pairwise cosine similarity (reversal of original hypothesis)
-
-The v1.0.0 design discussion hypothesized that real corpus rules within a domain would share vocabulary more than synthetic rules within a domain, making ranking harder on the real corpus. The data shows the opposite.
-
-| Corpus     | Median intra-domain cosine | p75    | Max    |
-|------------|----------------------------|--------|--------|
-| Real       | 0.184                      | 0.278  | 0.776  |
-| Synthetic  | 0.909                      | 0.931  | 0.981  |
-
-Synthetic rules within a domain are near-clones of each other (median cosine 0.91) because the generator uses one template per domain and varies only the rule number. Real rules within a domain are vastly more diverse (median 0.18) because each rule covers a structurally distinct concept (the `security` domain has separate rules for SQL injection, XSS, auth, crypto, headers, rate limits, PII, etc.).
-
-The implication for the latency gap is the opposite of the original prediction:
-
-- Synthetic ANN search (hnswlib HNSW) navigates a compact embedding space where most domain-neighbor embeddings cluster tightly; HNSW pruning is very effective. This drops vector-stage cost.
-- Real ANN search navigates a more diverse embedding space; HNSW must look at more candidates before finding the top-K. This is consistent with the +143% vector p95 gap (real 0.124 ms vs synthetic-interp 0.051 ms).
-
-The synthetic curve does NOT reflect real-corpus difficulty in two structural ways: real rules are longer and real embeddings are more diverse within each domain.
-
-### Implication
-
-The synthetic curve in this document is a useful upper-bound on retrieval cost as N grows, but it understates per-query cost at any given N. The +63% BM25 and +143% vector p95 gaps at matched scale are real, but they sit comfortably within the 10 ms E2E budget on the production path (steady-state p95 0.5 ms after warmup, 17x headroom). The real-corpus latency story is "we measure the right number now and it has plenty of headroom," not "the corpus is too slow."
-
-A scale benchmark that tracks real-corpus latency growth into the future would still benefit from either using the actual rule corpus at multiple scales (e.g., subsample 50 / 100 / 200 of the 276 production rules) or rewriting the synthetic generator to produce text with realistic length and embedding diversity. Flagged as a follow-up; not blocking.
-
-## Compression ratio on real corpus (Item 5 investigation, 2026-05-15)
-
-The synthetic scale curve showed non-monotonic compression ratio across scales (5.6x at 80 rules -> 7.6x at 500 -> 2.8x at 1K -> 25.2x at 10K), with a dip at the 1K mid-scale. The original design discussion hypothesized a length-cap on the summary as the cause; inspection of `writ/compression/abstractions.py` shows there is no length cap (the summary IS the centroid rule's statement, unconstrained). The hypothesis was wrong; the real cause is HDBSCAN's auto-discovered cluster count interacting with centroid-statement length variance.
-
-Measurement on real corpus subsamples at seeds=42:
-
-| N (rules) | Clusters | Mean compression | Min  | Max   | Mean cluster size | Silhouette |
-|-----------|----------|------------------|------|-------|-------------------|------------|
-| 50        | 13       | 3.52x            | 2.09 | 6.36  | 2.6               | 0.109      |
-| 100       | 23       | 4.43x            | 2.09 | 16.46 | 3.0               | 0.102      |
-| 200       | 55       | 3.64x            | 2.09 | 8.49  | 2.6               | 0.139      |
-| 247       | 60       | 4.27x            | 2.09 | 10.94 | 3.0               | 0.127      |
-
-Real corpus does show a mild version of the synthetic non-monotonicity (3.52 -> 4.43 -> 3.64 -> 4.27, dip at 200). Amplitude is much smaller than the synthetic curve's 2.8 -> 25.2 swing because real rules have diverse embeddings (per Item 2 H4 finding), preventing HDBSCAN from forming the very large clusters that produce the synthetic 25.2x ratio at 10K.
-
-Silhouette scores hover at 0.10-0.14 on real -- well below "well-clustered" (typically 0.5+). HDBSCAN is struggling on real-corpus diversity. K-means with explicit cluster count, or per-domain clustering, would likely produce more stable compression ratios. Out of scope for v1.1.0.
-
-Production impact is low: compression / Abstraction nodes are used only in summary mode (when retrieval would otherwise return more rules than the context budget allows). Typical query paths never invoke summary mode; the compression-ratio non-monotonicity does not affect query-time latency or precision. The measurement above is the first record of compression behavior on the real corpus -- prior data was only synthetic.
-
-## Related documents
-
-- `HANDBOOK.md` (the architecture handbook, with a condensed version of these numbers in the "By the numbers" section)
-- `benchmarks/bench_targets.py` (the contractual gate suite)
-- `benchmarks/scale_benchmark.py` (the synthetic scale curve generator)
-- `benchmarks/methodology_bench.py` (Phase 0 retrieval quality benchmarks against the curated 40-query methodology corpus)
-- `scripts/instrument-corpus-stats.py` (Item 2 four-hypothesis test runner)
+Generated by `benchmarks/scale_benchmark.py` on 2026-08-01 13:54 UTC

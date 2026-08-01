@@ -27,3 +27,9 @@ validate: check-venv
 
 check: test bench validate
 	@echo "All checks passed."
+
+docs: check-venv
+	$(PYTHON) scripts/render-docs.py
+
+docs-check: check-venv
+	$(PYTHON) scripts/render-docs.py --check

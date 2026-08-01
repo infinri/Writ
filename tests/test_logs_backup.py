@@ -526,7 +526,9 @@ class TestCliLogsBackupHelp:
     def test_backup_help_exits_zero_and_mentions_dest(self) -> None:
         result = runner.invoke(app, ["logs", "backup", "--help"])
         assert result.exit_code == 0, result.output
-        assert "--dest" in result.output
+        from tests._ansi import plain
+
+        assert "--dest" in plain(result.output)
 
 
 # ===========================================================================

@@ -45,10 +45,11 @@ the pilot needing fresh instructions. The plane lands correctly; the pilot just 
 
 ### Why version matters
 
-Everything here is true for one build (version 2.1.183). Claude Code changes between versions:
-field names appear, events get added. Treat this document as a snapshot, not a permanent contract.
-The header below records the exact build, and Part 5 explains how to re-capture it for a new
-version in a few minutes.
+Everything here is true for a specific build. The map was first captured on 2.1.183
+(2026-06-19) and re-verified against live capture on 2.1.220 (2026-08-01). Claude Code changes
+between versions: field names appear, events get added. Treat this document as a snapshot, not a
+permanent contract. Facts re-confirmed on 2.1.220 say so; facts only seen on the older build keep
+an explicit `[observed 2.1.183]` tag. Part 3 explains how to re-capture for a new version.
 
 ### Glossary (the jargon used in Part 2)
 
@@ -75,24 +76,37 @@ Every fact in Part 2 carries a tag so you know how sure we are:
 
 ---
 
-## Part 2: Technical reference (build 2.1.183)
+## Part 2: Technical reference (build 2.1.220; baseline 2.1.183)
 
 ### Header
 
 | Field | Value |
 |---|---|
-| Claude Code version | `2.1.183 (Claude Code)` [observed] |
-| Model in session | `claude-opus-4-8[1m]` (from SessionStart.model) [observed] |
-| Capture date | 2026-06-19 [observed] |
-| Host OS | Linux 6.17.0-35-generic x86_64, Ubuntu 24.04.3 LTS [observed] |
-| Live capture source | `~/.claude/writ-blackbox.jsonl` (raw envelopes, this build) [observed] |
+| Claude Code version | `2.1.220 (Claude Code)` [observed]; baseline capture was `2.1.183` |
+| Model in session | `claude-fable-5` (from SessionStart.model) [observed]; `claude-opus-4-8[1m]` on 2.1.183 |
+| Capture date | 2026-08-01 (refresh); 2026-06-19 (baseline) [observed] |
+| Host OS | Linux 6.17.0-40-generic x86_64, Ubuntu 24.04 LTS [observed] |
+| Live capture source | `~/.claude/writ-blackbox.jsonl` (raw envelopes; refresh filtered to real sessions only, because the same file also collects synthetic test-fixture envelopes that would poison the schema) [observed] |
 | Doc reference | https://code.claude.com/docs/en/hooks [doc] |
 | Doc reference (alias) | https://docs.anthropic.com/en/docs/claude-code/hooks redirects to the page above [doc] |
 
-This map is build-specific; schema claims are scoped to 2.1.183. The doc page carries no version
-number (its only inline version notes are v2.1.139 and v2.1.141), so it is the closest live
-reference but is not pinned to this build. Where the live capture and the docs disagree, the live
-capture wins for this build and both are recorded.
+Schema claims below are scoped to 2.1.220 where re-observed on 2026-08-01; claims seen only on
+the older build carry `[observed 2.1.183]`. The public changelog for 2.1.184-2.1.220 announces
+almost none of the payload changes recorded here (its only hook entries: a new `DirectoryAdded`
+event in v2.1.219, a hook-timeout misreport fix in v2.1.210, a frontmatter-hook trust requirement
+in v2.1.216, and a plugin-hook shell-injection fix in v2.1.207), so live capture remains the only
+reliable source. Where the live capture and the docs disagree, the live capture wins.
+
+Headline changes measured between 2.1.183 and 2.1.220:
+- **`prompt_id` (UUID) is now on every observed event**, including SessionStart, SessionEnd, and
+  the compaction pair. It identifies the user turn the event belongs to. [observed]
+- **Five events moved from DOC-ONLY to OBSERVED**: Stop, SessionEnd, PreCompact, PostCompact
+  (all captured live), and PostCompact now delivers the full `compact_summary` text. [observed]
+- **SubagentStart carries no task text at all on this build** (17/17 real spawns had only
+  `agent_id`/`agent_type` plus the universal fields). The 2.1.183 note that `prompt` appears
+  "sometimes" did not reproduce. [observed]
+- New tool_response fields: Bash `persistedOutputPath`/`persistedOutputSize`; Edit and Write
+  `memdirStamped`; Write `result`. [observed]
 
 ### The envelope at a glance
 
@@ -120,11 +134,12 @@ surfaces). The last column says whether we saw it on this build (OBSERVED) or on
 | SessionStart | session begins or resumes | `source` | No [doc] | initialUserMessage, sessionTitle, watchPaths, reloadSkills [doc] | OBSERVED |
 | SubagentStart | a subagent is spawned | `agent_type` | No [doc] | additionalContext (adds text) | OBSERVED |
 | SubagentStop | a subagent finishes | `agent_type` | Yes: prevents the subagent stopping [doc] | additionalContext [doc] | OBSERVED |
-| Stop | main agent about to stop | none | Yes: prevents stop, continues the turn [doc] | additionalContext [doc] | DOC-ONLY (capturable at turn end) |
+| Stop | main agent about to stop | none | Yes: prevents stop, continues the turn [doc] | additionalContext [doc] | OBSERVED (2.1.220) |
 | CwdChanged | working directory changes | none | No [doc] | none | DOC-ONLY (did not fire for an in-command `cd`; see Gaps) |
-| PreCompact | before history compaction | `trigger` (manual, auto) | Yes: blocks compaction [doc] | none | DOC-ONLY (needs a `/compact`) |
-| PostCompact | after history compaction | `trigger` (manual, auto) | No [doc] | none | DOC-ONLY (needs a `/compact`) |
-| SessionEnd | session ends | `reason` | No [doc] | none | DOC-ONLY |
+| PreCompact | before history compaction | `trigger` (manual, auto) | Yes: blocks compaction [doc] | none | OBSERVED (2.1.220, manual `/compact`) |
+| PostCompact | after history compaction | `trigger` (manual, auto) | No [doc] | none | OBSERVED (2.1.220; carries `compact_summary`) |
+| SessionEnd | session ends | `reason` | No [doc] | none | OBSERVED (2.1.220) |
+| DirectoryAdded | after `/add-dir` or SDK `register_repo_root` | UNVERIFIED | UNVERIFIED | UNVERIFIED | DOC-ONLY (added in v2.1.219) |
 | StopFailure | turn ends on an API error | `error_type` | No: output and exit ignored [doc] | none | DOC-ONLY |
 | PostToolBatch | after a parallel tool batch resolves | none | Yes: stops the loop before next model call [doc] | none | DOC-ONLY (did not fire when forced; see Gaps) |
 | PermissionRequest | a permission dialog appears | `tool_name` | Yes: denies the permission [doc] | `decision.updatedInput` (when behavior=allow) [doc] | DOC-ONLY |
@@ -145,10 +160,11 @@ surfaces). The last column says whether we saw it on this build (OBSERVED) or on
 | ElicitationResult | a user submits an MCP form | MCP server name | Yes: blocks the response [doc] | `action` + `content` | DOC-ONLY |
 
 Important practical limit: **PreToolUse and PostToolUse fire only for the tools your configuration
-subscribes to.** In this build's config the subscribed tools were `Agent`, `Bash`, `Edit`,
-`Write`. Other tools ran (`Read`, `NotebookEdit`, and the `TaskCreate`/`TaskUpdate` family) but
-fired no PreToolUse/PostToolUse hook at all [observed]. So which actions you can gate is set by
-your matcher list, not by Claude Code.
+subscribes to.** During the 2.1.183 capture the subscribed tools were `Agent`, `Bash`, `Edit`,
+`Write`, and unsubscribed tools (`Read`, `NotebookEdit`, the `TaskCreate`/`TaskUpdate` family)
+fired no PreToolUse/PostToolUse at all [observed]. On 2.1.220, with `Read` added to the matcher
+list, PreToolUse fires for `Read` too [observed]. So which actions you can gate is set by your
+matcher list, not by Claude Code.
 
 ### Common input fields
 
@@ -161,52 +177,67 @@ conditional.
 | `transcript_path` | universal | [both] | absolute path to the conversation log |
 | `cwd` | universal | [both] | working directory at hook time |
 | `hook_event_name` | universal | [both] | the event that fired |
-| `permission_mode` | UserPromptSubmit, Pre/PostToolUse, PostToolUseFailure, SubagentStop | [observed] | NOT on SessionStart or SubagentStart [observed] |
-| `effort` `{level}` | Pre/PostToolUse, PostToolUseFailure | [observed] | the model's reasoning-effort level; absent on UserPromptSubmit, SessionStart, SubagentStart |
+| `prompt_id` | universal since 2.1.2xx (every event observed on 2.1.220, including SessionStart/SessionEnd/Pre/PostCompact) | [observed] | UUID of the user turn the event belongs to; did not exist on 2.1.183 |
+| `permission_mode` | UserPromptSubmit, Pre/PostToolUse, PostToolUseFailure, Stop, SubagentStop | [observed] | NOT on SessionStart or SubagentStart [observed] |
+| `effort` `{level}` | Pre/PostToolUse, PostToolUseFailure, Stop, SubagentStop | [observed] | the model's reasoning-effort level; absent on UserPromptSubmit, SessionStart, SubagentStart |
 | `tool_name`, `tool_input` | Pre/PostToolUse, PostToolUseFailure | [both] | the action and its arguments |
 | `tool_use_id` | Pre/PostToolUse, PostToolUseFailure | [observed] | ties a PreToolUse to its PostToolUse |
 | `tool_response` | PostToolUse | [both] | the action's result (per-tool shape below) |
 | `duration_ms` | PostToolUse, PostToolUseFailure | [observed] | how long the tool took |
 | `error` | PostToolUseFailure | [observed] | the failure message, a STRING (see below) |
 | `is_interrupt` | PostToolUseFailure | [observed] | whether the failure was an interrupt |
-| `prompt` | UserPromptSubmit; SubagentStart (sometimes) | [observed] | the user's text / the subagent's task |
-| `source` | SessionStart | [observed] | how the session started (observed: `startup`) |
-| `model` | SessionStart | [observed] | observed: `claude-opus-4-8[1m]` |
+| `prompt` | UserPromptSubmit only on 2.1.220 | [observed] | the user's text. On 2.1.183 it appeared on SubagentStart "sometimes"; 17/17 real spawns on 2.1.220 had NO task text (design consequence: a SubagentStart hook cannot read the task and must query context another way) |
+| `source` | SessionStart | [observed] | observed values on 2.1.220: `startup`, `resume`, `compact` (only `startup` was seen on 2.1.183) |
+| `model` | SessionStart | [observed] | observed: `claude-fable-5` (2.1.220), `claude-opus-4-8[1m]` (2.1.183) |
+| `trigger` | PreCompact, PostCompact | [observed] | observed: `manual`; docs also list `auto` [doc] |
+| `custom_instructions` | PreCompact | [observed] | observed `null` on a bare manual `/compact` |
+| `compact_summary` | PostCompact | [observed] | the FULL generated summary text of the compacted conversation |
+| `reason` | SessionEnd | [observed] | observed: `prompt_input_exit` |
 | `agent_id`, `agent_type` | SubagentStart, SubagentStop, and tool events inside a subagent | [both] | values seen: `general-purpose`, `Explore`, `writ-explorer`, `workflow-subagent` |
 | `stop_hook_active` | SubagentStop, Stop | [observed] | true while Claude is re-invoking a stop hook after a block |
-| `agent_transcript_path`, `last_assistant_message`, `background_tasks`, `session_crons` | SubagentStop | [observed] | the subagent's log, its last message, and (observed empty) task/cron lists |
+| `last_assistant_message`, `background_tasks`, `session_crons` | Stop, SubagentStop | [observed] | the last message text and (observed empty) task/cron lists; SubagentStop additionally carries `agent_transcript_path` |
 
-Observed `permission_mode` values: `default`, `auto`, `plan`. Documented set also includes
-`acceptEdits`, `dontAsk`, `bypassPermissions` [doc].
-Observed `effort.level` values: `high`, `xhigh`. Documented set: `low`, `medium`, `high`, `xhigh`,
-`max` [doc].
+Observed `permission_mode` values: `default`, `auto`, `acceptEdits` (2.1.220); `plan` (2.1.183).
+Documented set also includes `dontAsk`, `bypassPermissions` [doc].
+Observed `effort.level` values: `xhigh` (2.1.220); `high` (2.1.183). Documented set: `low`,
+`medium`, `high`, `xhigh`, `max` [doc].
 
-### Per-event input (exact fields seen on this build)
+### Per-event input (exact fields seen on 2.1.220, real sessions only)
 
-UserPromptSubmit [observed]: `session_id, transcript_path, cwd, permission_mode, hook_event_name,
-prompt`.
+Every event below also carries the universal four (`session_id, transcript_path, cwd,
+hook_event_name`) plus `prompt_id`; only the additional fields are listed.
 
-PreToolUse [observed]: `session_id, transcript_path, cwd, permission_mode, effort{level},
-hook_event_name, tool_name, tool_input, tool_use_id` (plus `agent_id, agent_type` when the call
-runs inside a subagent).
+UserPromptSubmit [observed]: `permission_mode, prompt`.
+
+PreToolUse [observed]: `permission_mode, effort{level}, tool_name, tool_input, tool_use_id`
+(plus `agent_id, agent_type` when the call runs inside a subagent).
 
 PostToolUse [observed]: all PreToolUse fields, plus `tool_response, duration_ms`.
 
-PostToolUseFailure [observed]: `session_id, transcript_path, cwd, permission_mode, effort{level},
-hook_event_name, tool_name, tool_input, tool_use_id, error, is_interrupt, duration_ms`.
+PostToolUseFailure [observed]: `permission_mode, effort{level}, tool_name, tool_input,
+tool_use_id, error, is_interrupt, duration_ms`.
 
-SessionStart [observed]: `session_id, transcript_path, cwd, hook_event_name, source, model`.
+SessionStart [observed]: `source, model`.
 
-SubagentStart [observed]: `session_id, transcript_path, cwd, agent_id, agent_type,
-hook_event_name` (plus `prompt` sometimes). No `permission_mode`, no `effort`, no tool fields.
+SubagentStart [observed]: `agent_id, agent_type`. No task text, no `permission_mode`, no
+`effort`, no tool fields (17/17 real spawns).
 
-SubagentStop [observed]: `session_id, transcript_path, cwd, permission_mode, agent_id, agent_type,
-hook_event_name, stop_hook_active, agent_transcript_path, last_assistant_message, background_tasks,
-session_crons`.
+SubagentStop [observed]: `permission_mode, effort{level}, agent_id, agent_type, stop_hook_active,
+agent_transcript_path, last_assistant_message, background_tasks, session_crons`.
 
-For the events still only in the docs (Stop, SessionEnd, Setup, PreCompact, PostCompact,
-CwdChanged, the permission and worktree and elicitation families), the documented input fields are
-listed in the doc-only table at the end of this section.
+Stop [observed, new since 2.1.183]: `permission_mode, effort{level}, stop_hook_active,
+last_assistant_message, background_tasks, session_crons`. Same envelope as SubagentStop minus the
+agent fields.
+
+PreCompact [observed, new since 2.1.183]: `trigger, custom_instructions`.
+
+PostCompact [observed, new since 2.1.183]: `trigger, compact_summary`.
+
+SessionEnd [observed, new since 2.1.183]: `reason`.
+
+For the events still only in the docs (Setup, CwdChanged, DirectoryAdded, the permission and
+worktree and elicitation families), the documented input fields are listed in the doc-only table
+at the end of this section.
 
 ### tool_input per tool (the arguments of an action)
 
@@ -227,8 +258,8 @@ this build, so its schema comes from the transcript only.
 | NotebookEdit | `notebook_path`, `cell_id`, `edit_mode`, `new_source` | [observed: transcript] (no hook) |
 | TaskCreate | `subject`, `description`, `activeForm` | [observed: transcript] (no hook) |
 | TaskUpdate | `taskId`, `status` | [observed: transcript] (no hook) |
-| MultiEdit | NOT PRESENT in 2.1.183 (no such tool; the only edit primitive is `Edit`) | [observed] |
-| TodoWrite | NOT PRESENT in 2.1.183 (task tracking is the `TaskCreate` / `TaskUpdate` family) | [observed] |
+| MultiEdit | NOT PRESENT in 2.1.183 (no such tool; the only edit primitive is `Edit`); no MultiEdit envelope in the 2.1.220 capture either | [observed] |
+| TodoWrite | NOT PRESENT in 2.1.183 (task tracking is the `TaskCreate` / `TaskUpdate` family); no real TodoWrite envelope in the 2.1.220 capture either | [observed] |
 
 ### tool_response per tool (the result of an action)
 
@@ -238,9 +269,9 @@ or string [doc]; these shapes are observed. The transcript's stored result equal
 
 | Tool | tool_response fields | Source |
 |---|---|---|
-| Bash | `stdout`, `stderr`, `interrupted`, `isImage`, `noOutputExpected` | [both]. The transcript adds `assistantAutoBackgrounded`, `backgroundTaskId`, `gitOperation`, `returnCodeInterpretation`, `staleReadFileStateHint` |
-| Edit | `filePath`, `oldString`, `newString`, `originalFile`, `structuredPatch`, `userModified`, `replaceAll` | [both] |
-| Write | `type`, `filePath`, `content`, `originalFile`, `structuredPatch`, `userModified` | [both] |
+| Bash | `stdout`, `stderr`, `interrupted`, `isImage`, `noOutputExpected`; on 2.1.220 also `backgroundTaskId`, `returnCodeInterpretation`, and (new) `persistedOutputPath`, `persistedOutputSize` | [both]. The 2.1.183 transcript additionally showed `assistantAutoBackgrounded`, `gitOperation`, `staleReadFileStateHint` |
+| Edit | `filePath`, `oldString`, `newString`, `originalFile`, `structuredPatch`, `userModified`, `replaceAll`; on 2.1.220 also `memdirStamped` (new) | [both] |
+| Write | `type`, `filePath`, `content`, `originalFile`, `structuredPatch`, `userModified`; on 2.1.220 also `memdirStamped`, `result` (new) | [both] |
 | Read | `type`, `file` (a nested object: `filePath`, plus `cells[...]` for a notebook) | [observed: transcript] |
 | Glob | `filenames`, `numFiles`, `truncated`, `durationMs` | [observed: transcript] |
 | Grep | `mode`, `content`, `filenames`, `numFiles`, `numLines`, `numMatches` | [observed: transcript] |
@@ -299,6 +330,15 @@ Setup [doc]. Observed correction: one doc reading claimed SubagentStart cannot a
 live capture shows a SubagentStart hook returned `additionalContext` and the subagent received it
 [observed].
 
+Stop-hook caveat, load-bearing for anyone injecting context at turn end: on the builds where it
+was measured, `additionalContext` returned from a Stop hook is treated as a turn BLOCK (Claude
+continues the turn instead of stopping), so a Stop hook that always adds context loops until the
+retry cap unless it checks `stop_hook_active` [observed 2.1.1xx]. Not re-verified on 2.1.220 (no
+Stop block occurred in the capture window); Writ's own Stop hooks still guard on
+`stop_hook_active`, and `writ/shared/delivery.py` encodes which events deliver bare stdout to the
+model. If a new build changes either behavior, that is a code change (plus `test_delivery.py`),
+not just a doc edit.
+
 ### Rewrite surfaces (the force-swap family)
 
 These are the replies that change the pending action. The first row is verified live.
@@ -345,21 +385,25 @@ play, so all are recorded.
 | Doc reference | `TaskCreate` | The docs name a `TaskCreate` tool with TaskCreated/TaskCompleted events, never "Task" or "Agent" for spawning. [doc] |
 | Tool registry | `TaskCreate`, `TaskGet`, `TaskList`, `TaskStop`, `TaskUpdate` exist as tools, alongside an `Agent` tool. [observed] |
 
-Practical guidance: to force-swap a dispatch, match `Task` (it catches the runtime `Agent` tool on
-this build) and read/write `tool_input.subagent_type`. This is the path verified live.
+Practical guidance: to force-swap a dispatch, match `Task` (it catches the runtime `Agent` tool)
+and read/write `tool_input.subagent_type`. This is the path verified live on 2.1.183 and still
+observed working on 2.1.220 (the `Task` matcher produced envelopes with `tool_name: "Agent"` in
+the 2026-08-01 capture).
 
 ### Gaps (what is still not nailed down on this build)
 
 Closed since the first pass: per-tool input/result schemas for all tools that exist; the
 PostToolUseFailure envelope (field is `error`, a string); the SessionStart, SubagentStart, and
-SubagentStop envelopes.
+SubagentStop envelopes. Closed in the 2026-08-01 refresh: the Stop, SessionEnd, PreCompact, and
+PostCompact envelopes (all captured live on 2.1.220).
 
 Still open:
 1. **CwdChanged did not fire** for a directory change made inside a Bash command (`cd` within one
    command). The change took effect (later envelopes carried the new directory), but no CwdChanged
    envelope appeared. UNVERIFIED whether it fires for a genuine Claude Code working-directory
    change; a per-command shell reset may suppress the in-command case.
-2. **PreCompact and PostCompact** need a `/compact` to be run in the session; not yet captured.
+2. **The Stop `additionalContext` turn-block semantics** (see the Output contract) were not
+   re-exercised on 2.1.220; the guard-on-`stop_hook_active` discipline stands until re-measured.
 3. **Events that did not fire when their conditions were met**, so their existence on this build is
    UNVERIFIED: PostToolBatch (forced three parallel reads), InstructionsLoaded (a CLAUDE.md was
    loaded), MessageDisplay and Notification (none appeared). The docs describe these; this build

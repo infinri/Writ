@@ -16,7 +16,7 @@ import pytest
 
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
-AGENTS_DIR = SKILL_DIR / ".claude" / "agents"
+AGENTS_DIR = SKILL_DIR / "agents"
 HOOKS_DIR = SKILL_DIR / "hooks" / "scripts"
 RULES_DIR = SKILL_DIR / "rules"
 

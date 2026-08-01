@@ -119,6 +119,12 @@ def _validate_phase_a(project_root: str, session_id: str = "") -> str | None:
             by_phase = cache.get("loaded_rule_ids_by_phase", {})
             for phase_ids in by_phase.values():
                 loaded_ids.update(phase_ids)
+            # Always-on rules are injected into every prompt by a channel that used to
+            # record only its token count, so citing one -- the natural thing to do --
+            # was reported as a hallucination and SPENT the user's approval token. This
+            # widens the legitimate set; it never narrows it, so nothing that validates
+            # today can start failing.
+            loaded_ids.update(cache.get("always_on_rule_ids", []))
             hallucinated = _validate_citations(cited_ids, loaded_ids)
             if hallucinated:
                 _log_friction_event(

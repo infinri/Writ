@@ -55,7 +55,11 @@ ti = parsed.get("tool_input") or {}
 st = (ti.get("subagent_type") or "").strip().lower()
 prompt = ti.get("prompt") or ti.get("description") or ""
 
-GENERIC = {"", "general-purpose", "explore", "claude"}
+# "plan" (the harness Plan architect) is governed too: plan-shaped work must flow
+# through writ-planner so plan.md exists for the phase-a gate. "workflow-subagent"
+# is deliberately ungoverned: the Workflow engine dispatches it with structured
+# -output contracts a role swap would break.
+GENERIC = {"", "general-purpose", "explore", "claude", "plan"}
 if st not in GENERIC:
     sys.exit(0)  # already a named (writ-*) role -> allow
 

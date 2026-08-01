@@ -6,20 +6,25 @@ synthetic corpus. Two hazards follow, both fixed here:
 1. **Permanent loss.** Graph-first nodes (``provenance`` in ``proposed`` /
    ``graduation_pending``) have NO markdown home -- ``clear_all()`` destroys them with no
    way to rebuild. ``assert_safe_to_wipe`` refuses to run while any exist.
-2. **Incomplete restore.** The old teardowns recreated only ``Rule`` nodes, silently
-   dropping the methodology graph (Skill, Playbook, Technique, ...). ``restore_full_corpus``
-   re-imports the WHOLE ``bible/`` corpus so a benchmark run never leaves the graph empty
-   or Rule-only.
+2. **Lossy restore.** Rebuilding from ``bible/`` after the wipe is NOT a faithful restore:
+   markdown ingest carries no Abstraction nodes (they live in the compression pipeline),
+   derives RELATED_TO edges differently, and inherits any source-vs-graph flag drift
+   (measured 2026-08-01: a bible/ rebuild left 400 nodes / 1060 edges and 32 mandatory
+   where the live graph had 464 / 731 / 33). ``snapshot_graph`` dumps the EXACT live
+   graph to a Cypher replay file before the first wipe; ``restore_full_corpus`` replays
+   it, so the post-benchmark graph is byte-equivalent to the pre-benchmark graph.
 
-Use both: guard before the first wipe, restore in the ``finally``.
+Use all three: guard, then snapshot, before the first wipe; restore in the ``finally``.
+The snapshot file survives a crashed run -- replay it manually with
+``writ import-cypher <snapshot>`` if a benchmark dies between wipe and restore.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from writ.graph.methodology_ingest import ingest_path
+from writ.graph.dump import import_cypher_dump, render_cypher_dump
 
-BIBLE_DIR = Path(__file__).resolve().parent.parent / "bible"
+SNAPSHOT_PATH = Path(__file__).resolve().parent.parent / "var" / "benchmark-graph-snapshot.cypher"
 
 # Graph-first provenance states have no markdown home; clearing them is irreversible.
 _GRAPH_FIRST = ("proposed", "graduation_pending")
@@ -42,8 +47,16 @@ async def assert_safe_to_wipe(db) -> None:
         )
 
 
-async def restore_full_corpus(db) -> None:
-    """Wipe synthetic benchmark data and restore the FULL bible/ corpus (Rule +
-    methodology), so a benchmark never leaves the live graph empty or Rule-only."""
-    await db.clear_all()
-    await ingest_path(BIBLE_DIR, db)
+async def snapshot_graph(db) -> Path:
+    """Dump the exact live graph to a Cypher replay file. Call BEFORE the first
+    clear_all(); the file is the restore source and the crash-recovery artifact."""
+    nodes = await db.get_all_nodes_for_dump()
+    edges = await db.get_all_edges_cross_type()
+    SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SNAPSHOT_PATH.write_text(render_cypher_dump(nodes, edges), encoding="utf-8")
+    return SNAPSHOT_PATH
+
+
+async def restore_full_corpus(db, snapshot: Path = SNAPSHOT_PATH) -> None:
+    """Replay the pre-benchmark snapshot (wipes first), restoring the graph exactly."""
+    await import_cypher_dump(db, snapshot.read_text(encoding="utf-8"))

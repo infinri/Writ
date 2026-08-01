@@ -17,7 +17,7 @@ import pytest
 
 WRIT_ROOT = Path(__file__).resolve().parent.parent
 SESSION_CLI = WRIT_ROOT / "bin" / "lib" / "writ-session.py"
-AGENTS_DIR = WRIT_ROOT / ".claude" / "agents"
+AGENTS_DIR = WRIT_ROOT / "agents"
 COMMANDS_DIR = WRIT_ROOT / ".claude" / "commands"
 
 

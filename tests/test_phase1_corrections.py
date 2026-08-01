@@ -17,6 +17,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tests._bible_guard import requires_bible
+
+pytestmark = requires_bible
+
+
 BIBLE = Path(__file__).resolve().parent.parent / "bible" / "methodology"
 
 

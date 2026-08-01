@@ -9,8 +9,11 @@
 # compose, ingests the rule corpus, and starts the Writ daemon.
 # Idempotent -- safe to re-run on every plugin upgrade.
 #
-# Usage:
-#   bash $(claude plugin path writ)/scripts/bootstrap-plugin.sh
+# Usage (there is no `claude plugin path` subcommand; read installPath instead):
+#   WRIT_DIR=$(claude plugin list --json | python3 -c "import json,sys; \
+#     print(next(p['installPath'] for p in json.load(sys.stdin) \
+#     if p['id'].split('@')[0] == 'writ'))")
+#   bash "$WRIT_DIR/scripts/bootstrap-plugin.sh"
 
 set -euo pipefail
 

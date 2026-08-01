@@ -127,28 +127,27 @@ class TestPluginManifestPhaseB:
             f"plugin.json commands must reference .claude/commands, got '{commands}'"
         )
 
-    def test_plugin_json_agents_field(self, manifest: dict) -> None:
-        """agents must reference ./.claude/agents for sub-agent discovery.
+    def test_plugin_json_declares_no_agents_field(self, manifest: dict) -> None:
+        """agents must NOT be declared: it registers nothing.
 
-        Per the Claude Code plugin schema, ``agents`` is a list of individual
-        ``.md`` file paths (each ``^\\./.*\\.md$``); a bare directory string
-        fails ``claude plugin validate``. Accept either shape and require every
-        entry to live under .claude/agents.
+        This test previously required every entry to live under .claude/agents, and began
+        SKIPPING with "Phase B: not yet added" once the key was removed -- a message that
+        implies pending work when the removal was deliberate. Measured against Claude Code
+        2.1.220: a manifest array of five agent files yields `Agents (0)`, while the same
+        files at the plugin root's agents/ with no manifest key yield `Agents (5)`.
         """
-        if "agents" not in manifest:
-            pytest.skip("Phase B: agents field not yet added to plugin.json")
-        agents = manifest["agents"]
-        entries = [agents] if isinstance(agents, str) else agents
-        assert entries, "plugin.json agents must not be empty"
-        assert all(".claude/agents" in entry for entry in entries), (
-            f"every plugin.json agents entry must reference .claude/agents, got '{agents}'"
+        assert "agents" not in manifest, (
+            "plugin.json must not declare agents; the array registers nothing. The role "
+            "files are auto-discovered at the plugin root's agents/."
         )
 
-    def test_plugin_json_hooks_field(self, manifest: dict) -> None:
-        """hooks must reference ./hooks/hooks.json for hook auto-discovery."""
-        if "hooks" not in manifest:
-            pytest.skip("Phase B: hooks field not yet added to plugin.json")
-        hooks = manifest["hooks"]
-        assert "hooks/hooks.json" in hooks, (
-            f"plugin.json hooks must reference hooks/hooks.json, got '{hooks}'"
+    def test_plugin_json_declares_no_hooks_field(self, manifest: dict) -> None:
+        """hooks must NOT be declared: hooks/hooks.json is auto-discovered.
+
+        Declaring it collides with auto-discovery ("Duplicate hooks file detected") and ALL
+        12 hooks fail to load. Same silently-skipping problem as the agents field above.
+        """
+        assert "hooks" not in manifest, (
+            "plugin.json must not declare hooks; hooks/hooks.json is auto-discovered and "
+            "declaring it makes every hook fail to load"
         )

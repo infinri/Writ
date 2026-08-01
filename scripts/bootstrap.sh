@@ -143,7 +143,10 @@ link_all() {
 }
 
 link_all "$WRIT_DIR/rules" "$HOME/.claude/rules"
-link_all "$WRIT_DIR/.claude/agents" "$HOME/.claude/agents"
+# Role files moved to agents/ (the plugin root's documented location). Linking the old
+# .claude/agents path would recreate symlinks pointing at deleted files; link_all relinks
+# any target that is already a symlink, so re-running this repairs an upgraded install.
+link_all "$WRIT_DIR/agents" "$HOME/.claude/agents"
 ok "rules and agents linked"
 
 # ── 7. Start Neo4j via docker compose ──────────────────────────────────────
@@ -229,7 +232,7 @@ printf "${GREEN}${BOLD}═══════════════════
 printf "  Neo4j          : bolt://localhost:7687\n"
 printf "  Writ daemon    : http://localhost:8765\n"
 printf "  Rules loaded   : %s\n" "$RULE_COUNT"
-printf "  Daemon log     : /tmp/writ-server.log\n"
+printf "  Daemon log     : $WRIT_LOG\n"
 printf "  Harness config : ~/.claude/settings.json, ~/.claude/CLAUDE.md\n"
 printf "\n"
 printf "${YELLOW}!${RESET} Restart Claude Code for the hooks to take effect.\n"

@@ -43,8 +43,8 @@
 
 <h2><span class="sec-num">3.1</span>One warm call composes three channels</h2>
 <div class="prose">
-  <p><code>POST /prompt-bundle</code> (<code>writ/server/routes/query.py:107</code>) awaits the three channel handlers in-process inside the warm daemon and returns the rendered blocks separately. It replaced a shell hook that spawned roughly 16 cold Python processes per prompt; the module header records the measured motivation: about 646ms per prompt before, targeting about 300ms (<code>writ/retrieval/prompt_bundle.py:1-12</code>).</p>
-  <p>The session cache drives deduplication: rules already injected in the current phase are excluded from the broad query, the remaining token budget caps it, and the previous turn's injected ids are passed as the preferred order so the sticky tiebreak (chapter 2) keeps output stable for prompt caching (<code>routes/query.py:133-163</code>).</p>
+  <p><code>POST /prompt-bundle</code> (<code>writ/server/routes/query.py:165</code>) awaits the three channel handlers in-process inside the warm daemon and returns the rendered blocks separately. It replaced a shell hook that spawned roughly 28 cold Python processes per turn; the module header records the measured motivation: about 420ms of a measured 646ms per prompt went to those spawns (<code>writ/retrieval/prompt_bundle.py:1-7</code>).</p>
+  <p>The session cache drives deduplication: rules already injected in the current phase are excluded from the broad query, the remaining token budget caps it, and the previous turn's injected ids are passed as the preferred order so the sticky tiebreak (chapter 2) keeps output stable for prompt caching (<code>routes/query.py:193-201</code>).</p>
 </div>
 
 <figure class="fig">
@@ -88,7 +88,7 @@ flowchart LR
 
 <h2><span class="sec-num">3.2</span>Channel 2: obligations, not rankings</h2>
 <div class="prose">
-  <p>Some rules must reach the agent regardless of what the prompt says. Selection is one Cypher predicate: <code>mandatory = true OR always_on = true</code>, defined once in <code>writ/graph/predicates.py:16</code> and used verbatim by the endpoint (<code>routes/query.py:474</code>). There is no ranking and no budget drop on this channel: applicability decides, and a rule with no routing data fails open to universal so nothing silently disappears (<code>writ/retrieval/always_on_filter.py:27-42</code>).</p>
+  <p>Some rules must reach the agent regardless of what the prompt says. Selection is one Cypher predicate: <code>mandatory = true OR always_on = true</code>, defined once in <code>writ/graph/predicates.py:16</code> and used verbatim by the endpoint (<code>routes/query.py:522</code>). There is no ranking and no budget drop on this channel: applicability decides, and a rule with no routing data fails open to universal so nothing silently disappears (<code>writ/retrieval/always_on_filter.py:27-42</code>).</p>
 </div>
 
 <figure class="fig">
@@ -166,11 +166,11 @@ flowchart LR
 <table>
   <thead><tr><th>Endpoint</th><th>Channel / purpose</th><th>Anchor</th></tr></thead>
   <tbody>
-    <tr><td><code>POST /query</code></td><td>Channel 1: ranked domain rules. Runs the pipeline off the event loop so concurrent hook requests are not serialized.</td><td><code>routes/query.py:41</code></td></tr>
-    <tr><td><code>GET /always-on</code></td><td>Channel 2: standing obligations, mode-scoped and applicability-filtered. 5,000-token cap reported.</td><td><code>routes/query.py:441</code></td></tr>
-    <tr><td><code>POST /methodology-companion</code></td><td>Channel 3: deterministic workflow-state bundle.</td><td><code>routes/query.py:62</code></td></tr>
-    <tr><td><code>POST /prompt-bundle</code></td><td>Composition of all three plus session-cache updates.</td><td><code>routes/query.py:107</code></td></tr>
-    <tr><td><code>GET /rule/:id</code>, <code>POST /propose</code>, <code>POST /feedback</code>, <code>POST /conflicts</code>, <code>GET /health</code></td><td>Single-rule fetch, graph-first rule proposal, frequency feedback, conflict check, liveness with index-warm status.</td><td><code>routes/query.py:239-439</code></td></tr>
+    <tr><td><code>POST /query</code></td><td>Channel 1: ranked domain rules. Runs the pipeline off the event loop so concurrent hook requests are not serialized.</td><td><code>routes/query.py:42</code></td></tr>
+    <tr><td><code>GET /always-on</code></td><td>Channel 2: standing obligations, mode-scoped and applicability-filtered. 5,000-token cap reported.</td><td><code>routes/query.py:522</code></td></tr>
+    <tr><td><code>POST /methodology-companion</code></td><td>Channel 3: deterministic workflow-state bundle.</td><td><code>routes/query.py:120</code></td></tr>
+    <tr><td><code>POST /prompt-bundle</code></td><td>Composition of all three plus session-cache updates.</td><td><code>routes/query.py:165</code></td></tr>
+    <tr><td><code>GET /rule/:id</code>, <code>POST /propose</code>, <code>POST /feedback</code>, <code>POST /conflicts</code>, <code>GET /health</code></td><td>Single-rule fetch, graph-first rule proposal, frequency feedback, conflict check, liveness with index-warm status.</td><td><code>routes/query.py:310-464</code></td></tr>
     <tr><td><code>GET /graph</code>, <code>GET /node/:id</code>, <code>GET /dashboard</code>, <code>GET /explore</code></td><td>Graph explorer JSON and the interactive view served from <code>writ/static/explore.html</code>.</td><td><code>routes/explorer.py</code></td></tr>
   </tbody>
 </table>
