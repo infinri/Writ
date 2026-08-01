@@ -1,4 +1,4 @@
-"""LOGGING-BLUEPRINT section 6: one owner for the daemon-log path.
+"""One owner for the daemon-log path (logging blueprint section 6; doc now in git history only).
 
 `WRIT_LOG` had three defaults, not the two the blueprint counted: the library's
 `/tmp/writ-server.log` plus two different caller assignments

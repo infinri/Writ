@@ -114,7 +114,7 @@ _writ_start_locked() {
 # Idempotent, singleton-safe entry point. Always returns 0 so a caller's `set -e` never trips
 # and hooks degrade gracefully (server unavailable) on any failure.
 writ_default_server_log() {
-    # The ONE owner of the daemon-log path (LOGGING-BLUEPRINT section 6: "collapse
+    # The ONE owner of the daemon-log path (logging blueprint, in git history: "collapse
     # WRIT_LOG's two defaults into one router-owned path"). There were three: this
     # library's /tmp default plus two different caller assignments, so which file the
     # daemon's stdout landed in depended on which script happened to start it.

@@ -63,7 +63,7 @@ def test_stdin_json_mode_adds_ts(tmp_path, monkeypatch) -> None:
 
 
 def test_no_env_routes_to_central_router_not_repo_root(tmp_path, monkeypatch) -> None:
-    """CONTRACT CHANGE (logging P1, approved LOGGING-BLUEPRINT): with no
+    """CONTRACT CHANGE (logging P1, per the approved logging blueprint, now in git history only): with no
     WRIT_FRICTION_LOG, friction-append routes through the central router at
     ~/.claude/writ/logs/<project>/<stream>.jsonl. The old marker-walk that wrote
     <repo>/workflow-friction.log is superseded (centralization was the design
