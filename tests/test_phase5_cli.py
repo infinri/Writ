@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -59,7 +60,7 @@ def synthetic_log(tmp_path: Path) -> Path:
 
 def _cli(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["python3", "-m", "writ.cli", *args],
+        [sys.executable, "-m", "writ.cli", *args],
         capture_output=True, text=True, cwd=str(WRIT_ROOT), timeout=15,
     )
 
