@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 from datetime import datetime
 from typing import Any
 
@@ -62,16 +63,23 @@ async def session_update(session_id: str, request: SessionUpdateRequest) -> dict
 
 @router.get("/session/{session_id}/should-skip")
 async def session_should_skip(session_id: str) -> dict[str, Any]:
-    """Check whether RAG queries should be skipped for this session."""
+    """Check whether RAG queries should be skipped for this session.
 
-    def _check() -> bool:
-        cache = server.writ_session._read_cache(session_id)
-        budget = cache.get("remaining_budget", server.writ_session.DEFAULT_SESSION_BUDGET)
-        ctx_pct = cache.get("context_percent", 0)
-        return budget <= 0 or ctx_pct >= 75
+    Delegates to cmd_should_skip (the single policy source, including the
+    is_subagent never-skip exemption the old inline check missed). `known`
+    tells the caller whether this daemon actually has a cache for the
+    session: false means the boolean is a default, not an answer (divergent
+    cache dir / stale daemon), and hooks should fall back to the local read.
+    """
 
-    result = await asyncio.to_thread(_check)
-    return {"should_skip": result}
+    def _check() -> tuple[bool, bool]:
+        # _read_cache returns a defaults scaffold for unknown sessions, so file
+        # existence, not dict truthiness, is the recognition signal.
+        known = os.path.exists(server.writ_session._cache_path(session_id))
+        return server.writ_session.cmd_should_skip(session_id), known
+
+    result, known = await asyncio.to_thread(_check)
+    return {"should_skip": result, "known": known}
 
 
 @router.get("/session/{session_id}/mode")

@@ -572,11 +572,19 @@ _writ_session() {
             skip_result=$(curl -sf --connect-timeout 0.1 --max-time 0.5 \
                 "${WRIT_SESSION_BASE}/session/${session_id}/should-skip" 2>/dev/null) || true
             if [ -n "$skip_result" ]; then
-                # jq-first parse (B2: ~1-2ms vs ~10ms python cold-start per call).
-                if parsed_bool "$skip_result" "should_skip"; then
-                    return 0
-                else
-                    return 1
+                # Desync guard (mirrors the mode-get guard below): known=false means
+                # the daemon answered but has no cache for this session (divergent
+                # cache dir or a stale daemon) -- its boolean is a default, not an
+                # answer. Fall through to the subprocess, which reads the cache we
+                # actually write. A pre-`known` daemon also lands here (correct,
+                # just slower) until it is restarted.
+                if parsed_bool "$skip_result" "known"; then
+                    # jq-first parse (B2: ~1-2ms vs ~10ms python cold-start per call).
+                    if parsed_bool "$skip_result" "should_skip"; then
+                        return 0
+                    else
+                        return 1
+                    fi
                 fi
             fi
             # Fallback to subprocess
