@@ -215,6 +215,11 @@ The floor is also *scoped* so it doesn't spam: non-mandatory process rules only 
 
 **Budget: 5,000 tokens** (`always_on_cap`, `writ/shared/budget.json`), measured on the summary render. `writ validate` fails when the bundle breaches it; the endpoint itself reports the cap but does not trim.
 
+**How a rule earns each tier** (the original public-rulebook criteria, preserved from its design doc):
+
+- Severity: **critical** = a violation creates an exploitable vulnerability, data loss, or system failure in production, no exceptions; **high** = bugs, maintenance debt, or security weakness that compounds over time, exceptions require documented justification; **medium** = degrades code quality or developer experience, exceptions acceptable with team agreement; **low** = style or hygiene, advisory only.
+- A rule is **mandatory** (always-on, never ranked) only when ALL four hold: severity is critical; a violation is exploitable or causes data loss in production; the rule is universal across languages and frameworks; and an AI agent can mechanically detect violations from code inspection.
+
 ---
 
 ## 11. The corpus: `writ-corpus.cypher` and `bible/`

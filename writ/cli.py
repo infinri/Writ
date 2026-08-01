@@ -1275,7 +1275,7 @@ app.add_typer(git_hooks_app, name="git-hooks")
 def git_hooks_install(
     repo: str = typer.Option(".", "--repo", help="Repo to install the hooks into."),
 ) -> None:
-    """Install the Writ git hooks (prepare-commit-msg, post-commit) into a repo."""
+    """Install the Writ post-commit git hook into a repo (removes the retired prepare-commit-msg block)."""
     from writ.session.git_hooks import install_git_hooks
     install_git_hooks(repo)
     typer.echo(f"Installed Writ git hooks in {repo}")
