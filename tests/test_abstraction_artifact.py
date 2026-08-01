@@ -104,9 +104,14 @@ class TestRunCompressionWritesArtifact:
         Uses a tmp_path artifact so the repo's bible/abstractions.json is not
         touched during the test run.
 
-        sentence-transformers IS installed in .venv (confirmed by the existing
-        test_import_with_compress_creates_abstractions passing green).
+        Skips when sentence-transformers ([fallback] extra, Finding D) is not
+        installed: run_compression's clustering path needs it, and CI installs
+        [dev] only.
         """
+        pytest.importorskip(
+            "sentence_transformers",
+            reason="sentence-transformers ([fallback] extra) not installed",
+        )
         from writ.compression.abstractions import run_compression
 
         artifact_path = tmp_path / "abstractions.json"
