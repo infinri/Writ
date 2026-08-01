@@ -360,7 +360,7 @@ class TestDoctorDetectsDoubleRegistration:
         assert "duplicate-hook-registration" in [name for name, _ in _CHECKS]
 
 
-# docs/install-writ.md states there is NO settings.json hook seeding step, which this
+# docs/install.md states there is NO settings.json hook seeding step for discovered installs, which this
 # change makes conditionally untrue. The doc is corrected directly and NOT pinned by a test:
 # a standing project directive prohibits assertions on documentation content, because a
 # suite that goes red on reworded prose stops meaning "something is broken". Two such tests

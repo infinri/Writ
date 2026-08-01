@@ -8,7 +8,7 @@ cache-dir default moved and three bash copies kept the old value because nothing
 them. Writ has already paid this cost once: CHANGELOG.md:215 had to warn "keep registrations
 in sync between the two if you edit either". Generating the template plus a sync test means
 editing hooks/hooks.json stays the ONLY action needed for a hook change, which is what
-docs/install-writ.md already promises.
+docs/install.md already promises.
 
 WHAT THE TEMPLATE IS FOR. Hooks are already global for a normal install: `writ@skills-dir` is
 a user-scope plugin, so its hooks fire in every project with no settings.json entry at all.
