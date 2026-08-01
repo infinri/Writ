@@ -31,6 +31,11 @@ from writ.config import get_neo4j_password, get_neo4j_uri, get_neo4j_user
 from writ.graph.db import Neo4jConnection
 from writ.graph.integrity import IntegrityChecker
 
+from tests._bible_guard import requires_bible
+
+pytestmark = requires_bible
+
+
 SERVER = f"http://localhost:{_port()}"
 
 # The pre-fix injection selection. The validator, fed this, must still report the

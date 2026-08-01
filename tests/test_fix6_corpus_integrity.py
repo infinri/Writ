@@ -25,6 +25,8 @@ import pytest
 from pydantic import ValidationError
 
 from writ.graph.ingest import (
+
+
     NODE_ID_FIELDS,
     parse_edges_from_file,
     parse_nodes_from_file,
@@ -32,6 +34,11 @@ from writ.graph.ingest import (
     validate_parsed_node,
     validate_parsed_rule,
 )
+
+from tests._bible_guard import requires_bible
+
+pytestmark = requires_bible
+
 
 WRIT_ROOT = Path(__file__).resolve().parent.parent
 BIBLE = WRIT_ROOT / "bible"

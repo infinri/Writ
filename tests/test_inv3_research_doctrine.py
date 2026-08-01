@@ -44,7 +44,9 @@ from writ.shared.logging import read_streams, resolve_project  # noqa: E402
 # Exercises the router's cwd-based project-scope resolution to a tmp subdir;
 # opt out of the autouse WRIT_FRICTION_LOG redirect so rag_query telemetry
 # routes to the split per-project streams under WRIT_LOG_ROOT (P1 router).
-pytestmark = pytest.mark.no_friction_isolation
+from tests._bible_guard import requires_bible
+
+pytestmark = [requires_bible, pytest.mark.no_friction_isolation]
 
 from writ.graph.ingest import (
     parse_edges_from_file,
@@ -54,6 +56,7 @@ from writ.graph.ingest import (
 
 from tests._daemon import _port
 from tests.conftest import writ_server_source
+
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 METHODOLOGY = SKILL_DIR / "bible" / "methodology"

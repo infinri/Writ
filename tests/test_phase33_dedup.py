@@ -35,6 +35,11 @@ from writ.graph.ingest import (
 )
 from writ.graph.integrity import IntegrityChecker, _normalized_code_blocks
 
+from tests._bible_guard import requires_bible
+
+pytestmark = requires_bible
+
+
 NEO4J_URI = get_neo4j_uri()
 NEO4J_USER = get_neo4j_user()
 NEO4J_PASSWORD = get_neo4j_password()

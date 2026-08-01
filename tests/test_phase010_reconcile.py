@@ -20,6 +20,11 @@ from writ.graph.db import Neo4jConnection
 from writ.graph.integrity import IntegrityChecker
 from writ.graph.methodology_ingest import compute_expected_graph, ingest_path, reconcile
 
+from tests._bible_guard import requires_bible
+
+pytestmark = requires_bible
+
+
 BIBLE = Path(__file__).resolve().parent.parent / "bible"
 
 STALE = "ZZZ-STALE-RECONCILE-001"      # ingested, absent from bible -> pruned

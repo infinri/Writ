@@ -24,7 +24,11 @@ WRIT_PORT="${WRIT_PORT:-8765}"
 # Under the systemd user service, killing the PID does not stop anything:
 # systemd restarts the daemon immediately and the caller walks away believing
 # it is down. Stop through systemd instead, preserving the caller's intent.
-if command -v systemctl >/dev/null 2>&1 \
+# Port-conditioned: the unit serves the default port only. A caller with a
+# non-default WRIT_PORT (the test suite's 8799 daemon) wants THAT process
+# stopped, not the production unit.
+if [ "$WRIT_PORT" = "8765" ] \
+   && command -v systemctl >/dev/null 2>&1 \
    && systemctl --user is-active --quiet writ-server 2>/dev/null; then
     systemctl --user stop writ-server
     echo "[Writ] Server stopped via systemd (writ-server unit). To restart: systemctl --user restart writ-server" >&2

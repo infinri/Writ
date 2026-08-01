@@ -20,6 +20,11 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests._bible_guard import requires_bible
+
+pytestmark = requires_bible
+
+
 REPO_ROOT = (Path(__file__).resolve().parent.parent)
 METHODOLOGY_DIR = REPO_ROOT / "bible" / "methodology"
 

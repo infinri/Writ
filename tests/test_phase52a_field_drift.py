@@ -29,6 +29,11 @@ from writ.graph.db import Neo4jConnection
 from writ.graph.integrity import IntegrityChecker
 from writ.graph.methodology_ingest import ingest_path
 
+from tests._bible_guard import requires_bible
+
+pytestmark = requires_bible
+
+
 BIBLE = Path(__file__).resolve().parent.parent / "bible"
 
 # Real hand-authored methodology node verified to exist in bible/methodology/ at plan time.

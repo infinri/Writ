@@ -14,6 +14,11 @@ from pathlib import Path
 
 import pytest
 
+from tests._bible_guard import requires_bible
+
+pytestmark = requires_bible
+
+
 WRIT_ROOT = Path(__file__).resolve().parent.parent
 EXPORT_SCRIPT = WRIT_ROOT / "scripts" / "export_subagent_roles.py"
 AGENTS_DIR = WRIT_ROOT / "agents"

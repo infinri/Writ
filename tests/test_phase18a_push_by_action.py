@@ -92,6 +92,9 @@ async def db_corpus():
     except Exception:
         await db.close()
         pytest.skip("Neo4j unreachable")
+    if not BIBLE.exists():
+        await db.close()
+        pytest.skip("requires the untracked bible/ source tree (regenerate with `writ export`)")
     await db.clear_all()
     await ingest_path(BIBLE, db)
     yield db

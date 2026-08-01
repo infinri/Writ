@@ -49,6 +49,11 @@ from tests._writ_cmd import WRIT_CMD_PREFIX as _WRIT_CMD_PREFIX
 # writ.toml checked out) collecting and running; a local writ.toml overrides.
 from writ.config import get_neo4j_password, get_neo4j_user
 
+from tests._bible_guard import requires_bible
+
+pytestmark = requires_bible
+
+
 NEO4J_PASSWORD = get_neo4j_password()
 NEO4J_USER = get_neo4j_user()
 

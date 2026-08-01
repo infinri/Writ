@@ -27,6 +27,11 @@ from pathlib import Path
 
 import pytest
 
+from tests._bible_guard import requires_bible
+
+pytestmark = requires_bible
+
+
 WRIT_ROOT = Path(__file__).resolve().parent.parent
 BIBLE_METHODOLOGY = WRIT_ROOT / "bible" / "methodology"
 OLD_FIXTURE_PATH = WRIT_ROOT / "tests" / "fixtures" / "synthetic_methodology"

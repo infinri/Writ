@@ -36,7 +36,6 @@ import pytest_asyncio
 
 from writ.config import get_neo4j_password, get_neo4j_uri, get_neo4j_user
 from writ.graph.db import Neo4jConnection
-from writ.graph.methodology_ingest import ingest_path
 
 BIBLE = Path(__file__).resolve().parent.parent / "bible"
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -48,7 +47,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 @pytest_asyncio.fixture()
 async def db_corpus():
-    """Live Neo4j with full corpus ingested. Clears abstractions on teardown."""
+    """Live Neo4j with full corpus restored from the tracked cypher dump.
+
+    The dump, not a bible/ re-ingest, because these tests only need a complete
+    RULE corpus to link edges against, and bible/ is untracked (absent on CI);
+    a re-ingest there would wipe the graph and repopulate nothing. Clears
+    abstractions on teardown.
+    """
     db = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
     try:
         async with db._driver.session(database=db._database) as s:
@@ -56,8 +61,9 @@ async def db_corpus():
     except Exception:
         await db.close()
         pytest.skip("Neo4j unreachable")
-    await db.clear_all()
-    await ingest_path(BIBLE, db)
+    from writ.graph.dump import import_cypher_dump
+
+    await import_cypher_dump(db, (REPO_ROOT / "writ-corpus.cypher").read_text())
     yield db
     # Sweep any abstractions created during the test; rules stay.
     await db.delete_abstractions(project="writ")

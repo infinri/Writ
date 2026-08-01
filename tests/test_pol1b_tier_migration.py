@@ -17,6 +17,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from tests._bible_guard import requires_bible
+
+pytestmark = requires_bible
+
+
 WRIT_ROOT = Path(__file__).resolve().parent.parent
 GATE_CATEGORIES = WRIT_ROOT / "bin" / "lib" / "gate-categories.json"
 SCHEMA = WRIT_ROOT / "writ" / "graph" / "schema.py"

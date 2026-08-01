@@ -38,6 +38,8 @@ def _require_neo4j() -> None:
 
 @pytest.mark.asyncio
 async def test_graph_has_no_edges_bible_cannot_regenerate(_require_neo4j) -> None:
+    if not (REPO / "bible").exists():
+        pytest.skip("requires the untracked bible/ source tree (regenerate with `writ export`)")
     db = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
     try:
         # Clear then import bible fresh so the comparison is deterministic (not
