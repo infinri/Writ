@@ -2,7 +2,9 @@
 
 All notable changes to Writ are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.6.0] - 2026-08-01
+
+The trust release: every published number re-measured on disclosed hardware, the documentation rebuilt from a full code read, the hook system audited end to end with its failure posture made explicit, and the Claude Code contract re-pinned to 2.1.220.
 
 ### Changed
 

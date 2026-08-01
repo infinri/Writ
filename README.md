@@ -4,7 +4,7 @@ A Claude Code harness that gives every coding session two helpers: a fast librar
 
 The librarian returns ranked results in **0.6 ms at the 95th percentile** (measured 2026-08-01 at the live 287-rule corpus). At the 10,000-rule synthetic scale it still holds at 0.83 ms while reducing context tokens by **749 times** versus loading the whole rulebook every turn.
 
-See [`CHANGELOG.md`](CHANGELOG.md) for the release history through v1.5.1 (plugin marketplace install, sub-agent roles at `agents/`, gate-arming fixes, enterprise logging).
+See [`CHANGELOG.md`](CHANGELOG.md) for the release history through v1.6.0 (re-measured benchmarks with environment disclosure, hook-system audit and hardening, force-swap coverage, the Claude Code 2.1.220 black-box refresh).
 
 ## Browse the architecture in your browser
 
@@ -292,7 +292,7 @@ Both artifact sets are produced by the system's own audit stream, not written af
 
 ## Status
 
-**v1.5.1 (2026-07-31).** Installable end to end as a Claude Code plugin: marketplace manifest restored, sub-agent roles auto-discovered from `agents/` (verified `Agents (5)` on Claude Code 2.1.220), hook gate-arming fixes, and the enterprise logging program (typed streams, rotation, retention, `writ logs`) complete. Every number in this README is either measured and dated, or derived from the current source tree.
+**v1.6.0 (2026-08-01).** Every benchmark re-measured on disclosed hardware; documentation rebuilt from a full code read; the 37-script hook system audited end to end (silent-failure fixes, force-swap coverage, fail-open posture documented as the specification); Claude Code contract re-pinned to 2.1.220. Installs end to end as a Claude Code plugin (verified `Agents (5)` on 2.1.220). Every number in this README is either measured and dated, or derived from the current source tree.
 
 ## Related documents
 

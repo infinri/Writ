@@ -1,6 +1,6 @@
 [project]
 name = "claude-writ"
-version = "1.5.1"
+version = "1.6.0"
 description = "Hybrid RAG rule retrieval and session-aware workflow enforcement for Claude Code: a five-stage hybrid pipeline (BM25 + ANN + graph + RRF) over a Neo4j knowledge graph, wired into Claude Code via 38 hook scripts and a state machine."
 readme = "README.md"
 requires-python = ">=3.11"

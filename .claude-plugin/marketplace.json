@@ -5,13 +5,13 @@
   },
   "metadata": {
     "description": "Single-plugin marketplace for Writ. The repository root is the plugin, so `source` is './'.",
-    "version": "1.5.1"
+    "version": "1.6.0"
   },
   "plugins": [
     {
       "name": "writ",
       "source": "./",
-      "version": "1.5.1",
+      "version": "1.6.0",
       "displayName": "Writ",
       "description": "Hybrid RAG rule retrieval + session-aware workflow enforcement. Injects relevant coding rules via a 5-stage pipeline (BM25 + vector + graph traversal + reciprocal-rank fusion) and enforces mode-based workflow gates (plan -> tests -> implementation).",
       "category": "workflow",
