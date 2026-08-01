@@ -203,7 +203,7 @@ if parsed_bool "$CACHE" "is_orchestrator"; then IS_ORCHESTRATOR="true"; else IS_
 # 1c-2. Decision-memory Phase 2: once-per-session recall briefing. On the FIRST
 # UserPromptSubmit of a master session, surface the project's recent
 # rule-grounded decisions via additionalContext (the confirmed channel; see
-# WRIT-BLACKBOX-MAP.md -- SessionStart's only confirmed surface is
+# docs/reference/claude-code-blackbox.md -- SessionStart's only confirmed surface is
 # initialUserMessage, which would seed a fake user turn). Guarded by the
 # recall_briefed cache flag so it fires exactly once; fail-open + time-bounded so
 # a recall failure or a slow daemon never blocks the prompt.

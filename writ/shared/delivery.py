@@ -1,6 +1,6 @@
 """Single source of truth for hook-output delivery classification (CC 2.1.183).
 
-Encodes the verified delivery rule from docs/WRIT-BLACKBOX-MAP.md: which hook
+Encodes the verified delivery rule from docs/reference/claude-code-blackbox.md: which hook
 outputs actually reach the MODEL versus landing in the CC debug log, going to the
 user, or only mutating state. The friction analyzer (read-side telemetry) and the
 static hooks linter both import this, so the rule lives in exactly ONE place and
