@@ -103,6 +103,10 @@ fallback = [
     # Production daemons running on ONNX do not need this group. The
     # transitive cascade includes torch + nvidia CUDA libraries (~5GB).
     "sentence-transformers>=3.3,<4",
+    # writ/compression/clusters.py imports sklearn directly (HDBSCAN,
+    # KMeans, silhouette_score); declare it rather than relying on it
+    # arriving as a sentence-transformers transitive.
+    "scikit-learn>=1.5,<2",
 ]
 benchmark = [
     "pytest>=8,<9",
