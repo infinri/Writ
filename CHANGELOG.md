@@ -2,6 +2,21 @@
 
 All notable changes to Writ are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Documentation rebuilt from a full code read (all production code line-by-line; the test suite swept at contract level). New structure: README + HANDBOOK rewritten in place; `docs/install.md` replaces `docs/install-writ.md`; a complete `docs/reference/` set (architecture, graph-schema, retrieval, session-and-gates, configuration, logging, decision-memory, testing, compression, efficacy-ab, the Claude Code black-box map, plus generated cli/http-api/hooks/rulebook pages via `make docs`); the marketplace packet at `docs/marketplace/SUBMISSION.md` absorbs PROMOTIONAL-BRIEF.md.
+- Documentation is no longer a test surface: doc-content assertions removed from the suite; generated pages drift-check via `make docs-check`, not pytest.
+
+### Removed
+
+- `docs/extraction/` (all 12 deep dives), `docs/ARCHITECTURE.md`, `docs/LOGGING-BLUEPRINT.md`, `docs/LOGGING-COVERAGE-AUDIT.md`, `docs/EFFICACY-AB-RUNBOOK.md`, `out-of-the-box-rules.md`, `PROMOTIONAL-BRIEF.md`, `RESUME.md`: superseded by the reference set and ground-truth rewrite; git history is the archive. Each was fully read for unique content first; the survivors (severity rubric, mandatory-selection criteria, and a dozen smaller rationale items) were folded into HANDBOOK and `docs/reference/`.
+
+### Fixed
+
+- Stale docstrings the rewrite surfaced: `writ doctor` "10 checks" (13), `writ git-hooks install` claiming a prepare-commit-msg install (retired, strip-only), `bootstrap.sh`'s `/tmp` daemon-log banner (fix pending in the banner itself).
+
 ## [1.5.1] - 2026-07-31
 
 Writ has been published as a plugin since 1.4.x, and the plugin install path had never worked end to end. Three independent breakages, each verified against Claude Code 2.1.220 by installing from a local-path marketplace into a throwaway `HOME`.
@@ -19,7 +34,7 @@ Writ has been published as a plugin since 1.4.x, and the plugin install path had
 
 ### Known issues
 
-- `claude plugin details writ` reports `Agents (0)` despite `plugin.json` declaring five agent files that exist on disk. Plugin agents must live at `agents/` in the plugin root; Writ's are at `.claude/agents/`, which Claude Code reads as *project* agents. The `writ-*` roles are therefore available when working inside the Writ repository and have never been available to anyone using Writ elsewhere. Fixing it is a coordinated move across the manifest, `scripts/ingest_subagent_roles.py`, `scripts/export_subagent_roles.py`, the graph-drift check, and the bare-name steering in `hooks/scripts/writ-dispatch-discipline.sh`, so it ships separately.
+- `claude plugin details writ` reports `Agents (0)` despite `plugin.json` declaring five agent files that exist on disk. Plugin agents must live at `agents/` in the plugin root; Writ's are at `.claude/agents/`, which Claude Code reads as *project* agents. The `writ-*` roles are therefore available when working inside the Writ repository and have never been available to anyone using Writ elsewhere. Fixing it is a coordinated move across the manifest, `scripts/ingest_subagent_roles.py`, `scripts/export_subagent_roles.py`, the graph-drift check, and the bare-name steering in `hooks/scripts/writ-dispatch-discipline.sh`, so it ships separately. *(Resolved in the follow-up `a56ca1e`: roles moved to `agents/`, the `agents` manifest key removed entirely, measured `Agents (5)` on Claude Code 2.1.220; `writ-dispatch-discipline.sh` needed no change.)*
 - `claude plugin validate --strict` passes on manifests with this defect. Manifest validation checks shape, not whether declared components load, so it cannot substitute for a real install.
 
 ## [1.5.0] - 2026-05-21

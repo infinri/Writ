@@ -27,7 +27,7 @@
 <section class="hero">
   <div class="eyebrow">Chapter 2 of 4</div>
   <h1>Retrieval pipeline</h1>
-  <p class="lede">How a query becomes a ranked, budgeted list of rules. The pipeline (<code>writ/retrieval/pipeline.py</code>, 819 lines) is a hybrid ranker: sparse keyword search and dense vector search run in parallel, merge by reciprocal rank, then a graph-aware second pass re-scores before a token budget shapes the response.</p>
+  <p class="lede">How a query becomes a ranked, budgeted list of rules. The pipeline (<code>writ/retrieval/pipeline.py</code>, ~900 lines) is a hybrid ranker: sparse keyword search and dense vector search run in parallel, merge by reciprocal rank, then a graph-aware second pass re-scores before a token budget shapes the response.</p>
 </section>
 
 <div class="answers">
@@ -202,7 +202,7 @@ flowchart TD
 <div class="callout">
   <div class="label">As-built findings worth knowing</div>
   <p><strong>1. The graph signal cannot reorder results at current weights.</strong> Its maximum contribution is 0.01 x 1.0 = 0.01, but the sticky tiebreak treats adjacent scores within 0.02 as tied (<code>pipeline.py:107</code>). The proximity computation runs on every query and is effectively inert.</p>
-  <p><strong>2. The route-based Stage 1 filter is implemented but not wired.</strong> <code>RetrievalPipeline</code> accepts a <code>node_routes</code> map, but <code>build_pipeline</code> never passes it (<code>pipeline.py:811-819</code>), so production semantic mode always uses the legacy fallback: Rule-only plus a three-domain exclusion (<code>pipeline.py:365-371</code>).</p>
+  <p><strong>2. The route-based Stage 1 filter is wired (updated 2026-07-31).</strong> <code>build_pipeline</code> now loads the Category route map (<code>get_category_routes_by_node</code>) and passes it into the pipeline (<code>pipeline.py:863-898</code>). The legacy fallback (Rule-only plus a three-domain exclusion) applies only when the route map is empty or incomplete, in which case the whole pipeline reverts wholesale rather than silently dropping uncategorized nodes.</p>
   <p><strong>3. The authority preference pass is disabled at its default.</strong> It only swaps when its threshold is above 0.0 and nothing configures it (<code>pipeline.py:195</code>, <code>ranking.py:208</code>). The protection that does bind is seed filtering: AI-provisional rules never seed the graph signal.</p>
 </div>
 

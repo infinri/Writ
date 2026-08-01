@@ -1,6 +1,6 @@
 # Writ Scale Benchmark Results
 
-> **Freshness (verified 2026-06-16):** the per-stage **latency** and **context-reduction** figures below remain representative. Two classes of number are now superseded and should be read as historical: (1) **cold-start and ingest timings predate the B5.2 batch-ingest rewrite** (ingest is now 3-7x faster); (2) the **"Mandatory rules: 35"** count predates the 3.6a corpus work (the live graph is 399 nodes / 1048 edges, project `writ`). Re-run `make bench` for current numbers.
+> **Freshness (banner refreshed 2026-07-31):** the per-stage **latency** and **context-reduction** figures below remain representative. Superseded numbers to read as historical: (1) **cold-start and ingest timings predate the B5.2 batch-ingest rewrite** (ingest is now 3-7x faster); (2) all **corpus counts** in this document predate later corpus work: the shipped dump is now **464 nodes / 732 edges, 287 rules / 33 mandatory** (an earlier 2026-06-16 banner refresh said 399/1048 and was itself a cycle behind); (3) "Twelve targets" below is stale: `bench_targets.py` collects **14 tests across 7 classes**. Re-run `make bench` and `curl localhost:8765/health` for current numbers.
 
 This document holds two things. First, a fresh measurement of the live production system, taken today on the actual rule corpus you would interact with. Second, a synthetic scale curve from 2026-04-13 that shows how Writ behaves as the rulebook grows from 80 to 10,000 rules.
 

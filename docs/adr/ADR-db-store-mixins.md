@@ -40,4 +40,4 @@ module-level surface from `_common.py` (the shared helpers/constants hub).
   was a function/route split). `_common.py` is a single import hub: the stores
   import shared helpers/constants from it, so cross-module names route through one
   place.
-- Dead code (`get_all_edges`) moved as-is; its removal is a separate sweep.
+- Dead code (`get_all_edges`) moved as-is at split time; the W4 sweep later removed it (`tests/test_w4_db_dead_methods.py` pins the absence).

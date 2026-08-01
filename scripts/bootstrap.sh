@@ -232,7 +232,7 @@ printf "${GREEN}${BOLD}═══════════════════
 printf "  Neo4j          : bolt://localhost:7687\n"
 printf "  Writ daemon    : http://localhost:8765\n"
 printf "  Rules loaded   : %s\n" "$RULE_COUNT"
-printf "  Daemon log     : /tmp/writ-server.log\n"
+printf "  Daemon log     : $WRIT_LOG\n"
 printf "  Harness config : ~/.claude/settings.json, ~/.claude/CLAUDE.md\n"
 printf "\n"
 printf "${YELLOW}!${RESET} Restart Claude Code for the hooks to take effect.\n"
