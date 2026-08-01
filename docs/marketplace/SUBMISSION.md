@@ -2,6 +2,15 @@
 
 Maintainer reference for submitting `writ@writ` to the official Anthropic plugin marketplace at https://claude.ai/settings/plugins/submit. The positioning appendix at the bottom absorbs the former PROMOTIONAL-BRIEF.md.
 
+> **Listing status (checked 2026-08-01):** Writ IS already listed in
+> `anthropics/claude-plugins-community` (entry name `writ`), but the listing is stale in
+> every way that matters: it is pinned to an orphaned pre-history-scrub commit from
+> 2026-05-10 ("Release v1.0.0") that has NO marketplace.json and predates every 1.5.1
+> install fix, so a `writ@claude-community` install serves a three-month-old, install-broken
+> Writ. The description also carries the old numbers (276 rules / 30 mandatory / 726x).
+> The community repo auto-closes direct PRs; the ONLY update path is a re-submission
+> through the claude.ai form below, which re-pins the sha and refreshes the copy.
+
 ## Pre-submission checklist
 
 - [x] **Manifest validates**: `claude plugin validate <install>` exits 0 with no warnings (pinned by `tests/plugin/test_plugin_validate_cli.py`).
