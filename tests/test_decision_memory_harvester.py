@@ -706,7 +706,9 @@ class TestHarvestSinceValidation:
         monkeypatch.setattr(harvester, "_resolve_rev", bad_resolve)
         result = CliRunner().invoke(app, ["harvest", "--since", "2026-06-15", "--repo", "."])
         assert result.exit_code != 0
-        assert "--since" in result.output
+        from tests._ansi import plain
+
+        assert "--since" in plain(result.output)
 
 
 # ---------------------------------------------------------------------------

@@ -578,4 +578,6 @@ class TestLogsHelpJournaldHint:
     def test_logs_help_mentions_journald_hint(self) -> None:
         result = runner.invoke(app, ["logs", "--help"])
         assert result.exit_code == 0, result.output
-        assert "journalctl --user -u writ-server" in result.output
+        from tests._ansi import plain
+
+        assert "journalctl --user -u writ-server" in plain(result.output)
