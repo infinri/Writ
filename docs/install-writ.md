@@ -4,8 +4,13 @@ Writ is distributed as a Claude Code plugin. The skill lives at
 `~/.claude/skills/writ/` and Claude Code auto-loads it as the plugin
 `writ@skills-dir`, so its hooks and slash commands work from any project
 directory. Hook registrations come from one place: `hooks/hooks.json`
-(the plugin manifest). There is no `~/.claude/settings.json` hook seeding
-step; editing `hooks/hooks.json` is all that is needed for a hook change.
+(the plugin manifest). Editing `hooks/hooks.json` is all that is needed
+for a hook change.
+
+For a standard install there is no `~/.claude/settings.json` hook seeding
+step: the plugin is user-scoped, so its hooks already fire in every project.
+The one exception is an install at a path Claude Code does not discover, which
+is covered in "Installing outside `~/.claude/skills`" below.
 
 ## 1. Bootstrap runtime prerequisites
 
@@ -33,8 +38,45 @@ It merges the Writ allow/deny entries into `~/.claude/settings.json`
 (preserving your ordering and any non-Writ entries), sets the Writ
 statusLine (leaving a foreign statusLine untouched), and renders
 `templates/CLAUDE.md` into `~/.claude/CLAUDE.md` (backing up any
-pre-existing file). It never touches the `hooks` block: the plugin owns
-hooks.
+pre-existing file). By default it never touches the `hooks` block: the
+plugin owns hooks. See the next section for the one case where it should.
+
+## 2b. Installing outside `~/.claude/skills` (hook seeding)
+
+Skip this unless Writ lives somewhere Claude Code does not discover.
+
+Hooks load because `~/.claude/skills/writ` is auto-discovered as the
+user-scope plugin `writ@skills-dir`. Confirm your install is discovered:
+
+```bash
+claude plugin list --json     # look for an entry whose installPath is your install
+claude plugin details writ    # should report Hooks (12)
+```
+
+If Writ is at some other path and was not installed through a marketplace,
+nothing discovers it: `hooks/hooks.json` is never read and **no hooks load
+at all**, so there is no gate, no rule injection, and no enforcement. In
+that case register the hooks globally instead:
+
+```bash
+bash /path/to/writ/scripts/patch-global-config.sh --hooks
+```
+
+This merges the 12 hook events from `templates/settings.json` into
+`~/.claude/settings.json`, with the install path filled in. It is
+idempotent, backs up the previous file, and preserves your own hooks and
+unrelated settings.
+
+**Do not run it when Writ is plugin-loaded.** Both surfaces would register
+the same 12 events, so every hook would fire twice: doubled rule injection,
+doubled gate evaluation, and duplicated telemetry. The step detects this and
+refuses, and `writ doctor` reports the condition (`duplicate-hook-registration`)
+if it arises another way, such as seeding an install and later moving it
+under `~/.claude/skills`.
+
+`templates/settings.json` is generated from `hooks/hooks.json` by
+`scripts/render-settings-template.py`; a test keeps the two in sync, so
+`hooks/hooks.json` remains the only file to edit for a hook change.
 
 ## 3. Install user-level slash commands
 

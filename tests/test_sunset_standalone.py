@@ -1,9 +1,15 @@
 """SUNSET-STANDALONE: hooks/hooks.json is the single source of truth for hook registration.
 
-The standalone install path (templates/settings.json seeded into ~/.claude/settings.json by
-scripts/install-harness-config.sh) is removed. This locks: the dead files are gone, nothing in
-the active install/config surface references them, bootstrap uses patch-global-config.sh, and
-hooks/hooks.json carries the full hook surface. RED until the move lands.
+The standalone install path (a hand-maintained templates/settings.json seeded into
+~/.claude/settings.json by scripts/install-harness-config.sh) is removed. This locks: the dead
+files are gone, nothing in the active install/config surface references them, bootstrap uses
+patch-global-config.sh, and hooks/hooks.json carries the full hook surface.
+
+templates/settings.json later returned in a different form: GENERATED from hooks/hooks.json,
+and seeded only via an opt-in `patch-global-config.sh --hooks` for an install Claude Code does
+not auto-discover (where the alternative is no hooks loading at all). That does not reopen what
+this module locks -- hooks/hooks.json is still the one place a hook is defined -- so the
+deleted-files list drops that one entry and gains a guard that the file stays generated.
 
 Per TEST-TDD-001: skeletons approved before implementation.
 """
@@ -28,14 +34,29 @@ def _read(*parts):
 
 
 class TestDeadFilesRemoved:
+    # templates/settings.json is deliberately NOT in this list any more. What the sunset
+    # removed was a HAND-MAINTAINED second copy of the hook registrations, seeded by
+    # install-harness-config.sh into every install, which had to be kept in sync by hand
+    # (CHANGELOG.md:215: "keep registrations in sync between the two if you edit either").
+    # What exists now is a GENERATED artifact (scripts/render-settings-template.py, pinned to
+    # hooks/hooks.json by tests/test_settings_template_sync.py), seeded only by an opt-in
+    # --hooks flag, and only for an install that Claude Code does not auto-discover -- where
+    # the alternative is no hooks at all. hooks/hooks.json remains the single source of truth,
+    # which is what this module actually locks (see TestHooksJsonIsSoleSource below).
     @pytest.mark.parametrize("relpath", [
-        "templates/settings.json",
         "templates/settings.README.md",
         "scripts/install-harness-config.sh",
         "tests/test_harness_installer.py",
     ])
     def test_file_deleted(self, relpath):
         assert not os.path.exists(_p(relpath)), f"{relpath} must be deleted (standalone sunset)"
+
+    def test_the_settings_template_is_generated_not_hand_maintained(self):
+        """The sunset's real target was the dual hand-edited source, so guard that instead."""
+        assert "GENERATED FILE" in _read("templates", "settings.json"), (
+            "templates/settings.json must be generated from hooks/hooks.json, never edited "
+            "by hand: a second hand-maintained registration surface is what the sunset removed"
+        )
 
 
 class TestBootstrapRepointed:

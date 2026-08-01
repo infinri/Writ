@@ -837,6 +837,78 @@ def check_cc_hook_registration(opts: DoctorOptions) -> CheckResult:
     )
 
 
+def _global_settings_path() -> Path:
+    """The user-level settings file whose `hooks` block would double-register Writ."""
+    return Path(os.environ.get("WRIT_SETTINGS_TARGET", "")) or (
+        Path.home() / ".claude" / "settings.json"
+    )
+
+
+def _loaded_plugin_paths() -> list[str]:
+    """Install paths of currently loaded Claude Code plugins."""
+    if shutil.which("claude") is None:
+        return []
+    try:
+        out = subprocess.run(
+            ["claude", "plugin", "list", "--json"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if out.returncode != 0:
+            return []
+        return [
+            e.get("installPath", "")
+            for e in json.loads(out.stdout)
+            if e.get("enabled") is not False and e.get("installPath")
+        ]
+    except Exception:
+        return []
+
+
+def check_duplicate_hook_registration(opts: DoctorOptions) -> CheckResult:
+    """Writ's hooks registered twice: once by the plugin loader, once in settings.json.
+
+    `patch-global-config.sh --hooks` refuses to create this state, but it can still arise
+    by another route -- most plausibly seeding an arbitrary-path install and later moving it
+    under ~/.claude/skills, where it also becomes plugin-discoverable. Both surfaces would
+    then fire all 12 events: doubled rule injection, doubled gate evaluation, duplicated
+    telemetry, and a single-use gate token one path could consume before the other reads it.
+    A settings.json registration on its own is CORRECT (that is the install the seeding step
+    exists for), so only the overlap is reported.
+    """
+    name = "duplicate-hook-registration"
+    settings = _global_settings_path()
+    try:
+        doc = json.loads(settings.read_text()) if settings.is_file() else {}
+    except (OSError, json.JSONDecodeError):
+        return _ok(name=name, detail=f"{settings} unreadable; nothing to compare.")
+
+    settings_hooks = doc.get("hooks") or {}
+    if not settings_hooks:
+        return _ok(name=name, detail="No hooks block in user settings; the plugin owns hooks.")
+
+    skill_root = str(Path(__file__).resolve().parent.parent.parent)
+    if skill_root not in _loaded_plugin_paths():
+        return _ok(
+            name=name,
+            detail=(
+                f"{len(settings_hooks)} hook events in user settings and this install is not "
+                "plugin-loaded: settings.json is the only registration surface, as intended "
+                "for an install nothing auto-discovers."
+            ),
+        )
+
+    return _warn(
+        name=name,
+        detail=(
+            f"Writ hooks are registered TWICE: {len(settings_hooks)} events in {settings} AND "
+            f"this install ({skill_root}) is loaded as a plugin, which registers them again. "
+            "Every hook likely fires twice (doubled rule injection, doubled gate evaluation, "
+            f"duplicated telemetry). Remove the `hooks` block from {settings} and keep the "
+            "plugin registration."
+        ),
+    )
+
+
 def check_mode_gate_sanity(opts: DoctorOptions) -> CheckResult:
     name = "mode-gate-sanity"
     from writ.session import mode_engine
@@ -924,6 +996,7 @@ _CHECKS: list[tuple[str, Callable[[DoctorOptions], CheckResult]]] = [
     ("git-post-commit-hook", check_git_post_commit_hook),
     ("writ-path-symlink", check_writ_path_symlink),
     ("cc-hook-registration", check_cc_hook_registration),
+    ("duplicate-hook-registration", check_duplicate_hook_registration),
     ("mode-gate-sanity", check_mode_gate_sanity),
 ]
 
