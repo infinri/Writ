@@ -184,6 +184,10 @@ class TestRedundancyDetection:
 
     @pytest.mark.asyncio
     async def test_near_identical_flagged(self, db: Neo4jConnection, checker: IntegrityChecker) -> None:
+        pytest.importorskip(
+            "sentence_transformers",
+            reason="real redundancy embedding needs the [fallback] extra; the mocked-absence tests below still run",
+        )
         await db.create_rule(_make_rule(
             "DUP-A-001",
             trigger="Controller must not contain SQL queries directly",
@@ -203,6 +207,10 @@ class TestRedundancyDetection:
 
     @pytest.mark.asyncio
     async def test_different_rules_clean(self, db: Neo4jConnection, checker: IntegrityChecker) -> None:
+        pytest.importorskip(
+            "sentence_transformers",
+            reason="real redundancy embedding needs the [fallback] extra; the mocked-absence tests below still run",
+        )
         await db.create_rule(_make_rule(
             "DIFF-A-001",
             trigger="SQL query uses positional placeholders",
