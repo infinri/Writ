@@ -135,8 +135,21 @@ fi
 
 # ── 5. Start Neo4j via docker compose ──────────────────────────────────────
 step "Starting Neo4j via docker compose"
-docker compose -f "${COMPOSE_FILE}" up -d neo4j >/dev/null
-ok "neo4j container started"
+# Idempotent across container provenance: a writ-neo4j container created
+# outside this compose project (manual docker run, an older checkout's
+# compose) makes `compose up` fail on the name conflict. If the container
+# exists, reuse it: start it if stopped, leave it if running.
+if docker inspect writ-neo4j >/dev/null 2>&1; then
+    if [ "$(docker inspect -f '{{.State.Running}}' writ-neo4j 2>/dev/null)" = "true" ]; then
+        ok "neo4j container already running (pre-existing, reused)"
+    else
+        docker start writ-neo4j >/dev/null
+        ok "neo4j container started (pre-existing, reused)"
+    fi
+else
+    docker compose -f "${COMPOSE_FILE}" up -d neo4j >/dev/null
+    ok "neo4j container started"
+fi
 
 printf "   waiting for bolt port 7687 "
 waited=0

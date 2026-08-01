@@ -8,7 +8,7 @@ See [`CHANGELOG.md`](CHANGELOG.md) for the release history through v1.6.0 (re-me
 
 ## Browse the architecture in your browser
 
-Six self-contained HTML pages under [`docs/architecture/`](docs/architecture/) render the whole system with diagrams: [system overview](docs/architecture/index.html), [data model](docs/architecture/data-model.html), [retrieval pipeline](docs/architecture/retrieval-pipeline.html), [injection channels](docs/architecture/injection-channels.html), [knowledge graph](docs/architecture/knowledge-graph.html), and [corpus round-trip](docs/architecture/corpus-roundtrip.html). Clone and open `docs/architecture/index.html` in a browser; no server needed.
+Six self-contained HTML pages render the whole system with diagrams, served live on GitHub Pages: [system overview](https://infinri.github.io/Writ/docs/architecture/index.html), [data model](https://infinri.github.io/Writ/docs/architecture/data-model.html), [retrieval pipeline](https://infinri.github.io/Writ/docs/architecture/retrieval-pipeline.html), [injection channels](https://infinri.github.io/Writ/docs/architecture/injection-channels.html), [knowledge graph explorer](https://infinri.github.io/Writ/docs/architecture/knowledge-graph.html), and [corpus round-trip](https://infinri.github.io/Writ/docs/architecture/corpus-roundtrip.html). (The source lives under [`docs/architecture/`](docs/architecture/); cloning and opening `index.html` locally works too, no server needed.)
 
 ## Install as a Claude Code plugin
 

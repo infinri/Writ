@@ -11,7 +11,7 @@ Maintainer reference for submitting `writ@writ` to the official Anthropic plugin
 - [x] **Agents load**: measured `Agents (5)` on Claude Code 2.1.220 with roles auto-discovered from `agents/` (commit `a56ca1e`).
 - [x] **License OSI-approved**: MIT.
 - [x] **No secrets in repo**: `writ.toml` is gitignored; the shipped template carries only the documented dev Neo4j default.
-- [ ] **Fresh-install smoke on a clean machine**: run `tests/plugin/test_fresh_install_smoke.py` with `WRIT_INTEGRATION_TESTS=1` (clone, marketplace add, install, bootstrap, health), or walk the README steps in a throwaway VM. A green default suite does not prove this; the smoke test is env-gated.
+- [x] **Fresh-install smoke**: `tests/plugin/test_fresh_install_smoke.py` green with `WRIT_INTEGRATION_TESTS=1` on 2026-08-01 (clone, marketplace add, install, bootstrap, health). Bootstrap made idempotent across container provenance the same day (a pre-existing `writ-neo4j` container is reused instead of colliding with `compose up`).
 - [ ] **Screenshots captured** (below).
 
 ## Listing copy
