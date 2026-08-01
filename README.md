@@ -279,10 +279,6 @@ Pre-commit: `make bench` runs at `pre-push`.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md): rule authoring workflow, review cadence, AI proposal triage.
 
 ## Acknowledgements
-
-Kent Beck originated the TDD vocabulary used here: red-green-refactor,
-"watch it fail," and "no production code without a failing test first."
-
 Jesse Vincent's [Superpowers](https://github.com/obra/superpowers) revealed gaps in Writ's methodology coverage, and observing that project's design choices in practice fed Writ's analysis of the Agent Skills format (see [Relationship to Agent Skills](#relationship-to-agent-skills)).
 
 License: MIT. Authored by Lucio Saldivar.
