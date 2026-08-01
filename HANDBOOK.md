@@ -1,6 +1,6 @@
 # The Writ Handbook
 
-The operating manual for Writ: what it is, what happens on a turn, and how to run it. This is the *how to use it* guide; [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) holds the deep internals and this handbook does not duplicate them.
+The operating manual for Writ: what it is, what happens on a turn, and how to run it. This is the *how to use it* guide; [`docs/reference/architecture.md`](docs/reference/architecture.md) holds the deep internals and this handbook does not duplicate them.
 
 > **North star.** Writ relocates oversight; it does not remove it. The gate is the product. Writ never automates self-approval: a human token-gates any write of canon. Every "the agent could otherwise..." seam in this doc is closed by a human-held token, not by trust.
 
