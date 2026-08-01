@@ -27,21 +27,21 @@
 <section class="hero">
   <div class="eyebrow">Explorer: the graph itself</div>
   <h1>Every node and edge, live from Neo4j</h1>
-  <p class="lede">This is the actual writ-project knowledge graph, snapshotted from the running database and complete: 462 nodes and 1,246 edges, verified 1:1 against a full census of the store. Pan, zoom, search, and click any node to inspect its rules and relationships. The view opens on the full graph; presets isolate each edge layer.</p>
-  <span class="stamp">Snapshot exported from Neo4j on 2026-07-15 via the same query the daemon's /graph endpoint uses (writ/graph/db/node_store.py:197). Completeness check: an unscoped MATCH census returned the same 462 nodes and 1,246 edges, all project "writ". Re-export with the snippet in the footer.</span>
+  <p class="lede">This is the actual writ-project knowledge graph, snapshotted from the running database and complete: 464 nodes and 731 edges, verified 1:1 against a full census of the store. Pan, zoom, search, and click any node to inspect its rules and relationships. The view opens on the full graph; presets isolate each edge layer.</p>
+  <span class="stamp">Snapshot exported from Neo4j on 2026-08-01 via the same query the daemon's /graph endpoint uses (writ/graph/db/node_store.py:204). Completeness check: the per-type census printed by the exporter (scripts/export-graph-snapshot.py) matches this snapshot exactly: 464 nodes, 731 edges, all project "writ". Re-run that script to refresh.</span>
 </section>
 
 <div class="callout note">
   <div class="label">How to read the full graph</div>
-  <p>The full view is legible, not a hairball: two major bodies (the methodology and process cluster at top, the coding-rule corpus below) organized by readable radial hubs. That structure is mostly the work of the machine-derived layers, which are 87 percent of the edges: BELONGS_TO (395) radiating from the 22 Category hubs creates the spatial organization, RELATED_TO (510, from rule-id mentions in prose) forms the rule-to-rule mesh, and ABSTRACTS (186) ties the 62 generated summary nodes to their members. The layer that would get lost is the opposite one: only 155 edges are hand-authored knowledge, so they are drawn on top in dark teal at full strength, and the Curated skeleton preset isolates them entirely.</p>
+  <p>The full view is legible, not a hairball: two major bodies (the methodology and process cluster at top, the coding-rule corpus below) organized by readable radial hubs. That structure is mostly the work of the machine-derived layers, which are 80 percent of the edges: BELONGS_TO (331) radiating from the 22 Category hubs creates the spatial organization, ABSTRACTS (186) ties the 62 generated summary nodes to their members, and RELATED_TO (69, from rule-id mentions in prose) forms the rule-to-rule cross-reference layer. The layer that would get lost is the opposite one: only 145 edges are hand-authored knowledge, so they are drawn on top in dark teal at full strength, and the Curated skeleton preset isolates them entirely.</p>
 </div>
 
 <div class="controls">
   <div class="seg" id="graph-presets" role="group" aria-label="Edge presets">
-    <button type="button" data-preset="skeleton" aria-pressed="false">Curated skeleton (155)</button>
-    <button type="button" data-preset="related" aria-pressed="false">+ cross-references (665)</button>
-    <button type="button" data-preset="abstracts" aria-pressed="false">+ abstractions (851)</button>
-    <button type="button" data-preset="everything" aria-pressed="true">Everything (1,246)</button>
+    <button type="button" data-preset="skeleton" aria-pressed="false">Curated skeleton (145)</button>
+    <button type="button" data-preset="related" aria-pressed="false">+ cross-references (214)</button>
+    <button type="button" data-preset="abstracts" aria-pressed="false">+ abstractions (400)</button>
+    <button type="button" data-preset="everything" aria-pressed="true">Everything (731)</button>
   </div>
   <label class="chk"><input type="checkbox" id="graph-isolated" checked> Hide unconnected nodes</label>
   <input type="search" id="graph-search" placeholder="Find a node id, e.g. SEC-INJ-SQL" aria-label="Search node ids">
@@ -59,9 +59,9 @@
 
 <div class="legend">
   <span class="legend-title">Edges</span>
-  <span class="chip"><span class="swatch line sw-declared"></span>Hand-authored (155, drawn on top)</span>
-  <span class="chip"><span class="swatch line thin sw-related"></span>RELATED_TO (510, derived)</span>
-  <span class="chip"><span class="swatch line thin sw-belongs"></span>BELONGS_TO (395, derived)</span>
+  <span class="chip"><span class="swatch line sw-declared"></span>Hand-authored (145, drawn on top)</span>
+  <span class="chip"><span class="swatch line thin sw-related"></span>RELATED_TO (69, derived)</span>
+  <span class="chip"><span class="swatch line thin sw-belongs"></span>BELONGS_TO (331, derived)</span>
   <span class="chip"><span class="swatch line thin sw-abstracts"></span>ABSTRACTS (186, derived)</span>
 </div>
 <div class="legend" id="graph-legend"></div>
@@ -70,7 +70,7 @@
 <ul>
   <li><strong>Everything (the default)</strong> is the complete graph. The dark teal lines drawn on top are the hand-authored edges; the lighter washes underneath are the derived layers, colored by type (tan BELONGS_TO, grey-green RELATED_TO, lilac ABSTRACTS). Selecting a node dims everything outside its neighborhood.</li>
   <li><strong>Curated skeleton</strong> isolates the 14 hand-authored edge types (TEACHES, COUNTERS, GATES, DISPATCHES, and the rest). This is the knowledge people deliberately wrote down. It is sparse on purpose: most coding-rule relationships live in the derived layers, so expect the methodology teaching structure plus small rule clusters, not one connected body.</li>
-  <li><strong>+ cross-references</strong> adds RELATED_TO, derived from one rule mentioning another's id in its prose. This is the dense rule-to-rule mesh, strongest inside the Security domain.</li>
+  <li><strong>+ cross-references</strong> adds RELATED_TO (69), derived from one rule mentioning another's id in its prose: the rule-to-rule cross-reference layer.</li>
   <li><strong>+ abstractions</strong> adds the ABSTRACTS ties from the 62 generated summary nodes (chapter 4) to the rules they cover.</li>
   <li><strong>Node size is degree</strong> (connections in the current view), color is node type, and the 20 highest-degree nodes keep their labels at every zoom level.</li>
   <li><strong>One retrieval parallel worth knowing:</strong> the pipeline's adjacency cache also excludes BELONGS_TO (<code>writ/retrieval/traversal.py:58</code>), because category co-membership through a degree-70 hub is too weak a signal for the graph-proximity ranking. The narrow lesson from this one edge type: being a good spatial organizer is not sufficient grounds for being a relevance signal. The two roles have to be judged separately per edge type; RELATED_TO, for instance, stays in the cache and may serve both.</li>
@@ -81,19 +81,19 @@
 <table>
   <thead><tr><th>Edge layer</th><th>Count</th><th>Share</th><th>Where it comes from</th></tr></thead>
   <tbody>
-    <tr><td>Hand-authored typed edges (14 types)</td><td class="num">155</td><td class="num">12.4%</td><td>Front-matter <code>edges:</code> lists and RULE-START <code>### Edges</code> sections</td></tr>
-    <tr><td>RELATED_TO (derived)</td><td class="num">510</td><td class="num">40.9%</td><td>Rule-id mentions in prose (<code>ingest.py:41</code>)</td></tr>
-    <tr><td>BELONGS_TO (derived)</td><td class="num">395</td><td class="num">31.7%</td><td>Every node's category field plus the category tree</td></tr>
-    <tr><td>ABSTRACTS (derived)</td><td class="num">186</td><td class="num">14.9%</td><td>The compression run (chapter 4)</td></tr>
+    <tr><td>Hand-authored typed edges (14 types)</td><td class="num">145</td><td class="num">19.8%</td><td>Front-matter <code>edges:</code> lists and RULE-START <code>### Edges</code> sections</td></tr>
+    <tr><td>RELATED_TO (derived)</td><td class="num">69</td><td class="num">9.4%</td><td>Rule-id mentions in prose (<code>ingest.py:41</code>)</td></tr>
+    <tr><td>BELONGS_TO (derived)</td><td class="num">331</td><td class="num">45.3%</td><td>Every node's category field plus the category tree</td></tr>
+    <tr><td>ABSTRACTS (derived)</td><td class="num">186</td><td class="num">25.4%</td><td>The compression run (chapter 4)</td></tr>
   </tbody>
 </table>
 </div>
 <div class="prose">
-  <p>Counts are from this snapshot and match a full unscoped census of the database exactly: 462 nodes, 1,246 edges, every one of them project "writ" (decision-memory record nodes would also appear here, and none exist in the store yet). Node population: 287 Rules, 62 Abstractions, 22 Categories, and 91 methodology nodes across ten types. The takeaway for the "is our graph a hairball" question: it is not one. At average degree 5.4 with hub-and-spoke organization, the full graph reads clearly; the derived layers are what create that visible structure. The real risk was the reverse, the 155 hand-authored edges disappearing under 1,091 derived ones, which is why the curated layer renders on top and has its own preset.</p>
+  <p>Counts are from this snapshot and match the exporter's census of the database exactly: 464 nodes, 731 edges, every one of them project "writ" (decision-memory record nodes would also appear here, and none exist in the store yet). Node population: 287 Rules, 62 Abstractions, 22 Categories, and 93 methodology nodes across ten types. The takeaway for the "is our graph a hairball" question: it is not one. At average degree 3.2 with hub-and-spoke organization, the full graph reads clearly; the derived layers are what create that visible structure. The real risk was the reverse, the 145 hand-authored edges disappearing under 586 derived ones, which is why the curated layer renders on top and has its own preset.</p>
 </div>
 
 <footer class="site">
-  <p><strong>Refreshing the snapshot.</strong> The view reads <code>assets/graph-data.js</code>, a static export, so the page works with no daemon or database running. To refresh it after the corpus changes, re-run the export against Neo4j (it uses <code>get_graph_nodes_and_edges</code>, the same read the daemon's <code>/graph</code> endpoint serves) and reload. Rendering uses d3-force from a CDN, so viewing needs an internet connection.</p>
+  <p><strong>Refreshing the snapshot.</strong> The view reads <code>assets/graph-data.js</code>, a static export, so the page works with no daemon or database running. To refresh it after the corpus changes, run <code>.venv/bin/python scripts/export-graph-snapshot.py</code> (it uses <code>get_graph_nodes_and_edges</code>, the same read the daemon's <code>/graph</code> endpoint serves, and prints the per-type census these legends quote) and reload. Rendering uses d3-force from a CDN, so viewing needs an internet connection.</p>
 </footer>
 
 <div class="pagenav">

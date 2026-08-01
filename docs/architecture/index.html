@@ -28,7 +28,7 @@
   <div class="eyebrow">The Writ knowledge engine, as built</div>
   <h1>One graph, four planes, five-stage retrieval</h1>
   <p class="lede">Writ stores engineering knowledge in a Neo4j graph and injects the right rule at the right moment. This site maps the retrieval and graph systems from source code: a full system map below, and four chapters that each zoom into one subsystem. Every diagram opens fullscreen with zoom and pan.</p>
-  <span class="stamp">Read from source at commit 0c75b01 on 2026-07-15. Scope: writ/retrieval, writ/graph, writ/export.py, writ/compression, and the daemon endpoints that serve them. Every claim is anchored to file:line.</span>
+  <span class="stamp">Read from source at commit 0c75b01 on 2026-07-15; figures re-verified against source and the live graph on 2026-08-01 (commit ee31264). Scope: writ/retrieval, writ/graph, writ/export.py, writ/compression, and the daemon endpoints that serve them. Every claim is anchored to file:line.</span>
 </section>
 
 <div class="answers">
@@ -57,8 +57,8 @@
 <pre class="mermaid">
 flowchart LR
   BIBLE[("bible/ markdown corpus&lt;br/&gt;git-tracked source at rest")]
-  NEO[("Neo4j knowledge graph&lt;br/&gt;462 nodes, 1,246 edges&lt;br/&gt;13 curated + 3 record node types")]
-  IDX["In-memory search indexes&lt;br/&gt;BM25 + vector + adjacency + trigger&lt;br/&gt;pre-warmed, no DB on the query path"]
+  NEO[("Neo4j knowledge graph&lt;br/&gt;464 nodes, 731 edges&lt;br/&gt;13 curated + 4 record node types")]
+  IDX["In-memory search indexes&lt;br/&gt;BM25 + vector + adjacency&lt;br/&gt;pre-warmed, no DB on the query path"]
   DAEMON["FastAPI daemon&lt;br/&gt;3 injection channels&lt;br/&gt;+ graph explorer"]
   CLIENT(["START: a prompt arrives&lt;br/&gt;Claude Code hook or writ CLI"])
   TOOLS["Offline tools&lt;br/&gt;writ validate (32 checks)&lt;br/&gt;writ compress, export"]
@@ -115,7 +115,7 @@ flowchart LR
   <a class="card" href="knowledge-graph.html">
     <span class="card-part">Explorer</span>
     <h3>The graph itself</h3>
-    <p>The live corpus from Neo4j, complete: 462 nodes and 1,246 edges, force-directed with edge-layer presets, search, and per-node inspection. Hand-authored edges render on top so they never drown under the derived layers.</p>
+    <p>The live corpus from Neo4j, complete: 464 nodes and 731 edges, force-directed with edge-layer presets, search, and per-node inspection. Hand-authored edges render on top so they never drown under the derived layers.</p>
     <span class="go">Open the explorer</span>
   </a>
 </div>
@@ -128,8 +128,8 @@ flowchart LR
     <tr><td>Curated node types</td><td class="num">13</td><td><code>writ/graph/schema.py:112-140</code></td></tr>
     <tr><td>Decision-memory record types</td><td class="num">3 + Project registry</td><td><code>schema.py:577-628</code></td></tr>
     <tr><td>Allowed edge types</td><td class="num">24 (14 declared, 3 derived, 7 record)</td><td><code>writ/graph/db/_common.py:32-64</code></td></tr>
-    <tr><td>Retrieval stages</td><td class="num">5 (BM25, vector, merge, graph, rank)</td><td><code>writ/retrieval/pipeline.py:1-16</code></td></tr>
-    <tr><td>Injection channels</td><td class="num">3, composed by /prompt-bundle</td><td><code>writ/server/routes/query.py:107</code></td></tr>
+    <tr><td>Retrieval stages</td><td class="num">5 (filter, BM25, vector, graph, rank)</td><td><code>writ/retrieval/pipeline.py:1-16</code></td></tr>
+    <tr><td>Injection channels</td><td class="num">3, composed by /prompt-bundle</td><td><code>writ/server/routes/query.py:165</code></td></tr>
     <tr><td>Integrity checks</td><td class="num">32 across 7 clusters</td><td><code>writ/graph/integrity/</code></td></tr>
     <tr><td>Embedding model</td><td>all-MiniLM-L6-v2, ONNX on CPU, 384-dim</td><td><code>writ/retrieval/embeddings.py:70</code></td></tr>
     <tr><td>Code covered by this site</td><td class="num">~9,000 lines</td><td>writ/retrieval, writ/graph, export, compression</td></tr>
@@ -138,7 +138,7 @@ flowchart LR
 </div>
 
 <footer class="site">
-  <p><strong>Scope and provenance.</strong> Everything on this site was read from source at commit 0c75b01 on 2026-07-15. The session, gate, approval, and hook subsystems (writ/session, writ/gate.py, hooks/) are Claude-integration machinery, deliberately out of scope; they appear only as the clients calling the retrieval endpoints. Diagrams render with Mermaid loaded from a CDN, so viewing needs an internet connection.</p>
+  <p><strong>Scope and provenance.</strong> Everything on this site was read from source at commit 0c75b01 on 2026-07-15, and its figures were re-verified against source and the live graph on 2026-08-01 (commit ee31264). The session, gate, approval, and hook subsystems (writ/session, writ/gate.py, hooks/) are Claude-integration machinery, deliberately out of scope; they appear only as the clients calling the retrieval endpoints. Diagrams render with Mermaid loaded from a CDN, so viewing needs an internet connection.</p>
 </footer>
 
 <div class="pagenav">

@@ -2,6 +2,8 @@
 
 Writ records *why files changed*, mechanically, and plays it back. Source of truth: `writ/session/{harvester,decision_capture,commit_capture,plan_harvest,recall,git_hooks,git_identity,pr_comments,bitbucket_client,remote_parse,registration}.py`, `writ/graph/db/record_store.py`, `writ/server/routes/decision_memory.py`.
 
+Provenance: this feature family (decision capture, session recall, pushing per-file reasons onto commits and open PRs) is adapted from concepts pioneered by JolliAI. The recall eviction policy is adapted from Jolli's ContextCompiler (the policy, not the code; `writ/session/recall.py` documents the adaptation). Writ's addition is rule grounding: every decision carries its governing rule IDs, and those are never evicted from the recall digest.
+
 ## Records
 
 Three record types plus a registry, all deliberately outside every retrieval registry (they can never enter RAG; recall is a separate query by design):

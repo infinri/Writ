@@ -33,7 +33,7 @@
 <div class="answers">
   <div class="label">This chapter answers</div>
   <ul>
-    <li>How markdown becomes graph, and how the graph becomes markdown again without losing anything.</li>
+    <li>How markdown becomes graph, and how the graph becomes markdown again. One measured caveat (2026-08-01): the markdown round-trip is faithful for rules and methodology, but NOT for the whole graph. Rebuilding from <code>bible/</code> drops the 62 Abstraction nodes (they live in <code>bible/abstractions.json</code>, a separate materialization path) and re-derives a different RELATED_TO edge set. The faithful whole-graph restore is the Cypher dump: <code>writ export-cypher</code> / <code>writ import-cypher</code>.</li>
     <li>Which edges are recomputed on every ingest, and why export deliberately leaves them out.</li>
     <li>What reconcile deletes, and what it is forbidden from touching.</li>
     <li>How the Abstraction summary layer is generated with zero LLM involvement.</li>
@@ -120,7 +120,7 @@ flowchart LR
 
 <h3>The export asymmetry is intentional</h3>
 <ul>
-  <li>Only <strong>declared</strong> edges are written back to markdown; the three derived types (RELATED_TO, BELONGS_TO, ABSTRACTS) are excluded so a re-import re-derives them instead of freezing them into source (<code>export.py:53-65</code>).</li>
+  <li>Only <strong>declared</strong> edges are written back to markdown; the two export-derived types (RELATED_TO, BELONGS_TO; <code>writ/export.py:62</code>, <code>DERIVED_EDGE_TYPES</code>) are excluded so a re-import re-derives them instead of freezing them into source. ABSTRACTS edges are outside this mechanism entirely: they belong to the compression pipeline and rebuild from <code>bible/abstractions.json</code> (section 4.3), not from the markdown export.</li>
   <li>Plain ingest is upsert-only. <code>reconcile()</code> (<code>methodology_ingest.py:500</code>) is the separate pruning pass: it compares source against graph and deletes what source no longer contains.</li>
   <li>Reconcile has hard limits: nodes whose provenance is <code>record</code> or graph-first (<code>proposed</code>, <code>graduation_pending</code>) are exempt from deletion, and runtime properties like the frequency counters can never be cleared (<code>RUNTIME_EXEMPT_PROPS</code>, <code>schema.py:742</code>).</li>
   <li>A timestamp file supports staleness detection: export records when it ran, and a check compares that against the last graph write (<code>export.py:454-486</code>).</li>
@@ -195,7 +195,7 @@ flowchart LR
 </div>
 
 <footer class="site">
-  <p><strong>Scope and provenance.</strong> Everything on this site was read from source at commit 0c75b01 on 2026-07-15. The session, gate, approval, and hook subsystems are Claude-integration machinery and deliberately out of scope.</p>
+  <p><strong>Scope and provenance.</strong> Everything on this site was read from source at commit 0c75b01 on 2026-07-15, and this page's claims were re-verified against source on 2026-08-01 (the round-trip caveat above was added then). The session, gate, approval, and hook subsystems are Claude-integration machinery and deliberately out of scope.</p>
 </footer>
 
 <div class="pagenav">

@@ -10,7 +10,7 @@ synthetic corpus. Two hazards follow, both fixed here:
    markdown ingest carries no Abstraction nodes (they live in the compression pipeline),
    derives RELATED_TO edges differently, and inherits any source-vs-graph flag drift
    (measured 2026-08-01: a bible/ rebuild left 400 nodes / 1060 edges and 32 mandatory
-   where the live graph had 464 / 732 / 33). ``snapshot_graph`` dumps the EXACT live
+   where the live graph had 464 / 731 / 33). ``snapshot_graph`` dumps the EXACT live
    graph to a Cypher replay file before the first wipe; ``restore_full_corpus`` replays
    it, so the post-benchmark graph is byte-equivalent to the pre-benchmark graph.
 

@@ -126,6 +126,18 @@ In Work mode, two gates apply:
 1. **`phase-a`** validates `plan.md` against four required sections (`## Files`, `## Analysis`, `## Rules Applied`, `## Capabilities`) and verifies every cited rule ID against rules actually loaded in the session.
 2. **`test-skeletons`** requires at least one test file with real assertions before production code is written.
 
+## Decision memory: the repo remembers why files changed
+
+Every commit made under Writ is captured into the same Neo4j graph as the rulebook: the decision behind it (title, rationale, the approved plan's per-file reasons), each file change with the rules the AI was shown and the rules it cited, and the commit itself, linked by typed edges. Capture is a post-commit git hook that never blocks a commit and fails open when the daemon is down; `writ harvest` backfills history.
+
+That record then plays back in three places:
+
+- **`writ recall`** compiles recent decisions into a token-budgeted digest, and a once-per-session briefing injects the top of it into your first prompt, so a new session starts knowing what was decided and why.
+- **`writ pr sync`** posts one comment per changed file on the open Bitbucket pull request: the captured reason for the change, the rules the AI was shown, and the rules it cited. Idempotent (it updates its own comments), so reviewers see the "why" next to the diff instead of reconstructing it.
+- **Git notes**: the same per-file reasons are written to `refs/notes/writ-decisions`, a plain-git channel that travels with the repository and needs no server.
+
+This feature family is adapted from concepts pioneered by **JolliAI**: capturing AI development decisions as durable records, replaying them into new sessions, and pushing them onto commits and open PRs. Writ's recall eviction policy is adapted from Jolli's ContextCompiler (the policy, not the code; see `writ/session/recall.py`), and adds Writ's own twist: every decision stays grounded in the governing rule IDs, which are never evicted from the digest. Full detail: [`docs/reference/decision-memory.md`](docs/reference/decision-memory.md).
+
 ## Performance
 
 Live system measurement (2026-08-01, 287-rule corpus, ONNX runtime, warm indexes; steady-state samples over 10 representative queries):
@@ -269,6 +281,15 @@ make check         # both, plus writ validate
 
 Pre-commit: `make bench` runs at `pre-push`.
 
+## Evidence: pressure runs and operational reviews
+
+For auditors (and anyone deciding whether to trust an enforcement tool), Writ keeps its verification artifacts in the repository rather than asserting them:
+
+- **[`docs/pressure-runs/`](docs/pressure-runs/)**: adversarial scenario runs against real Claude Code sessions. Each completed run ships the verbatim task prompt, the full session transcript, the friction-log delta (every hook decision as JSONL), and a graded `analysis.md` scoring each targeted rule as held / bypassed / unclear. [`PSR-008`](docs/pressure-runs/PSR-008/analysis.md) is a complete example: 9 scored criteria, 8 passed, one designed-in failure documented honestly, and two real findings filed from the run. The methodology is in the [runbook](docs/pressure-runs/README.md).
+- **[`docs/monthly-reviews/`](docs/monthly-reviews/)**: recurring operational reviews built from the friction log via `writ analyze-friction`: per-rule activation counts, denial stick rates, rationalization counts, skill usage, and playbook compliance, with keep/revise/trim actions per rule. [`2026-05.md`](docs/monthly-reviews/2026-05.md) is the first completed review (7,058 logged events in the window).
+
+Both artifact sets are produced by the system's own audit stream, not written after the fact.
+
 ## Status
 
 **v1.5.1 (2026-07-31).** Installable end to end as a Claude Code plugin: marketplace manifest restored, sub-agent roles auto-discovered from `agents/` (verified `Agents (5)` on Claude Code 2.1.220), hook gate-arming fixes, and the enterprise logging program (typed streams, rotation, retention, `writ logs`) complete. Every number in this README is either measured and dated, or derived from the current source tree.
@@ -282,5 +303,7 @@ Pre-commit: `make bench` runs at `pre-push`.
 
 ## Acknowledgements
 Jesse Vincent's [Superpowers](https://github.com/obra/superpowers) revealed gaps in Writ's methodology coverage, and observing that project's design choices in practice fed Writ's analysis of the Agent Skills format (see [Relationship to Agent Skills](#relationship-to-agent-skills)).
+
+The decision-memory feature family (capturing decisions to the graph, session recall, and pushing per-file reasons onto commits and open PRs) is adapted from concepts pioneered by JolliAI; the recall eviction policy in particular is adapted from Jolli's ContextCompiler (see [Decision memory](#decision-memory-the-repo-remembers-why-files-changed)).
 
 License: MIT. Authored by Lucio Saldivar.

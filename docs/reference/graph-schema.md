@@ -46,7 +46,7 @@ Three source formats, strict precedence (`ingest.py`): YAML front-matter (one no
 
 **Reconcile** (`methodology_ingest.reconcile`): upsert, then three prune phases in order: delete nodes absent from the oracle, delete stale edges, clear stale managed props. Project-scoped; exempts graph-first provenance (`proposed`, `graduation_pending`) and `record` everywhere (one frozenset, `PARITY_EXEMPT_PROVENANCE`, keyed by seven call sites). Refuses an empty oracle. Full-corpus-only is caller discipline, not code-enforced: reconciling a partial source deletes everything the partial omits.
 
-**The dump.** `writ export-cypher` writes `writ-corpus.cypher` deterministically (staged `_dump_id`, sorted, stripped at the end); `writ import-cypher` wipes first because the CREATEs are not idempotent. 2026-07-31 dump: 464 nodes (Rule 287 of which 33 mandatory, Abstraction 62, Category 22, Phase 20, Skill 15, Playbook 15, AntiPattern 13, Technique 11, SubagentRole 7, Rationalization 4, WorkedExample 3, PressureScenario 3, ForbiddenResponse 2), 732 edges (BELONGS_TO 331, ABSTRACTS 186, RELATED_TO 69, COUNTERS 29, TEACHES 24, ...).
+**The dump.** `writ export-cypher` writes `writ-corpus.cypher` deterministically (staged `_dump_id`, sorted, stripped at the end); `writ import-cypher` wipes first because the CREATEs are not idempotent. 2026-07-31 dump: 464 nodes (Rule 287 of which 33 mandatory, Abstraction 62, Category 22, Phase 20, Skill 15, Playbook 15, AntiPattern 13, Technique 11, SubagentRole 7, Rationalization 4, WorkedExample 3, PressureScenario 3, ForbiddenResponse 2), 731 edges (BELONGS_TO 331, ABSTRACTS 186, RELATED_TO 69, COUNTERS 29, TEACHES 24, ...).
 
 ## 4. Integrity checks
 

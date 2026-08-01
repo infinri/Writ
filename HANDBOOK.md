@@ -174,7 +174,7 @@ Dispatch discipline (`writ-dispatch-discipline.sh`) governs Work, Investigate, a
 
 **13 node types** (`writ/graph/schema.py`): `Rule`, `Abstraction`, `Category`, `Skill`, `Playbook`, `Technique`, `AntiPattern`, `ForbiddenResponse`, `Phase`, `Rationalization`, `PressureScenario`, `WorkedExample`, `SubagentRole`. Decision-memory records (`Decision`, `FileChange`, `Commit`) are deliberately outside this registry: they never enter retrieval.
 
-**Shipped corpus** (`writ-corpus.cypher`, 2026-07-31: **464 nodes / 732 edges**; run the census below for your live graph):
+**Shipped corpus** (`writ-corpus.cypher`, 2026-07-31: **464 nodes / 731 edges**; run the census below for your live graph):
 
 | Node type | Count | Retrieval path |
 |---|---:|---|
