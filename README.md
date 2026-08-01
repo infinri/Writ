@@ -2,7 +2,7 @@
 
 A Claude Code harness that gives every coding session two helpers: a fast librarian that picks the rules that fit the current task, and a process keeper that blocks risky writes until you have approved a plan and tests.
 
-The librarian returns ranked results in **0.590 ms at the 95th percentile** (measured 2026-05-10 at the then-276-rule corpus; the live corpus is 287 rules today). At the 10,000-rule synthetic scale it still holds at 0.557 ms while reducing context tokens by **726 times** versus loading the whole rulebook every turn.
+The librarian returns ranked results in **0.6 ms at the 95th percentile** (measured 2026-08-01 at the live 287-rule corpus). At the 10,000-rule synthetic scale it still holds at 0.83 ms while reducing context tokens by **749 times** versus loading the whole rulebook every turn.
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the release history through v1.5.1 (plugin marketplace install, sub-agent roles at `agents/`, gate-arming fixes, enterprise logging).
 
@@ -128,33 +128,35 @@ In Work mode, two gates apply:
 
 ## Performance
 
-Live system measurement (2026-05-10, 276-rule corpus at the time, ONNX runtime, warm indexes; 500 samples per stage on 10 representative queries):
+Live system measurement (2026-08-01, 287-rule corpus, ONNX runtime, warm indexes; steady-state samples over 10 representative queries):
 
 | Stage             | Median   | p95      | Budget  | Headroom at p95 |
 |-------------------|---------:|---------:|--------:|----------------:|
-| End to end        | 0.338 ms | 0.590 ms | 10.0 ms | 17x             |
+| End to end        | 0.4 ms   | 0.6 ms   | 10.0 ms | 17x             |
 
-Synthetic scale curve (2026-04-13, from `SCALE_BENCHMARK_RESULTS.md`):
+Synthetic scale curve (2026-08-01, from `SCALE_BENCHMARK_RESULTS.md`):
 
 | Corpus      | E2E p95   | Tokens stuffed | Tokens retrieved | Reduction |
 |-------------|----------:|---------------:|-----------------:|----------:|
-| 80 rules    | 0.278 ms  | 13,876         | 3,155            | 4.4x      |
-| 500 rules   | 0.359 ms  | 63,003         | 1,600            | 39.4x     |
-| 1,000 rules | 0.399 ms  | 121,473        | 1,602            | 75.8x     |
-| 10,000 rules| 0.557 ms  | 1,174,142      | 1,617            | **726.1x**|
+| 80 rules    | 0.383 ms  | 14,738         | 2,056            | 7.2x      |
+| 500 rules   | 0.486 ms  | 79,491         | 1,898            | 41.9x     |
+| 1,000 rules | 0.662 ms  | 137,990        | 1,686            | 81.8x     |
+| 10,000 rules| 0.827 ms  | 1,190,649      | 1,590            | **748.8x**|
+
+All of the above was measured on a 16-thread AMD Ryzen 9 7940HS laptop with 31 GiB RAM and an *uncapped* Neo4j container (512M pagecache); absolute numbers will differ on smaller machines. The full disclosure is the "Measurement environment" section of `SCALE_BENCHMARK_RESULTS.md`.
 
 Retrieval quality against the 193-query ground-truth corpus (47 ambiguous, expanded 2026-07-17). The floors are regression gates the build fails below, deliberately set under the measured values, not quality targets:
 
-| Metric                                      | Floor   | Measured (2026-07-17) |
+| Metric                                      | Floor   | Measured (2026-08-01) |
 |---------------------------------------------|---------|------------------------|
-| MRR at 5 (ambiguous queries, n=47)          | >= 0.45 | ~0.57                  |
-| Hit rate at 5 (all 193 queries)             | >= 0.75 | ~0.78                  |
-| Domain hit rate top-5                       | >= 0.90 | passing                |
-| nDCG at 10                                  | >= 0.65 | passing                |
-| Methodology MRR at 5 (n=40, signed off)     | >= 0.78 | 0.8583 (v1.1.0 run)    |
-| Methodology hit rate                        | >= 0.90 | 1.0000 (v1.1.0 run)    |
+| MRR at 5 (ambiguous queries, n=47)          | >= 0.45 | 0.5681                 |
+| Hit rate at 5 (all 193 queries)             | >= 0.75 | 0.7824                 |
+| Domain hit rate top-5                       | >= 0.90 | 0.9323                 |
+| nDCG at 10                                  | >= 0.65 | 0.7071                 |
+| Methodology MRR at 5 (n=40, signed off)     | >= 0.78 | 0.8271                 |
+| Methodology hit rate                        | >= 0.90 | 0.9500                 |
 
-Full numbers and the real-versus-synthetic investigation in `SCALE_BENCHMARK_RESULTS.md`. Architectural detail in `HANDBOOK.md`.
+Full numbers in `SCALE_BENCHMARK_RESULTS.md`. Architectural detail in `HANDBOOK.md`.
 
 ## Relationship to Agent Skills
 
@@ -164,7 +166,7 @@ Writ targets a different problem. Writ is built around an enforcement-grade rule
 
 - The agent must not be the matching-decision-maker between context and rule.
 - Retrieval must be triggerable by filesystem and tool-call signals, not only by prompt content.
-- The corpus exceeds what fits in pre-loaded descriptions even with progressive disclosure (1,174,142 tokens at 10,000 rules versus a pre-loaded budget measured in low thousands).
+- The corpus exceeds what fits in pre-loaded descriptions even with progressive disclosure (1,190,649 tokens at 10,000 rules versus a pre-loaded budget measured in low thousands).
 
 ### Where progressive disclosure runs out
 
@@ -183,7 +185,7 @@ Writ models skills, playbooks, rationalizations, and forbidden-response sets as 
 
 Two architectural splits make this practical:
 
-- **Retrieval-on-demand for the bulk of the corpus.** Ranked results in **0.590 ms at p95** at the live corpus; at 10,000 rules, **0.557 ms p95**. Retrieved tokens stay roughly flat (around 1,600) regardless of corpus size, while context stuffing scales linearly (13,876 tokens at 80 rules to 1,174,142 at 10,000). Reduction: **52x at the live corpus, 726x at 10,000 rules.**
+- **Retrieval-on-demand for the bulk of the corpus.** Ranked results in **0.6 ms at p95** at the live corpus; at 10,000 rules, **0.83 ms p95**. Retrieved tokens stay roughly flat (around 1,600-2,000) regardless of corpus size, while context stuffing scales linearly (14,738 tokens at 80 rules to 1,190,649 at 10,000). Reduction: **56x at the live corpus, 749x at 10,000 rules** (measured 2026-08-01).
 - **Always-on bundle for the mandatory floor.** Mandatory rules and forbidden-response nodes load every turn through a dedicated endpoint with its own 5,000-token budget. They are excluded from the retrieval pipeline at index build time, so no ranking change can cause an enforcement rule to drop out of agent context.
 
 Thirty-seven hook scripts read filesystem changes, tool calls, and session state, and invoke retrieval with those signals attached. Methodology arrives in the agent's context based on observable state, not on whether the agent recognized the trigger from prompt text alone.

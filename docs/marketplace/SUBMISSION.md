@@ -22,7 +22,7 @@ Maintainer reference for submitting `writ@writ` to the official Anthropic plugin
 > Hybrid-RAG rule retrieval plus workflow gates for Claude Code: the right rules per prompt, no risky writes before an approved plan.
 
 **Short description**:
-> Writ is a Claude Code harness with two co-equal layers. A librarian retrieves the rules that fit the current task through a five-stage hybrid pipeline (BM25 + vector + graph traversal + weighted ranking, with an abstention gate) over a Neo4j knowledge graph: sub-millisecond ranked retrieval, roughly flat retrieved tokens as the corpus grows (726x reduction versus prompt-stuffing at 10,000 rules, measured). A process keeper of 37 hook scripts and a session state machine enforces mode-based workflow gates: plan approval, then test skeletons, then implementation, and approval requires a token only the user's keystroke produces. 287 rules ship out of the box across security, clean code, architecture, testing, performance, and process, with authoring tooling to grow your own.
+> Writ is a Claude Code harness with two co-equal layers. A librarian retrieves the rules that fit the current task through a five-stage hybrid pipeline (BM25 + vector + graph traversal + weighted ranking, with an abstention gate) over a Neo4j knowledge graph: sub-millisecond ranked retrieval, roughly flat retrieved tokens as the corpus grows (749x reduction versus prompt-stuffing at 10,000 rules, measured 2026-08-01). A process keeper of 37 hook scripts and a session state machine enforces mode-based workflow gates: plan approval, then test skeletons, then implementation, and approval requires a token only the user's keystroke produces. 287 rules ship out of the box across security, clean code, architecture, testing, performance, and process, with authoring tooling to grow your own.
 
 **Long description**: mirror README "The problem" + "What Writ does about it" verbatim (kept current there; do not fork the text here).
 
@@ -77,7 +77,7 @@ Dark theme, 14-16pt font, redact personal paths.
 
 | Audience | Pitch |
 |---|---|
-| CTO / VP Eng | Ranked retrieval instead of context stuffing, enforceable plan-first/test-first discipline, and an AI-proposes-human-promotes evolution model. 726x context reduction at 10k rules, zero per-project config. |
+| CTO / VP Eng | Ranked retrieval instead of context stuffing, enforceable plan-first/test-first discipline, and an AI-proposes-human-promotes evolution model. 749x context reduction at 10k rules, zero per-project config. |
 | Tech lead | One shared rulebook across every repo, graph-aware retrieval, hook-enforced gates, typed sub-agent roles. |
 | Engineer | Drop the plugin in. The right rules appear per turn; "approved" advances the workflow; writes are gated until then. |
 | Corpus maintainer | Rules live in a graph with explicit relationships; AI proposals arrive gated and provisional; friction analytics tell you what to graduate or trim. |

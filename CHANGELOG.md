@@ -6,16 +6,24 @@ All notable changes to Writ are documented in this file. The format follows [Kee
 
 ### Changed
 
+- Every published performance number re-measured on 2026-08-01 and reconciled across README, HANDBOOK, `docs/reference/`, and the marketplace packet: live e2e p95 0.6 ms at the 287-rule corpus; synthetic 10K curve now 0.827 ms p95 with 749x context reduction (was 0.557 ms / 726x from 2026-04-13); retrieval quality republished with exact values (MRR@5 0.5681, hit rate 0.7824, domain-hit 0.9323, nDCG@10 0.7071; methodology MRR@5 0.8271, hit 0.95). All 14 `bench_targets` contractual targets and all 4 methodology blockers pass.
+- `benchmarks/scale_benchmark.py` now writes a "Measurement environment" section into `SCALE_BENCHMARK_RESULTS.md` on every run (host CPU/threads/RAM, the Neo4j container's memory limit or the fact there is none, pagecache size, observed container usage, Python version), so scale numbers are never published without the machine that produced them.
+- The Claude Code black-box map (`docs/reference/claude-code-blackbox.md`) refreshed from build 2.1.183 to 2.1.220 via live capture filtered to real sessions: `prompt_id` is now universal; Stop, SessionEnd, PreCompact, and PostCompact moved from DOC-ONLY to observed (PostCompact carries the full `compact_summary`); SubagentStart confirmed to carry no task text (17/17 spawns); new tool_response fields recorded (Bash `persistedOutputPath`/`persistedOutputSize`, Edit/Write `memdirStamped`); `DirectoryAdded` (v2.1.219) added as doc-only. Un-re-measured claims keep explicit old-build tags.
+
+### Fixed
+
+- **Destructive benchmarks restored a degraded graph.** `_corpus_safety.restore_full_corpus` rebuilt from `bible/` markdown after wiping, which silently dropped all 62 Abstraction nodes (they have no markdown home), lost 2 SubagentRoles, derived a different RELATED_TO edge set, and inherited source-vs-graph flag drift (measured: 400 nodes / 1060 edges / 32 mandatory where the live graph had 464 / 732 / 33). The restore now snapshots the exact live graph to `var/benchmark-graph-snapshot.cypher` before the first wipe and replays it afterward; the snapshot file doubles as the crash-recovery artifact (`writ import-cypher <snapshot>`).
+- `benchmarks/methodology_bench.py` failed on import: it still pulled `bundle_for`/`retrieve` and the blocker thresholds from `tests/test_methodology_retrieval.py` after the POL-2 harness extraction moved them to `tests/fixtures/benchmark_harness.py`.
+- Stale docstrings the rewrite surfaced: `writ doctor` "10 checks" (13), `writ git-hooks install` claiming a prepare-commit-msg install (retired, strip-only), `bootstrap.sh`'s `/tmp` daemon-log banner (fix pending in the banner itself).
+
+### Changed (documentation rebuild, 2026-07-31)
+
 - Documentation rebuilt from a full code read (all production code line-by-line; the test suite swept at contract level). New structure: README + HANDBOOK rewritten in place; `docs/install.md` replaces `docs/install-writ.md`; a complete `docs/reference/` set (architecture, graph-schema, retrieval, session-and-gates, configuration, logging, decision-memory, testing, compression, efficacy-ab, the Claude Code black-box map, plus generated cli/http-api/hooks/rulebook pages via `make docs`); the marketplace packet at `docs/marketplace/SUBMISSION.md` absorbs PROMOTIONAL-BRIEF.md.
 - Documentation is no longer a test surface: doc-content assertions removed from the suite; generated pages drift-check via `make docs-check`, not pytest.
 
 ### Removed
 
 - `docs/extraction/` (all 12 deep dives), `docs/ARCHITECTURE.md`, `docs/LOGGING-BLUEPRINT.md`, `docs/LOGGING-COVERAGE-AUDIT.md`, `docs/EFFICACY-AB-RUNBOOK.md`, `out-of-the-box-rules.md`, `PROMOTIONAL-BRIEF.md`, `RESUME.md`: superseded by the reference set and ground-truth rewrite; git history is the archive. Each was fully read for unique content first; the survivors (severity rubric, mandatory-selection criteria, and a dozen smaller rationale items) were folded into HANDBOOK and `docs/reference/`.
-
-### Fixed
-
-- Stale docstrings the rewrite surfaced: `writ doctor` "10 checks" (13), `writ git-hooks install` claiming a prepare-commit-msg install (retired, strip-only), `bootstrap.sh`'s `/tmp` daemon-log banner (fix pending in the banner itself).
 
 ## [1.5.1] - 2026-07-31
 

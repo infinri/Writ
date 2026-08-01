@@ -36,9 +36,11 @@ Roughly half the suite needs a reachable Neo4j. The rule, encoded in `tests/_cor
 ## Benchmarks
 
 - `benchmarks/bench_targets.py`: 14 pass/fail contractual targets against a live migrated graph (integrity < 500 ms, ingest < 2 s, cold start < 3.5 s, memory < 2 GB, retrieval floors, per-stage latencies with warmup). Never wipes the DB; skips with instructions if the corpus is empty.
-- `benchmarks/scale_benchmark.py`: the synthetic 80/500/1K/10K curve; wipes and restores under `_corpus_safety` guards (refuses to run if unexported graph-first candidates exist).
+- `benchmarks/scale_benchmark.py`: the synthetic 80/500/1K/10K curve; wipes and restores under `_corpus_safety` guards (refuses to run if unexported graph-first candidates exist, then snapshots the exact live graph to `var/benchmark-graph-snapshot.cypher` and replays it afterward; a rebuild from `bible/` is NOT a faithful restore). After any wipe/restore, restart the daemon (`systemctl --user restart writ-server`) or `/health` reads degraded.
 - `benchmarks/methodology_bench.py`: read-only methodology retrieval vs blocker thresholds.
-- `benchmarks/run_benchmarks.py`: traversal latency at 1K/10K synthetic nodes (advisory print, not asserted).
+- `benchmarks/run_benchmarks.py`: traversal latency at 1K/10K synthetic nodes (advisory print, not asserted; same snapshot/restore discipline).
+
+Published numbers are machine-relative: the recorded runs come from a 16-thread AMD Ryzen 9 7940HS with 31 GiB RAM and an uncapped Neo4j container (512M pagecache). `scale_benchmark.py` writes the exact environment into the "Measurement environment" section of `SCALE_BENCHMARK_RESULTS.md` on every run.
 
 **Floors are floors, not targets** (`tests/fixtures/regression_floors.py`): the build fails below them; they were deliberately walked down as the corpus grew 4x, with each step's measurement recorded in the file's history table. Quote measured values with their dates, never the floors, when describing quality.
 

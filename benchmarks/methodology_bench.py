@@ -33,7 +33,7 @@ from tests.fixtures.methodology_loader import (
     load_corpus,
     load_ground_truth,
 )
-from tests.test_methodology_retrieval import (
+from tests.fixtures.benchmark_harness import (
     BLOCKER_COMPLETENESS,
     BLOCKER_HIT_RATE,
     BLOCKER_MRR,
@@ -146,10 +146,10 @@ def _print_summary(r: dict) -> None:
     print(fmt.format("Hit rate",            f"{m['hit_rate']:.4f}",              ">=", BLOCKER_HIT_RATE,     "PASS" if b["hit_rate"]["pass"] else "FAIL"))
     print(fmt.format("Bundle completeness", f"{m['bundle_completeness']:.4f}",   ">=", BLOCKER_COMPLETENESS, "PASS" if b["bundle_completeness"]["pass"] else "FAIL"))
     print(fmt.format("p95 retrieval (ms)",  f"{m['p95_retrieval_ms']:.2f}",      "<=", BLOCKER_P95_MS,       "PASS" if b["p95_retrieval_ms"]["pass"] else "FAIL"))
-    print(f"  (mean retrieval {m['mean_retrieval_ms']:.2f}ms; encode p95 {m['p95_encode_ms']:.2f}ms mean {m['mean_encode_ms']:.2f}ms, reported for visibility — not gated)")
+    print(f"  (mean retrieval {m['mean_retrieval_ms']:.2f}ms; encode p95 {m['p95_encode_ms']:.2f}ms mean {m['mean_encode_ms']:.2f}ms, reported for visibility, not gated)")
     all_pass = all(v["pass"] for v in b.values())
     print()
-    print(f"Overall: {'ALL BLOCKERS PASS' if all_pass else 'BLOCKER FAILURE — write docs/phase-0-report.md and escalate'}")
+    print(f"Overall: {'ALL BLOCKERS PASS' if all_pass else 'BLOCKER FAILURE: write docs/phase-0-report.md and escalate'}")
 
 
 def _print_verbose(r: dict) -> None:

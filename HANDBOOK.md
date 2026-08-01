@@ -391,19 +391,19 @@ Benchmarks: `bench_targets.py` (14 pass/fail targets: cold start, memory, per-st
 
 ## 20. By the numbers
 
-Per-stage and scale figures live in `SCALE_BENCHMARK_RESULTS.md` (dated measurements; the synthetic curve is 2026-04-13, the live measurement 2026-05-10 at the then-276-rule corpus):
+Per-stage and scale figures live in `SCALE_BENCHMARK_RESULTS.md` (dated measurements; both the synthetic curve and the live measurement below are 2026-08-01, at the 287-rule corpus, on the machine described in that file's "Measurement environment" section):
 
-| Stage | p95 @ 73 rules | p95 @ 10K rules |
+| Stage | p95 @ 287 rules (live) | p95 @ 10K rules (synthetic) |
 |---|---:|---:|
-| BM25 (Tantivy) | 0.162 ms | 0.262 ms |
-| Vector (hnswlib) | 0.046 ms | 0.108 ms |
-| Adjacency cache | 0.001 ms | 0.001 ms |
-| Ranking | 0.103 ms | 0.218 ms |
-| **End to end** | **0.278 ms** | **0.557 ms** |
+| BM25 (Tantivy) | 0.250 ms | 0.323 ms |
+| Vector (hnswlib) | 0.140 ms | 0.102 ms |
+| Adjacency cache | 0.004 ms | 0.002 ms |
+| Ranking | 0.112 ms | 0.418 ms |
+| **End to end** | **0.6 ms** | **0.827 ms** |
 
-The headline is **context reduction at scale**: retrieved tokens stay flat (~1,600) while stuffing scales linearly, a 726x reduction at 10,000 rules. Latency stays sub-millisecond because every index is pre-warmed in memory; retrieval does no synchronous I/O.
+The headline is **context reduction at scale**: retrieved tokens stay flat (~1,600-2,000) while stuffing scales linearly, a 749x reduction at 10,000 rules. Latency stays sub-millisecond because every index is pre-warmed in memory; retrieval does no synchronous I/O.
 
-Retrieval quality gates are *floors*, not targets (MRR@5 >= 0.45 on the 47 ambiguous queries, hit rate >= 0.75 on all 193; measured ~0.57 / ~0.78 on 2026-07-17). The floors were deliberately walked down as the corpus grew 4x; the history and rationale live in `tests/fixtures/regression_floors.py`.
+Retrieval quality gates are *floors*, not targets (MRR@5 >= 0.45 on the 47 ambiguous queries, hit rate >= 0.75 on all 193; measured 0.5681 / 0.7824 on 2026-08-01). The floors were deliberately walked down as the corpus grew 4x; the history and rationale live in `tests/fixtures/regression_floors.py`.
 
 ---
 
