@@ -125,6 +125,13 @@ class TestIntegrityBenchmark:
     async def test_integrity_check_duration(self, db) -> None:
         checker = IntegrityChecker(db._driver, db._database)
 
+        # One untimed warmup: the target is steady-state duration, and the first
+        # pass against a cold Neo4j (fresh CI service container, or a just-restarted
+        # daemon's first touch) measures cache population instead. Same rationale as
+        # test_end_to_end_p95's warmup. Observed cold outliers: 1.9s local, 3.2s CI,
+        # vs ~0.2s p95 warm.
+        await checker.run_all_checks(skip_redundancy=True)
+
         latencies: list[float] = []
         for _ in range(10):
             start = time.perf_counter()

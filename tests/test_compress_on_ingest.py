@@ -36,7 +36,6 @@ import json
 import shutil
 import subprocess
 import tempfile
-import tomllib
 from pathlib import Path
 
 import pytest
@@ -46,10 +45,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 from tests._writ_cmd import WRIT_CMD_PREFIX as _WRIT_CMD_PREFIX
 
-with open(REPO_ROOT / "writ.toml", "rb") as _f:
-    _writ_config = tomllib.load(_f)
-NEO4J_PASSWORD = _writ_config["neo4j"]["password"]
-NEO4J_USER = _writ_config["neo4j"]["user"]
+# Credentials via the central loader: env-independent defaults keep CI (no
+# writ.toml checked out) collecting and running; a local writ.toml overrides.
+from writ.config import get_neo4j_password, get_neo4j_user
+
+NEO4J_PASSWORD = get_neo4j_password()
+NEO4J_USER = get_neo4j_user()
 
 # Minimal artifact for the "artifact present" materialization test.
 # Uses two well-known methodology rule_ids that survive every clean ingest.

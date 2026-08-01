@@ -19,7 +19,6 @@ import asyncio
 import re
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
 import pytest
@@ -30,11 +29,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Shared resolver -- one source of truth for invoking `writ` from tests.
 from tests._writ_cmd import WRIT_CMD_PREFIX as _WRIT_CMD_PREFIX, WRIT_CLI
 
-# Read Neo4j credentials from writ.toml instead of hardcoding them.
-with open(REPO_ROOT / "writ.toml", "rb") as _f:
-    _writ_config = tomllib.load(_f)
-NEO4J_PASSWORD = _writ_config["neo4j"]["password"]
-NEO4J_USER = _writ_config["neo4j"]["user"]
+# Credentials via the central loader: env-independent defaults keep CI (no
+# writ.toml checked out) collecting and running; a local writ.toml overrides.
+from writ.config import get_neo4j_password, get_neo4j_user
+
+NEO4J_PASSWORD = get_neo4j_password()
+NEO4J_USER = get_neo4j_user()
 
 
 # ---------------------------------------------------------------------------
