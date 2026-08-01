@@ -21,6 +21,16 @@ export WRIT_DIR VENV_DIR
 WRIT_HOST="${WRIT_HOST:-localhost}"
 WRIT_PORT="${WRIT_PORT:-8765}"
 
+# Under the systemd user service, killing the PID does not stop anything:
+# systemd restarts the daemon immediately and the caller walks away believing
+# it is down. Stop through systemd instead, preserving the caller's intent.
+if command -v systemctl >/dev/null 2>&1 \
+   && systemctl --user is-active --quiet writ-server 2>/dev/null; then
+    systemctl --user stop writ-server
+    echo "[Writ] Server stopped via systemd (writ-server unit). To restart: systemctl --user restart writ-server" >&2
+    exit 0
+fi
+
 # Find Writ server process by port
 WRIT_PID=$(lsof -ti :"$WRIT_PORT" 2>/dev/null | head -1)
 

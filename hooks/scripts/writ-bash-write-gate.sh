@@ -46,6 +46,45 @@ CMD="$HOOK_COMMAND"
 case "$CMD" in
     *">"* | *"tee "* | *"dd "* | *"cp "* | *"mv "* | *"install "* \
     | *"sed -i"* | *"sed --in-place"* | *"--in-place"* | *"--target-directory"* ) ;;
+    pytest*|"python -m pytest"*|"python3 -m pytest"*)
+        # Interpreter force-swap: when the project has a venv, a bare pytest /
+        # python3 -m pytest runs the SYSTEM interpreter and fails on venv-only
+        # deps (measured here: 21 spurious embedding-test errors). Rewrite the
+        # command via updatedInput and disclose the rewrite in additionalContext
+        # so the model's narration matches what actually ran. Write-redirecting
+        # pytest commands (pytest > log) hit the arm above instead and stay gated.
+        if [ -x ".venv/bin/python" ]; then
+            SWAP=$(WRIT_PARSED_ENVELOPE="$HOOK_ENVELOPE" python3 <<'PYSWAP' 2>/dev/null
+import json, os, re, sys
+try:
+    parsed = json.loads(os.environ.get("WRIT_PARSED_ENVELOPE", ""))
+except (json.JSONDecodeError, ValueError):
+    sys.exit(0)
+ti = parsed.get("tool_input") or {}
+cmd = ti.get("command") or ""
+new = re.sub(r"^(?:python3?\s+-m\s+)?pytest\b", ".venv/bin/python -m pytest", cmd, count=1)
+if new == cmd:
+    sys.exit(0)
+ti["command"] = new
+print(json.dumps({"hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "allow",
+    "updatedInput": ti,
+    "additionalContext": (
+        "[Writ] Rewrote this Bash command to the venv interpreter "
+        "(a bare pytest here runs the system python, which lacks this "
+        f"repo's test deps). Actually ran: {new}"
+    ),
+}}))
+PYSWAP
+) || true
+            if [ -n "$SWAP" ]; then
+                log_gate_decision "bash-venv-swap" "allow" "pytest routed to .venv/bin/python -m pytest" ""
+                printf '%s\n' "$SWAP"
+            fi
+        fi
+        exit 0
+        ;;
     *) exit 0 ;;
 esac
 

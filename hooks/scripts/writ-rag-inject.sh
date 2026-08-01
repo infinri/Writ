@@ -362,10 +362,12 @@ if [ "${BUNDLE_ERR:-1}" = "1" ]; then
 fi
 
 # jq extracts each rendered piece (multi-line safe; ~6ms vs python ~15ms cold-start).
-AO_BLOCK=$(printf '%s' "$BUNDLE" | jq -r '.always_on_block // ""' 2>/dev/null)
-RULES_TEXT=$(printf '%s' "$BUNDLE" | jq -r '.rules_text // ""' 2>/dev/null)
-METHOD_BLOCK=$(printf '%s' "$BUNDLE" | jq -r '.methodology_block // ""' 2>/dev/null)
-NUDGE=$(printf '%s' "$BUNDLE" | jq -r '.nudge // ""' 2>/dev/null)
+# Each is || true guarded: under set -e an unguarded jq failure (binary missing,
+# exit 127) would abort the whole hook and silently drop EVERY injection this turn.
+AO_BLOCK=$(printf '%s' "$BUNDLE" | jq -r '.always_on_block // ""' 2>/dev/null) || true
+RULES_TEXT=$(printf '%s' "$BUNDLE" | jq -r '.rules_text // ""' 2>/dev/null) || true
+METHOD_BLOCK=$(printf '%s' "$BUNDLE" | jq -r '.methodology_block // ""' 2>/dev/null) || true
+NUDGE=$(printf '%s' "$BUNDLE" | jq -r '.nudge // ""' 2>/dev/null) || true
 # REMAINING_BUDGET (from the single $CACHE read at step 1c) still gates the
 # review-feedback push below; the endpoint owns the channel budgets itself.
 REMAINING_BUDGET=$(parsed_field "$CACHE" "remaining_budget"); REMAINING_BUDGET="${REMAINING_BUDGET:-8000}"

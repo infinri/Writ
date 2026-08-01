@@ -46,7 +46,9 @@ MSG
 fi
 
 # 3. Probe Neo4j bolt port 7687. If unreachable, instruct user and exit 0.
-if ! (exec 3<>/dev/tcp/"${NEO4J_HOST}"/"${NEO4J_PORT}") 2>/dev/null; then
+# timeout-wrapped: a bare /dev/tcp connect to a black-holed host blocks for the
+# kernel SYN timeout (minutes) and would stall every SessionStart with it.
+if ! timeout 2 bash -c "exec 3<>/dev/tcp/${NEO4J_HOST}/${NEO4J_PORT}" 2>/dev/null; then
   cat >&2 <<MSG
 [Writ] Neo4j not reachable at ${NEO4J_HOST}:${NEO4J_PORT}.
 [Writ] Start it with:
