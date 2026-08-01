@@ -29,7 +29,10 @@ from writ.graph.db import Neo4jConnection
 NEO4J_URI = get_neo4j_uri()
 NEO4J_USER = get_neo4j_user()
 NEO4J_PASSWORD = get_neo4j_password()
-AGENTS_DIR = Path(__file__).resolve().parent.parent / ".claude" / "agents"
+# Plugin agents must live at the plugin root's agents/. At .claude/agents/ Claude Code read
+# them as PROJECT agents, so `claude plugin details writ` reported Agents (0) and a
+# plugin-path install never had the writ-* roles at all.
+AGENTS_DIR = Path(__file__).resolve().parent.parent / "agents"
 FRONT_MATTER = re.compile(r"^---\n(.*?)\n---\n(.*)", re.DOTALL)
 
 # Dispatched-by map: which Playbooks invoke each role. Per plan Section 8

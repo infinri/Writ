@@ -1214,7 +1214,7 @@ class TestRunAllChecks:
     """run_all_checks: exception isolation, ordering, result count."""
 
     def _patch_all_ok(self, monkeypatch) -> None:
-        """Patch every seam so all 12 checks return ok with no side effects."""
+        """Patch every seam so all 13 checks return ok with no side effects."""
         monkeypatch.setattr(
             "writ.session.doctor._http_get_health",
             lambda: {"status": "healthy", "index_state": "warm", "rule_count": 5},
@@ -1243,17 +1243,24 @@ class TestRunAllChecks:
         # ~/.claude/settings.json and shells out to `claude plugin list`, so the outcome would
         # depend on the machine (TEST-ISOLATE-001). No loaded plugin => the check is ok.
         monkeypatch.setattr("writ.session.doctor._loaded_plugin_paths", lambda: [])
+        # role-symlinks otherwise reads the real ~/.claude/agents, whose writ-* symlinks
+        # dangle until bootstrap.sh is re-run after the agents/ move (TEST-ISOLATE-001).
+        # A nonexistent dir is the clean case: no user-level links, plugin provides the roles.
+        monkeypatch.setattr(
+            "writ.session.doctor._user_agents_dir",
+            lambda: Path("/nonexistent-writ-agents-dir"),
+        )
         monkeypatch.setattr(
             "writ.session.doctor._latest_session_cache",
             lambda session_id: {"mode": "work"},
         )
 
-    def test_returns_exactly_twelve_results(self, default_opts, monkeypatch) -> None:
+    def test_returns_exactly_thirteen_results(self, default_opts, monkeypatch) -> None:
         self._patch_all_ok(monkeypatch)
         from writ.session.doctor import run_all_checks
         results = run_all_checks(default_opts)
-        assert len(results) == 12, (
-            f"run_all_checks must return exactly 12 CheckResults; got {len(results)}"
+        assert len(results) == 13, (
+            f"run_all_checks must return exactly 13 CheckResults; got {len(results)}"
         )
 
     def test_result_names_match_contract(self, default_opts, monkeypatch) -> None:
@@ -1272,6 +1279,7 @@ class TestRunAllChecks:
             "writ-path-symlink",
             "cc-hook-registration",
             "duplicate-hook-registration",
+            "role-symlinks",
             "mode-gate-sanity",
         }
         actual_names = {r.name for r in results}
@@ -1283,7 +1291,7 @@ class TestRunAllChecks:
     def test_exception_in_one_check_does_not_stop_others(
         self, default_opts, monkeypatch
     ) -> None:
-        # daemon-liveness raises; all remaining 11 checks must still run
+        # daemon-liveness raises; all remaining 12 checks must still run
         self._patch_all_ok(monkeypatch)
         monkeypatch.setattr(
             "writ.session.doctor._http_get_health",
@@ -1291,7 +1299,7 @@ class TestRunAllChecks:
         )
         from writ.session.doctor import STATUS_FAIL, run_all_checks
         results = run_all_checks(default_opts)
-        assert len(results) == 12, "all 12 results must be returned despite one exception"
+        assert len(results) == 13, "all 13 results must be returned despite one exception"
         daemon_result = next(r for r in results if r.name == "daemon-liveness")
         assert daemon_result.status == STATUS_FAIL
         assert "daemon exploded" in daemon_result.detail, (

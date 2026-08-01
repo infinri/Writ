@@ -909,6 +909,46 @@ def check_duplicate_hook_registration(opts: DoctorOptions) -> CheckResult:
     )
 
 
+def _user_agents_dir() -> Path:
+    """The user-level agents dir bootstrap.sh symlinks the writ-* role files into."""
+    return Path.home() / ".claude" / "agents"
+
+
+def check_role_symlinks(opts: DoctorOptions) -> CheckResult:
+    """Dangling ~/.claude/agents/writ-*.md symlinks after the role files moved.
+
+    bootstrap.sh links the five role files into ~/.claude/agents so they are available as
+    USER agents in every project. When the files moved from .claude/agents/ to agents/, any
+    existing symlink began pointing at a deleted path. Re-running bootstrap.sh repairs them
+    (link_all relinks any target that is already a symlink), but an upgrade without a re-run
+    leaves five broken links, and a broken agent definition is exactly the kind of silence
+    worth surfacing. Having NO links is fine: a plugin-only install gets the roles from the
+    plugin itself.
+    """
+    name = "role-symlinks"
+    agents = _user_agents_dir()
+    if not agents.is_dir():
+        return _ok(name=name, detail=f"No {agents}; the plugin provides the roles.")
+
+    broken = sorted(
+        p.name for p in agents.glob("writ-*.md")
+        if p.is_symlink() and not p.exists()
+    )
+    if not broken:
+        return _ok(
+            name=name,
+            detail=f"No dangling writ-* role symlinks in {agents}.",
+        )
+    return _warn(
+        name=name,
+        detail=(
+            f"Dangling role symlinks in {agents}: {', '.join(broken)}. The role files moved "
+            "to agents/ in the install; re-run scripts/bootstrap.sh to repoint them, or "
+            "delete them to fall back on the plugin-provided roles."
+        ),
+    )
+
+
 def check_mode_gate_sanity(opts: DoctorOptions) -> CheckResult:
     name = "mode-gate-sanity"
     from writ.session import mode_engine
@@ -997,6 +1037,7 @@ _CHECKS: list[tuple[str, Callable[[DoctorOptions], CheckResult]]] = [
     ("writ-path-symlink", check_writ_path_symlink),
     ("cc-hook-registration", check_cc_hook_registration),
     ("duplicate-hook-registration", check_duplicate_hook_registration),
+    ("role-symlinks", check_role_symlinks),
     ("mode-gate-sanity", check_mode_gate_sanity),
 ]
 

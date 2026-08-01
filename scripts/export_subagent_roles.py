@@ -25,7 +25,9 @@ from writ.graph.db import Neo4jConnection
 NEO4J_URI = get_neo4j_uri()
 NEO4J_USER = get_neo4j_user()
 NEO4J_PASSWORD = get_neo4j_password()
-AGENTS_DIR = Path(__file__).resolve().parent.parent / ".claude" / "agents"
+# Must track ingest_subagent_roles.py's AGENTS_DIR. If only one moved, `--check` would
+# compare against an empty directory and report success while detecting no drift at all.
+AGENTS_DIR = Path(__file__).resolve().parent.parent / "agents"
 
 
 def render_agent_md(row: dict) -> str:

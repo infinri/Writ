@@ -333,7 +333,7 @@ Builds on v1.1.0 (2026-05-15) and the v1.0.0 / v1.0.1 history. v1.2.0 adds proac
 The standalone install at `~/.claude/skills/writ/` will keep working; the plugin path is purely additive. If you'd rather move to the plugin path:
 
 1. Stop the existing daemon: `bash ~/.claude/skills/writ/scripts/stop-server.sh`
-2. Remove the symlinks the standalone bootstrap created: `rm -f ~/.claude/rules/writ-*.md ~/.claude/agents/writ-*.md`
+2. Remove the symlinks the standalone bootstrap created: `rm -f ~/.claude/rules/writ-*.md ~/.claude/agents/writ-*.md` (these are symlinks into the install's `agents/`)
 3. Remove the rendered hook block from `~/.claude/settings.json` (the `permissions.allow` and `hooks` sections that reference `$HOME/.claude/skills/writ/.claude/hooks/`). Back up the file first.
 4. Install the plugin as described in "Install as a Claude Code plugin" above. The Neo4j Docker volume (`writ-neo4j-data`) is shared between modes, so the rule corpus survives the switch.
 

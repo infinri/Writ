@@ -306,11 +306,11 @@ Five role contracts, each a node *and* a Claude Code agent file:
 
 | Role | Node id | Agent file |
 |---|---|---|
-| Explorer | `ROL-EXPLORER-001` | `.claude/agents/writ-explorer.md` |
-| Planner | `ROL-PLANNER-001` | `.claude/agents/writ-planner.md` |
-| Test writer | `ROL-TEST-WRITER-001` | `.claude/agents/writ-test-writer.md` |
-| Implementer | `ROL-IMPLEMENTER-001` | `.claude/agents/writ-implementer.md` |
-| Reviewer | `ROL-REVIEWER-001` | `.claude/agents/writ-reviewer.md` |
+| Explorer | `ROL-EXPLORER-001` | `agents/writ-explorer.md` |
+| Planner | `ROL-PLANNER-001` | `agents/writ-planner.md` |
+| Test writer | `ROL-TEST-WRITER-001` | `agents/writ-test-writer.md` |
+| Implementer | `ROL-IMPLEMENTER-001` | `agents/writ-implementer.md` |
+| Reviewer | `ROL-REVIEWER-001` | `agents/writ-reviewer.md` |
 
 `SubagentRole` nodes (`schema.py:586`) carry `prompt_template`, `dispatched_by`, `model_preference`, `tools`, `description`. They are reachable only via `DISPATCHES` edges (§3) and surfaced by `GET /subagent-role/{name}`. The implementer's contract includes **post-write disk-verification**: after writing, it re-reads every planned file and reports a hard `VERIFICATION FAILED` error if any are missing. The reviewer runs a two-pass JSON review.
 

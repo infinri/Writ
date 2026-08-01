@@ -8,12 +8,5 @@
   },
   "license": "MIT",
   "keywords": ["claude-code", "rag", "rules", "enforcement", "neo4j", "fastapi", "hooks", "workflow"],
-  "commands": "./.claude/commands",
-  "agents": [
-    "./.claude/agents/writ-explorer.md",
-    "./.claude/agents/writ-implementer.md",
-    "./.claude/agents/writ-planner.md",
-    "./.claude/agents/writ-reviewer.md",
-    "./.claude/agents/writ-test-writer.md"
-  ]
+  "commands": "./.claude/commands"
 }

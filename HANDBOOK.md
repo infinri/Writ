@@ -141,7 +141,7 @@ In one sentence: the agent can draft, propose, and lobby, but the *write of cano
 
 ## 8. Sub-agents and orchestration
 
-Writ supports multi-session workflows (an orchestrator delegating to workers) as a first-class feature. There are **five named roles**, each both a `SubagentRole` graph node and a Claude Code agent file under `.claude/agents/`:
+Writ supports multi-session workflows (an orchestrator delegating to workers) as a first-class feature. There are **five named roles**, each both a `SubagentRole` graph node and a Claude Code agent file under `agents/` (the plugin root's auto-discovered location):
 
 | Role | Node id | Agent file | Default model |
 |---|---|---|---|
