@@ -107,7 +107,7 @@ Pull request comments currently support Bitbucket Cloud only, and self hosted Bi
 
 ## Measured
 
-Live rulebook of 287 rules, measured 2026-08-01, on a 16 thread AMD Ryzen 9 7940HS with 31 GiB of RAM and a database container with no memory cap. Your numbers will differ on other hardware. The full disclosure is in [`SCALE_BENCHMARK_RESULTS.md`](SCALE_BENCHMARK_RESULTS.md).
+Live rulebook of 287 rules, measured 2026-08-01, on a database container with no memory cap. Your numbers will differ on other hardware. The full disclosure is in [`SCALE_BENCHMARK_RESULTS.md`](SCALE_BENCHMARK_RESULTS.md).
 
 | | Live (287 rules) | Synthetic (10,000 rules) |
 |---|---:|---:|
