@@ -332,6 +332,17 @@ class TestMemoryRecordStore:
         )
 
     @pytest.mark.asyncio
+    async def test_memory_uniqueness_constraint_registered(self, db_clean: Neo4jConnection) -> None:
+        # create_memory MERGEs on (name, project) from two concurrent writers (the
+        # hook and backfill); a MERGE on a non-constrained key is not race-safe, so
+        # apply_constraints must register the composite uniqueness constraint.
+        await db_clean.apply_constraints()
+        names = {c.get("name") for c in await db_clean.list_constraints()}
+        assert "memory_name_project_unique" in names, (
+            f"Memory (name, project) uniqueness constraint missing; got {sorted(names)!r}"
+        )
+
+    @pytest.mark.asyncio
     async def test_create_memory_returns_name(self, db_clean: Neo4jConnection) -> None:
         # [create-1]
         name = f"test-note-{uuid.uuid4().hex[:8]}"

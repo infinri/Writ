@@ -61,6 +61,14 @@ class SchemaStoreMixin:
             "FOR (n:Commit) ON (n.commit_hash)",
             "CREATE INDEX decision_project IF NOT EXISTS "
             "FOR (n:Decision) ON (n.project)",
+            # Memory mirror: create_memory MERGEs on (name, project) from two
+            # concurrent writers (the PostToolUse hook and backfill), and a MERGE
+            # on a non-constrained key is not race-safe -- the constraint makes
+            # the loser MATCH the winner's node instead of forking a duplicate.
+            "CREATE CONSTRAINT memory_name_project_unique IF NOT EXISTS "
+            "FOR (n:Memory) REQUIRE (n.name, n.project) IS UNIQUE",
+            "CREATE INDEX memory_project IF NOT EXISTS "
+            "FOR (n:Memory) ON (n.project)",
         ])
         async with self._driver.session(database=self._database) as session:
             for stmt in drops + statements:

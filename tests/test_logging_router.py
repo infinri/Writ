@@ -136,8 +136,8 @@ def test_stream_map_classifies_audit_events(event):
 @pytest.mark.parametrize("event", [
     "repeated_denial", "hallucinated_rule_ids", "approval_pattern_miss",
     "approval_pattern_match", "subagent_type_fallback",
-    "decision_capture_failed", "commit_capture_failed", "recall_failed",
-    "git_hooks_auto_install_failed", "debug_to_work_handoff",
+    "decision_capture_failed", "commit_capture_failed", "memory_capture_failed",
+    "recall_failed", "git_hooks_auto_install_failed", "debug_to_work_handoff",
 ])
 def test_stream_map_classifies_friction_events(event):
     assert STREAM_MAP[event] == "friction"

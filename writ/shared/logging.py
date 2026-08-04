@@ -85,6 +85,7 @@ STREAM_MAP: dict[str, str] = {
     "subagent_type_fallback": "friction",
     "decision_capture_failed": "friction",
     "commit_capture_failed": "friction",
+    "memory_capture_failed": "friction",
     "recall_failed": "friction",
     "git_hooks_auto_install_failed": "friction",
     "debug_to_work_handoff": "friction",
