@@ -368,7 +368,57 @@ class TestHookEndToEnd:
 
 
 # --------------------------------------------------------------------------- #
-# 6. matcher wiring
+# 6. gate-state name guard: executing or forging vectors deny; provably
+#    read-only inspection passes. The original blanket form refused even
+#    `grep` of audit logs whose rows name the minter, which blocked live
+#    diagnosis three times in one session (BUG-manual-test-grant.md section 0).
+# --------------------------------------------------------------------------- #
+class TestGateStateNameGuard:
+    def _deny(self, out):
+        assert out is not None and out.get("permissionDecision") == "deny"
+        assert "ENF-GATE-STATE" in out.get("permissionDecisionReason", "")
+
+    def _sid(self):
+        return f"bwg-{uuid.uuid4().hex[:8]}"
+
+    def test_invoking_the_minter_script_is_denied(self, tmp_path: Path):
+        cmd = f"bash {SKILL_ROOT}/hooks/scripts/writ-manual-test-grant.sh"
+        self._deny(_run_hook(cmd, self._sid(), str(tmp_path)))
+
+    def test_running_the_grant_lib_is_denied(self, tmp_path: Path):
+        cmd = (f"python3 {SKILL_ROOT}/bin/lib/manual_test_grant.py "
+               "mint some-sid 'manual testing approved'")
+        self._deny(_run_hook(cmd, self._sid(), str(tmp_path)))
+
+    def test_readonly_grep_naming_the_minter_is_allowed(self, tmp_path: Path):
+        cmd = "grep -h writ-manual-test-grant var/logs/audit.jsonl"
+        assert _run_hook(cmd, self._sid(), str(tmp_path)) is None
+
+    def test_readonly_pipeline_naming_grant_state_is_allowed(self, tmp_path: Path):
+        cmd = "grep writ-grant- var/logs/audit.jsonl | tail -5 | wc -l"
+        assert _run_hook(cmd, self._sid(), str(tmp_path)) is None
+
+    def test_readonly_verb_with_command_substitution_is_denied(self, tmp_path: Path):
+        self._deny(_run_hook("cat $(echo writ-grant-x.json)", self._sid(), str(tmp_path)))
+
+    def test_readonly_verb_with_redirect_is_denied(self, tmp_path: Path):
+        cmd = "grep writ-grant- var/logs/audit.jsonl > /tmp/out"
+        self._deny(_run_hook(cmd, self._sid(), str(tmp_path)))
+
+    def test_readonly_verb_with_variable_expansion_is_denied(self, tmp_path: Path):
+        self._deny(_run_hook("cat $GRANT_FILE writ-grant-x.json", self._sid(), str(tmp_path)))
+
+    def test_readonly_verb_chained_to_interpreter_is_denied(self, tmp_path: Path):
+        cmd = "cat writ-grant-x.json && bash forge.sh"
+        self._deny(_run_hook(cmd, self._sid(), str(tmp_path)))
+
+    def test_pipeline_segment_with_non_readonly_verb_is_denied(self, tmp_path: Path):
+        cmd = "grep writ-grant- var/logs/audit.jsonl | xargs rm"
+        self._deny(_run_hook(cmd, self._sid(), str(tmp_path)))
+
+
+# --------------------------------------------------------------------------- #
+# 7. matcher wiring
 # --------------------------------------------------------------------------- #
 class TestMatcherWired:
     def test_bash_write_gate_on_bash_matcher(self):

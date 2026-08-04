@@ -9,8 +9,8 @@ Four source-derived counts:
   node types  -- len(NODE_ID_FIELDS)  == 13
   edge types  -- len(ALLOWED_EDGE_TYPES) == 24
   modes       -- len(MODE_CONFIG)     == 5
-  hooks       -- json.load hooks/hooks.json, count "command" leaves == 41
-  endpoints   -- regex @app/@router route decorators across writ/server/**.py == 45
+  hooks       -- json.load hooks/hooks.json, count "command" leaves == 44
+  endpoints   -- regex @app/@router route decorators across writ/server/**.py == 46
 """
 from __future__ import annotations
 
@@ -111,9 +111,11 @@ class TestDocCounts:
     # --- hooks --------------------------------------------------------------
 
     def test_hooks_json_entry_count(self) -> None:
+        # 44 = the 41 long-standing registrations + writ-manual-test-grant.sh +
+        # writ-state-write-gate.sh + writ-memory-capture.sh (the auto-memory mirror).
         source_count = _count_hooks_json_entries()
-        assert source_count == 41, (
-            f"hooks/hooks.json has {source_count} 'command' entries; expected 41. "
+        assert source_count == 44, (
+            f"hooks/hooks.json has {source_count} 'command' entries; expected 44. "
             "Bump this (and HANDBOOK 'registers **N hook scripts**') when adding or "
             "removing a registration."
         )
@@ -124,7 +126,8 @@ class TestDocCounts:
         # source_count is derived from writ_server_source(), which scans
         # writ/server/**/*.py and matches both @app.<verb> and @router.<verb>
         # decorators. Bump this when adding/removing a route.
+        # 46 = 45 + POST /memory-record (the auto-memory graph mirror).
         source_count = _count_server_endpoints()
-        assert source_count == 45, (
-            f"writ.server has {source_count} @app/@router route decorators; expected 45"
+        assert source_count == 46, (
+            f"writ.server has {source_count} @app/@router route decorators; expected 46"
         )

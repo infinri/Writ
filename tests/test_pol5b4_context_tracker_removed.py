@@ -87,8 +87,11 @@ class TestStopEventIntact:
         # dead PostToolUseFailure track-failed-writes), #6 (added PreToolUse Bash
         # writ-bash-write-gate), the token-saving read-junk gate (added PreToolUse
         # Read writ-read-junk-gate), and the comms-output gate (added Stop
-        # writ-comms-output-gate). Bump when adding/removing a registration; keep
-        # HANDBOOK 'registers **N hook scripts**' in sync.
+        # writ-comms-output-gate), the manual-testing grant (added its UserPromptSubmit
+        # minter and the PreToolUse Write|Edit state-write gate), and the auto-memory
+        # mirror (added PostToolUse Write|Edit writ-memory-capture). Bump when
+        # adding/removing a registration; keep HANDBOOK 'registers **N hook scripts**'
+        # in sync.
         data = json.loads(HOOKS_JSON.read_text())
         n = _registration_count(data)
-        assert n == 41, f"hooks.json registration count drifted; found {n}, expected 41"
+        assert n == 44, f"hooks.json registration count drifted; found {n}, expected 44"

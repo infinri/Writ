@@ -48,6 +48,99 @@ class RecordStoreMixin:
         commit_data.setdefault("ts", _now_iso())
         return await self._create_record(Commit(**commit_data), "commit_hash")
 
+    async def create_memory(
+        self,
+        *,
+        name: str,
+        project: str,
+        description: str = "",
+        type: str = "",
+        body: str = "",
+        links: list | None = None,
+        path: str = "",
+        session_id: str = "",
+        updated_at: str = "",
+        status: str = "live",
+    ) -> str:
+        """Create or update a Memory record. Idempotent via MERGE on (name, project).
+
+        The auto-memory mirror: one node per memory FILE, so an edit of that file
+        re-MERGEs the same node instead of appending a second one.
+
+        Written with explicit props instead of through _create_record because Memory
+        deliberately has NO schema model: it must stay out of NodeType /
+        NODE_TYPE_MODELS / NODE_ID_FIELDS so no retrieval or parity path can treat a
+        memory as a rule candidate. provenance='record' is what exempts it from
+        reconcile/prune, exactly as for Decision/FileChange/Commit. `type` mirrors
+        the graph property name (user/feedback/project/reference).
+        """
+        props = {
+            "description": description,
+            "type": type,
+            "body": body,
+            "links": [str(link) for link in (links or [])],
+            "path": path,
+            "session_id": session_id,
+            "updated_at": updated_at or _now_iso(),
+            "status": status or "live",
+            "provenance": "record",
+            "source_origin": "graph-authored",
+        }
+        record = await self._run_single(
+            "MERGE (m:Memory {name: $name, project: $project}) "
+            "SET m += $props "
+            "RETURN m.name AS name",
+            name=name, project=project, props=props,
+        )
+        return record["name"]
+
+    async def list_memories(
+        self, project: str, include_deleted: bool = False
+    ) -> list[dict]:
+        """The project's Memory records, most-recently-updated first.
+
+        Tombstoned records (status='deleted') are excluded unless include_deleted:
+        a memory whose file the user deleted must stop reading as live. A separate
+        project-scoped read, never /query -- Memory is excluded from
+        RETRIEVABLE_NODE_TYPES and must never enter the RAG pipeline.
+        """
+        rows = [dict(r) for r in await self._run(
+            "MATCH (m:Memory {project: $project}) "
+            "WHERE $include_deleted OR coalesce(m.status, 'live') <> 'deleted' "
+            "RETURN m.name AS name, m.description AS description, m.type AS type, "
+            "m.status AS status, m.path AS path, m.links AS links, "
+            "m.updated_at AS updated_at "
+            "ORDER BY m.updated_at DESC",
+            project=project, include_deleted=include_deleted,
+        )]
+        for row in rows:
+            row["links"] = row.get("links") or []
+        return rows
+
+    async def tombstone_missing_memories(
+        self, project: str, existing_names
+    ) -> int:
+        """Tombstone every live Memory in `project` whose file is gone. Returns the count.
+
+        The deletion reconciler behind `writ memory backfill`: `existing_names` is the
+        set of memory names still present on disk, so anything else is a file the user
+        deleted. The node is RETAINED with status='deleted' (audit trail), never
+        hard-deleted. Idempotent: an already-tombstoned node is not re-matched.
+
+        An EMPTY existing_names tombstones the project's whole live set, which is only
+        correct when the memory directory was actually read and found empty -- callers
+        must not call this after a failed listing.
+        """
+        names = sorted({str(n) for n in (existing_names or [])})
+        record = await self._run_single(
+            "MATCH (m:Memory {project: $project}) "
+            "WHERE NOT m.name IN $names AND coalesce(m.status, 'live') <> 'deleted' "
+            "SET m.status = 'deleted', m.tombstoned_at = $ts "
+            "RETURN count(m) AS tombstoned",
+            project=project, names=names, ts=_now_iso(),
+        )
+        return record["tombstoned"] if record else 0
+
     @staticmethod
     def _parse_planned_files(raw) -> list[dict]:
         """Parse the planned_files property into a list[dict].

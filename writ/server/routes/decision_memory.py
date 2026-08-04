@@ -1,7 +1,7 @@
 # writ-auth-scan: internal-service
-"""Decision-memory routes: commit capture + recall.
+"""Decision-memory routes: commit capture + memory mirror + recall.
 
-2 routes: /commit/capture, /recall.
+3 routes: /commit/capture, /memory-record, /recall.
 
 _db, capture_commit and log_friction_event are read via live `server.<attr>`
 access inside handler bodies (the monkeypatch seam).
@@ -15,9 +15,27 @@ from typing import Any
 from fastapi import APIRouter
 
 import writ.server as server
-from writ.server.models import CommitCaptureRequest, RecallRequest
+from writ.server.models import (
+    CommitCaptureRequest,
+    MemoryRecordRequest,
+    RecallRequest,
+)
 
 router = APIRouter()
+
+
+def _project_from_memory_path(path: str) -> str:
+    """The project scope of a memory path: the dir CONTAINING its memory dir.
+
+    Both callers send `project` (computed by bin/lib/memory_capture.py, the
+    stdlib-only parser the daemon deliberately does not import -- it belongs to the
+    hook's no-virtualenv world). This is the fallback for a caller that sends only
+    the path, and it must resolve the SAME segment that module does.
+    """
+    parts = [part for part in (path or "").replace("\\", "/").split("/") if part]
+    if len(parts) < 3 or parts[-2] != "memory":
+        return ""
+    return parts[-3]
 
 
 @router.post("/commit/capture")
@@ -53,6 +71,52 @@ async def commit_capture(request: CommitCaptureRequest) -> dict[str, Any]:
         )
         return {"ok": True}
     return {"ok": True}
+
+
+@router.post("/memory-record")
+async def memory_record(request: MemoryRecordRequest) -> dict[str, Any]:
+    """Upsert one auto-memory file as a Memory record (the graph mirror).
+
+    hooks/scripts/writ-memory-capture.sh curls this after a memory write LANDS, so
+    the file already exists whatever happens here. Fail-open in the same shape as
+    /commit/capture: _db None returns the error shape, and any failure is logged as
+    memory_capture_failed and still returns 200 -- a graph-write failure must never
+    surface as a hook error on a write that already succeeded. `writ memory backfill`
+    re-covers every miss. The exception detail goes to the log, never to the caller.
+
+    Access boundary: localhost-only daemon route, single-user, no auth tier; writes
+    project-scoped Memory records on the caller's own machine.
+    """
+    if server._db is None:
+        return {"error": "Database not connected."}
+
+    try:
+        name = await server._db.create_memory(
+            name=request.name,
+            project=request.project or _project_from_memory_path(request.path),
+            description=request.description,
+            type=request.type,
+            body=request.body,
+            links=request.links,
+            path=request.path,
+            session_id=request.session_id,
+            updated_at=request.updated_at,
+            status=request.status,
+        )
+    except Exception as exc:
+        try:
+            await asyncio.to_thread(
+                server.log_friction_event,
+                session_id=request.session_id,
+                mode=None,
+                event="memory_capture_failed",
+                error=str(exc),
+                file_path=request.path,
+            )
+        except Exception:
+            pass
+        return {"ok": True}
+    return {"ok": True, "name": name}
 
 
 @router.post("/recall")

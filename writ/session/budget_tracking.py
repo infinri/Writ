@@ -420,6 +420,14 @@ def cmd_format() -> None:
         rid = rule.get("rule_id")
         if rid:
             rule_ids.append(rid)
+        # A summary-mode abstraction was rendered above as "[ABSTRACT: <id>]", so that
+        # id is what the model SAW and what it naturally cites in ## Rules Applied.
+        # Recording only the covered rule_ids left the abstraction's own id absent from
+        # loaded_rule_ids, and the phase-a gate then flagged the citation as
+        # hallucinated -- for an id Writ itself had just injected.
+        abstraction_id = rule.get("abstraction_id")
+        if abstraction_id:
+            rule_ids.append(abstraction_id)
         for member_id in rule.get("rule_ids", []):
             rule_ids.append(member_id)
 

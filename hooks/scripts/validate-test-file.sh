@@ -24,6 +24,17 @@ MODE=$(python3 "$SESSION_HELPER" mode get "$SESSION_ID" 2>/dev/null | tr -d '[:s
 FILE="$HOOK_FILE_PATH"
 [ -z "$FILE" ] && exit 0
 
+# Manual-testing grant: the user conceded hand verification for code with no
+# runnable harness. Minted only from the user's own words by
+# writ-manual-test-grant.sh (UserPromptSubmit), so the agent cannot self-serve;
+# the store is write-denied by writ-state-write-gate.sh. Every admitted file is
+# recorded on the grant for the audit trail.
+GRANT_LIB="$WRIT_DIR/bin/lib/manual_test_grant.py"
+if [ -f "$GRANT_LIB" ] && python3 "$GRANT_LIB" admit "$SESSION_ID" "$FILE" >/dev/null 2>&1; then
+    log_gate_decision "test-first" "allow" "manual-testing grant admitted the file" "$FILE"
+    exit 0
+fi
+
 DENY=$(WRIT_DIR_ABS="$WRIT_DIR" python3 - "$FILE" <<'PY'
 import os, re, sys
 f = sys.argv[1]
@@ -50,7 +61,8 @@ except ValueError:
 # Test files are never production code -- exempt them up front so files under
 # tests/ never trip the "production code without a failing test" gate.
 norm = rel.replace(os.sep, "/")
-if norm.startswith("tests/") or "/tests/" in norm or norm.startswith("test/") or "/test/" in norm:
+if norm.startswith("tests/") or "/tests/" in norm or norm.startswith("test/") or "/test/" in norm \
+        or norm.startswith("Test/") or "/Test/" in norm:
     sys.exit(0)
 # Only apply to files under src/, lib/, or app/ at the repo root or immediately
 # under a recognized package directory. Anchor the regex to the repo-relative path.
@@ -68,6 +80,14 @@ elif ext in {"js", "ts"}:
     candidates += [f"tests/{stem}.test.{ext}", f"tests/{stem}.spec.{ext}"]
 elif ext == "php":
     candidates += [f"tests/Unit/{stem}Test.php", f"tests/{stem}Test.php"]
+    # Magento modules keep unit tests inside the module, mirroring the source
+    # subpath under Test/Unit/ -- app/code/V/M/Plugin/X.php is tested by
+    # app/code/V/M/Test/Unit/Plugin/XTest.php.
+    magento_module = re.match(r"^(app/code/[^/]+/[^/]+)/(.+)\.php$", norm)
+    if magento_module:
+        candidates.append(
+            f"{magento_module.group(1)}/Test/Unit/{magento_module.group(2)}Test.php"
+        )
 elif ext == "go":
     candidates += [f.replace(".go", "_test.go")]
 elif ext == "rs":

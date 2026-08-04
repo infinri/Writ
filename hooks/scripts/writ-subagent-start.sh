@@ -119,6 +119,20 @@ with mod.mutate_cache(agent_id) as cache:
     cache['token_snapshots'] = []
 " "$PARENT_STATE" "$AGENT_ID" 2>/dev/null || true
 
+# Manual-testing grant inherits exactly like gates_approved above: the user's
+# concession was given to the orchestrating session, and a dispatched worker acts
+# on its behalf, so it is not re-typed per worker. The child gets the REMAINING
+# TTL (never refreshed) and an inherited_from stamp for the audit trail. Keyed on
+# PARENT_SESSION (the payload session id), NOT /tmp/writ-current-session -- the
+# pointer churns across concurrent sessions and could leak another session's grant.
+GRANT_LIB="$WRIT_DIR/bin/lib/manual_test_grant.py"
+if [ -f "$GRANT_LIB" ] && [ -n "$PARENT_SESSION" ] && [ "$PARENT_SESSION" != "$AGENT_ID" ]; then
+    if python3 "$GRANT_LIB" inherit "$PARENT_SESSION" "$AGENT_ID" 2>/dev/null; then
+        log_gate_decision "manual-test-grant" "inherit" \
+            "sub-agent inherited the parent session's live manual-testing grant" "$AGENT_ID"
+    fi
+fi
+
 # Link this sub-agent to the COMMITTING session id so commit_capture's
 # enumeration (_collect_subagent_queried_rules) can merge this child's queried
 # rules at commit time, at any nesting depth. The post-commit hook uses

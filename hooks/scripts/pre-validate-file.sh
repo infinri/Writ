@@ -66,6 +66,19 @@ PROJECT_ROOT=$(detect_project_root "$FILE")
 OUTPUT=$("$SKILL_DIR/bin/run-analysis.sh" --project-root "$PROJECT_ROOT" "$TMPFILE" 2>&1)
 EXIT_CODE=$?
 
+# Pre-existing violations in untouched code must not block an unrelated edit to
+# the same file. Re-analyze the file as it stands and keep only what this edit
+# ADDS. See bin/lib/filter-new-findings.py for the fingerprinting rationale.
+if [ $EXIT_CODE -ne 0 ] && [ -f "$FILE" ]; then
+  BASE_OUT=$("$SKILL_DIR/bin/run-analysis.sh" --project-root "$PROJECT_ROOT" "$FILE" 2>/dev/null || true)
+  printf '%s' "$OUTPUT"   > "$TMPFILE.new.json"
+  printf '%s' "$BASE_OUT" > "$TMPFILE.base.json"
+  OUTPUT=$(FILE_NEW="$TMPFILE" FILE_OLD="$FILE" python3 \
+    "$SKILL_DIR/bin/lib/filter-new-findings.py" "$TMPFILE.new.json" "$TMPFILE.base.json")
+  rm -f "$TMPFILE.new.json" "$TMPFILE.base.json"
+  echo "$OUTPUT" | grep -q '"severity": "error"' || EXIT_CODE=0
+fi
+
 if [ $EXIT_CODE -ne 0 ]; then
   # Build denial reason from analysis output
   REASON=$(echo "$OUTPUT" | python3 -c "

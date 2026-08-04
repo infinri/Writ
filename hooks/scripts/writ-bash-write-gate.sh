@@ -40,6 +40,57 @@ SESSION_ID="$HOOK_SESSION_ID"
 CMD="$HOOK_COMMAND"
 [ -z "$CMD" ] && exit 0
 
+# Gate state is protected by a blanket path check BEFORE the write-verb early exit
+# below. The extractor only understands shell write forms (>, cp, mv, tee, sed -i),
+# so an interpreter one-liner -- python3 -c "json.dump(...open(p,'w'))", node -e,
+# perl -e -- reaches the file without ever matching one. Naming the path is
+# therefore refused unless the command is provably read-only (below).
+# The minter is a plain script, so the agent running it directly would forge a
+# grant that is indistinguishable from a real one in the audit trail. Naming it in
+# an executable position is refused; only the harness may invoke it as a hook.
+
+# Provably read-only inspection: the blanket guard used to refuse even `grep` of
+# audit logs whose ROWS name the minter, which blocked diagnosis of the very state
+# it protects. A command passes ONLY when it cannot execute, expand, or write:
+# no substitution/expansion/control/redirect characters anywhere, and every
+# pipeline segment starts with a read-only inspector. Interpreters, find/xargs/awk
+# (exec-capable), sed (its `w` command writes), sort (-o writes), rg (--pre
+# executes) and file (-C compiles to disk) stay excluded, so the minter and the
+# store remain un-invocable and un-writable through this allowance.
+_readonly_inspection() {
+    case "$1" in
+        *'$('* | *'${'* | *'`'* | *';'* | *'&'* | *'>'* | *'<'* | *$'\n'*) return 1 ;;
+    esac
+    # $NAME / $1 variable expansion (a trailing regex '$' has no name char after it).
+    printf '%s' "$1" | grep -qE '\$[[:alnum:]_]' && return 1
+    local _segs _seg _verb
+    IFS='|' read -ra _segs <<< "$1"
+    for _seg in "${_segs[@]}"; do
+        _seg="${_seg#"${_seg%%[![:space:]]*}"}"
+        _verb="${_seg%%[[:space:]]*}"
+        case "${_verb##*/}" in
+            grep|egrep|fgrep|cat|head|tail|wc|cut|tr|uniq|nl|ls|stat|diff|cmp|md5sum|sha256sum|strings|column|jq) ;;
+            *) return 1 ;;
+        esac
+    done
+    return 0
+}
+
+STATE_DIR_GUARD="${WRIT_CACHE_DIR:-$WRIT_DIR/var/session}"
+case "$CMD" in
+    *"$STATE_DIR_GUARD"* | *"/tmp/writ-current-session"* | *"writ-session-"* \
+    | *"writ-manual-test-grant"* | *"manual_test_grant"* | *"writ-grant-"*)
+        if _readonly_inspection "$CMD"; then
+            log_gate_decision "bash-write" "allow" "read-only inspection naming gate state" ""
+        else
+            GUARD_REASON="[ENF-GATE-STATE] Refusing this Bash command: it names Writ gate state ('$STATE_DIR_GUARD'). Mode, approvals and the manual-testing grant live there, and a gate the agent can edit is not a gate, so a command that could execute, expand, or write is refused in any mode. Plain read-only inspection (grep/cat/ls pipelines with no redirects, substitution, or control operators) is allowed, and the Read tool covers the rest. A manual-testing bypass is minted only from the user's own words: ask the user to reply \"manual testing approved\"."
+            log_gate_decision "bash-write" "deny" "$GUARD_REASON" "$STATE_DIR_GUARD"
+            emit_deny "$GUARD_REASON"
+            exit 0
+        fi
+        ;;
+esac
+
 # Cheap hot-path early-exit: a command with no write operator (the vast majority --
 # ls, git, grep, test runs) never spawns the python extractor. Loose on purpose
 # (a stray match only costs one spawn, never a false deny -- the extractor decides).
@@ -126,6 +177,39 @@ except Exception:
         if b == "credentials":
             return True
         return any(fnmatch.fnmatch(b, g) for g in _GLOBS)
+
+
+# Writ gate state: mode, approved gates and the manual-testing grant. The agent
+# editing these would be approving its own gates, so they are denied in any mode.
+# Defined outside the try/except above so it exists on BOTH the package-import and
+# fallback paths. Mirrors writ-state-write-gate.sh, which covers Write/Edit.
+_WRIT_HOME = os.environ.get("WRIT_DIR", "")
+_STATE_DIR = os.environ.get("WRIT_CACHE_DIR") or (
+    os.path.join(_WRIT_HOME, "var", "session") if _WRIT_HOME else ""
+)
+_POINTER = "/tmp/writ-current-session"
+
+
+def is_gate_state(path):
+    if not path:
+        return False
+    try:
+        ap = os.path.realpath(os.path.abspath(path))
+    except Exception:
+        return False
+    try:
+        if ap == os.path.realpath(os.path.abspath(_POINTER)):
+            return True
+    except Exception:
+        pass
+    if not _STATE_DIR:
+        return False
+    try:
+        sd = os.path.realpath(os.path.abspath(_STATE_DIR))
+    except Exception:
+        return False
+    return ap == sd or ap.startswith(sd + os.sep)
+
 
 NONFILE = {"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/zero", "-", ""}
 CONTROL = {"|", "||", "&&", ";", "&", "\n"}
@@ -249,6 +333,9 @@ for t in raw_targets:
     if is_cred(t):
         print(f"cred\t{t}")
         continue
+    if is_gate_state(t):
+        print(f"state\t{t}")
+        continue
     ap = t if os.path.isabs(t) else os.path.normpath(os.path.join(cwd, t))
     # Work-gate only project-local targets. Scratch writes outside the repo are not plan-gated.
     if ap == cwd or ap.startswith(cwd + os.sep):
@@ -262,6 +349,15 @@ PY
 CRED_HIT=$(printf '%s\n' "$TARGETS" | awk -F'\t' '$1=="cred"{print $2; exit}')
 if [ -n "$CRED_HIT" ]; then
     emit_deny "[SEC-CREDENTIAL-WRITE] Refusing this Bash command: it writes to a credential/secret path ('$CRED_HIT'). Secret material must not be written or overwritten by the agent. Name non-secret templates .env.example / .env.sample / *.pub."
+    exit 0
+fi
+
+# 1b. Writ gate state: deny in any mode. A gate the agent can edit is not a gate.
+STATE_HIT=$(printf '%s\n' "$TARGETS" | awk -F'\t' '$1=="state"{print $2; exit}')
+if [ -n "$STATE_HIT" ]; then
+    STATE_REASON="[ENF-GATE-STATE] Refusing this Bash command: it writes to Writ gate state ('$STATE_HIT'). Mode, approvals and the manual-testing grant live there. A manual-testing bypass is minted only from the user's own words -- ask the user to reply \"manual testing approved\"."
+    log_gate_decision "bash-write" "deny" "$STATE_REASON" "$STATE_HIT"
+    emit_deny "$STATE_REASON"
     exit 0
 fi
 
