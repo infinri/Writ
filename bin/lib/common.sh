@@ -41,6 +41,64 @@ except Exception:
 " "$1" "$(writ_session_cache_dir)" 2>/dev/null | tr -d '[:space:]'
 }
 
+# ── HTTP: curl-first, urllib fallback ────────────────────────────────────────
+# curl is an OPTIONAL accelerator, never a prerequisite. These two wrappers run curl
+# when it is present and fall back to `python3 bin/lib/writ_install.py http-*` (stdlib
+# urllib) when it is not, so a curl-less machine still gets rule injection and gate
+# approval instead of a silent "server unreachable". WRIT_NO_CURL=1 forces the fallback
+# arm, mirroring the WRIT_NO_JQ seam on parsed_field/parsed_bool; the equivalence of the
+# two arms is pinned by tests/test_no_tool_prereqs.py.
+#
+# Two semantics, because callers depend on the difference:
+#   writ_http_get URL            = `curl -s`   -> body on stdout for ANY status (>= 400
+#                                                 included), non-zero only if unreachable
+#   writ_http_get URL --fail     = `curl -sf`  -> nothing on stdout and non-zero on >= 400
+# Timeouts are per-call via the environment (curl's --connect-timeout / --max-time; the
+# python arm gets the max as its single socket timeout):
+#   WRIT_HTTP_CONNECT_TIMEOUT (default 0.5)   WRIT_HTTP_TIMEOUT (default 10)
+# Usage: RESP=$(WRIT_HTTP_TIMEOUT=3 writ_http_post "$URL" "$BODY" 2>/dev/null) || true
+_WRIT_INSTALL_PY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/writ_install.py"
+
+writ_http_get() {
+    local url="$1"
+    local fail="" arg
+    for arg in "$@"; do
+        [ "$arg" = "--fail" ] && fail="--fail"
+    done
+    local ct="${WRIT_HTTP_CONNECT_TIMEOUT:-0.5}" mt="${WRIT_HTTP_TIMEOUT:-10}" rc=0
+    if [ -z "${WRIT_NO_CURL:-}" ] && command -v curl >/dev/null 2>&1; then
+        if [ -n "$fail" ]; then
+            curl -sf --connect-timeout "$ct" --max-time "$mt" "$url" || rc=$?
+        else
+            curl -s --connect-timeout "$ct" --max-time "$mt" "$url" || rc=$?
+        fi
+        return $rc
+    fi
+    python3 "$_WRIT_INSTALL_PY" http-get "$url" ${fail:+--fail} --timeout "$mt" || rc=$?
+    return $rc
+}
+
+writ_http_post() {
+    local url="$1" body="${2:-}"
+    local fail="" arg
+    for arg in "$@"; do
+        [ "$arg" = "--fail" ] && fail="--fail"
+    done
+    local ct="${WRIT_HTTP_CONNECT_TIMEOUT:-0.5}" mt="${WRIT_HTTP_TIMEOUT:-10}" rc=0
+    if [ -z "${WRIT_NO_CURL:-}" ] && command -v curl >/dev/null 2>&1; then
+        if [ -n "$fail" ]; then
+            curl -sf --connect-timeout "$ct" --max-time "$mt" -X POST "$url" \
+                -H "Content-Type: application/json" -d "$body" || rc=$?
+        else
+            curl -s --connect-timeout "$ct" --max-time "$mt" -X POST "$url" \
+                -H "Content-Type: application/json" -d "$body" || rc=$?
+        fi
+        return $rc
+    fi
+    python3 "$_WRIT_INSTALL_PY" http-post "$url" "$body" ${fail:+--fail} --timeout "$mt" || rc=$?
+    return $rc
+}
+
 # ── Debug gating ─────────────────────────────────────────────────────────────
 # One shared gate for all opt-in debug sinks (the /tmp/*-debug.log files and the
 # WRIT_HOOK_LOG stderr breadcrumbs). Debug is OFF by default; WRIT_DEBUG=1 turns
@@ -864,9 +922,10 @@ writ_action_push() {
     local req resp text
     req=$(python3 -c "import json,sys; print(json.dumps({'action':sys.argv[1],'prompt':'','exclude_rule_ids':[],'budget_tokens':2000}))" "$action" 2>/dev/null) || return 0
     [ -z "$req" ] && return 0
-    resp=$(curl -sf --connect-timeout 0.2 --max-time 2 \
-        -X POST "${WRIT_SESSION_BASE}/methodology-companion" \
-        -H "Content-Type: application/json" -d "$req" 2>/dev/null) || return 0
+    # --fail keeps the previous fail-on-HTTP-error semantics: a >= 400 yields no body, and
+    # the caller (fail-open by contract) returns empty rather than injecting an error doc.
+    resp=$(WRIT_HTTP_CONNECT_TIMEOUT=0.2 WRIT_HTTP_TIMEOUT=2 \
+        writ_http_post "${WRIT_SESSION_BASE}/methodology-companion" "$req" --fail 2>/dev/null) || return 0
     [ -z "$resp" ] && return 0
     # 1.8c push observability: log a methodology_push friction event (action +
     # per-channel counts + rule_ids + tokens) before returning the text -- recorded
@@ -960,10 +1019,10 @@ print(json.dumps({
 }))
 " "$query" "$budget" "$exclude" 2>/dev/null)
     [ -z "$request" ] && return 0
-    curl -s --connect-timeout 0.3 --max-time 1 \
-        -X POST "$WRIT_URL" \
-        -H "Content-Type: application/json" \
-        -d "$request" 2>/dev/null || true
+    # Same budgets the inlined request carried (connect 0.3s, total 1s), now through the
+    # HTTP wrapper: a missing accelerator degrades to urllib, not to "no rules this turn".
+    WRIT_HTTP_CONNECT_TIMEOUT=0.3 WRIT_HTTP_TIMEOUT=1 \
+        writ_http_post "$WRIT_URL" "$request" 2>/dev/null || true
 }
 
 # Emit a rag_query friction event and append it via friction-append.py. Builds the

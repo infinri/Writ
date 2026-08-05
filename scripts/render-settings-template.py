@@ -18,8 +18,10 @@ no enforcement. `patch-global-config.sh --hooks` seeds this template for that ca
 
 THE ONLY TRANSFORMATION. settings.json uses the same hooks schema as the plugin manifest, so
 nothing structural changes. `${CLAUDE_PLUGIN_ROOT}` is set only for plugin-loaded hooks, so it
-becomes `${WRIT_DIR}`, which the installer fills via `envsubst '$WRIT_DIR'`. Leaving the
-plugin variable would expand to the empty string and point every command at /hooks/...
+becomes `${WRIT_DIR}`, which the installer fills in with the resolved install directory
+(`bin/lib/writ_install.py hooks` substitutes it in Python; it used to be a shell gettext
+call, which made gettext an install prerequisite for exactly one variable). Leaving the plugin
+variable would expand to the empty string and point every command at /hooks/...
 
 Usage:
   python3 scripts/render-settings-template.py            # write templates/settings.json

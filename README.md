@@ -14,33 +14,24 @@ Six self-contained HTML pages render the whole system with diagrams, served live
 
 Writ is published as a single-plugin marketplace in this repo.
 
-**Prerequisites:** Python 3.11+, Docker (Neo4j runs in a container), `jq`, `curl`, `envsubst`.
+**Prerequisites:** Python 3.11+ and Docker (Neo4j runs in a container). Nothing else. `jq` and `curl` are used when present and fall back to Python when absent.
+
+**1. Install the plugin:**
 
 ```shell
 claude plugin marketplace add infinri/Writ
 claude plugin install writ@writ
 ```
 
-**Find the install directory** (the next command needs it):
+**2. Open Claude Code once.** Writ detects the un-bootstrapped install and prints one absolute command on its own line, ready to paste:
 
 ```shell
-WRIT_DIR=$(claude plugin list --json \
-  | python3 -c "import json,sys; print(next(p['installPath'] for p in json.load(sys.stdin) if p['id'].split('@')[0] == 'writ'))")
+bash /path/it/prints/scripts/bootstrap-plugin.sh
 ```
 
-**One-time bootstrap.** Creates the venv at `${CLAUDE_PLUGIN_DATA:-$HOME/.cache/writ}/.venv`, brings up Neo4j, seeds the rule corpus from `writ-corpus.cypher`, and starts the FastAPI daemon:
+**3. Run it, then restart Claude Code.** That one script creates the venv at `${CLAUDE_PLUGIN_DATA:-$HOME/.cache/writ}/.venv`, brings up Neo4j, exports the embedding model, seeds the rule corpus from `writ-corpus.cypher`, starts the FastAPI daemon, patches `~/.claude/settings.json` (the Bash allowlist that suppresses permission prompts, plus the Writ statusLine) and `~/.claude/CLAUDE.md`, and installs the slash commands. It is idempotent, backs up anything it replaces, and re-running it after an update is the whole update procedure.
 
-```shell
-bash "$WRIT_DIR/scripts/bootstrap-plugin.sh"
-```
-
-Restart Claude Code and verify with `curl http://localhost:8765/health`.
-
-**Patch global config (plugin mode only).** Plugin installs do not write to `~/.claude/settings.json` or `~/.claude/CLAUDE.md`, so the Bash allowlist that suppresses permission prompts and the workflow instructions are missing until you run this once (idempotent, backs up existing files, `--dry-run` to preview):
-
-```shell
-bash "$WRIT_DIR/scripts/patch-global-config.sh"
-```
+You should then see a `[Writ: ...]` status line and a `--- WRIT RULES ---` block on your next prompt.
 
 The plugin's hooks degrade gracefully until bootstrap completes: sessions are never blocked, and the SessionStart hook prints setup instructions while anything is missing. Full install detail, the standalone path, the systemd service, and troubleshooting live in [`docs/install.md`](docs/install.md).
 
@@ -155,7 +146,7 @@ Synthetic scale curve (2026-08-01, from `SCALE_BENCHMARK_RESULTS.md`):
 | 1,000 rules | 0.662 ms  | 137,990        | 1,686            | 81.8x     |
 | 10,000 rules| 0.827 ms  | 1,190,649      | 1,590            | **748.8x**|
 
-All of the above was measured on a 16-thread AMD Ryzen 9 7940HS laptop with 31 GiB RAM and an *uncapped* Neo4j container (512M pagecache); absolute numbers will differ on smaller machines. The full disclosure is the "Measurement environment" section of `SCALE_BENCHMARK_RESULTS.md`.
+All of the above was measured on a single mid-range developer laptop and an *uncapped* Neo4j container (512M pagecache); absolute numbers will differ on smaller machines. The full disclosure is the "Measurement environment" section of `SCALE_BENCHMARK_RESULTS.md`.
 
 Retrieval quality against the 193-query ground-truth corpus (47 ambiguous, expanded 2026-07-17). The floors are regression gates the build fails below, deliberately set under the measured values, not quality targets:
 

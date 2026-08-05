@@ -216,10 +216,13 @@ if [ -z "$AGENT_ID" ]; then
 import os, json
 print(json.dumps({'project_root': os.environ.get('WRIT_ROOT', ''), 'budget': 20000}))
 " 2>/dev/null)
-        RECALL_RESP=$(curl -s --connect-timeout 0.3 --max-time 1.5 \
-            -X POST "http://${WRIT_HOST}:${WRIT_PORT}/recall" \
+        # Documented daemon-down-equivalent raw curl: with curl absent this degrades to
+        # exactly the "no briefing this session" branch a stopped daemon produces.
+        RECALL_RESP=$(curl -s --connect-timeout 0.3 --max-time 1.5 -X POST "http://${WRIT_HOST}:${WRIT_PORT}/recall" \
             -H "Content-Type: application/json" -d "$RECALL_REQ" 2>/dev/null) || true
-        RECALL_BRIEFING=$(printf '%s' "$RECALL_RESP" | jq -r '.briefing // ""' 2>/dev/null) || true
+        # parsed_field (jq-first, python3 fallback) rather than raw jq: with jq absent the
+        # raw extraction returned empty and the briefing was silently dropped.
+        RECALL_BRIEFING=$(parsed_field "$RECALL_RESP" "briefing")
         if [ -n "$RECALL_BRIEFING" ]; then
             echo ""
             echo "$RECALL_BRIEFING"
@@ -281,8 +284,9 @@ print(json.dumps({
 " "$PROMPT" "$ORCH_LOADED_RULE_IDS" 2>/dev/null)
 
         if [ -n "$ORCH_METHOD_REQUEST" ]; then
-            ORCH_METHOD_RESPONSE=$(curl -s --connect-timeout 0.5 --max-time 2 \
-                -X POST "$COMPANION_URL" \
+            # Documented daemon-down-equivalent raw curl: no companion block, same as a
+            # stopped daemon produces.
+            ORCH_METHOD_RESPONSE=$(curl -s --connect-timeout 0.5 --max-time 2 -X POST "$COMPANION_URL" \
                 -H "Content-Type: application/json" \
                 -d "$ORCH_METHOD_REQUEST" 2>/dev/null) || true
 
@@ -346,9 +350,10 @@ print(json.dumps({
     'always_on_filter': os.environ.get('WRIT_AOF', 'true') == 'true',
 }))" 2>/dev/null)
 
-BUNDLE=$(curl -s --connect-timeout 0.5 --max-time 3 \
-    -X POST "http://${WRIT_HOST}:${WRIT_PORT}/prompt-bundle" \
-    -H "Content-Type: application/json" -d "$BUNDLE_REQUEST" 2>/dev/null) || true
+# writ_http_post: curl when present (unchanged fast path and unchanged budgets),
+# stdlib urllib when it is not, so a curl-less machine still gets its rules.
+BUNDLE=$(WRIT_HTTP_CONNECT_TIMEOUT=0.5 WRIT_HTTP_TIMEOUT=3 \
+    writ_http_post "http://${WRIT_HOST}:${WRIT_PORT}/prompt-bundle" "$BUNDLE_REQUEST" 2>/dev/null) || true
 
 if [ -z "$BUNDLE" ]; then
     debug "failed: empty /prompt-bundle response"
@@ -356,20 +361,34 @@ if [ -z "$BUNDLE" ]; then
     exit 0
 fi
 
-BUNDLE_ERR=$(printf '%s' "$BUNDLE" | jq -r 'if .error then "1" else "0" end' 2>/dev/null) || true
-if [ "${BUNDLE_ERR:-1}" = "1" ]; then
-    debug "failed: error in /prompt-bundle response"
+# The error field, read through the jq-first/python-fallback helper. This was a raw
+# `jq -r` whose `|| true` guard plus a default-to-failed expansion meant an absent jq
+# yielded an empty string that became "1": a perfectly healthy daemon response was
+# reported as "query failed" and rule injection was disabled for the WHOLE session,
+# with a message blaming the server. Empty now correctly means "no error".
+BUNDLE_ERR=$(parsed_field "$BUNDLE" "error")
+# JSON truthiness, which is what the old `if .error then` tested: the endpoint sets
+# error=false on EVERY healthy response and only true (or a string) on a real failure,
+# so the falsy spellings of both extraction arms (jq "false"/"null", python
+# "False"/"None") must read as "no error". A non-empty check alone would report every
+# healthy bundle as failed -- the same class of defect as the default it replaces.
+case "$BUNDLE_ERR" in
+    ""|false|False|null|None|0) BUNDLE_ERR="" ;;
+esac
+if [ -n "$BUNDLE_ERR" ]; then
+    debug "failed: error in /prompt-bundle response ($BUNDLE_ERR)"
     echo "[Writ: query failed, proceeding without rules]"
     exit 0
 fi
 
-# jq extracts each rendered piece (multi-line safe; ~6ms vs python ~15ms cold-start).
-# Each is || true guarded: under set -e an unguarded jq failure (binary missing,
-# exit 127) would abort the whole hook and silently drop EVERY injection this turn.
-AO_BLOCK=$(printf '%s' "$BUNDLE" | jq -r '.always_on_block // ""' 2>/dev/null) || true
-RULES_TEXT=$(printf '%s' "$BUNDLE" | jq -r '.rules_text // ""' 2>/dev/null) || true
-METHOD_BLOCK=$(printf '%s' "$BUNDLE" | jq -r '.methodology_block // ""' 2>/dev/null) || true
-NUDGE=$(printf '%s' "$BUNDLE" | jq -r '.nudge // ""' 2>/dev/null) || true
+# Each rendered piece via parsed_field: still jq-first on the hot path (~1-2ms), with the
+# python3 fallback when jq is absent, and multi-line safe on both arms (these blocks are
+# multi-line). Missing/null yields the empty default, which every consumer below treats
+# as "nothing to inject".
+AO_BLOCK=$(parsed_field "$BUNDLE" "always_on_block")
+RULES_TEXT=$(parsed_field "$BUNDLE" "rules_text")
+METHOD_BLOCK=$(parsed_field "$BUNDLE" "methodology_block")
+NUDGE=$(parsed_field "$BUNDLE" "nudge")
 # REMAINING_BUDGET (from the single $CACHE read at step 1c) still gates the
 # review-feedback push below; the endpoint owns the channel budgets itself.
 REMAINING_BUDGET=$(parsed_field "$CACHE" "remaining_budget"); REMAINING_BUDGET="${REMAINING_BUDGET:-8000}"

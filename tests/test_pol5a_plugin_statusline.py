@@ -16,20 +16,20 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
-import pytest
-
 SKILL_DIR = Path(__file__).resolve().parent.parent
 PATCH_SCRIPT = SKILL_DIR / "scripts" / "patch-global-config.sh"
-PATCH_SRC = PATCH_SCRIPT.read_text()
+# The statusLine merge itself moved into the stdlib-only install module; the shell script
+# is now the entry point that calls it. Source-shape assertions follow the code.
+INSTALL_MODULE = SKILL_DIR / "bin" / "lib" / "writ_install.py"
+MODULE_SRC = INSTALL_MODULE.read_text()
 
 EXPECTED_CMD = f"bash {SKILL_DIR}/hooks/scripts/writ-statusline.sh"
 
-_HAVE_TOOLS = shutil.which("jq") is not None and shutil.which("envsubst") is not None
-requires_tools = pytest.mark.skipif(not _HAVE_TOOLS, reason="jq/envsubst not installed")
+# No tool-presence skip guard: the merge is stdlib-only Python now, so the jq/envsubst
+# skipif that used to hide these behavioral cases has nothing left to guard.
 
 
 def _write_settings(path: Path, status_line=None, with_perms: bool = True) -> None:
@@ -58,19 +58,25 @@ def _run_patch(tmp_dir: Path, settings_path: Path) -> subprocess.CompletedProces
 # source-shape
 # --------------------------------------------------------------------------- #
 class TestSourceShape:
-    def test_script_references_statusline(self) -> None:
-        assert "writ-statusline.sh" in PATCH_SRC, (
-            "patch-global-config.sh must reference the statusLine hook"
+    def test_the_merge_module_references_the_statusline_hook(self) -> None:
+        assert "writ-statusline.sh" in MODULE_SRC, (
+            "the install module must reference the statusLine hook"
         )
-        assert "statusLine" in PATCH_SRC, (
-            "patch-global-config.sh must assign a statusLine in its settings merge"
+        assert "statusLine" in MODULE_SRC, (
+            "the install module must assign a statusLine in its settings merge"
+        )
+
+    def test_the_patch_script_still_delivers_it(self) -> None:
+        """The script stays the documented entry point even though the merge moved: docs,
+        bootstrap.sh and this suite all name patch-global-config.sh."""
+        assert "writ_install.py" in PATCH_SCRIPT.read_text(), (
+            "patch-global-config.sh must delegate to bin/lib/writ_install.py"
         )
 
 
 # --------------------------------------------------------------------------- #
 # behavioral (live script, temp targets)
 # --------------------------------------------------------------------------- #
-@requires_tools
 class TestStatusLineMerge:
     def test_absent_gets_added(self, tmp_path) -> None:
         s = tmp_path / "settings.json"

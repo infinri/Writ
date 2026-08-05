@@ -70,10 +70,15 @@ bash "$SCRIPT_DIR/stop-server.sh" >/dev/null 2>&1 || true
 systemctl --user daemon-reload
 systemctl --user enable --now writ-server.service
 
-# Health probe.
+# Health probe. Uses the install module's stdlib http-get rather than curl: curl is an
+# optional accelerator, and on a machine without it the probe was always false, so a
+# perfectly good systemd install reported "/health not responding yet".
 ok=0
 for _ in $(seq 1 50); do
-    if curl -s --max-time 1 -o /dev/null "http://$WRIT_HOST:$WRIT_PORT/health"; then ok=1; break; fi
+    if python3 "$WRIT_DIR/bin/lib/writ_install.py" http-get \
+        "http://$WRIT_HOST:$WRIT_PORT/health" --fail --timeout 1 >/dev/null 2>&1; then
+        ok=1; break
+    fi
     sleep 0.2
 done
 if [ "$ok" = 1 ]; then
