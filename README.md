@@ -165,6 +165,8 @@ Retrieval quality against the 193-query ground-truth corpus (47 ambiguous, expan
 | Methodology MRR at 5 (n=40, signed off)     | >= 0.78 | 0.8271                 |
 | Methodology hit rate                        | >= 0.90 | 0.9500                 |
 
+**How to read these numbers.** A retrieval benchmark measures the pair (test set, retriever), never the retriever alone. The 47-query *ambiguous tier* exists for exactly that reason: those queries deliberately withhold the rule's own vocabulary and describe symptoms, narratives, or adjacent concepts, so they measure whether retrieval works when the asker does not already know the answer's words. A hit rate of 1.000 on a self-authored query set is a property of the test, not the retriever: whoever writes both the rules and the queries can trivially make every query contain its answer's vocabulary. That is why the numbers above are published with the miss list (`benchmarks/MISS-TRIAGE-2026-08-05.md` classifies all 42 failures by cause, including the ones that are our own fixture's defects), and why the floors are set beneath the measured values as regression gates rather than presented as achievements.
+
 Full numbers in `SCALE_BENCHMARK_RESULTS.md`. Architectural detail in `HANDBOOK.md`.
 
 ## Relationship to Agent Skills
