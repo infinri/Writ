@@ -251,13 +251,13 @@
       "id": "Q42",
       "set": "keyword",
       "query": "race condition concurrent writers",
-      "expected_rule_id": "FW-M2-RT-002"
+      "expected_rule_id": "ENF-SYS-003"
     },
     {
       "id": "Q43",
       "set": "keyword",
       "query": "idempotent message processing",
-      "expected_rule_id": "FW-M2-RT-005"
+      "expected_rule_id": "SCALE-QUEUE-002"
     },
     {
       "id": "Q44",
@@ -383,7 +383,7 @@
       "id": "Q65",
       "set": "symptom",
       "query": "process crashes halfway through leaves partial state",
-      "expected_rule_id": "FW-M2-RT-002"
+      "expected_rule_id": "ERR-GRACEFUL-002"
     },
     {
       "id": "Q66",
@@ -549,7 +549,7 @@
       "id": "Q93",
       "set": "keyword",
       "query": "regex denial of service ReDoS",
-      "expected_rule_id": "SEC-INJ-REGEX-001"
+      "expected_rule_id": "SEC-VAL-REGEX-001"
     },
     {
       "id": "Q94",

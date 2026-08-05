@@ -57,3 +57,28 @@ Any fixture correction changes the published metric and will be made transparent
 
 Full per-miss table preserved in the session record; per-miss justifications were
 verified against writ-corpus.cypher rule text, not summaries.
+
+---
+
+## Outcome (same day, re-measured after the corpus and fixture fixes)
+
+Applied: the 5 vocabulary edits above, plus 4 fixture corrections (Q93 ->
+SEC-VAL-REGEX-001, Q42 -> ENF-SYS-003, Q43 -> SCALE-QUEUE-002, Q65 -> ERR-GRACEFUL-002;
+Q41 left as-is pending curation). All four regression gates green.
+
+| Metric | Before | After |
+|---|---:|---:|
+| Hit rate at 5 (193) | 0.7824 (42 misses) | 0.8187 (35 misses) |
+| MRR at 5 (ambiguous, 47) | 0.5681 | 0.6167 |
+| Domain hit rate top-5 | 0.9323 | 0.9534 |
+| nDCG at 10 | 0.7071 | 0.7332 |
+
+Honest ledger of the 42 -> 35 delta: Q42/Q43/Q93 converted by fixture corrections;
+Q56/Q175/Q179 converted by their targeted vocabulary edits; Q57/Q189 converted
+collaterally (re-index shifted scores); Q10 and Q100 did NOT convert despite their
+targeted edits (placeholder and mass-assignment vocabulary was added but the expected
+rules still rank outside top-5); Q65's corrected expectation (ERR-GRACEFUL-002) still
+misses, confirming the compounding retrieval gap the triage predicted; Q84 regressed
+into a miss from the re-index. The remaining 35 misses stay dominated by the two
+systemic ranking patterns (sibling-rule collisions, the Magento-cluster magnet), which
+are pipeline work, not corpus edits.
