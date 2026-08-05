@@ -12,10 +12,9 @@ class MaintenanceStoreMixin:
         clear_project (M.1) so wiping one project never touches another.
 
         `preserve_labels`: labels exempted from the wipe. The corpus-replay path
-        (import_cypher_dump) passes the runtime-record labels absent from its dump,
-        because a corpus dump is not the whole graph: replaying writ-corpus.cypher
-        used to silently destroy every Memory/Decision record (2026-08-05 incident,
-        twice in one day). Default empty keeps test-cleanup semantics unchanged.
+        (import_cypher_dump) passes the runtime-record labels absent from its dump:
+        a corpus dump is not the whole graph, and operational records must survive
+        a corpus replay. Default empty keeps test-cleanup semantics unchanged.
         """
         async with self._driver.session(database=self._database) as session:
             if preserve_labels:

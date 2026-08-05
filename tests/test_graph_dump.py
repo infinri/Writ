@@ -147,9 +147,8 @@ class TestCypherDumpRoundTrip:
 
 
 class TestRecordPreservationOnReplay:
-    """Corpus replays must not destroy runtime records (2026-08-05 incident:
-    two import_cypher_dump replays in one day each silently deleted every
-    Memory record). Requires Neo4j running."""
+    """Corpus replays must not destroy runtime records: a corpus dump is not
+    the whole graph. Requires Neo4j running."""
 
     @pytest_asyncio.fixture
     async def db(self):
@@ -210,9 +209,8 @@ class TestRecordPreservationOnReplay:
 
 
 class TestScaleBenchmarkRequiresExplicitRun:
-    """The scale benchmark wipes the live graph; it must never start by accident
-    (2026-08-05: `--help` ran the full destructive benchmark). No Neo4j needed:
-    argument handling fails before any connection."""
+    """The scale benchmark wipes the live graph; it must never start by accident.
+    No Neo4j needed: argument handling fails before any connection."""
 
     def _invoke(self, *args: str):
         import os

@@ -564,10 +564,8 @@ if __name__ == "__main__":
     import argparse
 
     # This benchmark WIPES the live graph (snapshot-then-restore, but a killed run
-    # leaves the synthetic corpus in place). It used to start unconditionally --
-    # even `--help` ran it (2026-08-05 incident). Destructive work now requires
-    # the explicit flag; anything else prints usage and exits without touching
-    # Neo4j.
+    # leaves the synthetic corpus in place). Destructive work requires the explicit
+    # flag; anything else prints usage and exits without touching Neo4j.
     parser = argparse.ArgumentParser(
         description=(
             "Writ scale benchmark. DESTRUCTIVE: snapshots, then repeatedly wipes and "
