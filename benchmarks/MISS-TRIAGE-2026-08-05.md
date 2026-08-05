@@ -82,3 +82,34 @@ misses, confirming the compounding retrieval gap the triage predicted; Q84 regre
 into a miss from the re-index. The remaining 35 misses stay dominated by the two
 systemic ranking patterns (sibling-rule collisions, the Magento-cluster magnet), which
 are pipeline work, not corpus edits.
+
+---
+
+## Channel reframe (same day, follow-up investigation)
+
+Stage-level decomposition of the remaining 35 misses changes what they mean:
+
+- **21 misses expect `mandatory: true` rules.** Mandatory rules are excluded from the
+  retrieval index at build time BY DESIGN (the README's architectural invariant) and are
+  delivered through the always-on channel on every turn instead. A /query-style benchmark
+  can never find them; the "miss" is the architecture working. This also explains most
+  sibling-rule collisions: the mandatory rule's non-mandatory sibling is the only family
+  member in the index, so it wins by default (probe: SEC-AUTHZ-ENFORCE-001 and
+  PERF-QUERY-001 are absent from both raw indexes; their siblings rank).
+- **3 misses (Q165/Q166/Q167) expect process-domain rules** whose category routes them to
+  the methodology-companion channel, not semantic retrieval. PROC-INCIDENT-001 ranks #1 on
+  BOTH raw retrievers (BM25 43.95, cosine 0.672) and is then excluded by Stage-1 routing:
+  retrieval quality is not the problem; channel membership is.
+- **11 misses are genuine ranking/vocabulary work** -- the real remaining surface.
+
+**Decision required (metric definition, so not changed unilaterally):** split the
+benchmark by delivery channel. Retrieval hit-rate over index-eligible targets only
+(the 11 + converted queries), plus delivery verification for always-on targets (they
+arrive 100% of turns by construction) and routed methodology targets (companion channel).
+Re-scoping the 193-query set this way moves the headline number for definitional reasons,
+which must be disclosed as such, exactly like the fixture corrections above.
+
+Also fixed during this investigation: 30 nodes had lost their BELONGS_TO category edges
+(subset `--only` imports orphan cross-type edges; a full `writ import-markdown` rebuilds
+them -- 1,061 edges, 0 dangling), which had silently forced Stage-1 into its legacy
+fallback filter.
