@@ -2,7 +2,7 @@
 
 A Claude Code harness that gives every coding session two helpers: a fast librarian that picks the rules that fit the current task, and a process keeper that blocks risky writes until you have approved a plan and tests.
 
-The librarian returns ranked results in **0.6 ms at the 95th percentile** (measured 2026-08-01 at the live 287-rule corpus). At the 10,000-rule synthetic scale it still holds at 0.83 ms while reducing context tokens by **749 times** versus loading the whole rulebook every turn.
+The librarian returns ranked results in **0.52 ms at the 95th percentile** (measured 2026-08-05 at the live 287-rule corpus). At the 10,000-rule synthetic scale it still holds at 0.83 ms while reducing context tokens by **749 times** versus loading the whole rulebook every turn.
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the release history through v1.6.0 (re-measured benchmarks with environment disclosure, hook-system audit and hardening, force-swap coverage, the Claude Code 2.1.220 black-box refresh).
 
@@ -137,14 +137,20 @@ Live system measurement (2026-08-01, 287-rule corpus, ONNX runtime, warm indexes
 |-------------------|---------:|---------:|--------:|----------------:|
 | End to end        | 0.4 ms   | 0.6 ms   | 10.0 ms | 17x             |
 
-Synthetic scale curve (2026-08-01, from `SCALE_BENCHMARK_RESULTS.md`):
+Scale curve (synthetic tiers 2026-08-01; live-corpus row measured in place 2026-08-05, same
+harness math and latency workload, read-only -- ingest and cold-start columns do not apply
+to a pre-existing corpus):
 
-| Corpus      | E2E p95   | Tokens stuffed | Tokens retrieved | Reduction |
-|-------------|----------:|---------------:|-----------------:|----------:|
-| 80 rules    | 0.383 ms  | 14,738         | 2,056            | 7.2x      |
-| 500 rules   | 0.486 ms  | 79,491         | 1,898            | 41.9x     |
-| 1,000 rules | 0.662 ms  | 137,990        | 1,686            | 81.8x     |
-| 10,000 rules| 0.827 ms  | 1,190,649      | 1,590            | **748.8x**|
+| Corpus              | E2E p95   | Tokens stuffed | Tokens retrieved | Reduction |
+|---------------------|----------:|---------------:|-----------------:|----------:|
+| 80 rules            | 0.383 ms  | 14,738         | 2,056            | 7.2x      |
+| **287 rules (live)**| 0.524 ms  | 52,870         | 2,000            | **26.4x** |
+| 500 rules           | 0.486 ms  | 79,491         | 1,898            | 41.9x     |
+| 1,000 rules         | 0.662 ms  | 137,990       | 1,686            | 81.8x     |
+| 10,000 rules        | 0.827 ms  | 1,190,649      | 1,590            | **748.8x**|
+
+On the harder 193-query ground-truth workload (real queries, not the 5-query latency set)
+the live corpus measures 1.02 ms p95 / 0.43 ms median (2026-08-05, 579 timed queries).
 
 All of the above was measured on a single mid-range developer laptop and an *uncapped* Neo4j container (512M pagecache); absolute numbers will differ on smaller machines. The full disclosure is the "Measurement environment" section of `SCALE_BENCHMARK_RESULTS.md`.
 
@@ -188,7 +194,8 @@ Writ models skills, playbooks, rationalizations, and forbidden-response sets as 
 
 Two architectural splits make this practical:
 
-- **Retrieval-on-demand for the bulk of the corpus.** Ranked results in **0.6 ms at p95** at the live corpus; at 10,000 rules, **0.83 ms p95**. Retrieved tokens stay roughly flat (around 1,600-2,000) regardless of corpus size, while context stuffing scales linearly (14,738 tokens at 80 rules to 1,190,649 at 10,000). Reduction: **56x at the live corpus, 749x at 10,000 rules** (measured 2026-08-01).
+- **Retrieval-on-demand for the bulk of the corpus.** Ranked results in **0.52 ms at p95** at the live 287-rule corpus (re-measured 2026-08-05; the harder 193-query ground-truth workload measures 1.02 ms p95); at 10,000 rules, **0.83 ms p95**. Retrieved tokens stay roughly flat (around 1,600-2,000) regardless of corpus size, while context stuffing scales linearly (14,738 tokens at 80 rules to 1,190,649 at 10,000). Reduction: **26.4x at the live corpus** (52,870 domain-rule tokens vs 2,000 retrieved), **749x at 10,000 rules**. An earlier README revision said 56x at the live corpus; that number does not reproduce with the harness's own arithmetic and is corrected here.
+- **Measured injection cost, not a budget.** Across 67 real sessions and 891 turns of logged injections (all sources: per-prompt, per-read, per-write): **mean 537 tokens per turn, median 600, p95 1,360, max 5,440**. The 5,000-token always-on cap and 8,000-token retrieval budget are ceilings; the measured spend is what a turn actually costs.
 - **Always-on bundle for the mandatory floor.** Mandatory rules and forbidden-response nodes load every turn through a dedicated endpoint with its own 5,000-token budget. They are excluded from the retrieval pipeline at index build time, so no ranking change can cause an enforcement rule to drop out of agent context.
 
 Thirty-seven hook scripts read filesystem changes, tool calls, and session state, and invoke retrieval with those signals attached. Methodology arrives in the agent's context based on observable state, not on whether the agent recognized the trigger from prompt text alone.
