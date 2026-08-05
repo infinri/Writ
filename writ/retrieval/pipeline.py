@@ -18,9 +18,12 @@ Per ARCH-DI-001: all dependencies injected via constructor.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
+import shutil
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from writ.config import get_hnsw_cache_dir
@@ -536,6 +539,72 @@ class RetrievalPipeline:
         return scored_rules
 
 
+_BM25_SIDECAR = "writ_bm25.json"
+
+
+def _compute_bm25_hash(candidates: list[dict]) -> str:
+    """Cache key over exactly what the BM25 index consumes.
+
+    The HNSW hash covers trigger+statement only (all the embedding sees); BM25
+    additionally indexes tags and body and excludes mandatory rules, so reusing
+    the HNSW key would serve a stale keyword index after a tags/body/mandatory
+    edit. Sorted by rule_id so candidate order cannot change the key.
+    """
+    payload = [
+        (
+            r["rule_id"],
+            r.get("trigger", ""),
+            r.get("statement", ""),
+            str(r.get("tags", "")),
+            r.get("body", "") or "",
+            bool(r.get("mandatory", False)),
+        )
+        for r in sorted(candidates, key=lambda r: r["rule_id"])
+    ]
+    return hashlib.sha256(json.dumps(payload).encode("utf-8")).hexdigest()
+
+
+def _load_or_build_keyword_index(
+    candidates: list[dict], cache_root: str | Path
+) -> tuple[KeywordIndex, str]:
+    """Open the persisted BM25 index when its sidecar hash matches, else rebuild.
+
+    Mirrors the HNSW cache discipline below: hash first, open on hit, rebuild
+    into a fresh directory on miss (tantivy appends, so building into a
+    non-empty index would duplicate documents), sidecar written last so a
+    crash mid-build reads as a miss. Returns (index, outcome) where outcome is
+    "hit", "miss", or "nocache" (persistence unavailable; in-memory build --
+    the pre-persistence behavior, never a pipeline failure).
+    """
+    bm25_dir = Path(cache_root) / "bm25"
+    sidecar = bm25_dir / _BM25_SIDECAR
+    corpus_hash = _compute_bm25_hash(candidates)
+
+    try:
+        if sidecar.is_file() and json.loads(sidecar.read_text()).get("corpus_hash") == corpus_hash:
+            index = KeywordIndex(index_dir=bm25_dir)
+            index.reload()
+            _logger.info("Loaded BM25 index from cache (hash=%s)", corpus_hash[:12])
+            return index, "hit"
+    except Exception as exc:
+        _logger.debug("BM25 cache open failed, rebuilding: %s", exc)
+
+    try:
+        shutil.rmtree(bm25_dir, ignore_errors=True)
+        bm25_dir.mkdir(parents=True, exist_ok=True)
+        index = KeywordIndex(index_dir=bm25_dir)
+        index.build(candidates)
+        sidecar.write_text(json.dumps(
+            {"corpus_hash": corpus_hash, "count": len(candidates)}
+        ))
+        return index, "miss"
+    except Exception as exc:
+        _logger.warning("BM25 persistence unavailable, building in memory: %s", exc)
+        index = KeywordIndex()
+        index.build(candidates)
+        return index, "nocache"
+
+
 def _compute_corpus_hash_from_text(rule_ids: list[str], texts: list[str]) -> str:
     """Compute a SHA-256 hash of the corpus from rule_id + text pairs.
 
@@ -773,8 +842,12 @@ async def build_pipeline(
     all_candidates, rule_metadata = await _load_candidates(db)
 
     # Build BM25 index (Stage 2) -- includes methodology body per plan Section 3.2.
-    keyword_index = KeywordIndex()
-    keyword_index.build(all_candidates)
+    # Persisted and keyed like the HNSW index below, so a warm cold-start skips
+    # the rebuild; any cache trouble degrades to the old in-memory build.
+    keyword_index, bm25_outcome = _load_or_build_keyword_index(
+        all_candidates, Path(get_hnsw_cache_dir()).parent
+    )
+    emit("metrics", "bm25_cache", "", None, outcome=bm25_outcome)
 
     # Build vector index (Stage 3).
     texts = [f"{r.get('trigger', '')} {r.get('statement', '')}" for r in all_candidates]
