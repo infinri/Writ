@@ -866,6 +866,14 @@ print(envelope)
                 echo "$cw_result"
                 return 0
             fi
+            # No answer obtainable at all (daemon down AND the body yielded no
+            # session id for the local fallback). Policy point: fail open by
+            # default, fail closed under WRIT_STRICT=1 so an auditor can pin the
+            # gate to availability.
+            if [ "${WRIT_STRICT:-}" = "1" ]; then
+                echo '{"decision":"deny","reason":"[ENF-STRICT-001] Writ strict mode (WRIT_STRICT=1): the write gate could not be evaluated (daemon unreachable, no local fallback), so this write fails closed. Start the daemon (systemctl --user start writ-server) or unset WRIT_STRICT.","rag_rules":"","rag_meta":{"rule_ids":[],"tokens":0}}'
+                return 0
+            fi
             echo '{"decision":"allow","reason":null,"rag_rules":"","rag_meta":{"rule_ids":[],"tokens":0}}'
             return 0
             ;;

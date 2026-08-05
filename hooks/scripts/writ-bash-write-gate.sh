@@ -372,7 +372,28 @@ print(json.dumps({'tool_input': {'file_path': os.environ['WRIT_AP']}, 'skill_dir
     RESP=$(curl -sf --connect-timeout 0.2 --max-time 1 \
         -X POST "${WRIT_SESSION_BASE}/session/${SESSION_ID}/can-write" \
         -H "Content-Type: application/json" -d "$BODY" 2>/dev/null) || true
-    [ -z "$RESP" ] && continue   # server unreachable -> fail open (matches Write gate)
+    if [ -z "$RESP" ]; then
+        # Daemon unreachable: fall back to the same local subprocess the Write
+        # gate uses ({"decision": allow|deny} shape), so an outage does not
+        # ungate Bash writes. Only a NO-ANSWER (fallback also failed) is left
+        # to policy: fail open by default, fail closed under WRIT_STRICT=1.
+        RESP=$(printf '%s' "$BODY" | _writ_session can-write "$SESSION_ID" --skill-dir "$SKILL_DIR" 2>/dev/null | python3 -c "
+import sys, json
+try:
+    r = json.load(sys.stdin)
+except Exception:
+    raise SystemExit
+print(json.dumps({'can_write': r.get('decision', 'allow') != 'deny', 'reason': r.get('reason')}))" 2>/dev/null) || true
+    fi
+    if [ -z "$RESP" ]; then
+        if [ "${WRIT_STRICT:-}" = "1" ]; then
+            STRICT_REASON="[ENF-STRICT-001] Writ strict mode (WRIT_STRICT=1): the write gate could not be evaluated (daemon unreachable, local fallback failed), so this Bash write to '$path' fails closed. Start the daemon (systemctl --user start writ-server) or unset WRIT_STRICT."
+            log_gate_decision "bash-write" "deny" "$STRICT_REASON" "$path"
+            emit_deny "$STRICT_REASON"
+            exit 0
+        fi
+        continue   # no answer obtainable -> fail open (default posture)
+    fi
     DENY_REASON=$(printf '%s' "$RESP" | WRIT_TGT="$path" python3 -c "
 import sys, json, os
 try:
