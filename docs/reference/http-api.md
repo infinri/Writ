@@ -3,13 +3,14 @@
 
 # HTTP API reference
 
-All 45 endpoints on `http://localhost:8765`, generated from the FastAPI route table. JSON bodies; no auth (binds localhost only). Logical failures return HTTP 200 with an `error` key; 422 is request validation.
+All 46 endpoints on `http://localhost:8765`, generated from the FastAPI route table. JSON bodies; no auth (binds localhost only). Logical failures return HTTP 200 with an `error` key; 422 is request validation.
 
 ## decision_memory
 
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/commit/capture` | Create the Commit + FileChange records for a landed commit (Phase 1d) |
+| POST | `/memory-record` | Upsert one auto-memory file as a Memory record (the graph mirror) |
 | POST | `/recall` | Compile the project's recent rule-grounded Decisions (Phase 2 recall) |
 
 ## explorer

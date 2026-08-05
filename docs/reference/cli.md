@@ -29,6 +29,8 @@ Every `writ` command, generated from the Typer app. Run `writ <command> --help` 
 | `writ logs rotate` | Rotate, compress, prune, and sweep the Writ log streams (the P2 backstop) |
 | `writ logs stats` | Print per-stream live line/byte counts, archive count, and ts range |
 | `writ logs tail` | Print the last N events of a stream (newest last), fail-open on missing |
+| `writ memory backfill` | Upsert every existing memory file, then tombstone the ones whose file is gone |
+| `writ memory list` | List a project's mirrored memories, most-recently-updated first |
 | `writ migrate` | One-time migration of existing rules into graph |
 | `writ pr sync` | Post the captured per-file reasons as file-level comments on the PR review |
 | `writ propose` | Propose an AI-generated rule. Runs structural gate before ingestion |
