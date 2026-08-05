@@ -144,3 +144,96 @@ class TestCypherDumpRoundTrip:
 
         nodes_after = await db.get_all_nodes_for_dump()
         assert all("_dump_id" not in n["props"] for n in nodes_after)
+
+
+class TestRecordPreservationOnReplay:
+    """Corpus replays must not destroy runtime records (2026-08-05 incident:
+    two import_cypher_dump replays in one day each silently deleted every
+    Memory record). Requires Neo4j running."""
+
+    @pytest_asyncio.fixture
+    async def db(self):
+        conn = Neo4jConnection(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
+        await conn.clear_all()
+        yield conn
+        await conn.clear_all()
+        await conn.close()
+
+    async def _memory_count(self, db, project: str) -> int:
+        rows = await db._run(
+            "MATCH (m:Memory {project: $p}) RETURN count(m) AS c", p=project)
+        return [r["c"] for r in rows][0]
+
+    @pytest.mark.asyncio
+    async def test_corpus_only_replay_preserves_memory_records(self, db) -> None:
+        await db.create_memory(
+            name="survives-replay", project="-test-dump-records", description="d",
+            type="project", body="b", links=[], path="/tmp/x.md", session_id="s",
+            updated_at="2026-08-05T00:00:00Z", status="live")
+        script = render_cypher_dump(
+            [{"id": "R-CORPUS-1", "label": "Rule",
+              "props": {"rule_id": "R-CORPUS-1", "statement": "s"}}], [])
+        await import_cypher_dump(db, script)
+        assert await self._memory_count(db, "-test-dump-records") == 1, (
+            "a corpus-only replay deleted the Memory record; the wipe must "
+            "preserve record labels absent from the incoming dump"
+        )
+
+    @pytest.mark.asyncio
+    async def test_dump_carrying_memory_label_gets_exact_replace(self, db) -> None:
+        await db.create_memory(
+            name="pre-existing", project="-test-dump-records", description="old",
+            type="project", body="b", links=[], path="/tmp/x.md", session_id="s",
+            updated_at="2026-08-05T00:00:00Z", status="live")
+        script = render_cypher_dump(
+            [{"id": "from-dump", "label": "Memory",
+              "props": {"name": "from-dump", "project": "-test-dump-records"}}], [])
+        await import_cypher_dump(db, script)
+        rows = await db._run(
+            "MATCH (m:Memory {project: $p}) RETURN m.name AS name", p="-test-dump-records")
+        names = sorted(r["name"] for r in rows)
+        assert names == ["from-dump"], (
+            "a dump that CARRIES the Memory label must get exact-replace "
+            f"semantics for it, got {names!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_clear_all_preserve_labels_spares_only_named_labels(self, db) -> None:
+        await db.create_rule({"rule_id": "R-WIPE-1", "statement": "s"})
+        await db.create_memory(
+            name="spared", project="-test-dump-records", description="d",
+            type="project", body="b", links=[], path="/tmp/x.md", session_id="s",
+            updated_at="2026-08-05T00:00:00Z", status="live")
+        await db.clear_all(preserve_labels=frozenset({"Memory"}))
+        assert await db.count_rules() == 0
+        assert await self._memory_count(db, "-test-dump-records") == 1
+
+
+class TestScaleBenchmarkRequiresExplicitRun:
+    """The scale benchmark wipes the live graph; it must never start by accident
+    (2026-08-05: `--help` ran the full destructive benchmark). No Neo4j needed:
+    argument handling fails before any connection."""
+
+    def _invoke(self, *args: str):
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        repo = Path(__file__).resolve().parent.parent
+        return subprocess.run(
+            [sys.executable, str(repo / "benchmarks" / "scale_benchmark.py"), *args],
+            capture_output=True, text=True, timeout=300,
+            cwd=str(repo), env={**os.environ, "WRIT_NO_AUTOSTART": "1"},
+        )
+
+    def test_no_args_refuses_and_names_the_flag(self) -> None:
+        r = self._invoke()
+        assert r.returncode != 0, "a bare invocation must refuse, not run the wipe"
+        assert "--run" in (r.stdout + r.stderr)
+
+    def test_help_exits_zero_without_running(self) -> None:
+        r = self._invoke("--help")
+        assert r.returncode == 0
+        assert "DESTRUCTIVE" in (r.stdout + r.stderr)
+        assert "snapshotted" not in (r.stdout + r.stderr).lower()

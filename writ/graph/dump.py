@@ -8,6 +8,7 @@ equivalent for Neo4j), not the bible/ markdown tree.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -88,9 +89,18 @@ async def import_cypher_dump(db: "Neo4jConnection", text: str) -> dict:
     graph exactly match this dump," not "merge this dump into whatever is
     already there" -- so restore semantics belong here, not on every caller.
 
+    Runtime-record labels (RECORD_LABELS: Memory, Decision, FileChange, Commit)
+    are preserved through the wipe UNLESS the incoming dump itself creates that
+    label: a corpus dump is not the whole graph, and replaying one used to
+    silently destroy every record (2026-08-05 incident). A dump that does carry
+    a record label (a full snapshot) still gets exact-replace semantics for it.
+
     Returns {"statements_run": N}.
     """
-    await db.clear_all()
+    from writ.graph.db._common import RECORD_LABELS
+
+    labels_in_dump = set(re.findall(r"CREATE \(:([A-Za-z]+)", text))
+    await db.clear_all(preserve_labels=RECORD_LABELS - labels_in_dump)
     statements = [line for line in text.splitlines() if line.strip()]
     for statement in statements:
         await db.execute(statement)

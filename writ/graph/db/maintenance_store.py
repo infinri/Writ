@@ -6,12 +6,26 @@ from __future__ import annotations
 
 
 class MaintenanceStoreMixin:
-    async def clear_all(self) -> None:
+    async def clear_all(self, preserve_labels: frozenset[str] = frozenset()) -> None:
         """Delete ALL nodes and edges across EVERY project. For test cleanup and
         the explicit --all-projects path only. Project-scoped callers use
-        clear_project (M.1) so wiping one project never touches another."""
+        clear_project (M.1) so wiping one project never touches another.
+
+        `preserve_labels`: labels exempted from the wipe. The corpus-replay path
+        (import_cypher_dump) passes the runtime-record labels absent from its dump,
+        because a corpus dump is not the whole graph: replaying writ-corpus.cypher
+        used to silently destroy every Memory/Decision record (2026-08-05 incident,
+        twice in one day). Default empty keeps test-cleanup semantics unchanged.
+        """
         async with self._driver.session(database=self._database) as session:
-            await session.run("MATCH (n) DETACH DELETE n")
+            if preserve_labels:
+                await session.run(
+                    "MATCH (n) WHERE NOT any(l IN labels(n) WHERE l IN $preserve) "
+                    "DETACH DELETE n",
+                    preserve=sorted(preserve_labels),
+                )
+            else:
+                await session.run("MATCH (n) DETACH DELETE n")
 
     async def execute(self, statement: str) -> None:
         """Run a single raw Cypher statement with no return value expected.
