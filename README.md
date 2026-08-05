@@ -1,8 +1,12 @@
 # Writ
 
-A Claude Code harness that gives every coding session two helpers: a fast librarian that picks the rules that fit the current task, and a process keeper that blocks risky writes until you have approved a plan and tests.
+A Claude Code harness that gives every coding session two helpers: a process keeper that blocks risky writes until you have approved a plan and tests, and a fast librarian that picks the rules that fit the current task.
 
-The librarian returns ranked results in **0.52 ms at the 95th percentile** (measured 2026-08-05 at the live 287-rule corpus). At the 10,000-rule synthetic scale it still holds at 0.83 ms while reducing context tokens by **749 times** versus loading the whole rulebook every turn.
+The process keeper's core property is that **the agent cannot approve its own work**. A gate advances only on a token minted from the user's own typed approval; the server requires and consumes that token (one approval, one advance); and an agent's attempt to self-approve is refused and logged as `agent_self_approval_blocked` in the audit stream. Retrieval speed is table stakes -- moving the oversight decision out of the agent is the product.
+
+The librarian, for the record: ranked results in **0.52 ms at the 95th percentile** (measured 2026-08-05 at the live 287-rule corpus), holding at 0.83 ms at the 10,000-rule synthetic scale while reducing context tokens by **749 times** versus loading the whole rulebook every turn.
+
+The enforcement claims are auditable in this repo, not asserted. [`PSR-008`](docs/pressure-runs/PSR-008/analysis.md) is a complete adversarial pressure run against a real session: the verbatim task prompt, the full transcript, every hook decision as JSONL, and each targeted rule graded held / bypassed / unclear (9 criteria, 8 held, one designed-in failure documented honestly). The [first monthly operational review](docs/monthly-reviews/2026-05.md) is built from 7,058 logged events by the system's own audit stream. Details in [Evidence](#evidence-pressure-runs-and-operational-reviews).
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the release history through v1.6.0 (re-measured benchmarks with environment disclosure, hook-system audit and hardening, force-swap coverage, the Claude Code 2.1.220 black-box refresh).
 
@@ -63,6 +67,8 @@ Query text
 Each retriever covers a blind spot the others have. BM25 catches exact keyword matches. Vectors catch paraphrase ("SQL" versus "database query"). Graph traversal catches rules that share neither but are causally related. The two-pass ranker fuses everything with severity, confidence, and graph-proximity weights, and an abstention gate returns nothing rather than injecting noise when the best raw cosine falls below 0.30.
 
 **The enforcement layer (the process keeper).** 37 hook scripts under `hooks/scripts/`, wired into Claude Code via `hooks/hooks.json` (41 registrations across 12 hook events), plus one statusLine script, a session state machine in `writ/session/`, slash commands, and 5 sub-agent role files under `agents/`. The state machine owns mode, phase, and gate state; hooks are thin clients that delegate to it.
+
+**Adversarial review (the independence thesis).** The review claim is not a reviewer headcount; it is independence. The reviewer role runs with fresh context, judges a SHA-scoped diff, inherits none of the implementer's session history, and carries no Write tool: the implementer's framing never reaches it, and it can only report what it finds, never quietly fix it. Isolation is what makes a second opinion a second opinion.
 
 **Mandatory rules (the architectural invariant).** Rules with `mandatory: true` (33 in the live corpus, spanning ENF-* enforcement rules and SEC-*/PERF-*/SCALE-* invariants) are excluded from the retrieval pipeline at index build time. They reach the agent out of band through the `/always-on` endpoint with its own 5,000-token budget, enforced by a corpus integrity check. No change to ranking weights, embedding model, BM25 tuning, or graph traversal can cause an enforcement rule to disappear from agent context.
 
