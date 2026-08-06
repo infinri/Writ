@@ -104,6 +104,11 @@ class IngestReport:
     errors: list[IngestError] = field(default_factory=list)
     ingested: list[tuple[Path, str, str]] = field(default_factory=list)
     dry_run: bool = False
+    # Post-write read-back: (verified_count, [mismatched ids]). counts_by_type counts
+    # PARSED nodes, and Neo4j's properties_set counter reports the SET operation rather
+    # than a delta (it is identical on a no-op re-run), so neither can tell an applied
+    # edit from a silent stale apply. Reading the nodes back can.
+    verification: tuple[int, list[str]] | None = None
 
     def render(self) -> str:
         """Human-readable multi-line summary for stdout."""
@@ -124,6 +129,19 @@ class IngestReport:
             lines.append("Ingested files:")
             for filepath, node_type, node_id in self.ingested:
                 lines.append(f"  {filepath}:{node_type} '{node_id}'")
+        if not self.dry_run and self.verification is not None:
+            verified, mismatched = self.verification
+            if mismatched:
+                lines.append(
+                    f"VERIFY FAILED: {len(mismatched)} node(s) did not match source "
+                    f"after the write ({verified} verified): {', '.join(mismatched[:10])}"
+                )
+                lines.append(
+                    "  The write reported success but the graph kept older values. "
+                    "Re-run the import, then re-read before treating it as applied."
+                )
+            else:
+                lines.append(f"Verified against source after write: {verified} node(s)")
         if not self.dry_run:
             lines.append(
                 f"Edges created: {self.edges_created} "
@@ -311,6 +329,63 @@ def _build_write_specs(parsed_nodes: list[dict], project: str) -> list[tuple[str
     return cleaned
 
 
+async def _verify_written_nodes(
+    db: Neo4jConnection, cleaned: list[tuple[str, dict, dict]]
+) -> tuple[int, list[str]]:
+    """Read the just-written nodes back and confirm the graph holds what we sent.
+
+    A `SET n +=` that applies nothing is indistinguishable from a successful write in
+    both the parse count and Neo4j's properties_set counter (the latter reports the SET
+    operation, so it is identical on a no-op re-run). One 2026-08-06 run reported full
+    success while the node kept its old values, and the only reliable check was reading
+    the node back by hand -- so the importer does it.
+
+    Compares every scalar property the write sent (lists and JSON-encoded values
+    included; both sides pass through the same coercion). Returns
+    (verified_count, mismatched_ids); a read failure is reported as a mismatch rather
+    than silently passing.
+    """
+    from writ.graph.db._common import _node_write_spec
+
+    expected: dict[tuple[str, str], dict] = {}
+    for node_type, clean, _node in cleaned:
+        try:
+            label, id_field, node_id, project, props = _node_write_spec(node_type, clean)
+        except Exception:
+            continue
+        expected[(label, id_field, node_id, project)] = props
+
+    verified = 0
+    mismatched: list[str] = []
+    by_group: dict[tuple[str, str], list[tuple[str, str, dict]]] = {}
+    for (label, id_field, node_id, project), props in expected.items():
+        by_group.setdefault((label, id_field), []).append((node_id, project, props))
+
+    for (label, id_field), rows in by_group.items():
+        ids = [node_id for node_id, _p, _props in rows]
+        query = (
+            f"MATCH (n:{label}) WHERE n.{id_field} IN $ids "
+            f"RETURN n.{id_field} AS id, properties(n) AS props"
+        )
+        try:
+            records = await db._run(query, ids=ids)
+            live = {r["id"]: r["props"] for r in records}
+        except Exception:
+            mismatched.extend(ids)
+            continue
+        for node_id, _project, props in rows:
+            actual = live.get(node_id)
+            if actual is None:
+                mismatched.append(node_id)
+                continue
+            drifted = [k for k, v in props.items() if actual.get(k) != v]
+            if drifted:
+                mismatched.append(node_id)
+            else:
+                verified += 1
+    return verified, sorted(mismatched)
+
+
 async def _write_nodes(
     db: Neo4jConnection,
     cleaned: list[tuple[str, dict, dict]],
@@ -350,6 +425,7 @@ async def _write_nodes(
             await db.batch_create_nodes([(nt, clean) for nt, clean, _ in cleaned])
             for node_type, _clean, node in cleaned:
                 _record_ingested(node_type, node)
+            report.verification = await _verify_written_nodes(db, cleaned)
         except Exception as exc:
             report.errors.append(IngestError(
                 file=Path("<batch>"), node_type=None, node_id=None,

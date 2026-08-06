@@ -34,7 +34,7 @@ from writ.graph.db._common import RECORD_LABELS
 
 # Credentials via the central loader: env-independent defaults keep CI (no
 # writ.toml checked out) collecting and running; a local writ.toml overrides.
-from writ.config import get_neo4j_password, get_neo4j_user
+from writ.config import get_neo4j_password, get_neo4j_uri, get_neo4j_user
 
 from tests._bible_guard import requires_bible
 
@@ -43,6 +43,7 @@ pytestmark = requires_bible
 
 NEO4J_PASSWORD = get_neo4j_password()
 NEO4J_USER = get_neo4j_user()
+NEO4J_URI = get_neo4j_uri()
 
 
 # ---------------------------------------------------------------------------
@@ -755,3 +756,64 @@ class TestMigrateScriptShimContract:
 # hardcoding "1.5.0") and meant every version bump had to be applied in two test files;
 # removed in v1.5.1 so there is one place to change.
 
+
+
+class TestPostWriteVerification:
+    """An ingest that reports success must have proven it, not assumed it.
+
+    counts_by_type counts PARSED nodes and Neo4j's properties_set counter reports the
+    SET operation (identical on a no-op re-run), so neither distinguishes an applied
+    edit from a silent stale apply -- one observed run printed a full success report
+    while the node kept its old values. The importer now reads the nodes back.
+    """
+
+    def test_report_renders_verified_count_on_a_clean_write(self) -> None:
+        from writ.graph.methodology_ingest import IngestReport
+
+        report = IngestReport(counts_by_type={"Skill": 16}, verification=(16, []))
+        out = report.render()
+        assert "Verified against source after write: 16 node(s)" in out
+        assert "VERIFY FAILED" not in out
+
+    def test_report_shouts_and_names_ids_on_a_stale_apply(self) -> None:
+        from writ.graph.methodology_ingest import IngestReport
+
+        report = IngestReport(
+            counts_by_type={"Skill": 16},
+            verification=(15, ["SKL-PROC-EXAMPLE-001"]),
+        )
+        out = report.render()
+        assert "VERIFY FAILED: 1 node(s) did not match source" in out
+        assert "SKL-PROC-EXAMPLE-001" in out
+        assert "Re-run the import" in out
+
+    def test_dry_run_reports_no_verification(self) -> None:
+        from writ.graph.methodology_ingest import IngestReport
+
+        out = IngestReport(counts_by_type={"Skill": 1}, dry_run=True).render()
+        assert "Verified against source" not in out and "VERIFY FAILED" not in out
+
+    @pytest.mark.asyncio
+    async def test_verifier_flags_a_node_whose_graph_value_differs(self) -> None:
+        # The stale-apply shape: the expectation says one thing, the graph holds another.
+        from writ.graph.db import Neo4jConnection
+        from writ.graph.methodology_ingest import _verify_written_nodes
+
+        db = Neo4jConnection(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
+        try:
+            await db.create_methodology_node(
+                "Skill", {"skill_id": "SKL-VERIFY-TEST-001", "project": "writ",
+                          "statement": "current", "last_validated": "2026-08-06"})
+            stale = [("Skill", {"skill_id": "SKL-VERIFY-TEST-001", "project": "writ",
+                                "statement": "stale expectation"}, {})]
+            verified, mismatched = await _verify_written_nodes(db, stale)
+            assert verified == 0 and mismatched == ["SKL-VERIFY-TEST-001"]
+
+            fresh = [("Skill", {"skill_id": "SKL-VERIFY-TEST-001", "project": "writ",
+                                "statement": "current"}, {})]
+            verified, mismatched = await _verify_written_nodes(db, fresh)
+            assert verified == 1 and mismatched == []
+        finally:
+            async with db._driver.session(database=db._database) as s:
+                await s.run("MATCH (n:Skill {skill_id:'SKL-VERIFY-TEST-001'}) DETACH DELETE n")
+            await db.close()

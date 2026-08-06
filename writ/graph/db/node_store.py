@@ -72,7 +72,7 @@ class NodeStoreMixin:
 
     async def batch_create_nodes(
         self, node_specs: list[tuple[str, dict]], source_origin: str = "ingest"
-    ) -> None:
+    ) -> dict[str, int]:
         """Bulk-ingest nodes in ONE write transaction via UNWIND-grouped MERGE,
         instead of a session + auto-commit per node (B5.2: ~1,444 round-trips ->
         a handful). Semantically identical to create_rule / create_methodology_node
@@ -82,6 +82,12 @@ class NodeStoreMixin:
         node_specs: list of (node_type, data), the same args the per-node creates take.
         Grouped by (label, id_field) because MERGE can't parameterize the label and
         methodology types use different id-field property names.
+
+        Returns Neo4j's own write counters {"nodes_created", "properties_set"}. The
+        ingest report used to count PARSED nodes, so a run whose `SET n +=` applied
+        nothing still printed a full success report -- there was no way to tell an
+        applied edit from a silent no-op (2026-08-06 stale-apply observation). The
+        counters make that distinguishable at the source.
         """
         from collections import defaultdict
 
@@ -94,7 +100,9 @@ class NodeStoreMixin:
                 {"id": node_id, "project": project, "props": props}
             )
         if not groups:
-            return
+            return {"nodes_created": 0, "properties_set": 0}
+
+        totals = {"nodes_created": 0, "properties_set": 0}
 
         async def _work(tx) -> None:
             for (label, id_field), rows in groups.items():
@@ -106,10 +114,15 @@ class NodeStoreMixin:
                     f"MERGE (n:{label} {{{id_field}: row.id, project: row.project}}) "
                     "SET n += row.props"
                 )
-                await tx.run(query, rows=rows)
+                result = await tx.run(query, rows=rows)
+                summary = await result.consume()
+                counters = getattr(summary, "counters", None)
+                totals["nodes_created"] += getattr(counters, "nodes_created", 0) or 0
+                totals["properties_set"] += getattr(counters, "properties_set", 0) or 0
 
         async with self._driver.session(database=self._database) as session:
             await session.execute_write(_work)
+        return totals
 
     async def get_all_nodes(self, label: str | None = None) -> list[dict]:
         """Fetch all nodes across every label, optionally filtered to one label.
