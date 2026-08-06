@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Phase 3: dispatch discipline -- steer generic sub-agent dispatches to the named Writ role.
+# Phase 3: dispatch discipline -- hot-swap generic sub-agent dispatches to the named Writ role.
 #
-# PreToolUse on Task. In work mode, if the dispatched subagent_type is generic
-# (general-purpose / Explore / claude / empty) and the prompt carries no escape marker,
-# DENY the dispatch and name the matching Writ role (keyword-mapped from the prompt).
+# PreToolUse on Task. In work, investigate, and mode-unset sessions, if the dispatched
+# subagent_type is generic (general-purpose / Explore / claude / plan / empty) and the
+# prompt carries no escape marker ([general-purpose] / [writ:dispatch-ok]), REWRITE the
+# dispatch in place via updatedInput to the Writ role keyword-mapped from the prompt,
+# disclosing the swap in additionalContext; a prompt that maps to no role confidently
+# is denied with the role menu instead ("workflow-subagent" is exempt: the Workflow
+# engine's structured-output contracts would break under a role swap).
 # Generic agents are the exception, not the default (SKL-PROC-DISPATCH-001): they carry
 # no role prompt and run outside the Writ session (mode/gates/RAG).
 #
@@ -95,10 +99,11 @@ shown = st or "general-purpose"
 r = role()
 if r:
     # Confident classification: REWRITE the dispatch to the governed Writ role via
-    # updatedInput so the model proceeds with it directly. This replaces the old deny+retry,
-    # which depended on the agent re-dispatching (it largely did not -- the observed 92%
-    # general-purpose). additionalContext makes the swap visible so the agent can re-issue
-    # with '[general-purpose]' if generic was genuinely intended.
+    # updatedInput so the model proceeds with it directly. Deny-based steering is reserved
+    # for the ambiguous branch below because a denial depends on the agent re-dispatching,
+    # which it largely does not (observed 92% generic dispatches). additionalContext makes
+    # the swap visible so the agent can re-issue with '[general-purpose]' if generic was
+    # genuinely intended.
     new_ti = dict(ti)
     new_ti["subagent_type"] = r
     print(json.dumps({
