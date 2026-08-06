@@ -62,9 +62,11 @@
 # flags, and a leading backslash all sit in FRONT of the real command. One helper serves
 # both the egress pass and the write extractor, so `FOO=1 tee f`, `env FOO=1 cp a b` and
 # `sudo cp a b` are gated as writes for the same reason `FOO=1 curl -d @f https://host`
-# prompts. sudo/doas are parsed STRICTLY: an option the classifier cannot place bails to
-# no-detection rather than risk naming the wrong verb, so `sudo -u deploy scp f h:/p` is
-# covered while an exotic option shape stays where it was before this change.
+# prompts. sudo/doas are parsed STRICTLY, mirroring sudo's real short-option grammar for
+# the KNOWN letters -- bundles and glued values both resolve, so `sudo -u deploy scp f
+# h:/p`, `sudo -udeploy curl ...` and `sudo -nHudeploy curl ...` are all covered. Only an
+# UNKNOWN option letter or long option bails to no-detection, rather than risk a prompt
+# naming the wrong verb; a bailed segment's plain redirects are still extracted.
 #
 # COVERAGE LIMIT, egress (same honesty as the write block above): only literal,
 # tokenizable command shapes are seen. Obfuscation WILL evade -- base64/gzip piped into
@@ -386,7 +388,9 @@ SUDO_NOVALUE_FLAGS = frozenset({
     "-H", "--set-home", "-i", "--login", "-k", "--reset-timestamp",
     "-K", "--remove-timestamp", "-l", "--list", "-n", "--non-interactive",
     "-N", "--no-update", "-P", "--preserve-groups", "-S", "--stdin", "-s", "--shell",
-    "-v", "--validate", "-V", "--version", "-e", "--edit", "-h", "--help",
+    "-v", "--validate", "-V", "--version", "-e", "--edit", "--help",
+    # Short `-h` is deliberately NOT here: sudo reads it as --host, which takes a value,
+    # and the two sets must not disagree about one letter. `--help` stays value-less.
 })
 DOAS_VALUE_FLAGS = frozenset({"-u", "-a", "-C"})
 DOAS_NOVALUE_FLAGS = frozenset({"-L", "-n", "-s"})
@@ -396,11 +400,12 @@ DOAS_NOVALUE_FLAGS = frozenset({"-L", "-n", "-s"})
 # five -- their option sets are tiny and stable and they take no positional arguments
 # of their own, so the token after the options IS the verb.
 #
-# A set means STRICT: an unclassifiable dash token BAILS to no-detection. sudo's option
-# grammar is large enough that guessing wrong would swallow the real verb and could
-# raise a prompt naming the WRONG command, which is worse than a miss. Bailing is never
-# worse than the pre-fix behavior (`sudo <anything>` was undetected outright), and it
-# still closes the everyday shapes (`sudo curl -d @x URL`, `sudo -u deploy scp f h:/p`).
+# A set means STRICT: sudo's real short-option grammar is mirrored for the KNOWN letters
+# (bundling, and a value glued to its letter as in `-udeploy`), and only an UNKNOWN option
+# BAILS to no-detection. The bail exists because guessing a value's position would swallow
+# the real verb and could raise a prompt naming the WRONG command, which is worse than a
+# miss; it is never worse than the pre-fix behavior, where `sudo <anything>` went
+# undetected outright.
 WRAPPERS = {
     "command": (frozenset(), None),
     "env": (frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}), None),
@@ -453,20 +458,35 @@ def verb_at(seg):
                 if nxt in value_flags:
                     i += 1
                 continue
-            base = nxt.split("=", 1)[0] if nxt.startswith("--") else nxt
-            if base in novalue_flags:
-                i += 1
-                continue
-            if base in value_flags:
-                i += 1
-                if "=" not in nxt:            # `--user=x` carries its value, `-u x` does not
+            if nxt.startswith("--"):
+                base = nxt.split("=", 1)[0]
+                if base in novalue_flags:
                     i += 1
-                continue
-            if (not nxt.startswith("--") and len(nxt) > 2
-                    and all("-" + c in novalue_flags for c in nxt[1:])):
-                i += 1     # a bundle of value-less short flags consumes nothing after it
-                continue
-            return "", len(seg), []           # unclassifiable option: bail, detect nothing
+                    continue
+                if base in value_flags:
+                    i += 1
+                    if "=" not in nxt:        # `--user=x` carries its value, `--user x` does not
+                        i += 1
+                    continue
+                return "", len(seg), []       # unknown long option: bail, detect nothing
+            # Short options, parsed the way sudo really parses them: letters bundle, and
+            # the FIRST value-taking letter takes the REST of the token as its value
+            # (`-udeploy`), or the next token when nothing is left (`-u deploy`,
+            # `-nHu deploy`). Only an UNKNOWN letter is unclassifiable, and only that
+            # bails -- guessing a value's position is what would swallow the real verb.
+            takes_next, unknown = False, False
+            for k in range(1, len(nxt)):
+                letter = "-" + nxt[k]
+                if letter in novalue_flags:
+                    continue
+                if letter in value_flags:
+                    takes_next = k + 1 >= len(nxt)
+                    break
+                unknown = True
+                break
+            if unknown:
+                return "", len(seg), []       # unknown option letter: bail, detect nothing
+            i += 2 if takes_next else 1
     return "", len(seg), assigns
 
 
