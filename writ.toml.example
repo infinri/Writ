@@ -28,7 +28,6 @@ token = ""
 # (writ/config.py get_egress_allow_hosts, read by hooks/scripts/writ-bash-write-gate.sh).
 # Compared on host only, port ignored. localhost, 127.0.0.1, ::1, [::1] and $WRIT_HOST
 # always pass, so this list is for extras; $WRIT_EGRESS_ALLOW_HOSTS (comma-separated)
-# adds to it for one session. Uncomment BOTH lines below to use it -- the section
-# header is commented too, so an uncommented key alone would land in [bitbucket].
-# [egress]
+# adds to it for one session. Uncomment allow_hosts to use it.
+[egress]
 # allow_hosts = ["uploads.internal.example", "files.example.com"]

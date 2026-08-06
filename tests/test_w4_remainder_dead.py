@@ -265,7 +265,9 @@ _STRIPPED_SECTIONS = {
 # (no active keys) and therefore may or may not appear as parsed keys at all --
 # the assertion below treats their presence as optional, not required, so it
 # is not brittle to that.
-_KEPT_SECTIONS_ALLOWED = {"neo4j", "bitbucket", "hnsw", "logs"}
+# "egress" joined 2026-08-06: get_egress_allow_hosts in writ/config.py reads it,
+# which is this guard's own criterion for a kept section.
+_KEPT_SECTIONS_ALLOWED = {"neo4j", "bitbucket", "hnsw", "logs", "egress"}
 
 
 def _load_toml_example() -> dict:
