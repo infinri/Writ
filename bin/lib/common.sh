@@ -358,6 +358,25 @@ print(json.dumps({
 PY
 }
 
+# Emit a PreToolUse "ask" decision (Claude Code hookSpecificOutput contract): the
+# tool is neither allowed nor denied, the USER confirms it. Single source for the ask
+# envelope, the twin of emit_deny above. The reason rides an env var into python, which
+# does the JSON encoding, so newlines and quotes inside a reason (the egress guard lists
+# one destination per line) cannot corrupt or forge the envelope (SEC-INJ-LOG-001).
+# Usage: [ -n "$ASK" ] && emit_ask "$ASK"
+emit_ask() {
+  WRIT_ASK_REASON="$1" python3 <<'PY'
+import json, os
+print(json.dumps({
+    'hookSpecificOutput': {
+        'hookEventName': 'PreToolUse',
+        'permissionDecision': 'ask',
+        'permissionDecisionReason': os.environ.get('WRIT_ASK_REASON', '')
+    }
+}))
+PY
+}
+
 # Extract the rule objects (the fields used for violation pattern matching) from
 # a /query JSON response on stdin, as a JSON array; '[]' on any error. Single
 # source for the --add-rule-objects payload built by the RAG hooks

@@ -33,7 +33,7 @@ The code map for anyone (human or agent) modifying Writ's own source. Facts here
 
 ## Configuration reality
 
-`writ.toml` has four sections only (`[neo4j]`, `[hnsw]`, `[bitbucket]`, `[logs]`); everything else is code constants with tests pinning them. There is no generic `WRIT_`-prefix override mechanism; the real env vars are enumerated in `docs/reference/configuration.md`. Budget constants live in `writ/shared/budget.json` (edit the JSON, both Python and bash load it).
+`writ.toml` has five sections only (`[neo4j]`, `[hnsw]`, `[bitbucket]`, `[logs]`, `[egress]` -- the last one commented out in `writ.toml.example`, since `tests/test_w4_remainder_dead.py` pins the example's PARSED sections to the original four); everything else is code constants with tests pinning them. There is no generic `WRIT_`-prefix override mechanism; the real env vars are enumerated in `docs/reference/configuration.md`. Budget constants live in `writ/shared/budget.json` (edit the JSON, both Python and bash load it).
 
 ## Testing directives
 

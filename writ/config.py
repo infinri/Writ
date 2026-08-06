@@ -22,6 +22,12 @@ DEFAULT_NEO4J_URI = "bolt://localhost:7687"
 DEFAULT_NEO4J_USER = "neo4j"
 DEFAULT_NEO4J_PASSWORD = "writdevpass"
 DEFAULT_HNSW_CACHE_DIR = str(Path.home() / ".cache" / "writ" / "hnsw")
+# Hosts the Bash egress guard (hooks/scripts/writ-bash-write-gate.sh) never prompts
+# about. Loopback in every spelling a command line can carry, including the bracketed
+# IPv6 form that appears inside a URL (`http://[::1]:9/x`) and the bare form a raw
+# socket verb takes (`nc ::1 9000`).
+DEFAULT_EGRESS_ALLOW_HOSTS = ("localhost", "127.0.0.1", "::1", "[::1]")
+DEFAULT_WRIT_HOST = "localhost"
 
 # Default config file path: writ.toml in the package root (one level above writ/).
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
@@ -183,6 +189,39 @@ def get_hnsw_cache_dir(path: str | None = None) -> str:
     cfg = load_config(path)
     raw = cfg.get("hnsw", {}).get("cache_dir", DEFAULT_HNSW_CACHE_DIR)
     return os.path.expanduser(raw)
+
+
+def get_egress_allow_hosts(path: str | None = None) -> list[str]:
+    """Hosts the Bash egress guard may send local data to without prompting.
+
+    The union of three sources, lowercased and de-duplicated:
+      * DEFAULT_EGRESS_ALLOW_HOSTS (loopback, always allowed),
+      * writ.toml `[egress] allow_hosts` (a list of strings),
+      * the comma-separated `WRIT_EGRESS_ALLOW_HOSTS` env var and the daemon host
+        from `WRIT_HOST` (the daemon answers on the loopback name by default, but a
+        remote daemon must not make its own gate prompt).
+
+    `WRIT_CONFIG_PATH` overrides the config file when no explicit `path` is passed:
+    the guard runs inside a hook subprocess that resolves this list in-process, and
+    the real writ.toml is gitignored install state a test must never write to. The
+    env seam mirrors WRIT_STRICT / WRIT_PORT, and is scoped to this getter so the
+    other readers keep their single fixed location.
+
+    Never raises: an absent, empty or malformed writ.toml falls back to the
+    built-in defaults (load_config already warns), so a bad config NARROWS the
+    allowlist rather than opening the gate.
+    """
+    if path is None:
+        path = os.environ.get("WRIT_CONFIG_PATH") or None
+    cfg = load_config(path)
+    hosts = list(DEFAULT_EGRESS_ALLOW_HOSTS)
+    configured = cfg.get("egress", {}).get("allow_hosts") or []
+    if isinstance(configured, str):
+        configured = configured.split(",")
+    hosts.extend(str(h) for h in configured)
+    hosts.extend((os.environ.get("WRIT_EGRESS_ALLOW_HOSTS") or "").split(","))
+    hosts.append(os.environ.get("WRIT_HOST") or DEFAULT_WRIT_HOST)
+    return sorted({h.strip().lower() for h in hosts if h and h.strip()})
 
 
 def get_logs_backup_dest(path: str | None = None) -> str | None:

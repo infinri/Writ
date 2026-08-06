@@ -282,7 +282,7 @@ Errors come back as HTTP 200 with `{"error": "..."}` for logical failures, 422 f
 
 | File | Purpose |
 |---|---|
-| `writ.toml` | `[neo4j]` credentials, `[hnsw]` cache dir, `[bitbucket]` credentials, `[logs]` backup destination. Gitignored; `writ.toml.example` is the template. Missing file falls back to dev defaults. |
+| `writ.toml` | `[neo4j]` credentials, `[hnsw]` cache dir, `[bitbucket]` credentials, `[logs]` backup destination, `[egress] allow_hosts` (extra hosts the Bash egress guard never asks about). Gitignored; `writ.toml.example` is the template. Missing file falls back to dev defaults. |
 | `pyproject.toml` | Package metadata. Production deps: fastapi, uvicorn, neo4j, tantivy, hnswlib, httpx, pydantic, typer, rich, onnxruntime. `sentence-transformers` is the optional `[fallback]` extra, not a production dep. |
 | `.claude-plugin/plugin.json` | Plugin manifest. Deliberately declares no `hooks` key (auto-discovery of `hooks/hooks.json`; declaring it collides) and no `agents` key (declaring one loads zero agents; auto-discovery of `agents/` loads all 5). |
 | `.claude-plugin/marketplace.json` | Single-plugin marketplace so `claude plugin marketplace add infinri/Writ` resolves. Version must match `plugin.json`. |
@@ -291,7 +291,7 @@ Errors come back as HTTP 200 with `{"error": "..."}` for logical failures, 422 f
 | `bin/lib/gate-categories.json` | Gate exclusion globs plus framework detection. |
 | `writ/shared/budget.json` | Budget constants: default 8000, rule costs 200/120/40, always-on cap 5000. |
 
-Common environment variables: `WRIT_HOST`/`WRIT_PORT` (daemon target), `WRIT_CACHE_DIR` (session caches, default `<install>/var/session`), `WRIT_LOG_ROOT` (typed log streams, default `<install>/var/logs`), `WRIT_FRICTION_LOG` (collapse all streams to one file), `WRIT_DEBUG` (debug sinks, default off), `WRIT_NO_AUTOSTART` (suppress daemon autostart), `WRIT_ALLOW_EMBEDDING_FALLBACK=1` (permit the sentence-transformers path when ONNX is absent). Neo4j credentials are read from `writ.toml` only.
+Common environment variables: `WRIT_HOST`/`WRIT_PORT` (daemon target), `WRIT_CACHE_DIR` (session caches, default `<install>/var/session`), `WRIT_LOG_ROOT` (typed log streams, default `<install>/var/logs`), `WRIT_FRICTION_LOG` (collapse all streams to one file), `WRIT_DEBUG` (debug sinks, default off), `WRIT_NO_AUTOSTART` (suppress daemon autostart), `WRIT_ALLOW_EMBEDDING_FALLBACK=1` (permit the sentence-transformers path when ONNX is absent), `WRIT_EGRESS_ALLOW_HOSTS` (comma-separated hosts the Bash egress guard never asks about, unioned with `writ.toml [egress] allow_hosts`). Neo4j credentials are read from `writ.toml` only.
 
 **Availability posture, and the strict switch.** A daemon outage does not ungate writes: the gate hooks fall back to a local subprocess that reads the same session state, so plan and test gates hold with the daemon down. The residue -- a check that cannot be answered even locally -- fails open by default (the availability decision) or fails closed with **`WRIT_STRICT=1`**, which denies any write whose gate could not be evaluated and says why (`ENF-STRICT-001`). Auditors who consider fail-open disqualifying set one environment variable instead of arguing with a documentation link.
 

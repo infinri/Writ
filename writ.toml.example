@@ -23,3 +23,12 @@ password = "writdevpass"  # local dev default; change for any networked instance
 # Create a token: https://id.atlassian.com/manage-profile/security/api-tokens
 email = ""
 token = ""
+
+# Hosts the Bash egress guard may send local data to WITHOUT asking you to confirm
+# (writ/config.py get_egress_allow_hosts, read by hooks/scripts/writ-bash-write-gate.sh).
+# Compared on host only, port ignored. localhost, 127.0.0.1, ::1, [::1] and $WRIT_HOST
+# always pass, so this list is for extras; $WRIT_EGRESS_ALLOW_HOSTS (comma-separated)
+# adds to it for one session. Uncomment BOTH lines below to use it -- the section
+# header is commented too, so an uncommented key alone would land in [bitbucket].
+# [egress]
+# allow_hosts = ["uploads.internal.example", "files.example.com"]

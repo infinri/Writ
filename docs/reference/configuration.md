@@ -1,6 +1,6 @@
 # Configuration
 
-Every knob, its real location, and its default. The theme to keep straight: `writ.toml` holds exactly four sections; most values people expect in config are deliberately code constants with tests pinning them.
+Every knob, its real location, and its default. The theme to keep straight: `writ.toml` holds five sections; most values people expect in config are deliberately code constants with tests pinning them.
 
 ## writ.toml
 
@@ -12,6 +12,7 @@ At the install root, gitignored; `writ.toml.example` is the template. Readers in
 | `[hnsw]` | `cache_dir` | `~/.cache/writ/hnsw` |
 | `[bitbucket]` | `email`, `token` | none (PR sync off; the token is never logged) |
 | `[logs]` | `backup_dest` | none (`writ logs backup` requires `--dest`) |
+| `[egress]` | `allow_hosts` | `localhost`, `127.0.0.1`, `::1`, `[::1]`, `$WRIT_HOST` (the Bash egress guard's allowlist; configured hosts are unioned with those defaults and with `WRIT_EGRESS_ALLOW_HOSTS`, compared on host only with the port ignored) |
 
 **Not in writ.toml, by design (code constants):** ranking weights (`writ/retrieval/ranking.py`), the 0.30 abstention threshold (`writ/retrieval/pipeline.py`), gate cosine thresholds 0.95/0.85 (`writ/gate.py`, `writ/graph/schema.py`), graduation thresholds 50 / 0.75 (`writ/frequency.py`), context-budget bands 2,000 / 8,000 (`writ/retrieval/ranking.py`).
 
@@ -37,6 +38,8 @@ At the install root, gitignored; `writ.toml.example` is the template. Readers in
 | `WRIT_DEBUG` | Enable the `/tmp` debug sinks (`WRIT_HOOK_LOG` names one of them) | off |
 | `WRIT_NO_AUTOSTART` | Suppress hook-side daemon/Neo4j autostart | unset |
 | `WRIT_ALLOW_EMBEDDING_FALLBACK=1` | Permit the sentence-transformers fallback when the ONNX model is absent | off (hard error instead) |
+| `WRIT_EGRESS_ALLOW_HOSTS` | Comma-separated extra hosts the Bash egress guard never asks about; unioned with `[egress] allow_hosts` | unset (loopback + `$WRIT_HOST` only) |
+| `WRIT_CONFIG_PATH` | Config file `get_egress_allow_hosts()` reads when called with no explicit path (the hook-side test seam; the other readers keep the fixed install-root location) | `<install>/writ.toml` |
 | `WRIT_CONTEXT_WINDOW_TOKENS` | Context-pressure reference for the statusline/watcher; validated 1,000-10,000,000 at daemon startup, warn-only | 200,000 hook-side |
 | `WRIT_BLACKBOX=1` (or `~/.claude/writ-blackbox.on`) | Raw hook-payload capture to `~/.claude/writ-blackbox.jsonl` | off |
 | `WRIT_READ_JUNK_GATE=enforce` | Turn the read-junk gate from observe-only into blocking; `WRIT_READ_SIZE_KB` sets the oversize bound | `observe` / 100 KB |
