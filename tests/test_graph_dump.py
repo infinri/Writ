@@ -111,9 +111,12 @@ class TestCypherDumpRoundTrip:
     @pytest_asyncio.fixture
     async def db(self):
         conn = Neo4jConnection(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
-        await conn.clear_all()
+        # Explicit full wipe: clear_all preserves runtime records by default, so a
+        # fixture that asserts on record COUNTS must opt into wiping them or the
+        # previous test's records leak into this one's arithmetic.
+        await conn.clear_all(preserve_labels=frozenset())
         yield conn
-        await conn.clear_all()
+        await conn.clear_all(preserve_labels=frozenset())
         await conn.close()
 
     @pytest.mark.asyncio
@@ -153,9 +156,12 @@ class TestRecordPreservationOnReplay:
     @pytest_asyncio.fixture
     async def db(self):
         conn = Neo4jConnection(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
-        await conn.clear_all()
+        # Explicit full wipe: clear_all preserves runtime records by default, so a
+        # fixture that asserts on record COUNTS must opt into wiping them or the
+        # previous test's records leak into this one's arithmetic.
+        await conn.clear_all(preserve_labels=frozenset())
         yield conn
-        await conn.clear_all()
+        await conn.clear_all(preserve_labels=frozenset())
         await conn.close()
 
     async def _memory_count(self, db, project: str) -> int:
@@ -194,6 +200,33 @@ class TestRecordPreservationOnReplay:
         assert names == ["from-dump"], (
             "a dump that CARRIES the Memory label must get exact-replace "
             f"semantics for it, got {names!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_clear_all_preserves_records_by_default(self, db) -> None:
+        # The ~100 bare clear_all() call sites are test fixtures and admin corpus
+        # rebuilds; none of them means "destroy operational records", so the safe
+        # posture is the default rather than per-caller opt-in.
+        await db.create_rule({"rule_id": "R-DEFAULT-1", "statement": "s"})
+        await db.create_memory(
+            name="survives-default-wipe", project="-test-dump-records", description="d",
+            type="project", body="b", links=[], path="/tmp/x.md", session_id="s",
+            updated_at="2026-08-06T00:00:00Z", status="live")
+        await db.clear_all()
+        assert await db.count_rules() == 0, "the corpus must still be wiped"
+        assert await self._memory_count(db, "-test-dump-records") == 1, (
+            "a bare clear_all() must not destroy runtime records"
+        )
+
+    @pytest.mark.asyncio
+    async def test_clear_all_empty_preserve_set_wipes_everything(self, db) -> None:
+        await db.create_memory(
+            name="explicit-full-wipe", project="-test-dump-records", description="d",
+            type="project", body="b", links=[], path="/tmp/x.md", session_id="s",
+            updated_at="2026-08-06T00:00:00Z", status="live")
+        await db.clear_all(preserve_labels=frozenset())
+        assert await self._memory_count(db, "-test-dump-records") == 0, (
+            "an explicit empty preserve set must still wipe everything"
         )
 
     @pytest.mark.asyncio

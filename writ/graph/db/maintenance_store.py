@@ -6,22 +6,34 @@ from __future__ import annotations
 
 
 class MaintenanceStoreMixin:
-    async def clear_all(self, preserve_labels: frozenset[str] = frozenset()) -> None:
-        """Delete ALL nodes and edges across EVERY project. For test cleanup and
-        the explicit --all-projects path only. Project-scoped callers use
-        clear_project (M.1) so wiping one project never touches another.
+    async def clear_all(self, preserve_labels: frozenset[str] | None = None) -> None:
+        """Delete the corpus graph across EVERY project. For test cleanup and the
+        explicit --all-projects path only. Project-scoped callers use clear_project
+        (M.1) so wiping one project never touches another.
 
-        `preserve_labels`: labels exempted from the wipe. The corpus-replay path
-        (import_cypher_dump) passes the runtime-record labels absent from its dump:
-        a corpus dump is not the whole graph, and operational records must survive
-        a corpus replay. Default empty keeps test-cleanup semantics unchanged.
+        Runtime records are preserved BY DEFAULT (`preserve_labels=None` resolves to
+        RECORD_LABELS: Memory, Decision, FileChange, Commit). They are operational
+        state with no bible or dump home, so nothing that rebuilds the CORPUS should
+        take them with it -- and every one of this method's ~100 call sites is a test
+        fixture or an admin corpus rebuild, which is why the safe posture belongs in
+        the default rather than in each caller. Records were destroyed three times in
+        one session before this default existed: `writ memory backfill` rebuilt them
+        from files each time, but a Decision record has no such source.
+
+        Pass an explicit `frozenset()` for a genuine everything-wipe; pass a specific
+        set (as import_cypher_dump does, computing RECORD_LABELS minus the labels its
+        dump actually creates) to keep exact-replace semantics for labels the caller
+        is itself restoring.
         """
+        from writ.graph.db._common import RECORD_LABELS
+
+        preserve = RECORD_LABELS if preserve_labels is None else preserve_labels
         async with self._driver.session(database=self._database) as session:
-            if preserve_labels:
+            if preserve:
                 await session.run(
                     "MATCH (n) WHERE NOT any(l IN labels(n) WHERE l IN $preserve) "
                     "DETACH DELETE n",
-                    preserve=sorted(preserve_labels),
+                    preserve=sorted(preserve),
                 )
             else:
                 await session.run("MATCH (n) DETACH DELETE n")
