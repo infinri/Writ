@@ -164,12 +164,23 @@ Retrieval quality against the 193-query ground-truth corpus (47 ambiguous, expan
 
 | Metric                                      | Floor   | 2026-08-01 | 2026-08-05 |
 |---------------------------------------------|---------|-----------:|-----------:|
+| **Hit rate at 5 (index-eligible, n=169)**   | >= 0.90 | --         | **0.9290** |
+| Always-on targets delivered (n=21)          | 21/21   | --         | 21/21      |
+| Routed-channel targets verified (n=3)       | 3/3     | --         | 3/3        |
+| Hit rate at 5 (all 193, continuity)         | >= 0.75 | 0.7824     | 0.8187     |
 | MRR at 5 (ambiguous queries, n=47)          | >= 0.45 | 0.5681     | 0.6167     |
-| Hit rate at 5 (all 193 queries)             | >= 0.75 | 0.7824     | 0.8187     |
 | Domain hit rate top-5                       | >= 0.90 | 0.9323     | 0.9534     |
 | nDCG at 10                                  | >= 0.65 | 0.7071     | 0.7332     |
 | Methodology MRR at 5 (n=40, signed off)     | >= 0.78 | 0.8271     | --         |
 | Methodology hit rate                        | >= 0.90 | 0.9500     | --         |
+
+The split (2026-08-05) is a metric-definition change, disclosed as such: rank metrics are
+only meaningful for targets the ranked index can contain. 21 ground-truth queries target
+mandatory rules, which the architectural invariant above deliberately excludes from
+retrieval and delivers always-on every turn -- for those the verified guarantee is bundle
+membership, not rank. 3 more target process rules whose category routes them to the
+state/action/pull channels instead of semantic retrieval. The all-193 number stays in the
+table so the definition change cannot quietly inflate the headline.
 
 The 2026-08-05 column follows the miss triage (`benchmarks/MISS-TRIAGE-2026-08-05.md`): five
 rules gained the vocabulary their queries actually use, and four ground-truth entries the

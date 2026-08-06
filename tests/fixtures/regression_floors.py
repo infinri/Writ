@@ -298,3 +298,14 @@ DOMAIN_HIT_RATE_TOP5_FLOOR = 0.90
 # raise it (append-only, with a fresh measurement) when the corpus and query set
 # support it. Re-measure and append a note below when changing.
 NDCG10_FLOOR = 0.65
+
+# Channel-split floor (2026-08-05): retrieval rank metrics only make sense for
+# targets the index can contain. 21 of the 193 ground-truth queries target
+# mandatory rules (excluded from the ranked pool by the architectural invariant,
+# delivered via /always-on) and 3 target category-routed process rules (the
+# methodology-companion channel); scoring those against /query measures the
+# wrong channel (HANDBOOK section 10). Measured on the split's introduction:
+# eligible hit-rate@5 = 157/169 = 0.9290 at the 287-rule corpus. Floor set at
+# 0.90 (~5-query headroom), same anti-drift stance as the floors above.
+# The all-193 HIT_RATE_FLOOR above stays as the continuity gate.
+ELIGIBLE_HIT_RATE_FLOOR = 0.90
