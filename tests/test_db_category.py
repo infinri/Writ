@@ -78,11 +78,16 @@ def _make_category(category_id: str = "CAT-CODING-001", routes: list[str] | None
 
 @pytest_asyncio.fixture()
 async def db():
-    """Isolated Neo4j connection; graph is cleared before and after each test."""
+    """Isolated Neo4j connection; graph is cleared before and after each test.
+
+    Explicit full wipe: clear_all preserves runtime records by default, and this
+    module asserts on total node counts (including "empty graph returns []"), so
+    preserved memories would leak into that arithmetic.
+    """
     conn = Neo4jConnection(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
-    await conn.clear_all()
+    await conn.clear_all(preserve_labels=frozenset())
     yield conn
-    await conn.clear_all()
+    await conn.clear_all(preserve_labels=frozenset())
     await conn.close()
 
 

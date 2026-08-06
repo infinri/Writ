@@ -40,6 +40,12 @@ from pathlib import Path
 
 import pytest
 
+from writ.graph.db._common import RECORD_LABELS
+
+# Corpus wipes spare runtime records (Memory/Decision/FileChange/Commit): they have
+# no dump home, so a corpus rebuild must never take them. Mirrors clear_all's default.
+_PRESERVE = ", ".join(f"'{_l}'" for _l in sorted(RECORD_LABELS))
+
 SKILL_DIR = Path(__file__).resolve().parent.parent
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -124,7 +130,8 @@ def _clear_graph() -> None:
             "docker", "exec", "writ-neo4j", "cypher-shell",
             "-u", NEO4J_USER, "-p", NEO4J_PASSWORD,
             "--format", "plain",
-            "MATCH (n) DETACH DELETE n",
+            f"MATCH (n) WHERE NOT any(l IN labels(n) WHERE l IN [{_PRESERVE}]) "
+            "DETACH DELETE n",
         ],
         capture_output=True,
         text=True,
@@ -169,7 +176,8 @@ class TestImportMarkdownCompressFlag:
                     "docker", "exec", "writ-neo4j", "cypher-shell",
                     "-u", NEO4J_USER, "-p", NEO4J_PASSWORD,
                     "--format", "plain",
-                    "MATCH (n) DETACH DELETE n",
+                    f"MATCH (n) WHERE NOT any(l IN labels(n) WHERE l IN [{_PRESERVE}]) "
+            "DETACH DELETE n",
                 ],
                 capture_output=True,
                 text=True,

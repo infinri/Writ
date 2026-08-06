@@ -6,6 +6,8 @@ tests below it are pure functions and need no database.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 import pytest_asyncio
 from typer.testing import CliRunner
@@ -203,6 +205,24 @@ class TestRecordPreservationOnReplay:
         )
 
     @pytest.mark.asyncio
+    async def test_dump_enumeration_excludes_runtime_records(self, db) -> None:
+        # writ-corpus.cypher is shipped and git-tracked; mirrored memories are
+        # private operational state. They also carry no NODE_ID_FIELDS key, so a
+        # leaked record would arrive with a null id and break the sorted render.
+        await db.create_rule({"rule_id": "R-DUMP-SCOPE-1", "statement": "s"})
+        await db.create_memory(
+            name="must-not-be-dumped", project="-test-dump-records", description="d",
+            type="project", body="secret body", links=[], path="/tmp/x.md",
+            session_id="s", updated_at="2026-08-06T00:00:00Z", status="live")
+
+        nodes = await db.get_all_nodes_for_dump()
+        labels = {n["label"] for n in nodes}
+        assert "Memory" not in labels, f"the dump must exclude records; got {labels}"
+        assert not [n for n in nodes if n["id"] is None], "no null-id rows may reach the render"
+        script = render_cypher_dump(nodes, await db.get_all_edges_cross_type())
+        assert "must-not-be-dumped" not in script and "secret body" not in script
+
+    @pytest.mark.asyncio
     async def test_clear_all_preserves_records_by_default(self, db) -> None:
         # The ~100 bare clear_all() call sites are test fixtures and admin corpus
         # rebuilds; none of them means "destroy operational records", so the safe
@@ -239,6 +259,91 @@ class TestRecordPreservationOnReplay:
         await db.clear_all(preserve_labels=frozenset({"Memory"}))
         assert await db.count_rules() == 0
         assert await self._memory_count(db, "-test-dump-records") == 1
+
+
+class TestNoRawWholeGraphDeletes:
+    """A raw whole-graph delete bypasses clear_all's record-preserving default.
+
+    One did (a cypher-shell `MATCH (n) DETACH DELETE n` in a test helper), and it
+    destroyed every mirrored memory on each suite run. Records have no dump home,
+    so the corpus wipe must always route through the guard or spell out the same
+    label exemption.
+    """
+
+    _ALLOWED = {
+        # clear_all itself: the guard's implementation, where the raw form belongs.
+        "writ/graph/db/maintenance_store.py",
+    }
+
+    # A QUERY string starts with the MATCH clause; prose that merely mentions the
+    # statement (a docstring, an assertion message) does not. Keying on that keeps
+    # the guard from policing documentation, and the unscoped shape below excludes
+    # every legitimate id-scoped delete (`MATCH (n) WHERE n.rule_id IN $ids ...`).
+    _UNSCOPED = re.compile(r"^MATCH \(n\)\s+DETACH DELETE n", re.IGNORECASE)
+
+    def _query_strings(self, path):
+        """Every non-docstring string constant in a module, f-strings included."""
+        import ast
+
+        try:
+            tree = ast.parse(path.read_text())
+        except SyntaxError:
+            return []
+        docstrings = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)):
+                body = getattr(node, "body", [])
+                if body and isinstance(body[0], ast.Expr) and \
+                        isinstance(body[0].value, ast.Constant) and \
+                        isinstance(body[0].value.value, str):
+                    docstrings.add(id(body[0].value))
+        found = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                    and id(node) not in docstrings:
+                found.append(node.value)
+            elif isinstance(node, ast.JoinedStr):
+                # An f-string's leading literal carries the clause we key on.
+                parts = [v.value for v in node.values
+                         if isinstance(v, ast.Constant) and isinstance(v.value, str)]
+                if parts:
+                    found.append("".join(parts))
+        return found
+
+    def test_no_unguarded_whole_graph_delete_outside_clear_all(self) -> None:
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        offenders = []
+        for path in list(root.glob("tests/**/*.py")) + list(root.glob("writ/**/*.py")) \
+                + list(root.glob("benchmarks/**/*.py")) + list(root.glob("scripts/**/*.py")):
+            rel = path.relative_to(root).as_posix()
+            if rel in self._ALLOWED:
+                continue
+            for text in self._query_strings(path):
+                if self._UNSCOPED.match(text.strip()):
+                    offenders.append(f"{rel}: {text.strip()[:60]}")
+        assert not offenders, (
+            "unscoped whole-graph deletes bypass clear_all's record preservation; "
+            f"route them through clear_all() or spell out the label exemption: {offenders}"
+        )
+
+    def test_the_guard_would_catch_a_planted_raw_delete(self, tmp_path) -> None:
+        # Teeth, independent of the tree's current state: the unscoped form is
+        # caught, while the exempted form and an id-scoped delete are not.
+        planted = tmp_path / "planted.py"
+        planted.write_text('async def f(s):\n    await s.run("MATCH (n) DETACH DELETE n")\n')
+        assert [t for t in self._query_strings(planted) if self._UNSCOPED.match(t.strip())]
+
+        clean = tmp_path / "clean.py"
+        clean.write_text(
+            'async def f(s):\n'
+            '    await s.run("MATCH (n) WHERE NOT any(l IN labels(n) WHERE l IN $p) '
+            'DETACH DELETE n")\n'
+            '    await s.run("MATCH (n) WHERE n.rule_id IN $ids DETACH DELETE n")\n'
+        )
+        assert not [t for t in self._query_strings(clean) if self._UNSCOPED.match(t.strip())]
 
 
 class TestScaleBenchmarkRequiresExplicitRun:

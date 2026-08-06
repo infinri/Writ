@@ -29,6 +29,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Shared resolver -- one source of truth for invoking `writ` from tests.
 from tests._writ_cmd import WRIT_CMD_PREFIX as _WRIT_CMD_PREFIX, WRIT_CLI
 
+# Single source for the record labels a corpus wipe must spare.
+from writ.graph.db._common import RECORD_LABELS
+
 # Credentials via the central loader: env-independent defaults keep CI (no
 # writ.toml checked out) collecting and running; a local writ.toml overrides.
 from writ.config import get_neo4j_password, get_neo4j_user
@@ -82,13 +85,24 @@ def _run_import(*args: str, cwd: Path = SKILL_DIR) -> subprocess.CompletedProces
 
 
 def _clear_graph() -> None:
-    """Wipe the graph so each test starts from a clean slate."""
+    """Wipe the CORPUS so each test starts from a clean slate.
+
+    Runtime records (Memory, Decision, FileChange, Commit) are spared, matching
+    Neo4jConnection.clear_all's default. This ran as a raw whole-graph
+    `MATCH (n) DETACH DELETE n` through cypher-shell, which bypassed that guard
+    entirely and destroyed every mirrored memory on each suite run; the records
+    have no dump home, so nothing that rebuilds the corpus should take them.
+    A repo guard in tests/test_graph_dump.py fails on any new raw whole-graph
+    delete outside clear_all.
+    """
+    preserve = ", ".join(f"'{label}'" for label in sorted(RECORD_LABELS))
     result = subprocess.run(
         [
             "docker", "exec", "writ-neo4j", "cypher-shell",
             "-u", NEO4J_USER, "-p", NEO4J_PASSWORD,
             "--format", "plain",
-            "MATCH (n) DETACH DELETE n",
+            f"MATCH (n) WHERE NOT any(l IN labels(n) WHERE l IN [{preserve}]) "
+            "DETACH DELETE n",
         ],
         capture_output=True,
         text=True,

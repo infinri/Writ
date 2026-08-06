@@ -70,7 +70,7 @@ Each retriever covers a blind spot the others have. BM25 catches exact keyword m
 
 **Adversarial review (the independence thesis).** The review claim is not a reviewer headcount; it is independence. The reviewer role runs with fresh context, judges a SHA-scoped diff, inherits none of the implementer's session history, and carries no Write tool: the implementer's framing never reaches it, and it can only report what it finds, never quietly fix it. Isolation is what makes a second opinion a second opinion.
 
-**Mandatory rules (the architectural invariant).** Rules with `mandatory: true` (33 in the live corpus, spanning ENF-* enforcement rules and SEC-*/PERF-*/SCALE-* invariants) are excluded from the retrieval pipeline at index build time. They reach the agent out of band through the `/always-on` endpoint with its own 5,000-token budget, enforced by a corpus integrity check. No change to ranking weights, embedding model, BM25 tuning, or graph traversal can cause an enforcement rule to disappear from agent context.
+**Mandatory rules (the architectural invariant).** Rules with `mandatory: true` (32 in the live corpus, spanning ENF-* enforcement rules and SEC-*/PERF-*/SCALE-* invariants) are excluded from the retrieval pipeline at index build time. They reach the agent out of band through the `/always-on` endpoint with its own 5,000-token budget, enforced by a corpus integrity check. No change to ranking weights, embedding model, BM25 tuning, or graph traversal can cause an enforcement rule to disappear from agent context.
 
 ## Quick start (standalone)
 
@@ -86,7 +86,7 @@ Verify:
 
 ```bash
 writ status
-# {"status":"healthy","rule_count":287,"mandatory_count":33,"index_state":"warm",...}
+# {"status":"healthy","rule_count":287,"mandatory_count":32,"index_state":"warm",...}
 
 writ query "controller contains SQL query"
 # Mode: full | Candidates: 14 | Latency: 0.3ms

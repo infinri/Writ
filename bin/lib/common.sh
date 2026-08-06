@@ -4,7 +4,12 @@
 
 # ── Hook stdin parser path ──────────────────────────────────────────────────
 # Absolute path to the stdin-envelope parser invoked by load_hook_env (below).
-_PARSE_HOOK_STDIN_PY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/parse-hook-stdin.py"
+# THE single resolution of this library's own directory. Every helper path below
+# derives from it: each `$(cd ... && pwd)` is a subshell fork paid on EVERY hook
+# invocation (common.sh is sourced by all 37), and there were four.
+_WRIT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_WRIT_SKILL_DIR="${_WRIT_LIB_DIR%/bin/lib}"
+_PARSE_HOOK_STDIN_PY="$_WRIT_LIB_DIR/parse-hook-stdin.py"
 
 # ── Session-cache location (THE bash-side definition) ────────────────────────
 # Mirrors writ/session/cache.py: WRIT_CACHE_DIR wins, else <skill>/var/session
@@ -23,7 +28,7 @@ writ_session_cache_dir() {
         printf '%s' "$WRIT_CACHE_DIR"
         return 0
     fi
-    printf '%s' "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/var/session"
+    printf '%s' "$_WRIT_SKILL_DIR/var/session"
 }
 
 # The session's mode read STRAIGHT from the cache file: stdlib only, no writ import and
@@ -57,7 +62,7 @@ except Exception:
 # python arm gets the max as its single socket timeout):
 #   WRIT_HTTP_CONNECT_TIMEOUT (default 0.5)   WRIT_HTTP_TIMEOUT (default 10)
 # Usage: RESP=$(WRIT_HTTP_TIMEOUT=3 writ_http_post "$URL" "$BODY" 2>/dev/null) || true
-_WRIT_INSTALL_PY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/writ_install.py"
+_WRIT_INSTALL_PY="$_WRIT_LIB_DIR/writ_install.py"
 
 writ_http_get() {
     local url="$1"
@@ -446,7 +451,7 @@ detect_language() {
 # Single env-aware writer (Phase 1.2): all friction writes route through
 # bin/lib/friction-append.py so WRIT_FRICTION_LOG redirects every writer at once
 # (and the marker-walk fallback lives in exactly one place).
-_FRICTION_APPEND="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/friction-append.py"
+_FRICTION_APPEND="$_WRIT_LIB_DIR/friction-append.py"
 
 log_friction_event() {
   # `"${4:-"{}"}"` is required: `${4:-{}}` parses the second `}` as the
@@ -538,7 +543,7 @@ _writ_hook_exit_trap() {
   WRIT_EV_RC="$rc" \
   WRIT_EV_SESSION="${SESSION_ID:-${HOOK_SESSION_ID:-}}" \
   WRIT_EV_MODE="${CURRENT_MODE:-${MODE:-}}" \
-  WRIT_EV_SKILL="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" \
+  WRIT_EV_SKILL="$_WRIT_SKILL_DIR" \
   python3 -c '
 import os, sys
 sys.path.insert(0, os.environ["WRIT_EV_SKILL"])
