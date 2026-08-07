@@ -36,15 +36,29 @@ writ_session_cache_dir() {
 # no daemon round-trip. The auto-route classifier needs this because a daemon `mode get`
 # can spuriously return empty under load, and acting on a false empty would let the
 # classifier fight an explicit choice. Prints the mode, or "" when absent/unset/unreadable.
+# jq-first, because this is a one-field read of a small JSON file and python charges
+# ~13ms of interpreter startup for it against jq's ~2ms (measured 2026-08-07). Same
+# WRIT_NO_JQ seam as parsed_field. A missing, empty, or unparseable file prints "" on
+# both arms, which is the contract the callers branch on.
 writ_session_mode_direct() {
+    local p
+    p="$(writ_session_cache_dir)/writ-session-$1.json"
+    if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1; then
+        # `|| true` is load-bearing. jq exits 2 on a missing file and 4/5 on a corrupt
+        # one, and every hook runs under `set -euo pipefail`, so the bare pipeline
+        # aborted the CALLING hook with status 2 for a session that simply has no cache
+        # file yet. The python arm never did that because it catches the exception and
+        # prints "". Absence of a cache file is a normal state here, not an error.
+        { jq -r '.mode // "" | tostring' "$p" 2>/dev/null || true; } | tr -d '[:space:]'
+        return 0
+    fi
     python3 -c "
 import json, os, sys
-p = os.path.join(sys.argv[2], 'writ-session-' + sys.argv[1] + '.json')
 try:
-    print(json.load(open(p)).get('mode') or '')
+    print(json.load(open(sys.argv[1])).get('mode') or '')
 except Exception:
     print('')
-" "$1" "$(writ_session_cache_dir)" 2>/dev/null | tr -d '[:space:]'
+" "$p" 2>/dev/null | tr -d '[:space:]'
 }
 
 # ── HTTP: curl-first, urllib fallback ────────────────────────────────────────
