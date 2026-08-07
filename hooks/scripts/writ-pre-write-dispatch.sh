@@ -32,15 +32,37 @@ HOOK_START_NS=$(hook_timer_start)
 STDIN_DATA=$(cat)
 printf '%s' "$STDIN_DATA" | blackbox_log in writ-pre-write-dispatch
 
-# Item 4c: one python3 spawn parses stdin into session_id + check_body. Was
+# Item 4c: ONE parse turns stdin into session_id + write context + check body. Was
 # two separate calls in v1.1.0 (session_id parse, then envelope parse).
-PARSED_INPUT=$(python3 -c "
+#
+# jq does it in ~3ms where the python arm below needs ~15ms of interpreter startup,
+# and this is the hottest gate path in the system (measured 2026-08-07: 8 python
+# starts in this one hook, the most of any). Same seam as parsed_field and
+# load_hook_env: jq when present, python when not, WRIT_NO_JQ to force the fallback.
+# The two arms are held equal by tests/test_pre_write_parse_parity.py.
+PARSED_INPUT=""
+if [ -z "${WRIT_NO_JQ:-}" ] && [ -r "$SKILL_DIR/bin/lib/pre-write-parse.jq" ] \
+   && command -v jq >/dev/null 2>&1; then
+    PARSED_INPUT=$(printf '%s' "$STDIN_DATA" | jq -R -s -r \
+        --arg skill_dir "$SKILL_DIR" -f "$SKILL_DIR/bin/lib/pre-write-parse.jq" 2>/dev/null)
+fi
+# Empty means the jq arm was skipped or failed. It cannot mean "parsed to nothing":
+# both arms always emit three lines, the third of which is a non-empty JSON object.
+[ -z "$PARSED_INPUT" ] && PARSED_INPUT=$(python3 -c "
 import sys, json
 raw = sys.argv[1] or '{}'
 skill_dir = sys.argv[2] or ''
 try:
     data = json.loads(raw)
 except (ValueError, json.JSONDecodeError):
+    data = {}
+# Normalize to a dict before any .get(). A root that parses to a list, a string, or
+# null used to raise AttributeError here, and so did a 'tool_input': null -- which
+# this hook cannot distinguish from a successful empty parse: PARSED_INPUT comes back
+# empty, CHECK_BODY is empty, and the hook exits 0 WITHOUT running the write gate.
+# A malformed envelope must fail closed into the gate, not around it. Found
+# 2026-08-07 by tests/test_pre_write_parse_parity.py comparing this arm to the jq one.
+if not isinstance(data, dict):
     data = {}
 sid = (data.get('agent_id') or data.get('session_id') or '').strip()
 ti = data.get('tool_input', {})
@@ -49,6 +71,8 @@ if isinstance(ti, str):
         ti = json.loads(ti)
     except (ValueError, json.JSONDecodeError):
         ti = {}
+if not isinstance(ti, dict):
+    ti = {}
 # NotebookEdit uses notebook_path (not file_path), so map it -- else the server
 # gate sees an empty path and silently allows (the empty-body bypass). (#4)
 file_path = ti.get('file_path') or ti.get('path') or ti.get('notebook_path') or ''

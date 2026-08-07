@@ -10,6 +10,7 @@
 _WRIT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _WRIT_SKILL_DIR="${_WRIT_LIB_DIR%/bin/lib}"
 _PARSE_HOOK_STDIN_PY="$_WRIT_LIB_DIR/parse-hook-stdin.py"
+_PARSE_HOOK_STDIN_JQ="$_WRIT_LIB_DIR/parse-hook-stdin.jq"
 
 # ── Session-cache location (THE bash-side definition) ────────────────────────
 # Mirrors writ/session/cache.py: WRIT_CACHE_DIR wins, else <skill>/var/session
@@ -146,13 +147,37 @@ stop_hook_active() {
     printf '%s' "${1:-}" | grep -qE '"stop_hook_active"[[:space:]]*:[[:space:]]*true'
 }
 
+# Emit the envelope's shell assignments from stdin: jq when it can, python otherwise.
+#
+# jq-first for the same reason parsed_field is, just bigger: this is the ONE parse
+# every hook performs, so it is the single most-executed process in the system.
+# Measured 2026-08-07, one Write fires 15 hooks and pays 13 of these; the python
+# interpreter costs ~18ms to start and jq ~3ms, so the arm choice is worth ~195ms of
+# a 1,535ms write. Equivalence of the two arms is pinned by
+# tests/test_hook_env_parity.py, which found and closed three real divergences.
+#
+# The arm is chosen BEFORE stdin is consumed, because stdin cannot be re-read. That
+# is why there is no retry-on-bad-JSON: a malformed envelope now yields the same
+# empty assignments from both arms (jq slurps raw and parses inside a `try`), so
+# there is nothing a second attempt could recover. jq compiles its program before
+# reading input, so the one fallthrough that does matter -- a missing or unparseable
+# filter file, i.e. a partial install -- still reaches python with stdin intact.
+_writ_parse_hook_stdin() {
+    if [ -z "${WRIT_NO_JQ:-}" ] && [ -r "$_PARSE_HOOK_STDIN_JQ" ] \
+       && command -v jq >/dev/null 2>&1; then
+        jq -R -s -r -f "$_PARSE_HOOK_STDIN_JQ" 2>/dev/null && return 0
+    fi
+    python3 "$_PARSE_HOOK_STDIN_PY" --shell 2>/dev/null
+}
+
 # Single-spawn field extraction (POL-5b). Runs the parser once with --shell and
-# evals its shlex-quoted assignments, setting these globals:
+# evals its shell-quoted assignments, setting these globals:
 #   HOOK_SESSION_ID HOOK_AGENT_ID HOOK_AGENT_TYPE HOOK_EVENT HOOK_TOOL_NAME
 #   HOOK_FILE_PATH HOOK_COMMAND HOOK_IS_ERROR HOOK_ENVELOPE
-# Replaces the parse_hook_stdin + parsed_field (2+ spawn) idiom: one python3
-# spawn, then field access is a bash variable. HOOK_SESSION_ID gets
-# detect_session_id's PPID/cwd fallback when the envelope carries no id.
+# Replaces the parse_hook_stdin + parsed_field (2+ spawn) idiom: one parser spawn
+# (jq, or python3 when jq is absent), then field access is a bash variable.
+# HOOK_SESSION_ID gets detect_session_id's PPID/cwd fallback when the envelope
+# carries no id.
 # Usage: load_hook_env; echo "$HOOK_FILE_PATH"
 load_hook_env() {
     HOOK_SESSION_ID="" HOOK_SESSION_ID_RAW="" HOOK_AGENT_ID="" HOOK_AGENT_TYPE="" HOOK_EVENT=""
@@ -163,9 +188,9 @@ load_hook_env() {
     local _bb_raw=""
     if [ "${WRIT_BLACKBOX:-}" = "1" ] || [ -f "${HOME:-}/.claude/writ-blackbox.on" ]; then
         _bb_raw=$(cat)
-        eval "$(printf '%s' "$_bb_raw" | python3 "$_PARSE_HOOK_STDIN_PY" --shell 2>/dev/null)"
+        eval "$(printf '%s' "$_bb_raw" | _writ_parse_hook_stdin)"
     else
-        eval "$(python3 "$_PARSE_HOOK_STDIN_PY" --shell 2>/dev/null)"
+        eval "$(_writ_parse_hook_stdin)"
     fi
     if [ -z "${HOOK_SESSION_ID:-}" ]; then
         HOOK_SESSION_ID=$(ps -o ppid= -p $PPID 2>/dev/null | tr -d ' ')
@@ -305,6 +330,66 @@ parsed_bool() {
         local val
         val=$(printf '%s' "$json" | python3 -c 'import sys,json; print(json.load(sys.stdin).get(sys.argv[1], False))' "$field" 2>/dev/null)
         [ "$val" = "True" ]
+    fi
+}
+
+# Reshape JSON from stdin with one process instead of a python interpreter start.
+#   json_transform <jq_filter> <python_expr>       # reads stdin, prints one value
+# The python expression receives the parsed object as `d`; it is the fallback arm and
+# runs only when jq is absent or WRIT_NO_JQ is set, the same seam parsed_field uses.
+#
+# WHY BOTH ARMS EXIST: 24 inline `python3 -c` snippets fired per file write, each
+# paying ~15ms of interpreter startup to do JSON reshaping jq does in ~3ms (measured
+# 2026-08-07). This concentrates that conversion in one place so the equivalence
+# argument is made once, under test, instead of at 24 call sites.
+#
+# THE OUTPUT IS CANONICALIZED, because the two tools disagree on three shapes and
+# every disagreement would be a silent behavior change at some call site:
+#   booleans   jq prints true/false, python prints True/False -> JSON spelling wins
+#   null       jq prints the four characters "null", python raises -> BOTH print
+#              nothing, so a missing field can never be mistaken for the text "null"
+#   containers `jq -r` pretty-prints over several lines, python's json.dumps does not
+#              -> compact on both (-c), so a caller reading one line still gets one
+# Integers are safe as-is: jq 1.7 round-trips 9007199254740993 exactly.
+#
+# CONTRACT: one value out. A jq filter that emits two (`.a, .b`) has no python
+# equivalent here, and callers that need two fields should call twice or pass a filter
+# that builds one object.
+#
+# On the `eval` in the fallback arm (SEC-INJ-CMD-002): the expression is a literal
+# written in the hook's own source, and the untrusted DATA arrives on stdin, never in
+# the expression. Builtins are replaced with a small allowlist rather than left
+# exposed, so the arm cannot reach the filesystem or the process table even if a
+# future call site is careless about what it passes.
+json_transform() {
+    local filter="$1" pyexpr="$2"
+    if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1; then
+        jq -c -r "( $filter ) | if . == null then empty else . end" 2>/dev/null
+    else
+        python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+_allowed = {"len": len, "sorted": sorted, "str": str, "int": int, "float": float,
+            "bool": bool, "list": list, "dict": dict, "min": min, "max": max,
+            "sum": sum, "any": any, "all": all, "abs": abs, "round": round}
+try:
+    v = eval(sys.argv[1], {"__builtins__": _allowed}, {"d": d, "json": json})
+except Exception:
+    sys.exit(0)
+if v is None:
+    sys.exit(0)
+if v is True:
+    print("true")
+elif v is False:
+    print("false")
+elif isinstance(v, (dict, list)):
+    print(json.dumps(v, separators=(",", ":")))
+else:
+    print(v)
+' "$pyexpr" 2>/dev/null
     fi
 }
 

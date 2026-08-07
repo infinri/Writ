@@ -127,8 +127,16 @@ writ = "writ.cli:app"
 include = ["writ*"]
 
 [tool.pytest.ini_options]
+# Timing gates are DESELECTED by default and run via `make perf`. They measure p95
+# wall clock, which is deliberately sensitive to a few slow samples, and inside the
+# loaded suite (Neo4j, the daemon, thousands of subprocesses) they measure the machine
+# rather than the hook: measured 2026-08-07 on identical code, p95 moved ~30ms between
+# runs an hour apart while the code moved zero. The marker existed and was applied
+# since Item 4, but nothing ever read it, so the gates were running in exactly the
+# environment that makes them unreliable. Run them alone: `make perf`.
+addopts = "-m 'not perf'"
 markers = [
-    "perf: hook latency p95 regression floor tests (Item 4)",
+    "perf: hook latency p95 regression floor tests (Item 4). Deselected by default; run with `make perf`",
     "integration: tests that require a live Claude Code install or external service",
     "no_friction_isolation: opt out of the autouse WRIT_FRICTION_LOG redirect (tests that exercise friction-log path resolution itself)",
 ]

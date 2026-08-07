@@ -130,6 +130,7 @@ class TestPipeline:
         second_ids = [r["rule_id"] for r in second["rules"]]
         assert exclude_id not in second_ids
 
+    @pytest.mark.perf
     @pytest.mark.skipif(
         os.environ.get("CI") == "true",
         reason="wall-clock p95 budget calibrated to the reference machine; "
