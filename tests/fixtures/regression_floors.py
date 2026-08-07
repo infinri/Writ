@@ -307,5 +307,11 @@ NDCG10_FLOOR = 0.65
 # wrong channel (HANDBOOK section 10). Measured on the split's introduction:
 # eligible hit-rate@5 = 157/169 = 0.9290 at the 287-rule corpus. Floor set at
 # 0.90 (~5-query headroom), same anti-drift stance as the floors above.
+# 2026-08-06: that 157 was one draw from a hash-seed-dependent distribution (the
+# candidate merge used a set union; see writ/retrieval/pipeline.py
+# _merge_and_normalize). With the union ordered, the measurement is now stable at
+# 156/169 = 0.9231, repeatable across runs. The floor stays 0.90: the change made
+# the number honest, not worse, and moving a floor to track a re-measurement would
+# defeat its purpose.
 # The all-193 HIT_RATE_FLOOR above stays as the continuity gate.
 ELIGIBLE_HIT_RATE_FLOOR = 0.90

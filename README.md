@@ -162,17 +162,30 @@ All of the above was measured on a single mid-range developer laptop and an *unc
 
 Retrieval quality against the 193-query ground-truth corpus (47 ambiguous, expanded 2026-07-17). The floors are regression gates the build fails below, deliberately set under the measured values, not quality targets:
 
-| Metric                                      | Floor   | 2026-08-01 | 2026-08-05 |
-|---------------------------------------------|---------|-----------:|-----------:|
-| **Hit rate at 5 (index-eligible, n=169)**   | >= 0.90 | --         | **0.9290** |
-| Always-on targets delivered (n=21)          | 21/21   | --         | 21/21      |
-| Routed-channel targets verified (n=3)       | 3/3     | --         | 3/3        |
-| Hit rate at 5 (all 193, continuity)         | >= 0.75 | 0.7824     | 0.8187     |
-| MRR at 5 (ambiguous queries, n=47)          | >= 0.45 | 0.5681     | 0.6167     |
-| Domain hit rate top-5                       | >= 0.90 | 0.9323     | 0.9534     |
-| nDCG at 10                                  | >= 0.65 | 0.7071     | 0.7332     |
-| Methodology MRR at 5 (n=40, signed off)     | >= 0.78 | 0.8271     | --         |
-| Methodology hit rate                        | >= 0.90 | 0.9500     | --         |
+| Metric                                      | Floor   | 2026-08-01 | 2026-08-05 | 2026-08-06 |
+|---------------------------------------------|---------|-----------:|-----------:|-----------:|
+| **Hit rate at 5 (index-eligible, n=169)**   | >= 0.90 | --         | 0.9290     | **0.9231** |
+| Always-on targets delivered (n=21)          | 21/21   | --         | 21/21      | 21/21      |
+| Routed-channel targets verified (n=3)       | 3/3     | --         | 3/3        | 3/3        |
+| Hit rate at 5 (all 193, continuity)         | >= 0.75 | 0.7824     | 0.8187     | 0.8083     |
+| MRR at 5 (ambiguous queries, n=47)          | >= 0.45 | 0.5681     | 0.6167     | 0.6082     |
+| Domain hit rate top-5                       | >= 0.90 | 0.9323     | 0.9534     | 0.9585     |
+| nDCG at 10                                  | >= 0.65 | 0.7071     | 0.7332     | 0.7323     |
+| Methodology MRR at 5 (n=40, signed off)     | >= 0.78 | 0.8271     | --         | --         |
+| Methodology hit rate                        | >= 0.90 | 0.9500     | --         | --         |
+
+**Read the 2026-08-06 column, not the earlier ones.** Until that date the pipeline
+merged its BM25 and vector candidates through a `set` union, whose iteration order
+Python randomizes per process, and that order decided tie-breaking all the way through
+scoring and the budget cut. Every earlier column is therefore one draw from a
+distribution, not a measurement: five identical runs spanned 156-159 hits and 0.0174
+of MRR@5, and 30 of the 193 queries returned a different *set* of top-5 rules
+depending on the seed the daemon happened to start with. The union is now ordered, so
+repeated runs agree exactly; the 2026-08-06 numbers landed near the low end of the old
+band rather than above it, which is what collapsing a distribution to a point looks
+like when the earlier figure was a favourable draw. Nothing about relevance changed in
+that cycle, and every floor still passes. Details and the measured impact table:
+`benchmarks/RANKING-LEVERS-2026-08-06.md`.
 
 The split (2026-08-05) is a metric-definition change, disclosed as such: rank metrics are
 only meaningful for targets the ranked index can contain. 21 ground-truth queries target

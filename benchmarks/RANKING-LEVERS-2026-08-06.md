@@ -26,6 +26,20 @@ Corpus state at measurement time: 287 rules, 32 mandatory, 62 abstractions, 16 s
 
 ### Measurement noise, and why the sign test is the load-bearing evidence
 
+> **RESOLVED later the same day.** The cause turned out to be in the pipeline, not the
+> harness: `_merge_and_normalize` merged its BM25 and vector candidates with a `set`
+> union, and Python randomizes string hashing per process. That order fed
+> `normalize_ranks`, whose stable sort made a rule's normalized score itself
+> seed-dependent, and then fed the final sort and the budget trim. So this was never
+> only a measurement problem: **30 of 193 gold queries returned a different SET of
+> top-5 rules depending on the seed the daemon started with**, meaning a different
+> rulebook reached the model after a restart. The union is now ordered (BM25 rank,
+> then vector-only rank) and repeated runs agree exactly. The section below is kept as
+> the record of how the symptom looked, and its conclusion still holds: within-run arm
+> comparisons were always sound, which is why the sign test carried the argument.
+> Post-fix deterministic numbers: hit@5 156/193, eligible 156/169 = 0.9231, MRR@5
+> 0.6082, nDCG@10 0.7323. Regression guard: `tests/test_retrieval_determinism.py`.
+
 Discovered while verifying this cycle: **the benchmark is not reproducible run to run.**
 Five consecutive `benchmarks/bench_targets.py` runs, with unchanged code and an unchanged
 graph, returned:
@@ -160,11 +174,13 @@ Pinned by `tests/test_ranking_levers.py::TestPassComposition`.
 ## Reproducing
 
 ```
-PYTHONHASHSEED=0 .venv/bin/python scripts/sweep_ranking.py
+.venv/bin/python scripts/sweep_ranking.py
 ```
 
-Pin the seed. Without it the absolute numbers move by up to three queries between runs
-for the reason given under Method, and a re-run will not match this document.
+No seed pin is needed as of the determinism fix described in the callout under Method;
+the pipeline no longer depends on hash order. The arm-to-arm comparisons in this
+document were taken before that fix, but they were always within-run and so were never
+affected by it.
 
 Sweeps `w_graph` and `authority_preference_threshold` with the paired sign test. The
 `w_bundle_cohesion` arm is not reproducible from the current tree: the weight it varied

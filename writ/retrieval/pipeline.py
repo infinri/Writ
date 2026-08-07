@@ -446,7 +446,18 @@ class RetrievalPipeline:
         bm25_scores = {r["rule_id"]: r["score"] for r in bm25_results}
         vector_scores = {r.rule_id: r.score for r in vector_results}
 
-        all_ids = set(bm25_scores.keys()) | set(vector_scores.keys())
+        # ORDERED union, never `set(a) | set(b)`. Python randomizes string hashing
+        # per process, so a set's iteration order changes between daemon starts, and
+        # this order is load-bearing twice: ids_list below inherits it and
+        # normalize_ranks breaks ties with a STABLE sort (so a rule's bm25_norm
+        # actually changes), then _final_rank inherits it again and
+        # apply_context_budget trims by list position. Measured before the fix, over
+        # the 193-query gold set at PYTHONHASHSEED 0 vs 7: 30 queries returned a
+        # different SET of top-5 rules, i.e. a different rulebook reached the model
+        # after a restart. Discovery order (BM25 rank, then vector-only rank) is both
+        # deterministic and meaningful: a tie resolves toward the candidate the
+        # keyword stage surfaced first. Regression: tests/test_retrieval_determinism.py.
+        all_ids = list(bm25_scores) + [r for r in vector_scores if r not in bm25_scores]
         for rid in all_ids:
             candidate_ids[rid] = {
                 "bm25_score": bm25_scores.get(rid, 0.0),
@@ -651,10 +662,16 @@ async def _load_candidates(db: Neo4jConnection) -> tuple[list[dict], dict]:
     single-source RANKED_INCLUDE_WHERE constant so the {excluded-from-ranked}=={mandatory}
     validator (integrity.py) checks the exact predicate the pool uses (WRIT-BLUEPRINT 3.5/3.6a).
     """
+    # ORDER BY is not cosmetic: this load order becomes the BM25 and vector index
+    # build order, and index build order can decide ties among equal-scoring hits.
+    # Cypher gives no ordering guarantee without it, so leaving it out would make the
+    # determinism this module now promises depend on the database's whim across
+    # restarts. Sorted by the canonical id, which is unique, so the order is total.
     query = f"""
         MATCH (r:Rule)
         WHERE {RANKED_INCLUDE_WHERE}
         RETURN r
+        ORDER BY r.rule_id
     """
     rules: list[dict] = []
     async with db._driver.session(database=db._database) as session:
@@ -670,7 +687,9 @@ async def _load_candidates(db: Neo4jConnection) -> tuple[list[dict], dict]:
     methodology_nodes: list[dict] = []
     for label in retrievable_methodology_labels:
         id_field = retrievable_id_fields[label]
-        q = f"MATCH (n:{label}) RETURN n"
+        # Ordered for the same reason as the Rule query above: this feeds index
+        # build order, which can decide ties among equal-scoring candidates.
+        q = f"MATCH (n:{label}) RETURN n ORDER BY n.{id_field}"
         async with db._driver.session(database=db._database) as session:
             result = await session.run(q)
             async for record in result:
