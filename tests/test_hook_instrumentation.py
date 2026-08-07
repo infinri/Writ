@@ -25,6 +25,7 @@ import re
 import subprocess
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -332,8 +333,109 @@ def test_gate_decision_sanitizes_newlines_in_the_reason(tmp_path):
         'exit 2',
         tmp_path,
     )
+    # Read through _rows so the buffer is drained first: gate decisions are appended and
+    # emitted once per turn now, like hook_execution, rather than spawning python per
+    # hook. Asserting on the parsed rows is also stricter than counting lines, because it
+    # proves exactly one gate_decision RECORD exists rather than one line of text.
+    gate_rows = [r for r in _rows(tmp_path, "audit") if r.get("event") == "gate_decision"]
+    assert len(gate_rows) == 1, f"a newline in the reason forged extra rows: {gate_rows}"
+    assert "\n" not in gate_rows[0]["reason"]
+
+
+def _audit_without_draining(tmp_path: Path) -> list[dict]:
+    """Read the audit stream WITHOUT flushing. Distinguishes 'written synchronously'
+    from 'written eventually', which is the whole point of the split below."""
     path = tmp_path / "logs" / "hookproj" / "audit.jsonl"
-    assert len(path.read_text().strip().splitlines()) == 1
+    if not path.is_file():
+        return []
+    return [json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()]
+
+
+def test_a_denial_is_written_before_the_hook_returns(tmp_path):
+    """A DENY must not wait for a drain.
+
+    Review found the regression this pins: routing every gate_decision through the
+    once-per-turn drain meant a record whose session never saw another Stop or
+    SessionEnd was LOST, not delayed. A denial is the record proving a gate blocked
+    something, so it keeps the synchronous path it always had. Denials are rare; the
+    per-write cost came from the allow that every successful write logs.
+    """
+    _run_snippet(
+        'hook_instrument "probe-deny"\n'
+        'log_gate_decision "phase-a" "deny" "no plan approved" "/tmp/x.py"\n'
+        'exit 2',
+        tmp_path,
+    )
+    rows = [r for r in _audit_without_draining(tmp_path) if r.get("event") == "gate_decision"]
+    assert len(rows) == 1, (
+        f"a denial was not recorded synchronously; it would be lost if this session "
+        f"never drained. Found: {rows}"
+    )
+    assert rows[0]["decision"] == "deny"
+
+
+@pytest.mark.parametrize("decision", ["ask", "error", "inherit"])
+def test_any_decision_that_is_not_allow_is_written_synchronously(tmp_path, decision):
+    """The check is `!= "allow"`, not `== "deny"`, and that distinction is live.
+
+    writ-bash-write-gate.sh logs "ask" at a suspected data-exfiltration command and at a
+    commit over an unresolved reviewer CRITICAL; writ-manual-test-grant.sh logs "error";
+    writ-subagent-start.sh logs "inherit". None is "allow", every one is as audit-worthy
+    as a denial, and a future edit to `== "deny"` reads just as plausibly correct in
+    isolation. This is what would catch that edit.
+    """
+    _run_snippet(
+        'hook_instrument "probe-nonallow"\n'
+        f'log_gate_decision "bash-egress" "{decision}" "needs confirmation" "/tmp/x.py"\n'
+        'exit 0',
+        tmp_path,
+    )
+    rows = [r for r in _audit_without_draining(tmp_path) if r.get("event") == "gate_decision"]
+    assert len(rows) == 1 and rows[0]["decision"] == decision, (
+        f"a {decision!r} decision was buffered rather than written synchronously, so it "
+        f"would be lost if this session never drained: {rows}"
+    )
+
+
+def test_an_allow_is_buffered_not_written_synchronously(tmp_path):
+    """The other half, and the reason the write path got faster: an allow is the volume,
+    it is written on every successful write, and its claim (the gate ran) is still
+    carried by the hook_execution row beside it."""
+    _run_snippet(
+        'hook_instrument "probe-allow"\n'
+        'log_gate_decision "phase-a" "allow" "validation passed" "/tmp/x.py"\n'
+        'exit 0',
+        tmp_path,
+    )
+    assert _audit_without_draining(tmp_path) == [], (
+        "an allow was emitted synchronously, so the per-write spawn is back"
+    )
+    drained = [r for r in _rows(tmp_path, "audit") if r.get("event") == "gate_decision"]
+    assert len(drained) == 1 and drained[0]["decision"] == "allow", (
+        f"the buffered allow never reached the audit stream: {drained}"
+    )
+
+
+def test_a_buffered_decision_carries_its_own_decision_time(tmp_path):
+    """emit() stamps `ts` when it runs, so a drained row claimed DRAIN time: review
+    measured a decision made at 22:48:41 recorded as 22:48:44, and several decisions in
+    one turn collapsing onto the same instant. The row carries its own stamp now."""
+    before = int(time.time())
+    _run_snippet(
+        'hook_instrument "probe-when"\n'
+        'log_gate_decision "phase-a" "allow" "ok" "/tmp/x.py"\n'
+        'exit 0',
+        tmp_path,
+    )
+    after = int(time.time())
+    time.sleep(1.2)  # drain strictly later than the decision
+    rows = [r for r in _rows(tmp_path, "audit") if r.get("event") == "gate_decision"]
+    assert len(rows) == 1
+    decided = int(rows[0]["decided_at"])
+    assert before <= decided <= after, (
+        f"decided_at {decided} is outside the window the decision was made in "
+        f"({before}..{after}); it is probably drain time"
+    )
 
 
 # --- coverage: no wired hook left silent -------------------------------------

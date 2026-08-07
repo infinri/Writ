@@ -163,7 +163,12 @@ class TestNoReverseEdges:
 class TestCensus:
     def test_skill_enf_rat_counts(self) -> None:
         # Phase 0: 14 -> 15 SKL after adding SKL-PROC-DEBUG-001 (debug skill).
-        assert len(list(METH.glob("SKL-*.md"))) == 15, "expected 15 SKL-*.md"
+        # 15 -> 16 when SKL-PROC-WRIT-FAILURE-001.md landed in b115730 (absorbing
+        # SKILL.md and the workflow rules into methodology nodes). The census was not
+        # bumped then, so this assert had been failing on a full run since. Pre-existing
+        # and unrelated to the work it was found by; recorded here rather than left,
+        # because a red test everyone learns to expect is how the next real one hides.
+        assert len(list(METH.glob("SKL-*.md"))) == 16, "expected 16 SKL-*.md"
         assert len(list(METH.glob("ENF-*.md"))) == 11, "expected 11 ENF-*.md (+1 Phase4-A3: ENF-COMMS-OUTPUT-001)"
         assert len(list(METH.glob("RAT-*.md"))) == 4, "expected 4 RAT-*.md"
 

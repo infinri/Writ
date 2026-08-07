@@ -238,6 +238,17 @@ WRIT_BLACKBOX_MAX_BYTES_DEFAULT=268435456
 # `hook_execution` row: ~96ms per write for logging nobody reads synchronously
 # (measured 2026-08-07). The row is now appended by bash and drained once per turn.
 #
+# COVERAGE IS UNIVERSAL, and enforced. A hook registers its own exit work with
+# `writ_on_exit`, never with `trap ... EXIT`, because bash allows one EXIT trap and a
+# second one silently replaces this trap and its telemetry. tests/test_exit_trap_
+# ownership.py fails on any hook that takes the trap directly.
+#
+# An earlier version of this comment claimed the opposite and called the gap acceptable,
+# on the grounds that running the telemetry after another handler would report that
+# handler's `$?` and corrupt a gate decision. Review checked and refuted it: the two
+# hooks in question exit 0 on every path and carry their decision in stdout JSON, not
+# `$?`. The rc-preserving form below is exact for every exit shape regardless.
+#
 # THIS IS MORE DURABLE THAN THE SPAWN IT REPLACES, not less. Before, the row existed
 # only as arguments to a process that might never start, so a failed spawn dropped it
 # with no trace. Now it is on disk before any process runs, and the drain unlinks the
@@ -275,8 +286,13 @@ writ_event_buffer_append() {
     local row
     printf -v row 'hook_execution\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1e' \
         "$hook" "$dur" "$rc" "$mode" "$truncated"
+    # Still over the limit after per-field truncation: cut the row itself rather than
+    # dropping it. Dropping was the first spelling, and it contradicted this function's
+    # own position that a silently cut row is a lie while a marked one is data. The
+    # separator is re-appended so the record still parses as a record.
     if [ "${#row}" -gt "$WRIT_EVENT_ROW_MAX" ]; then
-        return 0
+        printf -v row 'hook_execution\x1f%s\x1f%s\x1f%s\x1f%s\x1f1\x1e' \
+            "${hook:0:64}" "$dur" "$rc" "${mode:0:32}"
     fi
     local buf
     buf="$(writ_event_buffer_path "$session")"
@@ -534,9 +550,22 @@ detect_project_root() {
 
   # Split on / and rebuild, dropping empty and "." segments and popping one level per
   # ".."; an unmatched ".." at the top is discarded, as abspath does.
-  local -a raw=() parts=()
-  IFS='/' read -r -a raw <<< "$path"
-  for seg in "${raw[@]}"; do
+  #
+  # SPLIT WITH PARAMETER EXPANSION, NOT `read`. The first version used
+  # `IFS='/' read -r -a raw <<< "$path"`, and `read` consumes only the FIRST LINE of the
+  # here-string: a directory whose name contains a newline (legal on Linux) lost every
+  # segment after it and the walk returned "". Callers gate on an empty PROJECT_ROOT and
+  # skip their checks, so that was a silent enforcement hole rather than a cosmetic bug.
+  # `${rest%%/*}` is byte-exact and has no notion of lines.
+  local -a parts=()
+  local rest="$path"
+  while [ -n "$rest" ]; do
+    seg="${rest%%/*}"
+    if [ "$seg" = "$rest" ]; then
+      rest=""
+    else
+      rest="${rest#*/}"
+    fi
     case "$seg" in
       ''|.) ;;
       ..) [ ${#parts[@]} -gt 0 ] && parts=("${parts[@]:0:${#parts[@]}-1}") ;;
@@ -786,11 +815,54 @@ hook_instrument() {
   # instrumented hooks emit both events. mktemp failure leaves the buffer empty,
   # which falls back to the direct per-event spawn.
   _WRIT_EVENT_BUF="$(mktemp 2>/dev/null || echo "")"
+  _WRIT_EXIT_HANDLERS=()
   trap '_writ_hook_exit_trap' EXIT
+  # A signal-killed hook used to record exit_code 0: the shell runs the EXIT trap with
+  # `$?` still 0 because no command set it. Converting the signal into an explicit exit
+  # gives the trap the real status (128 + signal, the shell's own convention) and keeps
+  # ONE trap function rather than adding a parallel signal path. The process's reported
+  # status was always correct, so enforcement never depended on this; the RECORD did.
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+}
+
+# Register a function to run at hook exit. USE THIS INSTEAD OF `trap ... EXIT`.
+#
+# bash allows exactly ONE EXIT trap, so a hook that installs its own after
+# hook_instrument REPLACES the telemetry trap and silently stops recording. Two hooks
+# did: pre-validate-file.sh and inject-tier-workflow.sh. The gap was invisible because
+# nothing fails when a metrics row is never written.
+# tests/test_exit_trap_ownership.py fails on any hook that takes the trap directly, so
+# the next one cannot reintroduce this quietly.
+# NOTE FOR HANDLER AUTHORS: handlers run with errexit OFF (see _writ_hook_exit_trap),
+# because a trap that dies partway would skip the telemetry behind it. A multi-statement
+# handler therefore does NOT stop at its own first failing command the way the rest of a
+# hook does. If a step must gate the next one, say so explicitly with `||` or an `if`.
+writ_on_exit() {
+  _WRIT_EXIT_HANDLERS+=("$1")
 }
 
 _writ_hook_exit_trap() {
   local rc=$?
+  # errexit OFF for the rest of this function. The trap is the last thing that runs and
+  # must not die partway: `( exit "$rc" )` below deliberately returns non-zero, and under
+  # `set -euo pipefail` (which every hook sets) that ABORTED THE TRAP, skipping telemetry
+  # on exactly the non-zero exits that matter most. Measured while building this: with
+  # errexit left on, `exit 2` and a failed command ran neither the hook's own handler nor
+  # the telemetry, while the exit status still looked correct.
+  set +e
+
+  # The hook's own exit handlers, in registration order, each seeing the hook's REAL
+  # exit status in $?. `( exit "$rc" )` is a subshell whose only job is to set $? for
+  # the command that follows.
+  local _h
+  for _h in "${_WRIT_EXIT_HANDLERS[@]:-}"; do
+    [ -n "$_h" ] || continue
+    ( exit "$rc" )
+    "$_h"
+  done
+
   local start_ns="${_WRIT_HOOK_START_NS:-0}" now_ns dur_ms
   now_ns=$(date +%s%N 2>/dev/null || echo 0)
   if [ "${start_ns:-0}" -gt 0 ] 2>/dev/null && [ "$now_ns" -gt 0 ] 2>/dev/null; then
@@ -808,44 +880,10 @@ _writ_hook_exit_trap() {
     "${_WRIT_HOOK_NAME:-unknown}" \
     "$dur_ms" "$rc" "${CURRENT_MODE:-${MODE:-}}"
 
-  # Gate decisions keep the immediate python path. They are governance records with
-  # 365-day retention and they are RARE (only a gate that actually decided writes one),
-  # so their spawn is not on the hot path, and deferring an audit record is a different
-  # risk calculus from deferring a metrics row. The `-s` test skips the spawn entirely
-  # when no decision was buffered, which is the common case.
-  if [ -s "${_WRIT_EVENT_BUF:-/nonexistent}" ]; then
-  WRIT_EV_BUF="${_WRIT_EVENT_BUF:-}" \
-  WRIT_EV_HOOK="${_WRIT_HOOK_NAME:-unknown}" \
-  WRIT_EV_DUR="$dur_ms" \
-  WRIT_EV_RC="$rc" \
-  WRIT_EV_SESSION="${SESSION_ID:-${HOOK_SESSION_ID:-}}" \
-  WRIT_EV_MODE="${CURRENT_MODE:-${MODE:-}}" \
-  WRIT_EV_SKILL="$_WRIT_SKILL_DIR" \
-  python3 -c '
-import os, sys
-sys.path.insert(0, os.environ["WRIT_EV_SKILL"])
-from writ.shared.logging import emit
-
-session = os.environ.get("WRIT_EV_SESSION", "")
-mode = os.environ.get("WRIT_EV_MODE") or None
-
-buf = os.environ.get("WRIT_EV_BUF", "")
-if buf and os.path.exists(buf):
-    try:
-        raw = open(buf).read()
-    except OSError:
-        raw = ""
-    for rec in raw.split("\x1e"):
-        parts = rec.split("\x1f")
-        if len(parts) < 5 or parts[0] != "gate_decision":
-            continue
-        emit(None, "gate_decision", session, mode, gate=parts[1],
-             decision=parts[2], reason=parts[3], target=parts[4])
-
-# hook_execution is NOT emitted here any more: the bash append above owns it, and
-# emitting in both places would double-count every hook on every write.
-' 2>/dev/null || true
-  fi
+  # NOTHING SPAWNS HERE ANY MORE. Both row kinds (hook_execution above,
+  # gate_decision via log_gate_decision) are appended to the session buffer and emitted
+  # by one drain per turn. The python block that used to live here ran on every write
+  # that recorded a decision, and with its git children it measured 203ms per write.
   [ -n "${_WRIT_EVENT_BUF:-}" ] && rm -f "$_WRIT_EVENT_BUF" 2>/dev/null || true
   exit "$rc"
 }
@@ -867,13 +905,62 @@ log_gate_decision() {
   # ASCII unit (\x1f) / record (\x1e) separators -- control characters that cannot
   # occur in a bash variable -- so python does all JSON encoding and no bash-side
   # quoting can corrupt or forge a record.
-  if [ -n "${_WRIT_EVENT_BUF:-}" ] && [ -f "${_WRIT_EVENT_BUF}" ]; then
-    printf 'gate_decision\037%s\037%s\037%s\037%s\036' \
-      "${1:-}" "${2:-}" "${3:-}" "${4:-}" >> "$_WRIT_EVENT_BUF" 2>/dev/null || true
+  # Append to the SESSION buffer that hook_execution uses, so the once-per-turn drain
+  # emits both kinds and no hook spawns python to log a decision. Separators are stripped
+  # from the values first: one inside a reason or a path would forge a second record,
+  # which is the whole point of SEC-INJ-LOG-001.
+  local _gd_gate="${1:-}" _gd_dec="${2:-}" _gd_reason="${3:-}" _gd_target="${4:-}"
+  _gd_gate="${_gd_gate//[$'\x1e\x1f\n\r']/_}"
+  _gd_dec="${_gd_dec//[$'\x1e\x1f\n\r']/_}"
+  _gd_reason="${_gd_reason//[$'\x1e\x1f\n\r']/ }"
+  _gd_target="${_gd_target//[$'\x1e\x1f\n\r']/_}"
+  local _gd_mode="${CURRENT_MODE:-${MODE:-}}"
+  _gd_mode="${_gd_mode//[$'\x1e\x1f\n\r']/_}"
+
+  # A DENIAL IS WRITTEN SYNCHRONOUSLY, always. It is the record that proves a gate
+  # blocked something, and a buffered row whose session never sees another Stop or
+  # SessionEnd is lost rather than delayed. Denials are rare, so this spawn is not on the
+  # hot path; the per-write cost came from the "allow" that every successful write logs.
+  # An allow is buffered: it is the volume, and its claim ("the gate ran") is still
+  # carried by the hook_execution row beside it.
+  # ANYTHING THAT IS NOT EXACTLY "allow" takes the synchronous path, not just "deny".
+  # Matching on "deny" would send a decision value nobody anticipated (a new gate verb, a
+  # capitalised variant, a typo) down the lossy branch SILENTLY, which is the wrong
+  # default for a governance record. Only the one high-volume value whose loss is
+  # tolerable is buffered, and it is named explicitly.
+  if [ "$_gd_dec" != "allow" ]; then
+    _gd_emit_now "$_gd_gate" "$_gd_dec" "$_gd_reason" "$_gd_target"
     return 0
   fi
-  # Fallback for a hook that calls this without hook_instrument (no buffer):
-  # emit directly so the decision is still recorded.
+
+  # Decision time, stamped here rather than at drain time. emit() timestamps when it
+  # runs, so a buffered row used to land with the DRAIN's clock: measured, a decision at
+  # 22:48:41 was recorded as 22:48:44, and several decisions in one turn all collapsed
+  # onto the same wrong instant. printf '%(%s)T' is a bash builtin, so this costs nothing.
+  local _gd_at
+  printf -v _gd_at '%(%s)T' -1
+  local _gd_row
+  printf -v _gd_row 'gate_decision\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1e' \
+    "$_gd_gate" "$_gd_dec" "$_gd_reason" "$_gd_target" "$_gd_mode" "$_gd_at"
+  # A row that fits the atomic-append bound goes in the buffer. One that does not falls
+  # through to the immediate emit below rather than being truncated: an audit reason is
+  # the text a human needs, and silently shortening it is worse than paying for a spawn
+  # on the rare long denial.
+  if [ "${#_gd_row}" -le "${WRIT_EVENT_ROW_MAX:-3072}" ]; then
+    local _gd_buf
+    _gd_buf="$(writ_event_buffer_path "${SESSION_ID:-${HOOK_SESSION_ID:-}}")"
+    mkdir -p "${_gd_buf%/*}" 2>/dev/null || true
+    if printf '%s' "$_gd_row" >> "$_gd_buf" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  # Fallback for a hook that calls this without hook_instrument (no buffer), and the
+  # path every deny takes: emit directly so the decision is recorded before the hook
+  # returns control.
+  _gd_emit_now "${1:-}" "${2:-}" "${3:-}" "${4:-}"
+}
+
+_gd_emit_now() {
   WRIT_GD_GATE="${1:-}" \
   WRIT_GD_DECISION="${2:-}" \
   WRIT_GD_REASON="${3:-}" \

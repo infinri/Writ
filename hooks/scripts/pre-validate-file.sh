@@ -26,7 +26,11 @@ esac
 
 TMPFILE=""
 cleanup() { [ -n "$TMPFILE" ] && rm -f "$TMPFILE"; }
-trap cleanup EXIT
+# writ_on_exit, NOT `trap cleanup EXIT`. bash allows one EXIT trap, so installing one
+# here replaced hook_instrument's trap and this hook silently stopped recording its
+# telemetry row. Registration runs the same cleanup at the same time and keeps the
+# instrumentation. Pinned by tests/test_exit_trap_ownership.py.
+writ_on_exit cleanup
 
 TMPFILE=$(echo "$HOOK_ENVELOPE" | python3 -c "
 import sys, json, os, tempfile

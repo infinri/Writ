@@ -156,6 +156,34 @@ class TestTheSymlinkTrap:
         )
 
 
+class TestNewlineInAPathSegment:
+    """A directory name may contain a newline on Linux, and that used to break the walk.
+
+    Found by review. The split was `IFS='/' read -r -a raw <<< "$path"`, and `read`
+    consumes only the FIRST LINE of a here-string, so every segment after the newline
+    was dropped and the walk returned "". Callers gate on an empty PROJECT_ROOT and skip
+    their checks, so this was a silent enforcement hole. The split is parameter
+    expansion now, which is byte-exact.
+    """
+
+    def test_a_marker_below_a_newline_segment_is_still_found(self, tmp_path) -> None:
+        weird = tmp_path / "weird\ndir"
+        (weird / ".git").mkdir(parents=True)
+        (weird / "sub").mkdir()
+        got = _assert_parity(str(weird / "sub"), str(tmp_path), "newline in a segment")
+        assert got == str(weird), (
+            "the walk did not resolve the project root under a newline-bearing "
+            f"directory; got {got!r}"
+        )
+
+    def test_a_newline_path_with_no_marker_still_returns_empty(self, tmp_path) -> None:
+        """Anti-vacuity: the fix must not make the walk answer for paths that have no
+        marker, which would be a different bug wearing the same result."""
+        weird = tmp_path / "no\nmarker"
+        (weird / "sub").mkdir(parents=True)
+        assert _assert_parity(str(weird / "sub"), str(tmp_path), "newline, no marker") == ""
+
+
 class TestTheSpawnIsGone:
     def test_the_walk_no_longer_spawns_python(self) -> None:
         """Anti-vacuity for the whole change: every parity test above would still pass

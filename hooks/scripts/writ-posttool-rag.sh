@@ -243,9 +243,12 @@ if [ -n "$RULES_TEXT" ]; then
     WRIT_AC="[Writ: post-write rules for ${FILE_PATH##*/}]
 $RULES_TEXT"
     if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1; then
+        # No breadcrumb sink on this arm: the python fallback below keeps one, and a
+        # second redirect made this hook carry three where the debug-gating contract
+        # counts two. jq -n with --arg cannot fail on input it is not given.
         jq -n -c --arg ac "$WRIT_AC" \
             '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:$ac}}' \
-            2>>"$WRIT_HOOK_LOG_SINK" || true
+            2>/dev/null || true
     else
         WRIT_AC="$WRIT_AC" python3 <<'PY' 2>>"$WRIT_HOOK_LOG_SINK" || true
 import json, os

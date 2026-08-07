@@ -70,8 +70,21 @@ BASELINE_TOTAL = 349
 # WRIT_PORT at a dead port, so every hook takes the same daemon-down path every run. The
 # total carries a few processes of margin because it also counts conditional git and
 # grep forks that depend on repo state.
+# 17 python / 210 total, measured, WITH audit logging restored.
+#
+# The path here is worth recording, because the middle step looked like a regression and
+# was not. pre-validate-file.sh and inject-tier-workflow.sh installed their own `trap ...
+# EXIT`, which REPLACED the instrumentation trap. That lost more than two metrics rows:
+# pre-validate-file.sh calls log_gate_decision, so its AUDIT records (365-day retention)
+# were being discarded with the trap. Registering via writ_on_exit brought them back and
+# cost a python start plus its git children, taking a write from 722ms to 925ms.
+#
+# Paying 203ms per write for one governance record was the wrong trade when the buffer
+# already existed, so gate_decision now goes through the SAME append-and-drain path as
+# hook_execution: 15 python starts, 195 processes, 16 git in production measurement,
+# with every audit record intact. The exit trap spawns nothing at all now.
 PYTHON_BUDGET = 17
-TOTAL_BUDGET = 208
+TOTAL_BUDGET = 215
 
 # Where this is going, and what closes the gap. Each item is a measured count of python
 # starts that actually EXECUTE on a file write, not a grep of the hook source:

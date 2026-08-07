@@ -24,6 +24,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -179,6 +180,127 @@ class TestConcurrency:
         )
 
 
+class TestConcurrentDrains:
+    """Two drains of one session must not both emit the same rows.
+
+    Found by review, reproduced before the fix: Stop and SessionEnd firing close
+    together both read the buffer before either unlinked, so two appended rows came out
+    as FOUR emitted. The drain now claims the buffer with an atomic os.rename, so
+    exactly one caller wins.
+    """
+
+    def _flush(self, session: str, env: dict[str, str]):
+        return subprocess.Popen(
+            ["python3", str(FLUSH), session], stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, env={**os.environ, **env},
+        )
+
+    def test_two_simultaneous_drains_emit_each_row_once(self, buf_env) -> None:
+        for i in range(4):
+            _append("s-race", f"hook-{i}", buf_env)
+        a = self._flush("s-race", buf_env)
+        b = self._flush("s-race", buf_env)
+        out_a, _ = a.communicate(timeout=60)
+        out_b, _ = b.communicate(timeout=60)
+        rows = [ln for ln in (out_a + out_b).splitlines() if ln.strip()]
+        assert len(rows) == 4, (
+            f"appended 4 rows, {len(rows)} were emitted across two concurrent drains"
+        )
+        names = sorted(json.loads(r)["hook_name"] for r in rows)
+        assert names == [f"hook-{i}" for i in range(4)], f"rows duplicated or lost: {names}"
+
+    def test_a_drain_that_finds_nothing_exits_quietly(self, buf_env) -> None:
+        """Anti-vacuity: the losing drain must exit 0 with no output, not error."""
+        proc = subprocess.run(["python3", str(FLUSH), "s-empty"], capture_output=True,
+                              text=True, timeout=60, env={**os.environ, **buf_env})
+        assert proc.returncode == 0 and proc.stdout.strip() == ""
+
+    def test_rows_left_by_a_dead_drain_are_recovered(self, buf_env, tmp_path) -> None:
+        """Claiming by rename would otherwise convert duplication into silent loss: a
+        drain that dies after the rename leaves rows under a name nothing reads."""
+        _append("s-orphan", "stranded-hook", buf_env)
+        buf = _buffer_path("s-orphan", buf_env)
+        orphan = Path(f"{buf}.inflight.99999.1")
+        buf.rename(orphan)
+        old = time.time() - 3600
+        os.utime(orphan, (old, old))   # older than the orphan threshold
+        proc = subprocess.run(["python3", str(FLUSH), "s-orphan"], capture_output=True,
+                              text=True, timeout=60, env={**os.environ, **buf_env})
+        assert "stranded-hook" in proc.stdout, (
+            f"rows from a dead drain were never recovered: {proc.stdout!r}"
+        )
+        assert not orphan.exists(), "the recovered claim file was not removed"
+
+    def test_two_drains_racing_one_aged_orphan_emit_it_once(self, buf_env) -> None:
+        """The second race, which the first fix left open and review caught.
+
+        Claiming the LIVE buffer by rename made concurrent drains safe, but orphan
+        adoption selected files by name and age and read them WITHOUT claiming, so two
+        drains that both saw the same aged orphan both emitted it. Reproduced 3/3 before
+        the fix. Adoption now goes through the same atomic rename.
+        """
+        _append("s-orphan-race", "contested", buf_env)
+        buf = _buffer_path("s-orphan-race", buf_env)
+        orphan = Path(f"{buf}.inflight.99999.1")
+        buf.rename(orphan)
+        old = time.time() - 3600
+        os.utime(orphan, (old, old))
+
+        procs = [
+            subprocess.Popen(["python3", str(FLUSH), "s-orphan-race"],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                             env={**os.environ, **buf_env})
+            for _ in range(2)
+        ]
+        outs = [p.communicate(timeout=60)[0] for p in procs]
+        rows = [ln for ln in "".join(outs).splitlines() if ln.strip()]
+        assert len(rows) == 1, (
+            f"one orphaned row was emitted {len(rows)} times by two racing drains"
+        )
+
+    def test_a_second_claim_never_overwrites_an_unswept_one(self, buf_env) -> None:
+        """os.rename REPLACES an existing destination, so a claim name that repeats
+        would destroy the earlier claim's rows with no trace. Review raised this for pid
+        reuse; the name carries a nanosecond stamp so two claims cannot collide."""
+        _append("s-collide", "first", buf_env)
+        buf = _buffer_path("s-collide", buf_env)
+        stale = Path(f"{buf}.inflight.{os.getpid()}.1")
+        buf.rename(stale)                        # a claim bearing THIS pid, unswept
+        _append("s-collide", "second", buf_env)  # a fresh buffer for the same session
+        subprocess.run(["python3", str(FLUSH), "s-collide"], capture_output=True,
+                       text=True, timeout=60, env={**os.environ, **buf_env})
+        # The stale claim is too young to adopt, so it must still be here with its row
+        # intact: the new claim took a different name rather than replacing it.
+        assert stale.exists(), "the unswept claim was destroyed by a colliding rename"
+        assert stale.read_text(errors="replace").count("first") == 1
+
+    def test_a_mangled_byte_does_not_wedge_the_buffer(self, buf_env) -> None:
+        """Review flagged the errors="replace" fix as correct but unguarded. Without it,
+        a UnicodeDecodeError raises before any row parses AND before the unlink, so that
+        session's buffer is stuck on every future flush."""
+        _append("s-bytes", "good-row", buf_env)
+        buf = _buffer_path("s-bytes", buf_env)
+        with open(buf, "ab") as handle:
+            handle.write(b"hook_execution\x1f\xff\xfe-broken\x1f1\x1f0\x1f\x1f0\x1e")
+        proc = subprocess.run(["python3", str(FLUSH), "s-bytes"], capture_output=True,
+                              text=True, timeout=60, env={**os.environ, **buf_env})
+        assert proc.returncode == 0, proc.stderr[:300]
+        assert "good-row" in proc.stdout, "a bad byte stranded the good row beside it"
+        assert not buf.exists(), "the buffer was left behind and will be re-read forever"
+
+    def test_a_fresh_claim_is_not_stolen_from_a_live_drain(self, buf_env) -> None:
+        """The other half: recovery must not adopt a claim a running drain still owns,
+        or the fix reintroduces the duplication it exists to prevent."""
+        _append("s-live", "in-flight", buf_env)
+        buf = _buffer_path("s-live", buf_env)
+        fresh = Path(f"{buf}.inflight.12345.1")
+        buf.rename(fresh)              # a live drain's claim, mtime = now
+        proc = subprocess.run(["python3", str(FLUSH), "s-live"], capture_output=True,
+                              text=True, timeout=60, env={**os.environ, **buf_env})
+        assert proc.stdout.strip() == "", "a live drain's claim was stolen"
+        assert fresh.exists()
+
+
 class TestFailureIsolation:
     def test_a_failed_append_does_not_change_the_hook_exit_status(self, tmp_path) -> None:
         """Telemetry failure must never become enforcement failure. An unwritable
@@ -234,10 +356,13 @@ class TestTheSpawnIsActuallyGone:
             "the trap still emits hook_execution directly as well as buffering it, "
             "so every hook would be counted twice"
         )
-        guard = body.index('if [ -s "${_WRIT_EVENT_BUF:-/nonexistent}" ]')
-        assert guard < body.index("python3 -c"), (
-            "the python spawn is not behind the gate-decision guard, so it still runs "
-            "on every hook rather than only when a gate decided"
+        # Updated: the trap now spawns NOTHING. It first kept a python block for
+        # gate_decision, which ran on every write that recorded a decision and measured
+        # 203ms per write with its git children. Gate decisions go through the same
+        # buffer and the same once-per-turn drain, so there is no spawn left to guard.
+        assert "python3" not in body, (
+            "the exit trap still spawns python; both row kinds are buffered now, so "
+            f"nothing should: {body[body.index('python3') - 200:][:400]!r}"
         )
 
     @pytest.mark.skipif(shutil.which("strace") is None, reason="strace unavailable")
