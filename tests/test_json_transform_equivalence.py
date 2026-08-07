@@ -56,16 +56,40 @@ CASES = [
 ]
 
 
-def _transform(jq_filter: str, py_expr: str, payload: str, *, no_jq: bool = False) -> str:
+def _script(jq_filter: str, py_expr: str, payload: str, *, no_jq: bool, tail: str = "") -> str:
+    """A harness that runs under the shell options EVERY HOOK SETS.
+
+    `set -euo pipefail` is not decoration here. Without it this harness reported the two
+    arms as equivalent while the jq arm was aborting its caller at exit 5 on malformed
+    input and the python arm was carrying on: both wrote nothing to stdout, so a
+    stdout-only comparison in a permissive shell saw no difference at all. The bug lived
+    in the caller's control flow, not in the output.
+    """
     env = "WRIT_NO_JQ=1 " if no_jq else ""
-    script = (
-        f"source {shlex.quote(COMMON_SH)} >/dev/null 2>&1; "
+    return (
+        "set -euo pipefail\n"
+        f"source {shlex.quote(COMMON_SH)} >/dev/null 2>&1\n"
         f"printf '%s' {shlex.quote(payload)} | "
-        f"{env}json_transform {shlex.quote(jq_filter)} {shlex.quote(py_expr)}"
+        f"{env}json_transform {shlex.quote(jq_filter)} {shlex.quote(py_expr)}\n"
+        f"{tail}"
     )
+
+
+def _transform(jq_filter: str, py_expr: str, payload: str, *, no_jq: bool = False) -> str:
     return subprocess.run(
-        ["bash", "-c", script], capture_output=True, text=True, timeout=30
+        ["bash", "-c", _script(jq_filter, py_expr, payload, no_jq=no_jq)],
+        capture_output=True, text=True, timeout=30,
     ).stdout
+
+
+def _survives(jq_filter: str, py_expr: str, payload: str, *, no_jq: bool = False) -> bool:
+    """True if the CALLER reaches the line after json_transform."""
+    proc = subprocess.run(
+        ["bash", "-c", _script(jq_filter, py_expr, payload, no_jq=no_jq,
+                               tail="printf 'SURVIVED'\n")],
+        capture_output=True, text=True, timeout=30,
+    )
+    return proc.stdout.endswith("SURVIVED")
 
 
 class TestEquivalence:
@@ -114,6 +138,29 @@ class TestFailureParity:
         jq_out = _transform(".a", "d['a']", bad)
         py_out = _transform(".a", "d['a']", bad, no_jq=True)
         assert jq_out == py_out
+
+    @pytest.mark.parametrize("payload", ['{"a": ', "{not json", "", "[1,2]", "null"])
+    def test_bad_payload_does_not_kill_the_calling_hook(self, payload: str) -> None:
+        """The finding this test exists for: jq exits 5 on malformed input, and under
+        `set -euo pipefail` that aborted the CALLING HOOK, while the python arm exited 0
+        and continued. Comparing stdout could never see it, because both arms print
+        nothing. So assert on the caller's survival, on both arms.
+
+        A hook that dies partway through is worse than one that reads an empty value:
+        it skips whatever it was going to do next, including its gate.
+        """
+        assert _survives(".a", "d['a']", payload), (
+            f"jq arm killed the caller on {payload!r}"
+        )
+        assert _survives(".a", "d['a']", payload, no_jq=True), (
+            f"python arm killed the caller on {payload!r}"
+        )
+
+    def test_a_good_payload_also_survives(self) -> None:
+        """Anti-vacuity: if the harness never reached the tail line, the survival
+        assertions above would be measuring a broken harness."""
+        assert _survives(".a", "d['a']", '{"a":1}')
+        assert _survives(".a", "d['a']", '{"a":1}', no_jq=True)
 
     def test_missing_required_key_fails_the_same_way(self) -> None:
         jq_out = _transform(".absent", "d['absent']", '{"a":1}')

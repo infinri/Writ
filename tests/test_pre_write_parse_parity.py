@@ -62,6 +62,19 @@ ENVELOPES = {
     "unicode": {"session_id": "s-12",
                 "tool_input": {"file_path": "/tmp/j.py", "content": "caf\u00e9 \u2713"}},
     "no_tool_input": {"session_id": "s-13"},
+    "session_id_with_embedded_newline": {"session_id": "abc\ndef",
+                                         "tool_input": {"file_path": "/tmp/k.py"}},
+    # NON-STRING ids. Added after review caught the newline fix introducing an
+    # asymmetry: the python arm gained an isinstance guard and the jq arm did not, so
+    # agent_id 5 gave "5" on jq and "" on python. Coercion is not parity-safe here
+    # (jq tostring gives "true", python str() gives "True"), so both arms emit "".
+    "agent_id_is_a_number": {"agent_id": 5, "session_id": "s-14",
+                             "tool_input": {"file_path": "/tmp/l.py"}},
+    "agent_id_is_a_float": {"agent_id": 5.0, "tool_input": {"file_path": "/tmp/m.py"}},
+    "agent_id_is_true": {"agent_id": True, "tool_input": {"file_path": "/tmp/o.py"}},
+    "session_id_is_a_list": {"session_id": [1], "tool_input": {"file_path": "/tmp/p.py"}},
+    "session_id_is_an_object": {"session_id": {"a": 1},
+                                "tool_input": {"file_path": "/tmp/q.py"}},
 }
 
 pytestmark = pytest.mark.skipif(
@@ -129,6 +142,57 @@ class TestArmParity:
             _, _, body = _split(out)
             assert body.strip(), f"{name}: {label} arm produced no check body"
             assert json.loads(body)["skill_dir"] == SKILL_DIR
+
+
+class TestTheThreeLineContract:
+    """The call site splits this output BY POSITION, so line count is a contract.
+
+    Found by review: neither arm stripped embedded newlines from the session id, so
+    `"session_id": "abc\\ndef"` emitted four lines. SESSION_ID silently truncated to
+    "abc" and CHECK_BODY became a stray line glued to the real JSON body, which is then
+    POSTed to /pre-write-check. Both arms did it identically, so arm-parity tests could
+    not see it: the hole was in the format, not in the translation.
+    """
+
+    @pytest.mark.parametrize("name", sorted(ENVELOPES))
+    def test_output_is_exactly_three_lines_on_both_arms(self, name: str) -> None:
+        raw = json.dumps(ENVELOPES[name])
+        for label, out in (("python", _run_python(raw)), ("jq", _run_jq(raw))):
+            lines = out.rstrip("\n").split("\n")
+            assert len(lines) == 3, (
+                f"{name}: {label} arm emitted {len(lines)} lines, not 3: {lines!r}"
+            )
+
+    @pytest.mark.parametrize("name", [
+        "agent_id_is_a_number", "agent_id_is_a_float", "agent_id_is_true",
+        "session_id_is_a_list", "session_id_is_an_object",
+    ])
+    def test_a_non_string_id_becomes_empty_on_both_arms(self, name: str) -> None:
+        """Pins the VALUE, not just arm equality, because the two obvious answers
+        (coerce, or empty) are both self-consistent and only one is parity-safe.
+
+        Coercion is not: jq's tostring gives "true" where python's str() gives "True".
+        Empty has no formatting to disagree about, and it routes to the hook's existing
+        detect_session_id fallback instead of inventing an id. Note the envelope for
+        agent_id_is_a_number ALSO carries a valid session_id, and the answer is still
+        empty: python's `or` picks the truthy agent_id first and never reaches the
+        session_id, so a jq arm that fell back to session_id here would diverge.
+        """
+        raw = json.dumps(ENVELOPES[name])
+        for label, out in (("python", _run_python(raw)), ("jq", _run_jq(raw))):
+            sid, _, body = _split(out)
+            assert sid == "", f"{label} arm: expected empty id, got {sid!r}"
+            assert json.loads(body)["session_id"] == "", f"{label} arm body"
+
+    def test_a_newline_in_the_session_id_does_not_shift_the_lines(self) -> None:
+        raw = json.dumps(ENVELOPES["session_id_with_embedded_newline"])
+        for label, out in (("python", _run_python(raw)), ("jq", _run_jq(raw))):
+            sid, _, body = _split(out)
+            assert "\n" not in sid and sid != "abc", (
+                f"{label} arm: session id truncated at the newline: {sid!r}"
+            )
+            # The body must still be the JSON object, not a fragment plus an object.
+            assert json.loads(body)["file_path"] == "/tmp/k.py", f"{label} arm body"
 
 
 class TestDegenerateInput:

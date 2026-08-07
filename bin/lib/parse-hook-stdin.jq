@@ -39,10 +39,15 @@
 #     @sh always wraps in single quotes. Both eval to identical values, which is the
 #     contract the parity tests assert (per-field after eval, not raw bytes).
 #
-# NOT MODELLED, because a CC envelope cannot produce them: a numeric or boolean
-# `content` / `file_path` / `command` (jq's tostring would print `true` where python
-# prints `True`), and a numeric `tool_result_is_error` (0 is falsy in python, truthy
-# in jq). These are string and boolean fields in CC's schema.
+# NOT MODELLED, because a CC envelope cannot produce it: a numeric or boolean
+# `content` / `file_path` / `command`, where jq's tostring prints `true` and python's
+# str() prints `True`. Those are string fields in CC's schema.
+#
+# `tool_result_is_error` USED to be listed here as not-modelled on the grounds that it
+# is a boolean field. That was the wrong call: the caveat disclaimed numbers while the
+# divergence also covered "" and empty containers, and the consequence was a gate
+# skipping its check. A disclaimer is not a substitute for handling the shape when the
+# handling is one comparison. See the pytruthy note at the HOOK_IS_ERROR emit.
 #
 # INVOCATION: `jq -R -s -r -f parse-hook-stdin.jq`. The raw-slurp flags are part of
 # the contract, not a preference. Without them jq does its own parsing, and on empty
@@ -62,9 +67,13 @@ def as_object: if type == "object" then . else {} end;
 # matching python: json.loads('"{\"a\":1}"') is the string, not the object.
 def root: (if type == "string" then (try fromjson catch {}) else . end) | as_object;
 
-# python truthiness for the scalars that can appear here, so an `or` chain in the
-# python lands on the same branch as this filter. jq's own `//` only tests for null.
-def pyor(a; b): if (a == null or a == "" or a == false or a == 0) then b else a end;
+# python truthiness, spelled out. jq's own notion of true is "anything but null and
+# false", python's also excludes "", 0, and empty containers, and the difference decides
+# branches on both sides of this file. Keep this definition BYTE-IDENTICAL with the copy
+# in pre-write-parse.jq: a shared jq module would need a -L path at every call site,
+# so the duplication is deliberate and the two must not drift.
+def pytruthy: . != null and . != false and . != "" and . != 0 and . != [] and . != {};
+def pyor(a; b): if (a | pytruthy) then a else b end;
 
 # python's `.get(k, default)`: an explicitly-null value is a VALUE, not a miss.
 def getor(obj; key; default): if (obj | has(key)) then obj[key] else default end;
@@ -114,5 +123,10 @@ root
   "HOOK_TOOL_NAME=" + q($r.tool_name),
   "HOOK_FILE_PATH=" + q($r.file_path),
   "HOOK_COMMAND=" + q($r.command),
-  "HOOK_IS_ERROR=" + (if $r.is_error then "1" else "0" end),
+  # python truthiness, NOT jq's. python spells this `"1" if result["is_error"] else "0"`,
+  # so "" / 0 / [] / {} are all FALSE there while jq counts every one of them as true.
+  # Measured 2026-08-07: `{"tool_result_is_error": ""}` gave 0 on python and 1 on jq, and
+  # five hooks gate on `[ "$HOOK_IS_ERROR" = "1" ] && exit 0`, so the jq arm would have
+  # SKIPPED their check on a shape the python arm still validates.
+  "HOOK_IS_ERROR=" + (if ($r.is_error | pytruthy) then "1" else "0" end),
   "HOOK_ENVELOPE=" + ($r | tojson | @sh)

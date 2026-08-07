@@ -378,7 +378,15 @@ parsed_bool() {
 json_transform() {
     local filter="$1" pyexpr="$2"
     if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1; then
-        jq -c -r "( $filter ) | if . == null then empty else . end" 2>/dev/null
+        # `|| true` is load-bearing, and its absence INVERTED this function's whole
+        # contract. jq exits 5 on malformed input; every hook runs under
+        # `set -euo pipefail`, so a bad payload aborted the calling hook at status 5
+        # while the python arm below exits 0 and prints nothing. That makes the
+        # PRESENCE of jq the thing that changes behavior, which is backwards. Measured
+        # 2026-08-07 on `printf '{not json' | json_transform '.foo' "d.get('foo')"`:
+        # the jq arm never reached the next line, the python arm did. Same defect class
+        # as writ_session_mode_direct above; a bad payload is a normal input here.
+        jq -c -r "( $filter ) | if . == null then empty else . end" 2>/dev/null || true
     else
         python3 -c '
 import sys, json

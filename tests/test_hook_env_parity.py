@@ -99,6 +99,17 @@ ENVELOPES = {
         "tool_input": {"notebook_path": "/tmp/n.ipynb", "content": "",
                        "new_source": "cell body"},
     },
+    # tool_result_is_error carrying a NON-BOOLEAN. Added after review: the filter's
+    # header disclaimed these shapes as "cannot happen" instead of handling them, and
+    # the divergence was real. python uses python truthiness ("" / 0 / [] / {} are all
+    # false) while jq counts every one of them as true, and five hooks gate on
+    # `[ "$HOOK_IS_ERROR" = "1" ] && exit 0`, so the jq arm SKIPPED their check.
+    "is_error_empty_string": {"session_id": "s-16", "tool_result_is_error": ""},
+    "is_error_zero": {"session_id": "s-17", "tool_result_is_error": 0},
+    "is_error_empty_list": {"session_id": "s-18", "tool_result_is_error": []},
+    "is_error_empty_object": {"session_id": "s-19", "tool_result_is_error": {}},
+    "is_error_nonempty_string": {"session_id": "s-20", "tool_result_is_error": "yes"},
+    "is_error_one": {"session_id": "s-21", "tool_result_is_error": 1},
 }
 
 pytestmark = pytest.mark.skipif(
@@ -194,6 +205,23 @@ class TestScalarParity:
         for key in SCALAR_KEYS:
             assert key in py, f"{name}: python parser did not emit {key}"
             assert key in jq, f"{name}: jq parser did not emit {key}"
+
+    @pytest.mark.parametrize("value,expected", [
+        ("", "0"), (0, "0"), ([], "0"), ({}, "0"), (False, "0"),
+        ("yes", "1"), (1, "1"), ([0], "1"), ({"a": 1}, "1"), (True, "1"),
+    ])
+    def test_is_error_uses_python_truthiness(self, value, expected: str) -> None:
+        """Pins the flag itself, not just arm equality.
+
+        Arm equality alone would be satisfied by both arms being wrong together. This
+        asserts the VALUE, because five hooks read it as `[ "$HOOK_IS_ERROR" = "1" ]
+        && exit 0`: a false 1 makes a check silently skip, which is the direction that
+        loses enforcement rather than merely logging oddly.
+        """
+        raw = json.dumps({"session_id": "s", "tool_result_is_error": value})
+        py, jq = _assignments(_run_python(raw)), _assignments(_run_jq(raw))
+        assert _unquote(py["HOOK_IS_ERROR"]) == expected, f"python arm: {value!r}"
+        assert _unquote(jq["HOOK_IS_ERROR"]) == expected, f"jq arm: {value!r}"
 
     def test_env_fallback_keys_on_absence_not_on_null(self) -> None:
         """The divergence that mattered most, and it only shows with the env set.

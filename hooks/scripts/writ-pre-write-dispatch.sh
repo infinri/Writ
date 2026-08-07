@@ -64,7 +64,12 @@ except (ValueError, json.JSONDecodeError):
 # 2026-08-07 by tests/test_pre_write_parse_parity.py comparing this arm to the jq one.
 if not isinstance(data, dict):
     data = {}
-sid = (data.get('agent_id') or data.get('session_id') or '').strip()
+# Strip embedded newlines before stripping the ends: this output is split positionally
+# by head -1 / sed -n 2p / tail -n +3, so a newline inside the session id emits four
+# lines and CHECK_BODY becomes a stray line glued to the real JSON body. Mirrored in
+# pre-write-parse.jq; see the longer note there.
+sid = (data.get('agent_id') or data.get('session_id') or '')
+sid = sid.replace('\n', ' ').replace('\r', ' ').strip() if isinstance(sid, str) else ''
 ti = data.get('tool_input', {})
 if isinstance(ti, str):
     try:
