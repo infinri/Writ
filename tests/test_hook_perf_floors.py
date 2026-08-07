@@ -47,9 +47,32 @@ SESSION_HELPER = str(SKILL_DIR / "bin" / "lib" / "writ-session.py")
 # the few-tens-of-ms of system noise that a single cold-cache outlier in 20
 # samples can introduce. The v1.1.0 end-to-end p95 test hit the same flake
 # class and was fixed by warmup + steady-state measurement; same pattern below.
-POSTTOOL_RAG_P95_FLOOR_MS = 550.0
-VALIDATE_RULES_P95_FLOOR_MS = 400.0
-PRE_WRITE_DISPATCH_P95_FLOOR_MS = 220.0
+# RE-BASELINED 2026-08-07, because these floors had stopped being able to fail. They
+# were set when a write cost ~1,515ms; it now costs 722ms, and measured p95 over 20
+# runs each (daemon up, hooks run alone) was:
+#
+#   writ-posttool-rag.sh        p95 154ms  against a 550ms floor   (3.6x headroom)
+#   validate-rules.sh           p95  14ms  against a 400ms floor  (28.0x headroom)
+#   writ-pre-write-dispatch.sh  p95 216ms  against a 220ms floor   (1.02x, about to flake)
+#
+# Two of the three could not have caught any regression short of a fivefold one, and the
+# third was 4ms from flaking on every run. A gate that cannot fail and a gate that fails
+# at random are the same amount of information: none.
+#
+# The new floors sit at roughly 1.3x measured p95. That is deliberate division of labour:
+# tests/test_write_path_process_budget.py is the PRECISE instrument (process counts are
+# deterministic; the same write measured 345 processes across runs whose wall time moved
+# 15%), and these floors are the coarse net for a regression that does NOT change process
+# count, such as a daemon route getting slower. Tightening them further would buy
+# sensitivity the ratchet already provides, at the cost of flakes.
+#
+# p95 is KEPT rather than switched to a median. The drift that made p95 unreliable came
+# from running inside the loaded suite; now that `make perf` runs these alone, p95 minus
+# median measured 4ms, 1ms and 6ms respectively. A median would give up tail sensitivity
+# and buy nothing.
+POSTTOOL_RAG_P95_FLOOR_MS = 200.0
+VALIDATE_RULES_P95_FLOOR_MS = 30.0
+PRE_WRITE_DISPATCH_P95_FLOOR_MS = 275.0
 
 # Untimed warmup iterations run before the timed loop to load module caches,
 # warm Neo4j connection pool, and prime any HTTP keep-alive.
