@@ -989,9 +989,17 @@ SKILL_DIR="$WRIT_DIR"
 while IFS=$'\t' read -r kind path; do
     [ "$kind" = "local" ] || continue
     [ -z "$path" ] && continue
-    BODY=$(WRIT_AP="$path" WRIT_SD="$SKILL_DIR" python3 -c "
+    # This loop runs once PER PATH found in the Bash command, so each interpreter start
+    # here is paid per path, not per command. jq builds the body with --arg (the path is
+    # never spliced into the program text), python stays as the fallback arm.
+    if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1; then
+        BODY=$(jq -n -c --arg fp "$path" --arg sd "$SKILL_DIR" \
+            '{tool_input:{file_path:$fp}, skill_dir:$sd}' 2>/dev/null) || continue
+    else
+        BODY=$(WRIT_AP="$path" WRIT_SD="$SKILL_DIR" python3 -c "
 import os, json
 print(json.dumps({'tool_input': {'file_path': os.environ['WRIT_AP']}, 'skill_dir': os.environ['WRIT_SD']}))" 2>/dev/null) || continue
+    fi
     RESP=$(curl -sf --connect-timeout 0.2 --max-time 1 \
         -X POST "${WRIT_SESSION_BASE}/session/${SESSION_ID}/can-write" \
         -H "Content-Type: application/json" -d "$BODY" 2>/dev/null) || true
@@ -1000,13 +1008,11 @@ print(json.dumps({'tool_input': {'file_path': os.environ['WRIT_AP']}, 'skill_dir
         # gate uses ({"decision": allow|deny} shape), so an outage does not
         # ungate Bash writes. Only a NO-ANSWER (fallback also failed) is left
         # to policy: fail open by default, fail closed under WRIT_STRICT=1.
-        RESP=$(printf '%s' "$BODY" | _writ_session can-write "$SESSION_ID" --skill-dir "$SKILL_DIR" 2>/dev/null | python3 -c "
-import sys, json
-try:
-    r = json.load(sys.stdin)
-except Exception:
-    raise SystemExit
-print(json.dumps({'can_write': r.get('decision', 'allow') != 'deny', 'reason': r.get('reason')}))" 2>/dev/null) || true
+        RESP=$(printf '%s' "$BODY" | _writ_session can-write "$SESSION_ID" --skill-dir "$SKILL_DIR" 2>/dev/null \
+            | json_transform \
+                '{can_write: ((.decision // "allow") != "deny"), reason: .reason}' \
+                "{'can_write': d.get('decision','allow') != 'deny', 'reason': d.get('reason')}" \
+            2>/dev/null) || true
     fi
     if [ -z "$RESP" ]; then
         if [ "${WRIT_STRICT:-}" = "1" ]; then
@@ -1017,15 +1023,19 @@ print(json.dumps({'can_write': r.get('decision', 'allow') != 'deny', 'reason': r
         fi
         continue   # no answer obtainable -> fail open (default posture)
     fi
-    DENY_REASON=$(printf '%s' "$RESP" | WRIT_TGT="$path" python3 -c "
-import sys, json, os
-try:
-    r = json.load(sys.stdin)
-except Exception:
-    raise SystemExit
-if not r.get('can_write', True):
-    reason = r.get('reason') or 'Write blocked by a Writ gate.'
-    print(f\"[Bash write to {os.path.basename(os.environ['WRIT_TGT'])}] {reason}\")" 2>/dev/null) || true
+    # The reason comes out of the JSON; the "[Bash write to X]" prefix is assembled in
+    # bash. Splitting it that way keeps the target path out of the transform entirely,
+    # which is what lets json_transform be used here at all (it takes no --arg).
+    # `has("can_write")`, NOT `.can_write // true`. jq's `//` falls through on FALSE as
+    # well as null, so `false // true` is true: the deny case would have read as an
+    # allow and this gate would have stopped denying. `//` is only safe on a field where
+    # false is not a legitimate value; here false IS the whole point.
+    BLOCK_REASON=$(printf '%s' "$RESP" | json_transform \
+        'if (if has("can_write") then .can_write else true end) then "" else ((.reason // "") | if . == "" then "Write blocked by a Writ gate." else . end) end' \
+        "'' if d.get('can_write', True) else (d.get('reason') or 'Write blocked by a Writ gate.')" \
+        2>/dev/null) || true
+    DENY_REASON=""
+    [ -n "$BLOCK_REASON" ] && DENY_REASON="[Bash write to ${path##*/}] $BLOCK_REASON"
     if [ -n "$DENY_REASON" ]; then
         log_gate_decision "bash-write" "deny" "$DENY_REASON" "$path"
         emit_deny "$DENY_REASON"

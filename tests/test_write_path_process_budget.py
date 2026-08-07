@@ -57,8 +57,13 @@ BASELINE_PYTHON = 46   # before any conversion
 BASELINE_TOTAL = 349
 
 # The ratchet: measured now, so a new spawn turns this red immediately. NOT the target.
-PYTHON_BUDGET = 32
-TOTAL_BUDGET = 349
+# Tightened 46 -> 32 -> 31 as conversions landed; lower it again with the next one.
+# The python figure is exact because it is branch-deterministic here: conftest points
+# WRIT_PORT at a dead port, so every hook takes the same daemon-down path every run. The
+# total carries a few processes of margin because it also counts conditional git and
+# grep forks that depend on repo state.
+PYTHON_BUDGET = 31
+TOTAL_BUDGET = 340
 
 # Where this is going, and what closes the gap. Each item is a measured count of python
 # starts that actually EXECUTE on a file write, not a grep of the hook source:
@@ -68,9 +73,12 @@ TOTAL_BUDGET = 349
 #   -5  `writ-session.py mode get` called directly instead of through the existing
 #       curl fast-path
 #   -3  the remaining inline JSON snippets in writ-pre-write-dispatch.sh
-#   -5  the inline snippets in pre-validate-file.sh
-#   -5  the inline snippets in writ-posttool-rag.sh, one of which is a `should-skip`
-#       daemon call made via python rather than curl
+#   -4  pre-validate-file.sh: two of these are detect_project_root, a marker walk up the
+#       directory tree that bash does with zero processes, called twice per write
+#   -1  writ-posttool-rag.sh's `should-skip`, a daemon call made via python not curl
+# Converted so far: 15 (13 stdin parses, the write-gate parse, and posttool-rag's
+# session-id read); plus the response relevance check and the additionalContext
+# envelope, which fire on the RAG path rather than on every write.
 # validate-rules.sh has 10 inline snippets and is deliberately NOT on this list: it
 # executes ZERO of them on a file write (measured), so converting it changes the cost
 # of writing a RULE file, not the number this test guards.

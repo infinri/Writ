@@ -132,6 +132,55 @@ class TestEquivalence:
             == _transform(".n", "d['n']", '{"n":9007199254740993}', no_jq=True).strip()
 
 
+class TestTheBashWriteGateDenyFilter:
+    """The gate filter is extracted from the hook and exercised, because I shipped it
+    wrong once in the space of one edit.
+
+    First version used `.can_write // true`. jq's `//` falls through on FALSE as well as
+    null, so `false // true` is true: every deny read as an allow and the gate stopped
+    denying. This is the same divergence the parser's own header documents, which is
+    what makes it worth a test rather than a comment. `//` is safe only on a field where
+    false is not a legitimate value.
+    """
+
+    GATE = REPO / "hooks" / "scripts" / "writ-bash-write-gate.sh"
+
+    def _filter(self) -> str:
+        m = re.search(r"json_transform \\\n\s*'(if \(if has\(\"can_write\"\).*?)' \\",
+                      self.GATE.read_text(), re.S)
+        assert m, (
+            "could not extract the deny filter from writ-bash-write-gate.sh; if the "
+            "call site moved, update this extraction rather than pasting a copy"
+        )
+        return m.group(1)
+
+    @pytest.mark.parametrize("payload,expect_block", [
+        ('{"can_write":false,"reason":"blocked by phase-a"}', "blocked by phase-a"),
+        ('{"can_write":false}', "Write blocked by a Writ gate."),
+        ('{"can_write":false,"reason":""}', "Write blocked by a Writ gate."),
+        ('{"can_write":false,"reason":null}', "Write blocked by a Writ gate."),
+        ('{"can_write":true}', ""),
+        ('{"can_write":true,"reason":"ignored"}', ""),
+        ('{}', ""),
+    ])
+    def test_deny_survives_both_arms(self, payload: str, expect_block: str) -> None:
+        py_expr = ("'' if d.get('can_write', True) else "
+                   "(d.get('reason') or 'Write blocked by a Writ gate.')")
+        for no_jq in (False, True):
+            got = _transform(self._filter(), py_expr, payload, no_jq=no_jq).strip()
+            arm = "python" if no_jq else "jq"
+            assert got == expect_block, (
+                f"{arm} arm on {payload}: expected {expect_block!r}, got {got!r}"
+            )
+
+    def test_the_broken_spelling_would_have_failed_this_test(self) -> None:
+        """Anti-vacuity, and it documents the trap concretely: the `//` spelling really
+        does turn a deny into an allow."""
+        broken = ('if (.can_write // true) then "" else '
+                  '((.reason // "") | if . == "" then "BLOCKED" else . end) end')
+        assert _transform(broken, "'unused'", '{"can_write":false}').strip() == ""
+
+
 class TestFailureParity:
     def test_malformed_json_fails_the_same_way_on_both_paths(self) -> None:
         bad = '{"a": '
@@ -190,8 +239,14 @@ class TestNoInlinePythonLeftOnTheWritePath:
     # counts snippets, not spawns).
     BUDGET = {
         "writ-pre-write-dispatch.sh": 4,
-        "writ-posttool-rag.sh": 4,
-        "writ-bash-write-gate.sh": 4,
+        # 4 -> 2: the session-id extraction and the response relevance check are now
+        # json_transform calls. The two that remain do real python work (regex keyword
+        # extraction, and an import of writ_phase_scoped_rules), not JSON reshaping.
+        "writ-posttool-rag.sh": 2,
+        # 4 -> 2: the can-write request body, the fallback response reshape, and the
+        # deny reason are converted. This loop runs once per path in the Bash command,
+        # so each start it drops is paid per path rather than per command.
+        "writ-bash-write-gate.sh": 2,
         "pre-validate-file.sh": 3,
         # Not on the write path: measured, ZERO of these 10 execute on a file write.
         # Converting them changes the cost of writing a RULE file. Kept in the ratchet
@@ -233,6 +288,20 @@ class TestNoInlinePythonLeftOnTheWritePath:
         assert len(found) == self.BUDGET[hook], (
             f"{hook}: ratchet says {self.BUDGET[hook]}, found {len(found)}. If a site "
             f"was converted, lower the constant in this commit."
+        )
+
+    @pytest.mark.parametrize("hook,minimum", [
+        ("writ-posttool-rag.sh", 2), ("writ-bash-write-gate.sh", 3),
+    ])
+    def test_the_converted_hooks_actually_call_the_helper(self, hook: str, minimum: int) -> None:
+        """The counterpart to the ratchet: a snippet can also vanish by being deleted
+        or rewritten as a second inline python. This asserts the replacement is
+        json_transform, so the helper has real production callers rather than being a
+        tested library nothing uses."""
+        text = (REPO / "hooks" / "scripts" / hook).read_text()
+        assert text.count("json_transform") >= minimum, (
+            f"{hook} calls json_transform {text.count('json_transform')} times, "
+            f"expected at least {minimum}"
         )
 
     def test_the_detector_would_see_a_planted_snippet(self) -> None:
