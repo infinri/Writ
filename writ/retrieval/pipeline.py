@@ -152,12 +152,13 @@ def _apply_sticky_tiebreak(
         # STICKY_TIEBREAK_THRESHOLD of the group's HIGHEST score.
         #
         # PRECONDITION: scored_rules is sorted DESCENDING here, so scored_rules[group_start]
-        # is the group max. This holds only because query() calls apply_authority_preference
-        # (pipeline.py) immediately before this, and that pass is currently a no-op (its
-        # threshold defaults to 0.0 and is never wired from config), so it never reorders.
-        # If apply_authority_preference is ever wired to actually swap pairs, the
-        # group_start==max assumption must be re-verified (re-sort descending first, or
-        # take max(group) explicitly).
+        # is the group max. query() satisfies this by calling this function immediately
+        # after its descending sort, with NO reordering pass in between. That ordering is
+        # deliberate: apply_authority_preference does reorder, and running it first (the
+        # pre-2026-08-06 order) left this function grouping a non-descending list, which
+        # inverted the very preference it had just applied. Any new pass inserted between
+        # the sort and this call must preserve descending order, or this grouping must be
+        # changed to take max(group) explicitly.
         group_start = i
         group_max = scored_rules[group_start]["score"]
         i += 1
@@ -334,29 +335,37 @@ class RetrievalPipeline:
         all_candidate_list = list(candidate_ids.keys())
         proximity = compute_graph_proximity(all_candidate_list, top3_ids, self._cache)
 
-        # Stage 5b': bundle cohesion per candidate.
-        bundle_cohesion = self._compute_bundle_cohesion(
-            all_candidate_list, first_pass_scores, active_weights,
-        )
-
-        # Stage 5c: Final ranking with graph proximity + bundle cohesion.
+        # Stage 5c: Final ranking with graph proximity.
         scored_rules = self._final_rank(
-            candidate_ids, active_weights, proximity, bundle_cohesion, enrichment,
+            candidate_ids, active_weights, proximity, enrichment,
         )
 
         # Sort by score descending.
         scored_rules.sort(key=lambda r: r["score"], reverse=True)
 
-        # Phase 3b: hard authority preference -- human outranks ai-provisional.
-        scored_rules = apply_authority_preference(
-            scored_rules, self._authority_preference_threshold,
-        )
-
         # Sticky rules tie-breaking: reorder adjacent rules within 0.02 score
         # of each other to match the prefer_rule_ids ordering. This stabilizes
         # the injection order across turns for prompt-cache friendliness.
+        #
+        # ORDER MATTERS: this runs on the freshly sorted list, BEFORE the authority
+        # pass, because its grouping treats the first element of each run as the
+        # group max, which is valid only on descending input. The authority pass
+        # reorders, so running it first left this one grouping a non-descending
+        # list. Measured over an exhaustive 12,960-configuration comparison of the
+        # two orders, 4,923 diverge; the worst shape inverted the preference
+        # outright, promoting a preferred ai-provisional rule above every human
+        # rule in its tie group. Order is load-bearing, not cosmetic:
+        # apply_context_budget trims by taking the first N in list order.
         if prefer_rule_ids:
             scored_rules = _apply_sticky_tiebreak(scored_rules, prefer_rule_ids)
+
+        # Phase 3b: hard authority preference -- human outranks ai-provisional.
+        # Applied LAST so the hard preference is the final word: it is allowed to
+        # override the tiebreak's prompt-cache ordering, but only within its own
+        # score threshold. Off by default (threshold 0.0 = no reordering).
+        scored_rules = apply_authority_preference(
+            scored_rules, self._authority_preference_threshold,
+        )
 
         # Apply context budget. Abstraction summaries (when present in the
         # graph and the budget triggers summary mode) replace raw rule
@@ -462,7 +471,7 @@ class RetrievalPipeline:
         fp_bm25, fp_vec, fp_sev, fp_conf = active_weights.first_pass_weights()
         first_pass_weights = RankingWeights(
             w_bm25=fp_bm25, w_vector=fp_vec, w_severity=fp_sev, w_confidence=fp_conf,
-            w_graph=0.0, w_bundle_cohesion=0.0,
+            w_graph=0.0,
         )
         first_pass_scores: list[tuple[str, float]] = []
         for rid, scores in candidate_ids.items():
@@ -481,30 +490,8 @@ class RetrievalPipeline:
         first_pass_scores.sort(key=lambda x: x[1], reverse=True)
         return first_pass_scores
 
-    def _compute_bundle_cohesion(self, all_candidate_list, first_pass_scores, active_weights) -> dict:
-        """Stage 5b': bundle cohesion per candidate (plan Section 3.2 deliverable 4).
-        A candidate gets a bonus proportional to the fraction of its bundle members
-        (1-hop neighbors) that are also in the top-N first-pass set.
-
-        Skipped entirely when w_bundle_cohesion is 0 (the default): the per-candidate
-        neighbor scan is pure overhead when the term is zero-weighted (audit P3).
-        compute_score sees the empty dict's .get default (0.0), so the result is
-        byte-identical to computing it -- this is an optimization, not a behavior change.
-        """
-        bundle_cohesion: dict[str, float] = {}
-        if active_weights.w_bundle_cohesion > 0:
-            top_n_set = set(rid for rid, _ in first_pass_scores[:FIRST_PASS_TOP_N])
-            for rid in all_candidate_list:
-                neighbors = self._cache.get_neighbors(rid)
-                if not neighbors:
-                    bundle_cohesion[rid] = 0.0
-                    continue
-                overlap = sum(1 for n in neighbors if n["rule_id"] in top_n_set)
-                bundle_cohesion[rid] = overlap / len(neighbors)
-        return bundle_cohesion
-
-    def _final_rank(self, candidate_ids, active_weights, proximity, bundle_cohesion, enrichment) -> list:
-        """Stage 5c: final ranking with graph proximity + bundle cohesion.
+    def _final_rank(self, candidate_ids, active_weights, proximity, enrichment) -> list:
+        """Stage 5c: final ranking with graph proximity.
         Returns the scored rule-entry dicts (unsorted; the caller sorts)."""
         scored_rules: list[dict] = []
         for rid, scores in candidate_ids.items():
@@ -515,7 +502,6 @@ class RetrievalPipeline:
                 severity=meta.get("severity", "medium"),
                 confidence=meta.get("confidence", "production-validated"),
                 graph_proximity=proximity.get(rid, 0.0),
-                bundle_cohesion=bundle_cohesion.get(rid, 0.0),
                 weights=active_weights,
                 times_seen_positive=meta.get("times_seen_positive", 0) or 0,
                 times_seen_negative=meta.get("times_seen_negative", 0) or 0,

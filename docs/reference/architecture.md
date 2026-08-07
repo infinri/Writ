@@ -53,8 +53,8 @@ The daemon runs as a **systemd user service** in production (`scripts/install-se
 
 | Seam | Status | Anchor |
 |---|---|---|
-| Authority-preference re-ranking | Implemented, always off: threshold defaults 0.0 and nothing configures it. The sticky-tiebreak logic depends on it staying a no-op; wiring it without revisiting that coupling breaks ordering silently. | `writ/retrieval/pipeline.py` |
-| Bundle-cohesion weight | Defined, defaults 0.0, computation skipped entirely. | `writ/retrieval/ranking.py` |
+| ~~Authority-preference re-ranking~~ | RESOLVED 2026-08-06: configurable via `[retrieval] authority_preference_threshold`, default still 0.0 because a gold-set sweep measured no change from enabling it (the corpus's one ai-provisional node is not semantic-routed). The tiebreak coupling is fixed: the preference now runs after the tiebreak, not before. | `writ/retrieval/pipeline.py` |
+| ~~Bundle-cohesion weight~~ | RESOLVED 2026-08-06: deleted. No weight improved all three metrics, and the methodology channel it was built for shipped deterministic. See `benchmarks/RANKING-LEVERS-2026-08-06.md`. | `writ/retrieval/ranking.py` |
 | `/analyze` LLM escalation | Real code; the `anthropic` SDK is not a declared dependency, so a default install gets "SDK not installed" placeholder findings and the calibration log fills with placeholders. | `writ/analysis/llm.py` |
 | BM25 persistence | The HNSW index persists with checksum guards; the Tantivy index rebuilds on every daemon start. | `writ/retrieval/keyword.py` |
 | `debug` log stream | Reserved retention entry, never written; debug output stays in `WRIT_DEBUG`-gated `/tmp` sinks. | `writ/session/log_rotation.py` |

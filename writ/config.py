@@ -7,6 +7,7 @@ Per ARCH-CONST-001: all tunables must live in writ.toml with named constant defa
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 from pathlib import Path
@@ -28,6 +29,11 @@ DEFAULT_HNSW_CACHE_DIR = str(Path.home() / ".cache" / "writ" / "hnsw")
 # socket verb takes (`nc ::1 9000`).
 DEFAULT_EGRESS_ALLOW_HOSTS = ("localhost", "127.0.0.1", "::1", "[::1]")
 DEFAULT_WRIT_HOST = "localhost"
+# Ships OFF. A 2026-08-06 sweep of the 193-query gold set found the preference
+# changes nothing on the default retrieval path (the only ai-provisional node in
+# the corpus is not semantic-routed), so enabling it by default would be a
+# ranking change with no measured gain. See benchmarks/RANKING-LEVERS-2026-08-06.md.
+DEFAULT_AUTHORITY_PREFERENCE_THRESHOLD = 0.0
 
 # Default config file path: writ.toml in the package root (one level above writ/).
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
@@ -222,6 +228,38 @@ def get_egress_allow_hosts(path: str | None = None) -> list[str]:
     hosts.extend((os.environ.get("WRIT_EGRESS_ALLOW_HOSTS") or "").split(","))
     hosts.append(os.environ.get("WRIT_HOST") or DEFAULT_WRIT_HOST)
     return sorted({h.strip().lower() for h in hosts if h and h.strip()})
+
+
+def get_authority_preference_threshold(path: str | None = None) -> float:
+    """Return [retrieval] authority_preference_threshold, defaulting to OFF (0.0).
+
+    The threshold drives `apply_authority_preference`: within this score gap, a
+    human / ai-promoted rule outranks an ai-provisional one. 0.0 disables the pass.
+
+    Never raises. A non-numeric, negative, or non-finite value falls back to the
+    default: this is an optional tuning key read during daemon startup, and a typo
+    in it must not stop the server from coming up. A bad value therefore leaves
+    ranking at its shipped behavior rather than at an arbitrary one.
+
+    The non-finite check is not defensive padding. TOML has literal `nan` / `inf`,
+    and an overflowing exponent (`1e400`) parses to `inf`. Both are floats and
+    neither is negative, so without this guard they reach
+    `apply_authority_preference`, where `threshold <= 0.0` is False and every
+    `gap > threshold` comparison is False: the pass would then swap EVERY adjacent
+    authority-mismatched pair regardless of score distance, which is the opposite
+    of a safe fallback.
+    """
+    cfg = load_config(path)
+    raw = cfg.get("retrieval", {}).get(
+        "authority_preference_threshold", DEFAULT_AUTHORITY_PREFERENCE_THRESHOLD
+    )
+    # bool is an int subclass; `True` must not silently become 1.0.
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return DEFAULT_AUTHORITY_PREFERENCE_THRESHOLD
+    value = float(raw)
+    if not math.isfinite(value) or value < 0.0:
+        return DEFAULT_AUTHORITY_PREFERENCE_THRESHOLD
+    return value
 
 
 def get_logs_backup_dest(path: str | None = None) -> str | None:

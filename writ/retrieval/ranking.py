@@ -38,11 +38,6 @@ LITERAL_W_VECTOR = 0.396
 LITERAL_W_SEVERITY = 0.099
 LITERAL_W_CONFIDENCE = 0.099
 LITERAL_W_GRAPH = 0.01
-# Phase 1 addition per plan Section 3.2 deliverable 4: bundle-cohesion bonus
-# applied when a candidate's bundle members (via Stage-4 adjacency) include
-# other high-ranked candidates. Default 0.0 preserves existing behavior until
-# methodology nodes are folded into the production ranking (Phase 2).
-DEFAULT_W_BUNDLE_COHESION = 0.0
 
 SUMMARY_THRESHOLD = 2000
 STANDARD_THRESHOLD = 8000
@@ -72,7 +67,6 @@ class RankingWeights:
     w_severity: float = DEFAULT_W_SEVERITY
     w_confidence: float = DEFAULT_W_CONFIDENCE
     w_graph: float = DEFAULT_W_GRAPH
-    w_bundle_cohesion: float = DEFAULT_W_BUNDLE_COHESION
 
     @classmethod
     def literal(cls) -> "RankingWeights":
@@ -88,13 +82,12 @@ class RankingWeights:
             w_severity=LITERAL_W_SEVERITY,
             w_confidence=LITERAL_W_CONFIDENCE,
             w_graph=LITERAL_W_GRAPH,
-            w_bundle_cohesion=0.0,
         )
 
     def validate(self) -> None:
         total = (
             self.w_bm25 + self.w_vector + self.w_severity
-            + self.w_confidence + self.w_graph + self.w_bundle_cohesion
+            + self.w_confidence + self.w_graph
         )
         if abs(total - 1.0) > 0.001:
             raise ValueError(f"Weights must sum to 1.0, got {total}")
@@ -142,7 +135,6 @@ def compute_score(
     severity: str,
     confidence: str,
     graph_proximity: float = 0.0,
-    bundle_cohesion: float = 0.0,
     weights: RankingWeights | None = None,
     times_seen_positive: int = 0,
     times_seen_negative: int = 0,
@@ -154,11 +146,6 @@ def compute_score(
     positive ratio (>= 0.75), the empirical ratio replaces the static
     confidence-tier weight. With default counters (0, 0) the behavior
     reduces to the static enum lookup, preserving prior semantics.
-
-    Phase 1 adds bundle_cohesion: a normalized (0..1) score expressing how many
-    other high-ranked candidates are within the candidate's bundle (reachable
-    via edges). Default 0.0 with default w_bundle_cohesion=0.0 preserves
-    pre-Phase-1 behavior.
     """
     if weights is None:
         weights = RankingWeights()
@@ -172,7 +159,6 @@ def compute_score(
         + weights.w_severity * sev_w
         + weights.w_confidence * conf_w
         + weights.w_graph * graph_proximity
-        + weights.w_bundle_cohesion * bundle_cohesion
     )
 
 

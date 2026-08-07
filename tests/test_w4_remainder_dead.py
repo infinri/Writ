@@ -267,7 +267,12 @@ _STRIPPED_SECTIONS = {
 # is not brittle to that.
 # "egress" joined 2026-08-06: get_egress_allow_hosts in writ/config.py reads it,
 # which is this guard's own criterion for a kept section.
-_KEPT_SECTIONS_ALLOWED = {"neo4j", "bitbucket", "hnsw", "logs", "egress"}
+# "retrieval" joined 2026-08-06 on the same criterion:
+# get_authority_preference_threshold reads [retrieval].authority_preference_threshold.
+# Note this is NOT the old decorative "ranking" section (still stripped below) --
+# that one had no reader; this one does, and the daemon passes its value into
+# build_pipeline at startup.
+_KEPT_SECTIONS_ALLOWED = {"neo4j", "bitbucket", "hnsw", "logs", "egress", "retrieval"}
 
 
 def _load_toml_example() -> dict:

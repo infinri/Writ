@@ -419,8 +419,8 @@ Retrieval quality gates are *floors*, not targets (MRR@5 >= 0.45 on the 47 ambig
 
 | Seam | Status |
 |---|---|
-| Authority-preference re-ranking | Implemented but always off (threshold 0.0, never configured); the sticky-tiebreak logic currently depends on it staying off. |
-| Bundle-cohesion ranking weight | Defined, defaults to 0, skipped entirely. |
+| ~~Authority-preference re-ranking~~ | RESOLVED 2026-08-06: configurable via `[retrieval] authority_preference_threshold`, still defaulting to 0.0 (a sweep measured no change from enabling it, because the corpus's one ai-provisional node is not semantic-routed). The sticky-tiebreak coupling is fixed: the preference now runs last. |
+| ~~Bundle-cohesion ranking weight~~ | RESOLVED 2026-08-06: deleted. No weight improved all three metrics, and the methodology channel it was built for shipped deterministic instead. See `benchmarks/RANKING-LEVERS-2026-08-06.md`. |
 | `/analyze` LLM escalation | Real code, but the `anthropic` SDK is not a dependency; without installing it, escalation returns "SDK not installed" placeholders. |
 | BM25 index persistence | The vector index persists across restarts; the BM25 index rebuilds every start. |
 | `debug` log stream | Reserved retention entry, never written; debug output stays in gated `/tmp` sinks. |
