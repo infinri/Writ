@@ -25,6 +25,12 @@ HOOK_START_NS=$(hook_timer_start)
 load_hook_env
 SESSION_ID="$HOOK_SESSION_ID"
 
+# 0. Drain any hook_execution rows a turn left behind. This is the backstop for a turn
+# that never reached Stop (crash, kill, disconnect): those rows are already on disk, and
+# without this they would sit there until the session id happened to come round again.
+# ERR-GRACEFUL-002: shutdown completes the in-progress work rather than dropping it.
+writ_event_buffer_flush "$SESSION_ID" || true
+
 # 1. Auto-feedback: correlate rules-in-context with analysis outcomes
 _writ_session auto-feedback "$SESSION_ID" \
     >> "/tmp/writ-feedback-${SESSION_ID}.log" 2>/dev/null || true

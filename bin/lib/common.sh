@@ -233,6 +233,69 @@ load_hook_env() {
 # WRIT_BLACKBOX_MAX_BYTES.
 WRIT_BLACKBOX_MAX_BYTES_DEFAULT=268435456
 
+# ── Buffered hook telemetry ──────────────────────────────────────────────────
+# 8 of the 15 hooks a file write fires used to spawn python purely to append one
+# `hook_execution` row: ~96ms per write for logging nobody reads synchronously
+# (measured 2026-08-07). The row is now appended by bash and drained once per turn.
+#
+# THIS IS MORE DURABLE THAN THE SPAWN IT REPLACES, not less. Before, the row existed
+# only as arguments to a process that might never start, so a failed spawn dropped it
+# with no trace. Now it is on disk before any process runs, and the drain unlinks the
+# buffer only after emitting, so a crash mid-drain replays instead of losing rows.
+#
+# ATOMICITY: Linux does not interleave O_APPEND writes at or below PIPE_BUF (4096
+# bytes), which is what lets several hooks share one buffer with no lock. That holds
+# only while rows stay under the limit, so the writer TRUNCATES rather than trusting
+# callers, and records that it truncated (a silently cut row is a lie; a marked one is
+# data). Fields use the same unit/record separators _WRIT_EVENT_BUF already uses.
+WRIT_EVENT_ROW_MAX=3072
+WRIT_EVENT_FIELD_MAX=400
+
+writ_event_buffer_path() {
+    printf '%s/writ-events-%s.buf' "$(writ_session_cache_dir)" "${1:-unknown}"
+}
+
+# Usage: writ_event_buffer_append <session> <hook> <duration_ms> <exit_code> <mode>
+# Never fails the caller: telemetry failure must not become enforcement failure.
+writ_event_buffer_append() {
+    local session="${1:-}" hook="${2:-}" dur="${3:-0}" rc="${4:-0}" mode="${5:-}"
+    local truncated=0
+    if [ "${#hook}" -gt "$WRIT_EVENT_FIELD_MAX" ]; then
+        hook="${hook:0:$WRIT_EVENT_FIELD_MAX}"
+        truncated=1
+    fi
+    if [ "${#mode}" -gt "$WRIT_EVENT_FIELD_MAX" ]; then
+        mode="${mode:0:$WRIT_EVENT_FIELD_MAX}"
+        truncated=1
+    fi
+    # A separator inside a value would forge a second row, the same argument
+    # SEC-INJ-LOG-001 makes about newlines in a log line.
+    hook="${hook//[$'\x1e\x1f\n\r']/_}"
+    mode="${mode//[$'\x1e\x1f\n\r']/_}"
+    local row
+    printf -v row 'hook_execution\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1e' \
+        "$hook" "$dur" "$rc" "$mode" "$truncated"
+    if [ "${#row}" -gt "$WRIT_EVENT_ROW_MAX" ]; then
+        return 0
+    fi
+    local buf
+    buf="$(writ_event_buffer_path "$session")"
+    mkdir -p "${buf%/*}" 2>/dev/null || true
+    printf '%s' "$row" >> "$buf" 2>/dev/null || true
+    return 0
+}
+
+# Drain a session's buffer through the real logging package, in ONE interpreter start.
+# Called at turn end (Stop), and again at SessionEnd for a turn that never reached Stop.
+writ_event_buffer_flush() {
+    local session="${1:-}" buf
+    buf="$(writ_event_buffer_path "$session")"
+    if [ -s "$buf" ]; then
+        python3 "$_WRIT_LIB_DIR/writ-flush-events.py" "$session" >/dev/null 2>&1 || true
+    fi
+    return 0
+}
+
 blackbox_log() {
     # Enabled by WRIT_BLACKBOX=1 OR the sentinel file ~/.claude/writ-blackbox.on (the
     # sentinel works for already-running CC sessions that can't get a new env var; remove
@@ -452,22 +515,53 @@ is_work_mode() {
 # of returning "" and silently skipping gate checks. Harmless for file-path callers:
 # a file has no marker inside its own join, so the first iteration falls through to
 # dirname exactly as before.
+# Pure bash: no processes at all. This ran twice per file write and again on the
+# per-prompt path, paying ~13ms of python interpreter startup each time to stat a few
+# files (measured 2026-08-07). The walk itself is `[ -e ]` and a suffix strip.
+#
+# NORMALIZATION IS LEXICAL, ON PURPOSE. The python it replaces used os.path.abspath,
+# which collapses `.`, `..` and repeated slashes but does NOT resolve symlinks.
+# `realpath` DOES resolve them, so the obvious one-line rewrite would walk the link
+# TARGET's parents and can return a different project root than this function has always
+# returned. tests/test_project_root_bash_parity.py builds two marked projects around a
+# symlink specifically to hold that behavior in place.
 detect_project_root() {
-  local start_path="$1"
-  # Pass start_path via argv (never spliced into the python source) so a path
-  # containing an apostrophe/space/glob cannot break the source string and
-  # abort the caller under `set -euo pipefail`. Double-quote the bash arg so a
-  # path with spaces stays a single argv.
-  python3 -c '
-import os, sys
-markers = ["composer.json","package.json","Cargo.toml","go.mod","pyproject.toml",".git"]
-path = os.path.abspath(sys.argv[1])
-while path != "/":
-    if any(os.path.exists(os.path.join(path, m)) for m in markers):
-        print(path); sys.exit(0)
-    path = os.path.dirname(path)
-print("")
-' "$start_path" 2>/dev/null
+  local start_path="$1" path seg
+  case "$start_path" in
+    /*) path="$start_path" ;;
+    *)  path="$PWD/$start_path" ;;
+  esac
+
+  # Split on / and rebuild, dropping empty and "." segments and popping one level per
+  # ".."; an unmatched ".." at the top is discarded, as abspath does.
+  local -a raw=() parts=()
+  IFS='/' read -r -a raw <<< "$path"
+  for seg in "${raw[@]}"; do
+    case "$seg" in
+      ''|.) ;;
+      ..) [ ${#parts[@]} -gt 0 ] && parts=("${parts[@]:0:${#parts[@]}-1}") ;;
+      *)  parts+=("$seg") ;;
+    esac
+  done
+  path=""
+  for seg in "${parts[@]:-}"; do
+    [ -n "$seg" ] && path="$path/$seg"
+  done
+  [ -z "$path" ] && path="/"
+
+  # Markers are checked at `path` BEFORE walking up, so a caller passing the project
+  # root itself resolves to it rather than to its parent (E-PROJROOT-BUG).
+  while [ "$path" != "/" ]; do
+    if [ -e "$path/composer.json" ] || [ -e "$path/package.json" ] \
+       || [ -e "$path/Cargo.toml" ] || [ -e "$path/go.mod" ] \
+       || [ -e "$path/pyproject.toml" ] || [ -e "$path/.git" ]; then
+      printf '%s\n' "$path"
+      return 0
+    fi
+    path="${path%/*}"
+    [ -z "$path" ] && path="/"
+  done
+  printf '\n'
 }
 
 # ── Session ID detection ────────────────────────────────────────────────────
@@ -706,10 +800,20 @@ _writ_hook_exit_trap() {
   fi
   [ "$dur_ms" -lt 0 ] 2>/dev/null && dur_ms=0
 
-  # One spawn for every event this hook produced: the buffered gate decisions
-  # (if any) plus this hook_execution row. The buffer holds RAW field values
-  # separated by ASCII unit/record separators, so python does all JSON encoding
-  # and no bash-side quoting can corrupt a record (SEC-INJ-LOG-001).
+  # The plain hook_execution row is APPENDED, not emitted: bash costs 0.018ms and no
+  # process, against ~13ms of interpreter startup, and 8 write-path hooks pay this on
+  # every file write. writ_event_buffer_flush drains it once per turn.
+  writ_event_buffer_append \
+    "${SESSION_ID:-${HOOK_SESSION_ID:-}}" \
+    "${_WRIT_HOOK_NAME:-unknown}" \
+    "$dur_ms" "$rc" "${CURRENT_MODE:-${MODE:-}}"
+
+  # Gate decisions keep the immediate python path. They are governance records with
+  # 365-day retention and they are RARE (only a gate that actually decided writes one),
+  # so their spawn is not on the hot path, and deferring an audit record is a different
+  # risk calculus from deferring a metrics row. The `-s` test skips the spawn entirely
+  # when no decision was buffered, which is the common case.
+  if [ -s "${_WRIT_EVENT_BUF:-/nonexistent}" ]; then
   WRIT_EV_BUF="${_WRIT_EVENT_BUF:-}" \
   WRIT_EV_HOOK="${_WRIT_HOOK_NAME:-unknown}" \
   WRIT_EV_DUR="$dur_ms" \
@@ -738,11 +842,10 @@ if buf and os.path.exists(buf):
         emit(None, "gate_decision", session, mode, gate=parts[1],
              decision=parts[2], reason=parts[3], target=parts[4])
 
-emit(None, "hook_execution", session, mode,
-     hook_name=os.environ.get("WRIT_EV_HOOK", "unknown"),
-     duration_ms=int(os.environ.get("WRIT_EV_DUR") or 0),
-     exit_code=int(os.environ.get("WRIT_EV_RC") or 0))
+# hook_execution is NOT emitted here any more: the bash append above owns it, and
+# emitting in both places would double-count every hook on every write.
 ' 2>/dev/null || true
+  fi
   [ -n "${_WRIT_EVENT_BUF:-}" ] && rm -f "$_WRIT_EVENT_BUF" 2>/dev/null || true
   exit "$rc"
 }

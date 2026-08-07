@@ -41,6 +41,15 @@ if [ -z "$SESSION_ID" ]; then
     exit 0
 fi
 
+# Drain this turn's buffered hook_execution rows in ONE interpreter start, replacing the
+# 8 python spawns a single file write used to pay. Placed BEFORE the mode gate below on
+# purpose: hooks buffer rows in every mode, so draining after that gate would strand
+# them whenever the session is not in a tracked mode.
+# Rows survive the paths that skip this: the buffer is keyed by SESSION, not by turn, so
+# a turn that exits early (stop_hook_active above) drains on the next Stop or at
+# SessionEnd. Never fails this hook.
+writ_event_buffer_flush "$SESSION_ID" || true
+
 # Read current mode
 MODE=$(_writ_session "mode get" "$SESSION_ID" 2>/dev/null || echo "")
 MODE=$(echo "$MODE" | tr -d '[:space:]')

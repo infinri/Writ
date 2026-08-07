@@ -23,6 +23,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -94,7 +95,36 @@ def _run_snippet(body: str, tmp_path: Path, argv: list[str] | None = None):
     )
 
 
+def _drain(tmp_path: Path) -> None:
+    """Flush any buffered hook_execution rows into the log streams.
+
+    hook_execution is APPENDED by bash at hook exit and drained once per turn, instead
+    of costing a python interpreter start in every hook (8 per file write, ~96ms). The
+    row still reaches the same stream with the same fields; it arrives at the drain
+    rather than at the exit. Every assertion below is unchanged, so what these tests
+    check is unchanged: this only moves the read to after the point where the row lands.
+    """
+    cache = tmp_path / "cache"
+    if not cache.is_dir():
+        return
+    flush = Path(__file__).resolve().parent.parent / "bin" / "lib" / "writ-flush-events.py"
+    env = os.environ.copy()
+    env["WRIT_CACHE_DIR"] = str(cache)
+    env["WRIT_LOG_ROOT"] = str(tmp_path / "logs")
+    env["WRIT_LOG_PROJECT"] = "hookproj"
+    # Mirror _run_snippet: conftest's autouse fixture sets WRIT_FRICTION_LOG, and emit
+    # honours it over the stream router. Inheriting it sent every drained row to that
+    # file instead of metrics.jsonl, so the rows existed and the assertions still read
+    # an empty stream. The drain must run in the same environment as the hook did.
+    env.pop("WRIT_FRICTION_LOG", None)
+    for buf in cache.glob("writ-events-*.buf"):
+        session = buf.name[len("writ-events-"):-len(".buf")]
+        subprocess.run([sys.executable, str(flush), session],
+                       capture_output=True, text=True, env=env, timeout=30)
+
+
 def _rows(tmp_path: Path, stream: str) -> list[dict]:
+    _drain(tmp_path)
     path = tmp_path / "logs" / "hookproj" / f"{stream}.jsonl"
     if not path.is_file():
         return []

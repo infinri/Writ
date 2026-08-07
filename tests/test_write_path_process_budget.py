@@ -57,13 +57,21 @@ BASELINE_PYTHON = 46   # before any conversion
 BASELINE_TOTAL = 349
 
 # The ratchet: measured now, so a new spawn turns this red immediately. NOT the target.
-# Tightened 46 -> 32 -> 31 -> 27 as conversions landed; lower it again with the next one.
+# Tightened 46 -> 32 -> 31 -> 27 -> 17 as conversions landed; lower it with the next one.
+#
+# The 27 -> 17 step also took TOTAL processes from 336 to 203, far more than 10 python
+# starts can account for. The reason is worth keeping: 128 of those were GIT processes
+# spawned as children of the per-hook `emit` call, which shells out to resolve the
+# project root for log routing. Buffering the telemetry row removed the python starts
+# and their git children together. It also explains an earlier measurement that made no
+# sense at the time: removing git alone moved the total by nothing, because the python
+# that spawned it simply did the work another way.
 # The python figure is exact because it is branch-deterministic here: conftest points
 # WRIT_PORT at a dead port, so every hook takes the same daemon-down path every run. The
 # total carries a few processes of margin because it also counts conditional git and
 # grep forks that depend on repo state.
-PYTHON_BUDGET = 27
-TOTAL_BUDGET = 336
+PYTHON_BUDGET = 17
+TOTAL_BUDGET = 208
 
 # Where this is going, and what closes the gap. Each item is a measured count of python
 # starts that actually EXECUTE on a file write, not a grep of the hook source:
