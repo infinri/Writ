@@ -56,6 +56,49 @@ print(tf)
 
 if [ -z "$TMPFILE" ] || [ ! -f "$TMPFILE" ]; then exit 0; fi
 
+# ── Shell guard ──────────────────────────────────────────────────────────────
+# Runs BEFORE the language gate below, because detect_language answers "unknown" for
+# .sh and this hook used to exit right there. That is how a shell file that does not
+# parse reached disk on 2026-08-07: an `if` without its `fi` in bin/lib/common.sh, which
+# all 37 hooks source. Every hook then failed at the parse, Claude Code reads a failing
+# PreToolUse hook as a deny, and Bash, Read and Edit stopped working at once. The file
+# that repairs it cannot be reached, because reaching it needs a tool.
+#
+# The check is on the PROPOSED content ($TMPFILE already holds it), so a broken file is
+# refused instead of written. `bash -n` parses without executing.
+case "$FILE" in
+  *.sh|*.bash)
+    SHELL_ERR=$(bash -n "$TMPFILE" 2>&1) || {
+      # Report the parse error itself: a deny that does not say what is wrong sends the
+      # next person hunting, and this one fires exactly when tooling is about to break.
+      SHELL_REASON="[ENF-POST-008] Shell syntax error in $FILE, write refused: ${SHELL_ERR//$TMPFILE/$FILE}"
+      emit_deny "$SHELL_REASON"
+      log_gate_decision "shell-syntax" "deny" "$SHELL_REASON" "$FILE"
+      exit 0
+    }
+
+    # Second shape, and the more dangerous one because it parses cleanly: a file whose
+    # live code is entirely commented out. The 2026-08-07 recovery did this to
+    # common.sh (1409 lines) and writ-rag-inject.sh (585 lines), which silently
+    # disabled every helper, every gate, rule injection and mode auto-routing. Nothing
+    # failed loudly. Only a LIVE -> DEAD transition is refused; a new comment-only file
+    # or a stub is ordinary and passes.
+    if [ -f "$FILE" ]; then
+      # NO `|| echo 0`: grep -c PRINTS 0 and EXITS 1 when nothing matches, so the
+      # fallback appended a second 0 and the comparison below died on "0\n0". Same trap
+      # cost a measurement harness an hour earlier today.
+      OLD_LIVE=$(grep -vcE '^[[:space:]]*(#|$)' "$FILE" 2>/dev/null); OLD_LIVE=${OLD_LIVE:-0}
+      NEW_LIVE=$(grep -vcE '^[[:space:]]*(#|$)' "$TMPFILE" 2>/dev/null); NEW_LIVE=${NEW_LIVE:-0}
+      if [ "${OLD_LIVE:-0}" -gt 0 ] && [ "${NEW_LIVE:-0}" -eq 0 ]; then
+        DEAD_REASON="[ENF-POST-008] $FILE has $OLD_LIVE live lines and the proposed content has none: commenting out a whole shell file disables it silently rather than failing loudly. Delete it, or keep the code."
+        emit_deny "$DEAD_REASON"
+        log_gate_decision "shell-commented-out" "deny" "$DEAD_REASON" "$FILE"
+        exit 0
+      fi
+    fi
+    ;;
+esac
+
 # Check if the file type is one we analyze
 lang=$(detect_language "$FILE")
 if [ "$lang" = "unknown" ]; then exit 0; fi
