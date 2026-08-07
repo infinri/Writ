@@ -57,21 +57,22 @@ BASELINE_PYTHON = 46   # before any conversion
 BASELINE_TOTAL = 349
 
 # The ratchet: measured now, so a new spawn turns this red immediately. NOT the target.
-# Tightened 46 -> 32 -> 31 as conversions landed; lower it again with the next one.
+# Tightened 46 -> 32 -> 31 -> 27 as conversions landed; lower it again with the next one.
 # The python figure is exact because it is branch-deterministic here: conftest points
 # WRIT_PORT at a dead port, so every hook takes the same daemon-down path every run. The
 # total carries a few processes of margin because it also counts conditional git and
 # grep forks that depend on repo state.
-PYTHON_BUDGET = 31
-TOTAL_BUDGET = 340
+PYTHON_BUDGET = 27
+TOTAL_BUDGET = 336
 
 # Where this is going, and what closes the gap. Each item is a measured count of python
 # starts that actually EXECUTE on a file write, not a grep of the hook source:
 #   -8  the hook_execution exit trap in common.sh, paid by 8 write-path hooks. Needs a
 #       daemon route (no /events route exists) and a decision about audit durability
 #       when the daemon is down, so it is its own cycle, not a slip-in here.
-#   -5  `writ-session.py mode get` called directly instead of through the existing
-#       curl fast-path
+#   DONE, -4: the mode reads. is_work_mode now reads the cache FILE instead of asking
+#       the daemon. The "curl fast path" it replaced was not fast: measured, a daemon
+#       round trip is 13-17ms and a python start 13ms, against ~2ms for a jq file read.
 #   -3  the remaining inline JSON snippets in writ-pre-write-dispatch.sh
 #   -4  pre-validate-file.sh: two of these are detect_project_root, a marker walk up the
 #       directory tree that bash does with zero processes, called twice per write

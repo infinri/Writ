@@ -423,15 +423,24 @@ else:
 # enforcement hooks fire only in Work mode. Non-work modes skip.
 # Usage: if ! is_work_mode "$SESSION_ID"; then exit 0; fi
 is_work_mode() {
-    # A5: use the _writ_session curl fast-path (~3ms vs ~10ms python cold-start)
-    # instead of spawning python directly -- 7 enforcement hooks call this per
-    # invocation. The daemon's /mode route reads the cache file FRESH (no stale
-    # in-memory view), and _writ_session falls back to the file-direct python
-    # helper when the daemon is down, so the result is unchanged.
+    # Reads the cache FILE, not the daemon. The A5 note this replaces called the curl
+    # path a "~3ms fast path against a ~10ms python cold start"; measured 2026-08-07 on
+    # this machine, a daemon round trip costs 13-17ms and a python start 13ms, so the
+    # fast path was not faster. The file read via jq is ~2ms.
+    #
+    # It is also the SAME ANSWER, which is what makes this safe rather than merely
+    # quick. GET /session/{id}/mode is `_read_cache(id).get("mode","") or ""`
+    # (writ/server/routes/session_state.py:86), so the daemon reads this exact file; a
+    # missing file yields _default_cache()["mode"] = None, which renders "" on both
+    # sides; and _write_cache fsyncs a `.tmp` file then os.rename()s it into place
+    # (writ/session/cache.py:291), so a reader can never observe a partial write.
+    #
+    # Strictly more robust, too: this answers correctly while the daemon is down or
+    # saturated. writ_session_mode_direct exists because a loaded daemon can return a
+    # spurious empty mode, and acting on a false empty would silently un-gate the 7
+    # enforcement hooks that call this.
     local sid="$1"
-    local mode
-    mode=$(_writ_session "mode get" "$sid" 2>/dev/null | tr -d '[:space:]')
-    [ "$mode" = "work" ]
+    [ "$(writ_session_mode_direct "$sid")" = "work" ]
 }
 
 # ── Project root detection ────────────────────────────────────────────────────
