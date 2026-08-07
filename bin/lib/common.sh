@@ -189,6 +189,11 @@ load_hook_env() {
 # the caller. Log path: $WRIT_BLACKBOX_LOG (default ~/.claude/writ-blackbox.jsonl).
 # Usage:  printf '%s' "$STDIN_JSON" | blackbox_log in  "$(basename "$0")" "$SESSION_ID"
 #         printf '%s' "$OUTPUT"     | blackbox_log out "$(basename "$0")" "$SESSION_ID"
+# Default cap on the capture log, 256 MiB. Named rather than inline so an operator
+# who finds capture stopped can grep for what bounded it. Override:
+# WRIT_BLACKBOX_MAX_BYTES.
+WRIT_BLACKBOX_MAX_BYTES_DEFAULT=268435456
+
 blackbox_log() {
     # Enabled by WRIT_BLACKBOX=1 OR the sentinel file ~/.claude/writ-blackbox.on (the
     # sentinel works for already-running CC sessions that can't get a new env var; remove
@@ -198,6 +203,58 @@ blackbox_log() {
     fi
     local direction="${1:-?}" hook="${2:-?}" session="${3:-}"
     local log="${WRIT_BLACKBOX_LOG:-$HOME/.claude/writ-blackbox.jsonl}"
+
+    # SIZE CAP. Capture is a debug switch with no expiry: measured 2026-08-06, the
+    # sentinel on this developer's machine was dated 19 June and the log had reached
+    # 1.48 GB, still growing, costing ~31ms and 2 python spawns on EVERY hook. An
+    # unbounded debug switch is indistinguishable from a leak, so past the cap it
+    # stops capturing, and says so ONCE rather than going quiet, because a capture
+    # that stopped silently is its own debugging trap.
+    local _bb_cap="${WRIT_BLACKBOX_MAX_BYTES:-$WRIT_BLACKBOX_MAX_BYTES_DEFAULT}"
+    # Validate the cap before comparing. `[ x -gt y ]` on a non-numeric or
+    # arithmetic-overflowing value exits non-zero, which an `if` reads as false, so an
+    # unvalidated typo in this one variable would silently STOP ENFORCING the cap:
+    # fail-open on exactly the setting an operator is most likely to get wrong. 19
+    # digits keeps it inside signed 64-bit.
+    case "$_bb_cap" in
+        ''|*[!0-9]*) _bb_cap="$WRIT_BLACKBOX_MAX_BYTES_DEFAULT" ;;
+        ???????????????????*) _bb_cap="$WRIT_BLACKBOX_MAX_BYTES_DEFAULT" ;;
+    esac
+    # Existence is checked BEFORE the redirect: `wc -c < missing 2>/dev/null` cannot
+    # suppress the message, because bash reports the failed redirect itself before wc
+    # ever runs, which leaks a raw "No such file or directory" to the hook's stderr on
+    # every first capture.
+    local _bb_size=0
+    if [ -f "$log" ]; then
+        _bb_size=$(wc -c < "$log" 2>/dev/null | tr -d ' ') || _bb_size=0
+        case "$_bb_size" in ''|*[!0-9]*) _bb_size=0 ;; esac
+    fi
+    local _bb_marker="${log}.capped"
+    if [ "$_bb_size" -gt "$_bb_cap" ]; then
+        cat >/dev/null 2>&1
+        # Announce once. Emitting per invocation cost ~20ms per write (one
+        # friction-append spawn each), making the announcement more expensive than
+        # the capture it replaced. The marker is created FIRST and the row is emitted
+        # only if that succeeded: otherwise a read-only directory would mean an
+        # unmarkable, therefore repeating, announcement every single write.
+        if [ ! -f "$_bb_marker" ] && : > "$_bb_marker" 2>/dev/null; then
+            # The path is escaped, not interpolated raw. A log path containing a
+            # quote would otherwise produce invalid JSON that the writer drops
+            # silently, losing the path and size this row exists to report -- the
+            # same allowlist-over-trust argument writ_action_push_body makes below.
+            local _bb_log_esc="${log//\\/\\\\}"
+            _bb_log_esc="${_bb_log_esc//\"/\\\"}"
+            log_friction_event "$session" "" "blackbox_capture_disabled" \
+                "{\"log\":\"$_bb_log_esc\",\"size_bytes\":$_bb_size,\"cap_bytes\":$_bb_cap,\"hook\":\"$hook\"}" \
+                2>/dev/null || true
+        fi
+        return 0
+    fi
+    # Under the cap: clear a stale marker so a LATER crossing announces again. Without
+    # this, deleting an over-cap log (the documented remediation) leaves the marker
+    # behind, and the next time the log grows past the cap it stops capturing in
+    # silence, which is the failure mode this whole feature exists to prevent.
+    [ -f "$_bb_marker" ] && rm -f "$_bb_marker" 2>/dev/null || true
     # python encodes one JSON record to stdout (handles payload escaping); bash appends
     # it. Encoding-only keeps the file write out of python (no direct file open here).
     local rec
@@ -948,11 +1005,45 @@ print(envelope)
 # output + return 0, so a calling hook never breaks on a missing/slow companion.
 # `sid` is accepted for future friction attribution (1.8c); unused today.
 # Usage: PUSH=$(writ_action_push "$SESSION_ID" "gate-denial")
+# The request body for writ_action_push, extracted so it can be tested against the
+# python path it replaces. Bash-built (no spawn, ~25ms saved on the write path) ONLY
+# when the action is a plain token; anything else falls back to python.
+#
+# The allowlist decides, not a blocklist (ABS-SECURITY-024): hand-rolling JSON string
+# escaping for arbitrary input is how injection bugs get written, so a token carrying
+# a quote, backslash, whitespace or non-ASCII byte goes to the encoder that already
+# handles it correctly. All four live callers pass plain tokens (gate-denial,
+# review-feedback, bible-authoring, and a derived phase token), so the fast path is
+# the normal path. WRIT_NO_BASH_JSON=1 forces the fallback, mirroring the WRIT_NO_JQ
+# seam parsed_field uses, so tests can compare the two byte for byte.
+writ_action_push_body() {
+    local action="$1"
+    [ -z "$action" ] && return 0
+    local _fallback=0
+    # A token outside the allowlist needs real JSON escaping: hand it to python.
+    case "$action" in
+        *[!A-Za-z0-9_-]* ) _fallback=1 ;;
+    esac
+    # The test seam is checked separately, not folded into the pattern above: a flag
+    # value made of allowed characters (WRIT_NO_BASH_JSON=1) would not match the
+    # unsafe class and the force would silently do nothing.
+    [ -n "${WRIT_NO_BASH_JSON:-}" ] && _fallback=1
+    if [ "$_fallback" = "1" ]; then
+        # Propagate python's status rather than forcing 0: the caller's
+        # `req=$(writ_action_push_body ...) || return 0` is the fail-open branch the
+        # original `req=$(python3 ...) || return 0` relied on, and swallowing the
+        # status here would quietly narrow that contract to the later empty check.
+        python3 -c "import json,sys; print(json.dumps({'action':sys.argv[1],'prompt':'','exclude_rule_ids':[],'budget_tokens':2000}))" "$action" 2>/dev/null
+        return $?
+    fi
+    printf '{"action": "%s", "prompt": "", "exclude_rule_ids": [], "budget_tokens": 2000}\n' "$action"
+}
+
 writ_action_push() {
     local sid="$1" action="$2"
     [ -z "$action" ] && return 0
     local req resp text
-    req=$(python3 -c "import json,sys; print(json.dumps({'action':sys.argv[1],'prompt':'','exclude_rule_ids':[],'budget_tokens':2000}))" "$action" 2>/dev/null) || return 0
+    req=$(writ_action_push_body "$action") || return 0
     [ -z "$req" ] && return 0
     # --fail keeps the previous fail-on-HTTP-error semantics: a >= 400 yields no body, and
     # the caller (fail-open by contract) returns empty rather than injecting an error doc.
