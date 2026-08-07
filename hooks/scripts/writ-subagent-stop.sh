@@ -50,6 +50,31 @@ if [ -z "$AGENT_TYPE" ]; then
         "{\"hook\":\"writ-subagent-stop\",\"parent_session\":\"$PARENT_SESSION\"}"
 fi
 
+# Cycle 9: record a reviewer's verdict HERE, in infrastructure, rather than letting
+# the orchestrator report it. The reviewer's JSON otherwise reaches only the agent
+# whose code was reviewed, which leaves the author adjudicating the critic. The
+# harness hands us the reviewer's own final text, so the author is never the courier.
+# Recorded against the PARENT session (the one that will run `git commit`), not the
+# agent's own throwaway session. Fire-and-forget: never changes the hook outcome.
+if [ "$AGENT_TYPE" = "writ-reviewer" ] && [ -n "$PARENT_SESSION" ]; then
+    REVIEW_MSG=$(parsed_field "$STDIN_JSON" "last_assistant_message")
+    # Recorded UNCONDITIONALLY, including when the message is empty: an empty
+    # message parses as unparseable, which counts as blocking. Skipping the record
+    # would leave "no verdict", which does NOT block, so a reviewer that stopped
+    # without a final word would silently read as approval.
+    # Message on stdin, not argv: a review runs to thousands of characters and
+    # would otherwise land on the process table and risk ARG_MAX.
+    if ! printf '%s' "$REVIEW_MSG" \
+            | python3 "$WRIT_DIR/bin/lib/review_findings.py" record \
+                "$PARENT_SESSION" "$AGENT_ID" >/dev/null 2>&1; then
+        # Never fatal, but never silent either: a regression in the recording path
+        # is otherwise indistinguishable from "no reviewer ran", which is exactly
+        # the state that does not block.
+        log_friction_event "$PARENT_SESSION" "" "review_verdict_record_failed" \
+            "{\"hook\":\"writ-subagent-stop\",\"agent_id\":\"$AGENT_ID\"}"
+    fi
+fi
+
 # Read the agent's session cache for summary metrics
 CACHE=$(_writ_session read "$AGENT_ID" 2>/dev/null || echo '{}')
 

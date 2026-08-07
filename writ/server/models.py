@@ -286,6 +286,18 @@ class SessionVerificationEvidenceRequest(BaseModel):
         return v
 
 
+class SessionReviewFindingsRequest(BaseModel):
+    """Request body for POST /session/{session_id}/review-findings.
+
+    `message` is the reviewer's final text verbatim, not a pre-parsed verdict:
+    parsing lives in bin/lib/review_findings.py so the HTTP path and the
+    SubagentStop hook cannot disagree about what a verdict is.
+    """
+
+    message: str = ""
+    agent_id: str = ""
+
+
 class SessionQualityJudgmentRequest(BaseModel):
     """Request body for POST /session/{session_id}/quality-judgment."""
 

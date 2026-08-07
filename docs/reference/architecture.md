@@ -8,7 +8,7 @@ Contributor-facing system design: the spine `README.md` and `HANDBOOK.md` refere
 
 | Piece | What it is | Where |
 |---|---|---|
-| **FastAPI daemon** | The single HTTP service all hooks talk to: retrieval, session state, gates, self-authoring. Binds `127.0.0.1:8765`, 45 endpoints, no auth (localhost only). | `writ/server/` (package: `__init__.py` app + lifespan, `models.py`, `routes/*.py`) |
+| **FastAPI daemon** | The single HTTP service all hooks talk to: retrieval, session state, gates, self-authoring. Binds `127.0.0.1:8765`, 48 endpoints, no auth (localhost only). | `writ/server/` (package: `__init__.py` app + lifespan, `models.py`, `routes/*.py`) |
 | **Hooks + session state machine** | 37 bash hooks intercept the Claude Code tool lifecycle (41 registrations, 12 events, `hooks/hooks.json`); a Python package owns mode/phase/budget/gate state per session. | `hooks/`, `writ/session/` |
 | **Neo4j canonical store** | The graph is the source of truth for rules, methodology, and decision-memory records. Docker container `writ-neo4j`, bolt 7687. | `writ/graph/db/` (mixin package composing `Neo4jConnection`) |
 | **The CLI** | Operator surface: ingest, export, reconcile, validate, author, query, doctor, logs, decision memory. | `writ/cli.py` (Typer), plus the hook-facing `bin/lib/writ-session.py` facade |
@@ -21,6 +21,8 @@ Contributor-facing system design: the spine `README.md` and `HANDBOOK.md` refere
 
 **Write path** (`PreToolUse` Write/Edit/NotebookEdit): `writ-pre-write-dispatch.sh` -> `POST /pre-write-check`, one call combining the gate decision, denial escalation (deny becomes ask after repeated denials), and file-context RAG on allow. Bash-mediated writes (`>`, `tee`, `cp`, `mv`, `sed -i`, `dd`) are extracted quote-aware by `writ-bash-write-gate.sh` and checked against the same `/session/{sid}/can-write`; credential paths are denied in every mode by `_is_credential_path` (`writ/session/gates.py`), which both gates share. Documented evasion limits: variable indirection, `eval`, heredocs, `python -c` writes.
 
+**Commit path** (`PreToolUse` Bash, added 2026-08-06): `git commit` asks for human confirmation while a `writ-reviewer` verdict with CRITICAL findings stands. The verdict is recorded by `writ-subagent-stop.sh` straight from the `SubagentStop` payload, so the agent whose code was reviewed never carries its own critic's findings. It asks rather than refuses because any override the agent could set would re-open that defect; an unparseable verdict counts as blocking, and only a fresh clean reviewer verdict lifts it. Shared parser and blocking rule: `bin/lib/review_findings.py`, also behind `POST`/`GET /session/{sid}/review-findings`.
+
 **Stop path**: pending-test runner (blocks on failure only in implementation/complete phase), violation enforcement (work mode), verify-before-claim (unoverridden quality scores under 3), and the deterministic comms gate (em/en dash, ` -- ` in prose). Blocking Stop hooks use stderr + non-zero exit guarded by `stop_hook_active`; a Stop hook's `additionalContext` would loop the turn.
 
 **Fail-open discipline.** Every hook is daemon-first with a subprocess fallback (`_writ_session`, `bin/lib/common.sh`) and fails open when the daemon is down; failures are logged, not silent. The deliberate fail-closed exceptions: credential-path denial, the research triangulation gate, and token validation on `/advance-phase`.
@@ -29,7 +31,7 @@ Contributor-facing system design: the spine `README.md` and `HANDBOOK.md` refere
 
 **Lifespan order** (`writ/server/__init__.py`): Neo4j connection -> `build_pipeline` (with the abstention threshold 0.30, the one call site that enables it) -> `MethodologyTriggerIndex.build_from_db` -> analyzer clients. Indexes are pre-warmed; request handlers do no synchronous I/O.
 
-**45 endpoints** by group: retrieval (`/query`, `/prompt-bundle`, `/always-on`, `/methodology-companion`, `/conflicts`, `/rule/{id}`, `/subagent-role/{name}`), authoring (`/propose`, `/feedback`, `/analyze`), gates (`/pre-write-check`, `/session/{sid}/advance-phase`, `/session/{sid}/promote-candidate`), 24 session-state routes under `/session/{sid}/...` plus `/session/format`, decision memory (`/commit/capture`, `/recall`), `/git-hooks/auto-install`, and the explorer (`/dashboard`, `/explore`, `/graph`, `/node/{id}`). Count them: `grep -rcE '@router\.(get|post)' writ/server/routes/`.
+**48 endpoints** by group: retrieval (`/query`, `/prompt-bundle`, `/always-on`, `/methodology-companion`, `/conflicts`, `/rule/{id}`, `/subagent-role/{name}`), authoring (`/propose`, `/feedback`, `/analyze`), gates (`/pre-write-check`, `/session/{sid}/advance-phase`, `/session/{sid}/promote-candidate`), 26 session-state routes under `/session/{sid}/...` plus `/session/format`, decision memory (`/commit/capture`, `/recall`), `/git-hooks/auto-install`, and the explorer (`/dashboard`, `/explore`, `/graph`, `/node/{id}`). Count them: `grep -rcE '@router\.(get|post)' writ/server/routes/`.
 
 **Error contract.** Logical failures return HTTP 200 with an `error` key; 422 is Pydantic validation; a raising `/query` re-raises after emitting an exception row (hooks fail open on the 500). `POST /session/{id}/mode` is the one route that returns a real 400 (invalid mode).
 

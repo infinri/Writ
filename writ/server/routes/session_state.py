@@ -32,6 +32,7 @@ from writ.server.models import (
     SessionInvalidateGateRequest,
     SessionModeSetRequest,
     SessionQualityJudgmentRequest,
+    SessionReviewFindingsRequest,
     SessionUpdateRequest,
     SessionVerificationEvidenceRequest,
 )
@@ -505,6 +506,77 @@ async def session_verification_evidence_get(session_id: str, todo_id: str | None
         if todo_id:
             return {"todo_id": todo_id, "evidence": evidence.get(todo_id)}
         return {"evidence": evidence}
+
+    return await asyncio.to_thread(_read)
+
+
+_REVIEW_FINDINGS_LIB = None
+
+
+def _review_findings_lib():
+    """The shared parser from bin/lib (not a package: no __init__.py).
+
+    Deliberately the SAME module the SubagentStop hook and the Bash gate use, so
+    the HTTP surface cannot develop its own idea of what counts as blocking.
+
+    Loaded once and cached, matching how the server holds writ-session.py: re-exec'ing
+    the file per request would put a synchronous disk read and module exec inside an
+    async handler.
+    """
+    global _REVIEW_FINDINGS_LIB
+    if _REVIEW_FINDINGS_LIB is None:
+        import importlib.util
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parents[3] / "bin" / "lib" / "review_findings.py"
+        spec = importlib.util.spec_from_file_location("writ_review_findings", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _REVIEW_FINDINGS_LIB = module
+    return _REVIEW_FINDINGS_LIB
+
+
+@router.post("/session/{session_id}/review-findings")
+async def session_review_findings_set(
+    session_id: str, request: SessionReviewFindingsRequest
+) -> dict[str, Any]:
+    """Record a reviewer verdict for the session. The latest one wins.
+
+    body: {message: str (the reviewer's final text, verbatim), agent_id: str}
+
+    The message is stored parsed, not raw: `bin/lib/review_findings.py` extracts
+    the verdict from prose-plus-fenced-JSON, and a message it cannot parse is
+    recorded as unparseable and treated as blocking. Fixing the findings and
+    re-running the reviewer records a clean verdict, which lifts the block.
+    """
+    lib = _review_findings_lib()
+
+    def _set() -> dict[str, Any]:
+        state = lib.record(session_id, request.message, request.agent_id)
+        return {
+            "ok": True,
+            "blocking": lib.is_blocking(state["verdict"]),
+            "verdict": state["verdict"],
+        }
+
+    return await asyncio.to_thread(_set)
+
+
+@router.get("/session/{session_id}/review-findings")
+async def session_review_findings_get(session_id: str) -> dict[str, Any]:
+    """The latest recorded reviewer verdict and whether it blocks a commit."""
+    lib = _review_findings_lib()
+
+    def _read() -> dict[str, Any]:
+        state = lib.read_state(session_id)
+        verdict = (state or {}).get("verdict")
+        return {
+            "verdict": verdict,
+            "blocking": lib.is_blocking(verdict),
+            "reason": lib.describe(verdict) if lib.is_blocking(verdict) else "",
+            "recorded_at": (state or {}).get("recorded_at", ""),
+            "agent_id": (state or {}).get("agent_id", ""),
+        }
 
     return await asyncio.to_thread(_read)
 

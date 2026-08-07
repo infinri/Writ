@@ -21,7 +21,7 @@ Two problems motivated it.
 
 | Piece | Role | Where |
 |---|---|---|
-| FastAPI daemon | The single HTTP service all hooks talk to (retrieval, session state, gates, self-authoring). Binds `127.0.0.1:8765`, 45 endpoints, no auth (localhost only). | `writ/server/` |
+| FastAPI daemon | The single HTTP service all hooks talk to (retrieval, session state, gates, self-authoring). Binds `127.0.0.1:8765`, 48 endpoints, no auth (localhost only). | `writ/server/` |
 | Hooks + session state | 37 thin bash hooks intercept the Claude Code tool lifecycle; a Python package tracks mode/phase/budget/gates per session. | `hooks/`, `writ/session/` |
 | Neo4j canonical store | The graph is the source of truth for all rules and methodology. Runs in Docker (`writ-neo4j`). | `writ/graph/db/` |
 | The CLI | Operator control surface: ingest, export, reconcile, validate, author, query, doctor, logs, decision memory. | `writ/cli.py` |
@@ -118,6 +118,8 @@ Work mode is the only mode that gates writes to source. The lifecycle is `planni
 1. **`mode set work` -> `planning`.** Writes to source are blocked.
 2. **Gate `phase-a` (the plan gate) -> `testing`.** `plan.md` must exist with four sections: `## Files` (each entry a path, change type, and reason), `## Analysis`, `## Rules Applied` (citing *real* rule IDs from the rules actually loaded this session; invented IDs are flagged as hallucinated), and `## Capabilities` (unchecked `- [ ]` checkboxes; pre-checked boxes are rejected).
 3. **Gate `test-skeletons` -> `implementation`.** At least one test file with real assertions must exist. After this gate, source writes flow freely.
+
+**After the last gate: the reviewer's verdict (added 2026-08-06).** The two gates end at `implementation`, so nothing in the phase machine can act on a code review, which runs later. The reviewer's contract already said "Critical blocks merge" (`agents/writ-reviewer.md`) and nothing enforced it: the verdict reached only the agent whose code was reviewed, leaving the author to adjudicate its own critic. Enforcement now sits at the commit instead of the phase advance. `writ-subagent-stop.sh` records a `writ-reviewer` verdict from the `SubagentStop` payload, so the orchestrator is never the courier, and `writ-bash-write-gate.sh` asks for human confirmation on `git commit` while CRITICAL findings stand. It asks rather than refuses on purpose: a refusal needs an override, and any override the agent can set re-opens the defect. A verdict that cannot be parsed counts as blocking, because failing to understand the critic must not read as approval. Fixing the findings and re-running the reviewer records a clean verdict, which lifts the block; asserting they are fixed does not.
 
 The validators are presence checks by design: they confirm the artifact exists in the expected shape. A regex cannot tell a real root cause or plan from a fabricated one; what makes the gate meaningful is that *you* read the artifact before typing the approval.
 
@@ -284,6 +286,7 @@ Writ records *why files changed*, mechanically, and plays it back.
 |---|---|---|
 | PreToolUse Write/Edit/NotebookEdit | `writ-pre-write-dispatch.sh` | Work gates unapproved, debug root-cause missing, credential path (any mode) |
 | PreToolUse Bash | `writ-bash-write-gate.sh` | Bash-mediated write to a gated or credential path |
+| PreToolUse Bash | `writ-bash-write-gate.sh` | `git commit` while a reviewer's CRITICAL findings stand (confirms, does not refuse) |
 | PreToolUse Bash | `writ-worktree-safety.sh` | `git worktree add` into an un-ignored project-local path |
 | PreToolUse Write | `pre-validate-file.sh` | Static analysis finds an error in the proposed content |
 | PreToolUse Write | `validate-test-file.sh` | New source has no assertion-bearing test (the TDD gate) |

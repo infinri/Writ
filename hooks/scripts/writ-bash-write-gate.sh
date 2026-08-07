@@ -144,10 +144,87 @@ case "$CMD" in
         if _readonly_inspection "$CMD"; then
             log_gate_decision "bash-write" "allow" "read-only inspection naming gate state" ""
         else
-            GUARD_REASON="[ENF-GATE-STATE] Refusing this Bash command: it names Writ gate state ('$STATE_DIR_GUARD'). Mode, approvals and the manual-testing grant live there, and a gate the agent can edit is not a gate, so a command that could execute, expand, or write is refused in any mode. Plain read-only inspection (grep/cat/ls pipelines with no redirects, substitution, or control operators) is allowed, and the Read tool covers the rest. A manual-testing bypass is minted only from the user's own words: ask the user to reply \"manual testing approved\"."
+            GUARD_REASON="[ENF-GATE-STATE] Refusing this Bash command: it names Writ gate state ('$STATE_DIR_GUARD'). Mode, approvals, the manual-testing grant and recorded review verdicts live there, and a gate the agent can edit is not a gate, so a command that could execute, expand, or write is refused in any mode. Plain read-only inspection (grep/cat/ls pipelines with no redirects, substitution, or control operators) is allowed, and the Read tool covers the rest. A manual-testing bypass is minted only from the user's own words: ask the user to reply \"manual testing approved\". A CRITICAL review verdict is cleared only by fixing the findings and re-running writ-reviewer, never by writing the record directly."
             log_gate_decision "bash-write" "deny" "$GUARD_REASON" "$STATE_DIR_GUARD"
             emit_deny "$GUARD_REASON"
             exit 0
+        fi
+        ;;
+esac
+
+# Cycle 9 -- the third vector: a commit that would land work a reviewer rejected.
+# agents/writ-reviewer.md already declares "Critical blocks merge"; nothing enforced
+# it, because the verdict reached only the agent whose code was reviewed, which is
+# the author adjudicating the critic. writ-subagent-stop.sh records the verdict at
+# SubagentStop; this arm confirms with the HUMAN before the commit.
+#
+# ASK, never deny: a deny needs an override, and any override this agent could set
+# re-opens the exact defect being closed. Routing to the human is the point.
+#
+# Placed BEFORE the cheap early-exit below, which would otherwise exit 0 on a commit
+# (it matches write operators and egress verbs only). Costs one case match on every
+# Bash call and one python spawn on commits alone.
+#
+# COVERAGE LIMIT, in the same spirit as the write and egress limits above: this
+# matches the literal `git commit` spelling, including after global flags
+# (`git -C dir commit`). A commit issued through an alias, a wrapper script, or a
+# variable is not seen. The gate is a confirmation prompt on the ordinary path, not
+# a containment boundary against a determined caller.
+#
+# The case arm is a cheap PREFILTER only. It is a raw substring match, so it also
+# fires on `grep "git commit" file`, and a false ask is user-visible friction, not
+# a harmless extra spawn. The grep below re-checks that `git ... commit` actually
+# starts a command (start of string, or after ; & | && ||), which a quoted mention
+# inside another command's arguments does not.
+# Provenance for the reviewer-verdict record. A recorded CRITICAL verdict is what
+# makes the commit arm below fire, so an agent that can write that record can clear
+# its own block, which is the defect this whole mechanism exists to close. The
+# ordinary ways to do that are this module's `record` subcommand and a POST to
+# /session/{sid}/review-findings; both are refused here, the same way the
+# manual-testing grant minter is.
+#
+# DELIBERATELY NARROWER than the state-dir guard above, which refuses any mention of
+# gate state. This file must stay stageable, greppable and committable
+# (`git add bin/lib/review_findings.py` is legitimate and common), so only MUTATING
+# use is refused: the `record` subcommand, or a POST-shaped request to the endpoint.
+#
+# HONEST LIMIT: this is a command-text check, so it is a confirmation boundary and
+# not containment. An agent that writes an intermediate script and runs that is not
+# stopped, and no in-repo secret would help because the agent can read the repo.
+# What closes the loop is the review_block_lifted audit event plus the human at the
+# commit prompt. Same posture the rest of this file documents for its own vectors.
+case "$CMD" in
+    *"review_findings"* | *"review-findings"*)
+        if printf '%s' "$CMD" | grep -qE \
+            'review_findings(\.py)?[[:space:]]+record|review-findings.*(POST|--data|-d[[:space:]])'; then
+            RECORD_REASON="[ENF-GATE-STATE] Refusing this Bash command: it writes a reviewer verdict directly. That record is what makes the commit gate fire, so an agent that writes it can clear its own CRITICAL findings, which is exactly the review this gate exists to enforce. Verdicts are recorded by writ-subagent-stop.sh from the reviewer's own output. To clear a block: fix the findings and re-run writ-reviewer. Reading the record is fine (GET, or the Read tool)."
+            log_gate_decision "review-record" "deny" "$RECORD_REASON" ""
+            emit_deny "$RECORD_REASON"
+            exit 0
+        fi
+        ;;
+esac
+
+_GIT_COMMIT_RE='(^|[;&|]|&&|\|\|)[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*(env[[:space:]]+|command[[:space:]]+|sudo[[:space:]]+|nohup[[:space:]]+)*git([[:space:]]+-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?)*[[:space:]]+commit([[:space:]]|$)'
+
+case "$CMD" in
+    *"git commit"* | *"git -"*" commit"*)
+        if printf '%s' "$CMD" | grep -qE "$_GIT_COMMIT_RE"; then
+            # `check` exits 1 and prints the reason when blocking, 0 and silent when
+            # not. Written as an `if` rather than `cmd && VAR=""` because the latter
+            # leans on set -e's "failing left side of &&" exemption to not kill the
+            # hook. A crash (missing interpreter, unreadable cache) leaves this empty
+            # and the commit proceeds: this arm is a confirmation prompt, and the
+            # hook's fail-open posture for infrastructure faults is deliberate.
+            if REVIEW_BLOCK=$(python3 "$WRIT_DIR/bin/lib/review_findings.py" check "$SESSION_ID" 2>/dev/null); then
+                REVIEW_BLOCK=""
+            fi
+            if [ -n "$REVIEW_BLOCK" ]; then
+                ASK_REASON="[Writ] The reviewer left $REVIEW_BLOCK. Committing lands work the review rejected. Fix the findings and re-run writ-reviewer to clear this (a fresh clean verdict lifts it), or confirm to commit anyway."
+                log_gate_decision "review-blocking" "ask" "$ASK_REASON" ""
+                emit_ask "$ASK_REASON"
+                exit 0
+            fi
         fi
         ;;
 esac

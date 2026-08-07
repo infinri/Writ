@@ -126,8 +126,9 @@ class TestDocCounts:
         # source_count is derived from writ_server_source(), which scans
         # writ/server/**/*.py and matches both @app.<verb> and @router.<verb>
         # decorators. Bump this when adding/removing a route.
-        # 46 = 45 + POST /memory-record (the auto-memory graph mirror).
+        # 48 = 46 + the GET and POST halves of /session/{sid}/review-findings
+        # (the reviewer-verdict record behind the commit gate, 2026-08-06).
         source_count = _count_server_endpoints()
-        assert source_count == 46, (
-            f"writ.server has {source_count} @app/@router route decorators; expected 46"
+        assert source_count == 48, (
+            f"writ.server has {source_count} @app/@router route decorators; expected 48"
         )

@@ -220,6 +220,11 @@ def _default_cache() -> dict:
         "phase_transitions": [],
         "quality_judgment_state": {},
         "quality_override_count": 0,
+        # Cycle 9: the latest writ-reviewer verdict, recorded at SubagentStop by
+        # infrastructure rather than reported by the orchestrator. The Bash gate
+        # reads it to confirm before a commit while CRITICAL findings stand.
+        # None (not {}) means no reviewer has run, which is NOT a blocking state.
+        "review_findings_state": None,
         "always_on_budget": DEFAULT_ALWAYS_ON_CAP,
         "always_on_tokens_used": 0,
         "queried_rules_by_file": {},
