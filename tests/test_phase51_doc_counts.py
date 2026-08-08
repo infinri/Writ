@@ -128,7 +128,10 @@ class TestDocCounts:
         # decorators. Bump this when adding/removing a route.
         # 48 = 46 + the GET and POST halves of /session/{sid}/review-findings
         # (the reviewer-verdict record behind the commit gate, 2026-08-06).
+        # 49 = 48 + GET /session/{sid}/prompt-state (2026-08-08): should_skip, known,
+        # escalation and the full cache from ONE read, replacing three round trips the
+        # RAG hook made on every prompt.
         source_count = _count_server_endpoints()
-        assert source_count == 48, (
-            f"writ.server has {source_count} @app/@router route decorators; expected 48"
+        assert source_count == 49, (
+            f"writ.server has {source_count} @app/@router route decorators; expected 49"
         )

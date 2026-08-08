@@ -360,6 +360,88 @@ class TestConcurrentDrains:
         assert not orphan.exists(), "the adopted claim was left on disk"
 
 
+class TestTheStopHookDrainsTheSessionItWasInvokedFor:
+    """The drain is only useful if it targets the right session.
+
+    friction-logger.sh read the session id from /tmp/writ-current-session, ONE global file
+    that writ-rag-inject.sh rewrites on every UserPromptSubmit in every Claude Code session
+    on the machine. Whichever session took a turn most recently owned it, so this Stop hook
+    drained that session rather than the one it was invoked for.
+
+    Harmless while every hook wrote telemetry directly. Not harmless once hook_execution and
+    gate_decision rows moved into a per-session buffer drained here: the rows of the session
+    actually running just accumulate. Measured on a live session 2026-08-08, 443 undrained
+    rows, pointer owned by an unrelated session id.
+
+    CC sends session_id in the Stop payload, so the correct answer was already available.
+    """
+
+    HOOK = REPO / "hooks" / "scripts" / "friction-logger.sh"
+
+    def _stop(self, session: str, env) -> None:
+        payload = json.dumps({"session_id": session, "hook_event_name": "Stop"})
+        subprocess.run(["bash", str(self.HOOK)], input=payload, capture_output=True,
+                       text=True, timeout=120, env={**os.environ, **env})
+
+    def test_it_drains_the_payload_session(self, buf_env) -> None:
+        _append("s-payload", "row-a", buf_env)
+        assert _buffer_path("s-payload", buf_env).exists()
+        self._stop("s-payload", buf_env)
+        assert not _buffer_path("s-payload", buf_env).exists(), (
+            "the Stop hook did not drain the session named in its own payload"
+        )
+
+    def test_it_does_not_drain_an_unrelated_session(self, buf_env) -> None:
+        """The other half. A drain that took every buffer would pass the test above while
+        stealing rows from a concurrently live session."""
+        _append("s-mine", "row-mine", buf_env)
+        _append("s-theirs", "row-theirs", buf_env)
+        self._stop("s-mine", buf_env)
+        assert not _buffer_path("s-mine", buf_env).exists()
+        assert _buffer_path("s-theirs", buf_env).exists(), (
+            "the Stop hook drained a session it was not invoked for"
+        )
+
+    def test_the_global_pointer_does_not_override_the_payload(self, buf_env, tmp_path) -> None:
+        """The actual defect, reproduced: a pointer file naming a DIFFERENT session must
+        not redirect the drain. Without the fix the payload session keeps its rows and the
+        pointer's session is drained instead."""
+        pointer = Path("/tmp/writ-current-session")
+        saved = pointer.read_text() if pointer.exists() else None
+        try:
+            pointer.write_text("some-other-session\n")
+            _append("s-real", "row-real", buf_env)
+            self._stop("s-real", buf_env)
+            assert not _buffer_path("s-real", buf_env).exists(), (
+                "the global pointer overrode the payload and the real session's rows "
+                "were stranded"
+            )
+        finally:
+            if saved is not None:
+                pointer.write_text(saved)
+
+    def test_the_pointer_is_still_used_when_the_payload_has_no_session(
+        self, buf_env
+    ) -> None:
+        """The fallback must survive: a payload without session_id should still drain via
+        the pointer rather than silently doing nothing."""
+        pointer = Path("/tmp/writ-current-session")
+        saved = pointer.read_text() if pointer.exists() else None
+        try:
+            pointer.write_text("s-fallback\n")
+            _append("s-fallback", "row-fb", buf_env)
+            subprocess.run(["bash", str(self.HOOK)], input='{"hook_event_name":"Stop"}',
+                           capture_output=True, text=True, timeout=120,
+                           env={**os.environ, **buf_env})
+            assert not _buffer_path("s-fallback", buf_env).exists(), (
+                "the pointer fallback stopped working, so a payload without session_id "
+                "now drains nothing"
+            )
+        finally:
+            if saved is not None:
+                pointer.write_text(saved)
+
+
 class TestFrictionRowsRideAlong:
     """friction-append.py was a SECOND interpreter start whose only job was appending
     the RAG hook's log lines: 35.3ms measured, of which ~22ms is the interpreter plus

@@ -32,9 +32,25 @@ if stop_hook_active "$STDIN_JSON"; then
     exit 0
 fi
 
-# Read session ID published by writ-rag-inject.sh (fires on every UserPromptSubmit)
-SESSION_ID=""
-if [ -f /tmp/writ-current-session ]; then
+# THE PAYLOAD IS AUTHORITATIVE, the pointer file is only a fallback.
+#
+# /tmp/writ-current-session is ONE global file, rewritten by writ-rag-inject.sh on every
+# UserPromptSubmit in EVERY Claude Code session on this machine, so the most recent session
+# to take a turn owns it. Reading it unconditionally meant this Stop hook drained whichever
+# session happened to be last, not the one it was invoked for.
+#
+# That was survivable while every hook wrote its telemetry directly. It stopped being
+# survivable when hook_execution and gate_decision rows moved to a per-session buffer
+# drained here: draining the wrong session strands this one's rows on disk. Measured on a
+# live session, 2026-08-08: 443 undrained rows, because the pointer had been taken over by
+# another session (cdp-12096297) and this session's buffer was never the drain target.
+#
+# CC sends session_id in the Stop payload, which is captured above for the loop-breaker, so
+# the right answer was already in hand.
+SESSION_ID=$(printf '%s' "$STDIN_JSON" \
+    | json_transform '.session_id // empty' "d.get('session_id')" 2>/dev/null || true)
+SESSION_ID=$(printf '%s' "$SESSION_ID" | tr -d '[:space:]')
+if [ -z "$SESSION_ID" ] && [ -f /tmp/writ-current-session ]; then
     SESSION_ID=$(cat /tmp/writ-current-session 2>/dev/null | tr -d '[:space:]')
 fi
 if [ -z "$SESSION_ID" ]; then

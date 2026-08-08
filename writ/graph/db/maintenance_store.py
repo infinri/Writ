@@ -29,23 +29,38 @@ class MaintenanceStoreMixin:
 
         preserve = RECORD_LABELS if preserve_labels is None else preserve_labels
         async with self._driver.session(database=self._database) as session:
+            # CONSUME, do not fire and forget. `session.run` returns a lazy result: the
+            # statement is dispatched but this coroutine can return before the delete has
+            # finished server-side. import_cypher_dump then opens NEW sessions and replays
+            # CREATE statements, so the wipe and the rebuild can overlap, and a create
+            # landing mid-delete is exactly how a DETACH DELETE ends up chasing a node id
+            # that no longer resolves (Neo.ClientError.Statement.EntityNotFound).
+            # rule_store and node_store already consume; this file did not, and it is the
+            # one that deletes.
             if preserve:
-                await session.run(
+                result = await session.run(
                     "MATCH (n) WHERE NOT any(l IN labels(n) WHERE l IN $preserve) "
                     "DETACH DELETE n",
                     preserve=sorted(preserve),
                 )
             else:
-                await session.run("MATCH (n) DETACH DELETE n")
+                result = await session.run("MATCH (n) DETACH DELETE n")
+            await result.consume()
 
     async def execute(self, statement: str) -> None:
         """Run a single raw Cypher statement with no return value expected.
 
         For the graph-dump import path (writ/graph/dump.py), which replays a
         pre-rendered script of literal CREATE/MATCH statements.
+
+        Consumed for the same reason clear_all is: the replay is a sequence of separate
+        sessions, so each statement must actually finish before the next one starts.
+        Returning early makes the replay order advisory, which for a script whose
+        MATCH statements depend on earlier CREATEs is not a property to leave to timing.
         """
         async with self._driver.session(database=self._database) as session:
-            await session.run(statement)
+            result = await session.run(statement)
+            await result.consume()
 
     async def clear_project(self, project: str = "writ") -> int:
         """Delete all nodes (and their edges) for one project. M.1: the scoped
