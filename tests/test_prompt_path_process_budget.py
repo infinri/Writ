@@ -237,6 +237,72 @@ class TestEscalationCheckIsNotInlinePython:
         )
 
 
+class TestTheEscalationRoundTripIsSkippedWhenNothingIsPending:
+    """/prompt-state already answers "is escalation pending", from the same cache file
+    /check-escalation reads, so when the answer is no the round trip only confirms it
+    (12.2ms measured).
+
+    THE STALENESS QUESTION HAD TO BE ANSWERED, NOT ASSUMED. An earlier pass kept this call
+    fresh because reusing the earlier snapshot could miss an escalation that arrived
+    mid-hook. The `escalation` field is written in exactly three places
+    (writ/session/approval_workflow.py, violations.py, budget_tracking.py) and none of them
+    run during a UserPromptSubmit hook: they fire on gate approvals and write violations.
+    Nothing can set it between the two reads in this hook's lifetime, so the snapshot is
+    safe HERE, which is not the same as safe in general.
+    """
+
+    FILTER = (
+        'if has("escalation") then (if .escalation == true then "yes" else "no" end) '
+        "else empty end"
+    )
+    PYEXPR = "(('yes' if d.get('escalation') is True else 'no') if 'escalation' in d else None)"
+
+    def _run(self, payload: str, no_jq: bool) -> str:
+        env = os.environ.copy()
+        if no_jq:
+            env["WRIT_NO_JQ"] = "1"
+        else:
+            env.pop("WRIT_NO_JQ", None)
+        script = (
+            f'source "{REPO / "bin" / "lib" / "common.sh"}" >/dev/null 2>&1\n'
+            f"printf '%s' {json.dumps(payload)} | json_transform "
+            f"{json.dumps(self.FILTER)} {json.dumps(self.PYEXPR)} 2>/dev/null || true\n"
+        )
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                              timeout=60, env=env).stdout.strip()
+
+    @pytest.mark.parametrize("no_jq", [False, True], ids=["jq", "python"])
+    @pytest.mark.parametrize("payload,expected", [
+        ('{"escalation":false}', "no"),          # skip the round trip
+        ('{"escalation":true}', "yes"),          # fetch the full object
+        ('{"detail":"Not Found"}', ""),          # stale daemon: MUST fall through
+        ("{}", ""),
+        ("", ""),
+        ("garbage", ""),
+    ])
+    def test_both_arms_agree_and_absent_means_fetch(self, payload, expected, no_jq) -> None:
+        assert self._run(payload, no_jq) == expected
+
+    def test_only_an_explicit_no_skips_the_call(self) -> None:
+        """The condition is `= "no"`, not `!= "yes"`. Inverting it would make every
+        unavailable answer suppress the escalation warning instead of fetching it."""
+        source = (HOOKS / "writ-rag-inject.sh").read_text()
+        assert '[ "$PS_ESC" = "no" ]' in source, (
+            "the guard no longer requires an explicit no; an empty or error response would "
+            "now suppress escalation rather than fall through to the real call"
+        )
+
+    def test_the_full_object_is_still_fetched_when_escalation_is_pending(self) -> None:
+        """gate, diagnosis, cycles and feedback_sent are read further down and
+        /prompt-state returns only the boolean, so the else branch must remain."""
+        source = (HOOKS / "writ-rag-inject.sh").read_text()
+        assert "_writ_session check-escalation" in source, (
+            "the full escalation fetch is gone; the fields below it would all be defaults"
+        )
+        for field in ("gate", "diagnosis", "cycles", "feedback_sent"):
+            assert field in source, f"{field} is no longer read from the escalation object"
+
+
 class TestTheRendererIsNotSpawnedToDiscoverNothingToDo:
     """writ_render_backward_context.py prints the INVALIDATED block, or nothing at all.
 

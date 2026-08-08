@@ -652,7 +652,35 @@ fi
 # cache captured at step 3 is current (was a redundant second _writ_session read).
 
 # Check for escalation and inject backward context
-ESCALATION=$(_writ_session check-escalation "$SESSION_ID" 2>/dev/null || echo '{"needed":false}')
+# ASK BEFORE SPAWNING, fourth instance of this pattern on this path. /prompt-state already
+# answered "is escalation pending", from the SAME cache file /check-escalation reads, so
+# when the answer is no this round trip only confirms it (measured 12.2ms).
+#
+# WHY THE EARLIER SNAPSHOT IS SAFE HERE, which is the part that needed checking rather than
+# assuming. I previously kept this call fresh because reusing the snapshot risked missing an
+# escalation that arrived mid-hook. The `escalation` field is written in exactly three
+# places (writ/session/approval_workflow.py, violations.py, budget_tracking.py), and none of
+# them run during a UserPromptSubmit hook: they fire on gate approvals and on write
+# violations. So nothing can set it between the two reads in this hook's lifetime.
+#
+# The full object is still fetched when escalation IS pending, because gate, diagnosis,
+# cycles and feedback_sent are read below and /prompt-state returns only the boolean.
+#
+# Presence first, again: a daemon without /prompt-state returns a body with no `escalation`
+# key, which yields empty here and falls through to the real call rather than being read as
+# "no escalation" and silently suppressing the warning.
+PS_ESC=""
+if [ -n "$PROMPT_STATE" ]; then
+    PS_ESC=$(printf '%s' "$PROMPT_STATE" | json_transform \
+        'if has("escalation") then (if .escalation == true then "yes" else "no" end) else empty end' \
+        "(('yes' if d.get('escalation') is True else 'no') if 'escalation' in d else None)" \
+        2>/dev/null || true)
+fi
+if [ "$PS_ESC" = "no" ]; then
+    ESCALATION='{"needed":false}'
+else
+    ESCALATION=$(_writ_session check-escalation "$SESSION_ID" 2>/dev/null || echo '{"needed":false}')
+fi
 # jq when present, python when not: a python start is 9.5ms before it does anything, and
 # `import json` adds 4.9 more, against 2.3ms for jq. Measured on this line: 13.7ms.
 # The truthiness test is spelled out rather than left to jq's, because jq counts "" and 0
