@@ -17,7 +17,10 @@ check-venv:
 	  exit 1)
 
 test: check-venv
-	$(PYTHON) -m pytest tests/ -x -q
+	# --maxfail=10, not -x. On a 7,000-test suite -x means one CI run reports exactly
+	# one failure, so reaching green costs N pushes at ~8 minutes each. Ten gives the
+	# whole picture in one run and still refuses to grind through a broken suite.
+	$(PYTHON) -m pytest tests/ --maxfail=10 -q
 
 # The timing gates, alone. `make test` deselects them (addopts in pyproject) because
 # p95 inside the loaded suite measures the machine, not the hook: ~30ms of drift on
