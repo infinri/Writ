@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 SKILL_DIR = (Path(__file__).resolve().parent.parent)
-EXPECTED_VERSION = "1.6.0"
+EXPECTED_VERSION = "1.7.0"
 
 
 @pytest.fixture(scope="module")

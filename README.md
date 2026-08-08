@@ -8,7 +8,7 @@ The librarian, for the record: ranked results in **0.52 ms at the 95th percentil
 
 The enforcement claims are auditable in this repo, not asserted. [`PSR-008`](docs/pressure-runs/PSR-008/analysis.md) is a complete adversarial pressure run against a real session: the verbatim task prompt, the full transcript, every hook decision as JSONL, and each targeted rule graded held / bypassed / unclear (9 criteria, 8 held, one designed-in failure documented honestly). The [first monthly operational review](docs/monthly-reviews/2026-05.md) is built from 7,058 logged events by the system's own audit stream. Details in [Evidence](#evidence-pressure-runs-and-operational-reviews).
 
-See [`CHANGELOG.md`](CHANGELOG.md) for the release history through v1.6.0 (re-measured benchmarks, hook-system audit and hardening, force-swap coverage, the Claude Code 2.1.220 black-box refresh).
+See [`CHANGELOG.md`](CHANGELOG.md) for the release history through v1.7.0 (re-measured benchmarks, hook-system audit and hardening, force-swap coverage, the Claude Code 2.1.220 black-box refresh).
 
 ## Browse the architecture in your browser
 

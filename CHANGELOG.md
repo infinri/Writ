@@ -4,7 +4,9 @@ All notable changes to Writ are documented in this file. The format follows [Kee
 
 ## [Unreleased]
 
-The install collapses to "install the plugin, run one command", and `jq`, `envsubst` and `curl` stop being prerequisites.
+## [1.7.0] - 2026-08-08
+
+The install collapses to "install the plugin, run one command"; `jq`, `envsubst` and `curl` stop being prerequisites; and the hook layer's own guarantees are audited rather than asserted. Two gates that were failing open now hold, session identity is never guessed, a destructive graph operation needs permission, and the isolation the test suite claimed is enforced instead of assumed.
 
 ### Added
 
