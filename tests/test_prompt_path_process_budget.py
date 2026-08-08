@@ -136,6 +136,65 @@ class TestPromptPathBudget:
         )
 
 
+class TestPromptStateFallsBackRatherThanGuessing:
+    """The skip decision must come from an ANSWER, never from a missing field.
+
+    The hook reads should_skip out of /session/{id}/prompt-state. A daemon too old to have
+    that route replies `{"detail":"Not Found"}` with HTTP 404, and writ_http_get (no
+    --fail) hands that body back like any other. The first version of the filter tested
+    `.should_skip == true`, which is false for an absent field, so a 404 read as "do not
+    skip" and the separate should-skip call was never consulted. A session whose budget was
+    exhausted would then keep injecting rules for the rest of its life, with nothing
+    failing. The filter tests PRESENCE first and emits nothing when the field is missing,
+    which is what routes the hook to the fallback.
+    """
+
+    FILTER = (
+        'if has("should_skip") then (if .should_skip == true then "yes" else "no" end) '
+        "else empty end"
+    )
+    PYEXPR = "(('yes' if d.get('should_skip') is True else 'no') if 'should_skip' in d else None)"
+
+    def _run(self, payload: str, no_jq: bool) -> str:
+        env = os.environ.copy()
+        if no_jq:
+            env["WRIT_NO_JQ"] = "1"
+        else:
+            env.pop("WRIT_NO_JQ", None)
+        script = (
+            f'source "{REPO / "bin" / "lib" / "common.sh"}" >/dev/null 2>&1\n'
+            f"printf '%s' {json.dumps(payload)} | json_transform "
+            f"{json.dumps(self.FILTER)} {json.dumps(self.PYEXPR)} 2>/dev/null || true\n"
+        )
+        proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                              timeout=60, env=env)
+        return proc.stdout.strip()
+
+    @pytest.mark.parametrize("no_jq", [False, True], ids=["jq", "python"])
+    @pytest.mark.parametrize("payload,expected", [
+        ('{"detail":"Not Found"}', ""),          # stale daemon: MUST fall back
+        ("", ""),                                # daemon down
+        ("garbage", ""),                         # malformed
+        ('{"should_skip":true,"cache":{}}', "yes"),
+        ('{"should_skip":false,"cache":{}}', "no"),
+        ('{"should_skip":null}', "no"),          # present but null is an answer, not a miss
+    ])
+    def test_both_arms_agree_and_absent_means_fallback(
+        self, payload: str, expected: str, no_jq: bool
+    ) -> None:
+        assert self._run(payload, no_jq) == expected
+
+    def test_the_hook_consults_the_fallback_when_the_field_is_absent(self) -> None:
+        """Structural: the empty case must reach `_writ_session should-skip`, not just
+        decline to skip. An `if/elif` that lost its elif would still pass the filter
+        tests above while silently dropping the policy check."""
+        source = (HOOKS / "writ-rag-inject.sh").read_text()
+        assert "elif _writ_session should-skip" in source, (
+            "the fallback to the separate should-skip call is gone, so a daemon without "
+            "/prompt-state would never skip"
+        )
+
+
 class TestEscalationCheckIsNotInlinePython:
     """The converted call, pinned. It read the escalation response through
     `python3 -c 'import sys,json; ...'`, which is 13.7ms measured to answer one boolean."""

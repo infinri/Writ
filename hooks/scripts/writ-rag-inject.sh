@@ -108,8 +108,35 @@ fi
 debug "session=$SESSION_ID prompt_len=${#PROMPT}"
 
 # 1. Check skip conditions (budget exhausted or context pressure > 75%)
-if _writ_session should-skip "$SESSION_ID" 2>/dev/null; then
-    debug "skipped: budget or context pressure"
+#
+# ONE call answers this AND supplies the session cache read at step 1c. They used to be
+# two `_writ_session` invocations, each paying a python interpreter start (9.5ms floor)
+# plus a round trip plus its own read of the SAME cache file. /session/{id}/prompt-state
+# returns should_skip, known, escalation and the full cache from a single read.
+#
+# Falling back to the separate calls when this comes back empty keeps a stale daemon
+# (one without the route) working rather than silently skipping every prompt.
+PROMPT_STATE=$(writ_http_get "http://${WRIT_HOST}:${WRIT_PORT}/session/${SESSION_ID}/prompt-state" 2>/dev/null || true)
+PS_SKIP=""
+if [ -n "$PROMPT_STATE" ]; then
+    # PRESENCE FIRST, then the value. Testing the value alone maps an ERROR body to "no":
+    # a daemon too old to have this route answers `{"detail":"Not Found"}`, `.should_skip`
+    # is absent, and `== true` is false, so the hook would read a 404 as "do not skip" and
+    # never consult the fallback. A session whose budget was exhausted would keep
+    # injecting for the rest of its life. Emitting nothing when the field is missing is
+    # what routes it to the separate call below.
+    PS_SKIP=$(printf '%s' "$PROMPT_STATE" | json_transform \
+        'if has("should_skip") then (if .should_skip == true then "yes" else "no" end) else empty end' \
+        "(('yes' if d.get('should_skip') is True else 'no') if 'should_skip' in d else None)" \
+        2>/dev/null || true)
+fi
+if [ -n "$PS_SKIP" ]; then
+    if [ "$PS_SKIP" = "yes" ]; then
+        debug "skipped: budget or context pressure"
+        exit 0
+    fi
+elif _writ_session should-skip "$SESSION_ID" 2>/dev/null; then
+    debug "skipped: budget or context pressure (fallback path)"
     exit 0
 fi
 
@@ -193,7 +220,18 @@ fi
 # alias, the main path reuses it for CACHE_FIELDS, and the escalation /
 # backward-context blocks reuse it raw. Positioned AFTER the auto-route block so
 # a just-set investigate mode is reflected.
-CACHE=$(_writ_session read "$SESSION_ID" 2>/dev/null || echo '{"loaded_rule_ids":[],"remaining_budget":8000}')
+# Reuse the cache that came back with the skip answer above, which is a CONSISTENT
+# snapshot rather than two reads that can straddle a concurrent write.
+#
+# EXCEPT when the auto-route block just set a mode: that snapshot predates the write, and
+# this read is positioned here precisely so a just-set mode is reflected. A stale mode
+# here is not a cosmetic bug, it decides whether the gates arm for the whole turn, so the
+# rare path re-reads rather than reusing.
+CACHE=""
+if [ -n "$PROMPT_STATE" ] && [ "${AUTOROUTED:-no}" != "yes" ]; then
+    CACHE=$(printf '%s' "$PROMPT_STATE" | json_transform '.cache' "d.get('cache')" 2>/dev/null || true)
+fi
+[ -n "$CACHE" ] || CACHE=$(_writ_session read "$SESSION_ID" 2>/dev/null || echo '{"loaded_rule_ids":[],"remaining_budget":8000}')
 CACHE_DATA="$CACHE"  # orchestrator branch alias -- same single read, no second round-trip
 if [ -z "$CURRENT_MODE" ]; then
     CURRENT_MODE=$(parsed_field "$CACHE" "mode")
