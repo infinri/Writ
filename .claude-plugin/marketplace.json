@@ -4,31 +4,18 @@
     "name": "Lucio Saldivar"
   },
   "metadata": {
-    "description": "Single-plugin marketplace for Writ. The plugin is served from the retained release/<version> branch and pinned to that release's commit, so the catalog on main can advance without changing what an installed version resolves to.",
+    "description": "Single-plugin marketplace for Writ. The repository root is the plugin, so `source` is './'.",
     "version": "1.7.0"
   },
   "plugins": [
     {
       "name": "writ",
-      "source": {
-        "source": "github",
-        "repo": "infinri/Writ",
-        "ref": "release/1.7.0"
-      },
+      "source": "./",
       "version": "1.7.0",
       "displayName": "Writ",
       "description": "Hybrid RAG rule retrieval + session-aware workflow enforcement. Injects relevant coding rules via a 5-stage pipeline (BM25 + vector + graph traversal + reciprocal-rank fusion) and enforces mode-based workflow gates (plan -> tests -> implementation).",
       "category": "workflow",
-      "keywords": [
-        "claude-code",
-        "rag",
-        "rules",
-        "enforcement",
-        "neo4j",
-        "fastapi",
-        "hooks",
-        "workflow"
-      ],
+      "keywords": ["claude-code", "rag", "rules", "enforcement", "neo4j", "fastapi", "hooks", "workflow"],
       "homepage": "https://github.com/infinri/Writ",
       "license": "MIT",
       "author": {
