@@ -6,7 +6,7 @@ Writ runs the same way under three install paths; pick one:
 - **B. Skills-directory checkout**: a clone at `~/.claude/skills/writ/`, auto-discovered by Claude Code as the user-scope plugin `writ@skills-dir`.
 - **C. Anywhere else**: a clone at a path Claude Code does not discover; hooks must be seeded into `~/.claude/settings.json` (section 3).
 
-In every path, hook registrations come from one place, `hooks/hooks.json` (41 registrations across 12 events over 37 scripts). Editing that file is all a hook change needs.
+In every path, hook registrations come from one place, `hooks/hooks.json` (44 registrations across 12 events over 40 scripts). Editing that file is all a hook change needs.
 
 **Prerequisites (all paths):** Python 3.11+, Docker (Neo4j runs in a container), and `git` for the clone paths. That is the whole list. `jq` and `curl` are optional accelerators: every JSON read has a Python fallback and every HTTP call has a `urllib` fallback, so their absence changes speed, never behavior. Nothing needs `envsubst`/gettext.
 

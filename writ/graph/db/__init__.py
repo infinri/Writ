@@ -34,6 +34,7 @@ from writ.graph.db._common import (
 
 if TYPE_CHECKING:
     from neo4j import AsyncDriver
+from writ.graph.db._safety import FullWipeRefused
 from writ.graph.db._query_runner import _QueryRunnerMixin
 from writ.graph.db.rule_store import RuleStoreMixin
 from writ.graph.db.node_store import NodeStoreMixin
@@ -48,6 +49,7 @@ from writ.graph.db.maintenance_store import MaintenanceStoreMixin
 # resolving for external callers (the seam the old single-file module exposed).
 __all__ = [
     "Neo4jConnection",
+    "FullWipeRefused",
     "ProjectIdentityConflict",
     "GraphConnection",
     "ALLOWED_EDGE_TYPES",
@@ -76,6 +78,12 @@ class Neo4jConnection(
     def __init__(self, uri: str, user: str, password: str, database: str = "neo4j") -> None:
         self._driver: AsyncDriver = AsyncGraphDatabase.driver(uri, auth=(user, password))
         self._database = database
+        # Retained so clear_all can tell WHICH instance it is about to delete from.
+        # The driver does not expose its target URI in a stable, public way, and the
+        # whole-graph wipe guard (writ/graph/db/_safety.py) cannot make a decision it
+        # has no way to observe. Never logged: it is inert connection metadata, but
+        # the credentials that travel with it are not, so only the URI is kept.
+        self._uri = uri
 
     async def close(self) -> None:
         """Close the driver connection pool."""

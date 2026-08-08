@@ -153,7 +153,7 @@ class TestOverrideMarkerPassesThrough:
 name: quarantine
 type: feedback
 explicit_rule_override: true
-override_authorized_by: lucio
+override_authorized_by: maintainer
 override_scope: "flaky test X only"
 ---
 Skip verification re-run for test suite X specifically — known quarantined."""
@@ -168,7 +168,7 @@ Skip verification re-run for test suite X specifically — known quarantined."""
 name: narrow exception
 type: feedback
 ---
-override authorized by: lucio (2026-04-22)
+override authorized by: maintainer (2026-04-22)
 Skip verification for test suite X — flaky, known quarantined, tracked in JIRA-123."""
         stdout, code = _run_hook(_payload(path, content))
         assert code == 0

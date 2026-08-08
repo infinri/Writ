@@ -37,8 +37,16 @@ except Exception:
 SESSION_ID=$(echo "$PARSED" | head -1)
 PROMPT=$(echo "$PARSED" | sed -n '2p')
 
-[ -z "$SESSION_ID" ] && SESSION_ID=$(cat /tmp/writ-current-session 2>/dev/null || true)
-[ -z "$SESSION_ID" ] && exit 0
+# NO POINTER FALLBACK, and this is the one where it mattered most. /tmp/writ-current-session
+# is a single global file naming whichever Claude Code session on this machine took a turn
+# most recently, so minting a manual-testing grant through it could arm the bypass on a
+# DIFFERENT session than the one whose user actually said the words. A grant is a
+# deliberate, user-authorized weakening of the gates; attaching it to the wrong session is
+# the worst outcome available here, and it would leave no trace.
+if [ -z "$SESSION_ID" ]; then
+    writ_critical writ-manual-test-grant "no session_id in hook payload; refusing to mint a grant against a guessed session"
+    exit 0
+fi
 
 # SEC-INJ-CMD-001: the prompt is passed as an argv element, never interpolated
 # into the python source.

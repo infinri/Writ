@@ -107,8 +107,19 @@ SESSION_ID=$(echo "$PARSED_INPUT" | head -1)
 WRITE_CTX=$(echo "$PARSED_INPUT" | sed -n 2p)
 CHECK_BODY=$(echo "$PARSED_INPUT" | tail -n +3)
 
+# NO SYNTHESIZED ID, AND NO EARLY EXIT. This used to call `detect_session_id ""`, which
+# invented an id from PPID or md5(cwd:user).
+#
+# It does NOT return here, and that distinction matters more here than anywhere else in
+# this cycle. The gate decision is made from CHECK_BODY, whose session_id comes from the
+# same parse above and is unaffected by this variable; returning early would skip
+# /pre-write-check entirely and turn its no-mode DENY ([ENF-GATE-MODE]) and its
+# credential-path DENY into a silent ALLOW. So the gate runs exactly as before, the
+# broken invariant is recorded, and only the SESSION-KEYED bookkeeping below is skipped
+# (see the "$SESSION_ID" guard on the cache update near the end).
 if [ -z "$SESSION_ID" ]; then
-    SESSION_ID=$(detect_session_id "")
+    writ_critical writ-pre-write-dispatch \
+        "no session_id in hook payload; the write gate still runs, but RAG budget and queried-rule bookkeeping are skipped"
 fi
 
 # A11: mode for hook_execution telemetry now travels in the /pre-write-check
@@ -288,7 +299,11 @@ print(json.dumps({"hookSpecificOutput": {
 PY
         printf '%s' "${RAG_RULES_RAW}${AO_WRITE_BLOCK}" | blackbox_log out writ-pre-write-dispatch "$SESSION_ID"
     fi
-    if [ -n "$NEW_RULE_IDS" ] && [ "$NEW_RULE_IDS" != "[]" ]; then
+    # "$SESSION_ID" is required, not decorative: _cache_path() has no empty-id guard, so
+    # `update ""` creates a REAL cache file named for the empty string and files this
+    # turn's rules under a session that can never be read back. The critical error was
+    # already recorded up top; this is the no-op that follows it.
+    if [ -n "$SESSION_ID" ] && [ -n "$NEW_RULE_IDS" ] && [ "$NEW_RULE_IDS" != "[]" ]; then
         _writ_session update "$SESSION_ID" \
             --add-rules "$NEW_RULE_IDS" \
             --cost "${COST:-0}" \

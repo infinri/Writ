@@ -96,6 +96,14 @@ STREAM_MAP: dict[str, str] = {
     # errors: a caught exception is not workflow friction. Own stream, own
     # retention (see log_rotation.RETENTION_DAYS).
     "exception": "errors",
+    # A CRITICAL condition that is NOT an exception: an invariant the code depends on
+    # turned out to be false, and the operation was abandoned rather than guessed.
+    #
+    # Added because Writ had no way to say this. Hooks that could not identify their
+    # session quietly fell back to a global pointer file or to a synthesized id, so a
+    # wrong-session read looked exactly like a normal run. The fallbacks are gone; the
+    # hook now records this and does nothing, which is loud instead of silently wrong.
+    "critical_error": "errors",
     # metrics
     "hook_execution": "metrics",
     # One row per daemon HTTP request (route/status/duration), from the server's

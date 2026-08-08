@@ -139,11 +139,43 @@ PY
 [ -n "$DECISION" ] && printf '%s' "$DECISION" | blackbox_log out writ-dispatch-discipline "$SESSION_ID"
 [ -n "$DECISION" ] && echo "$DECISION"
 
-# The hook emits a decision only when it intervenes (steer or deny); an empty
-# $DECISION means the dispatch was left alone, which is the allow branch.
+# THE AUDIT ROW SAYS WHAT WAS EMITTED, read back out of the JSON above rather than
+# inferred from "did we emit anything".
+#
+# This block used to log "deny" whenever $DECISION was non-empty. The non-empty case is
+# BOTH branches, and the dominant one is the reroute -- permissionDecision=allow with
+# updatedInput -- which is this hook's entire job. So every successful reroute was filed
+# in the audit stream (governance record, 365-day retention) as a denial, and the record
+# was lying about the one mechanism that closes the general-purpose sub-agent gap.
+# Reproduced live 2026-08-08: subagent_type "general-purpose" + an exploration prompt
+# produced updatedInput and permissionDecision=allow beside an audit row saying "deny".
+#
+# An empty $DECISION still means the dispatch was left alone, which is the allow branch.
+#
+# The audit target is the agent type that was ASKED FOR -- "general-purpose" on a reroute,
+# the named role on a pass-through. It was `${AGENT_TYPE:-}`, a variable this hook never
+# assigns, so every row filed an empty target and the stream could not say WHICH dispatch
+# it had rerouted, refused, or waved through. The value lives in tool_input, which only the
+# embedded python above reads, so it is lifted out here rather than inferred; the jq-first
+# seam keeps that to ~2ms beside the two interpreter starts this hook already pays.
+# NOT HOOK_AGENT_TYPE from load_hook_env: that is the type of the agent DOING the
+# dispatching, which is empty on the main session and confidently wrong inside a sub-agent.
+REQUESTED_AGENT_TYPE=$(printf '%s' "$HOOK_ENVELOPE" | json_transform \
+    '.tool_input.subagent_type' \
+    "(d.get('tool_input') or {}).get('subagent_type')")
+
 if [ -n "$DECISION" ]; then
-    log_gate_decision "dispatch-discipline" "deny" "$DECISION" "${AGENT_TYPE:-}"
+    # NOT defaulted to allow or deny. An unparseable payload is neither, and asserting
+    # one of them anyway is precisely the defect being fixed; "unknown" is the honest
+    # label and log_gate_decision already routes any non-"allow" value down its
+    # synchronous, non-lossy path. json_transform is the jq-first seam, so the rare
+    # intervening dispatch pays ~2ms rather than an interpreter start.
+    EMITTED_DECISION=$(printf '%s' "$DECISION" | json_transform \
+        '.hookSpecificOutput.permissionDecision' \
+        "(d.get('hookSpecificOutput') or {}).get('permissionDecision')")
+    log_gate_decision "dispatch-discipline" "${EMITTED_DECISION:-unknown}" \
+        "$DECISION" "${REQUESTED_AGENT_TYPE:-}"
 else
-    log_gate_decision "dispatch-discipline" "allow" "dispatch not intercepted" "${AGENT_TYPE:-}"
+    log_gate_decision "dispatch-discipline" "allow" "dispatch not intercepted" "${REQUESTED_AGENT_TYPE:-}"
 fi
 exit 0

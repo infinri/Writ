@@ -16,6 +16,7 @@ All tests FAIL until the implementation phase lands.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import subprocess
 import sys
@@ -50,11 +51,21 @@ NEO4J_URI = get_neo4j_uri()
 # helpers
 # ---------------------------------------------------------------------------
 
+
+# THE CONTAINER NAME IS A SEAM, not a constant. These two files reach Neo4j through
+# `docker exec <container> cypher-shell` rather than through Neo4jConnection, so they are
+# the one place WRIT_NEO4J_URI does NOT redirect: pointing the rest of the suite at a
+# disposable instance would silently leave these hitting production. Reading the name from
+# the environment puts them back under the same switch as everything else.
+def _neo4j_container() -> str:
+    return os.environ.get("WRIT_TEST_NEO4J_CONTAINER", "writ-neo4j")
+
+
 def _cypher(query: str) -> int:
     """Run a read-only Cypher query via docker exec and return the integer result."""
     result = subprocess.run(
         [
-            "docker", "exec", "writ-neo4j", "cypher-shell",
+            "docker", "exec", _neo4j_container(), "cypher-shell",
             "-u", NEO4J_USER, "-p", NEO4J_PASSWORD,
             "--format", "plain",
             query,
@@ -99,7 +110,7 @@ def _clear_graph() -> None:
     preserve = ", ".join(f"'{label}'" for label in sorted(RECORD_LABELS))
     result = subprocess.run(
         [
-            "docker", "exec", "writ-neo4j", "cypher-shell",
+            "docker", "exec", _neo4j_container(), "cypher-shell",
             "-u", NEO4J_USER, "-p", NEO4J_PASSWORD,
             "--format", "plain",
             f"MATCH (n) WHERE NOT any(l IN labels(n) WHERE l IN [{preserve}]) "
@@ -246,11 +257,18 @@ class TestImportMarkdownOnlyFilter:
         rule_count = _cypher("MATCH (n:Rule) RETURN count(n)")
         assert rule_count > 0, "Expected Rule nodes after --only Rule"
 
+        # RUNTIME RECORDS ARE NOT PART OF THE CLAIM. `_clear_graph` deliberately preserves
+        # Memory / Decision / Commit / FileChange -- they have no bible or dump source, so a
+        # corpus rebuild that took them with it would destroy state nothing can restore.
+        # This assertion is about what the IMPORTER created, and counting the survivors made
+        # it fail with "got 191" on any machine that had ever recorded a memory.
         non_rule_count = _cypher(
-            "MATCH (n) WHERE NOT n:Rule RETURN count(n)"
+            "MATCH (n) WHERE NOT n:Rule "
+            "AND NOT (n:Memory OR n:Decision OR n:Commit OR n:FileChange) "
+            "RETURN count(n)"
         )
         assert non_rule_count == 0, (
-            f"Expected zero non-Rule nodes after --only Rule; got {non_rule_count}"
+            f"Expected zero non-Rule corpus nodes after --only Rule; got {non_rule_count}"
         )
 
     def test_only_skill_imports_only_skills(self) -> None:

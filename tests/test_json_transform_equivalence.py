@@ -243,26 +243,48 @@ class TestNoInlinePythonLeftOnTheWritePath:
         # json_transform calls. The two that remain do real python work (regex keyword
         # extraction, and an import of writ_phase_scoped_rules), not JSON reshaping.
         "writ-posttool-rag.sh": 2,
-        # 4 -> 2: the can-write request body, the fallback response reshape, and the
+        # 4 -> 2 -> 1: the can-write request body, the fallback response reshape, and the
         # deny reason are converted. This loop runs once per path in the Bash command,
-        # so each start it drops is paid per path rather than per command.
-        "writ-bash-write-gate.sh": 2,
+        # so each start it drops is paid per path rather than per command. The 2 -> 1 is
+        # a CORRECTION, not a conversion: one of the two counted was a comment (see
+        # _snippets). The single survivor is the python fallback arm of the jq-first
+        # request builder at writ-bash-write-gate.sh:1230, which is meant to stay.
+        "writ-bash-write-gate.sh": 1,
         "pre-validate-file.sh": 3,
-        # Not on the write path: measured, ZERO of these 10 execute on a file write.
+        # Not on the write path: measured, ZERO of these execute on a file write.
         # Converting them changes the cost of writing a RULE file. Kept in the ratchet
-        # so the count cannot grow while it waits.
-        "validate-rules.sh": 10,
+        # so the count cannot grow while it waits. 10 -> 9 is the same comment
+        # correction, at validate-rules.sh:67.
+        "validate-rules.sh": 9,
     }
 
-    @staticmethod
-    def _snippets(text: str) -> list[int]:
+    # A whole-line shell comment. Dropped before counting: see _snippets.
+    _COMMENT_LINE = re.compile(r"^[ \t]*#.*$", re.M)
+
+    @classmethod
+    def _snippets(cls, text: str) -> list[int]:
         """Offsets of inline `python3 -c` blocks that do JSON work.
 
         Scans the SNIPPET BODY, not the line. These blocks open with `python3 -c "`
         and put `import json` on the NEXT line, so a line-based check reported zero
         offenders for a hook that has four of them, which is how an earlier version of
         this test passed while the condition it names was false.
+
+        COMMENTS ARE STRIPPED FIRST, and that correction is why two constants below moved
+        without a line of production code changing. A hook that explains in prose why a
+        `python3 -c "json.dump(...)"` snippet was removed was scored as still having it, so
+        the ratchet's "measured inventory" included two sentences: writ-bash-write-gate.sh
+        counted 2 where 1 executes, validate-rules.sh counted 10 where 9 do. That is worse
+        than an off-by-one, because the number moves when nobody touches the code -- the
+        gate-bypass work rewrote one such comment on 2026-08-08 and the count "improved"
+        from 2 to 1 on its own. It also means a ratchet could be lowered by deleting an
+        explanation, which is the opposite of the incentive this class exists to create.
+
+        Trailing comments after code are NOT stripped: `#` is legal inside a shell string,
+        so removing from `#` to end-of-line would corrupt real commands. None of the five
+        hooks has one, and a whole-line comment is the form prose actually takes here.
         """
+        text = cls._COMMENT_LINE.sub("", text)
         return [
             m.start() for m in re.finditer(r"python3\s+-c", text)
             if re.search(r"\b(json|import)\b", text[m.start():m.start() + 400])
@@ -288,6 +310,24 @@ class TestNoInlinePythonLeftOnTheWritePath:
         assert len(found) == self.BUDGET[hook], (
             f"{hook}: ratchet says {self.BUDGET[hook]}, found {len(found)}. If a site "
             f"was converted, lower the constant in this commit."
+        )
+
+    def test_the_count_ignores_prose_and_still_sees_code(self) -> None:
+        """Anti-vacuity for the comment strip, in both directions.
+
+        Stripping is the kind of correction that can quietly hollow out the whole ratchet:
+        a transform that removed too much would drive every count toward zero and each
+        `<=` assertion would pass forever. So this pins that a commented snippet scores 0,
+        a real one scores 1, and the two together score 1 -- the strip removes exactly the
+        prose and leaves the executable line beside it.
+        """
+        commented = '# was python3 -c "import json; json.dumps({})" before the rewrite\n'
+        real = 'B=$(python3 -c "\nimport json\nprint(json.dumps({}))\n")\n'
+
+        assert self._snippets(commented) == [], "a comment is being counted as inventory"
+        assert len(self._snippets(real)) == 1, "the strip ate a real snippet"
+        assert len(self._snippets(commented + real)) == 1, (
+            "the strip must remove the prose and keep the code that follows it"
         )
 
     @pytest.mark.parametrize("hook,minimum", [

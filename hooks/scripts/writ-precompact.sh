@@ -25,10 +25,21 @@ source "$WRIT_DIR/bin/lib/common.sh"
 
 HOOK_START_NS=$(hook_timer_start)
 
-# Session ID: from the stdin envelope (agent_id or session_id). load_hook_env
-# applies the PPID/md5 fallback internally when no envelope is present.
+# Session ID: from the stdin envelope (agent_id or session_id) and nowhere else.
+# load_hook_env no longer synthesizes one from PPID or md5(cwd:user); it leaves the
+# variable empty, and everything this hook does is keyed on it.
 load_hook_env
 SESSION_ID="$HOOK_SESSION_ID"
+
+# Every line below writes or reads under $SESSION_ID: clear-rules-for-compaction MUTATES
+# the cache, and _cache_path() has no empty-id guard, so it would create a cache named
+# for the empty string; the log redirect would open "/tmp/writ-precompact-.log". Compaction
+# is not blockable from here in any case (PreCompact stdout reaches nothing), so the
+# honest response to an unidentifiable session is to record it and do nothing.
+if [ -z "$SESSION_ID" ]; then
+    writ_critical writ-precompact "no session_id in hook payload; stale rule objects are left in place"
+    exit 0
+fi
 
 # Clear full rule objects, keep IDs
 _writ_session clear-rules-for-compaction "$SESSION_ID" \

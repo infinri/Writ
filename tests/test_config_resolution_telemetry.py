@@ -17,6 +17,21 @@ import json
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _neutralize_the_env_layer(monkeypatch):
+    """These tests assert on the writ.toml and built-in-default layers of `_neo4j_setting`.
+
+    The environment layer sits ABOVE both and legitimately wins (that is what lets one
+    process be pointed at a disposable instance). So a run that exports WRIT_NEO4J_URI --
+    which an isolated graph run does -- had these comparing the override against the
+    default and failing. They passed before only because nothing in the suite set the
+    variable, which quietly made the ambient environment part of the assertion. A test of
+    a lower precedence layer has to neutralize the higher one rather than assume it is unset.
+    """
+    for var in ("WRIT_NEO4J_URI", "WRIT_NEO4J_USER", "WRIT_NEO4J_PASSWORD"):
+        monkeypatch.delenv(var, raising=False)
+
+
 @pytest.fixture
 def rows(tmp_path, monkeypatch):
     log = tmp_path / "events.jsonl"

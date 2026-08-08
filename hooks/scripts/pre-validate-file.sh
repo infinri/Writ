@@ -1,8 +1,14 @@
 #!/bin/bash
-# Pre-write validation hook — validates content BEFORE the file is written.
+# Pre-write validation hook -- validates content BEFORE the file is written.
 # PreToolUse: fires before every Write/Edit/MultiEdit.
-# Exit non-zero = BLOCKS the write. Errors are injected back into Claude's context.
-# Output: structured JSON per finding.
+#
+# HOW THIS BLOCKS: it does NOT use the exit code. Every path below exits 0; a refusal is
+# the `permissionDecision: "deny"` JSON that emit_deny (or the inline equivalent at the
+# bottom) prints on stdout, and Claude Code reads that. The header used to say "Exit
+# non-zero = BLOCKS the write", which was true of an older contract and is now the kind
+# of prose that gets the next author to "fix" a blocking gate by changing an exit code
+# nothing reads -- and a non-zero exit here is a hook ERROR, not a deny.
+# Output: the deny JSON above, plus structured JSON per finding from the analyzers.
 #
 # Creates a temp file with the proposed content, runs analysis, cleans up.
 

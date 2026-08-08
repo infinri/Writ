@@ -33,8 +33,15 @@ STDIN_DATA=$(cat)
 SESSION_ID=$(printf '%s' "$STDIN_DATA" | json_transform \
     'if (.agent_id // "") != "" then .agent_id else (.session_id // "") end' \
     "d.get('agent_id','') or d.get('session_id','')" 2>/dev/null)
+# NO SYNTHESIZED ID. This used to call `detect_session_id ""`, which invented one from
+# PPID or md5(cwd:user). Every remaining step here is session-keyed -- the budget read,
+# the should-skip check, and the `update` that banks this turn's rule ids -- and
+# _cache_path() has no empty-id guard, so continuing would file all of it under a cache
+# named for the empty string. This hook injects rules; it gates nothing, so stopping
+# costs an injection and denies nothing.
 if [ -z "$SESSION_ID" ]; then
-    SESSION_ID=$(detect_session_id "")
+    writ_critical writ-posttool-rag "no session_id in hook payload; skipping post-write rule injection"
+    exit 0
 fi
 
 # A4: ONE session-cache read for the whole hook (was two -- this orchestrator

@@ -190,8 +190,21 @@ _writ_parse_hook_stdin() {
 #   HOOK_FILE_PATH HOOK_COMMAND HOOK_IS_ERROR HOOK_ENVELOPE
 # Replaces the parse_hook_stdin + parsed_field (2+ spawn) idiom: one parser spawn
 # (jq, or python3 when jq is absent), then field access is a bash variable.
-# HOOK_SESSION_ID gets detect_session_id's PPID/cwd fallback when the envelope
-# carries no id.
+#
+# HOOK_SESSION_ID IS THE PAYLOAD'S ID OR THE EMPTY STRING. It is never synthesized.
+# See writ_require_session for the whole argument; the short form is that an id built
+# from PPID or md5(cwd:user) can never equal the one Claude Code uses, so every write
+# under it lands in a session that does not exist while the hook reports success.
+#
+# EMPTY, NOT FATAL. Many callers legitimately need no session (a gate that only
+# inspects a file path), so this must not exit or return non-zero: doing that would
+# turn a Writ bookkeeping problem into a broken tool call. A caller that DOES require
+# a session tests for empty, calls `writ_critical <hook> "<message>"`, and no-ops.
+#
+# THIS DOES NOT WEAKEN ANY GATE. With the fallback, a missing id became a synthetic id,
+# that id had no session cache, so is_work_mode found no mode and the gate allowed.
+# With the fallback gone the id is empty, still no mode, and the gate still allows --
+# the same outcome, now RECORDED as a critical error instead of passing in silence.
 # Usage: load_hook_env; echo "$HOOK_FILE_PATH"
 load_hook_env() {
     HOOK_SESSION_ID="" HOOK_SESSION_ID_RAW="" HOOK_AGENT_ID="" HOOK_AGENT_TYPE="" HOOK_EVENT=""
@@ -206,12 +219,10 @@ load_hook_env() {
     else
         eval "$(_writ_parse_hook_stdin)"
     fi
-    if [ -z "${HOOK_SESSION_ID:-}" ]; then
-        HOOK_SESSION_ID=$(ps -o ppid= -p $PPID 2>/dev/null | tr -d ' ')
-    fi
-    if [ -z "${HOOK_SESSION_ID:-}" ]; then
-        HOOK_SESSION_ID=$(echo "${PWD}:${USER}" | md5sum | cut -c1-12)-$(date +%Y%m%d)
-    fi
+    # NOTHING RUNS HERE. Two fallbacks used to: `ps -o ppid=` and md5(cwd:user)-date.
+    # They were removed from 9 hooks first and survived here, in the one place ~20 hooks
+    # share, which is why the removal was not the removal it was reported to be.
+    # HOOK_SESSION_ID stays whatever the envelope carried, including "".
     # Log the raw envelope (the calling hook's basename labels it). Never affects the caller.
     if [ -n "${_bb_raw:-}" ]; then
         printf '%s' "$_bb_raw" | blackbox_log in "$(basename "${BASH_SOURCE[1]:-$0}" .sh)" "${HOOK_SESSION_ID:-}" || true
@@ -684,10 +695,20 @@ detect_project_root() {
 }
 
 # ── Session ID detection ────────────────────────────────────────────────────
-# Extracts session ID from parsed hook envelope, falling back to PID.
+# Extracts the session id from a parsed hook envelope, and NOTHING ELSE.
+#
+# NO FALLBACK, for the reasons spelled out on load_hook_env and writ_require_session:
+# `ps -o ppid=` and md5(cwd:user)-date both produce an id Claude Code has never heard
+# of, so state written under it is written to a session that does not exist. Both used
+# to live here, which is how three hooks that had "already been fixed" kept synthesizing.
+#
+# PRINTS THE ID OR AN EMPTY LINE, and always returns 0. An empty answer is a legitimate
+# result, not an error: plenty of callers do work that needs no session at all, and a
+# non-zero return here would abort them under `set -euo pipefail`. A caller that
+# REQUIRES a session checks for empty, calls writ_critical, and no-ops.
 # Usage: SESSION_ID=$(detect_session_id "$PARSED")
-#   where PARSED is the output of parse_hook_stdin.
-#   If called without args, falls back to PID detection (less reliable).
+#   where PARSED is the output of parse_hook_stdin. Called with no argument (or with an
+#   envelope carrying no id) it prints nothing.
 detect_session_id() {
   local parsed="${1:-}"
   local sid=""
@@ -702,13 +723,6 @@ aid = str(aid).strip() if aid is not None else ''
 sid = str(sid).strip() if sid is not None else ''
 print(aid or sid)
 " 2>/dev/null)
-  fi
-  # Fallback: PID-based detection
-  if [ -z "$sid" ]; then
-    sid=$(ps -o ppid= -p $PPID 2>/dev/null | tr -d ' ')
-  fi
-  if [ -z "$sid" ]; then
-    sid=$(echo "${PWD}:${USER}" | md5sum | cut -c1-12)-$(date +%Y%m%d)
   fi
   echo "$sid"
 }
@@ -838,6 +852,80 @@ detect_language() {
 # bin/lib/friction-append.py so WRIT_FRICTION_LOG redirects every writer at once
 # (and the marker-walk fallback lives in exactly one place).
 _FRICTION_APPEND="$_WRIT_LIB_DIR/friction-append.py"
+
+# Record a CRITICAL condition: an invariant this code depends on is false, and the
+# operation was abandoned rather than guessed at.
+#
+# Writ had no way to say this before. Hooks that could not identify their session fell back
+# to a global pointer file or to an id synthesized from PID and cwd, so acting on the WRONG
+# session was indistinguishable from a normal run. One such fallback stranded 999 telemetry
+# rows for a day before anyone noticed, and the same shape sat in the gate hooks, where the
+# consequence is an approval recorded against another session.
+#
+# STDERR FIRST, on purpose: the log write can itself fail, and this is the class of event
+# that must not depend on the logging path being healthy. Claude Code surfaces hook stderr,
+# so the operator sees it in the session rather than only in a file nobody greps.
+writ_critical() {
+  local component="${1:-unknown}" message="${2:-}" session="${3:-unknown}"
+  printf '[WRIT CRITICAL] %s: %s\n' "$component" "$message" >&2
+  local extra
+  if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1; then
+    extra=$(jq -n -c --arg component "$component" --arg message "$message" \
+      '{component: $component, message: $message, severity: "critical"}' 2>/dev/null) || extra=""
+  fi
+  # No jq: build it with the same python that is about to be spawned anyway, so the
+  # message cannot break the JSON regardless of what it contains.
+  if [ -z "$extra" ]; then
+    extra=$(WRIT_C="$component" WRIT_M="$message" python3 -c "
+import json, os
+print(json.dumps({'component': os.environ.get('WRIT_C',''),
+                  'message': os.environ.get('WRIT_M',''),
+                  'severity': 'critical'}))" 2>/dev/null) || extra='{"severity":"critical"}'
+  fi
+  python3 "$_FRICTION_APPEND" --stream errors "$session" "" "critical_error" "$extra" \
+    2>/dev/null || true
+  return 0
+}
+
+# The session id for THIS hook invocation, from the payload and nowhere else.
+#
+# NO FALLBACK BY DESIGN. Claude Code documents session_id as universal and authoritative on
+# every hook event (docs/reference/claude-code-blackbox.md), so its absence is not a normal
+# condition to paper over. The two things this replaces both produced silently wrong
+# answers: /tmp/writ-current-session is ONE file shared by every Claude Code session on the
+# machine, so it names whichever session took a turn most recently; and an id synthesized
+# from PPID or md5(cwd:user) never matches the real session, so state written under it is
+# simply lost.
+#
+# Prints the id and returns 0, or records a critical error and returns 1. Callers must
+# check the status: `SESSION_ID=$(writ_require_session "$STDIN_JSON" my-hook) || exit 0`.
+writ_require_session() {
+  local stdin_json="${1:-}" hook="${2:-unknown}" sid
+  # agent_id first, matching load_hook_env: inside a sub-agent that is the identity whose
+  # state must not be written under the parent's key.
+  # THE TWO ARMS MUST AGREE ON AN EMPTY STRING, and the obvious jq spelling does not.
+  # `.agent_id // .session_id` falls through only on null and false, so a payload carrying
+  # `"agent_id": ""` KEEPS the empty string under jq and this function refuses the whole
+  # hook, while the python arm's `or` falls through to session_id and proceeds. Measured on
+  # {"agent_id":"","session_id":"real-sess"}: rc=1 with jq, rc=0 with WRIT_NO_JQ=1. That
+  # inverts the seam's contract -- the presence of jq is supposed to change speed, never
+  # behavior -- and it does so on the identity three governance hooks read
+  # (validate-exit-plan, enforce-violations, friction-logger). Same defect the `pyor()`
+  # helper in bin/lib/parse-hook-stdin.jq exists to prevent; this is a single inline filter
+  # rather than that program, so the falsy skip is spelled out here instead.
+  # PYTHON IS THE CORRECT SIDE: an empty agent_id means "not a sub-agent", which is a
+  # session_id case, not a refusal.
+  sid=$(printf '%s' "$stdin_json" | json_transform \
+    '[.agent_id, .session_id] | map(select(. != null and . != "" and . != false)) | first // empty' \
+    "(d.get('agent_id') or d.get('session_id'))" 2>/dev/null || true)
+  sid=$(printf '%s' "$sid" | tr -d '[:space:]')
+  if [ -z "$sid" ]; then
+    writ_critical "$hook" "no session_id in hook payload; refusing to act on a guessed session"
+    return 1
+  fi
+  printf '%s' "$sid"
+  return 0
+}
 
 log_friction_event() {
   # `"${4:-"{}"}"` is required: `${4:-{}}` parses the second `}` as the

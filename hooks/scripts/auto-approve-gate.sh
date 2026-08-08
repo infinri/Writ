@@ -44,11 +44,15 @@ PROMPT=$(echo "$PARSED" | sed -n '2p')
 AGENT_ID=$(echo "$PARSED" | sed -n '3p')
 
 # Fallback session ID
+# NO SYNTHESIZED SESSION ID. This used to fall back to the parent PID and then to
+# md5(cwd:user)+date. Neither can ever equal the id Claude Code uses, so state written
+# under one is written to a session that does not exist and is simply never read again,
+# while the hook reports success. Claude Code documents session_id as universal and
+# authoritative on every hook event, so an empty one is a broken invariant, not a case to
+# paper over: record it and stop.
 if [ -z "$SESSION_ID" ]; then
-    SESSION_ID=$(ps -o ppid= -p $PPID 2>/dev/null | tr -d ' ')
-fi
-if [ -z "$SESSION_ID" ]; then
-    SESSION_ID=$(echo "${PWD}:${USER}" | md5sum | cut -c1-12)-$(date +%Y%m%d)
+    writ_critical auto-approve-gate "no session_id in hook payload; refusing to synthesize one"
+    exit 0
 fi
 
 # Publish session ID as backup -- skip inside sub-agents

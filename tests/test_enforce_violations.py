@@ -51,7 +51,17 @@ def _run_hook(
     env_overrides: dict[str, str] | None = None,
     stdin_payload: dict[str, Any] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Write cache to a temp session file, then invoke the hook via subprocess."""
+    """Write cache to a temp session file, then invoke the hook via subprocess.
+
+    Session identity comes ONLY from the hook's stdin payload (`session_id`,
+    or `agent_id` when present), matching Claude Code's actual hook contract.
+    There is no env var or pointer-file fallback: WRIT_SESSION_ID was never
+    set by Claude Code in production (a test-only affordance), and
+    /tmp/writ-current-session is a single global file overwritten by every
+    session on the machine, so both produced silently wrong answers. The
+    payload is merged with any caller-supplied stdin_payload so tests that
+    also need e.g. stop_hook_active still carry a valid session id.
+    """
     session_id = "test-enforce-session"
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -61,14 +71,16 @@ def _run_hook(
             json.dump(cache, f)
 
         env = os.environ.copy()
-        env["WRIT_SESSION_ID"] = session_id
         env["WRIT_CACHE_DIR"] = tmpdir
         # Point server at a port nothing listens on so hooks fall back gracefully
         env["WRIT_PORT"] = "19999"
         if env_overrides:
             env.update(env_overrides)
 
-        stdin_data = json.dumps(stdin_payload or {})
+        payload = {"session_id": session_id}
+        if stdin_payload:
+            payload.update(stdin_payload)
+        stdin_data = json.dumps(payload)
 
         result = subprocess.run(
             ["bash", HOOK_PATH],

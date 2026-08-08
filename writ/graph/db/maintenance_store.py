@@ -24,10 +24,27 @@ class MaintenanceStoreMixin:
         set (as import_cypher_dump does, computing RECORD_LABELS minus the labels its
         dump actually creates) to keep exact-replace semantics for labels the caller
         is itself restoring.
+
+        An everything-wipe (an EMPTY resolved preserve set) additionally requires the
+        target instance to be marked disposable, or it raises FullWipeRefused and
+        deletes nothing. See _safety.py for the mechanism and the incident. The guard
+        lives HERE, in the helper that issues the delete, rather than in a test
+        fixture: a fixture only protects tests that remember to use it, while this
+        protects every caller including the one that has not been written yet.
         """
         from writ.graph.db._common import RECORD_LABELS
 
         preserve = RECORD_LABELS if preserve_labels is None else preserve_labels
+        if not preserve:
+            # Scoped to the empty set on purpose. The ~89 bare `clear_all()` calls and
+            # every partial preserve set are untouched by this guard: they leave the
+            # runtime records alone, and the corpus they do delete rebuilds from
+            # bible/ or writ-corpus.cypher. Only the everything-wipe destroys state
+            # that has no source to come back from, so only it needs permission.
+            from writ.graph.db._safety import assert_full_wipe_allowed
+
+            # Before the session opens: a refused wipe must delete nothing.
+            assert_full_wipe_allowed(getattr(self, "_uri", None))
         async with self._driver.session(database=self._database) as session:
             # CONSUME, do not fire and forget. `session.run` returns a lazy result: the
             # statement is dispatched but this coroutine can return before the delete has

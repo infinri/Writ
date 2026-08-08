@@ -20,11 +20,20 @@
 # tokens, so a quoted '>' (e.g. `grep '>' app.pem`) is NOT treated as an operator;
 # and `[[ ]]` / `[ ]` / `test` / `(( ))` comparison/arith spans are suppressed.
 #
+# A THIRD write vector, added after an audit reproduced it live: an inline-code
+# interpreter (`python3 -c "open('src/x.py','w')..."`) matches none of the shell write
+# forms, so it produced no target, reached no gate and left no audit row -- a silent
+# pre-plan write. Such a segment now has its ARGUMENTS scanned for project-file paths,
+# and every path found is fed to the same work-gate decision below. Narrow by design:
+# the interpreter source is never classified as reading or writing (that is a parser
+# arms race), so a read-only one-liner naming a project file is gated too. See the
+# INLINE_INTERPRETERS block in the extractor for the exact forms covered and missed.
+#
 # COVERAGE LIMIT (no silent caps): only common LITERAL vectors are detected
 # (`>`/`>>`/`2>`/`&>`/`>|`, `tee`, `dd of=`, `cp`/`mv`/`install` dest incl. -t,
-# `sed -i`). Obfuscated writes -- var-indirection, eval/base64, here-docs,
-# `python -c "open(...,'w')"`, glued `foo>bar` -- WILL evade. This narrows the
-# hole, it does not seal it.
+# `sed -i`, and the inline-interpreter forms above). Obfuscated writes --
+# var-indirection, eval/base64, a path assembled from pieces, glued `foo>bar` -- WILL
+# evade. This narrows the hole, it does not seal it.
 #
 # ── Second vector: EGRESS ────────────────────────────────────────────────────
 # The file name still says "write" because renaming it would churn hooks.json, the
@@ -102,10 +111,13 @@ CMD="$HOOK_COMMAND"
 [ -z "$CMD" ] && exit 0
 
 # Gate state is protected by a blanket path check BEFORE the write-verb early exit
-# below. The extractor only understands shell write forms (>, cp, mv, tee, sed -i),
-# so an interpreter one-liner -- python3 -c "json.dump(...open(p,'w'))", node -e,
-# perl -e -- reaches the file without ever matching one. Naming the path is
-# therefore refused unless the command is provably read-only (below).
+# below, and it STAYS ahead of everything: it asks only whether the command TEXT names
+# a protected path, so it needs no write verb, no interpreter it recognizes and no
+# path shape at all. The extractor's own vectors are narrower by necessity -- the
+# shell write forms (>, cp, mv, tee, sed -i) plus the inline-interpreter scan added
+# below -- so an interpreter one-liner it does not recognize (a wrapper script, a path
+# in a variable) would still reach the file. Naming gate state is therefore refused
+# outright unless the command is provably read-only (below).
 # The minter is a plain script, so the agent running it directly would forge a
 # grant that is indistinguishable from a real one in the audit trail. Naming it in
 # an executable position is refused; only the harness may invoke it as a hook.
@@ -277,10 +289,31 @@ PYSWAP
         fi
         exit 0
         ;;
+    *python*|*node*|*perl*|*ruby*|*php*)
+        # Inline-code interpreters (see INLINE_INTERPRETERS in the extractor). TWO
+        # stages, because an interpreter NAME alone is not worth a spawn: `ls
+        # node_modules`, `php artisan migrate` and `python3 script.py` are not this
+        # vector. The second glob requires something shaped like an inline-code flag
+        # (`-c`, `-e`, `-E`, `-r`, `-p`, `--eval`, `--print`, each with the space that
+        # precedes a real flag) or a stdin form (`<`, `<<`, a bare `-`, or a pipe, which
+        # is how `printf '...' | python3` feeds an argument-free interpreter). Both
+        # stages are loose on purpose -- a stray match costs one spawn and the extractor
+        # decides -- and both are substring globs, so a quoted mention reaches the
+        # extractor too. The pipe pattern is the widest: an interpreter command with a
+        # pipe in it pays one spawn even when it writes nothing. That is the price of
+        # not being blind to the one stdin form that carries no marker at all.
+        # Placed AFTER the pytest arm so `python3 -m pytest` still gets the venv swap.
+        case "$CMD" in
+            *" -c"* | *" -e"* | *" -E"* | *" -r"* | *" -p"* \
+            | *"--eval"* | *"--print"* | *"<"* | *" - "* | *" -" | *"|"*) ;;
+            *) exit 0 ;;
+        esac
+        ;;
     *) exit 0 ;;
 esac
 
-# Extract write targets AND egress destinations in ONE python spawn.
+# Extract write targets (shell vectors AND inline-interpreter arguments) plus egress
+# destinations in ONE python spawn.
 # Output lines: "<kind>\t<path>" where kind is `cred` (credential, deny everywhere),
 # `state` (Writ gate state, deny everywhere) or `local` (project-local abspath,
 # work-gate it); plus "egress\t<host>\t<detail>" per non-allowlisted destination.
@@ -818,6 +851,172 @@ def redir_target(tok, nxt):
         return nxt
     return None
 
+
+# ── Third write vector: inline-code interpreters ────────────────────────────
+# `python3 -c "open('src/x.py','w').write('evil')"` matches NONE of the vectors above
+# -- no >, no tee, no cp -- so it used to yield no target, reach no gate and leave no
+# audit row, while `echo x > src/x.py` was denied. An audit reproduced that live: the
+# "no code before plan approval" boundary fell to one line, silently.
+#
+# THE QUESTION ASKED IS DELIBERATELY NOT "does this code write?". Deciding that from
+# interpreter source is a parser arms race nobody wins. This asks the same
+# mechanism-agnostic question the gate-state guard at the top of the hook already
+# asks: does the command TEXT name a file? A segment that runs inline code has its
+# arguments scanned for path-shaped STRING LITERALS (plus bare path arguments -- see
+# token_literals), and every hit goes into raw_targets, so the existing classification
+# (credential / gate state / project-local) and the existing work-gate call and audit
+# row apply unchanged. Nothing downstream of raw_targets knows this vector exists.
+#
+# FALSE POSITIVES ARE THE ACCEPTED COST. `python3 -c "print(open('src/x.py').read())"`
+# is read-only and will be gated. That is the same trade the gate-state guard makes,
+# and the alternative -- silence on a write -- is the defect being closed here.
+#
+# COVERED: python / python3 / pythonX.Y `-c`, node / nodejs `-e` `--eval` `-p`
+# `--print`, perl `-e` `-E` (including the glued `-pi -e` in-place form), ruby `-e`,
+# php `-r`; each flag glued to its code (`-c'...'`); a leading `\`, NAME=value
+# assignments and the sudo/env/command wrappers, because verb_at resolves the verb.
+# Also the STDIN forms -- a bare `-`, a heredoc (`<<'PY'`), an input redirect
+# (`python3 < script.py`) and an ARGUMENT-FREE interpreter fed by a pipe
+# (`printf '...' | python3`, which runs its stdin with no marker on the command) --
+# for which the WHOLE command text is scanned instead, since the source arrives from
+# another segment or from a heredoc body that is not an argument.
+# NOT COVERED, knowingly: `python -m MODULE` (module execution, not inline code -- a
+# module that itself writes, like py_compile, is not seen; the check bails there
+# because everything after `-m` is the module's own arguments, `-c`/`-p` included);
+# `sh -c` / `bash -c` (their body is shell, already parsed by the vectors above, and
+# gating every `bash -c` would gate most tooling); awk/sed program text; an
+# interpreter reached through a variable, an alias or a wrapper script; a path built
+# by concatenation or held in a variable (`open(P,'w')`); base64/eval-obfuscated
+# source; and a path whose basename carries no recognized extension and no `/`, `./`
+# or `~/` sigil (`open('scratch','w')`).
+INLINE_INTERPRETERS = frozenset({"python", "node", "nodejs", "perl", "ruby", "php"})
+INLINE_CODE_FLAGS = frozenset({"-c", "-e", "-E", "-r", "-p", "--eval", "--print"})
+INLINE_GLUED_FLAGS = ("-c", "-e", "-E", "-r", "-p")
+MODULE_FLAGS = ("-m",)
+# Extensions that let a token with no path sigil count as a file. DELIBERATELY NOT
+# imported from writ.session.gates._CODE_EXTENSIONS: this block has to keep working on
+# the package-import fallback path above -- where that import is precisely what failed
+# -- and an empty extension list there would silently reopen the hole this closes
+# (same posture as allow_hosts: a missed import must never OPEN the gate). Broader
+# than "code" on purpose, because the work gate covers every project file.
+INLINE_FILE_EXTS = frozenset({
+    ".py", ".pyi", ".pyx", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".php", ".go",
+    ".rs", ".java", ".rb", ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".cs", ".swift",
+    ".kt", ".kts", ".scala", ".m", ".mm", ".sql", ".sh", ".bash", ".zsh", ".pl", ".pm",
+    ".lua", ".ex", ".exs", ".clj", ".vue", ".svelte", ".r", ".jl", ".tf",
+    ".json", ".jsonl", ".ndjson", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
+    ".properties", ".xml", ".html", ".htm", ".css", ".scss", ".less", ".md", ".rst",
+    ".txt", ".csv", ".tsv", ".lock", ".log", ".cypher", ".proto", ".graphql",
+    ".patch", ".diff", ".bin", ".dat", ".db", ".sqlite", ".pickle", ".pkl", ".npy",
+})
+# `python3.12` -> `python`, `php8` -> `php`. Trailing dots go with the digits so a
+# version never leaves a stray separator behind.
+VERSION_SUFFIX = re.compile(r"[0-9.]+$")
+# Path-shaped runs inside one string literal or one bare argument. Quotes, parens,
+# commas and colons are not path characters, so they act as delimiters.
+PATH_CAND = re.compile(r"[A-Za-z0-9_@+~./-]+")
+# One string literal, single- or double-quoted. In every language covered here a path
+# in source code IS a string literal, which is the discriminator this scan rests on.
+QUOTED = re.compile(r"'([^']*)'|\"([^\"]*)\"")
+# Characters that mean a token is CODE rather than a filename. A real path argument
+# does not contain them; `console.log(process.env)` does.
+CODE_PUNCT = "()[]{};,"
+
+
+def interpreter_name(verb):
+    """The interpreter family of a verb_at() verb (already basenamed and unbackslashed)."""
+    return VERSION_SUFFIX.sub("", (verb or "").lower())
+
+
+def inline_form(args):
+    """"flag" (source in an argument), "stdin" (source piped/heredoc'd/redirected in),
+    or "" (not an inline-code invocation). First marker in argument order wins."""
+    for a in args:
+        d = dequote(a)
+        if not d or d == "--":
+            continue
+        if d == "-" or (d.startswith("<") and not d.startswith("<(")):
+            return "stdin"
+        if not d.startswith("-"):
+            continue
+        base = d.split("=", 1)[0]
+        if base in INLINE_CODE_FLAGS:
+            return "flag"
+        short = not d.startswith("--") and len(d) > 2
+        if short and d[:2] in INLINE_GLUED_FLAGS:
+            return "flag"
+        if base in MODULE_FLAGS or (short and d[:2] in MODULE_FLAGS):
+            return ""
+    return ""
+
+
+def looks_like_path(c):
+    """True for a candidate that names a file. Applied to the contents of a string
+    literal or a bare argument (token_literals decides which), so what it rejects is
+    the ordinary content of one: `src/x.py` and `./x` qualify, while `w`, `utf-8`,
+    `hello world`, `1/2` and `--flag` do not."""
+    if not c or c in NONFILE or c.startswith(("-", "//")):
+        return False
+    c = c.rstrip("/") or "/"
+    # Credential shapes FIRST, through the same single-source classifier the targets
+    # are later classified with. Without it `.env` (no extension after splitext) and
+    # `deploy.pem` (a credential extension, deliberately absent from the file-extension
+    # set below) would be candidates that never became targets -- the credential deny
+    # would have applied to `echo k > deploy.pem` and not to `python3 -c
+    # "open('deploy.pem','w')"`, which is the exact asymmetry this vector exists to end.
+    if is_cred(c):
+        return True
+    if os.path.splitext(os.path.basename(c))[1].lower() in INLINE_FILE_EXTS:
+        return True
+    # An explicit sigil is evidence on its own, extension or not.
+    if c.startswith(("/", "./", "../", "~/")):
+        return bool(c.strip("./~"))
+    # A dotfile with no sigil and no extension (`.gitignore`) is a KNOWN miss: the
+    # general rule that would catch it -- "basename starts with a dot" -- also catches
+    # `.write` and `.read` out of `f.write(...)`, and denying every one-liner that calls
+    # a method is not a trade worth making. Credential dotfiles are covered above.
+    return False
+
+
+def token_literals(tok):
+    """The path-bearing text a token contributes: its STRING LITERALS, or the token
+    itself when it is a bare command-line argument.
+
+    This is what keeps the scan usable. Scanning interpreter source as flat text made
+    every attribute chain a candidate -- `console.log` read as a .log file and
+    `process.env` as a credential -- so `node -e "console.log(process.env)"`, which
+    names no file at all, was refused. In each covered language a path in source IS a
+    quoted literal, and an attribute chain never is, so only literals are scanned.
+
+    Three shapes, in order: one layer of SHELL quoting is dropped first (`-c "..."`);
+    what remains is code, and its quoted spans are the literals; a token with no
+    literals is a bare argument (`perl -pi -e s/a/b/ src/a.pl`, `python3 <
+    scripts/build.py`) unless it carries code punctuation, in which case it is code
+    that mentions no file.
+
+    KNOWN MISS, stated rather than discovered later: a literal nested one level deeper
+    (`python3 -c "os.system('cat > src/a.py')"`) is read as the inner literal only, and
+    a path assembled from pieces or held in a variable has no literal to find at all.
+    """
+    if len(tok) >= 2 and tok[0] == tok[-1] and tok[0] in ("'", '"'):
+        tok = tok[1:-1]
+    spans = [m.group(1) if m.group(1) is not None else m.group(2)
+             for m in QUOTED.finditer(tok)]
+    if spans:
+        return spans
+    if any(ch in tok for ch in CODE_PUNCT):
+        return []
+    return [tok]
+
+
+def scan_tokens(toks):
+    """Project-path candidates carried by these tokens."""
+    out = []
+    for tok in toks:
+        for lit in token_literals(tok):
+            out += [c for c in PATH_CAND.findall(lit) if looks_like_path(c)]
+    return out
+
 try:
     tokens = shlex.split(cmd, comments=False, posix=False)
 except ValueError:
@@ -908,6 +1107,38 @@ for seg, _piped_in in segments:
             files = [a for a in args if not a.startswith("-") and REDIR.match(a) is None]
             if files:                       # the edited file is the LAST positional (skip the script)
                 raw_targets.append(files[-1])
+
+# Inline-interpreter pass: same segments, third question -- does this command hand an
+# interpreter source code that NAMES a project file? Its hits join raw_targets, so
+# every path below is classified and gated identically whether it came from a redirect
+# or from `python3 -c`. Runs on the RAW segment tokens: shlex(posix=False) keeps the
+# quote characters, and PATH_CAND excludes them, so quotes act as delimiters.
+stdin_interpreter = False
+for seg, piped_in in segments:
+    if not seg:
+        continue
+    verb, arg0, _assigns = verb_at(seg)
+    if interpreter_name(verb) not in INLINE_INTERPRETERS:
+        continue
+    args = seg[arg0:]
+    form = inline_form(args)
+    if not form and piped_in and not args:
+        # `printf '...' | python3` -- an argument-free interpreter reading a pipe runs
+        # the program on its stdin exactly as `python3 -` does, with no marker on the
+        # command at all. The pipe IS the marker.
+        form = "stdin"
+    if form == "flag":
+        raw_targets += scan_tokens(args)
+    elif form == "stdin":
+        stdin_interpreter = True
+if stdin_interpreter:
+    # The source is not in this segment's arguments: it arrives over a pipe, from a
+    # heredoc body, or from an input redirect. Every token of the command is the only
+    # place it can be, so paths named by ANY segment count -- `cat notes.md | python3 -`
+    # is gated on notes.md. Coarser than the flag form, deliberately: a stdin-fed
+    # interpreter is itself the strong signal, and the answer to "the code is somewhere
+    # in here" must not be silence.
+    raw_targets += scan_tokens(tokens)
 
 seen = set()
 for t in raw_targets:

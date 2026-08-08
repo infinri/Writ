@@ -41,16 +41,44 @@ ANALYSIS_RESULT="pass"
 if [ $EXIT_CODE -ne 0 ]; then
     ANALYSIS_RESULT="fail"
 fi
-python3 "$SKILL_DIR/bin/lib/writ-session.py" update "$SESSION_ID" \
-    --add-file "$FILE" \
-    --add-file-result "$FILE" "$ANALYSIS_RESULT" 2>/dev/null || true
+# COVERAGE TRACKING IS SESSION-KEYED; THE ANALYSIS BELOW IS NOT. _cache_path() has no
+# empty-id guard, so `update ""` would create a cache file named for the empty string and
+# record this file against a session nothing can read back. Skip the bookkeeping, record
+# why, and fall through -- the static-analysis deny at the end of this hook does not need
+# a session id and must still fire.
+if [ -n "$SESSION_ID" ]; then
+    python3 "$SKILL_DIR/bin/lib/writ-session.py" update "$SESSION_ID" \
+        --add-file "$FILE" \
+        --add-file-result "$FILE" "$ANALYSIS_RESULT" 2>/dev/null || true
+else
+    writ_critical validate-file \
+        "no session_id in hook payload; static analysis still runs, but this file is not recorded for coverage"
+fi
 
 if [ $EXIT_CODE -ne 0 ]; then
   # Full linter output -> per-session log; terse summary -> stderr.
   # emit-summary.py reads the log, surfaces the first error, references the
   # log path. Claude reads the full log only if the first error is ambiguous.
   SAFE_NAME=$(echo "$FILE" | tr '/' '_')
-  LOG_DIR="$SKILL_DIR/cache/$SESSION_ID"
+  # With no session id this used to be "$SKILL_DIR/cache/" plus a synthesized id; the id
+  # is gone, and an unguarded "$SKILL_DIR/cache/$SESSION_ID" would resolve to the cache
+  # ROOT and drop lint output beside the per-session directories. The literal name says
+  # what happened, and emit-summary still gets a real path to point the agent at.
+  #
+  # THE ROOT FOLLOWS WRIT_CACHE_DIR. It was hardcoded to the live skill directory, so a
+  # run that redirected Writ's cache somewhere disposable -- a test, an audit, a
+  # sandboxed session -- still wrote into the real repo: an audit on 2026-08-08 set
+  # WRIT_CACHE_DIR to a throwaway dir and afterwards found cache/test-audit-session-0001/
+  # sitting in the checkout, written from this line. Isolation that one writer ignores is
+  # not isolation.
+  #
+  # Deliberately NOT writ_session_cache_dir() from bin/lib/common.sh, whose fallback is
+  # <skill>/var/session: that directory holds gate state (mode, approvals, the
+  # manual-testing grant) and is what writ-state-write-gate.sh and the bash gate's
+  # STATE_DIR_GUARD exist to protect. Lint output does not belong there, and emit-summary
+  # hands this path to the agent to read. So: honour the env var, keep cache/ as the
+  # default, which is also where the sibling pending-test hooks still write.
+  LOG_DIR="${WRIT_CACHE_DIR:-$SKILL_DIR/cache}/${SESSION_ID:-no-session}"
   mkdir -p "$LOG_DIR"
   LOG_FILE="$LOG_DIR/${SAFE_NAME}.lint.json"
   echo "$OUTPUT" > "$LOG_FILE"

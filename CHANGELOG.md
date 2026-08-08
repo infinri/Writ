@@ -6,6 +6,14 @@ All notable changes to Writ are documented in this file. The format follows [Kee
 
 The install collapses to "install the plugin, run one command", and `jq`, `envsubst` and `curl` stop being prerequisites.
 
+### Added
+
+- **`SECURITY.md`.** States the trust model rather than implying one: Writ runs bash hooks with your privileges, the daemon is unauthenticated with its bind address as the only access control, and the gates are guardrails against an assistant's mistakes, not a sandbox and not a defence against a determined attacker. Includes the reporting channel and a plain statement that auditing what you install remains the user's job.
+- **A graph full-wipe guard** (`writ/graph/db/_safety.py`). `clear_all(preserve_labels=frozenset())` now raises `FullWipeRefused` unless both `WRIT_TEST_GRAPH=1` and a non-production `(host, port)` are in effect, and a refused wipe deletes nothing. The guard lives inside `clear_all`, before the session opens, because a fixture only protects the tests that remember to use it.
+- **`WRIT_NEO4J_URI` / `WRIT_NEO4J_USER` / `WRIT_NEO4J_PASSWORD`.** Neo4j Community serves one database per instance, so a disposable graph can only be a disposable *instance*; reaching it needs a per-process override. Env wins over `writ.toml` for the same reason `WRIT_PORT` does.
+- **A `critical_error` event on the `errors` stream** (`writ_critical`, `bin/lib/common.sh`). Writ previously had no way to record that a hook hit a condition it must not paper over.
+- **`GET /session/{id}/prompt-state`**, answering everything the prompt-path hook asks about a session in one call and one cache read.
+
 ### Changed
 
 - **The plugin install is one script run.** It was five things: a marketplace add, a plugin install, a WRIT_DIR discovery one-liner, `bootstrap-plugin.sh`, and (separately, and easy to miss) `patch-global-config.sh` plus `install-user-commands.sh`. Now: `claude plugin marketplace add`, `claude plugin install writ@writ`, and the single absolute command the SessionStart hook prints on its own copy-pasteable line. `bootstrap-plugin.sh` absorbed the global-config patch and the slash-command install; `bootstrap.sh` gained the command install it never had. The discovery incantation is gone from the docs entirely, because the hook that already detects an un-bootstrapped install already knows the path.
@@ -20,9 +28,22 @@ The install collapses to "install the plugin, run one command", and `jq`, `envsu
 - **Gate approval silently advanced nothing on a machine without curl.** `auto-approve-gate.sh` posted `/advance-phase` with a raw `curl`, and the local `_writ_session advance-phase` arm is not a usable fallback (it posts `{}`, dropping the single-use token and the cwd the server needs to resolve the project root). The POST now goes through the new `writ_http_post` wrapper in `bin/lib/common.sh` (curl-first, `urllib` fallback, `WRIT_NO_CURL=1` forcing seam mirroring `WRIT_NO_JQ`), preserving the request byte for byte.
 - **`writ_server_health` reported a live daemon as down whenever curl was absent,** which is not daemon-down-equivalent: it made every SessionStart fire a doomed second `writ serve` against an already-bound port. It now probes through the wrapper. Same fix class applied to `rag_query`, `writ_action_push`, both bootstraps' health and `/stats` polls, and the post-install health poll in `install-server-service.sh`. The remaining raw-curl sites are deliberate and unchanged -- each degrades to the exact branch a stopped daemon produces -- and `tests/test_no_tool_prereqs.py` carries them as an explicit allowlist, so a new undocumented raw-curl call fails the suite.
 
+
+- **Session identity is never synthesized.** Hooks used to fall back to a PID-derived or `md5(cwd:user)` id, and to a single pointer file under `/tmp` shared by every Claude Code session on the machine. Both produced confidently wrong answers, and state written under them was simply lost. A hook that cannot read an id from its payload now records a critical error and declines to act.
+- **Bash-mediated writes through interpreters are gated.** `python3 -c "open(...,'w')..."` and the `node -e` / `perl -e` / `ruby -e` / `php -r` equivalents went from silent-allow to a gate decision with an audit row. `python -m MODULE` stays deliberately unscanned, and the hook says so.
+- **`git worktree add` detection no longer fails open on multi-line commands.** `shlex.split` discards newlines, so a command was judged entirely by its first line's verb and a real invocation on any later line was allowed. Detection is now quote-aware, splits on newlines outside quotes, and skips heredoc bodies so a document *about* worktrees is not mistaken for one.
+- **`WRIT_CACHE_DIR` is honoured by every writer.** Pending-test markers and per-file lint logs resolved against the install directory regardless of the variable, so an isolated run still wrote into the live checkout.
+- **`writ_require_session` behaved differently with and without `jq`.** jq's `//` falls through on null and false but not on an empty string, so an empty `agent_id` made the jq arm refuse and the Python arm proceed. The seam's contract is that jq changes speed, never behaviour.
+- **The dispatch-discipline audit trail named no agent.** Every row recorded an empty `target`, so the record could not say which dispatch it had rerouted, refused, or waved through.
+- **`clear_all` and `execute` consume their results.** A lazy result let a wipe overlap the rebuild that followed it.
+
+### Security
+
+- **Environment-specific details removed from published documentation and the corpus.** Benchmark figures keep their ratios and no longer name the machine they were measured on.
+
 ## [1.6.0] - 2026-08-01
 
-The trust release: every published number re-measured on disclosed hardware, the documentation rebuilt from a full code read, the hook system audited end to end with its failure posture made explicit, and the Claude Code contract re-pinned to 2.1.220.
+The trust release: every published number re-measured, the documentation rebuilt from a full code read, the hook system audited end to end with its failure posture made explicit, and the Claude Code contract re-pinned to 2.1.220.
 
 ### Changed
 

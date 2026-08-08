@@ -8,7 +8,7 @@ The librarian, for the record: ranked results in **0.52 ms at the 95th percentil
 
 The enforcement claims are auditable in this repo, not asserted. [`PSR-008`](docs/pressure-runs/PSR-008/analysis.md) is a complete adversarial pressure run against a real session: the verbatim task prompt, the full transcript, every hook decision as JSONL, and each targeted rule graded held / bypassed / unclear (9 criteria, 8 held, one designed-in failure documented honestly). The [first monthly operational review](docs/monthly-reviews/2026-05.md) is built from 7,058 logged events by the system's own audit stream. Details in [Evidence](#evidence-pressure-runs-and-operational-reviews).
 
-See [`CHANGELOG.md`](CHANGELOG.md) for the release history through v1.6.0 (re-measured benchmarks with environment disclosure, hook-system audit and hardening, force-swap coverage, the Claude Code 2.1.220 black-box refresh).
+See [`CHANGELOG.md`](CHANGELOG.md) for the release history through v1.6.0 (re-measured benchmarks, hook-system audit and hardening, force-swap coverage, the Claude Code 2.1.220 black-box refresh).
 
 ## Browse the architecture in your browser
 
@@ -66,7 +66,7 @@ Query text
 
 Each retriever covers a blind spot the others have. BM25 catches exact keyword matches. Vectors catch paraphrase ("SQL" versus "database query"). Graph traversal catches rules that share neither but are causally related. The two-pass ranker fuses everything with severity, confidence, and graph-proximity weights, and an abstention gate returns nothing rather than injecting noise when the best raw cosine falls below 0.30.
 
-**The enforcement layer (the process keeper).** 37 hook scripts under `hooks/scripts/`, wired into Claude Code via `hooks/hooks.json` (41 registrations across 12 hook events), plus one statusLine script, a session state machine in `writ/session/`, slash commands, and 5 sub-agent role files under `agents/`. The state machine owns mode, phase, and gate state; hooks are thin clients that delegate to it.
+**The enforcement layer (the process keeper).** 40 hook scripts under `hooks/scripts/`, wired into Claude Code via `hooks/hooks.json` (44 registrations across 12 hook events), plus one statusLine script, a session state machine in `writ/session/`, slash commands, and 5 sub-agent role files under `agents/`. The state machine owns mode, phase, and gate state; hooks are thin clients that delegate to it.
 
 **Adversarial review (the independence thesis).** The review claim is not a reviewer headcount; it is independence. The reviewer role runs with fresh context, judges a SHA-scoped diff, inherits none of the implementer's session history, and carries no Write tool: the implementer's framing never reaches it, and it can only report what it finds, never quietly fix it. Isolation is what makes a second opinion a second opinion.
 
@@ -158,7 +158,7 @@ to a pre-existing corpus):
 On the harder 193-query ground-truth workload (real queries, not the 5-query latency set)
 the live corpus measures 1.02 ms p95 / 0.43 ms median (2026-08-05, 579 timed queries).
 
-All of the above was measured on a single mid-range developer laptop and an *uncapped* Neo4j container (512M pagecache); absolute numbers will differ on smaller machines. The full disclosure is the "Measurement environment" section of `SCALE_BENCHMARK_RESULTS.md`.
+All of the above was measured on a single mid-range developer laptop with an *uncapped* Neo4j container (512M pagecache); absolute numbers will differ on smaller machines. The full disclosure is the "Measurement environment" section of `SCALE_BENCHMARK_RESULTS.md`.
 
 Retrieval quality against the 193-query ground-truth corpus (47 ambiguous, expanded 2026-07-17). The floors are regression gates the build fails below, deliberately set under the measured values, not quality targets:
 
@@ -273,7 +273,7 @@ The most-used commands; run `writ --help` for the complete list.
 
 ## API reference
 
-All endpoints under `http://localhost:8765`. JSON bodies; no auth (binds localhost only). Total: 45 endpoints: 11 query/corpus routes, 3 gate routes, 24 session-state routes under `/session/{id}/`, 2 decision-memory, 1 git-hooks, 4 explorer.
+All endpoints under `http://localhost:8765`. JSON bodies; no auth (binds localhost only). Total: 49 endpoints: 11 query/corpus routes, 3 gate routes, 27 session-state routes under `/session/{id}/`, 3 decision-memory, 1 git-hooks, 4 explorer.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -300,11 +300,11 @@ Errors come back as HTTP 200 with `{"error": "..."}` for logical failures, 422 f
 | `.claude-plugin/plugin.json` | Plugin manifest. Deliberately declares no `hooks` key (auto-discovery of `hooks/hooks.json`; declaring it collides) and no `agents` key (declaring one loads zero agents; auto-discovery of `agents/` loads all 5). |
 | `.claude-plugin/marketplace.json` | Single-plugin marketplace so `claude plugin marketplace add infinri/Writ` resolves. Version must match `plugin.json`. |
 | `docker-compose.yml` | Single `neo4j:5` service on 7474/7687, health-checked. The daemon itself runs natively. |
-| `hooks/hooks.json` | Canonical hook wiring: 41 registrations across 12 events over 37 scripts. Auto-discovered; single source for the generated `templates/settings.json`. |
+| `hooks/hooks.json` | Canonical hook wiring: 44 registrations across 12 events over 40 scripts. Auto-discovered; single source for the generated `templates/settings.json`. |
 | `bin/lib/gate-categories.json` | Gate exclusion globs plus framework detection. |
 | `writ/shared/budget.json` | Budget constants: default 8000, rule costs 200/120/40, always-on cap 5000. |
 
-Common environment variables: `WRIT_HOST`/`WRIT_PORT` (daemon target), `WRIT_CACHE_DIR` (session caches, default `<install>/var/session`), `WRIT_LOG_ROOT` (typed log streams, default `<install>/var/logs`), `WRIT_FRICTION_LOG` (collapse all streams to one file), `WRIT_DEBUG` (debug sinks, default off), `WRIT_NO_AUTOSTART` (suppress daemon autostart), `WRIT_ALLOW_EMBEDDING_FALLBACK=1` (permit the sentence-transformers path when ONNX is absent), `WRIT_EGRESS_ALLOW_HOSTS` (comma-separated hosts the Bash egress guard never asks about, unioned with `writ.toml [egress] allow_hosts`). Neo4j credentials are read from `writ.toml` only.
+Common environment variables: `WRIT_HOST`/`WRIT_PORT` (daemon target), `WRIT_CACHE_DIR` (session caches, default `<install>/var/session`), `WRIT_LOG_ROOT` (typed log streams, default `<install>/var/logs`), `WRIT_FRICTION_LOG` (collapse all streams to one file), `WRIT_DEBUG` (debug sinks, default off), `WRIT_NO_AUTOSTART` (suppress daemon autostart), `WRIT_ALLOW_EMBEDDING_FALLBACK=1` (permit the sentence-transformers path when ONNX is absent), `WRIT_EGRESS_ALLOW_HOSTS` (comma-separated hosts the Bash egress guard never asks about, unioned with `writ.toml [egress] allow_hosts`). Neo4j credentials resolve from `WRIT_NEO4J_URI` / `WRIT_NEO4J_USER` / `WRIT_NEO4J_PASSWORD`, then `writ.toml`, then a dev-only built-in default; the env layer exists so one process can be pointed at a disposable instance (see `SECURITY.md`).
 
 **Availability posture, and the strict switch.** A daemon outage does not ungate writes: the gate hooks fall back to a local subprocess that reads the same session state, so plan and test gates hold with the daemon down. The residue -- a check that cannot be answered even locally -- fails open by default (the availability decision) or fails closed with **`WRIT_STRICT=1`**, which denies any write whose gate could not be evaluated and says why (`ENF-STRICT-001`). Auditors who consider fail-open disqualifying set one environment variable instead of arguing with a documentation link.
 
@@ -331,7 +331,7 @@ Both artifact sets are produced by the system's own audit stream, not written af
 
 ## Status
 
-**v1.6.0 (2026-08-01).** Every benchmark re-measured on disclosed hardware; documentation rebuilt from a full code read; the 37-script hook system audited end to end (silent-failure fixes, force-swap coverage, fail-open posture documented as the specification); Claude Code contract re-pinned to 2.1.220. Installs end to end as a Claude Code plugin (verified `Agents (5)` on 2.1.220). Every number in this README is either measured and dated, or derived from the current source tree.
+**v1.6.0 (2026-08-01).** Every benchmark re-measured; documentation rebuilt from a full code read; the hook system audited end to end (silent-failure fixes, force-swap coverage, fail-open posture documented as the specification); Claude Code contract re-pinned to 2.1.220. Installs end to end as a Claude Code plugin (verified `Agents (5)` on 2.1.220). Every number in this README is either measured and dated, or derived from the current source tree.
 
 ## Related documents
 
@@ -339,6 +339,7 @@ Both artifact sets are produced by the system's own audit stream, not written af
 - [`docs/install.md`](docs/install.md): full install detail for both install paths, the systemd service, and troubleshooting.
 - [`SCALE_BENCHMARK_RESULTS.md`](SCALE_BENCHMARK_RESULTS.md): the full live measurement plus the synthetic scale curve.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md): rule authoring workflow, review cadence, AI proposal triage.
+- [`SECURITY.md`](SECURITY.md): the trust model (Writ runs shell hooks as you; the daemon is unauthenticated), how to report a vulnerability, and what auditing what you install is still your job.
 
 ## Acknowledgements
 Jesse Vincent's [Superpowers](https://github.com/obra/superpowers) revealed gaps in Writ's methodology coverage, and observing that project's design choices in practice fed Writ's analysis of the Agent Skills format (see [Relationship to Agent Skills](#relationship-to-agent-skills)).

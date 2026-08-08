@@ -32,11 +32,15 @@ except Exception:
 print((data.get('agent_id') or data.get('session_id') or '').strip())
 " 2>/dev/null || echo "")
 fi
+# NO SYNTHESIZED SESSION ID. This used to fall back to the parent PID and then to
+# md5(cwd:user)+date. Neither can ever equal the id Claude Code uses, so state written
+# under one is written to a session that does not exist and is simply never read again,
+# while the hook reports success. Claude Code documents session_id as universal and
+# authoritative on every hook event, so an empty one is a broken invariant, not a case to
+# paper over: record it and stop.
 if [ -z "$SESSION_ID" ]; then
-    SESSION_ID=$(ps -o ppid= -p $PPID 2>/dev/null | tr -d ' ')
-fi
-if [ -z "$SESSION_ID" ]; then
-    SESSION_ID=$(echo "${PWD}:${USER}" | md5sum | cut -c1-12)-$(date +%Y%m%d)
+    writ_critical writ-postcompact "no session_id in hook payload; refusing to synthesize one"
+    exit 0
 fi
 
 # Reset phase exclusion list and budget so rules re-inject after the window

@@ -33,6 +33,7 @@ tests/test_import_markdown_unified.py).
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -88,11 +89,21 @@ _FIXTURE_ARTIFACT: dict = {
 # helpers (shape mirrors tests/test_import_markdown_unified.py)
 # ---------------------------------------------------------------------------
 
+
+# THE CONTAINER NAME IS A SEAM, not a constant. These two files reach Neo4j through
+# `docker exec <container> cypher-shell` rather than through Neo4jConnection, so they are
+# the one place WRIT_NEO4J_URI does NOT redirect: pointing the rest of the suite at a
+# disposable instance would silently leave these hitting production. Reading the name from
+# the environment puts them back under the same switch as everything else.
+def _neo4j_container() -> str:
+    return os.environ.get("WRIT_TEST_NEO4J_CONTAINER", "writ-neo4j")
+
+
 def _cypher(query: str) -> int:
     """Run a read-only Cypher query via docker exec; return the integer result."""
     result = subprocess.run(
         [
-            "docker", "exec", "writ-neo4j", "cypher-shell",
+            "docker", "exec", _neo4j_container(), "cypher-shell",
             "-u", NEO4J_USER, "-p", NEO4J_PASSWORD,
             "--format", "plain",
             query,
@@ -127,7 +138,7 @@ def _clear_graph() -> None:
     """Wipe the graph so each test starts clean."""
     result = subprocess.run(
         [
-            "docker", "exec", "writ-neo4j", "cypher-shell",
+            "docker", "exec", _neo4j_container(), "cypher-shell",
             "-u", NEO4J_USER, "-p", NEO4J_PASSWORD,
             "--format", "plain",
             f"MATCH (n) WHERE NOT any(l IN labels(n) WHERE l IN [{_PRESERVE}]) "
@@ -173,7 +184,7 @@ class TestImportMarkdownCompressFlag:
         try:
             subprocess.run(
                 [
-                    "docker", "exec", "writ-neo4j", "cypher-shell",
+                    "docker", "exec", _neo4j_container(), "cypher-shell",
                     "-u", NEO4J_USER, "-p", NEO4J_PASSWORD,
                     "--format", "plain",
                     f"MATCH (n) WHERE NOT any(l IN labels(n) WHERE l IN [{_PRESERVE}]) "

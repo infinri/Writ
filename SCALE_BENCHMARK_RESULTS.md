@@ -11,7 +11,8 @@ All numbers below come from this machine; expect different absolute values elsew
 Retrieval latency is CPU-bound (warm in-process indexes), and the Neo4j container
 here runs without a memory cap, so nothing below reflects a memory-constrained setup.
 
-- Host: a single mid-range developer laptop (hardware details withheld)
+- Host: a single mid-range developer laptop (hardware details withheld). Treat every absolute
+  number here as relative; the ratios are the portable part.
 - Neo4j container `writ-neo4j`: no memory limit (whole host available); pagecache 512M; observed usage 1.271GiB at report time
 - Python 3.12.3
 

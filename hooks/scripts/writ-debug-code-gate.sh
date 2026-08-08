@@ -28,6 +28,21 @@ except Exception:
     print(''); sys.exit(0)
 print((d.get('agent_id') or d.get('session_id') or '').strip())
 " 2>/dev/null || echo "")
+
+# THIS GATE'S OWN TELEMETRY IS KEYED HERE.
+#
+# hook_instrument's exit trap and log_gate_decision both file their rows under
+# `${SESSION_ID:-${HOOK_SESSION_ID:-}}`, and this gate set neither: load_hook_env is
+# unusable here because it reads stdin, which $STDIN_DATA has already consumed. So every
+# row this hook produced landed under the literal session id "unknown" -- measured
+# 2026-08-08, writ-events-unknown.buf held ~153 hook_execution rows dominated by this
+# gate, none of them attributable to the session that produced them.
+#
+# SID is the payload's identity and only the payload's (agent_id first, so a sub-agent's
+# reads are not filed under its parent). It is never synthesized, so an id the payload
+# did not carry stays empty and the hook no-ops below rather than inventing one.
+SESSION_ID="$SID"
+
 [ -n "$SID" ] || exit 0
 
 DECISION_JSON=$(printf '%s' "$STDIN_DATA" \

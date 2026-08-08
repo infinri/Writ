@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -27,6 +28,41 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 HOOKS = REPO / "hooks" / "scripts"
+
+# `python3 -c "` / `python3 -S -c '` -- the opener of an embedded program. The quote it
+# captures is what closes the block, which is what makes the scan below span lines.
+INLINE_PYTHON_OPENER = re.compile(r"""python3\s+(?:-S\s+)?-c\s+(["'])""")
+
+
+def inline_python_blocks(source: str) -> list[tuple[int, str]]:
+    """Every `python3 -c "..."` program embedded in a shell source, as
+    (1-based line number of the opener, program text).
+
+    SPANS NEWLINES, and that is the whole point. The scan this replaces asked whether one
+    LINE held both `python3 -c` and `json`, but every embedded program in the hook opens
+    with a bare `python3 -c "` and does its json work on a later line, so a per-line scan
+    could not see a single one of them and answered zero while five were sitting there.
+
+    Inside a double-quoted opener a backslash escapes the next character (bash); inside a
+    single-quoted one nothing escapes, so the first quote closes it.
+    """
+    blocks: list[tuple[int, str]] = []
+    pos = 0
+    while True:
+        opener = INLINE_PYTHON_OPENER.search(source, pos)
+        if opener is None:
+            return blocks
+        quote = opener.group(1)
+        start = i = opener.end()
+        while i < len(source):
+            if source[i] == "\\" and quote == '"':
+                i += 2
+                continue
+            if source[i] == quote:
+                break
+            i += 1
+        blocks.append((source.count("\n", 0, opener.start()) + 1, source[start:i]))
+        pos = i + 1
 
 PROMPT_PATH_HOOKS = [
     "writ-manual-test-grant.sh",
@@ -56,10 +92,20 @@ BASELINE_PYTHON = 13
 # REQUEST BUILDER moved to `jq -n` (that snippet was a whole interpreter start to
 # assemble five strings and a boolean already sitting in shell variables).
 
-# Inline `python3 -c` JSON reads in writ-rag-inject.sh are now ZERO (was 5, each ~14ms:
-# 9.5 interpreter floor plus 4.9 for `import json`, to answer what jq answers in 2.3).
-# The assertion lives in test_no_inline_json_python_remains; there is no count constant
-# any more because the count is zero and a ratchet at zero is just an assertion.
+# Inline `python3 -c` JSON reads in writ-rag-inject.sh: FIVE remain, at lines 277, 307,
+# 330, 423 and 526, each ~14ms (9.5 interpreter floor plus 4.9 for `import json`, to
+# answer what jq answers in 2.3).
+#
+# THIS FILE PREVIOUSLY RECORDED THE COUNT AS ZERO, AND THE ZERO WAS THE TEST'S OWN FAULT.
+# The scan asked whether a single LINE contained both `python3 -c` and `json`. Every one
+# of these five is a heredoc-style block: `python3 -c "` opens the line, and the `import
+# json` / `json.dumps` lands one or more lines BELOW. So the scan could not observe the
+# thing it was named after, reported an empty list, and that empty list was written up as
+# "now genuinely zero" -- a claim the suite appeared to back. A scan that cannot see its
+# subject does not prove absence, it proves nothing, and it is worse than no scan because
+# it is quoted as evidence. inline_python_blocks() above now walks from each opener to its
+# closing quote, so a block is measured whole.
+INLINE_JSON_PYTHON_BLOCKS = 5
 
 ENVELOPE = json.dumps({
     "session_id": "prompt-path-budget-probe",
@@ -200,15 +246,47 @@ class TestEscalationCheckIsNotInlinePython:
     `python3 -c 'import sys,json; ...'`, which is 13.7ms measured to answer one boolean."""
 
     def test_the_escalation_check_no_longer_starts_python(self) -> None:
-        """The specific line that was converted, pinned so it cannot quietly revert."""
+        """The specific call that was converted, pinned so it cannot quietly revert.
+
+        SCANNED AS BLOCKS, not lines. This test used to ask whether one LINE held both
+        `python3 -c` and `needed`, which is the identical shape as the zero-that-proved-
+        nothing described at INLINE_JSON_PYTHON_BLOCKS: the opener sits on its own line and
+        the program below it. It was not lying today only because no current block happens
+        to contain the word, so it was the next instance waiting to happen rather than a
+        second live defect. Reverting the conversion would restore a block reading
+        `resp["escalation"]["needed"]` under a bare opener, and the per-line form would
+        have reported that as clean.
+        """
         source = (HOOKS / "writ-rag-inject.sh").read_text()
         reverted = [
-            ln.strip() for ln in source.splitlines()
-            if "python3 -c" in ln and "needed" in ln
+            (line, body.strip()[:80])
+            for line, body in inline_python_blocks(source)
+            if "needed" in body
         ]
         assert reverted == [], (
             f"the escalation check is back to inline python: {reverted}"
         )
+
+    def test_that_scan_sees_a_reverted_escalation_check(self) -> None:
+        """Anti-vacuity for the scan above, in the shape the revert would actually take.
+
+        An empty list is the passing result, so the scan has to be shown finding the thing
+        before its emptiness means anything -- and shown finding it SPANNING LINES, which
+        is exactly what the previous per-line version could not do.
+        """
+        reverted_form = (
+            'ESC_NEEDED=$(printf \'%s\' "$RESP" | python3 -c "\n'
+            "import sys, json\n"
+            'print(json.load(sys.stdin)[\'escalation\'][\'needed\'])\n'
+            '" 2>/dev/null)\n'
+        )
+        old_scan = [
+            ln for ln in reverted_form.splitlines()
+            if "python3 -c" in ln and "needed" in ln
+        ]
+        new_scan = [b for _l, b in inline_python_blocks(reverted_form) if "needed" in b]
+        assert old_scan == [], "the per-line scan is supposed to be blind to this revert"
+        assert len(new_scan) == 1, f"the block scan missed the revert: {new_scan}"
 
     def test_escalation_uses_json_transform(self) -> None:
         """Positive half: asserting the old form is gone proves nothing if the new form
@@ -218,23 +296,66 @@ class TestEscalationCheckIsNotInlinePython:
             "the escalation check no longer routes through json_transform"
         )
 
-    def test_no_inline_json_python_remains(self) -> None:
-        """Now genuinely zero, so this is an assertion rather than a ratchet.
+    def test_inline_json_python_blocks_do_not_grow(self) -> None:
+        """A does-not-grow ratchet at the REAL count, which is five, not zero.
 
-        It started life asserting zero, failed usefully at FIVE, spent a commit as a
-        does-not-grow count, and only became a clean-slate assertion once the count was
-        actually zero. Writing the aspiration first and living with a red test would have
-        taught the suite to expect failure.
+        The previous version of this test asserted zero and passed, because it matched
+        `python3 -c` and `json` on the same LINE and every block puts them on different
+        lines (see INLINE_JSON_PYTHON_BLOCKS for the full account). The number below is
+        measured by walking each block whole.
+
+        `<=` rather than `==` on purpose: converting one of these to json_transform is the
+        goal, and a test that fails when the code gets better is a test people delete. It
+        fails when a SIXTH appears, and the constant is lowered by whoever removes one.
         """
         source = (HOOKS / "writ-rag-inject.sh").read_text()
         offenders = [
-            ln.strip()[:70] for ln in source.splitlines()
-            if "python3 -c" in ln and "json" in ln
+            (line, body.strip().splitlines()[0][:60] if body.strip() else "")
+            for line, body in inline_python_blocks(source)
+            if "json" in body
         ]
-        assert offenders == [], (
-            f"inline `python3 -c` JSON parsing is back ({len(offenders)} sites). Each is "
-            f"~14ms to read one field; use json_transform: {offenders}"
+        assert len(offenders) <= INLINE_JSON_PYTHON_BLOCKS, (
+            f"inline `python3 -c` JSON parsing grew to {len(offenders)} blocks, above the "
+            f"{INLINE_JSON_PYTHON_BLOCKS} recorded here. Each is ~14ms to read one field; "
+            f"use json_transform. Blocks at: {offenders}"
         )
+
+    def test_the_scan_sees_a_multi_line_block_the_old_one_missed(self) -> None:
+        """Anti-vacuity, and the direct proof that the old scan was blind.
+
+        This sample is the exact shape of all five real blocks: the opener on one line,
+        the json usage below it. The old per-line predicate scores it zero; a scan that
+        answers zero here would answer zero for the hook as well, which is precisely how a
+        false "no inline JSON python remains" claim got made.
+        """
+        sample = (
+            'REQ=$(WRIT_ROOT="$PWD" python3 -c "\n'
+            "import os, json\n"
+            "print(json.dumps({'root': os.environ['WRIT_ROOT']}))\n"
+            '" 2>/dev/null)\n'
+        )
+        old_scan = [
+            ln for ln in sample.splitlines() if "python3 -c" in ln and "json" in ln
+        ]
+        new_scan = [b for _line, b in inline_python_blocks(sample) if "json" in b]
+        assert old_scan == [], "the old per-line scan is supposed to be blind to this"
+        assert len(new_scan) == 1, (
+            f"the block scan missed a multi-line `python3 -c` block: {new_scan}"
+        )
+        assert "json.dumps" in new_scan[0], "the block was truncated before its json use"
+
+    def test_the_scan_does_not_swallow_the_rest_of_the_file(self) -> None:
+        """The other way to be vacuous: a scanner whose block never ends would report one
+        enormous hit containing every word in the file, and 'json' would always be in it.
+        Two adjacent blocks must come back as two, and a block with no json must not."""
+        sample = (
+            'A=$(python3 -c "\nimport json\nprint(json.dumps({}))\n")\n'
+            'B=$(python3 -c "\nprint(1 + 1)\n")\n'
+        )
+        blocks = inline_python_blocks(sample)
+        assert len(blocks) == 2, f"expected two separate blocks, got {blocks}"
+        assert [line for line, _b in blocks] == [1, 5]
+        assert sum(1 for _l, b in blocks if "json" in b) == 1
 
 
 class TestTheEscalationRoundTripIsSkippedWhenNothingIsPending:

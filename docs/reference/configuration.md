@@ -31,7 +31,7 @@ At the install root, gitignored; `writ.toml.example` is the template. Readers in
 | Variable | Effect | Default |
 |---|---|---|
 | `WRIT_HOST` / `WRIT_PORT` | Daemon target for every hook and CLI call | `localhost` / `8765` |
-| `WRIT_CACHE_DIR` | Session-cache directory | `<install>/var/session` (never `/tmp`: systemd empties it at boot; that wipe once destroyed every session cache) |
+| `WRIT_CACHE_DIR` | Root for everything a session writes: the session cache, the pending-test markers `writ-mark-pending-test.sh` leaves for the Stop hook, and the per-file lint logs from `validate-file.sh`. Those last two used to resolve against the install directory regardless of this variable, so an isolated run still wrote into the live checkout. | `<install>/var/session` (never `/tmp`: systemd empties it at boot; that wipe once destroyed every session cache) |
 | `WRIT_LOG_ROOT` | Typed log streams root | `<install>/var/logs` |
 | `WRIT_LOG_PROJECT` | Override the per-project log scope (sanitized against path traversal) | git-derived project name, else `writ` |
 | `WRIT_FRICTION_LOG` | Collapse **all** streams into one file (test isolation, single-log operators) | unset |
@@ -44,9 +44,11 @@ At the install root, gitignored; `writ.toml.example` is the template. Readers in
 | `WRIT_BLACKBOX=1` (or `~/.claude/writ-blackbox.on`) | Raw hook-payload capture to `~/.claude/writ-blackbox.jsonl` | off |
 | `WRIT_READ_JUNK_GATE=enforce` | Turn the read-junk gate from observe-only into blocking; `WRIT_READ_SIZE_KB` sets the oversize bound | `observe` / 100 KB |
 | `WRIT_REALIGN_CACHE=1` | Let `ensure-server` restart a daemon whose cache dir diverged | off (systemd owns restarts) |
-| `CLAUDE_SESSION_ID` / `CLAUDE_JOB_DIR` | First two tiers of session-id resolution | harness-provided |
+| `WRIT_NEO4J_URI` / `WRIT_NEO4J_USER` / `WRIT_NEO4J_PASSWORD` | Point one process at a different Neo4j instance without editing the shared `writ.toml`; wins over the file | unset (falls through to `[neo4j]`, then the coded defaults) |
+| `WRIT_TEST_GRAPH=1` | Mark the connected instance disposable, permitting a whole-graph wipe. Required **together with** a `WRIT_NEO4J_URI` on a different `(host, port)`; neither alone is enough | unset (wipes refused) |
+| `CLAUDE_SESSION_ID` / `CLAUDE_JOB_DIR` | The only sources of session identity. There is no third tier: a hook that cannot read an id from the payload records a `critical_error` and declines to act rather than synthesizing one (`writ_require_session`, `bin/lib/common.sh`). | harness-provided |
 
-Neo4j credentials come from `writ.toml` only; there is no `WRIT_NEO4J_*` override.
+`get_production_neo4j_uri()` deliberately ignores `WRIT_NEO4J_URI` and reads `writ.toml` only. It defines what the destructive-wipe guard treats as production, and a getter the caller can redirect could not answer that question: if the override fed both sides of the comparison, setting it would make every instance look non-production. See `writ/graph/db/_safety.py` and [testing](testing.md#destructive-graph-tests-need-their-own-neo4j-instance).
 
 ## Fixed paths
 

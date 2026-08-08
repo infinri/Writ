@@ -111,11 +111,16 @@ class TestCypherDumpRoundTrip:
     """Requires Neo4j running."""
 
     @pytest_asyncio.fixture
-    async def db(self):
+    async def db(self, disposable_graph):
         conn = Neo4jConnection(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
         # Explicit full wipe: clear_all preserves runtime records by default, so a
         # fixture that asserts on record COUNTS must opt into wiping them or the
         # previous test's records leak into this one's arithmetic.
+        #
+        # That wipe is unrecoverable for runtime records, so `disposable_graph`
+        # skips unless a separate, explicitly-marked Neo4j instance is configured
+        # (see tests/conftest.py). The pure-rendering classes above need no database
+        # and keep running unconditionally.
         await conn.clear_all(preserve_labels=frozenset())
         yield conn
         await conn.clear_all(preserve_labels=frozenset())
@@ -156,11 +161,16 @@ class TestRecordPreservationOnReplay:
     the whole graph. Requires Neo4j running."""
 
     @pytest_asyncio.fixture
-    async def db(self):
+    async def db(self, disposable_graph):
         conn = Neo4jConnection(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
         # Explicit full wipe: clear_all preserves runtime records by default, so a
         # fixture that asserts on record COUNTS must opt into wiping them or the
         # previous test's records leak into this one's arithmetic.
+        #
+        # `disposable_graph` skips unless a separate, explicitly-marked Neo4j
+        # instance is configured (see tests/conftest.py). Note the irony this
+        # encodes: these tests EXIST to prove records survive a corpus replay, and
+        # the setup they used to prove it with is what destroyed the real ones.
         await conn.clear_all(preserve_labels=frozenset())
         yield conn
         await conn.clear_all(preserve_labels=frozenset())
@@ -270,9 +280,22 @@ class TestNoRawWholeGraphDeletes:
     label exemption.
     """
 
+    # Files where the unscoped delete is legitimate, each mapped to a SENTINEL
+    # string that must still appear in it. The exemption is scoped to what the
+    # file currently IS, not to its name: if the file stops being the thing that
+    # earned the exemption, test_every_exemption_still_earns_itself goes red and
+    # the exemption has to be re-justified. An allowlist keyed on filename alone
+    # is how a real violation gets grandfathered in under a name that once meant
+    # something else.
     _ALLOWED = {
         # clear_all itself: the guard's implementation, where the raw form belongs.
-        "writ/graph/db/maintenance_store.py",
+        "writ/graph/db/maintenance_store.py": "assert_full_wipe_allowed",
+        # The wipe guard's own tests. The statement is the EXPECTED VALUE of an
+        # assertion about what clear_all produced -- and in the refusal cases,
+        # proof that it was never produced. It is asserted against, never
+        # executed: those tests drive clear_all through a fake driver that
+        # records statements rather than a Neo4j session.
+        "tests/test_graph_wipe_guard.py": "FullWipeRefused",
     }
 
     # A QUERY string starts with the MATCH clause; prose that merely mentions the
@@ -327,6 +350,29 @@ class TestNoRawWholeGraphDeletes:
         assert not offenders, (
             "unscoped whole-graph deletes bypass clear_all's record preservation; "
             f"route them through clear_all() or spell out the label exemption: {offenders}"
+        )
+
+    def test_every_exemption_still_earns_itself(self) -> None:
+        """An exemption expires when the file stops being what justified it.
+
+        Without this, `tests/test_graph_wipe_guard.py` would be permanently
+        licensed to contain raw whole-graph deletes -- including after someone
+        repurposes or rewrites it into something that is no longer the wipe
+        guard's test.
+        """
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        stale = []
+        for rel, sentinel in self._ALLOWED.items():
+            path = root / rel
+            if not path.exists():
+                stale.append(f"{rel}: exempted file no longer exists")
+            elif sentinel not in path.read_text(encoding="utf-8"):
+                stale.append(f"{rel}: no longer contains {sentinel!r}")
+        assert not stale, (
+            "these raw-delete exemptions no longer describe the files they "
+            f"exempt; re-justify or remove them: {stale}"
         )
 
     def test_the_guard_would_catch_a_planted_raw_delete(self, tmp_path) -> None:

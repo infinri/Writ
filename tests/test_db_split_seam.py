@@ -143,7 +143,12 @@ class TestSeamPreserved:
         from writ.graph.db import Neo4jConnection
 
         # Driver creation does not open a connection, so this is offline-safe.
-        conn = Neo4jConnection("bolt://localhost:7687", "u", "p", database="seamtest")
+        # A deliberately non-production port. This asserts on constructor wiring and never
+        # connects, but naming the real instance made it indistinguishable from a test that
+        # genuinely reaches for production, which is what the isolated-run guard in
+        # conftest.py looks for. A literal that cannot be the live graph keeps the guard
+        # meaningful instead of teaching people to exempt it.
+        conn = Neo4jConnection("bolt://localhost:7699", "u", "p", database="seamtest")
         try:
             assert conn._database == "seamtest"
             assert conn._driver is not None

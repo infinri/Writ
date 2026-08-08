@@ -11,7 +11,7 @@ load -- no gate, no injection, no enforcement.
 
 TWO DESIGN CONSTRAINTS, both tested here:
 
-1. GENERATED, never hand-maintained. The template is 41 command paths across 12 events. A
+1. GENERATED, never hand-maintained. The template is 44 command paths across 12 events. A
    second hand-edited copy is the same shape as the defect fixed in ea5022f: one source moved
    and stale copies survived because nothing compared them. CHANGELOG.md:215 shows Writ has
    been here before ("keep registrations in sync between the two if you edit either").

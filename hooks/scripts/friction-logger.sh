@@ -47,15 +47,12 @@ fi
 #
 # CC sends session_id in the Stop payload, which is captured above for the loop-breaker, so
 # the right answer was already in hand.
-SESSION_ID=$(printf '%s' "$STDIN_JSON" \
-    | json_transform '.session_id // empty' "d.get('session_id')" 2>/dev/null || true)
-SESSION_ID=$(printf '%s' "$SESSION_ID" | tr -d '[:space:]')
-if [ -z "$SESSION_ID" ] && [ -f /tmp/writ-current-session ]; then
-    SESSION_ID=$(cat /tmp/writ-current-session 2>/dev/null | tr -d '[:space:]')
-fi
-if [ -z "$SESSION_ID" ]; then
-    exit 0
-fi
+# NO POINTER FALLBACK. The first fix here still consulted the pointer when the payload had
+# no session_id, which keeps the failure mode alive in the rare case rather than removing
+# it. A drain aimed at the wrong session is worse than a drain that does not run, because
+# the rows it skips look identical to rows that never existed. Unresolvable now records a
+# critical error and this hook does nothing.
+SESSION_ID=$(writ_require_session "$STDIN_JSON" friction-logger) || exit 0
 
 # Drain this turn's buffered hook_execution rows in ONE interpreter start, replacing the
 # 8 python spawns a single file write used to pay. Placed BEFORE the mode gate below on

@@ -22,7 +22,12 @@ SESSION_ID="$HOOK_SESSION_ID"
 [ -z "$SESSION_ID" ] && exit 0
 is_work_mode "$SESSION_ID" || exit 0
 
-MARKER="$WRIT_DIR/cache/$SESSION_ID/pending-tests.txt"
+# THE ROOT FOLLOWS WRIT_CACHE_DIR, and must resolve to the same directory
+# writ-mark-pending-test.sh writes: this hook is the only reader of that marker, so the two
+# expressions moving apart would silently stop the end-of-turn test run with both hooks
+# still exiting 0. Hardcoded, both wrote into the live checkout under an isolated run.
+CACHE_ROOT="${WRIT_CACHE_DIR:-$WRIT_DIR/cache}"
+MARKER="$CACHE_ROOT/$SESSION_ID/pending-tests.txt"
 [ -f "$MARKER" ] || exit 0
 
 # Resolve every marker entry to a test file (or empty) via the helper.
@@ -42,7 +47,7 @@ if [ -z "$TEST_FILES" ]; then
     exit 0
 fi
 
-LOG_DIR="$WRIT_DIR/cache/$SESSION_ID"
+LOG_DIR="$CACHE_ROOT/$SESSION_ID"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/last-test-run.log"
 : > "$LOG"

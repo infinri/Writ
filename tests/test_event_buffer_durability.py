@@ -420,26 +420,167 @@ class TestTheStopHookDrainsTheSessionItWasInvokedFor:
             if saved is not None:
                 pointer.write_text(saved)
 
-    def test_the_pointer_is_still_used_when_the_payload_has_no_session(
-        self, buf_env
-    ) -> None:
-        """The fallback must survive: a payload without session_id should still drain via
-        the pointer rather than silently doing nothing."""
+    def test_a_payload_without_a_session_drains_nothing_and_says_so(self, buf_env) -> None:
+        """CONTRACT CHANGED DELIBERATELY, 2026-08-08. This test previously asserted the
+        opposite: that a payload without session_id still drained via the pointer file.
+
+        That fallback was the defect in a smaller costume. The pointer names whichever
+        Claude Code session on this machine took a turn most recently, so "drain something"
+        meant "drain someone else", and the rows it skipped were indistinguishable from
+        rows that never existed. Draining nothing and recording a critical error is the
+        honest outcome: no state is touched, and the failure is visible on stderr and on
+        the errors stream instead of being absorbed.
+        """
         pointer = Path("/tmp/writ-current-session")
         saved = pointer.read_text() if pointer.exists() else None
         try:
-            pointer.write_text("s-fallback\n")
-            _append("s-fallback", "row-fb", buf_env)
-            subprocess.run(["bash", str(self.HOOK)], input='{"hook_event_name":"Stop"}',
-                           capture_output=True, text=True, timeout=120,
-                           env={**os.environ, **buf_env})
-            assert not _buffer_path("s-fallback", buf_env).exists(), (
-                "the pointer fallback stopped working, so a payload without session_id "
-                "now drains nothing"
+            pointer.write_text("s-pointer-owner\n")
+            _append("s-pointer-owner", "row-owner", buf_env)
+            proc = subprocess.run(
+                ["bash", str(self.HOOK)], input='{"hook_event_name":"Stop"}',
+                capture_output=True, text=True, timeout=120,
+                env={**os.environ, **buf_env})
+            assert proc.returncode == 0, "a missing session id must not block the turn"
+            assert _buffer_path("s-pointer-owner", buf_env).exists(), (
+                "the pointer file still redirected the drain to another session"
+            )
+            assert "[WRIT CRITICAL]" in proc.stderr, (
+                "the hook did nothing and also said nothing, which is the silent failure "
+                "this change exists to remove"
             )
         finally:
             if saved is not None:
                 pointer.write_text(saved)
+
+
+class TestASubAgentDrainsItsOwnBuffer:
+    """SubagentStop is the ONLY drain trigger a sub-agent will ever get.
+
+    THE GAP, measured live 2026-08-08. Buffers are drained by writ_event_buffer_flush,
+    called from friction-logger.sh (Stop) and the SessionEnd hook. A sub-agent receives
+    NEITHER of those events; it receives SubagentStop, and that hook never called the
+    drain. So every sub-agent's rows had no active drain trigger at all and survived only
+    on the passive 24h _sweep_abandoned above: 12 buffers, ~1378 stranded hook_execution
+    rows, 8 of them keyed to sub-agent ids from the session that was running.
+
+    That is a regression rather than an oversight in the old design: before the buffer,
+    each hook wrote its row directly, so a sub-agent's telemetry needed no drain to exist.
+
+    The key is the AGENT's id, not the parent's. A sub-agent's hooks resolve
+    HOOK_SESSION_ID as `agent_id // session_id` (load_hook_env), so agent_id names the
+    buffer, and live SubagentStop payloads always carry it (verified against captured
+    envelopes; it is `agent_type` that arrives empty).
+    """
+
+    HOOK = REPO / "hooks" / "scripts" / "writ-subagent-stop.sh"
+
+    def _env(self, buf_env: dict[str, str], tmp_path: Path) -> dict[str, str]:
+        """Throwaway everything. WRIT_PORT points at a closed port so the hook's session
+        read takes the daemon-unreachable branch and the run stays hermetic."""
+        return {**os.environ, **buf_env,
+                "WRIT_LOG_ROOT": str(tmp_path / "logroot"),
+                "WRIT_FRICTION_LOG": str(tmp_path / "stream.jsonl"),
+                "WRIT_NO_AUTOSTART": "1", "WRIT_PORT": "1"}
+
+    def _stop(self, agent_id: str | None, env: dict[str, str],
+              parent: str = "parent-session") -> subprocess.CompletedProcess:
+        payload: dict = {"hook_event_name": "SubagentStop"}
+        if agent_id is not None:
+            payload.update({"agent_id": agent_id, "agent_type": "writ-explorer",
+                            "session_id": parent})
+        return subprocess.run(["bash", str(self.HOOK)], input=json.dumps(payload),
+                              capture_output=True, text=True, timeout=120, env=env)
+
+    def _logged(self, tmp_path: Path) -> list[dict]:
+        log = tmp_path / "stream.jsonl"
+        if not log.exists():
+            return []
+        return [json.loads(ln) for ln in log.read_text().splitlines() if ln.strip()]
+
+    def test_it_drains_the_agent_named_in_its_own_payload(self, buf_env, tmp_path) -> None:
+        _append("agent-alpha", "writ-read-rag", buf_env)
+        assert _buffer_path("agent-alpha", buf_env).exists()
+
+        proc = self._stop("agent-alpha", self._env(buf_env, tmp_path))
+
+        assert proc.returncode == 0, proc.stderr[-400:]
+        assert not _buffer_path("agent-alpha", buf_env).exists(), (
+            "SubagentStop left the sub-agent's buffer on disk. It is the only drain "
+            "trigger a sub-agent gets, so those rows now wait on the 24h sweep"
+        )
+
+    def test_the_drained_rows_reach_the_log_rather_than_just_disappearing(
+        self, buf_env, tmp_path
+    ) -> None:
+        """Anti-vacuity for the test above: deleting the buffer would satisfy it too.
+        Drained has to mean emitted, under the agent's own id."""
+        _append("agent-beta", "writ-read-rag", buf_env)
+        self._stop("agent-beta", self._env(buf_env, tmp_path))
+
+        rows = [r for r in self._logged(tmp_path) if r.get("event") == "hook_execution"]
+        assert any(r.get("hook_name") == "writ-read-rag" and r.get("session") == "agent-beta"
+                   for r in rows), f"the sub-agent's row never reached the log: {rows}"
+
+    def test_it_does_not_drain_another_agents_buffer(self, buf_env, tmp_path) -> None:
+        """The other half. A drain that took every buffer would pass the tests above
+        while stealing rows from a sibling sub-agent still running."""
+        _append("agent-mine", "row-mine", buf_env)
+        _append("agent-theirs", "row-theirs", buf_env)
+
+        self._stop("agent-mine", self._env(buf_env, tmp_path))
+
+        assert not _buffer_path("agent-mine", buf_env).exists()
+        assert _buffer_path("agent-theirs", buf_env).exists(), (
+            "one sub-agent's stop drained a sibling agent's buffer"
+        )
+
+    def test_it_does_not_drain_the_parent_session(self, buf_env, tmp_path) -> None:
+        """The parent is mid-turn and still buffering; its rows are Stop's to release.
+        This also pins that the drain keys on agent_id and not on session_id, which is
+        the difference between draining the sub-agent and draining its caller."""
+        _append("parent-session", "row-parent", buf_env)
+        _append("agent-child", "row-child", buf_env)
+
+        self._stop("agent-child", self._env(buf_env, tmp_path), parent="parent-session")
+
+        assert not _buffer_path("agent-child", buf_env).exists()
+        assert _buffer_path("parent-session", buf_env).exists(), (
+            "SubagentStop drained the PARENT's buffer, so the drain is keyed on "
+            "session_id rather than on the agent it was invoked for"
+        )
+
+    def test_a_payload_with_no_id_still_exits_zero(self, buf_env, tmp_path) -> None:
+        """A missing id is a Writ bookkeeping problem and must never become a blocked
+        turn. Nothing to drain, nothing broken."""
+        proc = self._stop(None, self._env(buf_env, tmp_path))
+        assert proc.returncode == 0, (
+            f"a payload without an id exited {proc.returncode}; stderr="
+            f"{proc.stderr[-400:]!r}"
+        )
+
+    def test_a_payload_with_no_id_records_the_failure_instead_of_going_quiet(
+        self, buf_env, tmp_path
+    ) -> None:
+        """Doing nothing silently is the shape this whole no-fallback policy exists to
+        remove: an un-drained buffer looks exactly like a session that buffered nothing.
+
+        Asserted on the recorded row rather than on stderr, because this hook redirects
+        stderr through a `tee` process substitution and a captured-stderr assertion would
+        race that tee's flush against the shell's exit.
+        """
+        self._stop(None, self._env(buf_env, tmp_path))
+        rows = [r for r in self._logged(tmp_path) if r.get("event") == "critical_error"]
+        assert any(r.get("component") == "writ-subagent-stop" for r in rows), (
+            f"no critical was recorded for a SubagentStop that could not name its "
+            f"buffer: {rows}"
+        )
+
+    def test_an_id_bearing_payload_records_no_critical(self, buf_env, tmp_path) -> None:
+        """Anti-vacuity for the test above, and a noise guard: the normal path must stay
+        quiet, or every sub-agent stop would cry critical."""
+        _append("agent-quiet", "row-quiet", buf_env)
+        self._stop("agent-quiet", self._env(buf_env, tmp_path))
+        assert [r for r in self._logged(tmp_path) if r.get("event") == "critical_error"] == []
 
 
 class TestFrictionRowsRideAlong:

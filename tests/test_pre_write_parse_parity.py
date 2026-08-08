@@ -172,8 +172,11 @@ class TestTheThreeLineContract:
         (coerce, or empty) are both self-consistent and only one is parity-safe.
 
         Coercion is not: jq's tostring gives "true" where python's str() gives "True".
-        Empty has no formatting to disagree about, and it routes to the hook's existing
-        detect_session_id fallback instead of inventing an id. Note the envelope for
+        Empty has no formatting to disagree about, and it routes to the hook's
+        no-session branch instead of inventing an id. (That branch used to be
+        `detect_session_id ""`, which synthesized one from PPID or md5(cwd:user); it now
+        records a critical_error and skips the session-keyed bookkeeping while the write
+        gate still runs off the parsed body.) Note the envelope for
         agent_id_is_a_number ALSO carries a valid session_id, and the answer is still
         empty: python's `or` picks the truthy agent_id first and never reaches the
         session_id, so a jq arm that fell back to session_id here would diverge.

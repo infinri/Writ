@@ -92,15 +92,39 @@ MODE_HINT=$(echo "$PARSED" | sed -n '4p' | tr -d '[:space:]')
 EFFORT=$(echo "$PARSED" | sed -n '5p' | tr -d '[:space:]')
 
 # Fallback session ID if not provided by Claude Code
+# NO SYNTHESIZED SESSION ID. This used to fall back to the parent PID and then to
+# md5(cwd:user)+date. Neither can ever equal the id Claude Code uses, so state written
+# under one is written to a session that does not exist and is simply never read again,
+# while the hook reports success. Claude Code documents session_id as universal and
+# authoritative on every hook event, so an empty one is a broken invariant, not a case to
+# paper over: record it and stop.
 if [ -z "$SESSION_ID" ]; then
-    SESSION_ID=$(ps -o ppid= -p $PPID 2>/dev/null | tr -d ' ')
-fi
-if [ -z "$SESSION_ID" ]; then
-    SESSION_ID=$(echo "${PWD}:${USER}" | md5sum | cut -c1-12)-$(date +%Y%m%d)
+    writ_critical writ-rag-inject "no session_id in hook payload; refusing to synthesize one"
+    exit 0
 fi
 
-# Publish session ID so Stop hooks (friction-logger) can find it
-# Do NOT overwrite when inside a sub-agent -- protect parent's session file
+# Publish the session id for the callers that have NO hook payload to read one from.
+#
+# THE STALE COMMENT THIS REPLACES SAID "so Stop hooks (friction-logger) can find it", and
+# that reader is gone: every hook now takes its identity from its own payload, because
+# this file names whichever session on this machine took a turn most recently and reading
+# it as "who am I" was silently wrong (it held cdp-12096297 while the live session was
+# another id, and a drain keyed off it stranded 999 rows across 16 sessions).
+#
+# THE WRITE STAYS, because four callers still read it and none of them HAS a payload:
+#   writ/session/cache.py:94   resolve_current_session_id() step 3, behind $CLAUDE_SESSION_ID
+#                              and $CLAUDE_JOB_DIR -- serves `writ mode set <mode>` with no
+#                              sid (cli_dispatch.py:122) and `writ doctor` (doctor.py:482)
+#   hooks/git/post-commit:29   a git hook; git passes no Claude Code envelope at all
+#   bin/audit-region.sh:27     a CLI tool, when --session is omitted
+#   session-start-bootstrap.sh:112  reads the PRE-rotation id, which by definition is not
+#                              in the payload (the payload carries the NEW one)
+# Deleting the write would not remove the risk, it would move it: those four would fall
+# through to the mtime glob (cache.py step 4), which is strictly racier. Re-check this
+# list before removing the write.
+#
+# Do NOT overwrite when inside a sub-agent -- that would publish the child's id as the
+# session, and the readers above want the top-level one.
 if [ -z "$AGENT_ID" ]; then
     echo "$SESSION_ID" > /tmp/writ-current-session
 fi

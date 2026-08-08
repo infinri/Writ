@@ -184,7 +184,7 @@ def _commit_data(**overrides) -> dict:
         "commit_hash": "abc123def456abc123def456abc123def456ab",
         "project": "test-helper",
         "subject": "refactor(db): add _create_record helper",
-        "author": "Lucio",
+        "author": "Test Author",
         "branch": "refactor/w3-record-store-dedup",
     }
     return {**defaults, **overrides}

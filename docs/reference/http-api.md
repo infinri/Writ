@@ -3,7 +3,7 @@
 
 # HTTP API reference
 
-All 46 endpoints on `http://localhost:8765`, generated from the FastAPI route table. JSON bodies; no auth (binds localhost only). Logical failures return HTTP 200 with an `error` key; 422 is request validation.
+All 49 endpoints on `http://localhost:8765`, generated from the FastAPI route table. JSON bodies; no auth (binds localhost only). Logical failures return HTTP 200 with an `error` key; 422 is request validation.
 
 ## decision_memory
 
@@ -73,9 +73,12 @@ All 46 endpoints on `http://localhost:8765`, generated from the FastAPI route ta
 | GET | `/session/{session_id}/mode` | Get the current mode for the session |
 | POST | `/session/{session_id}/mode` | Set the mode for the session |
 | GET | `/session/{session_id}/pending-violations` | Get pending violations for the session |
+| GET | `/session/{session_id}/prompt-state` | Everything the RAG hook asks about a session, in one call and one cache read |
 | GET | `/session/{session_id}/quality-judgment` | Read all quality judgments plus the override count for the session |
 | POST | `/session/{session_id}/quality-judgment` | Record a Gate 5 Tier 2 (Haiku judge) quality score for an artifact |
 | POST | `/session/{session_id}/reset-after-compaction` | Reset budget and clear phase exclusion list after compaction (PostCompact) |
+| GET | `/session/{session_id}/review-findings` | The latest recorded reviewer verdict and whether it blocks a commit |
+| POST | `/session/{session_id}/review-findings` | Record a reviewer verdict for the session. The latest one wins |
 | GET | `/session/{session_id}/should-skip` | Check whether RAG queries should be skipped for this session |
 | POST | `/session/{session_id}/update` | Update a single key in the session cache |
 | GET | `/session/{session_id}/verification-evidence` | Read verification evidence. Pass ?todo_id=X for a single entry, omit for all |

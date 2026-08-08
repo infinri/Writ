@@ -21,8 +21,8 @@ Two problems motivated it.
 
 | Piece | Role | Where |
 |---|---|---|
-| FastAPI daemon | The single HTTP service all hooks talk to (retrieval, session state, gates, self-authoring). Binds `127.0.0.1:8765`, 48 endpoints, no auth (localhost only). | `writ/server/` |
-| Hooks + session state | 37 thin bash hooks intercept the Claude Code tool lifecycle; a Python package tracks mode/phase/budget/gates per session. | `hooks/`, `writ/session/` |
+| FastAPI daemon | The single HTTP service all hooks talk to (retrieval, session state, gates, self-authoring). Binds `127.0.0.1:8765`, 49 endpoints, no auth (localhost only). | `writ/server/` |
+| Hooks + session state | 40 thin bash hooks intercept the Claude Code tool lifecycle (44 registrations across 12 events; 41 scripts on disk, one of which is the statusLine, not a hook); a Python package tracks mode/phase/budget/gates per session. | `hooks/`, `writ/session/` |
 | Neo4j canonical store | The graph is the source of truth for all rules and methodology. Runs in Docker (`writ-neo4j`). | `writ/graph/db/` |
 | The CLI | Operator control surface: ingest, export, reconcile, validate, author, query, doctor, logs, decision memory. | `writ/cli.py` |
 
@@ -278,7 +278,7 @@ Writ records *why files changed*, mechanically, and plays it back.
 
 ## 14. Hooks layer (operator reference)
 
-**Single registration.** `hooks/hooks.json` binds 12 Claude Code events to 37 scripts via `${CLAUDE_PLUGIN_ROOT}` (41 registrations; some scripts serve multiple events). One more script, `writ-statusline.sh`, is wired through the `statusLine` settings channel, not hooks. Editing a script takes effect immediately; changing `hooks.json` needs a fresh Claude Code session.
+**Single registration.** `hooks/hooks.json` binds 12 Claude Code events to 40 scripts via `${CLAUDE_PLUGIN_ROOT}` (44 registrations; some scripts serve multiple events). One more script, `writ-statusline.sh`, is wired through the `statusLine` settings channel, not hooks. Editing a script takes effect immediately; changing `hooks.json` needs a fresh Claude Code session.
 
 **What can block:**
 
@@ -308,18 +308,19 @@ Everything else is advisory or observational: the RAG injectors (`writ-rag-injec
 
 ## 15. Configuration
 
-**`writ.toml`** (at the install root, gitignored; template `writ.toml.example`; readers in `writ/config.py`). It has exactly four sections:
+**`writ.toml`** (at the install root, gitignored; template `writ.toml.example`; readers in `writ/config.py`). It has five sections:
 
 - **`[neo4j]`**: `uri` (default `bolt://localhost:7687`), `user` (`neo4j`), `password` (**`writdevpass` is a dev-only default**, silently used when the file is absent; override for any real deployment).
 - **`[hnsw]`**: `cache_dir` for the vector-index cache (default `~/.cache/writ/hnsw`).
 - **`[bitbucket]`**: `email`, `token` for PR sync (absent means PR sync is off; the token is never logged).
 - **`[logs]`**: `backup_dest` for `writ logs backup`.
+- **`[egress]`**: `allow_hosts`, the hosts the Bash egress guard may send local data to without prompting (`get_egress_allow_hosts`, `writ/config.py`). Absent means every outbound host is questioned.
 
 Everything else people expect to find in config is deliberately code: ranking weights (`writ/retrieval/ranking.py`: bm25 0.198, vector 0.594, severity 0.099, confidence 0.099, graph 0.01), the abstention threshold (0.30, `writ/retrieval/pipeline.py`), gate thresholds (redundancy 0.95, novelty band 0.85, `writ/gate.py` and `writ/graph/schema.py`), graduation thresholds (50 observations, 0.75 ratio, `writ/frequency.py`), and context-budget bands (summary under 2,000 tokens, standard to 8,000, full above; `writ/retrieval/ranking.py`).
 
 **`writ/shared/budget.json`**: `default_budget=8000`, per-rule render costs full 200 / standard 120 / summary 40, `subagent_budget=null` (unlimited), `always_on_cap=5000`.
 
-**Env vars:** `WRIT_HOST`/`WRIT_PORT` (daemon target, default `localhost:8765`), `WRIT_CACHE_DIR` (session caches, default `<install>/var/session`; deliberately not `/tmp`, which systemd empties at boot), `WRIT_LOG_ROOT` (log streams, default `<install>/var/logs`), `WRIT_LOG_PROJECT`, `WRIT_FRICTION_LOG` (collapse all streams into one file), `WRIT_DEBUG` (debug sinks, default off), `WRIT_HOOK_LOG`, `WRIT_NO_AUTOSTART`, `WRIT_ALLOW_EMBEDDING_FALLBACK=1` (permit the sentence-transformers path when the ONNX model is absent), `WRIT_CONTEXT_WINDOW_TOKENS` (validated 1,000-10,000,000 at daemon startup), `WRIT_BLACKBOX=1` (raw payload capture). Neo4j credentials come from `writ.toml` only.
+**Env vars:** `WRIT_HOST`/`WRIT_PORT` (daemon target, default `localhost:8765`), `WRIT_CACHE_DIR` (session caches, default `<install>/var/session`; deliberately not `/tmp`, which systemd empties at boot), `WRIT_LOG_ROOT` (log streams, default `<install>/var/logs`), `WRIT_LOG_PROJECT`, `WRIT_FRICTION_LOG` (collapse all streams into one file), `WRIT_DEBUG` (debug sinks, default off), `WRIT_HOOK_LOG`, `WRIT_NO_AUTOSTART`, `WRIT_ALLOW_EMBEDDING_FALLBACK=1` (permit the sentence-transformers path when the ONNX model is absent), `WRIT_CONTEXT_WINDOW_TOKENS` (validated 1,000-10,000,000 at daemon startup), `WRIT_BLACKBOX=1` (raw payload capture). Neo4j credentials resolve from `WRIT_NEO4J_URI` / `WRIT_NEO4J_USER` / `WRIT_NEO4J_PASSWORD`, then `writ.toml`, then a dev-only built-in default. `WRIT_TEST_GRAPH=1` plus a non-production URI is what the destructive-wipe guard requires (`writ/graph/db/_safety.py`).
 
 ---
 

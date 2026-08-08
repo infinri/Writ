@@ -27,24 +27,13 @@ WRIT_HOOK_LOG_SINK="$(hook_log_sink)"
 # Read stdin envelope
 STDIN_JSON=$(cat)
 
-SESSION_ID=$(echo "$STDIN_JSON" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    print(data.get('agent_id', '') or data.get('session_id', ''))
-except Exception:
-    print('')
-" 2>/dev/null) || true
-
-# Fallback session ID
-if [ -z "$SESSION_ID" ]; then
-    if [ -f /tmp/writ-current-session ]; then
-        SESSION_ID=$(cat /tmp/writ-current-session 2>/dev/null | tr -d '[:space:]')
-    fi
-fi
-if [ -z "$SESSION_ID" ]; then
-    SESSION_ID=$(echo "${PWD}:${USER}" | md5sum | cut -c1-12)-$(date +%Y%m%d)
-fi
+# Payload only, NO fallback. This had both of the failure shapes: /tmp/writ-current-session
+# names whichever Claude Code session on this machine took a turn most recently, and
+# md5(cwd:user)+date names a session that has never existed. This hook decides whether a
+# PLAN is approved, so approving against the wrong session, or against a phantom one, is a
+# governance failure that leaves no trace. The shared helper also replaces an inline
+# python3 -c that cost an interpreter start to read one field.
+SESSION_ID=$(writ_require_session "$STDIN_JSON" validate-exit-plan) || exit 0
 
 # Check if mode is Work. Only Work mode requires plan validation.
 # If no mode or non-work mode, allow exit -- Writ doesn't gate /plan usage.
