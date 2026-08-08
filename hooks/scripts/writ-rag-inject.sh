@@ -299,7 +299,7 @@ except Exception:
     # RAG is intentionally suppressed -- workers cover that domain --
     # but methodology nodes guide workflow decisions the orchestrator
     # itself owns. Fires when CURRENT_MODE=work AND prompt is non-trivial.
-    ORCH_REMAINING_BUDGET=$(echo "$CACHE_DATA" | python3 -c "import sys,json; print(json.load(sys.stdin).get('remaining_budget',8000))" 2>/dev/null || echo '8000')
+    ORCH_REMAINING_BUDGET=$(echo "$CACHE_DATA" | json_transform 'if (.remaining_budget // null) == null then 8000 else .remaining_budget end' "(8000 if d.get('remaining_budget') is None else d.get('remaining_budget'))" 2>/dev/null || echo '8000')
     ORCH_LOADED_RULE_IDS=$(echo "$CACHE_DATA" | python3 "$WRIT_DIR/bin/lib/writ_phase_scoped_rules.py" 2>/dev/null || echo '[]')
 
     if [ "${CURRENT_MODE:-}" = "work" ] && [ "${ORCH_REMAINING_BUDGET:-0}" -gt 600 ] && [ ${#PROMPT} -ge $MIN_QUERY_LENGTH ]; then
@@ -603,9 +603,9 @@ ESC_NEEDED=$(printf '%s' "$ESCALATION" | json_transform \
 [ -n "$ESC_NEEDED" ] || ESC_NEEDED="no"
 
 if [ "$ESC_NEEDED" = "yes" ]; then
-    ESC_GATE=$(echo "$ESCALATION" | python3 -c "import sys,json; print(json.load(sys.stdin).get('gate','?'))" 2>/dev/null)
-    ESC_DIAG=$(echo "$ESCALATION" | python3 -c "import sys,json; print(json.load(sys.stdin).get('diagnosis','?'))" 2>/dev/null)
-    ESC_CYCLES=$(echo "$ESCALATION" | python3 -c "import sys,json; print(json.load(sys.stdin).get('cycles',0))" 2>/dev/null)
+    ESC_GATE=$(echo "$ESCALATION" | json_transform 'if (.gate // null) == null then "?" else .gate end' "('?' if d.get('gate') is None else d.get('gate'))" 2>/dev/null)
+    ESC_DIAG=$(echo "$ESCALATION" | json_transform 'if (.diagnosis // null) == null then "?" else .diagnosis end' "('?' if d.get('diagnosis') is None else d.get('diagnosis'))" 2>/dev/null)
+    ESC_CYCLES=$(echo "$ESCALATION" | json_transform 'if (.cycles // null) == null then 0 else .cycles end' "(0 if d.get('cycles') is None else d.get('cycles'))" 2>/dev/null)
 
     # Build failure history from invalidation records
     FAILURE_HISTORY=$(python3 "$WRIT_DIR/bin/lib/writ_render_failure_history.py" "$CACHE" "$ESC_GATE" "$ESC_DIAG" 2>/dev/null)
@@ -623,7 +623,7 @@ ESCALATION_MSG
     debug "injected escalation for $ESC_GATE ($ESC_DIAG, $ESC_CYCLES cycles)"
 
     # C10: Post enriched negative feedback (once per escalation)
-    ESC_FB_SENT=$(echo "$ESCALATION" | python3 -c "import sys,json; d=json.load(sys.stdin); print('yes' if d.get('feedback_sent') else 'no')" 2>/dev/null || echo "no")
+    ESC_FB_SENT=$(echo "$ESCALATION" | json_transform 'if (.feedback_sent) != null and (.feedback_sent) != false and (.feedback_sent) != "" and (.feedback_sent) != 0 and (.feedback_sent) != [] and (.feedback_sent) != {} then "yes" else "no" end' "('yes' if d.get('feedback_sent') else 'no')" 2>/dev/null || echo "no")
     if [ "$ESC_FB_SENT" != "yes" ]; then
         python3 "$WRIT_DIR/bin/lib/writ_send_escalation_feedback.py" "$CACHE" "$ESC_GATE" 2>>"$WRIT_HOOK_LOG_SINK" || true
 

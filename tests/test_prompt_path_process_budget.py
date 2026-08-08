@@ -54,12 +54,10 @@ BASELINE_PYTHON = 13
 # 4 -> 3. The clean-cache path is different and only reached 11, so 10 would have been a
 # number I wanted rather than one I measured. Lower it when the next conversion earns it.
 
-# Inline `python3 -c` sites that still parse JSON in writ-rag-inject.sh. Each is ~14ms
-# (9.5 interpreter + 4.9 for `import json`) to answer one question jq answers in 2.3.
-# Converting each needs its own three-way parity check (jq arm, python arm, and the
-# original) across null / false / "" / 0 / [] / malformed, because jq and python disagree
-# on truthiness and that disagreement has already caused one gate to skip its check.
-REMAINING_INLINE_JSON = 5
+# Inline `python3 -c` JSON reads in writ-rag-inject.sh are now ZERO (was 5, each ~14ms:
+# 9.5 interpreter floor plus 4.9 for `import json`, to answer what jq answers in 2.3).
+# The assertion lives in test_no_inline_json_python_remains; there is no count constant
+# any more because the count is zero and a ratchet at zero is just an assertion.
 
 ENVELOPE = json.dumps({
     "session_id": "prompt-path-budget-probe",
@@ -218,20 +216,94 @@ class TestEscalationCheckIsNotInlinePython:
             "the escalation check no longer routes through json_transform"
         )
 
-    def test_inline_json_python_does_not_grow(self) -> None:
-        """A ratchet, not a clean-slate assertion.
+    def test_no_inline_json_python_remains(self) -> None:
+        """Now genuinely zero, so this is an assertion rather than a ratchet.
 
-        This started life asserting zero, which failed immediately and usefully: FIVE more
-        inline sites remain that I had not converted. Asserting an aspiration would have
-        meant either a permanently red test or deleting the check. Counting instead keeps
-        the pressure on without lying about today.
+        It started life asserting zero, failed usefully at FIVE, spent a commit as a
+        does-not-grow count, and only became a clean-slate assertion once the count was
+        actually zero. Writing the aspiration first and living with a red test would have
+        taught the suite to expect failure.
         """
         source = (HOOKS / "writ-rag-inject.sh").read_text()
         offenders = [
             ln.strip()[:70] for ln in source.splitlines()
             if "python3 -c" in ln and "json" in ln
         ]
-        assert len(offenders) <= REMAINING_INLINE_JSON, (
-            f"inline `python3 -c` JSON parsing grew to {len(offenders)}, above the "
-            f"{REMAINING_INLINE_JSON} known sites. Use json_transform: {offenders}"
+        assert offenders == [], (
+            f"inline `python3 -c` JSON parsing is back ({len(offenders)} sites). Each is "
+            f"~14ms to read one field; use json_transform: {offenders}"
+        )
+
+
+class TestNullDefaultsAreNotTheStringNone:
+    """A deliberate behaviour change, recorded because it is not a pure refactor.
+
+    The converted reads used `d.get('gate', '?')`, which returns the DEFAULT only when the
+    key is absent. A key present with a null value returns None, and `print(None)` emits
+    the four characters "None". That was not cosmetic:
+
+      - ORCH_REMAINING_BUDGET feeds `[ "$X" -gt 600 ]`. Bash exits 2 comparing "None",
+        so a null budget silently disabled the orchestrator companion branch.
+      - ESC_CYCLES is interpolated into user-facing text as "invalidated None times".
+
+    Both arms now map absent AND null to the same default. This DIVERGES from the original
+    on the null input, on purpose, and these tests pin the new contract so the divergence
+    stays a decision instead of drifting back.
+    """
+
+    def _run(self, payload: str, jq_filter: str, pyexpr: str, no_jq: bool) -> str:
+        env = os.environ.copy()
+        if no_jq:
+            env["WRIT_NO_JQ"] = "1"
+        else:
+            env.pop("WRIT_NO_JQ", None)
+        script = (
+            f'source "{REPO / "bin" / "lib" / "common.sh"}" >/dev/null 2>&1\n'
+            f"printf '%s' {json.dumps(payload)} | json_transform "
+            f"{json.dumps(jq_filter)} {json.dumps(pyexpr)} 2>/dev/null || true\n"
+        )
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                              timeout=60, env=env).stdout.strip()
+
+    FIELDS = {
+        "cycles": ('if (.cycles // null) == null then 0 else .cycles end',
+                   "(0 if d.get('cycles') is None else d.get('cycles'))", "0"),
+        "remaining_budget": (
+            'if (.remaining_budget // null) == null then 8000 else .remaining_budget end',
+            "(8000 if d.get('remaining_budget') is None else d.get('remaining_budget'))",
+            "8000"),
+        "gate": ('if (.gate // null) == null then "?" else .gate end',
+                 "('?' if d.get('gate') is None else d.get('gate'))", "?"),
+    }
+
+    @pytest.mark.parametrize("no_jq", [False, True], ids=["jq", "python"])
+    @pytest.mark.parametrize("field", sorted(FIELDS))
+    def test_explicit_null_yields_the_default_not_none(self, field: str, no_jq: bool) -> None:
+        jq_filter, pyexpr, default = self.FIELDS[field]
+        out = self._run(json.dumps({field: None}), jq_filter, pyexpr, no_jq)
+        assert out == default, f"{field} on explicit null gave {out!r}, wanted {default!r}"
+        assert out != "None", "the string 'None' is what broke bash arithmetic"
+
+    @pytest.mark.parametrize("no_jq", [False, True], ids=["jq", "python"])
+    @pytest.mark.parametrize("field", sorted(FIELDS))
+    def test_a_real_value_is_passed_through(self, field: str, no_jq: bool) -> None:
+        """Anti-vacuity: a filter that always returned the default would pass above."""
+        jq_filter, pyexpr, default = self.FIELDS[field]
+        value = 42 if field != "gate" else "plan"
+        out = self._run(json.dumps({field: value}), jq_filter, pyexpr, no_jq)
+        assert out == str(value) and out != default
+
+    @pytest.mark.parametrize("no_jq", [False, True], ids=["jq", "python"])
+    def test_a_falsy_but_real_value_is_not_replaced(self, no_jq: bool) -> None:
+        """0 is a legitimate remaining_budget and must NOT become 8000. This is why the
+        filter tests `== null` rather than using jq's `//`, which swallows 0 and false."""
+        jq_filter, pyexpr, _ = self.FIELDS["remaining_budget"]
+        assert self._run('{"remaining_budget":0}', jq_filter, pyexpr, no_jq) == "0"
+
+    def test_bash_cannot_compare_the_string_none(self) -> None:
+        """The evidence for calling the old behaviour a bug rather than a style choice."""
+        proc = subprocess.run(
+            ["bash", "-c", 'X=None; [ "$X" -gt 600 ]'], capture_output=True, text=True)
+        assert proc.returncode == 2, (
+            "if bash compared 'None' cleanly, the old default would have been harmless"
         )
