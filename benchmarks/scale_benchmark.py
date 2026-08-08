@@ -7,6 +7,37 @@ at each corpus size. Results logged to SCALE_BENCHMARK_RESULTS.md.
 
 from __future__ import annotations
 
+# THE REFUSAL RUNS BEFORE ANY HEAVY IMPORT, and that ordering is the whole point.
+# This script wipes the live graph, so a bare invocation must refuse and say how to
+# proceed. The check used to sit at the bottom of the file, after `numpy`,
+# `sentence_transformers` and `writ.config` were imported at module scope. On any
+# machine without the optional embedding extra installed, the script therefore died
+# with ModuleNotFoundError before reaching the guard: no refusal, no mention of
+# --run, just a traceback. The safety property survived only because an import that
+# crashes cannot wipe anything either, which is luck rather than design, and luck is
+# not what a destructive-operation guard should rest on. CI caught it on 2026-08-08,
+# where `.[dev]` does not pull the fallback extra.
+#
+# Parsed with stdlib only, so the refusal works on an interpreter that can import
+# nothing else this file needs.
+if __name__ == "__main__":
+    import argparse as _argparse
+
+    _parser = _argparse.ArgumentParser(
+        description=(
+            "Writ scale benchmark. DESTRUCTIVE: snapshots, then repeatedly wipes and "
+            "re-ingests the LIVE Neo4j graph at synthetic scales, restoring on exit. "
+            "A run killed mid-flight leaves the synthetic corpus in place; recover "
+            "with: writ import-cypher var/benchmark-graph-snapshot.cypher"
+        ),
+    )
+    _parser.add_argument(
+        "--run", action="store_true",
+        help="Actually run the destructive benchmark (required).",
+    )
+    if not _parser.parse_args().run:
+        _parser.error("this benchmark wipes the live graph; pass --run to proceed")
+
 import asyncio
 import gc
 import json
@@ -561,24 +592,6 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    import argparse
-
-    # This benchmark WIPES the live graph (snapshot-then-restore, but a killed run
-    # leaves the synthetic corpus in place). Destructive work requires the explicit
-    # flag; anything else prints usage and exits without touching Neo4j.
-    parser = argparse.ArgumentParser(
-        description=(
-            "Writ scale benchmark. DESTRUCTIVE: snapshots, then repeatedly wipes and "
-            "re-ingests the LIVE Neo4j graph at synthetic scales, restoring on exit. "
-            "A run killed mid-flight leaves the synthetic corpus in place; recover "
-            "with: writ import-cypher var/benchmark-graph-snapshot.cypher"
-        ),
-    )
-    parser.add_argument(
-        "--run", action="store_true",
-        help="Actually run the destructive benchmark (required).",
-    )
-    args = parser.parse_args()
-    if not args.run:
-        parser.error("this benchmark wipes the live graph; pass --run to proceed")
+    # Arguments were already parsed and the --run refusal already enforced at the top
+    # of this file, before the heavy imports. Reaching here means --run was given.
     asyncio.run(main())
