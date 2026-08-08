@@ -4,9 +4,9 @@ A Claude Code harness that gives every coding session two helpers: a process kee
 
 The process keeper's core property is that **the agent cannot approve its own work**. A gate advances only on a token minted from the user's own typed approval; the server requires and consumes that token (one approval, one advance); and an agent's attempt to self-approve is refused and logged as `agent_self_approval_blocked` in the audit stream. Retrieval speed is table stakes -- moving the oversight decision out of the agent is the product.
 
-The librarian, for the record: ranked results in **0.52 ms at the 95th percentile** (measured 2026-08-05 at the live 287-rule corpus), holding at 0.83 ms at the 10,000-rule synthetic scale while reducing context tokens by **749 times** versus loading the whole rulebook every turn.
+The librarian, for the record: ranked results in **1.02 ms at the 95th percentile** on the 193-query ground-truth workload (measured 2026-08-05 at the live 287-rule corpus), 9.8x inside the 10 ms budget, while cutting context tokens **26.4 times** versus stuffing the domain's rules every turn. Those are the harder query mix and the live corpus, which is why they are the ones quoted here; the easier mix measures 0.52 ms and the 10,000-rule synthetic scale reaches 749x, both in [Performance](#performance).
 
-The enforcement claims are auditable in this repo, not asserted. [`PSR-008`](docs/pressure-runs/PSR-008/analysis.md) is a complete adversarial pressure run against a real session: the verbatim task prompt, the full transcript, every hook decision as JSONL, and each targeted rule graded held / bypassed / unclear (9 criteria, 8 held, one designed-in failure documented honestly). The [first monthly operational review](docs/monthly-reviews/2026-05.md) is built from 7,058 logged events by the system's own audit stream. Details in [Evidence](#evidence-pressure-runs-and-operational-reviews).
+The enforcement claims are auditable in this repo, not asserted. [`PSR-008`](docs/pressure-runs/PSR-008/analysis.md) is a complete adversarial pressure run against a real session: the verbatim task prompt, the full transcript, every hook decision as JSONL, and each targeted rule graded held / bypassed / unclear (9 criteria, 8 held, one designed-in failure documented honestly). The [first monthly operational review](docs/monthly-reviews/2026-05.md) is built from the system's own audit stream, whose friction log stood at 7,058 lines at the close of the window (the count at the START was never captured, so the number of events generated WITHIN the window is not established; the review says so itself, and carries capturing it as an action item). Details in [Evidence](#evidence-pressure-runs-and-operational-reviews).
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the release history through v1.7.0 (re-measured benchmarks, hook-system audit and hardening, force-swap coverage, the Claude Code 2.1.220 black-box refresh).
 
@@ -43,7 +43,7 @@ The plugin's hooks degrade gracefully until bootstrap completes: sessions are ne
 
 Three things break when you give a coding agent a large rulebook the obvious way (paste it all into the prompt):
 
-1. **Token cost grows with the rulebook, not the work.** At 80 rules: about 13,876 tokens of rule text every turn. At 10,000 rules: 1,174,142 tokens. Cache hit rates collapse, latency climbs, the bill scales with the rulebook.
+1. **Token cost grows with the rulebook, not the work.** At 80 rules: 14,738 tokens of rule text every turn. At 10,000 rules: 1,190,649 tokens. Cache hit rates collapse, latency climbs, the bill scales with the rulebook.
 2. **Relevance degrades.** A model handed every rule treats none of them as load bearing. Specific rules drown in generic ones.
 3. **Workflow discipline has nowhere to live.** Static skill files can describe a process; they cannot enforce it. Telling the model to write tests first does not stop it from writing the implementation first.
 
@@ -69,6 +69,10 @@ Each retriever covers a blind spot the others have. BM25 catches exact keyword m
 **The enforcement layer (the process keeper).** 40 hook scripts under `hooks/scripts/`, wired into Claude Code via `hooks/hooks.json` (44 registrations across 12 hook events), plus one statusLine script, a session state machine in `writ/session/`, slash commands, and 5 sub-agent role files under `agents/`. The state machine owns mode, phase, and gate state; hooks are thin clients that delegate to it.
 
 **Adversarial review (the independence thesis).** The review claim is not a reviewer headcount; it is independence. The reviewer role runs with fresh context, judges a SHA-scoped diff, inherits none of the implementer's session history, and carries no Write tool: the implementer's framing never reaches it, and it can only report what it finds, never quietly fix it. Isolation is what makes a second opinion a second opinion.
+
+**What a finding actually does, stated precisely.** A recorded CRITICAL verdict turns the next `git commit` into a confirmation prompt naming the unresolved findings (`writ-bash-write-gate.sh`, via `review_findings.py`). It is a stop-and-ask, not an absolute block: you can confirm and commit anyway, and that choice is recorded as a `review_block_lifted` audit event. An unparseable verdict blocks the same way, because findings that cannot be read are not findings that can be dismissed; no reviewer having run at all does not block, since the gate only enforces a verdict that exists.
+
+The load-bearing part is not the prompt, it is that **the agent cannot clear its own verdict**. Writing a reviewer record directly is denied outright; verdicts are recorded only by the SubagentStop hook from the reviewer's own output, and the only way an agent can lift a block is to fix the findings and re-run the reviewer for a fresh clean verdict. So the escape hatch is human-held, exactly like the phase gates: the agent can be overruled by you, and cannot overrule you.
 
 **Mandatory rules (the architectural invariant).** Rules with `mandatory: true` (32 in the live corpus, spanning ENF-* enforcement rules and SEC-*/PERF-*/SCALE-* invariants) are excluded from the retrieval pipeline at index build time. They reach the agent out of band through the `/always-on` endpoint with its own 5,000-token budget, enforced by a corpus integrity check. No change to ranking weights, embedding model, BM25 tuning, or graph traversal can cause an enforcement rule to disappear from agent context.
 
@@ -137,6 +141,8 @@ This feature family is adapted from concepts pioneered by **JolliAI**: capturing
 
 ## Performance
 
+**Three p95 figures for the same corpus appear below, and they are not in competition.** They differ by query workload and by measurement date, so before the tables: `1.02 ms` is the 193-query ground-truth workload (2026-08-05) and is the number quoted in the lead, because it is the hardest of the three and the one a real session most resembles. `0.524 ms` is the 5-query latency set on the same date. `0.6 ms` is the older 10-query set from 2026-08-01, kept for continuity with the previous release. Anywhere a single number is quoted without a workload beside it, assume the ground-truth one.
+
 Live system measurement (2026-08-01, 287-rule corpus, ONNX runtime, warm indexes; steady-state samples over 10 representative queries):
 
 | Stage             | Median   | p95      | Budget  | Headroom at p95 |
@@ -171,6 +177,8 @@ Retrieval quality against the 193-query ground-truth corpus (47 ambiguous, expan
 | MRR at 5 (ambiguous queries, n=47)          | >= 0.45 | 0.5681     | 0.6167     | 0.6082     |
 | Domain hit rate top-5                       | >= 0.90 | 0.9323     | 0.9534     | 0.9585     |
 | nDCG at 10                                  | >= 0.65 | 0.7071     | 0.7332     | 0.7323     |
+
+**The index-eligible hit rate is the one to watch.** It sits at 0.9231 against a 0.90 floor that fails the build, which is 2.3 points of headroom, and it moved *down* between 08-05 and 08-06 (0.9290 to 0.9231). Three of the other metrics drifted down over the same pair of runs. That is disclosed here rather than left for a reader to notice, because a gate this close to its floor is a gate that will eventually trip on a change unrelated to retrieval quality, and the honest reading is that the margin is thin rather than comfortable.
 | Methodology MRR at 5 (n=40, signed off)     | >= 0.78 | 0.8271     | --         | --         |
 | Methodology hit rate                        | >= 0.90 | 0.9500     | --         | --         |
 
@@ -234,10 +242,10 @@ Writ models skills, playbooks, rationalizations, and forbidden-response sets as 
 Two architectural splits make this practical:
 
 - **Retrieval-on-demand for the bulk of the corpus.** Ranked results in **0.52 ms at p95** at the live 287-rule corpus (re-measured 2026-08-05; the harder 193-query ground-truth workload measures 1.02 ms p95); at 10,000 rules, **0.83 ms p95**. Retrieved tokens stay roughly flat (around 1,600-2,000) regardless of corpus size, while context stuffing scales linearly (14,738 tokens at 80 rules to 1,190,649 at 10,000). Reduction: **26.4x at the live corpus** (52,870 domain-rule tokens vs 2,000 retrieved), **749x at 10,000 rules**. An earlier README revision said 56x at the live corpus; that number does not reproduce with the harness's own arithmetic and is corrected here.
-- **Measured injection cost, not a budget.** Across 67 real sessions and 891 turns of logged injections (all sources: per-prompt, per-read, per-write): **mean 537 tokens per turn, median 600, p95 1,360, max 5,440**. The 5,000-token always-on cap and 8,000-token retrieval budget are ceilings; the measured spend is what a turn actually costs.
+- **Measured injection cost, not a budget.** Across 67 real sessions and 891 turns of logged injections (all sources: per-prompt, per-read, per-write): **mean 537 tokens per turn, median 600, p95 1,360, max 5,440**. The 5,000-token always-on cap and 8,000-token retrieval budget are ceilings; the measured spend is what a turn actually costs. Produced by `writ token-audit` (`writ/analysis/token_audit.py`) over the maintainer's own session logs. **Unlike every other number in this README, this one has no artifact you can check**: the input is raw session logs containing real prompts and file contents, which are not shippable. The command is in the repo and runs against your own logs, so the method is reproducible even though this particular run is not.
 - **Always-on bundle for the mandatory floor.** Mandatory rules and forbidden-response nodes load every turn through a dedicated endpoint with its own 5,000-token budget. They are excluded from the retrieval pipeline at index build time, so no ranking change can cause an enforcement rule to drop out of agent context.
 
-Thirty-seven hook scripts read filesystem changes, tool calls, and session state, and invoke retrieval with those signals attached. Methodology arrives in the agent's context based on observable state, not on whether the agent recognized the trigger from prompt text alone.
+Forty hook scripts read filesystem changes, tool calls, and session state, and invoke retrieval with those signals attached. Methodology arrives in the agent's context based on observable state, not on whether the agent recognized the trigger from prompt text alone.
 
 ### Boundary
 
@@ -310,7 +318,7 @@ Common environment variables: `WRIT_HOST`/`WRIT_PORT` (daemon target), `WRIT_CAC
 
 ## Testing
 
-367 test modules, ~5,700 collected tests. Roughly half exercise a live Neo4j and skip only when the graph is genuinely unreachable; an empty-but-reachable graph fails loudly instead of skipping. The suite runs against a dedicated daemon port (8799) and isolated cache/log directories, and restores the production corpus from `writ-corpus.cypher` when it finishes.
+398 test modules, 7,137 collected tests. Roughly half exercise a live Neo4j and skip only when the graph is genuinely unreachable; an empty-but-reachable graph fails loudly instead of skipping. The suite runs against a dedicated daemon port (8799) and isolated cache/log directories, and restores the production corpus from `writ-corpus.cypher` when it finishes.
 
 ```bash
 make test          # pytest tests/ -x -q
@@ -325,13 +333,15 @@ Pre-commit: `make bench` runs at `pre-push`.
 For auditors (and anyone deciding whether to trust an enforcement tool), Writ keeps its verification artifacts in the repository rather than asserting them:
 
 - **[`docs/pressure-runs/`](docs/pressure-runs/)**: adversarial scenario runs against real Claude Code sessions. Each completed run ships the verbatim task prompt, the full session transcript, the friction-log delta (every hook decision as JSONL), and a graded `analysis.md` scoring each targeted rule as held / bypassed / unclear. [`PSR-008`](docs/pressure-runs/PSR-008/analysis.md) is a complete example: 9 scored criteria, 8 passed, one designed-in failure documented honestly, and two real findings filed from the run. The methodology is in the [runbook](docs/pressure-runs/README.md).
-- **[`docs/monthly-reviews/`](docs/monthly-reviews/)**: recurring operational reviews built from the friction log via `writ analyze-friction`: per-rule activation counts, denial stick rates, rationalization counts, skill usage, and playbook compliance, with keep/revise/trim actions per rule. [`2026-05.md`](docs/monthly-reviews/2026-05.md) is the first completed review (7,058 logged events in the window).
+- **[`docs/monthly-reviews/`](docs/monthly-reviews/)**: recurring operational reviews built from the friction log via `writ analyze-friction`: per-rule activation counts, denial stick rates, rationalization counts, skill usage, and playbook compliance, with keep/revise/trim actions per rule. [`2026-05.md`](docs/monthly-reviews/2026-05.md) is the first completed review (friction log at 7,058 lines at the end of the window; the start count was not captured, so treat that as a cumulative total rather than a within-window event count).
 
 Both artifact sets are produced by the system's own audit stream, not written after the fact.
 
 ## Status
 
-**v1.6.0 (2026-08-01).** Every benchmark re-measured; documentation rebuilt from a full code read; the hook system audited end to end (silent-failure fixes, force-swap coverage, fail-open posture documented as the specification); Claude Code contract re-pinned to 2.1.220. Installs end to end as a Claude Code plugin (verified `Agents (5)` on 2.1.220). Every number in this README is either measured and dated, or derived from the current source tree.
+**v1.7.0 (2026-08-08).** Retrieval re-measured on 2026-08-05 and 2026-08-06 after a nondeterminism defect was found and fixed (see [Performance](#performance)); the hook layer audited and hardened, closing two gates that were failing open; destructive graph operations put behind an explicit permission; test isolation enforced rather than assumed. Installs end to end as a Claude Code plugin (verified `Agents (5)` on 2.1.220). Every number in this README is either measured and dated, or derived from the current source tree.
+
+The previous entry here read `v1.6.0 (2026-08-01)` and claimed "every benchmark re-measured" while the benchmarks had since been re-measured twice and the header already pointed at a newer changelog. A stale status block is the exact failure this README argues against, so it is called out rather than quietly replaced.
 
 ## Related documents
 

@@ -39,6 +39,8 @@ The install collapses to "install the plugin, run one command"; `jq`, `envsubst`
 - **The dispatch-discipline audit trail named no agent.** Every row recorded an empty `target`, so the record could not say which dispatch it had rerouted, refused, or waved through.
 - **`clear_all` and `execute` consume their results.** A lazy result let a wipe overlap the rebuild that followed it.
 
+- **Corrected several published figures that did not match their own sources.** The opening token-cost numbers disagreed with the benchmark file the same README cites and with its own table three sections later; the test-suite counts were stale by 31 modules and roughly 1,400 tests; a monthly-review figure was described as events "in the window" when the source document states the starting count was never captured, so no within-window count exists; and the package description carried a hook count matching neither the README nor the wiring. The injection-cost figures now say plainly that they are the one claim with no shippable artifact behind them, and why.
+
 ### Security
 
 - **Environment-specific details removed from published documentation and the corpus.** Benchmark figures keep their ratios and no longer name the machine they were measured on.

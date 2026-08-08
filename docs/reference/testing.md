@@ -10,7 +10,7 @@ make bench    # benchmarks/bench_targets.py (contractual perf floors)
 make check    # test + bench + writ validate
 ```
 
-367 test modules, ~5,700 collected tests. Always use the venv interpreter (`.venv/bin/python`): the system interpreter lacks `onnxruntime` and fails the embedding tests. Markers: `perf` (latency-floor tests), `integration` (needs a live `claude` CLI, gated behind `WRIT_INTEGRATION_TESTS=1`), `no_friction_isolation` (opts out of the log redirect).
+398 test modules, 7,137 collected tests. Always use the venv interpreter (`.venv/bin/python`): the system interpreter lacks `onnxruntime` and fails the embedding tests. Markers: `perf` (latency-floor tests), `integration` (needs a live `claude` CLI, gated behind `WRIT_INTEGRATION_TESTS=1`), `no_friction_isolation` (opts out of the log redirect).
 
 ## Isolation, forced at import time (`tests/conftest.py`)
 
