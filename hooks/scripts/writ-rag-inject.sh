@@ -679,7 +679,27 @@ if [ "$CURRENT_MODE" = "work" ]; then
         _GATE_DIR="${_GATE_DIR:-$_PROJECT_ROOT/.claude/gates}"
 
         # Check if any gate was invalidated (records exist but .approved file missing)
-        BACKWARD_CTX=$(python3 "$WRIT_DIR/bin/lib/writ_render_backward_context.py" "$CACHE" "$_GATE_DIR" 2>/dev/null)
+        #
+        # ASK BEFORE SPAWNING. The renderer prints nothing unless invalidation_history
+        # holds a non-empty entry, which for almost every session it does not (measured 0
+        # across live sessions). Discovering that cost a 19.5ms interpreter start on EVERY
+        # prompt. jq answers the same question in 2.3ms from $CACHE, already in memory.
+        #
+        # This is a NECESSARY-condition test, not the renderer's full logic: an empty
+        # history guarantees no output, while a non-empty one still has to check whether
+        # each gate's .approved file is missing. So the guard can only skip work the
+        # renderer would have skipped anyway.
+        #
+        # Fail-open: an unreadable cache leaves this empty and the default runs the
+        # renderer, because losing a gate-invalidation warning is worse than a spawn.
+        _HAS_INVALIDATION=$(printf '%s' "$CACHE" | json_transform \
+            'if ((.invalidation_history // {}) | to_entries | map(select((.value | length) > 0)) | length) > 0 then "yes" else "no" end' \
+            "('yes' if any((d.get('invalidation_history') or {}).values()) else 'no')" \
+            2>/dev/null || true)
+        BACKWARD_CTX=""
+        if [ "${_HAS_INVALIDATION:-yes}" != "no" ]; then
+            BACKWARD_CTX=$(python3 "$WRIT_DIR/bin/lib/writ_render_backward_context.py" "$CACHE" "$_GATE_DIR" 2>/dev/null)
+        fi
 
         if [ -n "$BACKWARD_CTX" ]; then
             echo ""

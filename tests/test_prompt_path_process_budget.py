@@ -237,6 +237,81 @@ class TestEscalationCheckIsNotInlinePython:
         )
 
 
+class TestTheRendererIsNotSpawnedToDiscoverNothingToDo:
+    """writ_render_backward_context.py prints the INVALIDATED block, or nothing at all.
+
+    For a session with no invalidation history it prints nothing, which is nearly every
+    session (measured 0 across live sessions), and finding that out cost a 19.5ms
+    interpreter start on EVERY prompt. Same shape as the dead mktemp removed earlier this
+    cycle: work spawned to learn there was no work.
+
+    The guard is a NECESSARY-condition test, not a copy of the renderer's logic. An empty
+    history guarantees no output; a non-empty one still needs the per-gate `.approved`
+    check, which stays in the renderer. So the guard can only skip what the renderer would
+    have skipped anyway, and that asymmetry is what makes it safe.
+    """
+
+    GUARD_JQ = (
+        'if ((.invalidation_history // {}) | to_entries '
+        "| map(select((.value | length) > 0)) | length) > 0 then \"yes\" else \"no\" end"
+    )
+    GUARD_PY = "('yes' if any((d.get('invalidation_history') or {}).values()) else 'no')"
+
+    def _guard(self, payload: str, no_jq: bool) -> str:
+        env = os.environ.copy()
+        if no_jq:
+            env["WRIT_NO_JQ"] = "1"
+        else:
+            env.pop("WRIT_NO_JQ", None)
+        script = (
+            f'source "{REPO / "bin" / "lib" / "common.sh"}" >/dev/null 2>&1\n'
+            f"printf '%s' {json.dumps(payload)} | json_transform "
+            f"{json.dumps(self.GUARD_JQ)} {json.dumps(self.GUARD_PY)} 2>/dev/null || true\n"
+        )
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                              timeout=60, env=env).stdout.strip()
+
+    @pytest.mark.parametrize("no_jq", [False, True], ids=["jq", "python"])
+    @pytest.mark.parametrize("payload,expected", [
+        ("{}", "no"),
+        ('{"invalidation_history":{}}', "no"),
+        ('{"invalidation_history":{"plan":[]}}', "no"),
+        ('{"invalidation_history":{"plan":[{"cycle":1}]}}', "yes"),
+        ('{"invalidation_history":{"plan":[],"test":[{"cycle":2}]}}', "yes"),
+        ("garbage", ""),      # unreadable: empty, and the hook defaults to running it
+    ])
+    def test_the_guard_agrees_on_both_arms(self, payload, expected, no_jq) -> None:
+        assert self._guard(payload, no_jq) == expected
+
+    def test_the_renderer_really_prints_nothing_without_history(self, tmp_path) -> None:
+        """The premise. If the renderer produced output for an empty history, skipping it
+        would drop a real warning rather than an empty string."""
+        proc = subprocess.run(
+            ["python3", str(REPO / "bin" / "lib" / "writ_render_backward_context.py"),
+             "{}", str(tmp_path)],
+            capture_output=True, text=True, timeout=60)
+        assert proc.stdout.strip() == ""
+
+    def test_the_renderer_does_print_when_a_gate_is_invalidated(self, tmp_path) -> None:
+        """Anti-vacuity for the test above: a renderer that printed nothing under all
+        conditions would make the guard look free while hiding a broken renderer."""
+        cache = json.dumps({"invalidation_history": {"plan": [
+            {"cycle": 1, "rule_id": "R-1", "file": "a.py", "evidence": "e"}]}})
+        proc = subprocess.run(
+            ["python3", str(REPO / "bin" / "lib" / "writ_render_backward_context.py"),
+             cache, str(tmp_path)],
+            capture_output=True, text=True, timeout=60)
+        assert "INVALIDATED" in proc.stdout
+
+    def test_the_hook_fails_open(self) -> None:
+        """An unreadable cache must RUN the renderer, not skip it: losing a gate
+        invalidation warning is worse than paying for a spawn."""
+        source = (HOOKS / "writ-rag-inject.sh").read_text()
+        assert '"${_HAS_INVALIDATION:-yes}" != "no"' in source, (
+            "the guard no longer defaults to running the renderer when the check fails"
+        )
+
+
 class TestNullDefaultsAreNotTheStringNone:
     """A deliberate behaviour change, recorded because it is not a pure refactor.
 
