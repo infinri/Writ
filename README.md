@@ -28,7 +28,7 @@ The main claim is not proven yet. Everything measured so far shows what the sear
 
 **You do not have to install this yourself.** If you are reading this you already use Claude Code, which means you already have something that reads instructions and runs commands. Point it at this page and ask it to install Writ. It handles the setup; the one piece you may need to do by hand is installing Docker, the same way you would install any other application.
 
-So the decision in front of you is not a technical one. It is whether you want the AI stopped and asked twice per task instead of trusted to remember. Everything below this line is the evidence an engineer would want before answering that.
+So the decision in front of you is not a technical one. It is whether you want the AI stopped and asked before it writes, instead of trusted to remember. Everything below this line is the evidence an engineer would want before answering that.
 
 ---
 
