@@ -12,7 +12,7 @@ Writ makes it happen for the part that matters. It sits between the AI and your 
 
 The rest follows from that. Refusing writes is only affordable if the AI can be handed the right rules cheaply, so Writ keeps the rulebook in a search system instead of the conversation, and looks at what the AI is doing right now to decide what to hand it.
 
-**What it costs you.** Two approvals per piece of work: you read the plan and type "approved", then you read the tests and type "approved". After that the AI writes code without interrupting you again. The rulebook lives in a database on your own machine, so you need Docker installed, which is a normal application download. Nothing is sent anywhere.
+**What it costs you.** Two approvals to start a piece of work: you read the plan and type "approved", then you read the tests and type "approved". After that the AI writes code without interrupting you again, with one exception, which is that a review finding something serious adds a confirmation before the work is committed. So usually two, occasionally three. The rulebook lives in a database on your own machine, so you need Docker installed, which is a normal application download. Your rules and your code stay on your machine; [`SECURITY.md`](SECURITY.md) lists the one thing that leaves and when.
 
 **What you get for that.** The process you asked for happens or the work stops, rather than happening for the first hour. And when it stops, there is a record of what was refused and why, which is the part that matters if you are the person answering for the code rather than writing it.
 
