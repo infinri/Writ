@@ -474,6 +474,31 @@ REMAINING_BUDGET=$(parsed_field "$CACHE" "remaining_budget"); REMAINING_BUDGET="
 # spawn turns the bundle meta into JSON lines (same events/fields/delivery tags as the
 # prior per-channel log_rag_query_event / always_on_inject) and pipes them to the
 # canonical friction-append.py writer (single-source path resolution; no inline marker-walk).
+# jq builds these rows when present. The python arm below is unchanged and still runs when
+# jq is absent, which is the WRIT_NO_JQ seam every other conversion on this path uses:
+# absence changes speed, never behaviour. Measured 16.9ms for the interpreter start against
+# 2.3 for jq, to turn three metadata objects into up to three JSON lines.
+#
+# THE SENTINEL IS jq's EXIT STATUS, NOT ITS OUTPUT. A bundle with no metadata legitimately
+# produces ZERO rows, and treating empty output as failure would spawn python to rediscover
+# that there is nothing to emit: the exact pattern removed twice already this cycle (the
+# dead mktemp, and the renderer that printed nothing on every prompt).
+#
+# These rows are AUDIT records (rag_query, always_on_inject), so parity is asserted on the
+# PARSED objects across every bundle shape the endpoint produces, not on the text.
+FRICTION_ROWS=""
+_FRICTION_ROWS_OK=""
+if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1 \
+        && [ -r "$WRIT_DIR/bin/lib/friction-rows.jq" ]; then
+    if FRICTION_ROWS=$(printf '%s' "$BUNDLE" | jq -R -s -r \
+            --arg sid "$SESSION_ID" --arg mode "${CURRENT_MODE:-}" --arg effort "$EFFORT" \
+            -f "$WRIT_DIR/bin/lib/friction-rows.jq" 2>>"$WRIT_HOOK_LOG_SINK"); then
+        _FRICTION_ROWS_OK=1
+    else
+        FRICTION_ROWS=""
+    fi
+fi
+if [ -z "$_FRICTION_ROWS_OK" ]; then
 FRICTION_ROWS=$(printf '%s' "$BUNDLE" | WRIT_SID="$SESSION_ID" WRIT_MODE="${CURRENT_MODE:-}" WRIT_EFFORT="$EFFORT" python3 -c "
 import json, os, sys
 try:
@@ -507,6 +532,7 @@ if mm is not None:
 for e in lines:
     print(json.dumps(e))
 " 2>>"$WRIT_HOOK_LOG_SINK") || true
+fi
 # The builder's rows used to be piped straight into friction-append.py, a SECOND
 # interpreter start whose only job was appending them. Measured 35.3ms on the prompt path,
 # and almost none of it work: the interpreter floor is 9.5ms and `import
