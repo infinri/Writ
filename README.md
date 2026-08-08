@@ -69,11 +69,11 @@ Worth being blunt about what the gate does and does not check. The validators co
 
 ## How the rules reach the AI
 
-**The floor: rules that can never be dropped.** Thirty three of the 287 shipped rules are marked mandatory. These are deliberately kept **out of the search index entirely** and delivered through a separate channel with its own budget. That means no change to search ranking, no swap of the underlying model, no retuning of anything can cause a critical security rule to fall off the list. A single definition in one file decides what belongs to the floor, and both the delivery code and the validation code read that same definition, so the two can never drift apart. This closed a real bug where two parts of the system checked different fields and left 29 of 32 mandatory rules unreachable by either path.
+**The floor: rules that can never be dropped.** Thirty two of the 287 shipped rules are marked mandatory. These are deliberately kept **out of the search index entirely** and delivered through a separate channel with its own budget. That means no change to search ranking, no swap of the underlying model, no retuning of anything can cause a critical security rule to fall off the list. A single definition in one file decides what belongs to the floor, and both the delivery code and the validation code read that same definition, so the two can never drift apart. This closed a real bug where two parts of the system checked different fields and left 29 of 32 mandatory rules unreachable by either path.
 
 **Everything else is searched for.** A five stage pipeline runs over a Neo4j graph database: narrow the candidates, keyword search, meaning based search (so a rule about "SQL" surfaces for a question about "database queries"), a walk across the graph to pull in related rules, then weighted ranking. Each stage covers a blind spot the others have. Keyword search catches exact terms. Meaning based search catches paraphrase. The graph walk catches rules that share no words at all but are causally connected. If nothing matches well enough, the pipeline **returns nothing** rather than injecting noise.
 
-**The search fires on what is happening, not just what you typed.** Thirty seven small scripts watch the session and attach real context to the query: which file is being written, what is inside it, which tool is running, what phase the workflow is in. A rule about SQL injection surfaces when the AI writes a file containing a query, not only when someone happens to type the word SQL.
+**The search fires on what is happening, not just what you typed.** Forty small scripts watch the session and attach real context to the query: which file is being written, what is inside it, which tool is running, what phase the workflow is in. A rule about SQL injection surfaces when the AI writes a file containing a query, not only when someone happens to type the word SQL.
 
 ## "Couldn't you just use skill files?"
 
@@ -189,8 +189,6 @@ Six self contained pages with interactive diagrams and a live explorer for the g
 **v1.7.0, released 2026-08-08.** Installs end to end as a Claude Code plugin. The 40 script hook system audited and hardened: two gates that were failing open now hold, session identity is never guessed, destructive database operations need explicit permission, and the test suite's isolation is enforced rather than assumed. Search numbers re-measured on 08-05 and 08-06 after a nondeterminism defect was found and fixed.
 
 Every number in this file is either measured and dated, or derived from the current source tree. Where this file and the code disagree, the code wins.
-
-One small thing this document practices rather than describes: Writ ships a rule that blocks the AI's own output when it contains an em dash, an en dash, or a double hyphen in prose. That rule is enforced by a hook at the end of every turn, and this README is written to it.
 
 ## Acknowledgements
 
