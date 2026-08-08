@@ -419,3 +419,49 @@ class TestScaleBenchmarkRequiresExplicitRun:
         assert r.returncode == 0
         assert "DESTRUCTIVE" in (r.stdout + r.stderr)
         assert "snapshotted" not in (r.stdout + r.stderr).lower()
+
+    def test_it_still_refuses_when_an_optional_dependency_is_missing(self, tmp_path) -> None:
+        """The refusal must not depend on the module's own imports succeeding.
+
+        The guard used to sit at the BOTTOM of scale_benchmark.py, below module-scope
+        imports of numpy, sentence_transformers and writ.config. On an interpreter
+        without the optional embedding extra the script died with ModuleNotFoundError
+        before ever reaching the guard: no refusal, no mention of --run, just a
+        traceback. Nothing was wiped, but only because a crashed import cannot wipe
+        anything either, and a destructive-operation guard should not rest on that.
+
+        THE TEST ABOVE CANNOT CATCH THIS, and did not: it passes on any machine where
+        the extra happens to be installed, which is every developer machine here. CI
+        installs `.[dev]`, which does not pull the fallback extra, so the defect only
+        ever appeared there. This one shadows the module with one that raises on
+        import, so the failing condition is reproduced anywhere the suite runs.
+        """
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        shadow = tmp_path / "sentence_transformers"
+        shadow.mkdir()
+        (shadow / "__init__.py").write_text(
+            'raise ImportError("simulated: optional extra not installed")\n'
+        )
+        repo = Path(__file__).resolve().parent.parent
+        env = {**os.environ, "WRIT_NO_AUTOSTART": "1", "PYTHONPATH": str(tmp_path)}
+
+        blocked = subprocess.run([sys.executable, "-c", "import sentence_transformers"],
+                                 capture_output=True, text=True, env=env, timeout=60)
+        assert "ImportError" in blocked.stderr, (
+            "the shadow did not take effect, so this test proves nothing"
+        )
+
+        r = subprocess.run(
+            [sys.executable, str(repo / "benchmarks" / "scale_benchmark.py")],
+            capture_output=True, text=True, timeout=300, cwd=str(repo), env=env,
+        )
+        out = r.stdout + r.stderr
+        assert r.returncode != 0, "a bare invocation must refuse"
+        assert "--run" in out, f"the refusal must name the flag; got: {out[:300]!r}"
+        assert "Traceback" not in out, (
+            f"the guard was reached only after an import blew up: {out[:300]!r}"
+        )
