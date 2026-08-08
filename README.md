@@ -4,11 +4,17 @@ A Claude Code harness that enforces engineering discipline at the moment the AI 
 
 ## In plain terms
 
-Give a coding AI a long list of rules and two things go wrong. It forgets them as the conversation grows, and it has no obligation to follow them anyway. You can ask an AI to write tests before code. Nothing makes it do so.
+You have probably watched this happen. You tell the AI how you want things done: write the test first, follow the pattern already in the file, ask before touching the database. It agrees. It works that way for a while. Then somewhere in a long session it stops, and nothing announces that it stopped. You find out in review, or you find out in production, or you do not find out.
 
-Writ changes where the rules live. Instead of putting them in the conversation and hoping, Writ sits between the AI and your files. When the AI tries to write code before you have approved a plan, the write is refused. Not discouraged, refused. And instead of showing the AI the entire rulebook every time it does anything, Writ looks at what the AI is actually doing right now and hands it only the rules that apply.
+That is not the AI being careless. An instruction in a conversation is a request competing with everything else in that conversation, and it loses as the conversation gets longer. Nothing in the system makes following it mandatory. You can ask for tests first. Nothing makes it happen.
 
-The refusal part is the point. The retrieval part is what makes the refusal affordable when your rulebook grows past a handful of rules.
+Writ makes it happen for the part that matters. It sits between the AI and your files. When the AI tries to write code before you have approved a plan, the write is refused. Not discouraged, refused, by code that runs whether or not the AI is still paying attention to what you said an hour ago.
+
+The rest follows from that. Refusing writes is only affordable if the AI can be handed the right rules cheaply, so Writ keeps the rulebook in a search system instead of the conversation, and looks at what the AI is doing right now to decide what to hand it.
+
+**What it costs you.** Two approvals per piece of work: you read the plan and type "approved", then you read the tests and type "approved". After that the AI writes code without interrupting you again. Running it needs Docker and a terminal, because the rulebook lives in a database on your own machine. Nothing is sent anywhere.
+
+**What you get for that.** The process you asked for happens or the work stops, rather than happening for the first hour. And when it stops, there is a record of what was refused and why, which is the part that matters if you are the person answering for the code rather than writing it.
 
 ### What it does not do
 
@@ -19,6 +25,8 @@ It stops an AI that is going along with the process, not one working around it. 
 It can tell that a plan exists. It cannot tell whether the plan is any good. The checks confirm the shape of the thing, not the thought behind it. A plausible plan and a careful one look identical to a machine, so this replaces none of your judgement, and reviewing the work is still your job.
 
 The main claim is not proven yet. Everything measured so far shows what the search costs and how well it ranks. None of it shows that an AI handed the right rule actually behaves better than one handed nothing. That is the whole point of the tool and it is currently unproven, with the reasoning and the missing experiment written up further down.
+
+**If you do not write code, you are done here.** Installing this needs Docker and a terminal, so the useful thing to do with it is forward it to whoever maintains your codebase and ask whether the approval gates are worth two prompts per task. That is the whole decision. Everything below is the evidence they will want.
 
 ---
 
