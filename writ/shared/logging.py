@@ -143,6 +143,23 @@ STREAM_MAP: dict[str, str] = {
 # never polluting the high-volume metrics or the compliance audit stream).
 _DEFAULT_STREAM = "friction"
 
+# Events whose top-level `mode` is NOT the session's governance mode.
+#
+# `mode` normally comes from base_friction_entry and means work / investigate / debug /
+# review / conversation. `retrieval_result` reuses the key for the retrieval DELIVERY
+# mode -- "standard", "summary", "full", "abstained" -- and any reader that takes `mode`
+# off every event silently mixes the two. It did: the metrics report's session-mode
+# histogram came out as {'work': 145, 'standard': 30, 'abstained': 3, ...}, and because
+# the streams are concatenated with metrics last, a delivery mode also OVERWROTE the real
+# mode of any session that had queried.
+#
+# Declared beside STREAM_MAP, the schema that creates the collision, so the next event to
+# reuse the key is registered where its author is already looking. Named as the exception
+# rather than listing the ~40 governance events, because a missing entry there would
+# silently drop a real mode -- the same class of failure, pointed the other way. The JSON
+# key itself is deliberately not renamed: `mode` is published on a live event.
+NON_GOVERNANCE_MODE_EVENTS: frozenset[str] = frozenset({"retrieval_result"})
+
 # Default log root: the Writ skill install's `var/logs`, so logs are co-located
 # with the install and follow it wherever it lives (standard `var/` runtime
 # convention). Derived from this module's own `__file__` -- not a fixed

@@ -38,6 +38,10 @@ SESSION_ID="$HOOK_SESSION_ID"
 # hatch in the prompt always overrides. is_work_mode only checks work, so read the
 # mode file-direct (authoritative, same as Fix C) and case on it.
 DISPATCH_MODE=$(python3 "$WRIT_DIR/bin/lib/writ-session.py" mode get "$SESSION_ID" 2>/dev/null | tr -d '[:space:]')
+# The gate rows this hook logs used to record mode:null while this very line held the
+# answer. common.sh falls back to the session cache when neither variable is set, but a
+# value the hook already resolved is the one it ACTED on, so hand it over directly.
+CURRENT_MODE="$DISPATCH_MODE"
 case "$DISPATCH_MODE" in
     work|investigate|"") ;;
     *) exit 0 ;;

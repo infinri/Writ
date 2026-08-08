@@ -13,7 +13,7 @@ import os
 import sys
 
 from writ.session.mode_engine import VALID_MODES
-from writ.shared.logging import read_streams, resolve_project
+from writ.shared.logging import NON_GOVERNANCE_MODE_EVENTS, read_streams, resolve_project
 from writ.shared.percentile import percentile
 from writ.session.cli_io import _emit_json
 
@@ -83,11 +83,21 @@ def _compute_event_frequency(events: list[dict]) -> dict[str, int]:
 
 
 def _compute_mode_distribution(events: list[dict]) -> dict[str, int]:
-    """Sessions counted at their latest mode; legacy tier events mapped to modes."""
+    """Sessions counted at their latest mode; legacy tier events mapped to modes.
+
+    Session-governance events ONLY. `mode` is not a single field: `retrieval_result`
+    reuses the key for the retrieval delivery mode ("standard" / "summary" / "abstained"),
+    and _SPLIT_STREAMS puts metrics last, so those values were counted as session modes
+    AND overwrote the real mode of every session that had queried -- live output read
+    {'work': 145, 'standard': 30, 'abstained': 3, ...}. NON_GOVERNANCE_MODE_EVENTS is the
+    schema's own record of which events redefine the key.
+    """
     _legacy_tier_to_mode = {0: "conversation", 1: "work", 2: "work", 3: "work"}
     mode_distribution: dict[str, int] = {m: 0 for m in VALID_MODES}
     session_final_mode: dict[str, str] = {}
     for e in events:
+        if e.get("event") in NON_GOVERNANCE_MODE_EVENTS:
+            continue
         sid = e.get("session", "unknown")
         mode = e.get("mode")
         if mode is None:

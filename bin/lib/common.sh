@@ -61,6 +61,63 @@ except Exception:
 " "$p" 2>/dev/null | tr -d '[:space:]'
 }
 
+# ── The session mode a telemetry / audit row is stamped with ─────────────────
+# Resolves that mode into the global _WRIT_ROW_MODE.
+#
+# WHY THIS LIVES HERE AND NOT IN THE HOOKS. log_gate_decision stamped its row from the
+# bare `${CURRENT_MODE:-${MODE:-}}`, and exactly ONE of the fourteen gate-emitting hooks
+# ever assigns that variable: validate-test-file.sh, whose rows measure 0% null across
+# 321. The other thirteen never did, so 4,672 of 4,993 gate_decision rows -- 93.6% --
+# recorded "mode": null while the session cache said "work". That is why it survived: a
+# null reads as an honest mode-unset session, not as a lost value. A value that has to be
+# set correctly in thirteen places is exactly how it drifted, so it is resolved once, in
+# the single place that consumes it.
+#
+# FILE-DIRECT, never the daemon. A daemon started against a different WRIT_CACHE_DIR
+# answers a stale mode=None (writ-subagent-start.sh:65-70) -- the same wrong answer this
+# exists to fix. writ_session_mode_direct above is that read.
+#
+# IT SETS A GLOBAL RATHER THAN PRINTING, deliberately: a printing helper is called as
+# `$(...)`, which runs the memo assignment in a subshell and discards it, so every call
+# would re-read the cache. log_gate_decision is on the per-write hot path and
+# writ-bash-write-gate.sh alone has eleven call sites.
+_WRIT_ROW_MODE=""
+_WRIT_ROW_MODE_MEMO=""
+_WRIT_ROW_MODE_SID=""
+_writ_row_mode() {
+    # An explicitly set variable always wins. A hook that computed the mode itself
+    # (validate-test-file.sh's MODE, writ-dispatch-discipline.sh's CURRENT_MODE) is
+    # recording the value it ACTED on, which is the one the audit trail wants.
+    _WRIT_ROW_MODE="${CURRENT_MODE:-${MODE:-}}"
+    [ -n "$_WRIT_ROW_MODE" ] && return 0
+    local _sid="${SESSION_ID:-${HOOK_SESSION_ID:-}}"
+    # No session, no lookup. An empty id names writ-session-.json, a file that never
+    # exists, so the read could only cost a process to learn "".
+    [ -z "$_sid" ] && return 0
+    # Memoized per process: each hook is its own process, so the cached value cannot
+    # outlive the state it describes. Keyed by session id because a few hooks resolve
+    # their own id after their first log call.
+    if [ "$_WRIT_ROW_MODE_SID" != "$_sid" ]; then
+        _WRIT_ROW_MODE_MEMO="$(writ_session_mode_direct "$_sid")"
+        _WRIT_ROW_MODE_SID="$_sid"
+    fi
+    _WRIT_ROW_MODE="$_WRIT_ROW_MODE_MEMO"
+    return 0
+}
+
+# The same value WITHOUT triggering a resolution: an explicit variable, else whatever a
+# log_gate_decision in this same process already looked up.
+#
+# hook_instrument's exit trap uses this instead of _writ_row_mode because the trap runs
+# on EVERY instrumented hook, including the many that never log a decision, and a single
+# file write fires fifteen of them. A lookup there would put a process back on all
+# fifteen to stamp a metrics row, against a process budget with single-digit headroom
+# (tests/test_write_path_process_budget.py). A hook that DID log a decision gets the
+# right mode on its hook_execution row for free.
+_writ_row_mode_cached() {
+    _WRIT_ROW_MODE="${CURRENT_MODE:-${MODE:-${_WRIT_ROW_MODE_MEMO:-}}}"
+}
+
 # ── HTTP: curl-first, urllib fallback ────────────────────────────────────────
 # curl is an OPTIONAL accelerator, never a prerequisite. These two wrappers run curl
 # when it is present and fall back to `python3 bin/lib/writ_install.py http-*` (stdlib
@@ -1074,10 +1131,13 @@ _writ_hook_exit_trap() {
   # The plain hook_execution row is APPENDED, not emitted: bash costs 0.018ms and no
   # process, against ~13ms of interpreter startup, and 8 write-path hooks pay this on
   # every file write. writ_event_buffer_flush drains it once per turn.
+  # Mode from the same resolution log_gate_decision uses, but CACHED ONLY: this trap runs
+  # on every instrumented hook, so a fresh lookup here would be a process on each of them.
+  _writ_row_mode_cached
   writ_event_buffer_append \
     "${SESSION_ID:-${HOOK_SESSION_ID:-}}" \
     "${_WRIT_HOOK_NAME:-unknown}" \
-    "$dur_ms" "$rc" "${CURRENT_MODE:-${MODE:-}}"
+    "$dur_ms" "$rc" "$_WRIT_ROW_MODE"
 
   # NOTHING SPAWNS HERE ANY MORE. Both row kinds (hook_execution above,
   # gate_decision via log_gate_decision) are appended to the session buffer and emitted
@@ -1112,7 +1172,11 @@ log_gate_decision() {
   _gd_dec="${_gd_dec//[$'\x1e\x1f\n\r']/_}"
   _gd_reason="${_gd_reason//[$'\x1e\x1f\n\r']/ }"
   _gd_target="${_gd_target//[$'\x1e\x1f\n\r']/_}"
-  local _gd_mode="${CURRENT_MODE:-${MODE:-}}"
+  # NOT the bare variable: thirteen of the fourteen hooks that reach this line never set
+  # it, and their rows recorded a null mode for a session that had one. _writ_row_mode
+  # keeps an explicit CURRENT_MODE/MODE winning and falls back to the session cache.
+  _writ_row_mode
+  local _gd_mode="$_WRIT_ROW_MODE"
   _gd_mode="${_gd_mode//[$'\x1e\x1f\n\r']/_}"
 
   # A DENIAL IS WRITTEN SYNCHRONOUSLY, always. It is the record that proves a gate
@@ -1159,12 +1223,15 @@ log_gate_decision() {
 }
 
 _gd_emit_now() {
+  # Same resolution as the buffered path above, and it matters more here: this is the
+  # branch every DENIAL takes, the record that proves a gate blocked something.
+  _writ_row_mode
   WRIT_GD_GATE="${1:-}" \
   WRIT_GD_DECISION="${2:-}" \
   WRIT_GD_REASON="${3:-}" \
   WRIT_GD_TARGET="${4:-}" \
   WRIT_GD_SESSION="${SESSION_ID:-${HOOK_SESSION_ID:-}}" \
-  WRIT_GD_MODE="${CURRENT_MODE:-${MODE:-}}" \
+  WRIT_GD_MODE="$_WRIT_ROW_MODE" \
   python3 -c '
 import json, os
 print(json.dumps({

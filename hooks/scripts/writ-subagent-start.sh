@@ -126,6 +126,15 @@ with mod.mutate_cache(agent_id) as cache:
     cache['token_snapshots'] = []
 " "$PARENT_STATE" "$AGENT_ID" 2>/dev/null || true
 
+# The sub-agent's mode, read once here rather than at the bottom of the hook. It used
+# to be resolved just before the subagent_start friction row (the last thing this hook
+# does), which is AFTER the manual-test-grant decision below -- so that gate row, a
+# governance record, was stamped with an empty mode while the value was one command
+# away. This hook has no SESSION_ID, so common.sh's session-cache fallback has nothing
+# to fall back to: the answer has to come from here. Same command, same value, earlier.
+CURRENT_MODE=$(_writ_session "mode get" "$AGENT_ID" 2>/dev/null || echo "")
+CURRENT_MODE=$(echo "$CURRENT_MODE" | tr -d '[:space:]')
+
 # Manual-testing grant inherits exactly like gates_approved above: the user's
 # concession was given to the orchestrating session, and a dispatched worker acts
 # on its behalf, so it is not re-typed per worker. The child gets the REMAINING
@@ -270,8 +279,9 @@ print(json.dumps({
 fi
 
 # Log sub-agent start to friction log (common.sh already sourced at top).
-CURRENT_MODE=$(_writ_session "mode get" "$AGENT_ID" 2>/dev/null || echo "")
-CURRENT_MODE=$(echo "$CURRENT_MODE" | tr -d '[:space:]')
+# CURRENT_MODE was resolved right after the sub-agent's cache was created, so the
+# manual-test-grant gate row above carries it too. Nothing between there and here
+# changes this agent's mode.
 log_friction_event "$AGENT_ID" "$CURRENT_MODE" "subagent_start" \
     "{\"agent_type\":\"$AGENT_TYPE\",\"parent_session\":\"$PARENT_SESSION\"}"
 
