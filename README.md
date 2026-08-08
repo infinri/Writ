@@ -6,9 +6,23 @@ A Claude Code harness that enforces engineering discipline at the moment the AI 
 
 Give a coding AI a long list of rules and two things go wrong. It forgets them as the conversation grows, and it has no obligation to follow them anyway. You can ask an AI to write tests before code. Nothing makes it do so.
 
-Writ changes where the rules live. Instead of putting them in the conversation and hoping, Writ sits between the AI and your files. When the AI tries to write code before you have approved a plan, the write is refused. Not discouraged, refused. And instead of showing the AI all 287 rules every time it does anything, Writ looks at what the AI is actually doing right now and hands it only the rules that apply.
+Writ changes where the rules live. Instead of putting them in the conversation and hoping, Writ sits between the AI and your files. When the AI tries to write code before you have approved a plan, the write is refused. Not discouraged, refused. And instead of showing the AI the entire rulebook every time it does anything, Writ looks at what the AI is actually doing right now and hands it only the rules that apply.
 
 The refusal part is the point. The retrieval part is what makes the refusal affordable when your rulebook grows past a handful of rules.
+
+### What it does not do
+
+Three limits, stated here rather than further down where they would look buried.
+
+It stops an AI that is going along with the process, not one working around it. Writ assumes the AI uses its tools normally. If something is actively trying to get past the checks, there are ways through, and they are listed later in this document rather than glossed.
+
+It can tell that a plan exists. It cannot tell whether the plan is any good. The checks confirm the shape of the thing, not the thought behind it. A plausible plan and a careful one look identical to a machine, so this replaces none of your judgement, and reviewing the work is still your job.
+
+The main claim is not proven yet. Everything measured so far shows what the search costs and how well it ranks. None of it shows that an AI handed the right rule actually behaves better than one handed nothing. That is the whole point of the tool and it is currently unproven, with the reasoning and the missing experiment written up further down.
+
+---
+
+**Everything below this point assumes you write code.** The rest of this document is written for engineers evaluating whether to run it, and stops rationing vocabulary.
 
 ## The claim, and its limits
 
