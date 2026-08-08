@@ -378,7 +378,25 @@ fi
 # degrades exactly as before. The endpoint returns the three rendered pieces SEPARATELY
 # so they keep their legacy emit order around the bash-side mode reminders (step 9b).
 case "${WRIT_ALWAYS_ON_FILTER:-1}" in 1|on|true|yes) _AO_FILTER_BOOL=true ;; *) _AO_FILTER_BOOL=false ;; esac
-BUNDLE_REQUEST=$(WRIT_SID="$SESSION_ID" WRIT_MODE="${CURRENT_MODE:-}" WRIT_PROMPT="$PROMPT" WRIT_EFFORT="$EFFORT" WRIT_AOF="$_AO_FILTER_BOOL" python3 -c "
+# jq builds this request when present: five strings and a boolean assembled from
+# variables already in the shell cost a 9.5ms interpreter start plus 4.9 for `import
+# json`, against 2.3 for jq. --arg is used for every value so a prompt containing quotes,
+# newlines or backslashes is encoded by jq rather than by string concatenation here.
+# always_on_filter must stay a JSON BOOLEAN, not the string "true", so it goes through
+# --argjson after being normalised to a bare true/false above.
+BUNDLE_REQUEST=""
+if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1; then
+    BUNDLE_REQUEST=$(jq -n -c \
+        --arg session_id "$SESSION_ID" \
+        --arg mode "${CURRENT_MODE:-}" \
+        --arg prompt "$PROMPT" \
+        --arg effort "$EFFORT" \
+        --argjson always_on_filter "$_AO_FILTER_BOOL" \
+        '{session_id: $session_id, mode: $mode, prompt: $prompt, effort: $effort, always_on_filter: $always_on_filter}' \
+        2>/dev/null) || BUNDLE_REQUEST=""
+fi
+if [ -z "$BUNDLE_REQUEST" ]; then
+    BUNDLE_REQUEST=$(WRIT_SID="$SESSION_ID" WRIT_MODE="${CURRENT_MODE:-}" WRIT_PROMPT="$PROMPT" WRIT_EFFORT="$EFFORT" WRIT_AOF="$_AO_FILTER_BOOL" python3 -c "
 import os, json
 print(json.dumps({
     'session_id': os.environ['WRIT_SID'],
@@ -387,6 +405,7 @@ print(json.dumps({
     'effort': os.environ.get('WRIT_EFFORT', ''),
     'always_on_filter': os.environ.get('WRIT_AOF', 'true') == 'true',
 }))" 2>/dev/null)
+fi
 
 # writ_http_post: curl when present (unchanged fast path and unchanged budgets),
 # stdlib urllib when it is not, so a curl-less machine still gets its rules.
@@ -404,7 +423,26 @@ fi
 # yielded an empty string that became "1": a perfectly healthy daemon response was
 # reported as "query failed" and rule injection was disabled for the WHOLE session,
 # with a message blaming the server. Empty now correctly means "no error".
-BUNDLE_ERR=$(parsed_field "$BUNDLE" "error")
+# ONE pass over the bundle for every field the rest of this hook needs.
+#
+# These were 5 separate parsed_field calls, each piping the WHOLE ~10KB response (it
+# carries the full always-on rule text) into a fresh jq: 50KB of piping and 5 interpreter
+# starts to read 5 strings. Measured ~38ms on the prompt path, second only to the HTTP
+# request that fetched the data. $BUNDLE is assigned once above and never reassigned, so
+# one parse here is valid for every consumer below.
+eval "$(parsed_fields "$BUNDLE" \
+    BUNDLE_ERR=error \
+    AO_BLOCK=always_on_block \
+    RULES_TEXT=rules_text \
+    METHOD_BLOCK=methodology_block \
+    NUDGE=nudge)"
+# parsed_fields emits nothing when the document is unparseable, leaving these unset under
+# `set -u`. Defaulting them keeps that case identical to parsed_field's empty default.
+BUNDLE_ERR="${BUNDLE_ERR-}"
+AO_BLOCK="${AO_BLOCK-}"
+RULES_TEXT="${RULES_TEXT-}"
+METHOD_BLOCK="${METHOD_BLOCK-}"
+NUDGE="${NUDGE-}"
 # JSON truthiness, which is what the old `if .error then` tested: the endpoint sets
 # error=false on EVERY healthy response and only true (or a string) on a real failure,
 # so the falsy spellings of both extraction arms (jq "false"/"null", python
@@ -423,10 +461,9 @@ fi
 # python3 fallback when jq is absent, and multi-line safe on both arms (these blocks are
 # multi-line). Missing/null yields the empty default, which every consumer below treats
 # as "nothing to inject".
-AO_BLOCK=$(parsed_field "$BUNDLE" "always_on_block")
-RULES_TEXT=$(parsed_field "$BUNDLE" "rules_text")
-METHOD_BLOCK=$(parsed_field "$BUNDLE" "methodology_block")
-NUDGE=$(parsed_field "$BUNDLE" "nudge")
+# AO_BLOCK / RULES_TEXT / METHOD_BLOCK / NUDGE were read in the single parsed_fields
+# pass above, alongside BUNDLE_ERR. Re-reading them here was 4 more jq starts over the
+# same 10KB document.
 # REMAINING_BUDGET (from the single $CACHE read at step 1c) still gates the
 # review-feedback push below; the endpoint owns the channel budgets itself.
 REMAINING_BUDGET=$(parsed_field "$CACHE" "remaining_budget"); REMAINING_BUDGET="${REMAINING_BUDGET:-8000}"

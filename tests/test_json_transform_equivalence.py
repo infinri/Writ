@@ -315,3 +315,86 @@ class TestNoInlinePythonLeftOnTheWritePath:
         would make the ratchet a count of python calls rather than of JSON snippets,
         and would block conversions that legitimately keep a python call."""
         assert self._snippets('X=$(python3 -c "print(1)")') == []
+
+
+class TestParsedFieldsMatchesParsedFieldPerArm:
+    """`parsed_fields` reads N fields in one pass; it must answer exactly what N calls to
+    `parsed_field` answer, per arm.
+
+    Why it exists: parsed_field pipes the WHOLE document into a fresh jq for every field.
+    The RAG hook called it 5 times on the ~10KB /prompt-bundle response (it carries the
+    full always-on rule text), so 50KB of piping and 5 interpreter starts to read 5
+    strings, measured at ~38ms. Any divergence here is a silent behaviour change at those
+    call sites, which is why this compares against the old helper rather than against
+    hand-written expectations.
+    """
+
+    DOCS = [
+        '{"error":false,"always_on_block":"=== RULES ===\\nline2","rules_text":"r",'
+        '"methodology_block":"","nudge":null}',
+        '{"error":"boom"}',
+        "{}",
+        '{"error":null,"nudge":"hi"}',
+        '{"always_on_block":"has $(cmd) and `tick` and \\"quotes\\""}',
+        "not json at all",
+        "",
+        '{"n":42,"neg":-1,"uni":"caf\\u00e9 \\u2713","bs":"C:\\\\path"}',
+    ]
+    FIELDS = ["error", "always_on_block", "rules_text", "methodology_block", "nudge", "n"]
+
+    def _both(self, doc: str, *, no_jq: bool) -> tuple[dict, dict]:
+        env = "WRIT_NO_JQ=1 " if no_jq else ""
+        pairs = " ".join(f"F_{f}={f}" for f in self.FIELDS)
+        singles = "\n".join(
+            f"printf 'S_{f}=%s\\n' \"$({env}parsed_field {shlex.quote(doc)} {f})\""
+            for f in self.FIELDS
+        )
+        script = (
+            "set -uo pipefail\n"
+            f"source {shlex.quote(COMMON_SH)} >/dev/null 2>&1\n"
+            f'eval "$({env}parsed_fields {shlex.quote(doc)} {pairs})" 2>/dev/null || true\n'
+            + "\n".join(f"printf 'M_{f}=%s\\n' \"${{F_{f}-}}\"" for f in self.FIELDS)
+            + "\n" + singles + "\n"
+        )
+        out = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                             timeout=60).stdout
+        multi, single = {}, {}
+        for line in out.splitlines():
+            if line.startswith("M_"):
+                k, _, v = line[2:].partition("=")
+                multi[k] = v
+            elif line.startswith("S_"):
+                k, _, v = line[2:].partition("=")
+                single[k] = v
+        return multi, single
+
+    @pytest.mark.parametrize("no_jq", [False, True], ids=["jq", "python"])
+    @pytest.mark.parametrize("doc", DOCS)
+    def test_one_pass_equals_n_calls(self, doc: str, no_jq: bool) -> None:
+        multi, single = self._both(doc, no_jq=no_jq)
+        assert multi == single, (
+            f"parsed_fields diverged from parsed_field on {doc[:50]!r} "
+            f"({'python' if no_jq else 'jq'} arm)"
+        )
+
+    def test_a_value_cannot_break_out_of_the_eval(self) -> None:
+        """The output is eval'd, so @sh / shlex.quote is load-bearing. A field carrying
+        a command substitution must arrive as literal text, never execute."""
+        doc = '{"nudge":"$(touch /tmp/writ-parsed-fields-pwned)"}'
+        script = (
+            "set -uo pipefail\n"
+            f"source {shlex.quote(COMMON_SH)} >/dev/null 2>&1\n"
+            f'eval "$(parsed_fields {shlex.quote(doc)} V=nudge)"\n'
+            'printf "%s" "$V"\n'
+        )
+        out = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                             timeout=60).stdout
+        assert out == "$(touch /tmp/writ-parsed-fields-pwned)"
+        assert not Path("/tmp/writ-parsed-fields-pwned").exists()
+
+    def test_the_comparison_is_not_vacuous(self) -> None:
+        """If parsed_fields emitted nothing for every doc, every dict above would be
+        empty-string-filled and still compare equal to a broken parsed_field. Pin that a
+        real value actually round-trips."""
+        multi, _ = self._both('{"nudge":"real-value"}', no_jq=False)
+        assert multi["nudge"] == "real-value"

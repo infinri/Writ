@@ -41,7 +41,7 @@ PROMPT_PATH_HOOKS = [
 # (recall and escalation fire for one and not the other), so the probe was measuring one
 # path and calling it the cost. The number here comes from the test's own envelope, which
 # is the one that will keep running.
-PYTHON_BUDGET = 11
+PYTHON_BUDGET = 10
 # Baseline before this cycle touched the prompt path, so the ratchet demonstrably ratchets.
 BASELINE_PYTHON = 13
 #
@@ -51,8 +51,10 @@ BASELINE_PYTHON = 13
 # same pattern that dominated the write path, so removing the spawn took its children too.
 #
 # I briefly set this ratchet to 10 on the strength of a warm-session probe that showed
-# 4 -> 3. The clean-cache path is different and only reached 11, so 10 would have been a
-# number I wanted rather than one I measured. Lower it when the next conversion earns it.
+# 4 -> 3. The clean-cache path is different and only reached 11, so 10 was a number I
+# wanted rather than one I measured. It reached 10 for real once the /prompt-bundle
+# REQUEST BUILDER moved to `jq -n` (that snippet was a whole interpreter start to
+# assemble five strings and a boolean already sitting in shell variables).
 
 # Inline `python3 -c` JSON reads in writ-rag-inject.sh are now ZERO (was 5, each ~14ms:
 # 9.5 interpreter floor plus 4.9 for `import json`, to answer what jq answers in 2.3).

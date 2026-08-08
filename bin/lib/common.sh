@@ -428,6 +428,66 @@ except Exception:
 # parsed_bool (jq prints true/false vs python True/False -- different strings).
 # Usage: FILE=$(parsed_field "$PARSED" "file_path")            # default ""
 #        BUDGET=$(parsed_field "$CACHE" "remaining_budget" "8000")
+# Extract SEVERAL fields from ONE json document in a single pass.
+#
+# Usage: eval "$(parsed_fields "$json" VAR1=field1 VAR2=field2 ...)"
+#
+# WHY THIS EXISTS. parsed_field pipes the WHOLE document into a fresh jq for every field.
+# The RAG hook called it 5 times on the /prompt-bundle response, which is ~10KB because it
+# carries the full always-on rule text: 50KB of piping and 5 interpreter starts to read 5
+# strings. Measured on the prompt path, those calls were ~38ms, second only to the HTTP
+# request that fetched the data.
+#
+# SEMANTICS ARE parsed_field's, FIELD FOR FIELD, including a difference that already
+# exists between its two arms: a JSON `false` renders as "false" under jq and "False"
+# under python, because one uses tostring and the other str(). That divergence is
+# pre-existing and its consumer in writ-rag-inject.sh tests for both spellings, so this
+# reproduces it rather than quietly canonicalizing. Absent and null both give "".
+#
+# The output is @sh-quoted assignments, evaluated by the caller. That is the same
+# eval-shell-assignments shape parse-hook-stdin.jq uses for the hook envelope, and the
+# same safety argument: @sh quoting means a value cannot break out and become a command.
+parsed_fields() {
+    local json="$1"; shift
+    local p var field
+    if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1; then
+        local prog="" sep=""
+        for p in "$@"; do
+            var="${p%%=*}"; field="${p#*=}"
+            prog="${prog}${sep}\"${var}=\" + (if (.[\"${field}\"]) == null then \"\" else (.[\"${field}\"] | tostring) end | @sh)"
+            sep=","
+        done
+        [ -n "$prog" ] || return 0
+        printf '%s' "$json" | jq -r "$prog" 2>/dev/null || true
+    else
+        local names=""
+        for p in "$@"; do
+            names="${names}${p}"$'\n'
+        done
+        printf '%s' "$json" | PARSED_FIELDS_SPEC="$names" python3 -c '
+import json, os, shlex, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+if not isinstance(d, dict):
+    d = {}
+for line in os.environ.get("PARSED_FIELDS_SPEC", "").splitlines():
+    if not line.strip():
+        continue
+    var, _, field = line.partition("=")
+    v = d.get(field)
+    # str(), matching parsed_field s python arm: a JSON false prints "False" here and
+    # "false" under jq. Pre-existing, and the caller handles both.
+    # No nested quotes in this expression on purpose: the whole program is inside a
+    # single-quoted shell string, so an escaped quote here is a python SyntaxError and
+    # the arm emits nothing at all, which reads as "every field was empty".
+    val = "" if v is None else str(v)
+    print(var + "=" + shlex.quote(val))
+' 2>/dev/null || true
+    fi
+}
+
 parsed_field() {
     local json="$1" field="$2" default="${3:-}"
     if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1; then
