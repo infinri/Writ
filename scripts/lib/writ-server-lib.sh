@@ -24,12 +24,18 @@ if ! declare -F writ_session_cache_dir >/dev/null 2>&1; then
 fi
 
 # True when the daemon answers /health (or the injected probe succeeds).
+#
+# Goes through writ_http_get (curl-first, urllib fallback) rather than a raw curl on
+# purpose: with curl absent this probe was ALWAYS false, which is not daemon-down
+# equivalent. It means "daemon down while actually up", so every SessionStart fired a
+# doomed second `writ serve` against an already-bound port.
 writ_server_health() {
     : "${WRIT_HOST:=localhost}" "${WRIT_PORT:=8765}"
     if [ -n "${WRIT_HEALTH_CMD:-}" ]; then
         ${WRIT_HEALTH_CMD} >/dev/null 2>&1
     else
-        curl -s --connect-timeout 0.1 "http://${WRIT_HOST}:${WRIT_PORT}/health" >/dev/null 2>&1
+        WRIT_HTTP_CONNECT_TIMEOUT=0.1 WRIT_HTTP_TIMEOUT=1 \
+            writ_http_get "http://${WRIT_HOST}:${WRIT_PORT}/health" >/dev/null 2>&1
     fi
 }
 

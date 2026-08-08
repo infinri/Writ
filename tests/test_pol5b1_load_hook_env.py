@@ -1,9 +1,11 @@
 """POL-5b-1: single-spawn hook field extraction via load_hook_env.
 
 `parse-hook-stdin.py --shell` emits shlex-quoted shell assignments for the scalar
-fields (+ HOOK_ENVELOPE); `common.sh load_hook_env` evals them in one python3 spawn
-and applies the session-id fallback. The 6 scalars-only hooks migrate off the
-parse_hook_stdin + parsed_field 2-spawn idiom.
+fields (+ HOOK_ENVELOPE); `common.sh load_hook_env` evals them in one python3 spawn.
+The 6 scalars-only hooks migrate off the parse_hook_stdin + parsed_field 2-spawn idiom.
+
+load_hook_env no longer "applies the session-id fallback", and this file used to require
+that it did. See TestSessionId below.
 
 RED until --shell + load_hook_env exist and the hooks are migrated.
 """
@@ -128,10 +130,25 @@ class TestSessionId:
         r = _shell_then_print(env, "HOOK_SESSION_ID")
         assert r.stdout == "sid-1"
 
-    def test_load_hook_env_fallback_when_empty(self) -> None:
+    def test_load_hook_env_leaves_the_id_empty_when_the_payload_has_none(self) -> None:
+        """This test used to assert the OPPOSITE, and that is why it is worth reading.
+
+        It required load_hook_env to "produce a non-empty fallback session id", which the
+        helper did by running `ps -o ppid=` and then md5(cwd:user)-date. Neither can ever
+        equal the id Claude Code uses, so the id it produced named a session that does not
+        exist: every write under it was lost, and the hook reported success. The test was
+        green the whole time, because it only ever checked that SOMETHING came out.
+
+        The contract now is the payload's id or the empty string. A caller that needs a
+        session detects empty, calls writ_critical, and no-ops; the rest carry on, because
+        plenty of hooks do work that needs no session at all.
+        See tests/test_session_identity_no_fallback.py for the full argument.
+        """
         env = '{"agent_id":"","session_id":"","tool_input":{}}'
         out = _load_hook_env_print(env, "HOOK_SESSION_ID")
-        assert out.strip(), "load_hook_env must produce a non-empty fallback session id"
+        assert out == "", (
+            f"load_hook_env invented a session id the payload never carried: {out!r}"
+        )
 
 
 # --------------------------------------------------------------------------- #

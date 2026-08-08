@@ -16,6 +16,7 @@ All tests FAIL until the implementation phase lands.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import subprocess
 import sys
@@ -29,9 +30,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Shared resolver -- one source of truth for invoking `writ` from tests.
 from tests._writ_cmd import WRIT_CMD_PREFIX as _WRIT_CMD_PREFIX, WRIT_CLI
 
+# Single source for the record labels a corpus wipe must spare.
+from writ.graph.db._common import RECORD_LABELS
+
 # Credentials via the central loader: env-independent defaults keep CI (no
 # writ.toml checked out) collecting and running; a local writ.toml overrides.
-from writ.config import get_neo4j_password, get_neo4j_user
+from writ.config import get_neo4j_password, get_neo4j_uri, get_neo4j_user
 
 from tests._bible_guard import requires_bible
 
@@ -40,17 +44,28 @@ pytestmark = requires_bible
 
 NEO4J_PASSWORD = get_neo4j_password()
 NEO4J_USER = get_neo4j_user()
+NEO4J_URI = get_neo4j_uri()
 
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
 
+
+# THE CONTAINER NAME IS A SEAM, not a constant. These two files reach Neo4j through
+# `docker exec <container> cypher-shell` rather than through Neo4jConnection, so they are
+# the one place WRIT_NEO4J_URI does NOT redirect: pointing the rest of the suite at a
+# disposable instance would silently leave these hitting production. Reading the name from
+# the environment puts them back under the same switch as everything else.
+def _neo4j_container() -> str:
+    return os.environ.get("WRIT_TEST_NEO4J_CONTAINER", "writ-neo4j")
+
+
 def _cypher(query: str) -> int:
     """Run a read-only Cypher query via docker exec and return the integer result."""
     result = subprocess.run(
         [
-            "docker", "exec", "writ-neo4j", "cypher-shell",
+            "docker", "exec", _neo4j_container(), "cypher-shell",
             "-u", NEO4J_USER, "-p", NEO4J_PASSWORD,
             "--format", "plain",
             query,
@@ -82,13 +97,24 @@ def _run_import(*args: str, cwd: Path = SKILL_DIR) -> subprocess.CompletedProces
 
 
 def _clear_graph() -> None:
-    """Wipe the graph so each test starts from a clean slate."""
+    """Wipe the CORPUS so each test starts from a clean slate.
+
+    Runtime records (Memory, Decision, FileChange, Commit) are spared, matching
+    Neo4jConnection.clear_all's default. This ran as a raw whole-graph
+    `MATCH (n) DETACH DELETE n` through cypher-shell, which bypassed that guard
+    entirely and destroyed every mirrored memory on each suite run; the records
+    have no dump home, so nothing that rebuilds the corpus should take them.
+    A repo guard in tests/test_graph_dump.py fails on any new raw whole-graph
+    delete outside clear_all.
+    """
+    preserve = ", ".join(f"'{label}'" for label in sorted(RECORD_LABELS))
     result = subprocess.run(
         [
-            "docker", "exec", "writ-neo4j", "cypher-shell",
+            "docker", "exec", _neo4j_container(), "cypher-shell",
             "-u", NEO4J_USER, "-p", NEO4J_PASSWORD,
             "--format", "plain",
-            "MATCH (n) DETACH DELETE n",
+            f"MATCH (n) WHERE NOT any(l IN labels(n) WHERE l IN [{preserve}]) "
+            "DETACH DELETE n",
         ],
         capture_output=True,
         text=True,
@@ -231,11 +257,18 @@ class TestImportMarkdownOnlyFilter:
         rule_count = _cypher("MATCH (n:Rule) RETURN count(n)")
         assert rule_count > 0, "Expected Rule nodes after --only Rule"
 
+        # RUNTIME RECORDS ARE NOT PART OF THE CLAIM. `_clear_graph` deliberately preserves
+        # Memory / Decision / Commit / FileChange -- they have no bible or dump source, so a
+        # corpus rebuild that took them with it would destroy state nothing can restore.
+        # This assertion is about what the IMPORTER created, and counting the survivors made
+        # it fail with "got 191" on any machine that had ever recorded a memory.
         non_rule_count = _cypher(
-            "MATCH (n) WHERE NOT n:Rule RETURN count(n)"
+            "MATCH (n) WHERE NOT n:Rule "
+            "AND NOT (n:Memory OR n:Decision OR n:Commit OR n:FileChange) "
+            "RETURN count(n)"
         )
         assert non_rule_count == 0, (
-            f"Expected zero non-Rule nodes after --only Rule; got {non_rule_count}"
+            f"Expected zero non-Rule corpus nodes after --only Rule; got {non_rule_count}"
         )
 
     def test_only_skill_imports_only_skills(self) -> None:
@@ -741,3 +774,64 @@ class TestMigrateScriptShimContract:
 # hardcoding "1.5.0") and meant every version bump had to be applied in two test files;
 # removed in v1.5.1 so there is one place to change.
 
+
+
+class TestPostWriteVerification:
+    """An ingest that reports success must have proven it, not assumed it.
+
+    counts_by_type counts PARSED nodes and Neo4j's properties_set counter reports the
+    SET operation (identical on a no-op re-run), so neither distinguishes an applied
+    edit from a silent stale apply -- one observed run printed a full success report
+    while the node kept its old values. The importer now reads the nodes back.
+    """
+
+    def test_report_renders_verified_count_on_a_clean_write(self) -> None:
+        from writ.graph.methodology_ingest import IngestReport
+
+        report = IngestReport(counts_by_type={"Skill": 16}, verification=(16, []))
+        out = report.render()
+        assert "Verified against source after write: 16 node(s)" in out
+        assert "VERIFY FAILED" not in out
+
+    def test_report_shouts_and_names_ids_on_a_stale_apply(self) -> None:
+        from writ.graph.methodology_ingest import IngestReport
+
+        report = IngestReport(
+            counts_by_type={"Skill": 16},
+            verification=(15, ["SKL-PROC-EXAMPLE-001"]),
+        )
+        out = report.render()
+        assert "VERIFY FAILED: 1 node(s) did not match source" in out
+        assert "SKL-PROC-EXAMPLE-001" in out
+        assert "Re-run the import" in out
+
+    def test_dry_run_reports_no_verification(self) -> None:
+        from writ.graph.methodology_ingest import IngestReport
+
+        out = IngestReport(counts_by_type={"Skill": 1}, dry_run=True).render()
+        assert "Verified against source" not in out and "VERIFY FAILED" not in out
+
+    @pytest.mark.asyncio
+    async def test_verifier_flags_a_node_whose_graph_value_differs(self) -> None:
+        # The stale-apply shape: the expectation says one thing, the graph holds another.
+        from writ.graph.db import Neo4jConnection
+        from writ.graph.methodology_ingest import _verify_written_nodes
+
+        db = Neo4jConnection(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
+        try:
+            await db.create_methodology_node(
+                "Skill", {"skill_id": "SKL-VERIFY-TEST-001", "project": "writ",
+                          "statement": "current", "last_validated": "2026-08-06"})
+            stale = [("Skill", {"skill_id": "SKL-VERIFY-TEST-001", "project": "writ",
+                                "statement": "stale expectation"}, {})]
+            verified, mismatched = await _verify_written_nodes(db, stale)
+            assert verified == 0 and mismatched == ["SKL-VERIFY-TEST-001"]
+
+            fresh = [("Skill", {"skill_id": "SKL-VERIFY-TEST-001", "project": "writ",
+                                "statement": "current"}, {})]
+            verified, mismatched = await _verify_written_nodes(db, fresh)
+            assert verified == 1 and mismatched == []
+        finally:
+            async with db._driver.session(database=db._database) as s:
+                await s.run("MATCH (n:Skill {skill_id:'SKL-VERIFY-TEST-001'}) DETACH DELETE n")
+            await db.close()

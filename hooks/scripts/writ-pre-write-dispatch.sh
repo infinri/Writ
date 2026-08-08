@@ -32,9 +32,23 @@ HOOK_START_NS=$(hook_timer_start)
 STDIN_DATA=$(cat)
 printf '%s' "$STDIN_DATA" | blackbox_log in writ-pre-write-dispatch
 
-# Item 4c: one python3 spawn parses stdin into session_id + check_body. Was
+# Item 4c: ONE parse turns stdin into session_id + write context + check body. Was
 # two separate calls in v1.1.0 (session_id parse, then envelope parse).
-PARSED_INPUT=$(python3 -c "
+#
+# jq does it in ~3ms where the python arm below needs ~15ms of interpreter startup,
+# and this is the hottest gate path in the system (measured 2026-08-07: 8 python
+# starts in this one hook, the most of any). Same seam as parsed_field and
+# load_hook_env: jq when present, python when not, WRIT_NO_JQ to force the fallback.
+# The two arms are held equal by tests/test_pre_write_parse_parity.py.
+PARSED_INPUT=""
+if [ -z "${WRIT_NO_JQ:-}" ] && [ -r "$SKILL_DIR/bin/lib/pre-write-parse.jq" ] \
+   && command -v jq >/dev/null 2>&1; then
+    PARSED_INPUT=$(printf '%s' "$STDIN_DATA" | jq -R -s -r \
+        --arg skill_dir "$SKILL_DIR" -f "$SKILL_DIR/bin/lib/pre-write-parse.jq" 2>/dev/null)
+fi
+# Empty means the jq arm was skipped or failed. It cannot mean "parsed to nothing":
+# both arms always emit three lines, the third of which is a non-empty JSON object.
+[ -z "$PARSED_INPUT" ] && PARSED_INPUT=$(python3 -c "
 import sys, json
 raw = sys.argv[1] or '{}'
 skill_dir = sys.argv[2] or ''
@@ -42,13 +56,28 @@ try:
     data = json.loads(raw)
 except (ValueError, json.JSONDecodeError):
     data = {}
-sid = (data.get('agent_id') or data.get('session_id') or '').strip()
+# Normalize to a dict before any .get(). A root that parses to a list, a string, or
+# null used to raise AttributeError here, and so did a 'tool_input': null -- which
+# this hook cannot distinguish from a successful empty parse: PARSED_INPUT comes back
+# empty, CHECK_BODY is empty, and the hook exits 0 WITHOUT running the write gate.
+# A malformed envelope must fail closed into the gate, not around it. Found
+# 2026-08-07 by tests/test_pre_write_parse_parity.py comparing this arm to the jq one.
+if not isinstance(data, dict):
+    data = {}
+# Strip embedded newlines before stripping the ends: this output is split positionally
+# by head -1 / sed -n 2p / tail -n +3, so a newline inside the session id emits four
+# lines and CHECK_BODY becomes a stray line glued to the real JSON body. Mirrored in
+# pre-write-parse.jq; see the longer note there.
+sid = (data.get('agent_id') or data.get('session_id') or '')
+sid = sid.replace('\n', ' ').replace('\r', ' ').strip() if isinstance(sid, str) else ''
 ti = data.get('tool_input', {})
 if isinstance(ti, str):
     try:
         ti = json.loads(ti)
     except (ValueError, json.JSONDecodeError):
         ti = {}
+if not isinstance(ti, dict):
+    ti = {}
 # NotebookEdit uses notebook_path (not file_path), so map it -- else the server
 # gate sees an empty path and silently allows (the empty-body bypass). (#4)
 file_path = ti.get('file_path') or ti.get('path') or ti.get('notebook_path') or ''
@@ -78,8 +107,19 @@ SESSION_ID=$(echo "$PARSED_INPUT" | head -1)
 WRITE_CTX=$(echo "$PARSED_INPUT" | sed -n 2p)
 CHECK_BODY=$(echo "$PARSED_INPUT" | tail -n +3)
 
+# NO SYNTHESIZED ID, AND NO EARLY EXIT. This used to call `detect_session_id ""`, which
+# invented an id from PPID or md5(cwd:user).
+#
+# It does NOT return here, and that distinction matters more here than anywhere else in
+# this cycle. The gate decision is made from CHECK_BODY, whose session_id comes from the
+# same parse above and is unaffected by this variable; returning early would skip
+# /pre-write-check entirely and turn its no-mode DENY ([ENF-GATE-MODE]) and its
+# credential-path DENY into a silent ALLOW. So the gate runs exactly as before, the
+# broken invariant is recorded, and only the SESSION-KEYED bookkeeping below is skipped
+# (see the "$SESSION_ID" guard on the cache update near the end).
 if [ -z "$SESSION_ID" ]; then
-    SESSION_ID=$(detect_session_id "")
+    writ_critical writ-pre-write-dispatch \
+        "no session_id in hook payload; the write gate still runs, but RAG budget and queried-rule bookkeeping are skipped"
 fi
 
 # A11: mode for hook_execution telemetry now travels in the /pre-write-check
@@ -259,7 +299,11 @@ print(json.dumps({"hookSpecificOutput": {
 PY
         printf '%s' "${RAG_RULES_RAW}${AO_WRITE_BLOCK}" | blackbox_log out writ-pre-write-dispatch "$SESSION_ID"
     fi
-    if [ -n "$NEW_RULE_IDS" ] && [ "$NEW_RULE_IDS" != "[]" ]; then
+    # "$SESSION_ID" is required, not decorative: _cache_path() has no empty-id guard, so
+    # `update ""` creates a REAL cache file named for the empty string and files this
+    # turn's rules under a session that can never be read back. The critical error was
+    # already recorded up top; this is the no-op that follows it.
+    if [ -n "$SESSION_ID" ] && [ -n "$NEW_RULE_IDS" ] && [ "$NEW_RULE_IDS" != "[]" ]; then
         _writ_session update "$SESSION_ID" \
             --add-rules "$NEW_RULE_IDS" \
             --cost "${COST:-0}" \

@@ -117,6 +117,30 @@ class RecallRequest(BaseModel):
     full: bool = False
 
 
+class MemoryRecordRequest(BaseModel):
+    """Request body for /memory-record (auto-memory graph mirror).
+
+    The parsed memory FILE, as built by bin/lib/memory_capture.py: the mirror hook
+    and `writ memory backfill` both send this shape. Every field but `path` and
+    `name` is optional so a sparse memory (no description, no links) still mirrors;
+    `project` is optional because the route derives it from `path` when absent.
+    """
+
+    path: str
+    name: str
+    project: str = ""
+    description: str = ""
+    type: str = ""
+    body: str = ""
+    links: list[str] = Field(default_factory=list)
+    session_id: str = ""
+    updated_at: str = ""
+    status: str = "live"
+    # Accepted for symmetry with the other capture routes (the caller's repo root);
+    # the memory scope is the encoded project dir in `path`, not the git project.
+    project_root: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Session route Pydantic models (PY-PYDANTIC-001)
 # ---------------------------------------------------------------------------
@@ -260,6 +284,18 @@ class SessionVerificationEvidenceRequest(BaseModel):
         if isinstance(v, bool):
             raise ValueError("exit_code must be an integer, not a boolean")
         return v
+
+
+class SessionReviewFindingsRequest(BaseModel):
+    """Request body for POST /session/{session_id}/review-findings.
+
+    `message` is the reviewer's final text verbatim, not a pre-parsed verdict:
+    parsing lives in bin/lib/review_findings.py so the HTTP path and the
+    SubagentStop hook cannot disagree about what a verdict is.
+    """
+
+    message: str = ""
+    agent_id: str = ""
 
 
 class SessionQualityJudgmentRequest(BaseModel):

@@ -99,7 +99,7 @@ RULES = [
     _rule("PROC-BRANCH-001", "low", "component",
         "When creating a feature branch.",
         "Feature branches are named with a ticket/issue reference: `bug/ORD-1234-negative-quantity`, `feat/ORD-1500-tenant-scoping`. Ad-hoc branch names without a tracking reference are violations.",
-        "```\nbranch: lucio-fix-2\n```",
+        "```\nbranch: quick-fix-2\n```",
         "```\nbranch: fix/ORD-1421-tenant-scoping\n```",
         "Repository branch-naming convention. PR template checks.",
         "Traceable branch names link code to issue tracker to release notes. Untraceable names break the audit trail.",

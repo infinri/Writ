@@ -24,11 +24,15 @@ fi
 
 HOOK_START_NS=$(hook_timer_start)
 
-# Read session ID
-SESSION_ID="${WRIT_SESSION_ID:-}"
-if [ -z "$SESSION_ID" ] && [ -f /tmp/writ-current-session ]; then
-    SESSION_ID=$(cat /tmp/writ-current-session 2>/dev/null | tr -d '[:space:]')
-fi
+# Session identity comes from the payload, with NO fallback.
+#
+# This read WRIT_SESSION_ID first (an env var Claude Code never sets, so it was always
+# empty) and then /tmp/writ-current-session, making the global pointer the effective
+# primary. That pointer names whichever Claude Code session on this machine took a turn
+# most recently, so this hook could enforce one session's violations against another, or
+# clear them there. Enforcement aimed at the wrong session is a governance failure, not a
+# logging one.
+SESSION_ID=$(writ_require_session "$STDIN_JSON" enforce-violations) || exit 0
 if [ -z "$SESSION_ID" ]; then
     exit 0
 fi

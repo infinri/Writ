@@ -28,12 +28,27 @@ import shlex
 import sys
 
 
+def _as_object(value: object) -> dict:
+    """Anything that is not a JSON object becomes an empty one.
+
+    A `"tool_input": null` envelope used to reach `tool_input.get(...)` below and
+    raise AttributeError, which the calling hook cannot distinguish from an empty
+    parse: every HOOK_* variable stays unset and the session id silently falls back
+    to the PPID heuristic. Same for a `tool_input` string that parses to a list, and
+    for a root document that is not an object. Measured 2026-08-07 while porting this
+    parser to jq: `{"tool_input": null}` crashed here and parsed cleanly there. The
+    jq arm normalizes at each step, so this one has to as well, or the fallback
+    disagrees with the fast path on the one shape that only breaks one of them.
+    """
+    return value if isinstance(value, dict) else {}
+
+
 def parse() -> None:
     raw = sys.stdin.read()
 
     # Try stdin envelope first (Claude Code internal format)
     try:
-        envelope = json.loads(raw)
+        envelope = _as_object(json.loads(raw))
     except (json.JSONDecodeError, ValueError):
         envelope = {}
 
@@ -44,13 +59,14 @@ def parse() -> None:
             tool_input = json.loads(tool_input)
         except (json.JSONDecodeError, ValueError):
             tool_input = {}
+    tool_input = _as_object(tool_input)
 
     # Fallback: CLAUDE_TOOL_INPUT env var (current documented behavior)
     if not tool_input:
         env_input = os.environ.get("CLAUDE_TOOL_INPUT", "")
         if env_input:
             try:
-                tool_input = json.loads(env_input)
+                tool_input = _as_object(json.loads(env_input))
             except (json.JSONDecodeError, ValueError):
                 tool_input = {}
 
@@ -99,7 +115,13 @@ def _emit_shell(result: dict) -> None:
     shlex.quote guarantees envelope values cannot be shell-executed by the eval.
     """
     def _q(v: object) -> str:
-        return shlex.quote("" if v is None else str(v))
+        # Non-strings collapse to "" here and in parse-hook-stdin.jq's q(), which is the
+        # ONLY way the two arms agree without reimplementing python's repr in jq: they
+        # disagreed on booleans (True vs true), containers ([1, 2] vs [1,2]) and floats
+        # (1.0 vs 1). Every field below is a string in CC's schema, so a non-string is
+        # malformed input and "" is already how hooks spell absent. HOOK_ENVELOPE below
+        # still carries the raw JSON, so nothing is actually lost.
+        return shlex.quote(v if isinstance(v, str) else "")
 
     # Mirror detect_session_id's preference: agent_id (sub-agent isolation) else session_id.
     session_id = result["agent_id"] or result["session_id"]

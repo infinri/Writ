@@ -303,6 +303,37 @@ def live_pipeline():
 
 
 @pytest.fixture()
+def disposable_graph():
+    """Gate a test that performs a whole-graph wipe on an explicitly disposable Neo4j.
+
+    Skips, with the exact commands to stand one up, when the connected instance is
+    not marked disposable. A test that wipes everything (`clear_all` with an empty
+    preserve set) destroys the runtime records -- Memory, Decision, FileChange,
+    Commit -- and a Decision record has no bible/ or dump source to rebuild from.
+    Running the suite against the interactive instance did exactly that.
+
+    This fixture is the operator-facing half of the protection, NOT the protection
+    itself. The enforcement lives in `clear_all` (writ/graph/db/_safety.py), because
+    a fixture can only defend the tests that remember to request it, and the two
+    fixtures that caused the incident would each have had to remember. What this
+    adds is a clean, actionable skip instead of an error traceback: without it the
+    guard still refuses, it just refuses less legibly.
+
+    Verified by tests/test_graph_wipe_guard.py, including that a stubbed
+    always-allow guard makes the refusal test fail.
+    """
+    from writ.config import get_neo4j_uri
+    from writ.graph.db._safety import full_wipe_allowed, how_to_run_safely
+
+    if not full_wipe_allowed(get_neo4j_uri()):
+        pytest.skip(
+            "destructive whole-graph test: no disposable Neo4j instance configured.\n"
+            + how_to_run_safely()
+        )
+    yield
+
+
+@pytest.fixture()
 def corpus_ready():
     """INC-1: guarantee the live graph holds the full methodology corpus before a
     graph-dependent test, self-healing a wiped/partial graph (re-import bible/) rather than
@@ -381,3 +412,60 @@ def compound_id_rule_data(valid_rule_data: dict) -> dict:
 def enf_gate_final_data(valid_rule_data: dict) -> dict:
     """Rule with non-numeric suffix: ENF-GATE-FINAL."""
     return {**valid_rule_data, "rule_id": "ENF-GATE-FINAL"}
+
+
+# ---------------------------------------------------------------------------
+# Production-graph tripwire (isolation cycle, 2026-08-08)
+# ---------------------------------------------------------------------------
+#
+# WHY A TRIPWIRE AND NOT A REVIEW. Pointing the suite at a disposable instance via
+# WRIT_NEO4J_URI mostly works, and "mostly" is the problem: on 2026-08-08 a full run with
+# the redirect exported still emptied the production corpus (Rule 287 -> 0), while the two
+# files most suspected of it were provably clean when run alone. A leak that only appears
+# in a 200-file run cannot be found by reading, and every hour spent auditing call sites
+# gives an answer that goes stale the next time someone adds a test.
+#
+# So the connection itself refuses. When the suite is explicitly running isolated
+# (WRIT_TEST_GRAPH=1 plus a WRIT_NEO4J_URI that is not production), any Neo4jConnection
+# opened against the production host:port raises immediately, and the error names the test
+# that did it. The leak stops being a silent wipe and becomes one failing test with an
+# address on it.
+#
+# In-process only, by construction: a subprocess gets its own interpreter and is covered
+# instead by inheriting the redirected environment. That is why the message says which of
+# the two applies.
+@pytest.fixture(autouse=True, scope="session")
+def _refuse_production_graph_when_isolated():
+    import os as _o
+
+    if _o.environ.get("WRIT_TEST_GRAPH") != "1" or not _o.environ.get("WRIT_NEO4J_URI"):
+        yield  # not an isolated run; the suite owns the default instance as before
+        return
+
+    from writ.config import get_production_neo4j_uri
+    from writ.graph.db import Neo4jConnection
+
+    def _hostport(uri):
+        from urllib.parse import urlparse
+
+        p = urlparse(uri if "://" in uri else f"bolt://{uri}")
+        return (p.hostname or "").lower(), p.port or 7687
+
+    production = _hostport(get_production_neo4j_uri())
+    original = Neo4jConnection.__init__
+
+    def guarded(self, uri, *a, **kw):
+        if _hostport(uri) == production:
+            raise AssertionError(
+                f"test opened the PRODUCTION graph at {uri} during an isolated run "
+                f"(WRIT_NEO4J_URI={_o.environ['WRIT_NEO4J_URI']}). Something resolved the "
+                f"URI without the env override, or hardcoded it. Fix the call site; do not "
+                f"relax this guard."
+            )
+        return original(self, uri, *a, **kw)
+
+    Neo4jConnection.__init__ = guarded
+    try:
+        yield
+    finally:
+        Neo4jConnection.__init__ = original

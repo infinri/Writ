@@ -29,6 +29,13 @@ METHODOLOGY_NODE_ID_FIELDS: dict[str, str] = {
     k: v for k, v in NODE_ID_FIELDS.items() if k != "Rule"
 }
 
+# Runtime-record labels: operational state (mirrored memories, decision-memory
+# records) that is NOT part of the corpus and has no bible/dump home. A corpus
+# replay must never silently destroy these -- import_cypher_dump preserves any of
+# them absent from the incoming dump. Deliberately NOT merged into NODE_ID_FIELDS:
+# that registry drives bible parity/ingest semantics, which records must not enter.
+RECORD_LABELS: frozenset[str] = frozenset({"Memory", "Decision", "FileChange", "Commit"})
+
 ALLOWED_EDGE_TYPES: frozenset[str] = frozenset({
     # Pre-existing (Change C: APPLIES_TO + JUSTIFIED_BY retired)
     "DEPENDS_ON", "PRECEDES", "CONFLICTS_WITH", "SUPPLEMENTS",

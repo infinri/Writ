@@ -85,7 +85,7 @@ Every fact in Part 2 carries a tag so you know how sure we are:
 | Claude Code version | `2.1.220 (Claude Code)` [observed]; baseline capture was `2.1.183` |
 | Model in session | `claude-fable-5` (from SessionStart.model) [observed]; `claude-opus-4-8[1m]` on 2.1.183 |
 | Capture date | 2026-08-01 (refresh); 2026-06-19 (baseline) [observed] |
-| Host OS | Linux 6.17.0-40-generic x86_64, Ubuntu 24.04 LTS [observed] |
+| Host OS | Linux x86_64 [observed] |
 | Live capture source | `~/.claude/writ-blackbox.jsonl` (raw envelopes; refresh filtered to real sessions only, because the same file also collects synthetic test-fixture envelopes that would poison the schema) [observed] |
 | Doc reference | https://code.claude.com/docs/en/hooks [doc] |
 | Doc reference (alias) | https://docs.anthropic.com/en/docs/claude-code/hooks redirects to the page above [doc] |

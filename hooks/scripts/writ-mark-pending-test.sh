@@ -27,7 +27,11 @@ MATCH=$(python3 "$TEST_PATHS_HELPER" match-src "$FILE" 2>/dev/null)
 [ -z "$MATCH" ] && MATCH=$(python3 "$TEST_PATHS_HELPER" match-test "$FILE" 2>/dev/null)
 [ -z "$MATCH" ] && exit 0
 
-MARKER_DIR="$WRIT_DIR/cache/$PARENT_SID"
+# THE ROOT FOLLOWS WRIT_CACHE_DIR, same as validate-file.sh. Hardcoded to the script's own
+# location, this wrote into the live checkout however the caller redirected Writ's cache, so
+# a test or an audit running against a throwaway directory still left cache/<sid>/ sitting in
+# the repository. writ-run-pending-tests.sh reads this exact path and moved with it.
+MARKER_DIR="${WRIT_CACHE_DIR:-$WRIT_DIR/cache}/$PARENT_SID"
 mkdir -p "$MARKER_DIR"
 echo "$FILE" >> "$MARKER_DIR/pending-tests.txt"
 

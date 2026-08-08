@@ -189,6 +189,89 @@ class TestHookStructureAndE2E:
         assert '"deny"' not in r.stdout, f"reading a .log must not be denied; stdout={r.stdout[:400]}"
 
 
+class TestTelemetryIsKeyedToTheRealSession:
+    """This gate's own rows must be attributable to the session that produced them.
+
+    THE DEFECT, measured live 2026-08-08. The hook calls hook_instrument but set neither
+    SESSION_ID nor HOOK_SESSION_ID, and the exit trap keys every buffered row on exactly
+    those (`${SESSION_ID:-${HOOK_SESSION_ID:-}}`), which falls through to the literal id
+    "unknown". writ-events-unknown.buf held ~153 hook_execution rows, dominated by this
+    gate: real telemetry, from real sessions, permanently unattributable.
+
+    load_hook_env is not the fix here -- it READS STDIN, and the hook has already
+    consumed the envelope into $STDIN_DATA -- so the id comes from the payload the hook
+    already parsed, and from nowhere else.
+    """
+
+    def _run(self, tmp_path, envelope, proj):
+        env = {**os.environ,
+               "WRIT_CACHE_DIR": str(tmp_path / "cache"),
+               "WRIT_LOG_ROOT": str(tmp_path / "logs")}
+        return subprocess.run(["bash", HOOK], input=json.dumps(envelope),
+                              capture_output=True, text=True, env=env,
+                              cwd=str(proj), timeout=20)
+
+    def _buffers(self, tmp_path):
+        return {p.name: p.read_text(errors="replace")
+                for p in (tmp_path / "cache").glob("writ-events-*.buf")}
+
+    def test_the_buffered_row_is_keyed_to_the_payloads_session(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        _seed(monkeypatch, tmp_path, "debug")
+        proj = _proj(tmp_path, EVIDENCE_EMPTY)
+        envelope = {"session_id": SID, "tool_name": "Grep",
+                    "tool_input": {"pattern": "foo", "path": str(proj)}}
+
+        result = self._run(tmp_path, envelope, proj)
+
+        assert result.returncode == 0, f"stderr={result.stderr[:400]}"
+        buffers = self._buffers(tmp_path)
+        assert f"writ-events-{SID}.buf" in buffers, (
+            f"this gate's telemetry was not filed under the session that ran it: "
+            f"{sorted(buffers)}"
+        )
+        assert "writ-events-unknown.buf" not in buffers, (
+            "rows still land under the literal id 'unknown' and cannot be traced back "
+            "to any session"
+        )
+        assert "writ-debug-code-gate" in buffers[f"writ-events-{SID}.buf"]
+
+    def test_a_subagents_read_is_filed_under_the_agent_not_its_parent(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """agent_id wins over session_id, matching load_hook_env. Filing a sub-agent's
+        reads under its parent would silently merge two sessions' telemetry."""
+        _seed(monkeypatch, tmp_path, "debug")
+        proj = _proj(tmp_path, EVIDENCE_EMPTY)
+        envelope = {"session_id": "parent-of-" + SID, "agent_id": SID,
+                    "tool_name": "Grep",
+                    "tool_input": {"pattern": "foo", "path": str(proj)}}
+
+        self._run(tmp_path, envelope, proj)
+
+        buffers = self._buffers(tmp_path)
+        assert f"writ-events-{SID}.buf" in buffers, sorted(buffers)
+        assert f"writ-events-parent-of-{SID}.buf" not in buffers, (
+            "the sub-agent's read was filed under its parent session"
+        )
+
+    def test_the_allowed_path_is_keyed_too(self, tmp_path, monkeypatch) -> None:
+        """Anti-vacuity: the deny path is the loud one, and it is the quiet allow that
+        produces the volume. Both must be attributable."""
+        _seed(monkeypatch, tmp_path, "debug")
+        proj = _proj(tmp_path, EVIDENCE_FULL)
+        envelope = {"session_id": SID, "tool_name": "Read",
+                    "tool_input": {"file_path": str(proj / "app.py")}}
+
+        result = self._run(tmp_path, envelope, proj)
+
+        assert '"deny"' not in result.stdout, "this case must be the allow path"
+        buffers = self._buffers(tmp_path)
+        assert f"writ-events-{SID}.buf" in buffers, sorted(buffers)
+        assert "writ-events-unknown.buf" not in buffers
+
+
 class TestRegistration:
     def _registers(self, manifest_path: Path) -> bool:
         data = json.loads(manifest_path.read_text())

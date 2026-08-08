@@ -27,6 +27,15 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash ${WRIT_DIR}/hooks/scripts/writ-manual-test-grant.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
             "command": "bash ${WRIT_DIR}/hooks/scripts/auto-approve-gate.sh"
           }
         ]
@@ -243,6 +252,15 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash ${WRIT_DIR}/hooks/scripts/writ-state-write-gate.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
             "command": "bash ${WRIT_DIR}/hooks/scripts/writ-pre-write-dispatch.sh"
           }
         ]
@@ -390,6 +408,15 @@
           {
             "type": "command",
             "command": "bash ${WRIT_DIR}/hooks/scripts/writ-mark-pending-test.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${WRIT_DIR}/hooks/scripts/writ-memory-capture.sh"
           }
         ]
       }

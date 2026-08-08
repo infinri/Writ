@@ -36,7 +36,10 @@ import json, os
 print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": os.environ.get("WRIT_AC", "")}}))
 PY
 }
-trap _emit_ac EXIT
+# writ_on_exit, NOT `trap _emit_ac EXIT`. bash allows one EXIT trap, so installing one
+# here replaced hook_instrument's trap and this hook silently stopped recording its
+# telemetry row. Pinned by tests/test_exit_trap_ownership.py.
+writ_on_exit _emit_ac
 
 # Increment 7a: in debug mode, auto-capture this Bash run (command + output
 # excerpt + exit code) into the bounded session command_log as evidence. This is

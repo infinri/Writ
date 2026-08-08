@@ -90,7 +90,7 @@ def _commit_factory(**overrides) -> dict:
         "commit_hash": "abc123def456abc123def456abc123def456abc1",
         "project": "test-dm",
         "subject": "feat(dm): add record substrate",
-        "author": "Lucio",
+        "author": "Test Author",
         "branch": "main",
         "ts": "2026-06-25T00:00:00Z",
     }

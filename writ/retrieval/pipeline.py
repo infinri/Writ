@@ -18,9 +18,12 @@ Per ARCH-DI-001: all dependencies injected via constructor.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
+import shutil
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from writ.config import get_hnsw_cache_dir
@@ -149,12 +152,13 @@ def _apply_sticky_tiebreak(
         # STICKY_TIEBREAK_THRESHOLD of the group's HIGHEST score.
         #
         # PRECONDITION: scored_rules is sorted DESCENDING here, so scored_rules[group_start]
-        # is the group max. This holds only because query() calls apply_authority_preference
-        # (pipeline.py) immediately before this, and that pass is currently a no-op (its
-        # threshold defaults to 0.0 and is never wired from config), so it never reorders.
-        # If apply_authority_preference is ever wired to actually swap pairs, the
-        # group_start==max assumption must be re-verified (re-sort descending first, or
-        # take max(group) explicitly).
+        # is the group max. query() satisfies this by calling this function immediately
+        # after its descending sort, with NO reordering pass in between. That ordering is
+        # deliberate: apply_authority_preference does reorder, and running it first (the
+        # pre-2026-08-06 order) left this function grouping a non-descending list, which
+        # inverted the very preference it had just applied. Any new pass inserted between
+        # the sort and this call must preserve descending order, or this grouping must be
+        # changed to take max(group) explicitly.
         group_start = i
         group_max = scored_rules[group_start]["score"]
         i += 1
@@ -331,29 +335,37 @@ class RetrievalPipeline:
         all_candidate_list = list(candidate_ids.keys())
         proximity = compute_graph_proximity(all_candidate_list, top3_ids, self._cache)
 
-        # Stage 5b': bundle cohesion per candidate.
-        bundle_cohesion = self._compute_bundle_cohesion(
-            all_candidate_list, first_pass_scores, active_weights,
-        )
-
-        # Stage 5c: Final ranking with graph proximity + bundle cohesion.
+        # Stage 5c: Final ranking with graph proximity.
         scored_rules = self._final_rank(
-            candidate_ids, active_weights, proximity, bundle_cohesion, enrichment,
+            candidate_ids, active_weights, proximity, enrichment,
         )
 
         # Sort by score descending.
         scored_rules.sort(key=lambda r: r["score"], reverse=True)
 
-        # Phase 3b: hard authority preference -- human outranks ai-provisional.
-        scored_rules = apply_authority_preference(
-            scored_rules, self._authority_preference_threshold,
-        )
-
         # Sticky rules tie-breaking: reorder adjacent rules within 0.02 score
         # of each other to match the prefer_rule_ids ordering. This stabilizes
         # the injection order across turns for prompt-cache friendliness.
+        #
+        # ORDER MATTERS: this runs on the freshly sorted list, BEFORE the authority
+        # pass, because its grouping treats the first element of each run as the
+        # group max, which is valid only on descending input. The authority pass
+        # reorders, so running it first left this one grouping a non-descending
+        # list. Measured over an exhaustive 12,960-configuration comparison of the
+        # two orders, 4,923 diverge; the worst shape inverted the preference
+        # outright, promoting a preferred ai-provisional rule above every human
+        # rule in its tie group. Order is load-bearing, not cosmetic:
+        # apply_context_budget trims by taking the first N in list order.
         if prefer_rule_ids:
             scored_rules = _apply_sticky_tiebreak(scored_rules, prefer_rule_ids)
+
+        # Phase 3b: hard authority preference -- human outranks ai-provisional.
+        # Applied LAST so the hard preference is the final word: it is allowed to
+        # override the tiebreak's prompt-cache ordering, but only within its own
+        # score threshold. Off by default (threshold 0.0 = no reordering).
+        scored_rules = apply_authority_preference(
+            scored_rules, self._authority_preference_threshold,
+        )
 
         # Apply context budget. Abstraction summaries (when present in the
         # graph and the budget triggers summary mode) replace raw rule
@@ -434,7 +446,18 @@ class RetrievalPipeline:
         bm25_scores = {r["rule_id"]: r["score"] for r in bm25_results}
         vector_scores = {r.rule_id: r.score for r in vector_results}
 
-        all_ids = set(bm25_scores.keys()) | set(vector_scores.keys())
+        # ORDERED union, never `set(a) | set(b)`. Python randomizes string hashing
+        # per process, so a set's iteration order changes between daemon starts, and
+        # this order is load-bearing twice: ids_list below inherits it and
+        # normalize_ranks breaks ties with a STABLE sort (so a rule's bm25_norm
+        # actually changes), then _final_rank inherits it again and
+        # apply_context_budget trims by list position. Measured before the fix, over
+        # the 193-query gold set at PYTHONHASHSEED 0 vs 7: 30 queries returned a
+        # different SET of top-5 rules, i.e. a different rulebook reached the model
+        # after a restart. Discovery order (BM25 rank, then vector-only rank) is both
+        # deterministic and meaningful: a tie resolves toward the candidate the
+        # keyword stage surfaced first. Regression: tests/test_retrieval_determinism.py.
+        all_ids = list(bm25_scores) + [r for r in vector_scores if r not in bm25_scores]
         for rid in all_ids:
             candidate_ids[rid] = {
                 "bm25_score": bm25_scores.get(rid, 0.0),
@@ -459,7 +482,7 @@ class RetrievalPipeline:
         fp_bm25, fp_vec, fp_sev, fp_conf = active_weights.first_pass_weights()
         first_pass_weights = RankingWeights(
             w_bm25=fp_bm25, w_vector=fp_vec, w_severity=fp_sev, w_confidence=fp_conf,
-            w_graph=0.0, w_bundle_cohesion=0.0,
+            w_graph=0.0,
         )
         first_pass_scores: list[tuple[str, float]] = []
         for rid, scores in candidate_ids.items():
@@ -478,30 +501,8 @@ class RetrievalPipeline:
         first_pass_scores.sort(key=lambda x: x[1], reverse=True)
         return first_pass_scores
 
-    def _compute_bundle_cohesion(self, all_candidate_list, first_pass_scores, active_weights) -> dict:
-        """Stage 5b': bundle cohesion per candidate (plan Section 3.2 deliverable 4).
-        A candidate gets a bonus proportional to the fraction of its bundle members
-        (1-hop neighbors) that are also in the top-N first-pass set.
-
-        Skipped entirely when w_bundle_cohesion is 0 (the default): the per-candidate
-        neighbor scan is pure overhead when the term is zero-weighted (audit P3).
-        compute_score sees the empty dict's .get default (0.0), so the result is
-        byte-identical to computing it -- this is an optimization, not a behavior change.
-        """
-        bundle_cohesion: dict[str, float] = {}
-        if active_weights.w_bundle_cohesion > 0:
-            top_n_set = set(rid for rid, _ in first_pass_scores[:FIRST_PASS_TOP_N])
-            for rid in all_candidate_list:
-                neighbors = self._cache.get_neighbors(rid)
-                if not neighbors:
-                    bundle_cohesion[rid] = 0.0
-                    continue
-                overlap = sum(1 for n in neighbors if n["rule_id"] in top_n_set)
-                bundle_cohesion[rid] = overlap / len(neighbors)
-        return bundle_cohesion
-
-    def _final_rank(self, candidate_ids, active_weights, proximity, bundle_cohesion, enrichment) -> list:
-        """Stage 5c: final ranking with graph proximity + bundle cohesion.
+    def _final_rank(self, candidate_ids, active_weights, proximity, enrichment) -> list:
+        """Stage 5c: final ranking with graph proximity.
         Returns the scored rule-entry dicts (unsorted; the caller sorts)."""
         scored_rules: list[dict] = []
         for rid, scores in candidate_ids.items():
@@ -512,7 +513,6 @@ class RetrievalPipeline:
                 severity=meta.get("severity", "medium"),
                 confidence=meta.get("confidence", "production-validated"),
                 graph_proximity=proximity.get(rid, 0.0),
-                bundle_cohesion=bundle_cohesion.get(rid, 0.0),
                 weights=active_weights,
                 times_seen_positive=meta.get("times_seen_positive", 0) or 0,
                 times_seen_negative=meta.get("times_seen_negative", 0) or 0,
@@ -534,6 +534,72 @@ class RetrievalPipeline:
             }
             scored_rules.append(rule_entry)
         return scored_rules
+
+
+_BM25_SIDECAR = "writ_bm25.json"
+
+
+def _compute_bm25_hash(candidates: list[dict]) -> str:
+    """Cache key over exactly what the BM25 index consumes.
+
+    The HNSW hash covers trigger+statement only (all the embedding sees); BM25
+    additionally indexes tags and body and excludes mandatory rules, so reusing
+    the HNSW key would serve a stale keyword index after a tags/body/mandatory
+    edit. Sorted by rule_id so candidate order cannot change the key.
+    """
+    payload = [
+        (
+            r["rule_id"],
+            r.get("trigger", ""),
+            r.get("statement", ""),
+            str(r.get("tags", "")),
+            r.get("body", "") or "",
+            bool(r.get("mandatory", False)),
+        )
+        for r in sorted(candidates, key=lambda r: r["rule_id"])
+    ]
+    return hashlib.sha256(json.dumps(payload).encode("utf-8")).hexdigest()
+
+
+def _load_or_build_keyword_index(
+    candidates: list[dict], cache_root: str | Path
+) -> tuple[KeywordIndex, str]:
+    """Open the persisted BM25 index when its sidecar hash matches, else rebuild.
+
+    Mirrors the HNSW cache discipline below: hash first, open on hit, rebuild
+    into a fresh directory on miss (tantivy appends, so building into a
+    non-empty index would duplicate documents), sidecar written last so a
+    crash mid-build reads as a miss. Returns (index, outcome) where outcome is
+    "hit", "miss", or "nocache" (persistence unavailable; in-memory build --
+    the pre-persistence behavior, never a pipeline failure).
+    """
+    bm25_dir = Path(cache_root) / "bm25"
+    sidecar = bm25_dir / _BM25_SIDECAR
+    corpus_hash = _compute_bm25_hash(candidates)
+
+    try:
+        if sidecar.is_file() and json.loads(sidecar.read_text()).get("corpus_hash") == corpus_hash:
+            index = KeywordIndex(index_dir=bm25_dir)
+            index.reload()
+            _logger.info("Loaded BM25 index from cache (hash=%s)", corpus_hash[:12])
+            return index, "hit"
+    except Exception as exc:
+        _logger.debug("BM25 cache open failed, rebuilding: %s", exc)
+
+    try:
+        shutil.rmtree(bm25_dir, ignore_errors=True)
+        bm25_dir.mkdir(parents=True, exist_ok=True)
+        index = KeywordIndex(index_dir=bm25_dir)
+        index.build(candidates)
+        sidecar.write_text(json.dumps(
+            {"corpus_hash": corpus_hash, "count": len(candidates)}
+        ))
+        return index, "miss"
+    except Exception as exc:
+        _logger.warning("BM25 persistence unavailable, building in memory: %s", exc)
+        index = KeywordIndex()
+        index.build(candidates)
+        return index, "nocache"
 
 
 def _compute_corpus_hash_from_text(rule_ids: list[str], texts: list[str]) -> str:
@@ -596,10 +662,16 @@ async def _load_candidates(db: Neo4jConnection) -> tuple[list[dict], dict]:
     single-source RANKED_INCLUDE_WHERE constant so the {excluded-from-ranked}=={mandatory}
     validator (integrity.py) checks the exact predicate the pool uses (WRIT-BLUEPRINT 3.5/3.6a).
     """
+    # ORDER BY is not cosmetic: this load order becomes the BM25 and vector index
+    # build order, and index build order can decide ties among equal-scoring hits.
+    # Cypher gives no ordering guarantee without it, so leaving it out would make the
+    # determinism this module now promises depend on the database's whim across
+    # restarts. Sorted by the canonical id, which is unique, so the order is total.
     query = f"""
         MATCH (r:Rule)
         WHERE {RANKED_INCLUDE_WHERE}
         RETURN r
+        ORDER BY r.rule_id
     """
     rules: list[dict] = []
     async with db._driver.session(database=db._database) as session:
@@ -615,7 +687,9 @@ async def _load_candidates(db: Neo4jConnection) -> tuple[list[dict], dict]:
     methodology_nodes: list[dict] = []
     for label in retrievable_methodology_labels:
         id_field = retrievable_id_fields[label]
-        q = f"MATCH (n:{label}) RETURN n"
+        # Ordered for the same reason as the Rule query above: this feeds index
+        # build order, which can decide ties among equal-scoring candidates.
+        q = f"MATCH (n:{label}) RETURN n ORDER BY n.{id_field}"
         async with db._driver.session(database=db._database) as session:
             result = await session.run(q)
             async for record in result:
@@ -773,8 +847,12 @@ async def build_pipeline(
     all_candidates, rule_metadata = await _load_candidates(db)
 
     # Build BM25 index (Stage 2) -- includes methodology body per plan Section 3.2.
-    keyword_index = KeywordIndex()
-    keyword_index.build(all_candidates)
+    # Persisted and keyed like the HNSW index below, so a warm cold-start skips
+    # the rebuild; any cache trouble degrades to the old in-memory build.
+    keyword_index, bm25_outcome = _load_or_build_keyword_index(
+        all_candidates, Path(get_hnsw_cache_dir()).parent
+    )
+    emit("metrics", "bm25_cache", "", None, outcome=bm25_outcome)
 
     # Build vector index (Stage 3).
     texts = [f"{r.get('trigger', '')} {r.get('statement', '')}" for r in all_candidates]

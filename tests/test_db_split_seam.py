@@ -25,7 +25,8 @@ EXPECTED_METHODS = [
     "batch_create_edges", "batch_create_nodes", "clear_all", "clear_project", "close",
     "count_by_authority", "count_rules", "create_abstraction", "create_abstracts_edge",
     "create_commit", "create_decision", "create_edge",
-    "create_filechange", "create_methodology_node", "create_project", "create_record_edge",
+    "create_filechange", "create_memory", "create_methodology_node", "create_project",
+    "create_record_edge",
     "create_rule", "delete_abstractions", "delete_rule", "evaluate_and_flip_graduation",
     "get_abstraction", "get_all_abstractions", "get_all_edges_cross_type",
     # Added after the split by later programs and never folded into this frozen
@@ -39,7 +40,8 @@ EXPECTED_METHODS = [
     "get_open_decisions_for_path", "get_projects", "get_recent_decisions", "get_rule",
     "get_rule_abstraction", "get_rule_statements", "get_rules_by_authority",
     "get_subagent_role", "increment_negative", "increment_positive", "list_constraints",
-    "list_indexes", "resolve_file_claims", "resolve_project_for_cwd", "traverse_neighbors",
+    "list_indexes", "list_memories", "resolve_file_claims", "resolve_project_for_cwd",
+    "tombstone_missing_memories", "traverse_neighbors",
     "update_rule_authority", "update_rule_confidence", "wire_governed_by", "wire_has_change",
     "wire_has_commit", "wire_has_decision", "wire_includes", "wire_motivated_by",
     "wire_realizes",
@@ -141,7 +143,12 @@ class TestSeamPreserved:
         from writ.graph.db import Neo4jConnection
 
         # Driver creation does not open a connection, so this is offline-safe.
-        conn = Neo4jConnection("bolt://localhost:7687", "u", "p", database="seamtest")
+        # A deliberately non-production port. This asserts on constructor wiring and never
+        # connects, but naming the real instance made it indistinguishable from a test that
+        # genuinely reaches for production, which is what the isolated-run guard in
+        # conftest.py looks for. A literal that cannot be the live graph keeps the guard
+        # meaningful instead of teaching people to exempt it.
+        conn = Neo4jConnection("bolt://localhost:7699", "u", "p", database="seamtest")
         try:
             assert conn._database == "seamtest"
             assert conn._driver is not None

@@ -33,6 +33,18 @@ HOOK = os.path.abspath(
 HELPER = os.path.abspath(
     os.path.join(os.path.dirname(__file__), os.pardir, "bin", "lib", "writ-session.py")
 )
+FLUSH = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), os.pardir, "bin", "lib", "writ-flush-events.py")
+)
+
+
+def _hook_env(cache_dir):
+    """A throwaway cache dir and log destination, so no test reads or writes live state."""
+    env = os.environ.copy()
+    env["WRIT_CACHE_DIR"] = str(cache_dir)
+    env["WRIT_FRICTION_LOG"] = os.path.join(str(cache_dir), "friction.log")
+    env["WRIT_LOG_ROOT"] = os.path.join(str(cache_dir), "logs")
+    return env
 
 
 def _seed_mode(cache_dir, sid, mode):
@@ -48,10 +60,37 @@ def _seed_mode(cache_dir, sid, mode):
     )
 
 
+def _drain(cache_dir, sid):
+    """Release `sid`'s buffered rows into the log.
+
+    TWO SINKS, ONE COLLECTOR. log_gate_decision BUFFERS an "allow" (that is the volume)
+    and emits anything else synchronously, so a test that read only one sink would see
+    only one branch of the very thing under test. Draining puts both on the one log file
+    this test owns.
+    """
+    subprocess.run([sys.executable, FLUSH, sid], env=_hook_env(cache_dir),
+                   capture_output=True, text=True, timeout=60)
+
+
+def _logged_gate_rows(cache_dir):
+    """Every `dispatch-discipline` gate_decision on this test's log, any session."""
+    log = _hook_env(cache_dir)["WRIT_FRICTION_LOG"]
+    if not os.path.exists(log):
+        return []
+    with open(log) as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    return [r for r in rows
+            if r.get("event") == "gate_decision" and r.get("gate") == "dispatch-discipline"]
+
+
+def _audit_rows(cache_dir, sid):
+    """The `dispatch-discipline` gate_decisions recorded FOR `sid`, drained first."""
+    _drain(cache_dir, sid)
+    return [r for r in _logged_gate_rows(cache_dir) if r.get("session") == sid]
+
+
 def _run_hook(cache_dir, master_sid, *, subagent_type, prompt):
-    env = os.environ.copy()
-    env["WRIT_CACHE_DIR"] = str(cache_dir)
-    env["WRIT_FRICTION_LOG"] = os.path.join(str(cache_dir), "friction.log")
+    env = _hook_env(cache_dir)
     envelope = {
         "session_id": master_sid,
         "hook_event_name": "PreToolUse",
@@ -258,3 +297,180 @@ class TestDispatchDiscipline:
             prompt="review the diff for correctness",
         )
         assert _decision(out)[0] is None
+
+
+class TestTheAuditRowMatchesTheDecisionEmitted:
+    """The governance record must say what the hook actually did.
+
+    THE DEFECT, reproduced live 2026-08-08. The hook logged `deny` whenever it emitted
+    ANYTHING, inferring the label from "did we intervene" rather than from the decision
+    in the JSON. Both branches emit, and the dominant branch is the REROUTE:
+    permissionDecision=allow plus updatedInput, which is this hook's whole purpose. So
+    every successful reroute was filed in the audit stream -- a governance record kept
+    for 365 days -- as a denial, and the record was lying about the single mechanism
+    that closes the general-purpose sub-agent gap.
+
+    WHY BOTH DIRECTIONS ARE ASSERTED. A hook hard-coded to "allow" would pass an
+    allow-only test just as the broken hook passed a deny-only reading of its own
+    behavior. The label is only trustworthy if it TRACKS the decision, so each test
+    compares the audit row against the permissionDecision that same run emitted, and
+    `test_the_two_branches_are_recorded_differently` pins that the two do not collapse.
+    """
+
+    EXPLORE_PROMPT = "explore the codebase structure and find where auth is handled"
+    AMBIGUOUS_PROMPT = "handle this one-off miscellaneous chore"
+
+    def _emit_and_record(self, cache_dir, sid, prompt):
+        """Run one dispatch; return (hook stdout, the single audit row it produced)."""
+        out = _run_hook(cache_dir, sid, subagent_type="general-purpose", prompt=prompt)
+        rows = _audit_rows(cache_dir, sid)
+        assert len(rows) == 1, (
+            f"expected exactly one dispatch-discipline audit row for {sid}, got {rows}"
+        )
+        return out, rows[0]
+
+    def test_a_reroute_is_recorded_as_the_allow_it_emitted(self, tmp_path):
+        """The row that was wrong: a governed reroute, recorded as a denial."""
+        _seed_mode(tmp_path, "audit-allow", "work")
+        out, row = self._emit_and_record(tmp_path, "audit-allow", self.EXPLORE_PROMPT)
+
+        emitted, _ = _decision(out)
+        assert emitted == "allow"
+        assert _rewrite_target(out) == "writ-explorer", (
+            "this case must be the reroute branch, or the assertion below proves nothing"
+        )
+        assert row["decision"] == emitted, (
+            f"the dispatch was allowed and rerouted to writ-explorer, but the audit "
+            f"stream recorded decision={row['decision']!r}"
+        )
+
+    def test_a_genuine_denial_is_still_recorded_as_deny(self, tmp_path):
+        """The other direction, and the reason the fix is not just s/deny/allow/: an
+        ambiguous dispatch really is denied and must still read as one."""
+        _seed_mode(tmp_path, "audit-deny", "work")
+        out, row = self._emit_and_record(tmp_path, "audit-deny", self.AMBIGUOUS_PROMPT)
+
+        emitted, reason = _decision(out)
+        assert emitted == "deny"
+        assert "did not map to a specific Writ role" in reason
+        assert row["decision"] == emitted, (
+            f"the dispatch was denied but the audit stream recorded "
+            f"decision={row['decision']!r}"
+        )
+
+    def test_two_dispatches_are_recorded_as_the_two_things_they_were(self, tmp_path):
+        """Anti-vacuity for both tests above, read from the UNFILTERED log.
+
+        A hook hard-coded to either label satisfies one of the two tests above, and each
+        of those reads only its own session's rows. This one runs both dispatches and
+        compares the whole audit picture, so it fails if the labels collapse onto one
+        value AND if a row is filed under a session that did not dispatch it.
+        """
+        _seed_mode(tmp_path, "audit-a", "work")
+        _seed_mode(tmp_path, "audit-b", "work")
+        _run_hook(tmp_path, "audit-a", subagent_type="general-purpose",
+                  prompt=self.EXPLORE_PROMPT)
+        _run_hook(tmp_path, "audit-b", subagent_type="general-purpose",
+                  prompt=self.AMBIGUOUS_PROMPT)
+        _drain(tmp_path, "audit-a")
+        _drain(tmp_path, "audit-b")
+
+        recorded = {(r["session"], r["decision"]) for r in _logged_gate_rows(tmp_path)}
+        assert recorded == {("audit-a", "allow"), ("audit-b", "deny")}, (
+            f"the audit stream cannot distinguish a reroute from a refusal, or filed a "
+            f"row under the wrong session: {recorded}"
+        )
+
+    def test_a_pass_through_is_recorded_as_allow(self, tmp_path):
+        """The third branch, unchanged by the fix and asserted so it stays that way: a
+        dispatch the hook never touches emits nothing and is an allow."""
+        _seed_mode(tmp_path, "audit-passthrough", "work")
+        out = _run_hook(tmp_path, "audit-passthrough",
+                        subagent_type="writ-explorer", prompt=self.EXPLORE_PROMPT)
+        assert _decision(out)[0] is None
+        rows = _audit_rows(tmp_path, "audit-passthrough")
+        assert [r["decision"] for r in rows] == ["allow"], rows
+        assert rows[0]["reason"] == "dispatch not intercepted"
+
+    def test_the_recorded_reason_is_the_decision_that_was_emitted(self, tmp_path):
+        """The label and the evidence behind it must come from the same emission.
+
+        The reason field carries the hook's own stdout, so an audit reader can check the
+        label against the payload it claims to describe rather than trusting it.
+        """
+        _seed_mode(tmp_path, "audit-reason", "work")
+        out, row = self._emit_and_record(tmp_path, "audit-reason", self.EXPLORE_PROMPT)
+        assert json.loads(row["reason"]) == json.loads(out)
+
+
+class TestTheAuditRowNamesTheAgentTypeDispatched:
+    """The `target` field must carry the agent type the dispatch ASKED FOR.
+
+    Every other gate names its subject in `target` -- the file it validated, the path it
+    refused, the host it questioned -- which is what makes a row answerable without the
+    payload beside it. This hook wrote `${AGENT_TYPE:-}`, a variable it never assigned, so
+    all three branches filed an empty target and the audit stream could not say WHICH
+    dispatch it had rerouted, refused, or waved through.
+
+    The requested type lives in tool_input, which the hook reads only inside its embedded
+    python, so this is not a rename: the value has to reach the shell. HOOK_AGENT_TYPE from
+    load_hook_env is the type of the agent DOING the dispatching, which on the main session
+    is empty and inside a sub-agent is confidently wrong.
+    """
+
+    EXPLORE_PROMPT = "explore the codebase structure and find where auth is handled"
+    AMBIGUOUS_PROMPT = "handle this one-off miscellaneous chore"
+
+    def test_a_reroute_names_the_generic_type_it_replaced(self, tmp_path):
+        _seed_mode(tmp_path, "target-allow", "work")
+        out = _run_hook(tmp_path, "target-allow", subagent_type="general-purpose",
+                        prompt=self.EXPLORE_PROMPT)
+        assert _rewrite_target(out) == "writ-explorer", "must be the reroute branch"
+
+        rows = _audit_rows(tmp_path, "target-allow")
+        assert [r["target"] for r in rows] == ["general-purpose"], (
+            f"a reroute must record the type that was dispatched, got {rows}"
+        )
+
+    def test_a_denial_names_the_type_it_refused(self, tmp_path):
+        _seed_mode(tmp_path, "target-deny", "work")
+        out = _run_hook(tmp_path, "target-deny", subagent_type="claude",
+                        prompt=self.AMBIGUOUS_PROMPT)
+        assert _decision(out)[0] == "deny", "must be the ambiguous branch"
+
+        rows = _audit_rows(tmp_path, "target-deny")
+        assert [r["target"] for r in rows] == ["claude"], (
+            f"a refusal must record the type that was refused, got {rows}"
+        )
+
+    def test_a_pass_through_names_the_governed_role_it_allowed(self, tmp_path):
+        """The branch that emits nothing still knows what it let past."""
+        _seed_mode(tmp_path, "target-passthrough", "work")
+        out = _run_hook(tmp_path, "target-passthrough", subagent_type="writ-implementer",
+                        prompt=self.EXPLORE_PROMPT)
+        assert _decision(out)[0] is None, "must be the untouched branch"
+
+        rows = _audit_rows(tmp_path, "target-passthrough")
+        assert [r["target"] for r in rows] == ["writ-implementer"], (
+            f"a pass-through must record what passed through, got {rows}"
+        )
+
+    def test_the_target_tracks_the_dispatch_rather_than_being_a_constant(self, tmp_path):
+        """Anti-vacuity. Each test above pins ONE type, so a hook that hard-coded any
+        single string would satisfy one of them exactly as the empty variable satisfied a
+        reader who only checked that the field existed. Three dispatches of three
+        different types must produce three different targets.
+        """
+        for sid, agent_type in (("target-x", "general-purpose"),
+                                ("target-y", "Explore"),
+                                ("target-z", "writ-reviewer")):
+            _seed_mode(tmp_path, sid, "work")
+            _run_hook(tmp_path, sid, subagent_type=agent_type, prompt=self.EXPLORE_PROMPT)
+            _drain(tmp_path, sid)
+
+        recorded = {(r["session"], r["target"]) for r in _logged_gate_rows(tmp_path)}
+        assert recorded == {("target-x", "general-purpose"),
+                            ("target-y", "Explore"),
+                            ("target-z", "writ-reviewer")}, (
+            f"the audit target does not track the dispatched type: {recorded}"
+        )

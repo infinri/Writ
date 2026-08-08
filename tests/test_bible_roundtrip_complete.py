@@ -20,6 +20,7 @@ import pytest
 
 from writ.config import get_neo4j_password, get_neo4j_uri, get_neo4j_user
 from writ.graph.db import Neo4jConnection
+from writ.graph.db._common import RECORD_LABELS
 from writ.graph.methodology_ingest import ingest_path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -48,12 +49,25 @@ async def test_graph_has_no_edges_bible_cannot_regenerate(_require_neo4j) -> Non
         # unaffected -- same pattern conftest uses at session start.
         await db.clear_all()
         report = await ingest_path(REPO / "bible", db, only=None, dry_run=False)
+        # RUNTIME RECORD EDGES ARE EXCLUDED, because clear_all now preserves the record
+        # nodes by default and bible is not their source. The claim under test is that
+        # bible regenerates the CORPUS completely; a `(:Commit)-[:INCLUDES]->(:FileChange)`
+        # edge surviving the clear is not a corpus edge bible failed to declare, and
+        # counting it made this test read "round-trip incomplete: 1064 vs 1063" the moment
+        # a single commit record existed. Scoped by the same RECORD_LABELS set clear_all
+        # preserves, so the two cannot drift apart.
         async with db._driver.session(database=db._database) as session:
-            result = await session.run("MATCH ()-[e]->() RETURN count(e) AS c")
+            result = await session.run(
+                "MATCH (a)-[e]->(b) "
+                "WHERE NOT any(l IN labels(a) WHERE l IN $records) "
+                "  AND NOT any(l IN labels(b) WHERE l IN $records) "
+                "RETURN count(e) AS c",
+                records=sorted(RECORD_LABELS),
+            )
             graph_total = (await result.single())["c"]
 
         assert graph_total == report.edges_created, (
-            f"bible round-trip incomplete: graph has {graph_total} edges but bible "
+            f"bible round-trip incomplete: graph has {graph_total} corpus edges but bible "
             f"regenerates {report.edges_created}. A mismatch means either a graph-only "
             f"edge (graph > bible; e.g. created via interactive add/edit and never "
             f"written back) or a duplicate edge declaration in bible (bible > graph). "

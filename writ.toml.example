@@ -23,3 +23,23 @@ password = "writdevpass"  # local dev default; change for any networked instance
 # Create a token: https://id.atlassian.com/manage-profile/security/api-tokens
 email = ""
 token = ""
+
+# Hosts the Bash egress guard may send local data to WITHOUT asking you to confirm
+# (writ/config.py get_egress_allow_hosts, read by hooks/scripts/writ-bash-write-gate.sh).
+# Compared on host only, port ignored. localhost, 127.0.0.1, ::1, [::1] and $WRIT_HOST
+# always pass, so this list is for extras; $WRIT_EGRESS_ALLOW_HOSTS (comma-separated)
+# adds to it for one session. Uncomment allow_hosts to use it.
+[egress]
+# allow_hosts = ["uploads.internal.example", "files.example.com"]
+
+# Ranking preference for human-authored rules over AI-proposed ones
+# (writ/config.py get_authority_preference_threshold).
+# When two results are within this score gap and the higher one is
+# authority="ai-provisional", the human / ai-promoted rule is ranked first.
+# 0.0 disables the preference entirely, which is the shipped default: a sweep of
+# the 193-query gold set measured no change from enabling it, because the only
+# ai-provisional node in the corpus is not reachable from the default semantic
+# route (benchmarks/RANKING-LEVERS-2026-08-06.md). Raise it only if you author
+# ai-provisional rules that the semantic path actually retrieves.
+[retrieval]
+authority_preference_threshold = 0.0

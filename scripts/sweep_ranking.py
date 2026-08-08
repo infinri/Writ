@@ -8,7 +8,10 @@ measured MRR@5 (ambiguous subset) / hit-rate@5 (all queries) for each:
      the four non-graph weights proportionally rebalanced so RankingWeights
      still sums to 1.0.
   2. authority_preference_threshold in {0.0, 0.02, 0.05, 0.10}, with default
-     weights.
+     weights. Measured 2026-08-06: byte-identical at every threshold. The corpus
+     holds one ai-provisional node and its category is not semantic-routed, so
+     the default query path never ranks one. The lever ships configurable and
+     OFF; see benchmarks/RANKING-LEVERS-2026-08-06.md.
 
 Indexes are built ONCE via build_pipeline; every combo reuses the same BM25 /
 vector / adjacency / model / metadata / abstractions / node_routes, so only the
@@ -74,7 +77,6 @@ def _rebalanced_weights(w_graph: float) -> RankingWeights:
         w_severity=_BASE_W_SEVERITY * scale,
         w_confidence=_BASE_W_CONFIDENCE * scale,
         w_graph=w_graph,
-        w_bundle_cohesion=0.0,
     )
 
 

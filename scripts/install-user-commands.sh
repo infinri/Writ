@@ -11,37 +11,29 @@
 # Idempotent: safe to re-run; copies overwrite previous installs so a
 # changed command propagates on next run.
 #
+# THIS IS A SHIM over `bin/lib/writ_install.py commands`, which owns the copy so
+# one module holds every install-time write (settings.json, CLAUDE.md, hook
+# registrations, slash commands). The per-file "installed:" output, the
+# USER_COMMANDS_DIR override and the exit codes are unchanged.
+#
 # Usage:
 #   bash scripts/install-user-commands.sh           # default: ~/.claude/commands
 #   USER_COMMANDS_DIR=/path bash scripts/install-user-commands.sh
+#
+# Exit codes:
+#   0  installed (or nothing to install)
+#   1  templates/commands is missing
+#   2  write failure
 
 set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-SOURCE_DIR="${SKILL_DIR}/templates/commands"
+INSTALL_MODULE="$SKILL_DIR/bin/lib/writ_install.py"
 TARGET_DIR="${USER_COMMANDS_DIR:-${HOME}/.claude/commands}"
 
-if [ ! -d "$SOURCE_DIR" ]; then
-    echo "error: source directory missing: $SOURCE_DIR" >&2
+if [ ! -f "$INSTALL_MODULE" ]; then
+    echo "error: install module missing: $INSTALL_MODULE" >&2
     exit 1
 fi
 
-mkdir -p "$TARGET_DIR"
-
-count=0
-for src in "$SOURCE_DIR"/*.md; do
-    [ -e "$src" ] || continue
-    name="$(basename "$src")"
-    cp "$src" "$TARGET_DIR/$name"
-    echo "installed: $TARGET_DIR/$name"
-    count=$((count + 1))
-done
-
-if [ "$count" -eq 0 ]; then
-    echo "warning: no .md files found in $SOURCE_DIR" >&2
-    exit 0
-fi
-
-echo
-echo "$count slash command(s) installed to $TARGET_DIR"
-echo "Restart Claude Code (or open a new session) to pick up the changes."
+exec python3 "$INSTALL_MODULE" commands --target "$TARGET_DIR" --skill-dir "$SKILL_DIR" "$@"

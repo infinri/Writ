@@ -20,10 +20,27 @@ source "$WRIT_DIR/bin/lib/common.sh"
 
 HOOK_START_NS=$(hook_timer_start)
 
-# Session ID: from the stdin envelope (agent_id or session_id). load_hook_env
-# applies the PPID/md5 fallback internally when no envelope is present.
+# Session ID: from the stdin envelope (agent_id or session_id) and nowhere else.
+# load_hook_env no longer synthesizes one from PPID or md5(cwd:user); it leaves the
+# variable empty.
 load_hook_env
 SESSION_ID="$HOOK_SESSION_ID"
+
+# THIS HOOK IS A ROLLUP OF ONE SESSION, so with no session id there is nothing to roll up.
+# auto-feedback and coverage MUTATE the cache, and _cache_path() has no empty-id guard, so
+# they would create a cache file named for the empty string; the two log redirects would
+# open "/tmp/writ-feedback-.log" and "/tmp/writ-coverage-.log"; and the buffer flush would
+# drain the wrong buffer. Record the broken invariant and stop.
+if [ -z "$SESSION_ID" ]; then
+    writ_critical writ-session-end "no session_id in hook payload; skipping the end-of-session rollup"
+    exit 0
+fi
+
+# 0. Drain any hook_execution rows a turn left behind. This is the backstop for a turn
+# that never reached Stop (crash, kill, disconnect): those rows are already on disk, and
+# without this they would sit there until the session id happened to come round again.
+# ERR-GRACEFUL-002: shutdown completes the in-progress work rather than dropping it.
+writ_event_buffer_flush "$SESSION_ID" || true
 
 # 1. Auto-feedback: correlate rules-in-context with analysis outcomes
 _writ_session auto-feedback "$SESSION_ID" \

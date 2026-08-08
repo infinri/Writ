@@ -11,7 +11,7 @@ load -- no gate, no injection, no enforcement.
 
 TWO DESIGN CONSTRAINTS, both tested here:
 
-1. GENERATED, never hand-maintained. The template is 41 command paths across 12 events. A
+1. GENERATED, never hand-maintained. The template is 44 command paths across 12 events. A
    second hand-edited copy is the same shape as the defect fixed in ea5022f: one source moved
    and stale copies survived because nothing compared them. CHANGELOG.md:215 shows Writ has
    been here before ("keep registrations in sync between the two if you edit either").
@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -145,8 +144,10 @@ class TestGeneratorIsTheSourceOfTruth:
         )
 
 
-_HAVE_JQ = shutil.which("jq") is not None and shutil.which("envsubst") is not None
-_needs_tools = pytest.mark.skipif(not _HAVE_JQ, reason="jq and envsubst required")
+# No tool-presence skip guard: the patcher is a shim over bin/lib/writ_install.py, which
+# is stdlib-only Python. The jq-and-envsubst skipif that used to sit here hid every
+# patch_hooks case on any machine without both tools -- a green run that had asserted
+# nothing about the seeding contract.
 
 
 @pytest.fixture
@@ -195,7 +196,6 @@ def _seeded(target: Path) -> dict:
     return doc
 
 
-@_needs_tools
 class TestSeedingIsOptIn:
     def test_without_the_flag_no_hooks_block_is_written(self, target):
         """The script's documented promise: it does NOT touch the hooks block."""
@@ -254,7 +254,6 @@ class TestSeedingIsOptIn:
         assert "bash /my/own.sh" in cmds, "the user's own hook was clobbered"
 
 
-@_needs_tools
 class TestSeedingRefusesUnderAPluginInstall:
     def _listing(self) -> str:
         return json.dumps([{

@@ -57,6 +57,7 @@ class AdjacencyCache:
             WHERE src_id IS NOT NULL AND tgt_id IS NOT NULL
               AND type(r) <> 'BELONGS_TO'
             RETURN src_id AS source, type(r) AS edge_type, tgt_id AS target
+            ORDER BY source, target, edge_type
         """
         async with db._driver.session(database=db._database) as session:
             result = await session.run(query)

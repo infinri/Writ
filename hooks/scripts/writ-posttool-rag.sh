@@ -27,10 +27,21 @@ HOOK_START_NS=$(hook_timer_start)
 # Read stdin once
 STDIN_DATA=$(cat)
 
-# Extract session ID
-SESSION_ID=$(echo "$STDIN_DATA" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('agent_id','') or d.get('session_id',''))" 2>/dev/null)
+# Extract session ID. json_transform, not a python spawn: this hook fires on every
+# write and an interpreter start costs ~15ms against jq's ~3ms. The `if/else` spells out
+# python's `or`, which falls through on the empty string where jq's `//` would keep it.
+SESSION_ID=$(printf '%s' "$STDIN_DATA" | json_transform \
+    'if (.agent_id // "") != "" then .agent_id else (.session_id // "") end' \
+    "d.get('agent_id','') or d.get('session_id','')" 2>/dev/null)
+# NO SYNTHESIZED ID. This used to call `detect_session_id ""`, which invented one from
+# PPID or md5(cwd:user). Every remaining step here is session-keyed -- the budget read,
+# the should-skip check, and the `update` that banks this turn's rule ids -- and
+# _cache_path() has no empty-id guard, so continuing would file all of it under a cache
+# named for the empty string. This hook injects rules; it gates nothing, so stopping
+# costs an injection and denies nothing.
 if [ -z "$SESSION_ID" ]; then
-    SESSION_ID=$(detect_session_id "")
+    writ_critical writ-posttool-rag "no session_id in hook payload; skipping post-write rule injection"
+    exit 0
 fi
 
 # A4: ONE session-cache read for the whole hook (was two -- this orchestrator
@@ -201,22 +212,16 @@ if [ -z "$RESPONSE" ]; then
     exit 0
 fi
 
-# Combined error + relevance check in one python3 spawn. Item 4a: was two
-# separate json.load() invocations in v1.1.0.
-RESPONSE_CHECK=$(echo "$RESPONSE" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    print('error')
-    sys.exit(0)
-if 'error' in d:
-    print('error')
-    sys.exit(0)
-rules = d.get('rules', [])
-relevant = [r for r in rules if r.get('score', 0) >= 0.4]
-print('relevant' if relevant else 'irrelevant')
-" 2>/dev/null || echo "error")
+# Combined error + relevance check, via json_transform rather than an interpreter start.
+# A malformed or empty response yields no output instead of the literal "error", and the
+# next line treats anything other than "relevant" as "stop", so the branch taken is the
+# same one the python spawn produced.
+RESPONSE_CHECK=$(printf '%s' "$RESPONSE" | json_transform \
+    'if has("error") then "error"
+     elif ([.rules[]? | select((.score // 0) >= 0.4)] | length) > 0 then "relevant"
+     else "irrelevant" end' \
+    "'error' if 'error' in d else ('relevant' if [r for r in d.get('rules',[]) if r.get('score',0) >= 0.4] else 'irrelevant')" \
+    2>/dev/null || echo "error")
 
 if [ "$RESPONSE_CHECK" != "relevant" ]; then
     exit 0
@@ -236,14 +241,30 @@ if [ -n "$RULES_TEXT" ]; then
     # #2: deliver via additionalContext. Plain stdout on PostToolUse reaches only
     # the CC debug log (verified delivery rule); additionalContext reaches the
     # model (OBSERVED via writ-bible-authoring-push). Additive, no decision.
-    WRIT_AC="[Writ: post-write rules for $(basename "$FILE_PATH")]
-$RULES_TEXT" python3 <<'PY' 2>>"$WRIT_HOOK_LOG_SINK" || true
+    # jq builds this envelope when it can; the python heredoc stays as the fallback.
+    # The value is passed with --arg / the environment, never spliced into the program
+    # text, so a rule body containing quotes or backslashes cannot forge JSON.
+    # basename is bash parameter expansion here: the fork cost 1.3ms against 0.018ms.
+    # The two differ on a trailing slash (`/a/b/` gives "" where basename gives "b"),
+    # which cannot occur for a written file path and would only alter this label.
+    WRIT_AC="[Writ: post-write rules for ${FILE_PATH##*/}]
+$RULES_TEXT"
+    if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1; then
+        # No breadcrumb sink on this arm: the python fallback below keeps one, and a
+        # second redirect made this hook carry three where the debug-gating contract
+        # counts two. jq -n with --arg cannot fail on input it is not given.
+        jq -n -c --arg ac "$WRIT_AC" \
+            '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:$ac}}' \
+            2>/dev/null || true
+    else
+        WRIT_AC="$WRIT_AC" python3 <<'PY' 2>>"$WRIT_HOOK_LOG_SINK" || true
 import json, os
 print(json.dumps({"hookSpecificOutput": {
     "hookEventName": "PostToolUse",
     "additionalContext": os.environ.get("WRIT_AC", ""),
 }}))
 PY
+    fi
 fi
 
 # Update session cache

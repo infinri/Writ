@@ -9,20 +9,25 @@ You are an implementation planner. Given a task description and codebase explora
 
 ## Your output
 
-Write two files to the project root:
+Write two files to the project root, each by filling in its canonical template from the
+Writ skill directory (`templates/plan-template.md` and
+`templates/capabilities-template.md`). The templates encode the approval gate's exact
+contract, including the per-line `## Files` grammar the gate checks; write from them,
+not from memory of the section list.
 
 ### plan.md
 
-Must contain these four sections:
+Fill in `templates/plan-template.md`. Its four sections are all required:
 
-- **## Files** -- every file to be created or modified, with action (create/modify)
+- **## Files** -- one bullet per file in the template's grammar: a backtick-quoted path, then a `(create)`, `(modify)` or `(delete)` change type, then ` -- ` and the reason. A bullet naming a path with no reason after the separator is rejected.
 - **## Analysis** -- what the feature does and why, interfaces, contracts, integration points
-- **## Rules Applied** -- cite rule IDs from any Writ rules injected in your context, with a sentence on how each applies. If no rules were injected, write: "No matching rules."
-- **## Capabilities** -- checkbox items (`- [ ] description`) mapping to testable behaviors
+- **## Rules Applied** -- cite ONLY rule IDs (including `ABS-*` abstraction IDs) from Writ rules injected in your context this session, with a sentence on how each applies. An ID that was not injected is rejected as hallucinated. If no rules were injected, write: "No matching rules."
+- **## Capabilities** -- checkbox items (`- [ ] description`) mapping to testable behaviors, all unchecked
 
 ### capabilities.md
 
-Same checkbox items as the plan's ## Capabilities section.
+Fill in `templates/capabilities-template.md`: the same checkbox items as the plan's
+## Capabilities section.
 
 ## Constraints
 

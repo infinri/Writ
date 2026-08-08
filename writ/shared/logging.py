@@ -85,6 +85,7 @@ STREAM_MAP: dict[str, str] = {
     "subagent_type_fallback": "friction",
     "decision_capture_failed": "friction",
     "commit_capture_failed": "friction",
+    "memory_capture_failed": "friction",
     "recall_failed": "friction",
     "git_hooks_auto_install_failed": "friction",
     "debug_to_work_handoff": "friction",
@@ -95,6 +96,14 @@ STREAM_MAP: dict[str, str] = {
     # errors: a caught exception is not workflow friction. Own stream, own
     # retention (see log_rotation.RETENTION_DAYS).
     "exception": "errors",
+    # A CRITICAL condition that is NOT an exception: an invariant the code depends on
+    # turned out to be false, and the operation was abandoned rather than guessed.
+    #
+    # Added because Writ had no way to say this. Hooks that could not identify their
+    # session quietly fell back to a global pointer file or to a synthesized id, so a
+    # wrong-session read looked exactly like a normal run. The fallbacks are gone; the
+    # hook now records this and does nothing, which is loud instead of silently wrong.
+    "critical_error": "errors",
     # metrics
     "hook_execution": "metrics",
     # One row per daemon HTTP request (route/status/duration), from the server's
@@ -109,6 +118,8 @@ STREAM_MAP: dict[str, str] = {
     # HNSW index cache outcome, once per pipeline build. A miss means the process is
     # about to bulk-encode the whole corpus.
     "hnsw_cache": "metrics",
+    # BM25 index cache outcome, same cadence and reason as hnsw_cache.
+    "bm25_cache": "metrics",
     # Which writ.toml was resolved and what it contributed, once per process per path.
     # Key NAMES only: that file holds neo4j.password and bitbucket.token.
     "config_resolved": "metrics",

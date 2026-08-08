@@ -6,6 +6,8 @@ tests below it are pure functions and need no database.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 import pytest_asyncio
 from typer.testing import CliRunner
@@ -109,11 +111,19 @@ class TestCypherDumpRoundTrip:
     """Requires Neo4j running."""
 
     @pytest_asyncio.fixture
-    async def db(self):
+    async def db(self, disposable_graph):
         conn = Neo4jConnection(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
-        await conn.clear_all()
+        # Explicit full wipe: clear_all preserves runtime records by default, so a
+        # fixture that asserts on record COUNTS must opt into wiping them or the
+        # previous test's records leak into this one's arithmetic.
+        #
+        # That wipe is unrecoverable for runtime records, so `disposable_graph`
+        # skips unless a separate, explicitly-marked Neo4j instance is configured
+        # (see tests/conftest.py). The pure-rendering classes above need no database
+        # and keep running unconditionally.
+        await conn.clear_all(preserve_labels=frozenset())
         yield conn
-        await conn.clear_all()
+        await conn.clear_all(preserve_labels=frozenset())
         await conn.close()
 
     @pytest.mark.asyncio
@@ -144,3 +154,268 @@ class TestCypherDumpRoundTrip:
 
         nodes_after = await db.get_all_nodes_for_dump()
         assert all("_dump_id" not in n["props"] for n in nodes_after)
+
+
+class TestRecordPreservationOnReplay:
+    """Corpus replays must not destroy runtime records: a corpus dump is not
+    the whole graph. Requires Neo4j running."""
+
+    @pytest_asyncio.fixture
+    async def db(self, disposable_graph):
+        conn = Neo4jConnection(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
+        # Explicit full wipe: clear_all preserves runtime records by default, so a
+        # fixture that asserts on record COUNTS must opt into wiping them or the
+        # previous test's records leak into this one's arithmetic.
+        #
+        # `disposable_graph` skips unless a separate, explicitly-marked Neo4j
+        # instance is configured (see tests/conftest.py). Note the irony this
+        # encodes: these tests EXIST to prove records survive a corpus replay, and
+        # the setup they used to prove it with is what destroyed the real ones.
+        await conn.clear_all(preserve_labels=frozenset())
+        yield conn
+        await conn.clear_all(preserve_labels=frozenset())
+        await conn.close()
+
+    async def _memory_count(self, db, project: str) -> int:
+        rows = await db._run(
+            "MATCH (m:Memory {project: $p}) RETURN count(m) AS c", p=project)
+        return [r["c"] for r in rows][0]
+
+    @pytest.mark.asyncio
+    async def test_corpus_only_replay_preserves_memory_records(self, db) -> None:
+        await db.create_memory(
+            name="survives-replay", project="-test-dump-records", description="d",
+            type="project", body="b", links=[], path="/tmp/x.md", session_id="s",
+            updated_at="2026-08-05T00:00:00Z", status="live")
+        script = render_cypher_dump(
+            [{"id": "R-CORPUS-1", "label": "Rule",
+              "props": {"rule_id": "R-CORPUS-1", "statement": "s"}}], [])
+        await import_cypher_dump(db, script)
+        assert await self._memory_count(db, "-test-dump-records") == 1, (
+            "a corpus-only replay deleted the Memory record; the wipe must "
+            "preserve record labels absent from the incoming dump"
+        )
+
+    @pytest.mark.asyncio
+    async def test_dump_carrying_memory_label_gets_exact_replace(self, db) -> None:
+        await db.create_memory(
+            name="pre-existing", project="-test-dump-records", description="old",
+            type="project", body="b", links=[], path="/tmp/x.md", session_id="s",
+            updated_at="2026-08-05T00:00:00Z", status="live")
+        script = render_cypher_dump(
+            [{"id": "from-dump", "label": "Memory",
+              "props": {"name": "from-dump", "project": "-test-dump-records"}}], [])
+        await import_cypher_dump(db, script)
+        rows = await db._run(
+            "MATCH (m:Memory {project: $p}) RETURN m.name AS name", p="-test-dump-records")
+        names = sorted(r["name"] for r in rows)
+        assert names == ["from-dump"], (
+            "a dump that CARRIES the Memory label must get exact-replace "
+            f"semantics for it, got {names!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_dump_enumeration_excludes_runtime_records(self, db) -> None:
+        # writ-corpus.cypher is shipped and git-tracked; mirrored memories are
+        # private operational state. They also carry no NODE_ID_FIELDS key, so a
+        # leaked record would arrive with a null id and break the sorted render.
+        await db.create_rule({"rule_id": "R-DUMP-SCOPE-1", "statement": "s"})
+        await db.create_memory(
+            name="must-not-be-dumped", project="-test-dump-records", description="d",
+            type="project", body="secret body", links=[], path="/tmp/x.md",
+            session_id="s", updated_at="2026-08-06T00:00:00Z", status="live")
+
+        nodes = await db.get_all_nodes_for_dump()
+        labels = {n["label"] for n in nodes}
+        assert "Memory" not in labels, f"the dump must exclude records; got {labels}"
+        assert not [n for n in nodes if n["id"] is None], "no null-id rows may reach the render"
+        script = render_cypher_dump(nodes, await db.get_all_edges_cross_type())
+        assert "must-not-be-dumped" not in script and "secret body" not in script
+
+    @pytest.mark.asyncio
+    async def test_clear_all_preserves_records_by_default(self, db) -> None:
+        # The ~100 bare clear_all() call sites are test fixtures and admin corpus
+        # rebuilds; none of them means "destroy operational records", so the safe
+        # posture is the default rather than per-caller opt-in.
+        await db.create_rule({"rule_id": "R-DEFAULT-1", "statement": "s"})
+        await db.create_memory(
+            name="survives-default-wipe", project="-test-dump-records", description="d",
+            type="project", body="b", links=[], path="/tmp/x.md", session_id="s",
+            updated_at="2026-08-06T00:00:00Z", status="live")
+        await db.clear_all()
+        assert await db.count_rules() == 0, "the corpus must still be wiped"
+        assert await self._memory_count(db, "-test-dump-records") == 1, (
+            "a bare clear_all() must not destroy runtime records"
+        )
+
+    @pytest.mark.asyncio
+    async def test_clear_all_empty_preserve_set_wipes_everything(self, db) -> None:
+        await db.create_memory(
+            name="explicit-full-wipe", project="-test-dump-records", description="d",
+            type="project", body="b", links=[], path="/tmp/x.md", session_id="s",
+            updated_at="2026-08-06T00:00:00Z", status="live")
+        await db.clear_all(preserve_labels=frozenset())
+        assert await self._memory_count(db, "-test-dump-records") == 0, (
+            "an explicit empty preserve set must still wipe everything"
+        )
+
+    @pytest.mark.asyncio
+    async def test_clear_all_preserve_labels_spares_only_named_labels(self, db) -> None:
+        await db.create_rule({"rule_id": "R-WIPE-1", "statement": "s"})
+        await db.create_memory(
+            name="spared", project="-test-dump-records", description="d",
+            type="project", body="b", links=[], path="/tmp/x.md", session_id="s",
+            updated_at="2026-08-05T00:00:00Z", status="live")
+        await db.clear_all(preserve_labels=frozenset({"Memory"}))
+        assert await db.count_rules() == 0
+        assert await self._memory_count(db, "-test-dump-records") == 1
+
+
+class TestNoRawWholeGraphDeletes:
+    """A raw whole-graph delete bypasses clear_all's record-preserving default.
+
+    One did (a cypher-shell `MATCH (n) DETACH DELETE n` in a test helper), and it
+    destroyed every mirrored memory on each suite run. Records have no dump home,
+    so the corpus wipe must always route through the guard or spell out the same
+    label exemption.
+    """
+
+    # Files where the unscoped delete is legitimate, each mapped to a SENTINEL
+    # string that must still appear in it. The exemption is scoped to what the
+    # file currently IS, not to its name: if the file stops being the thing that
+    # earned the exemption, test_every_exemption_still_earns_itself goes red and
+    # the exemption has to be re-justified. An allowlist keyed on filename alone
+    # is how a real violation gets grandfathered in under a name that once meant
+    # something else.
+    _ALLOWED = {
+        # clear_all itself: the guard's implementation, where the raw form belongs.
+        "writ/graph/db/maintenance_store.py": "assert_full_wipe_allowed",
+        # The wipe guard's own tests. The statement is the EXPECTED VALUE of an
+        # assertion about what clear_all produced -- and in the refusal cases,
+        # proof that it was never produced. It is asserted against, never
+        # executed: those tests drive clear_all through a fake driver that
+        # records statements rather than a Neo4j session.
+        "tests/test_graph_wipe_guard.py": "FullWipeRefused",
+    }
+
+    # A QUERY string starts with the MATCH clause; prose that merely mentions the
+    # statement (a docstring, an assertion message) does not. Keying on that keeps
+    # the guard from policing documentation, and the unscoped shape below excludes
+    # every legitimate id-scoped delete (`MATCH (n) WHERE n.rule_id IN $ids ...`).
+    _UNSCOPED = re.compile(r"^MATCH \(n\)\s+DETACH DELETE n", re.IGNORECASE)
+
+    def _query_strings(self, path):
+        """Every non-docstring string constant in a module, f-strings included."""
+        import ast
+
+        try:
+            tree = ast.parse(path.read_text())
+        except SyntaxError:
+            return []
+        docstrings = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)):
+                body = getattr(node, "body", [])
+                if body and isinstance(body[0], ast.Expr) and \
+                        isinstance(body[0].value, ast.Constant) and \
+                        isinstance(body[0].value.value, str):
+                    docstrings.add(id(body[0].value))
+        found = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                    and id(node) not in docstrings:
+                found.append(node.value)
+            elif isinstance(node, ast.JoinedStr):
+                # An f-string's leading literal carries the clause we key on.
+                parts = [v.value for v in node.values
+                         if isinstance(v, ast.Constant) and isinstance(v.value, str)]
+                if parts:
+                    found.append("".join(parts))
+        return found
+
+    def test_no_unguarded_whole_graph_delete_outside_clear_all(self) -> None:
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        offenders = []
+        for path in list(root.glob("tests/**/*.py")) + list(root.glob("writ/**/*.py")) \
+                + list(root.glob("benchmarks/**/*.py")) + list(root.glob("scripts/**/*.py")):
+            rel = path.relative_to(root).as_posix()
+            if rel in self._ALLOWED:
+                continue
+            for text in self._query_strings(path):
+                if self._UNSCOPED.match(text.strip()):
+                    offenders.append(f"{rel}: {text.strip()[:60]}")
+        assert not offenders, (
+            "unscoped whole-graph deletes bypass clear_all's record preservation; "
+            f"route them through clear_all() or spell out the label exemption: {offenders}"
+        )
+
+    def test_every_exemption_still_earns_itself(self) -> None:
+        """An exemption expires when the file stops being what justified it.
+
+        Without this, `tests/test_graph_wipe_guard.py` would be permanently
+        licensed to contain raw whole-graph deletes -- including after someone
+        repurposes or rewrites it into something that is no longer the wipe
+        guard's test.
+        """
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        stale = []
+        for rel, sentinel in self._ALLOWED.items():
+            path = root / rel
+            if not path.exists():
+                stale.append(f"{rel}: exempted file no longer exists")
+            elif sentinel not in path.read_text(encoding="utf-8"):
+                stale.append(f"{rel}: no longer contains {sentinel!r}")
+        assert not stale, (
+            "these raw-delete exemptions no longer describe the files they "
+            f"exempt; re-justify or remove them: {stale}"
+        )
+
+    def test_the_guard_would_catch_a_planted_raw_delete(self, tmp_path) -> None:
+        # Teeth, independent of the tree's current state: the unscoped form is
+        # caught, while the exempted form and an id-scoped delete are not.
+        planted = tmp_path / "planted.py"
+        planted.write_text('async def f(s):\n    await s.run("MATCH (n) DETACH DELETE n")\n')
+        assert [t for t in self._query_strings(planted) if self._UNSCOPED.match(t.strip())]
+
+        clean = tmp_path / "clean.py"
+        clean.write_text(
+            'async def f(s):\n'
+            '    await s.run("MATCH (n) WHERE NOT any(l IN labels(n) WHERE l IN $p) '
+            'DETACH DELETE n")\n'
+            '    await s.run("MATCH (n) WHERE n.rule_id IN $ids DETACH DELETE n")\n'
+        )
+        assert not [t for t in self._query_strings(clean) if self._UNSCOPED.match(t.strip())]
+
+
+class TestScaleBenchmarkRequiresExplicitRun:
+    """The scale benchmark wipes the live graph; it must never start by accident.
+    No Neo4j needed: argument handling fails before any connection."""
+
+    def _invoke(self, *args: str):
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        repo = Path(__file__).resolve().parent.parent
+        return subprocess.run(
+            [sys.executable, str(repo / "benchmarks" / "scale_benchmark.py"), *args],
+            capture_output=True, text=True, timeout=300,
+            cwd=str(repo), env={**os.environ, "WRIT_NO_AUTOSTART": "1"},
+        )
+
+    def test_no_args_refuses_and_names_the_flag(self) -> None:
+        r = self._invoke()
+        assert r.returncode != 0, "a bare invocation must refuse, not run the wipe"
+        assert "--run" in (r.stdout + r.stderr)
+
+    def test_help_exits_zero_without_running(self) -> None:
+        r = self._invoke("--help")
+        assert r.returncode == 0
+        assert "DESTRUCTIVE" in (r.stdout + r.stderr)
+        assert "snapshotted" not in (r.stdout + r.stderr).lower()

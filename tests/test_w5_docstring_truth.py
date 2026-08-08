@@ -105,18 +105,22 @@ def test_inv3_wired_arm_reworded() -> None:
 
 
 def test_phase51_hooks_count_reworded() -> None:
-    """test_phase51_doc_counts.py's module-docstring summary must state the hooks count is
-    41, matching the file's own passing test_hooks_json_entry_count assertion (the prose
-    said 35, which is stale).
+    """test_phase51_doc_counts.py's module-docstring summary must state the hooks count
+    its own test_hooks_json_entry_count asserts (the prose said 35, which was stale).
+
+    The pinned literal moves with that assertion: 41 -> 44 when the manual-testing
+    grant's two registrations and the auto-memory mirror's one landed. The guard's job
+    is prose/assertion AGREEMENT, so it tracks the current count rather than freezing
+    one.
     """
     src = _read("test_phase51_doc_counts.py")
     assert 'command" leaves == 35' not in src, (
         "test_phase51_doc_counts.py's docstring must not claim the hooks.json "
-        '\'command\" leaves\' count is 35 -- the real count is 41'
+        '\'command\" leaves\' count is 35 -- that count is long stale'
     )
-    assert 'command" leaves == 41' in src, (
-        "test_phase51_doc_counts.py's docstring must state the corrected hooks.json "
-        '\'command\" leaves\' count of 41, matching test_hooks_json_entry_count'
+    assert 'command" leaves == 44' in src, (
+        "test_phase51_doc_counts.py's docstring must state the current hooks.json "
+        '\'command\" leaves\' count of 44, matching test_hooks_json_entry_count'
     )
 
 

@@ -150,12 +150,12 @@ flowchart TD
   FP["Stage 5a: first-pass score&lt;br/&gt;bm25 + vector + severity + confidence&lt;br/&gt;weights renormalized, graph term held at zero"]
   SEED["Top-3 proximity seeds&lt;br/&gt;ai-provisional rules excluded"]
   PROX["Stage 5b: graph proximity per candidate&lt;br/&gt;1-hop neighbor of a seed = 1.0&lt;br/&gt;2-hop = 0.5, otherwise 0.0&lt;br/&gt;seeds themselves score 0 (no self-boost)"]
-  FINAL["Stage 5c: final weighted fusion&lt;br/&gt;all six terms, sorted descending"]
-  AUTH["Authority preference pass&lt;br/&gt;human outranks ai-provisional within a threshold&lt;br/&gt;(threshold defaults to 0.0: disabled)"]
-  STICKY["Sticky tiebreak&lt;br/&gt;adjacent scores within 0.02 reorder&lt;br/&gt;to match last-injected order&lt;br/&gt;(keeps prompt caches warm)"]
+  FINAL["Stage 5c: final weighted fusion&lt;br/&gt;all five terms, sorted descending"]
+  STICKY["Sticky tiebreak&lt;br/&gt;adjacent scores within 0.02 reorder&lt;br/&gt;to match last-injected order&lt;br/&gt;(keeps prompt caches warm)&lt;br/&gt;requires descending input"]
+  AUTH["Authority preference pass&lt;br/&gt;human outranks ai-provisional within a threshold&lt;br/&gt;(config: [retrieval] authority_preference_threshold, default 0.0 = off)&lt;br/&gt;runs LAST so the hard preference is final"]
   BUDGET["Context budget&lt;br/&gt;summary / standard / full projection"]
   OUT["rules, mode, total_candidates, latency_ms"]
-  FP --> SEED --> PROX --> FINAL --> AUTH --> STICKY --> BUDGET --> OUT
+  FP --> SEED --> PROX --> FINAL --> STICKY --> AUTH --> BUDGET --> OUT
   classDef entry fill:#0B5E55,stroke:#083F39,color:#FFFFFF,font-weight:bold
   classDef finish fill:#F6EEDF,stroke:#B4560F,color:#6B3D14,font-weight:bold
   classDef hub fill:#DCE9E5,stroke:#0B5E55,stroke-width:2px
@@ -167,7 +167,7 @@ flowchart TD
 
 <h3>The scoring formula</h3>
 <div class="prose">
-  <p>score = w1 x bm25 + w2 x vector + w3 x severity + w4 x confidence + w5 x graph proximity + w6 x bundle cohesion (<code>ranking.py:169-176</code>). Weights must sum to 1.0 and are validated (<code>ranking.py:94-100</code>). The caller picks one of two profiles per query.</p>
+  <p>score = w1 x bm25 + w2 x vector + w3 x severity + w4 x confidence + w5 x graph proximity (<code>ranking.py</code>). Weights must sum to 1.0 and are validated. The caller picks one of two profiles per query. A sixth term, bundle cohesion, was deleted on 2026-08-06: no weight improved all three retrieval metrics, and the methodology channel it was designed for shipped deterministic instead (<code>benchmarks/RANKING-LEVERS-2026-08-06.md</code>).</p>
 </div>
 
 <div class="tablewrap">
@@ -203,7 +203,7 @@ flowchart TD
   <div class="label">As-built findings worth knowing</div>
   <p><strong>1. The graph signal cannot reorder results at current weights.</strong> Its maximum contribution is 0.01 x 1.0 = 0.01, but the sticky tiebreak treats adjacent scores within 0.02 as tied (<code>pipeline.py:107</code>). The proximity computation runs on every query and is effectively inert.</p>
   <p><strong>2. The route-based Stage 1 filter is wired (updated 2026-07-31).</strong> <code>build_pipeline</code> now loads the Category route map (<code>get_category_routes_by_node</code>) and passes it into the pipeline (<code>pipeline.py:863-898</code>). The legacy fallback (Rule-only plus a three-domain exclusion) applies only when the route map is empty or incomplete, in which case the whole pipeline reverts wholesale rather than silently dropping uncategorized nodes.</p>
-  <p><strong>3. The authority preference pass is disabled at its default.</strong> It only swaps when its threshold is above 0.0 and nothing configures it (<code>pipeline.py:195</code>, <code>ranking.py:208</code>). The protection that does bind is seed filtering: AI-provisional rules never seed the graph signal.</p>
+  <p><strong>3. The authority preference pass is configurable but ships disabled (updated 2026-08-06).</strong> It only swaps when its threshold is above 0.0, which is now set by <code>[retrieval] authority_preference_threshold</code> in writ.toml and read at daemon startup. The default stays 0.0 because a sweep of the 193-query gold set measured no change from enabling it: the corpus holds one ai-provisional node and its category is not semantic-routed, so the default query path never ranks one. Enabling it is only meaningful for literal mode or an explicit <code>node_types</code> whitelist, which do admit it. The pass now runs after the sticky tiebreak; running it first inverted the preference outright, because the tiebreak could then promote a preferred ai-provisional rule above every human rule in its group. The protection that binds regardless is seed filtering: AI-provisional rules never seed the graph signal.</p>
 </div>
 
 <div class="pagenav">

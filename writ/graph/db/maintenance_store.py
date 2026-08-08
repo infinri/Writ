@@ -6,21 +6,78 @@ from __future__ import annotations
 
 
 class MaintenanceStoreMixin:
-    async def clear_all(self) -> None:
-        """Delete ALL nodes and edges across EVERY project. For test cleanup and
-        the explicit --all-projects path only. Project-scoped callers use
-        clear_project (M.1) so wiping one project never touches another."""
+    async def clear_all(self, preserve_labels: frozenset[str] | None = None) -> None:
+        """Delete the corpus graph across EVERY project. For test cleanup and the
+        explicit --all-projects path only. Project-scoped callers use clear_project
+        (M.1) so wiping one project never touches another.
+
+        Runtime records are preserved BY DEFAULT (`preserve_labels=None` resolves to
+        RECORD_LABELS: Memory, Decision, FileChange, Commit). They are operational
+        state with no bible or dump home, so nothing that rebuilds the CORPUS should
+        take them with it -- and every one of this method's ~100 call sites is a test
+        fixture or an admin corpus rebuild, which is why the safe posture belongs in
+        the default rather than in each caller. Records were destroyed three times in
+        one session before this default existed: `writ memory backfill` rebuilt them
+        from files each time, but a Decision record has no such source.
+
+        Pass an explicit `frozenset()` for a genuine everything-wipe; pass a specific
+        set (as import_cypher_dump does, computing RECORD_LABELS minus the labels its
+        dump actually creates) to keep exact-replace semantics for labels the caller
+        is itself restoring.
+
+        An everything-wipe (an EMPTY resolved preserve set) additionally requires the
+        target instance to be marked disposable, or it raises FullWipeRefused and
+        deletes nothing. See _safety.py for the mechanism and the incident. The guard
+        lives HERE, in the helper that issues the delete, rather than in a test
+        fixture: a fixture only protects tests that remember to use it, while this
+        protects every caller including the one that has not been written yet.
+        """
+        from writ.graph.db._common import RECORD_LABELS
+
+        preserve = RECORD_LABELS if preserve_labels is None else preserve_labels
+        if not preserve:
+            # Scoped to the empty set on purpose. The ~89 bare `clear_all()` calls and
+            # every partial preserve set are untouched by this guard: they leave the
+            # runtime records alone, and the corpus they do delete rebuilds from
+            # bible/ or writ-corpus.cypher. Only the everything-wipe destroys state
+            # that has no source to come back from, so only it needs permission.
+            from writ.graph.db._safety import assert_full_wipe_allowed
+
+            # Before the session opens: a refused wipe must delete nothing.
+            assert_full_wipe_allowed(getattr(self, "_uri", None))
         async with self._driver.session(database=self._database) as session:
-            await session.run("MATCH (n) DETACH DELETE n")
+            # CONSUME, do not fire and forget. `session.run` returns a lazy result: the
+            # statement is dispatched but this coroutine can return before the delete has
+            # finished server-side. import_cypher_dump then opens NEW sessions and replays
+            # CREATE statements, so the wipe and the rebuild can overlap, and a create
+            # landing mid-delete is exactly how a DETACH DELETE ends up chasing a node id
+            # that no longer resolves (Neo.ClientError.Statement.EntityNotFound).
+            # rule_store and node_store already consume; this file did not, and it is the
+            # one that deletes.
+            if preserve:
+                result = await session.run(
+                    "MATCH (n) WHERE NOT any(l IN labels(n) WHERE l IN $preserve) "
+                    "DETACH DELETE n",
+                    preserve=sorted(preserve),
+                )
+            else:
+                result = await session.run("MATCH (n) DETACH DELETE n")
+            await result.consume()
 
     async def execute(self, statement: str) -> None:
         """Run a single raw Cypher statement with no return value expected.
 
         For the graph-dump import path (writ/graph/dump.py), which replays a
         pre-rendered script of literal CREATE/MATCH statements.
+
+        Consumed for the same reason clear_all is: the replay is a sequence of separate
+        sessions, so each statement must actually finish before the next one starts.
+        Returning early makes the replay order advisory, which for a script whose
+        MATCH statements depend on earlier CREATEs is not a property to leave to timing.
         """
         async with self._driver.session(database=self._database) as session:
-            await session.run(statement)
+            result = await session.run(statement)
+            await result.consume()
 
     async def clear_project(self, project: str = "writ") -> int:
         """Delete all nodes (and their edges) for one project. M.1: the scoped

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -216,13 +217,21 @@ class TestStaticByteIdentity:
         assert "'exclude_rule_ids': json.loads(sys.argv[3])," in body
         assert "'top_k': 3," in body
 
-    def test_curl_invocation_matches_head_inline_tokens(self):
+    def test_post_invocation_keeps_the_head_inline_parameters(self):
+        """The POST moved from a raw curl to the curl-first writ_http_post wrapper (curl
+        is an optional accelerator now, so a curl-less machine must still retrieve rules).
+        The parameters it carried are unchanged: same URL, same JSON body variable, same
+        0.3s connect / 1s total budget, same fail-open redirect."""
         body = self._rag_query_body()
-        assert "curl -s --connect-timeout 0.3 --max-time 1" in body
-        assert '-X POST "$WRIT_URL"' in body
-        assert '-H "Content-Type: application/json"' in body
+        assert not re.search(r"curl\s+-", body), (
+            "rag_query must POST through writ_http_post, not raw curl"
+        )
+        assert "WRIT_HTTP_CONNECT_TIMEOUT=0.3" in body and "WRIT_HTTP_TIMEOUT=1" in body, (
+            "the connect/total budgets the inline curl carried must be preserved"
+        )
+        assert 'writ_http_post "$WRIT_URL"' in body
         # Lowercase local `$request`, unlike the hooks' `$REQUEST`.
-        assert '-d "$request"' in body
+        assert '"$request"' in body
         assert "2>/dev/null || true" in body
 
     def test_empty_request_guard_present(self):

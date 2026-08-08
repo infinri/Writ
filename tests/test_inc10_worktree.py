@@ -132,8 +132,11 @@ class TestAntValid:
 
 class TestCensus:
     def test_ant_count(self) -> None:
+        # 13 -> 14 on 2026-08-08 with ANT-PROC-TDD-007 (an absence claim whose search scope
+        # is narrower than the universe it claims to cover). Deliberate addition, not drift:
+        # this is the only ANT-*.md census in the suite, so it is the one that has to move.
         n = len(list(METH.glob("ANT-*.md")))
-        assert n == 13, f"expected 13 ANT-*.md, found {n}"
+        assert n == 14, f"expected 14 ANT-*.md, found {n}"
 
 
 class TestLiveGates:

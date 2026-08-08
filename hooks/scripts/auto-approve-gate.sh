@@ -44,11 +44,15 @@ PROMPT=$(echo "$PARSED" | sed -n '2p')
 AGENT_ID=$(echo "$PARSED" | sed -n '3p')
 
 # Fallback session ID
+# NO SYNTHESIZED SESSION ID. This used to fall back to the parent PID and then to
+# md5(cwd:user)+date. Neither can ever equal the id Claude Code uses, so state written
+# under one is written to a session that does not exist and is simply never read again,
+# while the hook reports success. Claude Code documents session_id as universal and
+# authoritative on every hook event, so an empty one is a broken invariant, not a case to
+# paper over: record it and stop.
 if [ -z "$SESSION_ID" ]; then
-    SESSION_ID=$(ps -o ppid= -p $PPID 2>/dev/null | tr -d ' ')
-fi
-if [ -z "$SESSION_ID" ]; then
-    SESSION_ID=$(echo "${PWD}:${USER}" | md5sum | cut -c1-12)-$(date +%Y%m%d)
+    writ_critical auto-approve-gate "no session_id in hook payload; refusing to synthesize one"
+    exit 0
 fi
 
 # Publish session ID as backup -- skip inside sub-agents
@@ -158,21 +162,27 @@ if [ "$CURRENT_MODE" = "work" ] && { [ "$CURRENT_PHASE" = "planning" ] || [ "$CU
     # substitute its own cwd -- that is Writ's install dir, which has its own plan.md.
     ADVANCE_PAYLOAD=$(python3 -c "import json,sys; print(json.dumps({'confirmation_source':'pattern','token':sys.argv[1],'cwd':sys.argv[2]}))" "$GATE_TOKEN" "$(pwd -P)" 2>/dev/null || echo "{}")
     # Address the daemon through WRIT_SESSION_HOST/PORT (common.sh derives them from
-    # WRIT_HOST/WRIT_PORT), as every other hook does. This curl hardcoded
+    # WRIT_HOST/WRIT_PORT), as every other hook does. This request once hardcoded
     # localhost:8765, so it ignored WRIT_PORT: the test suite pins WRIT_PORT to its own
-    # daemon precisely to leave the interactive 8765 singleton alone, and this one line
+    # daemon precisely to leave the interactive 8765 singleton alone, and that one line
     # reached past that isolation and advanced gates on the developer's real daemon,
     # writing real phase_advance rows into the real audit log.
-    # --max-time 10, not 3: this POST now runs the target gate's validator, and
+    # WRIT_HTTP_TIMEOUT=10, not 3: this POST runs the target gate's validator, and
     # _validate_test_skeletons falls back to a recursive glob over the project when no
     # session-tracked test file matches, which on a large repo can outlast a 3s budget.
     # A timeout is the worst outcome here: the server can still advance and consume the
     # token while the hook, seeing no response, tells the user nothing was advanced. This
     # runs once per human approval, not on a hot path, so the wider budget is cheap.
-    ADVANCE_RESP=$(curl -s --connect-timeout 0.5 --max-time 10 \
-        -X POST "http://${WRIT_SESSION_HOST}:${WRIT_SESSION_PORT}/session/${SESSION_ID}/advance-phase" \
-        -H 'Content-Type: application/json' \
-        --data "$ADVANCE_PAYLOAD" 2>/dev/null || echo "")
+    #
+    # writ_http_post, not raw curl: without a fallback, a user typing "approved" on a
+    # curl-less machine silently advanced NOTHING. The session helper's own advance arm
+    # cannot substitute -- it posts {}, dropping the single-use token and the cwd the
+    # server needs to resolve the project root -- so the request is preserved byte for byte
+    # here and urllib carries it when curl is absent. Non-fail mode on purpose: a >= 400
+    # body is what gate_advance_outcome.py classifies as a rejection.
+    ADVANCE_RESP=$(WRIT_HTTP_CONNECT_TIMEOUT=0.5 WRIT_HTTP_TIMEOUT=10 \
+        writ_http_post "http://${WRIT_SESSION_HOST}:${WRIT_SESSION_PORT}/session/${SESSION_ID}/advance-phase" \
+        "$ADVANCE_PAYLOAD" 2>/dev/null || echo "")
     # Classify the response via the shared stdlib helper (single source; the two
     # inline parses this replaces had drifted). A rejection SPENDS the token, so
     # the user must fix the artifact and type "approved" again to mint a fresh one.

@@ -7,6 +7,7 @@ Per ARCH-CONST-001: all tunables must live in writ.toml with named constant defa
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 from pathlib import Path
@@ -22,6 +23,17 @@ DEFAULT_NEO4J_URI = "bolt://localhost:7687"
 DEFAULT_NEO4J_USER = "neo4j"
 DEFAULT_NEO4J_PASSWORD = "writdevpass"
 DEFAULT_HNSW_CACHE_DIR = str(Path.home() / ".cache" / "writ" / "hnsw")
+# Hosts the Bash egress guard (hooks/scripts/writ-bash-write-gate.sh) never prompts
+# about. Loopback in every spelling a command line can carry, including the bracketed
+# IPv6 form that appears inside a URL (`http://[::1]:9/x`) and the bare form a raw
+# socket verb takes (`nc ::1 9000`).
+DEFAULT_EGRESS_ALLOW_HOSTS = ("localhost", "127.0.0.1", "::1", "[::1]")
+DEFAULT_WRIT_HOST = "localhost"
+# Ships OFF. A 2026-08-06 sweep of the 193-query gold set found the preference
+# changes nothing on the default retrieval path (the only ai-provisional node in
+# the corpus is not semantic-routed), so enabling it by default would be a
+# ranking change with no measured gain. See benchmarks/RANKING-LEVERS-2026-08-06.md.
+DEFAULT_AUTHORITY_PREFERENCE_THRESHOLD = 0.0
 
 # Default config file path: writ.toml in the package root (one level above writ/).
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
@@ -133,22 +145,56 @@ def _emit_config_exception(component: str, exc: BaseException, config_path: str)
         pass
 
 
-def get_neo4j_uri(path: str | None = None) -> str:
-    """Return neo4j.uri from config, falling back to DEFAULT_NEO4J_URI."""
+def _neo4j_setting(key: str, env_var: str, default: str, path: str | None) -> str:
+    """Resolve one [neo4j] setting: env var, then writ.toml, then the built-in default.
+
+    The env layer exists so a process can be pointed at a DIFFERENT Neo4j instance
+    without editing the gitignored writ.toml that the whole install shares. Neo4j
+    Community allows exactly one database per server, so "use a scratch database"
+    is not available; a disposable graph can only be a disposable INSTANCE on
+    another port, and reaching it needs a per-process override. That is what makes
+    the destructive-wipe guard in writ/graph/db/_safety.py possible at all.
+
+    Env wins over the file for the same reason WRIT_PORT and WRIT_CACHE_DIR do:
+    the file is shared install state, the env is this process's intent.
+    """
+    from_env = os.environ.get(env_var)
+    if from_env and from_env.strip():
+        return from_env.strip()
     cfg = load_config(path)
-    return cfg.get("neo4j", {}).get("uri", DEFAULT_NEO4J_URI)
+    return cfg.get("neo4j", {}).get(key, default)
+
+
+def get_neo4j_uri(path: str | None = None) -> str:
+    """Return the Neo4j URI: WRIT_NEO4J_URI, then neo4j.uri, then DEFAULT_NEO4J_URI."""
+    return _neo4j_setting("uri", "WRIT_NEO4J_URI", DEFAULT_NEO4J_URI, path)
 
 
 def get_neo4j_user(path: str | None = None) -> str:
-    """Return neo4j.user from config, falling back to DEFAULT_NEO4J_USER."""
-    cfg = load_config(path)
-    return cfg.get("neo4j", {}).get("user", DEFAULT_NEO4J_USER)
+    """Return the Neo4j user: WRIT_NEO4J_USER, then neo4j.user, then DEFAULT_NEO4J_USER."""
+    return _neo4j_setting("user", "WRIT_NEO4J_USER", DEFAULT_NEO4J_USER, path)
 
 
 def get_neo4j_password(path: str | None = None) -> str:
-    """Return neo4j.password from config, falling back to DEFAULT_NEO4J_PASSWORD."""
+    """Return the Neo4j password: WRIT_NEO4J_PASSWORD, then neo4j.password, then the default."""
+    return _neo4j_setting("password", "WRIT_NEO4J_PASSWORD", DEFAULT_NEO4J_PASSWORD, path)
+
+
+def get_production_neo4j_uri(path: str | None = None) -> str:
+    """Return the URI this install treats as PRODUCTION, ignoring WRIT_NEO4J_URI.
+
+    Deliberately env-blind. The destructive-wipe guard asks "is the instance I am
+    connected to something other than the real one?", and it cannot answer that
+    with a getter the caller can redirect: if WRIT_NEO4J_URI fed both sides of the
+    comparison, setting it would make every instance look non-production, which is
+    precisely the bypass the guard exists to prevent.
+
+    So production identity is the config file (or the built-in default) and nothing
+    else, which is also the honest definition -- writ.toml is what the daemon, the
+    CLI and every hook read when nobody has overridden anything.
+    """
     cfg = load_config(path)
-    return cfg.get("neo4j", {}).get("password", DEFAULT_NEO4J_PASSWORD)
+    return cfg.get("neo4j", {}).get("uri", DEFAULT_NEO4J_URI)
 
 
 def get_bitbucket_email(path: str | None = None) -> str | None:
@@ -183,6 +229,71 @@ def get_hnsw_cache_dir(path: str | None = None) -> str:
     cfg = load_config(path)
     raw = cfg.get("hnsw", {}).get("cache_dir", DEFAULT_HNSW_CACHE_DIR)
     return os.path.expanduser(raw)
+
+
+def get_egress_allow_hosts(path: str | None = None) -> list[str]:
+    """Hosts the Bash egress guard may send local data to without prompting.
+
+    The union of three sources, lowercased and de-duplicated:
+      * DEFAULT_EGRESS_ALLOW_HOSTS (loopback, always allowed),
+      * writ.toml `[egress] allow_hosts` (a list of strings),
+      * the comma-separated `WRIT_EGRESS_ALLOW_HOSTS` env var and the daemon host
+        from `WRIT_HOST` (the daemon answers on the loopback name by default, but a
+        remote daemon must not make its own gate prompt).
+
+    `WRIT_CONFIG_PATH` overrides the config file when no explicit `path` is passed:
+    the guard runs inside a hook subprocess that resolves this list in-process, and
+    the real writ.toml is gitignored install state a test must never write to. The
+    env seam mirrors WRIT_STRICT / WRIT_PORT, and is scoped to this getter so the
+    other readers keep their single fixed location.
+
+    Never raises: an absent, empty or malformed writ.toml falls back to the
+    built-in defaults (load_config already warns), so a bad config NARROWS the
+    allowlist rather than opening the gate.
+    """
+    if path is None:
+        path = os.environ.get("WRIT_CONFIG_PATH") or None
+    cfg = load_config(path)
+    hosts = list(DEFAULT_EGRESS_ALLOW_HOSTS)
+    configured = cfg.get("egress", {}).get("allow_hosts") or []
+    if isinstance(configured, str):
+        configured = configured.split(",")
+    hosts.extend(str(h) for h in configured)
+    hosts.extend((os.environ.get("WRIT_EGRESS_ALLOW_HOSTS") or "").split(","))
+    hosts.append(os.environ.get("WRIT_HOST") or DEFAULT_WRIT_HOST)
+    return sorted({h.strip().lower() for h in hosts if h and h.strip()})
+
+
+def get_authority_preference_threshold(path: str | None = None) -> float:
+    """Return [retrieval] authority_preference_threshold, defaulting to OFF (0.0).
+
+    The threshold drives `apply_authority_preference`: within this score gap, a
+    human / ai-promoted rule outranks an ai-provisional one. 0.0 disables the pass.
+
+    Never raises. A non-numeric, negative, or non-finite value falls back to the
+    default: this is an optional tuning key read during daemon startup, and a typo
+    in it must not stop the server from coming up. A bad value therefore leaves
+    ranking at its shipped behavior rather than at an arbitrary one.
+
+    The non-finite check is not defensive padding. TOML has literal `nan` / `inf`,
+    and an overflowing exponent (`1e400`) parses to `inf`. Both are floats and
+    neither is negative, so without this guard they reach
+    `apply_authority_preference`, where `threshold <= 0.0` is False and every
+    `gap > threshold` comparison is False: the pass would then swap EVERY adjacent
+    authority-mismatched pair regardless of score distance, which is the opposite
+    of a safe fallback.
+    """
+    cfg = load_config(path)
+    raw = cfg.get("retrieval", {}).get(
+        "authority_preference_threshold", DEFAULT_AUTHORITY_PREFERENCE_THRESHOLD
+    )
+    # bool is an int subclass; `True` must not silently become 1.0.
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return DEFAULT_AUTHORITY_PREFERENCE_THRESHOLD
+    value = float(raw)
+    if not math.isfinite(value) or value < 0.0:
+        return DEFAULT_AUTHORITY_PREFERENCE_THRESHOLD
+    return value
 
 
 def get_logs_backup_dest(path: str | None = None) -> str | None:

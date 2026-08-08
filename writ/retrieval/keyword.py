@@ -57,6 +57,15 @@ class KeywordIndex:
         else:
             self._index = tantivy.Index(self._schema)
 
+    def reload(self) -> None:
+        """Refresh the reader against segments already committed on disk.
+
+        The open-existing path (a persisted index dir whose sidecar hash
+        matched) skips build(), so the reader must be reloaded explicitly to
+        see the persisted documents.
+        """
+        self._index.reload()
+
     def build(self, rules: list[dict]) -> int:
         """Build the index from a list of rule dicts.
 

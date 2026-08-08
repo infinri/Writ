@@ -3,49 +3,26 @@
 
 # Rulebook inventory
 
-287 rules in the shipped corpus dump, 33 mandatory, 6 always-on. Generated from `writ-corpus.cypher`; the live graph may differ if rules were authored since the last `writ export-cypher`. Full rule text: `writ query`, `GET /rule/{id}`, or `writ export`.
+287 rules in the shipped corpus dump, 32 mandatory, 6 always-on. Generated from `writ-corpus.cypher`; the live graph may differ if rules were authored since the last `writ export-cypher`. Full rule text: `writ query`, `GET /rule/{id}`, or `writ export`.
 
 | Domain | Rules | Mandatory |
 |---|---:|---:|
-| ai enforcement | 10 | 4 |
 | api-design | 12 | 0 |
 | architecture | 28 | 0 |
 | code-quality | 45 | 0 |
 | communication | 2 | 0 |
-| database / sql | 2 | 0 |
+| database | 2 | 0 |
 | documentation | 8 | 0 |
-| enforcement | 3 | 3 |
-| frameworks / magento 2 | 12 | 0 |
+| enforcement | 19 | 7 |
+| frameworks | 12 | 0 |
+| languages | 8 | 0 |
 | meta-authoring | 3 | 0 |
-| operations | 2 | 0 |
 | performance | 19 | 1 |
-| php / coding standards | 1 | 0 |
-| php / error handling | 3 | 0 |
-| process | 18 | 6 |
-| python / async | 1 | 0 |
-| python / data validation | 1 | 0 |
-| python / module design | 1 | 0 |
-| python / type system | 1 | 0 |
+| process | 18 | 5 |
 | research | 4 | 0 |
 | scaling | 10 | 1 |
 | security | 76 | 18 |
-| system dynamics | 4 | 0 |
 | testing | 21 | 0 |
-
-## ai enforcement
-
-| Rule | Severity | Flags |
-|---|---|---|
-| `ENF-CTX-003` | high | mandatory |
-| `ENF-GATE-007` | critical | mandatory |
-| `ENF-POST-003` | critical | mandatory |
-| `ENF-POST-004` | critical |  |
-| `ENF-POST-005` | high |  |
-| `ENF-POST-007` | critical | mandatory |
-| `ENF-PRE-001` | critical |  |
-| `ENF-PRE-002` | critical |  |
-| `ENF-PRE-003` | critical |  |
-| `ENF-PRE-004` | critical |  |
 
 ## api-design
 
@@ -154,7 +131,7 @@
 | `ENF-COMMS-001` | high | always-on |
 | `ENF-COMMS-OUTPUT-001` | medium | always-on |
 
-## database / sql
+## database
 
 | Rule | Severity | Flags |
 |---|---|---|
@@ -178,11 +155,27 @@
 
 | Rule | Severity | Flags |
 |---|---|---|
+| `ENF-CTX-003` | high | mandatory |
 | `ENF-GATE-006` | high | mandatory |
+| `ENF-GATE-007` | critical | mandatory |
+| `ENF-OPS-001` | critical |  |
+| `ENF-OPS-002` | high |  |
+| `ENF-POST-003` | critical | mandatory |
+| `ENF-POST-004` | critical |  |
+| `ENF-POST-005` | high |  |
 | `ENF-POST-006` | high | mandatory |
+| `ENF-POST-007` | critical | mandatory |
+| `ENF-PRE-001` | critical |  |
+| `ENF-PRE-002` | critical |  |
+| `ENF-PRE-003` | critical |  |
+| `ENF-PRE-004` | critical |  |
+| `ENF-SYS-002` | critical |  |
+| `ENF-SYS-003` | critical |  |
+| `ENF-SYS-005` | critical |  |
+| `ENF-SYS-006` | critical |  |
 | `ENF-TEST-001` | critical | mandatory |
 
-## frameworks / magento 2
+## frameworks
 
 | Rule | Severity | Flags |
 |---|---|---|
@@ -199,6 +192,19 @@
 | `FW-M2-RT-005` | high |  |
 | `FW-M2-RT-006` | high |  |
 
+## languages
+
+| Rule | Severity | Flags |
+|---|---|---|
+| `PHP-ERR-001` | high |  |
+| `PHP-ERR-002` | medium |  |
+| `PHP-TRY-001` | high |  |
+| `PHP-TYPE-001` | low |  |
+| `PY-ASYNC-001` | critical |  |
+| `PY-IMPORT-001` | high |  |
+| `PY-PROTO-001` | medium |  |
+| `PY-PYDANTIC-001` | high |  |
+
 ## meta-authoring
 
 | Rule | Severity | Flags |
@@ -206,13 +212,6 @@
 | `ENF-META-CONCISE-001` | low |  |
 | `META-AUTH-001` | high |  |
 | `META-AUTH-002` | high |  |
-
-## operations
-
-| Rule | Severity | Flags |
-|---|---|---|
-| `ENF-OPS-001` | critical |  |
-| `ENF-OPS-002` | high |  |
 
 ## performance
 
@@ -238,20 +237,6 @@
 | `PERF-QUERY-003` | medium |  |
 | `PERF-QUERY-004` | medium |  |
 
-## php / coding standards
-
-| Rule | Severity | Flags |
-|---|---|---|
-| `PHP-TYPE-001` | low |  |
-
-## php / error handling
-
-| Rule | Severity | Flags |
-|---|---|---|
-| `PHP-ERR-001` | high |  |
-| `PHP-ERR-002` | medium |  |
-| `PHP-TRY-001` | high |  |
-
 ## process
 
 | Rule | Severity | Flags |
@@ -260,7 +245,7 @@
 | `ENF-PROC-DEBUG-001` | high | always-on |
 | `ENF-PROC-PLAN-001` | high | mandatory, always-on |
 | `ENF-PROC-PRIORITY-001` | high |  |
-| `ENF-PROC-SDD-001` | high | mandatory |
+| `ENF-PROC-SDD-001` | high |  |
 | `ENF-PROC-TDD-001` | critical | mandatory, always-on |
 | `ENF-PROC-VERIFY-001` | critical | mandatory, always-on |
 | `ENF-PROC-WORKTREE-001` | high | mandatory |
@@ -274,30 +259,6 @@
 | `PROC-REVIEW-001` | medium |  |
 | `PROC-ROLLBACK-001` | high |  |
 | `PROC-TEST-001` | high |  |
-
-## python / async
-
-| Rule | Severity | Flags |
-|---|---|---|
-| `PY-ASYNC-001` | critical |  |
-
-## python / data validation
-
-| Rule | Severity | Flags |
-|---|---|---|
-| `PY-PYDANTIC-001` | high |  |
-
-## python / module design
-
-| Rule | Severity | Flags |
-|---|---|---|
-| `PY-IMPORT-001` | high |  |
-
-## python / type system
-
-| Rule | Severity | Flags |
-|---|---|---|
-| `PY-PROTO-001` | medium |  |
 
 ## research
 
@@ -403,15 +364,6 @@
 | `SEC-VAL-REGEX-001` | medium |  |
 | `SEC-VAL-SERVER-001` | critical | mandatory |
 | `SEC-VAL-TYPE-001` | high |  |
-
-## system dynamics
-
-| Rule | Severity | Flags |
-|---|---|---|
-| `ENF-SYS-002` | critical |  |
-| `ENF-SYS-003` | critical |  |
-| `ENF-SYS-005` | critical |  |
-| `ENF-SYS-006` | critical |  |
 
 ## testing
 

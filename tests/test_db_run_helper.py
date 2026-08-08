@@ -61,6 +61,8 @@ import json
 
 import pytest
 
+from writ.graph.db._common import RECORD_LABELS
+
 from writ.graph.db.rule_store import RuleStoreMixin
 from writ.graph.db.node_store import NodeStoreMixin
 from writ.graph.db.edge_store import EdgeStoreMixin
@@ -115,7 +117,10 @@ _GET_SUBAGENT_ROLE_QUERY = (
     "            LIMIT 1\n        "
 )
 _GET_ALL_EDGES_CROSS_TYPE_QUERY = (
-    "\n            MATCH (a)-[rel]->(b)\n            RETURN\n"
+    "\n            MATCH (a)-[rel]->(b)\n"
+    "            WHERE NOT any(l IN labels(a) WHERE l IN $record_labels)\n"
+    "              AND NOT any(l IN labels(b) WHERE l IN $record_labels)\n"
+    "            RETURN\n"
     "                coalesce(a.abstraction_id, a.antipattern_id, a.category_id, "
     "a.example_id, a.forbidden_id, a.phase_id, a.playbook_id, a.rationalization_id, "
     "a.role_id, a.rule_id, a.scenario_id, a.skill_id, a.technique_id) AS source_id,\n"
@@ -589,7 +594,8 @@ class TestGetAllEdgesCrossType:
     def test_sends_expected_query_with_no_params(self) -> None:
         conn, calls = _make_conn(_FakeResult(rows=[]))
         asyncio.run(conn.get_all_edges_cross_type())
-        assert calls == [{"query": _GET_ALL_EDGES_CROSS_TYPE_QUERY, "params": {}}]
+        assert calls == [{"query": _GET_ALL_EDGES_CROSS_TYPE_QUERY,
+                          "params": {"record_labels": sorted(RECORD_LABELS)}}]
 
     def test_returns_row_data_dicts_in_order(self) -> None:
         rows = [

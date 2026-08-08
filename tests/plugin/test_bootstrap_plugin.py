@@ -77,7 +77,14 @@ class TestBootstrapPluginContent:
         )
 
     def test_bootstrap_plugin_checks_prerequisites(self, content: str) -> None:
-        """Script must check for python3 >= 3.11, docker, jq, curl, and envsubst."""
+        """Script must REQUIRE python3 >= 3.11 and docker -- and nothing else.
+
+        This test used to assert that jq, curl and envsubst were required too. That was
+        the defect, not the contract: all three were install-time-only conveniences (JSON
+        merges, string substitution, HTTP), each now has a Python-stdlib fallback, and
+        requiring them turned a working machine into a failed install. jq and curl are
+        still named, as OPTIONAL accelerators; the gettext substitution step is gone.
+        """
         lowered = content.lower()
         assert "python3" in lowered, (
             "bootstrap-plugin.sh must check for python3"
@@ -88,15 +95,34 @@ class TestBootstrapPluginContent:
         assert "docker" in lowered, (
             "bootstrap-plugin.sh must check for docker"
         )
-        assert "jq" in content, (
-            "bootstrap-plugin.sh must check for jq"
+        assert "require_tool jq" not in content, (
+            "jq must not be a hard prerequisite: parsed_field/parsed_bool fall back to python3"
         )
-        assert "curl" in content, (
-            "bootstrap-plugin.sh must check for curl"
+        assert "require_tool curl" not in content, (
+            "curl must not be a hard prerequisite: writ_http_get/writ_http_post fall back to urllib"
         )
-        assert "envsubst" in content, (
-            "bootstrap-plugin.sh must check for envsubst"
+        assert "optional_tool jq" in content and "optional_tool curl" in content, (
+            "bootstrap-plugin.sh must still report jq and curl as optional accelerators, so a "
+            "user can see the fast path is available (or not) without being blocked"
         )
+
+    def test_bootstrap_plugin_is_the_only_step_a_plugin_install_needs(self, content: str) -> None:
+        """One script run must leave settings.json patched, CLAUDE.md rendered and the
+        slash commands installed -- the two steps users used to miss because they were
+        documented separately, after the bootstrap."""
+        assert "patch-global-config.sh" in content, (
+            "bootstrap-plugin.sh must invoke patch-global-config.sh (permissions + "
+            "statusLine + CLAUDE.md: the things a plugin manifest cannot ship)"
+        )
+        assert "install-user-commands.sh" in content, (
+            "bootstrap-plugin.sh must invoke install-user-commands.sh so /writ-approve "
+            "works from any project after one run"
+        )
+
+    def test_bootstrap_plugin_has_a_preflight_flag(self, content: str) -> None:
+        """--preflight runs only the prerequisite checks, so the tool contract is
+        testable without Docker, pip and an ONNX export."""
+        assert "--preflight" in content
 
     def test_bootstrap_plugin_idempotent(self, content: str, tmp_path: Path) -> None:
         """Running bootstrap-plugin.sh twice must not fail; second run is a no-op or re-syncs.

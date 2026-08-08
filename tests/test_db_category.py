@@ -77,12 +77,22 @@ def _make_category(category_id: str = "CAT-CODING-001", routes: list[str] | None
 # --- Per-test isolated db fixture -------------------------------------------
 
 @pytest_asyncio.fixture()
-async def db():
-    """Isolated Neo4j connection; graph is cleared before and after each test."""
+async def db(disposable_graph):
+    """Isolated Neo4j connection; graph is cleared before and after each test.
+
+    Explicit full wipe: clear_all preserves runtime records by default, and this
+    module asserts on total node counts (including "empty graph returns []"), so
+    preserved memories would leak into that arithmetic.
+
+    Because that wipe is unrecoverable for runtime records, the `disposable_graph`
+    fixture skips these tests unless a separate, explicitly-marked Neo4j instance is
+    configured (see tests/conftest.py). This fixture is why the suite used to leave
+    the live graph holding 2 Memory nodes against 98 on-disk memory files.
+    """
     conn = Neo4jConnection(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
-    await conn.clear_all()
+    await conn.clear_all(preserve_labels=frozenset())
     yield conn
-    await conn.clear_all()
+    await conn.clear_all(preserve_labels=frozenset())
     await conn.close()
 
 

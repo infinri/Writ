@@ -1,7 +1,7 @@
 """The global-config patcher must work for a Writ installed at ANY path.
 
 Two entries in scripts/patch-global-config.sh were hardcoded to one developer's
-home (`Edit(/home/lucio.saldivar/.claude/skills/writ/**)` and an `analysis/Writ`
+home (`Edit(/home/original-dev/.claude/skills/writ/**)` and an `analysis/Writ`
 sibling), so every other install got allow rules pointing at directories it does
 not have: self-edits prompted, and the dead entries accumulated across moves.
 
@@ -21,13 +21,12 @@ import shutil
 import subprocess
 from pathlib import Path
 
-import pytest
-
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 PATCH_SCRIPT = SKILL_ROOT / "scripts" / "patch-global-config.sh"
 
-_HAVE_TOOLS = shutil.which("jq") is not None and shutil.which("envsubst") is not None
-requires_tools = pytest.mark.skipif(not _HAVE_TOOLS, reason="jq/envsubst not installed")
+# No tool-presence skip guard: the patcher is a shim over the stdlib-only
+# bin/lib/writ_install.py, so there is nothing left to skip for.
+INSTALL_MODULE = SKILL_ROOT / "bin" / "lib" / "writ_install.py"
 
 
 def _fake_install(tmp_path: Path, name: str = "writ") -> Path:
@@ -35,7 +34,11 @@ def _fake_install(tmp_path: Path, name: str = "writ") -> Path:
     root = tmp_path / "opt" / name
     (root / "scripts").mkdir(parents=True)
     (root / "templates").mkdir(parents=True)
+    (root / "bin" / "lib").mkdir(parents=True)
     shutil.copy(PATCH_SCRIPT, root / "scripts" / PATCH_SCRIPT.name)
+    # The shim resolves the module from its own SKILL_DIR, so a relocated tree must
+    # carry it: this is what makes the relocation test exercise the real code path.
+    shutil.copy(INSTALL_MODULE, root / "bin" / "lib" / INSTALL_MODULE.name)
     shutil.copy(SKILL_ROOT / "templates" / "CLAUDE.md", root / "templates" / "CLAUDE.md")
     return root
 
@@ -74,7 +77,6 @@ def _foreign_abs_paths(entry: str, install: Path) -> list[str]:
     return [t for t in tokens if not t.startswith(str(install))]
 
 
-@requires_tools
 class TestDerivedFromInstallDir:
     def test_self_edit_entry_points_at_this_install(self, tmp_path):
         install = _fake_install(tmp_path)
@@ -97,7 +99,7 @@ class TestDerivedFromInstallDir:
 
         The earlier version of this test excluded the runner's own home from the check,
         which is exactly where the bug it guards against lived: the hardcoded entry was
-        `Edit(/home/lucio.saldivar/.claude/skills/writ/**)`, so on that developer's machine
+        `Edit(/home/original-dev/.claude/skills/writ/**)`, so on that developer's machine
         the filter skipped it and the test passed against the very defect. Adversarial
         review caught it. Anchoring on the install dir instead of on "not my home" means
         the assertion holds no matter who runs it.
@@ -142,7 +144,6 @@ class TestDerivedFromInstallDir:
         assert cmd == f"bash {install}/hooks/scripts/writ-statusline.sh"
 
 
-@requires_tools
 class TestStaleEntryPruning:
     def test_dead_writ_install_entry_removed(self, tmp_path):
         install = _fake_install(tmp_path)
@@ -187,7 +188,6 @@ class TestStaleEntryPruning:
         assert "Bash(existing-user-entry *)" in allow
 
 
-@requires_tools
 def test_rerun_is_idempotent(tmp_path):
     install = _fake_install(tmp_path)
     settings = tmp_path / "settings.json"

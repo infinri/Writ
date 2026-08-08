@@ -16,30 +16,32 @@ The refusal part is the point. The retrieval part is what makes the refusal affo
 
 **The threat model.** Writ assumes a **cooperative AI**: one that uses its tools in the ordinary way and is not trying to defeat the harness. Under that assumption the gates hold. Against an AI actively working around them, they do not, and the gaps are written down rather than hidden:
 
-* Writes made through shell commands are inspected, but a determined workaround (an inline Python one liner, an evaluated string, a heredoc) can slip past the inspector.
+* Writes made through shell commands are inspected, and as of 1.7.0 that inspection reads inside interpreter one liners too (`python -c`, `node -e`, `perl -e`, `ruby -e`, `php -r`, including heredoc and piped forms). The gaps that remain are named in the hook itself rather than left vague: a path assembled from shell variables, `eval` or base64, an `sh -c` wrapper, program text handed to awk or sed, an interpreter reached through a variable or alias, and `python -m MODULE`, which is deliberately unscanned because matching it would refuse every `python -m pytest` run.
 * When the background service is unreachable, hooks **allow rather than block**. This is the specification, not a bug. An infrastructure outage must never lock you out of your own repository.
 * Sub agents (helper AIs spawned by the main one) skip the write gates by design. Their limits come from the tools their role grants them, not from re-checking work the human already approved.
 
 Two boundaries hold no matter what. Writes to credential files (keys, `.env`, SSH material) are refused in every mode with no server involved. And the approval token cannot be created or spent without a human keystroke, so **advancing the workflow and writing new rules into the rulebook halt even when raw file writes do not.**
 
+**What a review finding does.** A recorded CRITICAL verdict turns the next `git commit` into a confirmation prompt naming the unresolved findings. It is a stop and ask, not an absolute block: you can confirm and commit anyway, and that choice is recorded in the audit log. The part that carries the weight is that the AI cannot clear its own verdict. Writing a review record directly is refused outright; verdicts are written only from the reviewer's own output, and the only route an AI has to lifting a block is to fix the findings and earn a fresh clean verdict. An unreadable verdict blocks the same way a critical one does. So the AI can be overruled by you, and cannot overrule you.
+
 If you need enforcement against an AI that is actively adversarial, Writ is not that tool. If you need a cooperative AI to actually follow a process, it is.
 
 ## Install
 
-**You will need:** Python 3.11 or newer, Docker (the graph database runs in a container), and the command line tools `jq`, `curl`, and `envsubst`.
+**You will need:** Python 3.11 or newer and Docker (the graph database runs in a container). That is the whole list. `jq` and `curl` are used when present and fall back to Python when absent, so a machine without them installs fine.
 
 ```shell
 claude plugin marketplace add infinri/Writ
 claude plugin install writ@writ
-
-WRIT_DIR=$(claude plugin list --json \
-  | python3 -c "import json,sys; print(next(p['installPath'] for p in json.load(sys.stdin) if p['id'].split('@')[0] == 'writ'))")
-
-bash "$WRIT_DIR/scripts/bootstrap-plugin.sh"      # environment, database, rules, service
-bash "$WRIT_DIR/scripts/patch-global-config.sh"   # permissions and workflow instructions
 ```
 
-Restart Claude Code and check it worked with `curl http://localhost:8765/health`.
+Open Claude Code once. It detects the un-bootstrapped install and prints one absolute command on its own line, ready to paste:
+
+```shell
+bash /path/it/prints/scripts/bootstrap-plugin.sh
+```
+
+Run it and restart Claude Code. That one script does everything: environment, database, rules, background service, permissions, and workflow instructions. It is idempotent, and re-running it after an update is the whole update procedure. Check it worked with `curl http://localhost:8765/health`.
 
 Nothing breaks while you are partway through setup. Hooks stay out of the way until the install finishes, sessions are never blocked, and the startup hook prints exactly what is still missing. Full install detail, the manual path, and troubleshooting live in [`docs/install.md`](docs/install.md).
 
@@ -107,12 +109,14 @@ Pull request comments currently support Bitbucket Cloud only, and self hosted Bi
 
 ## Measured
 
-Live rulebook of 287 rules, measured 2026-08-01, on a database container with no memory cap. Your numbers will differ on other hardware. The full disclosure is in [`SCALE_BENCHMARK_RESULTS.md`](SCALE_BENCHMARK_RESULTS.md).
+Live rulebook of 287 rules, re-measured 2026-08-05 and 2026-08-06, on a database container with no memory cap. Your numbers will differ on other hardware. The full disclosure is in [`SCALE_BENCHMARK_RESULTS.md`](SCALE_BENCHMARK_RESULTS.md).
 
 | | Live (287 rules) | Synthetic (10,000 rules) |
 |---|---:|---:|
-| Search time, 95th percentile | 0.6 ms | 0.827 ms |
-| Rule text delivered per turn | about 1,900 tokens | about 1,590 tokens |
+| Search time, 95th percentile | 1.02 ms | 0.827 ms |
+| Rule text delivered per turn | about 2,000 tokens | about 1,590 tokens |
+
+**Which 95th percentile.** Three appear across this project's files and they are not in competition, they are different question sets: **1.02 ms** is the 193 question test set, which is the hardest and the one quoted above because it is closest to real use; 0.52 ms is a 5 question latency set on the same date; 0.6 ms is an older 10 question set from 2026-08-01. Where a single number appears without a question set beside it, assume the 193 question one.
 
 The property that matters is the second row. The amount of rule text sent per turn stays roughly flat as the rulebook grows.
 
@@ -120,12 +124,19 @@ The property that matters is the second row. The amount of rule text sent per tu
 
 Search quality against a 193 question test set (47 of them deliberately ambiguous). The floors are automated gates the build fails below, set deliberately under the measured values:
 
-| Metric | Floor | Measured 2026-08-01 |
-|---|---|---|
-| Mean reciprocal rank at 5 (ambiguous, n=47) | at least 0.45 | 0.5681 |
-| Hit rate at 5 (all 193) | at least 0.75 | 0.7824 |
-| Domain hit rate at 5 | at least 0.90 | 0.9323 |
-| nDCG at 10 | at least 0.65 | 0.7071 |
+| Metric | Floor | 2026-08-01 | 2026-08-05 | 2026-08-06 |
+|---|---|---:|---:|---:|
+| Hit rate at 5 (index-eligible, n=169) | at least 0.90 | -- | 0.9290 | **0.9231** |
+| Mean reciprocal rank at 5 (ambiguous, n=47) | at least 0.45 | 0.5681 | 0.6167 | 0.6082 |
+| Hit rate at 5 (all 193) | at least 0.75 | 0.7824 | 0.8187 | 0.8083 |
+| Domain hit rate at 5 | at least 0.90 | 0.9323 | 0.9534 | 0.9585 |
+| nDCG at 10 | at least 0.65 | 0.7071 | 0.7332 | 0.7323 |
+
+**Read the 2026-08-06 column, not the earlier ones.** Until that date the search merged its keyword and vector candidates through a `set` union, whose iteration order Python randomizes per process, and that order decided tie breaking all the way through scoring. Thirty of the 193 questions returned a different top 5 depending on the seed, so every earlier column is one draw from a distribution rather than a measurement. Five identical runs spanned 156 to 159 hits. The fix made the merge order deterministic; the corrected numbers landed at the low end of the old spread, which is what you would expect if the old high marks were luck.
+
+**The index eligible hit rate is the one to watch.** It sits at 0.9231 against a 0.90 floor that fails the build, which is 2.3 points of headroom, and it moved *down* between 08-05 and 08-06. Three of the other metrics drifted down over the same pair of runs. A gate this close to its floor will eventually trip on a change unrelated to search quality, and the honest reading is that the margin is thin rather than comfortable.
+
+**What a turn actually costs.** Across 67 real sessions and 891 turns of logged injections: mean 537 tokens per turn, median 600, 95th percentile 1,360, maximum 5,440. The 5,000 and 8,000 token budgets are ceilings, not spend. Unlike every other number here, **this one has no artifact you can check**: it comes from `writ token-audit` over the maintainer's own session logs, which contain real prompts and file contents and cannot ship. The command is in the repository and runs against your logs, so the method is reproducible even though this run is not.
 
 ## Not measured
 
@@ -133,7 +144,9 @@ Everything above measures what the search **costs** and how well it ranks. None 
 
 The harness to test it exists. It runs matched Claude Code sessions with Writ on and Writ off against a deliberately planted security defect, scoring whether the defect was caught and at what cost. It has not been run at a scale that proves anything. At one repetition the result is reported as insufficient by design, because a single run cannot beat the randomness in how AI sessions unfold. What is still needed: many repetitions with a noise floor, a defect suite broader than the single planted case, and a cheaper scoring judge.
 
-Until that exists, treat the enforcement claim as a designed mechanism with an honestly documented failure posture, not a demonstrated outcome.
+A second thing is unproven, and smaller only by comparison. The search runs five stages, one of which walks the rule graph, and **that stage is the reason this project needs a graph database at all**. Its individual contribution has never been isolated. Nobody has run the test set with graph traversal disabled and compared the ranking quality, so the honest position is that the dependency is justified by design reasoning rather than by a measurement. The nondeterminism finding makes this more pressing rather than less: if iteration order was quietly deciding thirty questions' results, per stage attribution was even shakier than it looked. The number will be published wherever it lands, including at or near zero.
+
+Until those exist, treat the enforcement claim as a designed mechanism with an honestly documented failure posture, not a demonstrated outcome.
 
 What **is** independently checkable today lives in the repository rather than in assertions. [`docs/pressure-runs/`](docs/pressure-runs/) contains adversarial test runs against real Claude Code sessions: the exact prompt used, the full transcript, every enforcement decision as raw log lines, and a graded analysis scoring each targeted rule as held or bypassed, including the failures, documented as failures. [`docs/monthly-reviews/`](docs/monthly-reviews/) contains operational reviews built from the system's own audit log.
 
@@ -167,11 +180,13 @@ Six self contained pages with interactive diagrams and a live explorer for the g
 * [`docs/reference/`](docs/reference/): precise contracts. Architecture, graph schema, retrieval, sessions and gates, configuration, logging, decision memory, testing.
 * [`docs/install.md`](docs/install.md): both install paths, running it as a background service, and troubleshooting.
 * [`CONTRIBUTING.md`](CONTRIBUTING.md): how to author rules, the review cadence, and triaging AI proposals.
-* [`CHANGELOG.md`](CHANGELOG.md): release history through v1.6.0.
+* [`CHANGELOG.md`](CHANGELOG.md): release history through v1.7.0.
+* [`SECURITY.md`](SECURITY.md): the trust model stated plainly, how to report a vulnerability, and why auditing what you install stays your job.
+* [`ERRATA.md`](ERRATA.md): corrections to figures this project has published, including the ones with no consumer that are deliberately kept out of this file.
 
 ## Status
 
-**v1.6.0, released 2026-08-01.** Installs end to end as a Claude Code plugin. Every published number re-measured on disclosed hardware. The 37 script hook system audited end to end. The Claude Code contract re-pinned to build 2.1.220.
+**v1.7.0, released 2026-08-08.** Installs end to end as a Claude Code plugin. The 40 script hook system audited and hardened: two gates that were failing open now hold, session identity is never guessed, destructive database operations need explicit permission, and the test suite's isolation is enforced rather than assumed. Search numbers re-measured on 08-05 and 08-06 after a nondeterminism defect was found and fixed.
 
 Every number in this file is either measured and dated, or derived from the current source tree. Where this file and the code disagree, the code wins.
 

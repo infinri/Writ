@@ -3,7 +3,7 @@
 
 # Hook registration matrix
 
-41 registrations across 12 events wiring 37 scripts under `hooks/scripts/`, generated from `hooks/hooks.json` (the single source; `templates/settings.json` is rendered from the same file). `writ-statusline.sh` is wired through the settings `statusLine` channel, not a hook event. Behavior and blocking semantics: `HANDBOOK.md` section 14.
+44 registrations across 12 events wiring 40 scripts under `hooks/scripts/`, generated from `hooks/hooks.json` (the single source; `templates/settings.json` is rendered from the same file). `writ-statusline.sh` is wired through the settings `statusLine` channel, not a hook event. Behavior and blocking semantics: `HANDBOOK.md` section 14.
 
 ## SessionStart
 
@@ -16,6 +16,7 @@
 
 | Matcher | Script |
 |---|---|
+| `(all)` | `writ-manual-test-grant.sh` |
 | `(all)` | `auto-approve-gate.sh` |
 | `(all)` | `writ-rag-inject.sh` |
 
@@ -83,6 +84,7 @@
 | `Read` | `writ-read-junk-gate.sh` |
 | `Read` | `writ-read-rag.sh` |
 | `Grep|Read|Glob` | `writ-debug-code-gate.sh` |
+| `Write|Edit|NotebookEdit` | `writ-state-write-gate.sh` |
 | `Write|Edit|NotebookEdit` | `writ-pre-write-dispatch.sh` |
 | `Write|Edit` | `pre-validate-file.sh` |
 | `Task` | `writ-dispatch-discipline.sh` |
@@ -105,3 +107,4 @@
 | `Write|Edit|NotebookEdit` | `writ-posttool-rag.sh` |
 | `Write` | `writ-quality-judge.sh` |
 | `Write|Edit` | `writ-mark-pending-test.sh` |
+| `Write|Edit` | `writ-memory-capture.sh` |

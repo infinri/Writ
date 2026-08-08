@@ -75,7 +75,6 @@ def _run_hook(
     cache_dir: Path,
     log_root: Path,
     project_root: Path,
-    session_pointer: Path,
     stop_hook_active: bool,
 ) -> subprocess.CompletedProcess:
     env = {
@@ -87,10 +86,16 @@ def _run_hook(
     }
     # Unset the single-file collapse so the router splits into typed streams.
     env.pop("WRIT_FRICTION_LOG", None)
-    # The hook reads the session id from this pointer path; the module default is
-    # /tmp/writ-current-session, so we write the real id there for the subprocess.
-    session_pointer.write_text(SID)
-    payload = json.dumps({"stop_hook_active": stop_hook_active})
+    # Session identity comes ONLY from the hook's stdin payload (`session_id`,
+    # or `agent_id` when present) -- there is no env var or pointer-file
+    # fallback. /tmp/writ-current-session used to be read as a fallback, but it
+    # is ONE global file rewritten by writ-rag-inject.sh on every
+    # UserPromptSubmit in EVERY Claude Code session on the machine, so it named
+    # whichever session took a turn most recently rather than the one this hook
+    # was invoked for. That silently drained/attributed state to the wrong
+    # session, so the fallback was removed; a payload without session_id now
+    # makes the hook record a critical error and do nothing.
+    payload = json.dumps({"stop_hook_active": stop_hook_active, "session_id": SID})
     return subprocess.run(
         ["bash", str(FRICTION_LOGGER)],
         input=payload,
@@ -130,25 +135,8 @@ def _seed_two_gates_at_fixed_mtimes(project_root: Path) -> None:
     os.utime(test_skel, (1_700_000_060, 1_700_000_060))
 
 
-@pytest.fixture()
-def pointer():
-    """The hook reads the CURRENT session id from the literal, non-overridable
-    path /tmp/writ-current-session (via `cat`), so a subprocess run must use that
-    exact path. Back up and restore any operator pointer around the test so this
-    never clobbers a real running session, then return the path for the run."""
-    path = Path("/tmp/writ-current-session")
-    saved = path.read_text() if path.exists() else None
-    try:
-        yield path
-    finally:
-        if saved is not None:
-            path.write_text(saved)
-        elif path.exists():
-            path.unlink()
-
-
 def test_gate_denied_then_approved_state_appends_audit_event_and_exits_zero(
-    tmp_path, monkeypatch, pointer
+    tmp_path, monkeypatch
 ):
     """With mode=work, an invalidation_history record and a matching .approved
     gate file, the hook exits 0 (NOT the silent set -e abort) and a
@@ -168,7 +156,6 @@ def test_gate_denied_then_approved_state_appends_audit_event_and_exits_zero(
         cache_dir=cache_dir,
         log_root=tmp_path / "logs",
         project_root=project_root,
-        session_pointer=pointer,
         stop_hook_active=False,
     )
 
@@ -192,7 +179,7 @@ def test_gate_denied_then_approved_state_appends_audit_event_and_exits_zero(
 
 
 def test_stop_hook_active_true_exits_zero_and_appends_no_events(
-    tmp_path, monkeypatch, pointer
+    tmp_path, monkeypatch
 ):
     """When CC re-invokes the Stop hook (stop_hook_active=true), the loop-breaker
     exits 0 immediately and appends NO events, even though the seeded state would
@@ -212,7 +199,6 @@ def test_stop_hook_active_true_exits_zero_and_appends_no_events(
         cache_dir=cache_dir,
         log_root=tmp_path / "logs",
         project_root=project_root,
-        session_pointer=pointer,
         stop_hook_active=True,
     )
 
@@ -227,7 +213,7 @@ def test_stop_hook_active_true_exits_zero_and_appends_no_events(
 
 
 def test_phase_transition_time_deduped_against_metrics_stream_across_fires(
-    tmp_path, monkeypatch, pointer
+    tmp_path, monkeypatch
 ):
     """Regression: phase_transition_time is METRICS-classified in STREAM_MAP, so
     its dedup read must target the metrics stream, not audit.
@@ -270,7 +256,6 @@ def test_phase_transition_time_deduped_against_metrics_stream_across_fires(
             cache_dir=cache_dir,
             log_root=tmp_path / "logs",
             project_root=project_root,
-            session_pointer=pointer,
             stop_hook_active=False,
         )
 

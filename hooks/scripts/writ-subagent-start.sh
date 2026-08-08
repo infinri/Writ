@@ -71,13 +71,20 @@ fi
 if [ -n "$PARENT_SESSION" ]; then
     PARENT_STATE=$(python3 "$SESSION_HELPER" read "$PARENT_SESSION" 2>/dev/null || echo '{}')
 else
-    # Try the published session file
-    if [ -f /tmp/writ-current-session ]; then
-        PARENT_SESSION=$(cat /tmp/writ-current-session 2>/dev/null | tr -d '[:space:]')
-        PARENT_STATE=$(python3 "$SESSION_HELPER" read "$PARENT_SESSION" 2>/dev/null || echo '{}')
-    else
-        PARENT_STATE='{}'
-    fi
+    # NO POINTER FALLBACK. /tmp/writ-current-session names whichever Claude Code session on
+    # this machine took a turn most recently, which for a sub-agent means inheriting mode
+    # and gate state from an unrelated parent. That is worse than inheriting nothing: the
+    # sub-agent would run governed by another session's phase, and the mismatch is
+    # invisible from either side.
+    #
+    # Empty state is the honest answer, and it is recorded rather than assumed.
+    # Filed under AGENT_ID, which is known non-empty here. Omitting it sent the row to
+    # session "unknown", so the one record saying a sub-agent started ungoverned could not
+    # be traced back to which sub-agent that was.
+    writ_critical writ-subagent-start \
+        "no parent session in payload; sub-agent starts with no inherited gate state" \
+        "$AGENT_ID"
+    PARENT_STATE='{}'
 fi
 
 # Create isolated session for the sub-agent with parent's gate state but fresh budget
@@ -119,21 +126,39 @@ with mod.mutate_cache(agent_id) as cache:
     cache['token_snapshots'] = []
 " "$PARENT_STATE" "$AGENT_ID" 2>/dev/null || true
 
-# Link this sub-agent to the COMMITTING session id so commit_capture's
-# enumeration (_collect_subagent_queried_rules) can merge this child's queried
-# rules at commit time, at any nesting depth. The post-commit hook uses
-# /tmp/writ-current-session as the capture session_id, so we stamp THAT id (not
-# the immediate parent). Fall back to the payload session_id (PARENT_SESSION,
-# extracted at line 50). Also stamp agent_type for future provenance queries.
-# CAVEAT: the fallback links to the IMMEDIATE parent, not the committing session.
-# For a deeply nested sub-agent spawned when /tmp/writ-current-session is empty,
-# the immediate parent may not be the committing session, so its queried rules
-# would miss the merge. In practice the post-commit hook keeps
-# /tmp/writ-current-session populated with the main session, so the primary path
-# (not the fallback) is what runs and the "any nesting depth" guarantee holds;
-# the fallback is best-effort only. (Accepted limitation, single-session scope.)
-PARENT="$(cat /tmp/writ-current-session 2>/dev/null || echo '')"
-[ -z "$PARENT" ] && PARENT="$PARENT_SESSION"
+# Manual-testing grant inherits exactly like gates_approved above: the user's
+# concession was given to the orchestrating session, and a dispatched worker acts
+# on its behalf, so it is not re-typed per worker. The child gets the REMAINING
+# TTL (never refreshed) and an inherited_from stamp for the audit trail. Keyed on
+# PARENT_SESSION (the payload session id), NOT /tmp/writ-current-session -- the
+# pointer churns across concurrent sessions and could leak another session's grant.
+GRANT_LIB="$WRIT_DIR/bin/lib/manual_test_grant.py"
+if [ -f "$GRANT_LIB" ] && [ -n "$PARENT_SESSION" ] && [ "$PARENT_SESSION" != "$AGENT_ID" ]; then
+    if python3 "$GRANT_LIB" inherit "$PARENT_SESSION" "$AGENT_ID" 2>/dev/null; then
+        log_gate_decision "manual-test-grant" "inherit" \
+            "sub-agent inherited the parent session's live manual-testing grant" "$AGENT_ID"
+    fi
+fi
+
+# Link this sub-agent to its parent so commit_capture's enumeration
+# (_collect_subagent_queried_rules) can merge this child's queried rules at commit time.
+# The link is the PAYLOAD's session id and nothing else.
+#
+# THIS USED TO PREFER /tmp/writ-current-session, and that was the same defect as
+# everywhere else, with a worse blast radius: the pointer is ONE file rewritten by every
+# Claude Code session on the machine, so a sub-agent spawned while another session had
+# just taken a turn was stamped as a child of THAT session -- its queried rules merged
+# into a stranger's commit, and this session's commit lost them. Invisible from both ends.
+#
+# WHAT THE POINTER BOUGHT, AND WHY LOSING IT IS SURVIVABLE: it named the committing
+# session directly, so a deeply nested sub-agent linked straight to the root rather than
+# to its immediate parent. Without it, a grandchild's parent_session_id is its immediate
+# parent and the parent_match arm of _collect_subagent_queried_rules misses it. The
+# path + recency arm still catches it: that cache holds queried rules for a committed
+# file and was modified inside the window, which is exactly the case that arm was
+# written for (writ/session/cache.py:409). So a nested worker's rules are merged by
+# content instead of by linkage -- one arm narrower, and never wrong.
+PARENT="$PARENT_SESSION"
 if [ -n "$PARENT" ] && [ "$PARENT" != "$AGENT_ID" ]; then
     _writ_session update "$AGENT_ID" --parent-session-id "$PARENT" --agent-type "$AGENT_TYPE"
 fi

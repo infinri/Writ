@@ -39,6 +39,18 @@ _FILES_BOLD_LINE_RE = re.compile(r'^-\s+\*\*(\w+)\*\*\s+`([^`]+)`\s+--\s+(\S.*)$
 # A bold-change-type ## Files bullet that names a backtick path (with or without a reason).
 _FILES_BOLD_PATH_ONLY_RE = re.compile(r'^-\s+\*\*\w+\*\*\s+`[^`]+`')
 
+# The canonical fill-in plan skeleton. Every rejection message names it, so a session
+# learns the format from ONE artifact instead of re-deriving it from each rejection.
+_PLAN_TEMPLATE_REF = 'templates/plan-template.md'
+
+# A cited id in ## Rules Applied: the canonical RULE-DOMAIN-NNN shape, or an
+# abstraction id, whose trailing segment is a label rather than three digits
+# (ABS-TESTING-E2E). Summary-mode injection renders abstractions as '[ABSTRACT: <id>]'
+# blocks, so the model sees and naturally cites them like any other id; excluding that
+# SHAPE made every such citation read as a hallucination. Widening the shape cannot
+# widen what is citable -- the check below still admits only ids the session loaded.
+_CITED_ID_RE = re.compile(r'ABS(?:-[A-Z0-9]+)+|[A-Z][A-Z0-9]+(?:-[A-Z][A-Z0-9]+)*-\d{3}')
+
 
 def _validate_citations(cited: set, available: set) -> set:
     """INV-2: the mode-agnostic citation-hallucination detector.
@@ -59,11 +71,12 @@ def _validate_phase_a(project_root: str, session_id: str = "") -> str | None:
     import re
     plan_path = _find_plan_md(project_root)
     if not plan_path:
-        return ("plan.md not found. Write plan.md with ALL of these sections: "
-                "## Files (list every file to create/modify), "
+        return (f"plan.md not found. Write it by filling in {_PLAN_TEMPLATE_REF} in the "
+                "Writ skill directory, which encodes this gate's exact contract: "
+                "## Files (one bullet per file: - `path` (change_type) -- reason), "
                 "## Analysis (what and why, contracts, integration points), "
-                "## Rules Applied (cite rule IDs from the injected WRIT RULES block), "
-                "## Capabilities (use - [ ] checkbox format for each testable behavior). "
+                "## Rules Applied (cite ONLY rule IDs injected in this session's WRIT RULES blocks), "
+                "## Capabilities (- [ ] checkbox per testable behavior, all unchecked). "
                 "All four sections are required in a single write. Do not present partial plans.")
     with open(plan_path) as f:
         content = f.read()
@@ -85,16 +98,16 @@ def _validate_phase_a(project_root: str, session_id: str = "") -> str | None:
             # the ' -- ' separator has nothing for the harvest to capture.
             if _FILES_PATH_ONLY_RE.match(stripped) and not _FILES_LINE_RE.match(stripped):
                 missing.append(
-                    '## Files line missing a reason (use: - `path` (change_type) -- reason): '
-                    + stripped
+                    '## Files line missing a reason (use: - `path` (change_type) -- reason, '
+                    f'as modeled in {_PLAN_TEMPLATE_REF}): ' + stripped
                 )
             # The bold-change-type shape ('- **type** `path` -- reason') is a
             # first-class ## Files form; a bold bullet naming a path but lacking a
             # reason is flagged with the same message as the canonical shape.
             if _FILES_BOLD_PATH_ONLY_RE.match(stripped) and not _FILES_BOLD_LINE_RE.match(stripped):
                 missing.append(
-                    '## Files line missing a reason (use: - `path` (change_type) -- reason): '
-                    + stripped
+                    '## Files line missing a reason (use: - `path` (change_type) -- reason, '
+                    f'as modeled in {_PLAN_TEMPLATE_REF}): ' + stripped
                 )
     if not re.search(r'^##\s+Analysis', content, re.MULTILINE):
         missing.append('## Analysis')
@@ -106,13 +119,13 @@ def _validate_phase_a(project_root: str, session_id: str = "") -> str | None:
         rest = content[section_start:]
         next_section = re.search(r'^## ', rest, re.MULTILINE)
         section_text = rest[:next_section.start()] if next_section else rest
-        has_rule_id = bool(re.search(r'[A-Z][A-Z0-9]+(?:-[A-Z][A-Z0-9]+)*-\d{3}', section_text))
+        has_rule_id = bool(_CITED_ID_RE.search(section_text))
         has_no_match = bool(re.search(r'[Nn]o matching rules', section_text))
         if not has_rule_id and not has_no_match:
             missing.append('rule ID or "No matching rules" in ## Rules Applied')
         # Validate cited rule IDs against session's loaded_rule_ids
         elif has_rule_id and session_id:
-            cited_ids = set(re.findall(r'[A-Z][A-Z0-9]+(?:-[A-Z][A-Z0-9]+)*-\d{3}', section_text))
+            cited_ids = set(_CITED_ID_RE.findall(section_text))
             cache = _read_cache(session_id)
             # Collect all rule IDs loaded across all phases
             loaded_ids = set(cache.get("loaded_rule_ids", []))

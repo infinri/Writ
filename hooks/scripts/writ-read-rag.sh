@@ -29,8 +29,14 @@ STDIN_DATA=$(cat)
 
 # Extract session ID
 SESSION_ID=$(echo "$STDIN_DATA" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('agent_id','') or d.get('session_id',''))" 2>/dev/null)
+# NO SYNTHESIZED ID. This used to call `detect_session_id ""`, which invented one from
+# PPID or md5(cwd:user). Everything below is session-keyed (the mode filter that decides
+# whether this hook runs at all, the budget check, and the `update` that banks the rule
+# ids), and _cache_path() has no empty-id guard, so continuing would write a cache named
+# for the empty string. This hook injects rules on Read and gates nothing.
 if [ -z "$SESSION_ID" ]; then
-    SESSION_ID=$(detect_session_id "")
+    writ_critical writ-read-rag "no session_id in hook payload; skipping per-read rule injection"
+    exit 0
 fi
 
 # Mode filter: fire in the read-heavy evaluation modes -- review, debug, and

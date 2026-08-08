@@ -39,7 +39,7 @@ Two fields that look redundant and are not: `loaded_rule_ids` doubles as the ran
 
 Glob caution for the exclusion list: `*` spans `/` and matches the raw path, so a directory-shaped glob exempts any depth and `..` escapes it. Keep patterns extension-anchored or exact filenames.
 
-The same check serves the Write/Edit/NotebookEdit tools (`/pre-write-check`, which also returns file-context RAG on allow) and Bash-mediated writes (`writ-bash-write-gate.sh` extracts redirect/copy targets quote-aware and calls `/session/{sid}/can-write`). The runtime-lens read gate (`_can_read_code_check`) blocks Read/Grep/Glob on source until `debug.md` has real Evidence and Narrowing sections; it fails open on any internal error by design.
+The same check serves the Write/Edit/NotebookEdit tools (`/pre-write-check`, which also returns file-context RAG on allow) and Bash-mediated writes (`writ-bash-write-gate.sh` extracts redirect and copy targets quote-aware, plus write targets inside interpreter one-liners such as `python -c` and `node -e`, and calls `/session/{sid}/can-write` with each). The runtime-lens read gate (`_can_read_code_check`) blocks Read/Grep/Glob on source until `debug.md` has real Evidence and Narrowing sections; it fails open on any internal error by design.
 
 ## 4. Work phases and validators
 

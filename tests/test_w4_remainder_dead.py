@@ -39,6 +39,7 @@ SECURITY: this file parses `writ.toml.example` only. It never reads or opens
 from __future__ import annotations
 
 import ast
+import re
 import tomllib
 from pathlib import Path
 
@@ -156,12 +157,25 @@ def test_budget_tracking_update_handlers_drops_set_gates_approved() -> None:
 
 
 def test_common_sh_parse_hook_stdin_function_removed() -> None:
+    """The dead 2-spawn helper must not come back.
+
+    Matches a DEFINITION rather than the bare name. The substring form flagged
+    `_writ_parse_hook_stdin()`, the private jq-first arm selector added 2026-08-07,
+    which is a different function with a different signature: a name-substring check
+    on a deletion guard reports any identifier that merely CONTAINS the deleted one.
+    Leading whitespace is allowed so an indented redefinition is still caught; the
+    `_writ_` prefix is not whitespace, so it does not sneak past that.
+    """
     path = REPO_ROOT / "bin" / "lib" / "common.sh"
     assert path.exists(), f"expected {path} to exist"
-    src = path.read_text()
-    assert "parse_hook_stdin()" not in src and "parse_hook_stdin ()" not in src, (
+    pattern = re.compile(r"^\s*parse_hook_stdin\s*\(\)", re.MULTILINE)
+    assert pattern.findall(path.read_text()) == [], (
         "bin/lib/common.sh must no longer define parse_hook_stdin(); it is dead, "
         "superseded by the single-spawn load_hook_env"
+    )
+    # Anti-vacuity: a pattern that matches nothing would pass on any source at all.
+    assert pattern.findall("  parse_hook_stdin() {\n  :\n}\n"), (
+        "the deletion guard's pattern no longer recognizes the definition it forbids"
     )
 
 
@@ -265,7 +279,14 @@ _STRIPPED_SECTIONS = {
 # (no active keys) and therefore may or may not appear as parsed keys at all --
 # the assertion below treats their presence as optional, not required, so it
 # is not brittle to that.
-_KEPT_SECTIONS_ALLOWED = {"neo4j", "bitbucket", "hnsw", "logs"}
+# "egress" joined 2026-08-06: get_egress_allow_hosts in writ/config.py reads it,
+# which is this guard's own criterion for a kept section.
+# "retrieval" joined 2026-08-06 on the same criterion:
+# get_authority_preference_threshold reads [retrieval].authority_preference_threshold.
+# Note this is NOT the old decorative "ranking" section (still stripped below) --
+# that one had no reader; this one does, and the daemon passes its value into
+# build_pipeline at startup.
+_KEPT_SECTIONS_ALLOWED = {"neo4j", "bitbucket", "hnsw", "logs", "egress", "retrieval"}
 
 
 def _load_toml_example() -> dict:

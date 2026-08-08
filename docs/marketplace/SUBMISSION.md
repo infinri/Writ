@@ -16,7 +16,7 @@ Maintainer reference for submitting `writ@writ` to the official Anthropic plugin
 - [x] **Manifest validates**: `claude plugin validate <install>` exits 0 with no warnings (pinned by `tests/plugin/test_plugin_validate_cli.py`).
 - [x] **Marketplace name not reserved**: `writ` is not on the reserved list.
 - [x] **Plugin source publicly reachable**: `marketplace.json` points at `./` and the repo is public at https://github.com/infinri/Writ.
-- [x] **README documents install + usage**: the "Install as a Claude Code plugin" section ships the install + bootstrap + patch-global-config sequence; full detail in `docs/install.md`.
+- [x] **README documents install + usage**: the "Install as a Claude Code plugin" section ships the collapsed sequence -- `claude plugin marketplace add`, `claude plugin install writ@writ`, then the one absolute `bootstrap-plugin.sh` command Writ itself prints on first session (that run also patches `~/.claude` and installs the slash commands, so there is no separate patch step and no install-path lookup). Prerequisites are Python 3.11+ and Docker only; `jq`, `curl` and `envsubst` are no longer required. Full detail in `docs/install.md`.
 - [x] **Agents load**: measured `Agents (5)` on Claude Code 2.1.220 with roles auto-discovered from `agents/` (commit `a56ca1e`).
 - [x] **License OSI-approved**: MIT.
 - [x] **No secrets in repo**: `writ.toml` is gitignored; the shipped template carries only the documented dev Neo4j default.
@@ -31,7 +31,7 @@ Maintainer reference for submitting `writ@writ` to the official Anthropic plugin
 > Hybrid-RAG rule retrieval plus workflow gates for Claude Code: the right rules per prompt, no risky writes before an approved plan.
 
 **Short description**:
-> Writ is a Claude Code harness with two co-equal layers. A librarian retrieves the rules that fit the current task through a five-stage hybrid pipeline (BM25 + vector + graph traversal + weighted ranking, with an abstention gate) over a Neo4j knowledge graph: sub-millisecond ranked retrieval, roughly flat retrieved tokens as the corpus grows (749x reduction versus prompt-stuffing at 10,000 rules, measured 2026-08-01). A process keeper of 37 hook scripts and a session state machine enforces mode-based workflow gates: plan approval, then test skeletons, then implementation, and approval requires a token only the user's keystroke produces. 287 rules ship out of the box across security, clean code, architecture, testing, performance, and process, with authoring tooling to grow your own.
+> Writ is a Claude Code harness with two co-equal layers. A librarian retrieves the rules that fit the current task through a five-stage hybrid pipeline (BM25 + vector + graph traversal + weighted ranking, with an abstention gate) over a Neo4j knowledge graph: sub-millisecond ranked retrieval, roughly flat retrieved tokens as the corpus grows (749x reduction versus prompt-stuffing at 10,000 rules, measured 2026-08-01). A process keeper of 40 hook scripts and a session state machine enforces mode-based workflow gates: plan approval, then test skeletons, then implementation, and approval requires a token only the user's keystroke produces. 287 rules ship out of the box across security, clean code, architecture, testing, performance, and process, with authoring tooling to grow your own.
 
 **Long description**: mirror README "The problem" + "What Writ does about it" verbatim (kept current there; do not fork the text here).
 

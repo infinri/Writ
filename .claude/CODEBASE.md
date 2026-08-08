@@ -13,7 +13,7 @@ The code map for anyone (human or agent) modifying Writ's own source. Facts here
 | `writ/server/` | FastAPI package: `__init__.py` (app, lifespan, global state), `models.py`, `routes/` (6 modules) | HIGH: hook contract. Routes read `server._pipeline` etc. as live attributes; never from-import them. |
 | `writ/session/` | The state machine, 30+ modules (POL-6 split); `bin/lib/writ-session.py` is a re-export facade loaded both as a CLI and via importlib by the server | HIGH: gates and modes. Keep it acyclic; modules never import the facade. |
 | `writ/analysis/`, `writ/compression/`, `writ/shared/` | Friction analytics, abstraction clustering, the logging router / budget / delivery tables | Moderate. |
-| `hooks/hooks.json` + `hooks/scripts/` | 41 registrations, 12 events, 37 scripts (+1 statusline script) | HIGH: exit codes are the gate mechanism. |
+| `hooks/hooks.json` + `hooks/scripts/` | 44 registrations, 12 events, 40 scripts (+1 statusline script) | HIGH: exit codes are the gate mechanism. |
 | `bin/lib/common.sh` | The shared hook library (`load_hook_env`, `_writ_session`, exit-trap instrumentation, cache-dir resolver) | HIGH: every hook sources it. |
 | `scripts/` | Bootstrap/deploy, migrations (one-shot, already applied), measurement tools, `render-docs.py` | Low, but `render-settings-template.py` and `render-docs.py` have `--check` drift modes. |
 
@@ -33,7 +33,7 @@ The code map for anyone (human or agent) modifying Writ's own source. Facts here
 
 ## Configuration reality
 
-`writ.toml` has four sections only (`[neo4j]`, `[hnsw]`, `[bitbucket]`, `[logs]`); everything else is code constants with tests pinning them. There is no generic `WRIT_`-prefix override mechanism; the real env vars are enumerated in `docs/reference/configuration.md`. Budget constants live in `writ/shared/budget.json` (edit the JSON, both Python and bash load it).
+`writ.toml` has five sections only (`[neo4j]`, `[hnsw]`, `[bitbucket]`, `[logs]`, `[egress]` -- the last one commented out in `writ.toml.example`, since `tests/test_w4_remainder_dead.py` pins the example's PARSED sections to the original four); everything else is code constants with tests pinning them. There is no generic `WRIT_`-prefix override mechanism; the real env vars are enumerated in `docs/reference/configuration.md`. Budget constants live in `writ/shared/budget.json` (edit the JSON, both Python and bash load it).
 
 ## Testing directives
 

@@ -37,7 +37,12 @@ from fastapi import FastAPI
 from writ.analysis.friction import log_friction_event, resolve_log_path
 from writ.analysis.instrumentation import Instrumentation
 from writ.analysis.llm import LlmAnalyzer
-from writ.config import get_neo4j_uri, get_neo4j_user, get_neo4j_password
+from writ.config import (
+    get_authority_preference_threshold,
+    get_neo4j_uri,
+    get_neo4j_user,
+    get_neo4j_password,
+)
 from writ.graph.db import Neo4jConnection
 from writ.graph.predicates import INJECTION_RULE_WHERE
 from writ.retrieval.pipeline import (
@@ -188,6 +193,9 @@ async def lifespan(app: FastAPI):
     # Daemon is the production rule-injection path: enable the S4 abstention gate.
     _pipeline = await build_pipeline(
         _db, abstention_threshold=RULE_INJECTION_ABSTENTION_THRESHOLD,
+        # Read once at startup, not per query: the hot /query path must not touch
+        # the filesystem. Defaults to 0.0 (pass disabled) when unconfigured.
+        authority_preference_threshold=get_authority_preference_threshold(),
     )
     _trigger_index = await MethodologyTriggerIndex.build_from_db(_db)
     _llm_client = LlmAnalyzer()

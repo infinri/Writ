@@ -92,15 +92,39 @@ MODE_HINT=$(echo "$PARSED" | sed -n '4p' | tr -d '[:space:]')
 EFFORT=$(echo "$PARSED" | sed -n '5p' | tr -d '[:space:]')
 
 # Fallback session ID if not provided by Claude Code
+# NO SYNTHESIZED SESSION ID. This used to fall back to the parent PID and then to
+# md5(cwd:user)+date. Neither can ever equal the id Claude Code uses, so state written
+# under one is written to a session that does not exist and is simply never read again,
+# while the hook reports success. Claude Code documents session_id as universal and
+# authoritative on every hook event, so an empty one is a broken invariant, not a case to
+# paper over: record it and stop.
 if [ -z "$SESSION_ID" ]; then
-    SESSION_ID=$(ps -o ppid= -p $PPID 2>/dev/null | tr -d ' ')
-fi
-if [ -z "$SESSION_ID" ]; then
-    SESSION_ID=$(echo "${PWD}:${USER}" | md5sum | cut -c1-12)-$(date +%Y%m%d)
+    writ_critical writ-rag-inject "no session_id in hook payload; refusing to synthesize one"
+    exit 0
 fi
 
-# Publish session ID so Stop hooks (friction-logger) can find it
-# Do NOT overwrite when inside a sub-agent -- protect parent's session file
+# Publish the session id for the callers that have NO hook payload to read one from.
+#
+# THE STALE COMMENT THIS REPLACES SAID "so Stop hooks (friction-logger) can find it", and
+# that reader is gone: every hook now takes its identity from its own payload, because
+# this file names whichever session on this machine took a turn most recently and reading
+# it as "who am I" was silently wrong (it held cdp-12096297 while the live session was
+# another id, and a drain keyed off it stranded 999 rows across 16 sessions).
+#
+# THE WRITE STAYS, because four callers still read it and none of them HAS a payload:
+#   writ/session/cache.py:94   resolve_current_session_id() step 3, behind $CLAUDE_SESSION_ID
+#                              and $CLAUDE_JOB_DIR -- serves `writ mode set <mode>` with no
+#                              sid (cli_dispatch.py:122) and `writ doctor` (doctor.py:482)
+#   hooks/git/post-commit:29   a git hook; git passes no Claude Code envelope at all
+#   bin/audit-region.sh:27     a CLI tool, when --session is omitted
+#   session-start-bootstrap.sh:112  reads the PRE-rotation id, which by definition is not
+#                              in the payload (the payload carries the NEW one)
+# Deleting the write would not remove the risk, it would move it: those four would fall
+# through to the mtime glob (cache.py step 4), which is strictly racier. Re-check this
+# list before removing the write.
+#
+# Do NOT overwrite when inside a sub-agent -- that would publish the child's id as the
+# session, and the readers above want the top-level one.
 if [ -z "$AGENT_ID" ]; then
     echo "$SESSION_ID" > /tmp/writ-current-session
 fi
@@ -108,8 +132,35 @@ fi
 debug "session=$SESSION_ID prompt_len=${#PROMPT}"
 
 # 1. Check skip conditions (budget exhausted or context pressure > 75%)
-if _writ_session should-skip "$SESSION_ID" 2>/dev/null; then
-    debug "skipped: budget or context pressure"
+#
+# ONE call answers this AND supplies the session cache read at step 1c. They used to be
+# two `_writ_session` invocations, each paying a python interpreter start (9.5ms floor)
+# plus a round trip plus its own read of the SAME cache file. /session/{id}/prompt-state
+# returns should_skip, known, escalation and the full cache from a single read.
+#
+# Falling back to the separate calls when this comes back empty keeps a stale daemon
+# (one without the route) working rather than silently skipping every prompt.
+PROMPT_STATE=$(writ_http_get "http://${WRIT_HOST}:${WRIT_PORT}/session/${SESSION_ID}/prompt-state" 2>/dev/null || true)
+PS_SKIP=""
+if [ -n "$PROMPT_STATE" ]; then
+    # PRESENCE FIRST, then the value. Testing the value alone maps an ERROR body to "no":
+    # a daemon too old to have this route answers `{"detail":"Not Found"}`, `.should_skip`
+    # is absent, and `== true` is false, so the hook would read a 404 as "do not skip" and
+    # never consult the fallback. A session whose budget was exhausted would keep
+    # injecting for the rest of its life. Emitting nothing when the field is missing is
+    # what routes it to the separate call below.
+    PS_SKIP=$(printf '%s' "$PROMPT_STATE" | json_transform \
+        'if has("should_skip") then (if .should_skip == true then "yes" else "no" end) else empty end' \
+        "(('yes' if d.get('should_skip') is True else 'no') if 'should_skip' in d else None)" \
+        2>/dev/null || true)
+fi
+if [ -n "$PS_SKIP" ]; then
+    if [ "$PS_SKIP" = "yes" ]; then
+        debug "skipped: budget or context pressure"
+        exit 0
+    fi
+elif _writ_session should-skip "$SESSION_ID" 2>/dev/null; then
+    debug "skipped: budget or context pressure (fallback path)"
     exit 0
 fi
 
@@ -173,7 +224,9 @@ AUTOROUTE
 
 [Writ: implementation request -> work mode set automatically]
 This reads as a build/implementation task, so the mode is now 'work' (the full gated
-workflow). BEFORE writing source: write plan.md and capabilities.md at the project root and
+workflow). BEFORE writing source: write plan.md and capabilities.md at the project root by
+filling in templates/plan-template.md and templates/capabilities-template.md from the Writ
+skill directory (they encode the gate's exact format, including the ## Files line grammar),
 present them for approval, then write test skeletons, then implement. Source writes are
 BLOCKED by the gate until the plan and test-skeleton gates are approved. If this is a trivial
 edit that needs no workflow, override with:
@@ -191,7 +244,18 @@ fi
 # alias, the main path reuses it for CACHE_FIELDS, and the escalation /
 # backward-context blocks reuse it raw. Positioned AFTER the auto-route block so
 # a just-set investigate mode is reflected.
-CACHE=$(_writ_session read "$SESSION_ID" 2>/dev/null || echo '{"loaded_rule_ids":[],"remaining_budget":8000}')
+# Reuse the cache that came back with the skip answer above, which is a CONSISTENT
+# snapshot rather than two reads that can straddle a concurrent write.
+#
+# EXCEPT when the auto-route block just set a mode: that snapshot predates the write, and
+# this read is positioned here precisely so a just-set mode is reflected. A stale mode
+# here is not a cosmetic bug, it decides whether the gates arm for the whole turn, so the
+# rare path re-reads rather than reusing.
+CACHE=""
+if [ -n "$PROMPT_STATE" ] && [ "${AUTOROUTED:-no}" != "yes" ]; then
+    CACHE=$(printf '%s' "$PROMPT_STATE" | json_transform '.cache' "d.get('cache')" 2>/dev/null || true)
+fi
+[ -n "$CACHE" ] || CACHE=$(_writ_session read "$SESSION_ID" 2>/dev/null || echo '{"loaded_rule_ids":[],"remaining_budget":8000}')
 CACHE_DATA="$CACHE"  # orchestrator branch alias -- same single read, no second round-trip
 if [ -z "$CURRENT_MODE" ]; then
     CURRENT_MODE=$(parsed_field "$CACHE" "mode")
@@ -214,10 +278,13 @@ if [ -z "$AGENT_ID" ]; then
 import os, json
 print(json.dumps({'project_root': os.environ.get('WRIT_ROOT', ''), 'budget': 20000}))
 " 2>/dev/null)
-        RECALL_RESP=$(curl -s --connect-timeout 0.3 --max-time 1.5 \
-            -X POST "http://${WRIT_HOST}:${WRIT_PORT}/recall" \
+        # Documented daemon-down-equivalent raw curl: with curl absent this degrades to
+        # exactly the "no briefing this session" branch a stopped daemon produces.
+        RECALL_RESP=$(curl -s --connect-timeout 0.3 --max-time 1.5 -X POST "http://${WRIT_HOST}:${WRIT_PORT}/recall" \
             -H "Content-Type: application/json" -d "$RECALL_REQ" 2>/dev/null) || true
-        RECALL_BRIEFING=$(printf '%s' "$RECALL_RESP" | jq -r '.briefing // ""' 2>/dev/null) || true
+        # parsed_field (jq-first, python3 fallback) rather than raw jq: with jq absent the
+        # raw extraction returned empty and the briefing was silently dropped.
+        RECALL_BRIEFING=$(parsed_field "$RECALL_RESP" "briefing")
         if [ -n "$RECALL_BRIEFING" ]; then
             echo ""
             echo "$RECALL_BRIEFING"
@@ -256,7 +323,7 @@ except Exception:
     # RAG is intentionally suppressed -- workers cover that domain --
     # but methodology nodes guide workflow decisions the orchestrator
     # itself owns. Fires when CURRENT_MODE=work AND prompt is non-trivial.
-    ORCH_REMAINING_BUDGET=$(echo "$CACHE_DATA" | python3 -c "import sys,json; print(json.load(sys.stdin).get('remaining_budget',8000))" 2>/dev/null || echo '8000')
+    ORCH_REMAINING_BUDGET=$(echo "$CACHE_DATA" | json_transform 'if (.remaining_budget // null) == null then 8000 else .remaining_budget end' "(8000 if d.get('remaining_budget') is None else d.get('remaining_budget'))" 2>/dev/null || echo '8000')
     ORCH_LOADED_RULE_IDS=$(echo "$CACHE_DATA" | python3 "$WRIT_DIR/bin/lib/writ_phase_scoped_rules.py" 2>/dev/null || echo '[]')
 
     if [ "${CURRENT_MODE:-}" = "work" ] && [ "${ORCH_REMAINING_BUDGET:-0}" -gt 600 ] && [ ${#PROMPT} -ge $MIN_QUERY_LENGTH ]; then
@@ -279,8 +346,9 @@ print(json.dumps({
 " "$PROMPT" "$ORCH_LOADED_RULE_IDS" 2>/dev/null)
 
         if [ -n "$ORCH_METHOD_REQUEST" ]; then
-            ORCH_METHOD_RESPONSE=$(curl -s --connect-timeout 0.5 --max-time 2 \
-                -X POST "$COMPANION_URL" \
+            # Documented daemon-down-equivalent raw curl: no companion block, same as a
+            # stopped daemon produces.
+            ORCH_METHOD_RESPONSE=$(curl -s --connect-timeout 0.5 --max-time 2 -X POST "$COMPANION_URL" \
                 -H "Content-Type: application/json" \
                 -d "$ORCH_METHOD_REQUEST" 2>/dev/null) || true
 
@@ -334,7 +402,25 @@ fi
 # degrades exactly as before. The endpoint returns the three rendered pieces SEPARATELY
 # so they keep their legacy emit order around the bash-side mode reminders (step 9b).
 case "${WRIT_ALWAYS_ON_FILTER:-1}" in 1|on|true|yes) _AO_FILTER_BOOL=true ;; *) _AO_FILTER_BOOL=false ;; esac
-BUNDLE_REQUEST=$(WRIT_SID="$SESSION_ID" WRIT_MODE="${CURRENT_MODE:-}" WRIT_PROMPT="$PROMPT" WRIT_EFFORT="$EFFORT" WRIT_AOF="$_AO_FILTER_BOOL" python3 -c "
+# jq builds this request when present: five strings and a boolean assembled from
+# variables already in the shell cost a 9.5ms interpreter start plus 4.9 for `import
+# json`, against 2.3 for jq. --arg is used for every value so a prompt containing quotes,
+# newlines or backslashes is encoded by jq rather than by string concatenation here.
+# always_on_filter must stay a JSON BOOLEAN, not the string "true", so it goes through
+# --argjson after being normalised to a bare true/false above.
+BUNDLE_REQUEST=""
+if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1; then
+    BUNDLE_REQUEST=$(jq -n -c \
+        --arg session_id "$SESSION_ID" \
+        --arg mode "${CURRENT_MODE:-}" \
+        --arg prompt "$PROMPT" \
+        --arg effort "$EFFORT" \
+        --argjson always_on_filter "$_AO_FILTER_BOOL" \
+        '{session_id: $session_id, mode: $mode, prompt: $prompt, effort: $effort, always_on_filter: $always_on_filter}' \
+        2>/dev/null) || BUNDLE_REQUEST=""
+fi
+if [ -z "$BUNDLE_REQUEST" ]; then
+    BUNDLE_REQUEST=$(WRIT_SID="$SESSION_ID" WRIT_MODE="${CURRENT_MODE:-}" WRIT_PROMPT="$PROMPT" WRIT_EFFORT="$EFFORT" WRIT_AOF="$_AO_FILTER_BOOL" python3 -c "
 import os, json
 print(json.dumps({
     'session_id': os.environ['WRIT_SID'],
@@ -343,10 +429,12 @@ print(json.dumps({
     'effort': os.environ.get('WRIT_EFFORT', ''),
     'always_on_filter': os.environ.get('WRIT_AOF', 'true') == 'true',
 }))" 2>/dev/null)
+fi
 
-BUNDLE=$(curl -s --connect-timeout 0.5 --max-time 3 \
-    -X POST "http://${WRIT_HOST}:${WRIT_PORT}/prompt-bundle" \
-    -H "Content-Type: application/json" -d "$BUNDLE_REQUEST" 2>/dev/null) || true
+# writ_http_post: curl when present (unchanged fast path and unchanged budgets),
+# stdlib urllib when it is not, so a curl-less machine still gets its rules.
+BUNDLE=$(WRIT_HTTP_CONNECT_TIMEOUT=0.5 WRIT_HTTP_TIMEOUT=3 \
+    writ_http_post "http://${WRIT_HOST}:${WRIT_PORT}/prompt-bundle" "$BUNDLE_REQUEST" 2>/dev/null) || true
 
 if [ -z "$BUNDLE" ]; then
     debug "failed: empty /prompt-bundle response"
@@ -354,20 +442,52 @@ if [ -z "$BUNDLE" ]; then
     exit 0
 fi
 
-BUNDLE_ERR=$(printf '%s' "$BUNDLE" | jq -r 'if .error then "1" else "0" end' 2>/dev/null) || true
-if [ "${BUNDLE_ERR:-1}" = "1" ]; then
-    debug "failed: error in /prompt-bundle response"
+# The error field, read through the jq-first/python-fallback helper. This was a raw
+# `jq -r` whose `|| true` guard plus a default-to-failed expansion meant an absent jq
+# yielded an empty string that became "1": a perfectly healthy daemon response was
+# reported as "query failed" and rule injection was disabled for the WHOLE session,
+# with a message blaming the server. Empty now correctly means "no error".
+# ONE pass over the bundle for every field the rest of this hook needs.
+#
+# These were 5 separate parsed_field calls, each piping the WHOLE ~10KB response (it
+# carries the full always-on rule text) into a fresh jq: 50KB of piping and 5 interpreter
+# starts to read 5 strings. Measured ~38ms on the prompt path, second only to the HTTP
+# request that fetched the data. $BUNDLE is assigned once above and never reassigned, so
+# one parse here is valid for every consumer below.
+eval "$(parsed_fields "$BUNDLE" \
+    BUNDLE_ERR=error \
+    AO_BLOCK=always_on_block \
+    RULES_TEXT=rules_text \
+    METHOD_BLOCK=methodology_block \
+    NUDGE=nudge)"
+# parsed_fields emits nothing when the document is unparseable, leaving these unset under
+# `set -u`. Defaulting them keeps that case identical to parsed_field's empty default.
+BUNDLE_ERR="${BUNDLE_ERR-}"
+AO_BLOCK="${AO_BLOCK-}"
+RULES_TEXT="${RULES_TEXT-}"
+METHOD_BLOCK="${METHOD_BLOCK-}"
+NUDGE="${NUDGE-}"
+# JSON truthiness, which is what the old `if .error then` tested: the endpoint sets
+# error=false on EVERY healthy response and only true (or a string) on a real failure,
+# so the falsy spellings of both extraction arms (jq "false"/"null", python
+# "False"/"None") must read as "no error". A non-empty check alone would report every
+# healthy bundle as failed -- the same class of defect as the default it replaces.
+case "$BUNDLE_ERR" in
+    ""|false|False|null|None|0) BUNDLE_ERR="" ;;
+esac
+if [ -n "$BUNDLE_ERR" ]; then
+    debug "failed: error in /prompt-bundle response ($BUNDLE_ERR)"
     echo "[Writ: query failed, proceeding without rules]"
     exit 0
 fi
 
-# jq extracts each rendered piece (multi-line safe; ~6ms vs python ~15ms cold-start).
-# Each is || true guarded: under set -e an unguarded jq failure (binary missing,
-# exit 127) would abort the whole hook and silently drop EVERY injection this turn.
-AO_BLOCK=$(printf '%s' "$BUNDLE" | jq -r '.always_on_block // ""' 2>/dev/null) || true
-RULES_TEXT=$(printf '%s' "$BUNDLE" | jq -r '.rules_text // ""' 2>/dev/null) || true
-METHOD_BLOCK=$(printf '%s' "$BUNDLE" | jq -r '.methodology_block // ""' 2>/dev/null) || true
-NUDGE=$(printf '%s' "$BUNDLE" | jq -r '.nudge // ""' 2>/dev/null) || true
+# Each rendered piece via parsed_field: still jq-first on the hot path (~1-2ms), with the
+# python3 fallback when jq is absent, and multi-line safe on both arms (these blocks are
+# multi-line). Missing/null yields the empty default, which every consumer below treats
+# as "nothing to inject".
+# AO_BLOCK / RULES_TEXT / METHOD_BLOCK / NUDGE were read in the single parsed_fields
+# pass above, alongside BUNDLE_ERR. Re-reading them here was 4 more jq starts over the
+# same 10KB document.
 # REMAINING_BUDGET (from the single $CACHE read at step 1c) still gates the
 # review-feedback push below; the endpoint owns the channel budgets itself.
 REMAINING_BUDGET=$(parsed_field "$CACHE" "remaining_budget"); REMAINING_BUDGET="${REMAINING_BUDGET:-8000}"
@@ -378,7 +498,32 @@ REMAINING_BUDGET=$(parsed_field "$CACHE" "remaining_budget"); REMAINING_BUDGET="
 # spawn turns the bundle meta into JSON lines (same events/fields/delivery tags as the
 # prior per-channel log_rag_query_event / always_on_inject) and pipes them to the
 # canonical friction-append.py writer (single-source path resolution; no inline marker-walk).
-printf '%s' "$BUNDLE" | WRIT_SID="$SESSION_ID" WRIT_MODE="${CURRENT_MODE:-}" WRIT_EFFORT="$EFFORT" python3 -c "
+# jq builds these rows when present. The python arm below is unchanged and still runs when
+# jq is absent, which is the WRIT_NO_JQ seam every other conversion on this path uses:
+# absence changes speed, never behaviour. Measured 16.9ms for the interpreter start against
+# 2.3 for jq, to turn three metadata objects into up to three JSON lines.
+#
+# THE SENTINEL IS jq's EXIT STATUS, NOT ITS OUTPUT. A bundle with no metadata legitimately
+# produces ZERO rows, and treating empty output as failure would spawn python to rediscover
+# that there is nothing to emit: the exact pattern removed twice already this cycle (the
+# dead mktemp, and the renderer that printed nothing on every prompt).
+#
+# These rows are AUDIT records (rag_query, always_on_inject), so parity is asserted on the
+# PARSED objects across every bundle shape the endpoint produces, not on the text.
+FRICTION_ROWS=""
+_FRICTION_ROWS_OK=""
+if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1 \
+        && [ -r "$WRIT_DIR/bin/lib/friction-rows.jq" ]; then
+    if FRICTION_ROWS=$(printf '%s' "$BUNDLE" | jq -R -s -r \
+            --arg sid "$SESSION_ID" --arg mode "${CURRENT_MODE:-}" --arg effort "$EFFORT" \
+            -f "$WRIT_DIR/bin/lib/friction-rows.jq" 2>>"$WRIT_HOOK_LOG_SINK"); then
+        _FRICTION_ROWS_OK=1
+    else
+        FRICTION_ROWS=""
+    fi
+fi
+if [ -z "$_FRICTION_ROWS_OK" ]; then
+FRICTION_ROWS=$(printf '%s' "$BUNDLE" | WRIT_SID="$SESSION_ID" WRIT_MODE="${CURRENT_MODE:-}" WRIT_EFFORT="$EFFORT" python3 -c "
 import json, os, sys
 try:
     b = json.load(sys.stdin)
@@ -410,7 +555,30 @@ if mm is not None:
     lines.append(rag(mm.get('query_source', ''), mm))
 for e in lines:
     print(json.dumps(e))
-" 2>>"$WRIT_HOOK_LOG_SINK" | python3 "$FA" --stdin-jsonl 2>>"$WRIT_HOOK_LOG_SINK" || true
+" 2>>"$WRIT_HOOK_LOG_SINK") || true
+fi
+# The builder's rows used to be piped straight into friction-append.py, a SECOND
+# interpreter start whose only job was appending them. Measured 35.3ms on the prompt path,
+# and almost none of it work: the interpreter floor is 9.5ms and `import
+# writ.shared.logging` adds 12.5 more (52 modules) to append a line. The rows go to the
+# session event buffer instead (a bash append, no process) and the once-per-turn drain
+# emits them through the SAME writ.shared.logging router, so classification, path
+# resolution and the durable fallback are unchanged.
+if [ -n "$FRICTION_ROWS" ]; then
+    FRICTION_OVERSIZED=""
+    while IFS= read -r _frow; do
+        [ -n "$_frow" ] || continue
+        # A row too large to append atomically returns 1 rather than being truncated:
+        # truncated JSON is unparseable, so the drain would drop it, turning a slow row
+        # into a lost one. Those take the original spawn, which is what this collects.
+        writ_friction_buffer_append "$SESSION_ID" "$_frow" \
+            || FRICTION_OVERSIZED="${FRICTION_OVERSIZED}${_frow}"$'\n'
+    done <<< "$FRICTION_ROWS"
+    if [ -n "$FRICTION_OVERSIZED" ]; then
+        printf '%s' "$FRICTION_OVERSIZED" \
+            | python3 "$FA" --stdin-jsonl 2>>"$WRIT_HOOK_LOG_SINK" || true
+    fi
+fi
 
 # 8a. Always-on bundle (rendered + token-tracked server-side; friction logged above).
 if [ -n "$AO_BLOCK" ]; then
@@ -508,13 +676,51 @@ fi
 # cache captured at step 3 is current (was a redundant second _writ_session read).
 
 # Check for escalation and inject backward context
-ESCALATION=$(_writ_session check-escalation "$SESSION_ID" 2>/dev/null || echo '{"needed":false}')
-ESC_NEEDED=$(echo "$ESCALATION" | python3 -c "import sys,json; print('yes' if json.load(sys.stdin).get('needed') else 'no')" 2>/dev/null || echo "no")
+# ASK BEFORE SPAWNING, fourth instance of this pattern on this path. /prompt-state already
+# answered "is escalation pending", from the SAME cache file /check-escalation reads, so
+# when the answer is no this round trip only confirms it (measured 12.2ms).
+#
+# WHY THE EARLIER SNAPSHOT IS SAFE HERE, which is the part that needed checking rather than
+# assuming. I previously kept this call fresh because reusing the snapshot risked missing an
+# escalation that arrived mid-hook. The `escalation` field is written in exactly three
+# places (writ/session/approval_workflow.py, violations.py, budget_tracking.py), and none of
+# them run during a UserPromptSubmit hook: they fire on gate approvals and on write
+# violations. So nothing can set it between the two reads in this hook's lifetime.
+#
+# The full object is still fetched when escalation IS pending, because gate, diagnosis,
+# cycles and feedback_sent are read below and /prompt-state returns only the boolean.
+#
+# Presence first, again: a daemon without /prompt-state returns a body with no `escalation`
+# key, which yields empty here and falls through to the real call rather than being read as
+# "no escalation" and silently suppressing the warning.
+PS_ESC=""
+if [ -n "$PROMPT_STATE" ]; then
+    PS_ESC=$(printf '%s' "$PROMPT_STATE" | json_transform \
+        'if has("escalation") then (if .escalation == true then "yes" else "no" end) else empty end' \
+        "(('yes' if d.get('escalation') is True else 'no') if 'escalation' in d else None)" \
+        2>/dev/null || true)
+fi
+if [ "$PS_ESC" = "no" ]; then
+    ESCALATION='{"needed":false}'
+else
+    ESCALATION=$(_writ_session check-escalation "$SESSION_ID" 2>/dev/null || echo '{"needed":false}')
+fi
+# jq when present, python when not: a python start is 9.5ms before it does anything, and
+# `import json` adds 4.9 more, against 2.3ms for jq. Measured on this line: 13.7ms.
+# The truthiness test is spelled out rather than left to jq's, because jq counts "" and 0
+# and [] as true while python does not, and this decides whether escalation fires.
+ESC_NEEDED=$(printf '%s' "$ESCALATION" | json_transform \
+    'if (.needed) != null and (.needed) != false and (.needed) != "" and (.needed) != 0 and (.needed) != [] and (.needed) != {} then "yes" else "no" end' \
+    "'yes' if d.get('needed') else 'no'" 2>/dev/null || true)
+# Both arms print NOTHING on malformed input, where the old inline python exited non-zero
+# and the `|| echo no` supplied the default. Restoring that default explicitly, because an
+# empty ESC_NEEDED would compare unequal to "yes" by luck rather than by decision.
+[ -n "$ESC_NEEDED" ] || ESC_NEEDED="no"
 
 if [ "$ESC_NEEDED" = "yes" ]; then
-    ESC_GATE=$(echo "$ESCALATION" | python3 -c "import sys,json; print(json.load(sys.stdin).get('gate','?'))" 2>/dev/null)
-    ESC_DIAG=$(echo "$ESCALATION" | python3 -c "import sys,json; print(json.load(sys.stdin).get('diagnosis','?'))" 2>/dev/null)
-    ESC_CYCLES=$(echo "$ESCALATION" | python3 -c "import sys,json; print(json.load(sys.stdin).get('cycles',0))" 2>/dev/null)
+    ESC_GATE=$(echo "$ESCALATION" | json_transform 'if (.gate // null) == null then "?" else .gate end' "('?' if d.get('gate') is None else d.get('gate'))" 2>/dev/null)
+    ESC_DIAG=$(echo "$ESCALATION" | json_transform 'if (.diagnosis // null) == null then "?" else .diagnosis end' "('?' if d.get('diagnosis') is None else d.get('diagnosis'))" 2>/dev/null)
+    ESC_CYCLES=$(echo "$ESCALATION" | json_transform 'if (.cycles // null) == null then 0 else .cycles end' "(0 if d.get('cycles') is None else d.get('cycles'))" 2>/dev/null)
 
     # Build failure history from invalidation records
     FAILURE_HISTORY=$(python3 "$WRIT_DIR/bin/lib/writ_render_failure_history.py" "$CACHE" "$ESC_GATE" "$ESC_DIAG" 2>/dev/null)
@@ -532,7 +738,7 @@ ESCALATION_MSG
     debug "injected escalation for $ESC_GATE ($ESC_DIAG, $ESC_CYCLES cycles)"
 
     # C10: Post enriched negative feedback (once per escalation)
-    ESC_FB_SENT=$(echo "$ESCALATION" | python3 -c "import sys,json; d=json.load(sys.stdin); print('yes' if d.get('feedback_sent') else 'no')" 2>/dev/null || echo "no")
+    ESC_FB_SENT=$(echo "$ESCALATION" | json_transform 'if (.feedback_sent) != null and (.feedback_sent) != false and (.feedback_sent) != "" and (.feedback_sent) != 0 and (.feedback_sent) != [] and (.feedback_sent) != {} then "yes" else "no" end' "('yes' if d.get('feedback_sent') else 'no')" 2>/dev/null || echo "no")
     if [ "$ESC_FB_SENT" != "yes" ]; then
         python3 "$WRIT_DIR/bin/lib/writ_send_escalation_feedback.py" "$CACHE" "$ESC_GATE" 2>>"$WRIT_HOOK_LOG_SINK" || true
 
@@ -551,7 +757,27 @@ if [ "$CURRENT_MODE" = "work" ]; then
         _GATE_DIR="${_GATE_DIR:-$_PROJECT_ROOT/.claude/gates}"
 
         # Check if any gate was invalidated (records exist but .approved file missing)
-        BACKWARD_CTX=$(python3 "$WRIT_DIR/bin/lib/writ_render_backward_context.py" "$CACHE" "$_GATE_DIR" 2>/dev/null)
+        #
+        # ASK BEFORE SPAWNING. The renderer prints nothing unless invalidation_history
+        # holds a non-empty entry, which for almost every session it does not (measured 0
+        # across live sessions). Discovering that cost a 19.5ms interpreter start on EVERY
+        # prompt. jq answers the same question in 2.3ms from $CACHE, already in memory.
+        #
+        # This is a NECESSARY-condition test, not the renderer's full logic: an empty
+        # history guarantees no output, while a non-empty one still has to check whether
+        # each gate's .approved file is missing. So the guard can only skip work the
+        # renderer would have skipped anyway.
+        #
+        # Fail-open: an unreadable cache leaves this empty and the default runs the
+        # renderer, because losing a gate-invalidation warning is worse than a spawn.
+        _HAS_INVALIDATION=$(printf '%s' "$CACHE" | json_transform \
+            'if ((.invalidation_history // {}) | to_entries | map(select((.value | length) > 0)) | length) > 0 then "yes" else "no" end' \
+            "('yes' if any((d.get('invalidation_history') or {}).values()) else 'no')" \
+            2>/dev/null || true)
+        BACKWARD_CTX=""
+        if [ "${_HAS_INVALIDATION:-yes}" != "no" ]; then
+            BACKWARD_CTX=$(python3 "$WRIT_DIR/bin/lib/writ_render_backward_context.py" "$CACHE" "$_GATE_DIR" 2>/dev/null)
+        fi
 
         if [ -n "$BACKWARD_CTX" ]; then
             echo ""

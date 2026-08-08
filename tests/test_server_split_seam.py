@@ -51,13 +51,18 @@ DOMAIN_ROUTER_MODULES = (
 #   print(len(routes))
 #   "
 #
-# 53 total (method, path) tuples registered on `app.routes`: 45 are the
+# 54 total (method, path) tuples registered on `app.routes`: 46 are the
 # plan's hand-authored `@app.<verb>` routes (query/session/gate/decision-memory/
 # git-hooks/explorer domains); the remaining 8 are FastAPI's always-on
 # docs/openapi/redoc routes (GET+HEAD x4: /docs, /docs/oauth2-redirect,
 # /openapi.json, /redoc) that every `FastAPI(...)` instance registers
 # automatically and are unaffected by the split. This is the CONTRACT the
 # split must not break: no route added, dropped, or re-prefixed.
+#
+# The baseline is a frozen SET, not a ceiling: a genuinely new feature route is
+# added here deliberately, in the same commit that adds it to the app, so the
+# guard keeps catching accidental drops and re-prefixes. Added since the split:
+# POST /memory-record (the auto-memory graph mirror; 53 -> 54).
 # ---------------------------------------------------------------------------
 ROUTE_BASELINE: list[tuple[str, str]] = [
     ("GET", "/always-on"),
@@ -79,6 +84,8 @@ ROUTE_BASELINE: list[tuple[str, str]] = [
     ("GET", "/session/{session_id}/mode"),
     ("GET", "/session/{session_id}/pending-violations"),
     ("GET", "/session/{session_id}/quality-judgment"),
+    ("GET", "/session/{session_id}/review-findings"),
+    ("GET", "/session/{session_id}/prompt-state"),
     ("GET", "/session/{session_id}/should-skip"),
     ("GET", "/session/{session_id}/verification-evidence"),
     ("GET", "/subagent-role/{name}"),
@@ -91,6 +98,7 @@ ROUTE_BASELINE: list[tuple[str, str]] = [
     ("POST", "/conflicts"),
     ("POST", "/feedback"),
     ("POST", "/git-hooks/auto-install"),
+    ("POST", "/memory-record"),
     ("POST", "/methodology-companion"),
     ("POST", "/pre-write-check"),
     ("POST", "/prompt-bundle"),
@@ -110,6 +118,7 @@ ROUTE_BASELINE: list[tuple[str, str]] = [
     ("POST", "/session/{session_id}/mode"),
     ("POST", "/session/{session_id}/promote-candidate"),
     ("POST", "/session/{session_id}/quality-judgment"),
+    ("POST", "/session/{session_id}/review-findings"),
     ("POST", "/session/{session_id}/reset-after-compaction"),
     ("POST", "/session/{session_id}/update"),
     ("POST", "/session/{session_id}/verification-evidence"),
@@ -133,11 +142,13 @@ def _current_route_tuples() -> list[tuple[str, str]]:
 
 class TestServerIsPackage:
     def test_route_baseline_captured_count(self) -> None:
-        """Sanity check on the frozen constant itself: exactly 53 tuples were
-        captured from HEAD. PASS now -- this just guards against a copy/paste
+        """Sanity check on the frozen constant itself: exactly 57 tuples are
+        declared (53 captured from HEAD, plus /memory-record, plus the GET and POST
+        halves of /session/{sid}/review-findings added 2026-08-06, plus GET
+        /session/{sid}/prompt-state added 2026-08-08). Guards against a copy/paste
         mistake in ROUTE_BASELINE, independent of the split."""
-        assert len(ROUTE_BASELINE) == 53
-        assert len(set(ROUTE_BASELINE)) == 53, "ROUTE_BASELINE must have no duplicate tuples"
+        assert len(ROUTE_BASELINE) == 57
+        assert len(set(ROUTE_BASELINE)) == 57, "ROUTE_BASELINE must have no duplicate tuples"
 
     def test_writ_server_is_package(self) -> None:
         """RED now: `writ.server` is still the single-file writ/server.py module
@@ -239,7 +250,7 @@ class TestRouteParityVsBaseline:
     def test_route_count_matches_baseline(self) -> None:
         """PASS now; a duplicate or dropped route changes the count even if
         set membership alone were checked loosely elsewhere."""
-        assert len(_current_route_tuples()) == len(ROUTE_BASELINE) == 53
+        assert len(_current_route_tuples()) == len(ROUTE_BASELINE) == 57
 
 
 # ---------------------------------------------------------------------------

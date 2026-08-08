@@ -2,9 +2,52 @@
 
 All notable changes to Writ are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.7.0] - 2026-08-08
+
+The install collapses to "install the plugin, run one command"; `jq`, `envsubst` and `curl` stop being prerequisites; and the hook layer's own guarantees are audited rather than asserted. Two gates that were failing open now hold, session identity is never guessed, a destructive graph operation needs permission, and the isolation the test suite claimed is enforced instead of assumed.
+
+### Added
+
+- **`SECURITY.md`.** States the trust model rather than implying one: Writ runs bash hooks with your privileges, the daemon is unauthenticated with its bind address as the only access control, and the gates are guardrails against an assistant's mistakes, not a sandbox and not a defence against a determined attacker. Includes the reporting channel and a plain statement that auditing what you install remains the user's job.
+- **A graph full-wipe guard** (`writ/graph/db/_safety.py`). `clear_all(preserve_labels=frozenset())` now raises `FullWipeRefused` unless both `WRIT_TEST_GRAPH=1` and a non-production `(host, port)` are in effect, and a refused wipe deletes nothing. The guard lives inside `clear_all`, before the session opens, because a fixture only protects the tests that remember to use it.
+- **`WRIT_NEO4J_URI` / `WRIT_NEO4J_USER` / `WRIT_NEO4J_PASSWORD`.** Neo4j Community serves one database per instance, so a disposable graph can only be a disposable *instance*; reaching it needs a per-process override. Env wins over `writ.toml` for the same reason `WRIT_PORT` does.
+- **A `critical_error` event on the `errors` stream** (`writ_critical`, `bin/lib/common.sh`). Writ previously had no way to record that a hook hit a condition it must not paper over.
+- **`GET /session/{id}/prompt-state`**, answering everything the prompt-path hook asks about a session in one call and one cache read.
+
+### Changed
+
+- **The plugin install is one script run.** It was five things: a marketplace add, a plugin install, a WRIT_DIR discovery one-liner, `bootstrap-plugin.sh`, and (separately, and easy to miss) `patch-global-config.sh` plus `install-user-commands.sh`. Now: `claude plugin marketplace add`, `claude plugin install writ@writ`, and the single absolute command the SessionStart hook prints on its own copy-pasteable line. `bootstrap-plugin.sh` absorbed the global-config patch and the slash-command install; `bootstrap.sh` gained the command install it never had. The discovery incantation is gone from the docs entirely, because the hook that already detects an un-bootstrapped install already knows the path.
+- **`jq`, `envsubst` and `curl` are no longer install prerequisites.** Python 3.11+ and Docker are the whole list (plus `git` for the clone paths). Context: all three existed in the tree only for install-time JSON merges, one-variable string substitution, and HTTP; each already had (or trivially admitted) a Python-stdlib equivalent; and demanding them turned a perfectly capable machine into a failed install. jq and curl remain the fast path when present, never a requirement, and both bootstraps now report them as optional accelerators.
+- **Install-time config writing moved from bash-plus-jq-plus-gettext into one stdlib module,** `bin/lib/writ_install.py` (`settings`, `claude-md`, `hooks`, `commands`, `all`, `http-get`, `http-post`). `patch-global-config.sh` and `install-user-commands.sh` are now thin shims over it and keep their flags, overrides, output shapes and 0/1/2 exit codes, because docs, `bootstrap.sh` and the suite all name them. Alternatives considered: (a) keep the jq programs and simply document the tools as required, rejected because the requirement was the defect; (b) put the module in the `writ/` package, rejected because every caller runs under bare system `python3` before the venv exists (the same constraint that put `memory_capture.py` and `gate_advance_outcome.py` in `bin/lib/`); (c) shim `envsubst` itself, rejected as strictly more machinery than substituting two variables in Python. Tradeoff accepted: a JSON merge expressed in Python is more lines than the jq one-liner it replaces, and the merge semantics now live in a second language from the shell that invokes them -- paid for by the merge being unit-testable, by the tests no longer skipping themselves when a tool is absent, and by one fewer thing a user must install.
+- **A missing `~/.claude/settings.json` is now created instead of failing.** `patch_settings` returned 1 when the file did not exist, which is the common case on a fresh machine and the single largest reason the install needed hand-holding. Parent directories are created; a file that never existed gets no `.bak`. Everything else is ported one-for-one: append-only allow/deny merge with original ordering, the two-guard stale-entry pruner (a live second checkout survives), the LEGACY_ALLOW subtraction, and the statusLine policy (add when absent, refresh a `writ-statusline.sh`, never clobber a foreign one).
+- **Both bootstraps accept `--preflight`**: run only the tool-presence and Python-version checks, then exit. It stops before `docker info` on purpose, so the prerequisite contract is testable without a running Docker daemon, pip, or an ONNX export.
+
+### Fixed
+
+- **Rule injection was disabled for an entire session on a machine without jq.** `writ-rag-inject.sh` extracted the `/prompt-bundle` error field with a raw `jq -r`; the `|| true` guard plus a default-to-failed expansion meant an absent jq produced an empty string that became "1", so a perfectly healthy daemon response was reported as `[Writ: query failed, proceeding without rules]` -- with a message blaming the server. All six raw `jq -r` reads in that hook (the four rendered blocks, the bundle error, the `/recall` briefing) now go through the jq-first `parsed_field` helper, whose default correctly means "no error".
+- **Gate approval silently advanced nothing on a machine without curl.** `auto-approve-gate.sh` posted `/advance-phase` with a raw `curl`, and the local `_writ_session advance-phase` arm is not a usable fallback (it posts `{}`, dropping the single-use token and the cwd the server needs to resolve the project root). The POST now goes through the new `writ_http_post` wrapper in `bin/lib/common.sh` (curl-first, `urllib` fallback, `WRIT_NO_CURL=1` forcing seam mirroring `WRIT_NO_JQ`), preserving the request byte for byte.
+- **`writ_server_health` reported a live daemon as down whenever curl was absent,** which is not daemon-down-equivalent: it made every SessionStart fire a doomed second `writ serve` against an already-bound port. It now probes through the wrapper. Same fix class applied to `rag_query`, `writ_action_push`, both bootstraps' health and `/stats` polls, and the post-install health poll in `install-server-service.sh`. The remaining raw-curl sites are deliberate and unchanged -- each degrades to the exact branch a stopped daemon produces -- and `tests/test_no_tool_prereqs.py` carries them as an explicit allowlist, so a new undocumented raw-curl call fails the suite.
+
+
+- **Session identity is never synthesized.** Hooks used to fall back to a PID-derived or `md5(cwd:user)` id, and to a single pointer file under `/tmp` shared by every Claude Code session on the machine. Both produced confidently wrong answers, and state written under them was simply lost. A hook that cannot read an id from its payload now records a critical error and declines to act.
+- **Bash-mediated writes through interpreters are gated.** `python3 -c "open(...,'w')..."` and the `node -e` / `perl -e` / `ruby -e` / `php -r` equivalents went from silent-allow to a gate decision with an audit row. `python -m MODULE` stays deliberately unscanned, and the hook says so.
+- **`git worktree add` detection no longer fails open on multi-line commands.** `shlex.split` discards newlines, so a command was judged entirely by its first line's verb and a real invocation on any later line was allowed. Detection is now quote-aware, splits on newlines outside quotes, and skips heredoc bodies so a document *about* worktrees is not mistaken for one.
+- **`WRIT_CACHE_DIR` is honoured by every writer.** Pending-test markers and per-file lint logs resolved against the install directory regardless of the variable, so an isolated run still wrote into the live checkout.
+- **`writ_require_session` behaved differently with and without `jq`.** jq's `//` falls through on null and false but not on an empty string, so an empty `agent_id` made the jq arm refuse and the Python arm proceed. The seam's contract is that jq changes speed, never behaviour.
+- **The dispatch-discipline audit trail named no agent.** Every row recorded an empty `target`, so the record could not say which dispatch it had rerouted, refused, or waved through.
+- **`clear_all` and `execute` consume their results.** A lazy result let a wipe overlap the rebuild that followed it.
+
+- **Corrected several published figures that did not match their own sources.** The opening token-cost numbers disagreed with the benchmark file the same README cites and with its own table three sections later; the test-suite counts were stale by 31 modules and roughly 1,400 tests; a monthly-review figure was described as events "in the window" when the source document states the starting count was never captured, so no within-window count exists; and the package description carried a hook count matching neither the README nor the wiring. The injection-cost figures now say plainly that they are the one claim with no shippable artifact behind them, and why.
+
+### Security
+
+- **Environment-specific details removed from published documentation and the corpus.** Benchmark figures keep their ratios and no longer name the machine they were measured on.
+
 ## [1.6.0] - 2026-08-01
 
-The trust release: every published number re-measured on disclosed hardware, the documentation rebuilt from a full code read, the hook system audited end to end with its failure posture made explicit, and the Claude Code contract re-pinned to 2.1.220.
+The trust release: every published number re-measured, the documentation rebuilt from a full code read, the hook system audited end to end with its failure posture made explicit, and the Claude Code contract re-pinned to 2.1.220.
 
 ### Changed
 

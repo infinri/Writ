@@ -10,7 +10,7 @@ make bench    # benchmarks/bench_targets.py (contractual perf floors)
 make check    # test + bench + writ validate
 ```
 
-367 test modules, ~5,700 collected tests. Always use the venv interpreter (`.venv/bin/python`): the system interpreter lacks `onnxruntime` and fails the embedding tests. Markers: `perf` (latency-floor tests), `integration` (needs a live `claude` CLI, gated behind `WRIT_INTEGRATION_TESTS=1`), `no_friction_isolation` (opts out of the log redirect).
+398 test modules, 7,137 collected tests. Always use the venv interpreter (`.venv/bin/python`): the system interpreter lacks `onnxruntime` and fails the embedding tests. Markers: `perf` (latency-floor tests), `integration` (needs a live `claude` CLI, gated behind `WRIT_INTEGRATION_TESTS=1`), `no_friction_isolation` (opts out of the log redirect).
 
 ## Isolation, forced at import time (`tests/conftest.py`)
 
@@ -22,6 +22,25 @@ make check    # test + bench + writ validate
 ## The anti-masking contracts
 
 Roughly half the suite needs a reachable Neo4j. The rule, encoded in `tests/_corpus.py::classify_corpus_state`: **unreachable is the only legitimate skip; a reachable-but-empty graph must FAIL.** An empty graph previously masked a real regression as a skip. Corpus expectations: 280+ rules, and the exact methodology census (5 SubagentRole, 15 Playbook, 13 Skill, 20 Phase); the session-start probe self-heals a cold graph by re-importing `bible/`, and `pytest_sessionfinish` unconditionally restores the shipped corpus from `writ-corpus.cypher` (the earlier count-gated restore left methodology nodes missing after a run).
+
+## Destructive graph tests need their own Neo4j instance
+
+A full wipe (`clear_all(preserve_labels=frozenset())`) deletes the runtime records -- `Memory`, `Decision`, `FileChange`, `Commit`. Rules come back from `bible/` or `writ-corpus.cypher`; **a `Decision` record has no source and cannot be rebuilt at all.** Running the suite against the interactive instance destroyed them (the graph held 2 `Memory` nodes against 98 on-disk memory files, with `Decision`/`FileChange`/`Commit` at 0).
+
+`clear_all` now **refuses** an everything-wipe unless the target instance is explicitly disposable, raising `FullWipeRefused` before issuing any statement. The bare `clear_all()` default and every partial preserve set are unaffected. Neo4j Community serves one database per instance, so isolation means a separate **instance on another bolt port**:
+
+```bash
+docker run -d --name writ-test-neo4j -p 7688:7687 -p 7475:7474 \
+  -e NEO4J_AUTH=neo4j/writtestpass neo4j:5
+export WRIT_NEO4J_URI=bolt://localhost:7688
+export WRIT_NEO4J_PASSWORD=writtestpass
+export WRIT_TEST_GRAPH=1
+.venv/bin/python -m pytest tests/test_db_category.py tests/test_graph_dump.py
+```
+
+Both halves are required, and neither is sufficient alone: `WRIT_TEST_GRAPH` is one sticky global that an old shell profile can leave set, and a differing URI alone would let a config typo authorize a wipe with no human involved. Instances are compared by `(host, port)` with loopback aliases collapsed, so `bolt://127.0.0.1:7687` cannot masquerade as "not production". Without both, the `disposable_graph` fixture (`tests/conftest.py`) skips those tests with these instructions.
+
+`WRIT_NEO4J_URI` / `WRIT_NEO4J_USER` / `WRIT_NEO4J_PASSWORD` override `writ.toml` for any process. `get_production_neo4j_uri()` deliberately ignores them: if the override fed both sides of the comparison, setting it would make every instance look non-production.
 
 ## Traps when writing tests
 
@@ -40,7 +59,7 @@ Roughly half the suite needs a reachable Neo4j. The rule, encoded in `tests/_cor
 - `benchmarks/methodology_bench.py`: read-only methodology retrieval vs blocker thresholds.
 - `benchmarks/run_benchmarks.py`: traversal latency at 1K/10K synthetic nodes (advisory print, not asserted; same snapshot/restore discipline).
 
-Published numbers are machine-relative: the recorded runs come from a 16-thread AMD Ryzen 9 7940HS with 31 GiB RAM and an uncapped Neo4j container (512M pagecache). `scale_benchmark.py` writes the exact environment into the "Measurement environment" section of `SCALE_BENCHMARK_RESULTS.md` on every run.
+Published numbers are machine-relative: the recorded runs come from a single mid-range developer machine with an uncapped Neo4j container (512M pagecache). `scale_benchmark.py` writes the exact environment into the "Measurement environment" section of `SCALE_BENCHMARK_RESULTS.md` on every run.
 
 **Floors are floors, not targets** (`tests/fixtures/regression_floors.py`): the build fails below them; they were deliberately walked down as the corpus grew 4x, with each step's measurement recorded in the file's history table. Quote measured values with their dates, never the floors, when describing quality.
 

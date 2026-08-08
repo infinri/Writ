@@ -38,6 +38,36 @@ AGENT_ID=$(parsed_field "$STDIN_JSON" "agent_id")
 AGENT_TYPE=$(parsed_field "$STDIN_JSON" "agent_type")
 PARENT_SESSION=$(parsed_field "$STDIN_JSON" "session_id")
 
+# THE SUB-AGENT'S TELEMETRY BUFFER DRAINS HERE, because nothing else ever will.
+#
+# Rows are buffered per session and released by writ_event_buffer_flush, which is called
+# from friction-logger.sh (Stop) and writ-session-end.sh (SessionEnd). A sub-agent gets
+# NEITHER of those events; it gets this one. So every sub-agent buffer had no active
+# drain trigger at all and survived only on the passive 24h _sweep_abandoned in
+# writ-flush-events.py. Measured 2026-08-08: 12 buffers holding ~1378 stranded
+# hook_execution rows, 8 of them keyed to sub-agent ids from the running session.
+#
+# AGENT_ID IS THE RIGHT KEY, not the parent's session id: a sub-agent's hooks resolve
+# HOOK_SESSION_ID as `agent_id // session_id` (load_hook_env), so the buffer this hook
+# has to claim is named after the agent. It comes from the payload and nowhere else --
+# no /tmp pointer, no PID or md5 synthesis -- because a drain aimed at a guessed id
+# takes another session's rows and strands these.
+#
+# BEFORE the early exit below, so a payload this hook declines to process further still
+# releases its rows, and `|| true` because this hook must exit 0 on every path
+# (friction-logger.sh drains under the same guarantee).
+if [ -n "$AGENT_ID" ]; then
+    writ_event_buffer_flush "$AGENT_ID" || true
+else
+    # Recorded rather than silent. Live SubagentStop payloads always carry agent_id
+    # (verified against captured envelopes), so its absence is a broken invariant, and
+    # without the id there is no buffer name to drain -- a state otherwise
+    # indistinguishable from a sub-agent that buffered nothing.
+    writ_critical "writ-subagent-stop" \
+        "no agent_id in SubagentStop payload; this sub-agent's telemetry buffer cannot be named and will wait for the abandoned-session sweep" \
+        "${PARENT_SESSION:-unknown}"
+fi
+
 if [ -z "$AGENT_ID" ]; then
     exit 0
 fi
@@ -48,6 +78,31 @@ if [ -z "$AGENT_TYPE" ]; then
     AGENT_TYPE="general-purpose"
     log_friction_event "$AGENT_ID" "" "subagent_type_fallback" \
         "{\"hook\":\"writ-subagent-stop\",\"parent_session\":\"$PARENT_SESSION\"}"
+fi
+
+# Cycle 9: record a reviewer's verdict HERE, in infrastructure, rather than letting
+# the orchestrator report it. The reviewer's JSON otherwise reaches only the agent
+# whose code was reviewed, which leaves the author adjudicating the critic. The
+# harness hands us the reviewer's own final text, so the author is never the courier.
+# Recorded against the PARENT session (the one that will run `git commit`), not the
+# agent's own throwaway session. Fire-and-forget: never changes the hook outcome.
+if [ "$AGENT_TYPE" = "writ-reviewer" ] && [ -n "$PARENT_SESSION" ]; then
+    REVIEW_MSG=$(parsed_field "$STDIN_JSON" "last_assistant_message")
+    # Recorded UNCONDITIONALLY, including when the message is empty: an empty
+    # message parses as unparseable, which counts as blocking. Skipping the record
+    # would leave "no verdict", which does NOT block, so a reviewer that stopped
+    # without a final word would silently read as approval.
+    # Message on stdin, not argv: a review runs to thousands of characters and
+    # would otherwise land on the process table and risk ARG_MAX.
+    if ! printf '%s' "$REVIEW_MSG" \
+            | python3 "$WRIT_DIR/bin/lib/review_findings.py" record \
+                "$PARENT_SESSION" "$AGENT_ID" >/dev/null 2>&1; then
+        # Never fatal, but never silent either: a regression in the recording path
+        # is otherwise indistinguishable from "no reviewer ran", which is exactly
+        # the state that does not block.
+        log_friction_event "$PARENT_SESSION" "" "review_verdict_record_failed" \
+            "{\"hook\":\"writ-subagent-stop\",\"agent_id\":\"$AGENT_ID\"}"
+    fi
 fi
 
 # Read the agent's session cache for summary metrics

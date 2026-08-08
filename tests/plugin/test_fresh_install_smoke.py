@@ -10,18 +10,25 @@ To run manually:
   3. Set: export WRIT_INTEGRATION_TESTS=1
   4. Run: pytest tests/plugin/test_fresh_install_smoke.py -v
 
-What the test does:
+What the test does (the SHIPPED sequence: marketplace add, plugin install, one script):
   1. Clones the current git checkout to /tmp/writ-fresh-<uuid>/
   2. Runs: claude plugin marketplace add /tmp/writ-fresh-<uuid>
   3. Runs: claude plugin install writ@writ
-  4. Runs: bash <plugin-install-dir>/scripts/bootstrap-plugin.sh
-  5. Asserts: curl http://localhost:8765/health returns {"status":"healthy"}
-  6. Asserts: ${CLAUDE_PLUGIN_DATA}/.venv/bin/python3 exists
-  7. Cleanup: removes marketplace, uninstalls plugin, deletes temp clone
+  4. Reads installPath from `claude plugin list --json` (there is no `claude plugin path`
+     subcommand and never has been; a $(...) wrapper around it expanded to the empty
+     string and ran `bash /scripts/bootstrap-plugin.sh` -- see CHANGELOG 1.5.1)
+  5. Runs: bash <plugin-install-dir>/scripts/bootstrap-plugin.sh
+     ONE script: runtime + ~/.claude patch + slash commands. No separate patch step.
+  6. Asserts: /health returns {"status":"healthy"}, read WITHOUT curl (the install
+     claims no external tools, so the smoke test must not need one either)
+  7. Asserts: ${CLAUDE_PLUGIN_DATA}/.venv/bin/python3 exists, settings.json carries the
+     Writ entries, ~/.claude/CLAUDE.md exists, and the slash commands are installed
+  8. Cleanup: removes marketplace, uninstalls plugin, deletes temp clone
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -74,14 +81,20 @@ class TestFreshInstallSmoke:
                 timeout=60,
             )
 
-            # Step 4: Determine plugin install dir and run bootstrap
+            # Step 4: Determine plugin install dir (installPath, NOT `claude plugin path`)
             result = subprocess.run(
-                ["claude", "plugin", "path", "writ"],
+                ["claude", "plugin", "list", "--json"],
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=15,
             )
-            plugin_install_dir = Path(result.stdout.strip())
+            listing = json.loads(result.stdout or "[]")
+            plugin_install_dir = Path(next(
+                entry["installPath"] for entry in listing
+                if str(entry.get("id", "")).split("@")[0] == "writ"
+            ))
+
+            # Step 5: ONE script -- runtime, ~/.claude patch and slash commands
             bootstrap = plugin_install_dir / "scripts" / "bootstrap-plugin.sh"
             assert bootstrap.exists(), f"bootstrap-plugin.sh not found at {bootstrap}"
             subprocess.run(
@@ -91,9 +104,12 @@ class TestFreshInstallSmoke:
                 timeout=300,
             )
 
-            # Step 5: Assert health endpoint
+            # Step 6: Assert health endpoint, read through the install's own stdlib HTTP
+            # shim rather than curl: the install requires no external tools, so neither
+            # may its smoke test.
             health_result = subprocess.run(
-                ["curl", "-sf", "http://localhost:8765/health"],
+                ["python3", str(plugin_install_dir / "bin" / "lib" / "writ_install.py"),
+                 "http-get", "http://localhost:8765/health", "--fail"],
                 capture_output=True,
                 text=True,
                 timeout=15,
@@ -105,13 +121,29 @@ class TestFreshInstallSmoke:
                 f"Writ health endpoint did not return healthy status: {health_result.stdout}"
             )
 
-            # Step 6: Assert venv exists
+            # Step 7: Assert venv exists
             plugin_data = Path(
                 os.environ.get("CLAUDE_PLUGIN_DATA", str(Path.home() / ".cache" / "writ"))
             )
             venv_python = plugin_data / ".venv" / "bin" / "python3"
             assert venv_python.exists(), (
                 f"Expected venv python3 at {venv_python} after bootstrap"
+            )
+
+            # Step 7b: the single-script promise -- global config and slash commands are
+            # in place with no separate patch step. These used to be documented extra
+            # commands, which is exactly what users missed.
+            settings = Path.home() / ".claude" / "settings.json"
+            assert settings.is_file(), f"{settings} not written by the bootstrap"
+            allow = json.loads(settings.read_text()).get("permissions", {}).get("allow", [])
+            assert any("writ-session.py" in entry for entry in allow), (
+                "the Writ permission entries are missing: the bootstrap did not patch settings.json"
+            )
+            assert (Path.home() / ".claude" / "CLAUDE.md").is_file(), (
+                "~/.claude/CLAUDE.md was not rendered by the bootstrap"
+            )
+            assert (Path.home() / ".claude" / "commands" / "writ-approve.md").is_file(), (
+                "the slash commands were not installed by the bootstrap"
             )
 
         finally:

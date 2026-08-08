@@ -561,4 +561,24 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    import argparse
+
+    # This benchmark WIPES the live graph (snapshot-then-restore, but a killed run
+    # leaves the synthetic corpus in place). Destructive work requires the explicit
+    # flag; anything else prints usage and exits without touching Neo4j.
+    parser = argparse.ArgumentParser(
+        description=(
+            "Writ scale benchmark. DESTRUCTIVE: snapshots, then repeatedly wipes and "
+            "re-ingests the LIVE Neo4j graph at synthetic scales, restoring on exit. "
+            "A run killed mid-flight leaves the synthetic corpus in place; recover "
+            "with: writ import-cypher var/benchmark-graph-snapshot.cypher"
+        ),
+    )
+    parser.add_argument(
+        "--run", action="store_true",
+        help="Actually run the destructive benchmark (required).",
+    )
+    args = parser.parse_args()
+    if not args.run:
+        parser.error("this benchmark wipes the live graph; pass --run to proceed")
     asyncio.run(main())

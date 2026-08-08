@@ -1703,5 +1703,164 @@ def logs_list(
     typer.echo(f"hint: daemon stdout -> {_JOURNALD_HINT}")
 
 
+# --- Auto-memory graph mirror: memory sub-app ----------------------------------
+# The mirror hook covers memories written from now on; `backfill` covers the ones
+# already on disk and doubles as the DELETION reconciler (a memory file the user
+# deleted must stop reading as live in the graph). Registered like the git-hooks /
+# pr / logs sub-apps.
+
+DEFAULT_PROJECTS_ROOT = "~/.claude/projects"
+
+memory_app = typer.Typer(
+    name="memory",
+    help="Mirror Claude Code's auto-memory files into the Writ graph, and read them back.",
+)
+app.add_typer(memory_app, name="memory")
+
+
+def _memory_capture():
+    """Load bin/lib/memory_capture.py -- the parser the mirror hook also binds to.
+
+    It is a flat stdlib-only script (it has to run from a hook with no virtualenv),
+    not an importable package, so it is loaded by path -- the same idiom
+    writ/server/__init__.py uses for bin/lib/writ-session.py. Binding here rather
+    than re-implementing the parse is what keeps the two writers from drifting.
+    """
+    import importlib.util
+
+    module_path = Path(__file__).resolve().parents[1] / "bin" / "lib" / "memory_capture.py"
+    spec = importlib.util.spec_from_file_location("writ_memory_capture", str(module_path))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _contained(candidate: Path, root: Path) -> bool:
+    """True when `candidate` resolves to `root` or somewhere beneath it.
+
+    SEC-INJ-PATH-001: the walk resolves symlinks and verifies containment BEFORE
+    reading, so a project directory (or a note) symlinked outside --projects-root
+    cannot make the backfill read arbitrary files.
+    """
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        return False
+    return resolved == root or root in resolved.parents
+
+
+@memory_app.command("backfill")
+def memory_backfill(
+    projects_root: str = typer.Option(
+        DEFAULT_PROJECTS_ROOT,
+        "--projects-root",
+        help="Root holding one directory per project, each with a memory/ subdir.",
+    ),
+) -> None:
+    """Upsert every existing memory file, then tombstone the ones whose file is gone.
+
+    Walks `<projects-root>/*/memory/*.md`, upserts each memory (idempotent MERGE, so
+    re-running is safe), and per project tombstones the Memory records whose file no
+    longer exists -- status='deleted', never a hard delete, so the audit trail
+    survives. MEMORY.md (the index) is skipped. Prints the counts.
+    """
+    root_path = Path(projects_root).expanduser()
+    try:
+        root = root_path.resolve()
+    except OSError as exc:
+        typer.echo(f"Cannot resolve --projects-root {projects_root!r}: {exc}", err=True)
+        raise typer.Exit(code=1)
+    if not root.is_dir():
+        typer.echo(f"No projects root at {root} (nothing to backfill).", err=True)
+        raise typer.Exit(code=1)
+
+    mc = _memory_capture()
+
+    async def _run() -> None:
+        projects = upserted = tombstoned = skipped = unreadable = outside = 0
+
+        async with _writ_db() as db:
+            for project_dir in sorted(root.iterdir()):
+                if not project_dir.is_dir():
+                    continue
+                if not _contained(project_dir, root):
+                    outside += 1
+                    continue
+                memory_dir = project_dir / "memory"
+                if not memory_dir.is_dir() or not _contained(memory_dir, root):
+                    continue
+
+                projects += 1
+                present_names: list[str] = []
+                for note in sorted(memory_dir.glob("*.md")):
+                    if mc.is_memory_index_file(str(note)):
+                        continue
+                    if not _contained(note, root):
+                        outside += 1
+                        continue
+                    try:
+                        content = note.read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        # The file EXISTS; a transient read failure must not become a
+                        # tombstone. Protect its record via the naming convention
+                        # (name == filename stem); the next run re-covers the content.
+                        present_names.append(note.stem)
+                        unreadable += 1
+                        continue
+                    payload = mc.build_memory_payload(str(note), content)
+                    if payload is None:
+                        present_names.append(note.stem)
+                        skipped += 1
+                        continue
+                    await db.create_memory(**payload)
+                    present_names.append(payload["name"])
+                    upserted += 1
+
+                # Only ever reached with a directory we actually listed, so an empty
+                # present_names means "every memory file here is gone", not "the read
+                # failed" -- the difference between a correct sweep and a mass tombstone.
+                tombstoned += await db.tombstone_missing_memories(
+                    project=project_dir.name, existing_names=present_names
+                )
+
+        typer.echo(
+            f"Memory backfill: projects={projects} upserted={upserted} "
+            f"tombstoned={tombstoned} skipped={skipped} unreadable={unreadable} "
+            f"outside_root={outside}"
+        )
+
+    asyncio.run(_run())
+
+
+@memory_app.command("list")
+def memory_list(
+    project: str = typer.Option(
+        ..., "--project", help="Project scope (the encoded project directory name)."
+    ),
+    include_deleted: bool = typer.Option(
+        False, "--include-deleted/--no-include-deleted",
+        help="Also show tombstoned memories (status=deleted).",
+    ),
+) -> None:
+    """List a project's mirrored memories, most-recently-updated first."""
+
+    async def _run() -> None:
+        async with _writ_db() as db:
+            memories = await db.list_memories(project, include_deleted=include_deleted)
+            if not memories:
+                typer.echo(f"(no memories mirrored for project {project})")
+                return
+            for memory in memories:
+                mem_type = memory.get("type") or "-"
+                status = memory.get("status") or "live"
+                typer.echo(
+                    f"{memory.get('name', '(unnamed)')}  [{mem_type}/{status}]  "
+                    f"{memory.get('description', '')}"
+                )
+            typer.echo(f"({len(memories)} memories)")
+
+    asyncio.run(_run())
+
+
 if __name__ == "__main__":
     app()

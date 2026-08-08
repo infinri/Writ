@@ -74,11 +74,6 @@ class TestBootstrapSections:
             "bootstrap.sh must verify the Docker daemon is running"
         )
 
-    def test_bootstrap_checks_envsubst_prerequisite(self, content: str) -> None:
-        assert "envsubst" in content, (
-            "bootstrap.sh must check for envsubst (used by patch-global-config.sh)"
-        )
-
     def test_bootstrap_creates_venv(self, content: str) -> None:
         assert "venv" in content and ".venv" in content, (
             "bootstrap.sh must create and use .venv"
@@ -121,6 +116,14 @@ class TestBootstrapSections:
         )
         assert "install-harness-config.sh" not in content, (
             "bootstrap.sh must not reference the deleted standalone seeder"
+        )
+
+    def test_bootstrap_installs_user_slash_commands(self, content: str) -> None:
+        """One bootstrap run must also install the user-level slash commands: the repo's
+        own .claude/commands is discovered only when the session cwd IS the repo, so
+        without this step /writ-approve silently does not exist in any other project."""
+        assert "install-user-commands.sh" in content, (
+            "bootstrap.sh must invoke install-user-commands.sh"
         )
 
     def test_bootstrap_creates_rule_and_agent_symlinks(self, content: str) -> None:
@@ -257,12 +260,33 @@ class TestBootstrapPrerequisiteChecks:
         combined = (result.stdout + result.stderr).lower()
         assert "git" in combined, "error message must mention git"
 
-    def test_fails_cleanly_when_envsubst_missing(self, tmp_path: Path) -> None:
-        result = self._run_with_limited_path(
-            tmp_path, ["bash", "python3", "docker", "git"]
+    def test_preflight_passes_with_only_python_docker_git(self, tmp_path: Path) -> None:
+        """The inverse of the test that used to live here.
+
+        This case previously asserted bootstrap FAILED when envsubst was absent. That
+        requirement is gone: gettext, jq and curl were install-time conveniences with
+        Python-stdlib fallbacks, and demanding them turned a perfectly capable machine
+        into a failed install. --preflight runs exactly the prerequisite phase (and stops
+        before `docker info`), so this proves the phase passes rather than proving a
+        full install works.
+        """
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        for tool in ("bash", "python3", "docker", "git"):
+            found = shutil.which(tool)
+            if found:
+                (fake_bin / tool).symlink_to(found)
+        env = {"HOME": str(tmp_path), "PATH": str(fake_bin)}
+        result = subprocess.run(
+            [str(BOOTSTRAP), "--preflight"],
+            env=env, capture_output=True, text=True, timeout=10,
         )
-        assert result.returncode != 0, "bootstrap must fail when envsubst is missing"
+        assert result.returncode == 0, (
+            f"preflight must pass without jq/curl/envsubst: {result.stdout}\n{result.stderr}"
+        )
         combined = (result.stdout + result.stderr).lower()
-        assert "envsubst" in combined, "error message must mention envsubst"
+        assert "jq" in combined and "curl" in combined, (
+            "preflight should still report the optional accelerators it did not find"
+        )
 
 

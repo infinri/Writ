@@ -32,14 +32,36 @@ if stop_hook_active "$STDIN_JSON"; then
     exit 0
 fi
 
-# Read session ID published by writ-rag-inject.sh (fires on every UserPromptSubmit)
-SESSION_ID=""
-if [ -f /tmp/writ-current-session ]; then
-    SESSION_ID=$(cat /tmp/writ-current-session 2>/dev/null | tr -d '[:space:]')
-fi
-if [ -z "$SESSION_ID" ]; then
-    exit 0
-fi
+# THE PAYLOAD IS AUTHORITATIVE, the pointer file is only a fallback.
+#
+# /tmp/writ-current-session is ONE global file, rewritten by writ-rag-inject.sh on every
+# UserPromptSubmit in EVERY Claude Code session on this machine, so the most recent session
+# to take a turn owns it. Reading it unconditionally meant this Stop hook drained whichever
+# session happened to be last, not the one it was invoked for.
+#
+# That was survivable while every hook wrote its telemetry directly. It stopped being
+# survivable when hook_execution and gate_decision rows moved to a per-session buffer
+# drained here: draining the wrong session strands this one's rows on disk. Measured on a
+# live session, 2026-08-08: 443 undrained rows, because the pointer had been taken over by
+# another session (cdp-12096297) and this session's buffer was never the drain target.
+#
+# CC sends session_id in the Stop payload, which is captured above for the loop-breaker, so
+# the right answer was already in hand.
+# NO POINTER FALLBACK. The first fix here still consulted the pointer when the payload had
+# no session_id, which keeps the failure mode alive in the rare case rather than removing
+# it. A drain aimed at the wrong session is worse than a drain that does not run, because
+# the rows it skips look identical to rows that never existed. Unresolvable now records a
+# critical error and this hook does nothing.
+SESSION_ID=$(writ_require_session "$STDIN_JSON" friction-logger) || exit 0
+
+# Drain this turn's buffered hook_execution rows in ONE interpreter start, replacing the
+# 8 python spawns a single file write used to pay. Placed BEFORE the mode gate below on
+# purpose: hooks buffer rows in every mode, so draining after that gate would strand
+# them whenever the session is not in a tracked mode.
+# Rows survive the paths that skip this: the buffer is keyed by SESSION, not by turn, so
+# a turn that exits early (stop_hook_active above) drains on the next Stop or at
+# SessionEnd. Never fails this hook.
+writ_event_buffer_flush "$SESSION_ID" || true
 
 # Read current mode
 MODE=$(_writ_session "mode get" "$SESSION_ID" 2>/dev/null || echo "")
