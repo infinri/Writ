@@ -18,6 +18,7 @@ Never fails the caller: telemetry must not become an enforcement failure.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import sys
@@ -29,12 +30,16 @@ FIELDS = 6       # hook_execution: kind, hook, duration_ms, exit_code, mode, tru
 GATE_FIELDS = 7  # gate_decision: kind, gate, decision, reason, target, mode, decided_at
 
 
+BUF_PREFIX = "writ-events-"
+BUF_SUFFIX = ".buf"
+
+
 def _buffer_path(session_id: str) -> str:
     cache_dir = os.environ.get("WRIT_CACHE_DIR")
     if not cache_dir:
         skill_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         cache_dir = os.path.join(skill_dir, "var", "session")
-    return os.path.join(cache_dir, f"writ-events-{session_id or 'unknown'}.buf")
+    return os.path.join(cache_dir, f"{BUF_PREFIX}{session_id or 'unknown'}{BUF_SUFFIX}")
 
 
 def _parse(raw: str) -> list[dict]:
@@ -88,9 +93,47 @@ def _parse(raw: str) -> list[dict]:
 
 
 CLAIM_SUFFIX = ".inflight."
-# A drain that has not finished in this long is dead, not slow. A live drain takes
-# milliseconds; 60s is three orders of magnitude of headroom.
+# FALLBACK ONLY, no longer the liveness test. Ownership is decided by the lock below:
+# "is the owning process still holding this file", which is the actual question. The age
+# test was the previous answer, and it was a heuristic wearing a fact's clothes -- a drain
+# that stalled past the timeout (paused process, heavy I/O) had its LIVE claim adopted and
+# its rows emitted twice. Three orders of magnitude of headroom is not a closed race, it is
+# a narrow one. This constant now applies only where flock is unsupported by the
+# filesystem, where a heuristic is the best available answer.
 ORPHAN_CLAIM_SECONDS = 60
+
+# A session whose buffer has not been touched in this long is never going to drain itself:
+# its Stop and SessionEnd already happened, or the client died without them. Nothing else
+# would ever look at that file, because buffers are session-scoped and each drain reads
+# only its own. Without the sweep those rows sit on disk forever, which is the quiet
+# version of the loss this whole design exists to prevent.
+ABANDONED_SESSION_SECONDS = 86400
+
+# Locked fds, held for the process lifetime. The lock lives on the OPEN FILE DESCRIPTION,
+# so letting one close would release ownership while the drain is still working.
+_HELD: list[int] = []
+
+_LOCK_HELD = "held"
+_LOCK_TAKEN = "taken"
+_LOCK_UNSUPPORTED = "unsupported"
+
+
+def _lock(fd: int) -> str:
+    """Try to take the file's advisory lock without blocking.
+
+    The OS releases it when the holder dies, so a crashed drain's claim becomes adoptable
+    IMMEDIATELY rather than after a timeout, and a live drain's claim never becomes
+    adoptable at all. That is strictly better than the age test on both ends.
+    """
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return _LOCK_HELD
+    except BlockingIOError:
+        return _LOCK_TAKEN
+    except OSError:
+        # ENOLCK / ENOTSUP on an exotic filesystem. Degrade to the age heuristic rather
+        # than refusing to drain.
+        return _LOCK_UNSUPPORTED
 
 
 def _claim_name(path: str) -> str:
@@ -104,8 +147,8 @@ def _claim_name(path: str) -> str:
     return f"{path}{CLAIM_SUFFIX}{os.getpid()}.{time.time_ns()}"
 
 
-def _claim(path: str) -> str | None:
-    """Take exclusive ownership of a file by renaming it, or return None.
+def _claim(path: str, age_fallback: float | None = None) -> str | None:
+    """Take exclusive ownership of a file by locking then renaming it, or return None.
 
     THE RACE THIS CLOSES: the first version read the file, emitted, then unlinked. Two
     drains of one session (Stop and SessionEnd firing close together) both read before
@@ -117,12 +160,41 @@ def _claim(path: str) -> str | None:
     adoption, which is the fix for the second race: adoption previously selected orphans
     by name and age and read them WITHOUT claiming, so two drains racing one aged orphan
     both emitted it. Reproduced 3/3 before this change.
+
+    LOCK BEFORE RENAME, deliberately. Locking after would leave a window in which the file
+    sits claimed-but-unlocked and a concurrent adopter could take it. Rename preserves the
+    inode, so a lock taken on the source is still held on the destination.
+
+    `age_fallback` is consulted ONLY when the filesystem cannot lock: None means "this is
+    the live buffer, claim it unconditionally", a number means "treat it as abandoned only
+    if it is at least this old".
     """
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return None
+
+    state = _lock(fd)
+    if state == _LOCK_TAKEN:
+        # Another drain holds it and is alive, however slow. Never steal it.
+        os.close(fd)
+        return None
+    if state == _LOCK_UNSUPPORTED and age_fallback is not None:
+        try:
+            if time.time() - os.path.getmtime(path) <= age_fallback:
+                os.close(fd)
+                return None
+        except OSError:
+            os.close(fd)
+            return None
+
     try:
         claim = _claim_name(path)
         os.rename(path, claim)
     except OSError:
+        os.close(fd)
         return None
+    _HELD.append(fd)
     # STAMP IT AS ACTIVE. os.rename PRESERVES mtime, so a freshly claimed orphan still
     # looked an hour old to the next drain, which adopted it and emitted the same rows
     # again. That defeated the claim entirely: measured, two drains racing one aged
@@ -139,13 +211,16 @@ def _adopt_orphans(path: str) -> list[str]:
     """Claim files left by a drain that died between rename and unlink.
 
     Without this, claiming-by-rename converts the duplication bug into a silent loss
-    bug: the rows sit on disk under a name nothing reads. Only claims older than
-    ORPHAN_CLAIM_SECONDS are adopted, so a live drain's claim is never stolen, and each
-    adoption goes through the same atomic _claim, so exactly one adopter wins.
+    bug: the rows sit on disk under a name nothing reads. Each adoption goes through the
+    same atomic _claim, so exactly one adopter wins.
+
+    THE LIVENESS TEST IS THE LOCK, NOT THE CLOCK. _claim tries the lock, so a claim whose
+    owner is still running is skipped no matter how long it has been running, and a claim
+    whose owner died is taken at once rather than after a timeout. The age constant is
+    passed only as the degraded answer for filesystems that cannot lock.
     """
     directory = os.path.dirname(path) or "."
     prefix = os.path.basename(path) + CLAIM_SUFFIX
-    now = time.time()
     adopted = []
     try:
         names = sorted(os.listdir(directory))
@@ -154,24 +229,80 @@ def _adopt_orphans(path: str) -> list[str]:
     for name in names:
         if not name.startswith(prefix):
             continue
-        candidate = os.path.join(directory, name)
-        try:
-            if now - os.path.getmtime(candidate) <= ORPHAN_CLAIM_SECONDS:
-                continue
-        except OSError:
-            continue
         # Re-claim under a FRESH unique name. The winner gets the rows; every loser
-        # sees the source gone and moves on.
-        claimed = _claim(candidate)
+        # sees the source gone or the lock held, and moves on.
+        claimed = _claim(os.path.join(directory, name), age_fallback=ORPHAN_CLAIM_SECONDS)
         if claimed:
             adopted.append(claimed)
     return adopted
 
 
-def main() -> int:
-    session_id = sys.argv[1] if len(sys.argv) > 1 else ""
-    path = _buffer_path(session_id)
+def _load_emit():
+    try:
+        skill_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        sys.path.insert(0, skill_dir)
+        from writ.shared.logging import emit as _emit
 
+        return _emit
+    except Exception:
+        # The rows still get printed, so a broken import degrades to visible output
+        # rather than to silence.
+        return None
+
+
+def _session_of(name: str) -> str | None:
+    """Recover the session id from a buffer or claim filename.
+
+    Needed because the sweep drains OTHER sessions' buffers, and emit() takes the session
+    id as an argument rather than reading it from the row. Attributing a swept row to the
+    sweeping session would silently corrupt the audit trail, which is worse than the leak
+    the sweep exists to fix.
+    """
+    if not name.startswith(BUF_PREFIX):
+        return None
+    rest = name[len(BUF_PREFIX):]
+    idx = rest.find(BUF_SUFFIX)
+    if idx < 0:
+        return None
+    return rest[:idx]
+
+
+def _sweep_abandoned(directory: str, skip_session: str, emit) -> int:
+    """Drain buffers whose own session will never drain them.
+
+    A session that ends without a Stop or SessionEnd (crash, disconnect, kill) leaves its
+    buffer and any claim files on disk, and nothing ever reads them again: every drain
+    looks only at its own session's path. Those rows are real telemetry and real gate
+    decisions, so this collects them rather than deleting them.
+    """
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return 0
+
+    newest: dict[str, float] = {}
+    for name in names:
+        session = _session_of(name)
+        if session is None or session == skip_session:
+            continue
+        try:
+            mtime = os.path.getmtime(os.path.join(directory, name))
+        except OSError:
+            continue
+        newest[session] = max(newest.get(session, 0.0), mtime)
+
+    now = time.time()
+    drained = 0
+    for session, mtime in sorted(newest.items()):
+        # The NEWEST file decides. A session with one old buffer and one fresh claim is
+        # still active, and taking its rows early would race its own drain.
+        if now - mtime <= ABANDONED_SESSION_SECONDS:
+            continue
+        drained += _drain(session, _buffer_path(session), emit)
+    return drained
+
+
+def _drain(session_id: str, path: str, emit) -> int:
     sources = _adopt_orphans(path)
     claimed = _claim(path)
     if claimed:
@@ -192,18 +323,6 @@ def main() -> int:
             continue
 
     rows = _parse(raw)
-
-    emit = None
-    try:
-        skill_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        sys.path.insert(0, skill_dir)
-        from writ.shared.logging import emit as _emit
-
-        emit = _emit
-    except Exception:
-        # The rows still get printed, so a broken import degrades to visible output
-        # rather than to silence.
-        emit = None
 
     for row in rows:
         if emit is not None:
@@ -230,6 +349,18 @@ def main() -> int:
             os.unlink(source)
         except OSError:
             pass
+    return len(rows)
+
+
+def main() -> int:
+    session_id = sys.argv[1] if len(sys.argv) > 1 else ""
+    path = _buffer_path(session_id)
+    emit = _load_emit()
+
+    _drain(session_id, path, emit)
+    # Own session first: the sweep is housekeeping for sessions that are already gone, and
+    # must never delay or displace the drain this process was actually called to do.
+    _sweep_abandoned(os.path.dirname(path) or ".", session_id, emit)
     return 0
 
 

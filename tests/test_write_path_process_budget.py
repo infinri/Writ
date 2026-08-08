@@ -27,6 +27,7 @@ Per TEST-TDD-001: skeletons approved before implementation.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -83,8 +84,17 @@ BASELINE_TOTAL = 349
 # already existed, so gate_decision now goes through the SAME append-and-drain path as
 # hook_execution: 15 python starts, 195 processes, 16 git in production measurement,
 # with every audit record intact. The exit trap spawns nothing at all now.
+#
+# 215 -> 200 after removing a DEAD `mktemp` from hook_instrument. It created a per-hook
+# scratch buffer for log_gate_decision that stopped being read when both row kinds moved
+# to the session buffer, but the call outlived its reader and kept spawning: 2 execve
+# (the mktemp plus the command substitution's subshell) x 10 instrumented write-path
+# hooks = 20 processes per write, in the cycle whose whole purpose was removing exactly
+# those. Measured 194 after, so the old figure was 214 and this ratchet was ONE process
+# from failing while the waste was invisible. Found by strace, not by reading, because
+# the variable was still assigned and still cleaned up.
 PYTHON_BUDGET = 17
-TOTAL_BUDGET = 215
+TOTAL_BUDGET = 200
 
 # Where this is going, and what closes the gap. Each item is a measured count of python
 # starts that actually EXECUTE on a file write, not a grep of the hook source:
@@ -191,3 +201,52 @@ class TestProcessBudget:
         above pass."""
         python, total = _counts("writ-pre-write-dispatch.sh")
         assert total > 5, f"counter saw only {total} processes for the main write hook"
+
+
+class TestInstrumentationSpawnsNothing:
+    """hook_instrument runs on EVERY instrumented hook, so anything it spawns is
+    multiplied by ten on a single file write.
+
+    It used to call `mktemp` for a scratch buffer that nothing read any more. The
+    variable was still assigned and still cleaned up at exit, so the code looked alive to
+    a reader; only a syscall trace showed the process. That is the failure mode this test
+    exists for, and why it asserts on execve rather than on the source text.
+    """
+
+    def _execve_lines(self, tmp_path: Path) -> list[str]:
+        script = tmp_path / "instrument-probe.sh"
+        script.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            f'source "{REPO / "bin" / "lib" / "common.sh"}"\n'
+            'hook_instrument "spawn-probe"\n'
+            "exit 0\n"
+        )
+        trace = tmp_path / "trace.txt"
+        env = os.environ.copy()
+        env["WRIT_CACHE_DIR"] = str(tmp_path / "cache")
+        env["WRIT_LOG_ROOT"] = str(tmp_path / "logs")
+        env["WRIT_PORT"] = "19999"
+        (tmp_path / "cache").mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["strace", "-f", "-qq", "-e", "trace=execve", "-o", str(trace),
+             "bash", str(script)],
+            capture_output=True, text=True, timeout=180, env=env,
+        )
+        if not trace.exists():
+            pytest.skip("strace produced no trace")
+        return trace.read_text(errors="replace").splitlines()
+
+    def test_instrumenting_a_hook_spawns_no_mktemp(self, tmp_path) -> None:
+        lines = self._execve_lines(tmp_path)
+        offenders = [ln for ln in lines if "mktemp" in ln]
+        assert offenders == [], (
+            f"hook_instrument spawned mktemp again, costing 2 execve on each of the 10 "
+            f"instrumented write-path hooks: {offenders}"
+        )
+
+    def test_the_trace_is_not_empty(self, tmp_path) -> None:
+        """Anti-vacuity: a trace that captured nothing would pass the assertion above
+        no matter what hook_instrument does."""
+        lines = self._execve_lines(tmp_path)
+        assert any("execve(" in ln for ln in lines), "the tracer recorded no execve at all"

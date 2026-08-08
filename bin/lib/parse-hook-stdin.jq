@@ -90,7 +90,18 @@ def parsed_tool_input:
     end;
 
 # The scalar coercion python's _q performs: None becomes the empty string.
-def q(v): (if v == null then "" else (v | tostring) end) | @sh;
+#
+# ANY NON-STRING BECOMES "" ON BOTH ARMS, which is what closes this divergence class
+# rather than disclaiming it. Every field q() is applied to (session_id, agent_id,
+# agent_type, event, tool_name, file_path, command) is a string in CC's schema, so a
+# non-string here is malformed input, and "" is already how every hook spells "absent".
+# Stringifying instead is where the arms disagreed, at every type: jq prints `true` where
+# python prints `True`, `[1,2]` where python prints `[1, 2]`, and `1` where python prints
+# `1.0`. Chasing per-type equality would mean reimplementing python's repr in jq. One
+# uniform rule is provable in a line and cannot drift.
+# The raw value is NOT lost: HOOK_ENVELOPE still carries the original JSON for any
+# consumer that needs the real shape.
+def q(v): (if (v | type) == "string" then v else "" end) | @sh;
 
 # A root that is not a JSON object (a bare array, a number, a truncated document)
 # becomes an empty one: `has()` raises on an array, which would abort the filter and

@@ -110,6 +110,21 @@ ENVELOPES = {
     "is_error_empty_object": {"session_id": "s-19", "tool_result_is_error": {}},
     "is_error_nonempty_string": {"session_id": "s-20", "tool_result_is_error": "yes"},
     "is_error_one": {"session_id": "s-21", "tool_result_is_error": 1},
+    # NON-STRINGS IN STRING FIELDS. Review found jq's tostring and python's str()
+    # disagreeing on containers ('[1,2]' vs '[1, 2]'); the same split covers booleans
+    # (true vs True) and floats (1 vs 1.0). Rather than disclaim the shapes, both arms
+    # now collapse any non-string to "", so these envelopes pin the agreement at every
+    # type instead of at the one type review happened to name.
+    "container_file_path": {"session_id": "s-22", "tool_input": {"file_path": [1, 2]}},
+    "object_file_path": {"session_id": "s-23", "tool_input": {"file_path": {"a": 1}}},
+    "bool_file_path": {"session_id": "s-24", "tool_input": {"file_path": True}},
+    "float_file_path": {"session_id": "s-25", "tool_input": {"file_path": 1.0}},
+    "int_file_path": {"session_id": "s-26", "tool_input": {"file_path": 7}},
+    "container_session_id": {"session_id": ["a", "b"]},
+    "bool_session_id": {"session_id": False},
+    "float_agent_id": {"session_id": "s-27", "agent_id": 2.5},
+    "bool_tool_name": {"session_id": "s-28", "tool_name": True},
+    "container_command": {"session_id": "s-29", "tool_input": {"command": ["ls", "-l"]}},
 }
 
 pytestmark = pytest.mark.skipif(

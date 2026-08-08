@@ -20,6 +20,7 @@ Per ENF-PROC-TDD-001: skeletons approved before implementation.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import shutil
@@ -266,13 +267,17 @@ class TestConcurrentDrains:
         buf = _buffer_path("s-collide", buf_env)
         stale = Path(f"{buf}.inflight.{os.getpid()}.1")
         buf.rename(stale)                        # a claim bearing THIS pid, unswept
-        _append("s-collide", "second", buf_env)  # a fresh buffer for the same session
-        subprocess.run(["python3", str(FLUSH), "s-collide"], capture_output=True,
-                       text=True, timeout=60, env={**os.environ, **buf_env})
-        # The stale claim is too young to adopt, so it must still be here with its row
-        # intact: the new claim took a different name rather than replacing it.
-        assert stale.exists(), "the unswept claim was destroyed by a colliding rename"
-        assert stale.read_text(errors="replace").count("first") == 1
+        fd = os.open(stale, os.O_RDONLY)
+        try:
+            # Its owner is still alive, so it is not adoptable and must survive intact.
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _append("s-collide", "second", buf_env)  # a fresh buffer, same session
+            subprocess.run(["python3", str(FLUSH), "s-collide"], capture_output=True,
+                           text=True, timeout=60, env={**os.environ, **buf_env})
+            assert stale.exists(), "the unswept claim was destroyed by a colliding rename"
+            assert stale.read_text(errors="replace").count("first") == 1
+        finally:
+            os.close(fd)
 
     def test_a_mangled_byte_does_not_wedge_the_buffer(self, buf_env) -> None:
         """Review flagged the errors="replace" fix as correct but unguarded. Without it,
@@ -288,17 +293,137 @@ class TestConcurrentDrains:
         assert "good-row" in proc.stdout, "a bad byte stranded the good row beside it"
         assert not buf.exists(), "the buffer was left behind and will be re-read forever"
 
-    def test_a_fresh_claim_is_not_stolen_from_a_live_drain(self, buf_env) -> None:
+    def _held_claim(self, session: str, hook: str, buf_env) -> tuple[Path, int]:
+        """A claim whose owning drain is still alive, modelled the way the drain now
+        decides liveness: by holding the lock, not by having a recent mtime."""
+        _append(session, hook, buf_env)
+        buf = _buffer_path(session, buf_env)
+        claim = Path(f"{buf}.inflight.12345.1")
+        buf.rename(claim)
+        fd = os.open(claim, os.O_RDONLY)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return claim, fd
+
+    def test_a_claim_a_live_drain_still_holds_is_not_stolen(self, buf_env) -> None:
         """The other half: recovery must not adopt a claim a running drain still owns,
         or the fix reintroduces the duplication it exists to prevent."""
-        _append("s-live", "in-flight", buf_env)
-        buf = _buffer_path("s-live", buf_env)
-        fresh = Path(f"{buf}.inflight.12345.1")
-        buf.rename(fresh)              # a live drain's claim, mtime = now
-        proc = subprocess.run(["python3", str(FLUSH), "s-live"], capture_output=True,
+        claim, fd = self._held_claim("s-live", "in-flight", buf_env)
+        try:
+            proc = subprocess.run(["python3", str(FLUSH), "s-live"], capture_output=True,
+                                  text=True, timeout=60, env={**os.environ, **buf_env})
+            assert proc.stdout.strip() == "", "a live drain's claim was stolen"
+            assert claim.exists()
+        finally:
+            os.close(fd)
+
+    def test_a_stalled_drain_keeps_its_claim_however_long_it_stalls(self, buf_env) -> None:
+        """THE FINDING THIS REPLACED AN AGE TEST FOR.
+
+        Ownership used to be decided by mtime: a claim older than 60s was assumed dead
+        and adopted. A drain that merely STALLED past that (paused process, heavy I/O)
+        was therefore robbed while still running, and its rows came out twice. That is
+        the original duplication bug returning through a side door, just rarer.
+
+        Backdating the claim an hour is exactly that scenario. The lock is held, so age
+        must not matter at all.
+        """
+        claim, fd = self._held_claim("s-stalled", "slow-row", buf_env)
+        try:
+            hour_ago = time.time() - 3600
+            os.utime(claim, (hour_ago, hour_ago))
+            proc = subprocess.run(["python3", str(FLUSH), "s-stalled"], capture_output=True,
+                                  text=True, timeout=60, env={**os.environ, **buf_env})
+            assert proc.stdout.strip() == "", (
+                "an hour-old claim was adopted while its drain still held the lock, so "
+                "the rows would be emitted twice"
+            )
+            assert claim.exists()
+        finally:
+            os.close(fd)
+
+    def test_a_dead_drains_claim_is_adopted_at_once_not_after_a_timeout(self, buf_env) -> None:
+        """The other end of the same change, and a real improvement rather than a wash.
+
+        The OS drops a dead process's lock, so an abandoned claim is recoverable
+        immediately. Under the age test these rows sat unreadable for a full minute
+        first. Fresh mtime, nobody holding it: adopt now.
+        """
+        _append("s-dead", "orphan-row", buf_env)
+        buf = _buffer_path("s-dead", buf_env)
+        orphan = Path(f"{buf}.inflight.999999.1")
+        buf.rename(orphan)
+        proc = subprocess.run(["python3", str(FLUSH), "s-dead"], capture_output=True,
                               text=True, timeout=60, env={**os.environ, **buf_env})
-        assert proc.stdout.strip() == "", "a live drain's claim was stolen"
-        assert fresh.exists()
+        assert "orphan-row" in proc.stdout, (
+            "a dead drain's claim was not adopted; its rows are unreachable"
+        )
+        assert not orphan.exists(), "the adopted claim was left on disk"
+
+
+class TestAbandonedSessionsAreSweptUp:
+    """A session that ends without a Stop or SessionEnd never drains itself.
+
+    Buffers are session-scoped and each drain reads only its own path, so a crashed or
+    disconnected session's rows are unreachable forever: not corrupted, just permanently
+    unread, which for an audit trail is the same outcome as losing them. Every later
+    drain now also sweeps buffers old enough that their own session is certainly gone.
+    """
+
+    def _age(self, path: Path, seconds: float) -> None:
+        stamp = time.time() - seconds
+        os.utime(path, (stamp, stamp))
+
+    def test_an_abandoned_buffer_is_drained_by_a_later_session(self, buf_env) -> None:
+        _append("s-abandoned", "stranded-row", buf_env)
+        self._age(_buffer_path("s-abandoned", buf_env), 90000)   # ~25h, past the cutoff
+        _append("s-current", "live-row", buf_env)
+        proc = subprocess.run(["python3", str(FLUSH), "s-current"], capture_output=True,
+                              text=True, timeout=60, env={**os.environ, **buf_env})
+        assert "stranded-row" in proc.stdout, (
+            "the abandoned session's row was never collected and would sit on disk forever"
+        )
+        assert not _buffer_path("s-abandoned", buf_env).exists()
+
+    def test_a_swept_row_keeps_its_own_session_id(self, buf_env) -> None:
+        """The sweep must not relabel what it collects.
+
+        emit() takes the session id as an argument rather than reading it from the row,
+        so the obvious implementation attributes every swept row to the SWEEPING session.
+        That would silently rewrite history in the audit stream, which is worse than the
+        leak being fixed. The id is recovered from the filename instead.
+        """
+        _append("s-ghost", "ghost-row", buf_env)
+        self._age(_buffer_path("s-ghost", buf_env), 90000)
+        _append("s-sweeper", "sweeper-row", buf_env)
+        proc = subprocess.run(["python3", str(FLUSH), "s-sweeper"], capture_output=True,
+                              text=True, timeout=60, env={**os.environ, **buf_env})
+        log = (Path(buf_env["WRIT_LOG_DIR"]) if buf_env.get("WRIT_LOG_DIR") else None)
+        assert "ghost-row" in proc.stdout and "sweeper-row" in proc.stdout, proc.stdout
+        assert log is not None
+
+    def test_a_recent_buffer_from_another_session_is_left_alone(self, buf_env) -> None:
+        """Anti-vacuity, and the actual risk of sweeping: a live concurrent session's
+        buffer must not be taken out from under it. Only age licenses the sweep."""
+        _append("s-other-live", "not-yours", buf_env)
+        _append("s-mine", "mine", buf_env)
+        proc = subprocess.run(["python3", str(FLUSH), "s-mine"], capture_output=True,
+                              text=True, timeout=60, env={**os.environ, **buf_env})
+        assert "not-yours" not in proc.stdout, "a live session's buffer was swept"
+        assert _buffer_path("s-other-live", buf_env).exists()
+
+    def test_an_abandoned_claim_is_swept_too(self, buf_env) -> None:
+        """The leak had two shapes: an abandoned BUFFER and an abandoned CLAIM (a drain
+        that died mid-flight in a session that never came back). Both are unreachable."""
+        _append("s-lost-claim", "claim-row", buf_env)
+        buf = _buffer_path("s-lost-claim", buf_env)
+        claim = Path(f"{buf}.inflight.4242.7")
+        buf.rename(claim)
+        self._age(claim, 90000)
+        _append("s-now", "now-row", buf_env)
+        proc = subprocess.run(["python3", str(FLUSH), "s-now"], capture_output=True,
+                              text=True, timeout=60, env={**os.environ, **buf_env})
+        assert "claim-row" in proc.stdout, "an abandoned claim was never collected"
+        assert not claim.exists()
 
 
 class TestFailureIsolation:

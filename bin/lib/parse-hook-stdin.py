@@ -115,7 +115,13 @@ def _emit_shell(result: dict) -> None:
     shlex.quote guarantees envelope values cannot be shell-executed by the eval.
     """
     def _q(v: object) -> str:
-        return shlex.quote("" if v is None else str(v))
+        # Non-strings collapse to "" here and in parse-hook-stdin.jq's q(), which is the
+        # ONLY way the two arms agree without reimplementing python's repr in jq: they
+        # disagreed on booleans (True vs true), containers ([1, 2] vs [1,2]) and floats
+        # (1.0 vs 1). Every field below is a string in CC's schema, so a non-string is
+        # malformed input and "" is already how hooks spell absent. HOOK_ENVELOPE below
+        # still carries the raw JSON, so nothing is actually lost.
+        return shlex.quote(v if isinstance(v, str) else "")
 
     # Mirror detect_session_id's preference: agent_id (sub-agent isolation) else session_id.
     session_id = result["agent_id"] or result["session_id"]

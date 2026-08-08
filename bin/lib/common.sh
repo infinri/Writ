@@ -258,7 +258,7 @@ WRIT_BLACKBOX_MAX_BYTES_DEFAULT=268435456
 # bytes), which is what lets several hooks share one buffer with no lock. That holds
 # only while rows stay under the limit, so the writer TRUNCATES rather than trusting
 # callers, and records that it truncated (a silently cut row is a lie; a marked one is
-# data). Fields use the same unit/record separators _WRIT_EVENT_BUF already uses.
+# data). Fields are separated by the unit/record separators defined just below.
 WRIT_EVENT_ROW_MAX=3072
 WRIT_EVENT_FIELD_MAX=400
 
@@ -809,12 +809,13 @@ hook_timer_end() {
 hook_instrument() {
   _WRIT_HOOK_NAME="${1:-$(basename "${BASH_SOURCE[1]:-$0}" .sh)}"
   _WRIT_HOOK_START_NS=$(hook_timer_start)
-  # Event buffer: log_gate_decision appends here instead of spawning its own
-  # python, so a hook that both decides and times out pays ONE spawn at exit
-  # rather than two. Measured: a friction-append spawn is ~26ms, and 11 of the
-  # instrumented hooks emit both events. mktemp failure leaves the buffer empty,
-  # which falls back to the direct per-event spawn.
-  _WRIT_EVENT_BUF="$(mktemp 2>/dev/null || echo "")"
+  # NO PER-HOOK TEMP FILE. An earlier design gave each hook its own mktemp scratch
+  # buffer for log_gate_decision to append to. That buffer became dead when both row
+  # kinds moved to the session-scoped buffer (writ_event_buffer_path), but the mktemp
+  # call outlived its reader and kept spawning a process on EVERY instrumented hook:
+  # ~15 wasted execve per file write, in the cycle whose entire purpose was removing
+  # exactly those. Found by strace, not by reading, because the variable was still
+  # assigned and still cleaned up and so looked alive.
   _WRIT_EXIT_HANDLERS=()
   trap '_writ_hook_exit_trap' EXIT
   # A signal-killed hook used to record exit_code 0: the shell runs the EXIT trap with
@@ -884,7 +885,6 @@ _writ_hook_exit_trap() {
   # gate_decision via log_gate_decision) are appended to the session buffer and emitted
   # by one drain per turn. The python block that used to live here ran on every write
   # that recorded a decision, and with its git children it measured 203ms per write.
-  [ -n "${_WRIT_EVENT_BUF:-}" ] && rm -f "$_WRIT_EVENT_BUF" 2>/dev/null || true
   exit "$rc"
 }
 
