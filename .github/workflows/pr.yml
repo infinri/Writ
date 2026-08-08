@@ -1,8 +1,14 @@
 name: PR checks
 
+# Fires for every branch in the develop -> release -> main flow, on pull requests
+# AND on direct pushes. The push trigger is load-bearing here: releases are merged
+# locally and pushed rather than opened as pull requests, so a pull-request-only
+# trigger meant the merge that actually ships never ran the checks.
 on:
   pull_request:
-    branches: [main]
+    branches: [main, develop, 'release/**']
+  push:
+    branches: [main, develop, 'release/**']
 
 jobs:
   test:
