@@ -18,6 +18,7 @@ module that reaches urllib pays more for the import than for the work.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -43,6 +44,15 @@ PROMPT_PATH_HOOKS = [
 PYTHON_BUDGET = 11
 # Baseline before this cycle touched the prompt path, so the ratchet demonstrably ratchets.
 BASELINE_PYTHON = 13
+#
+# MEASURED BEFORE/AFTER for the friction change, clean cache, identical envelope,
+# writ-rag-inject.sh alone: python 6 -> 5, git 32 -> 0, execve 71 -> 40. The git figure is
+# the interesting one: friction-append's `emit` shelled out to resolve the log root, the
+# same pattern that dominated the write path, so removing the spawn took its children too.
+#
+# I briefly set this ratchet to 10 on the strength of a warm-session probe that showed
+# 4 -> 3. The clean-cache path is different and only reached 11, so 10 would have been a
+# number I wanted rather than one I measured. Lower it when the next conversion earns it.
 
 # Inline `python3 -c` sites that still parse JSON in writ-rag-inject.sh. Each is ~14ms
 # (9.5 interpreter + 4.9 for `import json`) to answer one question jq answers in 2.3.
@@ -62,12 +72,19 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _python_starts(hook: str) -> int:
+def _python_starts(hook: str, cache_dir: Path) -> int:
     trace = Path("/tmp") / f"writ-prompt-budget-{hook}.trace"
+    # ISOLATED CACHE, and this is load-bearing rather than tidiness. Without it the hooks
+    # read and write the real session cache, so the count depends on state left by earlier
+    # runs (a session that has already tripped should-skip takes a shorter path and starts
+    # fewer interpreters). The first version of this file omitted it and measured a
+    # different number than a standalone probe, which is what exposed it.
+    env = {**os.environ, "WRIT_CACHE_DIR": str(cache_dir),
+           "WRIT_LOG_ROOT": str(cache_dir / "logs")}
     subprocess.run(
         ["strace", "-f", "-qq", "-e", "trace=execve", "-o", str(trace),
          "bash", str(HOOKS / hook)],
-        input=ENVELOPE, capture_output=True, text=True, timeout=180,
+        input=ENVELOPE, capture_output=True, text=True, timeout=180, env=env,
     )
     if not trace.exists():
         pytest.skip(f"strace produced no trace for {hook}")
@@ -77,9 +94,11 @@ def _python_starts(hook: str) -> int:
 
 
 @pytest.fixture(scope="module")
-def python_total() -> int:
+def python_total(tmp_path_factory) -> int:
+    cache = tmp_path_factory.mktemp("prompt-budget-cache")
     return sum(
-        _python_starts(hook) for hook in PROMPT_PATH_HOOKS if (HOOKS / hook).exists()
+        _python_starts(hook, cache) for hook in PROMPT_PATH_HOOKS
+        if (HOOKS / hook).exists()
     )
 
 
@@ -97,10 +116,23 @@ class TestPromptPathBudget:
             f"ratchet {PYTHON_BUDGET} is not below the {BASELINE_PYTHON} baseline"
         )
 
-    def test_the_counter_can_see_python(self) -> None:
+    def test_the_counter_can_see_python(self, tmp_path) -> None:
         """Anti-vacuity: a counter stuck at zero would satisfy every budget above."""
-        assert _python_starts("writ-rag-inject.sh") > 0, (
+        assert _python_starts("writ-rag-inject.sh", tmp_path) > 0, (
             "counted zero python starts for the RAG hook, which certainly starts python"
+        )
+
+    def test_the_count_is_stable_across_runs(self, tmp_path) -> None:
+        """A ratchet that drifts is a ratchet nobody trusts.
+
+        Two runs against SEPARATE clean caches must agree. Against a shared cache they do
+        not: the second run sees state the first left behind and can take a shorter path.
+        """
+        a = _python_starts("writ-rag-inject.sh", tmp_path / "a")
+        b = _python_starts("writ-rag-inject.sh", tmp_path / "b")
+        assert a == b, (
+            f"python starts varied between identical clean-cache runs ({a} vs {b}); the "
+            f"measurement depends on leftover state and cannot anchor a budget"
         )
 
 

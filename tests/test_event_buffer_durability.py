@@ -360,6 +360,85 @@ class TestConcurrentDrains:
         assert not orphan.exists(), "the adopted claim was left on disk"
 
 
+class TestFrictionRowsRideAlong:
+    """friction-append.py was a SECOND interpreter start whose only job was appending
+    the RAG hook's log lines: 35.3ms measured, of which ~22ms is the interpreter plus
+    `import writ.shared.logging` (52 modules). The drain already imports that router once
+    per turn for the other row kinds, so these rows ride along at no extra cost.
+
+    The risk this class covers is not speed, it is that a deferred row must still land in
+    the SAME stream, under its OWN session, with its own fields intact.
+    """
+
+    def _append(self, session: str, entry: dict, env) -> subprocess.CompletedProcess:
+        return _bash(
+            f'writ_friction_buffer_append "{session}" '
+            f"{json.dumps(json.dumps(entry))}", env
+        )
+
+    def _drain(self, session: str, env) -> list[dict]:
+        proc = subprocess.run(["python3", str(FLUSH), session], capture_output=True,
+                              text=True, timeout=60, env={**os.environ, **env})
+        return [json.loads(ln) for ln in proc.stdout.splitlines() if ln.strip()]
+
+    def test_a_buffered_entry_survives_the_drain(self, buf_env) -> None:
+        entry = {"session": "s-fr", "mode": "work", "event": "rag_query",
+                 "query_source": "user_prompt", "rule_count": 7}
+        self._append("s-fr", entry, buf_env)
+        rows = self._drain("s-fr", buf_env)
+        assert any(r.get("entry", {}).get("event") == "rag_query" for r in rows), (
+            f"the friction entry did not survive the buffer: {rows}"
+        )
+
+    def test_the_entrys_own_session_is_preserved(self, buf_env) -> None:
+        """The trap in deferring these. emit() takes the session as an argument, so the
+        obvious drain files every friction row under the DRAINING session. A row logged
+        by a sub-agent would then be attributed to its parent, silently."""
+        entry = {"session": "sub-agent-42", "mode": "work", "event": "rag_query"}
+        self._append("s-parent", entry, buf_env)
+        rows = self._drain("s-parent", buf_env)
+        friction = [r for r in rows if r.get("event") == "friction_event"]
+        assert friction, f"no friction row drained: {rows}"
+        assert friction[0]["entry"]["session"] == "sub-agent-42", (
+            "the row was refiled under the draining session"
+        )
+
+    def test_an_oversized_entry_is_refused_rather_than_truncated(self, buf_env) -> None:
+        """Truncated JSON is unparseable, so truncating here would convert a slow row
+        into a LOST row. The append returns non-zero and the caller spawns instead."""
+        entry = {"session": "s-big", "event": "rag_query", "blob": "x" * 4000}
+        proc = self._append("s-big", entry, buf_env)
+        assert proc.returncode != 0, (
+            "an oversized friction entry was accepted; if it was truncated, the drain "
+            "would silently drop it as invalid JSON"
+        )
+        assert not _buffer_path("s-big", buf_env).exists() or \
+            "x" * 100 not in _buffer_path("s-big", buf_env).read_text(errors="replace")
+
+    def test_a_normal_entry_is_accepted(self, buf_env) -> None:
+        """Anti-vacuity for the test above: if every entry were refused, the refusal
+        test would pass while the optimisation did nothing."""
+        entry = {"session": "s-ok", "event": "rag_query", "rule_count": 3}
+        assert self._append("s-ok", entry, buf_env).returncode == 0
+
+    def test_a_separator_in_the_payload_cannot_forge_a_row(self, buf_env) -> None:
+        """Same argument SEC-INJ-LOG-001 makes about newlines in a log line."""
+        entry = {"session": "s-sep", "event": "rag_query",
+                 "note": "a\x1eb\x1fc"}
+        self._append("s-sep", entry, buf_env)
+        rows = self._drain("s-sep", buf_env)
+        friction = [r for r in rows if r.get("event") == "friction_event"]
+        assert len(friction) == 1, f"payload separators forged extra rows: {rows}"
+
+    def test_a_malformed_entry_does_not_strand_its_neighbours(self, buf_env) -> None:
+        _bash('writ_friction_buffer_append "s-mix" \'{"broken\'', buf_env)
+        self._append("s-mix", {"session": "s-mix", "event": "rag_query"}, buf_env)
+        rows = self._drain("s-mix", buf_env)
+        assert any(r.get("event") == "friction_event" for r in rows), (
+            f"one unparseable entry stranded the good row beside it: {rows}"
+        )
+
+
 class TestAbandonedSessionsAreSweptUp:
     """A session that ends without a Stop or SessionEnd never drains itself.
 

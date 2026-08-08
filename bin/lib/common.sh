@@ -301,6 +301,36 @@ writ_event_buffer_append() {
     return 0
 }
 
+# Buffer one COMPLETE friction entry (a JSON object as produced by the hook's row
+# builder) instead of spawning friction-append.py to consume it.
+#
+# Measured 2026-08-07: that spawn is 35.3ms on the prompt path, and almost none of it is
+# work. The interpreter floor is 9.5ms and `import writ.shared.logging` adds 12.5 more
+# (52 modules, including ipaddress and locale) to append one line. The drain already
+# imports it once per turn for the other row kinds, so these rows ride along for free.
+#
+# RETURNS 1 WHEN THE CALLER MUST SPAWN INSTEAD, which is the whole safety argument.
+# The other row kinds truncate an oversized field and mark it, because a cut hook name is
+# still readable data. Truncating JSON produces INVALID JSON, which the drain skips, so
+# the same policy here would silently convert a slow row into a lost row. Oversized
+# entries take the old direct path: correct, rarer, and slower only when it happens.
+writ_friction_buffer_append() {
+    local session="${1:-}" entry="${2:-}"
+    [ -n "$entry" ] || return 0
+    # A separator inside the payload would forge a second row (SEC-INJ-LOG-001's argument
+    # about newlines in a log line). json.dumps already escapes newlines, so this guards
+    # a hand-built entry rather than the normal path.
+    entry="${entry//[$'\x1e\x1f\n\r']/ }"
+    local row
+    printf -v row 'friction_event\x1f%s\x1e' "$entry"
+    [ "${#row}" -le "$WRIT_EVENT_ROW_MAX" ] || return 1
+    local buf
+    buf="$(writ_event_buffer_path "$session")"
+    mkdir -p "${buf%/*}" 2>/dev/null || true
+    printf '%s' "$row" >> "$buf" 2>/dev/null || true
+    return 0
+}
+
 # Drain a session's buffer through the real logging package, in ONE interpreter start.
 # Called at turn end (Stop), and again at SessionEnd for a turn that never reached Stop.
 writ_event_buffer_flush() {

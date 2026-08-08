@@ -28,6 +28,7 @@ RECORD_SEP = "\x1e"
 FIELD_SEP = "\x1f"
 FIELDS = 6       # hook_execution: kind, hook, duration_ms, exit_code, mode, truncated
 GATE_FIELDS = 7  # gate_decision: kind, gate, decision, reason, target, mode, decided_at
+FRICTION_FIELDS = 2  # friction_event: kind, entry (one complete JSON object)
 
 
 BUF_PREFIX = "writ-events-"
@@ -89,6 +90,17 @@ def _parse(raw: str) -> list[dict]:
                 # or diffing on this needs int() first.
                 "decided_at": decided_at,
             })
+        elif parts[0] == "friction_event" and len(parts) == FRICTION_FIELDS:
+            # A complete entry dict, buffered by writ_friction_buffer_append instead of
+            # spawning friction-append.py (35.3ms measured) to append one line. Carried
+            # as JSON rather than as fields because the entry's shape varies by event.
+            try:
+                entry = json.loads(parts[1])
+            except ValueError:
+                # Same policy as a garbled row above: skip this one, keep its neighbours.
+                continue
+            if isinstance(entry, dict):
+                rows.append({"event": "friction_event", "entry": entry})
     return rows
 
 
@@ -327,7 +339,17 @@ def _drain(session_id: str, path: str, emit) -> int:
     for row in rows:
         if emit is not None:
             try:
-                if row["event"] == "hook_execution":
+                if row["event"] == "friction_event":
+                    # Mirrors friction-append.py's _emit_entry: session and mode come
+                    # from the ENTRY, not from this drain, or a row buffered by one
+                    # session would be filed under whichever session drained it. `ts` is
+                    # dropped because the router stamps its own.
+                    entry = row["entry"]
+                    emit(None, entry.get("event", ""), entry.get("session", ""),
+                         entry.get("mode"),
+                         **{k: v for k, v in entry.items()
+                            if k not in ("session", "mode", "event", "ts")})
+                elif row["event"] == "hook_execution":
                     emit(None, "hook_execution", session_id, row["mode"],
                          hook_name=row["hook_name"], duration_ms=row["duration_ms"],
                          exit_code=row["exit_code"])

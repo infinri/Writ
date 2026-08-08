@@ -399,7 +399,7 @@ REMAINING_BUDGET=$(parsed_field "$CACHE" "remaining_budget"); REMAINING_BUDGET="
 # spawn turns the bundle meta into JSON lines (same events/fields/delivery tags as the
 # prior per-channel log_rag_query_event / always_on_inject) and pipes them to the
 # canonical friction-append.py writer (single-source path resolution; no inline marker-walk).
-printf '%s' "$BUNDLE" | WRIT_SID="$SESSION_ID" WRIT_MODE="${CURRENT_MODE:-}" WRIT_EFFORT="$EFFORT" python3 -c "
+FRICTION_ROWS=$(printf '%s' "$BUNDLE" | WRIT_SID="$SESSION_ID" WRIT_MODE="${CURRENT_MODE:-}" WRIT_EFFORT="$EFFORT" python3 -c "
 import json, os, sys
 try:
     b = json.load(sys.stdin)
@@ -431,7 +431,29 @@ if mm is not None:
     lines.append(rag(mm.get('query_source', ''), mm))
 for e in lines:
     print(json.dumps(e))
-" 2>>"$WRIT_HOOK_LOG_SINK" | python3 "$FA" --stdin-jsonl 2>>"$WRIT_HOOK_LOG_SINK" || true
+" 2>>"$WRIT_HOOK_LOG_SINK") || true
+# The builder's rows used to be piped straight into friction-append.py, a SECOND
+# interpreter start whose only job was appending them. Measured 35.3ms on the prompt path,
+# and almost none of it work: the interpreter floor is 9.5ms and `import
+# writ.shared.logging` adds 12.5 more (52 modules) to append a line. The rows go to the
+# session event buffer instead (a bash append, no process) and the once-per-turn drain
+# emits them through the SAME writ.shared.logging router, so classification, path
+# resolution and the durable fallback are unchanged.
+if [ -n "$FRICTION_ROWS" ]; then
+    FRICTION_OVERSIZED=""
+    while IFS= read -r _frow; do
+        [ -n "$_frow" ] || continue
+        # A row too large to append atomically returns 1 rather than being truncated:
+        # truncated JSON is unparseable, so the drain would drop it, turning a slow row
+        # into a lost one. Those take the original spawn, which is what this collects.
+        writ_friction_buffer_append "$SESSION_ID" "$_frow" \
+            || FRICTION_OVERSIZED="${FRICTION_OVERSIZED}${_frow}"$'\n'
+    done <<< "$FRICTION_ROWS"
+    if [ -n "$FRICTION_OVERSIZED" ]; then
+        printf '%s' "$FRICTION_OVERSIZED" \
+            | python3 "$FA" --stdin-jsonl 2>>"$WRIT_HOOK_LOG_SINK" || true
+    fi
+fi
 
 # 8a. Always-on bundle (rendered + token-tracked server-side; friction logged above).
 if [ -n "$AO_BLOCK" ]; then
