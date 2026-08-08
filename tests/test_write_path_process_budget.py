@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -93,8 +94,22 @@ BASELINE_TOTAL = 349
 # those. Measured 194 after, so the old figure was 214 and this ratchet was ONE process
 # from failing while the waste was invisible. Found by strace, not by reading, because
 # the variable was still assigned and still cleaned up.
+#
+# 200 -> 180 after replacing `date +%s%N` with bash 5's EPOCHREALTIME. hook_timer_start
+# and the exit trap each called it, so it ran twice on every instrumented hook: 20 of the
+# 24 date processes on a write. Measured 194 -> 171 attempts, 163 -> 143 real processes.
+#
+# WHAT THIS NUMBER ACTUALLY COUNTS, because the name is misleading and cost us a wrong
+# figure in three commit messages. It counts execve ATTEMPTS, and a binary not found in
+# the first PATH entry produces one failed execve per directory tried, all inside the SAME
+# forked child. Those misses are cheap syscalls, NOT processes. On this machine `git`
+# resolves 8th, so 4 real git calls appeared as 32. Attempts are still the right thing to
+# ratchet (they are deterministic and strictly ordered by real cost), but never quote them
+# as a process count: REAL_PROCESS_BUDGET below is the honest figure.
 PYTHON_BUDGET = 17
-TOTAL_BUDGET = 200
+TOTAL_BUDGET = 180
+# Successful execve only: one per process actually created.
+REAL_PROCESS_BUDGET = 155
 
 # Where this is going, and what closes the gap. Each item is a measured count of python
 # starts that actually EXECUTE on a file write, not a grep of the hook source:
@@ -145,6 +160,32 @@ def _counts(hook: str) -> tuple[int, int]:
     return python, total
 
 
+_EXECVE_OK = re.compile(r"\)\s+= 0$")
+
+
+def _real_processes(hook: str) -> int:
+    """Successful execve only. See the note at REAL_PROCESS_BUDGET: a PATH miss is a
+    failed execve inside an already-forked child, not a new process."""
+    trace = Path("/tmp") / f"writ-real-{hook}.trace"
+    subprocess.run(
+        ["strace", "-f", "-qq", "-e", "trace=execve", "-o", str(trace),
+         "bash", str(HOOKS / hook)],
+        input=ENVELOPE, capture_output=True, text=True, timeout=180,
+    )
+    if not trace.exists():
+        pytest.skip(f"strace produced no trace for {hook}")
+    text = trace.read_text(errors="replace")
+    trace.unlink(missing_ok=True)
+    return sum(1 for ln in text.splitlines() if "execve(" in ln and _EXECVE_OK.search(ln))
+
+
+@pytest.fixture(scope="module")
+def real_total() -> int:
+    return sum(
+        _real_processes(hook) for hook in WRITE_PATH_HOOKS if (HOOKS / hook).exists()
+    )
+
+
 @pytest.fixture(scope="module")
 def totals() -> tuple[int, int]:
     py = tot = 0
@@ -193,7 +234,31 @@ class TestProcessBudget:
     def test_total_processes_within_budget(self, totals) -> None:
         _, total = totals
         assert total <= TOTAL_BUDGET, (
-            f"{total} processes per write exceeds the {TOTAL_BUDGET} baseline"
+            f"{total} execve attempts per write exceeds the {TOTAL_BUDGET} baseline"
+        )
+
+    def test_real_process_count_within_budget(self, real_total) -> None:
+        """The honest figure. See REAL_PROCESS_BUDGET: the attempts ratchet above counts
+        PATH-search misses, which are syscalls rather than processes."""
+        assert real_total <= REAL_PROCESS_BUDGET, (
+            f"{real_total} real processes per write exceeds {REAL_PROCESS_BUDGET}"
+        )
+
+    def test_real_processes_never_exceed_attempts(self, totals, real_total) -> None:
+        """The invariant that actually holds: every real process is one successful
+        execve, so it is a subset of the attempts.
+
+        This first asserted attempts > real, which passed alone and FAILED in a full
+        sweep at 135 == 135. That was a bug in the test, not the code: the gap is
+        PATH-search misses, so its size depends on where binaries sit on the runner's
+        PATH. Under the sweep everything resolved first try and the gap was legitimately
+        zero. A test that asserts a property of the machine will fail on a different
+        machine and teach nothing.
+        """
+        _, attempts = totals
+        assert 0 < real_total <= attempts, (
+            f"real processes ({real_total}) must be non-zero and cannot exceed execve "
+            f"attempts ({attempts}); a violation means one counter is broken"
         )
 
     def test_the_counter_can_see_processes(self) -> None:
@@ -243,6 +308,15 @@ class TestInstrumentationSpawnsNothing:
         assert offenders == [], (
             f"hook_instrument spawned mktemp again, costing 2 execve on each of the 10 "
             f"instrumented write-path hooks: {offenders}"
+        )
+
+    def test_instrumenting_a_hook_spawns_no_date(self, tmp_path) -> None:
+        """hook_timer_start ran `date +%s%N`, and the exit trap ran it again, so it cost
+        two processes on every instrumented hook. bash 5's EPOCHREALTIME is a variable."""
+        lines = self._execve_lines(tmp_path)
+        offenders = [ln for ln in lines if "/date" in ln]
+        assert offenders == [], (
+            f"hook_instrument spawned date again; EPOCHREALTIME makes this free: {offenders}"
         )
 
     def test_the_trace_is_not_empty(self, tmp_path) -> None:

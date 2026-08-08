@@ -760,8 +760,28 @@ log_friction_event() {
 # ── Hook timing ─────────────────────────────────────────────────────────────
 # Records start time. Call at the beginning of a hook.
 # Usage: HOOK_START_NS=$(hook_timer_start)
+# Nanoseconds since the epoch, with NO process on the normal path.
+#
+# `date +%s%N` is 1 fork+exec, and it ran twice per instrumented hook (start and exit
+# trap): 20 of the 24 date processes on a file write. bash 5 exposes EPOCHREALTIME as a
+# variable, so the common case costs nothing.
+#
+# LOCALE: EPOCHREALTIME's decimal separator follows LC_NUMERIC and IS a comma in some
+# locales, so the split matches either character rather than assuming a dot. Getting this
+# wrong would not error, it would silently produce a garbage duration.
+# The microsecond field is always 6 digits, hence the fixed "000" to reach nanoseconds.
+_writ_now_ns() {
+  local t="${EPOCHREALTIME:-}"
+  case "$t" in
+    *[.,]*) printf '%s%s000\n' "${t%%[.,]*}" "${t#*[.,]}" ;;
+    ?*)     printf '%s000000000\n' "$t" ;;
+    # bash 4 or a stripped environment: the old path, still correct, just slower.
+    *)      date +%s%N 2>/dev/null || python3 -c "import time; print(int(time.time()*1e9))" ;;
+  esac
+}
+
 hook_timer_start() {
-  date +%s%N 2>/dev/null || python3 -c "import time; print(int(time.time()*1e9))"
+  _writ_now_ns
 }
 
 # Logs hook_execution event with duration. Call before exit.
@@ -865,7 +885,7 @@ _writ_hook_exit_trap() {
   done
 
   local start_ns="${_WRIT_HOOK_START_NS:-0}" now_ns dur_ms
-  now_ns=$(date +%s%N 2>/dev/null || echo 0)
+  now_ns=$(_writ_now_ns 2>/dev/null || echo 0)
   if [ "${start_ns:-0}" -gt 0 ] 2>/dev/null && [ "$now_ns" -gt 0 ] 2>/dev/null; then
     dur_ms=$(( (now_ns - start_ns) / 1000000 ))
   else
