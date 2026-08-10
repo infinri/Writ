@@ -535,7 +535,14 @@ class TestPromoteCandidateBinding:
     """/session/{id}/promote-candidate must refuse a token bound to a pending phase
     gate (the cross-action confusion the plan calls out: a plan approval spent to
     promote a decision-memory candidate) and accept one minted with gate="" (no phase
-    gate pending)."""
+    gate pending).
+
+    Third case added after cycle 1 shipped, as a DELIBERATE DEVIATION from plan.md,
+    which specified "A pre-binding token (no line 2 at all) is accepted as before" for
+    this route: an unbound token is now refused here too. Keeping it accepted left the
+    exact fail-open branch class this cycle deleted from the advance route sitting on the
+    route whose side effect is a bible/ canon write, so anything able to put one line
+    into /tmp/writ-gate-token-<sid> held an unbound approval for Writ's own memory."""
 
     @pytest.mark.asyncio
     async def test_a_token_bound_to_a_phase_gate_is_refused(self, monkeypatch):
@@ -580,6 +587,70 @@ class TestPromoteCandidateBinding:
                 sid, SessionPromoteCandidateRequest(candidate_id="cand-1", token=token)
             )
             assert result.get("promoted") is True
+
+    @pytest.mark.asyncio
+    async def test_an_unbound_one_line_token_is_refused_before_any_canon_write(self, monkeypatch):
+        """The pre-binding one-line file: refused, with the reason the shared table owns.
+
+        promote_candidate is stubbed to report success, so the fail-open state this test
+        was written against does not merely return a different message -- it returns
+        promoted=True and records a call. That is what makes the assertion below about
+        the stub NOT being called the load-bearing one: the refusal has to happen before
+        the canon write, not be reported after it.
+        """
+        import writ.promotion as promotion_module
+        import writ.server as server_module
+        from writ.server import SessionPromoteCandidateRequest
+        from writ.server.routes.gate import session_promote_candidate
+        from writ.session.approval_workflow import _BINDING_REFUSAL_REASONS
+        from writ.session.gate_token import BINDING_UNBOUND, gate_token_path
+
+        promote_calls: list[tuple] = []
+        events: list[str] = []
+
+        async def _stub_promote(*args, **_kwargs):
+            promote_calls.append(args)
+            return {"promoted": True, "graduated_via": "test-stub"}
+
+        monkeypatch.setattr(server_module, "_db", object())
+        monkeypatch.setattr(server_module, "_pipeline", object())
+        monkeypatch.setattr(promotion_module, "promote_candidate", _stub_promote)
+        monkeypatch.setattr(
+            server_module, "log_friction_event",
+            lambda session_id=None, mode=None, event="", **extra: events.append(event),
+        )
+
+        sid = _sid("promote-unbound")
+        with _mint_cleanup(sid):
+            token = uuid.uuid4().hex
+            with open(gate_token_path(sid), "w") as f:
+                f.write(token + "\n")  # exactly what the pre-cycle writer wrote
+
+            result = await session_promote_candidate(
+                sid, SessionPromoteCandidateRequest(candidate_id="cand-1", token=token)
+            )
+            assert result.get("promoted") is False
+            assert promote_calls == [], (
+                "an unbound token must be refused BEFORE promote_candidate runs; a canon "
+                "write cannot be undone by a message"
+            )
+            # The reason text is the CLI's, so the two gate routes and the CLI cannot
+            # drift into describing one refusal three ways. Only the fixed prefix is
+            # pinned: the {target} the route fills in is its own wording.
+            error = result.get("error") or ""
+            reason_prefix = _BINDING_REFUSAL_REASONS[BINDING_UNBOUND].split("{target}")[0]
+            assert reason_prefix in error, (
+                f"the refusal must come from _BINDING_REFUSAL_REASONS[{BINDING_UNBOUND!r}]; "
+                f"got {error!r}"
+            )
+            assert "approve again" in error.lower()
+            # Capability 14 on this route: the unbound class is named in the log, so a
+            # fail-closed promotion gate is distinguishable from an absent token (which
+            # logs agent_self_approval_blocked) and from a phase-bound one.
+            assert BINDING_UNBOUND in events, (
+                f"the unbound refusal must log its own class; got {events}"
+            )
+            assert "candidate_promotion_gate_bound" not in events
 
 
 # ---------------------------------------------------------------------------

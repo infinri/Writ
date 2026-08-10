@@ -30,6 +30,7 @@ from writ.session.approval_workflow import (
     _GATE_VALIDATORS,
     apply_phase_advance,
 )
+from writ.session.gate_token import BINDING_UNBOUND
 from writ.session.locators import _find_plan_md, resolve_project_root
 from writ.session.mode_engine import MODE_CONFIG, _next_pending_gate
 
@@ -394,9 +395,51 @@ async def session_promote_candidate(
     # confusion, not merely a cross-gate one. A token whose line 2 names a gate was
     # minted while that gate was pending and belongs to it; promotion requires a token
     # minted with no phase gate pending, which is the state this route is actually used
-    # in. A pre-binding token (no line 2 at all) is accepted as before.
+    # in.
+    #
+    # AN UNBOUND TOKEN IS REFUSED HERE TOO, a deliberate deviation from plan.md, which
+    # said the pre-binding format "is accepted as before" on this route. Accepting it was
+    # the same fail-open branch class deleted from the advance route, on the route whose
+    # side effect is a bible/ canon write rather than a phase bump: a file recording
+    # nothing about what it authorizes cannot be checked against anything, so anything
+    # able to put one line into /tmp/writ-gate-token-<sid> held an unbound approval for
+    # Writ's own memory. The production hook's only writer always mints three lines, so
+    # nothing legitimate took that branch. Reason text comes from the CLI's table, so the
+    # two gate routes and the CLI cannot describe one refusal three ways.
+    #
+    # THE GATE HALF ONLY, NOT THE PLAN HALF. The advance route also refuses on plan
+    # drift, and that asymmetry is intended: the fingerprint on line 3 answers "does this
+    # approval still cover the plan the user was looking at", which is the right question
+    # for a phase gate whose artifact IS plan.md and the wrong one here. A promotion's
+    # artifact is the candidate's text, which this route re-runs through the structural
+    # gate below (edit-at-gate included); plan.md has no bearing on it. Enforcing drift
+    # here would refuse a promotion because an unrelated file changed -- a plausible
+    # interleaving, since the assistant may well be editing plan.md in the same turn --
+    # and would explain the refusal with a reason that is not about the promotion at all.
+    # The security gain would be nil: plan.md is agent-writable, the token is not, and
+    # one approval still authorizes exactly one promotion because success consumes it.
+    # The honest analogue would bind the candidate id into the token, which the mint
+    # cannot do: at approval time the hook knows the pending gate, not a candidate.
     binding = await asyncio.to_thread(server.read_gate_binding, session_id)
-    if binding is not None and binding[0]:
+    if binding is None:
+        await asyncio.to_thread(
+            server.log_friction_event,
+            session_id=session_id,
+            mode=None,
+            event=BINDING_UNBOUND,
+            event_target="promote_candidate",
+            candidate_id=candidate_id,
+        )
+        return {
+            "promoted": False,
+            # Nothing is consumed: the unbound file is left exactly as found, and the
+            # table's text already tells the user the only thing that helps, which is
+            # approving again so a bound token gets minted.
+            "error": _BINDING_REFUSAL_REASONS[BINDING_UNBOUND].format(
+                bound="", target="candidate-promotion",
+            ),
+        }
+    if binding[0]:
         await asyncio.to_thread(
             server.log_friction_event,
             session_id=session_id,
