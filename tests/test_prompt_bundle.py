@@ -18,6 +18,12 @@ import sys
 
 import pytest
 
+# autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
+# The `mode set work` call below sits behind a daemon-liveness skip, which is why the
+# sentinel probe that found the other 26 modules reported this one clean: with no daemon
+# listening the test skipped and never reached the deletion.
+from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
+
 SKILL_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 HOOK_SH = os.path.join(SKILL_ROOT, "hooks", "scripts", "writ-rag-inject.sh")
 

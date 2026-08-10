@@ -20,6 +20,9 @@ import pytest
 
 from writ.session.cache import mutate_cache
 
+# autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
+from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
+
 SKILL_DIR = (Path(__file__).resolve().parent.parent)
 DISPATCH_HOOK = SKILL_DIR / "hooks" / "scripts" / "writ-pre-write-dispatch.sh"
 SESSION_HELPER = str(SKILL_DIR / "bin" / "lib" / "writ-session.py")

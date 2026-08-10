@@ -31,6 +31,9 @@ from pathlib import Path
 
 import pytest
 
+# autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
+from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
+
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 COMMON_SH = SKILL_ROOT / "bin" / "lib" / "common.sh"
 WRIT_INSTALL = SKILL_ROOT / "bin" / "lib" / "writ_install.py"

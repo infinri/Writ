@@ -7,12 +7,19 @@ graph stays acyclic. The facade re-exports this surface, so the gate / approval 
 investigation callers resolve the names unchanged.
 """
 
+import glob
 import os
 import sys
 
 from writ.session.cache import _read_cache, _write_cache, mutate_cache, record_transition
 from writ.session.friction import _log_friction_event
-from writ.session.locators import PROJECT_ROOT_MARKERS, _find_debug_md, _find_plan_md
+from writ.session.locators import (
+    PLAN_HASH_UNREADABLE,
+    PROJECT_ROOT_MARKERS,
+    _find_debug_md,
+    _find_plan_md,
+    plan_md_hash,
+)
 
 
 # MODE_CONFIG is the single source of truth for per-mode gate behavior. A new
@@ -187,6 +194,49 @@ def _promote_root_cause_to_plan(session_id: str, mode: str) -> None:
             pass
 
 
+def _clear_gate_artifacts(project_root: str | None) -> None:
+    """Delete the on-disk `*.approved` artifacts of a project whose gate state was cleared.
+
+    An approval writes <project_root>/.claude/gates/<gate>.approved as an ARTIFACT
+    (approval_workflow.py); enforcement itself reads gates_approved from the cache. Clearing
+    only the cache therefore left the files behind, and the work-mode reminder in
+    writ-rag-inject.sh reads that directory straight off disk: in this repo the artifacts sat
+    approved for eighteen days, so the "plan gate pending" reminder could not fire for any
+    session in that window. Writes were still blocked correctly; what was lost was the
+    message telling the user which gate they were stuck behind.
+
+    Removes only `*.approved` directly inside that directory: never the directory itself,
+    never a neighbouring file. Never raises -- it runs after the durable cache write, so a
+    failure here must not surface as a failed mode change.
+
+    The DIRECTORY is checked on its RESOLVED path, not on the joined string. glob and
+    unlink resolve intermediate components, so a `.claude/gates` symlinked elsewhere made
+    this delete files at the link TARGET, anywhere on the filesystem, which is the exact
+    opposite of what the paragraph above promises. A gates directory that does not resolve
+    back inside the project root is refused outright, and nothing in it is touched.
+
+    Individual entries need no such check, because os.unlink never follows the FINAL path
+    component: removing a `*.approved` symlink removes the entry and never the file it
+    points at. Skipping an escaping entry instead would be the worse failure. Six non-test
+    call sites read these files as truth and every one of them tests with a symlink-
+    FOLLOWING call, so a surviving `phase-a.approved` link keeps asserting an approval the
+    cache no longer holds: validate-rules-helper.py `_derive_phase` would still report the
+    session past the plan gate. That cache-versus-disk divergence is the whole defect this
+    cleanup exists to close.
+    """
+    if not project_root:
+        return
+    try:
+        root = os.path.realpath(project_root)
+        gate_dir = os.path.realpath(os.path.join(root, ".claude", "gates"))
+        if not gate_dir.startswith(root.rstrip(os.sep) + os.sep):
+            return
+        for path in glob.glob(os.path.join(gate_dir, "*.approved")):
+            os.unlink(path)
+    except OSError:
+        pass
+
+
 def _apply_mode_set(cache: dict, mode: str, is_orchestrator: bool = False) -> tuple:
     """Mutate `cache` in place for a fresh mode-set; return (old_mode, new_phase).
 
@@ -233,6 +283,20 @@ def _mode_set(session_id: str, mode: str, is_orchestrator: bool = False) -> None
     """
     with mutate_cache(session_id) as cache:
         old_mode, new_phase = _apply_mode_set(cache, mode, is_orchestrator=is_orchestrator)
+        project_root = cache.get("project_root")
+
+    # _apply_mode_set emptied gates_approved, so the .approved artifacts have to go with
+    # it or the disk keeps claiming an approval the session no longer has. Runs AFTER the
+    # durable write (same write-before-log ordering as the event below), which is what
+    # keeps _apply_mode_set the pure no-lock, no-I/O mutation its docstring promises.
+    #
+    # ASSUMES the mutate_cache block above is the OUTERMOST one for this session_id.
+    # mutate_cache is reentrant per session_id and defers the write to the outermost
+    # caller, so a future nested call would run this deletion while the new empty
+    # gates_approved is still only in memory: the files would be gone and a crash before
+    # the outer exit would leave the cache still claiming them approved. No call site
+    # nests today; a new one must move the cleanup out to its own outermost caller.
+    _clear_gate_artifacts(project_root)
 
     _log_friction_event(
         session_id, mode, "mode_change",
@@ -266,6 +330,14 @@ def _mode_init(session_id: str, mode: str, is_orchestrator: bool = False) -> Non
         # _mode_set) so the durable write happens at THIS block's exit, before the
         # friction event below (matching direct _mode_set's write-before-log order).
         old_mode, _ = _apply_mode_set(cache, mode, is_orchestrator=is_orchestrator)
+        project_root = cache.get("project_root")
+
+    # Only the routing path reaches here (the already-routed check above returns), so this
+    # clears artifacts exactly when _apply_mode_set emptied gates_approved. After the
+    # durable write, for the same reason as in _mode_set, and on the same assumption: the
+    # mutate_cache block above must be the OUTERMOST one for this session_id, or the files
+    # go before the emptied cache is durable.
+    _clear_gate_artifacts(project_root)
 
     # old_mode is always None here (guarded above), so the debug->work promote never
     # applies via this path; emit the mode_change event after the durable write.
@@ -280,7 +352,9 @@ def _mode_switch(session_id: str, mode: str) -> None:
     with mutate_cache(session_id) as cache:
         old_mode = cache.get("mode")
         old_phase = cache.get("current_phase")
+        project_root = cache.get("project_root")
         restored = False
+        pivoted = False
 
         # Save Work state when leaving Work
         if old_mode == "work" and mode != "work":
@@ -288,17 +362,40 @@ def _mode_switch(session_id: str, mode: str) -> None:
                 "phase": cache.get("current_phase"),
                 "gates_approved": cache.get("gates_approved", []),
                 "loaded_rule_ids_by_phase": cache.get("loaded_rule_ids_by_phase", {}),
+                # Fingerprint the plan these approvals were granted against. The key is
+                # ALWAYS written (None when there is no plan) so the return path can tell
+                # "no plan at pause" from "this state predates the fingerprint".
+                "plan_hash": plan_md_hash(project_root),
             }
 
         # Restore Work state when returning to Work
         if mode == "work" and cache.get("paused_work_state"):
             paused = cache["paused_work_state"]
-            cache["current_phase"] = paused["phase"]
-            cache["gates_approved"] = paused["gates_approved"]
-            cache["loaded_rule_ids_by_phase"] = paused.get("loaded_rule_ids_by_phase", {})
-            cache["paused_work_state"] = None
-            new_phase = paused["phase"]
-            restored = True
+            # Restore-or-re-arm is decided by the file, not by the model's word for it.
+            # Same bytes means the same work, so the detour costs nothing. Different bytes
+            # (which includes absent at exactly one end) means the plan pivoted while the
+            # session was away, and approvals granted against the old plan do not cover it.
+            #
+            # An UNREADABLE plan is never "the same": the fingerprint could not be taken,
+            # so equality here would be equality of two failures, not of two files, and the
+            # bytes may well have changed while the session was paused. Re-arming costs one
+            # re-approval; restoring on an unchecked file hands back approvals that may no
+            # longer cover the plan. Absent at both ends still restores: that is genuinely
+            # equal, because no plan means nothing pivoted.
+            current_hash = plan_md_hash(project_root)
+            if current_hash == paused.get("plan_hash") and current_hash != PLAN_HASH_UNREADABLE:
+                cache["current_phase"] = paused["phase"]
+                cache["gates_approved"] = paused["gates_approved"]
+                cache["loaded_rule_ids_by_phase"] = paused.get("loaded_rule_ids_by_phase", {})
+                cache["paused_work_state"] = None
+                new_phase = paused["phase"]
+                restored = True
+            else:
+                cache["current_phase"] = "planning"
+                cache["gates_approved"] = []
+                cache["paused_work_state"] = None
+                new_phase = "planning"
+                pivoted = True
         elif mode == "work":
             # No paused state -- fresh start
             cache["current_phase"] = "planning"
@@ -319,6 +416,14 @@ def _mode_switch(session_id: str, mode: str) -> None:
             record_transition(
                 cache, from_phase=old_phase, to_phase=new_phase, trigger="mode-switch", mode=mode
             )
+
+    # A pivot re-armed the cache to planning with nothing approved, so the artifacts go
+    # too. A RESTORE deliberately keeps them: those approvals were just restored and are
+    # still valid. After the durable write, as in _mode_set, and on the same assumption:
+    # the mutate_cache block above must be the OUTERMOST one for this session_id, or the
+    # files go before the re-armed cache is durable.
+    if pivoted:
+        _clear_gate_artifacts(project_root)
 
     _log_friction_event(
         session_id, mode, "mode_change",

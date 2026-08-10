@@ -141,6 +141,22 @@ class TestHookAutoRouteWiring:
             "hook must auto-route the classified mode via `mode init` ($MODE_HINT)"
         )
 
+    def test_hook_reroutes_mid_session_via_switch(self):
+        """The mid-session path must use `mode switch`, never `mode set`.
+
+        `mode set` runs _apply_mode_set, which clears gates_approved and
+        paused_work_state; routing a misclassified prompt through it would destroy an
+        approved plan and approved tests. `mode switch` saves them instead, so a false
+        positive costs a detour rather than the approvals.
+        """
+        body = self._body()
+        assert re.search(r'mode\s+switch\s+"\$MODE_HINT"', body), (
+            "hook must re-route a live session via `mode switch` ($MODE_HINT)"
+        )
+        assert not re.search(r'mode\s+set\s+"\$MODE_HINT"', body), (
+            "auto-route must never call `mode set`: it wipes approved gates"
+        )
+
     def test_directive_offers_investigate(self):
         body = self._body()
         # The 'set mode' directive must list investigate as an option.
@@ -161,14 +177,20 @@ class TestHookAutoRouteBehavior:
         env["WRIT_HOST"] = "localhost"
         env["WRIT_FRICTION_LOG"] = str(tmp_path / "friction.log")
         env["WRIT_NO_AUTOSTART"] = "1"  # do not let the hook spawn a daemon on the dead port
+        # cwd must stay inside tmp_path: `mode set` stamps cache["project_root"] from the
+        # process cwd, and clearing gate state deletes <project_root>/.claude/gates/
+        # *.approved, so inheriting pytest's cwd deleted the REAL repo's approval files.
+        sandbox = tmp_path / "sandbox"
+        (sandbox / ".claude" / "gates").mkdir(parents=True, exist_ok=True)
+        (sandbox / ".git").mkdir(exist_ok=True)
         if seed_mode:
             subprocess.run(
                 [sys.executable, HELPER, "mode", "set", seed_mode, sid],
-                env=env, check=True, capture_output=True, text=True,
+                env=env, check=True, capture_output=True, text=True, cwd=str(sandbox),
             )
         r = subprocess.run(
             ["bash", HOOK], input=json.dumps({"session_id": sid, "prompt": prompt}),
-            capture_output=True, text=True, env=env, timeout=30,
+            capture_output=True, text=True, env=env, timeout=30, cwd=str(sandbox),
         )
         mode = subprocess.run(
             [sys.executable, HELPER, "mode", "get", sid],
@@ -189,7 +211,34 @@ class TestHookAutoRouteBehavior:
         assert "investigate mode set automatically" not in r.stdout
         assert "work mode set automatically" in r.stdout
 
-    def test_explicit_mode_not_overridden(self, tmp_path):
-        r, mode = self._run(tmp_path, ASE_PROMPT, seed_mode="work")
+    def test_midsession_reroute_preserves_work_state(self, tmp_path):
+        """Contract change (mode-switch cycle): the auto-route MAY re-route a live
+        session between work and investigate, because the original once-per-session
+        behavior meant a mid-work discovery could never start an investigation. What
+        it must never do is destroy work state, so the property asserted here moved
+        from "the mode cannot change" to "the approved gates survive the change".
+
+        `mode switch` (not `mode set`) is what makes that true: it saves phase and
+        gates into paused_work_state. Depth cases live in
+        tests/test_mode_switch_midsession.py.
+        """
+        sid = "autoroute-e2e"
+        r, mode = self._run(tmp_path, ASE_PROMPT, seed_mode="work", sid=sid)
         assert r.returncode == 0, r.stderr
-        assert mode == "work", "auto-route must never override an explicit mode choice"
+        assert mode == "investigate", (
+            "a mid-work investigate-shaped prompt must now re-route, not be ignored"
+        )
+        with open(os.path.join(str(tmp_path), f"writ-session-{sid}.json")) as f:
+            cache = json.load(f)
+        assert cache["paused_work_state"] is not None, (
+            "re-routing out of work must save the work state, never discard it"
+        )
+
+    def test_specialist_mode_not_overridden(self, tmp_path):
+        """The half of the old contract that survives: only work and investigate are
+        auto-routed between. An explicitly chosen debug session stays debug, because
+        flipping it to work on a guess would fire the debug-to-work root-cause handoff
+        as a side effect."""
+        r, mode = self._run(tmp_path, ASE_PROMPT, seed_mode="debug")
+        assert r.returncode == 0, r.stderr
+        assert mode == "debug", "auto-route must not touch an explicit specialist mode"

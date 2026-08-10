@@ -21,6 +21,8 @@ import tempfile
 from tests.fixtures.session_state import (  # noqa: F401
     call_can_write,
     project_root,
+    # autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
+    sandbox_cwd,
     session_id,
 )
 
@@ -108,6 +110,7 @@ models, queries the repository, and returns filtered results.
 """
 
 import re as _re
+
 # Extract rule IDs from the plan fixture so tests don't hardcode them separately
 VALID_PLAN_RULE_IDS = _re.findall(
     r'[A-Z][A-Z0-9]+(?:-[A-Z][A-Z0-9]+)*-\d{3}', VALID_PLAN_MD

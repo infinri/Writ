@@ -41,6 +41,9 @@ from pathlib import Path
 
 import pytest
 
+# autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
+from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
+
 SKILL = Path(__file__).resolve().parent.parent
 COMMON = SKILL / "bin" / "lib" / "common.sh"
 HOOK = SKILL / "hooks" / "scripts" / "writ-rag-inject.sh"
@@ -183,9 +186,14 @@ def _run_hook(envelope: str, cache_dir: str) -> subprocess.CompletedProcess:
            "WRIT_CACHE_DIR": cache_dir,
            "WRIT_PORT": "19999",
            "WRIT_HOST": "localhost"}
+    # NO cwd=SKILL. A work-shaped prompt makes this hook run `mode init work`, which stamps
+    # the process cwd as the session's project_root and then deletes that project's
+    # .claude/gates/*.approved: pinned to the skill dir, running this file deleted THIS
+    # repo's real approval artifacts. Inheriting the sandbox_cwd fixture's cwd keeps the
+    # deletion inside tmp_path, and the hook resolves its own paths from $0, not from cwd.
     return subprocess.run(
         ["bash", str(HOOK)], input=envelope, capture_output=True, text=True,
-        cwd=str(SKILL), env=env, timeout=25,
+        env=env, timeout=25,
     )
 
 

@@ -20,6 +20,8 @@ import pytest
 from tests.fixtures.session_state import (  # noqa: F401
     call_can_write,
     project_root,
+    # autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
+    sandbox_cwd,
     session_id,
 )
 

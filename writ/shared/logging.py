@@ -273,11 +273,22 @@ def _sanitize_value(value):
     return value
 
 
+# Fields that survive a None value as an explicit JSON null instead of being dropped.
+# `from_mode` is a mode_change row's provenance: dropped, the first mode set of a session
+# (no previous mode) is indistinguishable from a row where the field was never recorded,
+# and no consumer can tell the two apart afterwards. Deliberately a narrow allowlist --
+# every other field still disappears when None, because many event types rely on that.
+_KEEP_WHEN_NULL = ("from_mode",)
+
+
 def _build_entry(event: str, session_id: str, mode: str | None, fields: dict) -> dict:
-    """Base schema {ts, session, mode, event} plus sanitized non-None fields."""
+    """Base schema {ts, session, mode, event} plus sanitized non-None fields.
+
+    _KEEP_WHEN_NULL names the exceptions, which are written as an explicit null.
+    """
     entry = base_friction_entry(session_id, mode, event)
     for key, value in fields.items():
-        if value is None:
+        if value is None and key not in _KEEP_WHEN_NULL:
             continue
         entry[key] = _sanitize_value(value)
     return entry

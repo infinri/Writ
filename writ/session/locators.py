@@ -7,7 +7,9 @@ writ imports.
 """
 
 import glob
+import hashlib
 import os
+import re
 
 # The files whose presence marks a project root. The root walk tests `any` of
 # these, so order is irrelevant -- this is the single source for the set that
@@ -130,3 +132,70 @@ def _find_plan_md(project_root: str) -> str | None:
         return None
     found.sort(key=os.path.getmtime, reverse=True)
     return found[0]
+
+
+# The fingerprint of a plan.md that EXISTS but could not be read. It is not a hash and is
+# deliberately not hex, so it can never collide with a real 12-char digest. Absent and
+# unreadable have to be two different answers: None == None compares equal, so folding
+# unreadable into None made an unreadable plan at both ends RESTORE the approved gates,
+# even though its bytes may have changed while the session was away. Callers treat this
+# value as never-equal (see _mode_switch), which re-arms instead.
+PLAN_HASH_UNREADABLE = "unreadable"
+
+# A markdown task-list marker that is TICKED, and nothing else: optional indent, a bullet,
+# then [x] or [X]. Matched on bytes because the fingerprint hashes bytes. The bullet and the
+# brackets are kept in the replacement, so the line still occupies the same shape it did:
+# only the character INSIDE the box is rewritten, and adding or deleting a whole checkbox
+# line still changes the digest.
+_TICKED_CHECKBOX_RE = re.compile(rb"(?m)^([ \t]*[-*+][ \t]+)\[[xX]\]")
+
+
+def _untick_checkboxes(raw: bytes) -> bytes:
+    """Rewrite every ticked checkbox marker to its unticked spelling, and nothing else."""
+    return _TICKED_CHECKBOX_RE.sub(rb"\1[ ]", raw)
+
+
+def plan_md_hash(project_root: str | None) -> str | None:
+    """Fingerprint the plan.md the approval gate would validate.
+
+    Returns the digest, None when there is no plan.md at all, or PLAN_HASH_UNREADABLE when
+    one exists but cannot be read.
+
+    SAME ALGORITHM AS bin/lib/validate-rules-helper.py's prior_plan_hash (md5, truncated to
+    the first 12 hex chars), DIFFERENT INPUT, so the two digests are NOT interchangeable:
+    that one hashes plan.md's bytes verbatim, this one hashes them after the checkbox
+    normalization described below. For any plan.md containing a ticked box the two values
+    differ for identical input, and neither is a substitute for the other. They answer
+    different questions and nothing compares them: prior_plan_hash records the exact bytes a
+    plan had when a rule violation invalidated its gate, which is evidence about one
+    specific document and must stay byte-exact to be worth anything; this one asks whether
+    the work a paused session was approved for is still the same work. Do not "unify" them.
+
+    CHECKBOX TICK STATE IS NORMALIZED AWAY before hashing: every `- [x]` and `- [X]` marker
+    is hashed as `- [ ]`. templates/plan-template.md tells the author the capability boxes
+    "are ticked off after the implementation proves them", so finishing a cycle the
+    documented way edits plan.md, and without this the return path read that edit as a
+    pivot and demanded a fresh approval of a plan whose substance never changed. Only the
+    character inside the box is rewritten. Everything else is hashed verbatim: no whitespace
+    stripping, no section parsing, no other markdown touched. So a reworded sentence, a
+    reordered heading, or a checkbox line ADDED or REMOVED all still change the digest,
+    because which capabilities the plan claims is substance; whether they are ticked yet is
+    progress against it.
+
+    The mode switch uses this to decide restore-vs-re-arm on the way back into work. Equal
+    means the same work, so the approved gates survive the detour; different means the plan
+    pivoted while the session was away, so the old approvals no longer cover it. Absent at
+    both ends is genuinely equal (no plan means nothing pivoted). Unreadable is NOT: the
+    caller forces a re-arm on it, because a needless re-approval is the safe direction to
+    fail when the bytes cannot be checked.
+    """
+    if not project_root:
+        return None
+    path = _find_plan_md(project_root)
+    if not path:
+        return None
+    try:
+        with open(path, "rb") as f:
+            return hashlib.md5(_untick_checkboxes(f.read())).hexdigest()[:12]
+    except OSError:
+        return PLAN_HASH_UNREADABLE

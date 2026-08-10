@@ -20,6 +20,9 @@ import sys
 
 import pytest
 
+# autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
+from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
+
 SKILL_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 FACADE_PATH = os.path.join(SKILL_ROOT, "bin", "lib", "writ-session.py")
 LOCATORS_PATH = os.path.join(SKILL_ROOT, "writ", "session", "locators.py")

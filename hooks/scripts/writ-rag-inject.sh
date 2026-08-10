@@ -191,6 +191,9 @@ if [ -z "$AGENT_ID" ] && [ -n "$MODE_HINT" ]; then
   # caches, so it answered "unset" for EVERY session and the branch below fired every turn.
   PRIOR_MODE=$(writ_session_mode_direct "$SESSION_ID")
   AUTOROUTED="no"
+  # Empty means "no restore happened", which is the truth on every path except the
+  # investigate -> work switch below. Initialized here because the hook runs under `set -u`.
+  RESTORED_GATES=""
   if [ -z "$PRIOR_MODE" ]; then
     # `mode init` (not `mode set`): authoritatively sets the mode ONLY if still
     # unset (checked inside the helper's own cache read), so a spurious re-fire on
@@ -207,6 +210,51 @@ if [ -z "$AGENT_ID" ] && [ -n "$MODE_HINT" ]; then
       [ "$CONFIRMED_MODE" = "$MODE_HINT" ] && AUTOROUTED="yes"
     fi
     debug "auto-route requested $MODE_HINT -> mode is now '${CONFIRMED_MODE:-unset}'"
+  else
+    # Mid-session re-route. The hint used to be computed every turn and then thrown away
+    # once ANY mode existed, so five weeks of logs hold zero switch rows: mid-work, a
+    # discovery that needed investigating could never start an investigation.
+    #
+    # `mode switch`, NEVER `mode set`: set runs _apply_mode_set, which clears
+    # gates_approved and paused_work_state, so routing a misclassified prompt through it
+    # would destroy an approved plan and approved tests. switch SAVES them, which makes a
+    # false positive cost a detour instead of the approvals.
+    #
+    # Only between work and investigate, the two modes the classifier emits. An explicitly
+    # chosen debug / review / conversation mode is the user's and stays: flipping a debug
+    # session to work would fire the debug-to-work root-cause handoff as a side effect of
+    # a guess.
+    case "$PRIOR_MODE:$MODE_HINT" in
+      work:investigate|investigate:work)
+        python3 "$SESSION_HELPER" mode switch "$MODE_HINT" "$SESSION_ID" >/dev/null 2>&1 || true
+        # Re-read rather than trust the hint, for the same reason the unset path does:
+        # announcing the mode we ASKED for is how the hook came to tell the user the mode
+        # was 'work' while the cache said otherwise.
+        CONFIRMED_MODE=$(writ_session_mode_direct "$SESSION_ID")
+        if [ -n "$CONFIRMED_MODE" ]; then
+          CURRENT_MODE="$CONFIRMED_MODE"
+          [ "$CONFIRMED_MODE" = "$MODE_HINT" ] && AUTOROUTED="yes"
+        fi
+        # A switch back into work either RESTORES the gates approved before the detour
+        # (plan.md unchanged) or re-arms to planning (plan.md pivoted), and the two need
+        # different messages: telling a user whose approvals were just restored to go write
+        # plan.md and present it for approval sends them to redo work the cache still holds.
+        # Read the count off the cache rather than guessing which branch ran, so the
+        # announcement can never claim an approval the session does not actually have.
+        if [ "$MODE_HINT" = "work" ]; then
+          SWITCH_CACHE_FILE="$(writ_session_cache_dir)/writ-session-$SESSION_ID.json"
+          # Tested before the redirect: `< missing` fails the command outright and the
+          # shell reports it before any 2>/dev/null on the same line can take effect, so a
+          # cacheless session would print a hook error for a state that is simply "nothing
+          # to restore".
+          if [ -f "$SWITCH_CACHE_FILE" ]; then
+            RESTORED_GATES=$(json_transform '.gates_approved | length' \
+              "len(d.get('gates_approved') or [])" < "$SWITCH_CACHE_FILE" 2>/dev/null || true)
+          fi
+        fi
+        debug "mid-session re-route $PRIOR_MODE -> $MODE_HINT; mode is now '${CONFIRMED_MODE:-unset}'"
+        ;;
+    esac
   fi
   # Announce ONLY a change we actually made.
   if [ "$AUTOROUTED" = "yes" ]; then
@@ -219,6 +267,19 @@ This reads as an audit / exploration / research task, so the mode is now 'invest
 for the actual exploration; it inherits this mode and runs governed. To override:
   python3 $SESSION_HELPER mode set <conversation|debug|review|work|investigate> $SESSION_ID
 AUTOROUTE
+    elif [ -n "$RESTORED_GATES" ] && [ "$RESTORED_GATES" != "0" ]; then
+      # The switch restored a paused work cycle: plan.md was unchanged, so the approvals
+      # granted before the detour still stand. Say that, and say nothing about writing a
+      # plan; the count comes from the cache, so it cannot overstate what is approved.
+      cat << WORKRESTORE
+
+[Writ: implementation request -> paused work mode restored automatically]
+This reads as a build/implementation task, so the mode is back to 'work'. The plan did not
+change during the detour, so the paused phase and $RESTORED_GATES already-approved gate(s)
+were restored with it. Continue that cycle: do not rewrite plan.md and do not re-request an
+approval you already hold. If this is a trivial edit that needs no workflow, override with:
+  python3 $SESSION_HELPER mode set conversation $SESSION_ID
+WORKRESTORE
     else
       cat << WORKROUTE
 
