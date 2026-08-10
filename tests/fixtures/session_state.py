@@ -71,6 +71,40 @@ def sandbox_cwd(tmp_path, monkeypatch):
     return sandbox
 
 
+def write_bound_gate_token(session_id: str, token: str | None = None) -> str:
+    """Mint the gate token a genuine approval would mint for `session_id`; return it.
+
+    The token file binds what the approval authorizes: line 1 the secret, line 2 the gate,
+    line 3 the plan fingerprint. Both gate paths (the CLI cmd_advance_phase and the HTTP
+    advance route) refuse a token whose binding does not match the gate now pending, and
+    refuse an unbound one-line file outright. So `open(path, "w").write(token)` no longer
+    simulates an approval -- it simulates the pre-binding format both paths now reject.
+
+    The binding is DERIVED from the session cache, exactly as the production mint derives
+    it: cmd_current_phase reports next_gate and plan_hash out of that cache, the approval
+    hook writes those two lines, and the claim recomputes both from the same cache. A test
+    therefore keeps seeding the cache and gets the binding right by construction, instead
+    of hardcoding a gate name that a later seed change would silently invalidate. Call it
+    AFTER the cache is seeded, and once per advance (claiming consumes the file).
+
+    One helper rather than one per test module on purpose: this is the third comparison of
+    the same binding in the codebase, and the last time two call sites answered one
+    security question separately they drifted (see gate_token.py's module docstring).
+    """
+    from writ.session.cache import _read_cache
+    from writ.session.gate_token import mint_gate_token
+    from writ.session.locators import plan_md_hash
+    from writ.session.mode_engine import _next_pending_gate
+
+    cache = _read_cache(session_id)
+    return mint_gate_token(
+        session_id,
+        gate=_next_pending_gate(cache) or "",
+        plan_hash=plan_md_hash(cache.get("project_root")) or "",
+        token=token,
+    )
+
+
 def call_can_write(writ_session, session_id, file_path, monkeypatch, capsys, skill_dir=None):
     """Call cmd_can_write with a synthetic tool envelope and return the JSON result."""
     capsys.readouterr()  # clear any prior output

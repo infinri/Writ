@@ -25,7 +25,11 @@ from writ.server.models import (
     SessionAdvancePhaseRequest,
     SessionPromoteCandidateRequest,
 )
-from writ.session.approval_workflow import _GATE_VALIDATORS, apply_phase_advance
+from writ.session.approval_workflow import (
+    _BINDING_REFUSAL_REASONS,
+    _GATE_VALIDATORS,
+    apply_phase_advance,
+)
 from writ.session.locators import _find_plan_md, resolve_project_root
 from writ.session.mode_engine import MODE_CONFIG, _next_pending_gate
 
@@ -174,7 +178,63 @@ async def session_advance_phase(
     # concurrent same-token caller wins; the loser returns a no-op and runs NO
     # side effects. The claim consumes the token (replaces the old post-advance
     # consume_gate_token).
-    claimed = await asyncio.to_thread(server.claim_gate_token, session_id, token)
+    #
+    # The claim also enforces what the approval authorizes: the gate named on line 2 of
+    # the token file must be the gate being advanced, and the plan fingerprint on line 3
+    # must still match. Both sides derive the fingerprint from the cache's project_root,
+    # the same input cmd_current_phase hands the approval hook at mint time, so the mint
+    # and the claim hash the same file by construction.
+    #
+    # STRICT, WITH NO FALLBACK. Every claim on this route goes through
+    # claim_gate_token; a token file carrying no binding (the pre-cycle one-line format)
+    # is REFUSED here exactly as the CLI refuses it. The `if binding is None: use the
+    # bare mutex` branch that used to sit here read as a kindness to a session whose
+    # token predated the upgrade, but its real effect was a fail-open branch on the
+    # decision of whether a human approved an action: anything that could put a single
+    # line into /tmp/writ-gate-token-<sid> got an UNBOUND claim through the route while
+    # the same file was refused at the CLI. The production hook always mints three
+    # lines, so nothing legitimate ever took that branch -- which is exactly why it
+    # could be deleted rather than deprecated. _claim_token_mutex stays what it has
+    # always been: the internal mutual-exclusion primitive claim_gate_token is built on,
+    # never a route-level substitute for it.
+    #
+    # Both calls below read files (plan.md, the token file), so they go to a thread like
+    # every other blocking call on this route.
+    plan_hash = await asyncio.to_thread(server.plan_md_hash, cache.get("project_root")) or ""
+    refusal = await asyncio.to_thread(
+        server.gate_binding_refusal, session_id, gate=target_gate, plan_hash=plan_hash
+    )
+    if refusal:
+        # Fail closed and say WHY: the previous behavior of every refusal on this
+        # route was a message the user read as "no gate pending". The token is NOT
+        # spent (nothing was claimed), so the approval it does authorize survives.
+        # The reason text comes from the CLI's table so the two gate paths cannot
+        # drift into telling the user two different things about the same refusal.
+        binding = await asyncio.to_thread(server.read_gate_binding, session_id)
+        bound_gate = binding[0] if binding else ""
+        await asyncio.to_thread(
+            server.log_friction_event,
+            session_id=session_id,
+            mode=mode,
+            event=refusal,
+            gate=target_gate,
+            bound_gate=bound_gate,
+        )
+        return {
+            "advanced": False,
+            "error": (
+                _BINDING_REFUSAL_REASONS[refusal].format(
+                    bound=bound_gate, target=target_gate,
+                )
+                + " Your approval was NOT consumed."
+            ),
+            "gate": target_gate,
+            "token_spent": False,
+        }
+    claimed = await asyncio.to_thread(
+        server.claim_gate_token, session_id, token,
+        gate=target_gate, plan_hash=plan_hash,
+    )
     if not claimed:
         return {
             "advanced": False,
@@ -325,6 +385,32 @@ async def session_promote_candidate(
                 "Invalid or missing gate token. Promoting a candidate to canon requires "
                 "the token the approval hook writes on genuine user approval; the agent "
                 "cannot promote its own proposal."
+            ),
+        }
+
+    # The one deliberate narrowing of cycle 1: this route used to accept the very same
+    # token a phase advance accepts, so an "approved" typed at a plan.md could be spent
+    # writing a decision-memory candidate into the canon. That is a cross-ACTION
+    # confusion, not merely a cross-gate one. A token whose line 2 names a gate was
+    # minted while that gate was pending and belongs to it; promotion requires a token
+    # minted with no phase gate pending, which is the state this route is actually used
+    # in. A pre-binding token (no line 2 at all) is accepted as before.
+    binding = await asyncio.to_thread(server.read_gate_binding, session_id)
+    if binding is not None and binding[0]:
+        await asyncio.to_thread(
+            server.log_friction_event,
+            session_id=session_id,
+            mode=None,
+            event="candidate_promotion_gate_bound",
+            candidate_id=candidate_id,
+            bound_gate=binding[0],
+        )
+        return {
+            "promoted": False,
+            "error": (
+                f"That approval is bound to the {binding[0]} gate, so it cannot promote a "
+                "candidate to canon. Approve the promotion on its own turn, with no phase "
+                "gate pending."
             ),
         }
 

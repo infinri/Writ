@@ -60,12 +60,21 @@ from writ.session.approval_workflow import _validate_phase_a, apply_phase_advanc
 from writ.session.commit_capture import capture_commit
 from writ.session.decision_capture import capture_decision_at_approve
 from writ.session.gate_token import (
+    # _claim_token_mutex is deliberately NOT re-exported here. This import list is the
+    # route layer's monkeypatch seam, and the advance route's unbound-token fallback (the
+    # only thing that ever reached the bare mutex through it) is gone: every route claim
+    # now goes through claim_gate_token, binding and all. Leaving the primitive on the
+    # seam would advertise a route-level claim that skips the binding check, which is the
+    # fail-open shape this cycle removed. It stays public within writ.session.gate_token,
+    # where claim_gate_token is built on it and its own tests point at it directly.
     claim_gate_token,
     consume_gate_token,
+    gate_binding_refusal,
     gate_token_valid,
+    read_gate_binding,
     read_gate_token,
 )
-from writ.session.locators import _find_plan_md
+from writ.session.locators import _find_plan_md, plan_md_hash
 from writ.session.mode_engine import (
     MODE_CONFIG,
     VALID_MODES,

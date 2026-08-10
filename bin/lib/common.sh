@@ -992,6 +992,30 @@ log_friction_event() {
   python3 "$_FRICTION_APPEND" "$session_id" "$mode" "$event" "$extra" 2>/dev/null || true
 }
 
+# ── Gate token writer ───────────────────────────────────────────────────────
+# Writes the three-line gate-token file: the secret, the gate the approval
+# authorizes, and the plan fingerprint it was given for. Lives here beside
+# log_friction_event and writ_http_post because it is the third primitive
+# auto-approve-gate.sh shares with the rest of the surface.
+#
+# BYTE-IDENTICAL TO writ.session.gate_token.mint_gate_token FOR THE SAME INPUTS, and
+# tests/test_gate_token_binding.py holds the two writers against each other. The reader
+# is python and the production writer is bash, so a one-character disagreement about the
+# format is a gate that fail-closes on every approval; that is the same class of defect
+# as a writer/reader disagreement about the PATH, which is why gate_token_path hardcodes
+# /tmp.
+#
+# An empty gate and an empty fingerprint are legitimate values, not missing ones: they
+# are what an approval typed with no phase gate pending is bound to, and the claim
+# enforces them as "must be exactly empty".
+# Usage: write_gate_token_file <path> <token> <gate> <plan_hash>
+write_gate_token_file() {
+  local path="$1" secret="$2" gate="${3:-}" plan_hash="${4:-}"
+  printf '%s\n%s\n%s\n' "$secret" "$gate" "$plan_hash" > "$path"
+  # The file holds a secret in a world-readable directory; the python writer chmods too.
+  chmod 600 "$path" 2>/dev/null || true
+}
+
 # ── Hook timing ─────────────────────────────────────────────────────────────
 # Records start time. Call at the beginning of a hook.
 # Usage: HOOK_START_NS=$(hook_timer_start)

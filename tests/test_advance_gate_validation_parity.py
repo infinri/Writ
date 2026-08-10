@@ -23,6 +23,7 @@ import uuid
 
 import pytest
 
+from tests.fixtures.session_state import write_bound_gate_token
 from writ.server import SessionAdvancePhaseRequest
 from writ.session.cache import _read_cache, _write_cache
 from writ.session.gate_token import gate_token_path
@@ -63,10 +64,10 @@ def _seed(session_id: str, **overrides) -> None:
 
 
 def _token(session_id: str) -> str:
-    tok = uuid.uuid4().hex
-    with open(gate_token_path(session_id), "w") as fh:
-        fh.write(tok)
-    return tok
+    # A BOUND token (gate + plan fingerprint), derived from the seeded cache the way the
+    # production mint derives it. The route claims through claim_gate_token with no
+    # unbound fallback, so a bare one-line secret is refused before any gate logic runs.
+    return write_bound_gate_token(session_id, uuid.uuid4().hex)
 
 
 def _token_exists(session_id: str) -> bool:
@@ -274,5 +275,9 @@ class TestAdvanceReportsWhatItValidated:
 
 
 def _read_token(session_id: str) -> str:
+    # LINE ONE ONLY: the token file also carries the gate it authorizes and the plan
+    # fingerprint, and the secret is line 1 (read_gate_token's contract). Returning the
+    # whole file here would hand the route a "token" with the binding text glued on and
+    # fail the presence check for a reason that has nothing to do with the test's subject.
     with open(gate_token_path(session_id)) as fh:
-        return fh.read().strip()
+        return fh.readline().strip()

@@ -14,7 +14,6 @@ import json
 import os
 import secrets
 import sys
-import tempfile
 
 # ruff: noqa: F811 -- the shared session_id/project_root fixtures below are consumed
 # as test-method parameters, which ruff misreads as redefinitions of this import.
@@ -24,6 +23,7 @@ from tests.fixtures.session_state import (  # noqa: F401
     # autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
     sandbox_cwd,
     session_id,
+    write_bound_gate_token,
 )
 
 # ---------------------------------------------------------------------------
@@ -62,11 +62,11 @@ def _call_advance_phase(
     session_id: str, prompt: str, project_root: str, monkeypatch, capsys
 ) -> dict:
     """Call cmd_advance_phase with a gate token and return the JSON result."""
-    # Create gate token (simulates auto-approve-gate.sh)
-    token = secrets.token_hex(16)
-    token_path = os.path.join(tempfile.gettempdir(), f"writ-gate-token-{session_id}")
-    with open(token_path, "w") as f:
-        f.write(token)
+    # Create gate token (simulates auto-approve-gate.sh, which mints a BOUND token: the
+    # gate it authorizes plus the plan fingerprint). cmd_advance_phase refuses an unbound
+    # one-line token, so the binding is derived from the seeded cache the way the
+    # production mint derives it.
+    token = write_bound_gate_token(session_id, secrets.token_hex(16))
 
     capsys.readouterr()  # clear any prior output
     monkeypatch.setattr("sys.stdin", io.StringIO(prompt))

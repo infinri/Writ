@@ -164,8 +164,15 @@ class TestAdvancePopulatesGatesApproved:
                 {"mode": "work", "current_phase": "testing", "gates_approved": ["phase-a"]},
                 f,
             )
+        # A BOUND token: line 1 the secret, line 2 the gate it authorizes, line 3 the plan
+        # fingerprint. The route claims through claim_gate_token with no unbound fallback,
+        # so a bare one-line secret is refused before any gate logic runs. The two binding
+        # lines are written literally rather than derived from this process's cache,
+        # because the DAEMON recomputes them from ITS cache read: the gate is the one the
+        # seed above leaves pending, and the fingerprint is empty because the seeded cache
+        # carries no project_root for plan_md_hash to hash.
         with open(_token_path(sid), "w") as f:
-            f.write(token)
+            f.write(f"{token}\ntest-skeletons\n\n")
         try:
             result = _post_advance(sid, {"confirmation_source": "tool", "token": token})
             # The advance itself must have happened (rules out a trivial pass via refusal).

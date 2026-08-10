@@ -63,6 +63,7 @@ from fastapi.testclient import TestClient
 # ruff: noqa: F811 -- the shared client/isolated_cache fixtures below are consumed
 # as test-method parameters, which ruff misreads as redefinitions of this import.
 from tests.fixtures.server_routes import client, isolated_cache  # noqa: F401
+from tests.fixtures.session_state import write_bound_gate_token
 from writ.config import get_neo4j_password, get_neo4j_uri, get_neo4j_user
 from writ.graph.db import Neo4jConnection
 from writ.server import app
@@ -373,10 +374,15 @@ async def _wipe_1c_test_data(conn: Neo4jConnection) -> None:
 
 
 def _write_gate_token(session_id: str, token: str) -> None:
-    """Write a gate token file to /tmp (matching gate_token_path semantics)."""
-    path = os.path.join("/tmp", f"writ-gate-token-{session_id}")
-    with open(path, "w") as f:
-        f.write(token)
+    """Mint the bound gate token file (matching gate_token_path semantics).
+
+    The token binds the gate it authorizes and the plan fingerprint it was given for, and
+    the advance route claims through claim_gate_token with no unbound fallback, so a bare
+    one-line secret is refused before the route reaches any gate logic. The binding is
+    derived from the seeded session cache exactly as the production mint derives it, so
+    every caller below keeps seeding the cache first and needs no other change.
+    """
+    write_bound_gate_token(session_id, token)
 
 
 def _token_exists(session_id: str) -> bool:

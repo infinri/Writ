@@ -11,12 +11,11 @@ import io
 import json
 import os
 import secrets
-import tempfile
 
 import pytest
 
 # autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
-from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
+from tests.fixtures.session_state import sandbox_cwd, write_bound_gate_token  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Import the session helper as a module (it's not in a package)
@@ -74,10 +73,9 @@ def _call_advance_phase(
     session_id: str, prompt: str, project_root: str, monkeypatch, capsys
 ) -> dict:
     """Call cmd_advance_phase with a gate token and return the JSON result."""
-    token = secrets.token_hex(16)
-    token_path = os.path.join(tempfile.gettempdir(), f"writ-gate-token-{session_id}")
-    with open(token_path, "w") as f:
-        f.write(token)
+    # A BOUND token (gate + plan fingerprint), derived from the seeded cache the way the
+    # production mint derives it: cmd_advance_phase refuses an unbound one-line token.
+    token = write_bound_gate_token(session_id, secrets.token_hex(16))
     capsys.readouterr()
     monkeypatch.setattr("sys.stdin", io.StringIO(prompt))
     writ_session.cmd_advance_phase(session_id, project_root, token)

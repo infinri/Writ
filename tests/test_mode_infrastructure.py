@@ -23,6 +23,7 @@ from tests.fixtures.session_state import (  # noqa: F401
     # autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
     sandbox_cwd,
     session_id,
+    write_bound_gate_token,
 )
 
 # ---------------------------------------------------------------------------
@@ -467,13 +468,12 @@ This feature adds a new service endpoint.
     def _call_advance_phase(self, session_id, prompt, project_root, monkeypatch, capsys):
         import io
         import secrets
-        import tempfile
 
-        # Create gate token (simulates what auto-approve-gate.sh does)
-        token = secrets.token_hex(16)
-        token_path = os.path.join(tempfile.gettempdir(), f"writ-gate-token-{session_id}")
-        with open(token_path, "w") as f:
-            f.write(token)
+        # Create gate token (simulates what auto-approve-gate.sh does: it mints a BOUND
+        # token carrying the gate it authorizes and the plan fingerprint). The binding is
+        # derived from the seeded cache the way the production mint derives it, because
+        # cmd_advance_phase refuses an unbound one-line token.
+        token = write_bound_gate_token(session_id, secrets.token_hex(16))
 
         capsys.readouterr()
         monkeypatch.setattr("sys.stdin", io.StringIO(prompt))

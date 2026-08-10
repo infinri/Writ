@@ -174,8 +174,11 @@ def test_claimed_token_read_failure_emits_an_errors_row(tmp_path, monkeypatch):
     """gate_token.py:74 -- the rename just succeeded, so a read failure is real."""
     import writ.session.gate_token as gt
 
+    # A BOUND token body (secret, gate, plan fingerprint). claim_gate_token checks the
+    # binding before it claims, so an unbound one-line file would be refused without ever
+    # opening the renamed file -- the read failure this test exists for would not happen.
     src = tmp_path / "writ-gate-token-sid-t3"
-    src.write_text("tok")
+    src.write_text("tok\nphase-a\nplanhash123\n")
     monkeypatch.setattr(gt, "gate_token_path", lambda _sid: str(src))
 
     real_open = open
@@ -190,7 +193,7 @@ def test_claimed_token_read_failure_emits_an_errors_row(tmp_path, monkeypatch):
     # and _components() would then read the wrong log root. flaky_open only fails
     # on .claiming-* paths, so the errors write itself is unaffected.
     monkeypatch.setattr("builtins.open", flaky_open)
-    assert gt.claim_gate_token("sid-t3", "tok") is False
+    assert gt.claim_gate_token("sid-t3", "tok", gate="phase-a", plan_hash="planhash123") is False
     assert any("token" in (c or "") for c in _components())
 
 
@@ -199,7 +202,7 @@ def test_absent_gate_token_claim_emits_no_errors_row(tmp_path, monkeypatch):
     import writ.session.gate_token as gt
 
     monkeypatch.setattr(gt, "gate_token_path", lambda _sid: str(tmp_path / "absent-token"))
-    assert gt.claim_gate_token("sid-t4", "tok") is False
+    assert gt.claim_gate_token("sid-t4", "tok", gate="phase-a", plan_hash="planhash123") is False
     assert _errors() == []
 
 

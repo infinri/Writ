@@ -14,11 +14,16 @@ import sys
 from writ.session.cache import _read_cache, mutate_cache, record_transition
 from writ.session.friction import _log_friction_event
 from writ.session.gate_token import (
+    BINDING_GATE_MISMATCH,
+    BINDING_PLAN_DRIFT,
+    BINDING_UNBOUND,
     claim_gate_token,
+    gate_binding_refusal,
     gate_token_valid,
+    read_gate_binding,
     read_gate_token,
 )
-from writ.session.locators import _find_plan_md, resolve_project_root
+from writ.session.locators import _find_plan_md, plan_md_hash, resolve_project_root
 from writ.session.mode_engine import (
     MODE_CONFIG,
     _gate_sequence_for_mode,
@@ -241,6 +246,27 @@ _GATE_VALIDATORS: dict[str, object] = {
 }
 
 
+# What to tell the user when the token they hold does not authorize the gate now
+# pending. Each message names the cause and says plainly whether a fresh approval is
+# needed, because the failure mode being fixed is a refusal the user read as "no gate is
+# pending" and then retried unchanged.
+_BINDING_REFUSAL_REASONS: dict[str, str] = {
+    BINDING_GATE_MISMATCH: (
+        "Your approval is bound to the {bound} gate, but the {target} gate is what is "
+        "pending now. Approve again while {target} is the gate being asked about."
+    ),
+    BINDING_PLAN_DRIFT: (
+        "plan.md changed after this approval was given, so the approval no longer covers "
+        "the plan on disk. Review the current plan and approve again."
+    ),
+    BINDING_UNBOUND: (
+        "This gate token records nothing about what it authorizes (it is the pre-binding "
+        "format), so it cannot be checked against the {target} gate. Approve again to "
+        "mint a bound token."
+    ),
+}
+
+
 def _detect_project_root(project_root: str) -> str:
     """Return project_root as given, else the marker dir at or above cwd, else cwd.
 
@@ -416,13 +442,41 @@ def cmd_advance_phase(session_id: str, project_root: str = "", token: str = "") 
             sys.stdout.write("\n")
             return
 
+        # The approval must authorize THIS gate and THIS plan. The fingerprint comes
+        # from the cache's project_root, which is the same input cmd_current_phase
+        # reports to the approval hook at mint time, so the mint and the claim hash the
+        # same file by construction; deriving one of them from a separately-resolved
+        # root would refuse legitimate approvals whenever the two roots differ.
+        plan_hash = plan_md_hash(cache.get("project_root")) or ""
+        refusal = gate_binding_refusal(session_id, gate=target_gate, plan_hash=plan_hash)
+        if refusal:
+            # Refuse WITHOUT claiming: the token may legitimately authorize something
+            # else (another gate, a candidate promotion), and spending it here would
+            # destroy an approval the user did give. One friction event per refusal
+            # class, so the log can tell a fail-closed gate from an absent one.
+            binding = read_gate_binding(session_id)
+            bound_gate = binding[0] if binding else ""
+            _log_friction_event(
+                session_id, mode, refusal,
+                gate=target_gate, bound_gate=bound_gate,
+            )
+            _emit_json({
+                "advanced": False,
+                "gate": target_gate,
+                "reason": _BINDING_REFUSAL_REASONS[refusal].format(
+                    bound=bound_gate, target=target_gate,
+                ),
+            })
+            sys.stdout.write("\n")
+            return
+
         # G1 concurrency: atomically CLAIM the token before mutating. Exactly one
         # concurrent CLI advance wins; the loser returns a no-op WITHOUT advancing,
         # so one token can never advance two gates (recompute-under-lock double-
         # advance -- see project_advance_phase_token_race). The claim REPLACES the
         # post-lock consume_gate_token below: claiming IS consuming. It sits AFTER
         # the validator so a validator error / no-op still does not consume.
-        if not claim_gate_token(session_id, token):
+        if not claim_gate_token(session_id, token, gate=target_gate, plan_hash=plan_hash):
             _emit_json({
                 "advanced": False,
                 "reason": (
@@ -477,7 +531,14 @@ def cmd_advance_phase(session_id: str, project_root: str = "", token: str = "") 
 def cmd_current_phase(session_id: str) -> None:
     """Return the authoritative current phase from session state.
 
-    Output: JSON {"phase": "...", "mode": "...", "gates_approved": [...]}
+    Output: JSON {"phase": "...", "mode": "...", "gates_approved": [...],
+                  "next_gate": "..."|null, "plan_hash": "..."|null}
+
+    next_gate and plan_hash are the token binding the approval hook mints with. They are
+    reported HERE because the hook already makes this call once per approval turn and the
+    single cache read already has both answers in hand, so the binding costs the
+    per-prompt path nothing. null means "nothing to bind to": no gate is pending, or
+    there is no plan.md under the session's project root.
     """
     cache = _read_cache(session_id)
     mode = cache.get("mode")
@@ -491,5 +552,7 @@ def cmd_current_phase(session_id: str) -> None:
         "phase": phase or "unclassified",
         "mode": mode,
         "gates_approved": cache.get("gates_approved", []),
+        "next_gate": _next_pending_gate(cache),
+        "plan_hash": plan_md_hash(cache.get("project_root")),
     })
     sys.stdout.write("\n")

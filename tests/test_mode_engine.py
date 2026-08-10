@@ -18,12 +18,11 @@ import io
 import json
 import os
 import secrets
-import tempfile
 
 import pytest
 
 # autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
-from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
+from tests.fixtures.session_state import sandbox_cwd, write_bound_gate_token  # noqa: F401
 
 HELPER_PATH = os.path.join(os.path.dirname(__file__), os.pardir, "bin", "lib", "writ-session.py")
 _spec = importlib.util.spec_from_file_location("writ_session_engine", HELPER_PATH)
@@ -115,10 +114,9 @@ class TestGoldenWorkCycle:
     """Behavior-preservation oracle: a full Work cycle is unchanged."""
 
     def _advance(self, session_id, project_root, monkeypatch, capsys, prompt="approved"):
-        token = secrets.token_hex(16)
-        token_path = os.path.join(tempfile.gettempdir(), f"writ-gate-token-{session_id}")
-        with open(token_path, "w") as f:
-            f.write(token)
+        # A BOUND token (gate + plan fingerprint) derived from the seeded cache, as the
+        # production mint derives it: cmd_advance_phase refuses an unbound one-line token.
+        token = write_bound_gate_token(session_id, secrets.token_hex(16))
         capsys.readouterr()
         monkeypatch.setattr("sys.stdin", io.StringIO(prompt))
         writ_session.cmd_advance_phase(session_id, str(project_root), token)
