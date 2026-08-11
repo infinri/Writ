@@ -211,8 +211,12 @@ class TestCanWrite:
         _set_mode(session_id, "work")
         capsys.readouterr()
 
-        # Write a gate file on disk but DON'T add to cache
-        gate_file = project_root / ".claude" / "gates" / "phase-a.approved"
+        # Write a gate file on disk but DON'T add to cache. Session-scoped path (Part 2,
+        # isolation cycle): this session's OWN directory, so the test still proves the cache
+        # is the authority rather than passing because the artifact was somewhere unread.
+        gate_dir = project_root / ".claude" / "gates" / session_id
+        gate_dir.mkdir(parents=True, exist_ok=True)
+        gate_file = gate_dir / "phase-a.approved"
         gate_file.write_text("different-session-id\n")
 
         result = _call_can_write(session_id, str(project_root / "service.py"), monkeypatch, capsys)
@@ -267,7 +271,9 @@ class TestAdvancePhase:
         assert result["advanced"] is True
         assert result["gate"] == "phase-a"
 
-        gate_file = project_root / ".claude" / "gates" / "phase-a.approved"
+        # Session-scoped artifact path (Part 2, isolation cycle): the id is now BOTH the
+        # directory name and the file's contents, so both are asserted.
+        gate_file = project_root / ".claude" / "gates" / session_id / "phase-a.approved"
         assert gate_file.exists()
         assert gate_file.read_text().strip() == session_id
 

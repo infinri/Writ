@@ -18,6 +18,7 @@ from writ.session.locators import (
     PROJECT_ROOT_MARKERS,
     _find_debug_md,
     _find_plan_md,
+    is_valid_session_component,
     plan_md_hash,
 )
 
@@ -194,26 +195,41 @@ def _promote_root_cause_to_plan(session_id: str, mode: str) -> None:
             pass
 
 
-def _clear_gate_artifacts(project_root: str | None) -> None:
-    """Delete the on-disk `*.approved` artifacts of a project whose gate state was cleared.
+def _clear_gate_artifacts(project_root: str | None, session_id: str | None) -> None:
+    """Delete ONE SESSION's on-disk `*.approved` artifacts after its gate state was cleared.
 
-    An approval writes <project_root>/.claude/gates/<gate>.approved as an ARTIFACT
-    (approval_workflow.py); enforcement itself reads gates_approved from the cache. Clearing
-    only the cache therefore left the files behind, and the work-mode reminder in
+    An approval writes <project_root>/.claude/gates/<session_id>/<gate>.approved as an
+    ARTIFACT (approval_workflow.py); enforcement itself reads gates_approved from the cache.
+    Clearing only the cache therefore left the files behind, and the work-mode reminder in
     writ-rag-inject.sh reads that directory straight off disk: in this repo the artifacts sat
     approved for eighteen days, so the "plan gate pending" reminder could not fire for any
     session in that window. Writes were still blocked correctly; what was lost was the
     message telling the user which gate they were stuck behind.
 
-    Removes only `*.approved` directly inside that directory: never the directory itself,
-    never a neighbouring file. Never raises -- it runs after the durable cache write, so a
-    failure here must not surface as a failed mode change.
+    `session_id` is REQUIRED, not defaulted, because a default would make "clear my own
+    approvals" indistinguishable from "clear everybody's" at the call site -- the shape that
+    turned one session's `mode set` into a deletion of another session's approvals. An
+    unresolvable session id clears nothing under the session directory.
 
-    The DIRECTORY is checked on its RESOLVED path, not on the joined string. glob and
-    unlink resolve intermediate components, so a `.claude/gates` symlinked elsewhere made
-    this delete files at the link TARGET, anywhere on the filesystem, which is the exact
-    opposite of what the paragraph above promises. A gates directory that does not resolve
-    back inside the project root is refused outright, and nothing in it is touched.
+    TWO THINGS ARE REMOVED, and only these two:
+      1. `<gate_dir>/<session_id>/*.approved` -- this session's own artifacts.
+      2. `<gate_dir>/*.approved` -- LEGACY flat artifacts from before the path carried a
+         session. They are swept at every re-arm rather than migrated: approvals no longer
+         survive a session end by decision, and a surviving flat file would keep reading as
+         "approved" for every session in the repo. Sweeping over-blocks (a reader this
+         change missed reports gate-pending), which is the safe direction to fail.
+    A SIBLING SESSION's directory is never touched. Neither is the directory itself, nor a
+    neighbouring non-artifact file. Never raises -- it runs after the durable cache write,
+    so a failure here must not surface as a failed mode change.
+
+    BOTH DIRECTORIES ARE CHECKED ON THEIR RESOLVED PATHS, not on the joined strings. glob
+    and unlink resolve intermediate components, so a `.claude/gates` symlinked elsewhere
+    made this delete files at the link TARGET, anywhere on the filesystem, which is the
+    exact opposite of what the paragraph above promises. A symlinked `<session_id>`
+    directory is that same escape one level down, so it gets the same check: an escaping
+    session directory is skipped while the contained legacy sweep still runs, because
+    refusing the whole call would leave a flat artifact readable-as-truth on the strength of
+    a symlink an attacker planted.
 
     Individual entries need no such check, because os.unlink never follows the FINAL path
     component: removing a `*.approved` symlink removes the entry and never the file it
@@ -228,11 +244,18 @@ def _clear_gate_artifacts(project_root: str | None) -> None:
         return
     try:
         root = os.path.realpath(project_root)
+        contained = root.rstrip(os.sep) + os.sep
         gate_dir = os.path.realpath(os.path.join(root, ".claude", "gates"))
-        if not gate_dir.startswith(root.rstrip(os.sep) + os.sep):
+        if not gate_dir.startswith(contained):
             return
-        for path in glob.glob(os.path.join(gate_dir, "*.approved")):
-            os.unlink(path)
+        session_dir = ""
+        if session_id and is_valid_session_component(session_id):
+            candidate = os.path.realpath(os.path.join(gate_dir, session_id))
+            if candidate.startswith(contained):
+                session_dir = candidate
+        for directory in ([session_dir] if session_dir else []) + [gate_dir]:
+            for path in glob.glob(os.path.join(directory, "*.approved")):
+                os.unlink(path)
     except OSError:
         pass
 
@@ -296,7 +319,7 @@ def _mode_set(session_id: str, mode: str, is_orchestrator: bool = False) -> None
     # gates_approved is still only in memory: the files would be gone and a crash before
     # the outer exit would leave the cache still claiming them approved. No call site
     # nests today; a new one must move the cleanup out to its own outermost caller.
-    _clear_gate_artifacts(project_root)
+    _clear_gate_artifacts(project_root, session_id)
 
     _log_friction_event(
         session_id, mode, "mode_change",
@@ -337,7 +360,13 @@ def _mode_init(session_id: str, mode: str, is_orchestrator: bool = False) -> Non
     # durable write, for the same reason as in _mode_set, and on the same assumption: the
     # mutate_cache block above must be the OUTERMOST one for this session_id, or the files
     # go before the emptied cache is durable.
-    _clear_gate_artifacts(project_root)
+    #
+    # NARROWER THAN IT LOOKS since the artifacts became session-scoped: a freshly routed
+    # session has an empty directory of its own, so this is a no-op in the common case. It
+    # stays load-bearing for the documented mode=None wipe class, where a session that HAD a
+    # mode and approvals lost the mode and is then re-routed: its own directory still holds
+    # phase-a.approved while its cache says no mode. Do not delete this as dead code.
+    _clear_gate_artifacts(project_root, session_id)
 
     # old_mode is always None here (guarded above), so the debug->work promote never
     # applies via this path; emit the mode_change event after the durable write.
@@ -423,7 +452,7 @@ def _mode_switch(session_id: str, mode: str) -> None:
     # the mutate_cache block above must be the OUTERMOST one for this session_id, or the
     # files go before the re-armed cache is durable.
     if pivoted:
-        _clear_gate_artifacts(project_root)
+        _clear_gate_artifacts(project_root, session_id)
 
     _log_friction_event(
         session_id, mode, "mode_change",

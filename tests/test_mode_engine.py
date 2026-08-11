@@ -142,8 +142,12 @@ class TestGoldenWorkCycle:
 
         cache = writ_session._read_cache(session_id)
         assert cache["gates_approved"] == ["phase-a", "test-skeletons"]
-        assert (project_root / ".claude" / "gates" / "phase-a.approved").exists()
-        assert (project_root / ".claude" / "gates" / "test-skeletons.approved").exists()
+        # Session-scoped artifact path (Part 2, isolation cycle): the advance writes under
+        # <gates>/<session_id>/, so two instances in one repo cannot read each other's
+        # approvals. Only the path construction changed; both artifacts are still asserted.
+        session_gates = project_root / ".claude" / "gates" / session_id
+        assert (session_gates / "phase-a.approved").exists()
+        assert (session_gates / "test-skeletons.approved").exists()
 
     def test_advance_returns_no_gates_for_debug(self, session_id, project_root, monkeypatch, capsys):
         """Non-work modes have no gate sequence -> advance is a no-op (unchanged)."""

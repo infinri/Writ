@@ -23,7 +23,13 @@ from writ.session.gate_token import (
     read_gate_binding,
     read_gate_token,
 )
-from writ.session.locators import _find_plan_md, plan_md_hash, resolve_project_root
+from writ.session.locators import (
+    _find_plan_md,
+    gate_artifact_path,
+    gate_dir,
+    plan_md_hash,
+    resolve_project_root,
+)
 from writ.session.mode_engine import (
     MODE_CONFIG,
     _gate_sequence_for_mode,
@@ -512,12 +518,26 @@ def cmd_advance_phase(session_id: str, project_root: str = "", token: str = "") 
     # the claim both mutual-excludes concurrent advances and spends the token.
     _log_phase_token_summary(session_id, mode, cache, old_phase)
 
-    # Create gate file on disk as artifact (not source of truth)
-    gate_dir = os.path.join(project_root, ".claude", "gates")
-    os.makedirs(gate_dir, exist_ok=True)
-    gate_file = os.path.join(gate_dir, f"{target_gate}.approved")
-    with open(gate_file, "w") as f:
-        f.write(session_id + "\n")
+    # Create gate file on disk as artifact (not source of truth), under THIS SESSION's own
+    # directory: <project_root>/.claude/gates/<session_id>/<gate>.approved. The flat path
+    # this replaces was shared by every session working in the same repo, so one session's
+    # approval read as every session's and a re-arm in one deleted the others' files.
+    #
+    # An invalid session component writes NOTHING (locators.gate_artifact_path returns "").
+    # The advance itself already succeeded and the cache is the source of truth, so
+    # refusing here costs the audit artifact and no enforcement: the friction row is what
+    # makes the refusal visible instead of silent.
+    session_gate_dir = gate_dir(project_root, session_id)
+    gate_file = gate_artifact_path(project_root, session_id, target_gate)
+    if session_gate_dir and gate_file:
+        os.makedirs(session_gate_dir, exist_ok=True)
+        with open(gate_file, "w") as f:
+            f.write(session_id + "\n")
+    else:
+        _log_friction_event(
+            session_id, mode, "gate_artifact_refused",
+            gate=target_gate, reason="invalid_session_or_gate_path_component",
+        )
 
     _emit_json({
         "advanced": True,

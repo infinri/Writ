@@ -681,8 +681,16 @@ case "$CURRENT_MODE" in
         # Work mode: inject workflow reminder based on gate state
         _PROJECT_ROOT=$(detect_project_root "$(pwd -P)")
 
-        if [ -n "$_PROJECT_ROOT" ]; then
-            _GATE_DIR="$_PROJECT_ROOT/.claude/gates"
+        # THIS SESSION's own gate directory, never the project-wide one: a flat
+        # phase-a.approved from any session in the repo used to silence this reminder for a
+        # session that had approved nothing, and told it "test-skeletons gate pending",
+        # which reads as progress it never made. An empty answer (no project root, or a
+        # session id that cannot be a path component) means there is nowhere to read gate
+        # state from, so no reminder is printed -- the same silence a rootless project got
+        # before, and never a reminder derived from another session's files.
+        _GATE_DIR=$(writ_gate_dir "$_PROJECT_ROOT" "$SESSION_ID")
+
+        if [ -n "$_GATE_DIR" ]; then
             _PHASE_A="$_GATE_DIR/phase-a.approved"
             _TEST_SKEL="$_GATE_DIR/test-skeletons.approved"
 
@@ -814,8 +822,15 @@ fi
 # 13. Check for gate invalidation (backward context without escalation)
 # Only relevant in Work mode
 if [ "$CURRENT_MODE" = "work" ]; then
-    if [ -n "$_PROJECT_ROOT" ]; then
-        _GATE_DIR="${_GATE_DIR:-$_PROJECT_ROOT/.claude/gates}"
+    # Reuses the session-scoped $_GATE_DIR section 9b already built (both blocks run only in
+    # work mode, so the build happens once per prompt). Recomputed only if 9b was skipped;
+    # an empty answer means no session-scoped directory to read, and the invalidation check
+    # is skipped rather than pointed at the project-wide path, where another session's
+    # missing artifact would read as THIS session's gate invalidation.
+    # ${_PROJECT_ROOT:-} because this arm is only reached when 9b was skipped, and an
+    # unset variable under `set -u` would abort the whole hook rather than skip a check.
+    _GATE_DIR="${_GATE_DIR:-$(writ_gate_dir "${_PROJECT_ROOT:-}" "$SESSION_ID")}"
+    if [ -n "$_GATE_DIR" ]; then
 
         # Check if any gate was invalidated (records exist but .approved file missing)
         #

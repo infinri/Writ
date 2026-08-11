@@ -60,7 +60,17 @@ if [ -z "$PROJECT_ROOT" ]; then
   exit 2
 fi
 
-GATE_DIR="$PROJECT_ROOT/.claude/gates"
+# The artifacts live under THIS SESSION's own directory
+# (<project_root>/.claude/gates/<session_id>/), so the identity checked above is what
+# locates them. writ_gate_dir is the pure-shell mirror of writ/session/locators.gate_dir;
+# an empty answer means the id is not a usable path component, and refusing is the same
+# loud shape as the no-session refusal above rather than a silent all-false report.
+GATE_DIR=$(writ_gate_dir "$PROJECT_ROOT" "$SID")
+
+if [ -z "$GATE_DIR" ]; then
+  echo '{"error": "Unusable session id: a session id must match [A-Za-z0-9._-]{1,128} to name a gate directory. This script will not report gate state for an identity it cannot resolve to a path."}'
+  exit 2
+fi
 
 # The three values reach python through the ENVIRONMENT, not through string interpolation
 # into the program text. SID is operator-supplied and PROJECT_ROOT can hold any path
@@ -89,10 +99,9 @@ for gate in required_gates:
     if not exists:
         missing.append(gate)
 
-# The session is echoed back so the answer says WHO it is for. Part 1 requires the
-# identity without yet using it to locate the artifacts (Part 2 moves the path under
-# <gate_dir>/<session_id>/), and a required input with no visible effect is exactly the
-# kind of thing a later reader deletes as dead.
+# The session is echoed back so the answer says WHO it is for, and gate_dir now CONTAINS
+# that id: two instances in one repo get different answers from the same project at the
+# same moment, which is the whole point of the session-scoped path.
 result = {
     'session': os.environ['WRIT_SESSION'],
     'project_root': os.environ['WRIT_PROJECT_ROOT'],

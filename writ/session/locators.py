@@ -65,6 +65,66 @@ def resolve_project_root(explicit: str = "", start: str = "") -> tuple[str, str]
     return start, ROOT_FROM_CWD
 
 
+# ── Session-scoped gate artifacts ───────────────────────────────────────────────
+# An approval writes <project_root>/.claude/gates/<session_id>/<gate>.approved. The
+# session id used to be the file's CONTENTS and not part of the path, so two Claude Code
+# instances working in one repo shared one approval set: A's approval read as B's, and B
+# running `mode set` deleted A's files.
+#
+# THE SESSION ID IS A PATH COMPONENT NOW, so it is validated BEFORE it is ever joined.
+# The charset rejects a separator (a `sid` of "../.." would otherwise let an approval
+# artifact be written, and later deleted, anywhere on the filesystem), and "." / ".." are
+# rejected outright even though the charset admits their characters, because both name a
+# directory that is not a session. A rejected id yields the EMPTY STRING rather than an
+# exception: writers must create nothing, and readers must answer "no approval". A reader
+# that raised would fail OPEN under `set -e` -- the exception aborts the hook before the
+# gate check it was trying to run.
+#
+# bin/lib/common.sh `writ_gate_dir` is the byte-identical bash mirror (five of the readers
+# are shell, one of them on the per-prompt path where a python spawn costs ~19.5ms). Two
+# implementations of one path is a seam this repo has been bitten by before, so
+# tests/test_gate_dir_bash_python_parity.py runs both sides over the same inputs,
+# including a rejected id, and compares bytes. CHANGE BOTH OR NEITHER.
+_SESSION_COMPONENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+
+
+def is_valid_session_component(session_id) -> bool:
+    """True when `session_id` is safe to use as a single path component."""
+    if not isinstance(session_id, str) or not session_id:
+        return False
+    if session_id in (".", ".."):
+        return False
+    return bool(_SESSION_COMPONENT_RE.match(session_id))
+
+
+def gate_dir(project_root: str, session_id: str) -> str:
+    """The gate-artifact directory for ONE session, or "" when there is no valid path.
+
+    "" means "no gate directory": an absent project root or a session id that failed
+    `is_valid_session_component`. Callers must treat it as no-approval, never join to it.
+    """
+    if not project_root or not is_valid_session_component(session_id):
+        return ""
+    # Trailing separators are stripped so a root passed as "/srv/app/" produces the same
+    # bytes as "/srv/app" -- the bash mirror does the same strip, and the parity test
+    # compares byte for byte. A root of "/" strips to "" and rejoins as "/.claude/...".
+    root = project_root.rstrip("/") or "/"
+    return os.path.join(root, ".claude", "gates", session_id)
+
+
+def gate_artifact_path(project_root: str, session_id: str, gate_name: str) -> str:
+    """The `<gate>.approved` artifact path for ONE session, or "" when there is none.
+
+    The gate name is validated with the same component check as the session id: it
+    arrives from a CLI argument on the invalidation path (violations.py), so an
+    unvalidated name is the same traversal the session id would have been.
+    """
+    directory = gate_dir(project_root, session_id)
+    if not directory or not is_valid_session_component(gate_name):
+        return ""
+    return os.path.join(directory, f"{gate_name}.approved")
+
+
 def _find_debug_md(file_path: str) -> str | None:
     """Find debug.md for the project containing file_path.
 

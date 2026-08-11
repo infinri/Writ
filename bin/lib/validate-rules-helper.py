@@ -19,7 +19,10 @@ Post-analyze (stdin = /analyze JSON response):
   Emits routing decisions to stdout / stderr in the same shape the inline
   shell pipeline produces (one JSON blob with verdict + findings to route).
 
-Stdlib only.
+Stdlib only, with ONE exception: writ.session.locators supplies the session-scoped
+gate-artifact path. That module is itself stdlib-only and imports nothing else from writ,
+and the alternative was a THIRD hand-rolled copy of a path that already exists in two
+languages -- the duplicated-seam class of bug this repo has been bitten by before.
 """
 from __future__ import annotations
 
@@ -30,6 +33,10 @@ import json
 import os
 import re
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+from writ.session.locators import gate_artifact_path  # noqa: E402
 
 
 EXT_TO_LANG = {
@@ -108,14 +115,24 @@ def _find_plan_md(project_root: str) -> str:
     return found[0]
 
 
-def _derive_phase(project_root: str) -> str:
-    """Phase from gate-file artifacts under .claude/gates/."""
+def _derive_phase(project_root: str, session_id: str) -> str:
+    """Phase from THIS SESSION's own gate artifacts under .claude/gates/<session_id>/.
+
+    The session id is required because this function read the flat, session-less path for
+    eighteen days and reported the workflow phase of whichever session in the repo had
+    approved last: a sibling's approval moved this session past its own plan gate. A session
+    with no artifact of its own answers "planning", whatever a sibling directory holds.
+
+    An unresolvable path (no root, or a session id that is not a valid path component)
+    answers as if nothing were approved, which fails CLOSED to the earliest phase.
+    """
     if not project_root:
         return "code_generation"
-    gate_dir = os.path.join(project_root, ".claude", "gates")
-    if not os.path.isfile(os.path.join(gate_dir, "phase-a.approved")):
+    phase_a = gate_artifact_path(project_root, session_id, "phase-a")
+    test_skeletons = gate_artifact_path(project_root, session_id, "test-skeletons")
+    if not phase_a or not os.path.isfile(phase_a):
         return "planning"
-    if not os.path.isfile(os.path.join(gate_dir, "test-skeletons.approved")):
+    if not test_skeletons or not os.path.isfile(test_skeletons):
         return "code_generation"
     return "testing"
 
@@ -196,7 +213,9 @@ def cmd_pre_analyze(args: argparse.Namespace) -> int:
         return 0
 
     context = _build_context(file_path, project_root)
-    phase = _derive_phase(project_root)
+    # --session-id is already supplied by validate-rules.sh, so the derived phase is per
+    # session rather than per project.
+    phase = _derive_phase(project_root, args.session_id or "")
     plan_file = _find_plan_md(project_root)
     boundary = _boundary_mode(plan_file, cache)
 

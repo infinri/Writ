@@ -53,9 +53,14 @@ _writ_session coverage "$SESSION_ID" \
 # 3. Gate metrics (replaces log-session-metrics.sh)
 PROJECT_ROOT=$(detect_project_root "$(pwd)")
 if [ -n "$PROJECT_ROOT" ]; then
-    GATE_DIR="$PROJECT_ROOT/.claude/gates"
+    # THE ENDING SESSION's own gate directory, and only that one. The project-wide path this
+    # replaces credited this session with every approval any session in the repo had made.
+    GATE_DIR=$(writ_gate_dir "$PROJECT_ROOT" "$SESSION_ID")
     METRICS_FILE="$PROJECT_ROOT/.claude/session-metrics.md"
-    if [ -d "$GATE_DIR" ]; then
+    # NOT a symlink: this block now DELETES, and a symlinked <session_id> directory would
+    # aim those deletes at the link target anywhere on the filesystem (the same escape
+    # mode_engine._clear_gate_artifacts guards with a realpath containment check).
+    if [ -n "$GATE_DIR" ] && [ -d "$GATE_DIR" ] && [ ! -L "$GATE_DIR" ]; then
         for gate_file in "$GATE_DIR"/*.approved; do
             [ ! -f "$gate_file" ] && continue
             GATE_NAME=$(basename "$gate_file" .approved)
@@ -64,7 +69,16 @@ if [ -n "$PROJECT_ROOT" ]; then
             printf '\n## Gate: %s -- %s\n' \
                 "$GATE_NAME" "$TIMESTAMP" \
                 >> "$METRICS_FILE" 2>/dev/null || true
+            # Approvals do not outlive the session that earned them (this cycle's accepted
+            # cost), so the artifact goes once its metrics row is written. Per-entry rm, not
+            # rm -rf: os-level, unlink never follows a final-component symlink, and a
+            # sibling session's directory is not reachable from this glob at all.
+            rm -f "$gate_file" 2>/dev/null || true
         done
+        # rmdir, never `rm -r`: it removes the directory only when this hook emptied it, so
+        # an unrelated file someone left there is preserved rather than deleted. A leftover
+        # directory is inert -- no reader treats a directory as an approval.
+        rmdir "$GATE_DIR" 2>/dev/null || true
     fi
 fi
 

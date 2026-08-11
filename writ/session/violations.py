@@ -12,6 +12,7 @@ import sys
 from datetime import datetime, timezone
 
 from writ.session.cache import _read_cache, mutate_cache
+from writ.session.locators import gate_artifact_path
 
 
 MAX_CYCLES_BEFORE_ESCALATION = 3
@@ -155,9 +156,13 @@ def cmd_invalidate_gate(session_id: str, args: list[str]) -> None:
         print(f"invalidate-gate failed: {e}", file=sys.stderr)
         sys.exit(2)
 
-    # Delete gate file (best-effort -- record already written)
-    if project_root:
-        gate_file = os.path.join(project_root, ".claude", "gates", f"{gate_name}.approved")
+    # Delete THIS SESSION's own gate file (best-effort -- record already written). The
+    # invalidation belongs to the session whose rule was violated, so it must never reach a
+    # sibling session's artifact in the same project: the flat path this replaces was shared
+    # by every session in the repo. An unresolvable path (no root, or a session id that is
+    # not a valid path component) leaves nothing to delete.
+    gate_file = gate_artifact_path(project_root, session_id, gate_name)
+    if gate_file:
         try:
             os.remove(gate_file)
         except OSError:

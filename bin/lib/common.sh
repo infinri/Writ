@@ -751,6 +751,53 @@ detect_project_root() {
   printf '\n'
 }
 
+# ── Session-scoped gate artifact directory ───────────────────────────────────
+# Prints <project_root>/.claude/gates/<session_id>, or an EMPTY LINE when there is no
+# valid path (no project root, or a session id that is not [A-Za-z0-9._-]{1,128} or is
+# "." / ".."). Always returns 0: an empty answer is a legitimate result meaning "this
+# session has no gate directory, so it has approved nothing", and a non-zero return would
+# abort every caller under `set -euo pipefail` -- failing OPEN on a gate check, which is
+# the wrong direction for a human-oversight boundary.
+# Usage: GATE_DIR=$(writ_gate_dir "$PROJECT_ROOT" "$SESSION_ID")
+#
+# THE BYTE-IDENTICAL PYTHON MIRROR IS writ/session/locators.py `gate_dir`. Two
+# implementations of one path is a seam this repo has been bitten by before (the two
+# `## Files` parsers; gate_token_path matching the bash writer byte for byte), so
+# tests/test_gate_dir_bash_python_parity.py runs both sides over the same inputs,
+# including a rejected id, and compares bytes. CHANGE BOTH OR NEITHER.
+#
+# PURE SHELL, NO SPAWN, deliberately: writ-rag-inject.sh builds this on the per-prompt
+# path, where a python interpreter start costs ~19.5ms and `grep` a fork. The charset
+# check is a `case` glob for that reason, and tests/test_prompt_path_process_budget.py's
+# python-start ratchet must not move because of this function.
+#
+# LC_ALL=C IS LOAD-BEARING. Bracket ranges in a glob are COLLATION-ordered outside the C
+# locale, so `[A-Za-z]` under en_US.UTF-8 can admit accented letters that the python
+# mirror's ASCII regex rejects -- a silent parity break on exactly the inputs the
+# validation exists to refuse. It is `local`, so the locale is restored on return.
+writ_gate_dir() {
+  local root="${1:-}" sid="${2:-}"
+  local LC_ALL=C
+  if [ -z "$root" ] || [ -z "$sid" ] || [ ${#sid} -gt 128 ]; then
+    printf '\n'
+    return 0
+  fi
+  # "." and ".." pass the charset but name a directory that is not a session; a separator
+  # or any other character outside the class is refused so the id can never traverse.
+  case "$sid" in
+    .|..|*[!A-Za-z0-9._-]*)
+      printf '\n'
+      return 0
+      ;;
+  esac
+  # Strip trailing separators so "/srv/app/" and "/srv/app" produce the same bytes as the
+  # python mirror's rstrip. A root of "/" strips to "" and rejoins as "/.claude/...".
+  while [ -n "$root" ] && [ "${root%/}" != "$root" ]; do
+    root="${root%/}"
+  done
+  printf '%s\n' "$root/.claude/gates/$sid"
+}
+
 # ── Session ID detection ────────────────────────────────────────────────────
 # Extracts the session id from a parsed hook envelope, and NOTHING ELSE.
 #
