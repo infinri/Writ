@@ -31,10 +31,15 @@ class QueryRequest(BaseModel):
     prefer_rule_ids: list[str] | None = None
     node_types: list[str] | None = None
     retrieval_mode: str = "semantic"
-    # M.3: caller's project (resolved from cwd by the hook). None == search-all
-    # (backward-compatible; a no-op at single-project). When set, retrieval is
-    # scoped to {project, '_shared'} -- the cross-project anti-leak guarantee.
+    # The caller's project NAME, already resolved. Empty/None means no project was
+    # resolved, which now scopes retrieval to doctrine only (never search-all).
     project: str | None = None
+    # The caller's project ROOT, unresolved. This is what a hook actually holds
+    # (detect_project_root is pure bash); the daemon resolves root to name because
+    # resolution needs the :Project registry it already has open, and doing it
+    # client-side would cost a Neo4j round trip plus a python start per prompt per
+    # channel. Empty by default so every existing caller keeps working unchanged.
+    project_root: str = ""
 
 
 class CompanionRequest(BaseModel):
@@ -47,6 +52,13 @@ class CompanionRequest(BaseModel):
     # sized once floors are authored in 1.7 (the floor set is the dominant cost).
     budget_tokens: int = 5000
     exclude_rule_ids: list[str] | None = None
+    # Accepted so every retrieval channel carries the same field and a hook does not
+    # have to know which endpoint is project-aware. Every node this route can return
+    # is a retrievable METHODOLOGY label, which node_scope.py classifies as doctrine
+    # and therefore delivers to every project, so there is nothing here to scope out.
+    # The field exists so that stops being an accident: the day this route can return
+    # a record-typed node, the caller's root is already on the wire.
+    project_root: str = ""
 
 
 class PromptBundleRequest(BaseModel):
@@ -57,6 +69,11 @@ class PromptBundleRequest(BaseModel):
     prompt: str = ""          # keyword-extracted prompt: query text + companion prompt + always-on context
     effort: str = ""
     always_on_filter: bool = True
+    # The per-prompt hot path. Forwarded to the internal channel-1 QueryRequest,
+    # which dropped the project entirely before this cycle: a fix that stopped at
+    # /query would have tested green and left the route that runs on every prompt
+    # unscoped.
+    project_root: str = ""
 
 
 class ProposeRequest(BaseModel):

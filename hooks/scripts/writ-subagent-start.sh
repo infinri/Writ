@@ -207,14 +207,21 @@ except Exception:
     fi
 
     if [ -n "$AGENT_PROMPT" ] && [ ${#AGENT_PROMPT} -gt 10 ]; then
+        # The DISPATCHING project's root: this hook runs in the parent Claude Code
+        # process, so its cwd is the project that spawned the sub-agent. Without it the
+        # sub-agent's one and only rule injection is unscoped, so a dispatched worker
+        # could be governed by a different project's records than its dispatcher.
+        # detect_project_root is pure bash (no spawn).
+        _PROJECT_ROOT=$(detect_project_root "$(pwd -P)")
         RESPONSE=$(python3 -c "
 import json, sys
 print(json.dumps({
     'query': sys.argv[1][:500],
     'budget_tokens': 2000,
     'exclude_rule_ids': [],
+    'project_root': sys.argv[2],
 }))
-" "$AGENT_PROMPT" 2>/dev/null | \
+" "$AGENT_PROMPT" "$_PROJECT_ROOT" 2>/dev/null | \
             curl -s --connect-timeout 0.5 --max-time 2 \
                 -X POST "http://${WRIT_HOST}:${WRIT_PORT}/query" \
                 -H "Content-Type: application/json" \

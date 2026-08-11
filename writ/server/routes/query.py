@@ -15,6 +15,7 @@ seam). By-value pure functions/constants are imported from their origin modules.
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 
 from fastapi import APIRouter
@@ -39,11 +40,39 @@ from writ.shared.tokens import estimate_tokens
 router = APIRouter()
 
 
+async def resolve_caller_project(project_root: str) -> str:
+    """Resolve a caller-supplied project ROOT to a project NAME, or "" on failure.
+
+    The hooks send a root because they already hold one (detect_project_root is pure
+    bash); the registry that maps root to name lives in the daemon, which is already
+    being called. Resolution reads an in-process cached registry, so the steady-state
+    cost is zero Neo4j round trips per request (see ProjectStoreMixin._cached_projects).
+
+    NEVER raises and never returns an error to the caller. Retrieval is fail-open end
+    to end (rag_query runs with a 0.3s connect timeout and `|| true`), and an
+    unregistered project root is a NORMAL condition on any project that has not been
+    registered yet. The safe degradation is doctrine-only retrieval, which an empty
+    answer produces; a raise here would blank a turn's rules or surface a hook error
+    for something routine. The degradation is recorded on the retrieval_result row
+    instead, so it is visible rather than silent.
+    """
+    if not project_root or server._db is None:
+        return ""
+    try:
+        return await server._db.resolve_project_for_cwd(project_root) or ""
+    except Exception as exc:
+        emit_exception("server.query.resolve_project", exc, "", None, project_root=project_root)
+        return ""
+
+
 @router.post("/query")
 async def query_rules(request: QueryRequest) -> dict[str, Any]:
     """Ranked list of matching domain rules. Mandatory rules excluded."""
     if server._pipeline is None:
         return {"error": "Pipeline not initialized. Run writ serve."}
+    # An already-resolved `project` wins over `project_root`, so an internal caller
+    # (prompt_bundle's channel 1) that has resolved once does not resolve again.
+    project = request.project or await resolve_caller_project(request.project_root)
     # Per PERF-IO-001: the pipeline query is CPU/IO-bound and synchronous; run it
     # off the event loop so concurrent hook requests are not serialized behind it.
     try:
@@ -56,7 +85,7 @@ async def query_rules(request: QueryRequest) -> dict[str, Any]:
             prefer_rule_ids=request.prefer_rule_ids,
             node_types=request.node_types,
             retrieval_mode=request.retrieval_mode,
-            project=request.project,
+            project=project or None,
         )
     except Exception as exc:
         # Audit item F: nothing distinguished "graph unreachable" from "no rules
@@ -69,14 +98,16 @@ async def query_rules(request: QueryRequest) -> dict[str, Any]:
             "server.query", exc, request.session_id or "", None,
             retrieval_mode=request.retrieval_mode,
             domain=request.domain or "",
-            project=request.project or "",
+            project=project or "",
         )
         raise
-    _emit_retrieval_result(request, result)
+    _emit_retrieval_result(request, result, project)
     return result
 
 
-def _emit_retrieval_result(request: QueryRequest, result: dict[str, Any]) -> None:
+def _emit_retrieval_result(
+    request: QueryRequest, result: dict[str, Any], project: str = "",
+) -> None:
     """Record the quality of one retrieval on the metrics stream. Never raises.
 
     Audit item F: the S4 abstention gate returned an empty rule set with no event, so
@@ -110,7 +141,12 @@ def _emit_retrieval_result(request: QueryRequest, result: dict[str, Any]) -> Non
             latency_ms=result.get("latency_ms"),
             retrieval_mode=request.retrieval_mode,
             domain=request.domain or "",
-            project=request.project or "",
+            project=project or request.project or "",
+            # The RAW root the caller sent, recorded even (especially) when it did
+            # not resolve. A scope degradation is otherwise invisible: an operator
+            # could see project="" on the row and not know WHICH root is
+            # unregistered, so the fix (register that project) would have no target.
+            project_root=request.project_root or "",
             had_error=bool(result.get("error")),
         )
     except Exception:  # noqa: BLE001 - telemetry must not break retrieval
@@ -223,6 +259,11 @@ async def prompt_bundle(request: PromptBundleRequest) -> dict[str, Any]:
         # retrieval_result row is session-correlated even though the four hooks that POST
         # /query directly do not send one yet.
         session_id=sid,
+        # The project scope, which this internal request used to DROP: the field
+        # existed on QueryRequest and /query forwarded it, but the constructor here
+        # never set it, so the one route that runs on every prompt was unscoped no
+        # matter what the hook sent. Passed as a root, resolved once inside query_rules.
+        project_root=request.project_root,
     ))
     if "error" in qresp:
         # Match the legacy hook: a /query error aborted the whole injection (the
@@ -274,6 +315,7 @@ async def prompt_bundle(request: PromptBundleRequest) -> dict[str, Any]:
     if qsource and remaining_budget > 600:
         cresp = await methodology_companion(CompanionRequest(
             mode=mode, prompt=prompt, exclude_rule_ids=exclude_ids, budget_tokens=2000,
+            project_root=request.project_root,
         ))
         if "error" not in cresp:
             ctext, cmeta = split_format(await asyncio.to_thread(server._run_cmd_format_locked, cresp))
@@ -296,6 +338,12 @@ async def analyze_code(request: AnalyzeRequest) -> AnalyzeResponse | dict[str, A
     """Analyze code against retrieved rules. Returns structured compliance verdict."""
     if server._pipeline is None or server._llm_client is None or server._instrumentation is None:
         return {"error": "Pipeline not initialized. Run writ serve."}
+    # The project of the FILE UNDER ANALYSIS, not of whoever called: /analyze is the
+    # one retrieval route whose subject is a path, so the scope is derived here rather
+    # than added to AnalyzeRequest as a field a caller could forget or misreport. The
+    # file's directory is what the registry matches (a repo_root prefix), never the
+    # file itself.
+    project = await resolve_caller_project(os.path.dirname(request.file_path or ""))
     return await run_analysis(
         code=request.code,
         file_path=request.file_path,
@@ -304,6 +352,7 @@ async def analyze_code(request: AnalyzeRequest) -> AnalyzeResponse | dict[str, A
         pipeline=server._pipeline,
         llm_client=server._llm_client,
         instrumentation=server._instrumentation,
+        project=project or None,
     )
 
 

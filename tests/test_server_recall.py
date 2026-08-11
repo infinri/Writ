@@ -16,6 +16,8 @@ Capability map:
   [server-recall-2]  /recall is fail-open: compile_recall raising logs friction
                      and returns {ok, briefing:"", decisions:[]} (never raises)
   [server-recall-3]  /recall returns {ok, briefing, decisions} shape on success
+  [server-recall-4]  /recall degrades safely when the project cannot be
+                      resolved (isolation cycle v2, Part 3)
 """
 
 from __future__ import annotations
@@ -412,3 +414,78 @@ class TestRecallRouteSuccess:
         assert captured_kwargs.get("full") is True, (
             f"full must be forwarded to compile_recall; got {captured_kwargs!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Tests: [server-recall-4] unresolved project (isolation cycle v2, Part 3)
+# ---------------------------------------------------------------------------
+
+class TestRecallRouteUnresolvedProject:
+    """[server-recall-4]: resolve_project_for_cwd's default no longer returns
+    "writ" for an unregistered cwd -- it returns an empty string (see
+    tests/test_phaseM3_project_query_scope.py::TestProjectRegistry). /recall
+    must handle that empty answer explicitly, per plan.md's Part 3 Analysis:
+    "the route must return its empty-but-valid payload with a logged reason
+    rather than querying for the empty string."
+    """
+
+    def test_unresolved_project_returns_empty_but_valid_payload(
+        self,
+        client: TestClient,
+        isolated_cache: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import writ.server as _srv
+
+        monkeypatch.setattr(_srv, "_db", _FakeDB(project=""))
+
+        compile_recall_mock = AsyncMock()
+
+        with patch("writ.session.recall.compile_recall", new=compile_recall_mock):
+            resp = client.post("/recall", json=_recall_request())
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("ok") is True
+        assert data.get("briefing") == ""
+        assert data.get("decisions") == []
+        compile_recall_mock.assert_not_called()
+
+    def test_unresolved_project_logs_a_reason_not_silently(
+        self,
+        client: TestClient,
+        isolated_cache: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import writ.server as _srv
+
+        monkeypatch.setattr(_srv, "_db", _FakeDB(project=""))
+        logged: list[dict] = []
+        monkeypatch.setattr(_srv, "log_friction_event", lambda **kw: logged.append(kw))
+
+        with patch("writ.session.recall.compile_recall", new=AsyncMock()):
+            client.post("/recall", json=_recall_request(project_root="/tmp/unregistered-repo"))
+
+        assert logged, "an unresolved project must log a friction event with a reason"
+        assert any("project" in str(e).lower() for e in logged), (
+            f"the logged event should mention the project-resolution reason; got {logged!r}"
+        )
+
+    def test_resolved_project_is_unaffected_by_this_guard(
+        self,
+        client: TestClient,
+        isolated_cache: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Anti-vacuity: the guard must not swallow the normal success path too."""
+        import writ.server as _srv
+
+        monkeypatch.setattr(_srv, "_db", _FakeDB(project="proj-a"))
+
+        async def _canned(*args, **kwargs):
+            return {"briefing": "hello", "decisions": []}
+
+        with patch("writ.session.recall.compile_recall", new=_canned):
+            resp = client.post("/recall", json=_recall_request())
+
+        assert resp.json().get("briefing") == "hello"

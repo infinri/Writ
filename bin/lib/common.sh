@@ -1770,9 +1770,15 @@ print(m.get('cost', 0))
 # benign no-rules skip, not a hook error). That path is unreachable from the two call
 # sites (budget is bash arithmetic; exclude is always a valid JSON array via the callers'
 # '[]' fallback), so live behavior is unchanged.
-# Usage: RESPONSE=$(rag_query "$QUERY" "$PRETOOL_BUDGET" "$LOADED_RULE_IDS")
+# The 4th argument is the caller's PROJECT ROOT, sent so the daemon can scope
+# retrieval to that project's records (writ/retrieval/node_scope.py). A root, not a
+# resolved name: the registry lookup needs the graph, and resolving it here would cost
+# a python start plus a Neo4j round trip on a path that runs on every file read and
+# every write. Empty is a legitimate value (no project root found) and degrades to
+# doctrine-only retrieval server-side, never to an error.
+# Usage: RESPONSE=$(rag_query "$QUERY" "$PRETOOL_BUDGET" "$LOADED_RULE_IDS" "$PROJECT_ROOT")
 rag_query() {
-    local query="$1" budget="$2" exclude="$3"
+    local query="$1" budget="$2" exclude="$3" project_root="${4:-}"
     local request
     request=$(python3 -c "
 import json, sys
@@ -1781,8 +1787,9 @@ print(json.dumps({
     'budget_tokens': int(sys.argv[2]),
     'exclude_rule_ids': json.loads(sys.argv[3]),
     'top_k': 3,
+    'project_root': sys.argv[4],
 }))
-" "$query" "$budget" "$exclude" 2>/dev/null)
+" "$query" "$budget" "$exclude" "$project_root" 2>/dev/null)
     [ -z "$request" ] && return 0
     # Same budgets the inlined request carried (connect 0.3s, total 1s), now through the
     # HTTP wrapper: a missing accelerator degrades to urllib, not to "no rules this turn".

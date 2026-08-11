@@ -36,6 +36,8 @@ from writ.retrieval.embeddings import (
     ScoredResult,
 )
 
+from writ.retrieval.node_scope import is_visible
+
 _logger = logging.getLogger(__name__)
 from writ.retrieval.keyword import KeywordIndex
 from writ.retrieval.ranking import (
@@ -269,6 +271,10 @@ class RetrievalPipeline:
         for coding-only, ["Skill", "Playbook", "Technique", "AntiPattern",
         "ForbiddenResponse"] for methodology-only, None for all). Stage 1 filter.
 
+        project: the caller's project name. Doctrine (Rule + the five methodology
+        labels) is returned whatever this is, so an omitted or unresolvable project
+        costs completeness of RECORDS only, never doctrine. See node_scope.py.
+
         Returns dict with rules, mode, total_candidates, latency_ms.
         """
         start = time.perf_counter()
@@ -282,16 +288,20 @@ class RetrievalPipeline:
         allowed_types, methodology_domain_exclude, route_filter = self._resolve_stage1_filter(
             node_types, retrieval_mode,
         )
-        # M.3 project scope: admit only the caller's project + the shared corpus --
-        # the anti-leak guarantee. project=None preserves search-all.
-        allowed_projects = {project, "_shared"} if project is not None else None
+        # Project scope, decided by NODE TYPE (writ/retrieval/node_scope.py): doctrine
+        # reaches every caller regardless of its project tag, a record only reaches its
+        # own project or "_shared". project=None (or "") no longer disables the filter:
+        # it used to mean search-all, which returned another project's record-typed
+        # nodes to a caller that simply forgot the argument. It now means doctrine-only,
+        # a completeness degradation instead of a leak.
+        caller_project = project or None
         domain_lower = domain.lower() if domain else None  # A8: hoist query-constant
 
         # Stage 2: BM25 keyword search.
         bm25_results = self._keyword.search(query_text, limit=BM25_CANDIDATE_LIMIT)
         bm25_results = self._filter_candidates(
             bm25_results, lambda r: r["rule_id"], exclude, domain_lower, allowed_types,
-            methodology_domain_exclude, route_filter, allowed_projects,
+            methodology_domain_exclude, route_filter, caller_project,
         )
 
         # Stage 3: ANN vector search.
@@ -312,7 +322,7 @@ class RetrievalPipeline:
             }
         vector_results = self._filter_candidates(
             vector_results, lambda r: r.rule_id, exclude, domain_lower, allowed_types,
-            methodology_domain_exclude, route_filter, allowed_projects,
+            methodology_domain_exclude, route_filter, caller_project,
         )
 
         # Merge + reciprocal-rank normalize candidates from both stages.
@@ -411,14 +421,14 @@ class RetrievalPipeline:
         return allowed_types, methodology_domain_exclude, route_filter
 
     def _filter_candidates(self, results, id_of, exclude, domain_lower, allowed_types,
-                           methodology_domain_exclude, route_filter, allowed_projects):
+                           methodology_domain_exclude, route_filter, caller_project):
         """Stage 1 candidate filter. The BM25 hits are dict-shaped and the vector hits
         are ScoredResult-shaped, so the identical predicate chain is parameterized only
         by how each carries its rule_id (id_of). All filters are pure AND-ed predicates,
         so the result set is independent of their order.
 
         A8: single pass with ONE metadata lookup per candidate (was up to 5 dict.get +
-        a per-element domain.lower()). M.3 project scope is the last filter.
+        a per-element domain.lower()). The project scope is the last filter.
         """
         out = []
         for r in results:
@@ -434,7 +444,11 @@ class RetrievalPipeline:
                 continue
             if route_filter and "semantic" not in self._routes_for(rid):
                 continue
-            if allowed_projects is not None and m.get("project", "writ") not in allowed_projects:
+            # The "writ" default is for an UNTAGGED node, and it is why the scope
+            # cannot be decided by this string alone: the whole live corpus carries
+            # it, so a tag comparison would hide doctrine from every other project.
+            # is_visible admits doctrine by type and only then compares tags.
+            if not is_visible(m.get("node_type", "Rule"), m.get("project", "writ"), caller_project):
                 continue
             out.append(r)
         return out

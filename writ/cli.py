@@ -1390,6 +1390,20 @@ def recall_cmd(
     async def _run() -> None:
         async with _writ_db() as db:
             project = await db.resolve_project_for_cwd(os.path.abspath(repo))
+            if not project:
+                # No project, not "writ": the resolver stopped defaulting an
+                # unregistered repo to this one. Say so plainly instead of printing
+                # "no decisions captured", which is a different fact and would send
+                # someone hunting for missing decisions in a repo Writ has never
+                # been told about. Exit 0: nothing failed, there is just nothing
+                # registered to recall.
+                typer.echo(
+                    f"[Writ recall: {os.path.abspath(repo)} is not registered as a "
+                    f"project, so there are no decisions to recall. Register it by "
+                    f"running a Writ session in it (or `writ hooks install`) and "
+                    f"capturing a commit.]"
+                )
+                return
             payload = await compile_recall(db, project, full=full)
             briefing = payload.get("briefing") or ""
             if briefing:

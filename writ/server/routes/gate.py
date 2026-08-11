@@ -36,6 +36,11 @@ from writ.session.mode_engine import MODE_CONFIG, _next_pending_gate
 
 router = APIRouter()
 
+# Upper bound on the write-gate's project resolution. Generous next to a cached
+# registry read (microseconds) and small next to the write it sits in front of, so it
+# only ever fires when the event loop is wedged, where waiting longer helps nobody.
+_PROJECT_RESOLVE_TIMEOUT_S = 2.0
+
 
 @router.post("/session/{session_id}/advance-phase")
 async def session_advance_phase(
@@ -485,6 +490,28 @@ async def pre_write_check(request: PreWriteCheckRequest) -> dict[str, Any]:
     Returns {"decision": "allow"|"deny"|"ask", "reason": "...", "rag_rules": "...",
              "rag_meta": {"rule_ids": [...], "tokens": N}}.
     """
+    # Captured before _check leaves the event loop. _check is sync and runs in a
+    # worker thread, but resolve_project_for_cwd is a coroutine on a Neo4j driver that
+    # is bound to THIS loop, so it has to be submitted back here rather than run on a
+    # fresh loop inside the thread (a fresh loop would issue the registry read on a
+    # loop the async driver does not belong to, and raise).
+    loop = asyncio.get_running_loop()
+
+    def _resolve_project(project_root: str) -> str:
+        """Project name for a cached project_root, or "" when there is none.
+
+        Called from inside the worker thread, and only on the allow path: a denied
+        write must not resolve anything, because its RAG branch never runs. The
+        timeout keeps a wedged event loop from pinning this thread; the caller's
+        except turns any failure into a pre_write_rag_failed friction row and an
+        allowed write, so retrieval stays advisory.
+        """
+        if not project_root or server._db is None:
+            return ""
+        fut = asyncio.run_coroutine_threadsafe(
+            server._db.resolve_project_for_cwd(project_root), loop,
+        )
+        return fut.result(timeout=_PROJECT_RESOLVE_TIMEOUT_S) or ""
 
     def _check() -> dict[str, Any]:
         session_id = request.session_id
@@ -547,11 +574,18 @@ async def pre_write_check(request: PreWriteCheckRequest) -> dict[str, Any]:
                     query_parts = [lang] + [w.lower() for w in words if len(w) > 3]
                     query_text = ' '.join(query_parts[:15])
                     if len(query_text) >= 5:
+                        # PreWriteCheckRequest carries no project root, and does not
+                        # need one: the session cache already holds project_root (read
+                        # a few lines up for plan_hash), so the scope comes from the
+                        # session's own project rather than from a new request field
+                        # every Write/Edit would have to remember to send.
+                        project = _resolve_project(cache.get("project_root", "") or "")
                         result = server._pipeline.query(
                             query_text=query_text,
                             budget_tokens=max_budget,
                             exclude_rule_ids=exclude_ids,
                             prefer_rule_ids=request.prefer_rule_ids,
+                            project=project or None,
                         )
                         rules = result.get("rules", [])
                         if rules:

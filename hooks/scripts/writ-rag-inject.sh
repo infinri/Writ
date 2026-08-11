@@ -91,6 +91,14 @@ AGENT_ID=$(echo "$PARSED" | sed -n '3p')
 MODE_HINT=$(echo "$PARSED" | sed -n '4p' | tr -d '[:space:]')
 EFFORT=$(echo "$PARSED" | sed -n '5p' | tr -d '[:space:]')
 
+# This project's root, computed ONCE for the whole hook and used by two consumers:
+# the retrieval requests below send it so the daemon can scope them to this project
+# (writ/retrieval/node_scope.py), and step 9b reads this session's gate directory
+# under it. It is hoisted here rather than computed per consumer because
+# detect_project_root is pure bash, so one call costs nothing and two copies of the
+# same expression would be free to drift.
+_PROJECT_ROOT=$(detect_project_root "$(pwd -P)")
+
 # Fallback session ID if not provided by Claude Code
 # NO SYNTHESIZED SESSION ID. This used to fall back to the parent PID and then to
 # md5(cwd:user)+date. Neither can ever equal the id Claude Code uses, so state written
@@ -403,8 +411,9 @@ print(json.dumps({
     'prompt': sys.argv[1],
     'exclude_rule_ids': exclude,
     'budget_tokens': 2000,
+    'project_root': sys.argv[3],
 }))
-" "$PROMPT" "$ORCH_LOADED_RULE_IDS" 2>/dev/null)
+" "$PROMPT" "$ORCH_LOADED_RULE_IDS" "${_PROJECT_ROOT:-}" 2>/dev/null)
 
         if [ -n "$ORCH_METHOD_REQUEST" ]; then
             # Documented daemon-down-equivalent raw curl: no companion block, same as a
@@ -476,18 +485,20 @@ if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1; then
         --arg mode "${CURRENT_MODE:-}" \
         --arg prompt "$PROMPT" \
         --arg effort "$EFFORT" \
+        --arg project_root "${_PROJECT_ROOT:-}" \
         --argjson always_on_filter "$_AO_FILTER_BOOL" \
-        '{session_id: $session_id, mode: $mode, prompt: $prompt, effort: $effort, always_on_filter: $always_on_filter}' \
+        '{session_id: $session_id, mode: $mode, prompt: $prompt, effort: $effort, project_root: $project_root, always_on_filter: $always_on_filter}' \
         2>/dev/null) || BUNDLE_REQUEST=""
 fi
 if [ -z "$BUNDLE_REQUEST" ]; then
-    BUNDLE_REQUEST=$(WRIT_SID="$SESSION_ID" WRIT_MODE="${CURRENT_MODE:-}" WRIT_PROMPT="$PROMPT" WRIT_EFFORT="$EFFORT" WRIT_AOF="$_AO_FILTER_BOOL" python3 -c "
+    BUNDLE_REQUEST=$(WRIT_SID="$SESSION_ID" WRIT_MODE="${CURRENT_MODE:-}" WRIT_PROMPT="$PROMPT" WRIT_EFFORT="$EFFORT" WRIT_AOF="$_AO_FILTER_BOOL" WRIT_PROOT="${_PROJECT_ROOT:-}" python3 -c "
 import os, json
 print(json.dumps({
     'session_id': os.environ['WRIT_SID'],
     'mode': os.environ.get('WRIT_MODE', ''),
     'prompt': os.environ.get('WRIT_PROMPT', ''),
     'effort': os.environ.get('WRIT_EFFORT', ''),
+    'project_root': os.environ.get('WRIT_PROOT', ''),
     'always_on_filter': os.environ.get('WRIT_AOF', 'true') == 'true',
 }))" 2>/dev/null)
 fi
@@ -678,9 +689,8 @@ case "$CURRENT_MODE" in
         debug "injected review mode reminder"
         ;;
     work)
-        # Work mode: inject workflow reminder based on gate state
-        _PROJECT_ROOT=$(detect_project_root "$(pwd -P)")
-
+        # Work mode: inject workflow reminder based on gate state. _PROJECT_ROOT is
+        # computed once near the top of the hook (the retrieval requests need it too).
         # THIS SESSION's own gate directory, never the project-wide one: a flat
         # phase-a.approved from any session in the repo used to silence this reminder for a
         # session that had approved nothing, and told it "test-skeletons gate pending",

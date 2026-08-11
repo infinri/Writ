@@ -15,6 +15,20 @@ These tests pin the fix with a stub daemon (no real daemon / Neo4j needed):
   - the hook emits exactly ONE JSON object on stdout (no stray line).
 
 Per TEST-REGRESSION-001: these are RED before the fix, GREEN after.
+
+--- Isolation cycle v2 (plan.md, Part 3), 2026-08-11 ---
+
+TestSubagentQueryCarriesProjectRoot (appended below) pins capability:
+"writ-subagent-start.sh's inline /query request carries the project root, so a
+dispatched sub-agent is scoped to the dispatching project." The hook's inline
+/query body (lines 210-217) currently sends exactly {query, budget_tokens,
+exclude_rule_ids} -- no project field at all. It must gain `project_root`,
+computed the same way writ-rag-inject.sh already does (`detect_project_root
+"$(pwd -P)"`), from the DISPATCHING project's cwd (the hook runs in the parent
+Claude Code process's cwd, not the sub-agent's).
+
+RED today: the inline /query body has no project_root key and the hook never
+calls detect_project_root.
 """
 
 from __future__ import annotations
@@ -43,9 +57,14 @@ _STUB_RULE_IDS = ["TEST-INJ-001", "TEST-INJ-002", "TEST-INJ-003"]
 class _RulesDaemonHandler(BaseHTTPRequestHandler):
     """Stub daemon that is HEALTHY (so the hook runs its rules query) and returns a
     fixed rule set from /query. Records every query body so a test can assert the
-    fallback actually sends a non-empty query when the payload has no task."""
+    fallback actually sends a non-empty query when the payload has no task.
+
+    received_bodies (added for the Part 3 project-root tests) records the FULL
+    parsed /query request dict, not just the `query` text, so a test can inspect
+    fields the original regression tests never needed to look at."""
 
     received_queries: list[str] = []
+    received_bodies: list[dict] = []
 
     def log_message(self, *args):  # silence stderr noise
         pass
@@ -68,6 +87,11 @@ class _RulesDaemonHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length) if length else b"{}"
         if self.path == "/query":
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                parsed = {}
+            _RulesDaemonHandler.received_bodies.append(parsed)
             try:
                 _RulesDaemonHandler.received_queries.append(json.loads(raw).get("query", ""))
             except Exception:
@@ -107,6 +131,7 @@ class _RulesDaemonHandler(BaseHTTPRequestHandler):
 def rules_daemon():
     """A healthy stub daemon on a free port that serves a fixed rule set."""
     _RulesDaemonHandler.received_queries = []
+    _RulesDaemonHandler.received_bodies = []
     port = _free_port()
     srv = HTTPServer(("localhost", port), _RulesDaemonHandler)
     t = threading.Thread(target=srv.serve_forever, daemon=True)
@@ -123,7 +148,7 @@ def _seed_parent(cache_dir, parent_id):
         json.dump({"mode": "work", "current_phase": "planning", "gates_approved": []}, f)
 
 
-def _run_start_hook(*, cache_dir, port, agent_id, agent_type, parent_id, task=None):
+def _run_start_hook(*, cache_dir, port, agent_id, agent_type, parent_id, task=None, cwd=None):
     env = os.environ.copy()
     env["WRIT_CACHE_DIR"] = str(cache_dir)
     env["WRIT_HOST"] = "localhost"
@@ -143,6 +168,7 @@ def _run_start_hook(*, cache_dir, port, agent_id, agent_type, parent_id, task=No
         capture_output=True,
         text=True,
         env=env,
+        cwd=cwd,
         timeout=20,
     )
 
@@ -241,3 +267,86 @@ class TestSubagentRuleInjection:
         objs = _stdout_json_objects(r.stdout)
         assert len(objs) == 1, f"expected 1 stdout JSON object, got {len(objs)}: {r.stdout!r}"
         assert "hookSpecificOutput" in objs[0]
+
+
+class TestSubagentQueryCarriesProjectRoot:
+    """Capability: writ-subagent-start.sh's inline /query request carries the
+    project root, so a dispatched sub-agent is scoped to the dispatching project.
+
+    The hook is run with `cwd` set to a directory that carries a marker
+    (`.git`), matching detect_project_root's own walk-up-for-a-marker contract
+    (bin/lib/common.sh:702) -- an unmarked tmp_path would resolve to itself,
+    which is a valid root but would not distinguish "computed a root" from
+    "always echoes an empty default".
+    """
+
+    def test_query_body_carries_the_dispatching_projects_root(self, tmp_path, rules_daemon):
+        project_dir = tmp_path / "dispatching-project"
+        (project_dir / ".git").mkdir(parents=True)
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        _seed_parent(cache_dir, "p-root-1")
+
+        _run_start_hook(
+            cache_dir=cache_dir, port=rules_daemon,
+            agent_id="a-root-1", agent_type="writ-explorer", parent_id="p-root-1",
+            task="review the payment client for missing error handling",
+            cwd=str(project_dir),
+        )
+
+        assert _RulesDaemonHandler.received_bodies, "daemon received no /query body"
+        bodies = _RulesDaemonHandler.received_bodies
+        assert any(b.get("project_root") == str(project_dir) for b in bodies), (
+            f"no /query body carried the dispatching project's root "
+            f"({project_dir!s}); got bodies={bodies!r}"
+        )
+
+    def test_a_different_dispatching_project_sends_a_different_root(self, tmp_path, rules_daemon):
+        """Anti-vacuity: a hardcoded or empty project_root would pass the test
+        above by accident if the stub happened to match. Two distinct marked
+        directories must produce two distinct roots."""
+        project_a = tmp_path / "project-a"
+        project_b = tmp_path / "project-b"
+        (project_a / ".git").mkdir(parents=True)
+        (project_b / ".git").mkdir(parents=True)
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+
+        _seed_parent(cache_dir, "p-root-a")
+        _run_start_hook(
+            cache_dir=cache_dir, port=rules_daemon,
+            agent_id="a-root-a", agent_type="writ-explorer", parent_id="p-root-a",
+            task="explore the codebase", cwd=str(project_a),
+        )
+        _seed_parent(cache_dir, "p-root-b")
+        _run_start_hook(
+            cache_dir=cache_dir, port=rules_daemon,
+            agent_id="a-root-b", agent_type="writ-explorer", parent_id="p-root-b",
+            task="explore the codebase", cwd=str(project_b),
+        )
+
+        roots_seen = {b.get("project_root") for b in _RulesDaemonHandler.received_bodies}
+        assert str(project_a) in roots_seen
+        assert str(project_b) in roots_seen
+        assert str(project_a) != str(project_b)
+
+    def test_query_still_carries_the_original_fields(self, tmp_path, rules_daemon):
+        """The project_root addition must not displace the fields the original
+        regression (6d4e0a5 + 522541b) pins."""
+        project_dir = tmp_path / "dispatching-project"
+        (project_dir / ".git").mkdir(parents=True)
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        _seed_parent(cache_dir, "p-root-3")
+
+        _run_start_hook(
+            cache_dir=cache_dir, port=rules_daemon,
+            agent_id="a-root-3", agent_type="writ-explorer", parent_id="p-root-3",
+            task="audit the auth login handler for injection risk",
+            cwd=str(project_dir),
+        )
+
+        body = _RulesDaemonHandler.received_bodies[-1]
+        assert body.get("query"), "the query text field must still be present and non-empty"
+        assert "budget_tokens" in body
+        assert "exclude_rule_ids" in body

@@ -1,7 +1,7 @@
 """Decision Memory Phase 2 RECALL: tests for `writ recall` CLI command.
 
 Every test here is RED until the implementer adds `recall_cmd` to writ/cli.py.
-Tests fail on SystemExit/AssertionError (command not found in the typer app) or
+Tests fail on SystemExit/AttributeError (command not found in the typer app) or
 AttributeError, never on a collection/import error.
 
 CRITICAL isolation guarantee: NO test in this file touches Neo4j. The db
@@ -16,6 +16,8 @@ Capability map:
   [cli-recall-2]  writ recall prints a "no decisions" message when the project
                   has no captured decisions
   [cli-recall-3]  writ recall --full prints each decision with its rule statements
+  [cli-recall-4]  writ recall prints an explicit message when the project cannot
+                  be resolved (isolation cycle v2, Part 3)
 """
 
 from __future__ import annotations
@@ -299,3 +301,52 @@ class TestRecallCmdFullFlag:
             f"without --full, rule statement body must not be printed; "
             f"got:\n{result.output!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Tests: [cli-recall-4] unresolved project (isolation cycle v2, Part 3)
+# ---------------------------------------------------------------------------
+
+class TestRecallCmdUnresolvedProject:
+    """[cli-recall-4]: resolve_project_for_cwd's default no longer returns
+    "writ" for an unregistered repo -- it returns an empty string. Capability
+    29's CLI half: "the CLI [degrades] to an explicit message" rather than
+    silently querying for the empty-string project (which would either error
+    or, worse, coincide with a real project literally named "").
+    """
+
+    def test_unresolved_project_prints_an_explicit_message(self) -> None:
+        with patch("writ.cli._writ_db", new=_fake_writ_db(project="")):
+            with _patch_recall({"briefing": "should not be reached", "decisions": []}):
+                result = runner.invoke(app, ["recall"])
+
+        assert result.exit_code == 0, (
+            f"an unresolved project must not be treated as a CLI error; "
+            f"got {result.exit_code}\n{result.output}"
+        )
+        lower_out = result.output.lower()
+        assert "not registered" in lower_out or "no project" in lower_out or "unregistered" in lower_out, (
+            f"output must explicitly say the project could not be resolved; "
+            f"got:\n{result.output!r}"
+        )
+
+    def test_unresolved_project_never_calls_compile_recall(self) -> None:
+        """The empty-string project must not reach compile_recall at all --
+        querying decisions for project="" would either 404 or, worse, match
+        every mis-derived record filed under no project."""
+        compile_mock = AsyncMock()
+        with patch("writ.cli._writ_db", new=_fake_writ_db(project="")):
+            with patch("writ.session.recall.compile_recall", new=compile_mock):
+                runner.invoke(app, ["recall"])
+
+        compile_mock.assert_not_called()
+
+    def test_a_resolved_project_is_unaffected_by_this_guard(self) -> None:
+        """Anti-vacuity: the explicit-message path must not swallow the normal
+        success case too."""
+        payload = {"briefing": "[Writ recall]\n- ok", "decisions": []}
+        with patch("writ.cli._writ_db", new=_fake_writ_db(project="proj-a")):
+            with _patch_recall(payload):
+                result = runner.invoke(app, ["recall"])
+
+        assert "[Writ recall]" in result.output

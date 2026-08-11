@@ -534,11 +534,13 @@ class TestSeamRegisterBeforeCapture:
         remote = "https://github.com/org/fresh-project.git"
         runner = _runner_with_remote(repo_root=fresh_root, remote_url=remote)
 
-        # Confirm unregistered cwd resolves to "writ" fallback before registration.
+        # An unregistered cwd resolves to NO project. It used to fall back to "writ",
+        # which silently filed another project's records under this one and let a caller
+        # from an unregistered directory read this project's records as its own.
         cwd = fresh_root + "/src/module.py"
         pre_name = await db_clean.resolve_project_for_cwd(cwd)
-        assert pre_name == "writ", (
-            f"expected 'writ' fallback before registration, got {pre_name!r}"
+        assert pre_name == "", (
+            f"expected no project before registration, got {pre_name!r}"
         )
 
         returned_name = await ensure_project_registered(
