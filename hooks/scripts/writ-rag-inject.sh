@@ -343,7 +343,15 @@ if parsed_bool "$CACHE" "is_orchestrator"; then IS_ORCHESTRATOR="true"; else IS_
 if [ -z "$AGENT_ID" ]; then
     RECALL_BRIEFED=$(parsed_bool "$CACHE" "recall_briefed" && echo "yes" || echo "no")
     if [ "$RECALL_BRIEFED" != "yes" ]; then
-        RECALL_REQ=$(WRIT_ROOT="${PWD}" python3 -c "
+        # _PROJECT_ROOT, not $PWD: /recall feeds this value to resolve_project_for_cwd,
+        # a raw longest-prefix string compare against the REGISTERED repo_root. $PWD is
+        # bash's logical cwd, so a symlinked component makes that compare miss and the
+        # briefing comes back empty (plus a recall_project_unresolved friction row);
+        # and in a nested-repo tree a deep $PWD can prefix-match the registered OUTER
+        # project while the retrieval requests below carry the inner root, so one hook
+        # invocation would scope rules to one project and brief decisions from another.
+        # One project-root answer per hook invocation is the invariant.
+        RECALL_REQ=$(WRIT_ROOT="${_PROJECT_ROOT:-}" python3 -c "
 import os, json
 print(json.dumps({'project_root': os.environ.get('WRIT_ROOT', ''), 'budget': 20000}))
 " 2>/dev/null)

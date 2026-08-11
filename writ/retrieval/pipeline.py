@@ -328,8 +328,13 @@ class RetrievalPipeline:
         # Merge + reciprocal-rank normalize candidates from both stages.
         candidate_ids = self._merge_and_normalize(bm25_results, vector_results)
 
-        # Stage 4: Graph traversal enrichment (from adjacency cache).
-        enrichment = self._cache.get_enrichment(list(candidate_ids.keys()))
+        # Stage 4: Graph traversal enrichment (from adjacency cache), scoped to the
+        # caller through the SAME predicate the candidate filter uses. The cache is
+        # shared by every caller and unfiltered by design (see AdjacencyCache.
+        # build_from_db), so this is where the neighbour list becomes this caller's.
+        enrichment = self._scope_enrichment(
+            self._cache.get_enrichment(list(candidate_ids.keys())), caller_project,
+        )
 
         # Stage 5a: First-pass ranking (without graph proximity, INV-4).
         first_pass_scores = self._first_pass_rank(candidate_ids, active_weights)
@@ -452,6 +457,42 @@ class RetrievalPipeline:
                 continue
             out.append(r)
         return out
+
+    def _scope_enrichment(self, enrichment: dict, caller_project) -> dict:
+        """Drop neighbours this caller may not see, before they are attached.
+
+        THE SECOND CHANNEL OUT OF THIS PIPELINE. _filter_candidates scopes the
+        candidates; `relationships` used to carry whatever the shared adjacency cache
+        held, so a scoped candidate arrived decorated with unscoped neighbours and
+        budget_tracking.cmd_format rendered them into the `RELATED: <ids>` line the
+        model reads. Filtering here rather than in the cache's build query keeps ONE
+        rule (is_visible) and one cache for every caller.
+
+        TWO DEFAULTS, DELIBERATELY DIFFERENT FROM _filter_candidates':
+        - node_type falls back to "" (a record), NOT to "Rule". A candidate is always
+          doctrine-loaded so "Rule" is safe there; a NEIGHBOUR can be any label in the
+          graph, and defaulting an unknown one to "Rule" would admit every foreign
+          record -- the fail-open direction node_scope.py exists to refuse.
+        - project keeps the "writ" default for an untagged node, matching
+          _filter_candidates exactly, because an untagged node is the same question in
+          both places and two answers to it would drift.
+        The metadata dict is only a fallback: a record-typed neighbour is never in it
+        (_load_candidates loads Rule plus five methodology labels), so the entry's own
+        carried label is what actually decides.
+        """
+        scoped: dict[str, list[dict]] = {}
+        for rid, neighbours in enrichment.items():
+            kept = []
+            for n in neighbours:
+                meta = self._metadata.get(n.get("rule_id"), {})
+                node_type = n.get("node_type") or meta.get("node_type") or ""
+                project = n.get("project")
+                if project is None:
+                    project = meta.get("project", "writ")
+                if is_visible(node_type, project, caller_project):
+                    kept.append(n)
+            scoped[rid] = kept
+        return scoped
 
     def _merge_and_normalize(self, bm25_results, vector_results) -> dict:
         """Merge BM25 + vector hits into candidate_ids and attach reciprocal-rank

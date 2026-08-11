@@ -3,6 +3,7 @@
 Moved verbatim from the former writ/graph/db.py (Wave 2 mixin split); methods read self._driver / self._database set by Neo4jConnection.__init__."""
 from __future__ import annotations
 
+import asyncio
 import time
 
 from writ.graph.db._common import (
@@ -89,8 +90,8 @@ class ProjectStoreMixin:
         empty answer and degrade explicitly (retrieval to doctrine-only, `/recall`
         to an empty briefing with a logged reason, the CLI to a plain message).
 
-        THE REGISTRY READ IS CACHED IN THIS PROCESS, and the cache is read INLINE
-        here rather than through a helper method: this function is also called
+        THE REGISTRY READ IS CACHED IN THIS PROCESS, and both the cache and its lock are
+        read INLINE here rather than through a helper method: this function is also called
         unbound (`ProjectStoreMixin.resolve_project_for_cwd(stub, cwd)`) by callers
         that supply only get_projects, so a `self._helper()` call would raise
         AttributeError on them. getattr with a default is for the same reason: the
@@ -103,13 +104,49 @@ class ProjectStoreMixin:
         registration by a DIFFERENT process (the git post-commit capture, `writ
         harvest`, the CLI), which cannot invalidate this process's copy and would
         otherwise stay invisible to a long-lived daemon until it restarted.
+
+        SINGLE FLIGHT, not just a cache. The read-check-write below straddles an await,
+        so without a lock every caller that arrives while the cache is cold or expired
+        sees "no cache" and issues its own registry read: measured at 5 queries for 5
+        concurrent callers, which makes the cost scale with REQUEST VOLUME, the exact
+        property the budget above claims it does not have. The daemon is one process
+        with many in-flight requests over one shared connection object, so that is the
+        normal shape rather than a corner case. Regression:
+        tests/test_prompt_path_project_resolution_budget.py's asyncio.gather cases.
         """
-        now = time.monotonic()
         projects = getattr(self, "_projects_cache", None)
-        if projects is None or (now - getattr(self, "_projects_cache_at", 0.0)) >= PROJECTS_CACHE_TTL_S:
-            projects = await self.get_projects()
-            self._projects_cache = projects
-            self._projects_cache_at = now
+        expired = (
+            projects is None
+            or (time.monotonic() - getattr(self, "_projects_cache_at", 0.0)) >= PROJECTS_CACHE_TTL_S
+        )
+        if expired:
+            lock = getattr(self, "_projects_cache_lock", None)
+            loop = asyncio.get_running_loop()
+            if lock is None or getattr(self, "_projects_cache_loop", None) is not loop:
+                # Lazily created for the same reason the cache attributes are, and safe
+                # WITHOUT a lock of its own: there is no await between this read and the
+                # write below, so no other coroutine can interleave and build a second
+                # lock. Rebuilt when the running loop differs because an asyncio.Lock
+                # binds to the loop that first awaits it and raises RuntimeError on any
+                # other, which would turn one connection object reused across loops
+                # (every function-scoped pytest-asyncio test does this) into a hard
+                # resolution failure instead of a cache miss.
+                lock = asyncio.Lock()
+                self._projects_cache_lock = lock
+                self._projects_cache_loop = loop
+            async with lock:
+                # Re-check under the lock: the caller that held it may have just
+                # refreshed the cache, and waking up to issue a second identical query
+                # is precisely the stampede this lock exists to remove.
+                projects = getattr(self, "_projects_cache", None)
+                still_expired = (
+                    projects is None
+                    or (time.monotonic() - getattr(self, "_projects_cache_at", 0.0)) >= PROJECTS_CACHE_TTL_S
+                )
+                if still_expired:
+                    projects = await self.get_projects()
+                    self._projects_cache = projects
+                    self._projects_cache_at = time.monotonic()
         best_name, best_len = "", -1
         for p in projects:
             root = p.get("repo_root") or ""

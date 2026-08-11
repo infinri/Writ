@@ -284,6 +284,279 @@ class TestRecordScoping:
 # ---------------------------------------------------------------------------
 
 
+class TestEnrichmentIsScopedLikeCandidates:
+    """The second channel out of the pipeline: Stage 4 graph-proximity enrichment.
+
+    `_filter_candidates` was the ONLY is_visible call site, so a candidate that
+    passed the scope filter still carried `relationships`, a list built from
+    AdjacencyCache with no project filter, no node-type filter and no visibility
+    check at all (writ/retrieval/traversal.py's build_from_db matches
+    `(a)-[r]->(b)` for every non-BELONGS_TO edge in the shared graph). With
+    budget_tokens above STANDARD_THRESHOLD that list reaches the caller verbatim
+    and `cmd_format` renders it as the `RELATED: <ids>` line, so a scoped query
+    was returning scoped candidates decorated with unscoped neighbours.
+
+    WHY PRESSURESCENARIO AND NOT DECISION. The obvious record type cannot express
+    this leak: `_GRAPH_ID_COALESCE` is built from NODE_ID_FIELDS, which has no
+    decision_id, so build_from_db's `src_id IS NOT NULL` clause drops every
+    Decision edge before it reaches the cache -- pinned directly in
+    TestRecordEdgeEndpointsStayOutOfTheCache below, and a Decision-based
+    regression test here would have passed before the fix while asserting
+    nothing. PressureScenario is the live shape: it is absent from
+    DOCTRINE_NODE_TYPES (so node_scope.py classifies it as a record), it carries
+    a NODE_ID_FIELDS id (so it DOES enter the cache), and PRESSURE_TESTS wires it
+    straight to a Rule. Verified on the disposable graph before this test was
+    written: the cache came back with PSC-...  as a neighbour of the Rule.
+    """
+
+    PSC_ID = "PSC-ENRICH-001"
+
+    async def _seed(self, db, tmp_path) -> None:
+        """Rule A -[RELATED_TO]-> Rule B (doctrine to doctrine, must survive) and
+        PressureScenario -[PRESSURE_TESTS]-> Rule A (record to doctrine, must be
+        scoped). Everything is tagged "writ" exactly like the real corpus, so
+        "another project" here means the CALLER is elsewhere -- the same asymmetry
+        TestDoctrineReachesEveryProject guards."""
+        bible = _make_bible(tmp_path, "writ", ["ENRICH-DOC-001", "ENRICH-DOC-002"])
+        await ingest_path(bible, db)
+        await db.create_edge("RELATED_TO", "ENRICH-DOC-001", "ENRICH-DOC-002")
+        await db.create_methodology_node("PressureScenario", {
+            "scenario_id": self.PSC_ID,
+            "prompt": "a pressure prompt",
+            "expected_compliance": "comply",
+            "failure_patterns": ["fold"],
+            "rule_under_test": "ENRICH-DOC-001",
+            "difficulty": "medium",
+        })
+        await db.create_edge("PRESSURE_TESTS", self.PSC_ID, "ENRICH-DOC-001")
+
+    @staticmethod
+    def _entry(out: dict, rule_id: str) -> dict:
+        for r in out.get("rules", []):
+            if r.get("rule_id") == rule_id:
+                return r
+        raise AssertionError(
+            f"{rule_id} is not in the result set at all ({_result_ids(out)!r}); the "
+            f"enrichment assertions below would pass vacuously"
+        )
+
+    @staticmethod
+    def _related(entry: dict) -> set:
+        return {
+            n.get("rule_id") for n in entry.get("relationships", []) if isinstance(n, dict)
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_record_typed_neighbour_does_not_ride_along_to_another_project(
+        self, db, tmp_path,
+    ) -> None:
+        await self._seed(db, tmp_path)
+        pipeline = await build_pipeline(db)
+
+        out = pipeline.query("a thing happens", project="proj-a", budget_tokens=100_000)
+        related = self._related(self._entry(out, "ENRICH-DOC-001"))
+
+        assert self.PSC_ID not in related, (
+            f"leak: the record-typed neighbour {self.PSC_ID} (tagged 'writ') reached a "
+            f"caller from 'proj-a' through the enrichment channel; relationships={related!r}. "
+            f"is_visible must be applied where the neighbour list is ATTACHED, not only in "
+            f"_filter_candidates"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_doctrine_neighbour_still_survives_the_scope_filter(
+        self, db, tmp_path,
+    ) -> None:
+        """Anti-vacuity, and the same catastrophic-fix guard as
+        TestDoctrineReachesEveryProject one level down: a fix that dropped the
+        whole neighbour list, or that scoped it by project TAG, would pass the
+        test above while silently emptying every RELATED line for every project
+        except this one."""
+        await self._seed(db, tmp_path)
+        pipeline = await build_pipeline(db)
+
+        out = pipeline.query("a thing happens", project="proj-a", budget_tokens=100_000)
+        related = self._related(self._entry(out, "ENRICH-DOC-001"))
+
+        assert "ENRICH-DOC-002" in related, (
+            f"the doctrine neighbour ENRICH-DOC-002 was dropped for a caller from "
+            f"'proj-a'; relationships={related!r}. Doctrine is universal by design, so "
+            f"scoping the enrichment must not cost it"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_same_record_neighbour_does_reach_its_own_project(
+        self, db, tmp_path,
+    ) -> None:
+        """The other half: the filter is a SCOPE, not a blanket exclusion of
+        record-typed neighbours. A caller in the record's own project still gets
+        it, which is also what keeps this repo's own RELATED lines intact."""
+        await self._seed(db, tmp_path)
+        pipeline = await build_pipeline(db)
+
+        out = pipeline.query("a thing happens", project="writ", budget_tokens=100_000)
+        related = self._related(self._entry(out, "ENRICH-DOC-001"))
+
+        assert self.PSC_ID in related, (
+            f"the record-typed neighbour {self.PSC_ID} is tagged 'writ' and the caller IS "
+            f"'writ', so it must still be attached; relationships={related!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_rendered_related_line_carries_no_foreign_neighbour(
+        self, db, tmp_path,
+    ) -> None:
+        """End of the channel, not the middle of it: budget_tracking.cmd_format is
+        what turns `relationships` into the `RELATED: <ids>` text the model reads
+        (writ/session/budget_tracking.py:402-406, full mode only). Asserting on
+        the dict alone would leave the possibility that the render reads some other
+        source."""
+        import io
+        import json
+        import sys
+
+        from writ.session.budget_tracking import cmd_format
+
+        await self._seed(db, tmp_path)
+        pipeline = await build_pipeline(db)
+        out = pipeline.query("a thing happens", project="proj-a", budget_tokens=100_000)
+        assert out.get("mode") == "full", (
+            f"mode is {out.get('mode')!r}, but only full mode renders a RELATED line; "
+            f"this test would pass vacuously"
+        )
+
+        stdin_backup = sys.stdin
+        sys.stdin = io.StringIO(json.dumps(out))
+        try:
+            from contextlib import redirect_stdout
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                cmd_format()
+        finally:
+            sys.stdin = stdin_backup
+        rendered = buf.getvalue()
+
+        related_lines = [ln for ln in rendered.splitlines() if ln.startswith("RELATED:")]
+        assert related_lines, (
+            f"no RELATED line was rendered at all, so the assertion below would pass "
+            f"vacuously; rendered output was:\n{rendered}"
+        )
+        assert self.PSC_ID not in rendered, (
+            f"leak: {self.PSC_ID} reached the rendered injection text for a caller from "
+            f"'proj-a'. RELATED lines: {related_lines!r}"
+        )
+        assert any("ENRICH-DOC-002" in ln for ln in related_lines), (
+            f"the doctrine neighbour vanished from the rendered RELATED line: {related_lines!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_cache_entry_carries_enough_to_decide_visibility(
+        self, db, tmp_path,
+    ) -> None:
+        """The seam the filter depends on, pinned so it cannot be quietly removed.
+
+        A record-typed neighbour is NEVER in the pipeline's `_metadata` dict --
+        `_load_candidates` loads Rule plus the five retrievable methodology labels
+        and nothing else (TestLoadCandidatesForwardGuard) -- so a filter that
+        looked the neighbour up there would find {}, default its node_type to
+        "Rule" exactly as _filter_candidates does, and admit every foreign record:
+        fail-open, and green on a metadata-shaped unit test. The adjacency entry
+        therefore has to carry the neighbour's own label and project tag.
+        """
+        await self._seed(db, tmp_path)
+        cache = AdjacencyCache()
+        await cache.build_from_db(db)
+
+        entries = [
+            n for n in cache.get_neighbors("ENRICH-DOC-001")
+            if n.get("rule_id") == self.PSC_ID
+        ]
+        assert entries, (
+            f"{self.PSC_ID} is not a cached neighbour of ENRICH-DOC-001 at all; the "
+            f"leak this class covers cannot be reproduced and every assertion above "
+            f"would pass for the wrong reason"
+        )
+        entry = entries[0]
+        assert entry.get("node_type") == "PressureScenario", (
+            f"the adjacency entry does not carry the neighbour's own label "
+            f"({entry!r}), so is_visible cannot be applied to it without a metadata "
+            f"lookup that returns {{}} for every record type"
+        )
+        assert entry.get("project") == "writ", (
+            f"the adjacency entry does not carry the neighbour's project tag ({entry!r})"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_doctrine_entry_also_carries_its_label(self, db, tmp_path) -> None:
+        """Anti-vacuity for the pin above: the fields are populated for every
+        entry, not only for the one label this test names."""
+        await self._seed(db, tmp_path)
+        cache = AdjacencyCache()
+        await cache.build_from_db(db)
+
+        entries = [
+            n for n in cache.get_neighbors("ENRICH-DOC-001")
+            if n.get("rule_id") == "ENRICH-DOC-002"
+        ]
+        assert entries, "ENRICH-DOC-002 is not a cached neighbour of ENRICH-DOC-001"
+        assert entries[0].get("node_type") == "Rule", entries[0]
+
+
+class TestRecordEdgeEndpointsStayOutOfTheCache:
+    """Pins the SECOND, independent reason no Decision record can ride along
+    today, and the reason this file's enrichment tests use PressureScenario.
+
+    `wire_governed_by` creates real Decision -[GOVERNED_BY]-> Rule edges in the
+    live graph, and build_from_db matches every non-BELONGS_TO edge. The Decision
+    is dropped only because `_GRAPH_ID_COALESCE` is derived from NODE_ID_FIELDS,
+    which deliberately excludes decision_id, so the coalesced src_id is NULL and
+    the `src_id IS NOT NULL` clause discards the row.
+
+    THIS TEST PASSED BEFORE THE ENRICHMENT FIX. It is a forward guard, not the
+    regression proof: adding decision_id to NODE_ID_FIELDS (or widening the
+    coalesce) would make record nodes cache-reachable, and that edit should have
+    to turn this red rather than silently arming the channel.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_real_governed_by_edge_puts_no_decision_in_the_cache(
+        self, db, tmp_path,
+    ) -> None:
+        bible = _make_bible(tmp_path, "writ", ["ENRICH-GOV-001"])
+        await ingest_path(bible, db)
+        await db.create_decision(
+            decision_id="ENRICH-DEC-001", project="proj-b", title="t", rationale="r",
+            phase="planning", session_id="s", ts="2026-08-11T00:00:00+00:00",
+        )
+        try:
+            await db.wire_governed_by("ENRICH-DEC-001", "ENRICH-GOV-001", "proj-b")
+            edges = await db._run(
+                "MATCH (d:Decision {decision_id: $id})-[r:GOVERNED_BY]->(:Rule) "
+                "RETURN count(r) AS c", id="ENRICH-DEC-001",
+            )
+            assert edges[0]["c"] == 1, (
+                "the GOVERNED_BY edge was not created, so the assertion below would "
+                "pass vacuously"
+            )
+
+            cache = AdjacencyCache()
+            await cache.build_from_db(db)
+            neighbours = {
+                n.get("rule_id") for n in cache.get_neighbors("ENRICH-GOV-001")
+            }
+            assert "ENRICH-DEC-001" not in neighbours, (
+                f"a Decision record became cache-reachable: {neighbours!r}. The "
+                f"enrichment scope filter is now the only thing standing between a "
+                f"record edge and another project's RELATED line"
+            )
+        finally:
+            await db._run(
+                "MATCH (d:Decision {decision_id: $id}) DETACH DELETE d",
+                id="ENRICH-DEC-001",
+            )
+
+
 class TestLoadCandidatesForwardGuard:
     """Capability 36. Pins an EXISTING invariant so a future widening of
     _load_candidates cannot quietly add a record type to the pool that every
