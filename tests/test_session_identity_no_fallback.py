@@ -31,6 +31,21 @@ missed them twice over, and both misses are now pinned by TestTheScanReachesWhat
      invisible for want of one word. A scan that only recognizes the spellings already
      fixed can only ever confirm the last fix. It now matches ANY assignment from that
      file, however the variable is named.
+
+PART 1 OF THE ISOLATION CYCLE (session identity) NARROWS THE READER SET FURTHER. Before
+this cycle, four callers had no hook payload and so read the pointer as a last resort:
+`resolve_current_session_id()` itself (tiers 3 and 4, serving `mode set` with no sid and
+`writ doctor`), `bin/audit-region.sh`, `hooks/git/post-commit`, and
+`session-start-bootstrap.sh`'s pre-rotation read. This cycle deletes the resolver's own
+pointer/mtime-glob tiers and converts `bin/audit-region.sh` to require `--session` or
+`$CLAUDE_SESSION_ID`, so only TWO no-payload readers remain: `hooks/git/post-commit` (a git
+hook, which Claude Code never invokes with an envelope) and `session-start-bootstrap.sh`
+(which is asking a different question -- "which session did the harness just rotate away
+from" -- not "which session am I", and is exempted separately below). This file is RED on
+that narrowing until `bin/audit-region.sh` stops reading the pointer: today it still does,
+so `NO_PAYLOAD_POINTER_READERS` below must drop it to make the scan in
+`test_no_hook_reads_the_global_pointer_as_its_session` catch it like any other offender.
+Per TEST-TDD-001: skeletons approved before implementation.
 """
 
 from __future__ import annotations
@@ -108,20 +123,27 @@ LEGACY_POINTER_AS_SOURCE = re.compile(
 # It is a weaker instance of the same shape and it is NOT endorsed here: if two Claude Code
 # sessions on this machine interleave, the pointer can name the other one and this would
 # carry that session's mode. Removing it means removing the rotation carry-forward, which
-# is a product decision, not a cleanup. Flagged for that decision; exempted by name so the
-# scan stays sharp for every other file in the meantime.
+# is a product decision, not a cleanup (out of scope for Part 1 -- see plan.md). Flagged
+# for that decision; exempted by name so the scan stays sharp for every other file in the
+# meantime.
 POINTER_READ_EXEMPT = frozenset({"session-start-bootstrap.sh"})
 
-# TWO MORE, surfaced by covering the whole universe rather than hooks/scripts + bin/lib.
+# ONE MORE, surfaced by covering the whole universe rather than hooks/scripts + bin/lib.
 #
-# Both are already named in test_publishing_the_pointer_is_not_reading_it as legitimate
-# readers, and neither is a Claude Code hook, so neither has a payload to take an identity
-# from: bin/audit-region.sh is a CLI tool the operator runs, hooks/git/post-commit is a git
-# hook. The pointer is the only session name available to them, and
-# test_the_no_payload_exemptions_are_still_no_payload_callers holds them to one read each.
-# Named and argued, which is the whole difference from the state before: they were outside
-# the scan entirely, and nothing said so.
-NO_PAYLOAD_POINTER_READERS = frozenset({"audit-region.sh", "post-commit"})
+# `hooks/git/post-commit` is a git hook: git hands it no Claude Code envelope, ever, so it
+# has no payload to take an identity from and the pointer is the only session name
+# available to it. `test_the_no_payload_exemptions_are_still_no_payload_callers` holds it
+# to exactly one read.
+#
+# `bin/audit-region.sh` used to belong here too (it is also a no-payload CLI, not a hook),
+# but Part 1 of the isolation cycle converts it to require `--session` or
+# `$CLAUDE_SESSION_ID` and removes its pointer read entirely: an operator invoking a CLI
+# can be asked for `--session`, whereas git cannot be asked for anything. It is deliberately
+# ABSENT from this set now, so the general scan below (not a separate exemption) is what
+# proves its read is gone -- if the read comes back, this file fails at
+# `test_no_hook_reads_the_global_pointer_as_its_session`, not silently through a stale
+# allowlist entry.
+NO_PAYLOAD_POINTER_READERS = frozenset({"post-commit"})
 
 _FULL_LINE_COMMENT = re.compile(r"^[ \t]*#.*$", re.M)
 _TRAILING_COMMENT = re.compile(r"[ \t]#[ \t].*$", re.M)
@@ -174,6 +196,9 @@ class TestNoHookInventsASession:
         )
 
     def test_no_hook_reads_the_global_pointer_as_its_session(self) -> None:
+        """Part 1: `bin/audit-region.sh` is no longer in the exempt set, so if its pointer
+        read (currently at line 27-29) is still there, this scan must catch it exactly as
+        it would catch any hook that grew a new one -- RED until that read is removed."""
         offenders = scan(POINTER_AS_SOURCE, roots=SCAN_ROOTS, universe=SHELL_UNIVERSE,
                          transform=_strip_comments,
                          exempt=POINTER_READ_EXEMPT | NO_PAYLOAD_POINTER_READERS)
@@ -194,24 +219,54 @@ class TestNoHookInventsASession:
 
     def test_naming_the_pointer_as_a_protected_path_is_allowed(self) -> None:
         """writ-state-write-gate guards the pointer FILE from being written. That is a
-        different use and must not be flagged, or the fix would push it to hide the path."""
+        different use and must not be flagged, or the fix would push it to hide the path.
+        Part 1 leaves this file exactly as it is (it names the path, it does not read it
+        as a session id), so this stays a pinning test, not a conversion target."""
         assert not POINTER_AS_SOURCE.search(f'POINTER_FILE="{POINTER}"')
         assert not POINTER_AS_SOURCE.search(f'_POINTER = "{POINTER}"')
         assert (HOOKS / "writ-state-write-gate.sh").exists()
-        assert "writ-current-session" in (HOOKS / "writ-state-write-gate.sh").read_text()
+        gate_src = (HOOKS / "writ-state-write-gate.sh").read_text()
+        assert "writ-current-session" in gate_src
+        assert not POINTER_AS_SOURCE.search(_strip_comments(gate_src)), (
+            "writ-state-write-gate.sh only names the pointer as a protected path; it must "
+            "never start READING it as a session id"
+        )
+
+    def test_enforce_violations_comment_is_not_mistaken_for_a_read(self) -> None:
+        """enforce-violations.sh:30 (line number as of this cycle's plan; verify on read)
+        is a COMMENT quoting the fallback this whole file exists to remove, not a live
+        read. Its actual identity line uses `writ_require_session`, payload-only, already.
+        Part 1 leaves this file untouched -- it is already correct -- so this is a pin
+        against the plan's own correction of the original description, not a conversion."""
+        src = (HOOKS / "enforce-violations.sh").read_text()
+        assert "writ_require_session" in src
+        assert not POINTER_AS_SOURCE.search(_strip_comments(src)), (
+            "enforce-violations.sh must not gain a live pointer read; its only mention of "
+            f"{POINTER} must stay inside a comment"
+        )
 
     def test_publishing_the_pointer_is_not_reading_it(self) -> None:
-        """writ-rag-inject.sh still WRITES the pointer, and must not be flagged for it.
+        """Both writers still WRITE the pointer, and neither must be flagged for it.
 
-        Four callers read it and not one of them has a hook payload to read an id from:
-        resolve_current_session_id() (behind $CLAUDE_SESSION_ID and $CLAUDE_JOB_DIR, serving
-        `writ mode set` with no sid and `writ doctor`), hooks/git/post-commit, bin/audit-
-        region.sh, and the rotation carry-forward above. Deleting the write would not remove
-        the risk, it would push all four onto the mtime glob, which is strictly racier.
+        Two callers read it after Part 1 and not one of them has a hook payload to read an
+        id from: `hooks/git/post-commit` (a git hook -- git hands it no envelope, ever) and
+        `session-start-bootstrap.sh`'s rotation carry-forward (asking which session the
+        harness just rotated away from, not which session this is). Deleting the write
+        would not remove the risk for either one; it would leave them with NO signal at
+        all, which used to be racier (the mtime glob) and is now simply nothing, since
+        Part 1 deletes that glob too. Removing the pointer write is explicitly out of
+        scope for this cycle (plan.md, "Deliberately out of scope").
         """
         assert not POINTER_AS_SOURCE.search(f'echo "$SESSION_ID" > {POINTER}')
         rag = _strip_comments((HOOKS / "writ-rag-inject.sh").read_text())
-        assert f"> {POINTER}" in rag, "the publish was removed; re-check the four readers first"
+        assert f"> {POINTER}" in rag, "the publish was removed; re-check the two readers first"
+
+        # The SECOND writer, missed by the first plan and documented at HANDBOOK.md:37.
+        approve = _strip_comments((HOOKS / "auto-approve-gate.sh").read_text())
+        assert f"> {POINTER}" in approve, (
+            "auto-approve-gate.sh is the second pointer writer (HANDBOOK.md:37); Part 1 "
+            "keeps both writes, it only narrows who is allowed to read the result"
+        )
 
     def test_the_one_exemption_is_still_the_read_it_was_granted_for(self) -> None:
         """An allowlist nobody re-checks is a hole. This asserts the exempted file still
@@ -230,15 +285,16 @@ class TestNoHookInventsASession:
                 f"exemption is gone -- delete the exemption and the read together"
             )
 
-    def test_the_no_payload_exemptions_are_still_no_payload_callers(self) -> None:
-        """Same standard for the two the widened scope surfaced.
+    def test_the_no_payload_exemption_is_still_the_no_payload_caller(self) -> None:
+        """Same standard for the one caller Part 1 leaves in this set.
 
-        They are exempt for one reason only -- nothing hands them a hook payload -- so each
-        is held to the single read it was exempted for. If one of them ever grows a second,
-        or starts reading a payload, the exemption stops being the one that was granted.
-        """
-        paths = {"audit-region.sh": REPO / "bin" / "audit-region.sh",
-                 "post-commit": REPO / "hooks" / "git" / "post-commit"}
+        It is exempt for one reason only -- nothing hands it a hook payload -- so it is
+        held to the single read it was exempted for. If it ever grows a second read, or
+        starts reading a payload, the exemption stops being the one that was granted.
+        `bin/audit-region.sh` is deliberately NOT checked here: after Part 1 it should
+        have ZERO reads, which is what the general scan above proves, not this allowlist
+        pin."""
+        paths = {"post-commit": REPO / "hooks" / "git" / "post-commit"}
         assert set(paths) == set(NO_PAYLOAD_POINTER_READERS)
         for name, path in paths.items():
             src = _strip_comments(path.read_text())
@@ -251,6 +307,19 @@ class TestNoHookInventsASession:
                 f"{name} now reads a hook payload, so it has a real session id to use and "
                 f"the reason for its exemption is gone"
             )
+
+    def test_audit_region_no_longer_names_or_reads_the_pointer(self) -> None:
+        """Capability 6/8 (Part 1): bin/audit-region.sh drops the pointer entirely -- no
+        read, and (since it is the whole point) no residual reference that looks like one.
+        RED today: audit-region.sh:27-29 still reads the pointer as its fallback."""
+        src = _strip_comments((REPO / "bin" / "audit-region.sh").read_text())
+        assert not POINTER_AS_SOURCE.search(src), (
+            "bin/audit-region.sh must not read the pointer as a session-id source after "
+            "Part 1; it now requires --session or $CLAUDE_SESSION_ID"
+        )
+        assert "CLAUDE_SESSION_ID" in src, (
+            "bin/audit-region.sh must accept $CLAUDE_SESSION_ID as its env fallback"
+        )
 
 
 class TestTheScanReachesWhatItMissed:

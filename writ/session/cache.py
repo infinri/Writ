@@ -53,23 +53,27 @@ def _cache_dir() -> str:
     return os.environ.get("WRIT_CACHE_DIR", _DEFAULT_CACHE_DIR)
 
 
-# Payload-derived pointer file the hooks rewrite each turn with the CURRENT session id.
-# A module-level constant (not a hardcoded literal) so tests can monkeypatch it and the
-# resolver reads THIS name, never a bare /tmp path.
-_SESSION_POINTER_PATH = "/tmp/writ-current-session"
-
-
 def resolve_current_session_id() -> str | None:
-    """Resolve the CURRENT session id, preferring concurrency-safe signals.
+    """Resolve the CURRENT session id from the process's own environment, or None.
 
     Order (first non-empty wins):
       1. $CLAUDE_SESSION_ID          (per-process; authoritative if CC sets it)
       2. basename($CLAUDE_JOB_DIR)   (per-job; concurrency-safe; trailing / stripped)
-      3. _SESSION_POINTER_PATH       (payload-derived; self-heals each turn; shared-global)
-      4. newest writ-session-*.json  (mtime glob; last resort; racy)
-    Returns None when nothing resolves (callers fail loud, never guess). Each signal is
-    individually guarded so a bad value / unreadable file / dir falls through to the next
-    candidate -- the resolver NEVER raises.
+    Returns None when neither resolves. Each signal is individually guarded so a bad
+    value never propagates: the resolver NEVER raises, and it never guesses.
+
+    THERE IS NO THIRD TIER, and the two that were here were wrong in the same way. Tier 3
+    read /tmp/writ-current-session, ONE file per machine that every Claude Code session's
+    UserPromptSubmit hook overwrites, so it named whichever session took a turn most
+    recently. Tier 4 took the newest writ-session-*.json by mtime out of a cache directory
+    every project shares. Both answered "which session am I" with "whichever one moved
+    last", and both did so live: the user's magento project reported `work` mode it had
+    never set, and a stray test run left the pointer naming
+    `tier-embed-directive-597898df`, a session with no cache anywhere, which the mtime
+    glob could not tell apart from a real id. A wrong answer here is not a failed read, it
+    is a mode, an approval or an audit coverage scope written into somebody else's
+    session, and nothing in any log shows it happened. Callers get None and fail loud
+    instead (the CLI exits 2 naming the two env vars; the doctor reports no session).
     """
     # 1. per-process env id (empty string is treated as unset)
     try:
@@ -86,27 +90,6 @@ def resolve_current_session_id() -> str | None:
             base = os.path.basename(job_dir.rstrip("/"))
             if base:
                 return base
-    except Exception:
-        pass
-
-    # 3. payload-derived pointer file
-    try:
-        with open(_SESSION_POINTER_PATH) as f:
-            pointer = f.read().strip()
-        if pointer:
-            return pointer
-    except Exception:
-        pass
-
-    # 4. newest session cache by mtime (last resort; racy)
-    try:
-        pattern = os.path.join(_cache_dir(), "writ-session-*.json")
-        candidates = glob.glob(pattern)
-        if candidates:
-            latest = max(candidates, key=os.path.getmtime)
-            m = re.fullmatch(r"writ-session-(.+)\.json", os.path.basename(latest))
-            if m:
-                return m.group(1)
     except Exception:
         pass
 

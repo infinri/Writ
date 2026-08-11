@@ -459,9 +459,7 @@ def _resolve_hook_script(command: str) -> Path | None:
 
 
 def _latest_session_cache(session_id: str | None) -> dict | None:
-    """Read the named session cache, or the most-recent by mtime; None if none exist."""
-    import glob
-
+    """Read the named session cache, or the CURRENT session's; None when neither exists."""
     from writ.session import cache as cache_mod
 
     cache_dir = cache_mod._cache_dir()
@@ -475,27 +473,26 @@ def _latest_session_cache(session_id: str | None) -> dict | None:
         except (OSError, ValueError):
             return None
 
-    # Falsy session_id: delegate to the canonical resolver (pointer/env first) so the
-    # doctor reads the SAME session the live hooks do, not a bare mtime max that a
-    # rotated cache could win. The mtime-glob stays only as the resolver's own last
-    # resort; if it too returns None, fall back to it here for an offline doctor.
+    # Falsy session_id: the canonical resolver is the ONLY answer. It reports the session
+    # this process actually belongs to ($CLAUDE_SESSION_ID, then basename($CLAUDE_JOB_DIR))
+    # or None, and None is reported as none.
+    #
+    # NO LOCAL MTIME GLOB. This used to re-implement the resolver's own deleted last resort
+    # (newest writ-session-*.json in a directory every project's sessions share), so
+    # deleting that tier from the resolver alone would have left `writ doctor` still
+    # reporting a stranger's cache as this session's state. The doctor is the tool an
+    # operator reaches for once they ALREADY suspect the state is wrong, so a confident
+    # wrong answer here is worse than "no session": it retires the suspicion that was
+    # correct. Same reason a resolved id with no cache file returns None instead of
+    # falling through; the honest answer is that this session has no cache yet.
     resolved = cache_mod.resolve_current_session_id()
-    if resolved:
-        path = os.path.join(cache_dir, f"writ-session-{resolved}.json")
-        if os.path.isfile(path):
-            try:
-                with open(path) as f:
-                    return json.load(f)
-            except (OSError, ValueError):
-                return None
-        # resolved id has no cache in this dir -> fall through to the mtime last resort.
-
-    candidates = glob.glob(os.path.join(cache_dir, "writ-session-*.json"))
-    if not candidates:
+    if not resolved:
         return None
-    latest = max(candidates, key=os.path.getmtime)
+    path = os.path.join(cache_dir, f"writ-session-{resolved}.json")
+    if not os.path.isfile(path):
+        return None
     try:
-        with open(latest) as f:
+        with open(path) as f:
             return json.load(f)
     except (OSError, ValueError):
         return None

@@ -70,7 +70,23 @@ if [ -z "$SESSION_ID" ]; then
     exit 0
 fi
 
-# Publish session ID as backup -- skip inside sub-agents
+# Publish the session id for the callers that have NO payload to read one from. This is
+# the SECOND writer of this file; writ-rag-inject.sh:129 is the other.
+#
+# TWO READERS REMAIN, and neither could use a payload if it had one:
+#   hooks/git/post-commit:29        a git hook; git passes no Claude Code envelope, ever
+#   session-start-bootstrap.sh:112  reads the PRE-rotation id, which by definition is not
+#                                   in the payload (the payload carries the NEW one)
+# The other two are gone as of the session-identity cycle: resolve_current_session_id()
+# no longer reads this file or the newest cache by mtime (it answers from
+# $CLAUDE_SESSION_ID or $CLAUDE_JOB_DIR, or None), and bin/audit-region.sh now requires
+# --session or $CLAUDE_SESSION_ID. Nothing here answers "which session am I" from this
+# file any more, because it names whichever session on this machine took a turn most
+# recently. The write stays because deleting it would leave the two readers above with no
+# signal at all, and neither can be handed one. Re-check this list before removing it.
+#
+# Do NOT overwrite when inside a sub-agent: that would publish the child's id as the
+# session, and both readers want the top-level one.
 if [ -z "$AGENT_ID" ]; then
     echo "$SESSION_ID" > /tmp/writ-current-session
 fi
