@@ -1530,7 +1530,13 @@ def doctor(
         False, "--json/--no-json", help="Emit a machine-readable JSON list of results."
     ),
     session_id: str | None = typer.Option(
-        None, "--session-id", help="Override the most-recent session cache the mode/gate check scans."
+        None,
+        "--session-id",
+        help=(
+            "Read this session's cache in the mode/gate check instead of the current "
+            "session's ($CLAUDE_SESSION_ID, then basename($CLAUDE_JOB_DIR)). Without it, "
+            "an unresolvable session reports 'no session'; nothing is scanned or guessed."
+        ),
     ),
     repo: str = typer.Option(
         ".", "--repo", help="Repo whose post-commit hook is checked."

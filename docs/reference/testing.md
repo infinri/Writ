@@ -5,12 +5,31 @@ How the suite is built, why it's shaped that way, and the traps to avoid when ad
 ## Running
 
 ```bash
-make test     # pytest tests/ -x -q
+make test     # .venv/bin/python3 -m pytest tests/ --maxfail=10 -q
 make bench    # benchmarks/bench_targets.py (contractual perf floors)
 make check    # test + bench + writ validate
 ```
 
 398 test modules, 7,137 collected tests. Always use the venv interpreter (`.venv/bin/python`): the system interpreter lacks `onnxruntime` and fails the embedding tests. Markers: `perf` (latency-floor tests), `integration` (needs a live `claude` CLI, gated behind `WRIT_INTEGRATION_TESTS=1`), `no_friction_isolation` (opts out of the log redirect).
+
+`--maxfail=10`, not `-x`: on a suite this size `-x` reports exactly one failure per run, so reaching green costs one run per failure at minutes each. Ten gives the whole picture and still refuses to grind through a broken suite.
+
+### `make test` is an end-of-program command
+
+**During a cycle, run only the test files that cycle touches. Exactly ONE full-suite run happens, at the very end, and the orchestrator runs it.** Two full-suite invocations inside a single cycle once cost 785 seconds of a 2,495-second run and surfaced nothing the touched files had not.
+
+**Pass every path to ONE pytest invocation** rather than invoking pytest once per path. `pytest_sessionstart` (`tests/conftest.py`) runs a Neo4j warmth probe on every invocation, so N processes pay that probe N times; one process pays it once no matter how many paths follow it.
+
+```bash
+# One probe, one interpreter start, one collection:
+.venv/bin/python -m pytest tests/test_a.py tests/test_b.py tests/test_c.py -q
+# Three of each, for exactly the same tests:
+.venv/bin/python -m pytest tests/test_a.py -q
+.venv/bin/python -m pytest tests/test_b.py -q
+.venv/bin/python -m pytest tests/test_c.py -q
+```
+
+**`-k` is not a narrower run.** A `-k` expression selects *after* collection, so it still collects all 7,137 tests and pays the whole import cost before deselecting; only a path argument keeps tests out of the collection. Use paths, and `-k` only to pick within paths you already named.
 
 ## Isolation, forced at import time (`tests/conftest.py`)
 

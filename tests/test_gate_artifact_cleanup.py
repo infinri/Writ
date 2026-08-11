@@ -319,19 +319,94 @@ class TestCleanupCannotEscapeTheProject:
             "a real artifact in the same directory must still be cleared"
         )
 
-    # Capability 19 (a symlinked SESSION subdirectory must not be followed outside the
-    # project, the session-scoped twin of test_symlinked_gates_dir_is_not_followed above)
-    # has DELIBERATELY NO TEST HERE. A first attempt seeded a symlinked
-    # `<gate_dir>/<session_id>` pointing outside the project and asserted the outside
-    # file survived `mode set` -- and it passed today, for the wrong reason: today's
-    # `_clear_gate_artifacts` has no session-scoped subdirectory concept at all, so it
-    # never walks into `<gate_dir>/<session_id>` in the first place, symlinked or not.
-    # The victim file "survives" because nothing ever goes looking for it, which is a
-    # test that passes before implementation and asserts nothing (the exact flaw this
-    # cycle's brief calls out by name). A real test needs the session-aware clear to
-    # exist first, so that a version of it WITHOUT the containment check has something
-    # to be caught doing wrong; it belongs with that implementation, not in this
-    # skeleton pass. Flagged here rather than shipped silently passing.
+    # Capability 19 is the two tests below, and they only mean something as a PAIR.
+    #
+    # A first attempt at this capability was deleted for being vacuous: it seeded a
+    # symlinked `<gate_dir>/<session_id>` pointing outside the project, asserted the
+    # outside file survived `mode set`, and passed before any containment check existed --
+    # because the pre-Part-2 `_clear_gate_artifacts` had no session-subdirectory concept
+    # at all and never walked that path. The victim survived because nothing went looking
+    # for it, so "it survived" proved nothing about containment.
+    #
+    # What closes that hole is not a better assertion in the escape test; it is the
+    # CONTAINED twin. `test_a_contained_symlinked_session_subdirectory_IS_followed`
+    # proves the session-scoped walk really does resolve and enter a symlinked
+    # `<session_id>` directory, so in the escape test the ONLY thing standing between the
+    # walk and the outside victim is the resolved-path containment check. Delete that
+    # check and the escape test fails (the victim is unlinked); delete the walk and the
+    # contained test fails. Neither test can go quietly vacuous while the other holds.
+
+    def test_a_symlinked_session_subdirectory_is_not_followed_outside_the_project(
+        self, session_id, work_project, tmp_path
+    ):
+        """Capability 19: a `<gate_dir>/<session_id>` symlink resolving outside the project
+        is skipped, the mode change still succeeds, and the contained legacy sweep still
+        runs.
+
+        The third assertion is what keeps this test honest: a cleanup that simply did
+        nothing at all would satisfy the first two, so the same call must be caught still
+        deleting the flat artifact it IS responsible for. The refusal is per-directory and
+        fail-soft by design (mode_engine.py's own docstring): refusing the whole call would
+        let an attacker keep a flat `phase-a.approved` readable-as-truth just by planting a
+        symlink.
+        """
+        outside = tmp_path / "someone-elses-project"
+        outside.mkdir()
+        victim = outside / "phase-a.approved"
+        victim.write_text("another session's approval, in another project\n")
+        bystander = outside / "notes.md"
+        bystander.write_text("keep me\n")
+
+        gate_dir = work_project / ".claude" / "gates"
+        (gate_dir / session_id).symlink_to(outside, target_is_directory=True)
+        # The legacy flat artifact whose sweep proves the call did not simply bail out.
+        _approve_gate_flat(work_project, names=("test-skeletons",))
+
+        writ_session.cmd_mode(session_id, "set", "work")
+
+        assert victim.exists(), (
+            "the cleanup followed a symlinked session subdirectory and deleted an "
+            "approval outside the project"
+        )
+        assert victim.read_text() == "another session's approval, in another project\n"
+        assert sorted(p.name for p in outside.iterdir()) == [
+            "notes.md", "phase-a.approved",
+        ], "the escaping session directory's target lost or gained entries"
+        assert writ_session._read_cache(session_id)["mode"] == "work", (
+            "refusing to delete must stay fail-soft: the mode change still succeeds"
+        )
+        assert _flat_approved_files(work_project) == [], (
+            "the escaping session directory suppressed the contained legacy sweep too, "
+            "so this cleanup could pass its containment tests by doing nothing at all"
+        )
+
+    def test_a_contained_symlinked_session_subdirectory_IS_followed(
+        self, session_id, work_project
+    ):
+        """The discriminator for the test above: containment, not blindness, is what
+        saves the outside file.
+
+        The session directory here is equally a symlink, and equally not walked by any
+        pre-Part-2 code -- the ONLY difference from the escape case is that it resolves
+        INSIDE the project. Its artifacts must be deleted. If the session-scoped walk ever
+        stops happening (the exact regression that made the first attempt at capability 19
+        pass for free), this test fails and the escape test above stops being able to hide
+        it.
+        """
+        relocated = work_project / ".claude" / "gates-relocated"
+        relocated.mkdir()
+        artifact = relocated / "phase-a.approved"
+        artifact.write_text("token-from-an-earlier-cycle\n")
+
+        gate_dir = work_project / ".claude" / "gates"
+        (gate_dir / session_id).symlink_to(relocated, target_is_directory=True)
+
+        writ_session.cmd_mode(session_id, "set", "work")
+
+        assert not artifact.exists(), (
+            "a session directory that resolves INSIDE the project was not cleared, so "
+            "the walk the escape test relies on is not happening at all"
+        )
 
 
 class TestSwitchAndGateFiles:
