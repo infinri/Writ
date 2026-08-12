@@ -34,7 +34,17 @@ METHODOLOGY_NODE_ID_FIELDS: dict[str, str] = {
 # replay must never silently destroy these -- import_cypher_dump preserves any of
 # them absent from the incoming dump. Deliberately NOT merged into NODE_ID_FIELDS:
 # that registry drives bible parity/ingest semantics, which records must not enter.
-RECORD_LABELS: frozenset[str] = frozenset({"Memory", "Decision", "FileChange", "Commit"})
+#
+# `Project` belongs here on BOTH axes this set governs, which is why its absence
+# was a defect and not a stylistic gap:
+#   preserve  -- a Project registry entry is operational runtime state, authored by
+#                `create_project` at registration time and never by ingest, so it has
+#                no markdown home to restore it. Omitting it let a fixture wipe DELETE
+#                the registry, silently degrading project resolution for every project
+#                until the entries were re-registered by hand.
+#   exclude   -- Project nodes carry local filesystem paths in `repo_root`, so they
+#                must never ship in the public corpus dump.
+RECORD_LABELS: frozenset[str] = frozenset({"Memory", "Decision", "FileChange", "Commit", "Project"})
 
 ALLOWED_EDGE_TYPES: frozenset[str] = frozenset({
     # Pre-existing (Change C: APPLIES_TO + JUSTIFIED_BY retired)
