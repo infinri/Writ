@@ -29,6 +29,7 @@ Every `writ` command, generated from the Typer app. Run `writ <command> --help` 
 | `writ logs rotate` | Rotate, compress, prune, and sweep the Writ log streams (the P2 backstop) |
 | `writ logs stats` | Print per-stream live line/byte counts, archive count, and ts range |
 | `writ logs tail` | Print the last N events of a stream (newest last), fail-open on missing |
+| `writ memory audit` | Report Memory records whose project scope is wrong or unprovable. Repairs nothing |
 | `writ memory backfill` | Upsert every existing memory file, then tombstone the ones whose file is gone |
 | `writ memory list` | List a project's mirrored memories, most-recently-updated first |
 | `writ migrate` | One-time migration of existing rules into graph |
@@ -43,6 +44,7 @@ Every `writ` command, generated from the Typer app. Run `writ <command> --help` 
 | `writ serve` | Start Writ service. Pre-warms indexes into memory |
 | `writ status` | Health check: rule count, index status, last ingestion, stale rules |
 | `writ token-audit` | FOOTPRINT observer (WRIT-TOKEN-BLUEPRINT P0): per-session token COST from a CC transcript |
+| `writ transcript audit` | Report user turns that mix a bare text element with a tool_result element |
 | `writ validate` | Run integrity checks: conflicts, orphans, staleness, redundancy |
 
 ## Session CLI (`bin/lib/writ-session.py`)

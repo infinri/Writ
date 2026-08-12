@@ -83,6 +83,14 @@ STREAM_MAP: dict[str, str] = {
     "approval_pattern_miss": "friction",
     "approval_pattern_match": "friction",
     "subagent_type_fallback": "friction",
+    # A user-role entry in a sub-agent's transcript carries a free-text block it should not
+    # have: the structural signature of Claude Code splicing a queued user keystroke
+    # into the sub-agent's pending turn instead of holding it for the parent. Emitted by
+    # hooks/scripts/writ-subagent-stop.sh, attributed to the PARENT session, and carrying
+    # structure only (path, line, digest, counts) -- never the foreign text. Friction, not
+    # errors: it is a harness defect Writ cannot fix, only refuse to let pass unrecorded.
+    # The same finding also reaches the errors stream via writ_critical.
+    "foreign_input_in_subagent_turn": "friction",
     "decision_capture_failed": "friction",
     "commit_capture_failed": "friction",
     "memory_capture_failed": "friction",

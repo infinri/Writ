@@ -117,6 +117,26 @@ class RecordStoreMixin:
             row["links"] = row.get("links") or []
         return rows
 
+    async def list_all_memories(self) -> list[dict]:
+        """Every Memory node, across every project. Read-only, one entry per node.
+
+        The audit read behind `writ memory audit`, which has to see the whole
+        Memory population at once: a memory filed under the WRONG project is
+        invisible to `list_memories`, because that read is project-scoped and so
+        can only ever confirm what a node already claims about itself.
+
+        Deliberately unfiltered and unparameterized: tombstoned nodes are
+        included (a mis-filed tombstone is still mis-filed), and the properties
+        come back VERBATIM with no coalesce, because an audit must be able to
+        tell a missing `project`/`path` from a defaulted one.
+        """
+        return [dict(r) for r in await self._run(
+            "MATCH (m:Memory) "
+            "RETURN m.name AS name, m.project AS project, m.path AS path, "
+            "m.status AS status, m.type AS type, m.updated_at AS updated_at "
+            "ORDER BY m.project, m.name",
+        )]
+
     async def tombstone_missing_memories(
         self, project: str, existing_names
     ) -> int:

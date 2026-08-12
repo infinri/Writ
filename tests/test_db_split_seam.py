@@ -39,7 +39,10 @@ EXPECTED_METHODS = [
     "get_latest_filechange_per_path", "get_node_with_neighbors", "get_nodes_by_category",
     "get_open_decisions_for_path", "get_projects", "get_recent_decisions", "get_rule",
     "get_rule_abstraction", "get_rule_statements", "get_rules_by_authority",
-    "get_subagent_role", "increment_negative", "increment_positive", "list_constraints",
+    "get_subagent_role", "increment_negative", "increment_positive",
+    # Part 5 (isolation cycle): the audit's read-only cross-project Memory listing
+    # (writ/graph/db/record_store.py). Added deliberately, same reasoning as above.
+    "list_all_memories", "list_constraints",
     "list_indexes", "list_memories", "resolve_file_claims", "resolve_project_for_cwd",
     "tombstone_missing_memories", "traverse_neighbors",
     "update_rule_authority", "update_rule_confidence", "wire_governed_by", "wire_has_change",
