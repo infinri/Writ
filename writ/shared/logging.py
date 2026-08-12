@@ -225,7 +225,9 @@ def _sanitize_segment(name: str) -> str:
     (no empty, '.', or '..' component and no leading slash). If any component is a
     traversal component ('..', '.', empty) the name is treated as hostile and fully
     flattened: '/' and '..' are removed so it can never escape the log root. Falls
-    back to `UNRESOLVED_PROJECT` when nothing safe remains.
+    back to `UNRESOLVED_PROJECT` when nothing readable remains, which means EVERY
+    segment degraded and not merely one of them: a mixed name keeps its readable
+    segments (see the all-or-nothing note on that arm).
 
     BOTH fallbacks below used to be the literal 'writ'. That is the SAME default this
     cycle removed from `resolve_project`'s not-in-a-repo arms and from retrieval's
@@ -247,18 +249,41 @@ def _sanitize_segment(name: str) -> str:
         flat = flat.replace("..", "_")
         flat = flat.strip("._-")
         # `strip("._-")` cannot leave a leading '_', so `flat` can never itself BE the
-        # marker -- only this explicit arm can return it.
+        # marker -- only an explicit arm (this one, or the all-degraded one below) ever
+        # returns it, never a sanitized value that happens to look like it.
         return flat or UNRESOLVED_PROJECT
 
     # Safe nested identity: keep '/' separators, sanitize each segment's chars.
     safe_segments = []
+    degraded = 0
     for seg in segments:
         seg = re.sub(r"[^A-Za-z0-9._-]", "_", seg)
-        seg = seg.strip("._-") or "_"
-        safe_segments.append(seg)
+        stripped = seg.strip("._-")
+        if not stripped:
+            # Nothing readable survived this component; '_' is a placeholder standing in
+            # for a segment we could not read, not a name.
+            degraded += 1
+            stripped = "_"
+        safe_segments.append(stripped)
+
+    # ALL segments degraded: there is no identity left to file under, so answer with the
+    # marker for the same reason the branch above and `resolve_project` do. Without this,
+    # an all-punctuation name (`...`, `___`, `WRIT_LOG_PROJECT=%%%`) landed under the
+    # literal scope '_' while a name that failed EARLIER landed under '_unresolved' --
+    # two buckets for one condition, so "the rows we could not attribute" meant reading
+    # both and knowing to.
+    #
+    # THE ESCALATION IS ALL-OR-NOTHING ON PURPOSE, and the tempting simplification
+    # (escalate as soon as ANY segment degrades) is the one that loses information: in a
+    # MIXED name like `___/writ`, the surviving segment is a real, readable part of the
+    # identity, and `_/writ` still says which project this is while `_unresolved` throws
+    # that away. Only when every component degrades is there nothing to preserve.
+    if degraded == len(safe_segments):
+        return UNRESOLVED_PROJECT
+
     result = "/".join(safe_segments)
-    # Defensive only: an empty component would have taken the `unsafe` branch above, so
-    # every segment here is non-empty and `result` cannot be falsy. Kept honest anyway.
+    # Defensive only: every segment above is either real content or the '_' placeholder,
+    # so `result` cannot be falsy here. Kept honest anyway.
     return result or UNRESOLVED_PROJECT
 
 
