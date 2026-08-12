@@ -107,14 +107,6 @@ EXEMPT_HOOKS: dict[str, str] = {
         "and was measured OFF in production, so this call contributes zero rows "
         "to the measured writ-events-unknown.buf despite a naive grep flagging it."
     ),
-    "writ-subagent-start.sh": (
-        "log_gate_decision fires only on the narrow manual-test-grant inherit "
-        "success path (PARENT_SESSION set, PARENT_SESSION != AGENT_ID, and the "
-        "grant python call exits 0); the hook's own comment says plainly 'This "
-        "hook has no SESSION_ID' (its identity is AGENT_ID, read via a different "
-        "path entirely), and it measured zero rows in the unknown-session buffer "
-        "despite a naive grep flagging it."
-    ),
 }
 
 
@@ -266,7 +258,6 @@ class TestExemptionsStayJustified:
         editing the dict above."""
         assert set(EXEMPT_HOOKS) == {
             "writ-blackbox-capture.sh",
-            "writ-subagent-start.sh",
         }, (
             "the exemption set changed. That may be correct, but review the new "
             "entry's reason on its own merits -- this pin exists so growing the "
@@ -305,14 +296,6 @@ class TestExemptionsStayJustified:
         exemption's justification disappears with it."""
         src = (HOOKS_DIR / "writ-blackbox-capture.sh").read_text()
         assert "WRIT_BLACKBOX" in src and "hook_instrument" in src
-
-    def test_subagent_start_reason_still_matches_its_no_session_id_comment(self) -> None:
-        src = (HOOKS_DIR / "writ-subagent-start.sh").read_text()
-        assert "This hook has no SESSION_ID" in src, (
-            "writ-subagent-start.sh's exemption is grounded in this hook "
-            "deliberately carrying no SESSION_ID; if that comment/behavior is "
-            "gone, re-derive whether the exemption still holds"
-        )
 
 
 # ---------------------------------------------------------------------------
