@@ -238,6 +238,22 @@ def _render_push_reachability(findings: dict, out: list, err: list) -> None:
         out.append(f"  dead action tag (action_triggers on a non-methodology node): {oid}")
 
 
+def _render_delivery_orphans(findings: dict, out: list, err: list) -> None:
+    do = findings.get("delivery_orphans")
+    if not do:
+        return
+    out.append(
+        f"\nDelivery orphans (1.9) -- {len(do)} methodology node(s) no channel "
+        f"can select (no floor_modes, no action_triggers, no trigger_keywords, "
+        f"and no 'semantic'/'pull' category route):"
+    )
+    for node_id, ev in sorted(do.items())[:20]:
+        out.append(
+            f"  {node_id} ({ev.get('label', '?')}) in "
+            f"{ev.get('category', '?')} routes={ev.get('routes') or []}"
+        )
+
+
 def _render_example_lint(findings: dict, out: list, err: list) -> None:
     el = findings.get("example_lint")
     if not el:
@@ -347,6 +363,18 @@ _RENDER_STEPS: tuple[Callable[[dict, list, list], None], ...] = (
         lambda kv: f"  {kv[0]}: {', '.join(kv[1])}",
         items=lambda v: sorted(v.items()),
     ),
+    _section(
+        "route_implementation_closure",
+        lambda v: (
+            f"\nRoute implementation closure (1.9) -- {len(v)} categor(y/ies) "
+            f"declare a route no delivery channel implements; nothing reaches a "
+            f"member BY that route, and when it is the category's only route the "
+            f"member is undeliverable outright (see delivery orphans below):"
+        ),
+        lambda kv: f"  {kv[0]}: {', '.join(kv[1])}",
+        items=lambda v: sorted(v.items()),
+    ),
+    _render_delivery_orphans,
     _render_example_lint,
     _section(
         "domain_enum",

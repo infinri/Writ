@@ -55,16 +55,16 @@ CATEGORY_DEFS: list[tuple[str, str, list[str], str | None]] = [
     ("CAT-CODE-RESEARCH-001", "Research", ["semantic"], "CAT-CODE-001"),
     ("CAT-CODE-AIENF-001", "AI enforcement and system dynamics", ["semantic"], "CAT-CODE-001"),
     ("CAT-CODE-FW-001", "Frameworks", ["semantic"], "CAT-CODE-001"),
-    ("CAT-CODE-FW-MAGENTO-001", "Magento", ["semantic", "scoped"], "CAT-CODE-FW-001"),
+    ("CAT-CODE-FW-MAGENTO-001", "Magento", ["semantic"], "CAT-CODE-FW-001"),
     ("CAT-CODE-LANG-001", "Languages", ["semantic"], "CAT-CODE-001"),
-    ("CAT-CODE-LANG-PHP-001", "PHP", ["semantic", "scoped"], "CAT-CODE-LANG-001"),
-    ("CAT-CODE-LANG-PYTHON-001", "Python", ["semantic", "scoped"], "CAT-CODE-LANG-001"),
-    ("CAT-CODE-LANG-SQL-001", "SQL", ["semantic", "scoped"], "CAT-CODE-LANG-001"),
+    ("CAT-CODE-LANG-PHP-001", "PHP", ["semantic"], "CAT-CODE-LANG-001"),
+    ("CAT-CODE-LANG-PYTHON-001", "Python", ["semantic"], "CAT-CODE-LANG-001"),
+    ("CAT-CODE-LANG-SQL-001", "SQL", ["semantic"], "CAT-CODE-LANG-001"),
     ("CAT-PROC-001", "Process and workflow", ["state", "action", "pull"], None),
     ("CAT-PROC-DISPATCH-001", "Dispatch and orchestration", ["state", "action", "pull"], "CAT-PROC-001"),
     ("CAT-COMM-001", "Communication", ["always_on", "action"], None),
     ("CAT-META-001", "Meta-authoring", ["action", "pull"], None),
-    ("CAT-DISC-001", "Discipline counters", ["ride_along"], None),
+    ("CAT-DISC-001", "Discipline counters", ["pull"], None),
 ]
 
 CATEGORY_IDS = {c[0] for c in CATEGORY_DEFS}

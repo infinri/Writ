@@ -37,6 +37,7 @@ from writ.graph.schema import (
     PARITY_EXEMPT_PROVENANCE,
     REDUNDANCY_SIMILARITY_THRESHOLD,
     VALID_DOMAINS,
+    WIRED_ROUTES,
 )
 
 # The always-on injection budget cap (mirrors server.py:/always-on and
@@ -52,6 +53,11 @@ _ALWAYS_ON_CAP = 5000
 # stay CHANNEL-1 always_on per D1 and are not floor_modes-routed.
 _UNIVERSAL_FLOOR = {
     "SKL-PROC-BRAIN-001", "SKL-PROC-PLAN-001", "SKL-PROC-VERIFY-001", "PBK-PROC-PLAN-001",
+    # The one CRITICAL-severity AntiPattern in CAT-DISC-001: its counter
+    # (SKL-PROC-VERIFY-001) is already universal, so keying the warning to a typed
+    # keyword while the remedy is unconditional inverted the pair. Floored in the
+    # same five modes as the counter; its trigger_keywords stay as the pull channel.
+    "ANT-PROC-VERIFY-001",
 }
 EXPECTED_FLOORS: dict[str, set[str]] = {
     "conversation": _UNIVERSAL_FLOOR | {"SKL-PROC-METHODOLOGY-CHECK-001", "SKL-PROC-MODE-001"},
@@ -174,6 +180,7 @@ __all__ = [
     "RANKED_INCLUDE_WHERE",
     "REDUNDANCY_SIMILARITY_THRESHOLD",
     "VALID_DOMAINS",
+    "WIRED_ROUTES",
     "_ALWAYS_ON_CAP",
     "_DEPRECATED_PASS_API",
     "_FENCE_RE",

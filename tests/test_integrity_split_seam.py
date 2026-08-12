@@ -9,6 +9,14 @@ below stay importable from writ.graph.integrity.
 
 RED today: test_integritychecker_composed_from_check_mixins imports the new
 check submodules, which do not exist until the split lands.
+
+1.9 update: detect_route_implementation_closure and detect_delivery_orphans
+landed on RoutingChecksMixin (writ/graph/integrity/routing_checks.py)
+alongside detect_trigger_keyword_invariant/detect_push_reachability; both are
+added to EXPECTED_METHODS below in alphabetical position. This list asserts
+hard equality (test_facade_defines_only_init_and_run_all_checks), so it fails
+on an omission (a method silently dropped) exactly as loudly as on an extra
+(a method added without updating this pin).
 """
 from __future__ import annotations
 
@@ -22,14 +30,16 @@ EXPECTED_METHODS = [
     "detect_action_vocabulary_closure", "detect_always_on_budget_breach",
     "detect_artifact_dangling_rule_ids", "detect_category_reachability",
     "detect_confidence_defaults", "detect_conflicts", "detect_counter_nodes_parity",
-    "detect_dangling_dispatched_roles", "detect_dispatch_invokes_invariant",
+    "detect_dangling_dispatched_roles", "detect_delivery_orphans",
+    "detect_dispatch_invokes_invariant",
     "detect_dispatched_by_parity", "detect_domain_enum_invariant", "detect_edge_parity",
     "detect_enforceable_severity_coupling", "detect_example_lint",
     "detect_floor_completeness", "detect_forbidden_phrase_overlap",
     "detect_frequency_stale", "detect_graduation_flags", "detect_methodology_field_drift",
     "detect_orphans", "detect_orphans_all_labels", "detect_parity_violations",
     "detect_prop_parity", "detect_push_reachability", "detect_ranked_exclusion_mismatch",
-    "detect_redundant", "detect_shared_code_example", "detect_stale",
+    "detect_redundant", "detect_route_implementation_closure",
+    "detect_shared_code_example", "detect_stale",
     "detect_stranded_mandatory", "detect_teaches_source_invariant",
     "detect_trigger_keyword_invariant", "get_all_nodes", "get_category_count",
     "run_all_checks",

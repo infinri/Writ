@@ -122,6 +122,13 @@ class IntegrityChecker(
         findings["trigger_keyword_invariant"] = await self.detect_trigger_keyword_invariant()
         findings["push_reachability"] = await self.detect_push_reachability()
         findings["action_vocabulary"] = await self.detect_action_vocabulary_closure()
+        # 1.9: the route half of the same class. A route declared with no delivery
+        # implementation, and a methodology node no channel can select, were both
+        # silent until these two ran (the `ride_along` failure: 26 stranded nodes,
+        # zero failing checks). Both are gating: they land outside _NON_GATING, so
+        # the generic truthy sweep below picks them up with no exit-code edit.
+        findings["route_implementation_closure"] = await self.detect_route_implementation_closure()
+        findings["delivery_orphans"] = await self.detect_delivery_orphans()
         findings["example_lint"] = await self.detect_example_lint()
         findings["domain_enum"] = await self.detect_domain_enum_invariant()
         findings["counter_nodes_parity"] = await self.detect_counter_nodes_parity()

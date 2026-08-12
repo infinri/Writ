@@ -21,6 +21,13 @@ Per TEST-TDD-001 / PBK-PROC-TDD-001: this skeleton is authored as an
 executable spec before the implementation lands. Per TEST-ISOLATE-001, every
 case is a synthetic findings dict -- no daemon, no Neo4j.
 
+1.9 addition: route_implementation_closure and delivery_orphans (the route
+half of the reachability class -- a Category declaring an unwired route, and
+a methodology node no channel can select) were transcribed against the
+shipped writ/graph/validate_report.py `_section("route_implementation_closure",
+...)` and `_render_delivery_orphans` blocks the same way every other key here
+was: verbatim, not derived.
+
 Key coverage map (32 findings keys total; every key has >=1 dedicated test
 somewhere in this file):
     TestRenderFindingsPerKey: conflicts, orphans, orphan_counts_by_type,
@@ -30,7 +37,8 @@ somewhere in this file):
         teaches_source, stranded_mandatory, always_on_budget_breach,
         artifact_dangling_rule_ids, floor_completeness,
         trigger_keyword_invariant, push_reachability, action_vocabulary,
-        example_lint, domain_enum, counter_nodes_parity,
+        route_implementation_closure, delivery_orphans, example_lint,
+        domain_enum, counter_nodes_parity,
         dispatched_by_parity, enforceable_severity,
         forbidden_phrase_overlap, shared_code_example.
     TestSpecialCases: ranked_exclusion_mismatch, category_reachability,
@@ -93,6 +101,8 @@ class TestEmpty:
             trigger_keyword_invariant={},
             push_reachability={},
             action_vocabulary={},
+            route_implementation_closure={},
+            delivery_orphans={},
             example_lint={},
             domain_enum=[],
             counter_nodes_parity=[],
@@ -471,6 +481,78 @@ class TestRenderFindingsPerKey:
         ]
         assert stderr_lines == []
 
+    def test_route_implementation_closure(self) -> None:
+        # NOT a full verbatim transcription like the keys above: this
+        # header's wording was observed changing mid-authoring-session while
+        # cycle 6a's implementer iterated (derivation -> hand-listed
+        # WIRED_ROUTES, "serves"/"undeliverable" phrasing -> "implements"/
+        # "nothing reaches" phrasing). Pinning content (the section fires,
+        # names 1.9, and renders the category/route) rather than the exact
+        # sentence keeps this test meaningful without re-churning on every
+        # wording pass.
+        findings = make_findings(
+            route_implementation_closure={"CAT-DISC-001": ["ride_along"]}
+        )
+        stdout_lines, stderr_lines = render_findings(findings)
+        assert len(stdout_lines) == 2
+        assert "Route implementation closure" in stdout_lines[0]
+        assert "(1.9)" in stdout_lines[0]
+        assert stdout_lines[1] == "  CAT-DISC-001: ride_along"
+        assert stderr_lines == []
+
+    def test_route_implementation_closure_multiple_routes_joined(self) -> None:
+        # The item-line format (comma-joined routes) is stable across both
+        # observed header revisions -- pin that specifically.
+        findings = make_findings(
+            route_implementation_closure={"CAT-MULTI-1": ["bogus_a", "bogus_b"]}
+        )
+        stdout_lines, stderr_lines = render_findings(findings)
+        assert stdout_lines[1] == "  CAT-MULTI-1: bogus_a, bogus_b"
+        assert stderr_lines == []
+
+    def test_delivery_orphans(self) -> None:
+        # Transcribed from validate_report.py's _render_delivery_orphans.
+        # The value shape ({node_id: {label, category, routes}}) matches
+        # detect_delivery_orphans' documented return.
+        findings = make_findings(
+            delivery_orphans={
+                "ANT-PROC-DEBUG-001": {
+                    "label": "AntiPattern",
+                    "category": "CAT-DISC-001",
+                    "routes": ["ride_along"],
+                }
+            }
+        )
+        stdout_lines, stderr_lines = render_findings(findings)
+        assert stdout_lines == [
+            "\nDelivery orphans (1.9) -- 1 methodology node(s) no channel can "
+            "select (no floor_modes, no action_triggers, no trigger_keywords, "
+            "and no 'semantic'/'pull' category route):",
+            "  ANT-PROC-DEBUG-001 (AntiPattern) in CAT-DISC-001 routes=['ride_along']",
+        ]
+        assert stderr_lines == []
+
+    def test_delivery_orphans_missing_routes_renders_empty_list(self) -> None:
+        # ev.get('routes') or [] -- a category with no routes at all (falsy)
+        # must render as an empty list, not None or a KeyError.
+        findings = make_findings(
+            delivery_orphans={
+                "SKL-NOROUTE-1": {
+                    "label": "Skill",
+                    "category": "CAT-NOROUTE-1",
+                    "routes": [],
+                }
+            }
+        )
+        stdout_lines, stderr_lines = render_findings(findings)
+        assert stdout_lines == [
+            "\nDelivery orphans (1.9) -- 1 methodology node(s) no channel can "
+            "select (no floor_modes, no action_triggers, no trigger_keywords, "
+            "and no 'semantic'/'pull' category route):",
+            "  SKL-NOROUTE-1 (Skill) in CAT-NOROUTE-1 routes=[]",
+        ]
+        assert stderr_lines == []
+
     def test_example_lint_minimal(self) -> None:
         findings = make_findings(
             example_lint={
@@ -682,6 +764,25 @@ class TestTruncation:
         assert dat_lines == [
             f"  dead action tag (action_triggers on a non-methodology node): DEADTAG-{i}"
             for i in range(20)
+        ]
+        assert stderr_lines == []
+
+    def test_delivery_orphans_truncates_at_20_header_shows_full_count(self) -> None:
+        do = {
+            f"ANT-{i:03d}": {"label": "AntiPattern", "category": "CAT-X", "routes": []}
+            for i in range(25)
+        }
+        findings = make_findings(delivery_orphans=do)
+        stdout_lines, stderr_lines = render_findings(findings)
+        assert stdout_lines[0] == (
+            "\nDelivery orphans (1.9) -- 25 methodology node(s) no channel can "
+            "select (no floor_modes, no action_triggers, no trigger_keywords, "
+            "and no 'semantic'/'pull' category route):"
+        )
+        item_lines = stdout_lines[1:]
+        assert len(item_lines) == 20
+        assert item_lines == [
+            f"  ANT-{i:03d} (AntiPattern) in CAT-X routes=[]" for i in range(20)
         ]
         assert stderr_lines == []
 
