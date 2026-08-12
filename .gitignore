@@ -60,6 +60,13 @@ var/
 # Per-Work-cycle workflow artifacts (overwritten each cycle)
 plan.md
 capabilities.md
+# ...and their per-cycle archives. The two exact names above were too narrow: because
+# plan.md is overwritten every cycle, each cycle's approved plan gets archived beside it
+# under a name like plan-<cycle>.ARCHIVED.md, and those were NOT ignored. Several of them
+# name a client, so one `git add -A` would have published that name in a public history.
+# Verified before widening: no TRACKED file matches either pattern.
+plan-*.md
+capabilities-*.md
 
 # Plugin distribution: never ship
 .claude/settings.local.json
