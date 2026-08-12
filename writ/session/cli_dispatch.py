@@ -123,6 +123,8 @@ def _no_session_message(subcmd: str) -> str:
         f"{subcmd} <conversation|debug|review|work> <session_id>\n"
         "  or export an identity:  CLAUDE_SESSION_ID=<session_id>\n"
         "                          CLAUDE_JOB_DIR=<dir whose basename is the session_id>\n"
+        "Claude Code exports NEITHER of those (measured 2026-08-11, 2.1.227), so inside a "
+        "Claude Code session the explicit form above is the one that works.\n"
         "The removed fallbacks (the shared /tmp/writ-current-session pointer, then the "
         "newest session cache by mtime) both named whichever session on this machine "
         "took a turn most recently, which silently applied one session's mode to another."

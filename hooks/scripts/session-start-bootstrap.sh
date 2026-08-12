@@ -27,6 +27,30 @@ WRIT_DIR="${CLAUDE_PLUGIN_ROOT}"
 # hook, see the header). Guarded so bootstrap never breaks on a missing common.sh.
 source "$WRIT_DIR/bin/lib/common.sh" 2>/dev/null || true
 type hook_instrument >/dev/null 2>&1 && hook_instrument "session-start-bootstrap"
+
+# THIS HOOK'S OWN TELEMETRY IS KEYED HERE, from the payload captured in step 0. It is
+# keyed at the TOP and not down in step 5, because the exit trap armed above reads
+# SESSION_ID when the script EXITS and steps 2 and 3 both `exit 0` long before step 5
+# runs -- so the venv-missing and Neo4j-unreachable rows, exactly the ones a broken
+# install produces, would be the unattributed ones. The trap files under
+# `${SESSION_ID:-${HOOK_SESSION_ID:-}}` and this hook set neither, so its rows landed
+# under the literal session id "unknown" (measured 2026-08-11: 17 rows). load_hook_env
+# is not usable here -- it reads stdin, which step 0 has already consumed -- and neither
+# is the venv python, which step 2 has not yet proven exists.
+#
+# The id is the payload's and only the payload's (agent_id first, so a sub-agent's rows
+# are not filed under its parent). It is never synthesized: an id the payload did not
+# carry stays EMPTY, leaving a visible gap rather than a silently wrong record. Step 5
+# keeps its own parse because it needs cwd and source as well.
+SESSION_ID="$(printf '%s' "${STDIN_JSON}" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print(''); sys.exit(0)
+print((d.get('agent_id') or d.get('session_id') or '').strip())
+" 2>/dev/null || echo "")"
+
 WRIT_DATA="${CLAUDE_PLUGIN_DATA:-$HOME/.cache/writ}"
 # Venv lives at ${CLAUDE_PLUGIN_DATA:-$HOME/.cache/writ}/.venv so it
 # survives plugin upgrades that rewrite ${CLAUDE_PLUGIN_ROOT}.

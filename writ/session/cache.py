@@ -75,6 +75,19 @@ def resolve_current_session_id() -> str | None:
     session, and nothing in any log shows it happened. Callers get None and fail loud
     instead (the CLI exits 2 naming the two env vars; the doctor reports no session).
     """
+    # BOTH TIERS BELOW ARE UNREACHABLE FROM A BASH TOOL CALL, and the variable that WOULD
+    # answer is the one you must not read. Measured 2026-08-11 against Claude Code 2.1.227:
+    # CLAUDE_SESSION_ID and CLAUDE_JOB_DIR are NEVER exported, so this resolver returns
+    # None in practice and callers fail loud. CLAUDE_CODE_SESSION_ID *is* exported, and in
+    # a main session it equals the id hooks write state under, which makes it look like the
+    # fix. It is not: probed from inside a real sub-agent it still holds the PARENT's id,
+    # while Writ keys a sub-agent by its agent_id. Reading it would let a sub-agent resolve
+    # to its parent and approve or clear the PARENT's gates -- the same class of
+    # cross-session write that deleting tiers 3 and 4 closed. CLAUDE_CODE_CHILD_SESSION=1
+    # is a flag, not an id, and is set in the main session too, so it cannot tell parent
+    # from child either. The refusal therefore stands: the remedy is the explicit session
+    # argument at the call site, NOT another environment read.
+    #
     # 1. per-process env id (empty string is treated as unset)
     try:
         env_sid = os.environ.get("CLAUDE_SESSION_ID", "")
