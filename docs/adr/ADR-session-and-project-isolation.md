@@ -324,8 +324,19 @@ unmeasured because the corpus is clean apart from our own litter.
 THE OPERATIONAL ANSWER, recorded as this cycle required: run against the live graph,
 `examined=202 mismatch=0 empty=0 disk_drift=1 collision=0`. Two corrections come with it. The
 plan said 191 Memory nodes and the working notes said 199; the real count is 202, while the
-Rule count of 287 was accurate. And NO repair was performed: the orphan above is still in the
-graph, because repair is a write and belongs to its own cycle with its own evidence.
+Rule count of 287 was accurate. And NO repair was performed by the audit: at that moment the
+orphan above was still in the graph, because repair is a write and does not belong to a
+read-only command.
+
+UPDATE, after that run: the audit still performs no repair, but the one node it reported was
+afterwards cleared as a separate, deliberate operator action, on the reasoning that a new
+detector whose only standing finding is known test litter is one people learn to ignore. It was
+scoped by both key properties and proven surgical: Memory total 202 to 201, Rule count unchanged
+at 287, and a sha256 over the 201 survivors identical to the pre-clearing fingerprint of the
+non-target nodes, `209db28ef96d8e11`. The audit now reports
+`examined=201 mismatch=0 empty=0 disk_drift=0 collision=0`, collision scan complete, so a future
+finding is news rather than noise. The cost: the demonstration that this bucket fires against
+real data now survives only in this record and in the tests.
 
 Read-only is proven two ways rather than asserted. Structurally, the test stubs the database
 accessor with an object exposing only `list_all_memories`, so any attempted write raises rather
