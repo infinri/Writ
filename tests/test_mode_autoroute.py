@@ -242,3 +242,105 @@ class TestHookAutoRouteBehavior:
         r, mode = self._run(tmp_path, ASE_PROMPT, seed_mode="debug")
         assert r.returncode == 0, r.stderr
         assert mode == "debug", "auto-route must not touch an explicit specialist mode"
+
+
+# ===========================================================================
+# Part 6: mode_source provenance ("explicit" vs "auto")
+#
+# from_mode is null on BOTH the explicit and the automatic first-set path
+# (mode_engine.py:371 guards that the auto path's old_mode is always None), so
+# nothing before this could tell a human's `mode set` apart from the
+# classifier's `mode init`. mode_source is the only field that can, and the
+# mode_init no-op guarantee (the thing that keeps a re-firing classifier from
+# ever wiping a live gate cycle) must survive its addition unweakened.
+# ===========================================================================
+
+class TestModeInitNeverResetsAnExistingMode:
+    """Regression guard on mode_init's core guarantee (mode_engine.py:335-351):
+    a session with ANY mode already recorded -- however it got there -- is left
+    untouched by a later mode_init call. mode_source must not weaken this: an
+    auto-routed session is exactly as protected as an explicit one, and an
+    unset session is exactly as routable as it always was.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_cache(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("WRIT_CACHE_DIR", str(tmp_path))
+        sandbox = tmp_path / "cwd-sandbox"
+        (sandbox / ".claude" / "gates").mkdir(parents=True, exist_ok=True)
+        (sandbox / ".git").mkdir(exist_ok=True)
+        monkeypatch.chdir(sandbox)
+
+    def test_mode_init_is_a_noop_on_an_explicitly_set_session(self):
+        from writ.session import mode_engine
+        from writ.session.cache import _read_cache
+
+        sid = "regression-explicit-noop"
+        mode_engine._mode_set(sid, "work")
+        mode_engine._mode_init(sid, "investigate")
+
+        cache = _read_cache(sid)
+        assert cache["mode"] == "work", "mode_init must never override an explicit mode"
+        assert cache["mode_source"] == "explicit"
+
+    def test_mode_init_is_a_noop_on_an_already_auto_routed_session(self):
+        from writ.session import mode_engine
+        from writ.session.cache import _read_cache
+
+        sid = "regression-auto-noop"
+        mode_engine._mode_init(sid, "investigate")
+        mode_engine._mode_init(sid, "work")
+
+        cache = _read_cache(sid)
+        assert cache["mode"] == "investigate", (
+            "mode_init must never override an already-routed mode, even with a "
+            "second call to itself"
+        )
+        assert cache["mode_source"] == "auto"
+
+    def test_mode_init_still_routes_a_session_with_no_mode_at_all(self):
+        """The other half of the guard: an unset session is exactly as routable
+        as it always was."""
+        from writ.session import mode_engine
+        from writ.session.cache import _read_cache
+
+        sid = "regression-unset-still-routes"
+        mode_engine._mode_init(sid, "work")
+
+        cache = _read_cache(sid)
+        assert cache["mode"] == "work"
+        assert cache["mode_source"] == "auto"
+
+
+class TestHookAutoRouteStampsModeSource:
+    """The hook's auto-route call (`mode init`) must stamp mode_source == "auto"
+    through the real subprocess path, not just when mode_engine is called
+    in-process -- the hook is a thin wrapper around it, not a second contract.
+    """
+
+    def _run(self, tmp_path, prompt, sid="autoroute-source-e2e"):
+        env = os.environ.copy()
+        env["WRIT_CACHE_DIR"] = str(tmp_path)
+        env["WRIT_PORT"] = "59997"
+        env["WRIT_HOST"] = "localhost"
+        env["WRIT_FRICTION_LOG"] = str(tmp_path / "friction.log")
+        env["WRIT_NO_AUTOSTART"] = "1"
+        sandbox = tmp_path / "sandbox"
+        (sandbox / ".claude" / "gates").mkdir(parents=True, exist_ok=True)
+        (sandbox / ".git").mkdir(exist_ok=True)
+        r = subprocess.run(
+            ["bash", HOOK], input=json.dumps({"session_id": sid, "prompt": prompt}),
+            capture_output=True, text=True, env=env, timeout=30, cwd=str(sandbox),
+        )
+        with open(os.path.join(str(tmp_path), f"writ-session-{sid}.json")) as f:
+            cache = json.load(f)
+        return r, cache
+
+    def test_first_autoroute_stamps_auto_source(self, tmp_path):
+        r, cache = self._run(tmp_path, ASE_PROMPT)
+        assert r.returncode == 0, r.stderr
+        assert cache["mode"] == "investigate"
+        assert cache["mode_source"] == "auto", (
+            "the hook's own `mode init` call must stamp the same provenance as "
+            "calling mode_engine._mode_init directly"
+        )

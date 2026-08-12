@@ -225,7 +225,16 @@ def _sanitize_segment(name: str) -> str:
     (no empty, '.', or '..' component and no leading slash). If any component is a
     traversal component ('..', '.', empty) the name is treated as hostile and fully
     flattened: '/' and '..' are removed so it can never escape the log root. Falls
-    back to the 'writ' literal when nothing safe remains.
+    back to `UNRESOLVED_PROJECT` when nothing safe remains.
+
+    BOTH fallbacks below used to be the literal 'writ'. That is the SAME default this
+    cycle removed from `resolve_project`'s not-in-a-repo arms and from retrieval's
+    `resolve_project_for_cwd` -- one decision, not three coincidences. A name that
+    sanitizes down to nothing (an all-punctuation `WRIT_LOG_PROJECT` override, say)
+    is an identity we failed to read, not evidence that this is Writ; filing its rows
+    under the Writ skill's own scope is where its owner will never look for them.
+    The row is still RECORDED, just never MISLABELLED: an unattributed row is a
+    visible gap, a misattributed one is a silently wrong record.
     """
     cleaned = name.replace("\r", "").replace("\n", "")
 
@@ -237,7 +246,9 @@ def _sanitize_segment(name: str) -> str:
         flat = re.sub(r"[^A-Za-z0-9._-]", "_", cleaned)
         flat = flat.replace("..", "_")
         flat = flat.strip("._-")
-        return flat or "writ"
+        # `strip("._-")` cannot leave a leading '_', so `flat` can never itself BE the
+        # marker -- only this explicit arm can return it.
+        return flat or UNRESOLVED_PROJECT
 
     # Safe nested identity: keep '/' separators, sanitize each segment's chars.
     safe_segments = []
@@ -246,15 +257,41 @@ def _sanitize_segment(name: str) -> str:
         seg = seg.strip("._-") or "_"
         safe_segments.append(seg)
     result = "/".join(safe_segments)
-    return result or "writ"
+    # Defensive only: an empty component would have taken the `unsafe` branch above, so
+    # every segment here is non-empty and `result` cannot be falsy. Kept honest anyway.
+    return result or UNRESOLVED_PROJECT
+
+
+# The log scope for a row whose project could not be resolved at all.
+#
+# Rows must not be DROPPED when the project is unknown -- an unattributed row is a visible
+# gap someone can go and explain, and losing it is losing evidence -- but they must not be
+# attributed either. This scope keeps them, under a name that is plainly not a project.
+#
+# The leading underscore is what makes it uncollidable: derive_project_identity only ever
+# yields `host/org/repo` or a directory name. That is also why this literal is returned
+# WITHOUT passing through _sanitize_segment, which strips leading '._-' per segment and
+# would quietly turn it into a plausible project name.
+UNRESOLVED_PROJECT = "_unresolved"
 
 
 def resolve_project(cwd: str | None = None) -> str:
     """Resolve the project scope name for the log path.
 
     Order: `WRIT_LOG_PROJECT` env override -> `derive_project_identity(cwd).name`
-    (the clone-stable decision-memory identity) -> the literal 'writ'. The result is
+    (the clone-stable decision-memory identity) -> `UNRESOLVED_PROJECT`. A derived name is
     always sanitized to a safe path segment (SEC-INJ-PATH-001).
+
+    THE UNRESOLVED CASE USED TO RETURN THE LITERAL 'writ', and that is the same
+    hardcoded fail-open removed from `resolve_project_for_cwd` (which now answers "" for an
+    unregistered cwd rather than defaulting to Writ): a project with no `.git` yet had
+    every row of its own telemetry filed into the WRIT SKILL's log space, where its owner
+    would never look for them and where they read as Writ's own history. That is how a
+    reported symptom became invisible -- the rows existed, under another project's name.
+    Being unfindable under an honest scope is a gap; being findable under the wrong one is
+    a wrong record, so the marker replaces the default here for the same reason it did
+    there. Readers resolve the same way they write (metrics, `writ logs`, the friction
+    analysis all call this function), so a non-repo cwd reads back its own rows.
     """
     override = os.environ.get("WRIT_LOG_PROJECT")
     if override:
@@ -263,9 +300,11 @@ def resolve_project(cwd: str | None = None) -> str:
     try:
         _repo_root, _remote_url, name = derive_project_identity(cwd or os.getcwd())
     except NotInRepoError:
-        return "writ"
+        return UNRESOLVED_PROJECT
     except OSError:
-        return "writ"
+        # Unreadable / vanished cwd: the identity could not be TAKEN, which is not evidence
+        # that this is Writ. Same answer as not-in-a-repo, for the same reason.
+        return UNRESOLVED_PROJECT
 
     return _sanitize_segment(name)
 
@@ -284,9 +323,13 @@ def _sanitize_value(value):
 # Fields that survive a None value as an explicit JSON null instead of being dropped.
 # `from_mode` is a mode_change row's provenance: dropped, the first mode set of a session
 # (no previous mode) is indistinguishable from a row where the field was never recorded,
-# and no consumer can tell the two apart afterwards. Deliberately a narrow allowlist --
-# every other field still disappears when None, because many event types rely on that.
-_KEEP_WHEN_NULL = ("from_mode",)
+# and no consumer can tell the two apart afterwards. `mode_source` is the same field class
+# and fails the same way: a switch row for a session whose mode predates the field carries
+# None, and dropping it would make "we looked and there was no provenance" identical to
+# "this row was written before provenance was recorded at all" -- which is exactly the
+# ambiguity mode_source exists to end. Deliberately a narrow allowlist -- every other field
+# still disappears when None, because many event types rely on that.
+_KEEP_WHEN_NULL = ("from_mode", "mode_source")
 
 
 def _build_entry(event: str, session_id: str, mode: str | None, fields: dict) -> dict:

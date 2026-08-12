@@ -56,6 +56,25 @@ MODE_CONFIG: dict[str, dict] = {
 VALID_MODES = set(MODE_CONFIG)
 
 
+# WHO chose the mode, stamped into cache["mode_source"]. Two values and no third:
+#   MODE_SOURCE_EXPLICIT -- a human named the mode (`mode set`, and so `writ mode set`)
+#   MODE_SOURCE_AUTO     -- the writ-rag-inject.sh classifier chose it (`mode init`)
+#
+# WHY THE FIELD EXISTS AT ALL: both paths land in _apply_mode_set and both emit a
+# mode_change row with change_type "set" and from_mode null (_mode_init's old_mode is
+# always None by construction, guarded by its own already-routed check), so after the fact
+# NOTHING could tell a user's stated mode from the classifier's guess. The mid-session
+# re-route has to answer exactly that question before it may touch a live session's mode,
+# and one incident session is on record whose single mode-establishing row could not say.
+#
+# A session whose source is unknown (None: a cache written before this field, or a mode
+# carried forward from one) must be treated as EXPLICIT by consumers -- left alone. There
+# is no truth to recover there, and guessing "auto" would hand the classifier a session
+# whose mode a human may well have typed.
+MODE_SOURCE_EXPLICIT = "explicit"
+MODE_SOURCE_AUTO = "auto"
+
+
 # Mode auto-routing classifier. Defined in the standalone stdlib-only module
 # bin/lib/writ_mode_hint.py (so the UserPromptSubmit hook can import it without the
 # writ-package chain, which was load-flaky inside the hook's prompt-parse block); re-exported
@@ -260,7 +279,9 @@ def _clear_gate_artifacts(project_root: str | None, session_id: str | None) -> N
         pass
 
 
-def _apply_mode_set(cache: dict, mode: str, is_orchestrator: bool = False) -> tuple:
+def _apply_mode_set(
+    cache: dict, mode: str, is_orchestrator: bool = False, *, mode_source: str | None
+) -> tuple:
     """Mutate `cache` in place for a fresh mode-set; return (old_mode, new_phase).
 
     Pure cache mutation -- no lock, no I/O, no friction event -- so both _mode_set
@@ -268,11 +289,20 @@ def _apply_mode_set(cache: dict, mode: str, is_orchestrator: bool = False) -> tu
     OUTERMOST mutate_cache own the single write. The friction event / debug->work
     promote fire in the callers AFTER that durable write, preserving the
     write-before-log ordering the pre-lock code had.
+
+    `mode_source` is MODE_SOURCE_EXPLICIT or MODE_SOURCE_AUTO (or None only where the
+    provenance is genuinely unknown, e.g. a rotation carrying a pre-field cache forward).
+    It is keyword-only and has NO DEFAULT on purpose: every path that sets a mode passes
+    through here, so a new caller must state who chose the mode rather than inherit a
+    default that would quietly label a guess as a human's word.
     """
     old_mode = cache.get("mode")
     old_phase = cache.get("current_phase")
 
     cache["mode"] = mode
+    # Provenance is stamped WITH the mode, in the one function both set paths share,
+    # rather than at the call sites -- the two can then never disagree about who chose it.
+    cache["mode_source"] = mode_source
     if is_orchestrator:
         cache["is_orchestrator"] = True
 
@@ -303,9 +333,14 @@ def _mode_set(session_id: str, mode: str, is_orchestrator: bool = False) -> None
     mode's initial phase and clears gates_approved, so a new task never inherits
     the prior task's stale phase (test_phase_machine_reset). The AUTO-classifier
     must NOT use this -- it uses `_mode_init`, which never resets a live session.
+
+    Being the explicit command is exactly what it stamps: MODE_SOURCE_EXPLICIT, which is
+    what later tells the mid-session re-route to leave this session's mode alone.
     """
     with mutate_cache(session_id) as cache:
-        old_mode, new_phase = _apply_mode_set(cache, mode, is_orchestrator=is_orchestrator)
+        old_mode, new_phase = _apply_mode_set(
+            cache, mode, is_orchestrator=is_orchestrator, mode_source=MODE_SOURCE_EXPLICIT
+        )
         project_root = cache.get("project_root")
 
     # _apply_mode_set emptied gates_approved, so the .approved artifacts have to go with
@@ -324,6 +359,7 @@ def _mode_set(session_id: str, mode: str, is_orchestrator: bool = False) -> None
     _log_friction_event(
         session_id, mode, "mode_change",
         change_type="set", from_mode=old_mode, to_mode=mode,
+        mode_source=MODE_SOURCE_EXPLICIT,
     )
 
     # Debug -> Work handoff: set-work always lands in planning, so promote a
@@ -332,7 +368,12 @@ def _mode_set(session_id: str, mode: str, is_orchestrator: bool = False) -> None
         _promote_root_cause_to_plan(session_id, mode)
 
 
-def _mode_init(session_id: str, mode: str, is_orchestrator: bool = False) -> None:
+def _mode_init(
+    session_id: str,
+    mode: str,
+    is_orchestrator: bool = False,
+    mode_source: str | None = MODE_SOURCE_AUTO,
+) -> None:
     """Auto-route helper: set mode ONLY if the session has no mode yet.
 
     Used by the writ-rag-inject.sh classifier to route an UNSET session to a mode
@@ -341,6 +382,14 @@ def _mode_init(session_id: str, mode: str, is_orchestrator: bool = False) -> Non
     already set, so the classifier re-firing on a transient empty cache read can
     never wipe a live gate cycle back to planning. Idempotent. The authoritative
     "already set?" check is under the lock.
+
+    `mode_source` defaults to MODE_SOURCE_AUTO because the classifier is this function's
+    reason to exist. The ONE caller that overrides it is rotation.carry_forward_mode,
+    which is not choosing a mode at all -- it is moving one that was already chosen -- and
+    so passes the pre-rotation session's own source through (including None, when that
+    session predates the field). Labelling a carried explicit mode "auto" would hand a
+    human's stated mode to the classifier; labelling a carried auto mode "explicit" would
+    freeze a guess in place for the rest of the rotated session.
     """
     # Fast path: an unlocked read avoids a per-turn locked rewrite in the common
     # already-routed case (the classifier fires mode-init every turn).
@@ -352,7 +401,9 @@ def _mode_init(session_id: str, mode: str, is_orchestrator: bool = False) -> Non
         # Atomic check-then-set under the lock; apply the mutation directly (not via
         # _mode_set) so the durable write happens at THIS block's exit, before the
         # friction event below (matching direct _mode_set's write-before-log order).
-        old_mode, _ = _apply_mode_set(cache, mode, is_orchestrator=is_orchestrator)
+        old_mode, _ = _apply_mode_set(
+            cache, mode, is_orchestrator=is_orchestrator, mode_source=mode_source
+        )
         project_root = cache.get("project_root")
 
     # Only the routing path reaches here (the already-routed check above returns), so this
@@ -370,18 +421,37 @@ def _mode_init(session_id: str, mode: str, is_orchestrator: bool = False) -> Non
 
     # old_mode is always None here (guarded above), so the debug->work promote never
     # applies via this path; emit the mode_change event after the durable write.
+    #
+    # mode_source is on the row because from_mode CANNOT carry this: it is null on this
+    # path by construction AND null on the first explicit `mode set` of a session, so the
+    # row that establishes a mode was the one row in the stream that could not say who
+    # established it. One incident session's whole history was a single such row.
     _log_friction_event(
         session_id, mode, "mode_change",
         change_type="set", from_mode=old_mode, to_mode=mode,
+        mode_source=mode_source,
     )
 
 
 def _mode_switch(session_id: str, mode: str) -> None:
-    """Switch mode, preserving Work state if leaving/returning."""
+    """Switch mode, preserving Work state if leaving/returning.
+
+    It also preserves cache["mode_source"], by not touching it. A switch changes WHICH
+    mode the session is in; it does not change the story of who chose to put this session
+    under Writ's workflow in the first place. Overwriting the source here would erase the
+    only signal the mid-session re-route has: an auto-routed session that took one
+    classifier-driven detour would come back looking hand-set, and could never be routed
+    again; an explicitly-set session that a user switched by hand would look auto-set, and
+    the classifier would then feel free to move it.
+    """
     with mutate_cache(session_id) as cache:
         old_mode = cache.get("mode")
         old_phase = cache.get("current_phase")
         project_root = cache.get("project_root")
+        # Read, never written: this is the preservation. Carried onto the telemetry row so
+        # a switch row states the provenance it inherited instead of leaving a reader to
+        # walk back to whichever earlier row established the mode.
+        mode_source = cache.get("mode_source")
         restored = False
         pivoted = False
 
@@ -457,6 +527,7 @@ def _mode_switch(session_id: str, mode: str) -> None:
     _log_friction_event(
         session_id, mode, "mode_change",
         change_type="switch", from_mode=old_mode, to_mode=mode,
+        mode_source=mode_source,
     )
 
     # Debug -> Work handoff: only when landing in a fresh planning phase (not

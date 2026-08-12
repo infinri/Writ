@@ -2,7 +2,8 @@
 
 The Claude Code harness can assign a NEW session id partway through a run. The fresh
 cache then has mode=None and the write gate denies every write with [ENF-GATE-MODE].
-carry_forward_mode carries the MODE ONLY from the pre-rotation session, via
+carry_forward_mode carries the MODE (with its mode_source provenance, which is part of
+the mode, not extra state) from the pre-rotation session, via
 mode_engine._mode_init, so a rotated session re-approves every gate (gates_approved and
 a mid-cycle current_phase are NEVER inherited -- that governance north star falls out of
 _mode_init delegating to _mode_set, which lands current_phase at the mode's initial phase
@@ -22,7 +23,7 @@ from writ.session import cache, mode_engine
 def carry_forward_mode(
     session_id: str, cwd: str, prev_session_id: str, source: str
 ) -> None:
-    """Carry the pre-rotation session's mode into the fresh (rotated) session.
+    """Carry the pre-rotation session's mode, and its mode_source, into the rotated session.
 
     No-op unless: the new session has no mode yet, source is a continued (non-startup)
     session, a prev_session_id is given, the candidate cache has a mode, and the
@@ -58,8 +59,17 @@ def carry_forward_mode(
         )
         return
 
-    # 6. carry the mode (gates reset via _mode_init -> _mode_set), then notice.
-    mode_engine._mode_init(session_id, prev_mode)
+    # 6. carry the mode AND its provenance (gates reset via _mode_init), then notice.
+    #
+    # mode_source travels with the mode because a mode that arrives unlabelled reads as
+    # explicitly chosen (that is the deliberate fail-closed default), so an AUTO-routed
+    # session that rotated would come out the other side looking hand-set and could never
+    # be re-routed again -- a rotation, which the user never asked for and cannot see,
+    # would silently promote a classifier's guess to the user's word. Passing the
+    # candidate's own value also carries None forward as None: a pre-rotation cache written
+    # before the field has no provenance to recover, and inventing one either way would be
+    # a guess dressed as a record.
+    mode_engine._mode_init(session_id, prev_mode, mode_source=candidate.get("mode_source"))
     print(
         f"[Writ] session rotated; carried mode {prev_mode} forward; "
         "gates reset - re-approve each gate.",

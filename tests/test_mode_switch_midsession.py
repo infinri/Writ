@@ -399,7 +399,7 @@ class TestAutoRouteMidSession:
 
         `mode set` stamps cache["project_root"] from the process cwd, and clearing gate
         state deletes <project_root>/.claude/gates/*.approved, so inheriting pytest's cwd
-        made this suite delete the REAL repo's approval files on every run.
+        made this suite delete the REAL repo's approval artifacts on every run.
         """
         sandbox = tmp_path / "sandbox"
         (sandbox / ".claude" / "gates").mkdir(parents=True, exist_ok=True)
@@ -512,3 +512,316 @@ class TestAutoRouteMidSession:
         assert mode == "work"
         data = _read_raw_cache(tmp_path, sid)
         assert data["gates_approved"] == ["phase-a"], "a same-mode hint must not re-arm"
+
+
+# ===========================================================================
+# Part 6: mode_source provenance -- who chose the mode, not just what it is
+#
+# from_mode is null on BOTH the explicit and the automatic first-set path
+# (mode_engine.py:371 guards that the auto path's old_mode is always None), so
+# TestFromModeAlwaysRecorded above cannot tell a human's `mode set` apart from
+# the classifier's `mode init`. mode_source is the only field that can, and it
+# must survive a `mode switch` unchanged in either direction.
+# ===========================================================================
+
+class TestModeSourceStamping:
+    def test_mode_set_stamps_explicit(self, session_id, work_project, tmp_path):
+        writ_session.cmd_mode(session_id, "set", "work")
+
+        data = _read_raw_cache(tmp_path, session_id)
+        assert data["mode_source"] == "explicit"
+
+    def test_mode_init_stamps_auto(self, session_id, work_project, tmp_path):
+        writ_session.cmd_mode(session_id, "init", "investigate")
+
+        data = _read_raw_cache(tmp_path, session_id)
+        assert data["mode_source"] == "auto"
+
+    def _events(self, log_path):
+        with open(log_path) as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    def test_explicit_source_reaches_the_mode_change_telemetry_row(
+        self, session_id, work_project, tmp_path, monkeypatch
+    ):
+        """The unreadable row this contract exists to fix: a mode_change row must
+        say WHO chose the mode, not just what it became."""
+        log = tmp_path / "friction.log"
+        monkeypatch.setenv("WRIT_FRICTION_LOG", str(log))
+        writ_session.cmd_mode(session_id, "set", "work")
+
+        rows = [e for e in self._events(log) if e["event"] == "mode_change"]
+        assert rows, "mode set must emit a mode_change row"
+        assert rows[-1]["mode_source"] == "explicit"
+
+    def test_auto_source_reaches_the_mode_change_telemetry_row(
+        self, session_id, work_project, tmp_path, monkeypatch
+    ):
+        log = tmp_path / "friction.log"
+        monkeypatch.setenv("WRIT_FRICTION_LOG", str(log))
+        writ_session.cmd_mode(session_id, "init", "investigate")
+
+        rows = [e for e in self._events(log) if e["event"] == "mode_change"]
+        assert rows, "mode init must emit a mode_change row"
+        assert rows[-1]["mode_source"] == "auto"
+
+
+class TestModeSourcePreservedBySwitch:
+    """`_mode_switch` changes the mode, never the story of who chose it. Both
+    directions are covered: a test that only checks one cannot catch an
+    implementation that hardcodes either value.
+    """
+
+    def test_switching_an_auto_routed_session_stays_auto(
+        self, session_id, work_project, tmp_path
+    ):
+        writ_session.cmd_mode(session_id, "init", "investigate")
+        writ_session.cmd_mode(session_id, "switch", "work")
+
+        data = _read_raw_cache(tmp_path, session_id)
+        assert data["mode"] == "work"
+        assert data["mode_source"] == "auto", (
+            "switching an auto-routed session must not relabel it explicit"
+        )
+
+    def test_switching_an_explicitly_set_session_stays_explicit(
+        self, session_id, work_project, tmp_path
+    ):
+        writ_session.cmd_mode(session_id, "set", "work")
+        writ_session.cmd_mode(session_id, "switch", "investigate")
+
+        data = _read_raw_cache(tmp_path, session_id)
+        assert data["mode"] == "investigate"
+        assert data["mode_source"] == "explicit", (
+            "switching an explicitly-set session must not relabel it auto"
+        )
+
+
+# ===========================================================================
+# Part 6: reroute eligibility has TWO arms, not one explicit/auto split.
+#
+# Arm 1: current mode is work or investigate -> the reroute fires exactly as
+# it did before mode_source existed, REGARDLESS of source. Explicit does not
+# protect here -- this is the pre-existing guarantee that keeps an approved
+# plan and approved tests from being lost to a misclassified prompt, and it
+# must not regress.
+#
+# Arm 2: current mode is conversation, debug or review -> the reroute is
+# eligible ONLY when mode_source == "auto". An explicitly chosen specialist
+# mode stays put; an auto-set session that has since drifted into one of
+# these (via a manual `mode switch`) is still fair game. This arm is the
+# actual widening: before mode_source existed, an auto-routed session could
+# never reach conversation/debug/review at all.
+# ===========================================================================
+
+class TestAutoRouteEligibilityByModeSource:
+    def _env(self, tmp_path):
+        env = os.environ.copy()
+        env["WRIT_CACHE_DIR"] = str(tmp_path)
+        env["WRIT_PORT"] = "59997"
+        env["WRIT_HOST"] = "localhost"
+        env["WRIT_FRICTION_LOG"] = str(tmp_path / "friction.log")
+        env["WRIT_NO_AUTOSTART"] = "1"
+        return env
+
+    def _sandbox(self, tmp_path):
+        sandbox = tmp_path / "sandbox"
+        (sandbox / ".claude" / "gates").mkdir(parents=True, exist_ok=True)
+        (sandbox / ".git").mkdir(exist_ok=True)
+        return sandbox
+
+    def _hook(self, env, sandbox, sid, prompt):
+        return subprocess.run(
+            ["bash", HOOK], input=json.dumps({"session_id": sid, "prompt": prompt}),
+            capture_output=True, text=True, env=env, timeout=30, cwd=str(sandbox),
+        )
+
+    def _mode_get(self, env, sid):
+        return subprocess.run(
+            [sys.executable, HELPER, "mode", "get", sid],
+            env=env, capture_output=True, text=True,
+        ).stdout.strip()
+
+    def test_auto_set_session_reroutes_whatever_it_has_since_become(self, tmp_path):
+        """The widened half. Auto-route into investigate, then manually switch to
+        debug (switch preserves the auto source across the manual move); a
+        work-shaped prompt must still pull it into work, because mode_source --
+        not the CURRENT mode -- decides eligibility.
+        """
+        env = self._env(tmp_path)
+        sandbox = self._sandbox(tmp_path)
+        sid = "eligibility-auto-drift"
+        subprocess.run(
+            [sys.executable, HELPER, "mode", "init", "investigate", sid],
+            env=env, check=True, capture_output=True, text=True, cwd=str(sandbox),
+        )
+        subprocess.run(
+            [sys.executable, HELPER, "mode", "switch", "debug", sid],
+            env=env, check=True, capture_output=True, text=True, cwd=str(sandbox),
+        )
+        precondition = _read_raw_cache(tmp_path, sid)
+        assert precondition["mode"] == "debug"
+        assert precondition["mode_source"] == "auto", (
+            "precondition: a manual switch must preserve the auto source, or "
+            "this test proves nothing about the widened path"
+        )
+
+        r = self._hook(
+            env, sandbox, sid, "implement the export endpoint from the approved plan"
+        )
+        assert r.returncode == 0, r.stderr
+
+        assert self._mode_get(env, sid) == "work", (
+            "an auto-sourced session must be eligible for reroute regardless of "
+            "the mode it has since drifted to ('debug')"
+        )
+
+    def test_explicit_investigate_session_is_still_rerouted_to_work(self, tmp_path):
+        """Arm 1: work/investigate reroute regardless of mode_source. An
+        explicitly-set investigate session must still be pulled into work by a
+        build-shaped prompt -- explicit does not protect here, because this is
+        the pre-existing guarantee (an approved plan/tests must survive a
+        misclassified prompt), not a new restriction mode_source introduces.
+        """
+        env = self._env(tmp_path)
+        sandbox = self._sandbox(tmp_path)
+        sid = "eligibility-explicit-investigate"
+        subprocess.run(
+            [sys.executable, HELPER, "mode", "set", "investigate", sid],
+            env=env, check=True, capture_output=True, text=True, cwd=str(sandbox),
+        )
+        precondition = _read_raw_cache(tmp_path, sid)
+        assert precondition["mode_source"] == "explicit"
+
+        r = self._hook(
+            env, sandbox, sid, "implement the export endpoint from the approved plan"
+        )
+        assert r.returncode == 0, r.stderr
+
+        assert self._mode_get(env, sid) == "work", (
+            "arm 1: work/investigate reroute must fire regardless of "
+            "mode_source -- explicit does not protect a work/investigate "
+            "session, only conversation/debug/review"
+        )
+
+    @pytest.mark.parametrize("seeded", ["conversation", "debug", "review"])
+    def test_explicit_specialist_mode_is_not_rerouted(self, tmp_path, seeded):
+        """Arm 2 (protection half): an explicitly chosen conversation, debug,
+        or review session is never rerouted by the classifier. This is the
+        NEW protection mode_source adds -- before it existed, an explicit
+        specialist mode was safe only because the classifier's hint could
+        never match it either.
+        """
+        env = self._env(tmp_path)
+        sandbox = self._sandbox(tmp_path)
+        sid = f"eligibility-explicit-{seeded}"
+        subprocess.run(
+            [sys.executable, HELPER, "mode", "set", seeded, sid],
+            env=env, check=True, capture_output=True, text=True, cwd=str(sandbox),
+        )
+        precondition = _read_raw_cache(tmp_path, sid)
+        assert precondition["mode_source"] == "explicit"
+
+        r = self._hook(
+            env, sandbox, sid, "implement the export endpoint from the approved plan"
+        )
+        assert r.returncode == 0, r.stderr
+
+        assert self._mode_get(env, sid) == seeded, (
+            f"arm 2: an explicitly-set {seeded} session must never be "
+            f"rerouted by the classifier"
+        )
+
+
+class TestAutoRerouteNeverDestroysApprovals:
+    """`mode set` runs _apply_mode_set, which clears gates_approved and
+    paused_work_state; `mode switch` saves them instead. Proving the gates
+    SURVIVE a reroute is a stronger guarantee than asserting which verb ran --
+    it is the actual property `mode set` would destroy.
+    """
+
+    def _env(self, tmp_path):
+        env = os.environ.copy()
+        env["WRIT_CACHE_DIR"] = str(tmp_path)
+        env["WRIT_PORT"] = "59997"
+        env["WRIT_HOST"] = "localhost"
+        env["WRIT_FRICTION_LOG"] = str(tmp_path / "friction.log")
+        env["WRIT_NO_AUTOSTART"] = "1"
+        return env
+
+    def _sandbox(self, tmp_path):
+        sandbox = tmp_path / "sandbox"
+        (sandbox / ".claude" / "gates").mkdir(parents=True, exist_ok=True)
+        (sandbox / ".git").mkdir(exist_ok=True)
+        return sandbox
+
+    def _hook(self, env, sandbox, sid, prompt):
+        return subprocess.run(
+            ["bash", HOOK], input=json.dumps({"session_id": sid, "prompt": prompt}),
+            capture_output=True, text=True, env=env, timeout=30, cwd=str(sandbox),
+        )
+
+    def _seed_gates(self, tmp_path, sid, gates, phase=None):
+        path = os.path.join(str(tmp_path), f"writ-session-{sid}.json")
+        with open(path) as f:
+            cache = json.load(f)
+        cache["gates_approved"] = list(gates)
+        if phase is not None:
+            cache["current_phase"] = phase
+        with open(path, "w") as f:
+            json.dump(cache, f)
+
+    def test_auto_reroute_out_of_work_pauses_the_approved_gate_instead_of_wiping_it(
+        self, tmp_path
+    ):
+        env = self._env(tmp_path)
+        sandbox = self._sandbox(tmp_path)
+        sid = "reroute-preserves-approval"
+        subprocess.run(
+            [sys.executable, HELPER, "mode", "init", "work", sid],
+            env=env, check=True, capture_output=True, text=True, cwd=str(sandbox),
+        )
+        self._seed_gates(tmp_path, sid, ["phase-a"], phase="testing")
+
+        r = self._hook(env, sandbox, sid, "audit the codebase for security issues")
+        assert r.returncode == 0, r.stderr
+
+        after = _read_raw_cache(tmp_path, sid)
+        assert after["mode"] == "investigate"
+        assert after["paused_work_state"] is not None, (
+            "a reroute that used `mode set` would have wiped this instead of "
+            "pausing it"
+        )
+        assert after["paused_work_state"]["gates_approved"] == ["phase-a"], (
+            "the approved gate must survive the reroute, not be cleared by "
+            "`mode set`"
+        )
+
+    def test_auto_reroute_back_into_work_restores_rather_than_resets(self, tmp_path):
+        """If the return leg used `mode set`, phase would land back at 'planning'
+        and gates_approved would be wiped -- exactly the two invariants the
+        switch-back restore path (unchanged plan.md) instead preserves.
+        """
+        env = self._env(tmp_path)
+        sandbox = self._sandbox(tmp_path)
+        sid = "reroute-restore-not-reset"
+        (sandbox / "plan.md").write_text("# Plan: unchanged across the detour\n")
+        subprocess.run(
+            [sys.executable, HELPER, "mode", "init", "work", sid],
+            env=env, check=True, capture_output=True, text=True, cwd=str(sandbox),
+        )
+        self._seed_gates(tmp_path, sid, ["phase-a"], phase="testing")
+
+        self._hook(env, sandbox, sid, "audit the codebase for security issues")
+        self._hook(
+            env, sandbox, sid, "implement the export endpoint from the approved plan"
+        )
+
+        after = _read_raw_cache(tmp_path, sid)
+        assert after["mode"] == "work"
+        assert after["current_phase"] == "testing", (
+            "`mode set` would have reset this to 'planning'; the restore must not"
+        )
+        assert after["gates_approved"] == ["phase-a"], (
+            "`mode set` would have wiped this; the restore must keep it"
+        )

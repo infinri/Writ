@@ -194,13 +194,56 @@ CURRENT_MODE=""
 # cannot flake the way the package read can). Only auto-set when that confirms no mode --
 # never override an explicit choice.
 if [ -z "$AGENT_ID" ] && [ -n "$MODE_HINT" ]; then
-  # Single-source resolver (common.sh). This read used to inline its own cache-dir
-  # resolution with a tempdir fallback, which pointed at a directory holding no session
-  # caches, so it answered "unset" for EVERY session and the branch below fired every turn.
-  PRIOR_MODE=$(writ_session_mode_direct "$SESSION_ID")
+  # The prior mode AND who chose it (cache["mode_source"]: "explicit" | "auto" | absent),
+  # read together in ONE process from the cache file.
+  #
+  # ONE READ, because the pair has to be a single snapshot: read separately, the hook could
+  # act on a mode from one moment and a provenance from another and re-route a session on a
+  # label that no longer describes it. ONE PROCESS, because this file runs on EVERY prompt,
+  # so a second spawn to ask "who chose this mode" is a cost paid every turn forever. That
+  # is why the two fields travel as one "mode|source" string (json_transform's contract is
+  # one value out) and are split with shell builtins, which cost nothing.
+  #
+  # This replaces a writ_session_mode_direct call, so the count went 2 -> 1: that helper
+  # pipes jq into `tr`. Its cache-dir resolution is still the shared one below -- the
+  # tempdir-defaulting inline copy that answered "unset" for EVERY session is not coming
+  # back; writ_session_cache_dir is the single source both it and this use.
+  #
+  # FILE-DIRECT, not the /prompt-state snapshot from step 1, for exactly the reason the mode
+  # read was always file-direct: that snapshot is empty whenever the daemon is down or
+  # saturated, so provenance taken from it would go silently unavailable in the fallback
+  # case, read as "unknown", and quietly disable the re-route below with nothing in the log
+  # to show for it. The cache file is the authority both arms of this branch already trust.
+  PRIOR_CACHE_FILE="$(writ_session_cache_dir)/writ-session-$SESSION_ID.json"
+  PRIOR_PAIR=""
+  # Existence tested BEFORE the redirect (same trap as the RESTORED_GATES read below):
+  # `< missing` fails the command outright and the shell reports it before any 2>/dev/null
+  # on the line takes effect, and a session with no cache file yet is the normal first turn.
+  if [ -f "$PRIOR_CACHE_FILE" ]; then
+    PRIOR_PAIR=$(json_transform \
+      '((.mode // "") | tostring) + "|" + ((.mode_source // "") | tostring)' \
+      "(str(d.get('mode') or '') + '|' + str(d.get('mode_source') or ''))" \
+      < "$PRIOR_CACHE_FILE" 2>/dev/null || true)
+  fi
+  PRIOR_MODE=""
+  PRIOR_MODE_SOURCE=""
+  # No delimiter means the read produced nothing usable (missing / corrupt / unparseable
+  # file), which is writ_session_mode_direct's contract too: BOTH values stay empty, the
+  # session reads as unset, and the `mode init` arm below is authoritative anyway.
+  case "$PRIOR_PAIR" in
+    *"|"*)
+      PRIOR_MODE="${PRIOR_PAIR%%|*}"
+      PRIOR_MODE_SOURCE="${PRIOR_PAIR#*|}"
+      ;;
+  esac
+  # The whitespace strip writ_session_mode_direct did with `tr`, done with a builtin: both
+  # values are compared against literal names, and one stray space would miss every time.
+  PRIOR_MODE="${PRIOR_MODE//[[:space:]]/}"
+  PRIOR_MODE_SOURCE="${PRIOR_MODE_SOURCE//[[:space:]]/}"
   AUTOROUTED="no"
-  # Empty means "no restore happened", which is the truth on every path except the
-  # investigate -> work switch below. Initialized here because the hook runs under `set -u`.
+  # Empty means "no restore happened", which is the truth on every path except a mid-session
+  # switch INTO work below (from investigate, or from any mode an auto-routed session was
+  # sitting in). Initialized here because the hook runs under `set -u`.
   RESTORED_GATES=""
   if [ -z "$PRIOR_MODE" ]; then
     # `mode init` (not `mode set`): authoritatively sets the mode ONLY if still
@@ -228,12 +271,50 @@ if [ -z "$AGENT_ID" ] && [ -n "$MODE_HINT" ]; then
     # would destroy an approved plan and approved tests. switch SAVES them, which makes a
     # false positive cost a detour instead of the approvals.
     #
-    # Only between work and investigate, the two modes the classifier emits. An explicitly
-    # chosen debug / review / conversation mode is the user's and stays: flipping a debug
-    # session to work would fire the debug-to-work root-cause handoff as a side effect of
-    # a guess.
-    case "$PRIOR_MODE:$MODE_HINT" in
-      work:investigate|investigate:work)
+    # ELIGIBILITY IS A QUESTION ABOUT WHO CHOSE THE CURRENT MODE, not about which pair of
+    # modes it is. Two ways in, and the OR is deliberate:
+    #
+    #   1. mode_source "auto" -> this mode came from the classifier reading an EARLIER
+    #      prompt, not from a person. A later prompt is better evidence about the task than
+    #      an earlier one, so re-route from WHATEVER mode it landed in. This is the case
+    #      that was unreachable before Part 6: a session auto-routed once was pinned for its
+    #      whole life, because from_mode is null on both set paths and so nothing in the
+    #      record could tell a user's stated mode from the classifier's guess.
+    #      (Value written by mode_engine.MODE_SOURCE_AUTO; spelled literally here rather
+    #      than asked for, because asking would cost a process on every prompt.)
+    #
+    #   2. work <-> investigate whatever the source, which is the behaviour this file
+    #      already shipped and which widening must not withdraw: mid-work a discovery needs
+    #      investigating, and coming back is the switch that restores the paused work state.
+    #
+    # An "explicit" (or unknown-provenance) debug / review / conversation mode is therefore
+    # still left alone -- neither arm reaches it. That keeps the standing reason: flipping a
+    # hand-set debug session to work would fire the debug-to-work root-cause handoff as a
+    # side effect of a guess. Unknown provenance counts as explicit deliberately: there is
+    # no truth to recover for a pre-field cache, and guessing "auto" would hand the
+    # classifier a mode a human may well have typed.
+    #
+    # Unequal modes is a precondition of both arms: a work-shaped prompt during work is a
+    # no-op, not a re-switch.
+    #
+    # NO LOOP IS POSSIBLE between the specialist modes: classify_mode_hint returns only
+    # work, investigate or nothing (bin/lib/writ_mode_hint.py), so there is no hint that
+    # routes back DOWN into conversation / debug / review for a switch to fight over.
+    ROUTE_ELIGIBLE="no"
+    if [ "$PRIOR_MODE" != "$MODE_HINT" ]; then
+      if [ "$PRIOR_MODE_SOURCE" = "auto" ]; then
+        ROUTE_ELIGIBLE="yes"
+      else
+        case "$PRIOR_MODE:$MODE_HINT" in
+          work:investigate|investigate:work) ROUTE_ELIGIBLE="yes" ;;
+        esac
+      fi
+    fi
+    if [ "$ROUTE_ELIGIBLE" = "yes" ]; then
+        # `mode switch`, NEVER `mode set` -- and the widening above leans HARDER on that
+        # promise, not less: more sessions are now reachable from a guess, so the property
+        # that a misclassified prompt costs a detour instead of an approved plan and
+        # approved test skeletons is the whole reason this arm is allowed to exist.
         python3 "$SESSION_HELPER" mode switch "$MODE_HINT" "$SESSION_ID" >/dev/null 2>&1 || true
         # Re-read rather than trust the hint, for the same reason the unset path does:
         # announcing the mode we ASKED for is how the hook came to tell the user the mode
@@ -260,9 +341,8 @@ if [ -z "$AGENT_ID" ] && [ -n "$MODE_HINT" ]; then
               "len(d.get('gates_approved') or [])" < "$SWITCH_CACHE_FILE" 2>/dev/null || true)
           fi
         fi
-        debug "mid-session re-route $PRIOR_MODE -> $MODE_HINT; mode is now '${CONFIRMED_MODE:-unset}'"
-        ;;
-    esac
+        debug "mid-session re-route $PRIOR_MODE ($PRIOR_MODE_SOURCE) -> $MODE_HINT; mode is now '${CONFIRMED_MODE:-unset}'"
+    fi
   fi
   # Announce ONLY a change we actually made.
   if [ "$AUTOROUTED" = "yes" ]; then

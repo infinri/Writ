@@ -41,11 +41,19 @@ def _isolated_cache_dir(tmp_path, monkeypatch):
     yield
 
 
-def _seed_cache(session_id: str, *, mode: str | None, project_root: str | None) -> None:
+def _seed_cache(
+    session_id: str,
+    *,
+    mode: str | None,
+    project_root: str | None,
+    mode_source: str | None = None,
+) -> None:
     data = cache._read_cache(session_id)
     data["mode"] = mode
     if project_root is not None:
         data["project_root"] = project_root
+    if mode_source is not None:
+        data["mode_source"] = mode_source
     cache._write_cache(session_id, data)
 
 
@@ -287,3 +295,140 @@ class TestLoudNotice:
 
         captured = capsys.readouterr()
         assert "carried" not in captured.err.lower()
+
+
+# ===========================================================================
+# Part 6: mode_source carries alongside the mode
+#
+# carry_forward_mode moves the mode across a session-id rotation; it must
+# move the SAME mode_source the previous session actually had (not re-derive
+# it as "auto" just because the carry itself goes through mode_engine), and
+# the same-project refusal that withholds the mode must withhold the source
+# too -- a refused carry must never leak the source while denying the mode.
+# ===========================================================================
+
+class TestModeSourceCarriesToo:
+    def test_carries_explicit_source_alongside_the_mode(self, tmp_path):
+        from writ.session import rotation
+
+        project = str(tmp_path / "myproject")
+        _seed_cache(
+            "prev-sid-17", mode="work", project_root=project, mode_source="explicit"
+        )
+
+        rotation.carry_forward_mode(
+            "new-sid-17", cwd=project, prev_session_id="prev-sid-17", source="resume"
+        )
+
+        new_cache = cache._read_cache("new-sid-17")
+        assert new_cache["mode"] == "work"
+        assert new_cache["mode_source"] == "explicit"
+
+    def test_carries_auto_source_alongside_the_mode(self, tmp_path):
+        from writ.session import rotation
+
+        project = str(tmp_path / "myproject")
+        _seed_cache(
+            "prev-sid-18", mode="investigate", project_root=project, mode_source="auto"
+        )
+
+        rotation.carry_forward_mode(
+            "new-sid-18", cwd=project, prev_session_id="prev-sid-18", source="resume"
+        )
+
+        new_cache = cache._read_cache("new-sid-18")
+        assert new_cache["mode"] == "investigate"
+        assert new_cache["mode_source"] == "auto"
+
+    def test_cross_project_refusal_withholds_the_source_too(self, tmp_path):
+        """The same-project guard fails closed on BOTH fields together: a
+        refused carry must not leak the source while withholding the mode.
+        """
+        from writ.session import rotation
+
+        prev_project = str(tmp_path / "project-a")
+        other_cwd = str(tmp_path / "project-b")
+        _seed_cache(
+            "prev-sid-19", mode="work", project_root=prev_project, mode_source="explicit"
+        )
+
+        rotation.carry_forward_mode(
+            "new-sid-19", cwd=other_cwd, prev_session_id="prev-sid-19", source="resume"
+        )
+
+        new_cache = cache._read_cache("new-sid-19")
+        assert new_cache["mode"] is None
+        assert new_cache.get("mode_source") is None, (
+            "a refused carry must not carry the source either, even partially"
+        )
+
+    def test_new_session_already_having_a_mode_source_is_not_overwritten(
+        self, tmp_path
+    ):
+        from writ.session import rotation
+
+        project = str(tmp_path / "myproject")
+        _seed_cache(
+            "prev-sid-20", mode="work", project_root=project, mode_source="auto"
+        )
+        _seed_cache(
+            "new-sid-20", mode="debug", project_root=project, mode_source="explicit"
+        )
+
+        rotation.carry_forward_mode(
+            "new-sid-20", cwd=project, prev_session_id="prev-sid-20", source="resume"
+        )
+
+        new_cache = cache._read_cache("new-sid-20")
+        assert new_cache["mode"] == "debug", "an already-set mode must never be overwritten"
+        assert new_cache["mode_source"] == "explicit"
+
+
+class TestNonePreFieldProvenanceStaysNone:
+    """PIECE 2 mode_source: a session cache written BEFORE the `mode_source` field
+    existed carries a real mode but a genuinely `None` provenance -- there is
+    nothing to derive a value from, so carry_forward_mode passes that `None`
+    straight through, and cache._read_cache's own `setdefault` backfill leaves it
+    alone rather than inventing one.
+
+    The direction is load-bearing, not incidental: `None` is documented (see
+    cache._default_cache's `mode_source` comment) as "unknown, treat as explicit",
+    which means a session with `mode_source is None` is NOT eligible for the
+    auto-router's mid-session re-route (that eligibility check requires
+    `mode_source == "auto"`). If a future change started defaulting a missing/None
+    provenance to "auto" instead, every pre-existing session already on disk would
+    silently become re-routable, and a user's deliberately chosen mode could be
+    overwritten by a classifier's guess on the very next prompt -- with nothing
+    here to object, since "None carries through as None" is today correct only by
+    inspection.
+    """
+
+    def test_carried_mode_source_stays_none_when_candidate_predates_the_field(
+        self, tmp_path
+    ):
+        from writ.session import rotation
+
+        project = str(tmp_path / "myproject")
+        # No mode_source kwarg: this is exactly what a pre-field session on disk
+        # looks like -- a real mode, no provenance ever recorded for it.
+        _seed_cache("prev-sid-21", mode="work", project_root=project)
+        candidate = cache._read_cache("prev-sid-21")
+        assert candidate["mode_source"] is None, (
+            "setup sanity: the candidate must have a genuinely unrecorded "
+            "provenance, or this test is not exercising the pre-field case"
+        )
+
+        rotation.carry_forward_mode(
+            "new-sid-21", cwd=project, prev_session_id="prev-sid-21", source="resume"
+        )
+
+        new_cache = cache._read_cache("new-sid-21")
+        assert new_cache["mode"] == "work"
+        assert new_cache["mode_source"] is None, (
+            "a pre-field candidate's unrecorded provenance must carry through as "
+            "None, never be defaulted to \"auto\": None means the mode is treated "
+            "like an explicit human choice and is left alone by the auto-router, so "
+            "silently defaulting it here would make every pre-existing session on "
+            "disk re-routable and let a classifier's guess overwrite a user's "
+            "deliberately chosen mode."
+        )

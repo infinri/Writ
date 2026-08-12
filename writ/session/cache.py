@@ -184,6 +184,18 @@ def _default_cache() -> dict:
         "context_percent": 0,
         "queries": 0,
         "mode": None,
+        # WHO chose that mode: "explicit" (a human named it via `mode set`) or "auto" (the
+        # writ-rag-inject.sh classifier chose it via `mode init`). None means the question
+        # cannot be answered for this session -- a cache written before the field existed,
+        # or a mode carried forward from one -- and every consumer must treat that like
+        # "explicit" and leave the mode alone, never like "auto".
+        #
+        # It lives HERE, in the one function that defines the cache's shape, so a reread
+        # cache and a fresh one carry the key alike; the values are stamped by
+        # mode_engine._apply_mode_set (MODE_SOURCE_EXPLICIT / MODE_SOURCE_AUTO), never by a
+        # call site. Without it, the two paths were indistinguishable after the fact: both
+        # emit a mode_change row with change_type "set" and from_mode null.
+        "mode_source": None,
         "is_subagent": False,
         "files_written": [],
         "analysis_results": {},

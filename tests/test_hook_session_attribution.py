@@ -474,3 +474,119 @@ class TestCommsOutputGateAttributesItsTelemetry:
             f"{[p.name for p in cache_dir.iterdir()]}"
         )
         assert not (cache_dir / "writ-events-unknown.buf").exists()
+
+
+# ---------------------------------------------------------------------------
+# PART 6b: resolve_project() must not mislabel an ungitted cwd as "writ".
+#
+# THE DEFECT. A cwd outside any git repo makes derive_project_identity raise
+# NotInRepoError, and resolve_project() fell back to the literal string
+# "writ" -- the Writ skill's OWN log scope. That project's mode-change (and
+# every other) row was filed where its actual owner could never find it, and
+# it read indistinguishably from a genuine Writ-repo event. The fix trades a
+# wrong label for an honest one, not for silence: the row must still land
+# somewhere, under a marker that is explicitly NOT a real project name.
+# ---------------------------------------------------------------------------
+class TestResolveProjectDoesNotFallBackToWrit:
+    """`resolve_project()` for a cwd with no `.git` anywhere above it must
+    return an explicit unresolved marker, never the literal 'writ'."""
+
+    def test_ungitted_cwd_does_not_resolve_to_the_literal_writ(self, tmp_path) -> None:
+        from writ.shared.logging import resolve_project
+
+        result = resolve_project(cwd=str(tmp_path))
+
+        assert result != "writ", (
+            f"resolve_project() returned the literal 'writ' for {tmp_path}, a "
+            f"cwd with no .git anywhere above it. That string names the Writ "
+            f"skill's OWN log scope, so this project's row would be mislabelled "
+            f"into it -- exactly the defect this test guards."
+        )
+
+    def test_ungitted_cwd_still_resolves_to_a_non_empty_marker(self, tmp_path) -> None:
+        """The row must stay recorded, not dropped: the fix trades a wrong
+        label for an honest one, not for silence."""
+        from writ.shared.logging import resolve_project
+
+        result = resolve_project(cwd=str(tmp_path))
+
+        assert isinstance(result, str) and result.strip(), (
+            f"resolve_project() must return a non-empty marker for an ungitted "
+            f"cwd so the row is still recorded; got {result!r}"
+        )
+
+    def test_ungitted_cwd_marker_is_stable_across_calls(self, tmp_path) -> None:
+        """A fixed sentinel, not something derived per-call: two rows from the
+        same ungitted project must land together, not scatter across
+        different log scopes."""
+        from writ.shared.logging import resolve_project
+
+        first = resolve_project(cwd=str(tmp_path))
+        second = resolve_project(cwd=str(tmp_path))
+
+        assert first == second
+
+    def test_ungitted_cwd_row_is_recorded_under_the_marker_not_under_writ(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """End-to-end through `emit`: a row from an ungitted cwd must land on
+        disk under whatever resolve_project() now returns, not under 'writ'
+        and not nowhere.
+
+        DETERMINISM NOTE. This test was previously reported flaky (FileNotFoundError
+        from iterdir(), once in seven runs): emit()'s `if friction_log:` branch
+        (writ/shared/logging.py:422-428) takes priority over the per-project router
+        this test exercises, so ANY leaked WRIT_FRICTION_LOG value at call time makes
+        emit() append to that single file instead of ever creating `writ_root` --
+        and iterdir() on a directory that was never created raises FileNotFoundError
+        rather than returning empty, which is a confusing way to learn the real
+        precondition was violated. The delenv below already clears the variable and
+        nothing runs between it and the `emit()` call that could reintroduce it, but
+        the assertion immediately before the call pins that precondition explicitly
+        at its point of use: if it is EVER violated again (a sibling fixture change,
+        an inherited shell export, a future edit that inserts a call in between), this
+        fails on its own named line instead of resurfacing as an opaque iterdir()
+        crash three lines later.
+        """
+        from writ.shared import logging as writ_logging
+        from writ.shared.logging import UNRESOLVED_PROJECT
+
+        # The suite's autouse _isolate_friction_log fixture (tests/conftest.py)
+        # points WRIT_FRICTION_LOG at one collapsed file by default, which would
+        # short-circuit emit() before it ever reaches resolve_project() / the
+        # per-project stream router this test exercises. Opt out locally rather
+        # than a module-level `no_friction_isolation` mark, since every other
+        # test in this file is unaffected by the router and should keep the
+        # default isolation.
+        monkeypatch.delenv("WRIT_FRICTION_LOG", raising=False)
+        monkeypatch.setenv("WRIT_LOG_ROOT", str(tmp_path / "logs"))
+        monkeypatch.delenv("WRIT_LOG_PROJECT", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        assert "WRIT_FRICTION_LOG" not in os.environ, (
+            "WRIT_FRICTION_LOG is still set immediately before emit() despite the "
+            "delenv above; emit() would take its single-file early-return branch "
+            "(writ/shared/logging.py:422-428) instead of exercising the per-project "
+            "router this test exists to check -- this is the exact precondition "
+            "whose violation previously surfaced as a flaky FileNotFoundError from "
+            "iterdir() on a `logs` dir that was never created."
+        )
+
+        writ_logging.emit(None, "mode_change", "sid-ungitted", "work", change_type="set")
+
+        writ_root = tmp_path / "logs"
+        assert not (writ_root / "writ").exists(), (
+            "the row landed under the 'writ' project scope; an ungitted "
+            "project's row must never be filed into the Writ skill's own log "
+            "space"
+        )
+        assert writ_root.is_dir(), (
+            f"{writ_root} was never created; the row must still be recorded, not "
+            f"silently dropped (emit() likely took the WRIT_FRICTION_LOG "
+            f"single-file branch instead of the per-project router)"
+        )
+        project_dirs = {p.name for p in writ_root.iterdir() if p.is_dir()}
+        assert project_dirs == {UNRESOLVED_PROJECT}, (
+            f"expected exactly the {UNRESOLVED_PROJECT!r} project directory under "
+            f"{writ_root}; found {sorted(project_dirs)}"
+        )

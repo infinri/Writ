@@ -299,8 +299,16 @@ def test_resolve_project_uses_derive_project_identity_name(monkeypatch):
     assert resolve_project(cwd="/repo/root/sub") == "github.com/org/repo"
 
 
-def test_resolve_project_falls_back_to_writ_literal_when_not_in_repo(monkeypatch):
+def test_resolve_project_returns_unresolved_marker_when_not_in_repo(monkeypatch):
+    """The literal-'writ' fallback was removed on purpose (same hardcoded fail-open
+    removed from retrieval's resolve_project_for_cwd earlier in this cycle): filing
+    an ungitted project's rows under the string "writ" put them in the Writ skill's
+    OWN log space, where that project's owner would never look -- exactly what made
+    a real reported incident invisible. resolve_project() must now answer the
+    explicit UNRESOLVED_PROJECT marker instead, so the row is still RECORDED but
+    never MISLABELLED as another project's."""
     from writ.session.git_identity import NotInRepoError
+    from writ.shared.logging import UNRESOLVED_PROJECT
 
     monkeypatch.delenv("WRIT_LOG_PROJECT", raising=False)
 
@@ -308,7 +316,44 @@ def test_resolve_project_falls_back_to_writ_literal_when_not_in_repo(monkeypatch
         raise NotInRepoError("not a repo")
 
     monkeypatch.setattr("writ.shared.logging.derive_project_identity", _raise)
-    assert resolve_project(cwd="/tmp/not-a-repo") == "writ"
+    result = resolve_project(cwd="/tmp/not-a-repo")
+
+    assert result == UNRESOLVED_PROJECT, (
+        f"expected the UNRESOLVED_PROJECT marker (imported from writ.shared.logging, "
+        f"not hardcoded here, so a future rename cannot silently pass) for a cwd with "
+        f"no .git anywhere above it; got {result!r}"
+    )
+    assert result != "writ", (
+        "resolve_project() returned the literal 'writ' for an ungitted cwd. That "
+        "string names the Writ skill's OWN log scope, so this project's row would be "
+        "mislabelled into it and read indistinguishably from a genuine Writ-repo "
+        "event -- this is the specific defect this test exists to catch, not a "
+        "hypothetical one."
+    )
+
+
+def test_resolve_project_returns_unresolved_marker_on_os_error(monkeypatch):
+    """Same marker for the sibling except-arm: an unreadable/vanished cwd means the
+    identity could not be TAKEN, which is not evidence that this is Writ either."""
+    from writ.shared.logging import UNRESOLVED_PROJECT
+
+    monkeypatch.delenv("WRIT_LOG_PROJECT", raising=False)
+
+    def _raise(cwd):
+        raise OSError("cwd vanished")
+
+    monkeypatch.setattr("writ.shared.logging.derive_project_identity", _raise)
+    result = resolve_project(cwd="/tmp/vanished-cwd")
+
+    assert result == UNRESOLVED_PROJECT, (
+        f"expected the UNRESOLVED_PROJECT marker for a cwd whose identity raised "
+        f"OSError; got {result!r}"
+    )
+    assert result != "writ", (
+        "resolve_project() returned the literal 'writ' on an OSError from "
+        "derive_project_identity -- the same mislabelling defect as the "
+        "NotInRepoError arm, just reached through the sibling except clause."
+    )
 
 
 def test_resolve_project_sanitizes_slash_and_dotdot(monkeypatch):
@@ -342,6 +387,86 @@ def test_resolve_project_env_override_is_also_sanitized(monkeypatch):
     name = resolve_project()
     assert "/" not in name
     assert ".." not in name
+
+
+# --- _sanitize_segment(): a name that sanitizes to nothing (last hardcoded "writ")--
+#
+# The literal 'writ' default was removed from resolve_project's not-in-a-repo and
+# OSError arms earlier in this cycle (see test_resolve_project_returns_unresolved_marker_*
+# above); _sanitize_segment's own fallback was the last place it still hid. Measured
+# directly against both the pre-fix and post-fix function: a single segment made only
+# of characters the sanitizer strips (e.g. "..." or "___") never reaches either
+# fallback -- it takes the "safe" per-segment branch and defaults to the placeholder
+# "_", in both versions, so those inputs pin nothing about this fix. The genuinely
+# reachable case is the "unsafe" branch: a name whose split-on-'/' produces an empty,
+# '.', or '..' component (an empty string, bare '.', '..', '/', or a traversal shape
+# like '..//..') collapses to nothing and used to answer 'writ'. The sibling
+# "safe"-branch fallback (`result or ...`) can never fire, because every safe segment
+# already defaults to a non-empty placeholder before the join -- one live defect, not
+# two; noted here rather than pinned as its own test, since a test cannot exercise an
+# unreachable branch.
+
+
+@pytest.mark.parametrize(
+    "hostile_name", ["", ".", "..", "/", "..//..", "\n\n", "./."]
+)
+def test_sanitize_segment_of_a_hostile_or_empty_name_returns_the_unresolved_marker(
+    hostile_name,
+):
+    """Each of these previously sanitized down to the literal 'writ'. That string
+    names the Writ skill's OWN log scope, so an unrelated project's rows -- or a
+    caller whose identity could not be read at all -- would file into it, exactly
+    the mislabelling that made a real reported symptom undiagnosable. The fix answers
+    the explicit UNRESOLVED_PROJECT marker instead, imported here rather than
+    hardcoded, so a future rename of the marker cannot silently pass this test."""
+    from writ.shared.logging import UNRESOLVED_PROJECT, _sanitize_segment
+
+    result = _sanitize_segment(hostile_name)
+
+    assert result != "writ", (
+        f"_sanitize_segment({hostile_name!r}) returned the literal 'writ' -- the "
+        f"specific wrong answer this test exists to catch; got {result!r}"
+    )
+    assert result == UNRESOLVED_PROJECT
+
+
+def test_sanitize_segment_marker_is_unforgeable_from_user_input():
+    """The marker cannot be aliased by a caller-supplied name: _sanitize_segment
+    strips a leading '_' per segment, so the literal string UNRESOLVED_PROJECT
+    itself sanitizes to a DIFFERENT, distinct value rather than to itself. A
+    project genuinely named "_unresolved" therefore never collides with, and is
+    never mistaken for, an unresolved row."""
+    from writ.shared.logging import UNRESOLVED_PROJECT, _sanitize_segment
+
+    result = _sanitize_segment(UNRESOLVED_PROJECT)
+
+    assert result != UNRESOLVED_PROJECT
+    assert result == "unresolved"
+
+
+def test_sanitize_segment_of_an_ordinary_derived_identity_is_unchanged():
+    """Control: the fix must not turn every name into the marker. An ordinary
+    clone-stable identity (the shape derive_project_identity actually returns)
+    passes through unchanged, so this suite cannot pass against an
+    implementation that returns UNRESOLVED_PROJECT unconditionally."""
+    from writ.shared.logging import UNRESOLVED_PROJECT, _sanitize_segment
+
+    result = _sanitize_segment("github.com/infinri/Writ")
+
+    assert result == "github.com/infinri/Writ"
+    assert result != UNRESOLVED_PROJECT
+
+
+def test_sanitize_segment_of_the_literal_writ_name_still_maps_to_itself():
+    """The fix removes 'writ' as a FALLBACK default, not as a legitimate project
+    name: a project genuinely named 'writ' must still resolve to 'writ', not to
+    the unresolved marker."""
+    from writ.shared.logging import UNRESOLVED_PROJECT, _sanitize_segment
+
+    result = _sanitize_segment("writ")
+
+    assert result == "writ"
+    assert result != UNRESOLVED_PROJECT
 
 
 # --- Fallback durability -----------------------------------------------------
@@ -490,6 +615,46 @@ def test_emit_leaves_non_string_fields_untouched(tmp_path, monkeypatch):
     row = _read_jsonl(stream_path("proj-h", "metrics"))[0]
     assert row["duration_ms"] == 42
     assert row["rule_ids"] == ["A", "B"]
+
+
+# --- mode_source: kept as an explicit null (_KEEP_WHEN_NULL) ----------------
+#
+# Same treatment as from_mode -- test_mode_switch_midsession.py::TestFromModeAlwaysRecorded
+# pins the identical contract one layer up, through cmd_mode. An omitted key reads
+# exactly like a row written before the field existed at all, and that specific
+# ambiguity is what made a real telemetry row undiagnosable during a past incident.
+# The key's PRESENCE with a null value is the assertion here, not merely that emit
+# did not raise on a None value.
+
+
+def test_emit_keeps_mode_source_as_explicit_null_when_provenance_is_unknown(
+    tmp_path, monkeypatch
+):
+    """A mode_change row for a session whose provenance is genuinely unknown (a mode
+    carried forward from a pre-mode_source cache, say) must record `mode_source` as
+    an explicit JSON null, not drop the key. A dropped key is indistinguishable from
+    a row written before the field existed, which is the exact ambiguity mode_source
+    exists to end."""
+    monkeypatch.setenv("WRIT_LOG_ROOT", str(tmp_path))
+    monkeypatch.setenv("WRIT_LOG_PROJECT", "proj-mode-source")
+    emit(None, "mode_change", "sid-ms-1", "work", to_mode="work", mode_source=None)
+
+    rows = _read_jsonl(stream_path("proj-mode-source", "audit"))
+    assert len(rows) == 1
+    assert "mode_source" in rows[0], "the key must be present even when the value is null"
+    assert rows[0]["mode_source"] is None
+
+
+def test_emit_records_a_real_mode_source_value_unchanged(tmp_path, monkeypatch):
+    """Control for the null-retention test above: a real provenance value must still
+    round-trip unchanged, so the null-handling path cannot be satisfied by an
+    implementation that always nulls the field out."""
+    monkeypatch.setenv("WRIT_LOG_ROOT", str(tmp_path))
+    monkeypatch.setenv("WRIT_LOG_PROJECT", "proj-mode-source-2")
+    emit(None, "mode_change", "sid-ms-2", "work", to_mode="work", mode_source="explicit")
+
+    rows = _read_jsonl(stream_path("proj-mode-source-2", "audit"))
+    assert rows[0]["mode_source"] == "explicit"
 
 
 # --- read_streams() ----------------------------------------------------------
