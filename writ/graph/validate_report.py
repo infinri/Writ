@@ -100,6 +100,16 @@ def _render_unreviewed(findings: dict, out: list, err: list) -> None:
     out.append(f"\nUnreviewed AI-provisional: {u['message']}")
 
 
+def _render_parity_checks_skipped(findings: dict, out: list, err: list) -> None:
+    skipped = findings.get("parity_checks_skipped")
+    if not skipped:
+        return
+    out.append(
+        f"\nParity checks skipped: {skipped.get('reason', '')} "
+        f"({', '.join(skipped.get('checks', []))} did not run)"
+    )
+
+
 def _render_edge_parity(findings: dict, out: list, err: list) -> None:
     ep = findings.get("edge_parity")
     if not ep:
@@ -186,6 +196,24 @@ def _render_always_on_budget_breach(findings: dict, out: list, err: list) -> Non
         f"\nAlways-on budget breach: {b['rule_count']} rules render to "
         f"{b['total_tokens']} tokens (cap {b['cap']})."
     )
+
+
+def _render_artifact_abstracts_parity(findings: dict, out: list, err: list) -> None:
+    ap = findings.get("artifact_abstracts_parity")
+    if not ap:
+        return
+    stale = ap.get("stale", [])
+    missing = ap.get("missing", [])
+    out.append(
+        f"\nAbstraction edge parity -- live ABSTRACTS edges disagree with "
+        f"bible/abstractions.json (stale={len(stale)}, missing={len(missing)}); "
+        f"re-run `writ import-markdown` to re-materialize, or `writ compress` to "
+        f"regenerate the artifact:"
+    )
+    for abs_id, rule_id in stale[:20]:
+        out.append(f"  stale (graph, not in artifact):   {abs_id} -ABSTRACTS-> {rule_id}")
+    for abs_id, rule_id in missing[:20]:
+        out.append(f"  missing (artifact, not in graph): {abs_id} -ABSTRACTS-> {rule_id}")
 
 
 def _render_floor_completeness(findings: dict, out: list, err: list) -> None:
@@ -310,6 +338,7 @@ _RENDER_STEPS: tuple[Callable[[dict, list, list], None], ...] = (
         lambda v: f"\nGraduation flags ({len(v)}):",
         lambda gf: f"  {gf['rule_id']} (ratio: {gf['ratio']}, n={gf['n']})",
     ),
+    _render_parity_checks_skipped,
     _section(
         "parity_violations",
         lambda v: f"\nParity violations -- graph nodes absent from markdown ({len(v)}):",
@@ -354,6 +383,7 @@ _RENDER_STEPS: tuple[Callable[[dict, list, list], None], ...] = (
         ),
         lambda d: f"  {d['rule_id']} (in abstraction {d['abstraction_id']})",
     ),
+    _render_artifact_abstracts_parity,
     _render_floor_completeness,
     _render_trigger_keyword_invariant,
     _render_push_reachability,

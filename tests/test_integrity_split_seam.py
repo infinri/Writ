@@ -28,6 +28,7 @@ EXPECTED_METHODS = [
     "_get_categories_without_route", "_get_nodes_without_belongs_to",
     "_load_methodology_source_props", "_run", "check_unreviewed_count",
     "detect_action_vocabulary_closure", "detect_always_on_budget_breach",
+    "detect_artifact_abstracts_parity",
     "detect_artifact_dangling_rule_ids", "detect_category_reachability",
     "detect_confidence_defaults", "detect_conflicts", "detect_counter_nodes_parity",
     "detect_dangling_dispatched_roles", "detect_delivery_orphans",

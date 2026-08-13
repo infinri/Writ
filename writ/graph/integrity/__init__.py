@@ -27,6 +27,7 @@ from writ.graph.integrity._common import (
     _normalized_code_blocks,
     _python_blocks,
     lint_rule_examples,
+    resolve_parity_oracle,
 )
 from writ.graph.integrity._query import _QueryMixin
 from writ.graph.integrity.structural_checks import StructuralChecksMixin
@@ -112,10 +113,42 @@ class IntegrityChecker(
 
         # Phase 0: parity violations (graph nodes absent from markdown) and
         # category reachability (nodes with no BELONGS_TO category edge).
-        findings["parity_violations"] = await self.detect_parity_violations(bible_dir, project)
-        findings["edge_parity"] = await self.detect_edge_parity(bible_dir, project)
-        findings["prop_parity"] = await self.detect_prop_parity(bible_dir, project)
-        findings["methodology_field_drift"] = await self.detect_methodology_field_drift(bible_dir, project)
+        #
+        # Cycle 7 defect 1: these four return FALSY when they have no oracle, and
+        # falsy is what "clean" looks like to the truthy sweep below, so four checks
+        # that never ran were indistinguishable from four that passed. Resolve the
+        # oracle once, and when it cannot be trusted say so in a finding.
+        # parity_checks_skipped is NON-gating on purpose: a dict is truthy, so
+        # gating it would fail every bible-absent checkout for reporting honestly.
+        parity_dir, parity_skip_reason = resolve_parity_oracle(
+            bible_dir, self._default_bible_dir
+        )
+        _PARITY_CHECK_KEYS = (
+            "parity_violations", "edge_parity", "prop_parity",
+            "methodology_field_drift",
+        )
+        if parity_skip_reason:
+            findings["parity_checks_skipped"] = {
+                "reason": parity_skip_reason,
+                "checks": list(_PARITY_CHECK_KEYS),
+            }
+            # Set the falsy defaults DIRECTLY. Calling the detectors with None would
+            # let each one fall back to self._default_bible_dir, which is the very
+            # directory the resolver just rejected.
+            findings["parity_violations"] = []
+            findings["edge_parity"] = None
+            findings["prop_parity"] = None
+            findings["methodology_field_drift"] = None
+        else:
+            findings["parity_checks_skipped"] = None
+            findings["parity_violations"] = await self.detect_parity_violations(
+                parity_dir, project
+            )
+            findings["edge_parity"] = await self.detect_edge_parity(parity_dir, project)
+            findings["prop_parity"] = await self.detect_prop_parity(parity_dir, project)
+            findings["methodology_field_drift"] = (
+                await self.detect_methodology_field_drift(parity_dir, project)
+            )
         findings["dispatch_invokes"] = await self.detect_dispatch_invokes_invariant()
         findings["teaches_source"] = await self.detect_teaches_source_invariant()
         findings["floor_completeness"] = await self.detect_floor_completeness()
@@ -152,6 +185,13 @@ class IntegrityChecker(
         findings["artifact_dangling_rule_ids"] = await self.detect_artifact_dangling_rule_ids(
             artifact_path, project
         )
+        # Cycle 7 defect 2b: the coverage the markdown-parity exemption gives up.
+        # The oracle cannot see bible/abstractions.json, so the ABSTRACTS edge set
+        # is compared against the artifact itself, in both directions. Gating by
+        # omission from _NON_GATING below.
+        findings["artifact_abstracts_parity"] = await self.detect_artifact_abstracts_parity(
+            artifact_path, project
+        )
 
         # Exit code: any GATING finding that is truthy fails validate. The keys in
         # _NON_GATING are populated for reporting but never gate (informational /
@@ -168,6 +208,7 @@ class IntegrityChecker(
             "frequency_stale",         # informational
             "graduation_flags",        # informational (candidates, not failures)
             "orphan_counts_by_type",   # count companion to orphans_all_labels
+            "parity_checks_skipped",   # cycle 7: honest skip report, not a finding
         }
         has_issues = any(
             bool(v) for k, v in findings.items()

@@ -565,8 +565,8 @@ def validate(
         False, "--review-confidence", help="List rules at migration default confidence."
     ),
     benchmark: bool = typer.Option(False, "--benchmark", help="Report integrity check duration."),
-    bible_dir: Path | None = typer.Option(
-        None,
+    bible_dir: Path = typer.Option(
+        Path(DEFAULT_BIBLE_DIR),
         "--bible-dir",
         help="Markdown corpus to check graph/markdown parity against.",
     ),

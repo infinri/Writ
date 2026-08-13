@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from writ.graph.integrity._common import (
     NODE_ID_FIELDS,
+    ORACLE_BLIND_LABELS,
     REDUNDANCY_SIMILARITY_THRESHOLD,
     date,
     timedelta,
@@ -45,10 +46,10 @@ class StructuralChecksMixin:
         counts: dict[str, int] = {}
         async with self._driver.session(database=self._database) as session:
             for label, id_field in NODE_ID_FIELDS.items():
-                # Change B: Abstraction nodes are graph-derived materialized
-                # views (`writ compress`); they have no required edges in the
-                # source graph and are not orphans by the source-parity rule.
-                if label == "Abstraction":
+                # Change B, generalized in cycle 7: a label the markdown ingest
+                # cannot author has no required edges in the source graph, so it
+                # is not an orphan by the source-parity rule.
+                if label in ORACLE_BLIND_LABELS:
                     counts[label] = 0
                     continue
                 query = (

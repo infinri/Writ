@@ -108,5 +108,14 @@ class TestSitesMigrated:
         # migrate -> 25 async-with left in the mixins, and 6 new self._run call sites. (The other 9
         # planned sites use multi-line inline f-string queries / multi-line collects and are excluded;
         # they keep their explicit `async with`.)
-        assert async_with == 25, f"expected 25 async-with blocks left in mixins; found {async_with}"
+        #
+        # 25 -> 28 as three detectors were added, each with a multi-line query, which is the
+        # documented reason a site keeps its explicit `async with` rather than migrating:
+        #   +2 cycle 6a, routing_checks.py: detect_route_implementation_closure and
+        #      detect_delivery_orphans, the two checks that caught the dead-route class.
+        #   +1 cycle 7, artifact_checks.py: detect_artifact_abstracts_parity.
+        # self._run is unchanged at 6, which is the real invariant here: the migrated sites
+        # stay migrated. This count is a ratchet on NEW raw sessions, so it is expected to
+        # move when a detector lands, and each move should name what added it.
+        assert async_with == 28, f"expected 28 async-with blocks left in mixins; found {async_with}"
         assert self_run == 6, f"expected 6 self._run call sites; found {self_run}"

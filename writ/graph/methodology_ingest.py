@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 from writ.graph.db import (
     _GRAPH_ID_COALESCE,
@@ -43,6 +43,9 @@ from writ.graph.ingest import (
     validate_parsed_node,
 )
 from writ.graph.schema import MANAGED_PROP_NAMES, PARITY_EXEMPT_PROVENANCE
+
+if TYPE_CHECKING:
+    from neo4j import AsyncDriver
 
 
 # --- Registry ----------------------------------------------------------------
@@ -63,12 +66,59 @@ def _make_methodology_ingester(node_type: str) -> Ingester:
     return _ingest
 
 
+# The node labels the markdown ingest CANNOT author. Abstraction nodes are
+# materialized from bible/abstractions.json by writ/compression/abstractions.py;
+# discover_rule_files only yields *.md, so no markdown file can ever produce one,
+# and _persist_abstraction_layer deletes the project's abstractions before every
+# write, so a hand-authored one would not survive the next import either. Keeping
+# a registry entry for a label nothing can author is what let the markdown parity
+# oracle believe it owned 62 nodes and 186 edges it cannot see.
+ARTIFACT_AUTHORED_NODE_TYPES: frozenset[str] = frozenset({"Abstraction"})
+
 INGESTER_REGISTRY: dict[str, Ingester] = {
     "Rule": _ingest_rule,
-    **{nt: _make_methodology_ingester(nt) for nt in NODE_ID_FIELDS if nt != "Rule"},
+    **{
+        nt: _make_methodology_ingester(nt)
+        for nt in NODE_ID_FIELDS
+        if nt != "Rule" and nt not in ARTIFACT_AUTHORED_NODE_TYPES
+    },
 }
 
 KNOWN_NODE_TYPES: frozenset[str] = frozenset(INGESTER_REGISTRY.keys())
+
+# Every label the schema knows, minus the labels the markdown ingest can author.
+# DERIVED, not hand-listed: parse_source drops any node_type absent from
+# INGESTER_REGISTRY, so this set is exactly the labels the markdown oracle cannot
+# produce, and judging a blind spot is how validate came to recommend deleting 186
+# correct edges. A future artifact-authored type is exempt by construction.
+ORACLE_BLIND_LABELS: frozenset[str] = (
+    frozenset(NODE_ID_FIELDS) - frozenset(INGESTER_REGISTRY)
+)
+
+
+async def read_oracle_blind_node_ids(
+    driver: AsyncDriver, database: str, project: str
+) -> set[str]:
+    """Coalesced ids of live nodes whose label the markdown oracle cannot author.
+
+    One query, one round trip. Shared by detect_edge_parity (the check that
+    REPORTS stale edges) and reconcile's stale-edge prune (the command that
+    DELETES them), so the exemption cannot drift between them. Project scoping
+    matches read_live_edges exactly (n.project = $project, not coalesce), because
+    the ids are compared against rows that read returns.
+    """
+    if not ORACLE_BLIND_LABELS:
+        return set()
+    nid = _GRAPH_ID_COALESCE.format(v="n")
+    async with driver.session(database=database) as session:
+        result = await session.run(
+            f"MATCH (n) WHERE n.project = $project "
+            f"AND ANY(l IN labels(n) WHERE l IN $labels) "
+            f"RETURN {nid} AS id",
+            project=project,
+            labels=sorted(ORACLE_BLIND_LABELS),
+        )
+        return {r["id"] async for r in result if r["id"] is not None}
 
 
 # --- Typed records -----------------------------------------------------------
@@ -626,20 +676,30 @@ async def _reconcile_delete_stale_nodes(
 ) -> list[str]:
     """reconcile phase A: DETACH DELETE live nodes absent from the oracle (DETACH removes
     their incident edges too). 6.4: exempt graph-first nodes (proposed | graduation_pending)
-    -- the authoritative provenance axis the parity checks (integrity.py) key on. M.1:
+    -- the authoritative provenance axis the parity checks (integrity.py) key on. Cycle 7:
+    also exempt nodes whose label the oracle cannot author (ORACLE_BLIND_LABELS). M.1:
     scoped to this project, so another project's nodes are never even read. Returns the
     sorted stale node ids."""
     async with db._driver.session(database=db._database) as s:
         res = await s.run(
             f"MATCH (n) WHERE n.project = $project "
-            f"RETURN {nid} AS id, n.provenance AS provenance",
+            f"RETURN {nid} AS id, n.provenance AS provenance, labels(n) AS labels",
             project=project,
         )
-        live_nodes = [(r["id"], r["provenance"]) async for r in res if r["id"] is not None]
+        live_nodes = [
+            (r["id"], r["provenance"], r["labels"])
+            async for r in res
+            if r["id"] is not None
+        ]
         stale_node_ids = sorted(
             node_id
-            for (node_id, provenance) in live_nodes
-            if node_id not in expected_nodes and provenance not in PARITY_EXEMPT_PROVENANCE
+            for (node_id, provenance, labels) in live_nodes
+            if node_id not in expected_nodes
+            and provenance not in PARITY_EXEMPT_PROVENANCE
+            # Cycle 7: never delete a node the oracle cannot author. ingest_path
+            # (called at the top of reconcile) materializes the abstraction layer,
+            # and this phase used to delete it again on the same run.
+            and not (set(labels or []) & ORACLE_BLIND_LABELS)
         )
         if stale_node_ids:
             await s.run(
@@ -659,15 +719,19 @@ async def _reconcile_delete_stale_edges(
     Batched by relationship type (the type must be a Cypher literal, not a parameter).
     Returns the stale (etype, src, tgt) list."""
     live_edges = await read_live_edges(db._driver, db._database, project)
+    blind_ids = await read_oracle_blind_node_ids(db._driver, db._database, project)
 
-    # An edge is stale when it is absent from the oracle AND neither endpoint is graph-first
-    # (a proposed | graduation_pending node's edges are intentionally graph-only).
+    # An edge is stale when it is absent from the oracle, neither endpoint is graph-first
+    # (a proposed | graduation_pending node's edges are intentionally graph-only), and
+    # neither endpoint is a label the oracle cannot author (cycle 7).
     stale_edges = [
         (etype, src, tgt)
         for (etype, src, tgt, sp, tp) in live_edges
         if (etype, src, tgt) not in expected_edges
         and sp not in PARITY_EXEMPT_PROVENANCE
         and tp not in PARITY_EXEMPT_PROVENANCE
+        and src not in blind_ids
+        and tgt not in blind_ids
     ]
     edges_by_type: dict[str, list[dict]] = {}
     for etype, src, tgt in stale_edges:
