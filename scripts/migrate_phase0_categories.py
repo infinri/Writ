@@ -440,15 +440,36 @@ def _category_node_text(category_id: str, name: str, routes: list[str], parent: 
 def apply_plan(plan: Plan) -> None:
     """Mutate disk: write Category + SKL nodes, inject categories, delete dual blocks."""
     # 1. Author the 22 Category node files.
+    #
+    # CREATE ONLY, never overwrite. This is a spent one-time Phase-0 migration:
+    # it already ran, and every file it authors has been hand-edited since. A
+    # re-apply used to flatten those edits from the hardcoded template below.
+    # Measured against the live CAT-DISC-001, one line diverged and it was the
+    # load-bearing one: the template still says the category is "not
+    # retrievable", while cycle 6a moved it onto the `pull` route precisely so
+    # its 14 AntiPatterns could be delivered. Re-applying would restore prose
+    # that contradicts the routing data sitting beside it.
+    #
+    # Skipping rather than teaching the template today's prose is deliberate: a
+    # corrected template is correct until the next hand edit, which is the same
+    # trap one step along. Creating these files where they are absent is this
+    # script's job; owning their contents forever is not.
     for category_id, name, routes, parent in CATEGORY_DEFS:
         path = METHODOLOGY / f"{category_id}.md"
+        if path.exists():
+            print(f"[skip ] {path.relative_to(REPO_ROOT)} (exists; not overwriting)")
+            continue
         path.write_text(_category_node_text(category_id, name, routes, parent), encoding="utf-8")
         print(f"[write] {path.relative_to(REPO_ROOT)}")
 
-    # 2. Author SKL-PROC-DEBUG-001.
+    # 2. Author SKL-PROC-DEBUG-001, same rule: it comes from a hardcoded
+    # constant and carries the same overwrite risk.
     skl_path = METHODOLOGY / "SKL-PROC-DEBUG-001.md"
-    skl_path.write_text(SKL_PROC_DEBUG_001, encoding="utf-8")
-    print(f"[write] {skl_path.relative_to(REPO_ROOT)}")
+    if skl_path.exists():
+        print(f"[skip ] {skl_path.relative_to(REPO_ROOT)} (exists; not overwriting)")
+    else:
+        skl_path.write_text(SKL_PROC_DEBUG_001, encoding="utf-8")
+        print(f"[write] {skl_path.relative_to(REPO_ROOT)}")
 
     # 3. Inject category into the canonical copy of every mapped node.
     #    Front-matter methodology files: edit frontmatter. Rule-block (rules.md)
