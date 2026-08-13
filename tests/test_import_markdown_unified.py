@@ -16,7 +16,6 @@ All tests FAIL until the implementation phase lands.
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 import subprocess
 import sys
@@ -30,8 +29,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Shared resolver -- one source of truth for invoking `writ` from tests.
 from tests._writ_cmd import WRIT_CMD_PREFIX as _WRIT_CMD_PREFIX, WRIT_CLI
 
-# Single source for the record labels a corpus wipe must spare.
-from writ.graph.db._common import RECORD_LABELS
+# The suite's ONE path to Neo4j (cycle 8). This module used to hold a second one
+# and it is why the isolation attempt of 2026-08-08 still emptied production.
+from tests._graph import count as _graph_count, wipe_corpus as _graph_wipe_corpus
 
 # Credentials via the central loader: env-independent defaults keep CI (no
 # writ.toml checked out) collecting and running; a local writ.toml overrides.
@@ -52,37 +52,27 @@ NEO4J_URI = get_neo4j_uri()
 # ---------------------------------------------------------------------------
 
 
-# THE CONTAINER NAME IS A SEAM, not a constant. These two files reach Neo4j through
-# `docker exec <container> cypher-shell` rather than through Neo4jConnection, so they are
-# the one place WRIT_NEO4J_URI does NOT redirect: pointing the rest of the suite at a
-# disposable instance would silently leave these hitting production. Reading the name from
-# the environment puts them back under the same switch as everything else.
-def _neo4j_container() -> str:
-    return os.environ.get("WRIT_TEST_NEO4J_CONTAINER", "writ-neo4j")
-
-
 def _cypher(query: str) -> int:
-    """Run a read-only Cypher query via docker exec and return the integer result."""
-    result = subprocess.run(
-        [
-            "docker", "exec", _neo4j_container(), "cypher-shell",
-            "-u", NEO4J_USER, "-p", NEO4J_PASSWORD,
-            "--format", "plain",
-            query,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if result.returncode != 0:
-        pytest.skip(f"Neo4j not reachable: {result.stderr[:200]}")
-    lines = [l.strip() for l in result.stdout.splitlines() if l.strip()]
-    for line in reversed(lines):
-        try:
-            return int(line)
-        except ValueError:
-            continue
-    pytest.skip(f"Could not parse cypher output: {result.stdout!r}")
+    """Count through the suite's single graph path (tests/_graph.py).
+
+    This was a `docker exec ... cypher-shell` call that resolved its target from a
+    CONTAINER NAME while every other graph access in the suite resolved it from
+    WRIT_NEO4J_URI. The name came from an env var with a default, the var was set
+    nowhere in the repository so the default always won, and the default named the
+    PRODUCTION container: that is how the isolated run of 2026-08-08 on 7688 still
+    emptied the corpus on 7687. There is now exactly one way to name the server, and
+    it is the one `writ.config` reads, so the session-start preflight covers this
+    module and every subprocess with a single check.
+
+    The stdout integer parse went with it -- the driver returns a typed value, so
+    there is nothing to parse. The skip-on-unreachable stays here rather than moving
+    into tests/_graph.py: deciding that an absent graph means "skip this test" is a
+    test-boundary decision, and the shared helper must not make it for its callers.
+    """
+    try:
+        return _graph_count(query)
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"Neo4j not reachable: {str(exc)[:200]}")
 
 
 def _run_import(*args: str, cwd: Path = SKILL_DIR) -> subprocess.CompletedProcess:
@@ -99,29 +89,21 @@ def _run_import(*args: str, cwd: Path = SKILL_DIR) -> subprocess.CompletedProces
 def _clear_graph() -> None:
     """Wipe the CORPUS so each test starts from a clean slate.
 
-    Runtime records (Memory, Decision, FileChange, Commit) are spared, matching
-    Neo4jConnection.clear_all's default. This ran as a raw whole-graph
-    `MATCH (n) DETACH DELETE n` through cypher-shell, which bypassed that guard
-    entirely and destroyed every mirrored memory on each suite run; the records
-    have no dump home, so nothing that rebuilds the corpus should take them.
-    A repo guard in tests/test_graph_dump.py fails on any new raw whole-graph
-    delete outside clear_all.
+    Routes through `clear_all()` (tests/_graph.py::wipe_corpus), which is now the
+    single source for WHAT a corpus wipe spares: runtime records (Memory, Decision,
+    FileChange, Commit) have no dump to be rebuilt from, so nothing that rebuilds the
+    corpus may take them.
+
+    This module used to spell that exemption out itself, as a preserve clause built
+    from RECORD_LABELS and handed to cypher-shell. Two spellings of one rule is the
+    drift shape, and the copy here was the more dangerous half: the exemption was
+    correct, so the wipe deleted thoughtfully -- from the wrong server. Fixing WHAT
+    it deleted never touched WHERE it was aimed.
     """
-    preserve = ", ".join(f"'{label}'" for label in sorted(RECORD_LABELS))
-    result = subprocess.run(
-        [
-            "docker", "exec", _neo4j_container(), "cypher-shell",
-            "-u", NEO4J_USER, "-p", NEO4J_PASSWORD,
-            "--format", "plain",
-            f"MATCH (n) WHERE NOT any(l IN labels(n) WHERE l IN [{preserve}]) "
-            "DETACH DELETE n",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if result.returncode != 0:
-        pytest.skip(f"Could not clear Neo4j: {result.stderr[:200]}")
+    try:
+        _graph_wipe_corpus()
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"Could not clear Neo4j: {str(exc)[:200]}")
 
 
 # ---------------------------------------------------------------------------

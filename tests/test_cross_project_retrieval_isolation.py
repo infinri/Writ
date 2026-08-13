@@ -2,15 +2,25 @@
 
 ENF-SYS-005: a claim about a confidentiality boundary between concurrent projects
 sharing one database is not provable with a stubbed metadata dict, so every class
-here runs against a real Neo4j instance. Point WRIT_NEO4J_URI at the disposable
-test instance before running this file -- see tests/conftest.py's
-_refuse_production_graph_when_isolated, which raises immediately if a test opens
-the production host:port while WRIT_TEST_GRAPH=1 is set. NEVER run this file
-against the default (production) instance.
+here runs against a real Neo4j instance. There is nothing to export by hand any
+more: since cycle 8 the whole suite is isolated by default. tests/conftest.py
+applies the disposable instance's URI, user and password at MODULE IMPORT, before
+pytest imports a single test module, and then refuses at session start any run it
+cannot isolate -- if the resolved target is the production (host, port), or the
+disposable instance does not answer, no test runs at all.
 
-    WRIT_TEST_GRAPH=1 WRIT_NEO4J_URI=bolt://localhost:7688 \\
-    WRIT_NEO4J_PASSWORD=writtestpass \\
+    make test-graph-up      # once, to start and warm the disposable instance
     .venv/bin/python -m pytest tests/test_cross_project_retrieval_isolation.py -q
+
+The earlier version of this docstring pointed at a per-connection tripwire in
+conftest and told you to export the environment yourself. Both are gone, and the
+tripwire's deletion is the more useful half to know about: it monkeypatched
+Neo4jConnection.__init__, so it never observed the `docker exec` subprocess that
+actually emptied the production corpus during an isolated run, and it read green
+for four days while doing it. What replaces it is not a better watcher. It is that
+tests/_graph.py is the suite's ONLY path to a graph and resolves its target from
+writ.config alone, so one session-start check covers every transport, subprocesses
+included. Details in docs/adr/ADR-test-graph-isolation.md.
 
 THE GUARD THAT MUST BE ASSERTED FIRST. All 287 Rule nodes and every methodology
 node in the live corpus carry `project: "writ"`. The naive fix -- scoping a query
