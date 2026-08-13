@@ -34,7 +34,14 @@ EXPECTED_METHODS = [
     # the Cypher graph-dump feature, `get_category_routes_by_node` from Phase-0
     # category routing. The list stays exhaustive on purpose -- an unexpected EXTRA
     # method must fail here too -- so adding one is a deliberate act that edits this.
-    "execute", "get_all_nodes", "get_all_nodes_by_type", "get_all_nodes_for_dump",
+    # `execute_many` (cycle 9) replays a whole dump as ONE transaction. The
+    # per-statement `execute` loop it replaced turned a 1714-line dump into 1714
+    # independent transactions right after a mass delete, which is how a replay
+    # ended up chasing node ids the delete had just freed
+    # (Neo.ClientError.Statement.EntityNotFound). `execute` stays: it is still the
+    # single-statement helper, and narrowing its contract is not this change.
+    "execute", "execute_many", "get_all_nodes", "get_all_nodes_by_type",
+    "get_all_nodes_for_dump",
     "get_all_rules", "get_category_routes_by_node", "get_graph_nodes_and_edges",
     "get_latest_filechange_per_path", "get_node_with_neighbors", "get_nodes_by_category",
     "get_open_decisions_for_path", "get_projects", "get_recent_decisions", "get_rule",
