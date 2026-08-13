@@ -181,12 +181,31 @@ class TestNoProjectIsDoctrineOnly:
 
 # --- :Project registry + cwd->project resolver -------------------------------
 
+# Every repo_root this module registers lives under this prefix, which is not a
+# real path on any machine. It is the teardown's discriminator, and it has to be
+# the PATH rather than the name: one of the projects below is registered as
+# "writ", the same name as the live registry entry, so deleting by name would
+# take the real one.
+_SYNTHETIC_REPO_PREFIX = "/home/u/"
+
+
 @pytest_asyncio.fixture()
 async def db():
     conn = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
     await conn.clear_all()
     yield conn
     await conn.clear_all()
+    # clear_all preserves RECORD_LABELS, and cycle 6a added Project to that set
+    # (a registry entry is authored by create_project, never by ingest, so a wipe
+    # had nothing to restore it from). Correct for the real entry, and it made
+    # THIS module's synthetic entries permanent: they accumulated in the registry
+    # that decides which project a row belongs to, one of them under the live
+    # project's own name. So this module now removes exactly what it registered.
+    async with conn._driver.session(database=conn._database) as s:
+        await (await s.run(
+            "MATCH (p:Project) WHERE p.repo_root STARTS WITH $prefix DETACH DELETE p",
+            prefix=_SYNTHETIC_REPO_PREFIX,
+        )).consume()
     await conn.close()
 
 
