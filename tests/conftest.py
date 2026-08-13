@@ -16,6 +16,27 @@ import pytest
 TEST_DAEMON_PORT = "8799"
 _os.environ["WRIT_PORT"] = TEST_DAEMON_PORT
 
+# GRAPH ISOLATION (cycle 8), forced here for exactly the same reason WRIT_PORT is:
+# it has to happen before pytest imports a single test module. At least seventeen
+# modules bind `NEO4J_URI = get_neo4j_uri()` at their OWN import
+# (test_authoring.py:21, test_infrastructure.py:18, test_graph_dump.py:20,
+# test_db_category.py:23, test_retrieval.py:31, ...), and pytest imports the rootdir
+# conftest first, so an override applied any later is read by a module that already
+# cached the production URI. writ/config.py caches nothing (get_neo4j_uri reads
+# os.environ, then writ.toml, on every call), so the assignment takes effect
+# immediately, and every subprocess the suite spawns inherits it and re-resolves
+# through the same path.
+#
+# WHY THE SUITE NEEDS ITS OWN INSTANCE AT ALL: ~45 test files call clear_all, and
+# "which server is the suite pointed at" is ONE fact, where "is every one of those 45
+# call sites safe" is 45 facts that go stale the next time somebody adds a fixture.
+#
+# tests/_graph.py keeps a stdlib-only module top level and does every writ.* import
+# inside a function, so this line costs no driver import at conftest time.
+from tests._graph import apply_isolation_env  # noqa: E402
+
+WRIT_SUITE_IS_ISOLATED = apply_isolation_env(_os.environ)
+
 # Force WRIT_CACHE_DIR to a session-owned temp dir, at import (before any test or
 # subprocess). The session-cache default moved off /tmp to <skill>/var/session so it
 # survives a reboot -- but that made the install dir the fallback, so any subprocess
@@ -111,6 +132,14 @@ def pytest_sessionfinish(session, exitstatus):
     is); the command replays the shipped dump and is the canonical import
     path used in production. Single source of truth -- the inline duplicate
     is gone.
+
+    Cycle 8: skipped entirely on an isolated run. This restore exists to repair
+    the PRODUCTION corpus the suite used to wipe on every run; on a throwaway
+    instance there is nothing to repair, the next run's preflight refills it
+    from the same dump, and dropping it removes one full replay from every run.
+    It could not restore production during an isolated run in any case, since
+    it inherits the redirected environment -- so skipping removes the question
+    rather than answering it. Kept exactly as-is under WRIT_TEST_NO_ISOLATION=1.
     """
     import os
     import subprocess
@@ -124,20 +153,21 @@ def pytest_sessionfinish(session, exitstatus):
     if not dump_file.exists():
         return  # not a writ checkout; nothing to restore.
 
-    try:
-        subprocess.run(
-            [*WRIT_CMD_PREFIX, "import-cypher", "writ-corpus.cypher"],
-            cwd=str(skill_dir),
-            capture_output=True,
-            timeout=60,
-            check=False,
-        )
-    except (subprocess.SubprocessError, OSError):
-        # Neo4j may not be running, migrate.py may have changed
-        # signature, etc. End-of-suite is best-effort -- we don't
-        # raise out of pytest_sessionfinish because doing so flips
-        # exitstatus and masks the actual test results.
-        pass
+    if not WRIT_SUITE_IS_ISOLATED:
+        try:
+            subprocess.run(
+                [*WRIT_CMD_PREFIX, "import-cypher", "writ-corpus.cypher"],
+                cwd=str(skill_dir),
+                capture_output=True,
+                timeout=60,
+                check=False,
+            )
+        except (subprocess.SubprocessError, OSError):
+            # Neo4j may not be running, migrate.py may have changed
+            # signature, etc. End-of-suite is best-effort -- we don't
+            # raise out of pytest_sessionfinish because doing so flips
+            # exitstatus and masks the actual test results.
+            pass
 
     # F4b/option C: stop the suite's dedicated test daemon (on the test WRIT_PORT) so it
     # is not left running. Supersedes F4's restore-the-shared-daemon dance: the suite never
@@ -148,6 +178,97 @@ def pytest_sessionfinish(session, exitstatus):
         stop_test_daemon()
     except Exception:  # noqa: BLE001
         pass
+
+
+def _preflight_isolated_graph() -> None:
+    """Refuse to start a run that cannot be isolated. (cycle 8)
+
+    Three refusals, all before the first test:
+
+      * the resolved URI IS the production (host, port). From inside the process
+        a leaking run looks exactly like a healthy one: a graph that answers.
+        This is the transport-independent half of what the deleted tripwire
+        attempted per connection, and it is stronger, because it inspects the
+        CONFIGURATION every transport reads rather than one class's constructor.
+        Note that this branch never opens a connection at all -- if the target
+        is production, the correct amount of traffic to send it is none.
+      * the disposable instance is not answering. The suite does NOT fall back
+        to production and does NOT quietly mass-skip. An empty-or-absent graph
+        reading as a skip is the masking class tests/_corpus.py exists to
+        forbid: a mass skip is cheap to produce and indistinguishable from a
+        green run, and this suite has paid for that lesson twice. The accepted
+        cost, stated plainly: without docker you cannot run even the pure unit
+        tests until you set WRIT_TEST_NO_ISOLATION=1 once, and the message names
+        the variable.
+      * the instance answers but the corpus warm left it incomplete, so the
+        anti-masking contract ("reachable but empty must FAIL") is honoured
+        once, loudly, with the per-label census attached, instead of by two
+        hundred individual failures with no cause on them.
+
+    Every graph read happens in a worker thread, for the reason the bible/ warm
+    below already documents: calling asyncio.run on the MAIN thread here, before
+    pytest's event-loop policy is set up, leaves the main thread's current loop
+    unset on 3.12 and breaks later asyncio.get_event_loop() users. The refusing
+    happens on the main thread.
+    """
+    import concurrent.futures
+
+    from tests._corpus import ensure_corpus, is_complete, methodology_counts, neo4j_reachable
+    from tests._graph import (
+        STATE_ISOLATED,
+        classify_isolation,
+        isolation_refusal_message,
+        resolved_uri,
+        targets_production,
+    )
+
+    uri = resolved_uri()
+    is_production = targets_production(uri)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        # Deliberately not probed when the target is production: classify_isolation
+        # reports production-target regardless of reachability, so the probe would
+        # buy nothing and would be one connection to the graph we are protecting.
+        reachable = False
+        if not is_production:
+            try:
+                reachable = ex.submit(neo4j_reachable).result(timeout=30)
+            except Exception:  # noqa: BLE001
+                reachable = False
+
+        # WRIT_SUITE_IS_ISOLATED is already False when opted out, and this function
+        # is not called in that case -- so opted_out is False by construction here.
+        state = classify_isolation(
+            opted_out=False, is_production=is_production, reachable=reachable
+        )
+        if state != STATE_ISOLATED:
+            raise pytest.UsageError(f"graph isolation: {state}\n{isolation_refusal_message(uri)}")
+
+        # Warm a cold instance. ensure_corpus is a no-op when the graph is already
+        # complete (one census read), so a warm instance costs nothing here.
+        try:
+            ex.submit(ensure_corpus).result(timeout=180)
+        except Exception:  # noqa: BLE001
+            pass  # the completeness check below is the verdict, not this call
+
+        # Refuse rather than propagate: any exception escaping pytest_sessionstart
+        # that is not a UsageError becomes an INTERNALERROR with a traceback and no
+        # remedy on it. An instance that answered a moment ago and cannot be
+        # censused now is the unreachable case arriving late, so it gets the
+        # unreachable refusal.
+        try:
+            counts = ex.submit(methodology_counts).result(timeout=60)
+        except Exception as exc:  # noqa: BLE001
+            raise pytest.UsageError(
+                f"graph isolation: census read failed ({exc})\n"
+                f"{isolation_refusal_message(uri)}"
+            ) from exc
+
+    if not is_complete(counts):
+        raise pytest.UsageError(
+            "graph isolation: corpus incomplete after warm\n"
+            f"{isolation_refusal_message(uri, counts=counts)}"
+        )
 
 
 def pytest_sessionstart(session):
@@ -161,6 +282,12 @@ def pytest_sessionstart(session):
     POL-2b/E3: skip the import when the graph is ALREADY complete -- the MERGE would be a no-op,
     so the complete-start guarantee still holds and we save ~2-4s on warm runs. An empty/partial
     graph (or any Neo4j error) is NOT warm and still triggers the import.
+
+    Cycle 8: on an isolated run the isolation preflight REPLACES the bible/ warm below
+    rather than joining it -- running both would ingest the same corpus twice by two
+    different routes on every run, and the preflight both warms and verifies. Under
+    WRIT_TEST_NO_ISOLATION=1 the bible/ path below is reached unchanged, early return
+    and all.
     """
     import os
     import subprocess
@@ -179,35 +306,42 @@ def pytest_sessionstart(session):
         os.path.join(tempfile.gettempdir(), "writ-test-daemon-friction.log"),
     )
 
-    root = Path(__file__).resolve().parent.parent
-    if not (root / "bible").exists():
-        return
+    if WRIT_SUITE_IS_ISOLATED:
+        # Refuse a run that cannot be isolated, and warm the disposable instance from
+        # the tracked dump. Runs BEFORE any bible/ check on purpose: a clean checkout
+        # has no bible/ tree, and it must still be refused rather than silently
+        # allowed to proceed against whatever answers.
+        _preflight_isolated_graph()
+    else:
+        root = Path(__file__).resolve().parent.parent
+        if not (root / "bible").exists():
+            return
 
-    # Run the warmth probe (which uses asyncio.run for its Neo4j queries) in a worker thread.
-    # Calling asyncio.run on the MAIN thread here -- before pytest's event-loop policy is set up
-    # -- leaves the main-thread "current loop" unset on 3.12, which breaks later tests that use
-    # the legacy asyncio.get_event_loop(). The worker thread isolates that side effect.
-    import concurrent.futures
+        # Run the warmth probe (which uses asyncio.run for its Neo4j queries) in a worker thread.
+        # Calling asyncio.run on the MAIN thread here -- before pytest's event-loop policy is set up
+        # -- leaves the main-thread "current loop" unset on 3.12, which breaks later tests that use
+        # the legacy asyncio.get_event_loop(). The worker thread isolates that side effect.
+        import concurrent.futures
 
-    try:
-        from tests._corpus import graph_is_warm
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            warm = ex.submit(graph_is_warm).result(timeout=30)
-    except Exception:  # noqa: BLE001
-        warm = False
-
-    if not warm:
         try:
-            subprocess.run(
-                [*WRIT_CMD_PREFIX, "import-markdown", "bible/", "--no-export"],
-                cwd=str(root),
-                capture_output=True,
-                timeout=120,
-                check=False,
-            )
-        except (subprocess.SubprocessError, OSError):
-            pass
+            from tests._corpus import graph_is_warm
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                warm = ex.submit(graph_is_warm).result(timeout=30)
+        except Exception:  # noqa: BLE001
+            warm = False
+
+        if not warm:
+            try:
+                subprocess.run(
+                    [*WRIT_CMD_PREFIX, "import-markdown", "bible/", "--no-export"],
+                    cwd=str(root),
+                    capture_output=True,
+                    timeout=120,
+                    check=False,
+                )
+            except (subprocess.SubprocessError, OSError):
+                pass
 
     # F4b/option C: isolation is achieved by forcing WRIT_PORT to the dedicated test
     # port at conftest import -- the suite NEVER targets the interactive 8765 daemon.
@@ -412,60 +546,3 @@ def compound_id_rule_data(valid_rule_data: dict) -> dict:
 def enf_gate_final_data(valid_rule_data: dict) -> dict:
     """Rule with non-numeric suffix: ENF-GATE-FINAL."""
     return {**valid_rule_data, "rule_id": "ENF-GATE-FINAL"}
-
-
-# ---------------------------------------------------------------------------
-# Production-graph tripwire (isolation cycle, 2026-08-08)
-# ---------------------------------------------------------------------------
-#
-# WHY A TRIPWIRE AND NOT A REVIEW. Pointing the suite at a disposable instance via
-# WRIT_NEO4J_URI mostly works, and "mostly" is the problem: on 2026-08-08 a full run with
-# the redirect exported still emptied the production corpus (Rule 287 -> 0), while the two
-# files most suspected of it were provably clean when run alone. A leak that only appears
-# in a 200-file run cannot be found by reading, and every hour spent auditing call sites
-# gives an answer that goes stale the next time someone adds a test.
-#
-# So the connection itself refuses. When the suite is explicitly running isolated
-# (WRIT_TEST_GRAPH=1 plus a WRIT_NEO4J_URI that is not production), any Neo4jConnection
-# opened against the production host:port raises immediately, and the error names the test
-# that did it. The leak stops being a silent wipe and becomes one failing test with an
-# address on it.
-#
-# In-process only, by construction: a subprocess gets its own interpreter and is covered
-# instead by inheriting the redirected environment. That is why the message says which of
-# the two applies.
-@pytest.fixture(autouse=True, scope="session")
-def _refuse_production_graph_when_isolated():
-    import os as _o
-
-    if _o.environ.get("WRIT_TEST_GRAPH") != "1" or not _o.environ.get("WRIT_NEO4J_URI"):
-        yield  # not an isolated run; the suite owns the default instance as before
-        return
-
-    from writ.config import get_production_neo4j_uri
-    from writ.graph.db import Neo4jConnection
-
-    def _hostport(uri):
-        from urllib.parse import urlparse
-
-        p = urlparse(uri if "://" in uri else f"bolt://{uri}")
-        return (p.hostname or "").lower(), p.port or 7687
-
-    production = _hostport(get_production_neo4j_uri())
-    original = Neo4jConnection.__init__
-
-    def guarded(self, uri, *a, **kw):
-        if _hostport(uri) == production:
-            raise AssertionError(
-                f"test opened the PRODUCTION graph at {uri} during an isolated run "
-                f"(WRIT_NEO4J_URI={_o.environ['WRIT_NEO4J_URI']}). Something resolved the "
-                f"URI without the env override, or hardcoded it. Fix the call site; do not "
-                f"relax this guard."
-            )
-        return original(self, uri, *a, **kw)
-
-    Neo4jConnection.__init__ = guarded
-    try:
-        yield
-    finally:
-        Neo4jConnection.__init__ = original

@@ -50,10 +50,18 @@ def classify_corpus_state(
 
 
 def _connection():
-    from writ.config import get_neo4j_password, get_neo4j_uri, get_neo4j_user
-    from writ.graph.db import Neo4jConnection
+    """Delegates to tests/_graph.py so ONE factory serves the whole suite (cycle 8).
 
-    return Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
+    It used to build its own Neo4jConnection here, which was harmless in itself
+    (it resolved through writ.config, same as _graph.connection does) but meant
+    the suite had more than one place that decided where the graph is. That is
+    the exact shape of the 2026-08-08 leak, where a second target resolution
+    (a container NAME) sent DETACH DELETEs to production while every driver
+    connection honoured the isolated URI. One factory, one answer.
+    """
+    from tests._graph import connection
+
+    return connection()
 
 
 def neo4j_reachable() -> bool:
@@ -135,21 +143,35 @@ def graph_is_warm() -> bool:
 
 
 def ensure_corpus() -> None:
-    """Self-heal: if the live graph is missing methodology nodes, re-import bible/ so it is
-    complete. Idempotent (import-markdown is MERGE-only). No-op when already complete or when
-    Neo4j is unreachable (the caller decides whether to skip)."""
+    """Self-heal: if the live graph is missing methodology nodes, refill it.
+
+    bible/ first (it is the source of truth and MERGE-only, so re-importing it is
+    idempotent), then the tracked writ-corpus.cypher dump. No-op when already
+    complete or when Neo4j is unreachable (the caller decides whether to skip).
+
+    Cycle 8 added the dump fallback, and it is what makes this function work at
+    all on a clean checkout and on the disposable test instance, where bible/ does
+    not exist: bible/ is gitignored, so before the fallback a wiped graph plus an
+    absent bible/ made this return SILENTLY. That turns the anti-masking contract
+    this module exists for into a scatter of failures with no cause attached --
+    the caller believes it healed the graph, and every assertion downstream fails
+    on an empty one.
+    """
     if not neo4j_reachable():
         return
     if is_complete():
         return
-    if not (_REPO_ROOT / "bible").exists():
+    if (_REPO_ROOT / "bible").exists():
+        subprocess.run(
+            # --no-export: self-heal only needs the graph repopulated, not bible/ source
+            # rewritten from the graph (B5: avoids the export round-trip on every heal).
+            [*WRIT_CMD_PREFIX, "import-markdown", "bible/", "--no-export"],
+            cwd=str(_REPO_ROOT),
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
         return
-    subprocess.run(
-        # --no-export: self-heal only needs the graph repopulated, not bible/ source
-        # rewritten from the graph (B5: avoids the export round-trip on every heal).
-        [*WRIT_CMD_PREFIX, "import-markdown", "bible/", "--no-export"],
-        cwd=str(_REPO_ROOT),
-        capture_output=True,
-        timeout=120,
-        check=False,
-    )
+    from tests._graph import replay_dump
+
+    replay_dump(_REPO_ROOT)
