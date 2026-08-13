@@ -10,6 +10,7 @@ empty/partial graph is 'empty' (tests must FAIL), never 'unreachable' (the only 
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import subprocess
 from pathlib import Path
 
@@ -64,8 +65,40 @@ def _connection():
     return connection()
 
 
+def _run_coro(factory):
+    """Run an async factory to completion from sync code, loop running or not.
+
+    `asyncio.run` RAISES RuntimeError when a loop already owns this thread, and
+    the coroutine it was handed is then dropped unawaited. The three callers
+    below each ended in a bare `asyncio.run(_q())`, and `neo4j_reachable`
+    additionally wrapped it in `except Exception: return False` -- so a probe
+    called from inside a loop reported the graph UNREACHABLE rather than
+    admitting it never asked. Measured against one reachable graph: True from
+    outside a loop, False from inside it.
+
+    That is not a cosmetic difference. `classify_corpus_state` above makes
+    'unreachable' the ONE state that may skip, precisely so an empty graph
+    cannot mask a regression, so a dispatch failure returning False hands every
+    caller the single answer licensed to skip.
+
+    When a loop is running, borrow a thread that has none. `pytest_sessionstart`
+    already does exactly this for the same reason, so this is the suite's
+    existing idiom rather than a new one.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(factory())
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        return ex.submit(lambda: asyncio.run(factory())).result()
+
+
 def neo4j_reachable() -> bool:
-    """True if the Neo4j graph answers a trivial query."""
+    """True if the Neo4j graph answers a trivial query.
+
+    A False here means the QUERY failed, which is what callers read it as. It no
+    longer also means "this was called from a running loop": see _run_coro.
+    """
     async def _q() -> bool:
         db = _connection()
         try:
@@ -77,7 +110,7 @@ def neo4j_reachable() -> bool:
             await db.close()
 
     try:
-        return asyncio.run(_q())
+        return _run_coro(_q)
     except Exception:  # noqa: BLE001
         return False
 
@@ -104,7 +137,7 @@ def methodology_counts() -> dict[str, int]:
         finally:
             await db.close()
 
-    return asyncio.run(_q())
+    return _run_coro(_q)
 
 
 def clear_label(label: str) -> int:
@@ -120,7 +153,7 @@ def clear_label(label: str) -> int:
         finally:
             await db.close()
 
-    return asyncio.run(_q())
+    return _run_coro(_q)
 
 
 def is_complete(counts: dict[str, int] | None = None) -> bool:
