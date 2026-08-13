@@ -1,4 +1,4 @@
-.PHONY: test perf bench check check-venv validate
+.PHONY: test perf bench check check-venv validate test-graph-up test-graph-down
 
 # Pin the Python interpreter to the project venv. The system python3 on many
 # machines lacks onnxruntime (and other optional bench dependencies), which
@@ -16,7 +16,24 @@ check-venv:
 	  echo "or set PYTHON=/path/to/python to override the default venv location." >&2; \
 	  exit 1)
 
-test: check-venv
+# The disposable Neo4j the suite runs against. scripts/test-graph.sh owns the
+# container recipe, including the refusal to publish the production bolt port;
+# these targets exist so nobody retypes a `docker run` line. `up` is idempotent
+# (already serving means one line and exit 0) and it does nothing at all under
+# WRIT_TEST_NO_ISOLATION=1, so the opt-out path stays a no-op here too.
+test-graph-up:
+	bash scripts/test-graph.sh up
+
+test-graph-down:
+	bash scripts/test-graph.sh down
+
+# `test` starts the instance first so the documented entry point never fails for
+# a missing container. Bare `pytest` deliberately does NOT start anything: it
+# refuses at session start with a message naming `make test-graph-up`, because
+# a test runner that silently creates containers on your machine is the kind of
+# helpfulness that later gets blamed for something unrelated. That refusal lives
+# in tests/conftest.py, so there is no guard here to drift from it.
+test: check-venv test-graph-up
 	# --maxfail=10, not -x. On a 7,000-test suite -x means one CI run reports exactly
 	# one failure, so reaching green costs N pushes at ~8 minutes each. Ten gives the
 	# whole picture in one run and still refuses to grind through a broken suite.
