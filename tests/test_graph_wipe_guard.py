@@ -266,7 +266,14 @@ class TestDefaultCallsAreNotGated:
         assert conn.deletes, "the record-preserving default must not be gated"
         query, params = conn.queries[0]
         assert "NOT any(l IN labels(n) WHERE l IN $preserve)" in query
-        assert params["preserve"] == ["Commit", "Decision", "FileChange", "Memory"]
+        # Project joined RECORD_LABELS in cycle 6a. It belongs on both axes the
+        # set governs: a registry entry is authored by create_project and never
+        # by ingest, so a wipe that took it had nothing to restore it from (that
+        # destroyed the registry twice), and it carries a local repo_root path
+        # that must never ship in the public dump.
+        assert params["preserve"] == [
+            "Commit", "Decision", "FileChange", "Memory", "Project",
+        ]
 
     @pytest.mark.asyncio
     async def test_partial_preserve_set_runs_without_a_marker(

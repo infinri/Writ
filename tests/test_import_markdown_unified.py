@@ -262,9 +262,13 @@ class TestImportMarkdownOnlyFilter:
         # corpus rebuild that took them with it would destroy state nothing can restore.
         # This assertion is about what the IMPORTER created, and counting the survivors made
         # it fail with "got 191" on any machine that had ever recorded a memory.
+        # Project joined this preserve set in cycle 6a, for the same reason the
+        # four above are on it: a registry entry has no bible or dump source, so
+        # a corpus rebuild that took it with it would destroy state nothing can
+        # restore. It is a survivor, not something the importer created.
         non_rule_count = _cypher(
             "MATCH (n) WHERE NOT n:Rule "
-            "AND NOT (n:Memory OR n:Decision OR n:Commit OR n:FileChange) "
+            "AND NOT (n:Memory OR n:Decision OR n:Commit OR n:FileChange OR n:Project) "
             "RETURN count(n)"
         )
         assert non_rule_count == 0, (
