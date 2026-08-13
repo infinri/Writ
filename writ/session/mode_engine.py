@@ -122,7 +122,21 @@ def _next_pending_gate(cache: dict) -> str | None:
     mode = cache.get("mode")
     if mode != "work":
         return None
-    approved = set(cache.get("gates_approved", []))
+    # An approval counts only for the plan it was granted against. A bare gate
+    # name cannot say which plan that was, so rewriting plan.md used to leave
+    # every prior approval standing: a finished cycle's gates carried into the
+    # next one and the user's approval of the NEW plan advanced nothing.
+    #
+    # A gate with NO recorded hash re-arms. On a governance gate the safe default
+    # when we cannot prove what an approval covered is to ask again, and that
+    # costs one re-approval for a session whose state predates this binding.
+    # Honoring unfingerprinted entries instead would leave the hole open forever.
+    current_plan = plan_md_hash(cache.get("project_root"))
+    bound = cache.get("gates_approved_plan", {})
+    approved = {
+        gate for gate in cache.get("gates_approved", [])
+        if bound.get(gate) == current_plan
+    }
     for gate in _gate_sequence_for_mode(mode):
         if gate not in approved:
             return gate
@@ -315,6 +329,7 @@ def _apply_mode_set(
     new_phase = _initial_phase_for_mode(mode)
     cache["current_phase"] = new_phase
     cache["gates_approved"] = []
+    cache["gates_approved_plan"] = {}
     cache["paused_work_state"] = None
     cache["denial_counts"] = {}
 
@@ -492,6 +507,7 @@ def _mode_switch(session_id: str, mode: str) -> None:
             else:
                 cache["current_phase"] = "planning"
                 cache["gates_approved"] = []
+                cache["gates_approved_plan"] = {}
                 cache["paused_work_state"] = None
                 new_phase = "planning"
                 pivoted = True
@@ -499,6 +515,7 @@ def _mode_switch(session_id: str, mode: str) -> None:
             # No paused state -- fresh start
             cache["current_phase"] = "planning"
             cache["gates_approved"] = []
+            cache["gates_approved_plan"] = {}
             new_phase = "planning"
         else:
             cache["current_phase"] = None

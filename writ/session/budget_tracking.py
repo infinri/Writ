@@ -239,6 +239,7 @@ def _upd_reset_task_phase(cache: dict, args: list[str], i: int) -> int:
     old_phase = cache.get("current_phase")
     cache["current_phase"] = "planning"
     cache["gates_approved"] = []
+    cache["gates_approved_plan"] = {}
     if old_phase != "planning":
         cache.setdefault("phase_transitions", []).append({
             "from": old_phase,

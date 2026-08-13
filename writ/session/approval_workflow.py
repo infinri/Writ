@@ -321,6 +321,25 @@ def apply_phase_advance(
     # 1. gates_approved -- sorted set-union add (idempotent, preserves prior gates).
     cache["gates_approved"] = sorted(set(cache.get("gates_approved", [])) | {target_gate})
 
+    # 1b. gates_approved_plan -- WHICH plan this approval covered.
+    #
+    # Without it a gate name is just a string, and rewriting plan.md leaves every
+    # prior approval standing. That is not hypothetical: a finished cycle's
+    # phase-a and test-skeletons approvals carried into the next cycle, whose
+    # plan.md was written afterwards, so the user's genuine approval of the NEW
+    # plan advanced nothing because no gate was pending.
+    #
+    # mode_engine already fingerprints plan.md, but across a MODE SWITCH, which
+    # answers "did the plan change while this session was away?". A gate needs
+    # the other question, "does this approval cover the plan in front of me
+    # now?", and only that one survives a rewrite between the switch and the
+    # gate.
+    from writ.session.locators import plan_md_hash
+
+    bound = dict(cache.get("gates_approved_plan", {}))
+    bound[target_gate] = plan_md_hash(cache.get("project_root"))
+    cache["gates_approved_plan"] = bound
+
     # 2. current_phase.
     cache["current_phase"] = new_phase
 
