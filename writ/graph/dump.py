@@ -67,7 +67,13 @@ def render_cypher_dump(nodes: list[dict], edges: list[dict]) -> str:
         props_str = _render_props(node["props"], {_STAGING_PROPERTY: node["id"]})
         lines.append(f"CREATE (:{node['label']} {props_str});")
 
-    for edge in sorted(edges, key=lambda e: (e["source_id"], e["target_id"])):
+    # The type is a required tie-break: two edges sharing a (source, target)
+    # pair with different types otherwise keep driver return order, and real
+    # exports flipped 7 such pairs between runs -- content-identical churn in
+    # every corpus diff, and a false "same bytes" promise above.
+    for edge in sorted(
+        edges, key=lambda e: (e["source_id"], e["target_id"], e["type"])
+    ):
         lines.append(
             f"MATCH (a {{{_STAGING_PROPERTY}: {cypher_literal(edge['source_id'])}}}), "
             f"(b {{{_STAGING_PROPERTY}: {cypher_literal(edge['target_id'])}}}) "

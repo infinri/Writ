@@ -630,3 +630,28 @@ class TestScaleBenchmarkRequiresExplicitRun:
         assert "Traceback" not in out, (
             f"the guard was reached only after an import blew up: {out[:300]!r}"
         )
+
+
+class TestEdgeRenderOrderIsTotal:
+    """The docstring's claim 'the same graph always renders to the same bytes'
+    was FALSE for two edges sharing a (source, target) pair with different
+    types: the sort key had no tie-break, so driver return order decided, and
+    real exports flipped 7 such pairs between runs, polluting every corpus
+    diff with content-identical churn. The key now includes the edge type."""
+
+    def test_same_pair_different_type_renders_identically_from_either_input_order(
+        self,
+    ) -> None:
+        nodes = [
+            {"id": "A-001", "label": "Rule", "props": {"rule_id": "A-001"}},
+            {"id": "B-001", "label": "Rule", "props": {"rule_id": "B-001"}},
+        ]
+        e1 = {"source_id": "A-001", "target_id": "B-001", "type": "SUPPLEMENTS"}
+        e2 = {"source_id": "A-001", "target_id": "B-001", "type": "RELATED_TO"}
+        one = render_cypher_dump(nodes, [e1, e2])
+        other = render_cypher_dump(nodes, [e2, e1])
+        assert one == other, (
+            "two edges on the same (source, target) pair must render in a "
+            "deterministic order regardless of driver return order; the sort "
+            "key needs the edge type as a tie-break"
+        )
