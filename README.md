@@ -214,6 +214,8 @@ Six self contained pages with interactive diagrams and a live explorer for the g
 
 Every number in this file is either measured and dated, or derived from the current source tree. Where this file and the code disagree, the code wins.
 
+One small thing this document practices rather than describes: Writ ships a rule that blocks the AI's own output when it contains an em dash, an en dash, or a double hyphen in prose. That rule is enforced by a hook at the end of every turn, and this README is written to it.
+
 ## Acknowledgements
 
 **[Superpowers](https://github.com/obra/superpowers), by Jesse Vincent.** Superpowers is a skills library for Claude Code, and reading it revealed real gaps in Writ's own methodology coverage. Watching its design choices work in practice is also what pushed Writ to think seriously about where description based skill matching holds up and where it runs out, which became the "Couldn't you just use skill files?" section above.
