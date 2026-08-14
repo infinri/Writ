@@ -3,76 +3,43 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 
-A Claude Code harness that enforces engineering discipline at the moment the AI acts, and delivers the rules that fit the work in front of it. It is for engineers and engineering leads who want a coding agent held to plan-first, test-driven work by guardrails that run in code, rather than by instructions the agent can drift away from.
+**Governance for coding agents.**
+
+Writ is a governance runtime for Claude Code. It moves engineering controls outside the model, so they do not depend on the model remembering, interpreting, or choosing to follow them: workflow boundaries are enforced as code at tool time, the rules that govern the work are delivered when they are relevant, and the decisions behind each change are preserved after the session ends.
+
+**Enforce.** Selected workflow boundaries run as code at tool time. A Work-mode implementation can be stopped until a human has approved its plan and its tests, and credential writes and other protected actions have their own guards in every mode.
+
+**Inform.** The agent receives the engineering rules relevant to the task, file, tool, and workflow phase in front of it. The rest of the rulebook stays out of context.
+
+**Remember.** Approved plans, the rule ids that governed them, changed files, and commits become connected provenance: recorded in the graph, pushed onto pull requests and git notes, and compiled into a briefing for future sessions. The record answers a governance question: why was this change allowed to happen, under which plan, under which rules, resulting in which files and which commit.
+
+Most coding-agent systems ask the model to remember the process. Writ puts selected parts of the process around the model instead.
+
+```
+                         W R I T
+
+  User request
+       |
+       v
+  Engineering rules -----+
+  Prior decisions -------+--> Writ --> Claude Code
+                                          |
+                                          | tries an action
+                                          v
+                                  Writ checks the action
+                                          |
+                                 allow / ask / refuse
+                                          |
+                                          v
+                                      Repository
+                                          |
+                                          v
+                      provenance and future-session briefing
+```
+
+Writ governs three things. **Action**: what the agent is permitted to do. **Context**: which engineering rules govern the current action. **Continuity**: why the action was approved and what future sessions should know. Hooks and gates are the Action mechanism, retrieval over the rule graph is the Context mechanism, and decision provenance is the Continuity mechanism.
 
 Already convinced? [Jump to install](#install). Already installed? [`HANDBOOK.md`](HANDBOOK.md) is the operator manual.
-
-## In plain terms
-
-You have probably watched this happen. You tell the AI how you want things done: write the test first, follow the pattern already in the file, ask before touching the database. It agrees. It works that way for a while. Then somewhere in a long session it stops, and nothing announces that it stopped. You find out in review, or you find out in production, or you do not find out.
-
-That is not the AI being careless. An instruction in a conversation is a request competing with everything else in that conversation, and it loses as the conversation gets longer. Nothing in the system makes following it mandatory. You can ask for tests first. Nothing makes it happen.
-
-Writ makes it happen for the part that matters. It sits between the AI and your files. When the AI tries to write code before you have approved a plan, the write is refused. Not discouraged, refused, by code that runs whether or not the AI is still paying attention to what you said an hour ago.
-
-The rest follows from that. Refusing writes is only affordable if the AI can be handed the right rules cheaply, so Writ keeps the rulebook in a search system instead of the conversation, and looks at what the AI is doing right now to decide what to hand it.
-
-**What it costs you.** Two approvals to start a piece of work: you read the plan and type "approved", then you read the tests and type "approved". After that the AI writes code without interrupting you again, with one exception, which is that a review finding something serious adds a confirmation before the work is committed. So usually two, occasionally three. The rulebook lives in a database on your own machine, so you need Docker installed, which is a normal application download. Your rules and your code stay on your machine; [`SECURITY.md`](SECURITY.md) lists the one thing that leaves and when.
-
-**What you get for that.** The process you asked for happens or the work stops, rather than happening for the first hour. And when it stops, there is a record of what was refused and why, which is the part that matters if you are the person answering for the code rather than writing it.
-
-### What it does not do
-
-Three limits, stated here rather than further down where they would look buried.
-
-It stops an AI that is going along with the process, not one working around it. Writ assumes the AI uses its tools normally. If something is actively trying to get past the checks, there are ways through, and they are listed later in this document rather than glossed.
-
-It can tell that a plan exists. It cannot tell whether the plan is any good. The checks confirm the shape of the thing, not the thought behind it. A plausible plan and a careful one look identical to a machine, so this replaces none of your judgement, and reviewing the work is still your job.
-
-The main claim is not proven yet. Everything measured so far shows what the search costs and how well it ranks. None of it shows that an AI handed the right rule actually behaves better than one handed nothing. That is the whole point of the tool and it is currently unproven, with the reasoning and the missing experiment written up further down.
-
-**You do not have to install this yourself.** If you are reading this you already use Claude Code, which means you already have something that reads instructions and runs commands. Point it at this page and ask it to install Writ. It handles the setup; the one piece you may need to do by hand is installing Docker, the same way you would install any other application.
-
-So the decision in front of you is not a technical one. It is whether you want the AI stopped and asked before it writes, instead of trusted to remember. Everything below this line is the evidence an engineer would want before answering that.
-
----
-
-**Everything below this point assumes you write code.** The rest of this document is written for engineers evaluating whether to run it, and stops rationing vocabulary.
-
-## The claim, and its limits
-
-**The claim.** Instructions in a prompt decay. They get compacted away, outweighed by more recent text, or quietly reinterpreted. A check that runs at the moment the AI calls a tool does not decay. Writ moves workflow discipline to that boundary, where a violation is refused rather than requested, and moves the rulebook out of the prompt into a search system, so the rulebook can grow without the cost of every turn growing with it.
-
-**The threat model.** Writ assumes a **cooperative AI**: one that uses its tools in the ordinary way and is not trying to defeat the harness. Under that assumption the gates hold. Against an AI actively working around them, they do not, and the gaps are written down rather than hidden:
-
-* Writes made through shell commands are inspected, and as of 1.7.0 that inspection reads inside interpreter one liners too (`python -c`, `node -e`, `perl -e`, `ruby -e`, `php -r`, including heredoc and piped forms). The gaps that remain are named in the hook itself rather than left vague: a path assembled from shell variables, `eval` or base64, an `sh -c` wrapper, program text handed to awk or sed, an interpreter reached through a variable or alias, and `python -m MODULE`, which is deliberately unscanned because matching it would refuse every `python -m pytest` run.
-* When the background service is unreachable, hooks **allow rather than block**. This is the specification, not a bug. An infrastructure outage must never lock you out of your own repository.
-* Sub agents (helper AIs spawned by the main one) skip the write gates by design. Their limits come from the tools their role grants them, not from re-checking work the human already approved.
-
-Two boundaries hold no matter what. Writes to credential files (keys, `.env`, SSH material) are refused in every mode with no server involved. And the approval token cannot be created or spent without a human keystroke, so **advancing the workflow and writing new rules into the rulebook halt even when raw file writes do not.**
-
-**What a review finding does.** A recorded CRITICAL verdict turns the next `git commit` into a confirmation prompt naming the unresolved findings. It is a stop and ask, not an absolute block: you can confirm and commit anyway, and that choice is recorded in the audit log. The part that carries the weight is that the AI cannot clear its own verdict. Writing a review record directly is refused outright; verdicts are written only from the reviewer's own output, and the only route an AI has to lifting a block is to fix the findings and earn a fresh clean verdict. An unreadable verdict blocks the same way a critical one does. So the AI can be overruled by you, and cannot overrule you.
-
-If you need enforcement against an AI that is actively adversarial, Writ is not that tool. If you need a cooperative AI to actually follow a process, it is.
-
-## Install
-
-**You will need:** Python 3.11 or newer and Docker (the graph database runs in a container). That is the whole list. `jq` and `curl` are used when present and fall back to Python when absent, so a machine without them installs fine.
-
-```shell
-claude plugin marketplace add infinri/Writ
-claude plugin install writ@writ
-```
-
-Open Claude Code once. It detects the un-bootstrapped install and prints one absolute command on its own line, ready to paste:
-
-```shell
-bash /path/it/prints/scripts/bootstrap-plugin.sh
-```
-
-Run it and restart Claude Code. That one script does everything: environment, database, rules, background service, permissions, and workflow instructions. It is idempotent, and re-running it after an update is the whole update procedure. Check it worked with `curl http://localhost:8765/health`.
-
-Nothing breaks while you are partway through setup. Hooks stay out of the way until the install finishes, sessions are never blocked, and the startup hook prints exactly what is still missing. Full install detail, the manual path, and troubleshooting live in [`docs/install.md`](docs/install.md). Once it is running, [`HANDBOOK.md`](HANDBOOK.md) is the operator manual: modes, gates, helper AIs, the rulebook, and the command line.
 
 ## What using it feels like
 
@@ -96,13 +63,80 @@ Worth being blunt about what the gate does and does not check. The validators co
 | `debug` | Chasing one specific failure | Source edits, until you have written down a root cause |
 | `work` | Building or changing code | Source writes, until the plan gate and the test gate both open |
 
+And when the work is committed, Writ can connect the resulting files back to the approved plan and the rules that governed the session.
+
+## What it costs, and who it is for
+
+**What it costs you.** For a typical Work-mode change, Writ adds two approvals: you read the plan and type "approved", then you read the tests and type "approved". After that the AI writes code without interrupting you again, with one exception, which is that a review finding something serious adds a confirmation before the work is committed. So usually two, occasionally three. The other four modes add no approvals at all. The rulebook lives in a database on your own machine, so you need Docker installed, which is a normal application download. Your rules and your code stay on your machine; [`SECURITY.md`](SECURITY.md) lists the one thing that leaves and when.
+
+**What you get for that.** The gated steps either happen or the tool call is refused, rather than happening for the first hour and then quietly not. And when something is refused, there is a record of what was refused and why, which is the part that matters if you are the person answering for the code rather than writing it.
+
+**Who it is for.** Engineers and engineering leads who want a coding agent held to plan first, test driven work by guardrails that run in code, rather than by instructions the agent can drift away from.
+
+Writ deliberately trades some setup and workflow friction (Python, Docker, Neo4j, a background service, hooks, workflow state) for stronger control over agent behavior. The question is whether those guarantees are worth that tradeoff for your work. Everything below documents exactly what Writ controls, what it does not, and the evidence available today.
+
+## What Writ does not guarantee
+
+The limits, stated here rather than further down where they would look buried.
+
+**It stops an AI that is going along with the process, not one working around it.** This is the threat model: Writ assumes a **cooperative AI**, one that uses its tools in the ordinary way and is not trying to defeat the harness. Under that assumption the gates hold. Against an AI actively working around them they do not, and the gaps are written down here rather than glossed:
+
+* Writes made through shell commands are inspected, and as of 1.7.0 that inspection reads inside interpreter one liners too (`python -c`, `node -e`, `perl -e`, `ruby -e`, `php -r`, including heredoc and piped forms). The gaps that remain are named in the hook itself rather than left vague: a path assembled from shell variables, `eval` or base64, an `sh -c` wrapper, program text handed to awk or sed, an interpreter reached through a variable or alias, and `python -m MODULE`, which is deliberately unscanned because matching it would refuse every `python -m pytest` run.
+* When the background service is unreachable, hooks **allow rather than block**. This is the specification, not a bug. An infrastructure outage must never lock you out of your own repository.
+* Sub agents (helper AIs spawned by the main one) skip the write gates by design. Their limits come from the tools their role grants them, not from re-checking work the human already approved.
+
+If you need enforcement against an AI that is actively adversarial, Writ is not that tool. What Writ can do is mechanically refuse selected tool actions until configured workflow conditions are satisfied. Whether that produces better engineering outcomes is a different question, and the two limits below are why it is still open.
+
+It can tell that a plan exists. It cannot tell whether the plan is any good. The checks confirm the shape of the thing, not the thought behind it. A plausible plan and a careful one look identical to a machine, so this replaces none of your judgement, and reviewing the work is still your job.
+
+The main claim is not proven yet. Everything measured so far shows what the search costs and how well it ranks. None of it shows that an AI handed the right rule actually behaves better than one handed nothing. That is the whole point of the tool and it is currently unproven, with the reasoning and the missing experiment written up further down.
+
+**You do not have to install this yourself.** If you are reading this you already use Claude Code, which means you already have something that reads instructions and runs commands. Point it at this page and ask it to install Writ. It handles the setup; the one piece you may need to do by hand is installing Docker, the same way you would install any other application.
+
+---
+
+**Everything below this point assumes you write code.** The rest of this document is written for engineers evaluating whether to run it, and stops rationing vocabulary.
+
+## Install
+
+**You will need:** Python 3.11 or newer and Docker (the graph database runs in a container). That is the whole list. `jq` and `curl` are used when present and fall back to Python when absent, so a machine without them installs fine.
+
+```shell
+claude plugin marketplace add infinri/Writ
+claude plugin install writ@writ
+```
+
+Open Claude Code once. It detects the un-bootstrapped install and prints one absolute command on its own line, ready to paste:
+
+```shell
+bash /path/it/prints/scripts/bootstrap-plugin.sh
+```
+
+Run it and restart Claude Code. That one script does everything: environment, database, rules, background service, permissions, and workflow instructions. It is idempotent, and re-running it after an update is the whole update procedure. Check it worked with `curl http://localhost:8765/health`.
+
+Nothing breaks while you are partway through setup. Hooks stay out of the way until the install finishes, sessions are never blocked, and the startup hook prints exactly what is still missing. Full install detail, the manual path, and troubleshooting live in [`docs/install.md`](docs/install.md). Once it is running, [`HANDBOOK.md`](HANDBOOK.md) is the operator manual: modes, gates, helper AIs, the rulebook, and the command line.
+
+## Enforcement
+
+You have probably watched this happen. You tell the AI how you want things done: write the test first, follow the pattern already in the file, ask before touching the database. It agrees. It works that way for a while. Then somewhere in a long session it stops, and nothing announces that it stopped. You find out in review, or you find out in production, or you do not find out.
+
+That is not the AI being careless. An instruction in context is still an instruction: it can be compacted away, diluted by newer context, misapplied, or simply ignored, and nothing about putting a rule in the prompt makes violating it mechanically impossible. Instructions and enforcement are different primitives, and only one of them can refuse.
+
+Writ supplies the second primitive for the parts of the process you choose to gate. It sits between the AI and your files. In Work mode, a write attempted before you have approved a plan is refused. Not discouraged, refused, by code that runs whether or not the AI is still paying attention to what you said an hour ago.
+
+Refusing writes is only affordable if the AI can be handed the right rules cheaply, so Writ keeps the rulebook in a search system instead of the conversation, and looks at what the AI is doing right now to decide what to hand it. A check that runs at the moment the AI calls a tool does not decay, and the rulebook can grow without the cost of every turn growing with it.
+
+Two boundaries hold no matter what, including when the background service is down and inside sub agents. Writes to credential files (keys, `.env`, SSH material) are refused in every mode with no server involved. And the approval token cannot be created or spent without a human keystroke, so **advancing the workflow and writing new rules into the rulebook halt even when raw file writes do not.**
+
+**What a review finding does.** A recorded CRITICAL verdict turns the next `git commit` into a confirmation prompt naming the unresolved findings. It is a stop and ask, not an absolute block: you can confirm and commit anyway, and that choice is recorded in the audit log. The part that carries the weight is that the AI cannot clear its own verdict. Writing a review record directly is refused outright; verdicts are written only from the reviewer's own output, and the only route an AI has to lifting a block is to fix the findings and earn a fresh clean verdict. An unreadable verdict blocks the same way a critical one does. So the AI can be overruled by you, and cannot overrule you.
+
 ## How the rules reach the AI
 
 **The floor: rules that can never be dropped.** Thirty two of the 288 shipped rules are marked mandatory. These are deliberately kept **out of the search index entirely** and delivered through a separate channel with its own budget. That means no change to search ranking, no swap of the underlying model, no retuning of anything can cause a critical security rule to fall off the list. A single definition in one file decides what belongs to the floor, and both the delivery code and the validation code read that same definition, so the two can never drift apart. This closed a real bug where two parts of the system checked different fields and left 29 of 32 mandatory rules unreachable by either path.
 
-**Everything else is searched for.** A five stage pipeline runs over a Neo4j knowledge graph: narrow the candidates, keyword search, meaning based search (so a rule about "SQL" surfaces for a question about "database queries"), a walk across the graph to pull in related rules, then weighted ranking. Each stage covers a blind spot the others have. Keyword search catches exact terms. Meaning based search catches paraphrase. The graph walk catches rules that share no words at all but are causally connected. If nothing matches well enough, the pipeline **returns nothing** rather than injecting noise.
+**Everything else is searched for.** Writ currently uses a five stage retrieval pipeline over a Neo4j knowledge graph: narrow the candidates, keyword search, meaning based search (so a rule about "SQL" surfaces for a question about "database queries"), a walk across the graph to pull in related rules, then weighted ranking. Those five stages are the ones listed at the top of [`writ/retrieval/pipeline.py`](writ/retrieval/pipeline.py), and each is designed to cover a different retrieval failure mode: keyword search catches exact terms, meaning based search catches paraphrase, and the graph walk reaches rules that share no words with the query at all but are linked to a match. Keyword and meaning based retrieval are measured as part of the full system; the incremental contribution of the graph traversal stage has not yet been isolated, and it is listed under Not measured below. If nothing matches well enough, the pipeline **returns nothing** rather than injecting noise.
 
-**The search fires on what is happening, not just what you typed.** Forty-one small scripts watch the session and attach real context to the query: which file is being written, what is inside it, which tool is running, what phase the workflow is in. A rule about SQL injection surfaces when the AI writes a file containing a query, not only when someone happens to type the word SQL.
+**The search fires on what is happening, not just what you typed.** Writ's hooks observe the session across the twelve Claude Code events they register for: prompts, file reads, writes, shell commands, sub agent start and stop, compaction, and session lifecycle. They attach real context to the query: which file is being written, what is inside it, which tool is running, what phase the workflow is in. A rule about SQL injection surfaces when the AI writes a file containing a query, not only when someone happens to type the word SQL.
 
 ## "Couldn't you just use skill files?"
 
@@ -117,14 +151,6 @@ Two things a markdown file structurally cannot do.
 The search argument matters too, but treat it as secondary because it is weaker. Pre loaded descriptions blur together as their count grows, overlapping descriptions cause the AI to pick one and silently skip the other, and a request touching several areas gives it multiple plausible matches with nothing to break the tie. At 288 rules, designed to scale into the thousands, the matching decision has to move out of the AI. None of this is a flaw in the Agent Skills spec. It is the boundary of what description matching can do.
 
 **Where the line falls.** Small skill counts, discrete hand written behaviors, AI side matching acceptable, zero setup a priority: use Agent Skills. Large rulebooks that must be enforced, matching that has to leave the AI, triggers that fire on file content and tool calls, and process that must be *refused* rather than requested: that is Writ. Same problem space, different tradeoffs.
-
-**Where Writ sits against other approaches.** These are approaches to coding agent governance, not products. Each is a reasonable way to give an agent rules, and each runs into a structural limit that shaped Writ's design.
-
-* **Rules stuffed into the context.** Cost grows with the rulebook and the signal gets buried in it. Writ retrieves instead, so the per turn cost stays roughly flat as the rulebook grows.
-* **Static skill files.** Point in time bundles with no relationships between them. Writ keeps rules in a knowledge graph with typed links, so a matched rule can pull in its neighbors, including ones that share no words with what you asked.
-* **Per repo rules as code.** Nothing propagates between repositories, and each copy drifts on its own. Writ keeps one shared graph with per project isolation.
-* **An AI validator on every diff.** A model call per change, and the same code can be judged differently twice. Writ's gates are code, so an ordinary turn costs no model call at all.
-* **Rules in the system prompt.** Editing the rulebook changes the prefix every request shares. Writ injects per turn instead, and keeps rule ordering stable so the shared prefix does not churn.
 
 ## Decision provenance: why each file changed
 
@@ -195,7 +221,21 @@ What **is** independently checkable today lives in the repository rather than in
 
 Treat the shipped rulebook as a working example, not a universal standard. Commands for adding and editing rules exist so you grow your own, and there is a full lifecycle for rules the AI itself proposes: a proposed rule lands marked provisional, gets promoted to a review queue only after enough real world evidence accumulates, and enters the canonical rulebook only through a human approval that requires the same one time secret as everything else. The statistics never promote anything on their own.
 
-## Also in here: the Claude Code hook black box
+## Where Writ sits against other approaches
+
+These are approaches to coding agent governance, not products. Each is a reasonable way to give an agent rules, and each runs into a structural limit that shaped Writ's design.
+
+* **Rules stuffed into the context.** Cost grows with the rulebook and the signal gets buried in it. Writ retrieves instead, so the per turn cost stays roughly flat as the rulebook grows.
+* **Static skill files.** Point in time bundles with no relationships between them. Writ keeps rules in a knowledge graph with typed links, so a matched rule can pull in its neighbors, including ones that share no words with what you asked.
+* **Per repo rules as code.** Nothing propagates between repositories, and each copy drifts on its own. Writ keeps one shared graph with per project isolation.
+* **An AI validator on every diff.** A model call per change, and the same code can be judged differently twice. Writ's gates are code, so an ordinary turn costs no model call at all.
+* **Rules in the system prompt.** Editing the rulebook changes the prefix every request shares. Writ injects per turn instead, and keeps rule ordering stable so the shared prefix does not churn.
+
+## Research and reference artifacts
+
+Two things in this repository are reference material rather than product documentation, and both stand on their own.
+
+### The Claude Code hook black box
 
 [`docs/reference/claude-code-blackbox.md`](docs/reference/claude-code-blackbox.md) is a version pinned, empirical map of exactly what Claude Code hands a hook script and exactly what a script can hand back. Captured live on build 2.1.220 and compared against 2.1.183. Every single field carries an evidence tag: observed in real data, documented but not seen, or unverified. The build pin covers the original capture, and the file has kept growing since: it also carries findings observed on 2026-08-11 and 2026-08-14, each stamped with its own date. Read the tag next to a claim rather than the version at the top.
 
@@ -203,7 +243,7 @@ It records five events that moved from documented only to actually observed, pay
 
 It is useful whether or not you use Writ. It is the reference this project wishes had existed.
 
-## Architecture, in your browser
+### Architecture, in your browser
 
 Six self contained pages with interactive diagrams and a live explorer for the graph itself:
 [overview](https://infinri.github.io/Writ/docs/architecture/index.html) |
@@ -225,11 +265,9 @@ Six self contained pages with interactive diagrams and a live explorer for the g
 
 ## Status
 
-**v1.7.0, released 2026-08-08.** Installs end to end as a Claude Code plugin. The 40 script hook system audited and hardened: two gates that were failing open now hold, session identity is never guessed, destructive database operations need explicit permission, and the test suite's isolation is enforced rather than assumed. Search numbers re-measured on 08-05 and 08-06 after a nondeterminism defect was found and fixed.
+**v1.7.0, released 2026-08-08.** Installs end to end as a Claude Code plugin. The hook system audited and hardened: two gates that were failing open now hold, session identity is never guessed, destructive database operations need explicit permission, and the test suite's isolation is enforced rather than assumed. Search numbers re-measured on 08-05 and 08-06 after a nondeterminism defect was found and fixed.
 
 Every number in this file is either measured and dated, or derived from the current source tree. Where this file and the code disagree, the code wins.
-
-One small thing this document practices rather than describes: Writ ships a rule that blocks the AI's own output when it contains an em dash, an en dash, or a double hyphen in prose. That rule is enforced by a hook at the end of every turn, and this README is written to it.
 
 ## Acknowledgements
 
