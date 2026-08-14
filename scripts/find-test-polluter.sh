@@ -24,17 +24,31 @@ PYTHON=".venv/bin/python"
 
 VICTIM=""
 ARTIFACT=""
+RESET_CMD=""
 while [ $# -gt 0 ]; do
     case "$1" in
-        --victim)   VICTIM="$2"; shift 2 ;;
-        --artifact) ARTIFACT="$2"; shift 2 ;;
-        *) echo "usage: $0 (--victim <pytest node id> | --artifact <path>)" >&2; exit 2 ;;
+        --victim)    VICTIM="$2"; shift 2 ;;
+        --artifact)  ARTIFACT="$2"; shift 2 ;;
+        --reset-cmd) RESET_CMD="$2"; shift 2 ;;
+        *) echo "usage: $0 (--victim <pytest node id> | --artifact <path>) [--reset-cmd <shell>]" >&2; exit 2 ;;
     esac
 done
 if [ -z "$VICTIM" ] && [ -z "$ARTIFACT" ]; then
-    echo "usage: $0 (--victim <pytest node id> | --artifact <path>)" >&2
+    echo "usage: $0 (--victim <pytest node id> | --artifact <path>) [--reset-cmd <shell>]" >&2
     exit 2
 fi
+
+# PERSISTENT pollution (a file left on disk, a mutated graph) survives between
+# pytest invocations, so after the first probe that runs the real polluter,
+# every later probe reproduces regardless of subset and the bisection converges
+# on an arbitrary module -- observed live with a planted on-disk sentinel. The
+# caller owns the cleanup: --reset-cmd runs before EVERY probe (this script
+# still deletes nothing itself), and victim mode re-checks its own baseline
+# after convergence so a poisoned search refuses to name a module instead of
+# returning a confident wrong answer.
+reset_state() {
+    [ -n "$RESET_CMD" ] && bash -c "$RESET_CMD" >/dev/null 2>&1 || true
+}
 
 # Collection doubles as the preflight: tests/conftest.py refuses the whole run
 # when the disposable 7688 instance is absent, so this fails here with pytest's
@@ -60,6 +74,7 @@ done
 echo "candidates: ${#CANDIDATES[@]} module(s) collected before the victim"
 
 reproduce() {
+    reset_state
     if [ -n "$ARTIFACT" ] && [ -e "$ARTIFACT" ]; then
         echo "refusing to run: $ARTIFACT already exists. Remove it yourself and re-run." >&2
         exit 2
@@ -102,5 +117,11 @@ while [ "${#set_[@]}" -gt 1 ]; do
     fi
 done
 
+if [ -n "$VICTIM" ] && reproduce; then
+    echo "UNTRUSTWORTHY: the victim now fails ALONE, so state was persistently" >&2
+    echo "polluted during the search and the convergence above is meaningless." >&2
+    echo "Clean the polluted state and re-run with --reset-cmd '<cleanup shell>'." >&2
+    exit 3
+fi
 echo "polluter: ${set_[0]}"
 echo "confirm with: $PYTHON -m pytest ${set_[0]} ${VICTIM:-} -q"
