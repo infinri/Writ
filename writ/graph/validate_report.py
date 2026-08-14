@@ -80,6 +80,19 @@ def _render_dangling_dispatched_roles(findings: dict, out: list, err: list) -> N
         out.append(f"  {x['from']} dispatched_roles='{x['ref']}'{arrow}")
 
 
+def _render_dispatch_prose_parity(findings: dict, out: list, err: list) -> None:
+    parity = findings.get("dispatch_prose_parity")
+    if not parity:
+        return
+    unnamed = parity.get("declared_but_unnamed") or []
+    undeclared = parity.get("named_but_undeclared") or []
+    out.append(f"\nDispatch prose parity ({len(unnamed) + len(undeclared)}):")
+    for row in unnamed:
+        out.append(f"  {row['playbook']} dispatches {row['role']} but never names it in its own text")
+    for row in undeclared:
+        out.append(f"  {row['playbook']} names {row['role']} in its text with no DISPATCHES edge")
+
+
 def _render_redundancy_unavailable(findings: dict, out: list, err: list) -> None:
     if findings.get("redundancy_unavailable"):
         # Redundancy check could not run (missing optional dep).
@@ -315,6 +328,7 @@ _RENDER_STEPS: tuple[Callable[[dict, list, list], None], ...] = (
     ),
     _render_orphan_counts_by_type,
     _render_dangling_dispatched_roles,
+    _render_dispatch_prose_parity,
     _section(
         "stale",
         lambda v: f"\nStale ({len(v)}):",

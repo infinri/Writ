@@ -28,7 +28,14 @@ shipped writ/graph/validate_report.py `_section("route_implementation_closure",
 ...)` and `_render_delivery_orphans` blocks the same way every other key here
 was: verbatim, not derived.
 
-Key coverage map (32 findings keys total; every key has >=1 dedicated test
+Cycle E / E4 addition: dispatch_prose_parity (the fourth rendering of
+dispatched_roles -- the playbook's own prose, checked against the
+DISPATCHES edge) is transcribed verbatim from plan.md's
+`_render_dispatch_prose_parity` block (a dedicated irregular renderer, like
+dispatch_invokes, not a generic `_section` entry -- the finding is a
+two-key dict: declared_but_unnamed / named_but_undeclared).
+
+Key coverage map (33 findings keys total; every key has >=1 dedicated test
 somewhere in this file):
     TestRenderFindingsPerKey: conflicts, orphans, orphan_counts_by_type,
         dangling_dispatched_roles, stale, redundant, unreviewed,
@@ -40,7 +47,7 @@ somewhere in this file):
         route_implementation_closure, delivery_orphans, example_lint,
         domain_enum, counter_nodes_parity,
         dispatched_by_parity, enforceable_severity,
-        forbidden_phrase_overlap, shared_code_example.
+        forbidden_phrase_overlap, shared_code_example, dispatch_prose_parity.
     TestSpecialCases: ranked_exclusion_mismatch, category_reachability,
         orphan_counts_by_type (zero-filter/sort quirk),
         dangling_dispatched_roles (unresolvable arrow).
@@ -110,6 +117,7 @@ class TestEmpty:
             enforceable_severity=[],
             forbidden_phrase_overlap=[],
             shared_code_example=[],
+            dispatch_prose_parity={},
         )
         stdout_lines, stderr_lines = render_findings(findings)
         assert stdout_lines == []
@@ -685,6 +693,64 @@ class TestRenderFindingsPerKey:
         assert stdout_lines == [
             "\nShared code example (3.3) -- 1 block(s) in >1 rule:",
             "  ['RULE-A', 'RULE-B']: 'def foo(): pass'",
+        ]
+        assert stderr_lines == []
+
+    def test_dispatch_prose_parity_declared_but_unnamed_only(self) -> None:
+        # Transcribed verbatim from plan.md's E4 `_render_dispatch_prose_parity`
+        # block: a dedicated irregular renderer (like dispatch_invokes), not a
+        # generic `_section` entry, keyed on `dispatch_prose_parity` and shaped
+        # {declared_but_unnamed: [...], named_but_undeclared: [...]}.
+        findings = make_findings(
+            dispatch_prose_parity={
+                "declared_but_unnamed": [
+                    {"playbook": "PBK-PROC-AUDIT-FANOUT-001", "role": "ROL-EXPLORER-001"}
+                ],
+                "named_but_undeclared": [],
+            }
+        )
+        stdout_lines, stderr_lines = render_findings(findings)
+        assert stdout_lines == [
+            "\nDispatch prose parity (1):",
+            "  PBK-PROC-AUDIT-FANOUT-001 dispatches ROL-EXPLORER-001 but "
+            "never names it in its own text",
+        ]
+        assert stderr_lines == []
+
+    def test_dispatch_prose_parity_named_but_undeclared_only(self) -> None:
+        findings = make_findings(
+            dispatch_prose_parity={
+                "declared_but_unnamed": [],
+                "named_but_undeclared": [
+                    {"playbook": "PBK-PROC-SDD-001", "role": "ROL-REVIEWER-001"}
+                ],
+            }
+        )
+        stdout_lines, stderr_lines = render_findings(findings)
+        assert stdout_lines == [
+            "\nDispatch prose parity (1):",
+            "  PBK-PROC-SDD-001 names ROL-REVIEWER-001 in its text with no "
+            "DISPATCHES edge",
+        ]
+        assert stderr_lines == []
+
+    def test_dispatch_prose_parity_both_kinds_header_counts_the_sum_and_unnamed_renders_first(
+        self,
+    ) -> None:
+        # Header count is len(unnamed) + len(undeclared), not either alone,
+        # and declared_but_unnamed rows render before named_but_undeclared
+        # rows (source order of plan.md's renderer).
+        findings = make_findings(
+            dispatch_prose_parity={
+                "declared_but_unnamed": [{"playbook": "PBK-A", "role": "ROL-A"}],
+                "named_but_undeclared": [{"playbook": "PBK-B", "role": "ROL-B"}],
+            }
+        )
+        stdout_lines, stderr_lines = render_findings(findings)
+        assert stdout_lines == [
+            "\nDispatch prose parity (2):",
+            "  PBK-A dispatches ROL-A but never names it in its own text",
+            "  PBK-B names ROL-B in its text with no DISPATCHES edge",
         ]
         assert stderr_lines == []
 

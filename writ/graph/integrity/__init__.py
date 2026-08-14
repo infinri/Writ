@@ -150,6 +150,7 @@ class IntegrityChecker(
                 await self.detect_methodology_field_drift(parity_dir, project)
             )
         findings["dispatch_invokes"] = await self.detect_dispatch_invokes_invariant()
+        findings["dispatch_prose_parity"] = await self.detect_dispatch_prose_parity()
         findings["teaches_source"] = await self.detect_teaches_source_invariant()
         findings["floor_completeness"] = await self.detect_floor_completeness()
         findings["trigger_keyword_invariant"] = await self.detect_trigger_keyword_invariant()

@@ -17,6 +17,12 @@ added to EXPECTED_METHODS below in alphabetical position. This list asserts
 hard equality (test_facade_defines_only_init_and_run_all_checks), so it fails
 on an omission (a method silently dropped) exactly as loudly as on an extra
 (a method added without updating this pin).
+
+Cycle E / E4 update: detect_dispatch_prose_parity (the fourth rendering of
+dispatched_roles -- the playbook's own prose, checked against the
+DISPATCHES edge) is added below in alphabetical position, between
+detect_dispatch_invokes_invariant and detect_dispatched_by_parity. RED until
+structural_checks.py defines it.
 """
 from __future__ import annotations
 
@@ -32,7 +38,7 @@ EXPECTED_METHODS = [
     "detect_artifact_dangling_rule_ids", "detect_category_reachability",
     "detect_confidence_defaults", "detect_conflicts", "detect_counter_nodes_parity",
     "detect_dangling_dispatched_roles", "detect_delivery_orphans",
-    "detect_dispatch_invokes_invariant",
+    "detect_dispatch_invokes_invariant", "detect_dispatch_prose_parity",
     "detect_dispatched_by_parity", "detect_domain_enum_invariant", "detect_edge_parity",
     "detect_enforceable_severity_coupling", "detect_example_lint",
     "detect_floor_completeness", "detect_forbidden_phrase_overlap",

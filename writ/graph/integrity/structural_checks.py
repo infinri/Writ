@@ -101,6 +101,90 @@ class StructuralChecksMixin:
                 )
         return dangling
 
+    async def detect_dispatch_prose_parity(self) -> dict | None:
+        """A DISPATCHES edge must be matched by prose that NAMES the worker.
+
+        dispatched_roles, the DISPATCHES edge and SubagentRole.dispatched_by are
+        three renderings of one authored fact, and all three are already checked
+        against each other (detect_dangling_dispatched_roles above,
+        detect_dispatched_by_parity in edge_contract_checks). The FOURTH rendering
+        is the playbook's own text, and it is the only one a model ever sees:
+        traverse_neighbors walks (:Rule)-[*1..hops]-(:Rule)
+        (writ/graph/db/node_store.py:343-344), so no Playbook and no SubagentRole
+        is inside the graph walk at all. Agreement between the property and the
+        prose is therefore the whole of what this layer can guarantee, and it was
+        the one thing nothing checked.
+
+        Two clauses, one per direction:
+        (1) DECLARED-BUT-UNNAMED: p-[:DISPATCHES]->r, but neither r.role_id nor
+            r.name appears in p.statement + p.body. The graph knows who works and
+            the reader is never told. (PBK-PROC-AUDIT-FANOUT-001 was this.)
+        (2) NAMED-BUT-UNDECLARED: p's text names r by role_id or name with no
+            p-[:DISPATCHES]->r edge. The reader is told and the graph cannot see
+            it, so every downstream parity check reads clean.
+
+        Whether a playbook SHOULD dispatch anyone is an editorial question and is
+        deliberately NOT asked here: a lint carrying an allowlist of exempt
+        playbooks becomes a central table that drifts from the corpus, which is
+        the failure the routing-as-data fork exists to prevent. That decision is
+        recorded once per playbook in tests/test_methodology_migration.py.
+
+        Returns None when clean, else {declared_but_unnamed, named_but_undeclared}.
+        """
+        if self._driver is None:
+            return None
+        import re as _re
+
+        async with self._driver.session(database=self._database) as session:
+            pb_result = await session.run(
+                "MATCH (p:Playbook) "
+                "OPTIONAL MATCH (p)-[:DISPATCHES]->(d:SubagentRole) "
+                "RETURN p.playbook_id AS id, p.statement AS statement, "
+                "p.body AS body, collect(DISTINCT d.role_id) AS dispatched "
+                "ORDER BY id"
+            )
+            playbooks = [record.data() async for record in pb_result]
+            role_result = await session.run(
+                "MATCH (r:SubagentRole) RETURN r.role_id AS role_id, r.name AS name"
+            )
+            roles = [record.data() async for record in role_result]
+
+        declared_but_unnamed: list[dict] = []
+        named_but_undeclared: list[dict] = []
+        for playbook in playbooks:
+            text = f"{playbook.get('statement') or ''}\n{playbook.get('body') or ''}"
+            dispatched = {rid for rid in (playbook.get("dispatched") or []) if rid}
+            for role in roles:
+                tokens = [role["role_id"]]
+                if role.get("name"):
+                    tokens.append(role["name"])
+                # `\b` is the wrong boundary for these tokens: a hyphen is a
+                # non-word character, so \bwrit-explorer\b also matches inside
+                # writ-explorer-legacy. Excluding word chars AND hyphens on both
+                # sides makes the match the whole identifier or nothing.
+                named = any(
+                    _re.search(rf"(?<![\w-]){_re.escape(t)}(?![\w-])", text, _re.IGNORECASE)
+                    for t in tokens
+                )
+                if role["role_id"] in dispatched and not named:
+                    declared_but_unnamed.append(
+                        {"playbook": playbook["id"], "role": role["role_id"]}
+                    )
+                elif named and role["role_id"] not in dispatched:
+                    named_but_undeclared.append(
+                        {"playbook": playbook["id"], "role": role["role_id"]}
+                    )
+        if not declared_but_unnamed and not named_but_undeclared:
+            return None
+        return {
+            "declared_but_unnamed": sorted(
+                declared_but_unnamed, key=lambda d: (d["playbook"], d["role"])
+            ),
+            "named_but_undeclared": sorted(
+                named_but_undeclared, key=lambda d: (d["playbook"], d["role"])
+            ),
+        }
+
     async def detect_stale(self) -> list[dict]:
         """Find nodes past their staleness window, across ALL node types.
 
