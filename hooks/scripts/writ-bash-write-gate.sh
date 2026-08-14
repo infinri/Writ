@@ -1114,6 +1114,16 @@ for seg, _piped_in in segments:
 # or from `python3 -c`. Runs on the RAW segment tokens: shlex(posix=False) keeps the
 # quote characters, and PATH_CAND excludes them, so quotes act as delimiters.
 stdin_interpreter = False
+# Interpreter-scanned hits are tracked separately because ONE rule applies to
+# them alone: an EXISTING DIRECTORY named in interpreter arguments is never a
+# file-write target (no language here can open() a directory for writing), so
+# gating it is pure false positive -- observed live when a read-only
+# `python -c "validate('<project root>')"` probe was denied as a write to the
+# repo root via the `ap == cwd` branch below. The skip must NOT apply to the
+# shell vectors that share raw_targets: `cp/mv -t DIR` writes INTO a directory
+# and stays gated. A NONEXISTENT path stays gated on this vector too -- it
+# could be a file about to be created.
+interp_hits = set()
 for seg, piped_in in segments:
     if not seg:
         continue
@@ -1128,7 +1138,9 @@ for seg, piped_in in segments:
         # command at all. The pipe IS the marker.
         form = "stdin"
     if form == "flag":
-        raw_targets += scan_tokens(args)
+        hits = scan_tokens(args)
+        raw_targets += hits
+        interp_hits.update(hits)
     elif form == "stdin":
         stdin_interpreter = True
 if stdin_interpreter:
@@ -1138,7 +1150,9 @@ if stdin_interpreter:
     # is gated on notes.md. Coarser than the flag form, deliberately: a stdin-fed
     # interpreter is itself the strong signal, and the answer to "the code is somewhere
     # in here" must not be silence.
-    raw_targets += scan_tokens(tokens)
+    hits = scan_tokens(tokens)
+    raw_targets += hits
+    interp_hits.update(hits)
 
 seen = set()
 for t in raw_targets:
@@ -1152,6 +1166,9 @@ for t in raw_targets:
         print(f"state\t{t}")
         continue
     ap = t if os.path.isabs(t) else os.path.normpath(os.path.join(cwd, t))
+    # Interpreter-only exemption; see the interp_hits comment above.
+    if t in interp_hits and os.path.isdir(ap):
+        continue
     # Work-gate only project-local targets. Scratch writes outside the repo are not plan-gated.
     if ap == cwd or ap.startswith(cwd + os.sep):
         print(f"local\t{ap}")
