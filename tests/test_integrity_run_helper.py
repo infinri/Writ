@@ -114,8 +114,11 @@ class TestSitesMigrated:
         #   +2 cycle 6a, routing_checks.py: detect_route_implementation_closure and
         #      detect_delivery_orphans, the two checks that caught the dead-route class.
         #   +1 cycle 7, artifact_checks.py: detect_artifact_abstracts_parity.
+        #   +1 cycle E, structural_checks.py: detect_dispatch_prose_parity, which runs its
+        #      playbook and role queries in ONE session (two run() calls, so it is a
+        #      multi-run block, the documented reason a site keeps its explicit async with).
         # self._run is unchanged at 6, which is the real invariant here: the migrated sites
         # stay migrated. This count is a ratchet on NEW raw sessions, so it is expected to
         # move when a detector lands, and each move should name what added it.
-        assert async_with == 28, f"expected 28 async-with blocks left in mixins; found {async_with}"
+        assert async_with == 29, f"expected 29 async-with blocks left in mixins; found {async_with}"
         assert self_run == 6, f"expected 6 self._run call sites; found {self_run}"

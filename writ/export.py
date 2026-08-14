@@ -106,6 +106,7 @@ _METHODOLOGY_CANONICAL_RULE_IDS = frozenset({
     "ENF-META-CONCISE-001",
     "ENF-PROC-BRAIN-001",
     "ENF-PROC-DEBUG-001",
+    "ENF-PROC-FIXLOOP-001",
     "ENF-PROC-PLAN-001",
     "ENF-PROC-PRIORITY-001",
     "ENF-PROC-SDD-001",
@@ -115,6 +116,28 @@ _METHODOLOGY_CANONICAL_RULE_IDS = frozenset({
     "META-AUTH-001",
     "META-AUTH-002",
 })
+
+
+def _is_methodology_canonical(rule_id: str | None, bible_dir: Path) -> bool:
+    """A Rule is methodology-canonical when bible/methodology/<id>.md exists.
+
+    The frozenset above is the historical hand-maintained list, and being
+    hand-maintained is exactly how it failed: cycle F's ENF-PROC-FIXLOOP-001
+    was authored as a methodology Rule, was not added here, and the auto-export
+    dutifully wrote a duplicate RULE-START copy into bible/process/rules.md --
+    one node declared in two files, one edge declared twice, and the round-trip
+    completeness test red. The filesystem IS the fact the set tries to cache,
+    so consult it too; the set stays because three test modules import it and
+    because it documents the original Phase 0 migration cohort.
+    """
+    if not rule_id:
+        return False
+    if rule_id in _METHODOLOGY_CANONICAL_RULE_IDS:
+        return True
+    try:
+        return (bible_dir / "methodology" / f"{rule_id}.md").exists()
+    except OSError:
+        return False
 
 
 def rule_to_markdown(rule: dict, edges: list | None = None) -> str:
@@ -277,7 +300,7 @@ def group_rules_by_file(rules: list[dict], bible_dir: Path) -> dict[Path, list[d
     file_groups: dict[Path, list[dict]] = {}
     for rule in rules:
         rid = rule["rule_id"]
-        if rid in _METHODOLOGY_CANONICAL_RULE_IDS:
+        if _is_methodology_canonical(rid, bible_dir):
             # Dual-location rule: hand-authored front-matter SOURCE lives at
             # bible/methodology/<ID>.md (carrying its edges + all fields). The
             # rule export does NOT regenerate it -- skip entirely so the export
@@ -418,8 +441,8 @@ async def export_graph_to_markdown(db: Neo4jConnection, output_dir: Path) -> dic
             node = {k: v for k, v in node.items() if k != "label"}
             node_id = node.get(id_field)
             is_methodology = label in METHODOLOGY_NODE_TYPES
-            is_dual_location = (
-                label == "Rule" and node_id in _METHODOLOGY_CANONICAL_RULE_IDS
+            is_dual_location = label == "Rule" and _is_methodology_canonical(
+                node_id, output_dir
             )
 
             if is_methodology or is_dual_location:

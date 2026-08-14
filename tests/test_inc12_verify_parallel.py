@@ -135,7 +135,7 @@ class TestEdges:
 class TestCensus:
     def test_tec_count(self) -> None:
         n = len(list(METH.glob("TEC-*.md")))
-        assert n == 11, f"expected 11 TEC-*.md, found {n}"
+        assert n == 14, f"expected 14 TEC-*.md, found {n} (+3 cycle F: CONDITION-WAIT, DEFENSE-DEPTH, TEST-POLLUTION)"
 
 
 class TestLiveGates:

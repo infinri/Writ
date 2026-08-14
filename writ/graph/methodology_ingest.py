@@ -266,6 +266,7 @@ async def ingest_path(
         files, only, dry_run, report
     )
     parsed_nodes = _dedupe_dual_location(parsed_nodes)
+    parsed_edges = _dedupe_edges(parsed_edges)
     cleaned = _build_write_specs(parsed_nodes, project)
     await _write_nodes(
         db, cleaned, parsed_nodes, parsed_edges, node_source, dry_run, project, report
@@ -489,6 +490,35 @@ async def _write_nodes(
         report.edges_dangling = dangling
 
 
+def _dedupe_edges(parsed_edges: list[dict]) -> list[dict]:
+    """Collapse identical (source, type, target) declarations to ONE, order kept.
+
+    The edge-side twin of _dedupe_dual_location, and it exists for the same
+    dual-location reason: a rule that lives in bible/methodology/<id>.md ALSO
+    gets a machine-generated RULE-START copy in its domain rules.md on every
+    auto-export, and export_rules_to_markdown renders declared (non-derived)
+    edges into that copy. The node collapse handled the double NODE and nothing
+    handled the double EDGE, which held only by luck while every dual-located
+    rule's edges happened to be derived types the exporter filters. The first
+    dual-located rule with a declared GATES edge (ENF-PROC-FIXLOOP-001) made
+    bible regenerate one more edge than the graph holds and broke the
+    round-trip completeness test. The graph cannot hold two identical edges
+    (create_edge is MERGE-semantics), so collapsing at parse is what makes the
+    declared count mean the same thing as the graph count. Shared by
+    ingest_path (the writer) and parse_source (the reconcile oracle) so both
+    collapse identically.
+    """
+    seen: set[tuple] = set()
+    deduped: list[dict] = []
+    for edge in parsed_edges:
+        key = (edge.get("source"), edge.get("type"), edge.get("target"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(edge)
+    return deduped
+
+
 def _dedupe_dual_location(parsed_nodes: list[dict]) -> list[dict]:
     """Collapse dual-location duplicates to ONE record per (node_type, id).
 
@@ -560,7 +590,7 @@ def parse_source(
             parsed_edges.extend(parse_edges_from_file(filepath))
         except Exception:
             continue
-    return _dedupe_dual_location(parsed_nodes), parsed_edges
+    return _dedupe_dual_location(parsed_nodes), _dedupe_edges(parsed_edges)
 
 
 def compute_expected_graph(
