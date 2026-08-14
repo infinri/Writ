@@ -13,9 +13,9 @@
       "source": "./",
       "version": "1.7.0",
       "displayName": "Writ",
-      "description": "Hybrid RAG rule retrieval + session-aware workflow enforcement. Injects relevant coding rules via a 5-stage pipeline (BM25 + vector + graph traversal + reciprocal-rank fusion) and enforces mode-based workflow gates (plan -> tests -> implementation).",
+      "description": "Guardrails for Claude Code: the rules that fit the task delivered per prompt, and no risky writes before you approve a plan and tests. Hybrid retrieval (BM25 + vector + graph traversal + weighted ranking, with an abstention gate) over a Neo4j knowledge graph, wired in through hook scripts and a session state machine.",
       "category": "workflow",
-      "keywords": ["claude-code", "rag", "rules", "enforcement", "neo4j", "fastapi", "hooks", "workflow"],
+      "keywords": ["claude-code", "rag", "rules", "enforcement", "neo4j", "fastapi", "hooks", "workflow", "code-quality", "ai-tooling", "governance", "guardrails", "knowledge-graph", "tdd"],
       "homepage": "https://github.com/infinri/Writ",
       "license": "MIT",
       "author": {

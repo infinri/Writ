@@ -559,6 +559,29 @@ def reconcile(
     asyncio.run(_run())
 
 
+def _hook_lint_summary(findings: list[dict]) -> str:
+    """Header line for the #7C hook-delivery lint block in `writ validate`.
+
+    Counts the three actionable severities `writ.hooks_lint.lint_hooks` emits,
+    with "rejected" first so the header mirrors the sort order the linter
+    already applies. "error" (the unreadable-hooks.json case) is deliberately
+    excluded from every count: it is not a delivery finding, and it still
+    prints in the body loop below the header.
+
+    Returns "" for an empty findings list so the caller's `if findings:` guard
+    and this helper can never disagree about when the block stays silent.
+    """
+    if not findings:
+        return ""
+    counted = ("rejected", "inert", "review")
+    counts = {sev: sum(1 for f in findings if f["severity"] == sev) for sev in counted}
+    return (
+        "\nHook delivery lint (#7C, WARNING) -- "
+        + ", ".join(f"{counts[sev]} {sev}" for sev in counted)
+        + ":"
+    )
+
+
 @app.command()
 def validate(
     review_confidence: bool = typer.Option(
@@ -608,13 +631,8 @@ def validate(
             hooks_json = plugin_root / "hooks" / "hooks.json"
             if hooks_json.exists():
                 hl = lint_hooks(hooks_json, plugin_root)
-                inert = [f for f in hl if f["severity"] == "inert"]
-                review = [f for f in hl if f["severity"] == "review"]
                 if hl:
-                    typer.echo(
-                        f"\nHook delivery lint (#7C, WARNING) -- "
-                        f"{len(inert)} inert, {len(review)} review:"
-                    )
+                    typer.echo(_hook_lint_summary(hl))
                     for f in hl:
                         typer.echo(
                             f"  [{f['severity']}] {f['event']}:{f['matcher'] or '*'} "

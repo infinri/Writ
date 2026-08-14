@@ -68,7 +68,7 @@ All 49 endpoints on `http://localhost:8765`, generated from the FastAPI route ta
 | POST | `/session/{session_id}/clear-rules-for-compaction` | Clear loaded_rules from cache before compaction (PreCompact) |
 | POST | `/session/{session_id}/context-percent` | Set context_percent for the session |
 | GET | `/session/{session_id}/coverage` | Get rule coverage for the session |
-| GET | `/session/{session_id}/current-phase` | Get the current phase for the session |
+| GET | `/session/{session_id}/current-phase` | The phase, the mode, the next pending gate and the plan fingerprint |
 | POST | `/session/{session_id}/invalidate-gate` | Invalidate a gate: record the cycle, delete the .approved file, check escalation |
 | GET | `/session/{session_id}/mode` | Get the current mode for the session |
 | POST | `/session/{session_id}/mode` | Set the mode for the session |

@@ -3,7 +3,7 @@
 
 # Rulebook inventory
 
-287 rules in the shipped corpus dump, 32 mandatory, 6 always-on. Generated from `writ-corpus.cypher`; the live graph may differ if rules were authored since the last `writ export-cypher`. Full rule text: `writ query`, `GET /rule/{id}`, or `writ export`.
+288 rules in the shipped corpus dump, 32 mandatory, 6 always-on. Generated from `writ-corpus.cypher`; the live graph may differ if rules were authored since the last `writ export-cypher`. Full rule text: `writ query`, `GET /rule/{id}`, or `writ export`.
 
 | Domain | Rules | Mandatory |
 |---|---:|---:|
@@ -18,7 +18,7 @@
 | languages | 8 | 0 |
 | meta-authoring | 3 | 0 |
 | performance | 19 | 1 |
-| process | 18 | 5 |
+| process | 19 | 5 |
 | research | 4 | 0 |
 | scaling | 10 | 1 |
 | security | 76 | 18 |
@@ -243,6 +243,7 @@
 |---|---|---|
 | `ENF-PROC-BRAIN-001` | critical | mandatory |
 | `ENF-PROC-DEBUG-001` | high | always-on |
+| `ENF-PROC-FIXLOOP-001` | high |  |
 | `ENF-PROC-PLAN-001` | high | mandatory, always-on |
 | `ENF-PROC-PRIORITY-001` | high |  |
 | `ENF-PROC-SDD-001` | high |  |

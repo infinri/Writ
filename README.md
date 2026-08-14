@@ -1,6 +1,11 @@
 # Writ
 
-A Claude Code harness that enforces engineering discipline at the moment the AI acts, and delivers the rules that fit the work in front of it.
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+
+A Claude Code harness that enforces engineering discipline at the moment the AI acts, and delivers the rules that fit the work in front of it. It is for engineers and engineering leads who want a coding agent held to plan-first, test-driven work by guardrails that run in code, rather than by instructions the agent can drift away from.
+
+Already convinced? [Jump to install](#install). Already installed? [`HANDBOOK.md`](HANDBOOK.md) is the operator manual.
 
 ## In plain terms
 
@@ -67,7 +72,7 @@ bash /path/it/prints/scripts/bootstrap-plugin.sh
 
 Run it and restart Claude Code. That one script does everything: environment, database, rules, background service, permissions, and workflow instructions. It is idempotent, and re-running it after an update is the whole update procedure. Check it worked with `curl http://localhost:8765/health`.
 
-Nothing breaks while you are partway through setup. Hooks stay out of the way until the install finishes, sessions are never blocked, and the startup hook prints exactly what is still missing. Full install detail, the manual path, and troubleshooting live in [`docs/install.md`](docs/install.md).
+Nothing breaks while you are partway through setup. Hooks stay out of the way until the install finishes, sessions are never blocked, and the startup hook prints exactly what is still missing. Full install detail, the manual path, and troubleshooting live in [`docs/install.md`](docs/install.md). Once it is running, [`HANDBOOK.md`](HANDBOOK.md) is the operator manual: modes, gates, helper AIs, the rulebook, and the command line.
 
 ## What using it feels like
 
@@ -93,9 +98,9 @@ Worth being blunt about what the gate does and does not check. The validators co
 
 ## How the rules reach the AI
 
-**The floor: rules that can never be dropped.** Thirty two of the 287 shipped rules are marked mandatory. These are deliberately kept **out of the search index entirely** and delivered through a separate channel with its own budget. That means no change to search ranking, no swap of the underlying model, no retuning of anything can cause a critical security rule to fall off the list. A single definition in one file decides what belongs to the floor, and both the delivery code and the validation code read that same definition, so the two can never drift apart. This closed a real bug where two parts of the system checked different fields and left 29 of 32 mandatory rules unreachable by either path.
+**The floor: rules that can never be dropped.** Thirty two of the 288 shipped rules are marked mandatory. These are deliberately kept **out of the search index entirely** and delivered through a separate channel with its own budget. That means no change to search ranking, no swap of the underlying model, no retuning of anything can cause a critical security rule to fall off the list. A single definition in one file decides what belongs to the floor, and both the delivery code and the validation code read that same definition, so the two can never drift apart. This closed a real bug where two parts of the system checked different fields and left 29 of 32 mandatory rules unreachable by either path.
 
-**Everything else is searched for.** A five stage pipeline runs over a Neo4j graph database: narrow the candidates, keyword search, meaning based search (so a rule about "SQL" surfaces for a question about "database queries"), a walk across the graph to pull in related rules, then weighted ranking. Each stage covers a blind spot the others have. Keyword search catches exact terms. Meaning based search catches paraphrase. The graph walk catches rules that share no words at all but are causally connected. If nothing matches well enough, the pipeline **returns nothing** rather than injecting noise.
+**Everything else is searched for.** A five stage pipeline runs over a Neo4j knowledge graph: narrow the candidates, keyword search, meaning based search (so a rule about "SQL" surfaces for a question about "database queries"), a walk across the graph to pull in related rules, then weighted ranking. Each stage covers a blind spot the others have. Keyword search catches exact terms. Meaning based search catches paraphrase. The graph walk catches rules that share no words at all but are causally connected. If nothing matches well enough, the pipeline **returns nothing** rather than injecting noise.
 
 **The search fires on what is happening, not just what you typed.** Forty-one small scripts watch the session and attach real context to the query: which file is being written, what is inside it, which tool is running, what phase the workflow is in. A rule about SQL injection surfaces when the AI writes a file containing a query, not only when someone happens to type the word SQL.
 
@@ -109,9 +114,17 @@ Two things a markdown file structurally cannot do.
 
 **The trigger has to be in your message.** Skills work by matching their pre loaded descriptions against what you typed. A rule that must fire when the AI writes a controller containing a raw SQL string cannot work that way, because the thing that should trigger it is the file content at write time, which nobody typed.
 
-The search argument matters too, but treat it as secondary because it is weaker. Pre loaded descriptions blur together as their count grows, overlapping descriptions cause the AI to pick one and silently skip the other, and a request touching several areas gives it multiple plausible matches with nothing to break the tie. At 287 rules, designed to scale into the thousands, the matching decision has to move out of the AI. None of this is a flaw in the Agent Skills spec. It is the boundary of what description matching can do.
+The search argument matters too, but treat it as secondary because it is weaker. Pre loaded descriptions blur together as their count grows, overlapping descriptions cause the AI to pick one and silently skip the other, and a request touching several areas gives it multiple plausible matches with nothing to break the tie. At 288 rules, designed to scale into the thousands, the matching decision has to move out of the AI. None of this is a flaw in the Agent Skills spec. It is the boundary of what description matching can do.
 
 **Where the line falls.** Small skill counts, discrete hand written behaviors, AI side matching acceptable, zero setup a priority: use Agent Skills. Large rulebooks that must be enforced, matching that has to leave the AI, triggers that fire on file content and tool calls, and process that must be *refused* rather than requested: that is Writ. Same problem space, different tradeoffs.
+
+**Where Writ sits against other approaches.** These are approaches to coding agent governance, not products. Each is a reasonable way to give an agent rules, and each runs into a structural limit that shaped Writ's design.
+
+* **Rules stuffed into the context.** Cost grows with the rulebook and the signal gets buried in it. Writ retrieves instead, so the per turn cost stays roughly flat as the rulebook grows.
+* **Static skill files.** Point in time bundles with no relationships between them. Writ keeps rules in a knowledge graph with typed links, so a matched rule can pull in its neighbors, including ones that share no words with what you asked.
+* **Per repo rules as code.** Nothing propagates between repositories, and each copy drifts on its own. Writ keeps one shared graph with per project isolation.
+* **An AI validator on every diff.** A model call per change, and the same code can be judged differently twice. Writ's gates are code, so an ordinary turn costs no model call at all.
+* **Rules in the system prompt.** Editing the rulebook changes the prefix every request shares. Writ injects per turn instead, and keeps rule ordering stable so the shared prefix does not churn.
 
 ## Decision provenance: why each file changed
 
@@ -133,20 +146,20 @@ Pull request comments currently support Bitbucket Cloud only, and self hosted Bi
 
 ## Measured
 
-Live rulebook of 287 rules, re-measured 2026-08-05 and 2026-08-06, on a database container with no memory cap. Your numbers will differ on other hardware. The full disclosure is in [`SCALE_BENCHMARK_RESULTS.md`](SCALE_BENCHMARK_RESULTS.md).
+**Every figure in this section is a dated measurement, not a live readout.** The live column was measured on 2026-08-05 against a rulebook of 287 rules; the synthetic column on 2026-08-01 against a generated 10,000 rule corpus; the search quality table further down on 2026-08-01, 2026-08-05 and 2026-08-06, all against that same 287 rule corpus. The shipped rulebook is 288 rules today, so read each number as what was measured then, against the corpus named beside it. All of it ran on a database container with no memory cap, and your numbers will differ on other hardware. The full disclosure is in [`SCALE_BENCHMARK_RESULTS.md`](SCALE_BENCHMARK_RESULTS.md).
 
-| | Live (287 rules) | Synthetic (10,000 rules) |
+| | Live rulebook, 287 rules, 2026-08-05 | Synthetic, 10,000 rules, 2026-08-01 |
 |---|---:|---:|
 | Search time, 95th percentile | 1.02 ms | 0.827 ms |
 | Rule text delivered per turn | about 2,000 tokens | about 1,590 tokens |
 
-**Which 95th percentile.** Three appear across this project's files and they are not in competition, they are different question sets: **1.02 ms** is the 193 question test set, which is the hardest and the one quoted above because it is closest to real use; 0.52 ms is a 5 question latency set on the same date; 0.6 ms is an older 10 question set from 2026-08-01. Where a single number appears without a question set beside it, assume the 193 question one.
+**Which 95th percentile.** Three appear across this project's files and they are not in competition, they are different question sets: **1.02 ms** is the 193 question test set measured on 2026-08-05, which is the hardest and the one quoted above because it is closest to real use; 0.52 ms is a 5 question latency set from the same 2026-08-05 run; 0.6 ms is an older 10 question set from 2026-08-01. All three were measured against the 287 rule corpus of that week. Where a single number appears without a question set beside it, assume the 193 question one.
 
 The property that matters is the second row. The amount of rule text sent per turn stays roughly flat as the rulebook grows.
 
-**An honest note on the baseline.** The often quoted "749 times less context" is measured against pasting the entire 10,000 rule corpus (1.19 million tokens) into every single message. That is a theoretical ceiling, not something anyone does, since no context window holds it. Against the realistic comparison, a hand curated instructions file of about 5,000 tokens, Writ's per turn cost is roughly comparable while covering 287 rules instead of a dozen. The advantage grows with the size of your rulebook rather than with the size of the claim.
+**An honest note on the baseline.** The often quoted "749 times less context" is measured against pasting the entire 10,000 rule corpus (1.19 million tokens) into every single message. That is a theoretical ceiling, not something anyone does, since no context window holds it. Against the realistic comparison, a hand curated instructions file of about 5,000 tokens, Writ's per turn cost is roughly comparable while covering the whole shipped rulebook instead of a dozen rules, 287 of them at the time of that measurement and 288 today. The advantage grows with the size of your rulebook rather than with the size of the claim.
 
-Search quality against a 193 question test set (47 of them deliberately ambiguous). The floors are automated gates the build fails below, set deliberately under the measured values:
+Search quality against a 193 question test set (47 of them deliberately ambiguous), measured against the 287 rule corpus on the three dates in the column headers. The floors are automated gates the build fails below, set deliberately under the measured values:
 
 | Metric | Floor | 2026-08-01 | 2026-08-05 | 2026-08-06 |
 |---|---|---:|---:|---:|
@@ -159,6 +172,8 @@ Search quality against a 193 question test set (47 of them deliberately ambiguou
 **Read the 2026-08-06 column, not the earlier ones.** Until that date the search merged its keyword and vector candidates through a `set` union, whose iteration order Python randomizes per process, and that order decided tie breaking all the way through scoring. Thirty of the 193 questions returned a different top 5 depending on the seed, so every earlier column is one draw from a distribution rather than a measurement. Five identical runs spanned 156 to 159 hits. The fix made the merge order deterministic; the corrected numbers landed at the low end of the old spread, which is what you would expect if the old high marks were luck.
 
 **The index eligible hit rate is the one to watch.** It sits at 0.9231 against a 0.90 floor that fails the build, which is 2.3 points of headroom, and it moved *down* between 08-05 and 08-06. Three of the other metrics drifted down over the same pair of runs. A gate this close to its floor will eventually trip on a change unrelated to search quality, and the honest reading is that the margin is thin rather than comfortable.
+
+**The corpus has moved since those runs, and the floors were re-run against it.** One rule has been added since 2026-08-06, so the shipped rulebook is 288 rather than the 287 those columns were measured against. The quality figures have not been re-measured against the new corpus and are deliberately not restated as if they had been. What was re-run is the gate suite itself: `make bench` passed 17 of 17 on 2026-08-14, and every floor in the table above is one of those 17 targets, so each one still holds against today's rulebook. That is a pass or fail result, not a fresh score.
 
 **What a turn actually costs.** Across 67 real sessions and 891 turns of logged injections: mean 537 tokens per turn, median 600, 95th percentile 1,360, maximum 5,440. The 5,000 and 8,000 token budgets are ceilings, not spend. Unlike every other number here, **this one has no artifact you can check**: it comes from `writ token-audit` over the maintainer's own session logs, which contain real prompts and file contents and cannot ship. The command is in the repository and runs against your logs, so the method is reproducible even though this run is not.
 
@@ -176,13 +191,13 @@ What **is** independently checkable today lives in the repository rather than in
 
 ## The rulebook is opinionated
 
-287 rules ship in the box: 76 security, 45 code quality, 28 architecture, 21 testing, 19 performance, 18 process, and smaller sets besides. The shape reflects where its author has worked. There are 12 Magento 2 rules and exactly one PHP typing rule, which tells you something true about where it came from.
+288 rules ship in the box: 76 security, 45 code quality, 28 architecture, 21 testing, 19 performance, 19 process, and smaller sets besides. The shape reflects where its author has worked. There are 12 Magento 2 rules and exactly one PHP typing rule, which tells you something true about where it came from.
 
 Treat the shipped rulebook as a working example, not a universal standard. Commands for adding and editing rules exist so you grow your own, and there is a full lifecycle for rules the AI itself proposes: a proposed rule lands marked provisional, gets promoted to a review queue only after enough real world evidence accumulates, and enters the canonical rulebook only through a human approval that requires the same one time secret as everything else. The statistics never promote anything on their own.
 
 ## Also in here: the Claude Code hook black box
 
-[`docs/reference/claude-code-blackbox.md`](docs/reference/claude-code-blackbox.md) is a version pinned, empirical map of exactly what Claude Code hands a hook script and exactly what a script can hand back. Captured live on build 2.1.220 and compared against 2.1.183. Every single field carries an evidence tag: observed in real data, documented but not seen, or unverified.
+[`docs/reference/claude-code-blackbox.md`](docs/reference/claude-code-blackbox.md) is a version pinned, empirical map of exactly what Claude Code hands a hook script and exactly what a script can hand back. Captured live on build 2.1.220 and compared against 2.1.183. Every single field carries an evidence tag: observed in real data, documented but not seen, or unverified. The build pin covers the original capture, and the file has kept growing since: it also carries findings observed on 2026-08-11 and 2026-08-14, each stamped with its own date. Read the tag next to a claim rather than the version at the top.
 
 It records five events that moved from documented only to actually observed, payload fields the public changelog never announced, and the mechanism that lets a script rewrite a tool call before it runs without the AI ever seeing the change. It is written so a non engineer can follow the idea in Part 1 and an engineer can build against the detail in Part 2.
 

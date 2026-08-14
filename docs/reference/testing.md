@@ -12,7 +12,7 @@ make bench           # benchmarks/bench_targets.py (contractual perf floors)
 make check           # test + bench + writ validate
 ```
 
-Over 400 test modules, roughly 7,700 collected tests (2026-08-13). Always use the venv interpreter (`.venv/bin/python`): the system interpreter lacks `onnxruntime` and fails the embedding tests. The suite runs on its own daemon port (8799) and against its own Neo4j instance on 7688 (see below). Markers: `perf` (latency-floor tests), `integration` (needs a live `claude` CLI, gated behind `WRIT_INTEGRATION_TESTS=1`), `no_friction_isolation` (opts out of the log redirect).
+Over 400 test modules, roughly 7,900 collected tests (2026-08-14). Always use the venv interpreter (`.venv/bin/python`): the system interpreter lacks `onnxruntime` and fails the embedding tests. The suite runs on its own daemon port (8799) and against its own Neo4j instance on 7688 (see below). Markers: `perf` (latency-floor tests), `integration` (needs a live `claude` CLI, gated behind `WRIT_INTEGRATION_TESTS=1`), `no_friction_isolation` (opts out of the log redirect).
 
 `--maxfail=10`, not `-x`: on a suite this size `-x` reports exactly one failure per run, so reaching green costs one run per failure at minutes each. Ten gives the whole picture and still refuses to grind through a broken suite.
 
@@ -31,7 +31,7 @@ Over 400 test modules, roughly 7,700 collected tests (2026-08-13). Always use th
 .venv/bin/python -m pytest tests/test_c.py -q
 ```
 
-**`-k` is not a narrower run.** A `-k` expression selects *after* collection, so it still collects all ~7,700 tests and pays the whole import cost before deselecting; only a path argument keeps tests out of the collection. Use paths, and `-k` only to pick within paths you already named.
+**`-k` is not a narrower run.** A `-k` expression selects *after* collection, so it still collects all ~7,900 tests and pays the whole import cost before deselecting; only a path argument keeps tests out of the collection. Use paths, and `-k` only to pick within paths you already named.
 
 ## Isolation, forced at import time (`tests/conftest.py`)
 
@@ -43,7 +43,7 @@ Over 400 test modules, roughly 7,700 collected tests (2026-08-13). Always use th
 
 ## The anti-masking contracts
 
-Roughly half the suite needs a reachable Neo4j. The rule, encoded in `tests/_corpus.py::classify_corpus_state`: **unreachable is the only legitimate skip; a reachable-but-empty graph must FAIL.** An empty graph previously masked a real regression as a skip. Corpus expectations: 280+ rules, and the exact methodology census (5 SubagentRole, 15 Playbook, 13 Skill, 20 Phase). On an isolated run (the default, below) the session-start preflight warms a cold instance from the tracked `writ-corpus.cypher` and `pytest_sessionfinish` skips the restore, because a throwaway instance has nothing to repair. Under `WRIT_TEST_NO_ISOLATION=1` the old behaviour stands unchanged: the probe self-heals from `bible/`, and `pytest_sessionfinish` restores the shipped corpus from `writ-corpus.cypher` on every run (the earlier count-gated restore left methodology nodes missing after a run).
+Roughly half the suite needs a reachable Neo4j. The rule, encoded in `tests/_corpus.py::classify_corpus_state`: **unreachable is the only legitimate skip; a reachable-but-empty graph must FAIL.** An empty graph previously masked a real regression as a skip. What the classifier actually gates on is narrower than the file's census constant suggests: `classify_corpus_state` returns `ready` only when the rule count reaches `MIN_RULES` (280) **and** the SubagentRole count reaches `EXPECTED["SubagentRole"]` (5). The `EXPECTED` mapping records a wider census (5 SubagentRole, 15 Playbook, 13 Skill, 20 Phase), but the SubagentRole entry is the only one the classifier reads; the other three document the shipped corpus rather than gate a run. On an isolated run (the default, below) the session-start preflight warms a cold instance from the tracked `writ-corpus.cypher` and `pytest_sessionfinish` skips the restore, because a throwaway instance has nothing to repair. Under `WRIT_TEST_NO_ISOLATION=1` the old behaviour stands unchanged: the probe self-heals from `bible/`, and `pytest_sessionfinish` restores the shipped corpus from `writ-corpus.cypher` on every run (the earlier count-gated restore left methodology nodes missing after a run).
 
 ## The suite runs against its own Neo4j instance
 

@@ -230,3 +230,116 @@ class TestRealCorpus:
             "writ-rag-inject.sh", "session-start-bootstrap.sh",
             "auto-approve-gate.sh", "validate-rules.sh", "writ-cwd-changed.sh",
         })
+
+
+class TestHookLintSummary:
+    """Cycle H's folded fix pins `writ.cli._hook_lint_summary(findings: list[dict])
+    -> str`, the planned module-level private helper the `integrity` command's
+    hook-delivery lint header will call instead of its two inline list
+    comprehensions (`inert = [...]`, `review = [...]`). Today's header --
+
+        f"\\nHook delivery lint (#7C, WARNING) -- {len(inert)} inert, {len(review)} review:"
+
+    -- counts only two of the four severities `lint_hooks` can emit. A
+    `rejected` finding (cycle G) prints in the body loop but is invisible in
+    the count line an operator actually reads. The fixed helper names all
+    three countable severities, `rejected` first (mirroring the sort order
+    `TestSyntheticClassification.test_rejected_severity_sorts_above_inert`
+    already pins in `lint_hooks` itself), and leaves `error` (the
+    unreadable-hooks.json case) out of every count, matching today's
+    behavior.
+
+    Each test imports `_hook_lint_summary` locally rather than at module
+    scope: the helper does not exist yet, so a module-level import would
+    turn every class above into a single collection error. A local import
+    keeps that RED confined to this class -- `writ.cli` has no
+    `_hook_lint_summary` attribute yet, so each test below fails with an
+    ImportError, not a syntax or collection error, and the classes above
+    are unaffected.
+    """
+
+    def _summary(self, findings: list[dict]) -> str:
+        from writ.cli import _hook_lint_summary
+        return _hook_lint_summary(findings)
+
+    def test_mixed_findings_name_all_three_counts_rejected_first(self) -> None:
+        findings = [
+            {"severity": "rejected"},
+            {"severity": "rejected"},
+            {"severity": "inert"},
+            {"severity": "review"},
+            {"severity": "review"},
+            {"severity": "review"},
+        ]
+        out = self._summary(findings)
+        assert out == (
+            "\nHook delivery lint (#7C, WARNING) -- "
+            "2 rejected, 1 inert, 3 review:"
+        )
+
+    def test_rejected_only_list_reports_inert_and_review_as_zero(self) -> None:
+        findings = [
+            {"severity": "rejected"},
+            {"severity": "rejected"},
+            {"severity": "rejected"},
+        ]
+        out = self._summary(findings)
+        assert out == (
+            "\nHook delivery lint (#7C, WARNING) -- "
+            "3 rejected, 0 inert, 0 review:"
+        )
+
+    def test_no_rejected_findings_matches_the_pre_fix_inert_and_review_tail(self) -> None:
+        # Additive, no regression: before cycle H the header carried only
+        # f"{len(inert)} inert, {len(review)} review:" with no rejected
+        # count at all. With zero rejected findings the fixed helper must
+        # still produce that exact inert/review substring unchanged, merely
+        # prepending "0 rejected, " ahead of it.
+        findings = [
+            {"severity": "inert"},
+            {"severity": "inert"},
+            {"severity": "review"},
+        ]
+        out = self._summary(findings)
+        assert out == (
+            "\nHook delivery lint (#7C, WARNING) -- "
+            "0 rejected, 2 inert, 1 review:"
+        )
+        assert out.endswith("2 inert, 1 review:")  # the pre-fix tail, unchanged
+
+    def test_error_severity_is_excluded_from_every_count(self) -> None:
+        # The unreadable-hooks.json case: lint_hooks returns a single
+        # {"severity": "error", ...} finding. error stays uncounted in the
+        # header today and must stay uncounted after the fix.
+        findings = [{"severity": "error"}]
+        out = self._summary(findings)
+        assert out == (
+            "\nHook delivery lint (#7C, WARNING) -- "
+            "0 rejected, 0 inert, 0 review:"
+        )
+
+    def test_error_finding_mixed_with_others_is_not_miscounted_as_rejected(self) -> None:
+        # One of each countable severity plus one error: the error must not
+        # inflate the rejected bucket (or any other bucket) -- each count
+        # stays at exactly 1, not 2.
+        findings = [
+            {"severity": "error"},
+            {"severity": "rejected"},
+            {"severity": "inert"},
+            {"severity": "review"},
+        ]
+        out = self._summary(findings)
+        assert out == (
+            "\nHook delivery lint (#7C, WARNING) -- "
+            "1 rejected, 1 inert, 1 review:"
+        )
+
+    def test_empty_findings_list_renders_a_falsy_header(self) -> None:
+        # The `integrity` command keeps its existing `if hl:` guard around
+        # the new `typer.echo(_hook_lint_summary(hl))` call (the plan's
+        # "Shape of the fix"), so the silent-when-clean invariant is really
+        # the caller's job. This pins the helper's half of that contract:
+        # called on an empty list it must not fabricate a header worth
+        # echoing, so `if hl:` and `if _hook_lint_summary(hl):` never
+        # disagree about when `integrity` should stay silent.
+        assert self._summary([]) == ""
