@@ -7,10 +7,11 @@
 # "test" instance ends up on the production port.
 #
 #   up      create the container when absent, start it when stopped, wait for
-#           bolt to answer, then replay writ-corpus.cypher -- but only when it
-#           had to create or start something. An instance that is already
-#           serving is success: `up` prints one line and exits 0, so `make test`
-#           can depend on it on every run.
+#           bolt to answer, replay writ-corpus.cypher when it had to create or
+#           start something, then apply the schema and wait until every index is
+#           ONLINE. Idempotent: an already-serving instance skips the replay but
+#           still re-checks the schema, because that check is about the run that
+#           follows, not about what this script did.
 #   down    stop the container and KEEP its data. Nothing here destroys the
 #           container or its volume, so the next `up` starts warm.
 #   status  report what exists, what is running, and what the graph holds.
@@ -79,8 +80,10 @@ usage() {
 Usage: scripts/test-graph.sh <up|down|status>
 
   up      Create or start the disposable Neo4j test instance, wait for bolt,
-          and replay writ-corpus.cypher if it had to create or start it.
-          Idempotent: an already-serving instance exits 0 having done nothing.
+          replay writ-corpus.cypher if it had to create or start it, then apply
+          the schema and wait until every index is ONLINE. Idempotent: an
+          already-serving instance skips the replay but still re-checks the
+          schema, because that check is about the run that follows.
   down    Stop the instance. Data is kept, so the next `up` starts warm.
   status  Report container and graph state. Changes nothing.
 
@@ -190,6 +193,57 @@ warm_corpus() {
     "$PYTHON" -m writ.cli import-cypher "$CORPUS_DUMP"
 }
 
+# Applies the schema, then waits until every index reports state=ONLINE.
+#
+# The disposable instance never had a schema applied to it. writ-corpus.cypher
+# carries nodes and edges only (its single CREATE INDEX line is example text
+# inside a rule), and import_cypher_dump does not call apply_constraints, so a
+# fresh container ran the suite with NO uniqueness constraints at all -- which is
+# exactly what makes a MERGE on a non-constrained key race (create_project,
+# create_memory). Applying it here is the fix; waiting for ONLINE is what makes
+# "ready" mean ready rather than "a query answered".
+#
+# `state` lives ONLY on SHOW INDEXES rows; SHOW CONSTRAINTS has no state field, so
+# a constraint's readiness is read through its ownedIndex. Zero indexes is not
+# ready. The wait loop runs INSIDE python so a 90s wait costs one interpreter
+# start and one driver connection instead of ninety.
+ensure_schema() {
+    WRIT_NEO4J_URI="$ISOLATED_URI" \
+    WRIT_NEO4J_USER="$NEO4J_USER" \
+    WRIT_NEO4J_PASSWORD="$NEO4J_PASSWORD" \
+    WRIT_SCHEMA_WAIT="$BOLT_WAIT_SECONDS" \
+    "$PYTHON" - <<'PY'
+import asyncio
+import json
+import os
+import time
+
+from writ.config import get_neo4j_password, get_neo4j_uri, get_neo4j_user
+from writ.graph.db import Neo4jConnection
+
+
+async def main() -> int:
+    deadline = time.monotonic() + float(os.environ.get("WRIT_SCHEMA_WAIT", "90"))
+    db = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
+    try:
+        await db.apply_constraints()
+        while True:
+            state = await db.schema_readiness()
+            if state["ready"]:
+                print(json.dumps(state))
+                return 0
+            if time.monotonic() >= deadline:
+                print(json.dumps(state))
+                return 1
+            await asyncio.sleep(1)
+    finally:
+        await db.close()
+
+
+raise SystemExit(asyncio.run(main()))
+PY
+}
+
 cmd_up() {
     require_docker
 
@@ -212,26 +266,34 @@ cmd_up() {
     fi
 
     if [ "$touched" -eq 0 ] && bolt_ready; then
-        log "$CONTAINER_NAME already serving $ISOLATED_URI, nothing to do"
-        return 0
+        log "$CONTAINER_NAME already serving $ISOLATED_URI"
+    else
+        log "waiting up to ${BOLT_WAIT_SECONDS}s for bolt on $ISOLATED_URI"
+        if ! wait_for_bolt; then
+            fail "$ISOLATED_URI did not answer within ${BOLT_WAIT_SECONDS}s."
+            fail "Inspect it with: docker logs $CONTAINER_NAME"
+            return 1
+        fi
+        if [ "$touched" -ne 0 ] && ! warm_corpus; then
+            fail "the instance is up but its corpus is incomplete, so pytest will refuse the run."
+            return 1
+        fi
     fi
 
-    log "waiting up to ${BOLT_WAIT_SECONDS}s for bolt on $ISOLATED_URI"
-    if ! wait_for_bolt; then
-        fail "$ISOLATED_URI did not answer within ${BOLT_WAIT_SECONDS}s."
+    # After the replay, never before: applying the DDL first would put the
+    # replay's CREATEs into the window where the new constraints' backing indexes
+    # are still populating, and population over an already-loaded graph happens
+    # once instead of incrementally. The cost accepted is that a dump carrying a
+    # duplicate business key now fails here, at constraint creation, rather than
+    # on the offending row. apply_constraints is idempotent, so paying it on every
+    # `up` buys the guarantee for the run that follows.
+    local schema
+    if ! schema="$(ensure_schema)"; then
+        fail "the schema did not come ONLINE within ${BOLT_WAIT_SECONDS}s: ${schema:-no readiness report}"
         fail "Inspect it with: docker logs $CONTAINER_NAME"
         return 1
     fi
-
-    if [ "$touched" -eq 0 ]; then
-        log "$CONTAINER_NAME is serving $ISOLATED_URI, nothing to do"
-        return 0
-    fi
-
-    if ! warm_corpus; then
-        fail "the instance is up but its corpus is incomplete, so pytest will refuse the run."
-        return 1
-    fi
+    log "schema ready: $schema"
     log "ready: $ISOLATED_URI (user $NEO4J_USER)"
 }
 

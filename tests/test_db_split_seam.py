@@ -51,6 +51,10 @@ EXPECTED_METHODS = [
     # (writ/graph/db/record_store.py). Added deliberately, same reasoning as above.
     "list_all_memories", "list_constraints",
     "list_indexes", "list_memories", "resolve_file_claims", "resolve_project_for_cwd",
+    # The disposable-instance schema gate (item 1): the readiness verdict lives next
+    # to list_indexes/list_constraints so scripts/test-graph.sh and the suite share
+    # one definition instead of each re-deriving "is the schema usable".
+    "schema_readiness",
     "tombstone_missing_memories", "traverse_neighbors",
     "update_rule_authority", "update_rule_confidence", "wire_governed_by", "wire_has_change",
     "wire_has_commit", "wire_has_decision", "wire_includes", "wire_motivated_by",

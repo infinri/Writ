@@ -19,8 +19,10 @@ check-venv:
 # The disposable Neo4j the suite runs against. scripts/test-graph.sh owns the
 # container recipe, including the refusal to publish the production bolt port;
 # these targets exist so nobody retypes a `docker run` line. `up` is idempotent
-# (already serving means one line and exit 0) and it does nothing at all under
-# WRIT_TEST_NO_ISOLATION=1, so the opt-out path stays a no-op here too.
+# (an already-serving instance skips the corpus replay but still re-applies the
+# schema and re-checks that every index is ONLINE, measured at 0.68s) and it does
+# nothing at all under WRIT_TEST_NO_ISOLATION=1, so the opt-out path stays a
+# no-op here too.
 test-graph-up:
 	bash scripts/test-graph.sh up
 
