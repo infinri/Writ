@@ -214,7 +214,9 @@ def _default_cache() -> dict:
         # Phase 1 additions per plan Section 6.1 deliverable 5. Track playbook
         # execution state for SDD/brainstorm workflows, verification evidence
         # for Gate 5 Tier 1, review ordering for SDD two-stage review, and
-        # quality-judgment scores for Gate 5 Tier 2 (Haiku judge).
+        # quality-judgment scores for Gate 5 Tier 2 (self-scored: the session
+        # judges its own artifact; hooks/scripts/writ-quality-judge.sh emits the
+        # directive).
         "active_playbook": None,
         "active_phase": None,
         "playbook_phase_history": [],

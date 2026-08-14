@@ -75,7 +75,7 @@ All 49 endpoints on `http://localhost:8765`, generated from the FastAPI route ta
 | GET | `/session/{session_id}/pending-violations` | Get pending violations for the session |
 | GET | `/session/{session_id}/prompt-state` | Everything the RAG hook asks about a session, in one call and one cache read |
 | GET | `/session/{session_id}/quality-judgment` | Read all quality judgments plus the override count for the session |
-| POST | `/session/{session_id}/quality-judgment` | Record a Gate 5 Tier 2 (Haiku judge) quality score for an artifact |
+| POST | `/session/{session_id}/quality-judgment` | Record a Gate 5 Tier 2 (self-scored) quality score for an artifact |
 | POST | `/session/{session_id}/reset-after-compaction` | Reset budget and clear phase exclusion list after compaction (PostCompact) |
 | GET | `/session/{session_id}/review-findings` | The latest recorded reviewer verdict and whether it blocks a commit |
 | POST | `/session/{session_id}/review-findings` | Record a reviewer verdict for the session. The latest one wins |
