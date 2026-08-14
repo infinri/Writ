@@ -36,7 +36,8 @@ from writ.server.models import (
     SessionUpdateRequest,
     SessionVerificationEvidenceRequest,
 )
-from writ.session.mode_engine import VALID_MODES
+from writ.session.locators import plan_md_hash
+from writ.session.mode_engine import VALID_MODES, _next_pending_gate
 from writ.shared.logging import emit
 
 router = APIRouter()
@@ -183,14 +184,52 @@ async def session_can_write(session_id: str, request: SessionCanWriteRequest | N
 
 @router.get("/session/{session_id}/current-phase")
 async def session_current_phase(session_id: str) -> dict[str, Any]:
-    """Get the current phase for the session."""
+    """The phase, the mode, the next pending gate and the plan fingerprint.
 
-    def _get() -> str:
+    THE FOUR FIELDS ARE THE ONES THIS ROUTE'S CALLER ALREADY PARSES.
+    hooks/scripts/auto-approve-gate.sh reads `.phase`, `.mode`, `.next_gate` and
+    `.plan_hash` out of this reply, and the route used to return `{"phase": ...}`
+    alone, so three of the four read empty and the hook fell back to inferring the
+    gate from the phase (planning -> phase-a, testing -> test-skeletons,
+    implementation -> nothing). A gate re-armed DURING implementation -- which is
+    exactly what editing plan.md does, by design -- was therefore invisible to the
+    only mechanism that can clear it: every write denied and the user's "approved"
+    answered with "No approval gate was advanced". The CLI's cmd_current_phase
+    (writ/session/approval_workflow.py) has reported all four all along; an endpoint
+    returning a strict subset of what its only caller parses is the defect.
+
+    `next_gate` is computed by mode_engine._next_pending_gate, the SAME function
+    /advance-phase enforces with, so the approval path and the enforcement path
+    cannot hold two derivations of one fact again. Do not re-derive it here: the
+    plan-hash re-arm it performs is the binding of an approval to the plan it was
+    granted against, and reporting a gate on any other basis would either hide a
+    re-arm or manufacture a gate nobody is waiting on.
+
+    null is a real answer for both nullable fields, not an error: no gate is pending
+    (or the mode has no gates at all), and there is no plan.md under the session's
+    project root. Neither computation raises on those inputs -- _next_pending_gate
+    returns None for any non-work mode and plan_md_hash returns None for an empty
+    root or an absent plan -- which matters because a hook calls this on every
+    approval-shaped user prompt, so a 500 here would break the turn itself.
+    """
+
+    def _get() -> dict[str, Any]:
+        # ONE cache read, and both derivations inside the SAME to_thread: each does
+        # file I/O (_next_pending_gate fingerprints plan.md through plan_md_hash), so
+        # computing either outside this thread would put a disk read on the event
+        # loop (PY-ASYNC-001 / PERF-IO-001). One read also means the gate and the
+        # fingerprint describe one moment, which is what the token binding needs.
         cache = server.writ_session._read_cache(session_id)
-        return cache.get("current_phase", "planning") or "planning"
+        return {
+            "phase": cache.get("current_phase", "planning") or "planning",
+            # "" rather than null for an unset mode, matching this file's own
+            # /session/{id}/mode route; the hook coalesces either to empty anyway.
+            "mode": cache.get("mode", "") or "",
+            "next_gate": _next_pending_gate(cache),
+            "plan_hash": plan_md_hash(cache.get("project_root")),
+        }
 
-    phase = await asyncio.to_thread(_get)
-    return {"phase": phase}
+    return await asyncio.to_thread(_get)
 
 
 @router.post("/session/format")
@@ -625,7 +664,7 @@ async def session_review_findings_get(session_id: str) -> dict[str, Any]:
 async def session_quality_judgment_set(
     session_id: str, request: SessionQualityJudgmentRequest
 ) -> dict[str, Any]:
-    """Record a Gate 5 Tier 2 (Haiku judge) quality score for an artifact.
+    """Record a Gate 5 Tier 2 (self-scored) quality score for an artifact.
 
     body: {artifact_path: str, score: int (0-5), failing_section: str|None,
            rationale: str, overridden: bool, rubric: str|None}

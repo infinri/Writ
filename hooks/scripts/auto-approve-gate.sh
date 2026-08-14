@@ -124,9 +124,16 @@ fi
 PHASE_JSON=$(python3 "$SESSION_HELPER" current-phase "$SESSION_ID" 2>/dev/null || echo "{}")
 # Tab-separated, one value out, per json_transform's contract (jq when present, stdlib
 # python otherwise, since jq is not a prerequisite for the gate to work).
+#
+# FIELD 5 is a PRESENCE flag for next_gate, not a value: an absent key and a null both
+# render as an empty field, and those two mean opposite things. Null is the answer "no
+# gate is pending"; absent is "this responder is older than the field" (writ/ code and
+# the running daemon are separate artifacts -- the daemon has to be restarted to pick up
+# a checkout). The advance guard below has to tell them apart to know whether it may
+# trust the empty answer or must fall back to the phase.
 PHASE_FIELDS=$(printf '%s' "$PHASE_JSON" | json_transform \
-    '[.phase, .mode, .next_gate, .plan_hash] | map(. // "") | join("\t")' \
-    '"\t".join([str(d.get(k) or "") for k in ("phase", "mode", "next_gate", "plan_hash")])' \
+    '[(.phase // ""), (.mode // ""), (.next_gate // ""), (.plan_hash // ""), (if has("next_gate") then "1" else "" end)] | join("\t")' \
+    '"\t".join([str(d.get(k) or "") for k in ("phase", "mode", "next_gate", "plan_hash")] + ["1" if "next_gate" in d else ""])' \
     2>/dev/null || echo "")
 # `cut -s`: a line with no tab is a parse that failed, and every field must then read
 # empty rather than repeating the whole line into CURRENT_MODE (which would compare equal
@@ -135,6 +142,7 @@ CURRENT_PHASE=$(printf '%s' "$PHASE_FIELDS" | cut -s -f1)
 CURRENT_MODE=$(printf '%s' "$PHASE_FIELDS" | cut -s -f2)
 NEXT_GATE=$(printf '%s' "$PHASE_FIELDS" | cut -s -f3)
 PLAN_HASH=$(printf '%s' "$PHASE_FIELDS" | cut -s -f4)
+NEXT_GATE_REPORTED=$(printf '%s' "$PHASE_FIELDS" | cut -s -f5)
 
 case "$TIER" in
 embedded)
@@ -167,10 +175,10 @@ exact)
     PROJECT_ROOT=$(detect_project_root "$(pwd -P)")
 
     # False-positive guard (what the tool-only design was protecting against):
-    # auto-advance ONLY in work mode AND ONLY when current_phase is planning or
-    # testing -- the two phases that await a human approval gate. Implementation has
-    # no approval gate (finishing is a separate explicit action), and the other
-    # modes have no gates, so a stray "approved" there is a logged no-op.
+    # auto-advance ONLY in work mode, and ONLY when a gate is actually pending. Which
+    # gate that is comes from the server (see the precedence comment below the mint);
+    # the other modes have no gates at all, so a stray "approved" there is a logged
+    # no-op.
     #
     # The token is minted for EVERY exact approval, including the no-gate-pending case:
     # that is the token /session/{id}/promote-candidate needs, and it is bound to the
@@ -193,7 +201,26 @@ exact)
     GATE_ERROR=""
     VALIDATED=""
     TOKEN_SPENT=""
-    if [ -n "$GATE_TOKEN" ] && [ "$CURRENT_MODE" = "work" ] && { [ "$CURRENT_PHASE" = "planning" ] || [ "$CURRENT_PHASE" = "testing" ]; }; then
+    # PRECEDENCE: the server's next_gate WINS; the planning/testing phase inference is
+    # a FALLBACK, used only when the responder did not report the field at all (an
+    # older daemon -- writ/ and the running daemon are separate artifacts, and the
+    # daemon must be restarted to pick up a checkout).
+    #
+    # The inference maps planning -> phase-a, testing -> test-skeletons and
+    # implementation -> nothing, which is not the question _next_pending_gate answers.
+    # A gate RE-ARMS whenever plan.md changes under an approval, and that can happen in
+    # any phase; when it happened during implementation the inference said "no gate
+    # here" while enforcement denied every write, and the user's "approved" could not
+    # clear it. So a non-empty next_gate advances regardless of phase, and an empty one
+    # the server actually REPORTED (field present, value null) means nothing is
+    # pending -- an answer, not a gap, which the phase must not second-guess.
+    GATE_PENDING=""
+    if [ -n "$NEXT_GATE" ]; then
+        GATE_PENDING=1
+    elif [ -z "$NEXT_GATE_REPORTED" ] && { [ "$CURRENT_PHASE" = "planning" ] || [ "$CURRENT_PHASE" = "testing" ]; }; then
+        GATE_PENDING=1
+    fi
+    if [ -n "$GATE_TOKEN" ] && [ "$CURRENT_MODE" = "work" ] && [ -n "$GATE_PENDING" ]; then
         # Send the cwd and let the SERVER resolve the project root
         # (locators.resolve_project_root: marker dir at or above cwd, else the cwd itself).
         # Two reasons not to send the bash marker walk as project_root instead:
