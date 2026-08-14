@@ -41,6 +41,11 @@ jobs:
       WRIT_NEO4J_URI: bolt://localhost:7688
       WRIT_NEO4J_PASSWORD: writdevpass
       WRIT_TEST_GRAPH: "1"
+      # cycle A gave `make test` a test-graph-up dependency; this job's Neo4j is a
+      # workflow service already published on 7688, so that script stands down rather
+      # than collide with the port. The service IS the configured instance, which is
+      # the pre-cycle-A CI semantics restored.
+      WRIT_TEST_NO_ISOLATION: "1"
     services:
       neo4j:
         image: neo4j:5
