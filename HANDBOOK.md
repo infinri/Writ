@@ -388,12 +388,12 @@ MATCH (r:Rule {rule_id: 'SEC-INJ-SQL-001'})-[e]-(m) RETURN r, e, m;
 ## 19. Testing and benchmarks
 
 ```bash
-make test    # pytest tests/ -x -q
+make test    # starts the disposable Neo4j on 7688, then pytest tests/ --maxfail=10 -q
 make bench   # benchmarks/bench_targets.py, the contractual perf floors
 make check   # test + bench + writ validate
 ```
 
-398 test modules, 7,137 collected tests. Always run with the venv interpreter (`.venv/bin/python`); the system interpreter lacks `onnxruntime` and fails the embedding tests. Roughly half the suite needs a reachable Neo4j: unreachable skips, but a reachable-and-empty graph *fails* by design, so a broken corpus can never masquerade as a skip. The suite runs on its own daemon port (8799), isolates caches and logs per test, and restores the shipped corpus from `writ-corpus.cypher` when it finishes.
+Over 400 test modules, roughly 7,700 collected tests (2026-08-13). Always run with the venv interpreter (`.venv/bin/python`); the system interpreter lacks `onnxruntime` and fails the embedding tests. Roughly half the suite needs a reachable Neo4j: unreachable skips, but a reachable-and-empty graph *fails* by design, so a broken corpus can never masquerade as a skip. The suite runs on its own daemon port (8799), against its own Neo4j instance on port 7688 (`make test-graph-up`), isolates caches and logs per test, and restores the shipped corpus from `writ-corpus.cypher` when it finishes.
 
 Benchmarks: `bench_targets.py` (14 pass/fail targets: cold start, memory, per-stage latency, retrieval floors), `scale_benchmark.py` (the synthetic 80/500/1K/10K curve; wipes and restores), `methodology_bench.py` (read-only), `run_benchmarks.py` (traversal latency at 1K/10K).
 

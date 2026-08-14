@@ -73,5 +73,8 @@ Phase 0 introduced data-driven `Category` routing and parity. Phase 1 added the 
 ```bash
 docker exec writ-neo4j cypher-shell -u neo4j -p writdevpass \
   "MATCH (n) WHERE n.project='writ' RETURN count(n);"
-.venv/bin/python -m pytest   # 367 modules, ~5,700 tests; needs the venv interpreter
+make test   # over 400 test modules, roughly 7,700 collected tests (2026-08-13)
+            # Bare `.venv/bin/python -m pytest` REFUSES: the suite requires its own
+            # Neo4j on 7688 (tests/conftest.py). `make test` starts it; or run
+            # `make test-graph-up` once, then pytest with the venv interpreter.
 ```

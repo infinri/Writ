@@ -97,7 +97,7 @@ Worth being blunt about what the gate does and does not check. The validators co
 
 **Everything else is searched for.** A five stage pipeline runs over a Neo4j graph database: narrow the candidates, keyword search, meaning based search (so a rule about "SQL" surfaces for a question about "database queries"), a walk across the graph to pull in related rules, then weighted ranking. Each stage covers a blind spot the others have. Keyword search catches exact terms. Meaning based search catches paraphrase. The graph walk catches rules that share no words at all but are causally connected. If nothing matches well enough, the pipeline **returns nothing** rather than injecting noise.
 
-**The search fires on what is happening, not just what you typed.** Forty small scripts watch the session and attach real context to the query: which file is being written, what is inside it, which tool is running, what phase the workflow is in. A rule about SQL injection surfaces when the AI writes a file containing a query, not only when someone happens to type the word SQL.
+**The search fires on what is happening, not just what you typed.** Forty-one small scripts watch the session and attach real context to the query: which file is being written, what is inside it, which tool is running, what phase the workflow is in. A rule about SQL injection surfaces when the AI writes a file containing a query, not only when someone happens to type the word SQL.
 
 ## "Couldn't you just use skill files?"
 

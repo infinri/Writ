@@ -2,12 +2,14 @@
 
 Pins capabilities 2-11 and 20-22 of capabilities.md / plan.md's Capabilities
 section (item 1, 12-19, 23-26 and every `(real graph)` / `(operational)` item
-are out of scope for this file; those need the disposable instance itself,
-which does not exist yet).
+are out of scope for this file; those run against the live disposable instance,
+which `scripts/test-graph.sh up` creates and other suites exercise).
 
-None of the following exists in the tree yet: `tests/_graph.py`,
-`scripts/test-graph.sh`, or the conftest.py / tests/_corpus.py changes this
-cycle adds. Every test below is expected to fail today, for that reason.
+`tests/_graph.py` and `scripts/test-graph.sh` are tracked and every test below
+passes. This docstring used to declare the opposite (that neither file was in
+the tree, and that every test below was RED), which was true only on the day it
+was written; a file that announces itself RED while it is GREEN teaches its next
+reader to distrust the whole suite.
 
 SAFETY, read before touching anything in this file. This suite must never
 open, write to, or wipe `bolt://localhost:7687` -- the live production graph a

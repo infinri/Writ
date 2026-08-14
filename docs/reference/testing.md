@@ -12,7 +12,7 @@ make bench           # benchmarks/bench_targets.py (contractual perf floors)
 make check           # test + bench + writ validate
 ```
 
-398 test modules, 7,137 collected tests. Always use the venv interpreter (`.venv/bin/python`): the system interpreter lacks `onnxruntime` and fails the embedding tests. Markers: `perf` (latency-floor tests), `integration` (needs a live `claude` CLI, gated behind `WRIT_INTEGRATION_TESTS=1`), `no_friction_isolation` (opts out of the log redirect).
+Over 400 test modules, roughly 7,700 collected tests (2026-08-13). Always use the venv interpreter (`.venv/bin/python`): the system interpreter lacks `onnxruntime` and fails the embedding tests. The suite runs on its own daemon port (8799) and against its own Neo4j instance on 7688 (see below). Markers: `perf` (latency-floor tests), `integration` (needs a live `claude` CLI, gated behind `WRIT_INTEGRATION_TESTS=1`), `no_friction_isolation` (opts out of the log redirect).
 
 `--maxfail=10`, not `-x`: on a suite this size `-x` reports exactly one failure per run, so reaching green costs one run per failure at minutes each. Ten gives the whole picture and still refuses to grind through a broken suite.
 
@@ -31,7 +31,7 @@ make check           # test + bench + writ validate
 .venv/bin/python -m pytest tests/test_c.py -q
 ```
 
-**`-k` is not a narrower run.** A `-k` expression selects *after* collection, so it still collects all 7,137 tests and pays the whole import cost before deselecting; only a path argument keeps tests out of the collection. Use paths, and `-k` only to pick within paths you already named.
+**`-k` is not a narrower run.** A `-k` expression selects *after* collection, so it still collects all ~7,700 tests and pays the whole import cost before deselecting; only a path argument keeps tests out of the collection. Use paths, and `-k` only to pick within paths you already named.
 
 ## Isolation, forced at import time (`tests/conftest.py`)
 

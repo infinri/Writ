@@ -33,8 +33,9 @@ Four, all corrected in v1.7.0 and all checkable against artifacts already in thi
   records its starting line count as "not captured", so no within-window count exists; 7,058
   is the cumulative line count at the close. **This one has a consumer:** anyone who quoted
   it as a within-window event volume quoted something that was never measured.
-- Test-suite counts read 367 modules and ~5,700 tests against an actual 398 and 7,137
-  collected, and were stale in three files at once.
+- Test-suite counts read 367 modules and ~5,700 tests against an actual 398 modules and 7,137
+  collected at the time of the correction (2026-08-08); the suite has grown since, so treat both
+  figures as dated. They were stale in three files at once.
 - `pyproject.toml`'s package description carried a hook count matching neither the README nor
   the wiring, and it ships to PyPI independently of any README edit.
 
