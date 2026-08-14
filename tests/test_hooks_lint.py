@@ -114,10 +114,12 @@ class TestSyntheticClassification:
 class TestRealCorpus:
     """Run against the live hooks.json -- regression guard for precision.
 
-    Post-#2: the previously-inert injectors now deliver via additionalContext, so
-    they must NOT be flagged. The only remaining findings are postcompact (inert,
-    PostCompact bare stdout -- delivery unconfirmed, see plan) and validate-exit-plan
-    (review, genuine bare-stdout heredoc on its allow path)."""
+    Post-item-6: both remaining findings are fixed. writ-postcompact.sh delivers
+    its state line and verify-discipline directive through one
+    hookSpecificOutput.additionalContext payload, and validate-exit-plan.sh's
+    allow path does the same, so the live lint must report NOTHING. This is the
+    mechanism that confirms the fix: a regression back to bare stdout re-flags
+    the script here."""
 
     def _findings(self) -> list[dict]:
         return lint_hooks(WRIT_ROOT / "hooks" / "hooks.json", WRIT_ROOT)
@@ -131,11 +133,15 @@ class TestRealCorpus:
             "writ-pre-write-dispatch.sh",
         })
 
-    def test_remaining_findings_are_the_known_two(self) -> None:
-        inert = {f["script"] for f in self._findings() if f["severity"] == "inert"}
-        review = {f["script"] for f in self._findings() if f["severity"] == "review"}
-        assert "writ-postcompact.sh" in inert
-        assert "validate-exit-plan.sh" in review
+    def test_no_inert_or_review_findings_remain(self) -> None:
+        # Item 6 fixed the last two known offenders (writ-postcompact.sh: inert,
+        # validate-exit-plan.sh: review). The lint is the authority on scope here:
+        # after the fix it must report zero inert and zero review findings.
+        findings = self._findings()
+        assert findings == [], (
+            "live hook-delivery lint expected zero findings after item 6 "
+            f"(writ-postcompact.sh, validate-exit-plan.sh); got: {findings!r}"
+        )
 
     def test_working_hooks_never_flagged(self) -> None:
         flagged = {f["script"] for f in self._findings()}

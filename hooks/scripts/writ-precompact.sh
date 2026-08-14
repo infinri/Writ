@@ -11,7 +11,9 @@
 # objects annotated is being summarized away). A PreCompact hook also cannot
 # steer compaction: its stdout is not injected into the summary and it has no
 # additionalContext. PostCompact (writ-postcompact.sh) is the only hook whose
-# output reaches the next turn.
+# output reaches the next turn, and it does so via
+# hookSpecificOutput.additionalContext -- its bare stdout goes to the CC debug log
+# like any other non-special event.
 #
 # Hook type: PreCompact
 # Exit: always 0 (cannot block compaction)

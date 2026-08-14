@@ -6,9 +6,15 @@ fresh evidence. The architectural defense is to make the existing
 PostCompact hook emit a directive into the next-turn context that
 forces a re-verify mindset.
 
-Tests verify the directive contains key phrases and is emitted to
-stdout (which Claude Code injects into next-turn context per its
-PostCompact contract).
+Cycle B correction: bare stdout on PostCompact reaches only the Claude
+Code debug log (writ/shared/delivery.py::STDOUT_TO_MODEL_EVENTS lists
+only UserPromptSubmit, UserPromptExpansion, SessionStart). Reading raw
+stdout is what let the directive sit on a dead channel while these
+tests stayed green -- it only ever looked correct because a human-typed
+/compact echoes hook stdout into the transcript via an incidental
+<local-command-stdout> channel that does not exist for an automatic
+compaction. Tests now go through hookSpecificOutput.additionalContext,
+the channel documented to reach the model on any event.
 """
 from __future__ import annotations
 
@@ -32,34 +38,48 @@ def _run_hook(stdin_json: dict) -> tuple[str, str, int]:
     return proc.stdout, proc.stderr, proc.returncode
 
 
-class TestPostCompactDirective:
-    """The hook emits a verify-discipline directive on stdout after compact."""
+def _additional_context(stdin_json: dict) -> str:
+    """The hook's model-facing payload: the additionalContext field, not stdout.
 
-    def test_directive_emitted_on_stdout(self) -> None:
-        stdout, _, code = _run_hook({"session_id": "diag", "event": "compact"})
-        assert code == 0, "PostCompact hook must exit 0"
-        # Directive should be visible on stdout (next-turn context).
-        assert stdout.strip(), "Hook must emit a non-empty directive on stdout"
+    Reading stdout directly is what let the directive sit on a dead channel while
+    these tests stayed green -- bare stdout on PostCompact reaches the CC debug log
+    only (writ/shared/delivery.py). Parsing here means a regression back to bare
+    text fails on the json.loads, not on a phrase that happens to still be present.
+    """
+    stdout, _, code = _run_hook(stdin_json)
+    assert code == 0, "PostCompact hook must exit 0"
+    payload = json.loads(stdout)
+    hso = payload["hookSpecificOutput"]
+    assert hso["hookEventName"] == "PostCompact"
+    return hso["additionalContext"]
+
+
+class TestPostCompactDirective:
+    """The hook emits a verify-discipline directive via additionalContext after compact."""
+
+    def test_directive_delivered_via_additional_context(self) -> None:
+        ctx = _additional_context({"session_id": "diag", "event": "compact"})
+        assert ctx.strip(), "Hook must emit a non-empty directive via additionalContext"
 
     def test_directive_mentions_compaction(self) -> None:
-        stdout, _, _ = _run_hook({"session_id": "diag", "event": "compact"})
-        assert "compact" in stdout.lower(), (
+        ctx = _additional_context({"session_id": "diag", "event": "compact"})
+        assert "compact" in ctx.lower(), (
             "Directive must reference the compaction event so the model "
             "knows why this directive is firing"
         )
 
     def test_directive_mentions_recalled_or_second_hand_evidence(self) -> None:
-        stdout, _, _ = _run_hook({"session_id": "diag", "event": "compact"})
+        ctx = _additional_context({"session_id": "diag", "event": "compact"})
         signals = ["recalled", "second-hand", "second hand", "remembered", "pre-compact"]
-        assert any(s in stdout.lower() for s in signals), (
+        assert any(s in ctx.lower() for s in signals), (
             "Directive must signal that pre-compact memory is now "
             f"second-hand evidence (one of {signals!r})"
         )
 
     def test_directive_instructs_reverify(self) -> None:
-        stdout, _, _ = _run_hook({"session_id": "diag", "event": "compact"})
+        ctx = _additional_context({"session_id": "diag", "event": "compact"})
         signals = ["re-run", "rerun", "re-verify", "reverify", "verify"]
-        assert any(s in stdout.lower() for s in signals), (
+        assert any(s in ctx.lower() for s in signals), (
             f"Directive must instruct re-verification (one of {signals!r})"
         )
 
@@ -67,9 +87,8 @@ class TestPostCompactDirective:
         """PSR-004b finding: when re-run is rejected by tool permissions,
         the model must surface the gap, not collapse to 'yes'. The
         directive needs an explicit blocked-case clause."""
-        stdout, _, _ = _run_hook({"session_id": "diag", "event": "compact"})
-        lower = stdout.lower()
-        assert "blocked" in lower, (
+        ctx = _additional_context({"session_id": "diag", "event": "compact"})
+        assert "blocked" in ctx.lower(), (
             "Directive must address the blocked/rejected re-verification "
             "case explicitly (PSR-004b regression)"
         )
@@ -77,28 +96,43 @@ class TestPostCompactDirective:
     def test_directive_uses_stop_language(self) -> None:
         """The blocked case needs imperative STOP language so the model
         does not slide from 'blocked' into a confident affirmative."""
-        stdout, _, _ = _run_hook({"session_id": "diag", "event": "compact"})
-        assert "STOP" in stdout, (
+        ctx = _additional_context({"session_id": "diag", "event": "compact"})
+        assert "STOP" in ctx, (
             "Directive must include STOP language for the blocked case "
             "to interrupt the rejection-as-confirmation reflex"
         )
 
     def test_directive_forbids_yes_without_evidence(self) -> None:
         """Explicitly forbidden response language (PSR-004b option-a fix)."""
-        stdout, _, _ = _run_hook({"session_id": "diag", "event": "compact"})
-        lower = stdout.lower()
-        assert "forbidden" in lower, (
+        ctx = _additional_context({"session_id": "diag", "event": "compact"})
+        assert "forbidden" in ctx.lower(), (
             "Directive must use 'forbidden' framing so the model recognizes "
             "answering 'yes' without re-verify as a hard rule, not advice"
         )
 
     def test_directive_mentions_fresh_evidence(self) -> None:
         """The directive must distinguish recalled output from fresh evidence."""
-        stdout, _, _ = _run_hook({"session_id": "diag", "event": "compact"})
-        assert "fresh evidence" in stdout.lower(), (
+        ctx = _additional_context({"session_id": "diag", "event": "compact"})
+        assert "fresh evidence" in ctx.lower(), (
             "Directive must contrast recalled output with 'fresh evidence' "
             "so the model knows what counts as a valid affirmative"
         )
+
+    def test_stdout_is_exactly_one_json_object_with_no_text_outside_it(self) -> None:
+        """The state line and the directive travel INSIDE additionalContext, not
+        beside it: CC parses exactly one JSON object per invocation
+        (hooks/scripts/inject-tier-workflow.sh:29), so any text before or after
+        the object (a second print, a stray echo) either breaks the parse or is
+        silently dropped."""
+        stdout, _, code = _run_hook({"session_id": "diag", "event": "compact"})
+        assert code == 0
+        text = stdout.strip()
+        obj, end = json.JSONDecoder().raw_decode(text)
+        assert end == len(text), (
+            "stdout must be exactly one JSON object with nothing outside it; "
+            f"found trailing content: {text[end:]!r}"
+        )
+        assert "hookSpecificOutput" in obj
 
 
 class TestHookExecutability:

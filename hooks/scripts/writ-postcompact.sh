@@ -63,18 +63,30 @@ print(d.get('phase') or '')
 " 2>/dev/null)
 PC_MODE=$(echo "$STATE_FIELDS" | sed -n '1p')
 PC_PHASE=$(echo "$STATE_FIELDS" | sed -n '2p')
+# Phase 4c (PSR-004 follow-up): the verify-discipline directive below exists because
+# a pressure run showed post-compact sessions answering "is it passing?" from
+# pre-compact memory. See docs/pressure-runs/2026-04-22/PSR-004/analysis.md.
+# The state line and the directive are ONE payload, because CC parses exactly one
+# JSON object per hook invocation: two prints would drop the second or break the
+# parse. Bare stdout on PostCompact is not a model channel (writ/shared/delivery.py
+# ::STDOUT_TO_MODEL_EVENTS lists only UserPromptSubmit, UserPromptExpansion and
+# SessionStart), so this text reached the CC debug log and nothing else. It DOES
+# show up in a transcript when a human types /compact, because the harness echoes a
+# local command's stdout -- that is an incidental channel for manual compaction
+# only, and it is why the hook looked correct. On an automatic compaction, the case
+# that matters, the model never saw it. Shape copied from writ-bible-authoring-push.sh.
+PC_STATE_LINE=""
 if [ -n "$PC_MODE" ]; then
-    echo "[Writ: post-compact workflow state] mode=$PC_MODE, phase=$PC_PHASE. The next user turn re-injects the full rule set; treat this as your current workflow position."
-    echo
+    PC_STATE_LINE="[Writ: post-compact workflow state] mode=$PC_MODE, phase=$PC_PHASE. The next user turn re-injects the full rule set; treat this as your current workflow position.
+
+"
 fi
 
-# Phase 4c (PSR-004 follow-up): emit a verify-discipline directive so
-# the model treats recalled verification output as second-hand after
-# compaction. Without this, "Is it working?" post-compact gets answered
-# from pre-compact memory ("last run was N tests passing") rather than
-# fresh evidence. See docs/pressure-runs/2026-04-22/PSR-004/analysis.md.
-cat <<'DIRECTIVE'
-[Writ: context compacted]
+WRIT_PC_STATE="$PC_STATE_LINE" python3 <<'PY' || true
+import json
+import os
+
+directive = """[Writ: context compacted]
 Until the next compaction, treat any pre-compact verification output (test counts,
 "passing" claims, file reads) as second-hand evidence.
 
@@ -88,8 +100,15 @@ If asked "is it working?" / "is it done?" / "did it pass?":
   3. Only answer affirmatively with fresh test/lint output cited inline.
 
 Saying "yes" / "passing" / "all good" without fresh evidence is a forbidden response
-in this state. Recalled output is not fresh evidence.
-DIRECTIVE
+in this state. Recalled output is not fresh evidence."""
+
+print(json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "PostCompact",
+        "additionalContext": os.environ.get("WRIT_PC_STATE", "") + directive,
+    }
+}))
+PY
 
 # Mode for hook_execution telemetry (audit #5).
 MODE=$(_writ_session "mode get" "$SESSION_ID" 2>/dev/null || echo "")
