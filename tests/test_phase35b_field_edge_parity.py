@@ -38,6 +38,12 @@ async def db():
     yield conn
     await conn.clear_all()
     await conn.close()
+    # Restore rather than abandon: leaving the shared graph empty after this
+    # module starves any corpus-reading module collected later in the same
+    # session. Pre-existing defect, fixed alongside its copy in
+    # test_dispatch_prose_parity.py (which mirrored this fixture, bug included).
+    from tests._corpus import ensure_corpus
+    ensure_corpus()
 
 
 @pytest.fixture()

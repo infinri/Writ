@@ -18,6 +18,22 @@ GREEN always (pre-existing regression guards this cycle must not disturb):
   - TestUntouchedTailInvariants.
 
 Run: .venv/bin/python -m pytest tests/test_rag_query_helper.py -q
+
+--- Isolation cycle v2 (plan.md, Part 3), 2026-08-11 ---
+
+TestProjectRootScoping and TestHooksSendProjectRoot (appended below) pin
+capability: "rag_query sends the caller's project root and both hook callers
+pass it, so the read and post-write RAG channels are scoped." rag_query widens
+to a 4th positional arg, `project_root`, forwarded into the JSON body under the
+same key QueryRequest.project_root now accepts (see
+tests/test_query_route_project_scope.py). Both hooks already compute a project
+root today for the gate-artifact path (writ-rag-inject.sh's `_PROJECT_ROOT=
+$(detect_project_root "$(pwd -P)")`); writ-read-rag.sh and writ-posttool-rag.sh
+do not compute one yet, so wiring this in also requires each hook to call
+detect_project_root itself before it calls rag_query.
+
+RED today: rag_query takes exactly 3 positional args and the JSON body it
+builds has no project_root key; neither hook computes a PROJECT_ROOT variable.
 """
 
 from __future__ import annotations
@@ -170,6 +186,23 @@ def _run_rag_query_helper(query: str, budget: str, exclude: str, writ_url: str):
     script = 'source "$1"; WRIT_URL="$2"; RESPONSE=$(rag_query "$3" "$4" "$5"); printf "%s" "$RESPONSE"'
     return subprocess.run(
         ["bash", "-c", script, "bash", str(COMMON_SH), writ_url, query, budget, exclude],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+
+def _run_rag_query_helper_with_root(
+    query: str, budget: str, exclude: str, project_root: str, writ_url: str,
+):
+    """Same call shape as _run_rag_query_helper, with the 4th positional arg
+    rag_query must gain: the caller's project root."""
+    script = (
+        'source "$1"; WRIT_URL="$2"; RESPONSE=$(rag_query "$3" "$4" "$5" "$6"); '
+        'printf "%s" "$RESPONSE"'
+    )
+    return subprocess.run(
+        ["bash", "-c", script, "bash", str(COMMON_SH), writ_url, query, budget, exclude, project_root],
         capture_output=True,
         text=True,
         timeout=15,
@@ -410,3 +443,70 @@ class TestUntouchedTailInvariants:
         read_content = READ_RAG_HOOK.read_text()
         assert "hook_timer_end" in posttool_content
         assert "hook_timer_end" not in read_content
+
+
+# -- 6. Part 3: project-root scoping ------------------------------------------
+
+
+class TestProjectRootScoping:
+    """Capability: "rag_query sends the caller's project root and both hook
+    callers pass it, so the read and post-write RAG channels are scoped."
+
+    rag_query gains a 4th positional arg. The stub-server differential style
+    from section 2 above is reused: there is no frozen HEAD reference for a
+    feature that doesn't exist at HEAD, so these assert directly on the
+    request the stub server received.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _require_curl(self):
+        if shutil.which("curl") is None:
+            pytest.skip("curl is not available in this environment")
+
+    def test_project_root_reaches_the_request_body(self, stub_server):
+        _run_rag_query_helper_with_root("test", "1500", "[]", "/repo/proj-a", stub_server.url)
+        assert stub_server.requests, "rag_query did not reach the stub server"
+        assert stub_server.requests[-1].get("project_root") == "/repo/proj-a"
+
+    def test_empty_project_root_still_sends_a_valid_request(self, stub_server):
+        """Backward compat: a caller that has no project root yet (or a hook
+        running before this lands) must not have its query silently dropped."""
+        result = _run_rag_query_helper_with_root("test", "1500", "[]", "", stub_server.url)
+        assert result.stdout != "", "an empty project_root must not empty the whole response"
+        assert stub_server.requests[-1].get("project_root") == ""
+
+    def test_project_root_does_not_disturb_the_other_fields(self, stub_server):
+        _run_rag_query_helper_with_root("test", "1500", '["A","B"]', "/repo/proj-a", stub_server.url)
+        received = stub_server.requests[-1]
+        assert received.get("exclude_rule_ids") == ["A", "B"]
+        assert received.get("budget_tokens") == 1500
+        assert received.get("top_k") == 3
+
+
+class TestHooksSendProjectRoot:
+    """Source-scan half: each hook must actually compute a project root and
+    pass it as rag_query's 4th argument. Modeled on TestHooksAdoptRagQuery."""
+
+    def test_read_rag_computes_a_project_root(self):
+        content = READ_RAG_HOOK.read_text()
+        assert "detect_project_root" in content, (
+            "writ-read-rag.sh must compute a project root before calling rag_query"
+        )
+
+    def test_posttool_rag_computes_a_project_root(self):
+        content = POSTTOOL_RAG_HOOK.read_text()
+        assert "detect_project_root" in content, (
+            "writ-posttool-rag.sh must compute a project root before calling rag_query"
+        )
+
+    def test_read_rag_passes_project_root_to_rag_query(self):
+        content = READ_RAG_HOOK.read_text()
+        assert re.search(r'rag_query\s+"\$QUERY"\s+"\$PRETOOL_BUDGET"\s+"\$LOADED_RULE_IDS"\s+"\$[A-Z_]*PROJECT_ROOT"', content), (
+            "writ-read-rag.sh's rag_query call must carry a 4th project-root arg"
+        )
+
+    def test_posttool_rag_passes_project_root_to_rag_query(self):
+        content = POSTTOOL_RAG_HOOK.read_text()
+        assert re.search(r'rag_query\s+"\$QUERY"\s+"\$POSTTOOL_BUDGET"\s+"\$LOADED_RULE_IDS"\s+"\$[A-Z_]*PROJECT_ROOT"', content), (
+            "writ-posttool-rag.sh's rag_query call must carry a 4th project-root arg"
+        )

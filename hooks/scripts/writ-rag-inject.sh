@@ -91,6 +91,14 @@ AGENT_ID=$(echo "$PARSED" | sed -n '3p')
 MODE_HINT=$(echo "$PARSED" | sed -n '4p' | tr -d '[:space:]')
 EFFORT=$(echo "$PARSED" | sed -n '5p' | tr -d '[:space:]')
 
+# This project's root, computed ONCE for the whole hook and used by two consumers:
+# the retrieval requests below send it so the daemon can scope them to this project
+# (writ/retrieval/node_scope.py), and step 9b reads this session's gate directory
+# under it. It is hoisted here rather than computed per consumer because
+# detect_project_root is pure bash, so one call costs nothing and two copies of the
+# same expression would be free to drift.
+_PROJECT_ROOT=$(detect_project_root "$(pwd -P)")
+
 # Fallback session ID if not provided by Claude Code
 # NO SYNTHESIZED SESSION ID. This used to fall back to the parent PID and then to
 # md5(cwd:user)+date. Neither can ever equal the id Claude Code uses, so state written
@@ -186,11 +194,57 @@ CURRENT_MODE=""
 # cannot flake the way the package read can). Only auto-set when that confirms no mode --
 # never override an explicit choice.
 if [ -z "$AGENT_ID" ] && [ -n "$MODE_HINT" ]; then
-  # Single-source resolver (common.sh). This read used to inline its own cache-dir
-  # resolution with a tempdir fallback, which pointed at a directory holding no session
-  # caches, so it answered "unset" for EVERY session and the branch below fired every turn.
-  PRIOR_MODE=$(writ_session_mode_direct "$SESSION_ID")
+  # The prior mode AND who chose it (cache["mode_source"]: "explicit" | "auto" | absent),
+  # read together in ONE process from the cache file.
+  #
+  # ONE READ, because the pair has to be a single snapshot: read separately, the hook could
+  # act on a mode from one moment and a provenance from another and re-route a session on a
+  # label that no longer describes it. ONE PROCESS, because this file runs on EVERY prompt,
+  # so a second spawn to ask "who chose this mode" is a cost paid every turn forever. That
+  # is why the two fields travel as one "mode|source" string (json_transform's contract is
+  # one value out) and are split with shell builtins, which cost nothing.
+  #
+  # This replaces a writ_session_mode_direct call, so the count went 2 -> 1: that helper
+  # pipes jq into `tr`. Its cache-dir resolution is still the shared one below -- the
+  # tempdir-defaulting inline copy that answered "unset" for EVERY session is not coming
+  # back; writ_session_cache_dir is the single source both it and this use.
+  #
+  # FILE-DIRECT, not the /prompt-state snapshot from step 1, for exactly the reason the mode
+  # read was always file-direct: that snapshot is empty whenever the daemon is down or
+  # saturated, so provenance taken from it would go silently unavailable in the fallback
+  # case, read as "unknown", and quietly disable the re-route below with nothing in the log
+  # to show for it. The cache file is the authority both arms of this branch already trust.
+  PRIOR_CACHE_FILE="$(writ_session_cache_dir)/writ-session-$SESSION_ID.json"
+  PRIOR_PAIR=""
+  # Existence tested BEFORE the redirect (same trap as the RESTORED_GATES read below):
+  # `< missing` fails the command outright and the shell reports it before any 2>/dev/null
+  # on the line takes effect, and a session with no cache file yet is the normal first turn.
+  if [ -f "$PRIOR_CACHE_FILE" ]; then
+    PRIOR_PAIR=$(json_transform \
+      '((.mode // "") | tostring) + "|" + ((.mode_source // "") | tostring)' \
+      "(str(d.get('mode') or '') + '|' + str(d.get('mode_source') or ''))" \
+      < "$PRIOR_CACHE_FILE" 2>/dev/null || true)
+  fi
+  PRIOR_MODE=""
+  PRIOR_MODE_SOURCE=""
+  # No delimiter means the read produced nothing usable (missing / corrupt / unparseable
+  # file), which is writ_session_mode_direct's contract too: BOTH values stay empty, the
+  # session reads as unset, and the `mode init` arm below is authoritative anyway.
+  case "$PRIOR_PAIR" in
+    *"|"*)
+      PRIOR_MODE="${PRIOR_PAIR%%|*}"
+      PRIOR_MODE_SOURCE="${PRIOR_PAIR#*|}"
+      ;;
+  esac
+  # The whitespace strip writ_session_mode_direct did with `tr`, done with a builtin: both
+  # values are compared against literal names, and one stray space would miss every time.
+  PRIOR_MODE="${PRIOR_MODE//[[:space:]]/}"
+  PRIOR_MODE_SOURCE="${PRIOR_MODE_SOURCE//[[:space:]]/}"
   AUTOROUTED="no"
+  # Empty means "no restore happened", which is the truth on every path except a mid-session
+  # switch INTO work below (from investigate, or from any mode an auto-routed session was
+  # sitting in). Initialized here because the hook runs under `set -u`.
+  RESTORED_GATES=""
   if [ -z "$PRIOR_MODE" ]; then
     # `mode init` (not `mode set`): authoritatively sets the mode ONLY if still
     # unset (checked inside the helper's own cache read), so a spurious re-fire on
@@ -207,6 +261,88 @@ if [ -z "$AGENT_ID" ] && [ -n "$MODE_HINT" ]; then
       [ "$CONFIRMED_MODE" = "$MODE_HINT" ] && AUTOROUTED="yes"
     fi
     debug "auto-route requested $MODE_HINT -> mode is now '${CONFIRMED_MODE:-unset}'"
+  else
+    # Mid-session re-route. The hint used to be computed every turn and then thrown away
+    # once ANY mode existed, so five weeks of logs hold zero switch rows: mid-work, a
+    # discovery that needed investigating could never start an investigation.
+    #
+    # `mode switch`, NEVER `mode set`: set runs _apply_mode_set, which clears
+    # gates_approved and paused_work_state, so routing a misclassified prompt through it
+    # would destroy an approved plan and approved tests. switch SAVES them, which makes a
+    # false positive cost a detour instead of the approvals.
+    #
+    # ELIGIBILITY IS A QUESTION ABOUT WHO CHOSE THE CURRENT MODE, not about which pair of
+    # modes it is. Two ways in, and the OR is deliberate:
+    #
+    #   1. mode_source "auto" -> this mode came from the classifier reading an EARLIER
+    #      prompt, not from a person. A later prompt is better evidence about the task than
+    #      an earlier one, so re-route from WHATEVER mode it landed in. This is the case
+    #      that was unreachable before Part 6: a session auto-routed once was pinned for its
+    #      whole life, because from_mode is null on both set paths and so nothing in the
+    #      record could tell a user's stated mode from the classifier's guess.
+    #      (Value written by mode_engine.MODE_SOURCE_AUTO; spelled literally here rather
+    #      than asked for, because asking would cost a process on every prompt.)
+    #
+    #   2. work <-> investigate whatever the source, which is the behaviour this file
+    #      already shipped and which widening must not withdraw: mid-work a discovery needs
+    #      investigating, and coming back is the switch that restores the paused work state.
+    #
+    # An "explicit" (or unknown-provenance) debug / review / conversation mode is therefore
+    # still left alone -- neither arm reaches it. That keeps the standing reason: flipping a
+    # hand-set debug session to work would fire the debug-to-work root-cause handoff as a
+    # side effect of a guess. Unknown provenance counts as explicit deliberately: there is
+    # no truth to recover for a pre-field cache, and guessing "auto" would hand the
+    # classifier a mode a human may well have typed.
+    #
+    # Unequal modes is a precondition of both arms: a work-shaped prompt during work is a
+    # no-op, not a re-switch.
+    #
+    # NO LOOP IS POSSIBLE between the specialist modes: classify_mode_hint returns only
+    # work, investigate or nothing (bin/lib/writ_mode_hint.py), so there is no hint that
+    # routes back DOWN into conversation / debug / review for a switch to fight over.
+    ROUTE_ELIGIBLE="no"
+    if [ "$PRIOR_MODE" != "$MODE_HINT" ]; then
+      if [ "$PRIOR_MODE_SOURCE" = "auto" ]; then
+        ROUTE_ELIGIBLE="yes"
+      else
+        case "$PRIOR_MODE:$MODE_HINT" in
+          work:investigate|investigate:work) ROUTE_ELIGIBLE="yes" ;;
+        esac
+      fi
+    fi
+    if [ "$ROUTE_ELIGIBLE" = "yes" ]; then
+        # `mode switch`, NEVER `mode set` -- and the widening above leans HARDER on that
+        # promise, not less: more sessions are now reachable from a guess, so the property
+        # that a misclassified prompt costs a detour instead of an approved plan and
+        # approved test skeletons is the whole reason this arm is allowed to exist.
+        python3 "$SESSION_HELPER" mode switch "$MODE_HINT" "$SESSION_ID" >/dev/null 2>&1 || true
+        # Re-read rather than trust the hint, for the same reason the unset path does:
+        # announcing the mode we ASKED for is how the hook came to tell the user the mode
+        # was 'work' while the cache said otherwise.
+        CONFIRMED_MODE=$(writ_session_mode_direct "$SESSION_ID")
+        if [ -n "$CONFIRMED_MODE" ]; then
+          CURRENT_MODE="$CONFIRMED_MODE"
+          [ "$CONFIRMED_MODE" = "$MODE_HINT" ] && AUTOROUTED="yes"
+        fi
+        # A switch back into work either RESTORES the gates approved before the detour
+        # (plan.md unchanged) or re-arms to planning (plan.md pivoted), and the two need
+        # different messages: telling a user whose approvals were just restored to go write
+        # plan.md and present it for approval sends them to redo work the cache still holds.
+        # Read the count off the cache rather than guessing which branch ran, so the
+        # announcement can never claim an approval the session does not actually have.
+        if [ "$MODE_HINT" = "work" ]; then
+          SWITCH_CACHE_FILE="$(writ_session_cache_dir)/writ-session-$SESSION_ID.json"
+          # Tested before the redirect: `< missing` fails the command outright and the
+          # shell reports it before any 2>/dev/null on the same line can take effect, so a
+          # cacheless session would print a hook error for a state that is simply "nothing
+          # to restore".
+          if [ -f "$SWITCH_CACHE_FILE" ]; then
+            RESTORED_GATES=$(json_transform '.gates_approved | length' \
+              "len(d.get('gates_approved') or [])" < "$SWITCH_CACHE_FILE" 2>/dev/null || true)
+          fi
+        fi
+        debug "mid-session re-route $PRIOR_MODE ($PRIOR_MODE_SOURCE) -> $MODE_HINT; mode is now '${CONFIRMED_MODE:-unset}'"
+    fi
   fi
   # Announce ONLY a change we actually made.
   if [ "$AUTOROUTED" = "yes" ]; then
@@ -219,6 +355,19 @@ This reads as an audit / exploration / research task, so the mode is now 'invest
 for the actual exploration; it inherits this mode and runs governed. To override:
   python3 $SESSION_HELPER mode set <conversation|debug|review|work|investigate> $SESSION_ID
 AUTOROUTE
+    elif [ -n "$RESTORED_GATES" ] && [ "$RESTORED_GATES" != "0" ]; then
+      # The switch restored a paused work cycle: plan.md was unchanged, so the approvals
+      # granted before the detour still stand. Say that, and say nothing about writing a
+      # plan; the count comes from the cache, so it cannot overstate what is approved.
+      cat << WORKRESTORE
+
+[Writ: implementation request -> paused work mode restored automatically]
+This reads as a build/implementation task, so the mode is back to 'work'. The plan did not
+change during the detour, so the paused phase and $RESTORED_GATES already-approved gate(s)
+were restored with it. Continue that cycle: do not rewrite plan.md and do not re-request an
+approval you already hold. If this is a trivial edit that needs no workflow, override with:
+  python3 $SESSION_HELPER mode set conversation $SESSION_ID
+WORKRESTORE
     else
       cat << WORKROUTE
 
@@ -274,7 +423,15 @@ if parsed_bool "$CACHE" "is_orchestrator"; then IS_ORCHESTRATOR="true"; else IS_
 if [ -z "$AGENT_ID" ]; then
     RECALL_BRIEFED=$(parsed_bool "$CACHE" "recall_briefed" && echo "yes" || echo "no")
     if [ "$RECALL_BRIEFED" != "yes" ]; then
-        RECALL_REQ=$(WRIT_ROOT="${PWD}" python3 -c "
+        # _PROJECT_ROOT, not $PWD: /recall feeds this value to resolve_project_for_cwd,
+        # a raw longest-prefix string compare against the REGISTERED repo_root. $PWD is
+        # bash's logical cwd, so a symlinked component makes that compare miss and the
+        # briefing comes back empty (plus a recall_project_unresolved friction row);
+        # and in a nested-repo tree a deep $PWD can prefix-match the registered OUTER
+        # project while the retrieval requests below carry the inner root, so one hook
+        # invocation would scope rules to one project and brief decisions from another.
+        # One project-root answer per hook invocation is the invariant.
+        RECALL_REQ=$(WRIT_ROOT="${_PROJECT_ROOT:-}" python3 -c "
 import os, json
 print(json.dumps({'project_root': os.environ.get('WRIT_ROOT', ''), 'budget': 20000}))
 " 2>/dev/null)
@@ -295,6 +452,28 @@ print(json.dumps({'project_root': os.environ.get('WRIT_ROOT', ''), 'budget': 200
         # re-attempt every turn).
         python3 "$SESSION_HELPER" update "$SESSION_ID" --set-recall-briefed 2>>"$WRIT_HOOK_LOG_SINK" || true
     fi
+fi
+
+# 1c-3. Cycle G: post-compaction delivery, queued by writ-postcompact.sh. That hook cannot
+# deliver the state line or the PSR-004 verify-discipline directive itself (CC's validator
+# rejects a PostCompact hookSpecificOutput reply outright and discards it, 2026-08-14),
+# so cmd_reset_after_compaction sets post_compact_pending and the first prompt after the
+# compaction emits here, on the one channel confirmed to reach the model on this build.
+#
+# COST: the flag is read off the $CACHE this hook already fetched at step 1c, so the unset
+# path (every turn but one) is a string test with no python spawn and no HTTP call. The
+# single clearing update fires once per compaction, not once per turn.
+#
+# NO $AGENT_ID GUARD, unlike the recall block above: the flag lives on the compacted
+# session's own cache and a sub-agent runs under its own session id, so a worker cannot
+# consume the parent's queued directive.
+#
+# Fail-silent by design: if this prompt never arrives or the write fails, the flag stays set
+# and the directive fires on the first prompt that does get through. Nothing blocks on it.
+if parsed_bool "$CACHE" "post_compact_pending"; then
+    emit_post_compact_directive "$CURRENT_MODE" "$(parsed_field "$CACHE" "current_phase")"
+    python3 "$SESSION_HELPER" update "$SESSION_ID" --clear-post-compact-pending 2>>"$WRIT_HOOK_LOG_SINK" || true
+    debug "emitted post-compact directive (one-shot)"
 fi
 
 if [ "$IS_ORCHESTRATOR" = "true" ]; then
@@ -342,8 +521,9 @@ print(json.dumps({
     'prompt': sys.argv[1],
     'exclude_rule_ids': exclude,
     'budget_tokens': 2000,
+    'project_root': sys.argv[3],
 }))
-" "$PROMPT" "$ORCH_LOADED_RULE_IDS" 2>/dev/null)
+" "$PROMPT" "$ORCH_LOADED_RULE_IDS" "${_PROJECT_ROOT:-}" 2>/dev/null)
 
         if [ -n "$ORCH_METHOD_REQUEST" ]; then
             # Documented daemon-down-equivalent raw curl: no companion block, same as a
@@ -415,18 +595,20 @@ if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1; then
         --arg mode "${CURRENT_MODE:-}" \
         --arg prompt "$PROMPT" \
         --arg effort "$EFFORT" \
+        --arg project_root "${_PROJECT_ROOT:-}" \
         --argjson always_on_filter "$_AO_FILTER_BOOL" \
-        '{session_id: $session_id, mode: $mode, prompt: $prompt, effort: $effort, always_on_filter: $always_on_filter}' \
+        '{session_id: $session_id, mode: $mode, prompt: $prompt, effort: $effort, project_root: $project_root, always_on_filter: $always_on_filter}' \
         2>/dev/null) || BUNDLE_REQUEST=""
 fi
 if [ -z "$BUNDLE_REQUEST" ]; then
-    BUNDLE_REQUEST=$(WRIT_SID="$SESSION_ID" WRIT_MODE="${CURRENT_MODE:-}" WRIT_PROMPT="$PROMPT" WRIT_EFFORT="$EFFORT" WRIT_AOF="$_AO_FILTER_BOOL" python3 -c "
+    BUNDLE_REQUEST=$(WRIT_SID="$SESSION_ID" WRIT_MODE="${CURRENT_MODE:-}" WRIT_PROMPT="$PROMPT" WRIT_EFFORT="$EFFORT" WRIT_AOF="$_AO_FILTER_BOOL" WRIT_PROOT="${_PROJECT_ROOT:-}" python3 -c "
 import os, json
 print(json.dumps({
     'session_id': os.environ['WRIT_SID'],
     'mode': os.environ.get('WRIT_MODE', ''),
     'prompt': os.environ.get('WRIT_PROMPT', ''),
     'effort': os.environ.get('WRIT_EFFORT', ''),
+    'project_root': os.environ.get('WRIT_PROOT', ''),
     'always_on_filter': os.environ.get('WRIT_AOF', 'true') == 'true',
 }))" 2>/dev/null)
 fi
@@ -617,11 +799,18 @@ case "$CURRENT_MODE" in
         debug "injected review mode reminder"
         ;;
     work)
-        # Work mode: inject workflow reminder based on gate state
-        _PROJECT_ROOT=$(detect_project_root "$(pwd -P)")
+        # Work mode: inject workflow reminder based on gate state. _PROJECT_ROOT is
+        # computed once near the top of the hook (the retrieval requests need it too).
+        # THIS SESSION's own gate directory, never the project-wide one: a flat
+        # phase-a.approved from any session in the repo used to silence this reminder for a
+        # session that had approved nothing, and told it "test-skeletons gate pending",
+        # which reads as progress it never made. An empty answer (no project root, or a
+        # session id that cannot be a path component) means there is nowhere to read gate
+        # state from, so no reminder is printed -- the same silence a rootless project got
+        # before, and never a reminder derived from another session's files.
+        _GATE_DIR=$(writ_gate_dir "$_PROJECT_ROOT" "$SESSION_ID")
 
-        if [ -n "$_PROJECT_ROOT" ]; then
-            _GATE_DIR="$_PROJECT_ROOT/.claude/gates"
+        if [ -n "$_GATE_DIR" ]; then
             _PHASE_A="$_GATE_DIR/phase-a.approved"
             _TEST_SKEL="$_GATE_DIR/test-skeletons.approved"
 
@@ -753,8 +942,15 @@ fi
 # 13. Check for gate invalidation (backward context without escalation)
 # Only relevant in Work mode
 if [ "$CURRENT_MODE" = "work" ]; then
-    if [ -n "$_PROJECT_ROOT" ]; then
-        _GATE_DIR="${_GATE_DIR:-$_PROJECT_ROOT/.claude/gates}"
+    # Reuses the session-scoped $_GATE_DIR section 9b already built (both blocks run only in
+    # work mode, so the build happens once per prompt). Recomputed only if 9b was skipped;
+    # an empty answer means no session-scoped directory to read, and the invalidation check
+    # is skipped rather than pointed at the project-wide path, where another session's
+    # missing artifact would read as THIS session's gate invalidation.
+    # ${_PROJECT_ROOT:-} because this arm is only reached when 9b was skipped, and an
+    # unset variable under `set -u` would abort the whole hook rather than skip a check.
+    _GATE_DIR="${_GATE_DIR:-$(writ_gate_dir "${_PROJECT_ROOT:-}" "$SESSION_ID")}"
+    if [ -n "$_GATE_DIR" ]; then
 
         # Check if any gate was invalidated (records exist but .approved file missing)
         #

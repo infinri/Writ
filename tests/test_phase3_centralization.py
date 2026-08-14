@@ -14,14 +14,16 @@ import json
 import os
 import secrets
 import sys
-import tempfile
 
 # ruff: noqa: F811 -- the shared session_id/project_root fixtures below are consumed
 # as test-method parameters, which ruff misreads as redefinitions of this import.
 from tests.fixtures.session_state import (  # noqa: F401
     call_can_write,
     project_root,
+    # autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
+    sandbox_cwd,
     session_id,
+    write_bound_gate_token,
 )
 
 # ---------------------------------------------------------------------------
@@ -60,11 +62,11 @@ def _call_advance_phase(
     session_id: str, prompt: str, project_root: str, monkeypatch, capsys
 ) -> dict:
     """Call cmd_advance_phase with a gate token and return the JSON result."""
-    # Create gate token (simulates auto-approve-gate.sh)
-    token = secrets.token_hex(16)
-    token_path = os.path.join(tempfile.gettempdir(), f"writ-gate-token-{session_id}")
-    with open(token_path, "w") as f:
-        f.write(token)
+    # Create gate token (simulates auto-approve-gate.sh, which mints a BOUND token: the
+    # gate it authorizes plus the plan fingerprint). cmd_advance_phase refuses an unbound
+    # one-line token, so the binding is derived from the seeded cache the way the
+    # production mint derives it.
+    token = write_bound_gate_token(session_id, secrets.token_hex(16))
 
     capsys.readouterr()  # clear any prior output
     monkeypatch.setattr("sys.stdin", io.StringIO(prompt))
@@ -108,6 +110,7 @@ models, queries the repository, and returns filtered results.
 """
 
 import re as _re
+
 # Extract rule IDs from the plan fixture so tests don't hardcode them separately
 VALID_PLAN_RULE_IDS = _re.findall(
     r'[A-Z][A-Z0-9]+(?:-[A-Z][A-Z0-9]+)*-\d{3}', VALID_PLAN_MD
@@ -208,8 +211,12 @@ class TestCanWrite:
         _set_mode(session_id, "work")
         capsys.readouterr()
 
-        # Write a gate file on disk but DON'T add to cache
-        gate_file = project_root / ".claude" / "gates" / "phase-a.approved"
+        # Write a gate file on disk but DON'T add to cache. Session-scoped path (Part 2,
+        # isolation cycle): this session's OWN directory, so the test still proves the cache
+        # is the authority rather than passing because the artifact was somewhere unread.
+        gate_dir = project_root / ".claude" / "gates" / session_id
+        gate_dir.mkdir(parents=True, exist_ok=True)
+        gate_file = gate_dir / "phase-a.approved"
         gate_file.write_text("different-session-id\n")
 
         result = _call_can_write(session_id, str(project_root / "service.py"), monkeypatch, capsys)
@@ -264,7 +271,9 @@ class TestAdvancePhase:
         assert result["advanced"] is True
         assert result["gate"] == "phase-a"
 
-        gate_file = project_root / ".claude" / "gates" / "phase-a.approved"
+        # Session-scoped artifact path (Part 2, isolation cycle): the id is now BOTH the
+        # directory name and the file's contents, so both are asserted.
+        gate_file = project_root / ".claude" / "gates" / session_id / "phase-a.approved"
         assert gate_file.exists()
         assert gate_file.read_text().strip() == session_id
 

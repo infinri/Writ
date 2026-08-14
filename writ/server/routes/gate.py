@@ -25,11 +25,21 @@ from writ.server.models import (
     SessionAdvancePhaseRequest,
     SessionPromoteCandidateRequest,
 )
-from writ.session.approval_workflow import _GATE_VALIDATORS, apply_phase_advance
+from writ.session.approval_workflow import (
+    _BINDING_REFUSAL_REASONS,
+    _GATE_VALIDATORS,
+    apply_phase_advance,
+)
+from writ.session.gate_token import BINDING_UNBOUND
 from writ.session.locators import _find_plan_md, resolve_project_root
 from writ.session.mode_engine import MODE_CONFIG, _next_pending_gate
 
 router = APIRouter()
+
+# Upper bound on the write-gate's project resolution. Generous next to a cached
+# registry read (microseconds) and small next to the write it sits in front of, so it
+# only ever fires when the event loop is wedged, where waiting longer helps nobody.
+_PROJECT_RESOLVE_TIMEOUT_S = 2.0
 
 
 @router.post("/session/{session_id}/advance-phase")
@@ -174,7 +184,63 @@ async def session_advance_phase(
     # concurrent same-token caller wins; the loser returns a no-op and runs NO
     # side effects. The claim consumes the token (replaces the old post-advance
     # consume_gate_token).
-    claimed = await asyncio.to_thread(server.claim_gate_token, session_id, token)
+    #
+    # The claim also enforces what the approval authorizes: the gate named on line 2 of
+    # the token file must be the gate being advanced, and the plan fingerprint on line 3
+    # must still match. Both sides derive the fingerprint from the cache's project_root,
+    # the same input cmd_current_phase hands the approval hook at mint time, so the mint
+    # and the claim hash the same file by construction.
+    #
+    # STRICT, WITH NO FALLBACK. Every claim on this route goes through
+    # claim_gate_token; a token file carrying no binding (the pre-cycle one-line format)
+    # is REFUSED here exactly as the CLI refuses it. The `if binding is None: use the
+    # bare mutex` branch that used to sit here read as a kindness to a session whose
+    # token predated the upgrade, but its real effect was a fail-open branch on the
+    # decision of whether a human approved an action: anything that could put a single
+    # line into /tmp/writ-gate-token-<sid> got an UNBOUND claim through the route while
+    # the same file was refused at the CLI. The production hook always mints three
+    # lines, so nothing legitimate ever took that branch -- which is exactly why it
+    # could be deleted rather than deprecated. _claim_token_mutex stays what it has
+    # always been: the internal mutual-exclusion primitive claim_gate_token is built on,
+    # never a route-level substitute for it.
+    #
+    # Both calls below read files (plan.md, the token file), so they go to a thread like
+    # every other blocking call on this route.
+    plan_hash = await asyncio.to_thread(server.plan_md_hash, cache.get("project_root")) or ""
+    refusal = await asyncio.to_thread(
+        server.gate_binding_refusal, session_id, gate=target_gate, plan_hash=plan_hash
+    )
+    if refusal:
+        # Fail closed and say WHY: the previous behavior of every refusal on this
+        # route was a message the user read as "no gate pending". The token is NOT
+        # spent (nothing was claimed), so the approval it does authorize survives.
+        # The reason text comes from the CLI's table so the two gate paths cannot
+        # drift into telling the user two different things about the same refusal.
+        binding = await asyncio.to_thread(server.read_gate_binding, session_id)
+        bound_gate = binding[0] if binding else ""
+        await asyncio.to_thread(
+            server.log_friction_event,
+            session_id=session_id,
+            mode=mode,
+            event=refusal,
+            gate=target_gate,
+            bound_gate=bound_gate,
+        )
+        return {
+            "advanced": False,
+            "error": (
+                _BINDING_REFUSAL_REASONS[refusal].format(
+                    bound=bound_gate, target=target_gate,
+                )
+                + " Your approval was NOT consumed."
+            ),
+            "gate": target_gate,
+            "token_spent": False,
+        }
+    claimed = await asyncio.to_thread(
+        server.claim_gate_token, session_id, token,
+        gate=target_gate, plan_hash=plan_hash,
+    )
     if not claimed:
         return {
             "advanced": False,
@@ -328,6 +394,74 @@ async def session_promote_candidate(
             ),
         }
 
+    # The one deliberate narrowing of cycle 1: this route used to accept the very same
+    # token a phase advance accepts, so an "approved" typed at a plan.md could be spent
+    # writing a decision-memory candidate into the canon. That is a cross-ACTION
+    # confusion, not merely a cross-gate one. A token whose line 2 names a gate was
+    # minted while that gate was pending and belongs to it; promotion requires a token
+    # minted with no phase gate pending, which is the state this route is actually used
+    # in.
+    #
+    # AN UNBOUND TOKEN IS REFUSED HERE TOO, a deliberate deviation from plan.md, which
+    # said the pre-binding format "is accepted as before" on this route. Accepting it was
+    # the same fail-open branch class deleted from the advance route, on the route whose
+    # side effect is a bible/ canon write rather than a phase bump: a file recording
+    # nothing about what it authorizes cannot be checked against anything, so anything
+    # able to put one line into /tmp/writ-gate-token-<sid> held an unbound approval for
+    # Writ's own memory. The production hook's only writer always mints three lines, so
+    # nothing legitimate took that branch. Reason text comes from the CLI's table, so the
+    # two gate routes and the CLI cannot describe one refusal three ways.
+    #
+    # THE GATE HALF ONLY, NOT THE PLAN HALF. The advance route also refuses on plan
+    # drift, and that asymmetry is intended: the fingerprint on line 3 answers "does this
+    # approval still cover the plan the user was looking at", which is the right question
+    # for a phase gate whose artifact IS plan.md and the wrong one here. A promotion's
+    # artifact is the candidate's text, which this route re-runs through the structural
+    # gate below (edit-at-gate included); plan.md has no bearing on it. Enforcing drift
+    # here would refuse a promotion because an unrelated file changed -- a plausible
+    # interleaving, since the assistant may well be editing plan.md in the same turn --
+    # and would explain the refusal with a reason that is not about the promotion at all.
+    # The security gain would be nil: plan.md is agent-writable, the token is not, and
+    # one approval still authorizes exactly one promotion because success consumes it.
+    # The honest analogue would bind the candidate id into the token, which the mint
+    # cannot do: at approval time the hook knows the pending gate, not a candidate.
+    binding = await asyncio.to_thread(server.read_gate_binding, session_id)
+    if binding is None:
+        await asyncio.to_thread(
+            server.log_friction_event,
+            session_id=session_id,
+            mode=None,
+            event=BINDING_UNBOUND,
+            event_target="promote_candidate",
+            candidate_id=candidate_id,
+        )
+        return {
+            "promoted": False,
+            # Nothing is consumed: the unbound file is left exactly as found, and the
+            # table's text already tells the user the only thing that helps, which is
+            # approving again so a bound token gets minted.
+            "error": _BINDING_REFUSAL_REASONS[BINDING_UNBOUND].format(
+                bound="", target="candidate-promotion",
+            ),
+        }
+    if binding[0]:
+        await asyncio.to_thread(
+            server.log_friction_event,
+            session_id=session_id,
+            mode=None,
+            event="candidate_promotion_gate_bound",
+            candidate_id=candidate_id,
+            bound_gate=binding[0],
+        )
+        return {
+            "promoted": False,
+            "error": (
+                f"That approval is bound to the {binding[0]} gate, so it cannot promote a "
+                "candidate to canon. Approve the promotion on its own turn, with no phase "
+                "gate pending."
+            ),
+        }
+
     from writ.promotion import promote_candidate
     result = await promote_candidate(
         candidate_id, server._pipeline, server._db, server._BIBLE_DIR,
@@ -356,6 +490,28 @@ async def pre_write_check(request: PreWriteCheckRequest) -> dict[str, Any]:
     Returns {"decision": "allow"|"deny"|"ask", "reason": "...", "rag_rules": "...",
              "rag_meta": {"rule_ids": [...], "tokens": N}}.
     """
+    # Captured before _check leaves the event loop. _check is sync and runs in a
+    # worker thread, but resolve_project_for_cwd is a coroutine on a Neo4j driver that
+    # is bound to THIS loop, so it has to be submitted back here rather than run on a
+    # fresh loop inside the thread (a fresh loop would issue the registry read on a
+    # loop the async driver does not belong to, and raise).
+    loop = asyncio.get_running_loop()
+
+    def _resolve_project(project_root: str) -> str:
+        """Project name for a cached project_root, or "" when there is none.
+
+        Called from inside the worker thread, and only on the allow path: a denied
+        write must not resolve anything, because its RAG branch never runs. The
+        timeout keeps a wedged event loop from pinning this thread; the caller's
+        except turns any failure into a pre_write_rag_failed friction row and an
+        allowed write, so retrieval stays advisory.
+        """
+        if not project_root or server._db is None:
+            return ""
+        fut = asyncio.run_coroutine_threadsafe(
+            server._db.resolve_project_for_cwd(project_root), loop,
+        )
+        return fut.result(timeout=_PROJECT_RESOLVE_TIMEOUT_S) or ""
 
     def _check() -> dict[str, Any]:
         session_id = request.session_id
@@ -418,11 +574,18 @@ async def pre_write_check(request: PreWriteCheckRequest) -> dict[str, Any]:
                     query_parts = [lang] + [w.lower() for w in words if len(w) > 3]
                     query_text = ' '.join(query_parts[:15])
                     if len(query_text) >= 5:
+                        # PreWriteCheckRequest carries no project root, and does not
+                        # need one: the session cache already holds project_root (read
+                        # a few lines up for plan_hash), so the scope comes from the
+                        # session's own project rather than from a new request field
+                        # every Write/Edit would have to remember to send.
+                        project = _resolve_project(cache.get("project_root", "") or "")
                         result = server._pipeline.query(
                             query_text=query_text,
                             budget_tokens=max_budget,
                             exclude_rule_ids=exclude_ids,
                             prefer_rule_ids=request.prefer_rule_ids,
+                            project=project or None,
                         )
                         rules = result.get("rules", [])
                         if rules:

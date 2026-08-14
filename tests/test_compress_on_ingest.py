@@ -33,7 +33,6 @@ tests/test_import_markdown_unified.py).
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 import tempfile
@@ -41,28 +40,23 @@ from pathlib import Path
 
 import pytest
 
-from writ.graph.db._common import RECORD_LABELS
-
-# Corpus wipes spare runtime records (Memory/Decision/FileChange/Commit): they have
-# no dump home, so a corpus rebuild must never take them. Mirrors clear_all's default.
-_PRESERVE = ", ".join(f"'{_l}'" for _l in sorted(RECORD_LABELS))
-
 SKILL_DIR = Path(__file__).resolve().parent.parent
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 from tests._writ_cmd import WRIT_CMD_PREFIX as _WRIT_CMD_PREFIX
 
-# Credentials via the central loader: env-independent defaults keep CI (no
-# writ.toml checked out) collecting and running; a local writ.toml overrides.
-from writ.config import get_neo4j_password, get_neo4j_user
+# The suite's ONE path to Neo4j (cycle 8). This module used to hold a second one --
+# three `docker exec` sites reaching the graph by CONTAINER NAME -- and it is half of
+# why the isolation attempt of 2026-08-08 still emptied production. The credential
+# constants and the hand-rolled RECORD_LABELS preserve clause went with those sites:
+# they existed only to build a cypher-shell argv, and clear_all already owns the
+# single answer to what a corpus wipe spares.
+from tests._graph import count as _graph_count, wipe_corpus as _graph_wipe_corpus
 
 from tests._bible_guard import requires_bible
 
 pytestmark = requires_bible
 
-
-NEO4J_PASSWORD = get_neo4j_password()
-NEO4J_USER = get_neo4j_user()
 
 # Minimal artifact for the "artifact present" materialization test.
 # Uses two well-known methodology rule_ids that survive every clean ingest.
@@ -90,37 +84,24 @@ _FIXTURE_ARTIFACT: dict = {
 # ---------------------------------------------------------------------------
 
 
-# THE CONTAINER NAME IS A SEAM, not a constant. These two files reach Neo4j through
-# `docker exec <container> cypher-shell` rather than through Neo4jConnection, so they are
-# the one place WRIT_NEO4J_URI does NOT redirect: pointing the rest of the suite at a
-# disposable instance would silently leave these hitting production. Reading the name from
-# the environment puts them back under the same switch as everything else.
-def _neo4j_container() -> str:
-    return os.environ.get("WRIT_TEST_NEO4J_CONTAINER", "writ-neo4j")
-
-
 def _cypher(query: str) -> int:
-    """Run a read-only Cypher query via docker exec; return the integer result."""
-    result = subprocess.run(
-        [
-            "docker", "exec", _neo4j_container(), "cypher-shell",
-            "-u", NEO4J_USER, "-p", NEO4J_PASSWORD,
-            "--format", "plain",
-            query,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if result.returncode != 0:
-        pytest.skip(f"Neo4j not reachable: {result.stderr[:200]}")
-    lines = [l.strip() for l in result.stdout.splitlines() if l.strip()]
-    for line in reversed(lines):
-        try:
-            return int(line)
-        except ValueError:
-            continue
-    pytest.skip(f"Could not parse cypher output: {result.stdout!r}")
+    """Count through the suite's single graph path (tests/_graph.py).
+
+    This was a `docker exec ... cypher-shell` call that resolved its target from a
+    CONTAINER NAME while every other graph access in the suite resolved it from
+    WRIT_NEO4J_URI. The name came from an env var with a default, the var was set
+    nowhere in the repository so the default always won, and the default named the
+    PRODUCTION container. There is now exactly one way to name the server, and it is
+    the one `writ.config` reads, so a single env assignment in tests/conftest.py moves
+    this module too -- including the `writ` subprocesses it spawns, which inherit it.
+
+    The skip-on-unreachable stays here rather than moving into tests/_graph.py:
+    deciding that an absent graph means "skip this test" is a test-boundary decision.
+    """
+    try:
+        return _graph_count(query)
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"Neo4j not reachable: {str(exc)[:200]}")
 
 
 def _run_import(*args: str, cwd: Path = SKILL_DIR) -> subprocess.CompletedProcess:
@@ -135,21 +116,17 @@ def _run_import(*args: str, cwd: Path = SKILL_DIR) -> subprocess.CompletedProces
 
 
 def _clear_graph() -> None:
-    """Wipe the graph so each test starts clean."""
-    result = subprocess.run(
-        [
-            "docker", "exec", _neo4j_container(), "cypher-shell",
-            "-u", NEO4J_USER, "-p", NEO4J_PASSWORD,
-            "--format", "plain",
-            f"MATCH (n) WHERE NOT any(l IN labels(n) WHERE l IN [{_PRESERVE}]) "
-            "DETACH DELETE n",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if result.returncode != 0:
-        pytest.skip(f"Could not clear Neo4j: {result.stderr[:200]}")
+    """Wipe the CORPUS so each test starts clean, sparing runtime records.
+
+    Routes through `clear_all()` (tests/_graph.py::wipe_corpus), whose
+    record-preserving default is now the single source for what survives a corpus
+    wipe. The module-level `_PRESERVE` clause this used to build from RECORD_LABELS
+    is gone with it: one rule, one spelling.
+    """
+    try:
+        _graph_wipe_corpus()
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"Could not clear Neo4j: {str(exc)[:200]}")
 
 
 # ---------------------------------------------------------------------------
@@ -173,29 +150,22 @@ class TestImportMarkdownCompressFlag:
         bible/ so the graph returns to the committed baseline (rules plus the
         committed abstractions) with the fake test nodes gone.
 
-        The wipe runs raw Cypher directly, NOT _clear_graph(), because
-        _clear_graph() can pytest.skip and skipping inside teardown is unsafe.
+        The wipe calls wipe_corpus() inside a bare try/except rather than
+        _clear_graph(), because _clear_graph() can pytest.skip and skipping inside
+        teardown is unsafe. Cycle 8: it used to make that "never skip" guarantee by
+        pasting the cypher-shell argv out by hand, preserve clause and all -- which
+        is this whole defect in miniature. The clause was careful, so the wipe
+        deleted thoughtfully; it just deleted from the production server while the
+        rest of the run was isolated on another port.
         """
         yield
 
         import sys  # noqa: PLC0415
 
-        # (a) Best-effort whole-graph wipe -- never skips, never raises.
+        # (a) Best-effort corpus wipe -- never skips, never raises.
         try:
-            subprocess.run(
-                [
-                    "docker", "exec", _neo4j_container(), "cypher-shell",
-                    "-u", NEO4J_USER, "-p", NEO4J_PASSWORD,
-                    "--format", "plain",
-                    f"MATCH (n) WHERE NOT any(l IN labels(n) WHERE l IN [{_PRESERVE}]) "
-            "DETACH DELETE n",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-        except (subprocess.SubprocessError, OSError):
+            _graph_wipe_corpus()
+        except Exception:  # noqa: BLE001
             pass
 
         # (b) Revert the committed bible/abstractions.json that the --compress

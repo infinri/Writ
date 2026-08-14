@@ -41,6 +41,9 @@ import pytest
 
 from tests._daemon import _port
 
+# autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
+from tests.fixtures.session_state import sandbox_cwd, write_bound_gate_token  # noqa: F401
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -411,10 +414,10 @@ class TestCrossPathParity:
         ws._write_cache(session_id, existing)
 
         def _advance_once():
-            token = secrets.token_hex(16)
-            tpath = os.path.join(tempfile.gettempdir(), f"writ-gate-token-{session_id}")
-            with open(tpath, "w") as f:
-                f.write(token)
+            # A BOUND token (gate + plan fingerprint) derived from the cache as the
+            # production mint derives it, re-read per advance so the second call binds
+            # test-skeletons rather than the phase-a gate the first one spent.
+            token = write_bound_gate_token(session_id, secrets.token_hex(16))
             capsys.readouterr()
             monkeypatch.setattr("sys.stdin", io.StringIO("approved"))
             ws.cmd_advance_phase(session_id, str(project_root), token)

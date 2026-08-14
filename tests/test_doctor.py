@@ -822,22 +822,14 @@ class TestBitbucketCreds:
             lambda: (True, True),
         )
 
-        # Patch the config getters _bitbucket_live_auth calls for the Basic header
-        try:
-            import writ.config as _cfg
-            monkeypatch.setattr(_cfg, "get_bitbucket_email", lambda: "user@example.com")
-            monkeypatch.setattr(_cfg, "get_bitbucket_token", lambda: "tok")
-        except (ImportError, AttributeError):
-            pytest.skip("writ.config getters not yet implemented")
+        # Patch the config getters _bitbucket_live_auth calls for the Basic header.
+        # Both getters ship in writ/config.py, so a failure here is a real breakage
+        # and must fail the test rather than skip it.
+        import writ.config as _cfg
+        monkeypatch.setattr(_cfg, "get_bitbucket_email", lambda: "user@example.com")
+        monkeypatch.setattr(_cfg, "get_bitbucket_token", lambda: "tok")
 
         from writ.session.doctor import _bitbucket_live_auth
-        import inspect
-        sig = inspect.signature(_bitbucket_live_auth)
-        if "repo" not in sig.parameters:
-            pytest.skip(
-                "_bitbucket_live_auth does not yet accept a repo arg; "
-                "implementation not landed -- RED signal carried by other tests"
-            )
 
         _bitbucket_live_auth(".")
 

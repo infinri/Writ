@@ -1,6 +1,6 @@
 # Architecture
 
-Contributor-facing system design: the spine `README.md` and `HANDBOOK.md` reference. Every load-bearing claim is anchored to a file or a command you can run; where this page and the code disagree, the code wins. Counts are from the source tree and corpus dump of 2026-07-31.
+Contributor-facing system design: the spine `README.md` and `HANDBOOK.md` reference. Every load-bearing claim is anchored to a file or a command you can run; where this page and the code disagree, the code wins. Counts are from the source tree and corpus dump of 2026-08-14.
 
 > **North star.** Writ relocates oversight; it does not remove it. The gate is the product. Writ never automates self-approval: a human token-gates any write of canon. Every "the agent could otherwise..." seam below is closed by a human-held token, not by trust.
 
@@ -17,7 +17,7 @@ Contributor-facing system design: the spine `README.md` and `HANDBOOK.md` refere
 
 ## 2. Request flows
 
-**Prompt turn** (`UserPromptSubmit`): `auto-approve-gate.sh` scans for an approval phrase (mints the gate token, may advance a pending gate) and publishes the session id to `/tmp/writ-current-session`; then `writ-rag-inject.sh` ensures the daemon (flock-guarded singleton start), auto-routes an unset mode from the prompt shape, and makes **one** `POST /prompt-bundle` call. That endpoint runs the ranked query, the always-on floor, and the methodology companion in-process and returns all three rendered blocks (it replaced ~16 cold python spawns per turn). Delivery is plain stdout, which reaches the model only on `UserPromptSubmit`/`SessionStart`; every Pre/PostToolUse hook must use `additionalContext` instead (`writ/shared/delivery.py` is the empirically verified table).
+**Prompt turn** (`UserPromptSubmit`): `auto-approve-gate.sh` scans for an approval phrase (mints the gate token, may advance a pending gate) and writes the session id to `/tmp/writ-current-session` for the two payload-less readers only (`hooks/git/post-commit`, and `session-start-bootstrap.sh`'s pre-rotation read); nothing resolves its own identity from that file, which is one file per machine naming whichever session took a turn last. Every hook takes its session id from its own payload or declines to act. Then `writ-rag-inject.sh` ensures the daemon (flock-guarded singleton start), auto-routes an unset mode from the prompt shape, and makes **one** `POST /prompt-bundle` call. That endpoint runs the ranked query, the always-on floor, and the methodology companion in-process and returns all three rendered blocks (it replaced ~16 cold python spawns per turn). Delivery is plain stdout, which reaches the model only on `UserPromptSubmit`, `UserPromptExpansion` and `SessionStart`; every Pre/PostToolUse hook must use `additionalContext` instead; and the two compaction events reach the model on neither channel, so `writ-postcompact.sh` emits nothing and queues its re-orientation for the next `UserPromptSubmit` (`writ/shared/delivery.py` is the empirically verified table).
 
 **Write path** (`PreToolUse` Write/Edit/NotebookEdit): `writ-pre-write-dispatch.sh` -> `POST /pre-write-check`, one call combining the gate decision, denial escalation (deny becomes ask after repeated denials), and file-context RAG on allow. Bash-mediated writes (`>`, `tee`, `cp`, `mv`, `sed -i`, `dd`) are extracted quote-aware by `writ-bash-write-gate.sh` and checked against the same `/session/{sid}/can-write`; credential paths are denied in every mode by `_is_credential_path` (`writ/session/gates.py`), which both gates share. The same extractor also reads interpreter one-liners (`python -c`, `node -e`, `perl -e`, `ruby -e`, `php -r`, including heredoc and piped-stdin forms), so a write performed inside an interpreter is a gate decision rather than a silent allow. Documented evasion limits, listed in the hook itself: variable indirection, `eval` and base64, a path assembled from pieces, `sh -c` / `bash -c` wrappers, awk/sed program text, an interpreter reached through a variable or alias, and `python -m MODULE` (deliberately unscanned, because matching it would deny every `python -m pytest` run).
 
@@ -51,7 +51,7 @@ The daemon runs as a **systemd user service** in production (`scripts/install-se
 - **`.claude-plugin/marketplace.json`**: the same-repo single-plugin marketplace so `claude plugin marketplace add infinri/Writ` resolves. Version must match `plugin.json` and `pyproject.toml` (a test pins all three).
 - **Install paths**: marketplace plugin (venv at `${CLAUDE_PLUGIN_DATA:-~/.cache/writ}/.venv`, survives upgrades), `~/.claude/skills/writ` auto-discovery, or an undiscovered path with `--hooks` seeding from the generated `templates/settings.json`. Full detail: `docs/install.md`.
 
-## 6. Known seams (2026-07-31)
+## 6. Known seams (2026-08-14)
 
 | Seam | Status | Anchor |
 |---|---|---|
@@ -73,5 +73,8 @@ Phase 0 introduced data-driven `Category` routing and parity. Phase 1 added the 
 ```bash
 docker exec writ-neo4j cypher-shell -u neo4j -p writdevpass \
   "MATCH (n) WHERE n.project='writ' RETURN count(n);"
-.venv/bin/python -m pytest   # 367 modules, ~5,700 tests; needs the venv interpreter
+make test   # over 400 test modules, roughly 7,900 collected tests (2026-08-14)
+            # Bare `.venv/bin/python -m pytest` REFUSES: the suite requires its own
+            # Neo4j on 7688 (tests/conftest.py). `make test` starts it; or run
+            # `make test-graph-up` once, then pytest with the venv interpreter.
 ```

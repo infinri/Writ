@@ -157,7 +157,10 @@ class TestGateInvalidation:
 
     def test_invalidate_gate_deletes_approved_file(self, session_id):
         with tempfile.TemporaryDirectory() as td:
-            gate_dir = os.path.join(td, ".claude", "gates")
+            # Session-scoped artifact path (Part 2, isolation cycle): an invalidation
+            # deletes THIS session's own artifact, never a sibling's, so the fixture seeds
+            # `<root>/.claude/gates/<session_id>/`.
+            gate_dir = os.path.join(td, ".claude", "gates", session_id)
             os.makedirs(gate_dir)
             gate_file = os.path.join(gate_dir, "phase-a.approved")
             with open(gate_file, "w") as f:

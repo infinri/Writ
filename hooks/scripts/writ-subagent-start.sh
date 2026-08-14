@@ -54,6 +54,29 @@ if [ -z "$AGENT_ID" ]; then
     exit 0
 fi
 
+# THIS HOOK'S OWN TELEMETRY IS KEYED HERE, and AGENT_ID is non-empty by the guard above.
+#
+# log_gate_decision files its row under `${SESSION_ID:-${HOOK_SESSION_ID:-}}`
+# (bin/lib/common.sh:1304), and this hook set neither -- so the manual-test-grant
+# `inherit` row below, a governance record of a user concession passing to a worker,
+# was written with an empty session and read back as the literal id "unknown",
+# untraceable to the sub-agent that inherited the grant.
+#
+# AGENT_ID AND NEVER PARENT_SESSION, the same agent-first rule as
+# writ-debug-code-gate.sh:44: a sub-agent's rows belong to the sub-agent, and filing
+# them under its parent would attribute a child's inherited grant to the session that
+# merely dispatched it. It is not synthesized either -- the payload carried this id.
+#
+# ATTRIBUTION ONLY, verified rather than assumed. Nothing this hook reaches keys STATE
+# off SESSION_ID: it never calls hook_instrument (no exit trap) or writ_gate_dir, the
+# one SESSION_ID-keyed file write in common.sh is the buffered arm at :1284, which
+# log_gate_decision reaches only for the decision "allow" (:1264) and never for
+# "inherit", and the name is deliberately NOT exported, so no python child (the cache
+# writer, manual_test_grant.py, writ-session.py) can see it. The one other reader,
+# _writ_row_mode's fallback at :93, is a read-only mode lookup against this agent's own
+# cache file -- the same file CURRENT_MODE below already reads.
+SESSION_ID="$AGENT_ID"
+
 # Fallback: some Claude Code versions / nested sub-agents omit agent_type.
 # Default to "general-purpose" and log the fallback so we can track frequency.
 if [ -z "$AGENT_TYPE" ]; then
@@ -125,6 +148,20 @@ with mod.mutate_cache(agent_id) as cache:
     cache['pretool_queried_files'] = []
     cache['token_snapshots'] = []
 " "$PARENT_STATE" "$AGENT_ID" 2>/dev/null || true
+
+# The sub-agent's mode, read once here rather than at the bottom of the hook. It used
+# to be resolved just before the subagent_start friction row (the last thing this hook
+# does), which is AFTER the manual-test-grant decision below -- so that gate row, a
+# governance record, was stamped with an empty mode while the value was one command
+# away. Same command, same value, earlier.
+#
+# STILL RESOLVED HERE EXPLICITLY, even though SESSION_ID is now set above and
+# _writ_row_mode's fallback (common.sh:93) could reach the same cache file: that fallback
+# is a consolation prize for hooks that never computed the mode, and this hook did. The
+# explicit value is the one the hook ACTED on, which is what the audit trail wants, and
+# it keeps the mode on the gate row independent of the fallback's memoization.
+CURRENT_MODE=$(_writ_session "mode get" "$AGENT_ID" 2>/dev/null || echo "")
+CURRENT_MODE=$(echo "$CURRENT_MODE" | tr -d '[:space:]')
 
 # Manual-testing grant inherits exactly like gates_approved above: the user's
 # concession was given to the orchestrating session, and a dispatched worker acts
@@ -198,14 +235,21 @@ except Exception:
     fi
 
     if [ -n "$AGENT_PROMPT" ] && [ ${#AGENT_PROMPT} -gt 10 ]; then
+        # The DISPATCHING project's root: this hook runs in the parent Claude Code
+        # process, so its cwd is the project that spawned the sub-agent. Without it the
+        # sub-agent's one and only rule injection is unscoped, so a dispatched worker
+        # could be governed by a different project's records than its dispatcher.
+        # detect_project_root is pure bash (no spawn).
+        _PROJECT_ROOT=$(detect_project_root "$(pwd -P)")
         RESPONSE=$(python3 -c "
 import json, sys
 print(json.dumps({
     'query': sys.argv[1][:500],
     'budget_tokens': 2000,
     'exclude_rule_ids': [],
+    'project_root': sys.argv[2],
 }))
-" "$AGENT_PROMPT" 2>/dev/null | \
+" "$AGENT_PROMPT" "$_PROJECT_ROOT" 2>/dev/null | \
             curl -s --connect-timeout 0.5 --max-time 2 \
                 -X POST "http://${WRIT_HOST}:${WRIT_PORT}/query" \
                 -H "Content-Type: application/json" \
@@ -270,8 +314,9 @@ print(json.dumps({
 fi
 
 # Log sub-agent start to friction log (common.sh already sourced at top).
-CURRENT_MODE=$(_writ_session "mode get" "$AGENT_ID" 2>/dev/null || echo "")
-CURRENT_MODE=$(echo "$CURRENT_MODE" | tr -d '[:space:]')
+# CURRENT_MODE was resolved right after the sub-agent's cache was created, so the
+# manual-test-grant gate row above carries it too. Nothing between there and here
+# changes this agent's mode.
 log_friction_event "$AGENT_ID" "$CURRENT_MODE" "subagent_start" \
     "{\"agent_type\":\"$AGENT_TYPE\",\"parent_session\":\"$PARENT_SESSION\"}"
 

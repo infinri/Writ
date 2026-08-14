@@ -1,6 +1,6 @@
 # Writ Codebase: Development Guide
 
-The code map for anyone (human or agent) modifying Writ's own source. Facts here are derived from the tree as of 2026-07-31; when in doubt, the code wins. Deep contracts live in `docs/reference/`.
+The code map for anyone (human or agent) modifying Writ's own source. Facts here are derived from the tree as of 2026-08-14; when in doubt, the code wins. Deep contracts live in `docs/reference/`.
 
 ## Layout
 
@@ -29,7 +29,7 @@ The code map for anyone (human or agent) modifying Writ's own source. Facts here
 8. **Embeddings are 384-dim MiniLM via ONNX**; the sentence-transformers path exists only behind `WRIT_ALLOW_EMBEDDING_FALLBACK=1`.
 9. **Graduation is a plain ratio** (50 observations, 0.75 positive); deliberately no statistical interval.
 10. **Docs are not a test surface**: never assert on markdown prose; generated pages drift-check via `make docs-check`, not pytest.
-11. **Stop hooks block via stderr + exit code**, never `additionalContext` (turn-block loop); Pre/PostToolUse deliver to the model only via `additionalContext`.
+11. **Stop hooks block via stderr + exit code**, never `additionalContext` (turn-block loop); Pre/PostToolUse deliver to the model only via `additionalContext`; **PreCompact and PostCompact have no model-visible channel at all**, so `writ-postcompact.sh` emits nothing and queues `post_compact_pending`, which `writ-rag-inject.sh` delivers on the next `UserPromptSubmit` (`writ/shared/delivery.py` is the verified table).
 
 ## Configuration reality
 
@@ -37,8 +37,9 @@ The code map for anyone (human or agent) modifying Writ's own source. Facts here
 
 ## Testing directives
 
-- Run everything with the venv interpreter: `.venv/bin/python -m pytest` (system Python lacks onnxruntime). 367 modules, ~5,700 tests.
-- After touching `writ/`: `make test`. After touching retrieval, ranking, or schema: also `make bench` (14 contractual targets; floors live in `tests/fixtures/regression_floors.py`, history is append-only).
+- Run everything with the venv interpreter: `.venv/bin/python -m pytest <paths>` (system Python lacks onnxruntime). Over 400 test modules, roughly 7,900 collected tests (2026-08-14).
+- **Mid-cycle, run only the test files the cycle touched, all of them in ONE pytest invocation.** The single full-suite run happens at the very end of the program and the ORCHESTRATOR runs it, not the implementer. This is not a style preference: two mid-cycle `make test` calls once burned 785 seconds of a 2,495-second cycle and reported nothing the touched files had not already reported. Never substitute `-k` for a narrower path list; it still collects the whole suite before selecting. Command shapes and why one invocation beats N: `docs/reference/testing.md`.
+- After touching retrieval, ranking, or schema: also `make bench` (17 contractual targets; floors live in `tests/fixtures/regression_floors.py`, history is append-only).
 - Roughly half the suite needs a reachable Neo4j; an empty-but-reachable graph fails by design (the anti-masking contract in `tests/_corpus.py`).
 - The suite isolates itself at conftest import: port 8799, mkdtemp `WRIT_CACHE_DIR`, `WRIT_NO_AUTOSTART=1`, redirected logs; it restores the corpus from `writ-corpus.cypher` at session end. The full trap list: `docs/reference/testing.md`.
 - After changing `hooks/hooks.json`: `make docs && scripts/render-settings-template.py` (both templates are generated); a new event mapping needs a fresh Claude Code session to register.

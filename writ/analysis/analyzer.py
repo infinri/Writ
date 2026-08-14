@@ -25,6 +25,7 @@ async def run_analysis(
     pipeline: RetrievalPipeline,
     llm_client: LlmAnalyzer,
     instrumentation: Instrumentation,
+    project: str | None = None,
 ) -> AnalyzeResponse:
     """Execute the full analysis pipeline.
 
@@ -33,10 +34,16 @@ async def run_analysis(
     3. Decide whether to escalate to LLM
     4. If calibration mode: always run both, log paired results
     5. Build verdict from combined findings
+
+    project: the project owning `file_path`, resolved by the caller (the /analyze
+    route derives it from the file's directory). Optional and defaulting to None so
+    the direct callers keep working; None scopes retrieval to doctrine only, which
+    for this path costs nothing today because the analyzer checks code against
+    RULES, and rules are doctrine.
     """
     # Step 1: Retrieve rules
     query_text = f"{context} {file_path}"
-    retrieval_result = pipeline.query(query_text=query_text)
+    retrieval_result = pipeline.query(query_text=query_text, project=project)
     rules = retrieval_result.get("rules", [])
     retrieval_scores = {r["rule_id"]: r.get("score", 0.0) for r in rules}
     rules_checked = list(retrieval_scores.keys())

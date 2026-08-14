@@ -2,12 +2,24 @@
 
 A: after /compact the next rag-inject only fires on the next user prompt, so an
    autonomously-resuming agent has no workflow bearings. cmd_reset_after_compaction
-   now returns mode + phase, and writ-postcompact.sh emits a compact state line.
+   now returns mode + phase.
 C: writ-precompact.sh's "reduce footprint before compression" rationale is false
    (the session cache is a /tmp file, not part of the compacted context). Re-document;
    behavior unchanged.
 
-RED until writ-session.py / writ-postcompact.sh / writ-precompact.sh are updated.
+Cycle G correction: the compact state line and the verify-discipline directive no
+longer travel on writ-postcompact.sh's own stdout -- Claude Code's hook-output
+validator rejects a PostCompact hookSpecificOutput payload outright ("(root):
+Invalid input"), so that channel is dead. writ-postcompact.sh now only QUEUES
+delivery (post_compact_pending=True via cmd_reset_after_compaction); the next
+writ-rag-inject.sh UserPromptSubmit invocation is what actually emits the state
+line + directive (via bin/lib/common.sh::emit_post_compact_directive) and clears
+the flag. The state-line/directive assertions below are retargeted accordingly,
+hermetically (WRIT_PORT=19999, no live daemon needed) rather than gated behind a
+live-server marker.
+
+RED until writ-session.py / writ-rag-inject.sh / bin/lib/common.sh / writ-precompact.sh
+are updated.
 """
 
 from __future__ import annotations
@@ -28,7 +40,6 @@ import pytest
 SKILL_DIR = Path(__file__).resolve().parent.parent
 WRIT_SESSION_PY = str(SKILL_DIR / "bin" / "lib" / "writ-session.py")
 PRECOMPACT = SKILL_DIR / "hooks" / "scripts" / "writ-precompact.sh"
-POSTCOMPACT = SKILL_DIR / "hooks" / "scripts" / "writ-postcompact.sh"
 
 PRECOMPACT_SRC = PRECOMPACT.read_text()
 WRIT_SESSION_SRC = Path(WRIT_SESSION_PY).read_text()
@@ -48,19 +59,26 @@ def _load_writ_session():
     return mod
 
 
-def _server_up() -> bool:
-    try:
-        import urllib.request
-
-        from tests._daemon import _health_url
-
-        with urllib.request.urlopen(_health_url(), timeout=1) as r:
-            return r.status == 200
-    except Exception:
-        return False
-
-
-requires_server = pytest.mark.skipif(not _server_up(), reason="writ server not running")
+def _run_rag_inject(session_id: str, cache_dir: str,
+                     prompt: str = "What decisions were made recently?") -> subprocess.CompletedProcess:
+    """Hermetic UserPromptSubmit invocation of writ-rag-inject.sh: WRIT_PORT
+    points at an unreachable port so /prompt-bundle, /recall and should-skip
+    all fail open before the post_compact_pending check (a pure read of the
+    already-fetched $CACHE) runs -- no live daemon required."""
+    env = os.environ.copy()
+    env["WRIT_CACHE_DIR"] = cache_dir
+    env["WRIT_PORT"] = "19999"
+    env["WRIT_HOST"] = "localhost"
+    envelope = json.dumps({
+        "session_id": session_id,
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": prompt,
+    })
+    return subprocess.run(
+        ["bash", str(SKILL_DIR / "hooks" / "scripts" / "writ-rag-inject.sh")],
+        input=envelope, capture_output=True, text=True,
+        cwd=str(SKILL_DIR), env=env, timeout=20,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -104,14 +122,25 @@ class TestResetReturnsModeAndPhase:
 
 
 # --------------------------------------------------------------------------- #
-# A. writ-postcompact.sh emits the state line (behavioral)
+# A. writ-rag-inject.sh emits the state line + directive (behavioral, hermetic)
 # --------------------------------------------------------------------------- #
-@requires_server
-class TestPostCompactStateLine:
+class TestRagInjectPostCompactStateRehydration:
+    """Cycle G retarget: writ-postcompact.sh no longer emits anything (its
+    hookSpecificOutput shape is rejected by CC's validator on PostCompact).
+    It only sets post_compact_pending=True. The state line + directive move to
+    the next writ-rag-inject.sh UserPromptSubmit invocation, tested here
+    hermetically (WRIT_PORT=19999 unreachable, no live daemon needed) rather
+    than behind the @requires_server marker the old postcompact-stdout version
+    needed."""
+
     @pytest.fixture()
-    def seeded(self):
+    def seeded(self, tmp_path: Path):
         mod = _load_writ_session()
         sid = f"test-5d-{uuid.uuid4().hex[:8]}"
+        cache_dir = str(tmp_path / "writ-cache")
+        Path(cache_dir).mkdir(parents=True, exist_ok=True)
+        orig = os.environ.get("WRIT_CACHE_DIR")
+        os.environ["WRIT_CACHE_DIR"] = cache_dir
 
         def seed(**fields):
             cache = mod._read_cache(sid)
@@ -119,55 +148,42 @@ class TestPostCompactStateLine:
             mod._write_cache(sid, cache)
             return sid
 
-        yield sid, seed
-        p = Path(tempfile.gettempdir()) / f"writ-session-{sid}.json"
-        if p.exists():
-            p.unlink()
+        yield sid, cache_dir, seed
 
-    def _run_hook(self, sid: str) -> subprocess.CompletedProcess:
-        return subprocess.run(
-            ["bash", str(POSTCOMPACT)],
-            input=json.dumps({"session_id": sid, "event": "compact"}),
-            capture_output=True, text=True, cwd=str(SKILL_DIR),
-            env={**os.environ, "WRIT_HOST": "localhost"}, timeout=20,
-        )
+        if orig is None:
+            os.environ.pop("WRIT_CACHE_DIR", None)
+        else:
+            os.environ["WRIT_CACHE_DIR"] = orig
 
     def test_state_line_emitted_for_work_session(self, seeded) -> None:
-        sid, seed = seeded
-        seed(mode="work", current_phase="implementation")
-        r = self._run_hook(sid)
+        sid, cache_dir, seed = seeded
+        seed(mode="work", current_phase="implementation", post_compact_pending=True)
+        r = _run_rag_inject(sid, cache_dir)
         assert r.returncode == 0, f"exit {r.returncode}; stderr={r.stderr[:300]!r}"
         assert "post-compact workflow state" in r.stdout, f"state line missing: {r.stdout[:400]!r}"
         assert "mode=work" in r.stdout
         assert "implementation" in r.stdout
 
     def test_verification_directive_still_emitted(self, seeded) -> None:
-        sid, seed = seeded
-        seed(mode="work", current_phase="implementation")
-        r = self._run_hook(sid)
+        sid, cache_dir, seed = seeded
+        seed(mode="work", current_phase="implementation", post_compact_pending=True)
+        r = _run_rag_inject(sid, cache_dir)
+        assert r.returncode == 0, f"exit {r.returncode}; stderr={r.stderr[:300]!r}"
         assert "fresh evidence" in r.stdout.lower()
         assert "STOP" in r.stdout
 
-    def test_no_state_line_when_mode_unset(self) -> None:
-        # unseeded session -> daemon returns default mode (None); no state line,
-        # but the verification directive still emits (back-compat with phase4c).
-        sid = f"test-5d-nomode-{uuid.uuid4().hex[:8]}"
-        try:
-            r = subprocess.run(
-                ["bash", str(POSTCOMPACT)],
-                input=json.dumps({"session_id": sid, "event": "compact"}),
-                capture_output=True, text=True, cwd=str(SKILL_DIR),
-                env={**os.environ, "WRIT_HOST": "localhost"}, timeout=20,
-            )
-            assert r.returncode == 0, f"exit {r.returncode}; stderr={r.stderr[:300]!r}"
-            assert "post-compact workflow state" not in r.stdout, (
-                f"state line must not emit without a mode: {r.stdout[:300]!r}"
-            )
-            assert "fresh evidence" in r.stdout.lower(), "directive must still emit"
-        finally:
-            p = Path(tempfile.gettempdir()) / f"writ-session-{sid}.json"
-            if p.exists():
-                p.unlink()
+    def test_no_state_line_when_mode_unset(self, seeded) -> None:
+        # mode left unset, but post_compact_pending IS set: the state line is
+        # omitted (nothing to report) while the directive still emits (the
+        # no-mode boundary case this file exists to pin).
+        sid, cache_dir, seed = seeded
+        seed(post_compact_pending=True)
+        r = _run_rag_inject(sid, cache_dir)
+        assert r.returncode == 0, f"exit {r.returncode}; stderr={r.stderr[:300]!r}"
+        assert "post-compact workflow state" not in r.stdout, (
+            f"state line must not emit without a mode: {r.stdout[:300]!r}"
+        )
+        assert "fresh evidence" in r.stdout.lower(), "directive must still emit"
 
 
 # --------------------------------------------------------------------------- #
@@ -184,6 +200,17 @@ class TestPreCompactRedocumented:
         assert CORRECTED in PRECOMPACT_SRC, (
             "writ-precompact.sh must state that the session cache is not part of "
             "the compacted context"
+        )
+
+    def test_no_longer_claims_postcompact_reaches_next_turn_via_additional_context(self) -> None:
+        # Cycle G: this is the exact false belief the cycle disproves. CC's
+        # validator rejects PostCompact's hookSpecificOutput outright, so
+        # writ-postcompact.sh's own output never reached the next turn via
+        # additionalContext -- delivery now queues instead (post_compact_pending)
+        # and the next writ-rag-inject.sh UserPromptSubmit does the emitting.
+        assert "reaches the next turn" not in PRECOMPACT_SRC, (
+            "writ-precompact.sh must drop the false claim that PostCompact's "
+            "own output reaches the next turn via additionalContext"
         )
 
     def test_clear_rules_docstring_corrected(self) -> None:

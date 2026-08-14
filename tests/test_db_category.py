@@ -40,6 +40,36 @@ def _require_neo4j():
         pytest.skip("Neo4j unreachable")
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _restore_corpus_after_module(_require_neo4j):
+    """Leave the graph complete for whatever module collects next (cycle 8).
+
+    The `db` fixture below calls `clear_all(preserve_labels=frozenset())` -- the
+    explicit EVERYTHING-wipe -- before and after every test in this module, so the
+    last thing it does is leave the graph empty.
+
+    That never mattered before, because it never ran. `disposable_graph` skips
+    unless `full_wipe_allowed` holds, and against the production instance it cannot:
+    the marker records intent while the instance comparison is env-blind. Isolation
+    makes both halves true, so this module RUNS for the first time and its empty
+    graph becomes the starting state for everything collected after it. Test order
+    is deterministic (no pytest-randomly in the dev dependencies), but deterministic
+    is not safe: only tests that request `corpus_ready` or `live_pipeline` self-heal,
+    and the rest would meet an empty graph with no cause attached to the failures.
+
+    ensure_corpus() is a no-op (one census read) when the graph is already complete
+    and a dump replay when it is not, so the cost is at most one replay per module
+    rather than the one-per-test a function-scoped restore would buy. It depends on
+    `_require_neo4j` so an unreachable graph skips the module before this fixture is
+    ever set up: there is nothing to restore and nothing to restore it to.
+    """
+    yield
+
+    from tests._corpus import ensure_corpus
+
+    ensure_corpus()
+
+
 # --- Helpers -----------------------------------------------------------------
 
 def _make_rule(rule_id: str) -> dict:

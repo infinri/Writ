@@ -34,6 +34,9 @@ import pytest
 
 from tests._scope import DEFAULT_IGNORE, Universe, scan, shell_file
 
+# autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
+from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
+
 REPO = Path(__file__).resolve().parent.parent
 
 MARK_HOOK = REPO / "hooks" / "scripts" / "writ-mark-pending-test.sh"

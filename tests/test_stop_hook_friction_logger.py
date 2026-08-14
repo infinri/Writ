@@ -66,8 +66,15 @@ def _make_project(tmp_path: Path) -> Path:
     PROJECT_ROOT) and a .claude/gates dir holding an approved gate file."""
     root = tmp_path / "proj"
     (root / ".git").mkdir(parents=True)
-    (root / ".claude" / "gates").mkdir(parents=True)
+    _session_gates(root).mkdir(parents=True)
     return root
+
+
+def _session_gates(project_root: Path) -> Path:
+    """SID's OWN gate directory (Part 2, isolation cycle): the hook reads
+    `<project_root>/.claude/gates/<session_id>/`, so a fixture that seeds the flat
+    project-wide path is invisible to it -- which is the isolation this cycle buys."""
+    return project_root / ".claude" / "gates" / SID
 
 
 def _run_hook(
@@ -125,7 +132,8 @@ def _seed_two_gates_at_fixed_mtimes(project_root: Path) -> None:
     mtimes so the hook's Event-2 mtime diff produces a single phase_transition_time
     (phase-a -> test-skeletons). Fixed mtimes make the gate state identical across
     repeated Stop fires, so the second fire's dedup read must suppress a duplicate."""
-    gates = project_root / ".claude" / "gates"
+    gates = _session_gates(project_root)
+    gates.mkdir(parents=True, exist_ok=True)
     phase_a = gates / "phase-a.approved"
     test_skel = gates / "test-skeletons.approved"
     phase_a.write_text("ok")
@@ -150,7 +158,8 @@ def test_gate_denied_then_approved_state_appends_audit_event_and_exits_zero(
     project_root = _make_project(tmp_path)
     gate_name = "phase-a"
     _seed_cache(cache_dir, gate_name=gate_name)
-    (project_root / ".claude" / "gates" / f"{gate_name}.approved").write_text("ok")
+    _session_gates(project_root).mkdir(parents=True, exist_ok=True)
+    (_session_gates(project_root) / f"{gate_name}.approved").write_text("ok")
 
     proc = _run_hook(
         cache_dir=cache_dir,
@@ -193,7 +202,8 @@ def test_stop_hook_active_true_exits_zero_and_appends_no_events(
     project_root = _make_project(tmp_path)
     gate_name = "phase-a"
     _seed_cache(cache_dir, gate_name=gate_name)
-    (project_root / ".claude" / "gates" / f"{gate_name}.approved").write_text("ok")
+    _session_gates(project_root).mkdir(parents=True, exist_ok=True)
+    (_session_gates(project_root) / f"{gate_name}.approved").write_text("ok")
 
     proc = _run_hook(
         cache_dir=cache_dir,

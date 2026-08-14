@@ -6,9 +6,18 @@ from __future__ import annotations
 from writ.graph.integrity._common import (
     EXPECTED_FLOORS,
     KNOWN_ACTIONS,
+    WIRED_ROUTES,
     _FLOOR_NODE_LABELS,
     _GRAPH_ID_COALESCE,
 )
+
+# The two routes that let a delivery channel SELECT a node by itself, with no
+# per-node key: 'semantic' admits it to the Stage-1 ranked pool
+# (RulesRetrievalPipeline._routes_for), 'pull' admits it to the companion's
+# prompt-keyword channel. Every other wired route needs a key on the node
+# (floor_modes / action_triggers / trigger_keywords) to fire, which is why
+# detect_delivery_orphans tests the keys and these two routes as one conjunction.
+_SELECTING_ROUTES = ("semantic", "pull")
 
 
 class RoutingChecksMixin:
@@ -201,3 +210,113 @@ class RoutingChecksMixin:
             if unknown:
                 violations[node_id] = unknown
         return violations or None
+
+    async def detect_route_implementation_closure(self) -> dict | None:
+        """1.9: the ROUTE analog of detect_action_vocabulary_closure.
+
+        Every value in a Category's `routes` must be a member of WIRED_ROUTES --
+        the routes whose delivery mechanism is implemented. A route that is VALID
+        but UNWIRED parses, persists, and delivers nothing, so no member is
+        reachable BY THAT ROUTE; when it is the category's ONLY route, the members
+        are undeliverable outright. That is not hypothetical: CAT-DISC-001 declared
+        `ride_along` alone and stranded 26 members with no check failing, because
+        each sibling invariant here is scoped to the route it was written for
+        (`pull_orphans` fires only for pull-routed categories, `push_orphans` only
+        for action-routed ones), so a category routed to NEITHER slipped between
+        them. detect_delivery_orphans is the companion that separates the stranded
+        case from a merely inert route on an otherwise wired category.
+
+        Returns None when every Category declares only wired routes, else
+        {category_id: sorted([unwired_route])}. Guards mirror
+        detect_floor_completeness exactly: None when there is no driver, and SKIP
+        (None) when the graph holds no Category nodes, so a crafted test graph of a
+        few rules is never reported as a corpus-wide breach.
+        """
+        if self._driver is None:
+            return None
+        async with self._driver.session(database=self._database) as session:
+            present = await session.run("MATCH (c:Category) RETURN count(c) AS c")
+            if (await present.single())["c"] == 0:
+                return None
+            result = await session.run(
+                "MATCH (c:Category) WHERE c.routes IS NOT NULL "
+                "RETURN c.category_id AS cat, c.routes AS routes"
+            )
+            rows = [(r["cat"], r["routes"]) async for r in result]
+        violations: dict[str, list[str]] = {}
+        for cat, routes in rows:
+            unwired = sorted({r for r in (routes or []) if r not in WIRED_ROUTES})
+            if unwired:
+                violations[cat] = unwired
+        return violations or None
+
+    async def detect_delivery_orphans(self) -> dict | None:
+        """1.9: the union-scoped orphan check -- no channel can select this node.
+
+        A Skill, Playbook, Technique or AntiPattern (the four labels the
+        methodology companion can load) is UNDELIVERABLE when all five hold at
+        once: no `floor_modes` (the mode floor cannot seat it), no
+        `action_triggers` (no push can reach it), no `trigger_keywords` (no pull
+        can match it), and its category routes contain neither `semantic` (no
+        admission to the ranked pool) nor `pull`. That conjunction is the whole
+        definition of undeliverable, and it is deliberately a CONJUNCTION: ONE
+        live channel is sufficient, so a floor-only node (SKL-PROC-MODE-001,
+        floored in conversation and work while declaring no edges) and an
+        action-only node (SKL-PROC-REVRECV-001, pushed by the wired
+        `review-feedback` action) are correctly silent here. Flagging them would
+        make the check noise and get it switched off.
+
+        Rules and ForbiddenResponses are out of scope by label: they reach the
+        agent on the always-on injection channel (INJECTION_RULE_WHERE), which
+        consults no route and no trigger key.
+
+        Returns None when every such node has at least one channel, else
+        {node_id: {label, category, routes}} -- keyed by node id, valued with the
+        evidence that made it an orphan. Guards mirror detect_floor_completeness:
+        None when there is no driver, SKIP (None) when the graph holds no Category
+        nodes, since without categories every node would look route-less and the
+        check would report the entire corpus as orphaned.
+        """
+        if self._driver is None:
+            return None
+        nid = _GRAPH_ID_COALESCE.format(v="n")
+        async with self._driver.session(database=self._database) as session:
+            present = await session.run("MATCH (c:Category) RETURN count(c) AS c")
+            if (await present.single())["c"] == 0:
+                return None
+            result = await session.run(
+                f"MATCH (n)-[:BELONGS_TO]->(c:Category) "
+                f"WHERE labels(n)[0] IN {_FLOOR_NODE_LABELS} "
+                f"RETURN {nid} AS id, labels(n)[0] AS label, "
+                f"c.category_id AS cat, c.routes AS routes, "
+                f"n.floor_modes AS floor_modes, n.action_triggers AS action_triggers, "
+                f"n.trigger_keywords AS trigger_keywords"
+            )
+            rows = [r.data() async for r in result]
+        # A node with more than one BELONGS_TO category is deliverable if ANY of
+        # them opens a channel, so `deliverable` wins over a candidate row.
+        deliverable: set[str] = set()
+        candidates: dict[str, dict] = {}
+        for r in rows:
+            node_id = r["id"]
+            routes = r.get("routes") or []
+            has_channel = (
+                bool(r.get("floor_modes"))
+                or bool(r.get("action_triggers"))
+                or bool(r.get("trigger_keywords"))
+                or any(route in routes for route in _SELECTING_ROUTES)
+            )
+            if has_channel:
+                deliverable.add(node_id)
+                continue
+            candidates[node_id] = {
+                "label": r.get("label"),
+                "category": r.get("cat"),
+                "routes": sorted(routes),
+            }
+        orphans = {
+            node_id: ev
+            for node_id, ev in sorted(candidates.items())
+            if node_id not in deliverable
+        }
+        return orphans or None

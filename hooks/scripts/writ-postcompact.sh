@@ -4,7 +4,16 @@
 # Clears loaded_rule_ids_by_phase[current_phase] so rules will be
 # re-injected on the next UserPromptSubmit. Resets remaining_budget
 # to DEFAULT_SESSION_BUDGET (8000). This is the authoritative compaction
-# signal; the Cycle A heuristic in writ-rag-inject.sh stays as fallback.
+# signal, and the only one: the writ-rag-inject.sh heuristic that once
+# guessed at compaction was removed (it read an env var CC does not set).
+#
+# THIS HOOK EMITS NOTHING. It writes state and queues delivery; it does not
+# deliver. CC's hook-output validator rejects a PostCompact hookSpecificOutput
+# reply outright ("(root): Invalid input", observed on a real /compact
+# 2026-08-14) and discards it, and bare stdout on PostCompact reaches only the
+# CC debug log. cmd_reset_after_compaction therefore sets post_compact_pending,
+# and writ-rag-inject.sh emits the state line + verify-discipline directive on
+# the next UserPromptSubmit, which is a confirmed model channel.
 #
 # Hook type: PostCompact
 # Exit: always 0 (cannot block compaction)
@@ -18,8 +27,8 @@ source "$WRIT_DIR/bin/lib/common.sh"
 
 HOOK_START_NS=$(hook_timer_start)
 
-# Session ID: prefer the stdin envelope (Claude Code passes session_id), fall
-# back to grandparent PID, then to the deterministic cwd+user hash.
+# Session ID: the stdin envelope only (Claude Code passes session_id). There is
+# no fallback; an empty id is recorded and the hook stops (see below).
 STDIN_DATA=$(cat 2>/dev/null || true)
 SESSION_ID=""
 if [ -n "$STDIN_DATA" ]; then
@@ -43,53 +52,13 @@ if [ -z "$SESSION_ID" ]; then
     exit 0
 fi
 
-# Reset phase exclusion list and budget so rules re-inject after the window
-# is freed. The statusLine maintains context_percent independently. Capture the
-# result (mode + phase) so we can re-state the workflow position below.
+# Reset phase exclusion list and budget so rules re-inject after the window is freed, and
+# queue the post-compaction directive (cmd_reset_after_compaction sets post_compact_pending
+# in the same cache write, so queueing costs this hook no extra spawn). The statusLine
+# maintains context_percent independently. The result is logged, not printed: stdout on this
+# event is either discarded by the validator or debug-log-only, never a model channel.
 RESET_OUT=$(_writ_session reset-after-compaction "$SESSION_ID" 2>/dev/null || echo '{}')
 echo "$RESET_OUT" >> "/tmp/writ-postcompact-${SESSION_ID}.log" 2>/dev/null || true
-
-# State-rehydration: the next rag-inject only fires on the next user prompt, so
-# an agent resuming autonomously post-compact has no workflow bearings. Re-state
-# mode + phase (one python3 spawn -> two lines). Emitted only when a mode is set.
-STATE_FIELDS=$(echo "$RESET_OUT" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    d = {}
-print(d.get('mode') or '')
-print(d.get('phase') or '')
-" 2>/dev/null)
-PC_MODE=$(echo "$STATE_FIELDS" | sed -n '1p')
-PC_PHASE=$(echo "$STATE_FIELDS" | sed -n '2p')
-if [ -n "$PC_MODE" ]; then
-    echo "[Writ: post-compact workflow state] mode=$PC_MODE, phase=$PC_PHASE. The next user turn re-injects the full rule set; treat this as your current workflow position."
-    echo
-fi
-
-# Phase 4c (PSR-004 follow-up): emit a verify-discipline directive so
-# the model treats recalled verification output as second-hand after
-# compaction. Without this, "Is it working?" post-compact gets answered
-# from pre-compact memory ("last run was N tests passing") rather than
-# fresh evidence. See docs/pressure-runs/2026-04-22/PSR-004/analysis.md.
-cat <<'DIRECTIVE'
-[Writ: context compacted]
-Until the next compaction, treat any pre-compact verification output (test counts,
-"passing" claims, file reads) as second-hand evidence.
-
-If asked "is it working?" / "is it done?" / "did it pass?":
-  1. Re-run the relevant verification (tests, lint, typecheck, smoke command) FIRST.
-  2. If the re-run is BLOCKED (tool rejection, permission denied, env unavailable):
-       STOP. Do NOT answer "yes", "passing", or "should be working".
-       Respond instead: "Re-verification was blocked by [reason]. I cannot confirm
-       post-compact. Pre-compact context says X but I have no fresh evidence.
-       Want me to verify another way?"
-  3. Only answer affirmatively with fresh test/lint output cited inline.
-
-Saying "yes" / "passing" / "all good" without fresh evidence is a forbidden response
-in this state. Recalled output is not fresh evidence.
-DIRECTIVE
 
 # Mode for hook_execution telemetry (audit #5).
 MODE=$(_writ_session "mode get" "$SESSION_ID" 2>/dev/null || echo "")

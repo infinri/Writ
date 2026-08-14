@@ -17,6 +17,9 @@ import os
 
 import pytest
 
+# autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
+from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
+
 HELPER_PATH = os.path.join(os.path.dirname(__file__), os.pardir, "bin", "lib", "writ-session.py")
 _spec = importlib.util.spec_from_file_location("writ_session_investigate", HELPER_PATH)
 writ_session = importlib.util.module_from_spec(_spec)

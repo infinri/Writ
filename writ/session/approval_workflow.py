@@ -14,11 +14,22 @@ import sys
 from writ.session.cache import _read_cache, mutate_cache, record_transition
 from writ.session.friction import _log_friction_event
 from writ.session.gate_token import (
+    BINDING_GATE_MISMATCH,
+    BINDING_PLAN_DRIFT,
+    BINDING_UNBOUND,
     claim_gate_token,
+    gate_binding_refusal,
     gate_token_valid,
+    read_gate_binding,
     read_gate_token,
 )
-from writ.session.locators import _find_plan_md, resolve_project_root
+from writ.session.locators import (
+    _find_plan_md,
+    gate_artifact_path,
+    gate_dir,
+    plan_md_hash,
+    resolve_project_root,
+)
 from writ.session.mode_engine import (
     MODE_CONFIG,
     _gate_sequence_for_mode,
@@ -241,6 +252,27 @@ _GATE_VALIDATORS: dict[str, object] = {
 }
 
 
+# What to tell the user when the token they hold does not authorize the gate now
+# pending. Each message names the cause and says plainly whether a fresh approval is
+# needed, because the failure mode being fixed is a refusal the user read as "no gate is
+# pending" and then retried unchanged.
+_BINDING_REFUSAL_REASONS: dict[str, str] = {
+    BINDING_GATE_MISMATCH: (
+        "Your approval is bound to the {bound} gate, but the {target} gate is what is "
+        "pending now. Approve again while {target} is the gate being asked about."
+    ),
+    BINDING_PLAN_DRIFT: (
+        "plan.md changed after this approval was given, so the approval no longer covers "
+        "the plan on disk. Review the current plan and approve again."
+    ),
+    BINDING_UNBOUND: (
+        "This gate token records nothing about what it authorizes (it is the pre-binding "
+        "format), so it cannot be checked against the {target} gate. Approve again to "
+        "mint a bound token."
+    ),
+}
+
+
 def _detect_project_root(project_root: str) -> str:
     """Return project_root as given, else the marker dir at or above cwd, else cwd.
 
@@ -288,6 +320,25 @@ def apply_phase_advance(
     """
     # 1. gates_approved -- sorted set-union add (idempotent, preserves prior gates).
     cache["gates_approved"] = sorted(set(cache.get("gates_approved", [])) | {target_gate})
+
+    # 1b. gates_approved_plan -- WHICH plan this approval covered.
+    #
+    # Without it a gate name is just a string, and rewriting plan.md leaves every
+    # prior approval standing. That is not hypothetical: a finished cycle's
+    # phase-a and test-skeletons approvals carried into the next cycle, whose
+    # plan.md was written afterwards, so the user's genuine approval of the NEW
+    # plan advanced nothing because no gate was pending.
+    #
+    # mode_engine already fingerprints plan.md, but across a MODE SWITCH, which
+    # answers "did the plan change while this session was away?". A gate needs
+    # the other question, "does this approval cover the plan in front of me
+    # now?", and only that one survives a rewrite between the switch and the
+    # gate.
+    from writ.session.locators import plan_md_hash
+
+    bound = dict(cache.get("gates_approved_plan", {}))
+    bound[target_gate] = plan_md_hash(cache.get("project_root"))
+    cache["gates_approved_plan"] = bound
 
     # 2. current_phase.
     cache["current_phase"] = new_phase
@@ -416,13 +467,41 @@ def cmd_advance_phase(session_id: str, project_root: str = "", token: str = "") 
             sys.stdout.write("\n")
             return
 
+        # The approval must authorize THIS gate and THIS plan. The fingerprint comes
+        # from the cache's project_root, which is the same input cmd_current_phase
+        # reports to the approval hook at mint time, so the mint and the claim hash the
+        # same file by construction; deriving one of them from a separately-resolved
+        # root would refuse legitimate approvals whenever the two roots differ.
+        plan_hash = plan_md_hash(cache.get("project_root")) or ""
+        refusal = gate_binding_refusal(session_id, gate=target_gate, plan_hash=plan_hash)
+        if refusal:
+            # Refuse WITHOUT claiming: the token may legitimately authorize something
+            # else (another gate, a candidate promotion), and spending it here would
+            # destroy an approval the user did give. One friction event per refusal
+            # class, so the log can tell a fail-closed gate from an absent one.
+            binding = read_gate_binding(session_id)
+            bound_gate = binding[0] if binding else ""
+            _log_friction_event(
+                session_id, mode, refusal,
+                gate=target_gate, bound_gate=bound_gate,
+            )
+            _emit_json({
+                "advanced": False,
+                "gate": target_gate,
+                "reason": _BINDING_REFUSAL_REASONS[refusal].format(
+                    bound=bound_gate, target=target_gate,
+                ),
+            })
+            sys.stdout.write("\n")
+            return
+
         # G1 concurrency: atomically CLAIM the token before mutating. Exactly one
         # concurrent CLI advance wins; the loser returns a no-op WITHOUT advancing,
         # so one token can never advance two gates (recompute-under-lock double-
         # advance -- see project_advance_phase_token_race). The claim REPLACES the
         # post-lock consume_gate_token below: claiming IS consuming. It sits AFTER
         # the validator so a validator error / no-op still does not consume.
-        if not claim_gate_token(session_id, token):
+        if not claim_gate_token(session_id, token, gate=target_gate, plan_hash=plan_hash):
             _emit_json({
                 "advanced": False,
                 "reason": (
@@ -458,12 +537,26 @@ def cmd_advance_phase(session_id: str, project_root: str = "", token: str = "") 
     # the claim both mutual-excludes concurrent advances and spends the token.
     _log_phase_token_summary(session_id, mode, cache, old_phase)
 
-    # Create gate file on disk as artifact (not source of truth)
-    gate_dir = os.path.join(project_root, ".claude", "gates")
-    os.makedirs(gate_dir, exist_ok=True)
-    gate_file = os.path.join(gate_dir, f"{target_gate}.approved")
-    with open(gate_file, "w") as f:
-        f.write(session_id + "\n")
+    # Create gate file on disk as artifact (not source of truth), under THIS SESSION's own
+    # directory: <project_root>/.claude/gates/<session_id>/<gate>.approved. The flat path
+    # this replaces was shared by every session working in the same repo, so one session's
+    # approval read as every session's and a re-arm in one deleted the others' files.
+    #
+    # An invalid session component writes NOTHING (locators.gate_artifact_path returns "").
+    # The advance itself already succeeded and the cache is the source of truth, so
+    # refusing here costs the audit artifact and no enforcement: the friction row is what
+    # makes the refusal visible instead of silent.
+    session_gate_dir = gate_dir(project_root, session_id)
+    gate_file = gate_artifact_path(project_root, session_id, target_gate)
+    if session_gate_dir and gate_file:
+        os.makedirs(session_gate_dir, exist_ok=True)
+        with open(gate_file, "w") as f:
+            f.write(session_id + "\n")
+    else:
+        _log_friction_event(
+            session_id, mode, "gate_artifact_refused",
+            gate=target_gate, reason="invalid_session_or_gate_path_component",
+        )
 
     _emit_json({
         "advanced": True,
@@ -477,7 +570,14 @@ def cmd_advance_phase(session_id: str, project_root: str = "", token: str = "") 
 def cmd_current_phase(session_id: str) -> None:
     """Return the authoritative current phase from session state.
 
-    Output: JSON {"phase": "...", "mode": "...", "gates_approved": [...]}
+    Output: JSON {"phase": "...", "mode": "...", "gates_approved": [...],
+                  "next_gate": "..."|null, "plan_hash": "..."|null}
+
+    next_gate and plan_hash are the token binding the approval hook mints with. They are
+    reported HERE because the hook already makes this call once per approval turn and the
+    single cache read already has both answers in hand, so the binding costs the
+    per-prompt path nothing. null means "nothing to bind to": no gate is pending, or
+    there is no plan.md under the session's project root.
     """
     cache = _read_cache(session_id)
     mode = cache.get("mode")
@@ -491,5 +591,7 @@ def cmd_current_phase(session_id: str) -> None:
         "phase": phase or "unclassified",
         "mode": mode,
         "gates_approved": cache.get("gates_approved", []),
+        "next_gate": _next_pending_gate(cache),
+        "plan_hash": plan_md_hash(cache.get("project_root")),
     })
     sys.stdout.write("\n")

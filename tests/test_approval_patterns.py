@@ -162,3 +162,84 @@ class TestHookModuleAgreement:
             "auto-approve-gate.sh does not reference approval_match; "
             "the hook may still be using the old inline detector instead of the module."
         )
+
+
+# =============================================================================
+# Cycle 1 (plan.md): embedded-tier cases, added beside the exact-tier ones
+# above. No assertion above this line changes. classify() is the three-way
+# replacement for the bare is_approval() boolean (bin/lib/approval_match.py);
+# see tests/test_approval_tiers.py for the full tier matrix (the missed
+# 2026-08-10 prompt, the deleted substring-scan misses, the negation/question/
+# interrogative guards, and the is_approval-unchanged regression). This section
+# stays structurally parallel to TestExactMatches/TestPrefixPatterns/
+# TestNonApproval above so a reader comparing the two tiers side by side in one
+# file sees the same shape twice, not two different test styles.
+#
+# RED today: classify does not exist on approval_match.py. _tier() imports it
+# LOCALLY (not at module scope): a module-scope import would fail COLLECTION for this
+# entire file, silently blocking every pre-existing exact-tier test above from running
+# at all -- exactly the "no existing assertion changes" contract this section must not
+# violate. Scoping the import to _tier() means only the NEW tests below fail (cleanly,
+# on ImportError), and every test above keeps running exactly as it does today.
+# =============================================================================
+
+
+def _tier(prompt: str) -> str:
+    """classify()'s counterpart to _check_approval above: same lower+strip
+    normalization the hook applies before either function sees the prompt."""
+    from approval_match import classify
+
+    return classify(prompt.lower().strip())
+
+
+class TestEmbeddedMatches:
+    """Structural counterpart to TestExactMatches: a strong approval word present
+    as a standalone token, in a prompt that is not itself an exact match."""
+
+    def test_approved_buried_in_a_longer_sentence_is_embedded(self):
+        assert not _check_approval("so i think that is approved, one more thing though")
+        assert _tier("so i think that is approved, one more thing though") == "embedded"
+
+    def test_ship_it_buried_in_a_longer_sentence_is_embedded(self):
+        assert not _check_approval("ship it once the tests pass")
+        assert _tier("ship it once the tests pass") == "embedded"
+
+    def test_lgtm_buried_in_a_longer_sentence_is_embedded(self):
+        assert not _check_approval("lgtm just double check the migration")
+        assert _tier("lgtm just double check the migration") == "embedded"
+
+
+class TestExactTierClassifiesAsExact:
+    """Structural counterpart to TestPrefixPatterns: every existing exact-match
+    fixture must classify as 'exact', not 'embedded' -- the tiers partition the
+    same prompt space TestExactMatches/TestPrefixPatterns already cover."""
+
+    def test_approved_is_exact(self):
+        assert _tier("approved") == "exact"
+
+    def test_ok_proceed_with_remaining_work_is_exact(self):
+        assert _tier("ok proceed with remaining work") == "exact"
+
+    def test_approved_and_push_is_exact(self):
+        assert _tier("approved and push") == "exact"
+
+
+class TestEmbeddedGuardsAgreeWithNonApproval:
+    """Structural counterpart to TestNonApproval: every existing false case must
+    ALSO classify as 'none', not 'embedded' -- introducing the embedded tier must
+    not turn a prompt is_approval already rejects into a gate-confirmation prompt."""
+
+    def test_question_about_approval_is_none(self):
+        assert _tier("how do I get this approved?") == "none"
+
+    def test_is_this_approved_question_is_none(self):
+        assert _tier("is this approved?") == "none"
+
+    def test_not_approved_is_none(self):
+        assert _tier("not approved") == "none"
+
+    def test_how_do_i_get_this_approved_is_none(self):
+        assert _tier("how do I get this approved?") == "none"
+
+    def test_unrelated_prompt_is_none(self):
+        assert _tier("refactor the database module") == "none"

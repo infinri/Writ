@@ -64,6 +64,46 @@ class MaintenanceStoreMixin:
                 result = await session.run("MATCH (n) DETACH DELETE n")
             await result.consume()
 
+    async def execute_many(self, statements: list[str]) -> None:
+        """Run a whole script as ONE transaction in ONE session.
+
+        The corpus replay used to call `execute` per line, which opens a session
+        each time, so a 1714-statement dump was a mass delete followed by 1714
+        independent transactions reusing freed node ids. That is the shape behind
+        the full-suite flake this file's `clear_all` comment already names:
+        Neo.ClientError.Statement.EntityNotFound, "unable to load NODE <id>".
+
+        That earlier fix added `consume()` so each statement FINISHED before the
+        next began. Correct, and it narrowed the window rather than removing it,
+        because it never asked why there were 1714 transactions to interleave.
+
+        One transaction also makes the replay atomic, which matters on its own:
+        the per-statement loop left a half-populated corpus behind when it died
+        partway, and a half-populated corpus has no source to recover from. Now
+        it either lands whole or does not land.
+
+        An empty script opens nothing: a session for zero statements is a round
+        trip to say nothing.
+        """
+        if not statements:
+            return
+        async with self._driver.session(database=self._database) as session:
+            # AWAITED. neo4j's async begin_transaction is a COROUTINE returning
+            # the transaction, not a context manager, so `async with
+            # session.begin_transaction()` raises TypeError against the real
+            # driver while passing happily against a fake that returns a context
+            # manager directly. This line was written the wrong way first and the
+            # unit tests stayed green: they were testing the double, not the API.
+            tx = await session.begin_transaction()
+            try:
+                for statement in statements:
+                    result = await tx.run(statement)
+                    await result.consume()
+            except BaseException:
+                await tx.rollback()
+                raise
+            await tx.commit()
+
     async def execute(self, statement: str) -> None:
         """Run a single raw Cypher statement with no return value expected.
 

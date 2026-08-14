@@ -16,6 +16,7 @@ from __future__ import annotations
 import ast
 import re
 from datetime import date, timedelta
+from pathlib import Path
 
 from writ.graph.db import (
     _GRAPH_ID_COALESCE,
@@ -26,9 +27,11 @@ from writ.graph.db import (
 from writ.shared.tokens import estimate_tokens
 from writ.graph.ingest import parse_nodes_from_file, parse_rules_from_file
 from writ.graph.methodology_ingest import (
+    ORACLE_BLIND_LABELS,
     compute_expected_graph,
     expected_managed_props,
     parse_source,
+    read_oracle_blind_node_ids,
 )
 from writ.graph.predicates import INJECTION_RULE_WHERE, RANKED_INCLUDE_WHERE
 from writ.graph.schema import (
@@ -37,6 +40,7 @@ from writ.graph.schema import (
     PARITY_EXEMPT_PROVENANCE,
     REDUNDANCY_SIMILARITY_THRESHOLD,
     VALID_DOMAINS,
+    WIRED_ROUTES,
 )
 
 # The always-on injection budget cap (mirrors server.py:/always-on and
@@ -52,6 +56,11 @@ _ALWAYS_ON_CAP = 5000
 # stay CHANNEL-1 always_on per D1 and are not floor_modes-routed.
 _UNIVERSAL_FLOOR = {
     "SKL-PROC-BRAIN-001", "SKL-PROC-PLAN-001", "SKL-PROC-VERIFY-001", "PBK-PROC-PLAN-001",
+    # The one CRITICAL-severity AntiPattern in CAT-DISC-001: its counter
+    # (SKL-PROC-VERIFY-001) is already universal, so keying the warning to a typed
+    # keyword while the remedy is unconditional inverted the pair. Floored in the
+    # same five modes as the counter; its trigger_keywords stay as the pull channel.
+    "ANT-PROC-VERIFY-001",
 }
 EXPECTED_FLOORS: dict[str, set[str]] = {
     "conversation": _UNIVERSAL_FLOOR | {"SKL-PROC-METHODOLOGY-CHECK-001", "SKL-PROC-MODE-001"},
@@ -106,6 +115,29 @@ _DEPRECATED_PASS_API: dict[str, str] = {
     "conint(": "Pydantic v1 conint() -> Field(..., ge=/le=)/Annotated",
     "confloat(": "Pydantic v1 confloat() -> Field(..., ge=/le=)/Annotated",
 }
+
+
+def resolve_parity_oracle(
+    bible_dir: Path | None, default_bible_dir: Path | None
+) -> tuple[Path | None, str | None]:
+    """Resolve the markdown corpus the four parity detectors compare against.
+
+    Returns (dir_to_use, skip_reason). Exactly one is non-None: a usable oracle,
+    or the reason there is none. The empty-corpus half is the load-bearing one.
+    reconcile already refuses an empty oracle ("refusing to reconcile against an
+    empty oracle ... this would delete the graph"); the parity detectors had no
+    such guard, so pointing them at an absent or empty bible/ would report every
+    live node and edge as drift and recommend reconcile for all of it.
+    """
+    resolved = bible_dir if bible_dir is not None else default_bible_dir
+    if resolved is None:
+        return None, "no markdown corpus configured (pass --bible-dir)"
+    path = Path(resolved)
+    if not path.exists():
+        return None, f"markdown corpus {path} does not exist"
+    if not any(path.rglob("*.md")):
+        return None, f"markdown corpus {path} contains no *.md files"
+    return path, None
 
 
 def _python_blocks(section: str | None) -> list[str]:
@@ -170,10 +202,12 @@ __all__ = [
     "KNOWN_ACTIONS",
     "MANAGED_PROP_NAMES",
     "NODE_ID_FIELDS",
+    "ORACLE_BLIND_LABELS",
     "PARITY_EXEMPT_PROVENANCE",
     "RANKED_INCLUDE_WHERE",
     "REDUNDANCY_SIMILARITY_THRESHOLD",
     "VALID_DOMAINS",
+    "WIRED_ROUTES",
     "_ALWAYS_ON_CAP",
     "_DEPRECATED_PASS_API",
     "_FENCE_RE",
@@ -194,5 +228,7 @@ __all__ = [
     "parse_source",
     "read_live_edges",
     "read_live_nodes_with_keys",
+    "read_oracle_blind_node_ids",
+    "resolve_parity_oracle",
     "timedelta",
 ]

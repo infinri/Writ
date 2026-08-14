@@ -31,6 +31,23 @@ Reason fallback chain per file: plan-cited reason, else a prior open claim's rea
 
 `writ recall` (and a once-per-session briefing injected on your first prompt) compiles recent decisions into a token-budgeted digest (default 20,000). Eviction order under pressure: rationale first, then per-file reasons, then whole oldest decisions; ids, titles, governing rules, and their statements are never evicted. The briefing caps at 5 decisions / ~500 tokens.
 
+## Auto-memory mirror
+
+Claude Code's own auto-memory files are mirrored into the graph as `:Memory` nodes, one node per file, keyed `(name, project)` where `project` is the encoded project directory above the file's `memory/` dir. The mirror hook covers writes from now on, `writ memory backfill` covers what is already on disk and doubles as the deletion reconciler (a deleted file becomes `status="deleted"`, never a hard delete), and `writ memory list --project <p>` reads a project's set back. `Memory` is deliberately outside every retrieval registry, exactly like the three record types: a memory can never enter RAG.
+
+`create_memory` MERGEs on `(name, project)` and then applies a bare `SET m += $props` -- no `ON CREATE` / `ON MATCH` split, no versioning, no history. Last writer wins. So a memory filed under the **wrong** project is not merely mis-scoped: the next write of a same-named memory in that project overwrites the body, description and path of the node already sitting there, and the old content is gone. Project scope is a data-loss boundary here, not a filing convenience.
+
+`writ memory audit [--projects-root PATH] [--json]` is the watch on that boundary. It reports four buckets and repairs nothing:
+
+- **MISMATCH**: the stored `project` disagrees with the project derived from the stored `path`. An invariant guard: every current writer sets both properties in one `create_memory` call from the same derivation, so they agree by construction and no node violates this today -- but nothing in `create_memory` enforces the pair, so a future caller that derives the project some other way surfaces here.
+- **EMPTY**: an empty or missing `project`, or an empty or missing `path` -- a record whose scope cannot be checked at all.
+- **DISK DRIFT**: the stored `path` no longer exists, or it exists and the project derived from the **live** path no longer equals the stored `project`. This is the bucket that catches real regressions, because it compares the record against the world as it is now instead of against a property written in the same instant.
+- **COLLISION**: two on-disk project directories under `--projects-root` that derive the same project segment. Claude Code encodes a cwd by replacing `/` with `-` and does not escape hyphens already present, so `/home/u/foo/bar` and a real directory named `/home/u/foo-bar` both encode to `-home-u-foo-bar` -- two working directories sharing one set of Memory nodes. Nothing collides in a real projects root today; this is a structural risk being watched, not an observed failure.
+
+The buckets are assertions, not partitions: a node whose stored `project` disagrees with both its stored path and the live path is counted in MISMATCH and in DISK DRIFT, because those are two different claims about it. Counts are per finding.
+
+The audit is **read-only**: a plain `MATCH (m:Memory) RETURN ...` plus a `stat` of each stored path and a symlink-refusing walk of `--projects-root`. It never writes, and its output says so (`repaired=0`). Repair is a separate cycle by design, because re-keying a mis-filed node is itself a destructive write against content that has no history to restore from. `/memory-record` requests that arrive without a `project` are served from the path derivation and logged as `memory_project_derived`, so the guess that decides scope is auditable rather than silent.
+
 ## PR sync
 
 `writ pr sync [--pr-id N]` posts one comment per changed file on the open Bitbucket PR: the captured reason, "rules the AI was shown" (queried), and "rules the AI cited" (governing snapshot). Idempotent by an attribution marker (it updates its own comments), `skipped_no_reason` for files with no record, fail-loud on non-429 API errors. The client is SSRF-hardened: hardcoded `api.bitbucket.org` base, redirect allowlist, bounded 429 retries, and the token never appears in logs. Self-hosted Bitbucket Server is unsupported by design (`parse_bitbucket_remote` rejects non-bitbucket.org remotes). A parallel channel writes the same bodies as git notes on `refs/notes/writ-decisions`, best-effort.

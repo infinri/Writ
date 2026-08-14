@@ -105,6 +105,32 @@ def _cli_partition_scope(argv: list[str]) -> None:
     cmd_partition_scope(argv[2], max_loc=max_loc, max_files=max_files)
 
 
+def _no_session_message(subcmd: str) -> str:
+    """The refusal text for `mode set|switch|init` with no sid and nothing to resolve.
+
+    A bare `mode set work` typed by a human is a legitimate path, so the refusal has to
+    hand back a recovery rather than a usage line. It names BOTH env vars the resolver
+    accepts and the explicit-sid form, and says why the guess is gone: the resolver used
+    to fall back to /tmp/writ-current-session (one file per machine, rewritten by every
+    session's turn) and then to the newest session cache by mtime, so a bare command
+    could apply this mode to whichever session moved last, in any project on the box.
+    Failing here costs one retry; guessing cost another project its mode.
+    """
+    return (
+        "writ-session.py: cannot determine which session to apply "
+        f"`mode {subcmd}` to, and Writ no longer guesses one.\n"
+        "  Supply it explicitly:  writ-session.py mode "
+        f"{subcmd} <conversation|debug|review|work> <session_id>\n"
+        "  or export an identity:  CLAUDE_SESSION_ID=<session_id>\n"
+        "                          CLAUDE_JOB_DIR=<dir whose basename is the session_id>\n"
+        "Claude Code exports NEITHER of those (measured 2026-08-11, 2.1.227), so inside a "
+        "Claude Code session the explicit form above is the one that works.\n"
+        "The removed fallbacks (the shared /tmp/writ-current-session pointer, then the "
+        "newest session cache by mtime) both named whichever session on this machine "
+        "took a turn most recently, which silently applied one session's mode to another."
+    )
+
+
 def _cli_mode(argv: list[str]) -> None:
     if len(argv) < 4:
         _usage_exit("Usage: writ-session.py mode <get|set|switch> <session_id|value> [session_id]")
@@ -115,13 +141,12 @@ def _cli_mode(argv: list[str]) -> None:
         # <session_id> is optional: when omitted, resolve the CURRENT session via the
         # canonical resolver. The sid is the first non-flag positional after the mode
         # value (argv[3]); flags like --orchestrator are skipped. Behavior with an
-        # explicit sid is byte-for-byte unchanged; an unresolvable session prints the
-        # usage and exits 2 (same failure UX).
+        # explicit sid is byte-for-byte unchanged.
         sid = next((a for a in argv[4:] if not a.startswith("--")), None)
         if sid is None:
             sid = resolve_current_session_id()
         if not sid:
-            _usage_exit(f"Usage: writ-session.py mode {subcmd} <conversation|debug|review|work> <session_id>")
+            _usage_exit(_no_session_message(subcmd))
         orch = "--orchestrator" in argv
         cmd_mode(sid, subcmd, argv[3], is_orchestrator=orch)
     else:

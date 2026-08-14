@@ -27,6 +27,9 @@ except ImportError:
 from writ.server import app  # type: ignore[import]
 from pathlib import Path
 
+# autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
+from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
+
 try:
     from writ.server import SessionModeSetRequest  # type: ignore[import]
 except ImportError:

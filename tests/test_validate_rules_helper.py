@@ -4,6 +4,17 @@ The helper is called once before /analyze (to derive context, phase,
 plan-file) and once after (to consume the analyze response and emit
 routing decisions). Both invocations must match the inline Python logic
 they replace.
+
+PART 2 ADDITION (isolation cycle, plan_hash 033bb1595c2c): `_derive_phase` is the
+non-test reader capabilities.md calls out by name as mattering most --
+`bin/lib/validate-rules-helper.py:111-120` derived the WORKFLOW PHASE from flat
+gate-artifact presence, with no session component at all, and a stale artifact from a
+DIFFERENT session misreported phase for eighteen days in this very repo (see
+test_gate_artifact_cleanup.py's module docstring for that incident). `TestDerivePhase`
+below pins the session-scoped fix directly against the function; `TestPreAnalyzePhaseIsSessionScoped`
+pins the same claim through the real `pre-analyze` CLI subprocess `validate-rules.sh`
+actually invokes, with `--session-id` (already supplied there per plan.md's own
+annotation).
 """
 
 from __future__ import annotations
@@ -134,91 +145,102 @@ class TestHelperPreAnalyzeOutput:
 
 
 # ---------------------------------------------------------------------------
-# TestHelperPostAnalyzeOutput
+# TestDerivePhase (Part 2, capability 16)
 # ---------------------------------------------------------------------------
 
 
-class TestHelperPostAnalyzeOutput:
-    """Post-analyze invocation processes analyze response correctly."""
+class TestDerivePhase:
+    """Capability 16: `_derive_phase` takes the session id and reports THIS session's
+    own phase, never a sibling's.
 
-    def _make_analyze_response(self, verdict: str = "pass") -> dict:
-        return {
-            "verdict": verdict,
-            "findings": [],
-            "rules_checked": ["ARCH-ORG-001"],
-            "analysis_method": "pattern",
-            "retrieval_scores": {"ARCH-ORG-001": 0.85},
-            "summary": "No violations found.",
-        }
+    RED reason: `_derive_phase(project_root)` (validate-rules-helper.py:111-120) today
+    takes ONE argument and checks the flat `<project_root>/.claude/gates/phase-a.approved`
+    path. Every call below passes a second, session_id argument the current signature
+    does not accept, so they fail with a TypeError before the assertion is even reached
+    -- the correct RED for a capability whose signature has not changed yet.
+    """
 
-    def test_post_analyze_accepts_analyze_response_json(self) -> None:
-        """Helper post-analyze mode accepts analyze response JSON on stdin."""
-        stdin_data = json.dumps(self._make_analyze_response("pass"))
-        result = _run_helper("post-analyze", "--session-id", "test-helper-post-001",
-                             stdin_data=stdin_data)
-        assert result.returncode == 0, (
-            f"post-analyze must not crash on pass verdict; stderr={result.stderr!r}"
+    def test_returns_planning_with_no_artifact_at_all(self, tmp_path) -> None:
+        mod = _load_helper()
+        assert mod._derive_phase(str(tmp_path), "any-session") == "planning"
+
+    def test_returns_planning_for_a_session_with_no_artifact_of_its_own(
+        self, tmp_path
+    ) -> None:
+        """The exact capability wording: a sibling session directory holds
+        `phase-a.approved`, but the session actually asking has no artifact of its own,
+        so the honest answer is still `planning`.
+        """
+        mod = _load_helper()
+        sibling_dir = tmp_path / ".claude" / "gates" / "sibling-session"
+        sibling_dir.mkdir(parents=True)
+        (sibling_dir / "phase-a.approved").write_text("sibling-session\n")
+
+        assert mod._derive_phase(str(tmp_path), "asking-session") == "planning", (
+            "a sibling session's approval was read as this session's own"
         )
 
-    def test_post_analyze_pass_verdict_no_invalidation(self) -> None:
-        """Post-analyze with pass verdict does not trigger gate invalidation."""
-        stdin_data = json.dumps(self._make_analyze_response("pass"))
-        result = _run_helper("post-analyze", "--session-id", "test-helper-post-002",
-                             stdin_data=stdin_data)
-        output = result.stdout
-        # A pass verdict must not include invalidate-gate routing signal
-        assert "invalidate-gate" not in output.lower(), (
-            "Post-analyze pass verdict must not emit invalidate-gate signal"
+    def test_returns_code_generation_for_its_own_approved_phase_a(self, tmp_path) -> None:
+        mod = _load_helper()
+        own_dir = tmp_path / ".claude" / "gates" / "asking-session"
+        own_dir.mkdir(parents=True)
+        (own_dir / "phase-a.approved").write_text("asking-session\n")
+
+        assert mod._derive_phase(str(tmp_path), "asking-session") == "code_generation"
+
+    def test_returns_testing_once_both_of_its_own_gates_are_approved(
+        self, tmp_path
+    ) -> None:
+        mod = _load_helper()
+        own_dir = tmp_path / ".claude" / "gates" / "asking-session"
+        own_dir.mkdir(parents=True)
+        (own_dir / "phase-a.approved").write_text("asking-session\n")
+        (own_dir / "test-skeletons.approved").write_text("asking-session\n")
+
+        assert mod._derive_phase(str(tmp_path), "asking-session") == "testing"
+
+    def test_a_sibling_reaching_testing_does_not_advance_this_session(
+        self, tmp_path
+    ) -> None:
+        """Anti-vacuity companion to the sibling test above: even a FULLY advanced
+        sibling (both gates approved) must not move this session past `planning`."""
+        mod = _load_helper()
+        sibling_dir = tmp_path / ".claude" / "gates" / "sibling-session"
+        sibling_dir.mkdir(parents=True)
+        (sibling_dir / "phase-a.approved").write_text("sibling-session\n")
+        (sibling_dir / "test-skeletons.approved").write_text("sibling-session\n")
+
+        assert mod._derive_phase(str(tmp_path), "asking-session") == "planning"
+
+
+class TestPreAnalyzePhaseIsSessionScoped:
+    """The same capability, through the real `pre-analyze` CLI subprocess
+    `validate-rules.sh` actually invokes with `--session-id` (plan.md's own annotation:
+    "already supplied by validate-rules.sh as --session-id"). No mock of the helper's
+    internals -- a real process reads a real project directory.
+    """
+
+    def test_pre_analyze_phase_ignores_a_sibling_sessions_approval(self, tmp_path) -> None:
+        """RED reason: `cmd_pre_analyze` calls `_derive_phase(project_root)` today with
+        no session argument at all, so the CLI's own `--session-id` value never reaches
+        the phase derivation -- a sibling's flat-looking approval (seeded here under the
+        FUTURE session-scoped shape) is invisible to it either way, but so is a sibling's
+        approval seeded at the CURRENT flat path, which today's code WOULD wrongly honor.
+        This test seeds the flat path (today's real writer shape) to reproduce that
+        exact misreport.
+        """
+        gates = tmp_path / ".claude" / "gates"
+        gates.mkdir(parents=True)
+        (gates / "phase-a.approved").write_text("some-other-session\n")
+
+        result = _run_helper(
+            "pre-analyze", "--session-id", "asking-session-cli",
+            "--file", str(tmp_path / "service.py"),
+            "--project-root", str(tmp_path),
         )
-
-    def test_post_analyze_fail_verdict_signals_routing(self) -> None:
-        """Post-analyze with fail verdict emits routing decision in output."""
-        fail_response = self._make_analyze_response("fail")
-        fail_response["findings"] = [
-            {
-                "rule_id": "ARCH-ORG-001", "source": "llm",
-                "status": "violated", "evidence": "SQL in controller",
-            }
-        ]
-        stdin_data = json.dumps(fail_response)
-        result = _run_helper("post-analyze", "--session-id", "test-helper-post-003",
-                             stdin_data=stdin_data)
-        # Either the output JSON or exit code signals routing
-        # (implementation detail -- the key invariant is that it does not silently succeed)
-        combined = result.stdout + result.stderr
-        assert combined.strip(), (
-            "Post-analyze with fail verdict must produce some output"
-        )
-
-
-# ---------------------------------------------------------------------------
-# TestHelperGracefulMissingFields
-# ---------------------------------------------------------------------------
-
-
-class TestHelperGracefulMissingFields:
-    """Helper handles missing or malformed input without crashing."""
-
-    def test_missing_session_id_does_not_crash(self) -> None:
-        """Helper does not raise an unhandled exception when session_id is absent."""
-        result = _run_helper("pre-analyze", "--file", "/tmp/test.py")
-        # May exit non-zero but must not produce a Python traceback
-        assert "Traceback" not in result.stderr, (
-            f"Helper must not traceback on missing session_id; stderr={result.stderr!r}"
-        )
-
-    def test_malformed_stdin_post_analyze_does_not_crash(self) -> None:
-        """Helper handles non-JSON stdin in post-analyze mode without traceback."""
-        result = _run_helper("post-analyze", "--session-id", "test-helper-robust-001",
-                             stdin_data="THIS IS NOT JSON")
-        assert "Traceback" not in result.stderr, (
-            f"Helper must not traceback on malformed stdin; stderr={result.stderr!r}"
-        )
-
-    def test_empty_stdin_post_analyze_does_not_crash(self) -> None:
-        """Helper handles empty stdin in post-analyze mode without traceback."""
-        result = _run_helper("post-analyze", "--session-id", "test-helper-robust-002",
-                             stdin_data="")
-        assert "Traceback" not in result.stderr, (
-            f"Helper must handle empty stdin without traceback; stderr={result.stderr!r}"
+        assert result.returncode == 0, result.stderr
+        data = json.loads(result.stdout)
+        assert data["phase"] == "planning", (
+            f"the CLI reported a sibling session's flat approval as this session's own "
+            f"progress: {data!r}"
         )

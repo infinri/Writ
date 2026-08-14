@@ -16,10 +16,11 @@ import json
 import os
 import secrets
 import sys
-import tempfile
 import uuid
 
 import pytest
+
+from tests.fixtures.session_state import write_bound_gate_token
 
 SKILL_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 FACADE_PATH = os.path.join(SKILL_ROOT, "bin", "lib", "writ-session.py")
@@ -58,10 +59,9 @@ def _seed(sid, **fields):
 
 
 def _write_token(sid):
-    token = secrets.token_hex(16)
-    with open(os.path.join(tempfile.gettempdir(), f"writ-gate-token-{sid}"), "w") as f:
-        f.write(token)
-    return token
+    # A BOUND token (gate + plan fingerprint), derived from the seeded cache the way the
+    # production mint derives it: cmd_advance_phase refuses an unbound one-line token.
+    return write_bound_gate_token(sid, secrets.token_hex(16))
 
 
 def _advance(facade, sid, project_root, token, monkeypatch):

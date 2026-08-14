@@ -559,14 +559,37 @@ def reconcile(
     asyncio.run(_run())
 
 
+def _hook_lint_summary(findings: list[dict]) -> str:
+    """Header line for the #7C hook-delivery lint block in `writ validate`.
+
+    Counts the three actionable severities `writ.hooks_lint.lint_hooks` emits,
+    with "rejected" first so the header mirrors the sort order the linter
+    already applies. "error" (the unreadable-hooks.json case) is deliberately
+    excluded from every count: it is not a delivery finding, and it still
+    prints in the body loop below the header.
+
+    Returns "" for an empty findings list so the caller's `if findings:` guard
+    and this helper can never disagree about when the block stays silent.
+    """
+    if not findings:
+        return ""
+    counted = ("rejected", "inert", "review")
+    counts = {sev: sum(1 for f in findings if f["severity"] == sev) for sev in counted}
+    return (
+        "\nHook delivery lint (#7C, WARNING) -- "
+        + ", ".join(f"{counts[sev]} {sev}" for sev in counted)
+        + ":"
+    )
+
+
 @app.command()
 def validate(
     review_confidence: bool = typer.Option(
         False, "--review-confidence", help="List rules at migration default confidence."
     ),
     benchmark: bool = typer.Option(False, "--benchmark", help="Report integrity check duration."),
-    bible_dir: Path | None = typer.Option(
-        None,
+    bible_dir: Path = typer.Option(
+        Path(DEFAULT_BIBLE_DIR),
         "--bible-dir",
         help="Markdown corpus to check graph/markdown parity against.",
     ),
@@ -608,13 +631,8 @@ def validate(
             hooks_json = plugin_root / "hooks" / "hooks.json"
             if hooks_json.exists():
                 hl = lint_hooks(hooks_json, plugin_root)
-                inert = [f for f in hl if f["severity"] == "inert"]
-                review = [f for f in hl if f["severity"] == "review"]
                 if hl:
-                    typer.echo(
-                        f"\nHook delivery lint (#7C, WARNING) -- "
-                        f"{len(inert)} inert, {len(review)} review:"
-                    )
+                    typer.echo(_hook_lint_summary(hl))
                     for f in hl:
                         typer.echo(
                             f"  [{f['severity']}] {f['event']}:{f['matcher'] or '*'} "
@@ -1390,6 +1408,20 @@ def recall_cmd(
     async def _run() -> None:
         async with _writ_db() as db:
             project = await db.resolve_project_for_cwd(os.path.abspath(repo))
+            if not project:
+                # No project, not "writ": the resolver stopped defaulting an
+                # unregistered repo to this one. Say so plainly instead of printing
+                # "no decisions captured", which is a different fact and would send
+                # someone hunting for missing decisions in a repo Writ has never
+                # been told about. Exit 0: nothing failed, there is just nothing
+                # registered to recall.
+                typer.echo(
+                    f"[Writ recall: {os.path.abspath(repo)} is not registered as a "
+                    f"project, so there are no decisions to recall. Register it by "
+                    f"running a Writ session in it (or `writ hooks install`) and "
+                    f"capturing a commit.]"
+                )
+                return
             payload = await compile_recall(db, project, full=full)
             briefing = payload.get("briefing") or ""
             if briefing:
@@ -1516,7 +1548,13 @@ def doctor(
         False, "--json/--no-json", help="Emit a machine-readable JSON list of results."
     ),
     session_id: str | None = typer.Option(
-        None, "--session-id", help="Override the most-recent session cache the mode/gate check scans."
+        None,
+        "--session-id",
+        help=(
+            "Read this session's cache in the mode/gate check instead of the current "
+            "session's ($CLAUDE_SESSION_ID, then basename($CLAUDE_JOB_DIR)). Without it, "
+            "an unresolvable session reports 'no session'; nothing is scanned or guessed."
+        ),
     ),
     repo: str = typer.Option(
         ".", "--repo", help="Repo whose post-commit hook is checked."
@@ -1860,6 +1898,463 @@ def memory_list(
             typer.echo(f"({len(memories)} memories)")
 
     asyncio.run(_run())
+
+
+# --- `writ memory audit`: bucket computation + text rendering -----------------
+# classify_memory_rows / render_memory_audit_text are module level for the same
+# reason writ/analysis/friction.py hoisted aggregate_session / render_audit_text
+# out of audit_session: the bucket logic is the part worth unit-testing, and
+# nesting it in the command made CliRunner + asyncio + a monkeypatched database
+# the only way to reach it. The compute/render split also keeps the JSON and the
+# text report reading the SAME structure, so they cannot drift.
+
+# Depth cap for the collision walk, counted in path components below
+# --projects-root. The real layout is <root>/<project>/memory/<file>, so a project
+# directory sits at depth 1 and its memory/ at depth 2; 4 leaves slack for a
+# relocated or backed-up tree while refusing to crawl an entire filesystem when
+# --projects-root is mistakenly pointed at $HOME or /. The cap is NOT silent: what
+# it trimmed is counted and reported, because a truncated scan that says nothing
+# reads as "I checked everything" when it did not.
+MEMORY_COLLISION_SCAN_MAX_DEPTH = 4
+
+
+def classify_memory_rows(rows: list[dict], derive) -> dict:
+    """Bucket Memory rows into mismatch / empty / disk_drift. Read-only.
+
+    `rows` is what Neo4jConnection.list_all_memories() returns. `derive` is the
+    path -> project callable, injected so production binds to the same parser the
+    mirror hook and the backfill use (bin/lib/memory_capture.py) while a test can
+    hand in a stub. Touches the filesystem only to stat/resolve the stored paths
+    for the disk-drift bucket, so a test can hand it real temp paths.
+
+    BUCKETS ARE NOT DISJOINT: mismatch is a stored-vs-stored claim and
+    disk_drift's live_project_changed is a stored-vs-live claim, so one node can
+    appear in both and the counts are per FINDING, not per node.
+    """
+    mismatch: list[dict] = []
+    empty: list[dict] = []
+    drift: list[dict] = []
+
+    for memory in rows:
+        name = memory.get("name") or ""
+        project = memory.get("project") or ""
+        path = memory.get("path") or ""
+
+        if not project or not path:
+            empty.append({
+                "name": name, "project": project, "path": path,
+                "missing": [
+                    field for field, value in
+                    (("project", project), ("path", path)) if not value
+                ],
+            })
+            continue
+
+        # INVARIANT GUARD. Satisfied by every node in the graph today, and it
+        # cannot fire from any current writer: the hook, the route and the
+        # backfill all write `project` and `path` in ONE create_memory call from
+        # the SAME derivation, so the two properties agree by construction.
+        # Nothing in create_memory enforces the pair, though -- it takes both as
+        # independent kwargs -- so a future caller that computes the project some
+        # other way can break it, and this is where that shows up.
+        derived = derive(path)
+        if derived != project:
+            mismatch.append({
+                "name": name, "project": project, "path": path,
+                "derived_project": derived,
+            })
+
+        # DISK DRIFT is the bucket that can catch a real regression, because it
+        # compares the stored project against the world as it is NOW instead of
+        # against a property written in the same instant. A node can land here
+        # AND in MISMATCH: they are different assertions (stored-vs-stored,
+        # stored-vs-live), so the counts are per finding, not per node.
+        note = Path(path)
+        if not note.exists():
+            drift.append({
+                "name": name, "project": project, "path": path,
+                "kind": "path_missing",
+            })
+            continue
+        try:
+            live = str(note.resolve())
+        except OSError as exc:
+            drift.append({
+                "name": name, "project": project, "path": path,
+                "kind": "path_unresolvable", "detail": str(exc),
+            })
+            continue
+        live_project = derive(live)
+        if live_project != project:
+            drift.append({
+                "name": name, "project": project, "path": path,
+                "kind": "live_project_changed", "live_path": live,
+                "live_project": live_project,
+            })
+
+    return {
+        "counts": {
+            "mismatch": len(mismatch),
+            "empty": len(empty),
+            "disk_drift": len(drift),
+        },
+        "mismatch": mismatch,
+        "empty": empty,
+        "disk_drift": drift,
+    }
+
+
+def render_memory_audit_text(report: dict) -> str:
+    """Render the human-readable audit report from the report structure.
+
+    Reads only what the --json payload carries, so the two views cannot disagree.
+    The two skip counts stay separate, because they mean different things: subtrees
+    skipped BELOW an identified project directory are routine (nothing deeper there
+    can be a project directory), while directories pruned at the DEPTH CAP are a
+    real truncation and get their own loud line. Collapsing them into one number
+    would fire a warning on every healthy run, which is a warning operators learn
+    to skip.
+    """
+    counts = report["counts"]
+    pruned = report.get("project_dirs_pruned", 0)
+    skipped = report.get("project_subtrees_skipped", 0)
+    cap = report.get("collision_scan_depth_limit", MEMORY_COLLISION_SCAN_MAX_DEPTH)
+    lines = [
+        f"Memory project audit: examined={report['examined']} memories "
+        f"mismatch={counts['mismatch']} empty={counts['empty']} "
+        f"disk_drift={counts['disk_drift']} collision={counts['collision']}",
+        f"  projects root: {report['projects_root']} "
+        f"({'present' if report['projects_root_present'] else 'MISSING -- collision scan skipped'}, "
+        f"{report['project_dirs_scanned']} project dirs scanned, "
+        f"depth cap {cap})",
+    ]
+    if report["projects_root_present"]:
+        lines.append(
+            f"  scan bounds: {skipped} "
+            f"{'subtree' if skipped == 1 else 'subtrees'} skipped below a found "
+            f"project dir (by design), {pruned} "
+            f"{'directory' if pruned == 1 else 'directories'} pruned at the depth cap"
+        )
+    if pruned:
+        lines.append(
+            f"  COLLISION SCAN INCOMPLETE: {pruned} "
+            f"{'directory was' if pruned == 1 else 'directories were'} never scanned "
+            f"(pruned at depth cap {cap}), so collision={counts['collision']} covers "
+            f"only the part of the tree that was walked and is a floor, not a proof. "
+            f"Point --projects-root closer to the project directories to scan them."
+        )
+    for entry in report["mismatch"]:
+        lines.append(
+            f"  MISMATCH   {entry['name']}: stored project={entry['project']!r} "
+            f"but path derives {entry['derived_project']!r}  ({entry['path']})"
+        )
+    for entry in report["empty"]:
+        lines.append(
+            f"  EMPTY      {entry['name'] or '(unnamed)'}: missing "
+            f"{','.join(entry['missing'])}  project={entry['project']!r} "
+            f"path={entry['path']!r}"
+        )
+    for entry in report["disk_drift"]:
+        lines.append(
+            f"  DISK DRIFT {entry['name']} [{entry['kind']}]: "
+            f"project={entry['project']!r} path={entry['path']}"
+            + (
+                f" -> live project={entry['live_project']!r}"
+                if entry.get("live_project") is not None else ""
+            )
+        )
+    for entry in report["collision"]:
+        lines.append(
+            f"  COLLISION  {entry['project']}: derived by "
+            f"{len(entry['directories'])} directories -> "
+            f"{', '.join(entry['directories'])}"
+        )
+    lines.append("Audit is READ-ONLY: nothing was modified (repaired=0).")
+    return "\n".join(lines)
+
+
+@memory_app.command("audit")
+def memory_audit(
+    projects_root: str = typer.Option(
+        DEFAULT_PROJECTS_ROOT,
+        "--projects-root",
+        help="Root holding one directory per project, each with a memory/ subdir.",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit the buckets as JSON."),
+) -> None:
+    """Report Memory records whose project scope is wrong or unprovable. Repairs nothing.
+
+    Why this exists: `create_memory` MERGEs on (name, project) and then does a bare
+    `SET m += $props` with no ON CREATE / ON MATCH split, so a second call that
+    matches an existing node overwrites its body, description and path outright.
+    There is no versioning and no history. A memory filed under the wrong project
+    therefore is not merely mis-scoped -- it is a way to silently destroy another
+    project's memory content, so the scope is worth auditing on its own.
+
+    Four buckets, each read-only:
+
+    MISMATCH    stored `project` disagrees with the project derived from the stored
+                `path`.
+    EMPTY       an empty or missing `project`, or an empty or missing `path`.
+    DISK DRIFT  the stored `path` is gone, or it still exists but the project
+                derived from the LIVE path no longer equals the stored `project`.
+    COLLISION   two on-disk project directories under --projects-root that derive
+                the SAME project segment. The walk is bounded twice and reports both
+                bounds separately: it stops descending below a project directory it
+                has already found (routine -- no project directory lives inside
+                another), and it stops at MEMORY_COLLISION_SCAN_MAX_DEPTH components
+                below the root so a --projects-root pointed at a huge tree cannot
+                crawl all of it. Only the depth cap is a real truncation, and when it
+                trims anything the report says so loudly, because a collision count
+                from a truncated walk is a floor, not a proof.
+
+    Nothing is written: the graph read is a plain MATCH/RETURN and the disk walk
+    only stats. Repair is deliberately a separate cycle, because every repair here
+    is a destructive re-key of a node whose old content cannot be recovered.
+    """
+    root_path = Path(projects_root).expanduser()
+    try:
+        root = root_path.resolve()
+    except OSError as exc:
+        typer.echo(f"Cannot resolve --projects-root {projects_root!r}: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    mc = _memory_capture()
+
+    def _derive(path: str) -> str:
+        """The project a memory path implies, or '' when the path cannot resolve one.
+
+        Bound to bin/lib/memory_capture.py -- the same parser the mirror hook and the
+        backfill use -- so the audit cannot disagree with the writers about what a
+        path implies. `mc.derive_project_from_memory_path` returns None for an
+        unresolvable path and this wrapper turns that into '', so _derive itself
+        ALWAYS returns a string and is directly comparable to a stored property
+        that may itself be missing.
+        """
+        return mc.derive_project_from_memory_path(path) or ""
+
+    def _scan_collisions() -> tuple[list[dict], int, int]:
+        """Project directories under `root` grouped by the segment they derive.
+
+        Claude Code encodes a cwd into a project directory name by replacing `/`
+        with `-` and does NOT escape hyphens already in the path, so `/home/u/foo/bar`
+        and a real directory named `/home/u/foo-bar` both encode to `-home-u-foo-bar`
+        -- two different working directories, one project segment, one shared set of
+        Memory nodes that MERGE over each other. The derivation compounds it: it keys
+        on the segment directly above `memory/` and discards everything before it, so
+        a nested `<root>/a/proj/memory` and a flat `<root>/proj/memory` also derive
+        the same `proj`. Nothing collides in a real ~/.claude/projects today; this is
+        a structural risk being watched, not an observed failure.
+
+        followlinks=False: a symlinked project directory is not descended into, the
+        same containment stance `writ memory backfill` takes (SEC-INJ-PATH-001), so
+        the walk cannot be steered outside --projects-root.
+
+        BOUNDED, two ways, and the two are reported separately because they mean
+        different things.
+
+        1. BY DESIGN. The shape being searched for is `<root>/<project>/memory/`, and
+           a project directory does not contain other project directories, so once a
+           directory is identified as one there is nothing deeper in its subtree to
+           find. Descent stops there and the skipped child directories are counted as
+           routine. This is what keeps a real ~/.claude/projects reporting a COMPLETE
+           scan: the per-session scratch trees (`<project>/<session>/subagents/...`)
+           that used to trip the depth cap live under project directories and are now
+           excluded deliberately rather than by accident. The one thing this gives up
+           is a project directory nested INSIDE another project directory, which the
+           layout does not produce (all 10 live project dirs sit at depth 1) and which
+           the skipped-subtree count would still point an operator at.
+        2. AT THE DEPTH CAP. An unbounded walk of a --projects-root mistakenly set to
+           $HOME or / would crawl the whole subtree with no feedback, while every
+           other memory command walks one level. Descent into a NON-project directory
+           therefore stops at MEMORY_COLLISION_SCAN_MAX_DEPTH components below the
+           root, which still reaches a project directory nested under a relocated or
+           backed-up tree. Hitting this cap is the genuine truncation: it means part
+           of the tree was never searched, so it is counted separately and reported
+           loudly. With the by-design stop above it should only fire on an
+           unexpectedly deep tree, which is exactly the case worth warning about.
+
+        os.walk only honours either bound if `dirnames` is trimmed IN PLACE. The
+        project-directory test runs BEFORE the cap test, so a project directory
+        sitting exactly at the cap is still recorded.
+
+        Returns (collisions, project_dirs_scanned, subtrees_skipped, dirs_pruned).
+        """
+        import os
+
+        by_segment: dict[str, list[str]] = {}
+        scanned = 0
+        skipped = 0
+        pruned = 0
+        for dirpath, dirnames, _filenames in os.walk(root, followlinks=False):
+            if "memory" in dirnames:
+                scanned += 1
+                segment = _derive(str(Path(dirpath) / "memory" / "_.md"))
+                if segment:
+                    by_segment.setdefault(segment, []).append(dirpath)
+                # Stop here by design. `memory` itself is not counted as a skipped
+                # subtree: it holds the notes, never a candidate project directory.
+                skipped += sum(1 for name in dirnames if name != "memory")
+                dirnames[:] = []
+                continue
+            if len(Path(dirpath).relative_to(root).parts) >= MEMORY_COLLISION_SCAN_MAX_DEPTH:
+                pruned += len(dirnames)
+                dirnames[:] = []
+        collisions = [
+            {"project": segment, "directories": sorted(dirs)}
+            for segment, dirs in sorted(by_segment.items())
+            if len(dirs) > 1
+        ]
+        return collisions, scanned, skipped, pruned
+
+    async def _run() -> None:
+        async with _writ_db() as db:
+            memories = await db.list_all_memories()
+
+        buckets = classify_memory_rows(memories, _derive)
+
+        root_present = root.is_dir()
+        collisions, dirs_scanned, subtrees_skipped, dirs_pruned = (
+            _scan_collisions() if root_present else ([], 0, 0, 0)
+        )
+
+        report = {
+            "read_only": True,
+            "repaired": 0,
+            "examined": len(memories),
+            "projects_root": str(root),
+            "projects_root_present": root_present,
+            "project_dirs_scanned": dirs_scanned,
+            # Two skip counts, deliberately NOT summed. Routine: subtrees below a
+            # project directory already found, where no project directory can be.
+            "project_subtrees_skipped": subtrees_skipped,
+            # Real truncation: what the depth cap cost. pruned > 0 means the
+            # collision count is a floor, not a proof. In JSON and text alike.
+            "project_dirs_pruned": dirs_pruned,
+            "collision_scan_depth_limit": MEMORY_COLLISION_SCAN_MAX_DEPTH,
+            "collision_scan_complete": root_present and dirs_pruned == 0,
+            "counts": {**buckets["counts"], "collision": len(collisions)},
+            "mismatch": buckets["mismatch"],
+            "empty": buckets["empty"],
+            "disk_drift": buckets["disk_drift"],
+            "collision": collisions,
+        }
+
+        if as_json:
+            typer.echo(json.dumps(report, indent=2))
+            return
+        typer.echo(render_memory_audit_text(report))
+
+    asyncio.run(_run())
+
+
+# --- Sub-agent turn tripwire: transcript sub-app -------------------------------
+# The tripwire itself runs from the SubagentStop hook; this sub-app is the operator's
+# way to re-run the same predicate by hand over a file or a whole session directory.
+# Registered like the git-hooks / pr / logs / memory sub-apps.
+
+transcript_app = typer.Typer(
+    name="transcript",
+    help="Audit Claude Code transcripts for the spliced-keystroke turn shape Writ cannot fix.",
+)
+app.add_typer(transcript_app, name="transcript")
+
+
+@transcript_app.command("audit")
+def transcript_audit(
+    path: str = typer.Argument(..., help="A transcript jsonl, or a directory scanned recursively."),
+    show_text: bool = typer.Option(
+        False, "--show-text", help="Also print the offending text (the ONLY path that surfaces it)."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit the privacy-safe records as JSON."),
+) -> None:
+    """Report user turns that mix a bare text element with a tool_result element.
+
+    That shape is the structural signature of a queued keystroke spliced into a
+    sub-agent's turn -- a harness delivery bug Writ can detect but not fix. Default
+    output is the privacy-safe record only (path, line, timestamp, digest, length,
+    counts); `--show-text` is the single place the foreign text may surface, on an
+    operator's own terminal, for a file already on their disk.
+
+    Sub-agent transcripts are NOT durable -- Claude Code deletes them once a session
+    ends -- so auditing an old session legitimately finds nothing.
+    """
+    from writ.session.transcript_tripwire import scan_transcript
+
+    target = Path(path).expanduser()
+    if not target.exists():
+        typer.echo(f"[transcript audit] no such path: {target}", err=True)
+        raise typer.Exit(1)
+
+    files = sorted(target.rglob("*.jsonl")) if target.is_dir() else [target]
+
+    # ONE UNREADABLE FILE MUST NOT DISCARD THE OTHER 129. A single list comprehension
+    # here meant the first OSError (a permission-denied transcript in a scanned tree)
+    # aborted the audit and threw away every result already computed. Skip it and keep
+    # scanning -- but never silently: a scan that quietly dropped files would report a
+    # clean tree it never finished reading, so the skipped count and paths are reported
+    # in both the text and the --json output, AND the command exits 1 (see below).
+    results: list[tuple[Path, list]] = []
+    skipped: list[tuple[Path, str]] = []
+    for scan_target in files:
+        try:
+            results.append((scan_target, scan_transcript(scan_target)))
+        except OSError as e:
+            skipped.append((scan_target, str(e)))
+
+    findings = [finding for _, file_findings in results for finding in file_findings]
+
+    # AN INCOMPLETE AUDIT EXITS NON-ZERO, in every channel a caller might check. Keeping
+    # the scan going and failing loud are not in tension: everything readable is scanned
+    # and every skip is reported, and only then does the command exit 1, because an audit
+    # that could not read part of the tree answered PARTIALLY and a caller reading only
+    # the exit code would take that for a clean tree. Silent degradation is the failure
+    # class this command exists to remove, so it must not ship one of its own. 1 is the
+    # house meaning of a read failure (`token-audit` uses it the same way).
+    #
+    # FINDINGS DO NOT AFFECT THE EXIT CODE -- this is the part to get right. Finding two
+    # malformed turns is a SUCCESSFUL audit: it read everything it was asked to read and
+    # reported what was there, so it exits 0. Only an unreadable file makes the answer
+    # partial. Conflating the two would make "the tripwire fired" indistinguishable from
+    # "the tripwire could not look".
+    incomplete = bool(skipped)
+
+    if as_json:
+        typer.echo(json.dumps({
+            "path": str(target),
+            "files_scanned": len(results),
+            "files_skipped": len(skipped),
+            "findings": len(findings),
+            "records": [finding.to_record() for finding in findings],
+            "skipped": [{"path": str(p), "error": reason} for p, reason in skipped],
+        }, indent=2))
+        if incomplete:
+            raise typer.Exit(1)
+        return
+
+    for scanned, file_findings in results:
+        if not file_findings and target.is_dir():
+            continue
+        typer.echo(f"{scanned}: {len(file_findings)} finding(s)")
+        for finding in file_findings:
+            record = finding.to_record()
+            typer.echo(
+                f"  line {record['line_number']}  {record['timestamp']}  "
+                f"sha1={record['digest']}  len={record['text_length']}  "
+                f"texts={record['text_count']}  tool_results={record['tool_result_count']}"
+            )
+            if show_text:
+                typer.echo(f"    text: {finding.text}")
+    for skipped_path, reason in skipped:
+        typer.echo(f"{skipped_path}: SKIPPED (unreadable): {reason}")
+    summary = f"({len(findings)} finding(s) across {len(results)} file(s)"
+    if incomplete:
+        # The text says INCOMPLETE in the same breath as the exit code says 1, so the two
+        # channels cannot disagree about whether this audit finished.
+        summary += f", {len(skipped)} file(s) unreadable -- AUDIT INCOMPLETE"
+    typer.echo(summary + ")")
+    if incomplete:
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":

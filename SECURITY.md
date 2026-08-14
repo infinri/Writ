@@ -28,6 +28,18 @@ The bind address is configurable through `WRIT_HOST` (see `scripts/install-serve
 
 **What Writ stores.** The rule corpus, session state, decision records, and logs go into Neo4j and into `var/` inside the installation. Session logs can contain file paths, command text, and excerpts of your code. Before publishing a graph dump, an audit log, or a benchmark result, read it. Paths and command lines carry more about your environment and your employer than people expect.
 
+## What leaves your machine
+
+Short answer: your rules and your code do not. The longer answer, because "nothing is sent anywhere" is the kind of absolute worth checking rather than trusting.
+
+**Stays local, always.** The rule corpus, the graph database, session state, decision records, and every log stream. Neo4j runs in a container on your machine and the daemon binds loopback. There is no telemetry, no analytics, no usage reporting, and no phone-home of any kind. Nothing about your code, your prompts, or your session is transmitted for the project's benefit.
+
+**Goes out, opt-in, one destination.** The decision-memory PR sync posts per-file reasoning to Bitbucket Cloud, and `api.bitbucket.org` is the only host that client ever contacts (`writ/session/bitbucket_client.py`). It is off unless you put a token in `writ.toml`, and it is the only outbound network call Writ itself makes at runtime. Self-hosted Bitbucket Server is refused outright rather than half-supported. There is no GitHub client, so on a GitHub-hosted project this channel does nothing.
+
+**Goes out once, at install.** Bootstrap downloads the embedding model (`sentence-transformers/all-MiniLM-L6-v2`) and the Python dependencies. Ordinary package and model fetches, and after that the embedding runs locally.
+
+**Not Writ, but worth knowing.** Your AI assistant has its own network access and its own tools. If it searches the web or fetches a URL, that is the assistant acting, not Writ, and Writ neither performs nor prevents it. What Writ does add is a Bash egress guard that questions outbound commands to hosts you have not allowlisted (`[egress] allow_hosts` in `writ.toml`), which narrows one channel without pretending to close all of them.
+
 ## Your responsibility
 
 **Audit anything you install, including this.** Writ is a tool that hands an AI assistant hooks into your shell and your repositories. Before you run it, or any other plugin, skill, agent, or MCP server, read what it does. Check what it executes, what it sends over the network, and what it writes. Clone it and look, rather than trusting a description, a star count, or a summary that something else generated for you.

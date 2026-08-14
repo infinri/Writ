@@ -227,7 +227,7 @@ def summarize(
     since_days: int | None = None,
 ) -> dict[str, Any]:
     """Aggregate events into a summary dict."""
-    from writ.shared.delivery import classify_delivery, DEBUG_LOG
+    from writ.shared.delivery import classify_delivery, INERT_DELIVERIES
 
     events = _filter_since(events, since_days)
 
@@ -293,14 +293,18 @@ def summarize(
         name: percentile(durs, 95) for name, durs in hook_durations.items()
     }
 
-    # Sources whose injected tokens went (even partly) to the debug log: rules
-    # paid for that the model never saw. Sorted by inert tokens, biggest first.
+    # Sources whose injected tokens went (even partly) to an INERT bucket: rules paid for
+    # that the model never saw, whether CC filed them in the debug log or rejected the
+    # payload outright. Sorted by inert tokens, biggest first.
+    def _inert(by: Counter[str]) -> int:
+        return sum(by[d] for d in INERT_DELIVERIES)
+
     inert_inject_sources = {
-        src: by[DEBUG_LOG]
+        src: _inert(by)
         for src, by in sorted(
-            inject_tokens_by_source.items(), key=lambda kv: -kv[1][DEBUG_LOG]
+            inject_tokens_by_source.items(), key=lambda kv: -_inert(kv[1])
         )
-        if by[DEBUG_LOG] > 0
+        if _inert(by) > 0
     }
 
     return {
@@ -343,14 +347,16 @@ def format_report(summary: dict[str, Any]) -> str:
             lines.append(f"  {rid:20s} {count:>4d}x")
         lines.append("")
 
-    # #7: where injected rule-tokens actually went. debug-log tokens are INERT --
-    # the hook paid the cost but the model never saw the rules.
+    # #7: where injected rule-tokens actually went. debug-log and rejected tokens are both
+    # INERT: the hook paid the cost but the model never saw the rules.
+    from writ.shared.delivery import INERT_DELIVERIES
+
     by_delivery = summary.get("inject_tokens_by_delivery") or {}
     if by_delivery:
         lines.append("Rule-injection delivery (tokens):")
-        order = {"model": 0, "debug-log": 1, "unknown": 2, "user": 3, "state": 4}
+        order = {"model": 0, "debug-log": 1, "rejected": 2, "unknown": 3, "user": 4, "state": 5}
         for delivery, tok in sorted(by_delivery.items(), key=lambda kv: order.get(kv[0], 9)):
-            tag = "  (INERT -- model never saw these)" if delivery == "debug-log" else ""
+            tag = "  (INERT -- model never saw these)" if delivery in INERT_DELIVERIES else ""
             lines.append(f"  -> {delivery:12s} {tok:>7d}{tag}")
         inert = summary.get("inert_inject_sources") or {}
         if inert:
@@ -1073,10 +1079,12 @@ def render_audit_text(session_id: str, session_events: list[dict], agg: dict) ->
     if agg["tokens_by_delivery"]:
         out.append("")
         out.append("Tokens by delivery (#7):")
-        order = {"model": 0, "debug-log": 1, "unknown": 2, "user": 3, "state": 4}
+        from writ.shared.delivery import INERT_DELIVERIES
+
+        order = {"model": 0, "debug-log": 1, "rejected": 2, "unknown": 3, "user": 4, "state": 5}
         for delivery, tok in sorted(agg["tokens_by_delivery"].items(),
                                     key=lambda kv: order.get(kv[0], 9)):
-            tag = "  (INERT)" if delivery == "debug-log" else ""
+            tag = "  (INERT)" if delivery in INERT_DELIVERIES else ""
             out.append(f"  -> {delivery:<12} {tok:>6}{tag}")
 
     if agg["push_by_action"]:

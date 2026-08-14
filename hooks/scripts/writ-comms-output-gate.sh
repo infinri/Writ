@@ -15,6 +15,45 @@ source "$WRIT_DIR/bin/lib/common.sh"
 hook_instrument "writ-comms-output-gate"
 
 STDIN_JSON=$(cat 2>/dev/null || echo '{}')
+
+# THIS HOOK'S OWN TELEMETRY IS KEYED HERE, and it must be keyed BEFORE the
+# stop_hook_active exit below: hook_instrument's exit trap reads SESSION_ID when the
+# script EXITS, so keying it after that line would leave every continuation-Stop row
+# unattributed. Both that trap and log_gate_decision file under
+# `${SESSION_ID:-${HOOK_SESSION_ID:-}}` and this hook set neither, so its rows landed
+# under the literal session id "unknown" -- measured 2026-08-11, writ-events-unknown.buf
+# held 372 rows from this gate alone (197 hook_execution + 175 gate_decision). We cannot
+# use load_hook_env: it reads stdin, which $STDIN_JSON has already consumed.
+#
+# The id is the payload's and only the payload's (agent_id first, so a sub-agent's rows
+# are not filed under its parent). It is never synthesized: an id the payload did not
+# carry stays EMPTY, leaving a visible gap rather than a silently wrong record.
+#
+# This is the canonical empty-aware pair, the same spelling writ_require_session uses for
+# this exact identity read (common.sh:1022). NOT `.agent_id // .session_id`: jq's `//`
+# falls through only on null and false, so a payload carrying `"agent_id": ""` would KEEP
+# the empty string and never reach session_id, while the python arm's `or` falls through
+# and proceeds. That is the trap documented at common.sh:1010, where it made three
+# governance hooks disagree across the WRIT_NO_JQ seam -- the presence of jq is supposed
+# to change speed, never behavior. The select() filter and the `or` expression agree on
+# every falsy shape, and tests/ pins the pair.
+#
+# One process on BOTH arms, and it takes the payload on a pipe from $STDIN_JSON rather
+# than from this hook's stdin, which was already consumed. Measured 2026-08-11, 12 runs
+# each on the stop_hook_active early-exit path (median total hook duration): 3ms before
+# this fix (unattributed), 8ms with jq, 19.5ms under WRIT_NO_JQ=1. Both shapes this
+# replaced were worse on an arm: an inline `python3 -c` cost 19ms even WITH jq, and a
+# two-call parsed_field fallthrough cost 35ms without it, because each call is its own
+# python start. A jq-less host is a tested configuration here (the CI bare-python3
+# class), not a hypothetical, so the no-jq arm is not a throwaway number.
+SESSION_ID="$(printf '%s' "$STDIN_JSON" | json_transform \
+    '[.agent_id, .session_id] | map(select(. != null and . != "" and . != false)) | first // empty' \
+    "(d.get('agent_id') or d.get('session_id'))" 2>/dev/null || true)"
+# Edge-trim in the shell, matching .strip(): a padded id would otherwise become a buffer
+# filename with spaces in it. Parameter expansion, so this adds no process.
+SESSION_ID="${SESSION_ID#"${SESSION_ID%%[![:space:]]*}"}"
+SESSION_ID="${SESSION_ID%"${SESSION_ID##*[![:space:]]}"}"
+
 stop_hook_active "$STDIN_JSON" && exit 0          # block at most once; never loop
 
 TP=$(printf '%s' "$STDIN_JSON" \

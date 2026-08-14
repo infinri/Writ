@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -75,10 +76,22 @@ class TestTimingTestsCarryTheMarker:
     def test_pre_write_dispatch_floor_is_deselected_by_default(self) -> None:
         """Behavioural, not textual: collect with the default options and assert the
         timing test is not among them."""
+        # sys.executable, never bare "python3": the PATH interpreter is host state
+        # (CI's hostedtoolcache python has no pytest), the suite's own interpreter
+        # by definition does.
         proc = subprocess.run(
-            ["python3", "-m", "pytest", "tests/test_hook_perf_floors.py",
+            [sys.executable, "-m", "pytest", "tests/test_hook_perf_floors.py",
              "--collect-only", "-q"],
             capture_output=True, text=True, cwd=str(REPO), timeout=180,
+        )
+        # Guard against the vacuous pass this test shipped with: a subprocess that
+        # failed to run pytest at all produces empty stdout, which satisfies a
+        # not-in assertion trivially. The collection must have actually happened.
+        assert "No module named" not in proc.stderr, (
+            "the collection subprocess did not run pytest:\n" + proc.stderr[-300:]
+        )
+        assert proc.stdout.strip(), (
+            "empty collection output; the deselection was never exercised"
         )
         assert "test_pre_write_dispatch_p95_under_floor" not in proc.stdout, (
             "the timing gate is still collected by the default selection:\n"
@@ -88,8 +101,10 @@ class TestTimingTestsCarryTheMarker:
     def test_marker_selection_still_finds_them(self) -> None:
         """Deselected by default must not mean unreachable: `-m perf` has to collect
         them, or the gate has been deleted rather than isolated."""
+        # sys.executable for the same reason as above: this is the line that
+        # failed in CI (run 31848974902) when bare "python3" had no pytest.
         proc = subprocess.run(
-            ["python3", "-m", "pytest", "tests/test_hook_perf_floors.py",
+            [sys.executable, "-m", "pytest", "tests/test_hook_perf_floors.py",
              "--collect-only", "-q", "-m", "perf", "-o", "addopts="],
             capture_output=True, text=True, cwd=str(REPO), timeout=180,
         )

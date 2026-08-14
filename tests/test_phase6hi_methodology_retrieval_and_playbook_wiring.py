@@ -142,13 +142,13 @@ def _advance_with_token(client: TestClient, sid: str, source: str = "tool"):
     """Advance the phase, writing the gate token the route now requires + consumes
     (audit P0 self-approval fix). The token is consumed per advance, so callers that
     advance repeatedly must call this each time (it re-writes the token)."""
-    # Write via the PRODUCTION resolver, not tempfile.gettempdir(): gate_token_path
-    # hardcodes /tmp on purpose so the bash writer and the python reader can never
-    # disagree, and pytest sets $TMPDIR -- so gettempdir() put the token where the
-    # route never looks. The advance was then refused as self-approval, the route
+    # Mint via the PRODUCTION writer, not an open() at tempfile.gettempdir():
+    # gate_token_path hardcodes /tmp on purpose so the bash writer and the python reader
+    # can never disagree, and pytest sets $TMPDIR -- so gettempdir() put the token where
+    # the route never looks. The advance was then refused as self-approval, the route
     # still returned HTTP 200 with advanced=False, and the status-only assertion
     # below used to pass while no event was ever emitted.
-    from writ.session.gate_token import gate_token_path
+    from tests.fixtures.session_state import write_bound_gate_token
 
     # Seed a work-mode session with a pending gate AND a project root holding a
     # gate-valid plan.md. Without the session, the route answers "No pending gate to
@@ -180,9 +180,13 @@ def _advance_with_token(client: TestClient, sid: str, source: str = "tool"):
             c["current_phase"] = "planning"
             c["gates_approved"] = []
 
-    tok = "test-6i-gate-token"
-    with open(gate_token_path(sid), "w") as f:
-        f.write(tok)
+    # The token is BOUND to the gate it authorizes and to the plan fingerprint, and the
+    # route claims through claim_gate_token with no unbound fallback, so a bare one-line
+    # secret is refused before the route reaches any gate logic. The binding is derived
+    # from the session cache seeded just above, which is what the production mint does --
+    # and it is re-derived per call, so the second advance in a sequence binds
+    # test-skeletons rather than the phase-a gate the first one spent.
+    tok = write_bound_gate_token(sid, "test-6i-gate-token")
     # project_root travels in the REQUEST body (gate.py reads req.project_root),
     # not the session cache, and the phase-a gate fails closed without it.
     resp = client.post(

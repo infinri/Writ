@@ -36,6 +36,8 @@ from writ.retrieval.embeddings import (
     ScoredResult,
 )
 
+from writ.retrieval.node_scope import is_visible
+
 _logger = logging.getLogger(__name__)
 from writ.retrieval.keyword import KeywordIndex
 from writ.retrieval.ranking import (
@@ -72,10 +74,45 @@ RULE_INJECTION_ABSTENTION_THRESHOLD = 0.30
 _METHODOLOGY_EXCLUDE_DOMAINS = {"process", "communication", "meta-authoring"}
 
 
+def _neighbour_is_visible(
+    entry: dict,
+    caller_project: str | None,
+    metadata: dict[str, dict] | None = None,
+) -> bool:
+    """Whether one AdjacencyCache entry may carry anything to `caller_project`.
+
+    ONE rule for both cache readers. The neighbour list (_scope_enrichment) and the
+    proximity score (compute_graph_proximity) read the same shared, deliberately
+    unfiltered cache, so the defaults below have to be decided once: two copies of
+    them would let the RELATED line and the ranking disagree about the same node.
+
+    TWO DEFAULTS, DELIBERATELY DIFFERENT FROM _filter_candidates':
+    - node_type falls back to "" (a record), NOT to "Rule". A candidate is always
+      doctrine-loaded so "Rule" is safe there; a NEIGHBOUR can be any label in the
+      graph, and defaulting an unknown one to "Rule" would admit every foreign
+      record -- the fail-open direction node_scope.py exists to refuse.
+    - project keeps the "writ" default for an untagged node, matching
+      _filter_candidates exactly, because an untagged node is the same question in
+      both places and two answers to it would drift.
+    `metadata` is only a fallback for an entry that carries no label of its own: a
+    record-typed neighbour is never in that dict (_load_candidates loads Rule plus
+    five methodology labels), so the entry's own carried label is what decides.
+    """
+    meta = (metadata or {}).get(entry.get("rule_id"), {})
+    node_type = entry.get("node_type") or meta.get("node_type") or ""
+    project = entry.get("project")
+    if project is None:
+        project = meta.get("project", "writ")
+    return is_visible(node_type, project, caller_project)
+
+
 def compute_graph_proximity(
     candidate_ids: list[str],
     top3_ids: list[str],
     cache: AdjacencyCache,
+    *,
+    caller_project: str | None,
+    metadata: dict[str, dict] | None = None,
 ) -> dict[str, float]:
     """Compute graph proximity scores for candidates relative to top-3 rules.
 
@@ -83,23 +120,47 @@ def compute_graph_proximity(
     Per INV-2: 1.0 = 1-hop neighbor of a top-3 rule, 0.5 = 2-hop only, 0.0 = none.
     Per INV-4: top-3 rules themselves get 0.0 (no self-boost).
     If a candidate is 1-hop to one top-3 and 2-hop to another, max wins.
+
+    THE THIRD CHANNEL OUT OF THIS PIPELINE, and the quietest. _filter_candidates
+    scopes the candidates and _scope_enrichment scopes the neighbour list; the hops
+    counted here came straight from the shared cache, so a record-typed node another
+    project may not see could still move a doctrine candidate's rank. No id escapes
+    through a score, which is why this was deferred rather than treated as a leak,
+    but proximity is weighted into the final score and apply_context_budget trims by
+    rank, so the perturbation decides WHICH doctrine reaches the model.
+
+    A record moves a doctrine candidate in exactly one way: as a BRIDGE. Candidates
+    are doctrine-only by the time they get here and the seeds come from the
+    candidates, so a record is never a seed and never a scored candidate. It enters
+    the arithmetic because the 1-hop set is the stepping stone to the 2-hop set, so
+    the filter has to apply at BOTH expansions, not only where scores are assigned.
+
+    caller_project is REQUIRED, not defaulted: a caller that forgets it would
+    otherwise get the unscoped answer silently, and this function is imported
+    directly (tests, and any future ranking caller). None is a legitimate value and
+    means the caller resolved to no project, which is doctrine-only -- the same
+    meaning it carries in query() and in is_visible.
     """
     top3_set = set(top3_ids)
     proximity: dict[str, float] = {}
+
+    def visible_neighbours(rule_id: str) -> list[str]:
+        return [
+            n["rule_id"] for n in cache.get_neighbors(rule_id)
+            if _neighbour_is_visible(n, caller_project, metadata)
+        ]
 
     # Collect 1-hop neighbors of all top-3 rules.
     top3_1hop: set[str] = set()
     top3_2hop: set[str] = set()
     for tid in top3_ids:
-        for neighbor in cache.get_neighbors(tid):
-            nid = neighbor["rule_id"]
+        for nid in visible_neighbours(tid):
             if nid not in top3_set:
                 top3_1hop.add(nid)
 
     # Collect 2-hop neighbors (neighbors of 1-hop, excluding 1-hop and top-3).
     for nid in top3_1hop:
-        for neighbor in cache.get_neighbors(nid):
-            n2id = neighbor["rule_id"]
+        for n2id in visible_neighbours(nid):
             if n2id not in top3_set and n2id not in top3_1hop:
                 top3_2hop.add(n2id)
 
@@ -269,6 +330,10 @@ class RetrievalPipeline:
         for coding-only, ["Skill", "Playbook", "Technique", "AntiPattern",
         "ForbiddenResponse"] for methodology-only, None for all). Stage 1 filter.
 
+        project: the caller's project name. Doctrine (Rule + the five methodology
+        labels) is returned whatever this is, so an omitted or unresolvable project
+        costs completeness of RECORDS only, never doctrine. See node_scope.py.
+
         Returns dict with rules, mode, total_candidates, latency_ms.
         """
         start = time.perf_counter()
@@ -282,16 +347,20 @@ class RetrievalPipeline:
         allowed_types, methodology_domain_exclude, route_filter = self._resolve_stage1_filter(
             node_types, retrieval_mode,
         )
-        # M.3 project scope: admit only the caller's project + the shared corpus --
-        # the anti-leak guarantee. project=None preserves search-all.
-        allowed_projects = {project, "_shared"} if project is not None else None
+        # Project scope, decided by NODE TYPE (writ/retrieval/node_scope.py): doctrine
+        # reaches every caller regardless of its project tag, a record only reaches its
+        # own project or "_shared". project=None (or "") no longer disables the filter:
+        # it used to mean search-all, which returned another project's record-typed
+        # nodes to a caller that simply forgot the argument. It now means doctrine-only,
+        # a completeness degradation instead of a leak.
+        caller_project = project or None
         domain_lower = domain.lower() if domain else None  # A8: hoist query-constant
 
         # Stage 2: BM25 keyword search.
         bm25_results = self._keyword.search(query_text, limit=BM25_CANDIDATE_LIMIT)
         bm25_results = self._filter_candidates(
             bm25_results, lambda r: r["rule_id"], exclude, domain_lower, allowed_types,
-            methodology_domain_exclude, route_filter, allowed_projects,
+            methodology_domain_exclude, route_filter, caller_project,
         )
 
         # Stage 3: ANN vector search.
@@ -312,14 +381,19 @@ class RetrievalPipeline:
             }
         vector_results = self._filter_candidates(
             vector_results, lambda r: r.rule_id, exclude, domain_lower, allowed_types,
-            methodology_domain_exclude, route_filter, allowed_projects,
+            methodology_domain_exclude, route_filter, caller_project,
         )
 
         # Merge + reciprocal-rank normalize candidates from both stages.
         candidate_ids = self._merge_and_normalize(bm25_results, vector_results)
 
-        # Stage 4: Graph traversal enrichment (from adjacency cache).
-        enrichment = self._cache.get_enrichment(list(candidate_ids.keys()))
+        # Stage 4: Graph traversal enrichment (from adjacency cache), scoped to the
+        # caller through the SAME predicate the candidate filter uses. The cache is
+        # shared by every caller and unfiltered by design (see AdjacencyCache.
+        # build_from_db), so this is where the neighbour list becomes this caller's.
+        enrichment = self._scope_enrichment(
+            self._cache.get_enrichment(list(candidate_ids.keys())), caller_project,
+        )
 
         # Stage 5a: First-pass ranking (without graph proximity, INV-4).
         first_pass_scores = self._first_pass_rank(candidate_ids, active_weights)
@@ -331,9 +405,17 @@ class RetrievalPipeline:
         ]
         top3_ids = filter_proximity_seeds(first_pass_with_auth, FIRST_PASS_TOP_N)
 
-        # Stage 5b: Compute graph proximity from top-3.
+        # Stage 5b: Compute graph proximity from top-3, scoped to the caller by the
+        # same predicate as the candidates and the neighbour list. self._metadata is
+        # passed so this and _scope_enrichment resolve an unlabelled cache entry
+        # identically: without it, an entry missing its node_type would keep its place
+        # in the RELATED line while losing its hop, which is one boundary with two
+        # answers.
         all_candidate_list = list(candidate_ids.keys())
-        proximity = compute_graph_proximity(all_candidate_list, top3_ids, self._cache)
+        proximity = compute_graph_proximity(
+            all_candidate_list, top3_ids, self._cache,
+            caller_project=caller_project, metadata=self._metadata,
+        )
 
         # Stage 5c: Final ranking with graph proximity.
         scored_rules = self._final_rank(
@@ -411,14 +493,14 @@ class RetrievalPipeline:
         return allowed_types, methodology_domain_exclude, route_filter
 
     def _filter_candidates(self, results, id_of, exclude, domain_lower, allowed_types,
-                           methodology_domain_exclude, route_filter, allowed_projects):
+                           methodology_domain_exclude, route_filter, caller_project):
         """Stage 1 candidate filter. The BM25 hits are dict-shaped and the vector hits
         are ScoredResult-shaped, so the identical predicate chain is parameterized only
         by how each carries its rule_id (id_of). All filters are pure AND-ed predicates,
         so the result set is independent of their order.
 
         A8: single pass with ONE metadata lookup per candidate (was up to 5 dict.get +
-        a per-element domain.lower()). M.3 project scope is the last filter.
+        a per-element domain.lower()). The project scope is the last filter.
         """
         out = []
         for r in results:
@@ -434,10 +516,36 @@ class RetrievalPipeline:
                 continue
             if route_filter and "semantic" not in self._routes_for(rid):
                 continue
-            if allowed_projects is not None and m.get("project", "writ") not in allowed_projects:
+            # The "writ" default is for an UNTAGGED node, and it is why the scope
+            # cannot be decided by this string alone: the whole live corpus carries
+            # it, so a tag comparison would hide doctrine from every other project.
+            # is_visible admits doctrine by type and only then compares tags.
+            if not is_visible(m.get("node_type", "Rule"), m.get("project", "writ"), caller_project):
                 continue
             out.append(r)
         return out
+
+    def _scope_enrichment(self, enrichment: dict, caller_project) -> dict:
+        """Drop neighbours this caller may not see, before they are attached.
+
+        THE SECOND CHANNEL OUT OF THIS PIPELINE. _filter_candidates scopes the
+        candidates; `relationships` used to carry whatever the shared adjacency cache
+        held, so a scoped candidate arrived decorated with unscoped neighbours and
+        budget_tracking.cmd_format rendered them into the `RELATED: <ids>` line the
+        model reads. Filtering here rather than in the cache's build query keeps ONE
+        rule (is_visible) and one cache for every caller.
+
+        The per-entry decision, including the two defaults that differ from
+        _filter_candidates', lives in _neighbour_is_visible because the proximity
+        SCORE reads the same cache and has to answer identically.
+        """
+        scoped: dict[str, list[dict]] = {}
+        for rid, neighbours in enrichment.items():
+            scoped[rid] = [
+                n for n in neighbours
+                if _neighbour_is_visible(n, caller_project, self._metadata)
+            ]
+        return scoped
 
     def _merge_and_normalize(self, bm25_results, vector_results) -> dict:
         """Merge BM25 + vector hits into candidate_ids and attach reciprocal-rank

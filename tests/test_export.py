@@ -613,12 +613,15 @@ class TestDualLocationCanonicalTarget:
 
     def test_dual_location_ids_defined(self) -> None:
         """The methodology-canonical set (excluded from domain rules.md export):
-        12 legacy dual-location rules + ENF-COMMS-OUTPUT-001 (Phase 4 A3, authored
-        methodology-only -- the exclusion keeps the Rule-export from writing a lossy
-        RULE-START copy that drops always_on / trigger_keywords / edges)."""
+        12 legacy dual-location rules + ENF-COMMS-OUTPUT-001 (Phase 4 A3) +
+        ENF-PROC-FIXLOOP-001 (cycle F, the first methodology Rule authored AFTER
+        the set existed -- it was missed, the auto-export wrote a duplicate
+        RULE-START copy, and the round-trip broke; export.py now ALSO derives
+        canonicity from bible/methodology/<id>.md existing, so membership here
+        is documentation, not the load-bearing check)."""
         ids = self._import_canonical()
-        assert len(ids) == 13, (
-            f"Expected 13 methodology-canonical IDs, found {len(ids)}: {sorted(ids)}"
+        assert len(ids) == 14, (
+            f"Expected 14 methodology-canonical IDs, found {len(ids)}: {sorted(ids)}"
         )
 
     def test_group_rules_by_file_excludes_dual_location(

@@ -23,24 +23,18 @@ import pytest
 
 from tests.conftest import writ_server_source
 
-# Future config module -- ImportError expected until implementation lands.
-try:
-    from writ.config import (
-        DEFAULT_NEO4J_PASSWORD,
-        DEFAULT_NEO4J_URI,
-        DEFAULT_NEO4J_USER,
-        get_neo4j_password,
-        get_neo4j_uri,
-        get_neo4j_user,
-        load_config,
-    )
-    _CONFIG_AVAILABLE = True
-except ImportError:
-    _CONFIG_AVAILABLE = False
-
-pytestmark = pytest.mark.skipif(
-    not _CONFIG_AVAILABLE,
-    reason="writ/config.py not yet implemented",
+# Imported plainly, not behind a try/except with a module-level skipif: writ.config
+# is a shipped module this repo imports from dozens of places, so an ImportError
+# here is a real breakage and must surface as a collection error rather than
+# silently skipping every test in this file.
+from writ.config import (
+    DEFAULT_NEO4J_PASSWORD,
+    DEFAULT_NEO4J_URI,
+    DEFAULT_NEO4J_USER,
+    get_neo4j_password,
+    get_neo4j_uri,
+    get_neo4j_user,
+    load_config,
 )
 
 # Reference the canonical defaults from writ/config.py rather than

@@ -109,13 +109,29 @@ log_friction_event "$SESSION_ID" "work" "exitplanmode_allow"
 # Plan is valid -- allow exit from /plan mode.
 # The phase-a gate is NOT created here. The user must review the plan
 # and say "approved" for auto-approve-gate.sh to create the gate.
-cat <<'WRIT_DIRECTIVE'
-[WRIT WORKFLOW -- MANDATORY] Plan format validated. You are NOT approved to write code.
-NEXT STEPS IN ORDER:
-1. Present a brief plan summary to the user
-2. Say "Say approved to proceed"
-3. WAIT -- do not call Write or Edit until the user says "approved"
-Attempting to write before approval WILL be denied.
-WRIT_DIRECTIVE
+# PreToolUse plain stdout reaches only the CC debug log (writ/shared/delivery.py::
+# STDOUT_TO_MODEL_EVENTS), so this directive rode a dead channel while the deny
+# path above used permissionDecisionReason and did reach the model. Same
+# additionalContext shape as writ-read-rag.sh, the PreToolUse precedent. No
+# permissionDecision key: absent means no decision is expressed, so ExitPlanMode
+# still proceeds exactly as it does today.
+python3 <<'PY' || true
+import json
+
+print(json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "additionalContext": (
+            "[WRIT WORKFLOW -- MANDATORY] Plan format validated. "
+            "You are NOT approved to write code.\n"
+            "NEXT STEPS IN ORDER:\n"
+            "1. Present a brief plan summary to the user\n"
+            "2. Say \"Say approved to proceed\"\n"
+            "3. WAIT -- do not call Write or Edit until the user says \"approved\"\n"
+            "Attempting to write before approval WILL be denied."
+        ),
+    }
+}))
+PY
 
 exit 0

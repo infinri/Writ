@@ -205,3 +205,122 @@ class TestContextConstruction:
         )
         assert "PHP" in ctx
         assert "unit test" in ctx
+
+
+# ── Part 3 (isolation cycle v2, plan.md): project scoping ────────────────────
+#
+# plan.md's Part 3 file list: "writ/analysis/analyzer.py -- run_analysis's
+# pipeline.query at line 39 carries the project of the file under analysis".
+# "The file under analysis" -- not a caller-supplied field -- so the design
+# under test is: run_analysis gains an optional `project` kwarg it forwards
+# verbatim to pipeline.query, and the /analyze ROUTE is what derives it, from
+# the directory containing request.file_path, via the same
+# resolve_project_for_cwd the other routes use. AnalyzeRequest itself gains no
+# new field for this (unlike QueryRequest/CompanionRequest/PromptBundleRequest
+# in tests/test_query_route_project_scope.py, which DO need one because their
+# callers have no file path to derive a project from).
+#
+# RED today: run_analysis has no `project` parameter, and the /analyze route
+# never calls resolve_project_for_cwd.
+
+
+class TestRunAnalysisAcceptsAndForwardsProject:
+    def _make_pipeline_mock(self):
+        mock = MagicMock()
+        mock.query.return_value = {"rules": [], "mode": "standard", "total_candidates": 0, "latency_ms": 1.0}
+        return mock
+
+    def _make_llm_mock(self):
+        mock = AsyncMock(spec=LlmAnalyzer)
+        mock.analyze = AsyncMock(return_value=[])
+        return mock
+
+    def _make_instrumentation(self):
+        mock = MagicMock(spec=Instrumentation)
+        mock.get_mode.return_value = "production"
+        mock.should_escalate.return_value = False
+        return mock
+
+    @pytest.mark.asyncio
+    async def test_project_kwarg_reaches_pipeline_query(self):
+        from writ.analysis.analyzer import run_analysis
+        pipeline = self._make_pipeline_mock()
+        await run_analysis(
+            code="<?php class Foo {}",
+            file_path="/repo/proj-a/app/Model/Foo.php",
+            phase="code_generation",
+            context="PHP",
+            pipeline=pipeline,
+            llm_client=self._make_llm_mock(),
+            instrumentation=self._make_instrumentation(),
+            project="proj-a",
+        )
+        _, kwargs = pipeline.query.call_args
+        assert kwargs.get("project") == "proj-a", (
+            f"run_analysis must forward its project kwarg into pipeline.query; got {kwargs!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_omitted_project_kwarg_queries_unscoped_backward_compatible(self):
+        """Every existing direct caller of run_analysis (this file's
+        TestAnalyzeEndpoint class) calls it with no project at all; that must
+        keep working exactly as it does today."""
+        from writ.analysis.analyzer import run_analysis
+        pipeline = self._make_pipeline_mock()
+        await run_analysis(
+            code="<?php class Foo {}",
+            file_path="Foo.php",
+            phase="code_generation",
+            context="PHP",
+            pipeline=pipeline,
+            llm_client=self._make_llm_mock(),
+            instrumentation=self._make_instrumentation(),
+        )
+        _, kwargs = pipeline.query.call_args
+        assert kwargs.get("project") is None
+
+
+class TestAnalyzeRouteResolvesProjectFromFilePath:
+    """Drives the real /analyze route coroutine (writ.server.routes.query.analyze_code)
+    with monkeypatched daemon state, the same direct-call style as
+    tests/test_pre_write_rag_logging.py."""
+
+    class _FakeResolverDB:
+        def __init__(self, resolved: str = "") -> None:
+            self.resolved = resolved
+            self.calls: list[str] = []
+
+        async def resolve_project_for_cwd(self, cwd: str) -> str:
+            self.calls.append(cwd)
+            return self.resolved
+
+    @pytest.mark.asyncio
+    async def test_route_resolves_project_from_the_files_directory(self, monkeypatch):
+        import writ.server as server
+        from writ.server.routes.query import analyze_code
+
+        db = self._FakeResolverDB(resolved="proj-a")
+        pipeline = MagicMock()
+        pipeline.query.return_value = {"rules": [], "mode": "standard", "total_candidates": 0, "latency_ms": 1.0}
+        llm = AsyncMock(spec=LlmAnalyzer)
+        instrumentation = MagicMock(spec=Instrumentation)
+        instrumentation.get_mode.return_value = "production"
+        instrumentation.should_escalate.return_value = False
+
+        monkeypatch.setattr(server, "_db", db)
+        monkeypatch.setattr(server, "_pipeline", pipeline)
+        monkeypatch.setattr(server, "_llm_client", llm)
+        monkeypatch.setattr(server, "_instrumentation", instrumentation)
+
+        await analyze_code(AnalyzeRequest(
+            code="<?php class Foo {}",
+            file_path="/repo/proj-a/app/Model/Foo.php",
+            phase="code_generation",
+            context="PHP",
+        ))
+
+        assert db.calls == ["/repo/proj-a/app/Model"], (
+            f"the route must resolve the project from the file's DIRECTORY; got {db.calls!r}"
+        )
+        _, kwargs = pipeline.query.call_args
+        assert kwargs.get("project") == "proj-a"

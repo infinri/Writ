@@ -5,6 +5,49 @@ from __future__ import annotations
 
 from writ.graph.db._common import METHODOLOGY_NODE_ID_FIELDS
 
+# SHOW INDEXES rows carry `state` (ONLINE / POPULATING) and `populationPercent`.
+# SHOW CONSTRAINTS rows carry NO state field at all: verified against Neo4j 5 on
+# 2026-08-13, where a constraint row's keys are exactly entityType, id,
+# labelsOrTypes, name, ownedIndex, properties, propertyType, type. So constraint
+# readiness can only be read INDIRECTLY, through the index the constraint owns
+# (`ownedIndex`). Asking a constraint row for a state it does not have is how a
+# readiness check ends up reporting a value it cannot determine, which is the
+# failure this check exists to prevent.
+_INDEX_STATE_ONLINE = "ONLINE"
+
+
+def classify_schema_readiness(indexes: list[dict], constraints: list[dict]) -> dict:
+    """Decide whether the schema is usable, from already-fetched SHOW rows.
+
+    Pure, so the entire verdict is testable with no graph and no mocks: the claim
+    is about how rows map to a decision, and a mocked driver would only replay
+    whatever the test handed it.
+
+    ZERO indexes is NOT ready. An empty result means no DDL has run yet, and
+    reading "nothing is broken" off an empty set is the same defect as the
+    still-populating index this is meant to catch.
+    """
+    online = {i.get("name") for i in indexes if i.get("state") == _INDEX_STATE_ONLINE}
+    not_online = sorted(
+        f"{i.get('name')}={i.get('state')}@{i.get('populationPercent')}"
+        for i in indexes
+        if i.get("state") != _INDEX_STATE_ONLINE
+    )
+    # A constraint with no owned index has no index to wait on, so it cannot be
+    # the thing that is unready.
+    missing_owned = sorted(
+        str(c.get("ownedIndex"))
+        for c in constraints
+        if c.get("ownedIndex") is not None and c.get("ownedIndex") not in online
+    )
+    return {
+        "indexes": len(indexes),
+        "constraints": len(constraints),
+        "not_online": not_online,
+        "missing_owned": missing_owned,
+        "ready": bool(indexes) and not not_online and not missing_owned,
+    }
+
 
 class SchemaStoreMixin:
     async def apply_constraints(self) -> None:
@@ -83,3 +126,9 @@ class SchemaStoreMixin:
         """Return all indexes. For verification/testing."""
         rows = await self._run("SHOW INDEXES")
         return [record.data() for record in rows]
+
+    async def schema_readiness(self) -> dict:
+        """Live schema verdict: classify_schema_readiness over the two SHOW queries."""
+        return classify_schema_readiness(
+            await self.list_indexes(), await self.list_constraints()
+        )

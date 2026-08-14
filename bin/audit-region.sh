@@ -8,7 +8,9 @@
 #   3. for each file: run bin/run-analysis.sh and record it examined (record-analysis)
 #   4. print the INV-4 coverage map + the INV-5 presence synthesis gate
 #
-# Usage: bin/audit-region.sh [--session SID] <file-or-dir> [more...]
+# Usage: bin/audit-region.sh --session SID <file-or-dir> [more...]
+#        CLAUDE_SESSION_ID=SID bin/audit-region.sh <file-or-dir> [more...]
+# A session id is REQUIRED (flag or env); there is no fallback. See the note below.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -24,10 +26,25 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [ -z "$SID" ] && [ -f /tmp/writ-current-session ]; then
-  SID=$(tr -d '[:space:]' < /tmp/writ-current-session 2>/dev/null || true)
+# The session comes from --session, or from $CLAUDE_SESSION_ID, or not at all.
+#
+# NO POINTER FALLBACK. This used to read /tmp/writ-current-session when --session was
+# omitted. That is ONE file per machine, rewritten by every Claude Code session's turn, so
+# it names whichever session moved most recently. Everything below is session-keyed and
+# PERSISTENT: --freeze-scope pins the INV-4 coverage denominator and record-analysis files
+# every examined file into that session's cache. A wrong id therefore does not fail, it
+# silently overwrites ANOTHER session's audit scope with this region's file list, and the
+# operator reads a coverage percentage computed against the wrong denominator. An operator
+# running a CLI can be asked for --session; that is the whole difference between this file
+# and hooks/git/post-commit, which git hands no identity at all.
+if [ -z "$SID" ]; then
+  SID="${CLAUDE_SESSION_ID:-}"
 fi
-if [ -z "$SID" ] || [ ${#TARGETS[@]} -eq 0 ]; then
+if [ -z "$SID" ]; then
+  echo '{"error":"no session id: pass --session SID or export CLAUDE_SESSION_ID. The /tmp/writ-current-session fallback was removed because it names whichever session on this machine took a turn most recently, which freezes this audit scope into another session."}'
+  exit 2
+fi
+if [ ${#TARGETS[@]} -eq 0 ]; then
   echo '{"error":"usage: audit-region.sh [--session SID] <file-or-dir> ..."}'
   exit 2
 fi

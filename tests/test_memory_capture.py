@@ -85,6 +85,13 @@ import uuid
 from pathlib import Path
 
 import pytest
+
+# bible/ is a derived, untracked export of the graph, so a clean checkout and CI run
+# without it. The reconcile below refuses an empty oracle by design ("this would delete
+# the graph"), which is correct behaviour and a test failure rather than a defect.
+from tests._bible_guard import requires_bible
+
+pytestmark = requires_bible
 import pytest_asyncio
 
 from writ.config import get_neo4j_password, get_neo4j_uri, get_neo4j_user

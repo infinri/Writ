@@ -2,12 +2,16 @@
 
 Maintainer reference for submitting `writ@writ` to the official Anthropic plugin marketplace at https://claude.ai/settings/plugins/submit. The positioning appendix at the bottom absorbs the former PROMOTIONAL-BRIEF.md.
 
-> **Listing status (checked 2026-08-01):** Writ IS already listed in
+> **Listing status: an external claim, last checked 2026-08-01, NOT re-verified since.**
+> Everything in this block describes a repository this project does not control, so no
+> command in this tree can confirm it is still true. Re-check it by hand before opening
+> the form. As of 2026-08-01: Writ IS already listed in
 > `anthropics/claude-plugins-community` (entry name `writ`), but the listing is stale in
 > every way that matters: it is pinned to an orphaned pre-history-scrub commit from
 > 2026-05-10 ("Release v1.0.0") that has NO marketplace.json and predates every 1.5.1
 > install fix, so a `writ@claude-community` install serves a three-month-old, install-broken
-> Writ. The description also carries the old numbers (276 rules / 30 mandatory / 726x).
+> Writ. The listing's own description carried the numbers it was published with
+> (276 rules / 30 mandatory / 726x), none of which match this tree today.
 > The community repo auto-closes direct PRs; the ONLY update path is a re-submission
 > through the claude.ai form below, which re-pins the sha and refreshes the copy.
 
@@ -20,7 +24,7 @@ Maintainer reference for submitting `writ@writ` to the official Anthropic plugin
 - [x] **Agents load**: measured `Agents (5)` on Claude Code 2.1.220 with roles auto-discovered from `agents/` (commit `a56ca1e`).
 - [x] **License OSI-approved**: MIT.
 - [x] **No secrets in repo**: `writ.toml` is gitignored; the shipped template carries only the documented dev Neo4j default.
-- [x] **Fresh-install smoke**: `tests/plugin/test_fresh_install_smoke.py` green with `WRIT_INTEGRATION_TESTS=1` on 2026-08-01 (clone, marketplace add, install, bootstrap, health). Bootstrap made idempotent across container provenance the same day (a pre-existing `writ-neo4j` container is reused instead of colliding with `compose up`).
+- [ ] **Fresh-install smoke**: dated result, needs a re-run before submitting. `tests/plugin/test_fresh_install_smoke.py` ran green with `WRIT_INTEGRATION_TESTS=1` on 2026-08-01 (clone, marketplace add, install, bootstrap, health), and bootstrap was made idempotent across container provenance the same day (a pre-existing `writ-neo4j` container is reused instead of colliding with `compose up`). That run measured the tree as it stood on 2026-08-01, not the commit being submitted, so re-run it against the submission sha and re-date this line before opening the form.
 - [ ] **Screenshots captured** (below).
 
 ## Listing copy
@@ -31,11 +35,14 @@ Maintainer reference for submitting `writ@writ` to the official Anthropic plugin
 > Hybrid-RAG rule retrieval plus workflow gates for Claude Code: the right rules per prompt, no risky writes before an approved plan.
 
 **Short description**:
-> Writ is a Claude Code harness with two co-equal layers. A librarian retrieves the rules that fit the current task through a five-stage hybrid pipeline (BM25 + vector + graph traversal + weighted ranking, with an abstention gate) over a Neo4j knowledge graph: sub-millisecond ranked retrieval, roughly flat retrieved tokens as the corpus grows (749x reduction versus prompt-stuffing at 10,000 rules, measured 2026-08-01). A process keeper of 40 hook scripts and a session state machine enforces mode-based workflow gates: plan approval, then test skeletons, then implementation, and approval requires a token only the user's keystroke produces. 287 rules ship out of the box across security, clean code, architecture, testing, performance, and process, with authoring tooling to grow your own.
+> Writ is a Claude Code harness with two co-equal layers. A librarian retrieves the rules that fit the current task through a five-stage hybrid pipeline (BM25 + vector + graph traversal + weighted ranking, with an abstention gate) over a Neo4j knowledge graph: sub-millisecond ranked retrieval, roughly flat retrieved tokens as the corpus grows (749x reduction versus prompt-stuffing at 10,000 rules, measured 2026-08-01). A process keeper of 41 hook scripts and a session state machine enforces mode-based workflow gates: plan approval, then test skeletons, then implementation, and approval requires a token only the user's keystroke produces. 288 rules ship out of the box across security, clean code, architecture, testing, performance, and process, with authoring tooling to grow your own.
+
+(Rule count re-verified against `writ-corpus.cypher` on 2026-08-14; re-run the count
+before submitting if the corpus has moved since.)
 
 **Long description**: mirror README "The problem" + "What Writ does about it" verbatim (kept current there; do not fork the text here).
 
-**Category**: Development workflows. **Keywords**: mirror `plugin.json`.
+**Category**: Development workflows. **Keywords**: mirror `.claude-plugin/plugin.json`, which as of 2026-08-14 holds `claude-code`, `rag`, `rules`, `enforcement`, `neo4j`, `fastapi`, `hooks`, `workflow`, `code-quality`, `ai-tooling`, `governance`, `guardrails`, `knowledge-graph`, `tdd`. That list is kept byte-identical in `pyproject.toml` and `.claude-plugin/marketplace.json`; read it from the file rather than from this line if the two ever disagree.
 
 **Author**: Lucio Saldivar, https://github.com/infinri (replace the listing email with a public-facing alias before submitting).
 
@@ -45,7 +52,7 @@ Maintainer reference for submitting `writ@writ` to the official Anthropic plugin
 
 1. Rule injection: a session showing the `--- WRIT RULES ---` block on a real prompt.
 2. Gate denial: a Write blocked with `[ENF-GATE-PLAN]` before plan approval.
-3. `writ status` / `curl localhost:8765/health` showing the live corpus (287 rules, 33 mandatory, warm index).
+3. `writ status` / `curl localhost:8765/health` showing the live corpus (288 rules, 32 mandatory as of 2026-08-14, warm index; capture whatever the live daemon actually reports).
 4. The `/dashboard` friction analytics view, or the `/explore` graph explorer.
 5. Optional: the architecture pages under `docs/architecture/`.
 

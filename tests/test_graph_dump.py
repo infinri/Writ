@@ -24,6 +24,36 @@ NEO4J_PASSWORD = get_neo4j_password()
 runner = CliRunner()
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _restore_corpus_after_module():
+    """Leave the graph complete for whatever module collects next (cycle 8).
+
+    Two `db` fixtures in this file (TestCypherDumpRoundTrip, and
+    TestRecordPreservationOnReplay below it) call
+    `clear_all(preserve_labels=frozenset())` -- the explicit EVERYTHING-wipe -- both
+    before and after every test they serve, so the last thing they do is leave the
+    graph empty.
+
+    That never mattered before, because it never ran. `disposable_graph` skips unless
+    `full_wipe_allowed` holds, and against the production instance it cannot: the
+    marker records intent while the instance comparison is env-blind. Isolation makes
+    both halves true, so those two classes RUN for the first time and their empty
+    graph becomes the starting state for everything collected after this module.
+
+    ensure_corpus() is a no-op (one census read) when the graph is already complete,
+    returns immediately when Neo4j is unreachable, and replays writ-corpus.cypher
+    only when it has to -- so the pure rendering classes above, which need no
+    database at all, pay one reachability probe at module teardown and nothing more.
+    Module scope rather than function scope on purpose: the cost is bounded by module
+    count, not by test count.
+    """
+    yield
+
+    from tests._corpus import ensure_corpus
+
+    ensure_corpus()
+
+
 class TestCLIDefaultPaths:
     def test_export_cypher_help_shows_writ_corpus_cypher_default(self) -> None:
         result = runner.invoke(app, ["export-cypher", "--help"])
@@ -392,6 +422,141 @@ class TestNoRawWholeGraphDeletes:
         assert not [t for t in self._query_strings(clean) if self._UNSCOPED.match(t.strip())]
 
 
+class TestNoSecondGraphTransport:
+    """A test reaches Neo4j through Neo4jConnection, never through a container.
+
+    The 2026-08-08 leak: two modules ran `docker exec writ-neo4j cypher-shell`, and
+    `writ-neo4j` is the PRODUCTION container. Every driver connection honoured
+    WRIT_NEO4J_URI=bolt://localhost:7688 while those two files DETACH DELETEd the
+    corpus on 7687. The connection-level tripwire could not see it, because a
+    subprocess never touches Neo4jConnection.__init__.
+
+    This is the regression pin, not the fix. The fix is that the second transport is
+    gone; this fails the build when one comes back.
+    """
+
+    _FORBIDDEN_HEADS = ("docker", "docker-compose", "cypher-shell", "neo4j-admin")
+
+    # Ships EMPTY, deliberately. After this cycle no test file has a list literal
+    # whose FIRST element is one of the heads above: the tool-prerequisite tests
+    # pass ["bash", "docker", "git"] as a PATH allowlist, where "docker" is never
+    # the head. Inventing an exemption the tree does not need would license exactly
+    # the shape being forbidden. Same reasoning, same shape, as _ALLOWED above:
+    # an entry must name a file AND a sentinel that keeps earning it.
+    _ALLOWED: dict[str, str] = {}
+
+    def _forbidden_head_lists(self, path):
+        """Every list literal in a module whose FIRST element is a forbidden head.
+
+        Keys on the head -- index zero -- never on the substring appearing
+        anywhere in the list, so a tool-name allowlist like
+        ["bash", "docker", "git"] is not caught: "docker" sits at index 1,
+        never index 0.
+        """
+        import ast
+
+        try:
+            tree = ast.parse(path.read_text())
+        except SyntaxError:
+            return []
+        found = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.List) and node.elts:
+                head = node.elts[0]
+                if isinstance(head, ast.Constant) and isinstance(head.value, str) \
+                        and head.value in self._FORBIDDEN_HEADS:
+                    found.append((node.lineno, head.value))
+        return found
+
+    def test_no_second_transport_argv_in_tests(self) -> None:
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        offenders = []
+        for path in root.glob("tests/**/*.py"):
+            rel = path.relative_to(root).as_posix()
+            if rel in self._ALLOWED:
+                continue
+            for lineno, head in self._forbidden_head_lists(path):
+                offenders.append(f"{rel}:{lineno}: argv headed by {head!r}")
+        assert not offenders, (
+            "a test reaches Neo4j through a second transport instead of "
+            "Neo4jConnection; route it through the driver or spell out the "
+            f"exemption: {offenders}"
+        )
+
+    def test_allowed_is_empty(self) -> None:
+        assert self._ALLOWED == {}, (
+            "after cycle 8 no test file has an argv list headed by a forbidden "
+            "transport; an exemption the tree does not need would license "
+            f"exactly the shape being forbidden: {self._ALLOWED}"
+        )
+
+    def test_every_exemption_still_earns_itself(self) -> None:
+        """An exemption expires when the file stops being what justified it.
+
+        _ALLOWED ships empty, so this is vacuously true today. It exists so that
+        if an entry is ever added, it must name a file that still exists AND a
+        sentinel string that still appears in it -- the same discipline
+        TestNoRawWholeGraphDeletes applies to its own exemptions.
+        """
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        stale = []
+        for rel, sentinel in self._ALLOWED.items():
+            path = root / rel
+            if not path.exists():
+                stale.append(f"{rel}: exempted file no longer exists")
+            elif sentinel not in path.read_text(encoding="utf-8"):
+                stale.append(f"{rel}: no longer contains {sentinel!r}")
+        assert not stale, (
+            "these second-transport exemptions no longer describe the files "
+            f"they exempt; re-justify or remove them: {stale}"
+        )
+
+    def test_the_guard_would_catch_a_planted_second_transport(self, tmp_path) -> None:
+        # Teeth, independent of the tree's current state: an argv list HEADED
+        # by a forbidden transport is caught, while a tool-name allowlist
+        # carrying the same string at a later position is not.
+        planted = tmp_path / "planted.py"
+        planted.write_text(
+            'import subprocess\n'
+            'def f():\n'
+            '    subprocess.run(["docker", "exec", "writ-neo4j", "cypher-shell"])\n'
+        )
+        assert self._forbidden_head_lists(planted)
+
+        clean = tmp_path / "clean.py"
+        clean.write_text(
+            'import subprocess\n'
+            'def f():\n'
+            '    subprocess.run(["bash", "docker", "git"])\n'
+        )
+        assert not self._forbidden_head_lists(clean)
+
+    def test_no_false_positive_on_real_tool_allowlists(self) -> None:
+        """`["bash", "docker", "git"]` is a list of tool NAMES, not an invocation.
+
+        tests/test_bootstrap.py:246 and about six lines in
+        tests/test_no_tool_prereqs.py pass this shape as a PATH allowlist for the
+        preflight check; "docker" is never the head of that list, so the guard
+        must not fire on it. This is the single most likely way the guard gets
+        written wrong (keying on the substring "docker" appearing anywhere) and
+        then deleted by an annoyed contributor.
+        """
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        for rel in ("tests/test_bootstrap.py", "tests/test_no_tool_prereqs.py"):
+            path = root / rel
+            offenders = self._forbidden_head_lists(path)
+            assert not offenders, (
+                f"{rel} is a tool-name allowlist, not a transport invocation, "
+                f"and must not trip the guard: {offenders}"
+            )
+
+
 class TestScaleBenchmarkRequiresExplicitRun:
     """The scale benchmark wipes the live graph; it must never start by accident.
     No Neo4j needed: argument handling fails before any connection."""
@@ -464,4 +629,29 @@ class TestScaleBenchmarkRequiresExplicitRun:
         assert "--run" in out, f"the refusal must name the flag; got: {out[:300]!r}"
         assert "Traceback" not in out, (
             f"the guard was reached only after an import blew up: {out[:300]!r}"
+        )
+
+
+class TestEdgeRenderOrderIsTotal:
+    """The docstring's claim 'the same graph always renders to the same bytes'
+    was FALSE for two edges sharing a (source, target) pair with different
+    types: the sort key had no tie-break, so driver return order decided, and
+    real exports flipped 7 such pairs between runs, polluting every corpus
+    diff with content-identical churn. The key now includes the edge type."""
+
+    def test_same_pair_different_type_renders_identically_from_either_input_order(
+        self,
+    ) -> None:
+        nodes = [
+            {"id": "A-001", "label": "Rule", "props": {"rule_id": "A-001"}},
+            {"id": "B-001", "label": "Rule", "props": {"rule_id": "B-001"}},
+        ]
+        e1 = {"source_id": "A-001", "target_id": "B-001", "type": "SUPPLEMENTS"}
+        e2 = {"source_id": "A-001", "target_id": "B-001", "type": "RELATED_TO"}
+        one = render_cypher_dump(nodes, [e1, e2])
+        other = render_cypher_dump(nodes, [e2, e1])
+        assert one == other, (
+            "two edges on the same (source, target) pair must render in a "
+            "deterministic order regardless of driver return order; the sort "
+            "key needs the edge type as a tie-break"
         )

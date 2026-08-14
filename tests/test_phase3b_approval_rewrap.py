@@ -38,6 +38,9 @@ import pytest
 
 from tests._daemon import _port, expected_cache_dir
 
+# autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
+from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
+
 WRIT_ROOT = Path(__file__).resolve().parent.parent
 HOOK = WRIT_ROOT / "hooks" / "scripts" / "auto-approve-gate.sh"
 SESSION_HELPER = WRIT_ROOT / "bin" / "lib" / "writ-session.py"
@@ -129,9 +132,13 @@ def _run_hook(
 def _setup_work_planning_session(session_id: str, env: dict | None = None) -> bool:
     """Put a session into Work mode at the planning phase. Returns True on success."""
     interp = str(PYTHON) if PYTHON.exists() else "python3"
+    # NO cwd=WRIT_ROOT here, unlike the reads below. `mode set` stamps the process cwd as
+    # the session's project_root and then deletes that project's .claude/gates/*.approved,
+    # so pinning it to the repo root made this helper wipe THIS repo's approval artifacts
+    # on every run. Inheriting the sandbox_cwd fixture's cwd keeps the damage in tmp_path.
     proc = subprocess.run(
         [interp, str(SESSION_HELPER), "mode", "set", "work", session_id],
-        capture_output=True, text=True, cwd=str(WRIT_ROOT), env=env,
+        capture_output=True, text=True, env=env,
     )
     if proc.returncode != 0:
         return False

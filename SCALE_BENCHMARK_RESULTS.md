@@ -127,3 +127,45 @@ corpus and are omitted rather than approximated.
 
 Note: an earlier README revision claimed 56x at the live corpus. That figure does not
 reproduce with this file's own arithmetic and is superseded by the 26.4x above.
+
+---
+
+## Context reduction: an honest note on the baseline (2026-08-01)
+
+The often quoted "749 times less context" is measured against pasting the entire 10,000 rule corpus (1.19 million tokens) into every single message. That is a theoretical ceiling, not something anyone does, since no context window holds it. Against the realistic comparison, a hand curated instructions file of about 5,000 tokens, Writ's per turn cost is roughly comparable while covering the whole shipped rulebook instead of a dozen rules, 287 of them at the time of that measurement and 288 today. The advantage grows with the size of your rulebook rather than with the size of the claim.
+
+---
+
+## Which 95th percentile (2026-08-01 and 2026-08-05)
+
+Three appear across this project's files and they are not in competition, they are different question sets: **1.02 ms** is the 193 question test set measured on 2026-08-05, which is the hardest and the one to quote because it is closest to real use; 0.52 ms is a 5 question latency set from the same 2026-08-05 run; 0.6 ms is an older 10 question set from 2026-08-01. All three were measured against the 287 rule corpus of that week. Where a single number appears without a question set beside it, assume the 193 question one.
+
+---
+
+## Search quality against the gold set (2026-08-01, 2026-08-05, 2026-08-06)
+
+Search quality against a 193 question test set (47 of them deliberately ambiguous), measured against the 287 rule corpus on the three dates in the column headers. The floors are automated gates the build fails below, set deliberately under the measured values:
+
+| Metric | Floor | 2026-08-01 | 2026-08-05 | 2026-08-06 |
+|---|---|---:|---:|---:|
+| Hit rate at 5 (index-eligible, n=169) | at least 0.90 | -- | 0.9290 | **0.9231** |
+| Mean reciprocal rank at 5 (ambiguous, n=47) | at least 0.45 | 0.5681 | 0.6167 | 0.6082 |
+| Hit rate at 5 (all 193) | at least 0.75 | 0.7824 | 0.8187 | 0.8083 |
+| Domain hit rate at 5 | at least 0.90 | 0.9323 | 0.9534 | 0.9585 |
+| nDCG at 10 | at least 0.65 | 0.7071 | 0.7332 | 0.7323 |
+
+**Read the 2026-08-06 column, not the earlier ones.** Until that date the search merged its keyword and vector candidates through a `set` union, whose iteration order Python randomizes per process, and that order decided tie breaking all the way through scoring. Thirty of the 193 questions returned a different top 5 depending on the seed, so every earlier column is one draw from a distribution rather than a measurement. Five identical runs spanned 156 to 159 hits. The fix made the merge order deterministic; the corrected numbers landed at the low end of the old spread, which is what you would expect if the old high marks were luck.
+
+**The index eligible hit rate is the one to watch.** It sits at 0.9231 against a 0.90 floor that fails the build, which is 2.3 points of headroom, and it moved *down* between 08-05 and 08-06. Three of the other metrics drifted down over the same pair of runs. A gate this close to its floor will eventually trip on a change unrelated to search quality, and the honest reading is that the margin is thin rather than comfortable.
+
+---
+
+## Corpus growth since those runs, and the floors re-run against it (2026-08-14)
+
+One rule has been added since 2026-08-06, so the shipped rulebook is 288 rather than the 287 those columns were measured against. The quality figures have not been re-measured against the new corpus and are deliberately not restated as if they had been. What was re-run is the gate suite itself: `make bench` passed 17 of 17 on 2026-08-14, and every floor in the table above is one of those 17 targets, so each one still holds against today's rulebook. That is a pass or fail result, not a fresh score.
+
+---
+
+## What a turn actually costs (maintainer's own logs, no shippable artifact)
+
+Across 67 real sessions and 891 turns of logged injections: mean 537 tokens per turn, median 600, 95th percentile 1,360, maximum 5,440. The 5,000 and 8,000 token budgets are ceilings, not spend. Unlike every other number in this file, **this one has no artifact you can check**: it comes from `writ token-audit` over the maintainer's own session logs, which contain real prompts and file contents and cannot ship. The command is in the repository and runs against your logs, so the method is reproducible even though this run is not.

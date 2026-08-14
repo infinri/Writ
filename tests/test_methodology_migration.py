@@ -10,6 +10,17 @@ Covers the new acceptance surface introduced in v1.4.0:
 
 Doc-content assertions (docs/*.md prose) were removed 2026-07-31: documentation
 is not a test surface, so doc edits must never fail the suite.
+
+Cycle E additions (E1/E2/E3): the exhaustive per-playbook dispatch
+classification map (a new playbook cannot default into an unexplained empty
+dispatched_roles list), and the ROL-*.md corpus-data pins for the explorer's
+lens correction, the Write-without-Edit tools fix, and the dispatched_by
+reverse cache. RED today for PBK-PROC-DEBUG-001 / PBK-PROC-TDD-001 (currently
+dispatched_roles: []), for ROL-PLANNER-001 / ROL-TEST-WRITER-001 (currently
+tools without Edit), for ROL-EXPLORER-001's lens text (currently substitutes
+research for runtime), and for the three dispatched_by reverse-cache entries
+(PBK-PROC-DEBUG-001 on ROL-EXPLORER-001, PBK-PROC-TDD-001 on
+ROL-TEST-WRITER-001 and ROL-IMPLEMENTER-001).
 """
 
 from __future__ import annotations
@@ -260,6 +271,184 @@ class TestMethodologyNodeContent:
 
 
 # ---------------------------------------------------------------------------
+# Cycle E / E3: exhaustive per-playbook dispatch classification.
+#
+# Every PBK-*.md is classified exactly once. A playbook either hands work to a
+# separate agent session (and then must name the workers in its own text, which
+# detect_dispatch_prose_parity enforces) or it does not. The map is exhaustive
+# over the glob, so a NEW playbook fails this test until someone classifies it:
+# an empty dispatched_roles is an answer here, never a default nobody chose.
+# ---------------------------------------------------------------------------
+
+DISPATCHING_PLAYBOOKS = {
+    "PBK-PROC-ORCHESTRATOR-001": {
+        "ROL-EXPLORER-001", "ROL-PLANNER-001",
+        "ROL-TEST-WRITER-001", "ROL-IMPLEMENTER-001",
+    },
+    "PBK-PROC-SDD-001": {"ROL-IMPLEMENTER-001", "ROL-REVIEWER-001"},
+    "PBK-PROC-REVREQ-001": {"ROL-REVIEWER-001"},
+    "PBK-PROC-AUDIT-FANOUT-001": {"ROL-EXPLORER-001"},
+    "PBK-PROC-DEBUG-001": {"ROL-EXPLORER-001"},
+    "PBK-PROC-TDD-001": {"ROL-TEST-WRITER-001", "ROL-IMPLEMENTER-001"},
+}
+
+SINGLE_SESSION_PLAYBOOKS = {
+    "PBK-PROC-WORK-WORKFLOW-001": "the three gates are what one session does; PBK-PROC-ORCHESTRATOR-001 is the dispatch form and it declares the four workers",
+    "PBK-PROC-PLAN-001": "the procedure ROL-PLANNER-001 executes; executed-by is not dispatches",
+    "PBK-PROC-BRAIN-001": "a design conversation with the user, and a worker cannot hold the user's approval",
+    "PBK-PROC-RESEARCH-001": "the investigation spine; PBK-PROC-AUDIT-FANOUT-001 is the at-scale form that dispatches",
+    "PBK-PROC-FINISH-001": "presents four options to the user and waits; there is nothing to hand off",
+    "PBK-AUTHOR-001": "authoring runs in the session that holds the pressure-scenario transcripts",
+    "PBK-PROC-DIAGNOSE-CRASH-STACKTRACE-001": "a lens PBK-PROC-DEBUG-001 INVOKES; the dispatch decision belongs to the playbook that invokes it",
+    "PBK-PROC-DIAGNOSE-FAILING-TEST-001": "a lens PBK-PROC-DEBUG-001 INVOKES; same reason",
+    "PBK-PROC-DIAGNOSE-HEISENBUG-001": "a lens PBK-PROC-DEBUG-001 INVOKES; same reason",
+}
+
+
+class TestPlaybookDispatchClassification:
+    def test_every_playbook_is_classified_exactly_once(self) -> None:
+        on_disk = {p.stem for p in METHODOLOGY_DIR.glob("PBK-*.md")}
+        classified = set(DISPATCHING_PLAYBOOKS) | set(SINGLE_SESSION_PLAYBOOKS)
+        overlap = set(DISPATCHING_PLAYBOOKS) & set(SINGLE_SESSION_PLAYBOOKS)
+        assert not overlap, f"classified as both dispatching and single-session: {sorted(overlap)}"
+        assert on_disk == classified, (
+            f"unclassified playbooks: {sorted(on_disk - classified)}; "
+            f"classified but absent from disk: {sorted(classified - on_disk)}"
+        )
+
+    @pytest.mark.parametrize("playbook_id", sorted(DISPATCHING_PLAYBOOKS))
+    def test_dispatching_playbook_declares_its_roles(self, playbook_id: str) -> None:
+        fm = _parse_frontmatter(METHODOLOGY_DIR / f"{playbook_id}.md")
+        assert set(fm.get("dispatched_roles") or []) == DISPATCHING_PLAYBOOKS[playbook_id]
+
+    @pytest.mark.parametrize("playbook_id", sorted(SINGLE_SESSION_PLAYBOOKS))
+    def test_single_session_playbook_declares_no_roles(self, playbook_id: str) -> None:
+        fm = _parse_frontmatter(METHODOLOGY_DIR / f"{playbook_id}.md")
+        assert not (fm.get("dispatched_roles") or []), (
+            f"{playbook_id} declares roles but is classified single-session: "
+            f"{SINGLE_SESSION_PLAYBOOKS[playbook_id]}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Cycle E / E1+E2+E3: ROL-*.md corpus-data pins.
+#
+# Nothing pinned `tools` before this cycle -- that is how Write-without-Edit
+# survived undetected (test_fix5_role_coverage.py:106 only asserts non-empty;
+# test_phase3b_export_subagent_roles.py exercises a synthetic "Read Glob"
+# row). Pin the real values directly so the boundary cannot regress silently
+# again.
+# ---------------------------------------------------------------------------
+
+
+class TestRoleCountInvariant:
+    def test_exactly_five_subagent_role_files_on_disk(self) -> None:
+        """No sixth SubagentRole node: E1 corrects ROL-EXPLORER-001 in place
+        (it already holds the read-only runtime lens via its tool grant)
+        rather than introducing a new 'debugger' role."""
+        roles = sorted(p.stem for p in METHODOLOGY_DIR.glob("ROL-*.md"))
+        assert roles == [
+            "ROL-EXPLORER-001", "ROL-IMPLEMENTER-001", "ROL-PLANNER-001",
+            "ROL-REVIEWER-001", "ROL-TEST-WRITER-001",
+        ]
+
+
+class TestE1ExplorerLensCorrection:
+    """ROL-EXPLORER-001 must describe the investigation engine as three
+    source types (code, web, runtime) and name the runtime/debug lens,
+    instead of substituting research for runtime while still claiming
+    'three lenses' (SKL-PROC-INVESTIGATE-001 defines code/web/runtime and
+    routes runtime to PBK-PROC-DEBUG-001)."""
+
+    def test_prompt_template_names_the_runtime_debug_lens(self) -> None:
+        node = METHODOLOGY_DIR / "ROL-EXPLORER-001.md"
+        text = node.read_text().lower()
+        assert "runtime" in text and "debug" in text, (
+            "ROL-EXPLORER-001.md must name the runtime/debug lens "
+            "(SKL-PROC-INVESTIGATE-001's third source type) somewhere in "
+            "its text, not substitute 'research' for it"
+        )
+
+    def test_tags_include_runtime_and_debug(self) -> None:
+        node = METHODOLOGY_DIR / "ROL-EXPLORER-001.md"
+        fm = _parse_frontmatter(node)
+        tags = set(fm.get("tags") or [])
+        missing = {"runtime", "debug"} - tags
+        assert not missing, (
+            f"ROL-EXPLORER-001.md tags must include 'runtime' and 'debug'; "
+            f"missing: {sorted(missing)}; got {sorted(tags)}"
+        )
+
+    def test_trigger_mentions_pbk_proc_debug_001_needing_runtime_evidence(self) -> None:
+        node = METHODOLOGY_DIR / "ROL-EXPLORER-001.md"
+        fm = _parse_frontmatter(node)
+        trigger = fm.get("trigger", "")
+        assert "PBK-PROC-DEBUG-001" in trigger, (
+            "ROL-EXPLORER-001's trigger must mention PBK-PROC-DEBUG-001 "
+            f"needing runtime evidence gathered before any source is read; "
+            f"got: {trigger!r}"
+        )
+
+    def test_dispatched_by_includes_pbk_proc_debug_001(self) -> None:
+        node = METHODOLOGY_DIR / "ROL-EXPLORER-001.md"
+        fm = _parse_frontmatter(node)
+        dispatched_by = fm.get("dispatched_by") or []
+        assert "PBK-PROC-DEBUG-001" in dispatched_by, (
+            f"ROL-EXPLORER-001.dispatched_by must include PBK-PROC-DEBUG-001 "
+            f"(E1/E3, matching the new DISPATCHES edge); got {dispatched_by!r}"
+        )
+
+
+class TestE2ToolsBoundary:
+    """State the principle once: Write-without-Edit is backwards, because
+    Write is strictly more destructive (whole-file replace) than Edit
+    (exact-match substring replace). The fix is additive to planner and
+    test-writer only; explorer and reviewer's read-only boundary (neither
+    Write nor Edit) is coherent and E2 explicitly does not extend it."""
+
+    @pytest.mark.parametrize("role_id", ["ROL-PLANNER-001", "ROL-TEST-WRITER-001"])
+    def test_gains_edit_alongside_write(self, role_id: str) -> None:
+        node = METHODOLOGY_DIR / f"{role_id}.md"
+        fm = _parse_frontmatter(node)
+        tools = (fm.get("tools") or "").split()
+        assert "Write" in tools, f"{role_id}.md tools={tools!r} must include Write"
+        assert "Edit" in tools, (
+            f"{role_id}.md tools={tools!r} must include Edit alongside Write "
+            "(E2: an agent that can Write but not Edit has the same blast "
+            "radius and only the destructive means of using it)"
+        )
+
+    @pytest.mark.parametrize("role_id", ["ROL-EXPLORER-001", "ROL-REVIEWER-001"])
+    def test_stays_write_and_edit_free(self, role_id: str) -> None:
+        node = METHODOLOGY_DIR / f"{role_id}.md"
+        fm = _parse_frontmatter(node)
+        tools = (fm.get("tools") or "").split()
+        assert "Write" not in tools and "Edit" not in tools, (
+            f"{role_id}.md tools={tools!r} must hold neither Write nor Edit "
+            "-- this read-only boundary is coherent and E2 explicitly does "
+            "not extend it to explorer or reviewer"
+        )
+
+
+class TestE3DispatchedByReverseCache:
+    """PBK-PROC-TDD-001 gains ROL-TEST-WRITER-001 (RED phase) and
+    ROL-IMPLEMENTER-001 (GREEN/REFACTOR); each role's dispatched_by reverse
+    cache must be kept in lockstep with the new DISPATCHES edge."""
+
+    @pytest.mark.parametrize(
+        "role_id", ["ROL-TEST-WRITER-001", "ROL-IMPLEMENTER-001"]
+    )
+    def test_tdd_roles_dispatched_by_includes_tdd_playbook(self, role_id: str) -> None:
+        node = METHODOLOGY_DIR / f"{role_id}.md"
+        fm = _parse_frontmatter(node)
+        dispatched_by = fm.get("dispatched_by") or []
+        assert "PBK-PROC-TDD-001" in dispatched_by, (
+            f"{role_id}.dispatched_by must include PBK-PROC-TDD-001; "
+            f"got {dispatched_by!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # templates/CLAUDE.md slimming
 # ---------------------------------------------------------------------------
 
@@ -420,5 +609,3 @@ class TestRulesStubs:
             "rules/writ-orchestrator.md must contain at least one of "
             f"{sorted(token_words)} (required by test_orchestrator_hardening.py)"
         )
-
-

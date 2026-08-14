@@ -84,16 +84,44 @@ async def memory_record(request: MemoryRecordRequest) -> dict[str, Any]:
     surface as a hook error on a write that already succeeded. `writ memory backfill`
     re-covers every miss. The exception detail goes to the log, never to the caller.
 
+    A request that omits `project` is served from the path derivation and logged as
+    memory_project_derived, because that guess decides which project's memory this
+    write can overwrite (see the comment at the fallback).
+
     Access boundary: localhost-only daemon route, single-user, no auth tier; writes
     project-scoped Memory records on the caller's own machine.
     """
     if server._db is None:
         return {"error": "Database not connected."}
 
+    project = request.project or _project_from_memory_path(request.path)
+    if not request.project:
+        # A caller that sends no project makes the daemon GUESS the scope from the
+        # path, and create_memory MERGEs on (name, project) then overwrites the
+        # matched node's body/description/path -- no ON CREATE/ON MATCH split, no
+        # versioning. So a wrong guess does not just mis-scope the memory, it can
+        # destroy another project's memory of the same name, permanently and
+        # silently. Record the derivation (and whether it even resolved) so the
+        # guess is auditable after the fact instead of invisible. Fail-open in its
+        # own try/except: a logging failure must not skip the write below, which is
+        # mirroring a file that already exists on disk.
+        try:
+            await asyncio.to_thread(
+                server.log_friction_event,
+                session_id=request.session_id,
+                mode=None,
+                event="memory_project_derived",
+                file_path=request.path,
+                derived_project=project,
+                resolved=bool(project),
+            )
+        except Exception:
+            pass
+
     try:
         name = await server._db.create_memory(
             name=request.name,
-            project=request.project or _project_from_memory_path(request.path),
+            project=project,
             description=request.description,
             type=request.type,
             body=request.body,
@@ -139,6 +167,22 @@ async def recall(request: RecallRequest) -> dict[str, Any]:
         from writ.session.recall import compile_recall
 
         project = await server._db.resolve_project_for_cwd(request.project_root)
+        if not project:
+            # An unregistered project_root resolves to NO project now that the
+            # resolver's "writ" default is gone. Querying for the empty string would
+            # either return nothing or, worse, match records mis-filed under no
+            # project at all, and reading back another project's decisions is the
+            # exact confusion this cycle removes. Return the empty-but-valid payload
+            # and say why, because a silent empty briefing looks like "no decisions
+            # captured yet" and sends an operator looking in the wrong place.
+            await asyncio.to_thread(
+                server.log_friction_event,
+                session_id=request.project_root,
+                mode=None,
+                event="recall_project_unresolved",
+                project_root=request.project_root,
+            )
+            return {"ok": True, "briefing": "", "decisions": []}
         payload = await compile_recall(
             server._db, project, budget=request.budget, full=request.full
         )

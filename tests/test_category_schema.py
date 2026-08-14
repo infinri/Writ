@@ -38,6 +38,105 @@ class TestRouteValueEnum:
         assert VALID_ROUTES == enum_values
         assert isinstance(VALID_ROUTES, frozenset)
 
+    def test_wired_routes_is_hand_listed_excluding_ride_along_and_scoped(self) -> None:
+        """1.9 (finalized 2026-08-12): WIRED_ROUTES is a HAND-LISTED set of the
+        routes with a real, verified delivery mechanism -- {action, always_on,
+        pull, semantic, state} -- NOT derived from VALID_ROUTES by subtraction.
+
+        The subtraction form (an earlier draft of this contract, since
+        retracted) is backwards: it makes any NEW RouteValue member wired by
+        default, with no implementation behind it and every check staying
+        green -- precisely how `ride_along` survived unimplemented for
+        months. The hand-list inverts the default to UNWIRED, so a route
+        gained by the enum trips detect_route_implementation_closure
+        immediately instead of silently passing.
+
+        `ride_along` and `scoped` are both excluded, each independently
+        verified unimplemented (nothing reads either value; no delivery
+        mechanism exists for either). This test does NOT assert `WIRED_ROUTES
+        == VALID_ROUTES - {ride_along}` or any other derived form: the two
+        sets are MEANT to differ for as long as any route is unimplemented,
+        and a third route later joining the unimplemented set must not make
+        this test fail by construction.
+
+        Every comparison below names the offending member(s) on failure
+        (sorted-list diffs, not bare frozenset equality) -- a truncated
+        `frozenset({'a...ic', 'state'}) == frozenset({'a...ic', 'state'})`
+        repr hides exactly the fact (which single member differs) a reader
+        needs to act on it.
+        """
+        from writ.graph.schema import VALID_ROUTES, WIRED_ROUTES
+
+        assert isinstance(WIRED_ROUTES, frozenset)
+
+        expected_wired = {"action", "always_on", "pull", "semantic", "state"}
+        extra = sorted(WIRED_ROUTES - expected_wired)
+        missing = sorted(expected_wired - WIRED_ROUTES)
+        assert not extra and not missing, (
+            f"WIRED_ROUTES unexpectedly contains: {extra}; "
+            f"unexpectedly omits: {missing} "
+            f"(full WIRED_ROUTES: {sorted(WIRED_ROUTES)})"
+        )
+
+        assert "ride_along" not in WIRED_ROUTES, (
+            f"WIRED_ROUTES must exclude ride_along; got {sorted(WIRED_ROUTES)}"
+        )
+        assert "scoped" not in WIRED_ROUTES, (
+            f"WIRED_ROUTES must exclude scoped; got {sorted(WIRED_ROUTES)}"
+        )
+
+        # Strict subset, never equality: the sets are meant to differ for as
+        # long as any route is unimplemented.
+        assert WIRED_ROUTES < VALID_ROUTES, (
+            f"WIRED_ROUTES ({sorted(WIRED_ROUTES)}) must be a STRICT subset "
+            f"of VALID_ROUTES ({sorted(VALID_ROUTES)}); equality would mean "
+            f"nothing is unwired, which is not true today"
+        )
+        unimplemented = sorted(VALID_ROUTES - WIRED_ROUTES)
+        assert unimplemented == ["ride_along", "scoped"], (
+            f"expected VALID_ROUTES - WIRED_ROUTES == ['ride_along', 'scoped']; "
+            f"got {unimplemented}"
+        )
+
+    def test_wired_routes_subset_guard_would_reject_unknown_route(self) -> None:
+        """Mirrors schema.py's own anti-drift guard -- `if not WIRED_ROUTES <=
+        VALID_ROUTES: raise ValueError(...)`, executed at module import time
+        -- which catches the new failure mode a hand-list introduces that the
+        old derived form never could: a typo'd/invented route name IN the
+        hand-list itself. (Subtraction can only ever REMOVE members from
+        VALID_ROUTES; it cannot invent one that was never there.)
+
+        Deliberately does NOT dynamically re-execute the real guard source
+        (SEC-INJ-CMD-002 forbids exec/eval on a non-literal-constant string,
+        and the extracted source would be exactly that): instead this checks
+        the guard's own predicate and diff expression directly against a
+        corrupted WIRED_ROUTES, naming the offending member on failure. The
+        raise itself is a one-line `raise ValueError(f"...")` guarded by this
+        exact predicate, so proving the predicate is false (and the diff
+        names the corrupted member) is equivalent to proving the guard would
+        fire -- and does not require reloading writ.graph.schema, which would
+        redefine RouteValue/Category as new classes and break `is`-identity
+        checks elsewhere in this file (e.g. NODE_TYPE_MODELS['Category'] is
+        Category in TestRegistryCompleteness below).
+        """
+        from writ.graph.schema import VALID_ROUTES, WIRED_ROUTES
+
+        bogus_route = "not_a_real_route"
+        corrupted_wired = WIRED_ROUTES | {bogus_route}
+
+        assert not (corrupted_wired <= VALID_ROUTES), (
+            f"expected corrupted WIRED_ROUTES to fail the subset check "
+            f"(that IS the guard's `if` condition); it did not, so "
+            f"{bogus_route!r} must have become a real VALID_ROUTES member -- "
+            f"pick a different bogus name for this test"
+        )
+        offending = sorted(corrupted_wired - VALID_ROUTES)
+        assert offending == [bogus_route], (
+            f"the guard's own diff expression (WIRED_ROUTES - VALID_ROUTES, "
+            f"the exact text the raised ValueError interpolates) must name "
+            f"only {bogus_route!r}; got {offending}"
+        )
+
 
 class TestCategoryModel:
     """Category model validation -- prefix, routes, dedup, defaults."""

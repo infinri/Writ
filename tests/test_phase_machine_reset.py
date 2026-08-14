@@ -32,6 +32,9 @@ from pathlib import Path
 
 from tests._daemon import _port
 
+# autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
+from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
+
 SKILL_DIR = str(Path(__file__).resolve().parent.parent)
 WRIT_SESSION_PY = f"{SKILL_DIR}/bin/lib/writ-session.py"
 

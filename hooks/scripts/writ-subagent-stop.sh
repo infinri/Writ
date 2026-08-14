@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# SubagentStop hook -- logs sub-agent completion metrics.
+# SubagentStop hook -- drains the sub-agent's telemetry buffer, runs the transcript
+# tripwire, records a reviewer verdict, and logs completion metrics.
 #
-# When a sub-agent completes, this hook logs the event to the friction log
-# for observability and rule coverage analysis.
+# NOT metrics-only (it was, until 2026-08-11). Three of the four jobs above are
+# governance: the buffer drain is the only one a sub-agent ever gets, the reviewer
+# verdict has to be couriered by infrastructure rather than by the author, and the
+# transcript tripwire is the only read window on a sub-agent transcript at all
+# (Claude Code deletes those when the session ends).
 #
 # Hook type: SubagentStop
 # Exit: always 0
@@ -37,6 +41,15 @@ fi
 AGENT_ID=$(parsed_field "$STDIN_JSON" "agent_id")
 AGENT_TYPE=$(parsed_field "$STDIN_JSON" "agent_type")
 PARENT_SESSION=$(parsed_field "$STDIN_JSON" "session_id")
+
+# TWO transcript paths arrive here and they are NOT interchangeable. Measured
+# 2026-08-11 over 42 captured SubagentStop envelopes: `agent_transcript_path` names the
+# sub-agent's OWN transcript (42/42) and `transcript_path` names the PARENT session's
+# transcript (42/42). Both are read only to decide whether there is anything for the
+# tripwire to try; which one wins, and the refusal when they name the same file, are the
+# resolver's job in Python (see the tripwire block below).
+AGENT_TRANSCRIPT=$(parsed_field "$STDIN_JSON" "agent_transcript_path")
+PARENT_TRANSCRIPT=$(parsed_field "$STDIN_JSON" "transcript_path")
 
 # THE SUB-AGENT'S TELEMETRY BUFFER DRAINS HERE, because nothing else ever will.
 #
@@ -78,6 +91,103 @@ if [ -z "$AGENT_TYPE" ]; then
     AGENT_TYPE="general-purpose"
     log_friction_event "$AGENT_ID" "" "subagent_type_fallback" \
         "{\"hook\":\"writ-subagent-stop\",\"parent_session\":\"$PARENT_SESSION\"}"
+fi
+
+# TRANSCRIPT TRIPWIRE: refuse to let a queued-input misdelivery be invisible.
+#
+# Claude Code can splice a user keystroke queued during a dispatch into the SUB-AGENT's
+# pending turn instead of holding it for the parent. Writ cannot fix the harness; it can
+# only make a recurrence leave a record. The signature is structural, never textual: a
+# user-role entry in the sub-agent's transcript carrying a free-text block it has no
+# business carrying (the known 2026-08-10 finding is text sitting in the SAME user
+# envelope as a returned tool_result: text_count=1, tool_result_count=1). Measured
+# 2026-08-11: 2 matches in ~10,446 user messages across 130 local transcript files
+# (0.02%), none of them a benign harness sentinel -- a rate low enough and clean enough
+# to wire into the hook rather than leave behind a CLI subcommand nobody runs.
+#
+# HERE AND NOWHERE ELSE, because sub-agent transcripts are not durable: Claude Code
+# removes them when the session ends, so SubagentStop is the only reliable read window.
+#
+# NO additionalContext ON ANY PATH. A Stop-family hook's additionalContext is treated by
+# Claude Code as a turn BLOCK -- a verified live incident in this repo (fix 779c92e) --
+# and a tripwire that halts turns on a structural heuristic would do more damage than the
+# bug it reports. The finding goes to the logs; the session is never interrupted.
+#
+# Cost: at most one bounded scan of exactly one file per sub-agent completion, and
+# nothing at all on the per-prompt path.
+#
+# EITHER key is enough to try. The guard that used to sit here -- a shell test that
+# AGENT_TRANSCRIPT differed from PARENT_TRANSCRIPT -- moved into
+# resolve_subagent_transcript, for two reasons. It gated the whole tripwire on
+# `agent_transcript_path` being present, which made the resolver's documented fallbacks
+# (the flat derivation and the workflow-nested glob) dead code from here: a payload
+# without that key wrote nothing even when its sub-agent transcript was derivable and
+# malformed. And a string comparison in shell cannot see through a symlink or a
+# relative-versus-absolute spelling of the same file, so it was the weaker form of the
+# check. The resolver now compares resolved paths and answers None when the candidate
+# IS the parent transcript, so a collapse still scans nothing.
+if [ -n "$AGENT_TRANSCRIPT" ] || [ -n "$PARENT_TRANSCRIPT" ]; then
+    # Every failure mode degrades to a silent no-op (`|| true` under set -euo pipefail):
+    # a missing module, a deleted transcript, an unparseable line. A tripwire is not
+    # worth a hook failure.
+    TRIPWIRE_OUT=$(printf '%s' "$STDIN_JSON" | python3 -c '
+import json, sys
+sys.path.insert(0, sys.argv[1])
+try:
+    from writ.session.transcript_tripwire import resolve_subagent_transcript, scan_transcript
+except Exception:
+    sys.exit(0)
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+try:
+    path = resolve_subagent_transcript(payload)
+    if path is None:
+        sys.exit(0)
+    findings = scan_transcript(path)
+except Exception:
+    sys.exit(0)
+total = len(findings)
+# Capped output: a pathological transcript must not turn one completion into thousands
+# of rows. The count survives on every emitted record as findings_total.
+for finding in findings[:5]:
+    try:
+        record = dict(finding.to_record())
+    except Exception:
+        continue
+    record["hook"] = "writ-subagent-stop"
+    record["agent_id"] = sys.argv[2]
+    record["agent_type"] = sys.argv[3]
+    record["findings_total"] = total
+    print(json.dumps(record, separators=(",", ":"), default=str))
+' "$WRIT_DIR" "$AGENT_ID" "$AGENT_TYPE" 2>/dev/null || true)
+
+    if [ -n "$TRIPWIRE_OUT" ]; then
+        # ATTRIBUTED TO THE PARENT, not to the sub-agent. The finding is about foreign
+        # input delivered INTO this agent's turn, so letting the agent file it would make
+        # the suspect the courier, and the agent's session is a throwaway nobody reads.
+        # The session id is passed explicitly on argv: rows that rely on an ambient
+        # ${SESSION_ID:-${HOOK_SESSION_ID:-}} land under the literal id `unknown` in a
+        # hook like this one, which sets neither (that already stranded thousands of rows
+        # for another gate).
+        TRIPWIRE_SESSION="${PARENT_SESSION:-unknown}"
+        while IFS= read -r TRIPWIRE_REC; do
+            [ -n "$TRIPWIRE_REC" ] || continue
+            # STRUCTURE ONLY -- to_record() carries path, line, timestamp, digest and
+            # three counts, never the text. The foreign text is the one thing that must
+            # not be copied into a log to prove it was there.
+            log_friction_event "$TRIPWIRE_SESSION" "" "foreign_input_in_subagent_turn" \
+                "$TRIPWIRE_REC"
+            # ALSO to the errors stream, because friction is a file an operator greps
+            # later and this is a finding they need to see now.
+            writ_critical "writ-subagent-stop" \
+                "foreign input in sub-agent turn: a user-role entry in this sub-agent's transcript carries a free-text block it should not have (Claude Code queued-input misdelivery). Structural evidence only, text withheld: $TRIPWIRE_REC" \
+                "$TRIPWIRE_SESSION"
+        done <<TRIPWIRE_EOF
+$TRIPWIRE_OUT
+TRIPWIRE_EOF
+    fi
 fi
 
 # Cycle 9: record a reviewer's verdict HERE, in infrastructure, rather than letting

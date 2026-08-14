@@ -56,9 +56,9 @@ EXPECTED_FILE_COUNTS = {
     "RAT": 4,   # Rationalizations (+1 INC-11: RAT-PROC-SKILLCHECK-001)
     "PSC": 3,   # PressureScenarios
     "EXM": 3,   # WorkedExamples (+1 INC-8: EXM-PLAN-001)
-    "ENF": 11,  # Rule companions (+1 INC-3: ENF-META-CONCISE-001; +1 INC-11: ENF-PROC-PRIORITY-001; +1 Phase4-A3: ENF-COMMS-OUTPUT-001)
+    "ENF": 12,  # Rule companions (+1 INC-3: ENF-META-CONCISE-001; +1 INC-11: ENF-PROC-PRIORITY-001; +1 Phase4-A3: ENF-COMMS-OUTPUT-001; +1 cycle F: ENF-PROC-FIXLOOP-001, the fix-loop round cap)
     "META": 2,  # Meta-authoring nodes
-    "TEC": 11,  # Techniques (+2 INC-3: KEYWORDS, PERSUASION; +1 INC-7: RED-VERIFY; +1 INC-8: FILE-STRUCTURE; +2 INC-12: VERIFY-EVIDENCE-MAP, PARALLEL-PROMPT)
+    "TEC": 14,  # Techniques (+2 INC-3: KEYWORDS, PERSUASION; +1 INC-7: RED-VERIFY; +1 INC-8: FILE-STRUCTURE; +2 INC-12: VERIFY-EVIDENCE-MAP, PARALLEL-PROMPT; +3 cycle F: CONDITION-WAIT, DEFENSE-DEPTH, TEST-POLLUTION)
     "CAT": 22,  # Category nodes (Phase 0 Wave B: 22 CAT-*.md membership-target nodes)
 }
 

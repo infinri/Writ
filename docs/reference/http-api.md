@@ -68,14 +68,14 @@ All 49 endpoints on `http://localhost:8765`, generated from the FastAPI route ta
 | POST | `/session/{session_id}/clear-rules-for-compaction` | Clear loaded_rules from cache before compaction (PreCompact) |
 | POST | `/session/{session_id}/context-percent` | Set context_percent for the session |
 | GET | `/session/{session_id}/coverage` | Get rule coverage for the session |
-| GET | `/session/{session_id}/current-phase` | Get the current phase for the session |
+| GET | `/session/{session_id}/current-phase` | The phase, the mode, the next pending gate and the plan fingerprint |
 | POST | `/session/{session_id}/invalidate-gate` | Invalidate a gate: record the cycle, delete the .approved file, check escalation |
 | GET | `/session/{session_id}/mode` | Get the current mode for the session |
 | POST | `/session/{session_id}/mode` | Set the mode for the session |
 | GET | `/session/{session_id}/pending-violations` | Get pending violations for the session |
 | GET | `/session/{session_id}/prompt-state` | Everything the RAG hook asks about a session, in one call and one cache read |
 | GET | `/session/{session_id}/quality-judgment` | Read all quality judgments plus the override count for the session |
-| POST | `/session/{session_id}/quality-judgment` | Record a Gate 5 Tier 2 (Haiku judge) quality score for an artifact |
+| POST | `/session/{session_id}/quality-judgment` | Record a Gate 5 Tier 2 (self-scored) quality score for an artifact |
 | POST | `/session/{session_id}/reset-after-compaction` | Reset budget and clear phase exclusion list after compaction (PostCompact) |
 | GET | `/session/{session_id}/review-findings` | The latest recorded reviewer verdict and whether it blocks a commit |
 | POST | `/session/{session_id}/review-findings` | Record a reviewer verdict for the session. The latest one wins |

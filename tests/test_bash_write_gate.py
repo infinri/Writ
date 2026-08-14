@@ -26,6 +26,12 @@ from pathlib import Path
 
 import pytest
 
+# autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
+# The two `mode set work` calls below sit behind a daemon-liveness skip, which is why the
+# sentinel probe that found the other 26 modules reported this one clean: with no daemon
+# listening the tests skipped and never reached the deletion.
+from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
+
 SKILL_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 HOOKS_JSON = os.path.join(SKILL_ROOT, "hooks", "hooks.json")
 HOOK_SH = os.path.join(SKILL_ROOT, "hooks", "scripts", "writ-bash-write-gate.sh")
@@ -428,3 +434,56 @@ class TestMatcherWired:
             if "Bash" in g.get("matcher", "").split("|"):
                 scripts += [h["command"].rsplit("/", 1)[-1] for h in g.get("hooks", [])]
         assert "writ-bash-write-gate.sh" in scripts
+
+
+class TestInterpreterArgDirectoryIsNotAWriteTarget:
+    """The inline-interpreter args scan fed DIRECTORY paths to the work gate.
+
+    Observed live: a read-only `python -c "validate('<project root>')"` probe
+    was denied as '[Bash write to writ]' -- the target was the repo root
+    itself, via the explicit `ap == cwd` branch. No language this vector
+    covers can open() a directory for writing, so an EXISTING directory can
+    never be an interpreter file-write target; gating it is pure false
+    positive. A NONEXISTENT path stays gated: it could be a file about to be
+    created. The extractor cannot know which without the filesystem, which is
+    why these cases use a real tmp tree instead of the harness's /proj."""
+
+    def test_existing_directory_arg_is_not_a_target(self, tmp_path) -> None:
+        (tmp_path / "writ").mkdir()
+        got = _extract(
+            f"python3 -c \"from x import check; check('{tmp_path}/writ')\"",
+            cwd=str(tmp_path),
+        )
+        assert not any(k == "local" for k, _ in got), (
+            f"an existing directory must not be a write target; extractor "
+            f"emitted {got}"
+        )
+
+    def test_project_root_itself_is_not_a_target(self, tmp_path) -> None:
+        got = _extract(
+            f"python3 -c \"validate('{tmp_path}')\"", cwd=str(tmp_path)
+        )
+        assert not any(k == "local" for k, _ in got), (
+            f"the project root is always a directory and was the live "
+            f"false-positive; extractor emitted {got}"
+        )
+
+    def test_existing_file_arg_is_still_a_target(self, tmp_path) -> None:
+        (tmp_path / "app.py").write_text("x = 1\n")
+        got = _extract(
+            f"python3 -c \"open('{tmp_path}/app.py','w')\"", cwd=str(tmp_path)
+        )
+        assert ("local", str(tmp_path / "app.py")) in got, (
+            f"an existing FILE named by interpreter args must stay gated; "
+            f"extractor emitted {got}"
+        )
+
+    def test_nonexistent_path_arg_is_still_a_target(self, tmp_path) -> None:
+        got = _extract(
+            f"python3 -c \"open('{tmp_path}/new_module.py','w')\"",
+            cwd=str(tmp_path),
+        )
+        assert ("local", str(tmp_path / "new_module.py")) in got, (
+            f"a not-yet-existing path could be a file about to be created and "
+            f"must stay gated; extractor emitted {got}"
+        )

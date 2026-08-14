@@ -13,6 +13,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import json
+import logging
 import os
 import tempfile
 from pathlib import Path
@@ -34,6 +35,36 @@ EMBEDDING_CACHE_SIZE = 1024
 
 # Default ONNX model path.
 DEFAULT_ONNX_DIR = Path.home() / ".cache" / "writ" / "models" / "onnx"
+
+# Cycle 7: how many stored vectors load_index samples before trusting a cached
+# index. 16 reads at 384 float32 is ~25KB and microseconds, on the path that
+# exists to avoid a full corpus encode.
+DEGENERACY_SAMPLE_SIZE = 16
+
+# hnswlib normalizes stored vectors for space="cosine" (measured on 0.8.0: a raw
+# [3.0]*8 row, norm 8.49, reads back at norm 1.0), so a sampled norm is 1.0 for any
+# real embedding and 0.0 only for a genuinely zero row. This epsilon is float
+# slack, not a similarity threshold.
+_ZERO_NORM_EPS = 1e-6
+
+_logger = logging.getLogger(__name__)
+
+
+def _degeneracy_sample_ids(
+    count: int, sample_size: int = DEGENERACY_SAMPLE_SIZE
+) -> list[int]:
+    """Evenly spaced ids across 0..count-1: deterministic, sorted, no duplicates.
+
+    build_index assigns contiguous labels (add_items with list(range(count))), so
+    every id in the range exists and sampling needs no lookup. Deterministic so a
+    rejection is reproducible: the same cache file fails the same way every start.
+    """
+    if count <= 0:
+        return []
+    if count <= sample_size:
+        return list(range(count))
+    step = (count - 1) / (sample_size - 1)
+    return sorted({int(round(i * step)) for i in range(sample_size)})
 
 
 class ScoredResult(BaseModel):
@@ -406,6 +437,37 @@ class HnswlibStore:
         # Resize for growth headroom (1.2x)
         new_max = max(int(rule_count * 1.2), rule_count + 1)
         idx.resize_index(new_max)
+
+        # Third gate (cycle 7). The two above check IDENTITY: the sidecar names this
+        # corpus, and the .bin is the one the sidecar recorded. Neither reads a
+        # vector, so an index whose rows are all zero passes both and serves pure
+        # noise through the heaviest ranking signal (w_vector 0.594). That is not
+        # hypothetical: 313 zero-norm vectors did exactly that for six days, and
+        # knn_query never raised, it just returned distance 1.0 for everything.
+        # Reject only when NOTHING sampled is non-zero: a single zero row is a
+        # corpus problem, and rejecting for it would rebuild, re-encode the same
+        # zero, and reject again on the next start, forever.
+        sample_ids = _degeneracy_sample_ids(rule_count)
+        if sample_ids:
+            stored = np.asarray(
+                idx.get_items(sample_ids, return_type="numpy"), dtype=np.float64
+            )
+            norms = np.linalg.norm(stored, axis=1)
+            zero_count = int((norms <= _ZERO_NORM_EPS).sum())
+            if zero_count == len(sample_ids):
+                self._index = None
+                raise ValueError(
+                    f"HNSW index at {bin_path} is degenerate: all "
+                    f"{len(sample_ids)} sampled vectors have zero norm "
+                    f"(rule_count={rule_count}, corpus_hash={corpus_hash}); "
+                    f"rebuilding rather than serving a zero index"
+                )
+            if zero_count:
+                _logger.warning(
+                    "HNSW index at %s has %d zero-norm vector(s) in a sample of %d "
+                    "(corpus_hash=%s); loading it anyway, the index is usable",
+                    bin_path, zero_count, len(sample_ids), corpus_hash,
+                )
 
         self._index = idx
         self._dimensions = dims

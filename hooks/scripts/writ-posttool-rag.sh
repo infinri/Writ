@@ -205,8 +205,15 @@ if [ "$POSTTOOL_BUDGET" -lt 200 ]; then
     exit 0
 fi
 
+# The project owning the file just written, so the daemon scopes retrieval to that
+# project's records. Derived from the FILE, not from the hook's cwd: a write can land
+# in another checkout, and the rules that govern it belong to the file's project.
+# detect_project_root is pure bash, so this adds no interpreter start to a path that
+# runs on every write.
+PROJECT_ROOT=$(detect_project_root "$FILE_PATH")
+
 # Build the /query request and POST it (shared helper; see bin/lib/common.sh).
-RESPONSE=$(rag_query "$QUERY" "$POSTTOOL_BUDGET" "$LOADED_RULE_IDS")
+RESPONSE=$(rag_query "$QUERY" "$POSTTOOL_BUDGET" "$LOADED_RULE_IDS" "$PROJECT_ROOT")
 
 if [ -z "$RESPONSE" ]; then
     exit 0

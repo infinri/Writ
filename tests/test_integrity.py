@@ -514,12 +514,31 @@ class TestRunAllChecksPhase0:
     """
 
     @pytest.mark.asyncio
-    async def test_parity_violation_flips_exit_code(self) -> None:
+    async def test_parity_violation_flips_exit_code(self, tmp_path) -> None:
         """Non-empty detect_parity_violations must set exit_code=1; empty keeps 0.
 
         Uses AsyncMock stubs for all detectors so no Neo4j is needed.
+
+        Cycle 7: this test needs a USABLE oracle dir, and passing bible_dir=None
+        would silently stop testing what it means to test. run_all_checks now
+        resolves the parity oracle once and, when it is unusable, sets the four
+        parity keys to their falsy defaults WITHOUT calling the detectors. Under
+        the old bible_dir=None the patched detect_parity_violations would never
+        run, parity_violations would be [] no matter what the mock returned, and
+        case 1 would assert exit_code 1 against a check that never executed.
+
+        That is the exact failure this cycle exists to fix, one layer up: a
+        mocked detector plus an oracle that cannot resolve is indistinguishable
+        from a passing check. A tmp dir holding one .md is the smallest thing
+        that resolves, so the wiring this test pins actually executes.
         """
         from unittest.mock import AsyncMock, patch
+
+        oracle_dir = tmp_path / "bible"
+        oracle_dir.mkdir()
+        (oracle_dir / "seed.md").write_text(
+            "---\nrule_id: SEED-001\n---\n", encoding="utf-8"
+        )
 
         checker = IntegrityChecker(None, None)
 
@@ -548,7 +567,7 @@ class TestRunAllChecksPhase0:
             cm.start()
         try:
             findings = await checker.run_all_checks(
-                skip_redundancy=True, bible_dir=None
+                skip_redundancy=True, bible_dir=oracle_dir
             )
         finally:
             for cm in cms:
@@ -566,7 +585,7 @@ class TestRunAllChecksPhase0:
             cm.start()
         try:
             findings = await checker.run_all_checks(
-                skip_redundancy=True, bible_dir=None
+                skip_redundancy=True, bible_dir=oracle_dir
             )
         finally:
             for cm in cms:

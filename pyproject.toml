@@ -1,7 +1,7 @@
 [project]
 name = "claude-writ"
 version = "1.7.0"
-description = "Hybrid RAG rule retrieval and session-aware workflow enforcement for Claude Code: a five-stage hybrid pipeline (BM25 + ANN + graph + RRF) over a Neo4j knowledge graph, wired into Claude Code via 40 hook scripts and a state machine."
+description = "Guardrails for Claude Code: the rules that fit the task delivered per prompt, and no risky writes before you approve a plan and tests. Hybrid retrieval (BM25 + vector + graph traversal + weighted ranking, with an abstention gate) over a Neo4j knowledge graph, wired in through hook scripts and a session state machine."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -20,6 +20,10 @@ keywords = [
     "workflow",
     "code-quality",
     "ai-tooling",
+    "governance",
+    "guardrails",
+    "knowledge-graph",
+    "tdd",
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",

@@ -84,7 +84,7 @@ Every fact in Part 2 carries a tag so you know how sure we are:
 |---|---|
 | Claude Code version | `2.1.220 (Claude Code)` [observed]; baseline capture was `2.1.183` |
 | Model in session | `claude-fable-5` (from SessionStart.model) [observed]; `claude-opus-4-8[1m]` on 2.1.183 |
-| Capture date | 2026-08-01 (refresh); 2026-06-19 (baseline) [observed] |
+| Capture date | 2026-08-11 (sub-agent transcript pass: 42 captured SubagentStop payloads, 130 transcript files); 2026-08-01 (refresh); 2026-06-19 (baseline) [observed] |
 | Host OS | Linux x86_64 [observed] |
 | Live capture source | `~/.claude/writ-blackbox.jsonl` (raw envelopes; refresh filtered to real sessions only, because the same file also collects synthetic test-fixture envelopes that would poison the schema) [observed] |
 | Doc reference | https://code.claude.com/docs/en/hooks [doc] |
@@ -174,7 +174,7 @@ conditional.
 | Field | Where it appears | Source | Notes |
 |---|---|---|---|
 | `session_id` | universal | [both] | session identifier (the authoritative key) |
-| `transcript_path` | universal | [both] | absolute path to the conversation log |
+| `transcript_path` | universal | [both] | absolute path to the conversation log. **On SubagentStop it names the PARENT session's transcript, not the finished sub-agent's** (42/42 captured payloads, [observed 2026-08-11]); the sub-agent's own file is `agent_transcript_path` |
 | `cwd` | universal | [both] | working directory at hook time |
 | `hook_event_name` | universal | [both] | the event that fired |
 | `prompt_id` | universal since 2.1.2xx (every event observed on 2.1.220, including SessionStart/SessionEnd/Pre/PostCompact) | [observed] | UUID of the user turn the event belongs to; did not exist on 2.1.183 |
@@ -195,7 +195,8 @@ conditional.
 | `reason` | SessionEnd | [observed] | observed: `prompt_input_exit` |
 | `agent_id`, `agent_type` | SubagentStart, SubagentStop, and tool events inside a subagent | [both] | values seen: `general-purpose`, `Explore`, `writ-explorer`, `workflow-subagent` |
 | `stop_hook_active` | SubagentStop, Stop | [observed] | true while Claude is re-invoking a stop hook after a block |
-| `last_assistant_message`, `background_tasks`, `session_crons` | Stop, SubagentStop | [observed] | the last message text and (observed empty) task/cron lists; SubagentStop additionally carries `agent_transcript_path` |
+| `last_assistant_message`, `background_tasks`, `session_crons` | Stop, SubagentStop | [observed] | the last message text and (observed empty) task/cron lists |
+| `agent_transcript_path` | SubagentStop | [observed 2026-08-11] | absolute path to the SUB-AGENT's own transcript, resolved by Claude Code; present in 42/42 captured payloads. Not durable (see "Sub-agent transcripts" below) |
 
 Observed `permission_mode` values: `default`, `auto`, `acceptEdits` (2.1.220); `plan` (2.1.183).
 Documented set also includes `dontAsk`, `bypassPermissions` [doc].
@@ -223,7 +224,12 @@ SubagentStart [observed]: `agent_id, agent_type`. No task text, no `permission_m
 `effort`, no tool fields (17/17 real spawns).
 
 SubagentStop [observed]: `permission_mode, effort{level}, agent_id, agent_type, stop_hook_active,
-agent_transcript_path, last_assistant_message, background_tasks, session_crons`.
+agent_transcript_path, last_assistant_message, background_tasks, session_crons`. That plus the
+universals is the COMPLETE key set, with no variation across 42 captured payloads
+[observed 2026-08-11]: `agent_id, agent_transcript_path, agent_type, background_tasks, cwd, effort,
+hook_event_name, last_assistant_message, permission_mode, prompt_id, session_crons, session_id,
+stop_hook_active, transcript_path`. Note the two transcript keys point at different files (next
+section).
 
 Stop [observed, new since 2.1.183]: `permission_mode, effort{level}, stop_hook_active,
 last_assistant_message, background_tasks, session_crons`. Same envelope as SubagentStop minus the
@@ -330,6 +336,26 @@ Setup [doc]. Observed correction: one doc reading claimed SubagentStart cannot a
 live capture shows a SubagentStart hook returned `additionalContext` and the subagent received it
 [observed].
 
+`additionalContext` is EVENT-SCOPED, and an unaccepted event costs you the whole reply
+[observed 2026-08-14]. A real `/compact` ran `writ-postcompact.sh`, which replied
+`{"hookSpecificOutput": {"hookEventName": "PostCompact", "additionalContext": "..."}}`. Claude
+Code answered "(root): Invalid input" and discarded the entire object: `PostCompact` is not an
+accepted `hookEventName` variant for that shape. The validator error listed the variants it does
+accept: PreToolUse, PostToolUse, PostToolBatch, UserPromptSubmit, Stop, SubagentStop and
+SubagentStart. Two consequences worth stating plainly. First, the failure is silent on the case
+that matters: a human typing `/compact` sees the validator error echoed, but on an automatic
+compaction nothing is shown and nothing is delivered, which is how this shipped and stayed green
+for two cycles. Second, the rejection is total, not partial, so a valid `systemMessage` sitting
+beside an invalid `additionalContext` in the same object dies with it. `PostCompact` and
+`PreCompact` have no model-visible channel at all; queue the text in state and emit it from the
+next `UserPromptSubmit` instead. `writ/shared/delivery.py::ADDITIONAL_CONTEXT_EVENTS` encodes the
+accepted set and `writ/hooks_lint.py` flags a wired script that violates it.
+
+SubagentStart `additionalContext` was re-probed the same day and DOES deliver on this build
+[observed 2026-08-14], independently of the capture noted above. It appears in the validator's
+accepted-variant list and a live probe confirmed the sub-agent received the text, so the
+compaction finding above does not implicate the sub-agent injection path.
+
 Stop-hook caveat, load-bearing for anyone injecting context at turn end: on the builds where it
 was measured, `additionalContext` returned from a Stop hook is treated as a turn BLOCK (Claude
 continues the turn instead of stopping), so a Stop hook that always adds context loops until the
@@ -389,6 +415,53 @@ Practical guidance: to force-swap a dispatch, match `Task` (it catches the runti
 and read/write `tool_input.subagent_type`. This is the path verified live on 2.1.183 and still
 observed working on 2.1.220 (the `Task` matcher produced envelopes with `tool_name: "Agent"` in
 the 2026-08-01 capture).
+
+### Sub-agent transcripts, and queued input misdelivered into a sub-agent turn
+
+All of this was measured on 2026-08-11 against 42 captured SubagentStop payloads and 130 local
+transcript files [observed 2026-08-11]. It is recorded here because it is a harness behaviour no
+consumer can fix, only detect.
+
+**Two transcript keys, two different files.** A SubagentStop payload carries both, and they never
+name the same file: `transcript_path` is the PARENT session's transcript (42/42) and
+`agent_transcript_path` is the finished sub-agent's own transcript, already resolved by Claude Code
+(42/42). Nothing in the payload marks which is which, so code that reaches for the "obvious"
+universal key reads the parent's conversation while believing it is reading the worker's.
+
+**Layout.** A sub-agent transcript lives under its parent session's directory:
+`~/.claude/projects/<project-slug>/<parent-session-id>/subagents/agent-<agent-id>.jsonl`, beside an
+`agent-<agent-id>.meta.json` sidecar. Fan-out sub-agents spawned by a workflow nest one level
+deeper: `<parent-session-dir>/subagents/workflows/wf_<workflow-id>/agent-<agent-id>.jsonl`, which
+was 10 of the 42 captured payloads. A directory walk that assumes the flat form misses those ten.
+
+**Sub-agent transcripts are not durable.** Claude Code removes them when the session ends. Only the
+parent transcript survives, and it does not contain the sub-agent's messages. Corroborated off the
+log: in this project's transcript store, 1 of 5 session directories has a `subagents/` directory at
+all, and it is the live session. The consequence for hook authors is hard: **SubagentStop is the
+only reliable window in which a sub-agent's transcript can be read.** Anything a later event
+(Stop, SessionEnd, a nightly job) intends to read there will usually find nothing.
+
+**Queued user input can be misdelivered into a sub-agent's pending turn.** A keystroke the user
+queues while a sub-agent is running can be spliced into that SUB-AGENT's turn instead of being held
+for the parent, so the worker receives an instruction addressed to the orchestrator and the
+orchestrator never sees it. There is no field, flag, or event announcing this.
+
+The signature is structural, not textual: a `user`-role entry in the sub-agent's transcript that
+carries a free-text block it has no business carrying. After the opening task prompt, every
+legitimate `user`-role entry in a sub-agent transcript is the harness returning a tool result, so
+loose prose there is anomalous by construction. The one finding re-verified live on 2026-08-11 is
+that shape exactly: line 139 of a sub-agent transcript in this project dated 2026-08-10, with a
+132-character text block sitting in the SAME user envelope as a returned tool result
+(`text_count: 1, tool_result_count: 1`). Across the corpus the predicate matched **2 of ~10,446
+user messages in 130 transcript files (0.02%)**, and neither match was a benign harness sentinel.
+That rate, low and clean, is why detection is worth wiring into a hook rather than leaving to a
+command someone remembers to run.
+
+Detecting it must not act on it. A Stop-family hook that answers with `additionalContext` BLOCKS
+the turn (see the Output contract and gap 2 below), so a tripwire that "reported" a finding that way
+would halt real turns on a structural heuristic. Writ's implementation
+(`hooks/scripts/writ-subagent-stop.sh` plus `writ/session/transcript_tripwire.py`) logs the finding
+against the parent session and returns nothing.
 
 ### Gaps (what is still not nailed down on this build)
 

@@ -25,6 +25,9 @@ import pytest
 
 from writ.session.cache import _read_cache, _write_cache, _cache_path
 
+# autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
+from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
+
 
 def _seed(session_id: str, data: dict) -> None:
     _write_cache(session_id, data)

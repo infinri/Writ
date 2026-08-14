@@ -108,6 +108,82 @@ class RouteValue(str, Enum):
 
 VALID_ROUTES: frozenset[str] = frozenset(rv.value for rv in RouteValue)
 
+# The routes whose delivery mechanism is actually IMPLEMENTED -- the route analog
+# of integrity's KNOWN_ACTIONS. A Category may DECLARE any VALID_ROUTES value; a
+# declared route outside this set reaches nobody, so
+# detect_route_implementation_closure fails `writ validate` on it.
+#
+# HAND-LISTED, NOT DERIVED, and the direction matters. Deriving it as
+# `VALID_ROUTES - _UNWIRED_ROUTES` reads tidier and keeps the two sets in step
+# with the enum for free, but it makes a route added to RouteValue WIRED BY
+# DEFAULT: the new value lands in WIRED_ROUTES with no implementation behind it
+# and the closure check stays green, which is precisely how `ride_along` survived
+# for months. The explicit list inverts the default to UNWIRED, so a category
+# declaring a brand-new route trips the check immediately. The cost is one edit
+# here when a route genuinely gains an implementation, and that edit IS the
+# conscious decision the derived form only appeared to force. Do not "simplify"
+# this back to a subtraction.
+#
+# Each entry names the mechanism that serves it, verified by reading the code:
+#   semantic   -- RulesRetrievalPipeline admits a candidate to the ranked pool
+#                 only when its route list contains this value
+#                 (writ/retrieval/pipeline.py:517). The ONLY route whose STRING a
+#                 delivery branch reads.
+#   pull       -- MethodologyTriggerIndex pull channel, keyed on the member's own
+#                 trigger_keywords (writ/retrieval/trigger_index.py:172).
+#   action     -- the same index's push channel, keyed on the member's
+#                 action_triggers against KNOWN_ACTIONS (trigger_index push).
+#   state      -- the mode floor, keyed on the member's floor_modes against
+#                 EXPECTED_FLOORS (writ/graph/integrity/_common.py).
+#   always_on  -- the injection channel, INJECTION_RULE_WHERE
+#                 (writ/graph/predicates.py:16) selecting mandatory/always_on
+#                 members every turn.
+# For the four non-semantic entries the route value is metadata: the channel keys
+# off the MEMBER's property, not off the category's route string. They are listed
+# because the mechanism exists and demonstrably delivers those categories'
+# members, which is what "wired" has to mean for a check about undeliverable
+# nodes. Their per-route accuracy is policed elsewhere (pull by
+# detect_trigger_keyword_invariant's pull_orphans, action by
+# detect_push_reachability's empty_action_routes, state by
+# detect_floor_completeness).
+#
+# DELIBERATELY ABSENT:
+#   ride_along -- no mechanism anywhere. It exists as a RouteValue member, a seed
+#                 in scripts/migrate_phase0_categories.py, and a test asserting a
+#                 Category may declare it. CAT-DISC-001 declared it as its ONLY
+#                 route, leaving 26 members with no channel able to select them
+#                 (14 AntiPatterns verified unreachable by every live path in all
+#                 five modes) while every existing invariant stayed green, because
+#                 each was scoped to the route it was written for.
+#   scoped     -- also implemented nowhere, found while verifying this list. No
+#                 code reads the value and no language/framework/file-type scoping
+#                 mechanism exists to read it; its four declaring categories
+#                 (CAT-CODE-FW-MAGENTO-001, CAT-CODE-LANG-{PHP,PYTHON,SQL}-001)
+#                 co-declare `semantic`, so unlike ride_along it strands no member
+#                 -- it is an inert adjective on an otherwise wired category.
+# Retiring either enum value is deferred: deleting it from VALID_ROUTES would make
+# any surviving corpus file carrying it unparseable at ingest. Both stay legal to
+# declare, and declaring either now fails loud.
+WIRED_ROUTES: frozenset[str] = frozenset({
+    RouteValue.SEMANTIC.value,
+    RouteValue.PULL.value,
+    RouteValue.ACTION.value,
+    RouteValue.STATE.value,
+    RouteValue.ALWAYS_ON.value,
+})
+
+# Anti-drift guard, the one real benefit the derived form had: a typo in the list
+# above cannot invent a route the schema does not know. SUBSET, never equality --
+# the two sets are MEANT to differ while a route is unimplemented, and asserting
+# equality would re-wire every unwired route by definition. A bare `assert` would
+# vanish under `python -O`, so this raises.
+if not WIRED_ROUTES <= VALID_ROUTES:
+    raise ValueError(
+        f"WIRED_ROUTES contains route(s) absent from VALID_ROUTES: "
+        f"{sorted(WIRED_ROUTES - VALID_ROUTES)}; every wired route must be a "
+        f"RouteValue member (valid: {sorted(VALID_ROUTES)})"
+    )
+
 
 class NodeType(str, Enum):
     """All node types in the graph. Retrievable subset per plan Section 2.3."""

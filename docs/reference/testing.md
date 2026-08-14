@@ -5,42 +5,78 @@ How the suite is built, why it's shaped that way, and the traps to avoid when ad
 ## Running
 
 ```bash
-make test     # pytest tests/ -x -q
-make bench    # benchmarks/bench_targets.py (contractual perf floors)
-make check    # test + bench + writ validate
+make test            # starts the disposable Neo4j, then pytest tests/ --maxfail=10 -q
+make test-graph-up   # create or start that instance and warm it (idempotent)
+make test-graph-down # stop it, keeping its data
+make bench           # benchmarks/bench_targets.py (contractual perf floors)
+make check           # test + bench + writ validate
 ```
 
-398 test modules, 7,137 collected tests. Always use the venv interpreter (`.venv/bin/python`): the system interpreter lacks `onnxruntime` and fails the embedding tests. Markers: `perf` (latency-floor tests), `integration` (needs a live `claude` CLI, gated behind `WRIT_INTEGRATION_TESTS=1`), `no_friction_isolation` (opts out of the log redirect).
+Over 400 test modules, roughly 7,900 collected tests (2026-08-14). Always use the venv interpreter (`.venv/bin/python`): the system interpreter lacks `onnxruntime` and fails the embedding tests. The suite runs on its own daemon port (8799) and against its own Neo4j instance on 7688 (see below). Markers: `perf` (latency-floor tests), `integration` (needs a live `claude` CLI, gated behind `WRIT_INTEGRATION_TESTS=1`), `no_friction_isolation` (opts out of the log redirect).
+
+`--maxfail=10`, not `-x`: on a suite this size `-x` reports exactly one failure per run, so reaching green costs one run per failure at minutes each. Ten gives the whole picture and still refuses to grind through a broken suite.
+
+### `make test` is an end-of-program command
+
+**During a cycle, run only the test files that cycle touches. Exactly ONE full-suite run happens, at the very end, and the orchestrator runs it.** Two full-suite invocations inside a single cycle once cost 785 seconds of a 2,495-second run and surfaced nothing the touched files had not.
+
+**Pass every path to ONE pytest invocation** rather than invoking pytest once per path. `pytest_sessionstart` (`tests/conftest.py`) runs a Neo4j warmth probe on every invocation, so N processes pay that probe N times; one process pays it once no matter how many paths follow it.
+
+```bash
+# One probe, one interpreter start, one collection:
+.venv/bin/python -m pytest tests/test_a.py tests/test_b.py tests/test_c.py -q
+# Three of each, for exactly the same tests:
+.venv/bin/python -m pytest tests/test_a.py -q
+.venv/bin/python -m pytest tests/test_b.py -q
+.venv/bin/python -m pytest tests/test_c.py -q
+```
+
+**`-k` is not a narrower run.** A `-k` expression selects *after* collection, so it still collects all ~7,900 tests and pays the whole import cost before deselecting; only a path argument keeps tests out of the collection. Use paths, and `-k` only to pick within paths you already named.
 
 ## Isolation, forced at import time (`tests/conftest.py`)
 
 - **`WRIT_PORT=8799`**: the suite never touches the interactive daemon on 8765 (the singleton tests use 8791). `tests/_daemon.py` owns the test daemon's lifecycle and realigns it if its cache dir diverges from the suite's.
 - **`WRIT_CACHE_DIR`** defaults to a fresh `mkdtemp`: without it, subprocess tests would pollute the real `var/session` (the production default moved off `/tmp`, which made the install dir the fallback).
 - **`WRIT_NO_AUTOSTART=1`**: a test hitting a dead port must not auto-start a real daemon that outlives the run answering `mode=""` forever (an order-dependent failure class).
+- **`WRIT_NEO4J_URI` / `WRIT_NEO4J_USER` / `WRIT_NEO4J_PASSWORD` plus `WRIT_TEST_GRAPH=1`**: the suite talks to its own Neo4j instance on port 7688, never the one the interactive daemon serves. See [the section below](#the-suite-runs-against-its-own-neo4j-instance).
 - **Friction/log redirect** (autouse): `WRIT_FRICTION_LOG` and `WRIT_LOG_ROOT` point into the test's tmp dir so no test event lands in real streams.
 
 ## The anti-masking contracts
 
-Roughly half the suite needs a reachable Neo4j. The rule, encoded in `tests/_corpus.py::classify_corpus_state`: **unreachable is the only legitimate skip; a reachable-but-empty graph must FAIL.** An empty graph previously masked a real regression as a skip. Corpus expectations: 280+ rules, and the exact methodology census (5 SubagentRole, 15 Playbook, 13 Skill, 20 Phase); the session-start probe self-heals a cold graph by re-importing `bible/`, and `pytest_sessionfinish` unconditionally restores the shipped corpus from `writ-corpus.cypher` (the earlier count-gated restore left methodology nodes missing after a run).
+Roughly half the suite needs a reachable Neo4j. The rule, encoded in `tests/_corpus.py::classify_corpus_state`: **unreachable is the only legitimate skip; a reachable-but-empty graph must FAIL.** An empty graph previously masked a real regression as a skip. What the classifier actually gates on is narrower than the file's census constant suggests: `classify_corpus_state` returns `ready` only when the rule count reaches `MIN_RULES` (280) **and** the SubagentRole count reaches `EXPECTED["SubagentRole"]` (5). The `EXPECTED` mapping records a wider census (5 SubagentRole, 15 Playbook, 13 Skill, 20 Phase), but the SubagentRole entry is the only one the classifier reads; the other three document the shipped corpus rather than gate a run. On an isolated run (the default, below) the session-start preflight warms a cold instance from the tracked `writ-corpus.cypher` and `pytest_sessionfinish` skips the restore, because a throwaway instance has nothing to repair. Under `WRIT_TEST_NO_ISOLATION=1` the old behaviour stands unchanged: the probe self-heals from `bible/`, and `pytest_sessionfinish` restores the shipped corpus from `writ-corpus.cypher` on every run (the earlier count-gated restore left methodology nodes missing after a run).
 
-## Destructive graph tests need their own Neo4j instance
+## The suite runs against its own Neo4j instance
 
-A full wipe (`clear_all(preserve_labels=frozenset())`) deletes the runtime records -- `Memory`, `Decision`, `FileChange`, `Commit`. Rules come back from `bible/` or `writ-corpus.cypher`; **a `Decision` record has no source and cannot be rebuilt at all.** Running the suite against the interactive instance destroyed them (the graph held 2 `Memory` nodes against 98 on-disk memory files, with `Decision`/`FileChange`/`Commit` at 0).
+**This is the default for the whole suite, not an opt-in for destructive tests.** `tests/conftest.py` points every Neo4j resolution at a disposable instance on host bolt port **7688** at module import, before pytest imports a single test module, and marks it disposable with `WRIT_TEST_GRAPH=1`. Import time is the only time that works: at least seventeen modules bind `NEO4J_URI = get_neo4j_uri()` at their own import, so an override applied any later is read by a module that already cached the production URI.
 
-`clear_all` now **refuses** an everything-wipe unless the target instance is explicitly disposable, raising `FullWipeRefused` before issuing any statement. The bare `clear_all()` default and every partial preserve set are unaffected. Neo4j Community serves one database per instance, so isolation means a separate **instance on another bolt port**:
+The instance has one recipe and it lives in `scripts/test-graph.sh` (container `writ-test-neo4j`, image `neo4j:5`, host bolt 7688, `neo4j/writtestpass`). Read the script rather than copying its `docker run` line anywhere: a retyped recipe is how a "test" instance ends up on the production port.
 
 ```bash
-docker run -d --name writ-test-neo4j -p 7688:7687 -p 7475:7474 \
-  -e NEO4J_AUTH=neo4j/writtestpass neo4j:5
-export WRIT_NEO4J_URI=bolt://localhost:7688
-export WRIT_NEO4J_PASSWORD=writtestpass
-export WRIT_TEST_GRAPH=1
-.venv/bin/python -m pytest tests/test_db_category.py tests/test_graph_dump.py
+make test-graph-up            # create when absent, start when stopped, wait for bolt,
+                              # replay writ-corpus.cypher only if it had to do either
+make test-graph-down          # stop it; the data stays, so the next `up` starts warm
+bash scripts/test-graph.sh status
 ```
 
-Both halves are required, and neither is sufficient alone: `WRIT_TEST_GRAPH` is one sticky global that an old shell profile can leave set, and a differing URI alone would let a config typo authorize a wipe with no human involved. Instances are compared by `(host, port)` with loopback aliases collapsed, so `bolt://127.0.0.1:7687` cannot masquerade as "not production". Without both, the `disposable_graph` fixture (`tests/conftest.py`) skips those tests with these instructions.
+`make test` depends on `test-graph-up`, so the documented entry point never fails for a missing container. **Bare `pytest` starts nothing and refuses instead**, at session start, before the first test, in three cases: the resolved URI is the production `(host, port)`; the disposable instance does not answer; the instance answers but the corpus replay left it below the census. A refusal costs one command to clear. The rejected alternative, skipping, is cheap to produce and indistinguishable from a green run, which this repo has already paid for twice.
 
-`WRIT_NEO4J_URI` / `WRIT_NEO4J_USER` / `WRIT_NEO4J_PASSWORD` override `writ.toml` for any process. `get_production_neo4j_uri()` deliberately ignores them: if the override fed both sides of the comparison, setting it would make every instance look non-production.
+Why the whole suite and not just the destructive tests: a full wipe (`clear_all(preserve_labels=frozenset())`) deletes the runtime records: `Memory`, `Decision`, `FileChange`, `Commit`. Rules come back from `bible/` or `writ-corpus.cypher`; **a `Decision` record has no source and cannot be rebuilt at all.** Running the suite against the interactive instance destroyed them (the graph held 2 `Memory` nodes against 98 on-disk memory files, with `Decision`/`FileChange`/`Commit` at 0). `clear_all` **refuses** an everything-wipe unless the target instance is explicitly disposable, raising `FullWipeRefused` before issuing any statement; the bare `clear_all()` default and every partial preserve set are unaffected. Neo4j Community serves one database per instance, so isolation can only mean a separate **instance on another bolt port**.
+
+Both halves of that permission are required and neither is sufficient alone: `WRIT_TEST_GRAPH` is one sticky global that an old shell profile can leave set, and a differing URI alone would let a config typo authorize a wipe with no human involved. Instances are compared by `(host, port)` with loopback aliases collapsed, so `bolt://127.0.0.1:7687` cannot masquerade as "not production". CI learned that the hard way: the marker was never set there AND the service published 7687, so the `disposable_graph`-gated tests skipped in every run from the day they were written until the test job moved to 7688.
+
+`WRIT_NEO4J_URI` / `WRIT_NEO4J_USER` / `WRIT_NEO4J_PASSWORD` override `writ.toml` for any process, and conftest sets all three with `setdefault`, so an outer environment that already names an instance still wins (that is how CI points at its own service). The password matters as much as the URI: the disposable container uses `writtestpass` while a local `writ.toml` carries the production password, and redirecting the URI alone produces an auth failure that reads as "Neo4j unreachable" and skips half the suite. `get_production_neo4j_uri()` deliberately ignores all three: if the override fed both sides of the comparison, setting it would make every instance look non-production.
+
+### The opt-out, and what it costs
+
+`WRIT_TEST_NO_ISOLATION=1` restores the pre-isolation behaviour exactly: no env forced, no preflight, the end-of-suite corpus restore back on, `scripts/test-graph.sh` a no-op that exits 0. It exists for two honest reasons. A hard requirement with no escape hatch is the thing people work around by commenting out the conftest line, and a machine with no docker daemon must still be able to run the roughly half of the suite that never touches Neo4j.
+
+The costs, stated rather than discovered:
+
+- The suite runs against whatever `writ.toml` configures, which on a developer machine is the **live** graph the interactive daemon serves. Every corpus wipe in the suite lands there, and the end-of-suite replay is the only thing that puts the corpus back.
+- `disposable_graph`-gated tests skip, so `tests/test_db_category.py` and `test_graph_dump.py`'s `TestCypherDumpRoundTrip` / `TestRecordPreservationOnReplay` do not run at all.
+- Runtime records are only as safe as the guard inside `clear_all`. That guard is real, but it is the last line rather than the design.
+
+The reasoning behind the default, the alternatives it rejected, and the connection-level tripwire it replaced are recorded in [ADR-test-graph-isolation](../adr/ADR-test-graph-isolation.md).
 
 ## Traps when writing tests
 

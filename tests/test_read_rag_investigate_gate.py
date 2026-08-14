@@ -23,6 +23,9 @@ import pytest
 
 from tests.fixtures.net import free_port as _free_port
 
+# autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
+from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
+
 HOOK = os.path.abspath(
     os.path.join(os.path.dirname(__file__), os.pardir, "hooks", "scripts", "writ-read-rag.sh")
 )

@@ -102,7 +102,13 @@ sys.path.insert(0, '$SKILL_DIR')
 from writ.shared.logging import stream_path, resolve_project
 print(stream_path(resolve_project(), 'metrics'))
 " 2>/dev/null || echo "")
-GATE_DIR="$PROJECT_ROOT/.claude/gates"
+# THIS SESSION's own gate directory. Both events below correlate on-disk artifacts with
+# THIS session's cache (invalidation_history for Event 1, gate mtimes for Event 2), so the
+# project-wide path made a sibling session's approval satisfy the disk half of a correlation
+# whose other half was this session's alone: a "denied then approved" row for an approval
+# this session never received. An empty answer means no directory to correlate against, and
+# both events are skipped rather than measured against another session's files.
+GATE_DIR=$(writ_gate_dir "$PROJECT_ROOT" "$SESSION_ID")
 TS=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 
 # ── Event 1: gate_denied_then_approved ─────────────────────────────────────
@@ -119,6 +125,12 @@ session_id = sys.argv[3]
 mode = sys.argv[4]
 ts = sys.argv[5]
 log_path = sys.argv[6]
+
+# No session-scoped gate directory (unusable session id): nothing to correlate. Guarded
+# here rather than in the caller so the empty case cannot be joined into a relative path,
+# which would read '<cwd>/phase-a.approved' as an approval.
+if not gate_dir:
+    sys.exit(0)
 
 history = cache.get('invalidation_history', {})
 for gate_name, records in history.items():
@@ -163,7 +175,7 @@ for gate_name, records in history.items():
 # ── Event 2: phase_transition_time ────────────────────────────────────────
 # Compare mtimes of consecutive gate files to measure time in approval limbo.
 # Only relevant in Work mode.
-if [ "$MODE" = "work" ]; then
+if [ "$MODE" = "work" ] && [ -n "$GATE_DIR" ]; then
     python3 -c "
 import sys, json, os, collections
 

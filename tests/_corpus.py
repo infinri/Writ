@@ -10,6 +10,7 @@ empty/partial graph is 'empty' (tests must FAIL), never 'unreachable' (the only 
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import subprocess
 from pathlib import Path
 
@@ -50,14 +51,54 @@ def classify_corpus_state(
 
 
 def _connection():
-    from writ.config import get_neo4j_password, get_neo4j_uri, get_neo4j_user
-    from writ.graph.db import Neo4jConnection
+    """Delegates to tests/_graph.py so ONE factory serves the whole suite (cycle 8).
 
-    return Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
+    It used to build its own Neo4jConnection here, which was harmless in itself
+    (it resolved through writ.config, same as _graph.connection does) but meant
+    the suite had more than one place that decided where the graph is. That is
+    the exact shape of the 2026-08-08 leak, where a second target resolution
+    (a container NAME) sent DETACH DELETEs to production while every driver
+    connection honoured the isolated URI. One factory, one answer.
+    """
+    from tests._graph import connection
+
+    return connection()
+
+
+def _run_coro(factory):
+    """Run an async factory to completion from sync code, loop running or not.
+
+    `asyncio.run` RAISES RuntimeError when a loop already owns this thread, and
+    the coroutine it was handed is then dropped unawaited. The three callers
+    below each ended in a bare `asyncio.run(_q())`, and `neo4j_reachable`
+    additionally wrapped it in `except Exception: return False` -- so a probe
+    called from inside a loop reported the graph UNREACHABLE rather than
+    admitting it never asked. Measured against one reachable graph: True from
+    outside a loop, False from inside it.
+
+    That is not a cosmetic difference. `classify_corpus_state` above makes
+    'unreachable' the ONE state that may skip, precisely so an empty graph
+    cannot mask a regression, so a dispatch failure returning False hands every
+    caller the single answer licensed to skip.
+
+    When a loop is running, borrow a thread that has none. `pytest_sessionstart`
+    already does exactly this for the same reason, so this is the suite's
+    existing idiom rather than a new one.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(factory())
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        return ex.submit(lambda: asyncio.run(factory())).result()
 
 
 def neo4j_reachable() -> bool:
-    """True if the Neo4j graph answers a trivial query."""
+    """True if the Neo4j graph answers a trivial query.
+
+    A False here means the QUERY failed, which is what callers read it as. It no
+    longer also means "this was called from a running loop": see _run_coro.
+    """
     async def _q() -> bool:
         db = _connection()
         try:
@@ -69,7 +110,7 @@ def neo4j_reachable() -> bool:
             await db.close()
 
     try:
-        return asyncio.run(_q())
+        return _run_coro(_q)
     except Exception:  # noqa: BLE001
         return False
 
@@ -96,7 +137,7 @@ def methodology_counts() -> dict[str, int]:
         finally:
             await db.close()
 
-    return asyncio.run(_q())
+    return _run_coro(_q)
 
 
 def clear_label(label: str) -> int:
@@ -112,7 +153,7 @@ def clear_label(label: str) -> int:
         finally:
             await db.close()
 
-    return asyncio.run(_q())
+    return _run_coro(_q)
 
 
 def is_complete(counts: dict[str, int] | None = None) -> bool:
@@ -135,21 +176,35 @@ def graph_is_warm() -> bool:
 
 
 def ensure_corpus() -> None:
-    """Self-heal: if the live graph is missing methodology nodes, re-import bible/ so it is
-    complete. Idempotent (import-markdown is MERGE-only). No-op when already complete or when
-    Neo4j is unreachable (the caller decides whether to skip)."""
+    """Self-heal: if the live graph is missing methodology nodes, refill it.
+
+    bible/ first (it is the source of truth and MERGE-only, so re-importing it is
+    idempotent), then the tracked writ-corpus.cypher dump. No-op when already
+    complete or when Neo4j is unreachable (the caller decides whether to skip).
+
+    Cycle 8 added the dump fallback, and it is what makes this function work at
+    all on a clean checkout and on the disposable test instance, where bible/ does
+    not exist: bible/ is gitignored, so before the fallback a wiped graph plus an
+    absent bible/ made this return SILENTLY. That turns the anti-masking contract
+    this module exists for into a scatter of failures with no cause attached --
+    the caller believes it healed the graph, and every assertion downstream fails
+    on an empty one.
+    """
     if not neo4j_reachable():
         return
     if is_complete():
         return
-    if not (_REPO_ROOT / "bible").exists():
+    if (_REPO_ROOT / "bible").exists():
+        subprocess.run(
+            # --no-export: self-heal only needs the graph repopulated, not bible/ source
+            # rewritten from the graph (B5: avoids the export round-trip on every heal).
+            [*WRIT_CMD_PREFIX, "import-markdown", "bible/", "--no-export"],
+            cwd=str(_REPO_ROOT),
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
         return
-    subprocess.run(
-        # --no-export: self-heal only needs the graph repopulated, not bible/ source
-        # rewritten from the graph (B5: avoids the export round-trip on every heal).
-        [*WRIT_CMD_PREFIX, "import-markdown", "bible/", "--no-export"],
-        cwd=str(_REPO_ROOT),
-        capture_output=True,
-        timeout=120,
-        check=False,
-    )
+    from tests._graph import replay_dump
+
+    replay_dump(_REPO_ROOT)

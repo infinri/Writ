@@ -37,6 +37,18 @@ class AdjacencyCache:
         AntiPattern, etc.) so methodology edges surface during Stage 4
         enrichment. Cache key is the node's primary id field value.
 
+        DELIBERATELY UNFILTERED, AND EACH ENTRY CARRIES ITS NEIGHBOR'S LABEL AND
+        PROJECT TAG. One cache is shared by every caller in the daemon, so adding a
+        project filter here would either make the cache caller-specific (wrong: it is
+        built once at startup) or drop record adjacency outright (which loses future
+        record edges instead of scoping them). The scope decision therefore belongs to
+        the ATTACH site, RetrievalPipeline._scope_enrichment, and that site cannot make
+        it from the pipeline's metadata dict: `_load_candidates` loads only Rule plus
+        the five retrievable methodology labels, so a record-typed neighbor is absent
+        from it, its node_type would default to "Rule", and every foreign record would
+        be admitted. Carrying node_type + project on the entry is what makes the filter
+        decidable at all.
+
         Returns the number of nodes with at least one neighbor.
         """
         start = time.perf_counter()
@@ -49,6 +61,9 @@ class AdjacencyCache:
         from writ.graph.db import _GRAPH_ID_COALESCE
         src_id = _GRAPH_ID_COALESCE.format(v="a")
         tgt_id = _GRAPH_ID_COALESCE.format(v="b")
+        # labels(x)[0] matches the convention every other cross-label read here uses
+        # (get_all_edges_cross_type, get_all_nodes_for_dump): every node this graph
+        # writes carries exactly one label, so [0] is total rather than a choice.
         query = f"""
             MATCH (a)-[r]->(b)
             WITH a, r, b,
@@ -56,7 +71,9 @@ class AdjacencyCache:
                  {tgt_id} AS tgt_id
             WHERE src_id IS NOT NULL AND tgt_id IS NOT NULL
               AND type(r) <> 'BELONGS_TO'
-            RETURN src_id AS source, type(r) AS edge_type, tgt_id AS target
+            RETURN src_id AS source, type(r) AS edge_type, tgt_id AS target,
+                   labels(a)[0] AS source_type, a.project AS source_project,
+                   labels(b)[0] AS target_type, b.project AS target_project
             ORDER BY source, target, edge_type
         """
         async with db._driver.session(database=db._database) as session:
@@ -68,16 +85,23 @@ class AdjacencyCache:
             src = rec["source"]
             tgt = rec["target"]
             edge_type = rec["edge_type"]
-            # Store both directions for undirected lookup.
+            # Store both directions for undirected lookup. node_type/project always
+            # describe the NEIGHBOR named by rule_id, never the node the entry is filed
+            # under, so the attach-time filter can ask about the node it is about to
+            # hand out without a second lookup.
             self._neighbors.setdefault(src, []).append({
                 "rule_id": tgt,
                 "edge_type": edge_type,
                 "direction": "outgoing",
+                "node_type": rec.get("target_type"),
+                "project": rec.get("target_project"),
             })
             self._neighbors.setdefault(tgt, []).append({
                 "rule_id": src,
                 "edge_type": edge_type,
                 "direction": "incoming",
+                "node_type": rec.get("source_type"),
+                "project": rec.get("source_project"),
             })
 
         self._build_time_ms = (time.perf_counter() - start) * 1000

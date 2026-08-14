@@ -34,13 +34,27 @@ EXPECTED_METHODS = [
     # the Cypher graph-dump feature, `get_category_routes_by_node` from Phase-0
     # category routing. The list stays exhaustive on purpose -- an unexpected EXTRA
     # method must fail here too -- so adding one is a deliberate act that edits this.
-    "execute", "get_all_nodes", "get_all_nodes_by_type", "get_all_nodes_for_dump",
+    # `execute_many` (cycle 9) replays a whole dump as ONE transaction. The
+    # per-statement `execute` loop it replaced turned a 1714-line dump into 1714
+    # independent transactions right after a mass delete, which is how a replay
+    # ended up chasing node ids the delete had just freed
+    # (Neo.ClientError.Statement.EntityNotFound). `execute` stays: it is still the
+    # single-statement helper, and narrowing its contract is not this change.
+    "execute", "execute_many", "get_all_nodes", "get_all_nodes_by_type",
+    "get_all_nodes_for_dump",
     "get_all_rules", "get_category_routes_by_node", "get_graph_nodes_and_edges",
     "get_latest_filechange_per_path", "get_node_with_neighbors", "get_nodes_by_category",
     "get_open_decisions_for_path", "get_projects", "get_recent_decisions", "get_rule",
     "get_rule_abstraction", "get_rule_statements", "get_rules_by_authority",
-    "get_subagent_role", "increment_negative", "increment_positive", "list_constraints",
+    "get_subagent_role", "increment_negative", "increment_positive",
+    # Part 5 (isolation cycle): the audit's read-only cross-project Memory listing
+    # (writ/graph/db/record_store.py). Added deliberately, same reasoning as above.
+    "list_all_memories", "list_constraints",
     "list_indexes", "list_memories", "resolve_file_claims", "resolve_project_for_cwd",
+    # The disposable-instance schema gate (item 1): the readiness verdict lives next
+    # to list_indexes/list_constraints so scripts/test-graph.sh and the suite share
+    # one definition instead of each re-deriving "is the schema usable".
+    "schema_readiness",
     "tombstone_missing_memories", "traverse_neighbors",
     "update_rule_authority", "update_rule_confidence", "wire_governed_by", "wire_has_change",
     "wire_has_commit", "wire_has_decision", "wire_includes", "wire_motivated_by",

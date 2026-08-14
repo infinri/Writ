@@ -4,14 +4,20 @@ Wave 1 Cycle 5 -- Decision G1: advance-phase concurrent same-token double-fire.
 
 Three parts (plan.md "Decision G1"):
 
-  TestClaimGateTokenPrimitive     -- the new atomic claim primitive. RED today:
-                                      claim_gate_token does not exist yet on
-                                      writ.session.gate_token, so every test in
-                                      this class raises ImportError. Each test
-                                      imports it LOCALLY (not at module scope) so
-                                      that ImportError is scoped to this class and
-                                      does not block collection/execution of the
-                                      other two classes below.
+  TestClaimGateTokenPrimitive     -- the atomic claim primitive, `_claim_token_mutex`
+                                      (renamed from claim_gate_token once that name
+                                      became the gate=/plan_hash=-bound public function
+                                      -- see the note below the three parts). RED today
+                                      for a mechanical reason, not a new-capability one:
+                                      _claim_token_mutex does not exist yet under that
+                                      name, so every test in this class raises
+                                      ImportError until the rename lands. It pins the
+                                      SAME behavior claim_gate_token has always had; no
+                                      assertion here changed. Each test imports the name
+                                      LOCALLY (not at module scope) so that ImportError
+                                      is scoped to this class and does not block
+                                      collection/execution of the other two classes
+                                      below.
 
   TestServerConcurrentDoubleFire  -- the CENTERPIECE. Drives two concurrent
                                       session_advance_phase() calls with the SAME
@@ -33,6 +39,19 @@ Three parts (plan.md "Decision G1"):
                                       ordering, or a no-op accidentally consuming
                                       the token). Intent is documented per test.
 
+Cycle 1 (plan.md finding 4) touches this file too, in the opposite direction from an
+earlier draft: the bare rename-mutex this class exercises is kept as its own internal
+primitive, `_claim_token_mutex(session_id, supplied_token)`, UNCHANGED in behavior --
+review rejected giving the public `claim_gate_token` fail-open `gate=None`/
+`plan_hash=None` defaults ("do not enforce this half of the binding"), because a
+default on the function that decides whether a human approved an action means a caller
+that forgets the argument gets an unguarded claim and no error. `claim_gate_token`
+(tests/test_gate_token_binding.py owns its contract) now REQUIRES gate= and plan_hash=
+keyword-only, with no default, so omitting either raises TypeError instead of silently
+skipping enforcement. The four call sites below therefore go back to their ORIGINAL
+two-positional-argument call -- `_claim_token_mutex(sid, token)`, no gate=/plan_hash= at
+all -- and are UNCHANGED by, and not part of, this cycle's red set.
+
 Per TEST-TDD-001: skeletons approved before implementation.
 """
 
@@ -45,6 +64,7 @@ import uuid
 
 import pytest
 
+from tests.fixtures.session_state import write_bound_gate_token
 from writ.server import SessionAdvancePhaseRequest
 from writ.session.cache import _read_cache, _write_cache
 from writ.session.gate_token import gate_token_path
@@ -68,10 +88,27 @@ def _seed_cache(session_id: str, **overrides) -> dict:
 
 
 def _write_token(session_id: str, token: str) -> str:
+    """Write the PRE-BINDING one-line token file: the bare mutex's input.
+
+    _claim_token_mutex compares the WHOLE file against the supplied token, so its four
+    tests below need exactly this shape and must keep it. The two route tests use
+    _write_bound_token instead: the advance route claims through claim_gate_token with no
+    unbound fallback, so a one-line file is refused there before any gate logic runs.
+    """
     path = gate_token_path(session_id)
     with open(path, "w") as f:
         f.write(token)
     return path
+
+
+def _write_bound_token(session_id: str, token: str) -> str:
+    """Write the three-line BOUND token file a genuine approval mints; return its path.
+
+    The binding (gate + plan fingerprint) is derived from the already-seeded cache, which
+    is what the production mint does, so the route's claim recomputes the same two values.
+    """
+    write_bound_gate_token(session_id, token)
+    return gate_token_path(session_id)
 
 
 def _project_with_test_skeleton(tmp_path) -> str:
@@ -96,14 +133,20 @@ def _project_with_test_skeleton(tmp_path) -> str:
 
 
 class TestClaimGateTokenPrimitive:
-    """claim_gate_token(session_id, supplied_token) -> bool.
+    """_claim_token_mutex(session_id, supplied_token) -> bool.
 
     The token FILE is the mutual-exclusion primitive (os.rename-as-mutex):
     exactly one of N concurrent callers renaming the same source file wins.
+
+    This is the SAME function today's claim_gate_token is, just renamed and kept as an
+    internal primitive once the public claim_gate_token gains required gate=/plan_hash=
+    binding enforcement (tests/test_gate_token_binding.py). These four tests are
+    UNCHANGED by that cycle -- they import _claim_token_mutex, not claim_gate_token, and
+    call it with the same two positional arguments as before.
     """
 
     def test_exactly_one_of_n_concurrent_claims_wins(self):
-        from writ.session.gate_token import claim_gate_token
+        from writ.session.gate_token import _claim_token_mutex
 
         sid = f"g1a-race-{uuid.uuid4().hex[:8]}"
         token = uuid.uuid4().hex
@@ -116,7 +159,7 @@ class TestClaimGateTokenPrimitive:
 
         def _claim() -> None:
             start.wait()
-            outcome = claim_gate_token(sid, token)
+            outcome = _claim_token_mutex(sid, token)
             with results_lock:
                 results.append(outcome)
 
@@ -133,29 +176,29 @@ class TestClaimGateTokenPrimitive:
         assert results.count(False) == n - 1
 
     def test_winner_removes_the_token_file(self):
-        from writ.session.gate_token import claim_gate_token
+        from writ.session.gate_token import _claim_token_mutex
 
         sid = f"g1a-remove-{uuid.uuid4().hex[:8]}"
         token = uuid.uuid4().hex
         path = _write_token(sid, token)
 
-        assert claim_gate_token(sid, token) is True
+        assert _claim_token_mutex(sid, token) is True
         assert not os.path.exists(path), "a winning claim must remove the token file"
 
     def test_claim_on_absent_token_returns_false(self):
-        from writ.session.gate_token import claim_gate_token
+        from writ.session.gate_token import _claim_token_mutex
 
         sid = f"g1a-absent-{uuid.uuid4().hex[:8]}"
         # No token file was ever written for this fresh session id.
-        assert claim_gate_token(sid, "any-token") is False
+        assert _claim_token_mutex(sid, "any-token") is False
 
     def test_claim_with_mismatched_token_returns_false_and_removes_file(self):
-        from writ.session.gate_token import claim_gate_token
+        from writ.session.gate_token import _claim_token_mutex
 
         sid = f"g1a-mismatch-{uuid.uuid4().hex[:8]}"
         path = _write_token(sid, "the-real-token")
         try:
-            claimed = claim_gate_token(sid, "a-wrong-token")
+            claimed = _claim_token_mutex(sid, "a-wrong-token")
             assert claimed is False
             assert not os.path.exists(path), (
                 "a mismatched claim must still remove the (wrongly-claimed) token "
@@ -211,7 +254,7 @@ class TestServerConcurrentDoubleFire:
         sid = f"g1b-{uuid.uuid4().hex[:8]}"
         _seed_cache(sid)
         token = uuid.uuid4().hex
-        token_path = _write_token(sid, token)
+        token_path = _write_bound_token(sid, token)
 
         token_barrier = threading.Barrier(2, timeout=5)
         cache_barrier = threading.Barrier(2, timeout=5)
@@ -304,7 +347,7 @@ class TestPreservedBehaviorGuards:
         sid = f"g1c-single-{uuid.uuid4().hex[:8]}"
         _seed_cache(sid)  # current_phase=testing, gates_approved=[phase-a]
         token = uuid.uuid4().hex
-        token_path = _write_token(sid, token)
+        token_path = _write_bound_token(sid, token)
         try:
             result = await session_advance_phase(
                 sid,

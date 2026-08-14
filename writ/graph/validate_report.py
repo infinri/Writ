@@ -80,6 +80,19 @@ def _render_dangling_dispatched_roles(findings: dict, out: list, err: list) -> N
         out.append(f"  {x['from']} dispatched_roles='{x['ref']}'{arrow}")
 
 
+def _render_dispatch_prose_parity(findings: dict, out: list, err: list) -> None:
+    parity = findings.get("dispatch_prose_parity")
+    if not parity:
+        return
+    unnamed = parity.get("declared_but_unnamed") or []
+    undeclared = parity.get("named_but_undeclared") or []
+    out.append(f"\nDispatch prose parity ({len(unnamed) + len(undeclared)}):")
+    for row in unnamed:
+        out.append(f"  {row['playbook']} dispatches {row['role']} but never names it in its own text")
+    for row in undeclared:
+        out.append(f"  {row['playbook']} names {row['role']} in its text with no DISPATCHES edge")
+
+
 def _render_redundancy_unavailable(findings: dict, out: list, err: list) -> None:
     if findings.get("redundancy_unavailable"):
         # Redundancy check could not run (missing optional dep).
@@ -98,6 +111,16 @@ def _render_unreviewed(findings: dict, out: list, err: list) -> None:
     if not u:
         return
     out.append(f"\nUnreviewed AI-provisional: {u['message']}")
+
+
+def _render_parity_checks_skipped(findings: dict, out: list, err: list) -> None:
+    skipped = findings.get("parity_checks_skipped")
+    if not skipped:
+        return
+    out.append(
+        f"\nParity checks skipped: {skipped.get('reason', '')} "
+        f"({', '.join(skipped.get('checks', []))} did not run)"
+    )
 
 
 def _render_edge_parity(findings: dict, out: list, err: list) -> None:
@@ -188,6 +211,24 @@ def _render_always_on_budget_breach(findings: dict, out: list, err: list) -> Non
     )
 
 
+def _render_artifact_abstracts_parity(findings: dict, out: list, err: list) -> None:
+    ap = findings.get("artifact_abstracts_parity")
+    if not ap:
+        return
+    stale = ap.get("stale", [])
+    missing = ap.get("missing", [])
+    out.append(
+        f"\nAbstraction edge parity -- live ABSTRACTS edges disagree with "
+        f"bible/abstractions.json (stale={len(stale)}, missing={len(missing)}); "
+        f"re-run `writ import-markdown` to re-materialize, or `writ compress` to "
+        f"regenerate the artifact:"
+    )
+    for abs_id, rule_id in stale[:20]:
+        out.append(f"  stale (graph, not in artifact):   {abs_id} -ABSTRACTS-> {rule_id}")
+    for abs_id, rule_id in missing[:20]:
+        out.append(f"  missing (artifact, not in graph): {abs_id} -ABSTRACTS-> {rule_id}")
+
+
 def _render_floor_completeness(findings: dict, out: list, err: list) -> None:
     fc = findings.get("floor_completeness")
     if not fc:
@@ -238,6 +279,22 @@ def _render_push_reachability(findings: dict, out: list, err: list) -> None:
         out.append(f"  dead action tag (action_triggers on a non-methodology node): {oid}")
 
 
+def _render_delivery_orphans(findings: dict, out: list, err: list) -> None:
+    do = findings.get("delivery_orphans")
+    if not do:
+        return
+    out.append(
+        f"\nDelivery orphans (1.9) -- {len(do)} methodology node(s) no channel "
+        f"can select (no floor_modes, no action_triggers, no trigger_keywords, "
+        f"and no 'semantic'/'pull' category route):"
+    )
+    for node_id, ev in sorted(do.items())[:20]:
+        out.append(
+            f"  {node_id} ({ev.get('label', '?')}) in "
+            f"{ev.get('category', '?')} routes={ev.get('routes') or []}"
+        )
+
+
 def _render_example_lint(findings: dict, out: list, err: list) -> None:
     el = findings.get("example_lint")
     if not el:
@@ -271,6 +328,7 @@ _RENDER_STEPS: tuple[Callable[[dict, list, list], None], ...] = (
     ),
     _render_orphan_counts_by_type,
     _render_dangling_dispatched_roles,
+    _render_dispatch_prose_parity,
     _section(
         "stale",
         lambda v: f"\nStale ({len(v)}):",
@@ -294,6 +352,7 @@ _RENDER_STEPS: tuple[Callable[[dict, list, list], None], ...] = (
         lambda v: f"\nGraduation flags ({len(v)}):",
         lambda gf: f"  {gf['rule_id']} (ratio: {gf['ratio']}, n={gf['n']})",
     ),
+    _render_parity_checks_skipped,
     _section(
         "parity_violations",
         lambda v: f"\nParity violations -- graph nodes absent from markdown ({len(v)}):",
@@ -338,6 +397,7 @@ _RENDER_STEPS: tuple[Callable[[dict, list, list], None], ...] = (
         ),
         lambda d: f"  {d['rule_id']} (in abstraction {d['abstraction_id']})",
     ),
+    _render_artifact_abstracts_parity,
     _render_floor_completeness,
     _render_trigger_keyword_invariant,
     _render_push_reachability,
@@ -347,6 +407,18 @@ _RENDER_STEPS: tuple[Callable[[dict, list, list], None], ...] = (
         lambda kv: f"  {kv[0]}: {', '.join(kv[1])}",
         items=lambda v: sorted(v.items()),
     ),
+    _section(
+        "route_implementation_closure",
+        lambda v: (
+            f"\nRoute implementation closure (1.9) -- {len(v)} categor(y/ies) "
+            f"declare a route no delivery channel implements; nothing reaches a "
+            f"member BY that route, and when it is the category's only route the "
+            f"member is undeliverable outright (see delivery orphans below):"
+        ),
+        lambda kv: f"  {kv[0]}: {', '.join(kv[1])}",
+        items=lambda v: sorted(v.items()),
+    ),
+    _render_delivery_orphans,
     _render_example_lint,
     _section(
         "domain_enum",

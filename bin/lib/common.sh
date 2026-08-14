@@ -61,6 +61,63 @@ except Exception:
 " "$p" 2>/dev/null | tr -d '[:space:]'
 }
 
+# ── The session mode a telemetry / audit row is stamped with ─────────────────
+# Resolves that mode into the global _WRIT_ROW_MODE.
+#
+# WHY THIS LIVES HERE AND NOT IN THE HOOKS. log_gate_decision stamped its row from the
+# bare `${CURRENT_MODE:-${MODE:-}}`, and exactly ONE of the fourteen gate-emitting hooks
+# ever assigns that variable: validate-test-file.sh, whose rows measure 0% null across
+# 321. The other thirteen never did, so 4,672 of 4,993 gate_decision rows -- 93.6% --
+# recorded "mode": null while the session cache said "work". That is why it survived: a
+# null reads as an honest mode-unset session, not as a lost value. A value that has to be
+# set correctly in thirteen places is exactly how it drifted, so it is resolved once, in
+# the single place that consumes it.
+#
+# FILE-DIRECT, never the daemon. A daemon started against a different WRIT_CACHE_DIR
+# answers a stale mode=None (writ-subagent-start.sh:65-70) -- the same wrong answer this
+# exists to fix. writ_session_mode_direct above is that read.
+#
+# IT SETS A GLOBAL RATHER THAN PRINTING, deliberately: a printing helper is called as
+# `$(...)`, which runs the memo assignment in a subshell and discards it, so every call
+# would re-read the cache. log_gate_decision is on the per-write hot path and
+# writ-bash-write-gate.sh alone has eleven call sites.
+_WRIT_ROW_MODE=""
+_WRIT_ROW_MODE_MEMO=""
+_WRIT_ROW_MODE_SID=""
+_writ_row_mode() {
+    # An explicitly set variable always wins. A hook that computed the mode itself
+    # (validate-test-file.sh's MODE, writ-dispatch-discipline.sh's CURRENT_MODE) is
+    # recording the value it ACTED on, which is the one the audit trail wants.
+    _WRIT_ROW_MODE="${CURRENT_MODE:-${MODE:-}}"
+    [ -n "$_WRIT_ROW_MODE" ] && return 0
+    local _sid="${SESSION_ID:-${HOOK_SESSION_ID:-}}"
+    # No session, no lookup. An empty id names writ-session-.json, a file that never
+    # exists, so the read could only cost a process to learn "".
+    [ -z "$_sid" ] && return 0
+    # Memoized per process: each hook is its own process, so the cached value cannot
+    # outlive the state it describes. Keyed by session id because a few hooks resolve
+    # their own id after their first log call.
+    if [ "$_WRIT_ROW_MODE_SID" != "$_sid" ]; then
+        _WRIT_ROW_MODE_MEMO="$(writ_session_mode_direct "$_sid")"
+        _WRIT_ROW_MODE_SID="$_sid"
+    fi
+    _WRIT_ROW_MODE="$_WRIT_ROW_MODE_MEMO"
+    return 0
+}
+
+# The same value WITHOUT triggering a resolution: an explicit variable, else whatever a
+# log_gate_decision in this same process already looked up.
+#
+# hook_instrument's exit trap uses this instead of _writ_row_mode because the trap runs
+# on EVERY instrumented hook, including the many that never log a decision, and a single
+# file write fires fifteen of them. A lookup there would put a process back on all
+# fifteen to stamp a metrics row, against a process budget with single-digit headroom
+# (tests/test_write_path_process_budget.py). A hook that DID log a decision gets the
+# right mode on its hook_execution row for free.
+_writ_row_mode_cached() {
+    _WRIT_ROW_MODE="${CURRENT_MODE:-${MODE:-${_WRIT_ROW_MODE_MEMO:-}}}"
+}
+
 # ── HTTP: curl-first, urllib fallback ────────────────────────────────────────
 # curl is an OPTIONAL accelerator, never a prerequisite. These two wrappers run curl
 # when it is present and fall back to `python3 bin/lib/writ_install.py http-*` (stdlib
@@ -694,6 +751,53 @@ detect_project_root() {
   printf '\n'
 }
 
+# ── Session-scoped gate artifact directory ───────────────────────────────────
+# Prints <project_root>/.claude/gates/<session_id>, or an EMPTY LINE when there is no
+# valid path (no project root, or a session id that is not [A-Za-z0-9._-]{1,128} or is
+# "." / ".."). Always returns 0: an empty answer is a legitimate result meaning "this
+# session has no gate directory, so it has approved nothing", and a non-zero return would
+# abort every caller under `set -euo pipefail` -- failing OPEN on a gate check, which is
+# the wrong direction for a human-oversight boundary.
+# Usage: GATE_DIR=$(writ_gate_dir "$PROJECT_ROOT" "$SESSION_ID")
+#
+# THE BYTE-IDENTICAL PYTHON MIRROR IS writ/session/locators.py `gate_dir`. Two
+# implementations of one path is a seam this repo has been bitten by before (the two
+# `## Files` parsers; gate_token_path matching the bash writer byte for byte), so
+# tests/test_gate_dir_bash_python_parity.py runs both sides over the same inputs,
+# including a rejected id, and compares bytes. CHANGE BOTH OR NEITHER.
+#
+# PURE SHELL, NO SPAWN, deliberately: writ-rag-inject.sh builds this on the per-prompt
+# path, where a python interpreter start costs ~19.5ms and `grep` a fork. The charset
+# check is a `case` glob for that reason, and tests/test_prompt_path_process_budget.py's
+# python-start ratchet must not move because of this function.
+#
+# LC_ALL=C IS LOAD-BEARING. Bracket ranges in a glob are COLLATION-ordered outside the C
+# locale, so `[A-Za-z]` under en_US.UTF-8 can admit accented letters that the python
+# mirror's ASCII regex rejects -- a silent parity break on exactly the inputs the
+# validation exists to refuse. It is `local`, so the locale is restored on return.
+writ_gate_dir() {
+  local root="${1:-}" sid="${2:-}"
+  local LC_ALL=C
+  if [ -z "$root" ] || [ -z "$sid" ] || [ ${#sid} -gt 128 ]; then
+    printf '\n'
+    return 0
+  fi
+  # "." and ".." pass the charset but name a directory that is not a session; a separator
+  # or any other character outside the class is refused so the id can never traverse.
+  case "$sid" in
+    .|..|*[!A-Za-z0-9._-]*)
+      printf '\n'
+      return 0
+      ;;
+  esac
+  # Strip trailing separators so "/srv/app/" and "/srv/app" produce the same bytes as the
+  # python mirror's rstrip. A root of "/" strips to "" and rejoins as "/.claude/...".
+  while [ -n "$root" ] && [ "${root%/}" != "$root" ]; do
+    root="${root%/}"
+  done
+  printf '%s\n' "$root/.claude/gates/$sid"
+}
+
 # ── Session ID detection ────────────────────────────────────────────────────
 # Extracts the session id from a parsed hook envelope, and NOTHING ELSE.
 #
@@ -935,6 +1039,30 @@ log_friction_event() {
   python3 "$_FRICTION_APPEND" "$session_id" "$mode" "$event" "$extra" 2>/dev/null || true
 }
 
+# ── Gate token writer ───────────────────────────────────────────────────────
+# Writes the three-line gate-token file: the secret, the gate the approval
+# authorizes, and the plan fingerprint it was given for. Lives here beside
+# log_friction_event and writ_http_post because it is the third primitive
+# auto-approve-gate.sh shares with the rest of the surface.
+#
+# BYTE-IDENTICAL TO writ.session.gate_token.mint_gate_token FOR THE SAME INPUTS, and
+# tests/test_gate_token_binding.py holds the two writers against each other. The reader
+# is python and the production writer is bash, so a one-character disagreement about the
+# format is a gate that fail-closes on every approval; that is the same class of defect
+# as a writer/reader disagreement about the PATH, which is why gate_token_path hardcodes
+# /tmp.
+#
+# An empty gate and an empty fingerprint are legitimate values, not missing ones: they
+# are what an approval typed with no phase gate pending is bound to, and the claim
+# enforces them as "must be exactly empty".
+# Usage: write_gate_token_file <path> <token> <gate> <plan_hash>
+write_gate_token_file() {
+  local path="$1" secret="$2" gate="${3:-}" plan_hash="${4:-}"
+  printf '%s\n%s\n%s\n' "$secret" "$gate" "$plan_hash" > "$path"
+  # The file holds a secret in a world-readable directory; the python writer chmods too.
+  chmod 600 "$path" 2>/dev/null || true
+}
+
 # ── Hook timing ─────────────────────────────────────────────────────────────
 # Records start time. Call at the beginning of a hook.
 # Usage: HOOK_START_NS=$(hook_timer_start)
@@ -1074,10 +1202,13 @@ _writ_hook_exit_trap() {
   # The plain hook_execution row is APPENDED, not emitted: bash costs 0.018ms and no
   # process, against ~13ms of interpreter startup, and 8 write-path hooks pay this on
   # every file write. writ_event_buffer_flush drains it once per turn.
+  # Mode from the same resolution log_gate_decision uses, but CACHED ONLY: this trap runs
+  # on every instrumented hook, so a fresh lookup here would be a process on each of them.
+  _writ_row_mode_cached
   writ_event_buffer_append \
     "${SESSION_ID:-${HOOK_SESSION_ID:-}}" \
     "${_WRIT_HOOK_NAME:-unknown}" \
-    "$dur_ms" "$rc" "${CURRENT_MODE:-${MODE:-}}"
+    "$dur_ms" "$rc" "$_WRIT_ROW_MODE"
 
   # NOTHING SPAWNS HERE ANY MORE. Both row kinds (hook_execution above,
   # gate_decision via log_gate_decision) are appended to the session buffer and emitted
@@ -1112,7 +1243,11 @@ log_gate_decision() {
   _gd_dec="${_gd_dec//[$'\x1e\x1f\n\r']/_}"
   _gd_reason="${_gd_reason//[$'\x1e\x1f\n\r']/ }"
   _gd_target="${_gd_target//[$'\x1e\x1f\n\r']/_}"
-  local _gd_mode="${CURRENT_MODE:-${MODE:-}}"
+  # NOT the bare variable: thirteen of the fourteen hooks that reach this line never set
+  # it, and their rows recorded a null mode for a session that had one. _writ_row_mode
+  # keeps an explicit CURRENT_MODE/MODE winning and falls back to the session cache.
+  _writ_row_mode
+  local _gd_mode="$_WRIT_ROW_MODE"
   _gd_mode="${_gd_mode//[$'\x1e\x1f\n\r']/_}"
 
   # A DENIAL IS WRITTEN SYNCHRONOUSLY, always. It is the record that proves a gate
@@ -1159,12 +1294,15 @@ log_gate_decision() {
 }
 
 _gd_emit_now() {
+  # Same resolution as the buffered path above, and it matters more here: this is the
+  # branch every DENIAL takes, the record that proves a gate blocked something.
+  _writ_row_mode
   WRIT_GD_GATE="${1:-}" \
   WRIT_GD_DECISION="${2:-}" \
   WRIT_GD_REASON="${3:-}" \
   WRIT_GD_TARGET="${4:-}" \
   WRIT_GD_SESSION="${SESSION_ID:-${HOOK_SESSION_ID:-}}" \
-  WRIT_GD_MODE="${CURRENT_MODE:-${MODE:-}}" \
+  WRIT_GD_MODE="$_WRIT_ROW_MODE" \
   python3 -c '
 import json, os
 print(json.dumps({
@@ -1632,9 +1770,15 @@ print(m.get('cost', 0))
 # benign no-rules skip, not a hook error). That path is unreachable from the two call
 # sites (budget is bash arithmetic; exclude is always a valid JSON array via the callers'
 # '[]' fallback), so live behavior is unchanged.
-# Usage: RESPONSE=$(rag_query "$QUERY" "$PRETOOL_BUDGET" "$LOADED_RULE_IDS")
+# The 4th argument is the caller's PROJECT ROOT, sent so the daemon can scope
+# retrieval to that project's records (writ/retrieval/node_scope.py). A root, not a
+# resolved name: the registry lookup needs the graph, and resolving it here would cost
+# a python start plus a Neo4j round trip on a path that runs on every file read and
+# every write. Empty is a legitimate value (no project root found) and degrades to
+# doctrine-only retrieval server-side, never to an error.
+# Usage: RESPONSE=$(rag_query "$QUERY" "$PRETOOL_BUDGET" "$LOADED_RULE_IDS" "$PROJECT_ROOT")
 rag_query() {
-    local query="$1" budget="$2" exclude="$3"
+    local query="$1" budget="$2" exclude="$3" project_root="${4:-}"
     local request
     request=$(python3 -c "
 import json, sys
@@ -1643,8 +1787,9 @@ print(json.dumps({
     'budget_tokens': int(sys.argv[2]),
     'exclude_rule_ids': json.loads(sys.argv[3]),
     'top_k': 3,
+    'project_root': sys.argv[4],
 }))
-" "$query" "$budget" "$exclude" 2>/dev/null)
+" "$query" "$budget" "$exclude" "$project_root" 2>/dev/null)
     [ -z "$request" ] && return 0
     # Same budgets the inlined request carried (connect 0.3s, total 1s), now through the
     # HTTP wrapper: a missing accelerator degrades to urllib, not to "no rules this turn".
@@ -1712,4 +1857,44 @@ Investigate: audit / explore / research a codebase or topic (evidence-grounded, 
 Declare: python3 ${session_helper} mode set <conversation|debug|review|work|investigate> ${session_id}
 Full definitions: see HANDBOOK.md "Mode system" section.
 MODE_DIRECTIVE
+}
+
+# Emit the post-compaction workflow state line + the PSR-004 verify-discipline directive.
+# THE SINGLE SOURCE of both texts. They used to live in writ-postcompact.sh, which cannot
+# deliver them: on 2026-08-14 a real /compact showed CC's hook-output validator reject a
+# PostCompact hookSpecificOutput reply outright ("(root): Invalid input") and discard it, so
+# the directive had reached nothing since cycle B. writ-postcompact.sh now only queues
+# (post_compact_pending) and writ-rag-inject.sh calls this on the next UserPromptSubmit,
+# where bare stdout is a confirmed model channel.
+# The state line is emitted only when a mode is set; the directive always is.
+# Usage: emit_post_compact_directive "$CURRENT_MODE" "$PHASE"
+emit_post_compact_directive() {
+  local mode="$1" phase="${2:-}"
+  if [ -n "$mode" ]; then
+    cat << PC_STATE
+
+[Writ: post-compact workflow state] mode=$mode, phase=${phase:-unknown}. This turn re-injects
+the full rule set; treat this as your current workflow position.
+PC_STATE
+  fi
+  # Quoted delimiter: the directive is literal text, and an unquoted heredoc would expand
+  # any \$ or backtick a future edit adds to it.
+  cat << 'PC_DIRECTIVE'
+
+[Writ: context compacted]
+Until the next compaction, treat any pre-compact verification output (test counts,
+"passing" claims, file reads) as second-hand evidence.
+
+If asked "is it working?" / "is it done?" / "did it pass?":
+  1. Re-run the relevant verification (tests, lint, typecheck, smoke command) FIRST.
+  2. If the re-run is BLOCKED (tool rejection, permission denied, env unavailable):
+       STOP. Do NOT answer "yes", "passing", or "should be working".
+       Respond instead: "Re-verification was blocked by [reason]. I cannot confirm
+       post-compact. Pre-compact context says X but I have no fresh evidence.
+       Want me to verify another way?"
+  3. Only answer affirmatively with fresh test/lint output cited inline.
+
+Saying "yes" / "passing" / "all good" without fresh evidence is a forbidden response
+in this state. Recalled output is not fresh evidence.
+PC_DIRECTIVE
 }

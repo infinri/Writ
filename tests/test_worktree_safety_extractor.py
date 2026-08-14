@@ -27,6 +27,9 @@ from pathlib import Path
 
 import pytest
 
+# autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
+from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
+
 REPO = Path(__file__).resolve().parent.parent
 HOOK = REPO / "hooks" / "scripts" / "writ-worktree-safety.sh"
 HELPER = REPO / "bin" / "lib" / "writ-session.py"

@@ -25,17 +25,41 @@ jobs:
     # leaves slack for slow GitHub runners and HF download variance
     # without letting a stuck job run indefinitely.
     timeout-minutes: 15
+    env:
+      # The suite runs isolated: tests/conftest.py points every Neo4j resolution
+      # at this instance and marks it disposable. The service is published on
+      # 7688 so its (host, port) DIFFERS from the production default 7687, and
+      # the port is the load-bearing half of that, not the marker: the wipe
+      # guard is `marker_present() and not is_production_instance(uri)`
+      # (writ/graph/db/_safety.py:137-139). There is no writ.toml in CI, so
+      # get_neo4j_uri() and get_production_neo4j_uri() would otherwise both fall
+      # back to DEFAULT_NEO4J_URI, the two instance keys would compare EQUAL,
+      # and setting the marker alone would leave the gate shut. Without the port
+      # change every `disposable_graph` test skips here, which is why the
+      # whole-graph round trip and the record-preservation assertions have never
+      # actually run in CI since the day they were written.
+      WRIT_NEO4J_URI: bolt://localhost:7688
+      WRIT_NEO4J_PASSWORD: writdevpass
+      WRIT_TEST_GRAPH: "1"
+      # cycle A gave `make test` a test-graph-up dependency; this job's Neo4j is a
+      # workflow service already published on 7688, so that script stands down rather
+      # than collide with the port. The service IS the configured instance, which is
+      # the pre-cycle-A CI semantics restored.
+      WRIT_TEST_NO_ISOLATION: "1"
     services:
       neo4j:
         image: neo4j:5
         env:
           NEO4J_AUTH: neo4j/writdevpass
         ports:
-          - 7687:7687
+          - 7688:7687
           - 7474:7474
         # cypher-shell healthcheck matches docker-compose.yml so CI and
         # local both define "healthy" the same way. health-start-period
         # gives Neo4j 5 time to initialize before the first probe.
+        # Unaffected by the port change above, verified rather than assumed:
+        # the probe runs INSIDE the container against the container's own fixed
+        # 7687, so no published host port appears in it and none can.
         options: >-
           --health-cmd "cypher-shell -u neo4j -p writdevpass 'RETURN 1'"
           --health-interval 10s
@@ -44,6 +68,8 @@ jobs:
           --health-start-period 30s
     steps:
       - uses: actions/checkout@v4
+      # Resolves Neo4j through writ.config, so its migrate and verify steps read
+      # the job env above and warm the same instance the tests then use.
       - uses: ./.github/actions/setup-writ
       - name: Run tests
         run: make test
@@ -52,6 +78,11 @@ jobs:
     name: bench
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Deliberately left on the default 7687 while the test job moved to 7688.
+    # Nothing here requests `disposable_graph`, the benchmark numbers are a
+    # historical series that should not gain a new variable, and keeping one job
+    # on the default preserves a live proof that the non-isolated path still
+    # works end to end.
     services:
       neo4j:
         image: neo4j:5

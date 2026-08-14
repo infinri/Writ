@@ -8,6 +8,7 @@ from pathlib import Path
 from writ.graph.integrity._common import (
     MANAGED_PROP_NAMES,
     NODE_ID_FIELDS,
+    ORACLE_BLIND_LABELS,
     PARITY_EXEMPT_PROVENANCE,
     _GRAPH_ID_COALESCE,
     _coerce_neo4j_value,
@@ -18,6 +19,7 @@ from writ.graph.integrity._common import (
     parse_source,
     read_live_edges,
     read_live_nodes_with_keys,
+    read_oracle_blind_node_ids,
 )
 
 
@@ -61,23 +63,25 @@ class ParityChecksMixin:
         """Return non-Category nodes that have no BELONGS_TO edge to a Category.
 
         Single graph scan. Was get_all_nodes() + one exists()-query per node
-        (an N+1: O(corpus) round-trips); this is one round-trip. Abstraction
-        nodes are graph-derived materialized views (not routed/source nodes),
-        so they are exempt from the BELONGS_TO requirement, same as Category.
-        The `{nid} IS NOT NULL` clause reproduces get_all_nodes' skip of nodes
-        with no known primary-id field.
+        (an N+1: O(corpus) round-trips); this is one round-trip. A node whose
+        label the markdown ingest cannot author (ORACLE_BLIND_LABELS, cycle 7 --
+        Abstraction today) is a graph-derived materialized view, not a routed
+        source node, so it is exempt from the BELONGS_TO requirement, same as
+        Category. The `{nid} IS NOT NULL` clause reproduces get_all_nodes' skip
+        of nodes with no known primary-id field.
         """
         nid = _GRAPH_ID_COALESCE.format(v="n")
         query = (
             "MATCH (n) "
-            "WHERE NOT n:Category AND NOT n:Abstraction "
+            "WHERE NOT n:Category "
+            "AND NONE(l IN labels(n) WHERE l IN $blind_labels) "
             f"AND {nid} IS NOT NULL "
             "AND NOT (n)-[:BELONGS_TO]->(:Category) "
             f"RETURN labels(n)[0] AS type, {nid} AS id, "
             "coalesce(n.project, 'writ') AS project, n.provenance AS provenance"
         )
         async with self._driver.session(database=self._database) as session:
-            res = await session.run(query)
+            res = await session.run(query, blind_labels=sorted(ORACLE_BLIND_LABELS))
             return [
                 {
                     "type": r["type"], "id": r["id"],
@@ -164,11 +168,12 @@ class ParityChecksMixin:
         violations: list[dict] = []
         for node in graph_nodes:
             node_id = node["id"]
-            # Change B: Abstraction nodes are graph-derived materialized views
-            # (created by `writ compress`, never authored into bible/ source).
-            # They have no markdown home by design, so they are not parity
-            # drift; exempt them before any markdown comparison.
-            if node.get("type") == "Abstraction":
+            # Change B, generalized in cycle 7: a node whose label the markdown
+            # ingest cannot author has no markdown home by design (Abstraction
+            # nodes are materialized from bible/abstractions.json, never
+            # authored into bible/ source). They are not parity drift; exempt
+            # them before any markdown comparison.
+            if node.get("type") in ORACLE_BLIND_LABELS:
                 continue
             if node_id in declared:
                 continue
@@ -214,6 +219,19 @@ class ParityChecksMixin:
             (t, s, tg)
             for (t, s, tg, sp, tp) in live
             if sp in PARITY_EXEMPT_PROVENANCE or tp in PARITY_EXEMPT_PROVENANCE
+        }
+        # Cycle 7: an edge incident to a node the markdown oracle cannot author is
+        # not drift either, it is outside the oracle's field of view. Without this,
+        # 186 correct ABSTRACTS edges read as stale and the printed remedy
+        # (writ reconcile) deletes them. Abstraction integrity is checked instead by
+        # detect_artifact_abstracts_parity, which holds the artifact they come from.
+        blind_ids = await read_oracle_blind_node_ids(
+            self._driver, self._database, project
+        )
+        exempt |= {
+            (t, s, tg)
+            for (t, s, tg, _sp, _tp) in live
+            if s in blind_ids or tg in blind_ids
         }
         stale = sorted((live_edges - expected_edges) - exempt)
         missing = sorted(expected_edges - live_edges)
