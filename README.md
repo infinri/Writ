@@ -5,13 +5,15 @@
 
 **Governance for coding agents.**
 
-Writ is a governance runtime for Claude Code. It moves engineering controls outside the model, so they do not depend on the model remembering, interpreting, or choosing to follow them: workflow boundaries are enforced as code at tool time, the rules that govern the work are delivered when they are relevant, and the decisions behind each change are preserved after the session ends.
+Writ is a governance runtime for Claude Code. It moves important engineering controls outside the model, where they can be enforced, retrieved, and remembered independently of what the model happens to keep in context.
+
+**Enforce. Inform. Remember.**
 
 **Enforce.** Selected workflow boundaries run as code at tool time. A Work-mode implementation can be stopped until a human has approved its plan and its tests, and credential writes and other protected actions have their own guards in every mode.
 
-**Inform.** The agent receives the engineering rules relevant to the task, file, tool, and workflow phase in front of it. The rest of the rulebook stays out of context.
+**Inform.** Rules reach the agent by relevance: the ones matching the task, file, tool, and workflow phase in front of it, on top of a small always on floor of seven process and gate rules that injects every turn. Everything else, the mandatory security rules included, stays out of context until the work matches it.
 
-**Remember.** Approved plans, the rule ids that governed them, changed files, and commits become connected provenance: recorded in the graph, pushed onto pull requests and git notes, and compiled into a briefing for future sessions. The record answers a governance question: why was this change allowed to happen, under which plan, under which rules, resulting in which files and which commit.
+**Remember.** Approved plans, the rule ids that governed them, changed files, and commits become connected provenance: recorded in the graph, pushed onto pull requests and git notes, and compiled into a briefing for future sessions. The record answers a governance question: under what approved plan and governing rules did this change occur, and which files and commit resulted.
 
 Most coding-agent systems ask the model to remember the process. Writ puts selected parts of the process around the model instead.
 
@@ -22,6 +24,7 @@ Most coding-agent systems ask the model to remember the process. Writ puts selec
        |
        v
   Engineering rules -----+
+  Human approvals -------+
   Prior decisions -------+--> Writ --> Claude Code
                                           |
                                           | tries an action
@@ -34,7 +37,7 @@ Most coding-agent systems ask the model to remember the process. Writ puts selec
                                       Repository
                                           |
                                           v
-                      provenance and future-session briefing
+                                 decision provenance
 ```
 
 Writ governs three things. **Action**: what the agent is permitted to do. **Context**: which engineering rules govern the current action. **Continuity**: why the action was approved and what future sessions should know. Hooks and gates are the Action mechanism, retrieval over the rule graph is the Context mechanism, and decision provenance is the Continuity mechanism.
@@ -63,6 +66,8 @@ Worth being blunt about what the gate does and does not check. The validators co
 | `debug` | Chasing one specific failure | Source edits, until you have written down a root cause |
 | `work` | Building or changing code | Source writes, until the plan gate and the test gate both open |
 
+While Claude works, the hooks watch each write: editing a file whose code touches SQL can pull the parameterized query and injection rules into context at that moment, even if your prompt never mentioned SQL.
+
 And when the work is committed, Writ can connect the resulting files back to the approved plan and the rules that governed the session.
 
 ## What it costs, and who it is for
@@ -71,7 +76,7 @@ And when the work is committed, Writ can connect the resulting files back to the
 
 **What you get for that.** The gated steps either happen or the tool call is refused, rather than happening for the first hour and then quietly not. And when something is refused, there is a record of what was refused and why, which is the part that matters if you are the person answering for the code rather than writing it.
 
-**Who it is for.** Engineers and engineering leads who want a coding agent held to plan first, test driven work by guardrails that run in code, rather than by instructions the agent can drift away from.
+**Who it is for.** Engineers and engineering leads who need important coding-agent workflows to be governed outside the model rather than left as instructions. Writ ships opinionated plan-first and test-driven defaults, and its mode and gate system provides the machinery underneath them.
 
 Writ deliberately trades some setup and workflow friction (Python, Docker, Neo4j, a background service, hooks, workflow state) for stronger control over agent behavior. The question is whether those guarantees are worth that tradeoff for your work. Everything below documents exactly what Writ controls, what it does not, and the evidence available today.
 
@@ -91,13 +96,13 @@ It can tell that a plan exists. It cannot tell whether the plan is any good. The
 
 The main claim is not proven yet. Everything measured so far shows what the search costs and how well it ranks. None of it shows that an AI handed the right rule actually behaves better than one handed nothing. That is the whole point of the tool and it is currently unproven, with the reasoning and the missing experiment written up further down.
 
-**You do not have to install this yourself.** If you are reading this you already use Claude Code, which means you already have something that reads instructions and runs commands. Point it at this page and ask it to install Writ. It handles the setup; the one piece you may need to do by hand is installing Docker, the same way you would install any other application.
-
 ---
 
 **Everything below this point assumes you write code.** The rest of this document is written for engineers evaluating whether to run it, and stops rationing vocabulary.
 
 ## Install
+
+**You do not have to install this yourself.** If you are reading this you already use Claude Code, which means you already have something that reads instructions and runs commands. Point it at this page and ask it to install Writ. It handles the setup; the one piece you may need to do by hand is installing Docker, the same way you would install any other application.
 
 **You will need:** Python 3.11 or newer and Docker (the graph database runs in a container). That is the whole list. `jq` and `curl` are used when present and fall back to Python when absent, so a machine without them installs fine.
 
@@ -132,7 +137,7 @@ Two boundaries hold no matter what, including when the background service is dow
 
 ## How the rules reach the AI
 
-**The floor: rules that can never be dropped.** Thirty two of the 288 shipped rules are marked mandatory. These are deliberately kept **out of the search index entirely** and delivered through a separate channel with its own budget. That means no change to search ranking, no swap of the underlying model, no retuning of anything can cause a critical security rule to fall off the list. A single definition in one file decides what belongs to the floor, and both the delivery code and the validation code read that same definition, so the two can never drift apart. This closed a real bug where two parts of the system checked different fields and left 29 of 32 mandatory rules unreachable by either path.
+**The floor: rules that can never be dropped.** Thirty two of the 288 shipped rules are marked mandatory. These are deliberately kept **out of the search index entirely** and delivered through a separate channel with its own budget. Seven of them carry universal scope and inject on every turn; the other 25 are scoped to writes and keyword gated, so they arrive the moment a write matches them rather than every turn. That means no change to search ranking, no swap of the underlying model, no retuning of anything can cause a critical security rule to fall off the list. A single definition in one file decides what belongs to the floor, and both the delivery code and the validation code read that same definition, so the two can never drift apart. This closed a real bug where two parts of the system checked different fields and left 29 of 32 mandatory rules unreachable by either path.
 
 **Everything else is searched for.** Writ currently uses a five stage retrieval pipeline over a Neo4j knowledge graph: narrow the candidates, keyword search, meaning based search (so a rule about "SQL" surfaces for a question about "database queries"), a walk across the graph to pull in related rules, then weighted ranking. Those five stages are the ones listed at the top of [`writ/retrieval/pipeline.py`](writ/retrieval/pipeline.py), and each is designed to cover a different retrieval failure mode: keyword search catches exact terms, meaning based search catches paraphrase, and the graph walk reaches rules that share no words with the query at all but are linked to a match. Keyword and meaning based retrieval are measured as part of the full system; the incremental contribution of the graph traversal stage has not yet been isolated, and it is listed under Not measured below. If nothing matches well enough, the pipeline **returns nothing** rather than injecting noise.
 
@@ -172,36 +177,14 @@ Pull request comments currently support Bitbucket Cloud only, and self hosted Bi
 
 ## Measured
 
-**Every figure in this section is a dated measurement, not a live readout.** The live column was measured on 2026-08-05 against a rulebook of 287 rules; the synthetic column on 2026-08-01 against a generated 10,000 rule corpus; the search quality table further down on 2026-08-01, 2026-08-05 and 2026-08-06, all against that same 287 rule corpus. The shipped rulebook is 288 rules today, so read each number as what was measured then, against the corpus named beside it. All of it ran on a database container with no memory cap, and your numbers will differ on other hardware. The full disclosure is in [`SCALE_BENCHMARK_RESULTS.md`](SCALE_BENCHMARK_RESULTS.md).
+**Evidence today.** Every figure below is a dated measurement, not a live readout, taken on one developer machine with an uncapped database container, so your numbers will differ.
 
-| | Live rulebook, 287 rules, 2026-08-05 | Synthetic, 10,000 rules, 2026-08-01 |
-|---|---:|---:|
-| Search time, 95th percentile | 1.02 ms | 0.827 ms |
-| Rule text delivered per turn | about 2,000 tokens | about 1,590 tokens |
+* **Search quality.** 0.923 hit rate at 5 across the 169 index eligible questions of the gold set, and 0.608 mean reciprocal rank at 5 across the 47 deliberately ambiguous ones (2026-08-06).
+* **Search cost.** A warm 95th percentile of 0.827 ms in the published synthetic run against 10,000 rules (2026-08-01).
+* **Rule text per turn stays roughly flat as the rulebook grows.** About 2,000 tokens against the live 287 rule corpus (2026-08-05), about 1,590 against the 10,000 rule synthetic one (2026-08-01).
+* **The floors are gates, not aspirations.** 17 benchmark targets run in continuous integration on every push and every pull request, and they passed 17 of 17 on 2026-08-14.
 
-**Which 95th percentile.** Three appear across this project's files and they are not in competition, they are different question sets: **1.02 ms** is the 193 question test set measured on 2026-08-05, which is the hardest and the one quoted above because it is closest to real use; 0.52 ms is a 5 question latency set from the same 2026-08-05 run; 0.6 ms is an older 10 question set from 2026-08-01. All three were measured against the 287 rule corpus of that week. Where a single number appears without a question set beside it, assume the 193 question one.
-
-The property that matters is the second row. The amount of rule text sent per turn stays roughly flat as the rulebook grows.
-
-**An honest note on the baseline.** The often quoted "749 times less context" is measured against pasting the entire 10,000 rule corpus (1.19 million tokens) into every single message. That is a theoretical ceiling, not something anyone does, since no context window holds it. Against the realistic comparison, a hand curated instructions file of about 5,000 tokens, Writ's per turn cost is roughly comparable while covering the whole shipped rulebook instead of a dozen rules, 287 of them at the time of that measurement and 288 today. The advantage grows with the size of your rulebook rather than with the size of the claim.
-
-Search quality against a 193 question test set (47 of them deliberately ambiguous), measured against the 287 rule corpus on the three dates in the column headers. The floors are automated gates the build fails below, set deliberately under the measured values:
-
-| Metric | Floor | 2026-08-01 | 2026-08-05 | 2026-08-06 |
-|---|---|---:|---:|---:|
-| Hit rate at 5 (index-eligible, n=169) | at least 0.90 | -- | 0.9290 | **0.9231** |
-| Mean reciprocal rank at 5 (ambiguous, n=47) | at least 0.45 | 0.5681 | 0.6167 | 0.6082 |
-| Hit rate at 5 (all 193) | at least 0.75 | 0.7824 | 0.8187 | 0.8083 |
-| Domain hit rate at 5 | at least 0.90 | 0.9323 | 0.9534 | 0.9585 |
-| nDCG at 10 | at least 0.65 | 0.7071 | 0.7332 | 0.7323 |
-
-**Read the 2026-08-06 column, not the earlier ones.** Until that date the search merged its keyword and vector candidates through a `set` union, whose iteration order Python randomizes per process, and that order decided tie breaking all the way through scoring. Thirty of the 193 questions returned a different top 5 depending on the seed, so every earlier column is one draw from a distribution rather than a measurement. Five identical runs spanned 156 to 159 hits. The fix made the merge order deterministic; the corrected numbers landed at the low end of the old spread, which is what you would expect if the old high marks were luck.
-
-**The index eligible hit rate is the one to watch.** It sits at 0.9231 against a 0.90 floor that fails the build, which is 2.3 points of headroom, and it moved *down* between 08-05 and 08-06. Three of the other metrics drifted down over the same pair of runs. A gate this close to its floor will eventually trip on a change unrelated to search quality, and the honest reading is that the margin is thin rather than comfortable.
-
-**The corpus has moved since those runs, and the floors were re-run against it.** One rule has been added since 2026-08-06, so the shipped rulebook is 288 rather than the 287 those columns were measured against. The quality figures have not been re-measured against the new corpus and are deliberately not restated as if they had been. What was re-run is the gate suite itself: `make bench` passed 17 of 17 on 2026-08-14, and every floor in the table above is one of those 17 targets, so each one still holds against today's rulebook. That is a pass or fail result, not a fresh score.
-
-**What a turn actually costs.** Across 67 real sessions and 891 turns of logged injections: mean 537 tokens per turn, median 600, 95th percentile 1,360, maximum 5,440. The 5,000 and 8,000 token budgets are ceilings, not spend. Unlike every other number here, **this one has no artifact you can check**: it comes from `writ token-audit` over the maintainer's own session logs, which contain real prompts and file contents and cannot ship. The command is in the repository and runs against your logs, so the method is reproducible even though this run is not.
+Full dated measurements, the methodology behind each one, the corrections, and the historical runs live in [`SCALE_BENCHMARK_RESULTS.md`](SCALE_BENCHMARK_RESULTS.md).
 
 ## Not measured
 
