@@ -209,6 +209,12 @@ def _default_cache() -> dict:
         "pretool_queried_files": [],
         "paused_work_state": None,
         "is_orchestrator": False,
+        # Cycle G one-shot: cmd_reset_after_compaction sets this on the real PostCompact
+        # event and writ-rag-inject.sh clears it after emitting the verify-discipline
+        # directive on the next UserPromptSubmit. It lives here, in the single schema
+        # source, so a cache written before this cycle reads back False and simply never
+        # fires, which is the correct degradation for a queue nobody filled.
+        "post_compact_pending": False,
         "last_injected_rule_ids": [],
         "detected_domain": None,
         # Phase 1 additions per plan Section 6.1 deliverable 5. Track playbook

@@ -10,10 +10,12 @@
 # summarizer compresses; it is boundary hygiene (the conversation those
 # objects annotated is being summarized away). A PreCompact hook also cannot
 # steer compaction: its stdout is not injected into the summary and it has no
-# additionalContext. PostCompact (writ-postcompact.sh) is the only hook whose
-# output reaches the next turn, and it does so via
-# hookSpecificOutput.additionalContext -- its bare stdout goes to the CC debug log
-# like any other non-special event.
+# additionalContext. Neither does PostCompact: CC's validator rejects a
+# PostCompact hookSpecificOutput reply outright ("(root): Invalid input",
+# observed 2026-08-14) and its bare stdout goes to the CC debug log like any
+# other non-special event. Nothing emitted at either compaction boundary reaches
+# the model; writ-postcompact.sh queues instead (post_compact_pending) and
+# writ-rag-inject.sh delivers on the next UserPromptSubmit.
 #
 # Hook type: PreCompact
 # Exit: always 0 (cannot block compaction)

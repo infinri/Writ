@@ -336,6 +336,26 @@ Setup [doc]. Observed correction: one doc reading claimed SubagentStart cannot a
 live capture shows a SubagentStart hook returned `additionalContext` and the subagent received it
 [observed].
 
+`additionalContext` is EVENT-SCOPED, and an unaccepted event costs you the whole reply
+[observed 2026-08-14]. A real `/compact` ran `writ-postcompact.sh`, which replied
+`{"hookSpecificOutput": {"hookEventName": "PostCompact", "additionalContext": "..."}}`. Claude
+Code answered "(root): Invalid input" and discarded the entire object: `PostCompact` is not an
+accepted `hookEventName` variant for that shape. The validator error listed the variants it does
+accept: PreToolUse, PostToolUse, PostToolBatch, UserPromptSubmit, Stop, SubagentStop and
+SubagentStart. Two consequences worth stating plainly. First, the failure is silent on the case
+that matters: a human typing `/compact` sees the validator error echoed, but on an automatic
+compaction nothing is shown and nothing is delivered, which is how this shipped and stayed green
+for two cycles. Second, the rejection is total, not partial, so a valid `systemMessage` sitting
+beside an invalid `additionalContext` in the same object dies with it. `PostCompact` and
+`PreCompact` have no model-visible channel at all; queue the text in state and emit it from the
+next `UserPromptSubmit` instead. `writ/shared/delivery.py::ADDITIONAL_CONTEXT_EVENTS` encodes the
+accepted set and `writ/hooks_lint.py` flags a wired script that violates it.
+
+SubagentStart `additionalContext` was re-probed the same day and DOES deliver on this build
+[observed 2026-08-14], independently of the capture noted above. It appears in the validator's
+accepted-variant list and a live probe confirmed the sub-agent received the text, so the
+compaction finding above does not implicate the sub-agent injection path.
+
 Stop-hook caveat, load-bearing for anyone injecting context at turn end: on the builds where it
 was measured, `additionalContext` returned from a Stop hook is treated as a turn BLOCK (Claude
 continues the turn instead of stopping), so a Stop hook that always adds context loops until the

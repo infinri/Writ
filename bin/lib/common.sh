@@ -1858,3 +1858,43 @@ Declare: python3 ${session_helper} mode set <conversation|debug|review|work|inve
 Full definitions: see HANDBOOK.md "Mode system" section.
 MODE_DIRECTIVE
 }
+
+# Emit the post-compaction workflow state line + the PSR-004 verify-discipline directive.
+# THE SINGLE SOURCE of both texts. They used to live in writ-postcompact.sh, which cannot
+# deliver them: on 2026-08-14 a real /compact showed CC's hook-output validator reject a
+# PostCompact hookSpecificOutput reply outright ("(root): Invalid input") and discard it, so
+# the directive had reached nothing since cycle B. writ-postcompact.sh now only queues
+# (post_compact_pending) and writ-rag-inject.sh calls this on the next UserPromptSubmit,
+# where bare stdout is a confirmed model channel.
+# The state line is emitted only when a mode is set; the directive always is.
+# Usage: emit_post_compact_directive "$CURRENT_MODE" "$PHASE"
+emit_post_compact_directive() {
+  local mode="$1" phase="${2:-}"
+  if [ -n "$mode" ]; then
+    cat << PC_STATE
+
+[Writ: post-compact workflow state] mode=$mode, phase=${phase:-unknown}. This turn re-injects
+the full rule set; treat this as your current workflow position.
+PC_STATE
+  fi
+  # Quoted delimiter: the directive is literal text, and an unquoted heredoc would expand
+  # any \$ or backtick a future edit adds to it.
+  cat << 'PC_DIRECTIVE'
+
+[Writ: context compacted]
+Until the next compaction, treat any pre-compact verification output (test counts,
+"passing" claims, file reads) as second-hand evidence.
+
+If asked "is it working?" / "is it done?" / "did it pass?":
+  1. Re-run the relevant verification (tests, lint, typecheck, smoke command) FIRST.
+  2. If the re-run is BLOCKED (tool rejection, permission denied, env unavailable):
+       STOP. Do NOT answer "yes", "passing", or "should be working".
+       Respond instead: "Re-verification was blocked by [reason]. I cannot confirm
+       post-compact. Pre-compact context says X but I have no fresh evidence.
+       Want me to verify another way?"
+  3. Only answer affirmatively with fresh test/lint output cited inline.
+
+Saying "yes" / "passing" / "all good" without fresh evidence is a forbidden response
+in this state. Recalled output is not fresh evidence.
+PC_DIRECTIVE
+}

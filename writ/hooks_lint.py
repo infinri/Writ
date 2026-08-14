@@ -11,9 +11,14 @@ writ.analysis.friction: the linter catches an inert injector before it ever runs
 the telemetry confirms it from real events. A source whose logged deliveries are
 all "debug-log" is the runtime confirmation of a static "inert" flag here.
 
+It also flags the inverse failure (cycle G): a script that emits additionalContext on an
+event whose schema does not accept it, where CC's validator discards the ENTIRE reply. That
+check runs BEFORE the injector gate, because the script this bug shipped in
+(writ-postcompact.sh) matched neither injector heuristic and so was never examined at all.
+
 Conservative by design (the C1 lesson, where a 13-agent audit false-flagged a
-working security gate): two-signal matching, an explicit allowlist, and findings
-default to WARNINGS rather than hard failures.
+working security gate): two-signal matching, an explicit allowlist, comment-stripped
+detection, and findings default to WARNINGS rather than hard failures.
 """
 from __future__ import annotations
 
@@ -21,7 +26,11 @@ import json
 import re
 from pathlib import Path
 
-from writ.shared.delivery import STDOUT_TO_MODEL_EVENTS
+from writ.shared.delivery import (
+    ADDITIONAL_CONTEXT_EVENTS,
+    STDOUT_TO_MODEL_EVENTS,
+    reaches_model,
+)
 
 # Writ's injection signature: model-facing directive blocks start with "[Writ:"
 # or "[WRIT ...". Detected only when rendered to BARE STDOUT (the channel that
@@ -58,10 +67,44 @@ def _resolve_script(command: str, plugin_root: Path) -> Path | None:
     return None
 
 
-def _reaches_model(src: str) -> bool:
-    """True if the script has any model-facing channel (additionalContext or
-    permissionDecisionReason)."""
-    return ("additionalContext" in src) or ("permissionDecisionReason" in src)
+def _strip_comments(src: str) -> str:
+    """Drop whole-line shell comments, keeping line count irrelevant.
+
+    Full lines only. A trailing `# ...` is NOT stripped, because a bare `#` inside a
+    single-quoted string, a jq filter or a URL fragment is ordinary code and cutting there
+    would delete real emissions. Whole-line stripping is enough for the precision case this
+    exists for (writ-precompact.sh discusses additionalContext in prose only) and cannot
+    misread code as comment.
+    """
+    return "\n".join(
+        ln for ln in src.splitlines() if not ln.lstrip().startswith("#")
+    )
+
+
+def _reaches_model(src: str, event: str) -> bool:
+    """True if the script has a model-facing channel THAT THIS EVENT ACCEPTS.
+
+    The event argument is the cycle-G correction: this used to be a bare substring test, so
+    "the file mentions additionalContext somewhere" read as proof of delivery even on
+    PostCompact, where CC's validator discards the whole reply. The answer now comes from
+    writ.shared.delivery, the single source both this linter and the runtime telemetry read.
+    """
+    if "permissionDecisionReason" in src:
+        return True
+    return "additionalContext" in src and reaches_model(event, "additionalContext")
+
+
+def _emits_rejected_additional_context(src: str, event: str) -> bool:
+    """True if the script emits additionalContext on an event that rejects it.
+
+    Evaluated BEFORE the _is_injector gate, which is the whole point: writ-postcompact.sh
+    passed neither _is_injector branch (a python3 heredoc, not `cat`, and no
+    log_rag_query_event call), so the event-aware _reaches_model above would never have been
+    consulted for it and the bug would have shipped green a second time.
+    """
+    if event in ADDITIONAL_CONTEXT_EVENTS:
+        return False
+    return "additionalContext" in _strip_comments(src)
 
 
 def _emits_marker_to_stdout(src: str) -> bool:
@@ -119,9 +162,10 @@ def lint_hooks(hooks_json: Path, plugin_root: Path) -> list[dict]:
     """Return delivery findings for every injector wired to a non-special event.
 
     Each finding: {severity, script, event, matcher, detail}. severity is
-    "inert" (high confidence: no model channel at all), "review" (a model
-    channel exists but the script ALSO emits injection text to bare stdout on
-    this event), or "error" (could not read hooks.json).
+    "rejected" (the script emits additionalContext on an event whose schema does not accept
+    it, so CC discards the entire reply), "inert" (high confidence: no model channel this
+    event accepts), "review" (a model channel exists but the script ALSO emits injection text
+    to bare stdout on this event), or "error" (could not read hooks.json).
     """
     findings: list[dict] = []
     try:
@@ -153,9 +197,25 @@ def lint_hooks(hooks_json: Path, plugin_root: Path) -> list[dict]:
                     src = spath.read_text()
                 except OSError:
                     continue
+                # BEFORE the injector gate: a rejected payload is a delivery failure whether
+                # or not the script looks like an injector to the two heuristics below.
+                if _emits_rejected_additional_context(src, event):
+                    findings.append({
+                        "severity": "rejected", "script": name, "event": event,
+                        "matcher": matcher,
+                        "detail": (
+                            f"emits hookSpecificOutput.additionalContext on {event}, which "
+                            "is not in writ.shared.delivery.ADDITIONAL_CONTEXT_EVENTS. CC's "
+                            "hook-output validator rejects the payload and discards the "
+                            "ENTIRE reply ('(root): Invalid input'), so nothing is "
+                            "delivered. Queue the text and emit it on a confirmed channel "
+                            "(see writ-postcompact.sh -> post_compact_pending)."
+                        ),
+                    })
+                    continue
                 if not _is_injector(src):
                     continue
-                if not _reaches_model(src):
+                if not _reaches_model(src, event):
                     findings.append({
                         "severity": "inert", "script": name, "event": event,
                         "matcher": matcher,
@@ -163,7 +223,9 @@ def lint_hooks(hooks_json: Path, plugin_root: Path) -> list[dict]:
                             "injects rule/directive text to plain stdout on a "
                             "non-special event -> CC debug log; the model never "
                             "sees it. Wrap in hookSpecificOutput.additionalContext "
-                            "(see writ-bible-authoring-push.sh)."
+                            "if this event accepts it (see "
+                            "writ-bible-authoring-push.sh), otherwise queue the text "
+                            "for an event that does."
                         ),
                     })
                 elif _emits_marker_to_stdout(src):
@@ -178,6 +240,6 @@ def lint_hooks(hooks_json: Path, plugin_root: Path) -> list[dict]:
                         ),
                     })
     # Stable order for deterministic output / tests.
-    sev_order = {"error": 0, "inert": 1, "review": 2}
+    sev_order = {"error": 0, "rejected": 1, "inert": 2, "review": 3}
     findings.sort(key=lambda f: (sev_order.get(f["severity"], 9), f["event"], f["script"]))
     return findings

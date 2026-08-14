@@ -454,6 +454,28 @@ print(json.dumps({'project_root': os.environ.get('WRIT_ROOT', ''), 'budget': 200
     fi
 fi
 
+# 1c-3. Cycle G: post-compaction delivery, queued by writ-postcompact.sh. That hook cannot
+# deliver the state line or the PSR-004 verify-discipline directive itself (CC's validator
+# rejects a PostCompact hookSpecificOutput reply outright and discards it, 2026-08-14),
+# so cmd_reset_after_compaction sets post_compact_pending and the first prompt after the
+# compaction emits here, on the one channel confirmed to reach the model on this build.
+#
+# COST: the flag is read off the $CACHE this hook already fetched at step 1c, so the unset
+# path (every turn but one) is a string test with no python spawn and no HTTP call. The
+# single clearing update fires once per compaction, not once per turn.
+#
+# NO $AGENT_ID GUARD, unlike the recall block above: the flag lives on the compacted
+# session's own cache and a sub-agent runs under its own session id, so a worker cannot
+# consume the parent's queued directive.
+#
+# Fail-silent by design: if this prompt never arrives or the write fails, the flag stays set
+# and the directive fires on the first prompt that does get through. Nothing blocks on it.
+if parsed_bool "$CACHE" "post_compact_pending"; then
+    emit_post_compact_directive "$CURRENT_MODE" "$(parsed_field "$CACHE" "current_phase")"
+    python3 "$SESSION_HELPER" update "$SESSION_ID" --clear-post-compact-pending 2>>"$WRIT_HOOK_LOG_SINK" || true
+    debug "emitted post-compact directive (one-shot)"
+fi
+
 if [ "$IS_ORCHESTRATOR" = "true" ]; then
     debug "orchestrator mode: skipping broad /query, firing methodology companion + status line"
     # Still emit mode-classification directive if no mode set

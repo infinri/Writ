@@ -256,6 +256,14 @@ def _upd_set_recall_briefed(cache: dict, args: list[str], i: int) -> int:
     return i + 1
 
 
+def _upd_clear_post_compact_pending(cache: dict, args: list[str], i: int) -> int:
+    # Cycle G: the one-shot post-compaction delivery marker, cleared by writ-rag-inject.sh
+    # after it emits the verify-discipline directive. Unconditional write, so clearing an
+    # already-false or absent flag is an idempotent no-op.
+    cache["post_compact_pending"] = False
+    return i + 1
+
+
 def _upd_set_escalation_feedback_sent(cache: dict, args: list[str], i: int) -> int:
     # Layer 3: the escalation feedback marker, formerly a hand-rolled hook write.
     cache.setdefault("escalation", {})["feedback_sent"] = True
@@ -296,6 +304,7 @@ _UPDATE_HANDLERS: dict = {
     "--add-queried-rules-for-file": (_upd_add_queried_rules_for_file, 2),
     "--reset-task-phase": (_upd_reset_task_phase, 0),
     "--set-recall-briefed": (_upd_set_recall_briefed, 0),
+    "--clear-post-compact-pending": (_upd_clear_post_compact_pending, 0),
     "--set-escalation-feedback-sent": (_upd_set_escalation_feedback_sent, 0),
     "--set-detected-domain": (_upd_set_detected_domain, 1),
 }

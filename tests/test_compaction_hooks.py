@@ -286,6 +286,27 @@ class TestCmdResetAfterCompaction:
         assert "rules_cleared" in result
         assert "budget_reset" in result
 
+    def test_sets_post_compact_pending_true(self) -> None:
+        """Cycle G: the hook that used to emit the directive itself now only
+        QUEUES delivery. cmd_reset_after_compaction sets post_compact_pending
+        so the next writ-rag-inject.sh UserPromptSubmit knows to deliver it,
+        at zero extra process cost (same mutate_cache block that already
+        clears the phase rule ids and resets the budget)."""
+        cache = _make_cache_with_rules()
+        _run_cmd(self.mod, self.mod.cmd_reset_after_compaction, SESSION_ID, cache)
+        updated = self.mod._read_cache(SESSION_ID)
+        assert updated.get("post_compact_pending") is True
+
+    def test_sets_pending_true_alongside_the_existing_phase_reset(self) -> None:
+        """The pending flag is set in the SAME mutate_cache block, not a
+        second write: both effects must be visible from one reset call."""
+        cache = _make_cache_with_rules()
+        _run_cmd(self.mod, self.mod.cmd_reset_after_compaction, SESSION_ID, cache)
+        updated = self.mod._read_cache(SESSION_ID)
+        current_phase = cache["current_phase"]
+        assert updated["loaded_rule_ids_by_phase"][current_phase] == []
+        assert updated.get("post_compact_pending") is True
+
 
 # ---------------------------------------------------------------------------
 # TestClearRulesForCompactionRoute -- HTTP route
@@ -377,13 +398,120 @@ class TestResetAfterCompactionRoute:
 
 
 # ---------------------------------------------------------------------------
+# TestDefaultCacheCarriesPostCompactPending -- schema single-source
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultCacheCarriesPostCompactPending:
+    """_default_cache() (writ/session/cache.py) is the single schema source
+    _read_cache uses both for a fresh session and to backfill a loaded one, so
+    a session cache written before this cycle reads back with the key false
+    rather than missing -- the correct degradation (the flag simply never
+    fires) rather than a KeyError somewhere downstream."""
+
+    def setup_method(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self._env_patch = mock.patch.dict(os.environ, {"WRIT_CACHE_DIR": self._tmpdir})
+        self._env_patch.start()
+
+    def teardown_method(self):
+        self._env_patch.stop()
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_default_cache_has_post_compact_pending_false(self) -> None:
+        from writ.session.cache import _default_cache
+        assert _default_cache()["post_compact_pending"] is False
+
+    def test_fresh_session_cache_reads_back_with_the_key_false(self) -> None:
+        mod = _load_writ_session()
+        fresh = mod._read_cache("test-pcp-fresh-session")
+        assert fresh.get("post_compact_pending") is False
+
+    def test_legacy_cache_written_without_the_key_reads_back_false(self) -> None:
+        """A cache file written before this cycle (no post_compact_pending key
+        at all) must read back with the key present and false, not KeyError
+        and not True."""
+        mod = _load_writ_session()
+        sid = "test-pcp-legacy-session"
+        with open(mod._cache_path(sid), "w") as f:
+            json.dump({"mode": "work", "current_phase": "implementation"}, f)
+        reread = mod._read_cache(sid)
+        assert reread.get("post_compact_pending") is False
+
+
+# ---------------------------------------------------------------------------
+# TestClearPostCompactPendingUpdateHandler -- cmd_update flag
+# ---------------------------------------------------------------------------
+
+
+class TestClearPostCompactPendingUpdateHandler:
+    """`update --clear-post-compact-pending` (writ/session/budget_tracking.py),
+    mirroring `--set-recall-briefed`: writ-rag-inject.sh calls this once, after
+    emitting, to clear the one-shot flag."""
+
+    def setup_method(self):
+        self.mod = _load_writ_session()
+        self._tmpdir = tempfile.mkdtemp()
+        self._env_patch = mock.patch.dict(os.environ, {"WRIT_CACHE_DIR": self._tmpdir})
+        self._env_patch.start()
+
+    def teardown_method(self):
+        self._env_patch.stop()
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_clears_a_true_flag_to_false(self) -> None:
+        sid = "test-pcp-clear"
+        cache = self.mod._read_cache(sid)
+        cache["post_compact_pending"] = True
+        self.mod._write_cache(sid, cache)
+        self.mod.cmd_update(sid, ["--clear-post-compact-pending"])
+        updated = self.mod._read_cache(sid)
+        assert updated.get("post_compact_pending") is False
+
+    def test_idempotent_when_already_false(self) -> None:
+        sid = "test-pcp-clear-noop"
+        cache = self.mod._read_cache(sid)
+        cache["post_compact_pending"] = False
+        self.mod._write_cache(sid, cache)
+        self.mod.cmd_update(sid, ["--clear-post-compact-pending"])
+        updated = self.mod._read_cache(sid)
+        assert updated.get("post_compact_pending") is False
+
+    def test_idempotent_when_key_absent(self) -> None:
+        """A legacy cache with no post_compact_pending key at all must not
+        raise; clearing an absent flag is a safe no-op."""
+        sid = "test-pcp-clear-absent"
+        cache = {"mode": "work"}
+        with open(self.mod._cache_path(sid), "w") as f:
+            json.dump(cache, f)
+        self.mod.cmd_update(sid, ["--clear-post-compact-pending"])
+        updated = self.mod._read_cache(sid)
+        assert updated.get("post_compact_pending") is False
+
+
+# ---------------------------------------------------------------------------
 # TestCycleAHeuristicCoexistence -- fallback safety
 # ---------------------------------------------------------------------------
 
 
 class TestPostCompactIsSoleRecovery:
-    """PostCompact is the sole compaction-recovery signal; the Cycle A
-    detect-compaction heuristic was removed entirely (POL-5a-cleanup)."""
+    """PostCompact is the sole compaction-recovery TRIGGER; the Cycle A
+    detect-compaction heuristic was removed entirely (POL-5a-cleanup).
+
+    Cycle G splits trigger from delivery into two hooks: PostCompact fires
+    once, authoritatively, on the real compaction event and QUEUES recovery
+    (cmd_reset_after_compaction resets the phase/budget state AND sets
+    post_compact_pending=True) -- it does not deliver anything itself, because
+    CC's hook-output validator rejects a PostCompact hookSpecificOutput reply
+    outright. The next writ-rag-inject.sh UserPromptSubmit invocation is the
+    one hook confirmed to reach the model on this build, so it is what
+    actually emits the state line + directive and clears the flag. There is
+    still exactly one authoritative trigger (no detect-compaction heuristic
+    resurrected to duplicate it) -- delivery just no longer rides the same
+    hook invocation as the trigger.
+    """
 
     def test_detect_compaction_removed_from_rag_inject_hook(self) -> None:
         """writ-rag-inject.sh no longer calls detect-compaction.
@@ -391,7 +519,9 @@ class TestPostCompactIsSoleRecovery:
         The env-var-based heuristic was removed because the env var it read
         doesn't exist in Claude Code, and POL-5a-cleanup removed the dead
         cmd_detect_compaction chain entirely. PostCompact hook is the sole
-        authoritative recovery mechanism.
+        authoritative TRIGGER; writ-rag-inject.sh only ever DELIVERS what
+        PostCompact already queued via post_compact_pending, never detects
+        the compaction itself.
         """
         hook = f"{SKILL_DIR}/hooks/scripts/writ-rag-inject.sh"
         with open(hook) as f:
