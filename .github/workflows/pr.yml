@@ -107,7 +107,9 @@ jobs:
       - name: Run benchmarks
         # Shared runners are several times slower than the reference machine on
         # the genuinely hardware-bound cold-start target (measured 5.5s vs <1s,
-        # identical warm behavior). Scale only that budget; see bench_targets.py.
+        # identical warm behavior; 13.31s observed on a slow runner 2026-08-15,
+        # run 31852658113, needing 3.9x, while warm siblings ran 0.24s). Scale
+        # only that budget; see bench_targets.py.
         env:
-          WRIT_BENCH_BUDGET_SCALE: "3"
+          WRIT_BENCH_BUDGET_SCALE: "5"
         run: make bench
