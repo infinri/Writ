@@ -10,21 +10,25 @@ on:
   push:
     branches: [main, develop, 'release/**']
 
+# A push to a branch with an open PR fires this workflow twice (push and
+# pull_request). The twins share a group here so the newer cancels the older
+# within seconds, instead of both grinding toward the job timeout on a shared
+# runner. head_ref is set only on pull_request runs; ref_name covers push runs,
+# so both twins of one branch resolve to the same group.
+concurrency:
+  group: pr-checks-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: test
     runs-on: ubuntu-latest
-    # Timeout sized from local wall-clock measurement on 2026-05-13:
-    # full pytest run is ~88s (1502 passed, 14 skipped) after the
-    # test-order-dependent flake in TestOnnxRankingStability was
-    # skip-marked (commit 231ee41). Setup adds:
-    #   - pip install -e '.[dev]' with cuda/torch transitives: ~3-5 min
-    #   - writ import-markdown (full corpus ingest, Rule + methodology): ~30s
-    #   - scripts/export_onnx.py (HF download + ORT export): ~1-2 min
-    # Total job runtime ~6-9 min on a typical runner. 15-minute timeout
-    # leaves slack for slow GitHub runners and HF download variance
-    # without letting a stuck job run indefinitely.
-    timeout-minutes: 15
+    # Timeout re-sized 2026-08-14: the suite is ~7,900 collected tests now and the
+    # whole job measures 13 to 15 minutes on shared runners (a 15-minute limit
+    # cancelled two green-tree runs at 15m04s and 15m15s that day). Twenty minutes
+    # gives the measured runtime real headroom without letting a stuck job hold a
+    # runner indefinitely.
+    timeout-minutes: 20
     env:
       # The suite runs isolated: tests/conftest.py points every Neo4j resolution
       # at this instance and marks it disposable. The service is published on
@@ -77,7 +81,7 @@ jobs:
   bench:
     name: bench
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     # Deliberately left on the default 7687 while the test job moved to 7688.
     # Nothing here requests `disposable_graph`, the benchmark numbers are a
     # historical series that should not gain a new variable, and keeping one job
