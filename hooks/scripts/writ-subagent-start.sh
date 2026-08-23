@@ -293,6 +293,27 @@ gates = parent.get('gates_approved', [])
 print(f'[Writ sub-agent: mode={mode}, phase={phase}, gates={\",\".join(gates) if gates else \"none\"}]')
 " "$PARENT_STATE" 2>/dev/null || echo "[Writ sub-agent: isolated session]")
 
+# The plan artifacts are scoped to the PARENT's session, not this worker's agent id: the
+# parent is the session whose gates get approved, so a plan written under the worker's own
+# id is a plan its orchestrator cannot find. The path is computed from the same resolver the
+# gate reads with, and injected because agents/writ-planner.md is static text that cannot
+# interpolate a session id of its own.
+PLAN_DIR_INFO=$(python3 -c "
+import sys, json, os
+sys.path.insert(0, os.environ.get('WRIT_DIR', ''))
+try:
+    from writ.session.locators import plan_dir
+    root = json.loads(sys.argv[1]).get('project_root') or ''
+    d = plan_dir(root, sys.argv[2])
+    print(f'[Writ plan artifacts: write plan.md and capabilities.md to {d}/]' if d else '')
+except Exception:
+    print('')
+" "$PARENT_STATE" "$PARENT_SESSION" 2>/dev/null || echo "")
+if [ -n "$PLAN_DIR_INFO" ]; then
+    PHASE_INFO="$PHASE_INFO
+$PLAN_DIR_INFO"
+fi
+
 # Inject via additionalContext
 if [ -n "$ADDITIONAL_CONTEXT" ] || [ -n "$PHASE_INFO" ]; then
     SA_OUTPUT=$(python3 -c "

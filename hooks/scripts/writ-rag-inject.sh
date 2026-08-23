@@ -373,8 +373,11 @@ WORKRESTORE
 
 [Writ: implementation request -> work mode set automatically]
 This reads as a build/implementation task, so the mode is now 'work' (the full gated
-workflow). BEFORE writing source: write plan.md and capabilities.md at the project root by
-filling in templates/plan-template.md and templates/capabilities-template.md from the Writ
+workflow). BEFORE writing source: write your plan to
+.claude/plans/$SESSION_ID/ -- both plan.md and capabilities.md go there (session-scoped, so
+a second session working this same project cannot revoke your approvals by saving its own
+plan), each by filling in templates/plan-template.md and
+templates/capabilities-template.md from the Writ
 skill directory (they encode the gate's exact format, including the ## Files line grammar),
 present them for approval, then write test skeletons, then implement. Source writes are
 BLOCKED by the gate until the plan and test-skeleton gates are approved. If this is a trivial
