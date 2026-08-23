@@ -9,88 +9,56 @@ The caller passes an already-lowercased, already-stripped prompt (the hook's
 PROMPT_LOWER and the test wrapper both lower+strip first). is_approval may
 .strip() defensively but does not change the matching semantics.
 
-TWO TIERS, AND ONLY ONE OF THEM CAN ADVANCE A GATE (cycle 1). is_approval stays the
-exact-tier predicate, unchanged: it decides what mints a token and advances. classify()
-adds a middle tier for the case that cost a turn on 2026-08-10, "ok remember we want to
-fix all our findings, approved", which is a genuine approval that hits none of the
-anchored patterns below. The embedded tier ASKS instead of advancing, so recall goes up
-while the set of things that can advance a gate does not widen.
+TWO TIERS, AND ONLY ONE OF THEM CAN ADVANCE A GATE. is_approval is the exact-tier
+predicate and accepts exactly one word, `approved`: it decides what mints a token and
+advances. classify() adds a middle tier for the case that cost a turn on 2026-08-10, "ok
+remember we want to fix all our findings, approved", which is a genuine approval that is
+not the bare word. The embedded tier ASKS instead of advancing, so recall stays high while
+the set of things that can advance a gate is one phrase wide.
+
+The exact tier was narrowed from seventeen phrases plus fuzzy matching plus seven regex
+shapes to that single word, by user directive, after a message merely DISCUSSING approval
+phrases fired both this predicate and the manual-testing grant. See is_approval.
 """
 
 import re
 import sys
 
 
-def _levenshtein(s1: str, s2: str) -> int:
-    if len(s1) < len(s2):
-        return _levenshtein(s2, s1)
-    if len(s2) == 0:
-        return len(s1)
-    prev = range(len(s2) + 1)
-    for i, c1 in enumerate(s1):
-        curr = [i + 1]
-        for j, c2 in enumerate(s2):
-            curr.append(min(prev[j + 1] + 1, curr[j] + 1, prev[j] + (c1 != c2)))
-        prev = curr
-    return prev[-1]
-
-
 def is_approval(prompt: str) -> bool:
-    """Return True if the (lowercased) prompt is a human approval signal.
+    """Return True only for the exact word `approved`.
 
-    Pure function, no I/O, fail-closed: any internal error returns False so a
-    hook defect degrades to "no approval detected" (the safe default).
+    ONE PHRASE, BY USER DIRECTIVE. This predicate mints the gate token that advances a
+    phase, so its trigger surface is the set of words a user would deliberately choose and
+    nothing else. What was deleted, and why each had to go:
+
+      * a seventeen-member phrase set including `ok`, `okay`, `y`, `yes`, `go`, `do it` and
+        `continue`. Every one of those is ordinary conversational acknowledgement, and each
+        minted a token.
+      * a prefix-stripping retry (`ok approved`, `sure proceed`), which turned a sentence
+        that merely began with an approval word into an approval.
+      * a Levenshtein distance <= 2 pass over approve/proceed/accept for short prompts. It
+        accepted the typo `except`, which is a real word with an unrelated meaning.
+      * seven regex shapes, including `approved and <short instruction>` and a
+        `phase<a-d> approved` form that never matched the hyphenated spelling users type,
+        because the pattern's whitespace class cannot cross a hyphen.
+
+    Why the mint deserves this and the claim side did not: a token minted when no phase gate
+    is pending carries an EMPTY gate line, and the empty-gate token is exactly what the
+    promotion route accepts as a canon-write credential. So a casual `ok` left a durable
+    credential in /tmp. Narrowing the trigger removes that without touching the binding or
+    the atomic claim, which were already sound.
+
+    Trailing `.`/`!`/`,` are still stripped: a user typing a full stop has not changed their
+    mind. Case and surrounding whitespace are the caller's job (the hook passes an
+    already-lowered, already-stripped prompt) and are handled defensively here anyway.
+
+    Pure function, no I/O, fail-closed: any internal error returns False so a defect
+    degrades to "no approval detected", which is the safe direction.
     """
     try:
-        prompt = (prompt or "").strip()
-
-        exact = {
-            'approved', 'approve', 'lgtm', 'proceed', 'go ahead',
-            'looks good', 'ship it', 'yes', 'yep', 'y', 'ok', 'okay',
-            'go', 'do it', 'continue', 'accepted', 'accept',
-        }
-
-        clean = re.sub(r'[.!,]+$', '', prompt.strip())
-
-        if clean in exact:
-            return True
-
-        # Strip common prefix words and re-check exact match
-        prefixes = ('ok ', 'okay ', 'sure ', 'yeah ', 'yes ', 'yep ', 'alright ')
-        stripped = clean
-        for p in prefixes:
-            if clean.startswith(p):
-                stripped = re.sub(r'^' + re.escape(p) + r'[,]?\s*', '', clean)
-                break
-        if stripped != clean and stripped in exact:
-            return True
-
-        fuzzy_targets = ['approved', 'approve', 'proceed', 'accepted', 'accept']
-        if len(clean) <= 12:
-            for target in fuzzy_targets:
-                if _levenshtein(clean, target) <= 2:
-                    return True
-
-        if len(prompt) < 120:
-            approval_words = r'(?:approved?|proceed|go ahead|continue|accept(?:ed)?|lgtm|looks? good|ship it)'
-            prefix_words = r'(?:ok|okay|sure|yeah|yes|yep|alright)'
-            patterns = [
-                r'^(?:yes|yep|yeah),?\s*' + approval_words,
-                r'^' + approval_words + r'\s*[.!]*$',
-                r'^(?:phase\s*[a-d]|test.skeletons?)\s*(?:approved?|lgtm)\s*[.!]*$',
-                r'^(?:approve|create)\s+(?:phase|gate)',
-                # Prefix word + optional comma/space + approval word (+ optional trailing context)
-                r'^' + prefix_words + r'[,.]?\s+' + approval_words,
-                # Approval word + conjunction/comma + short trailing instruction.
-                # Precision signal: user approves AND issues an instruction (not
-                # a sentence merely beginning with an approval word).
-                r'^' + approval_words + r'\s*(?:,|\s+(?:and|then|plus|&))\s+[\w][\w ,]*[.!]*$',
-            ]
-            for p in patterns:
-                if re.match(p, prompt):
-                    return True
-
-        return False
+        prompt = (prompt or "").strip().lower()
+        return re.sub(r"[.!,]+$", "", prompt).strip() == "approved"
     except Exception:
         return False
 

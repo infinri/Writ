@@ -5,6 +5,7 @@ The hook (auto-approve-gate.sh) delegates to the same module, so these
 tests exercise the exact logic that runs in production.
 """
 
+import pytest
 import os
 import sys
 
@@ -21,88 +22,39 @@ def _check_approval(prompt: str) -> bool:
 
 # -- Exact matches (existing behavior) ---------------------------------------
 
-class TestExactMatches:
+class TestOnlyApprovedMints:
+    """One phrase mints, by user directive (2026-08-23).
+
+    These three classes used to assert that `approve`, `lgtm`, `proceed`, `go ahead`,
+    `yes`, `continue`, the `ok <approval>` prefix forms, and `approved and <instruction>`
+    all minted a token. They no longer do. The old fixtures are kept here as NEGATIVE
+    assertions rather than deleted, so re-widening the vocabulary has to argue with a named
+    test instead of slipping through absent coverage.
+
+    The authoritative contract, including the grant surface, lives in
+    tests/test_approval_exact_only.py. This class exists so this module's own fixtures stay
+    honest, not to duplicate that one.
+    """
+
     def test_approved_returns_true(self):
         assert _check_approval("approved")
 
-    def test_approve_returns_true(self):
-        assert _check_approval("approve")
+    @pytest.mark.parametrize("prompt", [
+        # former exact set
+        "approve", "lgtm", "proceed", "go ahead", "looks good", "ship it",
+        "yes", "yep", "y", "ok", "okay", "go", "do it", "continue",
+        "accepted", "accept",
+        # former prefix forms
+        "ok proceed with remaining work", "sure, go ahead", "yeah approved, continue",
+        "okay proceed", "sure approved", "ok continue", "yeah go ahead",
+        "yes proceed with that", "ok looks good",
+        # former conjunction forms
+        "approved and push", "approved, ship it", "approved then commit",
+        "approve and merge",
+    ])
+    def test_former_vocabulary_no_longer_mints(self, prompt):
+        assert not _check_approval(prompt), prompt
 
-    def test_lgtm_returns_true(self):
-        assert _check_approval("lgtm")
-
-    def test_proceed_returns_true(self):
-        assert _check_approval("proceed")
-
-    def test_go_ahead_returns_true(self):
-        assert _check_approval("go ahead")
-
-    def test_yes_returns_true(self):
-        assert _check_approval("yes")
-
-    def test_continue_returns_true(self):
-        assert _check_approval("continue")
-
-    def test_trailing_exclamation_approved_returns_true(self):
-        assert _check_approval("approved!")
-
-    def test_trailing_period_approved_returns_true(self):
-        assert _check_approval("approved.")
-
-
-# -- Prefix-tolerant patterns (existing behavior) ----------------------------
-
-class TestPrefixPatterns:
-    def test_ok_proceed_with_remaining_work_returns_true(self):
-        """Friction log line 5: this exact phrase was missed."""
-        assert _check_approval("ok proceed with remaining work")
-
-    def test_sure_go_ahead_returns_true(self):
-        assert _check_approval("sure, go ahead")
-
-    def test_yeah_approved_continue_returns_true(self):
-        assert _check_approval("yeah approved, continue with implementation")
-
-    def test_okay_proceed_returns_true(self):
-        assert _check_approval("okay proceed")
-
-    def test_sure_approved_returns_true(self):
-        assert _check_approval("sure, approved")
-
-    def test_ok_continue_returns_true(self):
-        assert _check_approval("ok continue")
-
-    def test_yeah_go_ahead_returns_true(self):
-        assert _check_approval("yeah go ahead")
-
-    def test_yes_proceed_with_that_returns_true(self):
-        assert _check_approval("yes proceed with that")
-
-    def test_ok_looks_good_returns_true(self):
-        assert _check_approval("ok looks good")
-
-
-# -- New conjunction/comma pattern: accept tests (RED until pattern added) ---
-
-class TestConjunctionPattern:
-    def test_approved_and_push_returns_true(self):
-        """Approval word + 'and' + short instruction -> accepted."""
-        assert _check_approval("approved and push")
-
-    def test_approved_comma_ship_it_returns_true(self):
-        """Approval word + comma + short instruction -> accepted."""
-        assert _check_approval("approved, ship it")
-
-    def test_approved_then_commit_returns_true(self):
-        """Approval word + 'then' + short instruction -> accepted."""
-        assert _check_approval("approved then commit")
-
-    def test_approve_and_merge_returns_true(self):
-        """Approval word + 'and' + short instruction -> accepted."""
-        assert _check_approval("approve and merge")
-
-
-# -- Non-approval: must NOT match (existing + new governance guards) ----------
 
 class TestNonApproval:
     def test_question_about_approval_returns_false(self):
@@ -210,18 +162,22 @@ class TestEmbeddedMatches:
 
 
 class TestExactTierClassifiesAsExact:
-    """Structural counterpart to TestPrefixPatterns: every existing exact-match
-    fixture must classify as 'exact', not 'embedded' -- the tiers partition the
-    same prompt space TestExactMatches/TestPrefixPatterns already cover."""
+    """The exact tier is now one phrase wide, so it partitions differently.
+
+    `approved` is exact. The prefix and conjunction forms that used to be exact are
+    embedded: they carry a strong approval word inside a longer sentence, so the hook ASKS
+    rather than advancing, which mints nothing and is why that tier was left alone.
+    """
 
     def test_approved_is_exact(self):
         assert _tier("approved") == "exact"
 
-    def test_ok_proceed_with_remaining_work_is_exact(self):
-        assert _tier("ok proceed with remaining work") == "exact"
-
-    def test_approved_and_push_is_exact(self):
-        assert _tier("approved and push") == "exact"
+    @pytest.mark.parametrize("prompt", [
+        "ok proceed with remaining work",
+        "approved and push",
+    ])
+    def test_former_exact_forms_are_no_longer_exact(self, prompt):
+        assert _tier(prompt) != "exact", prompt
 
 
 class TestEmbeddedGuardsAgreeWithNonApproval:

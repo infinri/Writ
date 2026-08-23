@@ -167,12 +167,29 @@ def own_daemon():
     _stop_own_daemon()
 
 
+class TestNarrowedVocabularyIsSilent:
+    """A phrase that no longer mints produces no approval output at all.
+
+    `lgtm` and `proceed` used to reach the fallback directive here, which is how they
+    revealed themselves as approvals. As of 2026-08-23 the exact tier is the single word
+    `approved`, so these are ordinary prose: no directive, no telemetry row, no advance.
+    Kept as fixtures so re-widening the vocabulary fails a named test.
+    """
+
+    @pytest.mark.parametrize("prompt", ["lgtm", "proceed", "ok", "yes", "y", "continue"])
+    def test_former_phrase_emits_no_approval_output(self, prompt: str) -> None:
+        stdout, code = _run_hook(prompt, session_id=f"phase3b-silent-{prompt}")
+        assert code == 0
+        assert "[Writ: approval pattern detected]" not in stdout, prompt
+        assert "No approval gate was advanced" not in stdout, prompt
+
+
 class TestApprovalFallbackWhenNoGatePending:
     """The default session has no pending Work-mode gate, so an approval phrase
     produces the 'No approval gate was advanced' fallback -- NOT the old
     /writ-approve directive and NOT a phase advance."""
 
-    @pytest.mark.parametrize("prompt", ["approved", "lgtm", "proceed"])
+    @pytest.mark.parametrize("prompt", ["approved", "approved.", "approved!"])
     def test_no_pending_gate_emits_fallback(self, prompt: str) -> None:
         # Unique session per param so a stray prior advance cannot pollute it;
         # the default unclassified/null-mode session always hits the fallback.
@@ -181,14 +198,14 @@ class TestApprovalFallbackWhenNoGatePending:
         assert "[Writ: approval pattern detected]" in stdout
         assert "No approval gate was advanced" in stdout
 
-    @pytest.mark.parametrize("prompt", ["approved", "lgtm", "proceed"])
+    @pytest.mark.parametrize("prompt", ["approved"])
     def test_fallback_does_not_emit_writ_approve(self, prompt: str) -> None:
         # The superseded design steered to /writ-approve. The current hook never does.
         stdout, code = _run_hook(prompt, session_id=f"phase3b-noapprove-{prompt}")
         assert code == 0
         assert "/writ-approve" not in stdout
 
-    @pytest.mark.parametrize("prompt", ["approved", "lgtm", "proceed"])
+    @pytest.mark.parametrize("prompt", ["approved"])
     def test_fallback_does_not_advance(self, prompt: str) -> None:
         # The fallback path is a no-op advance: it must NOT print the advance line.
         stdout, code = _run_hook(prompt, session_id=f"phase3b-noadv-{prompt}")

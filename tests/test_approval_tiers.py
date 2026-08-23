@@ -72,18 +72,30 @@ class TestClassifyExactTier:
     accepts. The mint+advance mechanics for the exact tier are exercised end to end by
     tests/test_pol6f_approval_workflow_extraction.py and
     tests/test_advance_phase_token_claim.py; this pins only the classification decision
-    that has to precede them, so introducing classify() cannot narrow the exact set.
+    that has to precede them. The exact set is one phrase wide as of 2026-08-23; the
+    invariant pinned here is that the two predicates never disagree about it.
     """
 
-    @pytest.mark.parametrize("prompt", [
-        "approved", "approve", "lgtm", "proceed", "go ahead", "yes", "continue",
-        "approved!", "approved.", "ok proceed with remaining work", "sure, go ahead",
-        "yeah approved, continue with implementation", "approved and push",
-        "approved, ship it", "approved then commit", "approve and merge",
-    ])
+    @pytest.mark.parametrize("prompt", ["approved", "approved!", "approved."])
     def test_is_approval_true_prompts_classify_as_exact(self, prompt):
         assert is_approval(prompt) is True, f"fixture drift: {prompt!r} is no longer exact"
         assert _tier(prompt) == "exact"
+
+    @pytest.mark.parametrize("prompt", [
+        "approve", "lgtm", "proceed", "go ahead", "yes", "continue",
+        "ok proceed with remaining work", "sure, go ahead",
+        "yeah approved, continue with implementation", "approved and push",
+        "approved, ship it", "approved then commit", "approve and merge",
+    ])
+    def test_former_exact_prompts_no_longer_mint(self, prompt):
+        """The exact tier narrowed to one phrase (user directive, 2026-08-23).
+
+        These stay as fixtures rather than being deleted: the invariant this class exists
+        for is that classify() and is_approval never disagree, and that has to hold on the
+        prompts the two used to BOTH accept just as much as on the one they still do.
+        """
+        assert is_approval(prompt) is False, prompt
+        assert _tier(prompt) != "exact", prompt
 
 
 # ---------------------------------------------------------------------------
