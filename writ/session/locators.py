@@ -125,6 +125,33 @@ def gate_artifact_path(project_root: str, session_id: str, gate_name: str) -> st
     return os.path.join(directory, f"{gate_name}.approved")
 
 
+def plan_dir(project_root: str, session_id: str) -> str:
+    """The plan directory for ONE session, or "" when there is no valid path.
+
+    Mirrors gate_dir deliberately, including the validation and the trailing-separator
+    strip, because it is the same problem one artifact later: a single file at the project
+    root is a single file for EVERY session working that root, so a plan written by one
+    session moved another session's approval fingerprint and cleared its approved gates.
+    Gate artifacts were scoped per session for exactly that reason; the plan they are
+    granted against was not.
+
+    "" means "no session-scoped plan". Callers must treat it as "fall through to the
+    shared tiers", never join to it.
+    """
+    if not project_root or not is_valid_session_component(session_id):
+        return ""
+    root = project_root.rstrip("/") or "/"
+    return os.path.join(root, ".claude", "plans", session_id)
+
+
+def plan_path(project_root: str, session_id: str) -> str:
+    """The `plan.md` path for ONE session, or "" when there is none."""
+    directory = plan_dir(project_root, session_id)
+    if not directory:
+        return ""
+    return os.path.join(directory, "plan.md")
+
+
 def _find_debug_md(file_path: str) -> str | None:
     """Find debug.md for the project containing file_path.
 
@@ -164,10 +191,16 @@ def _is_own_project(candidate_dir: str, project_root: str) -> bool:
     return any(os.path.exists(os.path.join(candidate_dir, m)) for m in PROJECT_ROOT_MARKERS)
 
 
-def _find_plan_md(project_root: str) -> str | None:
+def _find_plan_md(project_root: str, session_id: str | None = None) -> str | None:
     """Find the plan.md the approval gate should validate.
 
-    The root plan.md WINS when it exists. That is what the old docstring claimed, but a
+    A SESSION-SCOPED plan wins over everything below when session_id is supplied and that
+    file exists, so two sessions on one project no longer share one fingerprint. session_id
+    defaults to None, which reproduces the pre-scoping resolution exactly: a caller with no
+    session in hand keeps the behaviour it had, which is what makes this change inert until
+    something writes a scoped plan.
+
+    Below that tier, unchanged: the root plan.md WINS when it exists. That is what the old docstring claimed, but a
     single mtime sort across every candidate meant a more recently touched plan one level
     down beat it -- so the gate could approve a plan the user was not looking at.
 
@@ -177,6 +210,11 @@ def _find_plan_md(project_root: str) -> str | None:
     that filter, a root that resolved high (a $HOME with a .git, say) let `*/plan.md` reach
     into unrelated sibling projects and satisfy this project's gate with their plan.
     """
+    if session_id:
+        scoped = plan_path(project_root, session_id)
+        if scoped and os.path.isfile(scoped):
+            return scoped
+
     root_plan = os.path.join(project_root, 'plan.md')
     if os.path.isfile(root_plan):
         return root_plan
@@ -215,7 +253,7 @@ def _untick_checkboxes(raw: bytes) -> bytes:
     return _TICKED_CHECKBOX_RE.sub(rb"\1[ ]", raw)
 
 
-def plan_md_hash(project_root: str | None) -> str | None:
+def plan_md_hash(project_root: str | None, session_id: str | None = None) -> str | None:
     """Fingerprint the plan.md the approval gate would validate.
 
     Returns the digest, None when there is no plan.md at all, or PLAN_HASH_UNREADABLE when
@@ -251,7 +289,7 @@ def plan_md_hash(project_root: str | None) -> str | None:
     """
     if not project_root:
         return None
-    path = _find_plan_md(project_root)
+    path = _find_plan_md(project_root, session_id)
     if not path:
         return None
     try:

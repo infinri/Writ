@@ -118,7 +118,7 @@ async def session_advance_phase(
         }
 
     mode = cache.get("mode")
-    target_gate = _next_pending_gate(cache)
+    target_gate = _next_pending_gate(cache, session_id)
     if target_gate is None:
         # No pending gate / non-work mode: a no-op MUST NOT claim/consume the token
         # or run any side effect.
@@ -206,7 +206,9 @@ async def session_advance_phase(
     #
     # Both calls below read files (plan.md, the token file), so they go to a thread like
     # every other blocking call on this route.
-    plan_hash = await asyncio.to_thread(server.plan_md_hash, cache.get("project_root")) or ""
+    plan_hash = await asyncio.to_thread(
+        server.plan_md_hash, cache.get("project_root"), session_id
+    ) or ""
     refusal = await asyncio.to_thread(
         server.gate_binding_refusal, session_id, gate=target_gate, plan_hash=plan_hash
     )
@@ -263,7 +265,7 @@ async def session_advance_phase(
     # relative candidates against the DAEMON's cwd (Writ's own install dir, which has a
     # plan.md), so an unguarded call would name Writ's plan as the approved artifact.
     if target_gate == "phase-a" and project_root:
-        plan_path = _find_plan_md(project_root)
+        plan_path = _find_plan_md(project_root, session_id)
         if plan_path:
             validated_path = plan_path
             artifacts.append(os.path.relpath(plan_path, project_root))
@@ -274,6 +276,7 @@ async def session_advance_phase(
                 locked_cache, target_gate, old_phase, new_phase,
                 trigger="user-approved", mode=mode,
                 confirmation_source=source, artifacts_validated=artifacts,
+                session_id=session_id,
             )
 
     await asyncio.to_thread(_apply)

@@ -46,6 +46,7 @@ writ.toml
 # Writ enforcement runtime artifacts
 workflow-friction.log
 .claude/gates/
+.claude/plans/
 .friction-snapshot
 cache/
 bible/.export_timestamp
@@ -78,3 +79,4 @@ PREMISE-VERIFICATION-BLUEPRINT.md
 *_absorption.md
 RESUME.md
 WRIT-ROADMAP.md
+CONTAINMENT-AUDIT-*.md

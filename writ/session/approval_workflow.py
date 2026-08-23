@@ -80,7 +80,7 @@ def _validate_citations(cited: set, available: set) -> set:
 def _validate_phase_a(project_root: str, session_id: str = "") -> str | None:
     """Validate plan.md for phase-a gate. Returns error message or None."""
     import re
-    plan_path = _find_plan_md(project_root)
+    plan_path = _find_plan_md(project_root, session_id or None)
     if not plan_path:
         return (f"plan.md not found. Write it by filling in {_PLAN_TEMPLATE_REF} in the "
                 "Writ skill directory, which encodes this gate's exact contract: "
@@ -296,6 +296,7 @@ def apply_phase_advance(
     mode: str | None,
     confirmation_source: str | None = None,
     artifacts_validated: list | None = None,
+    session_id: str | None = None,
 ) -> None:
     """The single shared cache-mutation unit for an approved-gate phase advance.
 
@@ -337,7 +338,7 @@ def apply_phase_advance(
     from writ.session.locators import plan_md_hash
 
     bound = dict(cache.get("gates_approved_plan", {}))
-    bound[target_gate] = plan_md_hash(cache.get("project_root"))
+    bound[target_gate] = plan_md_hash(cache.get("project_root"), session_id)
     cache["gates_approved_plan"] = bound
 
     # 2. current_phase.
@@ -449,7 +450,7 @@ def cmd_advance_phase(session_id: str, project_root: str = "", token: str = "") 
 
         # Find next pending gate (shared scan: mode_engine._next_pending_gate; reached
         # only in work mode here, where its mode=="work" guard matches this path).
-        target_gate = _next_pending_gate(cache)
+        target_gate = _next_pending_gate(cache, session_id)
 
         if target_gate is None:
             _emit_json({"advanced": False, "reason": "All gates already approved"})
@@ -472,7 +473,7 @@ def cmd_advance_phase(session_id: str, project_root: str = "", token: str = "") 
         # reports to the approval hook at mint time, so the mint and the claim hash the
         # same file by construction; deriving one of them from a separately-resolved
         # root would refuse legitimate approvals whenever the two roots differ.
-        plan_hash = plan_md_hash(cache.get("project_root")) or ""
+        plan_hash = plan_md_hash(cache.get("project_root"), session_id) or ""
         refusal = gate_binding_refusal(session_id, gate=target_gate, plan_hash=plan_hash)
         if refusal:
             # Refuse WITHOUT claiming: the token may legitimately authorize something
@@ -518,7 +519,7 @@ def cmd_advance_phase(session_id: str, project_root: str = "", token: str = "") 
 
         # Audit-trail artifacts: the plan.md rel-path on every gate but test-skeletons.
         artifacts = []
-        plan_path = _find_plan_md(project_root)
+        plan_path = _find_plan_md(project_root, session_id)
         if plan_path and target_gate != "test-skeletons":
             artifacts.append(os.path.relpath(plan_path, project_root))
 
@@ -528,6 +529,7 @@ def cmd_advance_phase(session_id: str, project_root: str = "", token: str = "") 
             cache, target_gate, old_phase, new_phase,
             trigger="user-approved", mode=mode,
             artifacts_validated=artifacts, confirmation_source=None,
+            session_id=session_id,
         )
 
     # H3/G1: the claim above (inside the lock, after the validator) consumed the
@@ -591,7 +593,7 @@ def cmd_current_phase(session_id: str) -> None:
         "phase": phase or "unclassified",
         "mode": mode,
         "gates_approved": cache.get("gates_approved", []),
-        "next_gate": _next_pending_gate(cache),
-        "plan_hash": plan_md_hash(cache.get("project_root")),
+        "next_gate": _next_pending_gate(cache, session_id),
+        "plan_hash": plan_md_hash(cache.get("project_root"), session_id),
     })
     sys.stdout.write("\n")

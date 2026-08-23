@@ -117,8 +117,14 @@ def _gate_strictness_for_mode(mode: str | None) -> str:
     return MODE_CONFIG.get(mode or "", {}).get("gate_strictness", "advisory")
 
 
-def _next_pending_gate(cache: dict) -> str | None:
-    """Return the first gate in the mode's sequence not yet approved."""
+def _next_pending_gate(cache: dict, session_id: str | None = None) -> str | None:
+    """Return the first gate in the mode's sequence not yet approved.
+
+    session_id selects the session-scoped plan to fingerprint. It defaults to None so an
+    un-threaded caller keeps the shared-root behaviour; both this function and the advance
+    path must be given the SAME id, or the approval path and the enforcement path hold two
+    derivations of one fact again, which is the defect the two were unified to close.
+    """
     mode = cache.get("mode")
     if mode != "work":
         return None
@@ -131,7 +137,7 @@ def _next_pending_gate(cache: dict) -> str | None:
     # when we cannot prove what an approval covered is to ask again, and that
     # costs one re-approval for a session whose state predates this binding.
     # Honoring unfingerprinted entries instead would leave the hole open forever.
-    current_plan = plan_md_hash(cache.get("project_root"))
+    current_plan = plan_md_hash(cache.get("project_root"), session_id)
     bound = cache.get("gates_approved_plan", {})
     approved = {
         gate for gate in cache.get("gates_approved", [])
@@ -193,7 +199,7 @@ def _promote_root_cause_to_plan(session_id: str, mode: str) -> None:
             _log_friction_event(session_id, mode, "debug_to_work_handoff", evidence_present=False)
             return
 
-        plan_path = _find_plan_md(project_root) or os.path.join(project_root, "plan.md")
+        plan_path = _find_plan_md(project_root, session_id) or os.path.join(project_root, "plan.md")
         existing = ""
         if os.path.isfile(plan_path):
             with open(plan_path) as f:
@@ -479,7 +485,7 @@ def _mode_switch(session_id: str, mode: str) -> None:
                 # Fingerprint the plan these approvals were granted against. The key is
                 # ALWAYS written (None when there is no plan) so the return path can tell
                 # "no plan at pause" from "this state predates the fingerprint".
-                "plan_hash": plan_md_hash(project_root),
+                "plan_hash": plan_md_hash(project_root, session_id),
             }
 
         # Restore Work state when returning to Work
@@ -496,7 +502,7 @@ def _mode_switch(session_id: str, mode: str) -> None:
             # re-approval; restoring on an unchecked file hands back approvals that may no
             # longer cover the plan. Absent at both ends still restores: that is genuinely
             # equal, because no plan means nothing pivoted.
-            current_hash = plan_md_hash(project_root)
+            current_hash = plan_md_hash(project_root, session_id)
             if current_hash == paused.get("plan_hash") and current_hash != PLAN_HASH_UNREADABLE:
                 cache["current_phase"] = paused["phase"]
                 cache["gates_approved"] = paused["gates_approved"]

@@ -225,8 +225,8 @@ async def session_current_phase(session_id: str) -> dict[str, Any]:
             # "" rather than null for an unset mode, matching this file's own
             # /session/{id}/mode route; the hook coalesces either to empty anyway.
             "mode": cache.get("mode", "") or "",
-            "next_gate": _next_pending_gate(cache),
-            "plan_hash": plan_md_hash(cache.get("project_root")),
+            "next_gate": _next_pending_gate(cache, session_id),
+            "plan_hash": plan_md_hash(cache.get("project_root"), session_id),
         }
 
     return await asyncio.to_thread(_get)
