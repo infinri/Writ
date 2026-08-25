@@ -1,8 +1,9 @@
 """Single source for the gate-token mechanism (H2).
 
 The gate token is written by auto-approve-gate.sh ONLY on genuine user
-approval (input the agent cannot forge), so requiring it is what makes the
-human the approver. The path, the read semantics (missing -> ""), the
+approval, which the agent cannot forge; and since both write gates now refuse
+the path, it cannot rewrite the binding of a real one either. Requiring the
+token is therefore what makes the human the approver. The path, the read semantics (missing -> ""), the
 match comparison, and consumption are security-critical and MUST be defined
 once: three call sites (server advance-phase, server promote-candidate, CLI
 cmd_advance_phase) previously each reimplemented the comparison, and they
@@ -15,11 +16,15 @@ one approval authorizes exactly one gated action. A bare secret cannot keep that
 promise: whatever gate happened to be pending when the token was spent got the
 approval, so an "approved" typed at a plan.md could advance the test-skeletons gate,
 or be spent promoting a decision-memory candidate into the canon. The file is now
-three lines:
+four lines:
 
     line 1           the secret, as before
     line 2           the gate this approval authorizes, empty when none was pending
     line 3           locators.plan_md_hash of the plan.md the user was looking at
+    line 4           the promotion candidate this approval names, empty for a phase
+                     advance. Added because the promotion route took the candidate from
+                     the request body, so one approval authorized promoting whichever
+                     candidate the caller named: an approval for C was spendable on D.
 
 read_gate_token() returns LINE ONE ONLY, so the non-destructive presence checks in
 the advance and promote-candidate routes keep comparing what they always compared.
@@ -54,6 +59,7 @@ import uuid
 BINDING_UNBOUND = "gate_token_unbound"
 BINDING_GATE_MISMATCH = "gate_token_gate_mismatch"
 BINDING_PLAN_DRIFT = "gate_token_plan_drift"
+BINDING_CANDIDATE_MISMATCH = "gate_token_candidate_mismatch"
 
 
 def gate_token_path(session_id: str) -> str:
@@ -65,12 +71,27 @@ def gate_token_path(session_id: str) -> str:
     return os.path.join("/tmp", f"writ-gate-token-{session_id}")
 
 
-def mint_gate_token(session_id: str, *, gate: str, plan_hash: str, token: str | None = None) -> str:
-    """Write the three-line token file and return the token.
+def mint_gate_token(
+    session_id: str,
+    *,
+    gate: str,
+    plan_hash: str,
+    candidate_id: str = "",
+    token: str | None = None,
+) -> str:
+    """Write the four-line token file and return the token.
 
     The bash writer (common.sh write_gate_token_file) produces the same bytes for the
     same inputs; the hook mints from bash so a broken writ package cannot cost the
     user their approval, and this is the python side of that one format.
+
+    LINE 4 IS THE CANDIDATE, and it binds a promotion the way line 3 binds a phase
+    advance. The promotion route used to take candidate_id from the request body, so one
+    approval authorized promoting ANY candidate the caller named: an approval for
+    candidate C was spendable on candidate D. The candidate the agent surfaced through
+    the review route before the human approved is now recorded here, and the route
+    requires the two to match. Empty for every non-promotion approval, which is the
+    common case and is what a phase advance compares against.
 
     `token` exists so a test can drive one fixed value through both writers and
     compare bytes. Production callers omit it and get a fresh secret.
@@ -79,7 +100,7 @@ def mint_gate_token(session_id: str, *, gate: str, plan_hash: str, token: str | 
         token = secrets.token_hex(16)
     path = gate_token_path(session_id)
     with open(path, "w") as f:
-        f.write(f"{token}\n{gate}\n{plan_hash}\n")
+        f.write(f"{token}\n{gate}\n{plan_hash}\n{candidate_id}\n")
     # The secret sits in a world-readable directory; the bash writer chmods too.
     os.chmod(path, 0o600)
     return token
@@ -123,43 +144,84 @@ def _token_file_lines(session_id: str) -> list[str] | None:
         return None
 
 
-def _binding_refusal(lines: list[str] | None, gate: str, plan_hash: str) -> str:
+def _line(lines: list[str], index: int) -> str:
+    """Line `index` stripped, or "" when the file is shorter than that.
+
+    BOUNDS-SAFE ON PURPOSE. Callers split on "\\n", so a file written with a trailing
+    newline yields one MORE element than it has lines and a file written without one
+    yields exactly as many. A three-line token from before the candidate binding
+    therefore has either four elements or three, and line 4 must read as "" in both
+    cases rather than raising IndexError in one of them.
+    """
+    return lines[index].strip() if len(lines) > index else ""
+
+
+def _binding_refusal(
+    lines: list[str] | None, gate: str, plan_hash: str, candidate_id: str = ""
+) -> str:
     """Return the refusal class for these token-file lines, or "" when they authorize.
 
     Pure, and the ONLY comparison of a binding in the codebase: the destructive claim
     and the non-destructive pre-check below both route through it, because the last
     time this module let two call sites answer the same security question separately
     they drifted.
+
+    THE CANDIDATE COMPARISON IS BACKWARDS-COMPATIBLE AND FAILS SAFE. A token minted
+    before line 4 existed reads as candidate "", so a phase advance (which passes "")
+    still matches and every token already on disk keeps advancing. A promotion passes a
+    real candidate id against that empty value and is refused, which is the correct
+    direction to fail for a credential minted before the binding it is being asked to
+    carry.
     """
     if lines is None or len(lines) < 3:
         return BINDING_UNBOUND
-    if lines[1].strip() != (gate or ""):
+    if _line(lines, 1) != (gate or ""):
         return BINDING_GATE_MISMATCH
-    if lines[2].strip() != (plan_hash or ""):
+    if _line(lines, 2) != (plan_hash or ""):
         return BINDING_PLAN_DRIFT
+    if _line(lines, 3) != (candidate_id or ""):
+        return BINDING_CANDIDATE_MISMATCH
     return ""
 
 
-def gate_binding_refusal(session_id: str, *, gate: str, plan_hash: str) -> str:
+def gate_binding_refusal(
+    session_id: str, *, gate: str, plan_hash: str, candidate_id: str = ""
+) -> str:
     """The refusal class for the on-disk token, or "" when it authorizes this gate.
 
     Non-destructive, so a caller can name WHY it is refusing (and log a distinct
     friction event) without spending the user's approval on a claim it already knows
     will fail.
     """
-    return _binding_refusal(_token_file_lines(session_id), gate, plan_hash)
+    return _binding_refusal(
+        _token_file_lines(session_id), gate, plan_hash, candidate_id
+    )
 
 
 def read_gate_binding(session_id: str) -> tuple[str, str] | None:
     """(bound gate, bound plan fingerprint), or None when the file carries no binding.
 
     Callers that must treat a pre-binding token file differently from a mismatched
-    one need to ask that question without consuming anything.
+    one need to ask that question without consuming anything. The candidate is read
+    separately (read_gate_candidate) rather than widened into this tuple, because every
+    existing caller unpacks exactly two values.
     """
     lines = _token_file_lines(session_id)
     if lines is None or len(lines) < 3:
         return None
-    return lines[1].strip(), lines[2].strip()
+    return _line(lines, 1), _line(lines, 2)
+
+
+def read_gate_candidate(session_id: str) -> str:
+    """The candidate this token authorizes promoting, or "" when it binds none.
+
+    "" covers three cases that need no distinguishing here: a non-promotion approval, a
+    token minted before line 4 existed, and an absent file. All three mean "this token
+    does not authorize promoting anything", and the promotion route refuses on the
+    mismatch rather than on the reason for it.
+    """
+    lines = _token_file_lines(session_id)
+    return _line(lines, 3) if lines else ""
 
 
 def gate_token_valid(token: str, expected: str) -> bool:
@@ -246,25 +308,32 @@ def _claim_token_mutex(session_id: str, supplied_token: str) -> bool:
 
 
 def claim_gate_token(
-    session_id: str, supplied_token: str, *, gate: str, plan_hash: str
+    session_id: str,
+    supplied_token: str,
+    *,
+    gate: str,
+    plan_hash: str,
+    candidate_id: str = "",
 ) -> bool:
-    """Claim the token for ONE named gate against ONE plan fingerprint.
+    """Claim the token for ONE named gate against ONE plan fingerprint and ONE candidate.
 
     Refuses when the token is absent, already claimed, mismatched, bound to a
-    different gate, bound to a plan fingerprint that no longer matches, or carries no
-    binding at all (a pre-cycle token file). gate and plan_hash are required: see the
-    module docstring on why a default here would be a fail-open bypass.
+    different gate, bound to a plan fingerprint that no longer matches, bound to a
+    different candidate, or carries no binding at all (a pre-cycle token file). gate and
+    plan_hash are required: see the module docstring on why a default here would be a
+    fail-open bypass. candidate_id defaults to empty because that is what every phase
+    advance binds and passes, and only the promotion route has a candidate at all.
 
     The binding is checked BEFORE the claim so a refusal does not consume an approval
     that authorizes a different action, and again from the claimed bytes, which are
     the only bytes that were actually spent.
     """
-    if _binding_refusal(_token_file_lines(session_id), gate, plan_hash):
+    if _binding_refusal(_token_file_lines(session_id), gate, plan_hash, candidate_id):
         return False
     content = _claim_file(session_id)
     if content is None:
         return False
     lines = content.split("\n")
-    if _binding_refusal(lines, gate, plan_hash):
+    if _binding_refusal(lines, gate, plan_hash, candidate_id):
         return False
     return gate_token_valid(supplied_token, lines[0].strip())

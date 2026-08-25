@@ -137,13 +137,13 @@ The validators are presence checks by design: they confirm the artifact exists i
 
 This is the keystone. Writ could otherwise let the agent approve its own writes. It cannot.
 
-- **The token.** A 32-hex-character secret at `/tmp/writ-gate-token-<session_id>` (chmod 600).
+- **The token.** A 32-hex-character secret at `/tmp/writ-gate-token-<session_id>` (chmod 600), and the binding it carries: four lines holding the secret, the gate it authorizes, the plan fingerprint it was granted against, and the promotion candidate it names (empty for a phase advance). Both write gates refuse that path, so the agent can read the credential but not rewrite what it authorizes.
 - **Who writes it.** `auto-approve-gate.sh`, and *only* when the user's typed prompt matches an approval pattern (exact phrases, small-edit fuzzy match, bounded regexes; single source `bin/lib/approval_match.py`). The agent cannot forge your keystroke.
-- **Who consumes it.** `/advance-phase` (§6) and `/promote-candidate` (§12), the only two routes that advance workflow or write canon. Claiming the token is an atomic filesystem rename, so two concurrent requests with the same token produce exactly one advance. Claiming *is* consuming: one approval, one advance.
+- **Who consumes it.** `/advance-phase` (§6) and `/promote-candidate` (§12), the only two routes that advance workflow or write canon. Both **claim** it, and the claim is an atomic filesystem rename, so two concurrent requests carrying the same token produce exactly one advance or one promotion. Claiming *is* consuming, and it happens before the work it protects: a judged-and-failed artifact spends the approval too, because the approval was for the artifact that failed.
 - **What spends it.** A successful advance, or a failed validation (the artifact changed; re-approve). A request that cannot even resolve the project root does not spend it.
 - **What happens without it.** The attempt is refused and logged as `agent_self_approval_blocked` on the audit stream.
 
-In one sentence: the agent can draft, propose, and lobby, but the *write of canon* requires a token only your keystroke produces.
+In one sentence: the agent can draft, propose, and lobby, but the *write of canon* requires a credential your keystroke alone mints, which names the one candidate it authorizes, and which the agent cannot write to because both write gates refuse that path.
 
 ---
 

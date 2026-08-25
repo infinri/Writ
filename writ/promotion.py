@@ -4,7 +4,8 @@ A graduation_pending candidate becomes canon ONLY through an informed, edit-capa
 token-gated human promotion (the North Star: oversight relocated to the graduation
 moment, not removed).
 
-- build_promotion_review_artifact (6.3b) surfaces the candidate's CONTENT + canon-fit so
+- build_promotion_review_artifact (6.3b), served by POST /session/{id}/promotion-review,
+  surfaces the candidate's CONTENT + canon-fit so
   the gate is INFORMED, not a rubber-stamp.
 - promote_candidate (6.3c) performs the gated, edit-capable canon write: re-lint the
   (edited) text, stamp provenance=graduated + graduated_via, export to bible/ source.

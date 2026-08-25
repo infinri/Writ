@@ -24,13 +24,14 @@ from writ.server.models import (
     PreWriteCheckRequest,
     SessionAdvancePhaseRequest,
     SessionPromoteCandidateRequest,
+    SessionPromotionReviewRequest,
 )
 from writ.session.approval_workflow import (
     _BINDING_REFUSAL_REASONS,
     _GATE_VALIDATORS,
     apply_phase_advance,
 )
-from writ.session.gate_token import BINDING_UNBOUND
+from writ.session.gate_token import BINDING_CANDIDATE_MISMATCH, BINDING_UNBOUND
 from writ.session.locators import _find_plan_md, resolve_project_root
 from writ.session.mode_engine import MODE_CONFIG, _next_pending_gate
 from writ.shared.logging import request_project_scope, set_request_project_scope
@@ -362,6 +363,50 @@ async def session_advance_phase(
     return result
 
 
+@router.post("/session/{session_id}/promotion-review")
+async def session_promotion_review(
+    session_id: str, request: SessionPromotionReviewRequest | None = None
+) -> dict[str, Any]:
+    """Surface a graduation_pending candidate for human review, and record what was shown.
+
+    TWO JOBS, ON PURPOSE, because they are the same act. The artifact half is what
+    writ.promotion.build_promotion_review_artifact was written for: the candidate's
+    statement, trigger, examples and canon-fit, so the human is "the APPROVER of canon,
+    not a veto switch reacting to an id". That function had NO production caller, so the
+    flow its docstring describes did not exist.
+
+    The recording half is what makes the next approval bindable. `pending_candidate_id`
+    goes into the session cache, cmd_current_phase reports it, and the mint writes it as
+    the token's fourth line. Without a record of what was surfaced there is nothing for a
+    promotion approval to bind to, which is why the two halves belong in one call: a
+    candidate that was never shown must never become one an approval can authorize.
+
+    A candidate that is not graduation_pending is refused and NOT recorded, so a rejected
+    surfacing cannot leave a binding behind for a later approval to pick up.
+    """
+    if server._db is None or server._pipeline is None:
+        return {"error": "Database/pipeline not connected."}
+    req = request or SessionPromotionReviewRequest()
+    candidate_id = req.candidate_id
+    if not candidate_id:
+        return {"error": "candidate_id is required."}
+
+    try:
+        artifact = await server.build_promotion_review_artifact(
+            candidate_id, server._pipeline, server._db
+        )
+    except ValueError as exc:
+        # Not found, or not graduation_pending. Nothing is recorded.
+        return {"error": str(exc)}
+
+    def _record() -> None:
+        with server.writ_session.mutate_cache(session_id) as cache:
+            cache["pending_candidate_id"] = candidate_id
+
+    await asyncio.to_thread(_record)
+    return {"candidate_id": candidate_id, **artifact}
+
+
 @router.post("/session/{session_id}/promote-candidate")
 async def session_promote_candidate(
     session_id: str, request: SessionPromoteCandidateRequest | None = None
@@ -434,8 +479,16 @@ async def session_promote_candidate(
     # and would explain the refusal with a reason that is not about the promotion at all.
     # The security gain would be nil: plan.md is agent-writable, the token is not, and
     # one approval still authorizes exactly one promotion because success consumes it.
-    # The honest analogue would bind the candidate id into the token, which the mint
-    # cannot do: at approval time the hook knows the pending gate, not a candidate.
+    #
+    # THE CANDIDATE HALF IS NOW BOUND. This comment used to end by calling that analogue
+    # impossible, "which the mint cannot do: at approval time the hook knows the pending
+    # gate, not a candidate". That was true only because nothing told the hook. The review
+    # route below records the candidate it surfaces, cmd_current_phase reports it, and the
+    # mint writes it as line 4, so a promotion approval binds to one candidate exactly as a
+    # phase approval binds to one plan. The agent still chooses WHICH candidate it
+    # surfaced, which is the same residual plan.md carries and which the paragraph above
+    # already accepts: what the binding removes is an approval for candidate C being
+    # spendable on candidate D.
     binding = await asyncio.to_thread(server.read_gate_binding, session_id)
     if binding is None:
         await asyncio.to_thread(
@@ -470,6 +523,52 @@ async def session_promote_candidate(
                 f"That approval is bound to the {binding[0]} gate, so it cannot promote a "
                 "candidate to canon. Approve the promotion on its own turn, with no phase "
                 "gate pending."
+            ),
+        }
+
+    # The candidate this approval was minted for. "" covers a non-promotion approval and
+    # a token minted before line 4 existed; both mean "authorizes promoting nothing", so
+    # both are refused here rather than distinguished.
+    bound_candidate = await asyncio.to_thread(server.read_gate_candidate, session_id)
+    if bound_candidate != candidate_id:
+        await asyncio.to_thread(
+            server.log_friction_event,
+            session_id=session_id,
+            mode=None,
+            event=BINDING_CANDIDATE_MISMATCH,
+            event_target="promote_candidate",
+            candidate_id=candidate_id,
+            bound_candidate=bound_candidate,
+        )
+        return {
+            "promoted": False,
+            # Nothing is consumed: the approval may legitimately authorize the OTHER
+            # candidate, and spending it here would destroy that authorization.
+            "error": (
+                f"That approval authorizes promoting {bound_candidate or 'no candidate'}, "
+                f"not {candidate_id}. Surface {candidate_id} for review, then approve it."
+            ),
+        }
+
+    # ATOMIC CLAIM, matching /advance-phase. This route used to read the token here and
+    # consume it only after the write returned, so two concurrent posts with one token both
+    # reached promote_candidate and both wrote canon. claim_gate_token's claim-by-rename is
+    # the mutual exclusion; the loser gets False and does nothing.
+    #
+    # plan_hash is passed as the token's OWN line-3 value rather than a freshly computed
+    # fingerprint, so _binding_refusal compares that field against itself and cannot refuse
+    # on plan drift. That preserves the asymmetry argued for above: atomicity is gained
+    # without importing an enforcement this route deliberately does not want.
+    claimed = await asyncio.to_thread(
+        server.claim_gate_token, session_id, token,
+        gate="", plan_hash=binding[1], candidate_id=candidate_id,
+    )
+    if not claimed:
+        return {
+            "promoted": False,
+            "error": (
+                "That approval was already spent (a concurrent request claimed it). "
+                "One approval authorizes exactly one promotion."
             ),
         }
 

@@ -152,7 +152,8 @@ _readonly_inspection() {
 STATE_DIR_GUARD="${WRIT_CACHE_DIR:-$WRIT_DIR/var/session}"
 case "$CMD" in
     *"$STATE_DIR_GUARD"* | *"/tmp/writ-current-session"* | *"writ-session-"* \
-    | *"writ-manual-test-grant"* | *"manual_test_grant"* | *"writ-grant-"*)
+    | *"writ-manual-test-grant"* | *"manual_test_grant"* | *"writ-grant-"* \
+    | *"writ-gate-token"*)
         if _readonly_inspection "$CMD"; then
             log_gate_decision "bash-write" "allow" "read-only inspection naming gate state" ""
         else

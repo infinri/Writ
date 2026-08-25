@@ -595,5 +595,9 @@ def cmd_current_phase(session_id: str) -> None:
         "gates_approved": cache.get("gates_approved", []),
         "next_gate": _next_pending_gate(cache, session_id),
         "plan_hash": plan_md_hash(cache.get("project_root"), session_id),
+        # The candidate the review route surfaced to the human, if any. The mint reads
+        # this to bind a promotion approval to one candidate, the same way it reads
+        # plan_hash to bind a phase approval to one plan.
+        "candidate_id": cache.get("pending_candidate_id") or "",
     })
     sys.stdout.write("\n")

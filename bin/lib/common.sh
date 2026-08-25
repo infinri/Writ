@@ -1055,10 +1055,13 @@ log_friction_event() {
 # An empty gate and an empty fingerprint are legitimate values, not missing ones: they
 # are what an approval typed with no phase gate pending is bound to, and the claim
 # enforces them as "must be exactly empty".
-# Usage: write_gate_token_file <path> <token> <gate> <plan_hash>
+# LINE 4 is the candidate a promotion is bound to, empty for every other approval. It
+# exists because the promotion route used to take the candidate from the request body, so
+# one approval authorized promoting whichever candidate the caller named.
+# Usage: write_gate_token_file <path> <token> <gate> <plan_hash> [candidate_id]
 write_gate_token_file() {
-  local path="$1" secret="$2" gate="${3:-}" plan_hash="${4:-}"
-  printf '%s\n%s\n%s\n' "$secret" "$gate" "$plan_hash" > "$path"
+  local path="$1" secret="$2" gate="${3:-}" plan_hash="${4:-}" candidate="${5:-}"
+  printf '%s\n%s\n%s\n%s\n' "$secret" "$gate" "$plan_hash" "$candidate" > "$path"
   # The file holds a secret in a world-readable directory; the python writer chmods too.
   chmod 600 "$path" 2>/dev/null || true
 }

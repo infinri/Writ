@@ -131,9 +131,13 @@ PHASE_JSON=$(python3 "$SESSION_HELPER" current-phase "$SESSION_ID" 2>/dev/null |
 # the running daemon are separate artifacts -- the daemon has to be restarted to pick up
 # a checkout). The advance guard below has to tell them apart to know whether it may
 # trust the empty answer or must fall back to the phase.
+# FIELD 6 is the candidate the review route surfaced, and it binds a promotion approval
+# the way plan_hash binds a phase approval. Both arms of json_transform are updated
+# together: they are two spellings of one projection and a drift between them would mint
+# tokens whose binding depends on whether jq happened to be installed.
 PHASE_FIELDS=$(printf '%s' "$PHASE_JSON" | json_transform \
-    '[(.phase // ""), (.mode // ""), (.next_gate // ""), (.plan_hash // ""), (if has("next_gate") then "1" else "" end)] | join("\t")' \
-    '"\t".join([str(d.get(k) or "") for k in ("phase", "mode", "next_gate", "plan_hash")] + ["1" if "next_gate" in d else ""])' \
+    '[(.phase // ""), (.mode // ""), (.next_gate // ""), (.plan_hash // ""), (if has("next_gate") then "1" else "" end), (.candidate_id // "")] | join("\t")' \
+    '"\t".join([str(d.get(k) or "") for k in ("phase", "mode", "next_gate", "plan_hash")] + ["1" if "next_gate" in d else ""] + [str(d.get("candidate_id") or "")])' \
     2>/dev/null || echo "")
 # `cut -s`: a line with no tab is a parse that failed, and every field must then read
 # empty rather than repeating the whole line into CURRENT_MODE (which would compare equal
@@ -143,6 +147,7 @@ CURRENT_MODE=$(printf '%s' "$PHASE_FIELDS" | cut -s -f2)
 NEXT_GATE=$(printf '%s' "$PHASE_FIELDS" | cut -s -f3)
 PLAN_HASH=$(printf '%s' "$PHASE_FIELDS" | cut -s -f4)
 NEXT_GATE_REPORTED=$(printf '%s' "$PHASE_FIELDS" | cut -s -f5)
+CANDIDATE_ID=$(printf '%s' "$PHASE_FIELDS" | cut -s -f6)
 
 case "$TIER" in
 embedded)
@@ -191,7 +196,7 @@ exact)
         # earlier turn is bound to an earlier state: keeping it would make the user's
         # fresh approval be refused as a gate mismatch, with no way to clear it. The
         # newest approval is the authoritative one.
-        write_gate_token_file "$GATE_TOKEN_FILE" "$GATE_TOKEN" "${NEXT_GATE:-}" "${PLAN_HASH:-}"
+        write_gate_token_file "$GATE_TOKEN_FILE" "$GATE_TOKEN" "${NEXT_GATE:-}" "${PLAN_HASH:-}" "${CANDIDATE_ID:-}"
     fi
 
     ADVANCED_TO=""

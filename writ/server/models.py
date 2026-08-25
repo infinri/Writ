@@ -261,6 +261,17 @@ class SessionAdvancePhaseRequest(BaseModel):
     cwd: str = ""
 
 
+class SessionPromotionReviewRequest(BaseModel):
+    """Request body for POST /session/{session_id}/promotion-review.
+
+    Surfacing a candidate is what makes the human its approver rather than a veto switch
+    reacting to an id, and it is also what records the candidate the next approval binds
+    to. One field: the route derives everything else from the graph.
+    """
+
+    candidate_id: str | None = None
+
+
 class SessionPromoteCandidateRequest(BaseModel):
     """Request body for POST /session/{session_id}/promote-candidate."""
 

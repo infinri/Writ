@@ -581,7 +581,11 @@ class TestPromoteCandidateBinding:
 
         sid = _sid("promote-accept")
         with _mint_cleanup(sid):
-            token = mint_gate_token(sid, gate="", plan_hash="")
+            # The candidate is now part of the binding (2026-08-25): this route used to
+            # take it from the request body alone, so one approval authorized promoting
+            # whichever candidate the caller named. An empty gate is still necessary and
+            # is what this test is about; it is no longer sufficient on its own.
+            token = mint_gate_token(sid, gate="", plan_hash="", candidate_id="cand-1")
 
             result = await session_promote_candidate(
                 sid, SessionPromoteCandidateRequest(candidate_id="cand-1", token=token)
