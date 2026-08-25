@@ -38,7 +38,7 @@ from writ.server.models import (
 )
 from writ.session.locators import plan_md_hash
 from writ.session.mode_engine import VALID_MODES, _next_pending_gate
-from writ.shared.logging import emit
+from writ.shared.logging import emit, request_project_scope
 
 router = APIRouter()
 
@@ -176,9 +176,16 @@ async def session_can_write(session_id: str, request: SessionCanWriteRequest | N
     """
     req = request or SessionCanWriteRequest()
     envelope = {"tool_input": req.tool_input}
-    result = await asyncio.to_thread(
-        server.writ_session._can_write_check, session_id, envelope, req.skill_dir
-    )
+    # The cache read is HOISTED out of _can_write_check (which accepts it) rather than
+    # added: the gate needs the project root to file its write_attempt / gate_denial rows
+    # under the caller's project instead of the daemon's cwd, and the cache is the only
+    # thing that knows it. One read either way; this way the handler can name the scope.
+    cache = await asyncio.to_thread(server.writ_session._read_cache, session_id)
+    with request_project_scope(cache.get("project_root")):
+        result = await asyncio.to_thread(
+            server.writ_session._can_write_check, session_id, envelope, req.skill_dir,
+            cache=cache,
+        )
     return {"can_write": result["can_write"], "reason": result.get("reason")}
 
 

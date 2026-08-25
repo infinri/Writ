@@ -25,10 +25,12 @@ and bin writers import DOWN into it (ARCH-LAYER-001).
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import re
 import sys
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -334,6 +336,96 @@ def resolve_project(cwd: str | None = None) -> str:
     return _sanitize_segment(name)
 
 
+# The project root the CURRENT request is about, or None when the caller's own cwd is the
+# right answer. Read by `emit` and set only by `request_project_scope` below.
+#
+# WHY A CONTEXT VARIABLE AND NOT A PARAMETER ON emit(). `resolve_project()` derives the log
+# scope from `os.getcwd()`, which is correct for every hook-side writer -- a hook is a
+# subprocess launched in the user's project -- and wrong for the daemon, whose cwd is pinned
+# to the skill directory by `WorkingDirectory` in its unit file. So a daemon route serving a
+# write for project X filed X's rows under Writ's own log space. Measured before this was
+# added: 33 of 51 `write_attempt` rows in Writ's audit stream carried paths belonging to
+# another repo, while that repo's own audit stream showed no write-gate activity at all, so
+# reading it to ask "is the gate running here" answered a confident no. That is the same
+# harm `resolve_project`'s own docstring describes one layer down, and for the same reason:
+# a row findable under the wrong scope is worse than one that is merely hard to find.
+#
+# The correct scope is a property of the CALLER, not of the emitting function, and the
+# emitting functions (gates.py, mode_engine.py, approval_workflow.py) are reached from BOTH
+# the daemon and the CLI helper. Threading a keyword through them would therefore have to be
+# repeated at all 34 call sites and would fail in the wrong direction: a future site that
+# omits it misfiles silently, which is precisely the defect being closed, and a misfiled row
+# still reads as a valid row in someone else's log. Setting it once at the request boundary
+# makes correct attribution the default for everything downstream.
+_REQUEST_PROJECT_ROOT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "writ_request_project_root", default=None,
+)
+
+
+@contextmanager
+def request_project_scope(project_root: str | None):
+    """Attribute every event emitted in this block to the project at `project_root`.
+
+    For daemon request handlers: the route knows which project it is serving (the session
+    cache's `project_root`), and nothing beneath it does. A blank or None value is "no
+    scope", leaving the existing cwd resolution in place, so an un-threaded caller and a
+    request with no resolvable root behave exactly as they did before.
+
+    `contextvars` rather than a plain attribute because the value must survive the thread
+    hop: `/pre-write-check` evaluates the whole gate inside `asyncio.to_thread`, which
+    copies the caller's context into the worker thread, so the `write_attempt` emitted deep
+    inside `_can_write_check` inherits this scope with nothing threaded through. That
+    propagation is load-bearing, so it is pinned by
+    tests/test_log_project_scope_daemon.py::TestScopeCrossesTheThreadBoundary rather than
+    assumed.
+
+    Always restores the previous value, including when the body raises: a scope stranded by
+    an exception would misattribute every later request in the process, which is a worse
+    version of the bug this closes.
+    """
+    token = _REQUEST_PROJECT_ROOT.set(_clean_scope(project_root))
+    try:
+        yield
+    finally:
+        _REQUEST_PROJECT_ROOT.reset(token)
+
+
+def _clean_scope(project_root: str | None) -> str | None:
+    """Normalize a caller-supplied scope: blank and non-string both mean "no scope"."""
+    if not isinstance(project_root, str):
+        return None
+    return project_root.strip() or None
+
+
+def set_request_project_scope(project_root: str | None) -> None:
+    """Set the request scope for the REST of the current context, with no restore.
+
+    Safe ONLY where the caller already runs inside its own context copy, which covers both
+    daemon shapes:
+
+      * a synchronous worker under `asyncio.to_thread`, which runs its target via
+        `contextvars.copy_context().run(...)`;
+      * an async request handler, which runs as an `asyncio.Task`, and a Task copies the
+        context at creation.
+
+    In both cases the copy IS the isolation: a value set inside cannot reach the event
+    loop's own context or any other request, so the missing restore costs nothing. That is
+    also exactly why this must not be called from module scope or from a plain synchronous
+    helper on the shared context -- there the value would persist and misattribute
+    everything after it.
+
+    Prefer `request_project_scope` anywhere a `with` block is practical. This exists because
+    both daemon routes learn their project root deep inside long bodies with several early
+    returns -- `/pre-write-check` a hundred lines into the worker it would have to wrap --
+    and paying a second thread hop, a second cache read on the hottest gate path, or a
+    hundred-line reindent to hoist that out is a worse trade than one documented setter.
+    That the isolation actually holds is pinned by
+    tests/test_log_project_scope_daemon.py::TestRouteScopeDoesNotEscape for both shapes,
+    rather than left as an argument in a comment.
+    """
+    _REQUEST_PROJECT_ROOT.set(_clean_scope(project_root))
+
+
 def _sanitize_value(value):
     """Strip raw CR/LF from string field values (SEC-INJ-LOG-001).
 
@@ -466,7 +558,11 @@ def emit(
         return
 
     resolved_stream = stream if stream is not None else stream_for(event)
-    project = resolve_project()
+    # The request's project when a daemon route declared one, else this process's cwd.
+    # See _REQUEST_PROJECT_ROOT on why the scope has to come from the caller. Passed
+    # through resolve_project rather than used as a path segment directly, so the
+    # sanitizing and the NotInRepoError fallback stay in one place (SEC-INJ-PATH-001).
+    project = resolve_project(_REQUEST_PROJECT_ROOT.get())
     target = stream_path(project, resolved_stream)
 
     _roll_if_oversize(project, resolved_stream, target)

@@ -33,6 +33,7 @@ from writ.session.approval_workflow import (
 from writ.session.gate_token import BINDING_UNBOUND
 from writ.session.locators import _find_plan_md, resolve_project_root
 from writ.session.mode_engine import MODE_CONFIG, _next_pending_gate
+from writ.shared.logging import request_project_scope, set_request_project_scope
 
 router = APIRouter()
 
@@ -97,6 +98,13 @@ async def session_advance_phase(
     # Ordered resolution (explicit > marker-at-or-above-cwd > cwd). req.cwd comes from
     # the approval hook's payload; the daemon's own cwd is never a candidate.
     project_root, root_tier = resolve_project_root(explicit=req.project_root, start=req.cwd)
+    # Attribute this advance's rows (phase_advance, the gate-rejection events, the
+    # promotion no-ops) to the approving project rather than the daemon's cwd. Set as soon
+    # as the root is known: the token-invalid return above fires BEFORE any root exists, so
+    # that one row stays cwd-scoped, which is honest -- there is no project to name yet.
+    # This handler is an asyncio.Task, so the set is confined to this request's context
+    # copy, and the to_thread emits below inherit it.
+    set_request_project_scope(project_root)
     # Read the session cache ONCE; the gate validation, the pending-gate decision,
     # and apply_phase_advance all derive from this single read.
     cache = await asyncio.to_thread(server.writ_session._read_cache, session_id)
@@ -529,6 +537,19 @@ async def pre_write_check(request: PreWriteCheckRequest) -> dict[str, Any]:
         # count -- equivalent to the old re-read.
         cache = server.writ_session._read_cache(session_id)
         mode = cache.get("mode")
+
+        # File this request's rows under the project being WRITTEN, not the daemon's cwd.
+        # Every event below (write_attempt, gate_denial, pre_write_rag_failed) reaches the
+        # log router from inside this worker, and the router's default scope is
+        # os.getcwd(), which for the daemon is its own WorkingDirectory. Without this the
+        # gate decisions for every project on the machine landed in Writ's audit stream and
+        # the owning project's stream showed no gate activity at all.
+        #
+        # The no-restore setter is correct here specifically: asyncio.to_thread runs this
+        # function inside a copied context, so the value dies with the call. Set AFTER the
+        # cache read because the cache is the only thing that knows the project root, and
+        # BEFORE _can_write_check, which is the first emitter.
+        set_request_project_scope(cache.get("project_root"))
 
         # 1. Gate approval check
         gate_result = server.writ_session._can_write_check(session_id, envelope, skill_dir, cache=cache)
