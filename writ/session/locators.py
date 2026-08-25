@@ -152,12 +152,45 @@ def plan_path(project_root: str, session_id: str) -> str:
     return os.path.join(directory, "plan.md")
 
 
-def _find_debug_md(file_path: str) -> str | None:
+def debug_dir(project_root: str, session_id: str) -> str:
+    """The debug directory for ONE session, or "" when there is no valid path.
+
+    Mirrors plan_dir, which mirrors gate_dir, because this is the same problem a third
+    time. debug.md was one file at the project root, and two gates read it: the debug
+    write gate unblocks source edits once a root cause is populated, and the runtime read
+    lens opens reading code once evidence is narrowed. So one session recording its root
+    cause opened the OTHER session's gates, and one session overwriting the file closed
+    them.
+
+    `.claude/debug.md` was already the third resolution tier, so this sits beside an
+    existing location rather than inventing one.
+    """
+    if not project_root or not is_valid_session_component(session_id):
+        return ""
+    root = project_root.rstrip("/") or "/"
+    return os.path.join(root, ".claude", "debug", session_id)
+
+
+def debug_path(project_root: str, session_id: str) -> str:
+    """The `debug.md` path for ONE session, or "" when there is none."""
+    directory = debug_dir(project_root, session_id)
+    if not directory:
+        return ""
+    return os.path.join(directory, "debug.md")
+
+
+def _find_debug_md(file_path: str, session_id: str | None = None) -> str | None:
     """Find debug.md for the project containing file_path.
 
-    Walks up from the file's directory to a project marker, then checks
-    debug.md, docs/debug.md, .claude/debug.md at that root. Returns the path or
-    None. Distinct from _find_plan_md (different filename, not reused).
+    Walks up from the file's directory to a project marker, then checks the SESSION-SCOPED
+    file first when a session id is supplied, and otherwise debug.md, docs/debug.md,
+    .claude/debug.md at that root. Returns the path or None. Distinct from _find_plan_md
+    (different filename, not reused).
+
+    session_id defaults to None, which reproduces the pre-scoping resolution exactly, so a
+    caller with no session in hand and any project holding only a root debug.md behave as
+    they did before. That is what makes this change inert until something writes a scoped
+    file.
     """
     path = os.path.dirname(os.path.abspath(file_path))
     root = None
@@ -171,8 +204,17 @@ def _find_debug_md(file_path: str) -> str | None:
         path = parent
     if root is None:
         return None
-    for rel in ("debug.md", os.path.join("docs", "debug.md"), os.path.join(".claude", "debug.md")):
-        candidate = os.path.join(root, rel)
+    tiers = []
+    if session_id:
+        scoped = debug_path(root, session_id)
+        if scoped:
+            tiers.append(scoped)
+    tiers += [
+        os.path.join(root, "debug.md"),
+        os.path.join(root, "docs", "debug.md"),
+        os.path.join(root, ".claude", "debug.md"),
+    ]
+    for candidate in tiers:
         if os.path.isfile(candidate):
             return candidate
     return None

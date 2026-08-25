@@ -192,7 +192,7 @@ def _promote_root_cause_to_plan(session_id: str, mode: str) -> None:
                 break
             path = os.path.dirname(path)
 
-        debug_md = _find_debug_md(os.path.join(project_root, "_"))
+        debug_md = _find_debug_md(os.path.join(project_root, "_"), session_id)
         root_cause = _extract_root_cause(debug_md) if debug_md else None
 
         if not root_cause:

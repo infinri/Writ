@@ -15,7 +15,7 @@ import sys
 
 from writ.session.cache import _read_cache, mutate_cache
 from writ.session.friction import _log_friction_event
-from writ.session.locators import _find_debug_md
+from writ.session.locators import _find_debug_md, debug_path
 from writ.session.mode_engine import _effective_source_type
 
 # Fallback gate-categories.json path: <skill_root>/bin/lib/gate-categories.json. Used only
@@ -368,19 +368,24 @@ def _check_debug_gate(session_id: str, mode, file_path: str, basename: str, cach
         _log_friction_event(session_id, mode, "write_attempt",
                             file_path=file_path, result="allow", gate_status="debug_exempt")
         return {"can_write": True, "reason": None}
-    debug_md = _find_debug_md(file_path)
+    debug_md = _find_debug_md(file_path, session_id)
     if debug_md and _validate_root_cause(debug_md) is None:
         _log_friction_event(session_id, mode, "debug_gate_root_cause_populated",
                             file_path=file_path, result="allow", gate_status="debug_root_cause_ok",
                             evidence_backed=evidence_backed)
         return {"can_write": True, "reason": None}
+    # The path names THIS session's scoped file. Naming the project root instead would
+    # steer two sessions debugging one project into the same file, which is the bleed the
+    # scoped tier exists to stop: recording a root cause there would unblock the other
+    # session's source edits too.
+    scoped_debug = debug_path(cache.get("project_root") or "", session_id)
     reason = (
         "[DEBUG-GATE-ROOT-CAUSE] Source edits are blocked in debug mode until a root "
-        "cause is established. Create debug.md at the project root with a populated "
-        "'## Root cause' section, then edit source. debug.md and test files are writable "
-        "now so you can record evidence -- a real command you run is auto-recorded. "
-        "Evidence / Falsification / Triangulation are advisory but recommended "
-        "(scaffold: templates/debug.md)."
+        f"cause is established. Create {scoped_debug or 'debug.md at the project root'} "
+        "with a populated '## Root cause' section, then edit source. debug.md and test "
+        "files are writable now so you can record evidence -- a real command you run is "
+        "auto-recorded. Evidence / Falsification / Triangulation are advisory but "
+        "recommended (scaffold: templates/debug.md)."
     )
     _log_friction_event(session_id, mode, "debug_gate_source_edit_denied",
                         file_path=file_path, result="deny", gate_status="debug_root_cause_missing",
@@ -574,7 +579,7 @@ def _can_read_code_check(session_id: str, envelope: dict, skill_dir: str = "") -
 
         # Locate debug.md from the search target so it works for Read and Grep alike.
         search_dir = _resolve_read_search_dir(tool, ti)
-        debug_md = _find_debug_md(os.path.join(search_dir, "_"))
+        debug_md = _find_debug_md(os.path.join(search_dir, "_"), session_id)
 
         # Lens open once runtime evidence is recorded.
         if debug_md and _validate_evidence_narrowing(debug_md) is None:

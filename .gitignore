@@ -47,6 +47,7 @@ writ.toml
 workflow-friction.log
 .claude/gates/
 .claude/plans/
+.claude/debug/
 .friction-snapshot
 cache/
 bible/.export_timestamp

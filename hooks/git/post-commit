@@ -26,7 +26,23 @@ fi
 # Git launches this hook, so it has no Claude Code session id. Bridge it via the
 # file auto-approve-gate.sh writes every prompt, so capture_commit can read the
 # session cache for per-file queried rule ids. Absent file -> empty (best-effort).
-WRIT_SESSION_ID="$(cat /tmp/writ-current-session 2>/dev/null || echo '')"
+#
+# GUARDED BY PROJECT. The pointer names whichever session on this machine took a turn most
+# recently, and prompts vastly outnumber commits across concurrent sessions, so trusting it
+# blindly credited this commit to a session that may have been working a DIFFERENT project
+# and merged that session's queried-rules map into this commit's provenance. The helper
+# returns the id only when the named session declared this project, and empty otherwise,
+# which is the same best-effort empty the absent-pointer case always produced.
+# rotation.py performs the identical comparison on the identical pointer.
+#
+# THE POINTER READ STAYS HERE, in the one file exempted for it by name. Moving it into the
+# helper would hide it behind a python open() that the pointer-read scan in
+# tests/test_session_identity_no_fallback.py cannot match, so the exemption would still
+# read as granted-and-used while the actual read had left the audited file.
+pointer_sid="$(cat /tmp/writ-current-session 2>/dev/null || echo '')"
+writ_lib="$(dirname "$0")/../../bin/lib/pointer_session.py"
+[ -f "$writ_lib" ] || writ_lib="${WRIT_DIR:-}/bin/lib/pointer_session.py"
+WRIT_SESSION_ID="$(python3 "$writ_lib" "$pointer_sid" "$project_root" 2>/dev/null || echo '')"
 
 writ_port="${WRIT_PORT:-8765}"
 writ_host="${WRIT_HOST:-localhost}"
