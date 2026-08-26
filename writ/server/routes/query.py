@@ -517,9 +517,19 @@ async def health() -> dict[str, Any]:
     ensure-server.sh compares it against the caller's expected dir to detect and realign
     a server-cache desync (a daemon started under a divergent TMPDIR).
     """
+    from writ.server.transport import tcp_readonly_enabled
+
     cache_dir = getattr(server.writ_session, "CACHE_DIR", None) if server.writ_session else None
     if server._db is None:
-        return {"status": "not_ready", "error": "Database not connected.", "cache_dir": cache_dir}
+        # tcp_readonly is reported on THIS branch too. The enforcement state does not
+        # depend on the graph being up, and a doctor asking a not-ready daemon still
+        # needs a true answer about which transports can write to it.
+        return {
+            "status": "not_ready",
+            "error": "Database not connected.",
+            "cache_dir": cache_dir,
+            "tcp_readonly": tcp_readonly_enabled(),
+        }
 
     rule_count = await server._db.count_rules()
 
@@ -549,6 +559,12 @@ async def health() -> dict[str, Any]:
         # The friction-log path this daemon writes to. The test suite aligns on
         # this (like cache_dir) so daemon-emitted events don't pollute the repo log.
         "friction_log": str(resolve_log_path()),
+        # Whether THIS daemon restricts its TCP port to the read-only allowlist.
+        # Reported for the same reason cache_dir is: the caller cannot know it. The
+        # flag lives in the service's environment (a systemd drop-in), so `writ
+        # doctor` read its OWN environment and printed "TCP still serves every route"
+        # at a daemon that was returning 403 to every TCP write.
+        "tcp_readonly": tcp_readonly_enabled(),
     }
     if status == "degraded":
         payload["warning"] = (

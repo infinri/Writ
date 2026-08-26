@@ -22,6 +22,8 @@ import urllib.error
 import urllib.request
 import uuid
 
+from pathlib import Path
+
 import pytest
 
 # This is a security-integration test of the DEPLOYED daemon's advance-phase route, so it
@@ -40,14 +42,31 @@ def _server_up() -> bool:
 
 
 def _post_advance(session_id: str, body: dict) -> dict:
-    req = urllib.request.Request(
-        f"{SERVER}/session/{session_id}/advance-phase",
-        data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
+    """POST through the shared client, which prefers the daemon's unix socket.
+
+    THIS TEST STILL TARGETS THE DEPLOYED DAEMON, which is its whole point. What
+    changed is the transport: with WRIT_TCP_READONLY=1 the daemon serves
+    state-changing routes only over its socket, so a direct urllib POST to :8765
+    returns 403 and this test failed on a daemon that was working correctly. The
+    client falls back to TCP when no socket exists, so an install that has not
+    enabled isolation behaves exactly as before.
+    """
+    import sys as _sys
+
+    lib = str(Path(__file__).resolve().parent.parent / "bin" / "lib")
+    if lib not in _sys.path:
+        _sys.path.insert(0, lib)
+    import writ_daemon_client
+
+    status, text = writ_daemon_client.post_json(
+        f"/session/{session_id}/advance-phase", body, base_url=SERVER, timeout=5.0
     )
-    with urllib.request.urlopen(req, timeout=5) as resp:
-        return json.loads(resp.read())
+    if status != 200:
+        raise urllib.error.HTTPError(
+            f"{SERVER}/session/{session_id}/advance-phase", status,
+            f"daemon returned {status}: {text[:200]}", {}, None,
+        )
+    return json.loads(text)
 
 
 def _token_path(session_id: str) -> str:

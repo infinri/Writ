@@ -327,8 +327,47 @@ def _socket_state() -> dict:
         pass
     if state["exists"]:
         state["answers"] = _socket_answers(path)
-    state["tcp_readonly"] = os.environ.get("WRIT_TCP_READONLY", "").strip() == "1"
+    # ASK THE DAEMON, never this process. The flag lives in the service's environment
+    # (a systemd drop-in at ~/.config/systemd/user/writ-server.service.d/), which the
+    # CLI never inherits, so reading os.environ here printed "TCP still serves every
+    # route" at a daemon that was returning 403 to every TCP write. None means the
+    # daemon could not be asked, which is a third state and not a default.
+    health = _socket_health(path)
+    state["tcp_readonly"] = health.get("tcp_readonly") if health else None
     return state
+
+
+def _socket_health(path: str = "") -> dict | None:
+    """The daemon's /health payload, over the socket if it answers, else over TCP.
+
+    `/health` is on the TCP read-only allowlist precisely so this fallback works while
+    enforcement is on, which is exactly when the answer matters most. Returns None when
+    neither transport answers, so the caller can report "could not ask" rather than
+    guessing in either direction (CLEAN-ERR-001).
+    """
+    import http.client
+    import json as _json
+
+    if path:
+        class _Conn(http.client.HTTPConnection):
+            def connect(self) -> None:
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                sock.settimeout(2.0)
+                sock.connect(path)
+                self.sock = sock
+
+        conn = _Conn("localhost", timeout=2.0)
+        try:
+            conn.request("GET", "/health", headers={"Host": "localhost"})
+            response = conn.getresponse()
+            if response.status == 200:
+                return _json.loads(response.read().decode("utf-8", "replace"))
+        except Exception:  # noqa: BLE001 - a diagnostic must not raise
+            pass
+        finally:
+            conn.close()
+
+    return _http_get_health()
 
 
 def _socket_answers(path: str) -> bool:
@@ -957,12 +996,16 @@ def check_daemon_socket(opts: DoctorOptions) -> CheckResult:
     # Whether TCP is restricted is the question this check exists to answer alongside
     # the socket's health: a working socket with TCP wide open is the state the sweep
     # started from, and it is indistinguishable from the finished state without this.
-    tcp = (
-        "TCP restricted to the read-only allowlist"
-        if state.get("tcp_readonly")
-        else "TCP still serves every route (set WRIT_TCP_READONLY=1 once the "
-             "transport census reads zero state-touching TCP writes)"
-    )
+    readonly = state.get("tcp_readonly")
+    if readonly is True:
+        tcp = "TCP restricted to the read-only allowlist"
+    elif readonly is False:
+        tcp = ("TCP still serves every route (set WRIT_TCP_READONLY=1 for the daemon "
+               "once the transport census reads zero state-touching TCP writes)")
+    else:
+        # Neither transport answered /health. Saying either "restricted" or "open"
+        # here would be the same false confidence this check was fixed to remove.
+        tcp = "could not ask the daemon whether TCP is restricted"
     return _ok(
         name=name,
         detail=f"Daemon answers over {path}; directory is 0o700; {tcp}.",
