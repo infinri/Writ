@@ -501,6 +501,13 @@ class TestEmbeddingStack:
         # permissions-allowlist otherwise shells to the installer against the
         # developer's real ~/.claude/settings.json (TEST-ISOLATE-001).
         monkeypatch.setattr("writ.session.doctor._missing_allow_entries", lambda: [])
+        # daemon-socket otherwise stats the developer's real runtime directory and
+        # dials the live daemon (TEST-ISOLATE-001).
+        monkeypatch.setattr(
+            "writ.session.doctor._socket_state",
+            lambda: {"path": "/run/w.sock", "exists": True, "dir_mode": 0o700,
+                     "answers": True},
+        )
         monkeypatch.setattr("writ.session.doctor._venv_import_ok", lambda: True)
         monkeypatch.setattr(
             "writ.session.doctor._onnx_model_files_present", lambda: (True, True)
@@ -531,6 +538,13 @@ class TestEmbeddingStack:
         # permissions-allowlist otherwise shells to the installer against the
         # developer's real ~/.claude/settings.json (TEST-ISOLATE-001).
         monkeypatch.setattr("writ.session.doctor._missing_allow_entries", lambda: [])
+        # daemon-socket otherwise stats the developer's real runtime directory and
+        # dials the live daemon (TEST-ISOLATE-001).
+        monkeypatch.setattr(
+            "writ.session.doctor._socket_state",
+            lambda: {"path": "/run/w.sock", "exists": True, "dir_mode": 0o700,
+                     "answers": True},
+        )
         monkeypatch.setattr("writ.session.doctor._venv_import_ok", lambda: True)
         monkeypatch.setattr(
             "writ.session.doctor._onnx_model_files_present", lambda: (False, True)
@@ -551,6 +565,13 @@ class TestEmbeddingStack:
         # permissions-allowlist otherwise shells to the installer against the
         # developer's real ~/.claude/settings.json (TEST-ISOLATE-001).
         monkeypatch.setattr("writ.session.doctor._missing_allow_entries", lambda: [])
+        # daemon-socket otherwise stats the developer's real runtime directory and
+        # dials the live daemon (TEST-ISOLATE-001).
+        monkeypatch.setattr(
+            "writ.session.doctor._socket_state",
+            lambda: {"path": "/run/w.sock", "exists": True, "dir_mode": 0o700,
+                     "answers": True},
+        )
         monkeypatch.setattr("writ.session.doctor._venv_import_ok", lambda: True)
         monkeypatch.setattr(
             "writ.session.doctor._onnx_model_files_present", lambda: (True, False)
@@ -1239,7 +1260,7 @@ class TestRunAllChecks:
     """run_all_checks: exception isolation, ordering, result count."""
 
     def _patch_all_ok(self, monkeypatch) -> None:
-        """Patch every seam so all 16 checks return ok with no side effects."""
+        """Patch every seam so all 17 checks return ok with no side effects."""
         monkeypatch.setattr(
             "writ.session.doctor._http_get_health",
             lambda: {"status": "healthy", "index_state": "warm", "rule_count": 5},
@@ -1264,6 +1285,13 @@ class TestRunAllChecks:
         # permissions-allowlist otherwise shells to the installer against the
         # developer's real ~/.claude/settings.json (TEST-ISOLATE-001).
         monkeypatch.setattr("writ.session.doctor._missing_allow_entries", lambda: [])
+        # daemon-socket otherwise stats the developer's real runtime directory and
+        # dials the live daemon (TEST-ISOLATE-001).
+        monkeypatch.setattr(
+            "writ.session.doctor._socket_state",
+            lambda: {"path": "/run/w.sock", "exists": True, "dir_mode": 0o700,
+                     "answers": True},
+        )
         monkeypatch.setattr("writ.session.doctor._venv_import_ok", lambda: True)
         monkeypatch.setattr(
             "writ.session.doctor._onnx_model_files_present", lambda: (True, True)
@@ -1291,12 +1319,12 @@ class TestRunAllChecks:
             lambda session_id: {"mode": "work"},
         )
 
-    def test_returns_exactly_sixteen_results(self, default_opts, monkeypatch) -> None:
+    def test_returns_exactly_seventeen_results(self, default_opts, monkeypatch) -> None:
         self._patch_all_ok(monkeypatch)
         from writ.session.doctor import run_all_checks
         results = run_all_checks(default_opts)
-        assert len(results) == 16, (
-            f"run_all_checks must return exactly 16 CheckResults; got {len(results)}"
+        assert len(results) == 17, (
+            f"run_all_checks must return exactly 17 CheckResults; got {len(results)}"
         )
 
     def test_result_names_match_contract(self, default_opts, monkeypatch) -> None:
@@ -1311,6 +1339,7 @@ class TestRunAllChecks:
             "duplicate-records",
             "index-degeneracy",
             "permissions-allowlist",
+            "daemon-socket",
             "embedding-stack",
             "corpus-drift",
             "bitbucket-creds",
@@ -1338,7 +1367,7 @@ class TestRunAllChecks:
         )
         from writ.session.doctor import STATUS_FAIL, run_all_checks
         results = run_all_checks(default_opts)
-        assert len(results) == 16, "all 16 results must be returned despite one exception"
+        assert len(results) == 17, "all 17 results must be returned despite one exception"
         daemon_result = next(r for r in results if r.name == "daemon-liveness")
         assert daemon_result.status == STATUS_FAIL
         assert "daemon exploded" in daemon_result.detail, (
@@ -1569,6 +1598,13 @@ class TestDoctorCommandNet:
         # permissions-allowlist otherwise shells to the installer against the
         # developer's real ~/.claude/settings.json (TEST-ISOLATE-001).
         monkeypatch.setattr("writ.session.doctor._missing_allow_entries", lambda: [])
+        # daemon-socket otherwise stats the developer's real runtime directory and
+        # dials the live daemon (TEST-ISOLATE-001).
+        monkeypatch.setattr(
+            "writ.session.doctor._socket_state",
+            lambda: {"path": "/run/w.sock", "exists": True, "dir_mode": 0o700,
+                     "answers": True},
+        )
         monkeypatch.setattr("writ.session.doctor._venv_import_ok", lambda: True)
         monkeypatch.setattr(
             "writ.session.doctor._onnx_model_files_present", lambda: (True, True)

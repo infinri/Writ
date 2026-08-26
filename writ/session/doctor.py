@@ -304,6 +304,53 @@ _INSTALL_MODULE = _PACKAGE_ROOT / "bin" / "lib" / "writ_install.py"
 _GLOBAL_CONFIG_PATCHER = _PACKAGE_ROOT / "scripts" / "patch-global-config.sh"
 
 
+def _socket_state() -> dict:
+    """The daemon socket's presence, its directory's mode, and whether it answers.
+
+    The DIRECTORY mode is the one that matters. uvicorn chmods the socket itself to
+    0o666, so a socket in a traversable directory is reachable by every local
+    account and looks private while being nothing of the kind.
+    """
+    import stat as stat_mod
+
+    from writ.config import get_daemon_socket_path
+
+    path = get_daemon_socket_path()
+    state = {"path": path, "exists": False, "dir_mode": None, "answers": False}
+    try:
+        state["exists"] = stat_mod.S_ISSOCK(os.stat(path).st_mode)
+    except OSError:
+        return state
+    try:
+        state["dir_mode"] = stat_mod.S_IMODE(os.stat(os.path.dirname(path)).st_mode)
+    except OSError:
+        pass
+    if state["exists"]:
+        state["answers"] = _socket_answers(path)
+    return state
+
+
+def _socket_answers(path: str) -> bool:
+    """True when the daemon serves /health over this socket."""
+    import http.client
+
+    class _Conn(http.client.HTTPConnection):
+        def connect(self) -> None:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(2.0)
+            sock.connect(path)
+            self.sock = sock
+
+    conn = _Conn("localhost", timeout=2.0)
+    try:
+        conn.request("GET", "/health", headers={"Host": "localhost"})
+        return conn.getresponse().status == 200
+    except Exception:  # noqa: BLE001 - a diagnostic must not raise
+        return False
+    finally:
+        conn.close()
+
+
 def _missing_allow_entries() -> list[str]:
     """Shipped Writ permission entries absent from ~/.claude/settings.json.
 
@@ -865,6 +912,50 @@ def check_index_degeneracy(opts: DoctorOptions) -> CheckResult:
     )
 
 
+def check_daemon_socket(opts: DoctorOptions) -> CheckResult:
+    """Reports the daemon's private transport, and whether it is actually private.
+
+    A socket in a world-traversable directory is the failure this check exists for:
+    uvicorn creates the socket 0o666, so the 0700 directory is the entire control,
+    and getting that wrong produces a private-looking door anyone can open.
+    """
+    name = "daemon-socket"
+
+    try:
+        state = _socket_state()
+    except Exception as exc:
+        return _warn(name=name, detail=f"Could not inspect the daemon socket ({exc}).")
+
+    path = state.get("path") or "(unresolved)"
+    if not state.get("exists"):
+        return _warn(
+            name=name,
+            detail=(
+                f"No daemon socket at {path}; clients fall back to TCP on "
+                f"{_DAEMON_PORT}, which every local account can reach."
+            ),
+        )
+
+    mode = state.get("dir_mode")
+    if mode is not None and mode != 0o700:
+        return _fail(
+            name=name,
+            detail=(
+                f"The socket directory for {path} is {oct(mode)}, not 0o700. uvicorn "
+                "creates the socket itself world-writable (0o666), so the directory "
+                "is the only thing keeping other local accounts out."
+            ),
+        )
+
+    if not state.get("answers"):
+        return _warn(
+            name=name,
+            detail=f"Socket present at {path} but the daemon did not answer /health over it.",
+        )
+
+    return _ok(name=name, detail=f"Daemon answers over {path}; directory is 0o700.")
+
+
 def check_permissions_allowlist(opts: DoctorOptions) -> CheckResult:
     """Detects a HALF-APPLIED install: the plugin loaded, the permission patch did not.
 
@@ -1247,6 +1338,7 @@ _CHECKS: list[tuple[str, Callable[[DoctorOptions], CheckResult]]] = [
     ("duplicate-records", check_duplicate_records),
     ("index-degeneracy", check_index_degeneracy),
     ("permissions-allowlist", check_permissions_allowlist),
+    ("daemon-socket", check_daemon_socket),
     ("embedding-stack", check_embedding_stack),
     ("corpus-drift", check_corpus_drift),
     ("bitbucket-creds", check_bitbucket_creds),

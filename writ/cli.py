@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -347,14 +348,56 @@ def serve(
     port: int = typer.Option(DEFAULT_PORT, help="Port to bind the service to."),
     host: str = typer.Option(DEFAULT_HOST, help="Host to bind the service to."),
 ) -> None:
-    """Start Writ service. Pre-warms indexes into memory."""
+    """Start Writ service on a private unix socket AND the TCP port. Pre-warms indexes.
+
+    TWO LISTENERS, ONE PROCESS. `Server.serve(sockets=[...])` takes a socket list, so
+    both transports are served by the same app and the same warmed index. The socket
+    is the private door for hooks; TCP stays because `/dashboard` and `/explore` are
+    HTML for a browser and a browser cannot open a unix socket.
+
+    The socket's PARENT DIRECTORY is created 0700 before the bind, and that is the
+    isolation: uvicorn chmods the socket itself to 0o666. An unusable path (over the
+    AF_UNIX byte cap) or a failed bind logs the reason and serves TCP alone, because a
+    transport upgrade must never stop the daemon from starting.
+    """
     import uvicorn
 
+    from writ.config import (
+        MAX_SOCKET_PATH,
+        get_daemon_socket_path,
+        prepare_socket_dir,
+        socket_path_usable,
+    )
     from writ.server import app as fastapi_app
+
+    sockets = []
+    sock_path = get_daemon_socket_path()
+    if not socket_path_usable(sock_path):
+        typer.echo(
+            f"Socket path unusable (over the {MAX_SOCKET_PATH}-byte AF_UNIX cap): "
+            f"{sock_path}; serving TCP only.",
+            err=True,
+        )
+        sock_path = ""
+    if sock_path:
+        try:
+            prepare_socket_dir(sock_path)
+            if os.path.exists(sock_path):
+                os.unlink(sock_path)
+            uds_config = uvicorn.Config(fastapi_app, uds=sock_path, log_level="info")
+            sockets.append(uds_config.bind_socket())
+            typer.echo(f"Listening on unix socket {sock_path}")
+        except OSError as exc:
+            typer.echo(f"Could not bind {sock_path} ({exc}); serving TCP only.", err=True)
+            sock_path = ""
+
+    tcp_config = uvicorn.Config(fastapi_app, host=host, port=port, log_level="info")
+    sockets.append(tcp_config.bind_socket())
 
     typer.echo(f"Starting Writ service on {host}:{port}")
     typer.echo("Pre-warming indexes...")
-    uvicorn.run(fastapi_app, host=host, port=port, log_level="info")
+    server = uvicorn.Server(tcp_config)
+    asyncio.run(server.serve(sockets=sockets))
 
 
 @app.command(name="import-markdown")

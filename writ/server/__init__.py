@@ -217,11 +217,18 @@ async def lifespan(app: FastAPI):
         await _db.close()
 
 
+from writ.server.transport import TransportCensusMiddleware
+
 app = FastAPI(
     title="Writ",
     description="Hybrid RAG knowledge retrieval service for AI coding rule enforcement.",
     lifespan=lifespan,
 )
+
+# Transport census (E2a). Records which transport each request arrived on and counts
+# state-touching requests that came over TCP; enforces nothing yet. See
+# writ/server/transport.py for why counting comes before enforcing.
+app.add_middleware(TransportCensusMiddleware)
 
 
 # Routes whose volume would drown the stream without telling anyone anything. /health is

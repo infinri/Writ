@@ -71,6 +71,10 @@ STREAM_MAP: dict[str, str] = {
     # zero-norm vectors served noise through the heaviest ranking signal for six
     # days and still read as a healthy start.
     "index_degeneracy": "audit",
+    # Transport census (E2a). One row per state-touching request that arrived over
+    # the PUBLIC transport, which is the list the socket migration has to cover.
+    # Audit rather than metrics: it is evidence about who can write to the daemon.
+    "daemon_tcp_write": "audit",
     # Evidence, on audit rather than metrics: these ARE the oversight record. Both lived
     # only in the session cache, and citation_log is additionally trimmed to a cap, so the
     # proof behind a completion claim was the most perishable data Writ held.

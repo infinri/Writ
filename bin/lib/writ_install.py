@@ -48,14 +48,18 @@ Exit codes (unchanged from patch-global-config.sh):
 
 import argparse
 import difflib
+import http.client
 import json
 import os
 import re
 import shutil
+import socket
+import stat
 import subprocess
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
@@ -265,6 +269,58 @@ def _append_new(existing, incoming):
         if item not in out:
             out.append(item)
     return out
+
+
+class UnixSocketHTTPConnection(http.client.HTTPConnection):
+    """HTTP over an AF_UNIX socket, stdlib only.
+
+    This module runs under BARE system python3 (see the header), so requests,
+    httpx and requests_unixsocket are all unavailable. http.client already speaks
+    HTTP/1.1 over any socket; only `connect` has to change.
+
+    The Host header stays "localhost" because the daemon does not route on it and
+    a socket path is not a valid header value.
+    """
+
+    def __init__(self, socket_path, timeout=None):
+        super().__init__("localhost", timeout=timeout)
+        self._socket_path = socket_path
+
+    def connect(self):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        if self.timeout is not None:
+            sock.settimeout(self.timeout)
+        sock.connect(self._socket_path)
+        self.sock = sock
+
+
+def _daemon_socket_path():
+    """The daemon socket if it exists and is a socket, else None (use TCP)."""
+    path = os.environ.get("WRIT_SOCKET") or os.path.join(
+        os.path.expanduser("~"), ".cache", "writ", "run", "writ.sock"
+    )
+    try:
+        return path if stat.S_ISSOCK(os.stat(path).st_mode) else None
+    except OSError:
+        return None
+
+
+def _request_over_socket(sock_path, method, url, body=None, timeout=None):
+    """Issue one request over the socket. Returns (status, text) or None to fall back."""
+    parsed = urllib.parse.urlsplit(url)
+    target = parsed.path or "/"
+    if parsed.query:
+        target += "?" + parsed.query
+    conn = UnixSocketHTTPConnection(sock_path, timeout=timeout)
+    try:
+        headers = {"Host": "localhost"}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        conn.request(method, target, body=body, headers=headers)
+        response = conn.getresponse()
+        return response.status, response.read().decode("utf-8", "replace")
+    finally:
+        conn.close()
 
 
 def cmd_check_settings(args):

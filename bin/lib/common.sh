@@ -136,6 +136,25 @@ _writ_row_mode_cached() {
 # Usage: RESP=$(WRIT_HTTP_TIMEOUT=3 writ_http_post "$URL" "$BODY" 2>/dev/null) || true
 _WRIT_INSTALL_PY="$_WRIT_LIB_DIR/writ_install.py"
 
+# Which transport a given URL should use. Only DAEMON urls go through the private
+# socket.
+#
+# WHY THIS IS PER-URL. writ_http_get / writ_http_post are GENERIC helpers: hooks call
+# them for the daemon and for other hosts alike. An earlier version of this change put
+# the socket flag on them unconditionally, which made curl ignore the URL's host and
+# fail to connect (exit 7) for every non-daemon call: 15 tests across 5 modules caught
+# it. The daemon-only call sites further down can use $WRIT_CURL_TRANSPORT directly.
+_writ_transport_for() {
+    case "$1" in
+        http://localhost:"${WRIT_SESSION_PORT}"/*|http://127.0.0.1:"${WRIT_SESSION_PORT}"/*|http://localhost:"${WRIT_SESSION_PORT}"|http://127.0.0.1:"${WRIT_SESSION_PORT}")
+            printf '%s' "${WRIT_CURL_TRANSPORT:-}"
+            ;;
+        *)
+            printf ''
+            ;;
+    esac
+}
+
 writ_http_get() {
     local url="$1"
     local fail="" arg
@@ -145,9 +164,9 @@ writ_http_get() {
     local ct="${WRIT_HTTP_CONNECT_TIMEOUT:-0.5}" mt="${WRIT_HTTP_TIMEOUT:-10}" rc=0
     if [ -z "${WRIT_NO_CURL:-}" ] && command -v curl >/dev/null 2>&1; then
         if [ -n "$fail" ]; then
-            curl -sf --connect-timeout "$ct" --max-time "$mt" "$url" || rc=$?
+            curl $(_writ_transport_for "$url") -sf --connect-timeout "$ct" --max-time "$mt" "$url" || rc=$?
         else
-            curl -s --connect-timeout "$ct" --max-time "$mt" "$url" || rc=$?
+            curl $(_writ_transport_for "$url") -s --connect-timeout "$ct" --max-time "$mt" "$url" || rc=$?
         fi
         return $rc
     fi
@@ -164,10 +183,10 @@ writ_http_post() {
     local ct="${WRIT_HTTP_CONNECT_TIMEOUT:-0.5}" mt="${WRIT_HTTP_TIMEOUT:-10}" rc=0
     if [ -z "${WRIT_NO_CURL:-}" ] && command -v curl >/dev/null 2>&1; then
         if [ -n "$fail" ]; then
-            curl -sf --connect-timeout "$ct" --max-time "$mt" -X POST "$url" \
+            curl $(_writ_transport_for "$url") -sf --connect-timeout "$ct" --max-time "$mt" -X POST "$url" \
                 -H "Content-Type: application/json" -d "$body" || rc=$?
         else
-            curl -s --connect-timeout "$ct" --max-time "$mt" -X POST "$url" \
+            curl $(_writ_transport_for "$url") -s --connect-timeout "$ct" --max-time "$mt" -X POST "$url" \
                 -H "Content-Type: application/json" -d "$body" || rc=$?
         fi
         return $rc
@@ -1336,6 +1355,29 @@ WRIT_SESSION_PORT="${WRIT_PORT:-8765}"
 WRIT_SESSION_HOST="${WRIT_HOST:-localhost}"
 WRIT_SESSION_BASE="http://${WRIT_SESSION_HOST}:${WRIT_SESSION_PORT}"
 
+# Transport for every daemon call in this file. When the daemon's unix socket exists we
+# go through it; otherwise this is empty and the call takes the TCP port exactly as
+# before. curl ignores the URL's host when --unix-socket is given, so the URLs above are
+# unchanged and each call site needs only this one variable.
+#
+# DELIBERATELY UNQUOTED at the call sites. Empty expands to nothing, and non-empty must
+# split into the two words `--unix-socket` and the path; quoting it would pass one
+# argument containing a space and curl would reject it. It is set here unconditionally so
+# `set -u` cannot trip on it.
+WRIT_SESSION_SOCKET="${WRIT_SOCKET:-$HOME/.cache/writ/run/writ.sock}"
+# AN EXPLICIT HOST OR PORT OVERRIDE WINS, and that is not a nicety. Callers that set
+# WRIT_HOST or WRIT_PORT are naming the endpoint they want -- a fake daemon in a test,
+# a second instance, a probe. curl ignores the URL's host when --unix-socket is given,
+# so leaving the socket on would silently redirect those calls to the real daemon.
+# Measured: 6 tests across 3 modules did exactly that before this guard existed.
+if [ -n "${WRIT_HOST:-}" ] || [ -n "${WRIT_PORT:-}" ]; then
+    WRIT_CURL_TRANSPORT=""
+elif [ -S "$WRIT_SESSION_SOCKET" ]; then
+    WRIT_CURL_TRANSPORT="--unix-socket $WRIT_SESSION_SOCKET"
+else
+    WRIT_CURL_TRANSPORT=""
+fi
+
 _writ_session() {
     local subcmd="$1"
     shift
@@ -1353,7 +1395,7 @@ _writ_session() {
         "should-skip")
             # Special: exit code matters (0=skip, 1=don't skip)
             local skip_result=""
-            skip_result=$(curl -sf --connect-timeout 0.1 --max-time 0.5 \
+            skip_result=$(curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.1 --max-time 0.5 \
                 "${WRIT_SESSION_BASE}/session/${session_id}/should-skip" 2>/dev/null) || true
             if [ -n "$skip_result" ]; then
                 # Desync guard (mirrors the mode-get guard below): known=false means
@@ -1378,7 +1420,7 @@ _writ_session() {
         "mode get")
             # Special: hooks expect plain mode string, not JSON
             local mode_result=""
-            mode_result=$(curl -sf --connect-timeout 0.1 --max-time 0.5 \
+            mode_result=$(curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.1 --max-time 0.5 \
                 "${WRIT_SESSION_BASE}/session/${session_id}/mode" 2>/dev/null) || true
             if [ -n "$mode_result" ]; then
                 # jq-first parse (B2: ~1-2ms vs ~10ms python cold-start per call).
@@ -1439,7 +1481,7 @@ d.setdefault('skill_dir', os.environ.get('WRIT_SD', ''))
 print(json.dumps(d))
 " "$cw_body" 2>/dev/null) || cw_post_body="$cw_body"
             local cw_result=""
-            cw_result=$(curl -sf --connect-timeout 0.1 --max-time 0.5 \
+            cw_result=$(curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.1 --max-time 0.5 \
                 -X POST "${WRIT_SESSION_BASE}/session/${session_id}/can-write" \
                 -H "Content-Type: application/json" -d "$cw_post_body" 2>/dev/null) || true
             if [ -n "$cw_result" ]; then
@@ -1494,7 +1536,7 @@ except (ValueError, json.JSONDecodeError):
 print(json.dumps({'query_response': data}))
 " "$stdin_data" 2>/dev/null)
             if [ -n "$fmt_body" ]; then
-                fmt_result=$(curl -sf --connect-timeout 0.1 --max-time 0.5 \
+                fmt_result=$(curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.1 --max-time 0.5 \
                     -X POST "${WRIT_SESSION_BASE}/session/format" \
                     -H "Content-Type: application/json" \
                     -d "$fmt_body" 2>/dev/null) || true
@@ -1564,7 +1606,7 @@ sys.stdout.write('WRIT_META:' + json.dumps({
             # gotcha documented on log_friction_event above.
             local check_body="${2:-"{}"}"
             local pwc_result=""
-            pwc_result=$(curl -sf --connect-timeout 0.2 --max-time 1 \
+            pwc_result=$(curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.2 --max-time 1 \
                 -X POST "${WRIT_SESSION_BASE}/pre-write-check" \
                 -H "Content-Type: application/json" \
                 -d "$check_body" 2>/dev/null) || true
@@ -1623,12 +1665,12 @@ print(envelope)
     # Try curl first (fast path)
     local result=""
     if [ "$method" = "POST" ]; then
-        result=$(curl -sf --connect-timeout 0.1 --max-time 0.5 \
+        result=$(curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.1 --max-time 0.5 \
             -X POST "$url" \
             -H "Content-Type: application/json" \
             -d "$body" 2>/dev/null) || true
     else
-        result=$(curl -sf --connect-timeout 0.1 --max-time 0.5 "$url" 2>/dev/null) || true
+        result=$(curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.1 --max-time 0.5 "$url" 2>/dev/null) || true
     fi
 
     if [ -n "$result" ]; then
