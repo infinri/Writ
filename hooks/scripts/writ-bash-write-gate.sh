@@ -1308,7 +1308,7 @@ while IFS=$'\t' read -r kind path; do
 import os, json
 print(json.dumps({'tool_input': {'file_path': os.environ['WRIT_AP']}, 'skill_dir': os.environ['WRIT_SD']}))" 2>/dev/null) || continue
     fi
-    RESP=$(curl -sf --connect-timeout 0.2 --max-time 1 \
+    RESP=$(curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.2 --max-time 1 \
         -X POST "${WRIT_SESSION_BASE}/session/${SESSION_ID}/can-write" \
         -H "Content-Type: application/json" -d "$BODY" 2>/dev/null) || true
     if [ -z "$RESP" ]; then

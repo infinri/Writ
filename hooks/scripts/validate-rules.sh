@@ -108,7 +108,7 @@ request = {
 }
 print(json.dumps(request))
 " "$CODE" "$FILE" "$PHASE" "$CONTEXT" 2>/dev/null | \
-    curl -s --connect-timeout 0.5 --max-time 15 \
+    curl ${WRIT_CURL_TRANSPORT} -s --connect-timeout 0.5 --max-time 15 \
         -X POST "$ANALYZE_URL" \
         -H "Content-Type: application/json" \
         -d @- 2>/dev/null) || true

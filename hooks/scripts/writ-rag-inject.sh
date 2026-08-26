@@ -45,7 +45,7 @@ debug "stdin: ${STDIN_JSON:0:200}"
 # Auto-start: ensure Neo4j and the Writ server are running.
 # WRIT_NO_AUTOSTART (set by tests / CI) suppresses the auto-start so running this hook
 # against a throwaway WRIT_PORT does not spawn (and leak) a real daemon on that port.
-if [ -z "${WRIT_NO_AUTOSTART:-}" ] && ! curl -sf --connect-timeout 0.2 "$WRIT_HEALTH_URL" >/dev/null 2>&1; then
+if [ -z "${WRIT_NO_AUTOSTART:-}" ] && ! curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.2 "$WRIT_HEALTH_URL" >/dev/null 2>&1; then
     debug "server down, attempting auto-start"
 
     # Ensure Neo4j is running (docker start is a no-op if already up).
@@ -440,7 +440,7 @@ print(json.dumps({'project_root': os.environ.get('WRIT_ROOT', ''), 'budget': 200
 " 2>/dev/null)
         # Documented daemon-down-equivalent raw curl: with curl absent this degrades to
         # exactly the "no briefing this session" branch a stopped daemon produces.
-        RECALL_RESP=$(curl -s --connect-timeout 0.3 --max-time 1.5 -X POST "http://${WRIT_HOST}:${WRIT_PORT}/recall" \
+        RECALL_RESP=$(curl ${WRIT_CURL_TRANSPORT} -s --connect-timeout 0.3 --max-time 1.5 -X POST "http://${WRIT_HOST}:${WRIT_PORT}/recall" \
             -H "Content-Type: application/json" -d "$RECALL_REQ" 2>/dev/null) || true
         # parsed_field (jq-first, python3 fallback) rather than raw jq: with jq absent the
         # raw extraction returned empty and the briefing was silently dropped.
@@ -531,7 +531,7 @@ print(json.dumps({
         if [ -n "$ORCH_METHOD_REQUEST" ]; then
             # Documented daemon-down-equivalent raw curl: no companion block, same as a
             # stopped daemon produces.
-            ORCH_METHOD_RESPONSE=$(curl -s --connect-timeout 0.5 --max-time 2 -X POST "$COMPANION_URL" \
+            ORCH_METHOD_RESPONSE=$(curl ${WRIT_CURL_TRANSPORT} -s --connect-timeout 0.5 --max-time 2 -X POST "$COMPANION_URL" \
                 -H "Content-Type: application/json" \
                 -d "$ORCH_METHOD_REQUEST" 2>/dev/null) || true
 

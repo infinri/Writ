@@ -202,7 +202,7 @@ fi
 
 # Query Writ for rules if server is available
 ADDITIONAL_CONTEXT=""
-HEALTH=$(curl -sf --connect-timeout 0.5 --max-time 1 "http://${WRIT_HOST}:${WRIT_PORT}/health" 2>/dev/null || echo "")
+HEALTH=$(curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.5 --max-time 1 "http://${WRIT_HOST}:${WRIT_PORT}/health" 2>/dev/null || echo "")
 if [ -n "$HEALTH" ]; then
     # Build the retrieval query. Newer Claude Code sends the delegated task in a
     # `task` field; use it when present. CC 2.1.181's SubagentStart payload carries
@@ -250,7 +250,7 @@ print(json.dumps({
     'project_root': sys.argv[2],
 }))
 " "$AGENT_PROMPT" "$_PROJECT_ROOT" 2>/dev/null | \
-            curl -s --connect-timeout 0.5 --max-time 2 \
+            curl ${WRIT_CURL_TRANSPORT} -s --connect-timeout 0.5 --max-time 2 \
                 -X POST "http://${WRIT_HOST}:${WRIT_PORT}/query" \
                 -H "Content-Type: application/json" \
                 -d @- 2>/dev/null) || true

@@ -85,7 +85,7 @@ if [ "$PAYLOAD_STATUS" -ne 0 ] || [ -z "$PAYLOAD" ]; then
   exit 0
 fi
 
-if ! curl -sf --connect-timeout 0.2 --max-time 2 \
+if ! curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.2 --max-time 2 \
     -X POST "$MEMORY_URL" \
     -H "Content-Type: application/json" \
     -d "$PAYLOAD" >/dev/null 2>&1; then

@@ -90,8 +90,23 @@ if [ -z "$request" ]; then
     exit 0
 fi
 
+# Prefer the daemon's private unix socket when one exists.
+#
+# RESOLVED HERE, not borrowed. This file does not source common.sh: its header holds it
+# to "System python3 and curl only", the same constraint that put the session-id
+# comparison in bin/lib/pointer_session.py rather than in a bash library. Two lines of
+# POSIX sh cost less than a bash dependency.
+#
+# writ_base is unchanged because curl ignores the URL's host once --unix-socket is
+# given. No socket means no flag, which is the ordinary state on a machine whose daemon
+# has not restarted since the socket landed, and it must stay a no-op rather than an
+# error (a commit is never blocked).
+writ_sock="${WRIT_SOCKET:-$HOME/.cache/writ/run/writ.sock}"
+writ_transport=""
+[ -S "$writ_sock" ] && writ_transport="--unix-socket $writ_sock"
+
 # Reach the daemon. A down daemon fails open (the graph write is simply skipped).
-curl -s --connect-timeout 0.5 --max-time 3 \
+curl $writ_transport -s --connect-timeout 0.5 --max-time 3 \
     -X POST "${writ_base}/commit/capture" \
     -H "Content-Type: application/json" \
     -d "$request" >/dev/null 2>&1 || echo "" >/dev/null
