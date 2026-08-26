@@ -267,6 +267,57 @@ def _append_new(existing, incoming):
     return out
 
 
+def cmd_check_settings(args):
+    """Report which shipped permission entries are ABSENT from a settings file.
+
+    Read-only: writes nothing, ever. Exists so `writ doctor` can diagnose a
+    half-applied install without holding its own copy of the entry list. A second
+    copy would drift from BASE_ALLOW/DENY, and a drifted copy makes the check
+    silently always-fail, which is worse than no check.
+
+    The two DERIVED entries cmd_settings adds (Edit(<skill-dir>/**) and
+    Bash(<skill-dir>/*)) are deliberately NOT checked: they encode the install
+    location, so a legitimately moved install would report them missing forever.
+    What this answers is "did the patch run at all", and BASE_ALLOW + DENY answer
+    that.
+
+    Exit 0 when nothing is missing, EXIT_PRECONDITION when something is, and
+    EXIT_WRITE_FAILURE for a file that cannot be parsed.
+    """
+    target = os.path.abspath(args.target)
+    if not os.path.isfile(target):
+        print("[check-settings] ERROR: %s not found, so the install patch has never "
+              "run against it." % target, file=sys.stderr)
+        return EXIT_PRECONDITION
+
+    doc, _existed, error = _load_settings(target)
+    if error is not None:
+        return error
+
+    permissions = doc.get("permissions")
+    if not isinstance(permissions, dict):
+        permissions = {}
+    current_allow = permissions.get("allow")
+    current_allow = current_allow if isinstance(current_allow, list) else []
+    current_deny = permissions.get("deny")
+    current_deny = current_deny if isinstance(current_deny, list) else []
+
+    expected = len(BASE_ALLOW) + len(DENY)
+    missing = [entry for entry in BASE_ALLOW if entry not in current_allow]
+    missing += [entry for entry in DENY if entry not in current_deny]
+
+    if not missing:
+        print("[check-settings] all %d entries present in %s." % (expected, target))
+        return EXIT_OK
+
+    for entry in missing:
+        print(entry)
+    print("[check-settings] %d of %d entries missing from %s; re-run "
+          "scripts/patch-global-config.sh." % (len(missing), expected, target),
+          file=sys.stderr)
+    return EXIT_PRECONDITION
+
+
 def cmd_settings(args):
     skill_dir = _skill_dir(args.skill_dir)
     target = os.path.abspath(args.target)
@@ -653,6 +704,11 @@ def build_parser():
     settings.add_argument("--target", required=True)
     add_common(settings)
     settings.set_defaults(func=cmd_settings)
+
+    check_settings = subparsers.add_parser(
+        "check-settings", help="report shipped permission entries absent from a settings file")
+    check_settings.add_argument("--target", required=True)
+    check_settings.set_defaults(func=cmd_check_settings)
 
     claude_md = subparsers.add_parser("claude-md", help="render templates/CLAUDE.md")
     claude_md.add_argument("--target", required=True)

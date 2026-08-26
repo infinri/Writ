@@ -144,15 +144,56 @@ def resolve_test(src_path: str, config: dict) -> str:
     return result if os.path.isfile(result) else ""
 
 
-def runner_for(test_path: str, config: dict, cwd: Path | str | None = None) -> tuple[str, str]:
-    """Return (command, config_file_or_empty) for the runner that owns this test."""
+# PHPUnit cache root. /tmp because a Magento checkout's own directory is often not
+# writable by the runner, which is why the shared path existed in the first place.
+_PHPUNIT_CACHE_ROOT = "/tmp/writ-phpunit-cache"
+_SESSION_CACHE_TOKEN = "{session_cache}"
+# Session ids reach this from a hook payload, and the result becomes a filesystem
+# path, so anything outside this alphabet is rejected rather than sanitized
+# (SEC-INJ-PATH-001): a rejected id falls back to the shared root, which is the
+# previous behaviour, instead of building a path from attacker-shaped input.
+_SAFE_SESSION = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+
+
+def _substitute_session_cache(cmd: str, session_id: str) -> str:
+    """Replace `{session_cache}` in `cmd`; a command without it is untouched."""
+    if _SESSION_CACHE_TOKEN not in cmd:
+        return cmd
+    return cmd.replace(_SESSION_CACHE_TOKEN, _session_cache_dir(session_id))
+
+
+def _session_cache_dir(session_id: str) -> str:
+    """The cache directory for `session_id`, or the shared root when there is none.
+
+    WHY A SHARED FALLBACK IS ACCEPTABLE HERE. Every session pointing at one cache
+    directory is the defect this replaces, and an empty id leaves that defect in
+    place for that one call. It is still the right trade: a test runner must never
+    fail to run for want of a cache path, and PHPUnit already runs with
+    --do-not-cache-result so the shared state is scratch rather than results.
+    """
+    if session_id and _SAFE_SESSION.match(session_id):
+        return f"{_PHPUNIT_CACHE_ROOT}/{session_id}"
+    return _PHPUNIT_CACHE_ROOT
+
+
+def runner_for(
+    test_path: str,
+    config: dict,
+    cwd: Path | str | None = None,
+    session_id: str = "",
+) -> tuple[str, str]:
+    """Return (command, config_file_or_empty) for the runner that owns this test.
+
+    `{session_cache}` in a runner_command is substituted with a per-session cache
+    directory. A command without the token is returned byte-identical.
+    """
     name = match_test(test_path, config)
     if not name:
         return ("", "")
     pat = _find_pattern(config, name)
     if not pat:
         return ("", "")
-    cmd = pat.get("runner_command", "")
+    cmd = _substitute_session_cache(pat.get("runner_command", ""), session_id)
     cfg_rel = pat.get("runner_config_file", "") or ""
     cfg_abs = ""
     if cfg_rel:
@@ -178,6 +219,8 @@ def main(argv: list[str]) -> int:
     p_rt.add_argument("file")
     p_rf = sub.add_parser("runner-for")
     p_rf.add_argument("file")
+    p_rf.add_argument("--session", default="",
+                      help="session id, for the per-session PHPUnit cache directory")
 
     args = ap.parse_args(argv)
     cwd = Path.cwd()
@@ -190,7 +233,7 @@ def main(argv: list[str]) -> int:
     elif args.cmd == "resolve-test":
         print(resolve_test(args.file, config))
     elif args.cmd == "runner-for":
-        cmd, cfg = runner_for(args.file, config, cwd)
+        cmd, cfg = runner_for(args.file, config, cwd, session_id=args.session)
         print(cmd)
         print(cfg)
     return 0

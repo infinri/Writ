@@ -150,15 +150,40 @@ _readonly_inspection() {
 }
 
 STATE_DIR_GUARD="${WRIT_CACHE_DIR:-$WRIT_DIR/var/session}"
-case "$CMD" in
-    *"$STATE_DIR_GUARD"* | *"/tmp/writ-current-session"* | *"writ-session-"* \
-    | *"writ-manual-test-grant"* | *"manual_test_grant"* | *"writ-grant-"* \
-    | *"writ-gate-token"*)
+
+# The minter's own TEST FILE is not the minter. The grant module's name is a
+# module name, so it matched the test file named after it as readily as the
+# module itself under bin/lib/, and a pytest run naming that test file was
+# refused -- measured roughly eight times in one session, twice on commands whose
+# only purpose was probing this behaviour. A test file cannot mint a grant, and
+# anything it might WRITE is still covered by the grant-file patterns below, so
+# the test file's name is scrubbed before matching rather than the module pattern
+# being dropped. Scrubbing, not exempting: a command naming the test file AND the
+# module still matches on the module.
+CMD_FOR_STATE_MATCH="${CMD//test_manual_test_grant.py/}"
+
+# WHICH pattern matched is recorded, because the refusal used to interpolate
+# $STATE_DIR_GUARD unconditionally: a command matching the grant module was told
+# it "names Writ gate state ('<...>/var/session')" when it had named no such
+# path. That misdirection, not the breadth of the match, is why the false
+# positive above went unexplained for so long -- every refusal pointed the reader
+# at the wrong pattern.
+STATE_MATCH=""
+for _state_pat in "$STATE_DIR_GUARD" "/tmp/writ-current-session" "writ-session-" \
+                  "writ-manual-test-grant" "manual_test_grant" "writ-grant-" \
+                  "writ-gate-token"; do
+    case "$CMD_FOR_STATE_MATCH" in
+        *"$_state_pat"*) STATE_MATCH="$_state_pat"; break ;;
+    esac
+done
+
+case "$STATE_MATCH" in
+    ?*)
         if _readonly_inspection "$CMD"; then
             log_gate_decision "bash-write" "allow" "read-only inspection naming gate state" ""
         else
-            GUARD_REASON="[ENF-GATE-STATE] Refusing this Bash command: it names Writ gate state ('$STATE_DIR_GUARD'). Mode, approvals, the manual-testing grant and recorded review verdicts live there, and a gate the agent can edit is not a gate, so a command that could execute, expand, or write is refused in any mode. Plain read-only inspection (grep/cat/ls pipelines with no redirects, substitution, or control operators) is allowed, and the Read tool covers the rest. A manual-testing bypass is minted only from the user's own words: ask the user to reply \"manual testing approved\". A CRITICAL review verdict is cleared only by fixing the findings and re-running writ-reviewer, never by writing the record directly."
-            log_gate_decision "bash-write" "deny" "$GUARD_REASON" "$STATE_DIR_GUARD"
+            GUARD_REASON="[ENF-GATE-STATE] Refusing this Bash command: it names Writ gate state ('$STATE_MATCH'). Mode, approvals, the manual-testing grant and recorded review verdicts live there, and a gate the agent can edit is not a gate, so a command that could execute, expand, or write is refused in any mode. Plain read-only inspection (grep/cat/ls pipelines with no redirects, substitution, or control operators) is allowed, and the Read tool covers the rest. A manual-testing bypass is minted only from the user's own words: ask the user to reply \"manual testing approved\". A CRITICAL review verdict is cleared only by fixing the findings and re-running writ-reviewer, never by writing the record directly."
+            log_gate_decision "bash-write" "deny" "$GUARD_REASON" "$STATE_MATCH"
             emit_deny "$GUARD_REASON"
             exit 0
         fi

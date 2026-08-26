@@ -56,7 +56,9 @@ LOG="$LOG_DIR/last-test-run.log"
 declare -A RUNNER_CMD RUNNER_CFG RUNNER_FILES RUNNER_FMT
 while IFS= read -r tf; do
     [ -z "$tf" ] && continue
-    INFO=$(python3 "$TEST_PATHS_HELPER" runner-for "$tf" 2>/dev/null)
+    # --session is what makes the PHPUnit cache directory per-session; without it
+    # the substitution falls back to the shared root and two sessions collide.
+    INFO=$(python3 "$TEST_PATHS_HELPER" runner-for "$tf" --session "$SESSION_ID" 2>/dev/null)
     CMD=$(echo "$INFO" | sed -n '1p')
     CFG=$(echo "$INFO" | sed -n '2p')
     [ -z "$CMD" ] && continue

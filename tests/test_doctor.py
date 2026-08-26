@@ -498,6 +498,9 @@ class TestEmbeddingStack:
             "writ.session.doctor._index_degeneracy",
             lambda: {"zero_count": 0, "sample_size": 0},
         )
+        # permissions-allowlist otherwise shells to the installer against the
+        # developer's real ~/.claude/settings.json (TEST-ISOLATE-001).
+        monkeypatch.setattr("writ.session.doctor._missing_allow_entries", lambda: [])
         monkeypatch.setattr("writ.session.doctor._venv_import_ok", lambda: True)
         monkeypatch.setattr(
             "writ.session.doctor._onnx_model_files_present", lambda: (True, True)
@@ -525,6 +528,9 @@ class TestEmbeddingStack:
             "writ.session.doctor._index_degeneracy",
             lambda: {"zero_count": 0, "sample_size": 0},
         )
+        # permissions-allowlist otherwise shells to the installer against the
+        # developer's real ~/.claude/settings.json (TEST-ISOLATE-001).
+        monkeypatch.setattr("writ.session.doctor._missing_allow_entries", lambda: [])
         monkeypatch.setattr("writ.session.doctor._venv_import_ok", lambda: True)
         monkeypatch.setattr(
             "writ.session.doctor._onnx_model_files_present", lambda: (False, True)
@@ -542,6 +548,9 @@ class TestEmbeddingStack:
             "writ.session.doctor._index_degeneracy",
             lambda: {"zero_count": 0, "sample_size": 0},
         )
+        # permissions-allowlist otherwise shells to the installer against the
+        # developer's real ~/.claude/settings.json (TEST-ISOLATE-001).
+        monkeypatch.setattr("writ.session.doctor._missing_allow_entries", lambda: [])
         monkeypatch.setattr("writ.session.doctor._venv_import_ok", lambda: True)
         monkeypatch.setattr(
             "writ.session.doctor._onnx_model_files_present", lambda: (True, False)
@@ -1230,7 +1239,7 @@ class TestRunAllChecks:
     """run_all_checks: exception isolation, ordering, result count."""
 
     def _patch_all_ok(self, monkeypatch) -> None:
-        """Patch every seam so all 15 checks return ok with no side effects."""
+        """Patch every seam so all 16 checks return ok with no side effects."""
         monkeypatch.setattr(
             "writ.session.doctor._http_get_health",
             lambda: {"status": "healthy", "index_state": "warm", "rule_count": 5},
@@ -1252,6 +1261,9 @@ class TestRunAllChecks:
             "writ.session.doctor._index_degeneracy",
             lambda: {"zero_count": 0, "sample_size": 0},
         )
+        # permissions-allowlist otherwise shells to the installer against the
+        # developer's real ~/.claude/settings.json (TEST-ISOLATE-001).
+        monkeypatch.setattr("writ.session.doctor._missing_allow_entries", lambda: [])
         monkeypatch.setattr("writ.session.doctor._venv_import_ok", lambda: True)
         monkeypatch.setattr(
             "writ.session.doctor._onnx_model_files_present", lambda: (True, True)
@@ -1279,12 +1291,12 @@ class TestRunAllChecks:
             lambda session_id: {"mode": "work"},
         )
 
-    def test_returns_exactly_fifteen_results(self, default_opts, monkeypatch) -> None:
+    def test_returns_exactly_sixteen_results(self, default_opts, monkeypatch) -> None:
         self._patch_all_ok(monkeypatch)
         from writ.session.doctor import run_all_checks
         results = run_all_checks(default_opts)
-        assert len(results) == 15, (
-            f"run_all_checks must return exactly 15 CheckResults; got {len(results)}"
+        assert len(results) == 16, (
+            f"run_all_checks must return exactly 16 CheckResults; got {len(results)}"
         )
 
     def test_result_names_match_contract(self, default_opts, monkeypatch) -> None:
@@ -1298,6 +1310,7 @@ class TestRunAllChecks:
             "uniqueness-constraints",
             "duplicate-records",
             "index-degeneracy",
+            "permissions-allowlist",
             "embedding-stack",
             "corpus-drift",
             "bitbucket-creds",
@@ -1325,7 +1338,7 @@ class TestRunAllChecks:
         )
         from writ.session.doctor import STATUS_FAIL, run_all_checks
         results = run_all_checks(default_opts)
-        assert len(results) == 15, "all 15 results must be returned despite one exception"
+        assert len(results) == 16, "all 16 results must be returned despite one exception"
         daemon_result = next(r for r in results if r.name == "daemon-liveness")
         assert daemon_result.status == STATUS_FAIL
         assert "daemon exploded" in daemon_result.detail, (
@@ -1553,6 +1566,9 @@ class TestDoctorCommandNet:
             "writ.session.doctor._index_degeneracy",
             lambda: {"zero_count": 0, "sample_size": 0},
         )
+        # permissions-allowlist otherwise shells to the installer against the
+        # developer's real ~/.claude/settings.json (TEST-ISOLATE-001).
+        monkeypatch.setattr("writ.session.doctor._missing_allow_entries", lambda: [])
         monkeypatch.setattr("writ.session.doctor._venv_import_ok", lambda: True)
         monkeypatch.setattr(
             "writ.session.doctor._onnx_model_files_present", lambda: (True, True)

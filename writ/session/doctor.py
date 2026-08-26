@@ -300,6 +300,39 @@ def _index_degeneracy() -> dict:
     }
 
 
+_INSTALL_MODULE = _PACKAGE_ROOT / "bin" / "lib" / "writ_install.py"
+_GLOBAL_CONFIG_PATCHER = _PACKAGE_ROOT / "scripts" / "patch-global-config.sh"
+
+
+def _missing_allow_entries() -> list[str]:
+    """Shipped Writ permission entries absent from ~/.claude/settings.json.
+
+    Asks writ_install.py, the module that OWNS the entry list, instead of keeping a
+    copy here. A copy drifts, and a drifted copy makes this check silently
+    always-fail. Raises when the file cannot be read or parsed, so the check can
+    report that distinctly from "entries are missing".
+    """
+    target = Path.home() / ".claude" / "settings.json"
+    proc = subprocess.run(
+        ["python3", str(_INSTALL_MODULE), "check-settings", "--target", str(target)],
+        capture_output=True, text=True, timeout=30,
+    )
+    if proc.returncode == 0:
+        return []
+    entries = [
+        line.strip() for line in proc.stdout.splitlines()
+        if line.strip() and not line.startswith("[check-settings]")
+    ]
+    if entries:
+        return entries
+    raise RuntimeError((proc.stderr or proc.stdout).strip() or "check-settings failed")
+
+
+def _patch_global_config() -> None:
+    """Fix callable: re-run the patcher that merges the entries (idempotent)."""
+    subprocess.run(["bash", str(_GLOBAL_CONFIG_PATCHER)], check=False, timeout=300)
+
+
 def _apply_neo4j_constraints() -> None:
     """Fix callable: create every missing uniqueness constraint/index (idempotent)."""
     from writ.config import get_neo4j_password, get_neo4j_uri, get_neo4j_user
@@ -832,6 +865,42 @@ def check_index_degeneracy(opts: DoctorOptions) -> CheckResult:
     )
 
 
+def check_permissions_allowlist(opts: DoctorOptions) -> CheckResult:
+    """Detects a HALF-APPLIED install: the plugin loaded, the permission patch did not.
+
+    The plugin manifest schema has no permissions field, so the allowlist can only
+    arrive from scripts/patch-global-config.sh. bootstrap-plugin.sh only WARNS when
+    that step fails, and the SessionStart detector keys on the venv, so
+    venv-present-but-allowlist-absent looks healthy indefinitely while every
+    read-only Writ command prompts the user.
+    """
+    name = "permissions-allowlist"
+
+    try:
+        missing = _missing_allow_entries()
+    except Exception as exc:
+        return _fail(
+            name=name,
+            detail=f"Could not read the Writ permission entries ({exc}).",
+            fixable=True,
+            fix=_patch_global_config,
+        )
+
+    if not missing:
+        return _ok(name=name, detail="Writ permission entries present.")
+
+    return _fail(
+        name=name,
+        detail=(
+            f"{len(missing)} Writ permission entr(ies) missing from "
+            "~/.claude/settings.json, so read-only Writ commands prompt on every "
+            "call. Fix with `bash scripts/patch-global-config.sh`."
+        ),
+        fixable=True,
+        fix=_patch_global_config,
+    )
+
+
 def check_embedding_stack(opts: DoctorOptions) -> CheckResult:
     name = "embedding-stack"
     import_ok = _venv_import_ok()
@@ -1177,6 +1246,7 @@ _CHECKS: list[tuple[str, Callable[[DoctorOptions], CheckResult]]] = [
     ("uniqueness-constraints", check_uniqueness_constraints),
     ("duplicate-records", check_duplicate_records),
     ("index-degeneracy", check_index_degeneracy),
+    ("permissions-allowlist", check_permissions_allowlist),
     ("embedding-stack", check_embedding_stack),
     ("corpus-drift", check_corpus_drift),
     ("bitbucket-creds", check_bitbucket_creds),

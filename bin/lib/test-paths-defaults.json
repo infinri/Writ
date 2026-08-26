@@ -64,7 +64,7 @@
       "test_match": ["*/app/code/*/Test/Unit/*.php"],
       "src_to_test_regex": "^(.*)/app/code/([^/]+)/([^/]+)/(.+)\\.php$",
       "src_to_test_replace": "{1}/app/code/{2}/{3}/Test/Unit/{4}Test.php",
-      "runner_command": "vendor/bin/phpunit --cache-directory=/tmp/writ-phpunit-cache --do-not-cache-result",
+      "runner_command": "vendor/bin/phpunit --cache-directory={session_cache} --do-not-cache-result",
       "runner_config_file": "dev/tests/unit/phpunit.xml.dist"
     }
   ]
