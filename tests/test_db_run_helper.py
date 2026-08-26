@@ -335,6 +335,17 @@ class _FakeSession:
             return self._results.pop(0)
         return _FakeResult()
 
+    async def execute_write(self, work, *args, **kwargs):
+        """Managed-write entry point, mirroring AsyncSession.execute_write.
+
+        Invokes the unit of work with this session standing in for the
+        transaction, so a query routed through `_write_single` lands in the same
+        `calls` list as a `_run_single` one and every query/params assertion in
+        this file keeps holding. The real driver re-invokes the work on a
+        transient error; nothing here raises one, so it runs exactly once.
+        """
+        return await work(self, *args, **kwargs)
+
 
 class _FakeDriver:
     """Stands in for neo4j's AsyncDriver. session() returns a fresh _FakeSession
@@ -983,8 +994,11 @@ class TestWritesAdoptRunSingle:
     def test_method_calls_self_run_single_not_inline_session(self, name: str) -> None:
         method = getattr(Neo4jConnection, name)
         source = inspect.getsource(method)
-        assert "self._run_single(" in source, (
-            f"{name} has not been migrated to self._run_single(...) yet "
+        # Either shared runner satisfies this: the point is that the method does
+        # not hand-roll a session. Record writes use the _write_single variant,
+        # which adds the driver's managed retry on top of the same one-query shape.
+        assert "self._run_single(" in source or "self._write_single(" in source, (
+            f"{name} has not been migrated to a shared runner yet "
             "(Wave-3 Cycle B2)"
         )
         assert "await session.run(" not in source, (

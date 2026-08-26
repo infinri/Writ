@@ -490,6 +490,14 @@ class TestEmbeddingStack:
     def test_import_ok_and_both_model_files_present_returns_ok(
         self, default_opts, monkeypatch
     ) -> None:
+        # duplicate-records and index-degeneracy otherwise reach the live graph and
+        # the developer's real ~/.cache/writ index, so the outcome would depend on
+        # the machine (TEST-ISOLATE-001). Clean graph, no index to sample.
+        monkeypatch.setattr("writ.session.doctor._count_duplicate_records", lambda: {})
+        monkeypatch.setattr(
+            "writ.session.doctor._index_degeneracy",
+            lambda: {"zero_count": 0, "sample_size": 0},
+        )
         monkeypatch.setattr("writ.session.doctor._venv_import_ok", lambda: True)
         monkeypatch.setattr(
             "writ.session.doctor._onnx_model_files_present", lambda: (True, True)
@@ -509,6 +517,14 @@ class TestEmbeddingStack:
         assert r.status == STATUS_FAIL
 
     def test_model_onnx_missing_returns_fail(self, default_opts, monkeypatch) -> None:
+        # duplicate-records and index-degeneracy otherwise reach the live graph and
+        # the developer's real ~/.cache/writ index, so the outcome would depend on
+        # the machine (TEST-ISOLATE-001). Clean graph, no index to sample.
+        monkeypatch.setattr("writ.session.doctor._count_duplicate_records", lambda: {})
+        monkeypatch.setattr(
+            "writ.session.doctor._index_degeneracy",
+            lambda: {"zero_count": 0, "sample_size": 0},
+        )
         monkeypatch.setattr("writ.session.doctor._venv_import_ok", lambda: True)
         monkeypatch.setattr(
             "writ.session.doctor._onnx_model_files_present", lambda: (False, True)
@@ -518,6 +534,14 @@ class TestEmbeddingStack:
         assert r.status == STATUS_FAIL
 
     def test_tokenizer_json_missing_returns_fail(self, default_opts, monkeypatch) -> None:
+        # duplicate-records and index-degeneracy otherwise reach the live graph and
+        # the developer's real ~/.cache/writ index, so the outcome would depend on
+        # the machine (TEST-ISOLATE-001). Clean graph, no index to sample.
+        monkeypatch.setattr("writ.session.doctor._count_duplicate_records", lambda: {})
+        monkeypatch.setattr(
+            "writ.session.doctor._index_degeneracy",
+            lambda: {"zero_count": 0, "sample_size": 0},
+        )
         monkeypatch.setattr("writ.session.doctor._venv_import_ok", lambda: True)
         monkeypatch.setattr(
             "writ.session.doctor._onnx_model_files_present", lambda: (True, False)
@@ -1206,7 +1230,7 @@ class TestRunAllChecks:
     """run_all_checks: exception isolation, ordering, result count."""
 
     def _patch_all_ok(self, monkeypatch) -> None:
-        """Patch every seam so all 13 checks return ok with no side effects."""
+        """Patch every seam so all 15 checks return ok with no side effects."""
         monkeypatch.setattr(
             "writ.session.doctor._http_get_health",
             lambda: {"status": "healthy", "index_state": "warm", "rule_count": 5},
@@ -1219,6 +1243,14 @@ class TestRunAllChecks:
         monkeypatch.setattr(
             "writ.session.doctor._list_neo4j_constraint_names",
             lambda: [f"c{i}" for i in range(17)],
+        )
+        # duplicate-records and index-degeneracy otherwise reach the live graph and
+        # the developer's real ~/.cache/writ index, so the outcome would depend on
+        # the machine (TEST-ISOLATE-001). Clean graph, no index to sample.
+        monkeypatch.setattr("writ.session.doctor._count_duplicate_records", lambda: {})
+        monkeypatch.setattr(
+            "writ.session.doctor._index_degeneracy",
+            lambda: {"zero_count": 0, "sample_size": 0},
         )
         monkeypatch.setattr("writ.session.doctor._venv_import_ok", lambda: True)
         monkeypatch.setattr(
@@ -1247,12 +1279,12 @@ class TestRunAllChecks:
             lambda session_id: {"mode": "work"},
         )
 
-    def test_returns_exactly_thirteen_results(self, default_opts, monkeypatch) -> None:
+    def test_returns_exactly_fifteen_results(self, default_opts, monkeypatch) -> None:
         self._patch_all_ok(monkeypatch)
         from writ.session.doctor import run_all_checks
         results = run_all_checks(default_opts)
-        assert len(results) == 13, (
-            f"run_all_checks must return exactly 13 CheckResults; got {len(results)}"
+        assert len(results) == 15, (
+            f"run_all_checks must return exactly 15 CheckResults; got {len(results)}"
         )
 
     def test_result_names_match_contract(self, default_opts, monkeypatch) -> None:
@@ -1264,6 +1296,8 @@ class TestRunAllChecks:
             "stale-orphan-port-conflict",
             "neo4j-connectivity",
             "uniqueness-constraints",
+            "duplicate-records",
+            "index-degeneracy",
             "embedding-stack",
             "corpus-drift",
             "bitbucket-creds",
@@ -1291,7 +1325,7 @@ class TestRunAllChecks:
         )
         from writ.session.doctor import STATUS_FAIL, run_all_checks
         results = run_all_checks(default_opts)
-        assert len(results) == 13, "all 13 results must be returned despite one exception"
+        assert len(results) == 15, "all 15 results must be returned despite one exception"
         daemon_result = next(r for r in results if r.name == "daemon-liveness")
         assert daemon_result.status == STATUS_FAIL
         assert "daemon exploded" in daemon_result.detail, (
@@ -1511,6 +1545,14 @@ class TestDoctorCommandNet:
         monkeypatch.setattr("writ.session.doctor._ps_writ_serve_orphans", lambda: [])
         monkeypatch.setattr("writ.session.doctor._tcp_can_connect", lambda h, p: True)
         monkeypatch.setattr("writ.session.doctor._count_neo4j_rules", lambda: 5)
+        # duplicate-records and index-degeneracy otherwise reach the live graph and
+        # the developer's real ~/.cache/writ index, so the outcome would depend on
+        # the machine (TEST-ISOLATE-001). Clean graph, no index to sample.
+        monkeypatch.setattr("writ.session.doctor._count_duplicate_records", lambda: {})
+        monkeypatch.setattr(
+            "writ.session.doctor._index_degeneracy",
+            lambda: {"zero_count": 0, "sample_size": 0},
+        )
         monkeypatch.setattr("writ.session.doctor._venv_import_ok", lambda: True)
         monkeypatch.setattr(
             "writ.session.doctor._onnx_model_files_present", lambda: (True, True)

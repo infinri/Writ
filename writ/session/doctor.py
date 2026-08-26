@@ -218,6 +218,88 @@ def _list_neo4j_constraint_names() -> list[str]:
     return asyncio.run(_run())
 
 
+# The three record labels and the property each one MERGEs on
+# (writ/graph/db/record_store.py). Kept here rather than imported so a doctor
+# check never pulls the graph package in just to name a label.
+_RECORD_KEYS: dict[str, str] = {
+    "Decision": "decision_id",
+    "FileChange": "change_id",
+    "Commit": "commit_hash",
+}
+
+
+def _count_duplicate_records() -> dict[str, int]:
+    """{label: number of (id, project) keys held by more than one node}.
+
+    Absent labels are omitted, so a clean graph returns {}. This has to be
+    runnable BEFORE the uniqueness constraints are applied, because Neo4j
+    refuses to create a constraint over data that already violates it: without
+    this check a duplicate turns a silent data problem into an opaque migrate
+    failure.
+    """
+    from writ.config import get_neo4j_password, get_neo4j_uri, get_neo4j_user
+    from writ.graph.db import Neo4jConnection
+
+    async def _run() -> dict[str, int]:
+        db = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
+        try:
+            found: dict[str, int] = {}
+            for label, key in _RECORD_KEYS.items():
+                rows = await db._run(
+                    f"MATCH (n:{label}) WHERE n.{key} IS NOT NULL "
+                    f"WITH n.{key} AS k, n.project AS p, count(*) AS c "
+                    "WHERE c > 1 "
+                    "RETURN count(*) AS groups"
+                )
+                groups = rows[0]["groups"] if rows else 0
+                if groups:
+                    found[label] = groups
+            return found
+        finally:
+            await db.close()
+
+    return asyncio.run(_run())
+
+
+def _index_degeneracy() -> dict:
+    """{"zero_count": n, "sample_size": m} for the live HNSW index on disk.
+
+    Reads the sidecar and .bin directly rather than going through
+    `load_index`, which needs a corpus hash the doctor has no reason to know.
+    An absent or unreadable index is not degeneracy: it reports a zero-length
+    sample, which the check reads as "nothing to judge".
+    """
+    import hnswlib
+    import numpy as np
+
+    from writ.retrieval.embeddings import (
+        DEFAULT_HNSW_CACHE_DIR,
+        _ZERO_NORM_EPS,
+        _degeneracy_sample_ids,
+    )
+
+    cache_dir = Path(DEFAULT_HNSW_CACHE_DIR)
+    sidecar = cache_dir / "writ_hnsw.json"
+    binary = cache_dir / "writ_hnsw.bin"
+    if not sidecar.exists() or not binary.exists():
+        return {"zero_count": 0, "sample_size": 0}
+    data = json.loads(sidecar.read_text())
+    rule_count = int(data["rule_count"])
+    sample_ids = _degeneracy_sample_ids(rule_count)
+    if not sample_ids:
+        return {"zero_count": 0, "sample_size": 0}
+    idx = hnswlib.Index(space="cosine", dim=int(data["dims"]))
+    idx.load_index(str(binary), max_elements=rule_count)
+    stored = np.asarray(
+        idx.get_items(sample_ids, return_type="numpy"), dtype=np.float64
+    )
+    norms = np.linalg.norm(stored, axis=1)
+    return {
+        "zero_count": int((norms <= _ZERO_NORM_EPS).sum()),
+        "sample_size": len(sample_ids),
+    }
+
+
 def _apply_neo4j_constraints() -> None:
     """Fix callable: create every missing uniqueness constraint/index (idempotent)."""
     from writ.config import get_neo4j_password, get_neo4j_uri, get_neo4j_user
@@ -646,6 +728,14 @@ def check_neo4j_connectivity(opts: DoctorOptions) -> CheckResult:
     )
 
 
+# A FLOOR on the count, deliberately not raised when the record constraints were
+# added, because a count cannot express which constraints exist. Measured on the
+# live graph: it already carried uniqueness on (decision_id, project) and
+# (commit_hash, project) under legacy names, and `CREATE CONSTRAINT ... IF NOT
+# EXISTS` is satisfied by an equivalent constraint whatever it is called, so the
+# statement is a no-op and the count does not move. Raising this to 20 made the
+# check FAIL on a graph that was correctly constrained. Constraint identity is
+# asserted by (label, properties) in tests/test_write_side_integrity.py instead.
 _MIN_EXPECTED_CONSTRAINTS = 17
 
 
@@ -681,6 +771,64 @@ def check_uniqueness_constraints(opts: DoctorOptions) -> CheckResult:
     return _ok(
         name=name,
         detail=f"{len(names)} constraint(s) applied.",
+    )
+
+
+def check_duplicate_records(opts: DoctorOptions) -> CheckResult:
+    """Surfaces forked record nodes, which block the uniqueness constraints.
+
+    NOT fixable from here on purpose. Which of two forked Decisions to keep is a
+    judgement about the user's own history, not a migration, so this reports and
+    a human resolves.
+    """
+    name = "duplicate-records"
+
+    try:
+        duplicates = _count_duplicate_records()
+    except Exception as exc:
+        return _fail(name=name, detail=f"Could not count duplicate records ({exc}).")
+
+    if not duplicates:
+        return _ok(name=name, detail="No duplicate record keys.")
+
+    parts = ", ".join(f"{label}: {count}" for label, count in sorted(duplicates.items()))
+    return _fail(
+        name=name,
+        detail=(
+            f"Duplicate record keys ({parts}). Each is one (id, project) held by "
+            "more than one node, so the matching uniqueness constraint cannot be "
+            "created until they are merged by hand."
+        ),
+    )
+
+
+def check_index_degeneracy(opts: DoctorOptions) -> CheckResult:
+    """Surfaces a partially zero-norm HNSW index.
+
+    A fully degenerate index is rejected at load and rebuilt. A PARTIAL one
+    loads and serves noise for those rows, and used to be reported only to a
+    logger nobody reads: 313 zero-norm vectors did that for six days.
+    """
+    name = "index-degeneracy"
+
+    try:
+        state = _index_degeneracy()
+    except Exception as exc:
+        return _warn(name=name, detail=f"Could not sample the HNSW index ({exc}).")
+
+    sample_size = state.get("sample_size", 0)
+    zero_count = state.get("zero_count", 0)
+    if not sample_size:
+        return _ok(name=name, detail="No HNSW index on disk to sample.")
+    if not zero_count:
+        return _ok(name=name, detail=f"{sample_size} sampled vector(s), none zero-norm.")
+    return _warn(
+        name=name,
+        detail=(
+            f"{zero_count} of {sample_size} sampled vector(s) have zero norm. "
+            "Retrieval serves noise for those rules. Rebuild the index to clear "
+            "it; a rebuild that does not clear it means the corpus text is empty."
+        ),
     )
 
 
@@ -1027,6 +1175,8 @@ _CHECKS: list[tuple[str, Callable[[DoctorOptions], CheckResult]]] = [
     ("stale-orphan-port-conflict", check_stale_orphan_port_conflict),
     ("neo4j-connectivity", check_neo4j_connectivity),
     ("uniqueness-constraints", check_uniqueness_constraints),
+    ("duplicate-records", check_duplicate_records),
+    ("index-degeneracy", check_index_degeneracy),
     ("embedding-stack", check_embedding_stack),
     ("corpus-drift", check_corpus_drift),
     ("bitbucket-creds", check_bitbucket_creds),

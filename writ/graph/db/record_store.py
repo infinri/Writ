@@ -26,7 +26,7 @@ class RecordStoreMixin:
         props["provenance"] = "record"
         props["source_origin"] = "graph-authored"
         label = type(model).__name__
-        record = await self._run_single(
+        record = await self._write_single(
             f"MERGE (n:{label} {{{id_field}: ${id_field}, project: $project}}) "
             "SET n += $props "
             f"RETURN n.{id_field} AS {id_field}",
@@ -86,7 +86,7 @@ class RecordStoreMixin:
             "provenance": "record",
             "source_origin": "graph-authored",
         }
-        record = await self._run_single(
+        record = await self._write_single(
             "MERGE (m:Memory {name: $name, project: $project}) "
             "SET m += $props "
             "RETURN m.name AS name",

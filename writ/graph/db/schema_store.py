@@ -49,11 +49,35 @@ def classify_schema_readiness(indexes: list[dict], constraints: list[dict]) -> d
     }
 
 
+def _statement_subject(statement: str) -> str:
+    """The constraint/index name a DDL statement acts on, for a blocked report.
+
+    Reads the third whitespace-separated token of `CREATE|DROP CONSTRAINT|INDEX
+    <name> ...`, which is how every statement in `apply_constraints` is shaped.
+    Falls back to the whole statement so an unrecognised shape is still legible
+    rather than reported as an empty name.
+    """
+    parts = statement.split()
+    if len(parts) >= 3 and parts[0].upper() in ("CREATE", "DROP"):
+        return parts[2]
+    return statement
+
+
 class SchemaStoreMixin:
-    async def apply_constraints(self) -> None:
-        """Apply uniqueness constraint and performance indexes. Idempotent via IF NOT EXISTS.
+    async def apply_constraints(self) -> list[str]:
+        """Apply uniqueness constraints and performance indexes. Idempotent via IF NOT EXISTS.
 
         Includes Phase 1 constraints for all 10 new methodology labels.
+
+        Returns the statements that could NOT be applied, each named, and applies
+        every other one. Neo4j refuses CREATE CONSTRAINT when the data already
+        violates it, and this loop used to run bare: one label holding duplicates
+        would abort the pass and silently leave every later statement unapplied,
+        including the Memory constraint created near the end. A duplicate is a
+        data problem for a human to resolve (which of two forked Decisions to
+        keep is a judgement, not a migration), so the pass reports it and
+        continues rather than failing the whole schema setup. `writ doctor`
+        surfaces the same duplicates before a migrate ever attempts this.
         """
         # M.2: identity is composite (id, project), so two projects can hold the
         # same id (namespaced coexistence). Drop the old single-property
@@ -104,6 +128,25 @@ class SchemaStoreMixin:
             "FOR (n:Commit) ON (n.commit_hash)",
             "CREATE INDEX decision_project IF NOT EXISTS "
             "FOR (n:Decision) ON (n.project)",
+            # Records MERGE on (id, project) through one shared _create_record
+            # (record_store.py), and a MERGE on a non-constrained key is not
+            # race-safe: concurrent writers fork duplicates. Measured before
+            # these landed: eight concurrent create_decision calls on one id
+            # produced eight Decision nodes, and eight create_commit calls on
+            # one hash produced eight Commit nodes. Same rationale as
+            # Project(name) above and Memory(name, project) below.
+            #
+            # These also close a read gap. Every record index above is on a key
+            # the MERGE does not use (Decision had none on decision_id at all,
+            # Commit's omits project), so the constraint's owned index is the
+            # first one backing the actual MERGE key. That is a side effect, not
+            # the reason: no scan cost was measured.
+            "CREATE CONSTRAINT decision_decision_id_project_unique IF NOT EXISTS "
+            "FOR (n:Decision) REQUIRE (n.decision_id, n.project) IS UNIQUE",
+            "CREATE CONSTRAINT filechange_change_id_project_unique IF NOT EXISTS "
+            "FOR (n:FileChange) REQUIRE (n.change_id, n.project) IS UNIQUE",
+            "CREATE CONSTRAINT commit_commit_hash_project_unique IF NOT EXISTS "
+            "FOR (n:Commit) REQUIRE (n.commit_hash, n.project) IS UNIQUE",
             # Memory mirror: create_memory MERGEs on (name, project) from two
             # concurrent writers (the PostToolUse hook and backfill), and a MERGE
             # on a non-constrained key is not race-safe -- the constraint makes
@@ -113,9 +156,14 @@ class SchemaStoreMixin:
             "CREATE INDEX memory_project IF NOT EXISTS "
             "FOR (n:Memory) ON (n.project)",
         ])
+        blocked: list[str] = []
         async with self._driver.session(database=self._database) as session:
             for stmt in drops + statements:
-                await session.run(stmt)
+                try:
+                    await session.run(stmt)
+                except Exception as exc:
+                    blocked.append(f"{_statement_subject(stmt)}: {exc}")
+        return blocked
 
     async def list_constraints(self) -> list[dict]:
         """Return all constraints. For verification/testing."""

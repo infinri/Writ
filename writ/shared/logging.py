@@ -26,6 +26,7 @@ and bin writers import DOWN into it (ARCH-LAYER-001).
 from __future__ import annotations
 
 import contextvars
+import fcntl
 import json
 import os
 import re
@@ -64,6 +65,12 @@ STREAM_MAP: dict[str, str] = {
     "candidate_promoted": "audit",
     "quality_judgment": "audit",
     "memory_policy_deny": "audit",
+    # Partial vector-cache degeneracy. On audit rather than metrics for the same
+    # reason as the evidence rows below: this IS the oversight record. It lived
+    # only in a _logger.warning, invisible at default level, which is how 313
+    # zero-norm vectors served noise through the heaviest ranking signal for six
+    # days and still read as a healthy start.
+    "index_degeneracy": "audit",
     # Evidence, on audit rather than metrics: these ARE the oversight record. Both lived
     # only in the session cache, and citation_log is additionally trimmed to a cap, so the
     # proof behind a completion claim was the most perishable data Writ held.
@@ -482,9 +489,12 @@ def _unique_archive_dest(arc_dir: Path, stream: str, day: date) -> Path:
     first.
 
     Shared, single-source collision logic (DRY-CONFIG-001): the router's
-    source-side roll (via `_unique_archive_path`) and the scheduled sweep
-    (`writ.session.log_rotation._dest_for`) both import DOWN into this helper so
-    the same-day suffixing can never drift between them.
+    source-side roll and the scheduled sweep
+    (`writ.session.log_rotation._rotate_live`) both reach this through
+    `locked_archive_rename`, so the same-day suffixing can never drift between
+    them. Call it through that function rather than directly: the name it returns
+    is only free until someone renames, so picking here and renaming in the
+    caller is the race this helper cannot fix on its own.
     """
     base = arc_dir / f"{stream}-{day}.jsonl"
     if not _archive_taken(base):
@@ -497,10 +507,57 @@ def _unique_archive_dest(arc_dir: Path, stream: str, day: date) -> Path:
         i += 1
 
 
-def _unique_archive_path(project: str, stream: str, day: date) -> Path:
-    """A collision-safe archive path for a same-day roll under a project's
-    `archive/` dir (delegates to the shared `_unique_archive_dest`)."""
-    return _unique_archive_dest(archive_dir(project), stream, day)
+@contextmanager
+def archive_lock(arc_dir: Path):
+    """Exclusive advisory lock over one archive dir, for the duration of a move.
+
+    `fcntl.flock` on a `.rotate.lock` file, the same mechanism
+    writ/session/cache.py uses to serialize session-cache writers. Fail-open on
+    an unlockable directory (ERR-GRACEFUL-001): rotation must never block a hook,
+    so a lock that cannot be taken degrades to the old unsynchronized behavior
+    rather than dropping the roll.
+    """
+    lock_fd = None
+    try:
+        arc_dir.mkdir(parents=True, exist_ok=True)
+        lock_fd = os.open(str(arc_dir / ".rotate.lock"), os.O_CREAT | os.O_RDWR, 0o644)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    except OSError:
+        if lock_fd is not None:
+            os.close(lock_fd)
+            lock_fd = None
+    try:
+        yield
+    finally:
+        if lock_fd is not None:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
+
+
+def locked_archive_rename(src: Path, arc_dir: Path, stream: str, day: date) -> Path:
+    """Move `src` into `arc_dir` under a free `<stream>-<day>` name, atomically.
+
+    PICK AND RENAME ARE ONE STEP, and that is the whole point. Splitting them is
+    what loses data: `_unique_archive_dest` returns a name that is free at the
+    moment it looks, and the caller renames afterwards, so two rotators both
+    resolve `<stream>-<day>.jsonl`, the first moves the old data there, the
+    router recreates the live file, and the second moves THAT over the first's
+    archive. A whole generation is gone, and `os.rename` reports nothing.
+
+    Note that racing the same source is NOT the dangerous case: one rename wins
+    and the loser's source is already gone, so it fails with ENOENT and the
+    append proceeds. The loss needs the live file recreated in between, which is
+    exactly what a busy logger does. Measured with two processes rolling one
+    stream 15 times each before this existed: 15 of 30 generations lost.
+
+    A lock around the pick alone would not have helped, since two sequential
+    picks still return the same free name. Returns the destination the file now
+    occupies.
+    """
+    with archive_lock(arc_dir):
+        dest = _unique_archive_dest(arc_dir, stream, day)
+        os.rename(src, dest)
+        return dest
 
 
 def _roll_if_oversize(project: str, stream: str, target: Path) -> None:
@@ -521,9 +578,7 @@ def _roll_if_oversize(project: str, stream: str, target: Path) -> None:
         return
     try:
         today = datetime.now(timezone.utc).date()
-        dest = _unique_archive_path(project, stream, today)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        os.rename(target, dest)
+        locked_archive_rename(target, archive_dir(project), stream, today)
     except OSError:
         return  # roll failed: leave the live file in place, append proceeds
 

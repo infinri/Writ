@@ -23,6 +23,8 @@ import hnswlib
 import numpy as np
 from pydantic import BaseModel, Field
 
+from writ.shared.logging import emit
+
 # Per ARCH-CONST-001: named constants for HNSW defaults.
 DEFAULT_EF_CONSTRUCTION = 200
 DEFAULT_M = 16
@@ -467,6 +469,21 @@ class HnswlibStore:
                     "HNSW index at %s has %d zero-norm vector(s) in a sample of %d "
                     "(corpus_hash=%s); loading it anyway, the index is usable",
                     bin_path, zero_count, len(sample_ids), corpus_hash,
+                )
+                # The warning above is invisible at default level, which is how
+                # the six-day incident stayed undiagnosed: partial corruption
+                # read as a healthy start, exactly as the all-zero case did
+                # before the gate above existed. The audit row is the durable
+                # copy, carrying the two numbers needed to judge severity.
+                # Deliberately NOT a rejection: see the comment above on why
+                # tightening the threshold rebuilds forever.
+                emit(
+                    None, "index_degeneracy", "", None,
+                    zero_count=zero_count,
+                    sample_size=len(sample_ids),
+                    corpus_hash=corpus_hash,
+                    rule_count=rule_count,
+                    index_path=str(bin_path),
                 )
 
         self._index = idx

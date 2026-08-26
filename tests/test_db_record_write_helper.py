@@ -106,6 +106,17 @@ class _FakeSession:
                 return _FakeResult({id_field: params[id_field]})
         return _FakeResult({})
 
+    async def execute_write(self, work, *args, **kwargs):
+        """Managed-write entry point, mirroring AsyncSession.execute_write.
+
+        `_create_record` routes through `_write_single` for the driver's managed
+        retry, so this session stands in for the transaction and the work's
+        query lands in the same `calls` list every assertion below reads. The
+        real driver re-invokes the work on a transient error; nothing here
+        raises one, so it runs exactly once.
+        """
+        return await work(self, *args, **kwargs)
+
 
 class _FakeDriver:
     """Stands in for neo4j's AsyncDriver. session() returns a fresh _FakeSession
