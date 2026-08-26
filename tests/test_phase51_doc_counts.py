@@ -134,7 +134,10 @@ class TestDocCounts:
         # 50 = 49 + POST /session/{sid}/promotion-review (2026-08-25): surfaces a
         # graduation_pending candidate for human review AND records it, which is what
         # lets the next approval bind to one candidate instead of authorizing any.
+        # 49 = 50 - the session-cache key setter (2026-08-26): an arbitrary-key writer
+        # with no callers, which could set the gate inputs `mode` and `current_phase`
+        # over unauthenticated localhost HTTP. See tests/test_daemon_authorization.py.
         source_count = _count_server_endpoints()
-        assert source_count == 50, (
-            f"writ.server has {source_count} @app/@router route decorators; expected 50"
+        assert source_count == 49, (
+            f"writ.server has {source_count} @app/@router route decorators; expected 49"
         )

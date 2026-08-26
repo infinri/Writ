@@ -80,6 +80,5 @@ All 49 endpoints on `http://localhost:8765`, generated from the FastAPI route ta
 | GET | `/session/{session_id}/review-findings` | The latest recorded reviewer verdict and whether it blocks a commit |
 | POST | `/session/{session_id}/review-findings` | Record a reviewer verdict for the session. The latest one wins |
 | GET | `/session/{session_id}/should-skip` | Check whether RAG queries should be skipped for this session |
-| POST | `/session/{session_id}/update` | Update a single key in the session cache |
 | GET | `/session/{session_id}/verification-evidence` | Read verification evidence. Pass ?todo_id=X for a single entry, omit for all |
 | POST | `/session/{session_id}/verification-evidence` | Record verification evidence for a completion claim |

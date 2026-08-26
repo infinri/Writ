@@ -1,9 +1,16 @@
 """Writ HTTP API -- Pydantic request models (PY-PYDANTIC-001).
 
-All 23 request-body models for the FastAPI service live here, moved verbatim
+The request-body models for the FastAPI service live here, moved verbatim
 from the pre-split writ/server.py. This module imports NOTHING from writ.server,
 so it cannot participate in an import cycle; writ/server/__init__.py re-exports
 these names so `from writ.server import QueryRequest` keeps working.
+
+NO MODEL HERE MAY DECLARE EXACTLY A STRING `key` AND A STRING `value`. That is the
+arbitrary-key setter shape, and the one that existed (SessionUpdateRequest, for a
+route with no callers) let any local process write any string-valued key of the
+session cache, including the gate inputs `mode` and `current_phase`. A permitted
+operation is a named route with a typed body; see tests/test_daemon_authorization.py,
+which fails on the shape rather than on the name.
 """
 
 # writ-auth-scan: internal-service
@@ -161,15 +168,6 @@ class MemoryRecordRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Session route Pydantic models (PY-PYDANTIC-001)
 # ---------------------------------------------------------------------------
-
-
-class SessionUpdateRequest(BaseModel):
-    """Request body for POST /session/{session_id}/update."""
-
-    model_config = {"strict": True}
-
-    key: str
-    value: str
 
 
 class SessionModeSetRequest(BaseModel):
@@ -355,7 +353,6 @@ __all__ = [
     "CommitCaptureRequest",
     "GitHooksAutoInstallRequest",
     "RecallRequest",
-    "SessionUpdateRequest",
     "SessionModeSetRequest",
     "SessionCanWriteRequest",
     "SessionFormatRequest",

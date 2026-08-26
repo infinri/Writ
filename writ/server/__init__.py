@@ -302,7 +302,6 @@ from writ.server.models import (  # noqa: E402
     SessionPromoteCandidateRequest,
     SessionPromotionReviewRequest,
     SessionQualityJudgmentRequest,
-    SessionUpdateRequest,
     SessionVerificationEvidenceRequest,
 )
 

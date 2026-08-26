@@ -121,7 +121,6 @@ ROUTE_BASELINE: list[tuple[str, str]] = [
     ("POST", "/session/{session_id}/quality-judgment"),
     ("POST", "/session/{session_id}/review-findings"),
     ("POST", "/session/{session_id}/reset-after-compaction"),
-    ("POST", "/session/{session_id}/update"),
     ("POST", "/session/{session_id}/verification-evidence"),
 ]
 
@@ -145,11 +144,12 @@ class TestServerIsPackage:
     def test_route_baseline_captured_count(self) -> None:
         """Sanity check on the frozen constant itself: exactly 57 tuples are
         declared (53 captured from HEAD, plus /memory-record, plus the GET and POST
-        halves of /session/{sid}/review-findings added 2026-08-06, plus GET
-        /session/{sid}/prompt-state added 2026-08-08). Guards against a copy/paste
-        mistake in ROUTE_BASELINE, independent of the split."""
-        assert len(ROUTE_BASELINE) == 58
-        assert len(set(ROUTE_BASELINE)) == 58, "ROUTE_BASELINE must have no duplicate tuples"
+        halves of the verdict route added 2026-08-06, plus GET
+        /session/{sid}/prompt-state added 2026-08-08, MINUS the session-cache key
+        setter removed 2026-08-26). Guards against a copy/paste mistake in
+        ROUTE_BASELINE, independent of the split."""
+        assert len(ROUTE_BASELINE) == 57
+        assert len(set(ROUTE_BASELINE)) == 57, "ROUTE_BASELINE must have no duplicate tuples"
 
     def test_writ_server_is_package(self) -> None:
         """RED now: `writ.server` is still the single-file writ/server.py module
@@ -251,7 +251,10 @@ class TestRouteParityVsBaseline:
     def test_route_count_matches_baseline(self) -> None:
         """PASS now; a duplicate or dropped route changes the count even if
         set membership alone were checked loosely elsewhere."""
-        assert len(_current_route_tuples()) == len(ROUTE_BASELINE) == 58
+        # 58 before the session-cache key setter was removed: an arbitrary-key
+        # writer with no callers, which could set the gate inputs `mode` and
+        # `current_phase`. See tests/test_daemon_authorization.py.
+        assert len(_current_route_tuples()) == len(ROUTE_BASELINE) == 57
 
 
 # ---------------------------------------------------------------------------

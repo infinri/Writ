@@ -243,6 +243,40 @@ case "$CMD" in
         ;;
 esac
 
+# The daemon's arbitrary-key setter. POST /session/{id}/update was
+# `cache[key] = value` with no auth and no key allowlist, so it could write the gate
+# inputs `mode` and `current_phase`; it was deleted (writ/server/routes/session_state.py)
+# because it had no callers. This arm is what stops it coming back silently: the route
+# reappearing would otherwise be reachable from Bash on day one, the same way it was
+# reachable before anyone noticed it existed.
+#
+# SCOPED TO THE SETTER PATH, not to session-state POSTs generally. The agent's own
+# legitimate calls are session-state POSTs (quality-judgment, verification-evidence,
+# context-percent are all agent-initiated by design), so a blanket refusal would need a
+# list of exceptions, which is the blocklist shape ABS-SECURITY-024 rejects.
+#
+# HONEST LIMIT, same as the arms above: a command-text check is a confirmation boundary,
+# not containment. An agent that writes an intermediate script and runs that is not
+# stopped. What closes the loop is the route being gone.
+case "$CMD" in
+    *"/update"*)
+        # A SCHEME IS REQUIRED, and that is not cosmetic. The first draft matched the
+        # bare path, which also matched the literal `/session/{session_id}/update`
+        # sitting in a test file's frozen route list, so editing the very test that
+        # pins this route's removal was refused. That is the same
+        # mention-versus-use confusion the state-dir arm had, reintroduced by the
+        # commit that fixed it. Requiring http:// or https:// means only something
+        # shaped like an actual request matches; a quoted template does not.
+        if printf '%s' "$CMD" | grep -qE \
+            'https?://[^[:space:]"'"'"']*/session/[^/[:space:]"'"'"']+/update'; then
+            UPDATE_REASON="[ENF-GATE-STATE] Refusing this Bash command: it posts to the session-cache key setter. That route wrote any string-valued key of the session cache, including the gate inputs \`mode\` and \`current_phase\`, so a caller could advance a phase or disable the work-mode gates without an approval. It has been removed from the daemon; a command still addressing it is either stale or an attempt to write gate state by another door. Reading session state is fine (GET, or the Read tool)."
+            log_gate_decision "session-update" "deny" "$UPDATE_REASON" ""
+            emit_deny "$UPDATE_REASON"
+            exit 0
+        fi
+        ;;
+esac
+
 _GIT_COMMIT_RE='(^|[;&|]|&&|\|\|)[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*(env[[:space:]]+|command[[:space:]]+|sudo[[:space:]]+|nohup[[:space:]]+)*git([[:space:]]+-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?)*[[:space:]]+commit([[:space:]]|$)'
 
 case "$CMD" in

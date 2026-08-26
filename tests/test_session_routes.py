@@ -31,7 +31,6 @@ from writ.server import app  # type: ignore[import]
 # ImportError is expected until implementation lands.
 try:
     from writ.server import (
-        SessionUpdateRequest,
         SessionModeSetRequest,
         SessionCanWriteRequest,
         SessionFormatRequest,
@@ -39,7 +38,6 @@ try:
         SessionAddViolationRequest,
     )
 except ImportError:
-    SessionUpdateRequest = None  # type: ignore[assignment,misc]
     SessionModeSetRequest = None  # type: ignore[assignment,misc]
     SessionCanWriteRequest = None  # type: ignore[assignment,misc]
     SessionFormatRequest = None  # type: ignore[assignment,misc]
@@ -133,21 +131,24 @@ class TestSessionRead:
 # ---------------------------------------------------------------------------
 
 
-class TestSessionUpdate:
-    """POST /session/{session_id}/update"""
+class TestSessionUpdateIsGone:
+    """The session-cache key setter was REMOVED (Cycle E1).
+
+    It wrote any string-valued cache key with no auth and no allowlist, including
+    the gate inputs `mode` and `current_phase`, and had no production callers. The
+    two tests that used to assert it returned 200 and validated its body are
+    replaced by one asserting it is unreachable; the full coverage lives in
+    tests/test_daemon_authorization.py.
+    """
 
     @pytest.mark.asyncio
-    async def test_update_returns_200(self, client: AsyncClient) -> None:
-        """POST /session/{session_id}/update with valid body returns HTTP 200."""
-        payload = {"key": "mode", "value": "Work"}
-        response = await client.post(f"/session/{SESSION_ID}/update", json=payload)
-        assert response.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_update_rejects_missing_body(self, client: AsyncClient) -> None:
-        """POST /session/{session_id}/update with no body returns HTTP 422."""
-        response = await client.post(f"/session/{SESSION_ID}/update")
-        assert response.status_code == 422
+    async def test_the_setter_route_is_unreachable(self, client: AsyncClient) -> None:
+        response = await client.post(
+            f"/session/{SESSION_ID}/update", json={"key": "mode", "value": "work"}
+        )
+        assert response.status_code == 404, (
+            f"the removed key setter still answers with {response.status_code}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -621,15 +622,6 @@ class TestVerificationEvidenceTypedBody:
 
 class TestPydanticValidation:
     """Malformed request bodies are rejected with HTTP 422 before handler runs."""
-
-    @pytest.mark.asyncio
-    async def test_update_wrong_type_rejected(self, client: AsyncClient) -> None:
-        """PUT body with wrong field type returns 422, not 500."""
-        response = await client.post(
-            f"/session/{SESSION_ID}/update", json={"key": 42, "value": None}
-        )
-        # key must be a string; 42 should fail Pydantic validation.
-        assert response.status_code == 422
 
     @pytest.mark.asyncio
     async def test_mode_set_non_string_rejected(self, client: AsyncClient) -> None:

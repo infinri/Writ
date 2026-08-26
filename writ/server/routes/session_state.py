@@ -33,7 +33,6 @@ from writ.server.models import (
     SessionModeSetRequest,
     SessionQualityJudgmentRequest,
     SessionReviewFindingsRequest,
-    SessionUpdateRequest,
     SessionVerificationEvidenceRequest,
 )
 from writ.session.locators import plan_md_hash
@@ -51,16 +50,25 @@ async def session_read(session_id: str) -> dict[str, Any]:
     return data
 
 
-@router.post("/session/{session_id}/update")
-async def session_update(session_id: str, request: SessionUpdateRequest) -> dict[str, Any]:
-    """Update a single key in the session cache."""
-
-    def _do_update() -> None:
-        with server.writ_session.mutate_cache(session_id) as cache:
-            cache[request.key] = request.value
-
-    await asyncio.to_thread(_do_update)
-    return {"ok": True}
+# REMOVED: POST /session/{session_id}/update.
+#
+# It was `cache[key] = value` inside mutate_cache, with no authentication, no key
+# allowlist, and no Bash-gate arm naming it, so any local process could write any
+# string-valued key of the session cache. Two of those keys are gate INPUTS: eight
+# hooks call is_work_mode and exit 0 when it is not `work`, and current_phase decides
+# which gate comes next. Probed against the running daemon on a throwaway session id:
+# {"key":"current_phase","value":"implementation"} returned {"ok": true} and the
+# following GET showed the new phase.
+#
+# Deleted rather than allowlisted because a repo-wide search found ZERO production
+# callers: the route, its model, one docs row and its own tests. Anything a future
+# caller needs is a named route with a typed body and its own gate arm, which keeps
+# the permitted operations enumerable (ABS-SECURITY-024) instead of preserving a
+# general-purpose setter behind a list of forbidden keys.
+#
+# A unix socket would NOT have covered this. The agent shares the daemon's uid, so
+# socket permissions are invisible to it; the socket (Cycle E2) stops other local
+# users, this removal stops the agent.
 
 
 @router.get("/session/{session_id}/should-skip")
