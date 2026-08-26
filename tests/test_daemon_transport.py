@@ -51,6 +51,15 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 
+# The interpreter for the dual-transport CHILD, which needs uvicorn.
+#
+# NOT sys.executable. The Stop hook runs this suite under system python3, which has no
+# uvicorn, so the child died with ModuleNotFoundError and four tests failed while the
+# same file passed when run from the venv by hand. An interpreter-fragile test is worse
+# than no test: it reports green to whoever runs it the way the author did.
+_VENV_PY = REPO / ".venv" / "bin" / "python"
+CHILD_PY = str(_VENV_PY) if _VENV_PY.is_file() else sys.executable
+
 # Kept well under the ~107-byte AF_UNIX cap; pytest's tmp_path is already long, so
 # tests that bind use a short /tmp path of their own and clean it up.
 _SHORT_SOCK_DIR = "/tmp/writ-t-e2a"
@@ -217,7 +226,7 @@ class TestBothTransportsAndTheDiscriminator:
         sock_path = short_dir / "w.sock"
         port = cls._free_port()
         proc = subprocess.Popen(
-            [sys.executable, "-c", _DUAL_SERVER, str(sock_path), str(port)],
+            [CHILD_PY, "-c", _DUAL_SERVER, str(sock_path), str(port)],
             cwd=str(REPO), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
         deadline = 0.0
