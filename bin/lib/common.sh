@@ -155,6 +155,28 @@ _writ_transport_for() {
     esac
 }
 
+# One curl attempt, then ONE retry over TCP when the socket refused the connection.
+#
+# Exit 7 is "couldn't connect". A socket FILE outliving its listener is the ordinary
+# aftermath of a crashed or replaced daemon, and it satisfies `[ -S ]`, so before this
+# retry every daemon call over a stale socket failed and fell through to the local
+# python subprocess: correct, because that fallback is the design, but the daemon went
+# unused with nothing announcing it. Retrying only on 7 costs nothing when the socket
+# is healthy, which is why this is a per-call retry rather than a probe at source time
+# (a probe would add a round trip or a python start to EVERY hook).
+_writ_curl_with_fallback() {
+    local url="$1"
+    shift
+    local transport rc=0
+    transport=$(_writ_transport_for "$url")
+    curl $transport "$@" || rc=$?
+    if [ "$rc" -eq 7 ] && [ -n "$transport" ]; then
+        rc=0
+        curl "$@" || rc=$?
+    fi
+    return $rc
+}
+
 writ_http_get() {
     local url="$1"
     local fail="" arg
@@ -164,9 +186,9 @@ writ_http_get() {
     local ct="${WRIT_HTTP_CONNECT_TIMEOUT:-0.5}" mt="${WRIT_HTTP_TIMEOUT:-10}" rc=0
     if [ -z "${WRIT_NO_CURL:-}" ] && command -v curl >/dev/null 2>&1; then
         if [ -n "$fail" ]; then
-            curl $(_writ_transport_for "$url") -sf --connect-timeout "$ct" --max-time "$mt" "$url" || rc=$?
+            _writ_curl_with_fallback "$url" -sf --connect-timeout "$ct" --max-time "$mt" "$url" || rc=$?
         else
-            curl $(_writ_transport_for "$url") -s --connect-timeout "$ct" --max-time "$mt" "$url" || rc=$?
+            _writ_curl_with_fallback "$url" -s --connect-timeout "$ct" --max-time "$mt" "$url" || rc=$?
         fi
         return $rc
     fi
@@ -183,10 +205,10 @@ writ_http_post() {
     local ct="${WRIT_HTTP_CONNECT_TIMEOUT:-0.5}" mt="${WRIT_HTTP_TIMEOUT:-10}" rc=0
     if [ -z "${WRIT_NO_CURL:-}" ] && command -v curl >/dev/null 2>&1; then
         if [ -n "$fail" ]; then
-            curl $(_writ_transport_for "$url") -sf --connect-timeout "$ct" --max-time "$mt" -X POST "$url" \
+            _writ_curl_with_fallback "$url" -sf --connect-timeout "$ct" --max-time "$mt" -X POST "$url" \
                 -H "Content-Type: application/json" -d "$body" || rc=$?
         else
-            curl $(_writ_transport_for "$url") -s --connect-timeout "$ct" --max-time "$mt" -X POST "$url" \
+            _writ_curl_with_fallback "$url" -s --connect-timeout "$ct" --max-time "$mt" -X POST "$url" \
                 -H "Content-Type: application/json" -d "$body" || rc=$?
         fi
         return $rc
@@ -1370,7 +1392,14 @@ WRIT_SESSION_SOCKET="${WRIT_SOCKET:-$HOME/.cache/writ/run/writ.sock}"
 # a second instance, a probe. curl ignores the URL's host when --unix-socket is given,
 # so leaving the socket on would silently redirect those calls to the real daemon.
 # Measured: 6 tests across 3 modules did exactly that before this guard existed.
-if [ -n "${WRIT_HOST:-}" ] || [ -n "${WRIT_PORT:-}" ]; then
+if [ -n "${WRIT_SOCKET:-}" ] && [ -S "$WRIT_SESSION_SOCKET" ]; then
+    # BOTH set means "use this socket, with that port as the fallback". Without this
+    # arm the suite could not reach the socket at all: tests/conftest.py sets
+    # WRIT_PORT globally, on purpose, to keep the suite off the interactive daemon,
+    # and the arm below then read that as "the caller named an endpoint". A test
+    # meant to exercise the socket passed without touching one.
+    WRIT_CURL_TRANSPORT="--unix-socket $WRIT_SESSION_SOCKET"
+elif [ -n "${WRIT_HOST:-}" ] || [ -n "${WRIT_PORT:-}" ]; then
     WRIT_CURL_TRANSPORT=""
 elif [ -S "$WRIT_SESSION_SOCKET" ]; then
     WRIT_CURL_TRANSPORT="--unix-socket $WRIT_SESSION_SOCKET"

@@ -57,6 +57,54 @@ def is_state_touching(method: str) -> bool:
     return (method or "").upper() not in _READ_METHODS
 
 
+# Routes TCP may still reach when enforcement is on. An ALLOWLIST, not a blocklist of
+# dangerous routes, so a new state-touching route is private the day it lands
+# (ABS-SECURITY-024).
+#
+# These five exist because a browser cannot open a unix socket: /dashboard and /explore
+# are server-rendered HTML, /graph and /node/* are what they link to, and README.md
+# tells every new user to verify an install with `curl http://localhost:8765/health`.
+TCP_READONLY_ALLOWLIST = ("/health", "/dashboard", "/explore", "/graph")
+_TCP_READONLY_PREFIXES = ("/node/",)
+_ENFORCE_ENV = "WRIT_TCP_READONLY"
+
+
+def tcp_readonly_enabled() -> bool:
+    """True when TCP is restricted to the read-only allowlist.
+
+    SHIPS OFF. The go signal is the census reading zero state-touching TCP writes over
+    a day of real use, not a belief that the client migration is complete: turning it
+    on early breaks whichever caller was missed, silently, on somebody else's session.
+    """
+    import os
+
+    return os.environ.get(_ENFORCE_ENV, "").strip() == "1"
+
+
+def tcp_refusal(scope: dict[str, Any]) -> str | None:
+    """A refusal reason for this request, or None to serve it.
+
+    None whenever enforcement is off, whenever the request came over the socket, and
+    whenever the path is on the read-only allowlist. A GET outside the allowlist is
+    also served: the verb bounds what a caller may CHANGE, and closing reads is not
+    what this sweep was about.
+    """
+    if not tcp_readonly_enabled():
+        return None
+    if request_transport(scope) != TRANSPORT_TCP:
+        return None
+    path = scope.get("path", "") or ""
+    if path in TCP_READONLY_ALLOWLIST or path.startswith(_TCP_READONLY_PREFIXES):
+        return None
+    if not is_state_touching(scope.get("method", "")):
+        return None
+    return (
+        f"{scope.get('method', '')} {path} is served over the Writ daemon's unix "
+        "socket, not its TCP port. State-changing routes are private to the user "
+        "running the daemon; TCP serves the read-only surface only."
+    )
+
+
 def note_request(transport: str, method: str, path: str) -> None:
     """Record one state-touching request that arrived over TCP. Never raises.
 
@@ -95,4 +143,21 @@ class TransportCensusMiddleware:
         transport = request_transport(scope)
         scope["writ_transport"] = transport
         note_request(transport, scope.get("method", ""), scope.get("path", ""))
+        refusal = tcp_refusal(scope)
+        if refusal is not None:
+            # Counted first, then refused: the census must record what enforcement
+            # would have blocked, so turning the flag on does not blind the audit.
+            import json as _json
+
+            body = _json.dumps({"error": refusal}).encode()
+            await send({
+                "type": "http.response.start",
+                "status": 403,
+                "headers": [
+                    [b"content-type", b"application/json"],
+                    [b"content-length", str(len(body)).encode()],
+                ],
+            })
+            await send({"type": "http.response.body", "body": body})
+            return
         await self.app(scope, receive, send)

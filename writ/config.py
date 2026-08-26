@@ -271,6 +271,31 @@ def socket_path_usable(sock_path: str) -> bool:
     return len(os.fsencode(sock_path)) <= MAX_SOCKET_PATH
 
 
+def socket_is_live(sock_path: str) -> bool:
+    """True when something is listening on this socket right now.
+
+    Used before unlinking. A socket FILE outliving its listener is the ordinary
+    aftermath of a crash and must be replaced; a socket with a live listener belongs
+    to a daemon that is still serving, and unlinking it silently disconnects every
+    client of that daemon. Measured on this machine: a second `writ serve` did
+    exactly that, leaving the first daemon answering TCP with a dead socket file and
+    errno 111 for anything that tried it.
+    """
+    import socket as _socket
+
+    if not sock_path or not os.path.exists(sock_path):
+        return False
+    probe = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    probe.settimeout(0.5)
+    try:
+        probe.connect(sock_path)
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
 def prepare_socket_dir(sock_path: str) -> str:
     """Create the socket's parent directory 0700 and return it. Idempotent.
 

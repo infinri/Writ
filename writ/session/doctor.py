@@ -327,6 +327,7 @@ def _socket_state() -> dict:
         pass
     if state["exists"]:
         state["answers"] = _socket_answers(path)
+    state["tcp_readonly"] = os.environ.get("WRIT_TCP_READONLY", "").strip() == "1"
     return state
 
 
@@ -953,7 +954,19 @@ def check_daemon_socket(opts: DoctorOptions) -> CheckResult:
             detail=f"Socket present at {path} but the daemon did not answer /health over it.",
         )
 
-    return _ok(name=name, detail=f"Daemon answers over {path}; directory is 0o700.")
+    # Whether TCP is restricted is the question this check exists to answer alongside
+    # the socket's health: a working socket with TCP wide open is the state the sweep
+    # started from, and it is indistinguishable from the finished state without this.
+    tcp = (
+        "TCP restricted to the read-only allowlist"
+        if state.get("tcp_readonly")
+        else "TCP still serves every route (set WRIT_TCP_READONLY=1 once the "
+             "transport census reads zero state-touching TCP writes)"
+    )
+    return _ok(
+        name=name,
+        detail=f"Daemon answers over {path}; directory is 0o700; {tcp}.",
+    )
 
 
 def check_permissions_allowlist(opts: DoctorOptions) -> CheckResult:

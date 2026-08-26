@@ -366,16 +366,34 @@ def serve(
         MAX_SOCKET_PATH,
         get_daemon_socket_path,
         prepare_socket_dir,
+        socket_is_live,
         socket_path_usable,
     )
     from writ.server import app as fastapi_app
 
-    sockets = []
+    # TCP IS BOUND FIRST, and the order is the fix, not a preference. Binding the
+    # socket first meant a second `writ serve` unlinked the RUNNING daemon's socket,
+    # bound its own, then died on the already-taken port, leaving a socket file with
+    # nothing behind it. Measured here: the daemon logged "Listening on unix socket"
+    # at 15:01, the file's mtime was 15:39, and a connect returned errno 111 while
+    # that same daemon still answered on TCP. Binding the port first makes a
+    # duplicate start fail before it can touch the socket.
+    tcp_config = uvicorn.Config(fastapi_app, host=host, port=port, log_level="info")
+    sockets = [tcp_config.bind_socket()]
+
     sock_path = get_daemon_socket_path()
     if not socket_path_usable(sock_path):
         typer.echo(
             f"Socket path unusable (over the {MAX_SOCKET_PATH}-byte AF_UNIX cap): "
             f"{sock_path}; serving TCP only.",
+            err=True,
+        )
+        sock_path = ""
+    if sock_path and socket_is_live(sock_path):
+        # Belt and braces behind the bind order: another daemon on a different port
+        # can hold this socket, and stealing it would disconnect its clients.
+        typer.echo(
+            f"{sock_path} is already being served by another process; serving TCP only.",
             err=True,
         )
         sock_path = ""
@@ -389,10 +407,6 @@ def serve(
             typer.echo(f"Listening on unix socket {sock_path}")
         except OSError as exc:
             typer.echo(f"Could not bind {sock_path} ({exc}); serving TCP only.", err=True)
-            sock_path = ""
-
-    tcp_config = uvicorn.Config(fastapi_app, host=host, port=port, log_level="info")
-    sockets.append(tcp_config.bind_socket())
 
     typer.echo(f"Starting Writ service on {host}:{port}")
     typer.echo("Pre-warming indexes...")

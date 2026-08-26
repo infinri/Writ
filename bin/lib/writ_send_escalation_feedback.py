@@ -16,16 +16,18 @@ except Exception:
 records = cache.get('invalidation_history', {}).get(gate, [])
 rule_ids = set(r['rule_id'] for r in records)
 
-import urllib.request, urllib.error
+# Through the shared client, which prefers the daemon's unix socket. The hardcoded
+# localhost:8765 URL this replaces was one of three python call sites the transport
+# census exposed; it is now the client's TCP fallback rather than the only path.
+import os as _os
+import sys as _sys
+
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+import writ_daemon_client
+
 for rid in rule_ids:
-    payload = json.dumps({'rule_id': rid, 'signal': 'negative'}).encode()
-    req = urllib.request.Request(
-        'http://localhost:8765/feedback',
-        data=payload,
-        headers={'Content-Type': 'application/json'},
-        method='POST',
+    status, _body = writ_daemon_client.post_json(
+        '/feedback', {'rule_id': rid, 'signal': 'negative'}, timeout=0.3
     )
-    try:
-        urllib.request.urlopen(req, timeout=0.3)
-    except (urllib.error.URLError, OSError):
+    if status == 0:
         break

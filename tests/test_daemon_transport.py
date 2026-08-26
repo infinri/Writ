@@ -414,13 +414,23 @@ class TestClientsAndDiagnostic:
         assert len(invocations) >= 9, (
             f"expected the known daemon invocations, found {len(invocations)}"
         )
-        # Either form counts: the daemon-only call sites use the variable directly,
-        # while the two GENERIC wrappers must decide per URL via the helper, because
-        # hooks call them for non-daemon hosts as well.
-        missing = [
-            ln.strip() for ln in invocations
-            if "WRIT_CURL_TRANSPORT" not in ln and "_writ_transport_for" not in ln
-        ]
+        # Three forms count. Daemon-only sites use the variable directly; the two
+        # GENERIC wrappers decide per URL through the helper, because hooks call them
+        # for non-daemon hosts too; and the retry helper itself resolves the
+        # transport into `$transport` and then deliberately retries WITHOUT it, which
+        # is the stale-socket fallback and not an omission.
+        allowed = ("WRIT_CURL_TRANSPORT", "_writ_transport_for", "$transport")
+        in_retry_helper = False
+        missing = []
+        for line in source.splitlines():
+            if line.startswith("_writ_curl_with_fallback()"):
+                in_retry_helper = True
+            elif line.startswith("}") and in_retry_helper:
+                in_retry_helper = False
+            if line not in invocations or in_retry_helper:
+                continue
+            if not any(form in line for form in allowed):
+                missing.append(line.strip())
         assert not missing, f"daemon calls without the transport flag: {missing}"
 
     def test_the_subprocess_fallback_is_untouched(self) -> None:
