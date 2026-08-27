@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from tests._inventory import hook_registrations
+
 SKILL_DIR = Path(__file__).resolve().parent.parent
 HOOK = SKILL_DIR / "hooks" / "scripts" / "writ-context-tracker.sh"
 HOOKS_JSON = SKILL_DIR / "hooks" / "hooks.json"
@@ -92,6 +94,13 @@ class TestStopEventIntact:
         # mirror (added PostToolUse Write|Edit writ-memory-capture). Bump when
         # adding/removing a registration; keep HANDBOOK 'registers **N hook scripts**'
         # in sync.
+        # DERIVED. This was the third of four places asserting 44, and adding a hook meant
+        # editing all of them plus a HANDBOOK sentence. The canonical tripwire lives in
+        # test_phase51_doc_counts.py, whose declared job is source-derived counts; this
+        # site only needs to agree with the manifest it reads.
         data = json.loads(HOOKS_JSON.read_text())
         n = _registration_count(data)
-        assert n == 44, f"hooks.json registration count drifted; found {n}, expected 44"
+        assert n == len(hook_registrations()), (
+            f"this file's own registration count ({n}) disagrees with the shared derivation "
+            f"({len(hook_registrations())}); one of the two readers is wrong"
+        )

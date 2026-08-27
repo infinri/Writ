@@ -113,11 +113,31 @@ class TestDocCounts:
     def test_hooks_json_entry_count(self) -> None:
         # 44 = the 41 long-standing registrations + writ-manual-test-grant.sh +
         # writ-state-write-gate.sh + writ-memory-capture.sh (the auto-memory mirror).
+        #
+        # THIS IS THE CANONICAL TRIPWIRE for the registration count, and it keeps its
+        # literal on purpose: reviewing a population change is this file's declared job.
+        # Cycle K deleted the three COPIES of this number (test_pol5b4,
+        # tests/plugin/test_hooks_routing, and a HANDBOOK sentence's worth of drift), so a
+        # deliberate change now edits one assertion instead of four.
         source_count = _count_hooks_json_entries()
         assert source_count == 44, (
             f"hooks/hooks.json has {source_count} 'command' entries; expected 44. "
             "Bump this (and HANDBOOK 'registers **N hook scripts**') when adding or "
             "removing a registration."
+        )
+
+    def test_hooks_json_event_count(self) -> None:
+        """The canonical tripwire for the EVENT count, moved here in cycle K.
+
+        Ten sites across four files restated "12 hook events" and every one of them broke
+        together whenever an event was wired. They now derive from tests/_inventory.py, so
+        this is the one place a deliberate change is reviewed. It belongs in this file
+        because reviewing source-derived counts is what this file is for.
+        """
+        events = json.loads(HOOKS_JSON.read_text()).get("hooks") or {}
+        assert len(events) == 12, (
+            f"hooks/hooks.json registers {len(events)} events; expected 12. Bump this when "
+            "wiring a new Claude Code event, and nothing else needs editing."
         )
 
     # --- endpoints ----------------------------------------------------------

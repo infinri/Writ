@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._inventory import hook_registrations
+
 from tests.plugin.conftest import REPO_ROOT, _expand_plugin_root
 
 HOOKS_JSON_PATH = REPO_ROOT / "hooks" / "hooks.json"
@@ -111,10 +113,12 @@ class TestHooksJsonStructure:
         manual-testing grant added its UserPromptSubmit minter and the PreToolUse
         Write|Edit state-write gate (41 -> 43); the auto-memory mirror added the
         PostToolUse Write|Edit writ-memory-capture (43 -> 44)."""
+        # DERIVED. The narrative above is kept because it records HOW the count grew, but
+        # the literal is gone: this was the fourth place asserting 44.
         registrations = _collect_all_registrations(hooks_data)
-        assert len(registrations) == 44, (
-            f"hooks.json registration count drifted; found {len(registrations)}, "
-            f"expected 44. Update this and HANDBOOK if the change is intentional."
+        assert len(registrations) == len(hook_registrations()), (
+            f"this file's collector found {len(registrations)} registrations, the shared "
+            f"derivation found {len(hook_registrations())}; the two readers disagree"
         )
 
     def test_hooks_json_event_mapping(self, hooks_data: dict) -> None:

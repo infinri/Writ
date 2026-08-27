@@ -32,6 +32,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._inventory import hook_events
+
 SKILL = Path(__file__).resolve().parent.parent
 HOOKS_JSON = SKILL / "hooks" / "hooks.json"
 TEMPLATE = SKILL / "templates" / "settings.json"
@@ -80,8 +82,11 @@ class TestTemplateMatchesItsSource:
     def test_it_registers_the_same_events(self):
         assert set(_commands(_load(TEMPLATE))) == set(_commands(_load(HOOKS_JSON)))
 
-    def test_it_registers_all_twelve_events(self):
-        assert len(_commands(_load(TEMPLATE))) == 12
+    def test_it_registers_every_event_the_manifest_does(self):
+        # DERIVED. This asserted 12, one of five sites in this file and ten across the
+        # suite. The template's job is to mirror hooks.json, so agreement with the source
+        # is the claim; the canonical literal lives in test_phase51_doc_counts.py.
+        assert len(_commands(_load(TEMPLATE))) == len(hook_events())
 
     def test_every_command_matches_modulo_the_path_variable(self):
         """Structural comparison, not text: reformatting either file must yield neither
@@ -190,8 +195,9 @@ def _seeded(target: Path) -> dict:
     """
     doc = _load(target)
     events = doc.get("hooks") or {}
-    assert len(events) == 12, (
-        f"expected 12 seeded hook events, got {len(events)}: the --hooks step did nothing"
+    assert len(events) == len(hook_events()), (
+        f"expected {len(hook_events())} seeded hook events, got {len(events)}: the --hooks "
+        "step did nothing"
     )
     return doc
 
@@ -209,7 +215,7 @@ class TestSeedingIsOptIn:
     def test_the_flag_merges_every_event(self, target):
         r = _patch(target, "--hooks")
         assert r.returncode == 0, f"{r.stdout}\n{r.stderr}"
-        assert len(_seeded(target)["hooks"]) == 12
+        assert len(_seeded(target)["hooks"]) == len(hook_events())
 
     def test_the_install_path_is_expanded_not_left_as_a_variable(self, target):
         _patch(target, "--hooks")
@@ -280,7 +286,7 @@ class TestSeedingRefusesUnderAPluginInstall:
 
         without = fresh("no-plugin.json")
         _patch(without, "--hooks", plugin_list="[]")
-        assert len(_load(without).get("hooks") or {}) == 12, (
+        assert len(_load(without).get("hooks") or {}) == len(hook_events()), (
             "control case did not seed, so this test cannot attribute anything"
         )
 
@@ -301,7 +307,7 @@ class TestSeedingRefusesUnderAPluginInstall:
         }])
         r = _patch(target, "--hooks", plugin_list=other)
         assert r.returncode == 0, f"{r.stdout}\n{r.stderr}"
-        assert len(_load(target).get("hooks") or {}) == 12
+        assert len(_load(target).get("hooks") or {}) == len(hook_events())
 
 
 class TestDoctorDetectsDoubleRegistration:

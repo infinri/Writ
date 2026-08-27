@@ -148,8 +148,14 @@ class TestServerIsPackage:
         /session/{sid}/prompt-state added 2026-08-08, MINUS the session-cache key
         setter removed 2026-08-26). Guards against a copy/paste mistake in
         ROUTE_BASELINE, independent of the split."""
+        # THE CANONICAL ROUTE LITERAL, kept here because the baseline list it guards lives
+        # in this file: a deliberate route change is reviewed by editing both together.
         assert len(ROUTE_BASELINE) == 57
-        assert len(set(ROUTE_BASELINE)) == 57, "ROUTE_BASELINE must have no duplicate tuples"
+        # This said `== 57` too, which restated the line above rather than adding a claim.
+        # The claim is that no tuple appears twice.
+        assert len(set(ROUTE_BASELINE)) == len(ROUTE_BASELINE), (
+            "ROUTE_BASELINE must have no duplicate tuples"
+        )
 
     def test_writ_server_is_package(self) -> None:
         """RED now: `writ.server` is still the single-file writ/server.py module
@@ -254,7 +260,11 @@ class TestRouteParityVsBaseline:
         # 58 before the session-cache key setter was removed: an arbitrary-key
         # writer with no callers, which could set the gate inputs `mode` and
         # `current_phase`. See tests/test_daemon_authorization.py.
-        assert len(_current_route_tuples()) == len(ROUTE_BASELINE) == 57
+        # The `== 57` that used to close this line restated len(ROUTE_BASELINE), a list
+        # twenty lines above, so it added no claim and broke on every deliberate route
+        # change (58 before the session-cache key setter was removed). The BASELINE LIST is
+        # the review gate: a route added without updating it fails the first comparison.
+        assert len(_current_route_tuples()) == len(ROUTE_BASELINE)
 
 
 # ---------------------------------------------------------------------------

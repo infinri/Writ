@@ -113,6 +113,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytest
+
+from tests._inventory import doctor_check_names
 from typer.testing import CliRunner
 
 from writ.cli import app
@@ -1267,7 +1269,7 @@ class TestRunAllChecks:
     """run_all_checks: exception isolation, ordering, result count."""
 
     def _patch_all_ok(self, monkeypatch) -> None:
-        """Patch every seam so all 18 checks return ok with no side effects."""
+        """Patch every seam so every registered check returns ok with no side effects."""
         monkeypatch.setattr(
             "writ.session.doctor._http_get_health",
             lambda: {"status": "healthy", "index_state": "warm", "rule_count": 5},
@@ -1326,12 +1328,17 @@ class TestRunAllChecks:
             lambda session_id: {"mode": "work"},
         )
 
-    def test_returns_exactly_eighteen_results(self, default_opts, monkeypatch) -> None:
+    def test_it_returns_one_result_per_registered_check(self, default_opts, monkeypatch) -> None:
         self._patch_all_ok(monkeypatch)
         from writ.session.doctor import run_all_checks
         results = run_all_checks(default_opts)
-        assert len(results) == 18, (
-            f"run_all_checks must return exactly 18 CheckResults; got {len(results)}"
+        # DERIVED, not restated. This said 18, and before cycle I it said 17: adding one
+        # check meant editing this number, a second one below, the name set, and this
+        # test's own name. The registry is the single source.
+        expected = len(doctor_check_names())
+        assert len(results) == expected, (
+            f"run_all_checks must return one result per registered check ({expected}); "
+            f"got {len(results)}"
         )
 
     def test_result_names_match_contract(self, default_opts, monkeypatch) -> None:
@@ -1375,7 +1382,9 @@ class TestRunAllChecks:
         )
         from writ.session.doctor import STATUS_FAIL, run_all_checks
         results = run_all_checks(default_opts)
-        assert len(results) == 18, "all 18 results must be returned despite one exception"
+        assert len(results) == len(doctor_check_names()), (
+            "every registered check must still return a result despite one exception"
+        )
         daemon_result = next(r for r in results if r.name == "daemon-liveness")
         assert daemon_result.status == STATUS_FAIL
         assert "daemon exploded" in daemon_result.detail, (
