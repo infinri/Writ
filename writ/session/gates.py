@@ -16,7 +16,7 @@ import sys
 from writ.session.cache import _read_cache, mutate_cache
 from writ.session.friction import _log_friction_event
 from writ.session.locators import _find_debug_md, debug_path
-from writ.session.mode_engine import _effective_source_type
+from writ.session.mode_engine import _effective_source_type, approved_gates_for_plan
 
 # Fallback gate-categories.json path: <skill_root>/bin/lib/gate-categories.json. Used only
 # when a caller passes no skill_dir (hooks pass it); resolved from the skill root because this
@@ -341,8 +341,13 @@ def _check_special_files(basename: str, mode, current_phase) -> dict | None:
         if current_phase == "implementation":
             return {
                 "can_write": False,
+                # The old wording sent the reader to invalidate-gate, which records a
+                # violation and escalates but deliberately does NOT clear an approval:
+                # only the human's approval decides a gate. Advertising it here named an
+                # escape that does nothing.
                 "reason": "[ENF-GATE-PLAN] plan.md cannot be modified during implementation phase. "
-                          "Invalidate the current gate to return to planning if the plan needs changes.",
+                          "Ask the user before changing the plan: a changed plan re-arms the "
+                          "gates and needs one fresh approval before writes resume.",
             }
         return {"can_write": True, "reason": None}
 
@@ -406,7 +411,14 @@ def _check_work_gate(session_id: str, mode, file_path: str, current_phase, cache
     now logs gate_status="all_approved" instead of "excluded" -- same allow
     decision; the only behavioral change from the reorder.)
     """
-    approved_gates = set(cache.get("gates_approved", []))
+    # The approved set is the PLAN-PAIRED one, computed by the same function the advance
+    # path uses (mode_engine.approved_gates_for_plan). Reading `gates_approved` alone here
+    # is what let source writes continue against a plan that had changed since the approval,
+    # while an advance was refused for exactly that drift. `granted` keeps the raw set only
+    # to tell the two denials apart: never approved reads differently from approved for a
+    # plan that no longer exists, and a refusal the user cannot act on is a deadlock.
+    granted = set(cache.get("gates_approved", []))
+    approved_gates = approved_gates_for_plan(cache, session_id)
 
     if "phase-a" not in approved_gates or "test-skeletons" not in approved_gates:
         categories_path = _resolve_categories_path(skill_dir)
@@ -416,6 +428,20 @@ def _check_work_gate(session_id: str, mode, file_path: str, current_phase, cache
             _log_friction_event(session_id, mode, "write_attempt",
                                 file_path=file_path, result="allow", gate_status="excluded")
             return {"can_write": True, "reason": None}
+
+        drifted = [gate for gate in ("phase-a", "test-skeletons")
+                   if gate in granted and gate not in approved_gates]
+        if drifted:
+            reason = (
+                "[ENF-GATE-DRIFT] ALL writes blocked -- plan.md changed after it was "
+                f"approved, so the approval for {', '.join(drifted)} no longer covers it. "
+                "DO NOT attempt more writes.\n"
+                "Tell the user what changed and say: \"Say approved to proceed.\"\n"
+                "One fresh approval re-binds the gates to the current plan. Ticking a "
+                "capability box is not a change and never causes this."
+            )
+            _log_gate_denial(session_id, cache, drifted[0], file_path, reason)
+            return {"can_write": False, "reason": reason}
 
         if "phase-a" not in approved_gates:
             reason = (

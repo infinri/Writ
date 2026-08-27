@@ -1659,8 +1659,21 @@ body = json.load(sys.stdin)
 # Build stdin envelope for can-write
 envelope = json.dumps({'tool_input': body.get('tool_input', {})})
 print(envelope)
-" 2>/dev/null | _writ_session can-write "$fallback_result" --skill-dir "${SKILL_DIR:-}" 2>/dev/null || echo '{"decision":"allow"}')
-                echo "$cw_result"
+" 2>/dev/null | _writ_session can-write "$fallback_result" --skill-dir "${SKILL_DIR:-}" 2>/dev/null) || cw_result=""
+                if [ -n "$cw_result" ]; then
+                    echo "$cw_result"
+                    return 0
+                fi
+                # The local evaluator itself could not run (a partial install, a broken
+                # venv: the helper exits non-zero with empty stdout). This arm used to be
+                # an inline `|| echo allow`, which ran BEFORE the strict check below and
+                # so handed an allow to an operator who had opted into failing closed.
+                # Same policy as the no-session arm, applied where the crash lands.
+                if [ "${WRIT_STRICT:-}" = "1" ]; then
+                    echo '{"decision":"deny","reason":"[ENF-STRICT-001] Writ strict mode (WRIT_STRICT=1): the local write-gate evaluator could not be run (daemon unreachable and the session helper failed), so this write fails closed. Check the Writ install (writ doctor) or unset WRIT_STRICT.","rag_rules":"","rag_meta":{"rule_ids":[],"tokens":0}}'
+                    return 0
+                fi
+                echo '{"decision":"allow","reason":null,"rag_rules":"","rag_meta":{"rule_ids":[],"tokens":0}}'
                 return 0
             fi
             # No answer obtainable at all (daemon down AND the body yielded no

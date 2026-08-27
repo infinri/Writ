@@ -117,6 +117,38 @@ def _gate_strictness_for_mode(mode: str | None) -> str:
     return MODE_CONFIG.get(mode or "", {}).get("gate_strictness", "advisory")
 
 
+def approved_gates_for_plan(cache: dict, session_id: str | None = None) -> set[str]:
+    """The approved gates whose approval still covers the CURRENT plan.
+
+    ONE definition, read by both the approval path (`_next_pending_gate`, below) and the
+    enforcement path (`gates._check_work_gate`). They used to differ: this one paired each
+    gate with the plan it was granted against while the write gate read `gates_approved`
+    alone, so after a plan edit an advance was refused for drift while source writes kept
+    being permitted against a plan that no longer existed. Two derivations of one fact is
+    the defect; a shared function is the fix, so a future change lands on both paths at
+    once or on neither.
+
+    An approval counts only for the plan it was granted against. A bare gate name cannot
+    say which plan that was, so rewriting plan.md used to leave every prior approval
+    standing: a finished cycle's gates carried into the next one and the user's approval of
+    the NEW plan advanced nothing.
+
+    A gate with NO recorded hash re-arms. On a governance gate the safe default when we
+    cannot prove what an approval covered is to ask again, and that costs one re-approval
+    for a session whose state predates this binding. Honoring unfingerprinted entries
+    instead would leave the hole open forever.
+
+    Tick state is NOT drift: `plan_md_hash` normalizes `- [x]` to `- [ ]` before hashing,
+    so checking off a capability the documented way does not re-arm the gates.
+    """
+    current_plan = plan_md_hash(cache.get("project_root"), session_id)
+    bound = cache.get("gates_approved_plan", {})
+    return {
+        gate for gate in cache.get("gates_approved", [])
+        if bound.get(gate) == current_plan
+    }
+
+
 def _next_pending_gate(cache: dict, session_id: str | None = None) -> str | None:
     """Return the first gate in the mode's sequence not yet approved.
 
@@ -128,21 +160,7 @@ def _next_pending_gate(cache: dict, session_id: str | None = None) -> str | None
     mode = cache.get("mode")
     if mode != "work":
         return None
-    # An approval counts only for the plan it was granted against. A bare gate
-    # name cannot say which plan that was, so rewriting plan.md used to leave
-    # every prior approval standing: a finished cycle's gates carried into the
-    # next one and the user's approval of the NEW plan advanced nothing.
-    #
-    # A gate with NO recorded hash re-arms. On a governance gate the safe default
-    # when we cannot prove what an approval covered is to ask again, and that
-    # costs one re-approval for a session whose state predates this binding.
-    # Honoring unfingerprinted entries instead would leave the hole open forever.
-    current_plan = plan_md_hash(cache.get("project_root"), session_id)
-    bound = cache.get("gates_approved_plan", {})
-    approved = {
-        gate for gate in cache.get("gates_approved", [])
-        if bound.get(gate) == current_plan
-    }
+    approved = approved_gates_for_plan(cache, session_id)
     for gate in _gate_sequence_for_mode(mode):
         if gate not in approved:
             return gate
