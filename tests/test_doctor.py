@@ -498,6 +498,13 @@ class TestEmbeddingStack:
             "writ.session.doctor._index_degeneracy",
             lambda: {"zero_count": 0, "sample_size": 0},
         )
+        # hook-telemetry-coverage otherwise reads the developer's real metrics stream,
+        # so the observational arm would depend on the machine (TEST-ISOLATE-001). The
+        # structural arm still runs against the real hooks.json, which is the point.
+        monkeypatch.setattr(
+            "writ.session.doctor._observed_hook_names",
+            lambda: set(__import__("writ.session.doctor", fromlist=["x"])._registered_hook_scripts()),
+        )
         # permissions-allowlist otherwise shells to the installer against the
         # developer's real ~/.claude/settings.json (TEST-ISOLATE-001).
         monkeypatch.setattr("writ.session.doctor._missing_allow_entries", lambda: [])
@@ -1260,7 +1267,7 @@ class TestRunAllChecks:
     """run_all_checks: exception isolation, ordering, result count."""
 
     def _patch_all_ok(self, monkeypatch) -> None:
-        """Patch every seam so all 17 checks return ok with no side effects."""
+        """Patch every seam so all 18 checks return ok with no side effects."""
         monkeypatch.setattr(
             "writ.session.doctor._http_get_health",
             lambda: {"status": "healthy", "index_state": "warm", "rule_count": 5},
@@ -1319,12 +1326,12 @@ class TestRunAllChecks:
             lambda session_id: {"mode": "work"},
         )
 
-    def test_returns_exactly_seventeen_results(self, default_opts, monkeypatch) -> None:
+    def test_returns_exactly_eighteen_results(self, default_opts, monkeypatch) -> None:
         self._patch_all_ok(monkeypatch)
         from writ.session.doctor import run_all_checks
         results = run_all_checks(default_opts)
-        assert len(results) == 17, (
-            f"run_all_checks must return exactly 17 CheckResults; got {len(results)}"
+        assert len(results) == 18, (
+            f"run_all_checks must return exactly 18 CheckResults; got {len(results)}"
         )
 
     def test_result_names_match_contract(self, default_opts, monkeypatch) -> None:
@@ -1347,6 +1354,7 @@ class TestRunAllChecks:
             "writ-path-symlink",
             "cc-hook-registration",
             "duplicate-hook-registration",
+            "hook-telemetry-coverage",
             "role-symlinks",
             "mode-gate-sanity",
         }
@@ -1367,7 +1375,7 @@ class TestRunAllChecks:
         )
         from writ.session.doctor import STATUS_FAIL, run_all_checks
         results = run_all_checks(default_opts)
-        assert len(results) == 17, "all 17 results must be returned despite one exception"
+        assert len(results) == 18, "all 18 results must be returned despite one exception"
         daemon_result = next(r for r in results if r.name == "daemon-liveness")
         assert daemon_result.status == STATUS_FAIL
         assert "daemon exploded" in daemon_result.detail, (

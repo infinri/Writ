@@ -25,7 +25,6 @@ WRIT_DIR="$(cd "$HOOK_DIR/../.." && pwd)"
 SESSION_HELPER="$WRIT_DIR/bin/lib/writ-session.py"
 source "$WRIT_DIR/bin/lib/common.sh"
 
-HOOK_START_NS=$(hook_timer_start)
 
 # Session ID: the stdin envelope only (Claude Code passes session_id). There is
 # no fallback; an empty id is recorded and the hook stops (see below).
@@ -63,5 +62,4 @@ echo "$RESET_OUT" >> "/tmp/writ-postcompact-${SESSION_ID}.log" 2>/dev/null || tr
 # Mode for hook_execution telemetry (audit #5).
 MODE=$(_writ_session "mode get" "$SESSION_ID" 2>/dev/null || echo "")
 MODE=$(echo "$MODE" | tr -d '[:space:]')
-hook_timer_end "$HOOK_START_NS" "writ-postcompact" "$SESSION_ID" "${MODE:-}"
 exit 0

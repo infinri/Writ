@@ -1333,6 +1333,159 @@ def check_role_symlinks(opts: DoctorOptions) -> CheckResult:
     )
 
 
+def _registered_hook_scripts() -> dict[str, Path]:
+    """Hook name to script path, from the plugin's hooks manifest. Empty when unreadable.
+
+    Names come from the `.sh` token in each registered command, which is also the basename
+    the telemetry row carries, so the two sets are directly comparable.
+    """
+    manifest = _PACKAGE_ROOT / DEFAULT_HOOKS_MANIFEST
+    try:
+        doc = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    found: dict[str, Path] = {}
+    for entries in (doc.get("hooks") or {}).values():
+        for entry in entries or []:
+            for hook in entry.get("hooks") or []:
+                for token in str(hook.get("command", "")).split():
+                    if not token.endswith(".sh"):
+                        continue
+                    # Commands are `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/<name>.sh`;
+                    # everything after the closing brace is the package-relative path.
+                    relative = token.split("}", 1)[-1].lstrip("/")
+                    found[token.rsplit("/", 1)[-1][:-3]] = _PACKAGE_ROOT / relative
+    return found
+
+
+def _observed_hook_names() -> set[str]:
+    """`hook_name` values present in the metrics stream, live file plus archives.
+
+    Separate from the structural check so the observational arm can be substituted in
+    tests, and so a missing or unreadable log degrades to "nothing observed" rather than
+    to a failure: absence of rows is never itself a defect here.
+    """
+    import gzip
+
+    # stream_path, NOT the friction-log resolver: that one answers with whatever
+    # WRIT_FRICTION_LOG names (on this machine a bare `workflow-friction.log` at the repo
+    # root), so its parent is not the per-project stream directory and the metrics file was
+    # never found. Caught by the doctor reporting "no metrics stream" against a live file
+    # with rows in it.
+    try:
+        from writ.shared.logging import resolve_project, stream_path
+
+        metrics = stream_path(resolve_project(), "metrics")
+    except Exception:  # noqa: BLE001 - a log-path fault must not fail the check
+        return set()
+    project_dir = metrics.parent
+    names: set[str] = set()
+    candidates = [project_dir / "metrics.jsonl"]
+    candidates += sorted((project_dir / "archive").glob("metrics-*.jsonl*"))
+    for path in candidates:
+        opener = gzip.open if path.suffix == ".gz" else open
+        try:
+            with opener(path, "rt", errors="replace") as handle:  # type: ignore[operator]
+                for line in handle:
+                    if "hook_execution" not in line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if row.get("event") == "hook_execution" and row.get("hook_name"):
+                        names.add(str(row["hook_name"]))
+        except OSError:
+            continue
+    return names
+
+
+def check_hook_telemetry_coverage(opts: DoctorOptions) -> CheckResult:
+    """Can Writ say whether each registered hook ran?
+
+    Until 2026-08-27 it could not: 8 of 40 registered hooks emitted no `hook_execution`
+    row by any means, behind a comment in common.sh claiming coverage was universal and
+    enforced. Coverage is now structural, installed by common.sh for any script under
+    `hooks/scripts/` that sources it, so this check verifies the two preconditions that
+    makes true rather than scanning for a helper call. Three successive lexical scans for
+    such a call returned 21, 12 and 10 before the right answer, 8, which is why this one
+    does not count spellings.
+
+    THE STRUCTURAL ARM FAILS, THE OBSERVATIONAL ARM WARNS. A registered hook that is not
+    under `hooks/scripts/` or does not source `common.sh` cannot be instrumented, which is
+    definite and readable from disk. A hook with no row in the retention window is only a
+    hint: PreCompact, SessionEnd and the git hooks fire rarely by design, and
+    `writ-cwd-changed` went a full window with none simply because the working directory
+    did not change.
+    """
+    name = "hook-telemetry-coverage"
+    registered = _registered_hook_scripts()
+    if not registered:
+        return _warn(
+            name=name,
+            detail=(
+                f"Could not read {_PACKAGE_ROOT / DEFAULT_HOOKS_MANIFEST}, so hook "
+                "telemetry coverage is unknown."
+            ),
+        )
+
+    broken: list[str] = []
+    for hook, path in sorted(registered.items()):
+        if "/hooks/scripts/" not in path.as_posix():
+            broken.append(f"{hook} (registered outside hooks/scripts/)")
+            continue
+        try:
+            body = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            broken.append(f"{hook} (script unreadable at {path})")
+            continue
+        if "common.sh" not in body:
+            broken.append(f"{hook} (does not source common.sh)")
+    if broken:
+        return _fail(
+            name=name,
+            detail=(
+                "These registered hooks cannot record that they ran, so nothing can tell "
+                "a dead hook from a quiet one: " + "; ".join(broken) + ". A hook must live "
+                "under hooks/scripts/ and source bin/lib/common.sh, which installs the "
+                "telemetry trap."
+            ),
+        )
+
+    observed = _observed_hook_names()
+    if not observed:
+        # NOT "every hook is dead". An empty set means the metrics stream could not be
+        # read at all: a fresh install, a redirected WRIT_FRICTION_LOG, a pruned log dir.
+        # Listing all 40 hooks here would be the loudest possible false alarm, and a check
+        # that cannot tell no-log from no-runs must not accuse either way.
+        return _ok(
+            name=name,
+            detail=(
+                f"All {len(registered)} registered hooks are instrumented. No metrics "
+                "stream was readable, so per-hook execution could not be observed."
+            ),
+        )
+    silent = sorted(hook for hook in registered if hook not in observed)
+    if silent:
+        return _warn(
+            name=name,
+            detail=(
+                f"All {len(registered)} registered hooks are instrumented, but these have "
+                "no hook_execution row in the metrics retention window: "
+                + ", ".join(silent)
+                + ". Rare triggers (compaction, session end, cwd change, git hooks) "
+                "explain silence legitimately; a hook you expect on every turn does not."
+            ),
+        )
+    return _ok(
+        name=name,
+        detail=(
+            f"All {len(registered)} registered hooks are instrumented and have recorded "
+            "at least one execution."
+        ),
+    )
+
+
 def check_mode_gate_sanity(opts: DoctorOptions) -> CheckResult:
     name = "mode-gate-sanity"
     from writ.session import mode_engine
@@ -1425,6 +1578,7 @@ _CHECKS: list[tuple[str, Callable[[DoctorOptions], CheckResult]]] = [
     ("writ-path-symlink", check_writ_path_symlink),
     ("cc-hook-registration", check_cc_hook_registration),
     ("duplicate-hook-registration", check_duplicate_hook_registration),
+    ("hook-telemetry-coverage", check_hook_telemetry_coverage),
     ("role-symlinks", check_role_symlinks),
     ("mode-gate-sanity", check_mode_gate_sanity),
 ]

@@ -499,16 +499,27 @@ def test_deciding_hook_records_both_branches(hook):
 
 
 def test_every_wired_hook_emits_hook_execution():
-    """The audit's headline finding, as an executable check: 18 of 37 wired hooks
-    emitted nothing. This fails until that number is 0."""
+    """The audit's headline finding, as an executable check: 18 of 37 wired hooks emitted
+    nothing. This fails until that number is 0.
+
+    THE PREDICATE CHANGED, and why matters more than the change. It used to look for any of
+    four token spellings in the file. That is a lexical scan for a CALL, and it was wrong in
+    four different ways: it counted a mention inside a comment as a call, it missed the
+    guarded `type hook_instrument && ...` form, and when the redundant `hook_timer_end`
+    calls were deleted in favour of the universal trap it read the deletions as silence.
+    Coverage is now structural: common.sh installs the trap for any script under
+    hooks/scripts/ that sources it, so what has to be true of a wired hook is that it lives
+    there and sources common.sh. `tests/test_hook_telemetry_coverage.py` proves the rest by
+    RUNNING hooks and counting rows, which no spelling can fool.
+    """
     silent = []
     for name in sorted(_wired_hooks()):
         path = HOOKS_DIR / name
         if not path.is_file():
             continue
-        text = path.read_text()
-        if not any(tok in text for tok in
-                   ("hook_instrument", "hook_timer_end", "log_friction_event",
-                    "friction-append")):
+        if "common.sh" not in path.read_text():
             silent.append(name)
-    assert silent == [], f"wired hooks emitting nothing: {silent}"
+    assert silent == [], (
+        "wired hooks that cannot emit a row, because they do not source common.sh and so "
+        f"never get its telemetry trap: {silent}"
+    )

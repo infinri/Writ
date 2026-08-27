@@ -438,11 +438,21 @@ class TestUntouchedTailInvariants:
         assert "PostToolUse" in content
         assert "file-write-post" in content
 
-    def test_posttool_rag_keeps_hook_timer_end_read_rag_does_not(self):
-        posttool_content = POSTTOOL_RAG_HOOK.read_text()
-        read_content = READ_RAG_HOOK.read_text()
-        assert "hook_timer_end" in posttool_content
-        assert "hook_timer_end" not in read_content
+    def test_neither_rag_hook_emits_its_own_execution_row(self):
+        """This asserted the opposite for posttool-rag until the telemetry trap became
+        universal: common.sh now writes one row for every script under hooks/scripts/, so
+        an explicit `hook_timer_end` in either hook would be a SECOND row and a python
+        spawn to write it. The asymmetry the original test protected (read-rag stays out of
+        the timer path) survives as symmetry: neither hook emits for itself.
+        """
+        for hook in (POSTTOOL_RAG_HOOK, READ_RAG_HOOK):
+            code = "\n".join(
+                line for line in hook.read_text().splitlines()
+                if not line.lstrip().startswith("#")
+            )
+            assert "hook_timer_end" not in code, (
+                f"{hook.name} emits its own hook_execution row on top of the trap's"
+            )
 
 
 # -- 6. Part 3: project-root scoping ------------------------------------------

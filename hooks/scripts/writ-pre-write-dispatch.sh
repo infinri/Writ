@@ -26,7 +26,6 @@ WRIT_HOOK_LOG_SINK="$(hook_log_sink)"
 # is /dev/null unless WRIT_DEBUG=1, so no debug file is opened in production.
 exec 2> >(tee -a "$(_writ_debug_enabled && echo "${WRIT_HOOK_LOG:-/tmp/writ-hook-debug.log}" || echo /dev/null)" >&2)
 
-HOOK_START_NS=$(hook_timer_start)
 
 # Read stdin once
 STDIN_DATA=$(cat)
@@ -130,7 +129,6 @@ fi
 MODE=""
 
 if [ -z "$CHECK_BODY" ]; then
-    hook_timer_end "$HOOK_START_NS" "writ-pre-write-dispatch" "$SESSION_ID" "${MODE:-}"
     exit 0
 fi
 
@@ -142,7 +140,6 @@ fi
 RESULT=$(_writ_session pre-write-check "$SESSION_ID" "$CHECK_BODY" 2>/dev/null || echo "")
 
 if [ -z "$RESULT" ]; then
-    hook_timer_end "$HOOK_START_NS" "writ-pre-write-dispatch" "$SESSION_ID" "${MODE:-}"
     exit 0
 fi
 
@@ -321,5 +318,4 @@ PY
     fi
 fi
 
-hook_timer_end "$HOOK_START_NS" "writ-pre-write-dispatch" "$SESSION_ID" "${MODE:-}"
 exit 0

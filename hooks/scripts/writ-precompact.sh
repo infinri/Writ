@@ -27,7 +27,6 @@ WRIT_DIR="$(cd "$HOOK_DIR/../.." && pwd)"
 SESSION_HELPER="$WRIT_DIR/bin/lib/writ-session.py"
 source "$WRIT_DIR/bin/lib/common.sh"
 
-HOOK_START_NS=$(hook_timer_start)
 
 # Session ID: from the stdin envelope (agent_id or session_id) and nowhere else.
 # load_hook_env no longer synthesizes one from PPID or md5(cwd:user); it leaves the
@@ -52,5 +51,4 @@ _writ_session clear-rules-for-compaction "$SESSION_ID" \
 # Mode for hook_execution telemetry (audit #5).
 MODE=$(_writ_session "mode get" "$SESSION_ID" 2>/dev/null || echo "")
 MODE=$(echo "$MODE" | tr -d '[:space:]')
-hook_timer_end "$HOOK_START_NS" "writ-precompact" "$SESSION_ID" "${MODE:-}"
 exit 0

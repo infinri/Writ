@@ -17,7 +17,6 @@ WRIT_DIR="$(cd "$HOOK_DIR/../.." && pwd)"
 SESSION_HELPER="$WRIT_DIR/bin/lib/writ-session.py"
 source "$WRIT_DIR/bin/lib/common.sh"
 
-HOOK_START_NS=$(hook_timer_start)
 
 # Read stdin JSON envelope
 STDIN_JSON=$(cat)
@@ -107,5 +106,4 @@ if [ "$CURRENT_MODE" = "work" ] && [ -n "$NEW_CWD" ]; then
     fi
 fi
 
-hook_timer_end "$HOOK_START_NS" "writ-cwd-changed" "$SESSION_ID" "${CURRENT_MODE:-}"
 exit 0

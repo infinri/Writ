@@ -22,7 +22,6 @@ WRIT_HOST="${WRIT_HOST:-localhost}"
 WRIT_PORT="${WRIT_PORT:-8765}"
 WRIT_URL="http://${WRIT_HOST}:${WRIT_PORT}/query"
 
-HOOK_START_NS=$(hook_timer_start)
 
 # Read stdin once
 STDIN_DATA=$(cat)
@@ -298,5 +297,4 @@ if [ -n "$META_LINE" ]; then
     log_rag_query_event "$SESSION_ID" "${CURRENT_MODE:-}" "file-write-post" "$COST" "$NEW_RULE_IDS" "" "PostToolUse" "additionalContext"
 fi
 
-hook_timer_end "$HOOK_START_NS" "writ-posttool-rag" "$SESSION_ID" "${CURRENT_MODE:-}"
 exit 0

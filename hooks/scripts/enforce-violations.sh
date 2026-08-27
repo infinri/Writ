@@ -22,7 +22,6 @@ if stop_hook_active "$STDIN_JSON"; then
     exit 0
 fi
 
-HOOK_START_NS=$(hook_timer_start)
 
 # Session identity comes from the payload, with NO fallback.
 #
@@ -43,7 +42,6 @@ MODE=$(echo "$MODE" | tr -d '[:space:]')
 
 # Only enforce in Work mode
 if [ "$MODE" != "work" ]; then
-    hook_timer_end "$HOOK_START_NS" "enforce-violations" "$SESSION_ID" "$MODE"
     exit 0
 fi
 
@@ -67,10 +65,8 @@ ids = [v.get('rule_id', 'unknown') for v in violations]
 print(', '.join(ids))
 " 2>/dev/null || echo "unknown")
 
-    hook_timer_end "$HOOK_START_NS" "enforce-violations" "$SESSION_ID" "$MODE"
     echo "You have $VIOLATION_COUNT unresolved violations: [$RULE_IDS]. Fix these before completing." >&2
     exit 2
 fi
 
-hook_timer_end "$HOOK_START_NS" "enforce-violations" "$SESSION_ID" "$MODE"
 exit 0

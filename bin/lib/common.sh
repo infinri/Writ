@@ -347,10 +347,16 @@ WRIT_BLACKBOX_MAX_BYTES_DEFAULT=268435456
 # `hook_execution` row: ~96ms per write for logging nobody reads synchronously
 # (measured 2026-08-07). The row is now appended by bash and drained once per turn.
 #
-# COVERAGE IS UNIVERSAL, and enforced. A hook registers its own exit work with
+# COVERAGE IS UNIVERSAL BECAUSE OF WHERE A HOOK LIVES, not because each one remembers to
+# ask: the block at the end of this file installs the trap when a script under
+# hooks/scripts/ sources common.sh. An earlier version of this comment claimed coverage
+# was universal and enforced while it was opt-in, and 8 registered hooks emitted nothing
+# behind that sentence. Two rules keep it true: a hook registers exit work with
 # `writ_on_exit`, never with `trap ... EXIT`, because bash allows one EXIT trap and a
-# second one silently replaces this trap and its telemetry. tests/test_exit_trap_
-# ownership.py fails on any hook that takes the trap directly.
+# second silently replaces this one (tests/test_exit_trap_ownership.py fails on any hook
+# that takes the trap directly), and a hook does NOT emit its own hook_execution row,
+# because the trap already does (tests/test_hook_telemetry_coverage.py fails on any that
+# still calls hook_timer_end).
 #
 # An earlier version of this comment claimed the opposite and called the gap acceptable,
 # on the grounds that running the telemetry after another handler would report that
@@ -1224,16 +1230,18 @@ _writ_hook_exit_trap() {
   # the telemetry, while the exit status still looked correct.
   set +e
 
-  # The hook's own exit handlers, in registration order, each seeing the hook's REAL
-  # exit status in $?. `( exit "$rc" )` is a subshell whose only job is to set $? for
-  # the command that follows.
-  local _h
-  for _h in "${_WRIT_EXIT_HANDLERS[@]:-}"; do
-    [ -n "$_h" ] || continue
-    ( exit "$rc" )
-    "$_h"
-  done
-
+  # THE ROW GOES IN BEFORE THE HANDLERS RUN, and the order is the whole point. Three
+  # hooks drain the buffer as their exit work (friction-logger, writ-subagent-stop,
+  # writ-session-end). With the append last, each drained the buffer and then re-created
+  # it with its own row: measured by seeding one row and running friction-logger, which
+  # left a file holding `hook_execution|friction-logger|73|0||0` behind. Every turn
+  # stranded a one-row orphan, and a session's final row waited on a turn that might never
+  # come. Appending first means a drain handler flushes the drainer too.
+  #
+  # THE COST, so nobody has to rediscover it: dur_ms now covers the hook's own body and
+  # NOT its registered exit work. For the 37 hooks that register nothing this is identical;
+  # for the three drainers the row under-reports by the flush. The alternative is a row
+  # that measures the flush and cannot be inside it.
   local start_ns="${_WRIT_HOOK_START_NS:-0}" now_ns dur_ms
   now_ns=$(_writ_now_ns 2>/dev/null || echo 0)
   if [ "${start_ns:-0}" -gt 0 ] 2>/dev/null && [ "$now_ns" -gt 0 ] 2>/dev/null; then
@@ -1258,6 +1266,18 @@ _writ_hook_exit_trap() {
   # gate_decision via log_gate_decision) are appended to the session buffer and emitted
   # by one drain per turn. The python block that used to live here ran on every write
   # that recorded a decision, and with its git children it measured 203ms per write.
+
+  # The hook's own exit handlers, in registration order, each seeing the hook's REAL
+  # exit status in $?. `( exit "$rc" )` is a subshell whose only job is to set $? for
+  # the command that follows. These run AFTER the row above so a handler that drains the
+  # buffer includes it.
+  local _h
+  for _h in "${_WRIT_EXIT_HANDLERS[@]:-}"; do
+    [ -n "$_h" ] || continue
+    ( exit "$rc" )
+    "$_h"
+  done
+
   exit "$rc"
 }
 
@@ -1985,3 +2005,40 @@ Saying "yes" / "passing" / "all good" without fresh evidence is a forbidden resp
 in this state. Recalled output is not fresh evidence.
 PC_DIRECTIVE
 }
+
+# ── Telemetry coverage follows LOCATION, not memory ──────────────────────────
+# hook_instrument is opt-in, and 8 of the 40 hooks registered in hooks/hooks.json called
+# neither it nor any other emitter, so nothing could say whether they had ever run. The
+# reason that sat unnoticed is instructive: three successive lexical scans for "does this
+# file instrument itself" returned 21, then 12, then 10 uninstrumented hooks before
+# landing on 8, because there are four spellings that produce a row. A check that must
+# enumerate spellings is the defect it is meant to catch, so coverage is now structural.
+#
+# THE GUARD IS THE SOURCING SCRIPT'S PATH. ${BASH_SOURCE[1]} is the file that sourced
+# this one. All 40 registered hooks live under hooks/scripts/ and source common.sh; the
+# five CLI tools under bin/ that also source it are NOT hooks, must not carry an exit
+# trap, and must not appear in hook metrics.
+#
+# SAFE BECAUSE NOTHING COMPETES FOR THE TRAP: no script under hooks/scripts/ or bin/
+# installs its own EXIT/TERM/INT/HUP handler, and tests/test_exit_trap_ownership.py keeps
+# it that way. A hook that calls hook_instrument itself afterwards re-installs the same
+# single trap under its chosen name, which is why the existing explicit calls keep
+# working and keep their names.
+#
+# THE NAME IS DERIVED WITHOUT A PROCESS. hook_instrument's own default would resolve
+# BASH_SOURCE[1] to common.sh from here, so the name is passed explicitly, via parameter
+# expansion rather than basename: this runs on every hook of every turn.
+#
+# BOTH PATTERNS ARE REQUIRED. `*/hooks/scripts/*` needs a slash BEFORE `hooks`, so it
+# misses a RELATIVE invocation (`bash hooks/scripts/x.sh`), which is how the scripts are
+# run by hand and from some tests. Claude Code always passes an absolute path, so this gap
+# would never have shown up in production and would have silently dropped telemetry
+# everywhere else. Found by probing a real hook, not by the unit tests, which happened to
+# use absolute tmp_path scripts.
+case "${BASH_SOURCE[1]:-}" in
+    hooks/scripts/*|*/hooks/scripts/*)
+        _writ_auto_hook="${BASH_SOURCE[1]##*/}"
+        hook_instrument "${_writ_auto_hook%.sh}"
+        unset _writ_auto_hook
+        ;;
+esac

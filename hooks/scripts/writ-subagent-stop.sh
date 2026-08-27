@@ -70,7 +70,11 @@ PARENT_TRANSCRIPT=$(parsed_field "$STDIN_JSON" "transcript_path")
 # releases its rows, and `|| true` because this hook must exit 0 on every path
 # (friction-logger.sh drains under the same guarantee).
 if [ -n "$AGENT_ID" ]; then
-    writ_event_buffer_flush "$AGENT_ID" || true
+    # AT EXIT, not here: common.sh appends this hook's own row before running exit
+    # handlers, so draining at exit flushes this hook too rather than stranding its row in
+    # a buffer it had already unlinked.
+    _writ_drain_agent_buffer() { writ_event_buffer_flush "$AGENT_ID" || true; }
+    writ_on_exit _writ_drain_agent_buffer
 else
     # Recorded rather than silent. Live SubagentStop payloads always carry agent_id
     # (verified against captured envelopes), so its absence is a broken invariant, and

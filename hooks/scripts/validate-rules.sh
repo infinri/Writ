@@ -17,7 +17,6 @@
 SKILL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 source "$SKILL_DIR/bin/lib/common.sh"
 
-HOOK_START_NS=$(hook_timer_start)
 
 SESSION_HELPER="$SKILL_DIR/bin/lib/writ-session.py"
 WRIT_HOST="${WRIT_HOST:-localhost}"
@@ -171,7 +170,6 @@ print('no')
         fi
     fi
 
-    hook_timer_end "$HOOK_START_NS" "validate-rules" "$SESSION_ID" "$MODE"
     exit 0
 fi
 
@@ -242,7 +240,6 @@ PLAN_FILE="$HELPER_PLAN_FILE"
 if [ -z "$PLAN_FILE" ]; then
     # No plan.md -> warning mode only (Tier 1 behavior). Silent (exit 0) when
     # there are no confirmed violations; advisory (exit 1) when there are.
-    hook_timer_end "$HOOK_START_NS" "validate-rules" "$SESSION_ID" "$MODE"
     exit "$WARN_EXIT"
 fi
 
@@ -310,7 +307,6 @@ for f in findings:
 # Clear pending violations after phase-boundary scan
 _writ_session clear-pending-violations "$SESSION_ID" 2>/dev/null || true
 
-hook_timer_end "$HOOK_START_NS" "validate-rules" "$SESSION_ID" "$MODE"
 
 # Sentinel-driven final exit. Exit 2 only when the gate-invalidation block
 # wrote the sentinel; remove it after reading so the next run starts clean.

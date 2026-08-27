@@ -61,7 +61,12 @@ SESSION_ID=$(writ_require_session "$STDIN_JSON" friction-logger) || exit 0
 # Rows survive the paths that skip this: the buffer is keyed by SESSION, not by turn, so
 # a turn that exits early (stop_hook_active above) drains on the next Stop or at
 # SessionEnd. Never fails this hook.
-writ_event_buffer_flush "$SESSION_ID" || true
+# DRAINED AT EXIT, not here. common.sh appends this hook's own hook_execution row in its
+# exit trap, before running the handlers registered below, so draining at exit flushes this
+# hook too. Draining inline instead left the row stranded in a buffer this hook had already
+# removed, and re-created the file every turn.
+_writ_drain_own_buffer() { writ_event_buffer_flush "$SESSION_ID" || true; }
+writ_on_exit _writ_drain_own_buffer
 
 # Read current mode
 MODE=$(_writ_session "mode get" "$SESSION_ID" 2>/dev/null || echo "")

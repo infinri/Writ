@@ -43,11 +43,19 @@ def test_no_empty_mode_timer_end(hook: str) -> None:
 
 
 @pytest.mark.parametrize("hook", FLAGGED_HOOKS)
-def test_timer_end_passes_a_mode_variable(hook: str) -> None:
+def test_the_hook_sets_a_mode_variable_for_its_row(hook: str) -> None:
+    """The property is unchanged, the mechanism is not. These hooks no longer call
+    hook_timer_end: common.sh's exit trap writes the row for every hook under
+    hooks/scripts/, and it reads the mode from `CURRENT_MODE` then `MODE`
+    (`_writ_row_mode_cached`). So what each hook owes is an ASSIGNMENT of one of those,
+    not an argument. Passing it to a call that no longer exists proved nothing.
+    """
     src = (HOOKS_DIR / hook).read_text()
-    timer_lines = [ln for ln in src.splitlines() if "hook_timer_end" in ln]
-    assert timer_lines, f"{hook} has no hook_timer_end call"
-    for ln in timer_lines:
-        assert re.search(r'\$\{?(MODE|CURRENT_MODE)\b', ln), (
-            f"{hook}: hook_timer_end must pass a mode variable, got: {ln.strip()}"
-        )
+    assigns = [
+        ln for ln in src.splitlines()
+        if re.match(r'\s*(MODE|CURRENT_MODE)=', ln) and not ln.lstrip().startswith("#")
+    ]
+    assert assigns, (
+        f"{hook} sets neither MODE nor CURRENT_MODE, so the hook_execution row common.sh "
+        "writes for it will carry mode:null"
+    )

@@ -326,17 +326,23 @@ class TestCwdChangedHookContract:
             shutil.rmtree(cache_dir, ignore_errors=True)
             shutil.rmtree(cwd_dir, ignore_errors=True)
 
-    def test_hook_uses_hook_timer_start(self) -> None:
-        """Hook source contains hook_timer_start call."""
+    def test_hook_is_positioned_to_be_instrumented(self) -> None:
+        """WHAT THIS USED TO ASSERT, and why it changed: two cases required the literal
+        strings `hook_timer_start` and `hook_timer_end` in the source. Those calls are gone,
+        because common.sh now installs the telemetry trap for every script under
+        hooks/scripts/ that sources it, and keeping the explicit call as well made this hook
+        emit its row twice. The property worth pinning is the one the trap depends on.
+        Whether a row actually appears is proven by running the hook, in
+        tests/test_hook_telemetry_coverage.py.
+        """
         with open(HOOK_PATH) as f:
             source = f.read()
-        assert "hook_timer_start" in source, "Hook must call hook_timer_start"
-
-    def test_hook_uses_hook_timer_end(self) -> None:
-        """Hook source contains hook_timer_end call."""
-        with open(HOOK_PATH) as f:
-            source = f.read()
-        assert "hook_timer_end" in source, "Hook must call hook_timer_end"
+        assert "common.sh" in source, (
+            "the hook must source common.sh, which installs its telemetry trap"
+        )
+        assert "/hooks/scripts/" in str(HOOK_PATH), (
+            "the hook must live under hooks/scripts/, which is what the trap keys on"
+        )
 
     def test_hook_logs_cwd_changed_friction_event(self) -> None:
         """Hook calls log_friction_event with event name 'cwd_changed'."""

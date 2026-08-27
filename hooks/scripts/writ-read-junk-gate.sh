@@ -14,13 +14,17 @@ SKILL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 # shellcheck source=/dev/null
 . "$SKILL_DIR/bin/lib/common.sh" 2>/dev/null || exit 0
 
-HOOK_START_NS=$(hook_timer_start)
 load_hook_env
 FP="${HOOK_FILE_PATH:-}"
 SID="${HOOK_SESSION_ID:-}"
 [ -n "$FP" ] || exit 0                       # no file path -> nothing to gate (fail-open)
 
 MODE_NOW=$(_writ_session "mode get" "$SID" 2>/dev/null | tr -d '[:space:]')
+# MODE is what common.sh's exit trap reads for the hook_execution row (_writ_row_mode_cached
+# takes CURRENT_MODE then MODE). This hook's own variable is MODE_NOW, so without this the
+# row it now gets for free would carry an empty mode. HOOK_SESSION_ID already covers the
+# session field, which is why SID needs no equivalent line.
+MODE="$MODE_NOW"
 GATE_MODE="${WRIT_READ_JUNK_GATE:-observe}"
 SIZE_LIMIT_KB="${WRIT_READ_SIZE_KB:-100}"
 
@@ -48,7 +52,7 @@ if [ -z "$reason" ] && [ "${FILE_BYTES:-0}" -gt $(( SIZE_LIMIT_KB * 1024 )) ] 2>
 fi
 
 # not junk -> allow silently (this is the common case; keep it cheap)
-[ -n "$reason" ] || { hook_timer_end "$HOOK_START_NS" "writ-read-junk-gate" "$SID" "$MODE_NOW"; exit 0; }
+[ -n "$reason" ] || exit 0
 
 # --- prevented-cost floor: bytes/4; binaries credit 0 (cannot claim binary bytes are tokens) ---
 if [ "$reason" = "binary" ]; then FLOOR=0; else FLOOR=$(( FILE_BYTES / 4 )); fi
@@ -80,7 +84,6 @@ print(json.dumps({
 
 # --- observe mode (default): never deny ---
 if [ "$GATE_MODE" != "enforce" ]; then
-  hook_timer_end "$HOOK_START_NS" "writ-read-junk-gate" "$SID" "$MODE_NOW"
   exit 0
 fi
 
@@ -92,5 +95,4 @@ else
   MSG="[WRIT-READ-JUNK] Skipped $FP: generated/vendored/ignored content ($reason). It dilutes the audit for ~${FLOOR} tokens of little signal. If you need a fact, grep the symbol (rg -n '<symbol>' '$FP') or read the source it was generated from. To override, re-issue the Read after stating why."
 fi
 emit_deny "$MSG"
-hook_timer_end "$HOOK_START_NS" "writ-read-junk-gate" "$SID" "$MODE_NOW"
 exit 0
