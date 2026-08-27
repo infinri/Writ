@@ -246,6 +246,11 @@ def _default_cache() -> dict:
         "queried_rules_by_file": {},
         "parent_session_id": "",
         "agent_type": "",
+        # Where agent_type came from: envelope, sidecar, cache, or unresolved. Declared
+        # here so a sub-agent cache written by writ-subagent-start.sh keeps the same keyset
+        # as a fresh one (test_cache_schema_single_source). An empty string means no
+        # resolution has been attempted, which is NOT the same as `unresolved`.
+        "role_source": "",
         # Project where the mode was declared (stamped at mode-set). Enables the
         # rotation carry's same-project guard; "" means "unknown project".
         "project_root": "",

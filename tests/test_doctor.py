@@ -1327,6 +1327,16 @@ class TestRunAllChecks:
             "writ.session.doctor._latest_session_cache",
             lambda session_id: {"mode": "work"},
         )
+        # stranded-telemetry-buffer otherwise stats the real var/session directory, and
+        # subagent-role-coverage otherwise reads the real metrics stream, so both outcomes
+        # would depend on the machine (TEST-ISOLATE-001). Caught by the full suite: this
+        # test passed alone and failed in a run where an unattributable buffer briefly
+        # existed on disk. Clean state for both: no orphan buffer, no dispatch rows.
+        monkeypatch.setattr(
+            "writ.session.doctor._unknown_buffer",
+            lambda: Path("/nonexistent-writ-unknown-buffer.buf"),
+        )
+        monkeypatch.setattr("writ.session.doctor._metrics_rows", lambda event: [])
 
     def test_it_returns_one_result_per_registered_check(self, default_opts, monkeypatch) -> None:
         self._patch_all_ok(monkeypatch)
@@ -1362,6 +1372,10 @@ class TestRunAllChecks:
             "cc-hook-registration",
             "duplicate-hook-registration",
             "hook-telemetry-coverage",
+            # Cycle L: rows filed under the session id `unknown`, and how often a
+            # dispatched sub-agent's role is actually observed rather than defaulted.
+            "stranded-telemetry-buffer",
+            "subagent-role-coverage",
             "role-symlinks",
             "mode-gate-sanity",
         }

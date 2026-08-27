@@ -77,12 +77,41 @@ fi
 # cache file -- the same file CURRENT_MODE below already reads.
 SESSION_ID="$AGENT_ID"
 
-# Fallback: some Claude Code versions / nested sub-agents omit agent_type.
-# Default to "general-purpose" and log the fallback so we can track frequency.
-if [ -z "$AGENT_TYPE" ]; then
-    AGENT_TYPE="general-purpose"
+# THE ROLE IS RESOLVED HERE, AND THIS IS THE EARLIEST POINT IT CAN BE.
+#
+# `agent_type` is in this event's schema and arrives EMPTY on this build. The old code
+# rewrote the empty string to the literal `general-purpose`, which is how a role nobody
+# observed became a fact in the child's cache and in every record downstream of it.
+#
+# RESOLVED EARLY AND STORED, because the sidecar Claude Code writes beside the agent's
+# transcript is EPHEMERAL: it is deleted after the agent finishes (measured 2026-08-27, 0
+# of 57 completed agents still had one). A later hook cannot re-derive what is gone, so the
+# answer is captured while the file exists and replayed from the cache afterwards.
+ROLE_RESOLUTION=$(AGENT_ID="$AGENT_ID" AGENT_TYPE="$AGENT_TYPE" python3 -c '
+import os, sys
+sys.path.insert(0, sys.argv[1])
+role, source = "", "unresolved"
+try:
+    from writ.session.subagent_role import resolve_role
+    role, source = resolve_role(os.environ.get("AGENT_ID", ""),
+                                os.environ.get("AGENT_TYPE", ""))
+except Exception:
+    # Resolution failure must not fail the hook, and must not invent a role.
+    pass
+print(role)
+print(source)
+' "$WRIT_DIR" 2>/dev/null || true)
+
+if [ -n "$ROLE_RESOLUTION" ]; then
+    AGENT_TYPE=$(printf '%s' "$ROLE_RESOLUTION" | head -1)
+    ROLE_SOURCE=$(printf '%s' "$ROLE_RESOLUTION" | sed -n 2p)
+fi
+[ -z "$AGENT_TYPE" ] && AGENT_TYPE="unknown"
+[ -z "${ROLE_SOURCE:-}" ] && ROLE_SOURCE="unresolved"
+
+if [ "$ROLE_SOURCE" = "unresolved" ]; then
     log_friction_event "$AGENT_ID" "" "subagent_type_fallback" \
-        "{\"hook\":\"writ-subagent-start\",\"parent_session\":\"$PARENT_SESSION\"}"
+        "{\"hook\":\"writ-subagent-start\",\"parent_session\":\"$PARENT_SESSION\",\"role_source\":\"unresolved\"}"
 fi
 
 # Read parent's current state from the AUTHORITATIVE file cache (where
@@ -121,6 +150,8 @@ spec.loader.exec_module(mod)
 
 parent = json.loads(sys.argv[1])
 agent_id = sys.argv[2]
+resolved_role = sys.argv[3] if len(sys.argv) > 3 else ''
+role_source = sys.argv[4] if len(sys.argv) > 4 else 'unresolved'
 
 # Create fresh cache with parent's structural state but clean operational state
 # Locked read-modify-write via mutate_cache (creates the default if not exists),
@@ -135,6 +166,12 @@ with mod.mutate_cache(agent_id) as cache:
     cache['gates_approved'] = parent.get('gates_approved') or []
     cache['remaining_budget'] = mod.DEFAULT_SESSION_BUDGET  # telemetry only; see cmd_should_skip
     cache['is_subagent'] = True  # bypass budget-based skips; sub-agents get unlimited injection
+    # THE ROLE AND WHERE IT CAME FROM, stored while the sidecar still exists. Kept together
+    # on purpose: a role with no source cannot be told apart from a default, and the stop
+    # hook replays the SOURCE rather than reporting "cache", so one observation is not
+    # laundered into a weaker claim by each hop.
+    cache['agent_type'] = resolved_role
+    cache['role_source'] = role_source
     cache['loaded_rule_ids'] = []
     cache['loaded_rule_ids_by_phase'] = {}
     cache['loaded_rules'] = []
@@ -147,7 +184,7 @@ with mod.mutate_cache(agent_id) as cache:
     cache['feedback_sent'] = []
     cache['pretool_queried_files'] = []
     cache['token_snapshots'] = []
-" "$PARENT_STATE" "$AGENT_ID" 2>/dev/null || true
+" "$PARENT_STATE" "$AGENT_ID" "$AGENT_TYPE" "$ROLE_SOURCE" 2>/dev/null || true
 
 # The sub-agent's mode, read once here rather than at the bottom of the hook. It used
 # to be resolved just before the subagent_start friction row (the last thing this hook

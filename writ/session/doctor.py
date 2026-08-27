@@ -1400,6 +1400,182 @@ def _observed_hook_names() -> set[str]:
     return names
 
 
+def stream_path(project: str, kind: str) -> Path:
+    """The per-project log stream, as one patchable seam.
+
+    A thin indirection over writ.shared.logging.stream_path so a check that reads a stream
+    can be pointed at a fixture without also faking project resolution. Module level on
+    purpose: that is what makes it substitutable.
+    """
+    from writ.shared.logging import stream_path as _stream_path
+
+    return Path(_stream_path(project, kind))
+
+
+def _metrics_rows(event: str) -> list[dict] | None:
+    """Rows of one event kind from the metrics stream, or None when nothing is readable.
+
+    None and [] are DIFFERENT and both callers depend on it: None means the stream could
+    not be read at all (fresh install, redirected log, pruned directory), while [] means it
+    was read and held no such row. Cycle I's first version conflated them and accused all
+    40 hooks of never running on a machine whose log simply was not there.
+    """
+    import gzip
+
+    try:
+        from writ.shared.logging import resolve_project
+
+        metrics = stream_path(resolve_project(), "metrics")
+    except Exception:  # noqa: BLE001 - a log-path fault must not fail a check
+        return None
+
+    project_dir = Path(metrics).parent
+    candidates = [Path(metrics)]
+    if Path(metrics).name != "metrics.jsonl":
+        candidates.append(project_dir / "metrics.jsonl")
+    candidates += sorted((project_dir / "archive").glob("metrics-*.jsonl*"))
+
+    rows: list[dict] = []
+    read_any = False
+    for path in candidates:
+        opener = gzip.open if path.suffix == ".gz" else open
+        try:
+            with opener(path, "rt", errors="replace") as handle:  # type: ignore[operator]
+                read_any = True
+                for line in handle:
+                    if event not in line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if row.get("event") == event:
+                        rows.append(row)
+        except OSError:
+            continue
+    if not read_any:
+        return None
+    return rows
+
+
+def _unknown_buffer() -> Path:
+    """The buffer bash writes when a hook files a row with no session to file it under."""
+    from writ.session.cache import _cache_dir
+
+    return Path(_cache_dir()) / "writ-events-unknown.buf"
+
+
+def check_stranded_telemetry_buffer(opts: DoctorOptions) -> CheckResult:
+    """Are any hook rows filed under a session that will never drain them?
+
+    Rows are buffered per session and released by that session's own drain. A hook that
+    resolves no session id files its rows under the literal id `unknown`, and while
+    writ-flush-events.py does sweep an idle buffer after ABANDONED_SESSION_SECONDS, a
+    frequent writer keeps the mtime young and the sweep never fires. Measured 2026-08-27:
+    695 rows sat here, 673 from writ-statusline (not a hook, since excluded from
+    instrumentation) and 22 from writ-subagent-stop (which now sets its session).
+
+    WARN, NOT FAIL, and the rows are named rather than counted. Nothing is broken for the
+    user: the rows are telemetry, not enforcement, and the sweep still collects them once
+    the frequent writer stops. Naming the hooks is what makes the report actionable, since
+    the fix is always "that hook is not setting a session id".
+    """
+    name = "stranded-telemetry-buffer"
+    buffer_path = _unknown_buffer()
+    try:
+        raw = buffer_path.read_text(errors="replace")
+    except OSError:
+        # Absent or unreadable is the healthy state: nothing has filed an orphan row.
+        return _ok(name=name, detail="No unattributable hook rows are buffered.")
+
+    hooks: dict[str, int] = {}
+    for record in raw.split("\x1e"):
+        if not record.strip():
+            continue
+        fields = record.split("\x1f")
+        if len(fields) < 2 or fields[0] != "hook_execution":
+            continue
+        hooks[fields[1]] = hooks.get(fields[1], 0) + 1
+
+    if not hooks:
+        # A zero-byte or separator-only file is not a stranded row. Reporting it would be
+        # crying wolf, which cycle D spent a whole pass removing.
+        return _ok(name=name, detail="No unattributable hook rows are buffered.")
+
+    listed = ", ".join(f"{hook} ({count})" for hook, count in sorted(hooks.items()))
+    total = sum(hooks.values())
+    return _warn(
+        name=name,
+        detail=(
+            f"{total} hook rows are buffered under the session id 'unknown' at "
+            f"{buffer_path}, so they reach no log until the abandoned-session sweep runs: "
+            f"{listed}. Each of these hooks resolves no session id; set SESSION_ID (or "
+            f"HOOK_SESSION_ID) in the hook, or stop instrumenting it if it is not a hook."
+        ),
+    )
+
+
+def check_subagent_role_coverage(opts: DoctorOptions) -> CheckResult:
+    """How often is a dispatched sub-agent's ROLE actually known?
+
+    This is the number cycle M's enforcement is not allowed to skip. `agent_type` arrives
+    empty from this build's envelope (10 of 10 real SubagentStop payloads, 2026-08-27) and
+    the hooks used to rewrite it to the literal `general-purpose`, so 53 completion records
+    that day named a role nobody observed. Roles are now resolved from the sidecar and
+    carry a `role_source`, and this check reports the rate.
+
+    NO OBSERVATIONS IS OK, NOT AN ACCUSATION. A machine that has dispatched nothing, or
+    whose log is absent, is not a machine with a broken resolver.
+
+    A ROW WITH NO `role_source` IS UNMEASURED, NOT UNRESOLVED, and the difference is the
+    whole check. Every dispatch recorded before this field existed lacks it; counting those
+    as failed resolutions reported "0 of 1066 resolved" on a machine where the resolver had
+    simply never run yet, which is cycle I's mistake one level down, at row granularity.
+    Only rows that carry the field are in the denominator.
+    """
+    name = "subagent-role-coverage"
+    rows = _metrics_rows("subagent_complete")
+    if rows is None:
+        return _ok(
+            name=name,
+            detail="No readable metrics stream, so sub-agent role coverage is unmeasured.",
+        )
+    if not rows:
+        return _ok(name=name, detail="No sub-agent dispatches recorded yet.")
+
+    measured = [row for row in rows if row.get("role_source")]
+    legacy = len(rows) - len(measured)
+    if not measured:
+        return _ok(
+            name=name,
+            detail=(
+                f"{legacy} sub-agent dispatches recorded, none since role resolution was "
+                "added, so coverage is not measurable yet."
+            ),
+        )
+
+    unresolved = sum(1 for row in measured
+                     if str(row.get("role_source")) == "unresolved")
+    resolved = len(measured) - unresolved
+    detail = (
+        f"{resolved} of {len(measured)} measured sub-agent dispatches carry an observed "
+        f"role ({unresolved} unresolved"
+        + (f", {legacy} predate the field" if legacy else "")
+        + ")."
+    )
+    if resolved == 0:
+        return _warn(
+            name=name,
+            detail=(
+                detail + " No role has been resolved since resolution was added, so "
+                "nothing may key an authority decision on one yet: check that the sidecar "
+                "layout under ~/.claude/projects still matches "
+                "writ/session/subagent_role.py."
+            ),
+        )
+    return _ok(name=name, detail=detail)
+
+
 def check_hook_telemetry_coverage(opts: DoctorOptions) -> CheckResult:
     """Can Writ say whether each registered hook ran?
 
@@ -1579,6 +1755,8 @@ _CHECKS: list[tuple[str, Callable[[DoctorOptions], CheckResult]]] = [
     ("cc-hook-registration", check_cc_hook_registration),
     ("duplicate-hook-registration", check_duplicate_hook_registration),
     ("hook-telemetry-coverage", check_hook_telemetry_coverage),
+    ("stranded-telemetry-buffer", check_stranded_telemetry_buffer),
+    ("subagent-role-coverage", check_subagent_role_coverage),
     ("role-symlinks", check_role_symlinks),
     ("mode-gate-sanity", check_mode_gate_sanity),
 ]

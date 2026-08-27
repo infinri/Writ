@@ -2035,7 +2035,31 @@ PC_DIRECTIVE
 # would never have shown up in production and would have silently dropped telemetry
 # everywhere else. Found by probing a real hook, not by the unit tests, which happened to
 # use absolute tmp_path scripts.
+#
+# LOCATION IS NOT QUITE THE PREDICATE: one script under hooks/scripts/ is NOT a hook.
+# writ-statusline.sh is wired through the settings `statusLine` channel, not hooks.json, and
+# it renders constantly. Instrumenting it cost a trap on every render and wrote 673 rows in
+# one day under the session id `unknown` (it never sets SESSION_ID), which did more damage
+# than the waste: writ-flush-events.py sweeps a buffer once it goes ABANDONED_SESSION_SECONDS
+# without a write, so the statusline's constant appends kept `writ-events-unknown.buf`
+# perpetually young and stranded 22 writ-subagent-stop rows that would otherwise have been
+# collected. One non-hook held the whole bucket open.
+#
+# WHY A HARD-CODED NAME AND NOT A PREDICATE. Reading hooks/hooks.json here to test
+# membership costs a subshell on every hook of every turn, on the path where the cycle
+# before this one removed 15 execve per file write. An env-var opt-out (WRIT_NOT_A_HOOK=1)
+# is one line but hands the agent a switch that silences all hook telemetry, and a control
+# the agent can disable is not a control. Moving the script under bin/ is structurally
+# cleanest and breaks every installed statusLine setting, because writ_install.py pins the
+# path (STATUSLINE_REL).
+#
+# THE ENUMERATION IS KEPT HONEST BY A TEST, not by vigilance:
+# test_subagent_role_census.py derives the unregistered-script set from hooks.json and fails
+# if any member is missing from this line, so the next non-hook added here cannot be
+# instrumented silently.
 case "${BASH_SOURCE[1]:-}" in
+    hooks/scripts/writ-statusline.sh|*/hooks/scripts/writ-statusline.sh)
+        ;;
     hooks/scripts/*|*/hooks/scripts/*)
         _writ_auto_hook="${BASH_SOURCE[1]##*/}"
         hook_instrument "${_writ_auto_hook%.sh}"
