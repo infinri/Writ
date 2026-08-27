@@ -340,8 +340,9 @@ def _socket_state() -> dict:
 def _socket_health(path: str = "") -> dict | None:
     """The daemon's /health payload, over the socket if it answers, else over TCP.
 
-    `/health` is on the TCP read-only allowlist precisely so this fallback works while
-    enforcement is on, which is exactly when the answer matters most. Returns None when
+    `GET /health` is a read, and enforcement bounds only what TCP may CHANGE, so this
+    fallback works while enforcement is on, which is exactly when the answer matters
+    most. Returns None when
     neither transport answers, so the caller can report "could not ask" rather than
     guessing in either direction (CLEAN-ERR-001).
     """
@@ -1020,7 +1021,7 @@ def check_daemon_socket(opts: DoctorOptions) -> CheckResult:
     # started from, and it is indistinguishable from the finished state without this.
     readonly = state.get("tcp_readonly")
     if readonly is True:
-        tcp = "TCP restricted to the read-only allowlist"
+        tcp = "TCP restricted to read-only requests plus POST /query"
     elif readonly is False:
         tcp = ("TCP still serves every route (set WRIT_TCP_READONLY=1 for the daemon "
                "once the transport census reads zero state-touching TCP writes)")

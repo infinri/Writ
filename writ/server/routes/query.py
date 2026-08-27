@@ -559,7 +559,7 @@ async def health() -> dict[str, Any]:
         # The friction-log path this daemon writes to. The test suite aligns on
         # this (like cache_dir) so daemon-emitted events don't pollute the repo log.
         "friction_log": str(resolve_log_path()),
-        # Whether THIS daemon restricts its TCP port to the read-only allowlist.
+        # Whether THIS daemon bounds its TCP port to reads plus the named POST reads.
         # Reported for the same reason cache_dir is: the caller cannot know it. The
         # flag lives in the service's environment (a systemd drop-in), so `writ
         # doctor` read its OWN environment and printed "TCP still serves every route"

@@ -41,7 +41,7 @@ Every `writ` command, generated from the Typer app. Run `writ <command> --help` 
 | `writ reconcile` | Make the graph match the source-of-truth: delete stale nodes/edges and clear stale props |
 | `writ review` | Review AI-proposed rules. List, inspect, promote, reject, or downweight |
 | `writ role-prompt` | Print the graph-canonical prompt template for a SubagentRole |
-| `writ serve` | Start Writ service. Pre-warms indexes into memory |
+| `writ serve` | Start Writ service on a private unix socket AND the TCP port. Pre-warms indexes |
 | `writ status` | Health check: rule count, index status, last ingestion, stale rules |
 | `writ token-audit` | FOOTPRINT observer (WRIT-TOKEN-BLUEPRINT P0): per-session token COST from a CC transcript |
 | `writ transcript audit` | Report user turns that mix a bare text element with a tool_result element |

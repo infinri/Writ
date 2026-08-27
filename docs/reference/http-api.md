@@ -3,7 +3,7 @@
 
 # HTTP API reference
 
-All 49 endpoints on `http://localhost:8765`, generated from the FastAPI route table. JSON bodies; no auth (binds localhost only). Logical failures return HTTP 200 with an `error` key; 422 is request validation.
+All 49 endpoints, generated from the FastAPI route table. JSON bodies; no auth. The daemon listens on `http://localhost:8765` and on a unix socket (`$WRIT_SOCKET`, default `~/.cache/writ/run/writ.sock`); with `WRIT_TCP_READONLY=1` set, TCP serves reads plus `POST /query` and refuses every other state-changing request with 403, so those routes are reachable only over the socket, which is private to the user running the daemon. Logical failures return HTTP 200 with an `error` key; 422 is request validation.
 
 ## decision_memory
 
@@ -29,6 +29,7 @@ All 49 endpoints on `http://localhost:8765`, generated from the FastAPI route ta
 | POST | `/pre-write-check` | Combined gate check + final-gate check + RAG query for Write/Edit |
 | POST | `/session/{session_id}/advance-phase` | Advance to the next workflow phase |
 | POST | `/session/{session_id}/promote-candidate` | 6.3c: human-gated, edit-capable promotion of a graduation_pending candidate to canon |
+| POST | `/session/{session_id}/promotion-review` | Surface a graduation_pending candidate for human review, and record what was shown |
 
 ## git_hooks
 

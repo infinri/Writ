@@ -96,8 +96,12 @@ def render_http_api() -> str:
     lines = [BANNER.format(source="writ/server routes")]
     lines.append("# HTTP API reference\n")
     lines.append(
-        f"All {len(rows)} endpoints on `http://localhost:8765`, generated from "
-        "the FastAPI route table. JSON bodies; no auth (binds localhost only). "
+        f"All {len(rows)} endpoints, generated from the FastAPI route table. JSON "
+        "bodies; no auth. The daemon listens on `http://localhost:8765` and on a unix "
+        "socket (`$WRIT_SOCKET`, default `~/.cache/writ/run/writ.sock`); with "
+        "`WRIT_TCP_READONLY=1` set, TCP serves reads plus `POST /query` and refuses "
+        "every other state-changing request with 403, so those routes are reachable "
+        "only over the socket, which is private to the user running the daemon. "
         "Logical failures return HTTP 200 with an `error` key; 422 is request "
         "validation.\n"
     )

@@ -550,7 +550,7 @@ class TestEnforcementIsOptIn:
         _require(transport, "tcp_refusal")
         monkeypatch.setenv("WRIT_TCP_READONLY", "1")
         assert transport.tcp_refusal(self._scope("tcp", "GET", path)) is None, (
-            f"{path} was refused over TCP; it is on the read-only allowlist"
+            f"GET {path} was refused over TCP; a read changes nothing"
         )
 
     def test_enabled_it_still_serves_a_node_detail_page(self, monkeypatch) -> None:
@@ -604,3 +604,384 @@ class TestEnforcementIsOptIn:
         assert "read-only" in result.detail.lower() or "readonly" in result.detail.lower(), (
             f"the socket check does not say whether TCP is restricted: {result.detail}"
         )
+
+
+# =========================================================================== #
+# Cycle G skeletons: the VERB bounds what TCP may change, not the PATH.
+#
+# E2b keyed the exemption on the path alone (`transport.py:97`), which grants every
+# verb on those paths and misses a route the browser genuinely needs. Both halves were
+# measured against the running daemon, not read out of the source:
+#
+#   POST /health over TCP  -> 405 (a missing handler), where the policy owes 403
+#   POST /query  over TCP  -> 403, and `writ/static/explore.html:505` calls exactly
+#                             that from the page, so the /explore query panel has been
+#                             broken since enforcement was enabled
+#
+# `POST /query` is a read that carries a body: the handler runs the retrieval pipeline
+# and emits log rows, with no graph write and no counter, so exempting it costs no
+# state. `POST /health` is not exempt, because nothing needs it.
+#
+# NOT TESTED HERE, deliberately: capability 10 (the generated API doc no longer claims
+# "no auth (binds localhost only)"). Asserting on doc prose is forbidden in this repo,
+# so that one is verified by reading the `make docs` diff.
+#
+# Per ENF-GATE-007: skeletons written and approved before implementation.
+# Per TEST-ISOLATE-003: the live class overrides WRIT_SOCKET onto a short /tmp path
+# this module owns and never touches ~/.cache/writ/run/writ.sock.
+# =========================================================================== #
+
+# The five the old path allowlist exempted, including one under its `/node/` prefix
+# match. Every one of them is a GET-only route today, which is why nothing was
+# exploitable and also why the grant was pointless.
+FORMERLY_PATH_EXEMPT = READ_ONLY_TCP_ROUTES + ("/node/ENF-GATE-007",)
+
+# Verbs that are not reads. `_READ_METHODS` covers GET, HEAD and OPTIONS.
+STATE_TOUCHING_VERBS = ("POST", "PUT", "PATCH", "DELETE")
+
+
+def _req_scope(transport: str, method: str, path: str) -> dict:
+    """One ASGI scope. `client` is None over a unix socket, which is how uvicorn
+    reports it and the only signal that cannot be forged by a caller."""
+    client = None if transport == "socket" else ("127.0.0.1", 5555)
+    return {"type": "http", "client": client, "method": method, "path": path}
+
+
+class TestTheVerbBoundsWhatTcpMayChange:
+    """THE DEFECT. A POST to a path the old allowlist named was served over TCP."""
+
+    @pytest.mark.parametrize("path", FORMERLY_PATH_EXEMPT)
+    def test_a_post_to_a_formerly_exempt_path_is_refused(self, monkeypatch, path) -> None:
+        transport = _require_module("writ.server.transport")
+
+        _require(transport, "tcp_refusal")
+        monkeypatch.setenv("WRIT_TCP_READONLY", "1")
+        assert transport.tcp_refusal(_req_scope("tcp", "POST", path)) is not None, (
+            f"POST {path} was served over TCP; the path allowlist granted every verb"
+        )
+
+    @pytest.mark.parametrize("verb", STATE_TOUCHING_VERBS)
+    def test_every_state_touching_verb_is_refused_on_an_exempt_path(
+        self, monkeypatch, verb
+    ) -> None:
+        """PUT, PATCH and DELETE too. A future route on one of these paths must not
+        inherit a grant nobody wrote for it."""
+        transport = _require_module("writ.server.transport")
+
+        _require(transport, "tcp_refusal")
+        monkeypatch.setenv("WRIT_TCP_READONLY", "1")
+        assert transport.tcp_refusal(_req_scope("tcp", verb, "/health")) is not None, (
+            f"{verb} /health was served over TCP"
+        )
+
+    def test_the_refusal_names_the_socket(self, monkeypatch) -> None:
+        transport = _require_module("writ.server.transport")
+
+        _require(transport, "tcp_refusal")
+        monkeypatch.setenv("WRIT_TCP_READONLY", "1")
+        refusal = str(transport.tcp_refusal(_req_scope("tcp", "POST", "/dashboard")))
+        assert "socket" in refusal.lower(), (
+            f"the refusal does not tell the caller where to go instead: {refusal}"
+        )
+
+    def test_the_generic_invariant_holds_for_every_path_it_is_given(
+        self, monkeypatch
+    ) -> None:
+        """THE SHAPE THAT WOULD HAVE CAUGHT THIS without knowing the mechanism: with
+        enforcement on, a state-touching TCP request is refused unless its path is a
+        named body-carrying read. Stated once, over a mixed sample."""
+        transport = _require_module("writ.server.transport")
+
+        _require(transport, "tcp_refusal", "TCP_READONLY_POST_ALLOWLIST")
+        monkeypatch.setenv("WRIT_TCP_READONLY", "1")
+        sample = FORMERLY_PATH_EXEMPT + (
+            "/query", "/session/abc/mode", "/session/abc/can-write", "/commit/capture",
+            "/memory-record", "/feedback", "/recall", "/propose", "/node/x/edit",
+        )
+        wrong = []
+        for path in sample:
+            refused = transport.tcp_refusal(_req_scope("tcp", "POST", path)) is not None
+            exempt = path in transport.TCP_READONLY_POST_ALLOWLIST
+            if refused == exempt:
+                wrong.append((path, "served" if not refused else "refused"))
+        assert not wrong, (
+            "these paths did not follow refuse-unless-named-body-read: " + repr(wrong)
+        )
+
+    def test_the_path_keyed_allowlist_is_gone(self) -> None:
+        """Must-not-return. A constant that exempts only reads grants nothing once
+        reads are served everywhere, and a name claiming a boundary it does not
+        enforce is worse than no name."""
+        transport = _require_module("writ.server.transport")
+
+        leftover = [
+            name for name in ("TCP_READONLY_ALLOWLIST", "_TCP_READONLY_PREFIXES")
+            if hasattr(transport, name)
+        ]
+        assert not leftover, f"the path-keyed allowlist is still present: {leftover}"
+
+
+class TestTheBrowserSurfaceSurvives:
+    """A browser cannot open a unix socket, so the read surface it needs must keep
+    working over TCP, including the one POST the /explore page issues.
+    """
+
+    @pytest.mark.parametrize("path", FORMERLY_PATH_EXEMPT)
+    def test_a_get_is_still_served(self, monkeypatch, path) -> None:
+        transport = _require_module("writ.server.transport")
+
+        _require(transport, "tcp_refusal")
+        monkeypatch.setenv("WRIT_TCP_READONLY", "1")
+        assert transport.tcp_refusal(_req_scope("tcp", "GET", path)) is None, (
+            f"GET {path} was refused over TCP; the browser surface needs it"
+        )
+
+    @pytest.mark.parametrize("verb", ("HEAD", "OPTIONS"))
+    def test_head_and_options_are_still_served(self, monkeypatch, verb) -> None:
+        """A preflight and a link check are reads. Refusing them would break the page
+        without changing what a caller can alter."""
+        transport = _require_module("writ.server.transport")
+
+        _require(transport, "tcp_refusal")
+        monkeypatch.setenv("WRIT_TCP_READONLY", "1")
+        assert transport.tcp_refusal(_req_scope("tcp", verb, "/dashboard")) is None, (
+            f"{verb} /dashboard was refused over TCP"
+        )
+
+    def test_post_query_is_served_over_tcp(self, monkeypatch) -> None:
+        """THE LIVE REGRESSION. explore.html:505 posts this from the page."""
+        transport = _require_module("writ.server.transport")
+
+        _require(transport, "tcp_refusal")
+        monkeypatch.setenv("WRIT_TCP_READONLY", "1")
+        assert transport.tcp_refusal(_req_scope("tcp", "POST", "/query")) is None, (
+            "POST /query was refused over TCP; the /explore query panel needs it"
+        )
+
+    def test_post_query_is_served_over_the_socket(self, monkeypatch) -> None:
+        transport = _require_module("writ.server.transport")
+
+        _require(transport, "tcp_refusal")
+        monkeypatch.setenv("WRIT_TCP_READONLY", "1")
+        assert transport.tcp_refusal(_req_scope("socket", "POST", "/query")) is None
+
+    def test_the_exemption_is_exact_match_not_a_prefix(self, monkeypatch) -> None:
+        """The `/node/` prefix match is what let one entry cover any depth. A path
+        that merely starts with an exempt one must not inherit the exemption."""
+        transport = _require_module("writ.server.transport")
+
+        _require(transport, "tcp_refusal")
+        monkeypatch.setenv("WRIT_TCP_READONLY", "1")
+        for path in ("/query/mutate", "/queryx", "/query/../session/abc/mode"):
+            assert transport.tcp_refusal(_req_scope("tcp", "POST", path)) is not None, (
+                f"POST {path} inherited the /query exemption by prefix"
+            )
+
+
+class TestStateRoutesStayPrivate:
+    """Must-not-regress: what E2b closed stays closed."""
+
+    @pytest.mark.parametrize(
+        "path",
+        ("/session/abc/mode", "/session/abc/advance-phase", "/commit/capture",
+         "/memory-record"),
+    )
+    def test_a_state_route_is_still_refused_over_tcp(self, monkeypatch, path) -> None:
+        transport = _require_module("writ.server.transport")
+
+        _require(transport, "tcp_refusal")
+        monkeypatch.setenv("WRIT_TCP_READONLY", "1")
+        assert transport.tcp_refusal(_req_scope("tcp", "POST", path)) is not None, (
+            f"POST {path} was served over TCP"
+        )
+
+    def test_the_socket_still_serves_a_state_route(self, monkeypatch) -> None:
+        transport = _require_module("writ.server.transport")
+
+        _require(transport, "tcp_refusal")
+        monkeypatch.setenv("WRIT_TCP_READONLY", "1")
+        assert transport.tcp_refusal(
+            _req_scope("socket", "POST", "/session/abc/mode")
+        ) is None
+
+    def test_the_default_is_still_off(self, monkeypatch) -> None:
+        """Enforcement ships OFF, and this cycle does not change that."""
+        transport = _require_module("writ.server.transport")
+
+        _require(transport, "tcp_refusal")
+        monkeypatch.delenv("WRIT_TCP_READONLY", raising=False)
+        assert transport.tcp_refusal(
+            _req_scope("tcp", "POST", "/session/abc/mode")
+        ) is None
+
+
+class TestTheCensusRecordsTheDecision:
+    """A row must say whether it was refused. Reading the live log today gave three
+    rows where two were refusals and one was a served POST /health, indistinguishable,
+    and the census is the artifact the migration is judged by.
+    """
+
+    @staticmethod
+    def _rows(log_path: Path) -> list[dict]:
+        if not log_path.exists():
+            return []
+        return [
+            json.loads(line) for line in log_path.read_text().splitlines()
+            if line.strip()
+        ]
+
+    def test_a_refused_request_is_recorded_as_refused(self, tmp_path, monkeypatch) -> None:
+        log = tmp_path / "events.jsonl"
+        monkeypatch.setenv("WRIT_FRICTION_LOG", str(log))
+        transport = _require_module("writ.server.transport")
+
+        _require(transport, "note_request")
+        transport.note_request("tcp", "POST", "/session/abc/mode", refused=True)
+        row = next(
+            (r for r in self._rows(log) if r.get("event") == "daemon_tcp_write"), None
+        )
+        assert row is not None, "no census row emitted"
+        assert row.get("refused") is True, f"the row does not record the refusal: {row}"
+
+    def test_an_exempted_request_is_recorded_as_not_refused(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        log = tmp_path / "events.jsonl"
+        monkeypatch.setenv("WRIT_FRICTION_LOG", str(log))
+        transport = _require_module("writ.server.transport")
+
+        _require(transport, "note_request")
+        transport.note_request("tcp", "POST", "/query", refused=False)
+        row = next(
+            (r for r in self._rows(log) if r.get("event") == "daemon_tcp_write"), None
+        )
+        assert row is not None, "an exempted TCP write emitted no census row"
+        assert row.get("refused") is False, (
+            f"a served request was not distinguishable from a refused one: {row}"
+        )
+
+    def test_a_read_still_emits_no_row(self, tmp_path, monkeypatch) -> None:
+        """Must-not-regress: the census names write traffic only, or it is noise."""
+        log = tmp_path / "events.jsonl"
+        monkeypatch.setenv("WRIT_FRICTION_LOG", str(log))
+        transport = _require_module("writ.server.transport")
+
+        _require(transport, "note_request")
+        transport.note_request("tcp", "GET", "/health", refused=False)
+        assert not [
+            r for r in self._rows(log) if r.get("event") == "daemon_tcp_write"
+        ], "a read was counted as a write"
+
+    def test_the_middleware_records_what_it_refused(self, tmp_path, monkeypatch) -> None:
+        """End to end through the middleware, because the ordering between counting
+        and refusing is the part that has to stay right: a refusal that skipped the
+        count would blind the audit at exactly the moment it matters."""
+        log = tmp_path / "events.jsonl"
+        monkeypatch.setenv("WRIT_FRICTION_LOG", str(log))
+        monkeypatch.setenv("WRIT_TCP_READONLY", "1")
+        transport = _require_module("writ.server.transport")
+
+        _require(transport, "TransportCensusMiddleware")
+        sent: list[dict] = []
+
+        async def _app(scope, receive, send):  # pragma: no cover - must not be reached
+            raise AssertionError("the refused request reached the app")
+
+        async def _send(message):
+            sent.append(message)
+
+        async def _receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        import asyncio
+
+        asyncio.run(
+            transport.TransportCensusMiddleware(_app)(
+                _req_scope("tcp", "POST", "/session/abc/mode"), _receive, _send
+            )
+        )
+        assert sent and sent[0].get("status") == 403, sent
+        row = next(
+            (r for r in self._rows(log) if r.get("event") == "daemon_tcp_write"), None
+        )
+        assert row is not None and row.get("refused") is True, (
+            f"the middleware refused without recording it: {row}"
+        )
+
+
+class TestEnforcementLiveOverTcp:
+    """Real processes. The defect was found by probing the running daemon, and a
+    policy that only holds in a unit test would not have been caught by that probe.
+    """
+
+    @staticmethod
+    def _serve(sock_path: Path, port: int) -> subprocess.Popen:
+        env = dict(os.environ)
+        env["WRIT_SOCKET"] = str(sock_path)
+        env["WRIT_TCP_READONLY"] = "1"
+        return subprocess.Popen(
+            [CHILD_PY, "-m", "writ.cli", "serve", "--port", str(port),
+             "--host", "127.0.0.1"],
+            cwd=str(REPO), env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+
+    @staticmethod
+    def _code(args: list[str]) -> str:
+        return subprocess.run(
+            ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+             "--max-time", "10"] + args,
+            capture_output=True, text=True, timeout=20,
+        ).stdout.strip()
+
+    def _wait_for_tcp(self, proc, port: int, limit: float = 90.0) -> None:
+        waited = 0.0
+        while waited < limit:
+            if proc.poll() is not None:
+                out, err = proc.communicate()
+                pytest.fail(f"daemon died before serving: {err or out}")
+            if self._code([f"http://127.0.0.1:{port}/health"]) == "200":
+                return
+            time.sleep(0.5)
+            waited += 0.5
+        pytest.fail("the daemon never answered GET /health over TCP")
+
+    def test_the_live_daemon_refuses_a_post_to_an_exempt_path(self, sock_dir) -> None:
+        """`POST /health` returned 405 on the running daemon before this fix, which
+        is what sent me looking."""
+        sock_dir.mkdir(parents=True, exist_ok=True)
+        port = _free_port()
+        proc = self._serve(sock_dir / "w.sock", port)
+        try:
+            self._wait_for_tcp(proc, port)
+            base = f"http://127.0.0.1:{port}"
+            assert self._code(["-X", "POST", f"{base}/health"]) == "403", (
+                "POST /health was not refused over TCP"
+            )
+            assert self._code([f"{base}/health"]) == "200", (
+                "GET /health stopped working over TCP"
+            )
+            assert self._code(["-X", "POST", f"{base}/session/x/mode"]) == "403", (
+                "a state route was not refused over TCP"
+            )
+        finally:
+            proc.kill()
+            proc.wait(timeout=15)
+
+    def test_the_live_daemon_serves_post_query_over_tcp(self, sock_dir) -> None:
+        """The /explore panel's call. Any code but 403 means the policy let it
+        through; the handler's own status depends on the pipeline, not on this."""
+        sock_dir.mkdir(parents=True, exist_ok=True)
+        port = _free_port()
+        proc = self._serve(sock_dir / "w.sock", port)
+        try:
+            self._wait_for_tcp(proc, port)
+            code = self._code([
+                "-X", "POST", f"http://127.0.0.1:{port}/query",
+                "-H", "Content-Type: application/json",
+                "-d", '{"query": "transport policy", "budget_tokens": 200}',
+            ])
+            assert code != "403", "POST /query was refused over TCP"
+        finally:
+            proc.kill()
+            proc.wait(timeout=15)
