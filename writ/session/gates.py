@@ -17,6 +17,9 @@ from writ.session.cache import _read_cache, mutate_cache
 from writ.session.friction import _log_friction_event
 from writ.session.locators import _find_debug_md, debug_path
 from writ.session.mode_engine import _effective_source_type, approved_gates_for_plan
+# One source for what "lazily seeded" means. Duplicating the literal here would be the
+# same defect cycle K removed: a constant restated in a second file goes stale silently.
+from writ.session.subagent_seed import is_lazily_seeded
 
 # Fallback gate-categories.json path: <skill_root>/bin/lib/gate-categories.json. Used only
 # when a caller passes no skill_dir (hooks pass it); resolved from the skill root because this
@@ -311,13 +314,43 @@ def _check_exempt_write(session_id: str, mode, file_path: str, cache: dict, skil
     # is narrowed by the agent definition + spawn prompt. Gates exist to stop
     # the master from writing code before plan approval, not to re-police
     # workers the orchestrator has already sanctioned. See rules/writ-orchestrator.md.
-    if cache.get("is_subagent"):
+    # NOT for a lazily seeded cache. That cache was created by a hook because
+    # SubagentStart never fired, so nothing here establishes that an orchestrator passed a
+    # human gate on this agent's behalf, which is the entire justification for the bypass.
+    # This is the second of two independent guards; _authority_mode is the first, and both
+    # would have to fail for a seeded cache to gain a write.
+    if cache.get("is_subagent") and not is_lazily_seeded(cache):
         _log_friction_event(session_id, mode, "write_attempt",
                             file_path=file_path, result="allow",
                             gate_status="subagent_bypass")
         return {"can_write": True, "reason": None}
 
     return None
+
+
+def _authority_mode(cache: dict):
+    """The mode the WRITE DECISION may use, which is not always the mode in the cache.
+
+    A cache created by a hook running inside a sub-agent (`cache_source: lazy_seed`) exists
+    so the agent can be seen and can receive rules. It is not evidence that anyone
+    authorized the agent to write, and reading its inherited mode here would turn a missing
+    file into a grant. Measured on one envelope before this function existed:
+
+        no cache at all                  -> False  [ENF-GATE-MODE] No mode declared...
+        seeded, parent's mode and gates  -> True
+        seeded, is_subagent removed      -> True
+
+    The third line is why this is not solved by narrowing the sub-agent bypass alone: the
+    work gate allows on its own once a mode and its approved gates are present. Resolving
+    the mode as ABSENT reproduces the previous decision on EVERY path rather than on the
+    paths someone remembered to enumerate, including the exemptions that run ahead of the
+    mode check and therefore still allow.
+
+    Retrieval is unaffected: it reads `cache["mode"]` directly, and rules are not authority.
+    """
+    if is_lazily_seeded(cache):
+        return None
+    return cache.get("mode")
 
 
 def _check_special_files(basename: str, mode, current_phase) -> dict | None:
@@ -493,7 +526,7 @@ def _can_write_check(session_id: str, envelope: dict, skill_dir: str = "", cache
 
     if cache is None:
         cache = _read_cache(session_id)
-    mode = cache.get("mode")
+    mode = _authority_mode(cache)
 
     # Credential-path guard (#6): deny writes to secret/credential files in EVERY
     # mode, ahead of every exemption and gate -- even a skill-dir or sub-agent write

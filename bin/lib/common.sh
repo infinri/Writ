@@ -325,6 +325,55 @@ load_hook_env() {
     if [ -n "${_bb_raw:-}" ]; then
         printf '%s' "$_bb_raw" | blackbox_log in "$(basename "${BASH_SOURCE[1]:-$0}" .sh)" "${HOOK_SESSION_ID:-}" || true
     fi
+    _writ_seed_subagent_cache
+}
+
+# GOVERN A SUB-AGENT ON THE HOOK THAT RUNS, NOT THE EVENT THAT MIGHT NOT FIRE.
+#
+# `SubagentStart` creates a sub-agent's cache, and it does not arrive for every sub-agent.
+# Measured 2026-08-27 across all 239 log files (including the 226 gzipped archives an
+# earlier grep of mine silently skipped): 1,381 distinct agents have a `subagent_start` row,
+# 2,219 hit the stop-side fallback instead, and the two sets do NOT intersect. So 64% of
+# sub-agents never inherit a mode, never inherit the approved gates, and never get a rule
+# injected. 1,425 of them DO have daemon rows under their own agent id, which means Writ
+# hooks ran inside them: that is the seam this uses.
+#
+# HERE, NOT IN THREE HOOKS. Every hook calls load_hook_env, and the envelope it parses
+# carries both halves needed: HOOK_AGENT_ID (the child) and HOOK_SESSION_ID_RAW (the parent,
+# kept separate precisely because HOOK_SESSION_ID prefers the agent id). A call added to the
+# PreToolUse hooks that matter today is a list that goes stale the moment a fourth one does,
+# which the telemetry cycle measured four times over before making coverage structural.
+#
+# IT GRANTS NOTHING. The seeded cache is marked `lazy_seed`, and the write gate resolves a
+# lazy_seed cache's mode as ABSENT, so the write decision is identical to the no-cache
+# decision on every path. See writ/session/gates.py::_authority_mode.
+#
+# COST. For a main session this is one test on an empty variable, no process. For a
+# sub-agent it is one more test on a filename, and a single python start on the FIRST hook
+# only; every later hook in that agent sees the file and returns.
+_writ_seed_subagent_cache() {
+    [ -n "${HOOK_AGENT_ID:-}" ] || return 0
+    [ "${HOOK_AGENT_ID:-}" != "${HOOK_SESSION_ID_RAW:-}" ] || return 0
+    [ -n "${HOOK_SESSION_ID_RAW:-}" ] || return 0
+    local _cache_file
+    _cache_file="$(writ_session_cache_dir)/writ-session-${HOOK_AGENT_ID}.json"
+    [ -f "$_cache_file" ] && return 0
+    WRIT_SEED_AGENT_ID="$HOOK_AGENT_ID" \
+    WRIT_SEED_PARENT="$HOOK_SESSION_ID_RAW" \
+    WRIT_SEED_AGENT_TYPE="${HOOK_AGENT_TYPE:-}" \
+    python3 -c '
+import os, sys
+sys.path.insert(0, sys.argv[1])
+try:
+    from writ.session.subagent_seed import seed_subagent_cache
+    seed_subagent_cache(os.environ.get("WRIT_SEED_AGENT_ID", ""),
+                        os.environ.get("WRIT_SEED_PARENT", ""),
+                        envelope_agent_type=os.environ.get("WRIT_SEED_AGENT_TYPE", ""))
+except Exception:
+    # A sub-agent that cannot inherit governance is a gap to report, never a hook failure.
+    pass
+' "$_WRIT_SKILL_DIR" 2>/dev/null || true
+    return 0
 }
 
 # Black-box capture: append the RAW Claude-Code <-> hook payloads to a JSONL so the

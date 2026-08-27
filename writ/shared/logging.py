@@ -148,6 +148,10 @@ STREAM_MAP: dict[str, str] = {
     "always_on_inject": "metrics",
     "subagent_start": "metrics",
     "subagent_complete": "metrics",
+    # Emitted when a hook running inside a sub-agent seeds a cache SubagentStart never
+    # created. Metrics, beside its lifecycle siblings, because the governance census
+    # counts lazily seeded agents from it and reads that stream.
+    "subagent_seeded": "metrics",
     "playbook_step_complete": "metrics",
     "phase_token_summary": "metrics",
     "phase_transition_time": "metrics",

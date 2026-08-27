@@ -139,52 +139,39 @@ else
     PARENT_STATE='{}'
 fi
 
-# Create isolated session for the sub-agent with parent's gate state but fresh budget
+# Create isolated session for the sub-agent with parent's gate state but fresh budget.
+# The importlib dance that used to load bin/lib/writ-session.py here is gone with the
+# inline mutate_cache block it served: the seeder is a package module, so a plain import
+# off the skill root reaches it.
 python3 -c "
-import sys, json, os
-sys.path.insert(0, '$WRIT_DIR/bin/lib')
-from importlib import util
-spec = util.spec_from_file_location('writ_session', '$SESSION_HELPER')
-mod = util.module_from_spec(spec)
-spec.loader.exec_module(mod)
+import sys
+sys.path.insert(0, '$WRIT_DIR')
 
-parent = json.loads(sys.argv[1])
 agent_id = sys.argv[2]
+parent_session = sys.argv[5] if len(sys.argv) > 5 else ''
 resolved_role = sys.argv[3] if len(sys.argv) > 3 else ''
 role_source = sys.argv[4] if len(sys.argv) > 4 else 'unresolved'
 
-# Create fresh cache with parent's structural state but clean operational state
-# Locked read-modify-write via mutate_cache (creates the default if not exists),
-# so a duplicate SubagentStart or a concurrent writer for the same agent_id cannot
-# lose this initialization -- consistent with the layer-2 serialized-writer discipline.
-with mod.mutate_cache(agent_id) as cache:
-    # Null-safe (audit P1): parent.get('mode', 'work') returns None when the key EXISTS
-    # with a null value (a mode-unset parent), so the child would inherit None and run
-    # mode-less. The 'or' coalesces both the missing-key and null-value cases to the default.
-    cache['mode'] = parent.get('mode') or 'work'
-    cache['current_phase'] = parent.get('current_phase') or 'planning'
-    cache['gates_approved'] = parent.get('gates_approved') or []
-    cache['remaining_budget'] = mod.DEFAULT_SESSION_BUDGET  # telemetry only; see cmd_should_skip
-    cache['is_subagent'] = True  # bypass budget-based skips; sub-agents get unlimited injection
-    # THE ROLE AND WHERE IT CAME FROM, stored while the sidecar still exists. Kept together
-    # on purpose: a role with no source cannot be told apart from a default, and the stop
-    # hook replays the SOURCE rather than reporting "cache", so one observation is not
-    # laundered into a weaker claim by each hop.
-    cache['agent_type'] = resolved_role
-    cache['role_source'] = role_source
-    cache['loaded_rule_ids'] = []
-    cache['loaded_rule_ids_by_phase'] = {}
-    cache['loaded_rules'] = []
-    cache['denial_counts'] = {}
-    cache['queries'] = 0
-    cache['context_percent'] = 0
-    cache['files_written'] = []
-    cache['analysis_results'] = {}
-    cache['pending_violations'] = []
-    cache['feedback_sent'] = []
-    cache['pretool_queried_files'] = []
-    cache['token_snapshots'] = []
-" "$PARENT_STATE" "$AGENT_ID" "$AGENT_TYPE" "$ROLE_SOURCE" 2>/dev/null || true
+# ONE COPY OF THE INHERITANCE RULES, in writ/session/subagent_seed.py. This block used to
+# hold its own, which meant the lazily seeded path (for the 64% of sub-agents that never get
+# a SubagentStart) would have been a second copy free to drift. `cache_source` records that
+# THIS path created the cache, which is what the write gate keys the sub-agent bypass on: a
+# dispatch that fired SubagentStart is an authorization event, a hook-seeded cache is not.
+#
+# `default_mode='work'` preserves this path's long-standing null-safety (audit P1): a
+# mode-unset parent would otherwise hand the child a None and let it run mode-less. The lazy
+# path passes no default, so it seeds nothing rather than inventing a mode.
+#
+# The role is resolved ONCE, above, and handed over with its source, so a sidecar-derived
+# role is not relabelled `envelope` on the way in.
+from writ.session.subagent_seed import CACHE_SOURCE_START, seed_subagent_cache
+
+seed_subagent_cache(agent_id, parent_session,
+                    cache_source=CACHE_SOURCE_START,
+                    default_mode='work',
+                    role=resolved_role,
+                    role_source=role_source)
+" "$PARENT_STATE" "$AGENT_ID" "$AGENT_TYPE" "$ROLE_SOURCE" "$PARENT_SESSION" 2>/dev/null || true
 
 # The sub-agent's mode, read once here rather than at the bottom of the hook. It used
 # to be resolved just before the subagent_start friction row (the last thing this hook

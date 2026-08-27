@@ -1458,6 +1458,121 @@ def _metrics_rows(event: str) -> list[dict] | None:
     return rows
 
 
+def _subagent_governance_census() -> dict | None:
+    """Bucket every sub-agent Writ has seen by how it came to be governed.
+
+    Returns None when no stream is readable, which is NOT the same as "nothing is governed".
+
+    Four buckets, because averaging them hides the thing worth knowing:
+      governed   -- a `subagent_start` row: the event fired, the cache was made at spawn
+      lazy       -- a `subagent_seeded` row: a hook inside the agent made the cache
+      reachable  -- neither, but Writ hooks ran inside it (a daemon or hook row under its
+                    own agent id), so a future hook could seed it
+      unreachable-- only stop-side rows: Writ never ran anything inside it
+
+    READS THE ARCHIVES. The wrong diagnosis that produced this cycle came from a grep that
+    silently skipped 226 gzipped files holding 1,421 `subagent_start` rows, so a census that
+    reads only the live file would repeat the mistake it exists to correct.
+    """
+    import gzip
+
+    try:
+        from writ.shared.logging import resolve_project
+
+        metrics = stream_path(resolve_project(), "metrics")
+    except Exception:  # noqa: BLE001 - a log-path fault must not fail a check
+        return None
+
+    project_dir = Path(metrics).parent
+    candidates = [Path(metrics)]
+    if Path(metrics).name != "metrics.jsonl":
+        candidates.append(project_dir / "metrics.jsonl")
+    candidates += sorted((project_dir / "archive").glob("metrics-*.jsonl*"))
+
+    started: set[str] = set()
+    seeded: set[str] = set()
+    completed: set[str] = set()
+    active: set[str] = set()
+    read_any = False
+
+    for path in candidates:
+        opener = gzip.open if path.suffix == ".gz" else open
+        try:
+            with opener(path, "rt", errors="replace") as handle:  # type: ignore[operator]
+                read_any = True
+                for line in handle:
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    event = row.get("event")
+                    agent = str(row.get("agent_id") or "")
+                    if event == "subagent_start":
+                        started.add(agent or str(row.get("session") or ""))
+                    elif event == "subagent_seeded":
+                        seeded.add(agent or str(row.get("session") or ""))
+                    elif event == "subagent_complete":
+                        completed.add(agent)
+                    else:
+                        # Any other row filed under an agent's own id proves a Writ hook
+                        # ran inside that agent, which is what makes it seedable.
+                        session = str(row.get("session") or "")
+                        if session and session != agent:
+                            active.add(session)
+        except OSError:
+            continue
+
+    if not read_any:
+        return None
+
+    ungoverned = completed - started - seeded
+    return {
+        "governed": len(completed & started),
+        "lazy": len(completed & seeded),
+        "reachable": len(ungoverned & active),
+        "unreachable": len(ungoverned - active),
+        "total": len(completed),
+    }
+
+
+def check_subagent_governance_census(opts: DoctorOptions) -> CheckResult:
+    """How many sub-agents actually inherited a mode, and how many ran outside Writ?
+
+    Measured 2026-08-27: 1,381 agents had a `subagent_start` row and 2,219 did not, with no
+    overlap, so 64% inherited no mode, no approved gates and no injected rule. Those agents
+    were not more dangerous for it (with no cache the write gate refused them outright), but
+    they were invisible, and an ungoverned worker nobody counts is the thing this check
+    exists to stop being normal.
+    """
+    name = "subagent-governance-census"
+    census = _subagent_governance_census()
+    if census is None:
+        return _ok(name=name, detail="No readable metrics stream, so governance is unmeasured.")
+    if not census["total"]:
+        return _ok(name=name, detail="No sub-agent dispatches recorded yet.")
+
+    detail = (
+        f"{census['governed']} governed at spawn, {census['lazy']} lazily seeded, "
+        f"{census['reachable']} ungoverned but reachable, "
+        f"{census['unreachable']} unreachable, of {census['total']} dispatches."
+    )
+    covered = census["governed"] + census["lazy"]
+    # Warn only when the MAJORITY is ungoverned. A handful of unreachable agents is the
+    # harness's business, not a defect, and crying wolf about it trains the reader to skip
+    # this line.
+    if covered * 2 < census["total"]:
+        return _warn(
+            name=name,
+            detail=(
+                detail + " Most sub-agents inherit no mode and no rules. The reachable ones "
+                "are seeded by any hook that runs inside them (see "
+                "writ/session/subagent_seed.py); the unreachable ones run no Writ hook at "
+                "all and cannot be reached from here."
+            ),
+        )
+    return _ok(name=name, detail=detail)
+
+
 def _unknown_buffer() -> Path:
     """The buffer bash writes when a hook files a row with no session to file it under."""
     from writ.session.cache import _cache_dir
@@ -1757,6 +1872,7 @@ _CHECKS: list[tuple[str, Callable[[DoctorOptions], CheckResult]]] = [
     ("hook-telemetry-coverage", check_hook_telemetry_coverage),
     ("stranded-telemetry-buffer", check_stranded_telemetry_buffer),
     ("subagent-role-coverage", check_subagent_role_coverage),
+    ("subagent-governance-census", check_subagent_governance_census),
     ("role-symlinks", check_role_symlinks),
     ("mode-gate-sanity", check_mode_gate_sanity),
 ]

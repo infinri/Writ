@@ -1337,6 +1337,11 @@ class TestRunAllChecks:
             lambda: Path("/nonexistent-writ-unknown-buffer.buf"),
         )
         monkeypatch.setattr("writ.session.doctor._metrics_rows", lambda event: [])
+        # subagent-governance-census otherwise scans the real metrics stream and its
+        # archives, so the outcome would depend on the machine (TEST-ISOLATE-001). None
+        # means "no readable stream", which the check reports as ok.
+        monkeypatch.setattr(
+            "writ.session.doctor._subagent_governance_census", lambda: None)
 
     def test_it_returns_one_result_per_registered_check(self, default_opts, monkeypatch) -> None:
         self._patch_all_ok(monkeypatch)
@@ -1376,6 +1381,8 @@ class TestRunAllChecks:
             # dispatched sub-agent's role is actually observed rather than defaulted.
             "stranded-telemetry-buffer",
             "subagent-role-coverage",
+            # Cycle M-pre: how many sub-agents inherited a mode at all.
+            "subagent-governance-census",
             "role-symlinks",
             "mode-gate-sanity",
         }

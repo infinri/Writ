@@ -246,6 +246,11 @@ def _default_cache() -> dict:
         "queried_rules_by_file": {},
         "parent_session_id": "",
         "agent_type": "",
+        # How this cache came to exist: `subagent_start` (the event fired), `lazy_seed`
+        # (a hook running inside the sub-agent seeded it), or "" for a main session. The
+        # write gate reads it: a lazily seeded cache confers no write authority, because
+        # creating one where none existed would otherwise loosen the gate.
+        "cache_source": "",
         # Where agent_type came from: envelope, sidecar, cache, or unresolved. Declared
         # here so a sub-agent cache written by writ-subagent-start.sh keeps the same keyset
         # as a fresh one (test_cache_schema_single_source). An empty string means no
