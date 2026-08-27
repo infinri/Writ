@@ -598,8 +598,30 @@ def _recreate_symlink() -> None:
         )
 
 
+# Where a plugin's hook registrations live when its manifest does not say.
+#
+# Claude Code discovers them by CONVENTION, so a plugin.json with no `hooks` key is
+# normal: this repo's has keys $schema, author, commands, description, keywords,
+# license, name and version, and its hooks fire. Before this default, an absent key
+# made `hooks_ref` empty, `_PACKAGE_ROOT / ""` resolved to the package root, and
+# open() on a directory raised IsADirectoryError, which the except turned into
+# "hook scripts missing or non-executable: <the package root>". A correct install
+# reported a directory as a missing script.
+#
+# A CONSTANT, not an inline literal, because this encodes a convention rather than a
+# contract: if the loader ever stops auto-detecting this path, the day it changes
+# there should be one place to look.
+DEFAULT_HOOKS_MANIFEST = "hooks/hooks.json"
+
+
 def _cc_registration_ok() -> tuple[bool, list[str]]:
-    """(all_ok, [missing_or_non_exec_paths]) for every .sh referenced by hooks.json."""
+    """(all_ok, [missing_or_non_exec_paths]) for every .sh referenced by hooks.json.
+
+    An explicit `hooks` key in plugin.json wins; its ABSENCE falls back to
+    DEFAULT_HOOKS_MANIFEST. A declared path that cannot be read is still a failure,
+    and so are a missing script and a non-executable one: only the absence of a
+    declaration is benign.
+    """
     plugin_json = _PACKAGE_ROOT / ".claude-plugin" / "plugin.json"
     missing: list[str] = []
     try:
@@ -608,7 +630,7 @@ def _cc_registration_ok() -> tuple[bool, list[str]]:
     except (OSError, ValueError):
         return (False, [str(plugin_json)])
 
-    hooks_ref = plugin.get("hooks", "")
+    hooks_ref = plugin.get("hooks") or DEFAULT_HOOKS_MANIFEST
     hooks_path = (_PACKAGE_ROOT / str(hooks_ref).lstrip("./")).resolve()
     try:
         with open(hooks_path) as f:
