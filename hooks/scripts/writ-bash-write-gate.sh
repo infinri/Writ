@@ -190,6 +190,125 @@ case "$STATE_MATCH" in
         ;;
 esac
 
+# ── Fourth vector: IRREVERSIBLE DESTRUCTION ─────────────────────────────────
+# AIMED AT WHAT ACTUALLY DESTROYED STATE HERE, not at the verbs that sound dangerous.
+# Two incidents:
+#   2026-08-05  invoking benchmarks/*.py blind wiped the graph.
+#   2026-08-08  a docker exec at target resolution wiped it again, and the tripwire in
+#               place missed it because it watched CONNECTIONS.
+# Neither is rm -rf, reset --hard, clean -fd, a force push, DROP TABLE or TRUNCATE, which
+# is the canonical list. 46 python files carry DETACH DELETE today.
+#
+# DENY, NOT ASK. Claude Code already prompts for anything outside its allowlist, so an ask
+# here is a second prompt for one action. What that layer cannot do is notice
+# reversibility: one Bash(git push:*) allowlist entry covers --force forever.
+#
+# THE CLEARANCE IS THE USER'S OWN HANDS: the refusal tells the agent to have the user run
+# it with a leading exclamation mark in the prompt. No new grant type, and deliberately NOT
+# the manual-testing grant, which means "manual testing" rather than "destroy this".
+#
+# rm -rf, DROP TABLE and TRUNCATE are OUT OF SCOPE on purpose: no incident, Claude Code
+# already prompts, and each one widens the false-positive surface on scratch work.
+#
+# CONSEQUENCE, same as the gate-state guard above: a Bash command that merely NAMES one of
+# these patterns is refused unless it is plain read-only inspection, so this file and any
+# doc discussing the patterns must be edited with the Edit tool rather than a heredoc. That
+# bit immediately: the command adding an example refusal message to this very block was
+# refused by the block itself.
+_IRREV_CYPHER_RE='detach[[:space:]]+delete|match[[:space:]]*\([[:alnum:]_]*\)[[:space:]]*delete|drop[[:space:]]+constraint|drop[[:space:]]+index'
+
+# The project-local .py a python interpreter would RUN, or nothing.
+#
+# -m and -c disqualify the whole command: -m pytest is the suite (one of its tests
+# legitimately wipes the shared graph and restores it through migrate.py, so refusing
+# pytest would stop the suite), and -c is inline code, already the third vector above.
+_irrev_script_target() {
+    local cmd="$1"
+    case " $cmd " in *" -m "*|*" -c "*) return 0 ;; esac
+    local -a toks; read -ra toks <<< "$cmd"
+    local n=${#toks[@]} i j
+    for ((i = 0; i < n; i++)); do
+        case "${toks[i]##*/}" in
+            python|python3|python3.*|pythonw) ;;
+            *) continue ;;
+        esac
+        for ((j = i + 1; j < n; j++)); do
+            case "${toks[j]}" in
+                -*) continue ;;
+                *.py) printf '%s' "${toks[j]}"; return 0 ;;
+                *) break ;;
+            esac
+        done
+    done
+    return 0
+}
+
+# A reason to refuse, or nothing. Read-only inspection is exempt FIRST: planning the cycle
+# that added this guard needed three greps for DETACH DELETE, and a guard that refuses
+# those makes the codebase unsearchable. Same escape the gate-state guard uses.
+_irreversible_reason() {
+    local cmd="$1" lower
+    _readonly_inspection "$cmd" && return 0
+    lower="${cmd,,}"
+
+    # 1. Graph destruction through a container or a shell (the 2026-08-08 vector). BOTH a
+    #    graph-reaching verb AND a destructive statement are required, so writing prose
+    #    that merely contains the statement is not caught.
+    case "$lower" in
+        *"docker exec"*|*"docker compose exec"*|*"docker-compose exec"*|*"cypher-shell"*)
+            if [[ "$lower" =~ $_IRREV_CYPHER_RE ]]; then
+                printf '%s' "[ENF-IRREVERSIBLE] Refusing this Bash command: it reaches Neo4j with a destructive statement (DETACH DELETE, MATCH ... DELETE, DROP CONSTRAINT or DROP INDEX). That is how the graph was wiped on 2026-08-08, and it is not recoverable from here. If it is genuinely intended, ask the user to run it themselves by prefixing it with ! in the prompt, so a human owns the destruction. Reading the graph is fine: a RETURN query, or the /explore page."
+                return 0
+            fi
+            ;;
+    esac
+
+    # 2. Graph destruction through a script (the 2026-08-05 vector). Nothing in the command
+    #    text says the script wipes the graph, so the FILE decides. One bounded read and no
+    #    external process: the $(<file) form is a builtin.
+    local script; script="$(_irrev_script_target "$cmd")"
+    if [ -n "$script" ] && [ -f "$script" ]; then
+        local body; body="$(<"$script")"
+        if [[ "${body,,}" =~ $_IRREV_CYPHER_RE ]]; then
+            printf '%s' "[ENF-IRREVERSIBLE] Refusing this Bash command: it invokes ${script}, which contains a destructive Neo4j statement (DETACH DELETE, DROP CONSTRAINT or DROP INDEX). Invoking a script like this blind is how the graph was wiped on 2026-08-05, and nothing in the command text says it would. If it is genuinely intended, ask the user to run it themselves by prefixing it with ! in the prompt. Running the same file under pytest is not gated."
+            return 0
+        fi
+    fi
+
+    # 3. Git history destruction. No incident, but this branch carries dozens of unpushed
+    #    commits, so a hard reset is the live exposure. --force-with-lease is ALLOWED: it is
+    #    the reversible form, and refusing it pushes people toward the unsafe spelling.
+    local git_match=""
+    case "$lower" in
+        *"git reset --hard"*) git_match="git reset --hard" ;;
+        *"git tag -d "*)      git_match="git tag -d" ;;
+    esac
+    case "$cmd" in *"git branch -D"*) git_match="git branch -D" ;; esac
+    case "$lower" in
+        *"git clean"*) case "$lower" in *" -f"*) git_match="git clean -f" ;; esac ;;
+    esac
+    case "$lower" in
+        *"git push"*)
+            case "$lower" in
+                *"--force-with-lease"*) ;;
+                *"--force"*|*" -f "*|*" -f") git_match="git push --force" ;;
+            esac
+            ;;
+    esac
+    if [ -n "$git_match" ]; then
+        printf '%s' "[ENF-IRREVERSIBLE] Refusing this Bash command: ${git_match} destroys git history or refs, and this branch carries unpushed work that exists nowhere else. If it is genuinely intended, ask the user to run it themselves by prefixing it with ! in the prompt. The reversible forms are allowed: --soft, --force-with-lease, git clean -n, and git branch -d."
+        return 0
+    fi
+    return 0
+}
+
+IRREV_REASON="$(_irreversible_reason "$CMD")"
+if [ -n "$IRREV_REASON" ]; then
+    log_gate_decision "irreversible" "deny" "$IRREV_REASON" ""
+    emit_deny "$IRREV_REASON"
+    exit 0
+fi
+
 # Cycle 9 -- the third vector: a commit that would land work a reviewer rejected.
 # agents/writ-reviewer.md already declares "Critical blocks merge"; nothing enforced
 # it, because the verdict reached only the agent whose code was reviewed, which is

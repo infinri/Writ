@@ -14,7 +14,7 @@ source it the assignment comes AFTER (15/21, 19/23, 16/23, 18/23, 25/33, 18/20),
 
 THE REAL CAUSE is plainer. E2a added the transport to `common.sh`'s own invocations
 and never touched the hooks that build their OWN curl commands.
-`writ-bash-write-gate.sh:1311` and `writ-memory-capture.sh:88` are the two still
+`writ-bash-write-gate.sh` (can-write) and `writ-memory-capture.sh` (/memory-record) are the two still
 writing, which matches the census exactly: `can-write` at 21:43 and `/memory-record`
 at 21:44.
 
@@ -165,15 +165,30 @@ class TestEveryDaemonCurlCarriesTheTransport:
         (`can-write` and `/memory-record`) rather than to a count I guessed: my first
         draft asserted >= 8 against a real 7, which is the same mistake in miniature.
         """
+        # ANCHORED TO THE ROUTE, NOT THE LINE NUMBER. This held two hardcoded line numbers
+        # (writ-bash-write-gate.sh:1311, writ-memory-capture.sh:88) and cycle J's guard
+        # moved the first one to 1430, failing a test about detector completeness for a
+        # reason that has nothing to do with completeness. The census named ROUTES
+        # (`can-write` and `/memory-record`); those are what must be found.
         must_see = {
-            "writ-bash-write-gate.sh": 1311,
-            "writ-memory-capture.sh": 88,
+            "writ-bash-write-gate.sh": "can-write",
+            "writ-memory-capture.sh": "memory-record",
         }
-        for hook, lineno in must_see.items():
-            found = {ln for ln, _ in _daemon_curl_lines((HOOKS / hook).read_text())}
-            assert lineno in found, (
-                f"the detector missed {hook}:{lineno}, which the census named as a "
-                f"live TCP writer; it saw {sorted(found)}"
+        # TWO CLAIMS, SPLIT, because tying them together needs a variable resolver:
+        # writ-memory-capture.sh sets MEMORY_URL on line 25 and uses "$MEMORY_URL" at the
+        # curl on line 88, so no window around the curl contains the route string.
+        #   (a) this hook is the one the census named  -> the route appears in the file
+        #   (b) the detector is not vacuous here       -> it finds a daemon curl in it
+        for hook, route in must_see.items():
+            source = (HOOKS / hook).read_text()
+            assert route in source, (
+                f"{hook} no longer references {route}; the census anchor is stale and this "
+                "test needs re-aiming rather than adjusting"
+            )
+            hits = _daemon_curl_lines(source)
+            assert hits, (
+                f"the detector found no daemon curl in {hook}, which the census named as a "
+                "live TCP writer"
             )
         # And it must see the whole population, not only the two known ones.
         every = {
