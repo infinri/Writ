@@ -1,12 +1,22 @@
 """Resolve which role a sub-agent is running as, from the one field the harness delivers.
 
 WHY THIS MODULE EXISTS. `agent_type` is in the SubagentStart and SubagentStop envelope
-schema, and on this build it arrives EMPTY: 10 of 10 real SubagentStop envelopes captured
-2026-08-27 carried `agent_type: ""` while `agent_id` was populated in 10 of 10. Both hooks
-then rewrote the empty string to the literal `general-purpose`, so 53 governance records
-that day named a role nobody observed and were indistinguishable from a real dispatch of a
-general-purpose agent. A write scope keyed on that field would have granted every worker
-one role's authority while the code read as though it granted five.
+schema, and it arrives EMPTY for one whole population of sub-agents: 10 of 10 real
+SubagentStop envelopes captured 2026-08-27 carried `agent_type: ""` while `agent_id` was
+populated in 10 of 10. Both hooks then rewrote the empty string to the literal
+`general-purpose`, so those records named a role nobody observed and were
+indistinguishable from a real dispatch of a general-purpose agent. Across the full log
+corpus that is 2,219 records. A write scope keyed on that field would have granted every
+one of those workers one role's authority while the code read as though it granted five.
+
+WHICH POPULATION, CORRECTED. An earlier version of this docstring said "on this build",
+which was too broad and came from reading logs rather than triggering a dispatch. Three
+probe dispatches on 2026-08-27 all carried `agent_type` POPULATED on both SubagentStart and
+SubagentStop, resolving via SOURCE_ENVELOPE. The empty-envelope population is exactly the
+one that never receives a SubagentStart at all (measured: 1,381 agents have a start row,
+2,219 do not, and the sets do not intersect). So the fallback is not this build's normal
+path; it is the signature of an ungoverned spawn, which is why the source is recorded
+beside the role rather than the role alone.
 
 WHERE THE ROLE ACTUALLY LIVES. Claude Code writes a sidecar beside each sub-agent
 transcript, `agent-<agent_id>.meta.json`, carrying `agentType` (163 of 163 files on this

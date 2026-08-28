@@ -412,9 +412,41 @@ play, so all are recorded.
 | Tool registry | `TaskCreate`, `TaskGet`, `TaskList`, `TaskStop`, `TaskUpdate` exist as tools, alongside an `Agent` tool. [observed] |
 
 Practical guidance: to force-swap a dispatch, match `Task` (it catches the runtime `Agent` tool)
-and read/write `tool_input.subagent_type`. This is the path verified live on 2.1.183 and still
-observed working on 2.1.220 (the `Task` matcher produced envelopes with `tool_name: "Agent"` in
-the 2026-08-01 capture).
+and read/write `tool_input.subagent_type`. This is the path verified live on 2.1.183, observed
+working on 2.1.220 (the `Task` matcher produced envelopes with `tool_name: "Agent"` in the
+2026-08-01 capture), and re-confirmed by dispatch on 2026-08-27: the swap fired and rewrote a
+generic `Explore` request to `writ-explorer` before the sub-agent started.
+
+### The sub-agent lifecycle, probe-verified 2026-08-27
+
+Recorded because it was got WRONG from logs first, and the error is the useful part. A report
+claiming `SubagentStart` never fires, the `Task` matcher never matches, and cache inheritance
+never happens was produced by grepping `var/logs` with plain `grep -r`, which **silently skips
+gzipped files**. 226 archives held 1,421 `subagent_start` rows. Three probe dispatches settled
+in seconds what an hour of log-reading had inverted. **Verify a harness behaviour by triggering
+it.**
+
+What three dispatches showed, on ordinary `Agent` tool calls [observed 2026-08-27]:
+
+| Stage | Result |
+|---|---|
+| `PreToolUse` matcher `Task` | fires; `tool_input.subagent_type` present and rewritable |
+| `SubagentStart` | fires; envelope is `{session_id, transcript_path, cwd, prompt_id, agent_id, agent_type, hook_event_name}` |
+| `agent_type` on both start and stop | POPULATED (`writ-explorer`, `general-purpose`), including for a generic dispatch using the `[general-purpose]` escape |
+| tool events inside the sub-agent | fire, with `agent_id` present, so their rows file under the agent's own id |
+| `SubagentStop` | fires; `agent_type` populated |
+
+**Two populations, and only one of them is governed.** Across the full log corpus, 1,381
+distinct agents have a `subagent_start` row and 2,219 do not, and the sets do **not** intersect.
+Every agent in the second group arrives at `SubagentStop` with `agent_type: ""`. So an empty
+`agent_type` is the signature of a spawn path that skipped `SubagentStart` entirely, not a
+property of the build. Of those 2,219, 1,425 still produced rows under their own agent id (Writ
+hooks ran inside them) and 794 produced only stop-side rows.
+
+**Sidecar lifetime differs between the two.** For a governed dispatch the sidecar
+(`agent-<agent_id>.meta.json`) survives the agent's completion; for the ungoverned population
+none of 57 completed agents still had one, while 68 from the same session persisted. Any design
+that reads the sidecar must therefore treat it as ephemeral and persist what it learns.
 
 ### Sub-agent transcripts, and queued input misdelivered into a sub-agent turn
 

@@ -4,12 +4,21 @@ RED until `writ/session/subagent_role.py` exists, the two subagent hooks use it,
 `common.sh` stops instrumenting the one script under `hooks/scripts/` that is not a hook.
 
 WHAT THE CENSUS FOUND, because the design follows from it (measured 2026-08-27 on this
-machine). The live harness sends `agent_type: ""` in 10 of 10 real `SubagentStop`
-envelopes while `agent_id` is populated in 10 of 10. The hooks' fallback rewrites that
-empty string to the literal `general-purpose`, so 53 governance records carry a role
-nobody observed and are indistinguishable from a real general-purpose dispatch. Keying a
-write scope on `agent_type` would therefore have enforced ONE role for every worker while
-reading as though it enforced five.
+machine). The harness sends `agent_type: ""` in 10 of 10 captured `SubagentStop` envelopes
+while `agent_id` is populated in 10 of 10. The hooks' fallback rewrites that empty string to
+the literal `general-purpose`, so those governance records carry a role nobody observed and
+are indistinguishable from a real general-purpose dispatch. Keying a write scope on
+`agent_type` would therefore have enforced ONE role for every such worker while reading as
+though it enforced five.
+
+SCOPE OF THAT CLAIM, CORRECTED AFTER PROBING. This file first said "the live harness", full
+stop, which generalized from logs to the build. Three probe dispatches later the same day
+all carried `agent_type` POPULATED, on both SubagentStart and SubagentStop, resolving via
+SOURCE_ENVELOPE. The empty-envelope population is exactly the one that never receives a
+SubagentStart: 1,381 agents have a start row, 2,219 do not, and the sets do not intersect.
+So an empty `agent_type` is the signature of an ungoverned spawn, not of this build. That
+distinction is what the source field exists to keep visible, and getting it wrong is why
+verifying by triggering beats grepping a log.
 
 TWO CORRECTIONS TO THE APPROVED PLAN, recorded here rather than by editing plan.md,
 because an edit would change `plan_md_hash` and invalidate the approval that authorized

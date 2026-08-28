@@ -1634,10 +1634,12 @@ def check_subagent_role_coverage(opts: DoctorOptions) -> CheckResult:
     """How often is a dispatched sub-agent's ROLE actually known?
 
     This is the number cycle M's enforcement is not allowed to skip. `agent_type` arrives
-    empty from this build's envelope (10 of 10 real SubagentStop payloads, 2026-08-27) and
-    the hooks used to rewrite it to the literal `general-purpose`, so 53 completion records
-    that day named a role nobody observed. Roles are now resolved from the sidecar and
-    carry a `role_source`, and this check reports the rate.
+    empty for the sub-agents that never receive a SubagentStart (10 of 10 captured
+    SubagentStop payloads from that population, 2026-08-27; 2,219 records corpus-wide), and
+    the hooks used to rewrite it to the literal `general-purpose`, so those records named a
+    role nobody observed. An ordinary Agent dispatch carries it populated, probe-verified
+    the same day. Roles are now resolved from the sidecar and carry a `role_source`, and
+    this check reports the rate.
 
     NO OBSERVATIONS IS OK, NOT AN ACCUSATION. A machine that has dispatched nothing, or
     whose log is absent, is not a machine with a broken resolver.

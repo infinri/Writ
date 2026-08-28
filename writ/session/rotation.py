@@ -47,6 +47,17 @@ def _sessions_claiming_project(cwd: str, exclude: tuple = ()) -> list:
                 data = json.load(handle) or {}
         except Exception:
             continue
+        # A SUB-AGENT IS NOT A SESSION WORKING THE PROJECT. It is a worker inside one, it
+        # never rotates, and it cannot be a rotating session's predecessor. Counting one
+        # would make the sole-claimant guard below see a contested project and refuse a
+        # legitimate carry, costing the user their mode for a reason they cannot see.
+        #
+        # This was latent rather than live: sub-agent caches carried project_root "" until a
+        # draft of writ/session/subagent_seed.py inherited it, which is how the failure was
+        # found. That draft was changed to leave the field empty, so the guard here is what
+        # makes the invariant hold no matter what any future writer stamps.
+        if data.get("is_subagent"):
+            continue
         if data.get("project_root") == cwd:
             found.append(match.group(1))
     return found

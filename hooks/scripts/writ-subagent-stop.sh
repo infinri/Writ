@@ -109,9 +109,12 @@ fi
 SESSION_ID="$AGENT_ID"
 
 # THE ROLE IS RESOLVED, NOT DEFAULTED. `agent_type` is in the envelope schema and arrives
-# EMPTY on this build (10 of 10 real SubagentStop envelopes, 2026-08-27). The old code
-# rewrote that empty string to the literal `general-purpose`, so 53 completion records that
-# day named a role nobody observed, indistinguishable from a real general-purpose dispatch.
+# EMPTY for the sub-agents that never receive a SubagentStart: 10 of 10 captured envelopes
+# from that population (2026-08-27), 2,219 records corpus-wide. An ordinary Agent dispatch
+# carries it populated, probe-verified the same day, so an empty value is the signature of
+# an ungoverned spawn rather than this build's normal path. The old code rewrote the empty
+# string to the literal `general-purpose`, so those records named a role nobody observed,
+# indistinguishable from a real general-purpose dispatch.
 # The resolver reads the sidecar Claude Code writes beside the agent's transcript, falls back
 # to a role this session already stored, and reports `unknown` when nothing answered.
 # ROLE_SOURCE travels with it so a defaulted role can never be read as an observed one.
