@@ -295,7 +295,7 @@ for f in findings:
 
     if rid not in loaded_rule_ids:
         # New finding -- rule wasn't available at planning time
-        print(f'[Writ: new finding] {rid} not in session rules -- warning only.', file=sys.stderr)
+        print(f'[Writ: new finding] {rid} not in session rules, warning only.', file=sys.stderr)
         continue
 
     # Rule was available at planning time -- gate invalidation

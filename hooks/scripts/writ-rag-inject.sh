@@ -793,7 +793,7 @@ case "$CURRENT_MODE" in
         ;;
     debug)
         echo ""
-        echo "[Writ: Debug mode. Rules injected for investigation. No code generation -- recommend Work mode when fix is identified.]"
+        echo "[Writ: Debug mode. Rules injected for investigation. No code generation: recommend Work mode when fix is identified.]"
         debug "injected debug mode reminder"
         ;;
     review)
@@ -819,11 +819,11 @@ case "$CURRENT_MODE" in
 
             if [ ! -f "$_PHASE_A" ]; then
                 echo ""
-                echo "[Writ: Work mode -- plan gate pending. Enter /plan, write plan.md, exit, present, wait for approval.]"
+                echo "[Writ: Work mode, plan gate pending. Enter /plan, write plan.md, exit, present, wait for approval.]"
                 debug "injected work mode state (plan)"
             elif [ ! -f "$_TEST_SKEL" ]; then
                 echo ""
-                echo "[Writ: Work mode -- test-skeletons gate pending. Write test files to disk, present, wait for approval.]"
+                echo "[Writ: Work mode, test-skeletons gate pending. Write test files to disk, present, wait for approval.]"
                 debug "injected work mode state (test-skeletons)"
             fi
         fi
@@ -856,7 +856,7 @@ if [ -n "${PROMPT:-}" ] && [ "${CURRENT_MODE:-}" != "review" ] && [ "${REMAINING
         REVIEW_PUSH=$(writ_action_push "$SESSION_ID" "review-feedback" || true)
         if [ -n "$REVIEW_PUSH" ]; then
             echo ""
-            echo "[Writ: methodology -- review-feedback]"
+            echo "[Writ: methodology, review-feedback]"
             echo "$REVIEW_PUSH"
         fi
     fi

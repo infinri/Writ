@@ -646,7 +646,7 @@ def reconcile(
                 # The library reconcile refuses to run against an empty oracle
                 # (would wipe the corpus). Surface it as a clean exit, not a
                 # traceback -- mirrors add/edit/propose error handling.
-                typer.echo(f"ERROR: reconcile aborted -- {exc}", err=True)
+                typer.echo(f"ERROR: reconcile aborted: {exc}", err=True)
                 raise typer.Exit(code=1) from exc
             deleted_nodes = result["deleted_nodes"]
             deleted_edges = result["deleted_edges"]

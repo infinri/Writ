@@ -188,7 +188,7 @@ elif decision == 'deny':
             'hookEventName': 'PreToolUse',
             'permissionDecision': 'deny',
             'permissionDecisionReason': reason or 'Gate approval required',
-            'additionalContext': 'IMPORTANT: This write was denied by a Writ gate. Do NOT attempt more writes to other files -- the denial applies to ALL files until the gate advances. Read the denial reason and follow the workflow: present your work to the user and wait for approval.',
+            'additionalContext': 'IMPORTANT: This write was denied by a Writ gate. Do NOT attempt more writes to other files, because the denial applies to ALL files until the gate advances. Read the denial reason and follow the workflow: present your work to the user and wait for approval.',
         }
     })
 else:

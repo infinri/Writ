@@ -56,7 +56,7 @@ failing = [
     if isinstance(j, dict) and j.get("score", 5) < 3 and not j.get("overridden")
 ]
 if failing:
-    print("ENF-PROC-VERIFY-001 / Gate 5: do not claim this work complete -- these "
+    print("ENF-PROC-VERIFY-001 / Gate 5: do not claim this work complete, these "
           "artifacts scored < 3 on quality self-review and were not overridden: "
           + ", ".join(failing)
           + ". Fix them (re-review and re-POST the score) or pass "

@@ -141,7 +141,7 @@ class IngestError:
         nt = self.node_type or "?"
         nid = self.node_id or "?"
         field_part = f" [field={self.field}]" if self.field else ""
-        return f"{self.file}:{nt} '{nid}'{field_part} -- {self.reason}"
+        return f"{self.file}:{nt} '{nid}'{field_part}: {self.reason}"
 
 
 @dataclass

@@ -109,7 +109,7 @@ case "$MODE" in
         AC_TEXT="[Writ: Conversation mode. Rules injected for context. No code generation expected.]"
         ;;
     debug)
-        AC_TEXT="[Writ: Debug mode. Investigate the problem. No code generation -- switch to Work mode when fix is identified.]"
+        AC_TEXT="[Writ: Debug mode. Investigate the problem. No code generation: switch to Work mode when fix is identified.]"
         ;;
     review)
         AC_TEXT="[Writ: Review mode. Evaluate code against Writ rules. Produce structured findings per file.]"

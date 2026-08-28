@@ -531,12 +531,12 @@ print(json.dumps(entry))
         # project root resolved from a stray marker file above the work dir could stamp an
         # unrelated plan silently.
         echo "[Writ: ${CURRENT_PHASE} gate approved -> ${ADVANCED_TO}] (advanced by the approval hook on your confirmation; no agent self-approval)"
-        [ -n "$VALIDATED" ] && echo "[Writ: ${VALIDATED}] -- if that is not the plan you meant to approve, the project root is wrong: invalidate the gate before continuing."
+        [ -n "$VALIDATED" ] && echo "[Writ: ${VALIDATED}] (if that is not the plan you meant to approve, the project root is wrong: invalidate the gate before continuing)"
     elif [ -n "$GATE_ERROR" ]; then
         # The server REFUSED the advance. Surface the reason on STDOUT so the agent sees WHY
         # and fixes it -- stderr is not shown in the UserPromptSubmit context, which made
         # refusals look like "no gate pending".
-        echo "[Writ: ${CURRENT_PHASE} gate REJECTED -- not advanced] ${GATE_ERROR}"
+        echo "[Writ: ${CURRENT_PHASE} gate REJECTED, not advanced] ${GATE_ERROR}"
         # Two kinds of refusal, and telling the user the wrong one is a real cost: a spent
         # token means they MUST type the approval again, an unspent one means they must not.
         # token_spent=false comes back when the gate could not evaluate the artifact at all

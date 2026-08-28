@@ -1457,7 +1457,7 @@ fi
 # 1b. Writ gate state: deny in any mode. A gate the agent can edit is not a gate.
 STATE_HIT=$(printf '%s\n' "$TARGETS" | awk -F'\t' '$1=="state"{print $2; exit}')
 if [ -n "$STATE_HIT" ]; then
-    STATE_REASON="[ENF-GATE-STATE] Refusing this Bash command: it writes to Writ gate state ('$STATE_HIT'). Mode, approvals and the manual-testing grant live there. A manual-testing bypass is minted only from the user's own words -- ask the user to reply \"manual testing approved\"."
+    STATE_REASON="[ENF-GATE-STATE] Refusing this Bash command: it writes to Writ gate state ('$STATE_HIT'). Mode, approvals and the manual-testing grant live there. A manual-testing bypass is minted only from the user's own words, so ask the user to reply \"manual testing approved\"."
     log_gate_decision "bash-write" "deny" "$STATE_REASON" "$STATE_HIT"
     emit_deny "$STATE_REASON"
     exit 0
