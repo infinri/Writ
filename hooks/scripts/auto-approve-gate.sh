@@ -2,11 +2,18 @@
 # Auto-approve gate: approval detection for the human phase gate.
 # UserPromptSubmit: fires at the start of every user turn.
 #
-# TWO TIERS, ONE AUTHORITY (cycle 1). bin/lib/approval_match.py classifies the prompt as
-# exact, embedded or none, and only ONE of them can advance a gate:
+# THREE TIERS, ONE AUTHORITY (cycle 1; the replan tier added later). bin/lib/
+# approval_match.py classifies the prompt as exact, replan, embedded or none, and each tier
+# authorizes exactly one act:
 #
 #   exact     the prompt IS an approval. The hook mints a bound single-use token and
 #             advances the pending gate, exactly as it did before the tier split.
+#   replan    the whole prompt is `replan approved`. The hook mints a token bound to the
+#             "replan" gate and spends it in this same process on the local reset command,
+#             which returns a work session to planning and CLEARS both approved gates. It
+#             is a separate tier, not a wider `approved`, because during implementation a
+#             user may type `approved` about anything, and clearing two approved gates
+#             destroys work they never offered up.
 #   embedded  a strong approval word inside a longer sentence ("ok remember we want to
 #             fix all our findings, approved", which cost a turn on 2026-08-10). The hook
 #             ASKS: it names the pending gate and advances nothing. If the user confirms,
@@ -103,7 +110,7 @@ TIER=$(python3 -c "import sys; sys.path.insert(0, '$WRIT_DIR/bin/lib'); from app
 # Fail closed on anything unexpected (a broken module, an empty print): an unrecognized
 # tier must behave like "none", never like an approval.
 case "$TIER" in
-    exact|embedded) ;;
+    exact|embedded|replan) ;;
     *) TIER="none" ;;
 esac
 
@@ -149,7 +156,135 @@ PLAN_HASH=$(printf '%s' "$PHASE_FIELDS" | cut -s -f4)
 NEXT_GATE_REPORTED=$(printf '%s' "$PHASE_FIELDS" | cut -s -f5)
 CANDIDATE_ID=$(printf '%s' "$PHASE_FIELDS" | cut -s -f6)
 
+# PRECEDENCE: the server's next_gate WINS; the planning/testing phase inference is
+# a FALLBACK, used only when the responder did not report the field at all (an
+# older daemon -- writ/ and the running daemon are separate artifacts, and the
+# daemon must be restarted to pick up a checkout).
+#
+# The inference maps planning -> phase-a, testing -> test-skeletons and
+# implementation -> nothing, which is not the question _next_pending_gate answers.
+# A gate RE-ARMS whenever plan.md changes under an approval, and that can happen in
+# any phase; when it happened during implementation the inference said "no gate
+# here" while enforcement denied every write, and the user's "approved" could not
+# clear it. So a non-empty next_gate advances regardless of phase, and an empty one
+# the server actually REPORTED (field present, value null) means nothing is
+# pending -- an answer, not a gap, which the phase must not second-guess.
+#
+# HOISTED ABOVE THE DISPATCH because two arms read it now: the exact arm decides
+# whether to attempt an advance, and the replan arm refuses to reset a session that
+# still has a gate to advance. One computation, so the two can never disagree about
+# whether anything is pending.
+GATE_PENDING=""
+if [ -n "$NEXT_GATE" ]; then
+    GATE_PENDING=1
+elif [ -z "$NEXT_GATE_REPORTED" ] && { [ "$CURRENT_PHASE" = "planning" ] || [ "$CURRENT_PHASE" = "testing" ]; }; then
+    GATE_PENDING=1
+fi
+
+# The ONE place the re-open phrase is advertised, printed by the three branches that
+# report "no gate was advanced". Those branches used to end with "otherwise this approval
+# needs no gate action", which in the plan-frozen state was simply false: an action WAS
+# needed (re-opening planning) and no reply existed that took it. The hint fires only in
+# the state where the phrase would actually do something, so it is never noise.
+#
+# $1 is the gate still pending, "" when nothing is. It is an ARGUMENT rather than a read of
+# GATE_PENDING because the server's own answer outranks the local inference: the noop
+# branch below has been told authoritatively that nothing is pending, even where a
+# plan-drift re-arm made the local computation say otherwise.
+_replan_hint() {
+    if [ "$CURRENT_MODE" != "work" ]; then return 0; fi
+    if [ "$CURRENT_PHASE" != "implementation" ]; then return 0; fi
+    if [ -n "${1:-}" ]; then return 0; fi
+    cat <<'HINT'
+If what you actually need is a CHANGED PLAN: plan.md is frozen during implementation, and
+only you can re-open it. Reply exactly "replan approved" on your own turn. That returns
+this session to planning, clears the phase-a and test-skeletons approvals, and keeps every
+source write blocked until you approve both again against the revised plan.
+HINT
+}
+
 case "$TIER" in
+replan)
+    # THE USER'S WAY OUT OF THE PLAN-FROZEN STATE, and the only one: mode=work,
+    # phase=implementation, both gates approved. plan.md is refused by the write gate
+    # there, and the plan change is what re-arms the gates, so before this arm existed no
+    # reply the user could type acted on the refusal. A live session typed `approved`
+    # twice and was told the approval needed no gate action.
+    #
+    # FIRST IN THE DISPATCH, ahead of the exact arm, because it is the destructive one and
+    # the reader looking for "what can clear my approvals" should hit it first.
+    #
+    # FAIL CLOSED ON AN UNKNOWN STATE. The entire decision comes from the single
+    # current-phase call above, and an unparseable read, an unknown session, or a responder
+    # too old to report next_gate all render as EMPTY fields -- which is not evidence that
+    # this session qualifies. Field 5 is next_gate's PRESENCE flag, so requiring it is what
+    # separates "the server says nothing is pending" from "the server never said".
+    if [ -z "$CURRENT_MODE" ] || [ "$NEXT_GATE_REPORTED" != "1" ]; then
+        cat <<'DIRECTIVE'
+[Writ: nothing was changed]
+This session's mode and phase could not be read, so the phrase did nothing: an unknown
+state gets no reset. If this session should be under the Work workflow, declare it
+explicitly first with: writ-session.py mode set work <session_id>.
+DIRECTIVE
+    elif [ "$CURRENT_MODE" != "work" ]; then
+        echo "[Writ: nothing was changed] This session is in ${CURRENT_MODE} mode, which has no plan gates, so there is nothing to re-open and plan.md is not frozen."
+    elif [ "$CURRENT_PHASE" != "implementation" ]; then
+        # Answer with what IS pending rather than swallowing the phrase. Every extra state
+        # the phrase fired in would be one more state where a mistyped destructive phrase
+        # lands, and in none of these would it achieve anything.
+        if [ "$CURRENT_PHASE" = "complete" ]; then
+            echo "[Writ: nothing was changed] This session's phase is complete. The reset for a finished cycle is: writ-session.py mode set work <session_id>, which starts the next one in the planning phase."
+        else
+            echo "[Writ: nothing was changed] This session's phase is ${CURRENT_PHASE}, not implementation, so plan.md is already writable and the ${NEXT_GATE:-next} gate is what is pending. Reply \"approved\" when the plan is ready."
+        fi
+    elif [ -n "$GATE_PENDING" ]; then
+        echo "[Writ: nothing was changed] The ${NEXT_GATE:-plan} gate is already pending, so the plan is not frozen: reply \"approved\" to advance it. Re-opening would throw away an approval you can simply re-grant."
+    else
+        # MINT AND SPEND IN THIS ONE PROCESS, before the model's turn begins, so no
+        # replan-bound token is ever on disk while the agent is running. The read-only
+        # inspection allowance in writ-bash-write-gate.sh means the agent CAN cat a token
+        # file, so the window is the defense; the gate's refusal of any command naming the
+        # reset subcommand is the other half.
+        GATE_TOKEN_FILE="/tmp/writ-gate-token-${SESSION_ID}"
+        GATE_TOKEN=$(python3 -c "import secrets; print(secrets.token_hex(16))" 2>/dev/null || echo "")
+        if [ -z "$GATE_TOKEN" ]; then
+            echo "[Writ: nothing was changed] No approval token could be minted, so the phase was not reset. Try the phrase again."
+        else
+            # LINE 2 IS THE LITERAL "replan", and it must equal
+            # writ.session.gate_token.REPLAN_GATE byte for byte: the python claim compares
+            # them, so a drift here would refuse every genuine re-open. Line 3 is the plan
+            # fingerprint current-phase already reported, so the mint and the claim
+            # fingerprint the same plan.md by construction. Any token left from an earlier
+            # turn is overwritten, exactly as the exact arm overwrites: nothing is pending
+            # in this state, so a leftover is bound to a state that no longer exists.
+            write_gate_token_file "$GATE_TOKEN_FILE" "$GATE_TOKEN" "replan" "${PLAN_HASH:-}"
+            # LOCAL CLI, no HTTP route on purpose: "the daemon is unreachable" is one of
+            # the two causes the old message conflated, so an escape that needed the daemon
+            # would be inert in half the states it exists for.
+            REOPEN_JSON=$(python3 "$SESSION_HELPER" reopen-planning "$SESSION_ID" --token "$GATE_TOKEN" 2>/dev/null || echo "{}")
+            # REPORT ONLY WHAT THE COMMAND CONFIRMED. The command owns the authoritative
+            # guards (it re-reads mode, phase and the pending gate from the cache), so a
+            # crash, a refusal, or an unparseable answer must all read as "nothing changed"
+            # here rather than as a reset this hook cannot prove happened.
+            REOPENED=$(printf '%s' "$REOPEN_JSON" | json_transform \
+                '(if .reopened then "1" else "" end)' \
+                '"1" if d.get("reopened") else ""' 2>/dev/null || echo "")
+            if [ -n "$REOPENED" ]; then
+                cat <<'DIRECTIVE'
+[Writ: planning re-opened by the approval hook on your confirmation; no agent self-approval]
+The phase is back to planning and BOTH approved gates are cleared, so plan.md is writable
+again and every source write stays blocked. Revise plan.md (and capabilities.md) with the
+user, then get phase-a and test-skeletons approved again against the revised plan before
+touching any source file.
+DIRECTIVE
+            else
+                REOPEN_REASON=$(printf '%s' "$REOPEN_JSON" | json_transform \
+                    '(.reason // "")' 'str(d.get("reason") or "")' 2>/dev/null || echo "")
+                echo "[Writ: nothing was changed] ${REOPEN_REASON:-The reset command did not confirm a re-open.}"
+            fi
+        fi
+    fi
+    ;;
 embedded)
     # A genuine near miss, unlike the substring scan's "going". Logged so the tier's
     # precision can be measured from the friction log instead of guessed at.
@@ -172,6 +307,7 @@ DIRECTIVE
 No approval gate is pending in this phase/mode, so there is nothing to advance and no
 token was minted. Treat the prompt as an ordinary instruction, not as a gate approval.
 DIRECTIVE
+        _replan_hint "$GATE_PENDING"
     fi
     ;;
 exact)
@@ -206,26 +342,13 @@ exact)
     GATE_ERROR=""
     VALIDATED=""
     TOKEN_SPENT=""
-    # PRECEDENCE: the server's next_gate WINS; the planning/testing phase inference is
-    # a FALLBACK, used only when the responder did not report the field at all (an
-    # older daemon -- writ/ and the running daemon are separate artifacts, and the
-    # daemon must be restarted to pick up a checkout).
-    #
-    # The inference maps planning -> phase-a, testing -> test-skeletons and
-    # implementation -> nothing, which is not the question _next_pending_gate answers.
-    # A gate RE-ARMS whenever plan.md changes under an approval, and that can happen in
-    # any phase; when it happened during implementation the inference said "no gate
-    # here" while enforcement denied every write, and the user's "approved" could not
-    # clear it. So a non-empty next_gate advances regardless of phase, and an empty one
-    # the server actually REPORTED (field present, value null) means nothing is
-    # pending -- an answer, not a gap, which the phase must not second-guess.
-    GATE_PENDING=""
-    if [ -n "$NEXT_GATE" ]; then
-        GATE_PENDING=1
-    elif [ -z "$NEXT_GATE_REPORTED" ] && { [ "$CURRENT_PHASE" = "planning" ] || [ "$CURRENT_PHASE" = "testing" ]; }; then
-        GATE_PENDING=1
-    fi
+    # Set INSIDE the advance block below, so the tail can tell "the daemon was asked and
+    # said nothing" from "nothing was ever asked". Those two used to share one message,
+    # which is how a plain no-gate-pending turn read as a possible server outage and an
+    # actual outage read as nothing needing done.
+    ADVANCE_ATTEMPTED=""
     if [ -n "$GATE_TOKEN" ] && [ "$CURRENT_MODE" = "work" ] && [ -n "$GATE_PENDING" ]; then
+        ADVANCE_ATTEMPTED=1
         # Send the cwd and let the SERVER resolve the project root
         # (locators.resolve_project_root: marker dir at or above cwd, else the cwd itself).
         # Two reasons not to send the bash marker walk as project_root instead:
@@ -331,22 +454,38 @@ print(json.dumps(entry))
         fi
     elif [ "$OUTCOME" = "noop" ]; then
         # Benign no-op: the server reported no pending gate to advance (not a rejection).
-        # Emit the SAME neutral steer as the none/else branch -- no REJECTED text, no
-        # "fix the issue", and the approval token is NOT spent.
+        # No REJECTED text, no "fix the issue", and the approval token is NOT spent.
         cat <<'DIRECTIVE'
-[Writ: approval pattern detected]
-No approval gate was advanced (no gate is pending in this phase/mode). If you intended
-to advance a Work-mode plan/test gate, ensure the server is up; otherwise this approval
-needs no gate action.
+[Writ: approval pattern detected, nothing was advanced]
+The Writ server answered that no gate is pending, so this approval had nothing to advance.
+DIRECTIVE
+        # "" and not "$GATE_PENDING": the server's own check is AUTHORITATIVE here, and it
+        # just said nothing is pending. The local computation can disagree (a plan-drift
+        # re-arm reports a gate the advance route then finds already covered), and in that
+        # disagreement the answer from the thing that would do the advancing wins.
+        _replan_hint ""
+    elif [ -n "$ADVANCE_ATTEMPTED" ]; then
+        # A gate WAS pending and the daemon was asked, but nothing recognizable came back.
+        # Its own branch, because the remedy is specific and belongs to nobody else: this
+        # used to be merged with the no-gate-pending case, so a genuine outage was reported
+        # as "or the Writ server is unreachable" alongside advice to do nothing.
+        cat <<DIRECTIVE
+[Writ: ${NEXT_GATE:-plan} gate NOT advanced -- the Writ daemon did not answer]
+Your approval was not consumed. Start the daemon and try again:
+  systemctl --user restart writ-server
+Then reply "approved" once more; a duplicate advance on an already-advanced gate is a
+no-op, so retrying is safe.
 DIRECTIVE
     else
-        # No pending gate, or server unreachable: fall back to the steer directive.
+        # No advance was ever attempted: no gate pending, not work mode, or no token could
+        # be minted. Neutral, and it says which of those it was by naming nothing that did
+        # not happen.
         cat <<'DIRECTIVE'
-[Writ: approval pattern detected]
-No approval gate was advanced (no gate is pending in this phase/mode, or the Writ
-server is unreachable). If you intended to advance a Work-mode plan/test gate, ensure the
-server is up; otherwise this approval needs no gate action.
+[Writ: approval pattern detected, nothing was advanced]
+No approval gate is pending in this phase/mode, so this approval had nothing to advance
+and no gate state changed.
 DIRECTIVE
+        _replan_hint "$GATE_PENDING"
     fi
     ;;
 esac

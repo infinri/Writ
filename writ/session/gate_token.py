@@ -61,6 +61,21 @@ BINDING_GATE_MISMATCH = "gate_token_gate_mismatch"
 BINDING_PLAN_DRIFT = "gate_token_plan_drift"
 BINDING_CANDIDATE_MISMATCH = "gate_token_candidate_mismatch"
 
+# The line-2 binding a re-open-planning approval carries, and the reason it is a NAME
+# rather than an empty line.
+#
+# "replan" is deliberately a name that NO mode's gate_sequence contains, so a
+# replan-bound token authorizes exactly one thing and nothing else:
+#   * both advance paths take their target from _next_pending_gate, which can only ever
+#     return a gate out of MODE_CONFIG's sequences, so this line can never match one and
+#     the advance is refused as BINDING_GATE_MISMATCH;
+#   * /promote-candidate requires line 2 to be exactly EMPTY (the no-gate-pending mint),
+#     so a named gate is refused there too.
+# The alternative was minting the re-open approval with an empty gate line, which is the
+# specific hazard this module's docstring already records: the empty-gate token IS the
+# canon-write credential, so a re-open approval would have doubled as one.
+REPLAN_GATE = "replan"
+
 
 def gate_token_path(session_id: str) -> str:
     # Must match the bash writer (auto-approve-gate.sh) byte-for-byte: it

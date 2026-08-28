@@ -168,10 +168,39 @@ CMD_FOR_STATE_MATCH="${CMD//test_manual_test_grant.py/}"
 # path. That misdirection, not the breadth of the match, is why the false
 # positive above went unexplained for so long -- every refusal pointed the reader
 # at the wrong pattern.
+# `reopen-planning` is the subcommand that returns a work session to planning and CLEARS
+# both approved gates. It belongs on this list rather than in a code comment: the whole
+# point of the phrase is that only the USER can spend it, and the approval hook mints and
+# claims that token inside one process, so no legitimate agent invocation exists. Refusing
+# the command TEXT is what makes "the agent never resets its own phase" mechanical.
+#
+# The HYPHEN is load-bearing. This pattern is a raw substring match, so the underscored
+# test path tests/test_replan_reopen_planning.py does not match it and a pytest command
+# naming that file stays runnable -- which is exactly why that file is named that way. The
+# cost, shared with every other pattern here, is that a command merely MENTIONING
+# reopen-planning is refused unless it is provably read-only inspection, so this file and
+# any doc discussing the subcommand must be edited with the Edit tool, never a heredoc.
 STATE_MATCH=""
+# `auto-approve-gate` is THE HOOK THAT MINTS, and refusing the subcommand was not enough.
+#
+# Found by the reviewer and reproduced: an agent that never types `reopen-planning` can run
+# `bash hooks/scripts/auto-approve-gate.sh` with a forged
+# {"session_id": ..., "prompt": "replan approved"} on stdin. The hook mints a token and
+# claims it in the same process, so the reset completed with no human turn at all, and the
+# hook's own reply said "no agent self-approval" while an agent did exactly that. Guarding
+# the CLI subcommand closed the front door and left the hook itself open.
+#
+# It is the only hook that mints (2 call sites of write_gate_token_file; the bash and state
+# write gates have none, and the manual-test-grant hook is already on this list), so this one
+# name closes the whole class: the pre-existing exact-tier `approved` advance is minted by the
+# same script and becomes unreachable from Bash by the same pattern.
+#
+# THE COST, stated because it is real: a hook cannot be verified by triggering it from Bash
+# any more, and that is this repo's most reliable verification method. Tests still run it as
+# a subprocess (pytest is not gated), which is where that verification now belongs.
 for _state_pat in "$STATE_DIR_GUARD" "/tmp/writ-current-session" "writ-session-" \
                   "writ-manual-test-grant" "manual_test_grant" "writ-grant-" \
-                  "writ-gate-token"; do
+                  "writ-gate-token" "reopen-planning" "auto-approve-gate"; do
     case "$CMD_FOR_STATE_MATCH" in
         *"$_state_pat"*) STATE_MATCH="$_state_pat"; break ;;
     esac

@@ -17,7 +17,9 @@ from writ.session.gate_token import (
     BINDING_GATE_MISMATCH,
     BINDING_PLAN_DRIFT,
     BINDING_UNBOUND,
+    REPLAN_GATE,
     claim_gate_token,
+    consume_gate_token,
     gate_binding_refusal,
     gate_token_valid,
     read_gate_binding,
@@ -35,8 +37,24 @@ from writ.session.mode_engine import (
     _gate_sequence_for_mode,
     _initial_phase_for_mode,
     _next_pending_gate,
+    reopen_planning,
 )
 from writ.session.cli_io import _emit_json
+
+# The re-open phrase has exactly ONE definition, in bin/lib/approval_match.py: that module
+# is the DETECTOR the UserPromptSubmit hook loads by path, and it deliberately carries no
+# writ-package import so a broken package cannot cost the user their approval. The
+# governance row below has to record the same bytes the detector matched, so the constant is
+# imported rather than restated -- a second spelling is a phrase the two would eventually
+# disagree about, and the user would be told to type something that no longer fires.
+# Resolved the way mode_engine resolves writ_mode_hint (a sys.path insert of bin/lib plus a
+# package-facing import), stated here rather than inherited from that module's side effect.
+_BIN_LIB = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "bin", "lib"
+)
+if _BIN_LIB not in sys.path:
+    sys.path.insert(0, _BIN_LIB)
+from approval_match import REPLAN_PHRASE  # noqa: E402  (path-loaded; single source)
 
 # A fully-annotated ## Files bullet: a backtick path, a (change_type), and a
 # non-empty reason after ' -- '. The (\S.*) group rejects a trailing-blank reason.
@@ -565,6 +583,213 @@ def cmd_advance_phase(session_id: str, project_root: str = "", token: str = "") 
         "gate": target_gate,
         "phase": new_phase,
         "from_phase": old_phase,
+    })
+    sys.stdout.write("\n")
+
+
+def _reopen_refused(session_id: str, mode, reason: str, message: str, *, consume: bool) -> None:
+    """One exit for every refused re-open: the audit row, the token, then the JSON.
+
+    `reason` is a name out of a CLOSED set (state_unknown, not_work_mode,
+    not_implementation, gate_pending, token_not_replan, token_claimed, token_invalid), one
+    per class, per gate_token.py's rule that a fail-closed gate must not read the same as an
+    absent one. `message` is the sentence the user reads, and it names what is ACTUALLY
+    pending: the incident this command exists to fix was a message that conflated two causes
+    and then told the user no action was needed.
+
+    `consume` is a parameter rather than a constant because the two refusal families differ
+    in exactly this, and getting it backwards costs the user an approval either way:
+
+      * a STATE refusal (wrong mode, wrong phase, a gate already pending) comes after the
+        token was established as THIS act's credential, so it is spent. Leaving it on disk
+        would keep a live re-open credential for a state that just refused one.
+      * a refusal that never established that (a missing or forged secret, a binding naming
+        a real phase gate) consumes NOTHING: that file may be the user's genuine phase
+        approval, and destroying it to punish a request they did not make would cost them
+        an approval they did give.
+    """
+    _log_friction_event(session_id, mode, "plan_reopen_refused", reason=reason)
+    if consume:
+        consume_gate_token(session_id)
+    _emit_json({"reopened": False, "refusal": reason, "reason": message})
+    sys.stdout.write("\n")
+
+
+def cmd_reopen_planning(session_id: str, token: str = "") -> None:
+    """Return this session to planning on the user's `replan approved`, and nothing else.
+
+    THE STATE THIS ESCAPES: mode=work, current_phase=implementation, both gates approved.
+    plan.md is refused by the write gate there, and the plan change is what re-arms the
+    gates, so a session that needed to amend its plan had nothing the user could type that
+    acted on the refusal. `approved` had no gate to advance, and the hook said so in a
+    message that read as "nothing was needed".
+
+    IT LIVES HERE for the same reason cmd_advance_phase does: this layer already owns the
+    token-guarded commands and may import mode_engine. The reset itself is
+    mode_engine.reopen_planning; this function is the AUTHORIZATION and the audit trail.
+
+    The guard order is not arbitrary:
+      1. the token's secret, so a forged call can never reach a state check;
+      2. the token's line-2 binding, non-destructively, so a token that authorizes a real
+         phase gate is refused without being spent;
+      3. mode / phase / pending-gate, from the cache rather than from bash, so the hook's
+         guard is a fast path and not the only one;
+      4. the atomic claim, which is what makes one phrase authorize exactly one re-open.
+    Step 3 precedes any plan-fingerprint comparison deliberately: a session in the wrong
+    mode must be told THAT, not told its plan drifted.
+
+    NOT WRAPPED IN mutate_cache. mode_engine.reopen_planning -> _mode_set owns the
+    read-modify-write and deletes the `*.approved` artifacts after its own durable write, on
+    the documented assumption that its block is the outermost one for this session. Nesting
+    it here would delete the files while the cleared state was still only in memory.
+
+    Output: JSON {"reopened": true, ...} or {"reopened": false, "refusal": ..., "reason": ...}
+    """
+    cache = _read_cache(session_id)
+    mode = cache.get("mode")
+
+    # 1. The secret. Mirrors cmd_advance_phase: the token is minted only by the approval
+    # hook from the user's own words, so failing here means the caller is not the hook.
+    # Nothing is consumed and nothing is reset -- an agent guessing a token must not be
+    # able to destroy a real pending approval as a side effect of being refused.
+    expected_token = read_gate_token(session_id)
+    if not gate_token_valid(token, expected_token):
+        _log_friction_event(
+            session_id, mode, "agent_self_approval_blocked",
+            event_target="reopen_planning",
+            had_token=bool(token), had_expected=bool(expected_token),
+        )
+        _emit_json({
+            "reopened": False,
+            "refusal": "token_invalid",
+            "reason": (
+                "Invalid or missing gate token. Planning is re-opened only by the approval "
+                "hook, on the user typing `replan approved` in their own turn."
+            ),
+        })
+        sys.stdout.write("\n")
+        return
+
+    # 2. The binding, read non-destructively. A token bound to a real phase gate is the
+    # user's genuine phase approval and must survive this refusal; None means the
+    # pre-binding one-line format, which records nothing about what it authorizes and so
+    # cannot be checked against anything.
+    binding = read_gate_binding(session_id)
+    if binding is None or binding[0] != REPLAN_GATE:
+        _reopen_refused(
+            session_id, mode, "token_not_replan",
+            (
+                "This approval does not authorize re-opening planning"
+                + (f" (it is bound to the {binding[0]} gate)" if binding and binding[0] else "")
+                + ". Re-opening planning needs the user to reply exactly `replan approved` "
+                "on their own turn; that mints the one approval this command accepts."
+            ),
+            consume=False,
+        )
+        return
+
+    # 3. The state, read authoritatively from the cache. Every refusal below changes
+    # nothing and names what IS pending, which is the other half of the fix: the user was
+    # left guessing once already.
+    phase = cache.get("current_phase")
+    if not mode:
+        # No mode at all is an UNKNOWN state, not a different one: there is nothing to
+        # return to planning and no evidence anybody put this session under the workflow.
+        _reopen_refused(
+            session_id, mode, "state_unknown",
+            (
+                "This session has no declared mode, so there is no plan phase to re-open. "
+                "Declare one first: `writ-session.py mode set work <session_id>`, which "
+                "already starts in planning."
+            ),
+            consume=True,
+        )
+        return
+    if mode != "work":
+        _reopen_refused(
+            session_id, mode, "not_work_mode",
+            (
+                f"This session is in {mode} mode, which has no plan gates, so there is "
+                "nothing to re-open and nothing was changed. plan.md is not frozen here."
+            ),
+            consume=True,
+        )
+        return
+    if phase != "implementation":
+        # `complete` is a terminal phase with its own documented reset (the advance route
+        # says the same words), so it gets the command that actually works there rather
+        # than a phrase that would not fire.
+        if phase == "complete":
+            detail = (
+                "This session's phase is `complete`. The reset for a finished cycle is "
+                "`writ-session.py mode set work <session_id>`, which starts a new one in "
+                "planning."
+            )
+        else:
+            detail = (
+                f"This session's phase is {phase or 'unset'}, not implementation: plan.md "
+                "is already writable and a gate is already pending, so `approved` is the "
+                "reply that moves this forward. Nothing was changed."
+            )
+        _reopen_refused(session_id, mode, "not_implementation", detail, consume=True)
+        return
+    pending = _next_pending_gate(cache, session_id)
+    if pending:
+        # Includes the plan-drift re-arm: a plan edited under an approval re-arms its gate
+        # in ANY phase, so a gate can be pending during implementation. The plan is not
+        # frozen in that state, and clearing both approvals would throw away one the user
+        # can simply re-grant.
+        _reopen_refused(
+            session_id, mode, "gate_pending",
+            (
+                f"The {pending} gate is already pending, so the plan is not frozen: reply "
+                "`approved` to advance it. Nothing was changed."
+            ),
+            consume=True,
+        )
+        return
+
+    # 4. The claim. Atomic (os.rename), so exactly one of N concurrent calls re-opens and
+    # the rest are no-ops; claiming IS consuming, so the phrase authorizes exactly one
+    # re-open. The plan fingerprint is recomputed from the cache's own project_root, which
+    # is the same input cmd_current_phase reported to the hook at mint time, so the mint and
+    # the claim hash the same plan.md by construction.
+    plan_hash = plan_md_hash(cache.get("project_root"), session_id) or ""
+    if not claim_gate_token(session_id, token, gate=REPLAN_GATE, plan_hash=plan_hash):
+        # One name for the claim step, because both ways it can fail have the same remedy:
+        # a concurrent call already spent this approval, or plan.md changed between the
+        # mint and the claim so the approval no longer covers the plan it was given for.
+        _reopen_refused(
+            session_id, mode, "token_claimed",
+            (
+                "That approval could not be claimed: either a concurrent call already "
+                "spent it, or plan.md changed after it was given. Nothing was changed; "
+                "reply `replan approved` again to re-open planning."
+            ),
+            consume=False,
+        )
+        return
+
+    gates_cleared = list(cache.get("gates_approved", []))
+    reopen_planning(session_id)
+    new_phase = _initial_phase_for_mode("work")
+
+    # The governance record, AFTER the durable state change (write-before-log, as in
+    # _mode_set). `confirmation_source: pattern` plus a token only the hook can mint from
+    # the user's own words is how this row proves the human asked: the same vocabulary a
+    # phase advance uses, so one reader answers "who approved this" for both.
+    _log_friction_event(
+        session_id, mode, "plan_reopened",
+        from_phase="implementation", to_phase=new_phase,
+        gates_cleared=gates_cleared,
+        confirmation_source="pattern", matched_prompt=REPLAN_PHRASE,
+    )
+
+    _emit_json({
+        "reopened": True,
+        "phase": new_phase,
+        "from_phase": "implementation",
+        "gates_cleared": gates_cleared,
     })
     sys.stdout.write("\n")
 

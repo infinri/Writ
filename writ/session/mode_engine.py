@@ -318,7 +318,8 @@ def _clear_gate_artifacts(project_root: str | None, session_id: str | None) -> N
 
 
 def _apply_mode_set(
-    cache: dict, mode: str, is_orchestrator: bool = False, *, mode_source: str | None
+    cache: dict, mode: str, is_orchestrator: bool = False, *,
+    mode_source: str | None, trigger: str = "mode-set",
 ) -> tuple:
     """Mutate `cache` in place for a fresh mode-set; return (old_mode, new_phase).
 
@@ -333,6 +334,13 @@ def _apply_mode_set(
     It is keyword-only and has NO DEFAULT on purpose: every path that sets a mode passes
     through here, so a new caller must state who chose the mode rather than inherit a
     default that would quietly label a guess as a human's word.
+
+    `trigger` names WHAT caused this reset on the phase-transition record, and it DOES
+    default, to the value every existing caller already produced ("mode-set"), so no
+    current row changes. It exists because reopen_planning reuses this function rather than
+    reimplementing gate clearing: a human re-opening planning mid-cycle would otherwise be
+    recorded as a new task's "mode-set", which is the one thing an auditor reading
+    phase_transitions needs to be able to tell apart.
     """
     old_mode = cache.get("mode")
     old_phase = cache.get("current_phase")
@@ -360,12 +368,14 @@ def _apply_mode_set(
     # Audit trail -- skip no-op transitions (e.g. repeated mode set work)
     if old_phase != new_phase:
         record_transition(
-            cache, from_phase=old_phase, to_phase=new_phase, trigger="mode-set", mode=mode
+            cache, from_phase=old_phase, to_phase=new_phase, trigger=trigger, mode=mode
         )
     return old_mode, new_phase
 
 
-def _mode_set(session_id: str, mode: str, is_orchestrator: bool = False) -> None:
+def _mode_set(
+    session_id: str, mode: str, is_orchestrator: bool = False, *, trigger: str = "mode-set"
+) -> None:
     """Set mode with fresh state. Internal -- called by cmd_mode.
 
     This is the EXPLICIT new-task command: it always resets current_phase to the
@@ -375,10 +385,15 @@ def _mode_set(session_id: str, mode: str, is_orchestrator: bool = False) -> None
 
     Being the explicit command is exactly what it stamps: MODE_SOURCE_EXPLICIT, which is
     what later tells the mid-session re-route to leave this session's mode alone.
+
+    `trigger` is passed through to the phase-transition record (see _apply_mode_set) and
+    defaults to what every existing caller produced, so only a caller that states a
+    different cause gets a different row.
     """
     with mutate_cache(session_id) as cache:
         old_mode, new_phase = _apply_mode_set(
-            cache, mode, is_orchestrator=is_orchestrator, mode_source=MODE_SOURCE_EXPLICIT
+            cache, mode, is_orchestrator=is_orchestrator,
+            mode_source=MODE_SOURCE_EXPLICIT, trigger=trigger,
         )
         project_root = cache.get("project_root")
 
@@ -405,6 +420,45 @@ def _mode_set(session_id: str, mode: str, is_orchestrator: bool = False) -> None
     # populated debug.md root cause into plan.md. Best-effort (never raises).
     if old_mode == "debug" and mode == "work":
         _promote_root_cause_to_plan(session_id, mode)
+
+
+def reopen_planning(session_id: str, *, trigger: str = "user-replan") -> None:
+    """Return a work session to planning at the USER's explicit request.
+
+    This is the exit from the plan-frozen state: mode=work, current_phase=implementation,
+    both gates approved, and plan.md refused by the write gate. Before it existed there was
+    no reply the user could type that acted on that refusal, so a session that needed to
+    amend its plan had nowhere to go.
+
+    IT REUSES _mode_set RATHER THAN CLEARING ANYTHING ITSELF, and that is the whole design.
+    `_apply_mode_set` already resets current_phase to the mode's initial phase, empties
+    gates_approved and gates_approved_plan, clears paused_work_state and denial_counts, and
+    _mode_set then deletes this session's `*.approved` artifacts through
+    _clear_gate_artifacts. Re-implementing any of that here would be a second definition of
+    "a gate is cleared", and the last time this codebase held two of those they drifted. The
+    only thing added is the `trigger`, so phase_transitions says a human re-planned instead
+    of mis-reporting it as a new task.
+
+    CALLED, NOT WRAPPED: _mode_set's cleanup runs AFTER its own durable write and documents
+    that it assumes its mutate_cache block is the OUTERMOST one for this session id. Putting
+    this call inside another mutate_cache block would defer the write to the outer exit while
+    the artifact deletion had already happened, so a crash in between would leave the files
+    gone and the cache still claiming the gates approved.
+
+    TWO PROPERTIES OF _apply_mode_set ARE RELIED ON HERE. `is_orchestrator` is only ever
+    SET, never cleared, so an orchestrator session stays suppressed across a re-open; and
+    `denial_counts = {}` resets the deny-to-ask escalation back to plain deny, which is
+    stricter, not looser.
+
+    Guarded on mode, because there is nothing to re-open outside work: every other mode has
+    an empty gate_sequence and a None initial phase, so running this against one would
+    record a transition and delete artifacts to achieve nothing. The AUTHORITATIVE state
+    guards (phase, pending gate, the token) live in approval_workflow.cmd_reopen_planning,
+    which is the only caller and the only place a human's approval is checked.
+    """
+    if _read_cache(session_id).get("mode") != "work":
+        return
+    _mode_set(session_id, "work", trigger=trigger)
 
 
 def _mode_init(

@@ -374,13 +374,21 @@ def _check_special_files(basename: str, mode, current_phase) -> dict | None:
         if current_phase == "implementation":
             return {
                 "can_write": False,
-                # The old wording sent the reader to invalidate-gate, which records a
-                # violation and escalates but deliberately does NOT clear an approval:
-                # only the human's approval decides a gate. Advertising it here named an
-                # escape that does nothing.
-                "reason": "[ENF-GATE-PLAN] plan.md cannot be modified during implementation phase. "
-                          "Ask the user before changing the plan: a changed plan re-arms the "
-                          "gates and needs one fresh approval before writes resume.",
+                # THE MESSAGE NAMES THE ESCAPE, because for a while none existed. Two
+                # earlier wordings both sent the reader nowhere: one advertised
+                # invalidate-gate, which records a violation and escalates but
+                # deliberately does NOT clear an approval; the other said "ask the user",
+                # and no reply the user could type acted on the refusal (a live session
+                # typed `approved` twice and was told no gate action was needed). The
+                # phrase below is the reply that works, so the refusal and the fix are one
+                # message. The [ENF-GATE-PLAN] tag stays for log parsing.
+                "reason": "[ENF-GATE-PLAN] plan.md cannot be modified during the implementation "
+                          "phase. Only the user can re-open planning: tell them what you want to "
+                          "change and why, then ask them to reply exactly `replan approved` in "
+                          "their own turn. That returns this session to planning, CLEARS both "
+                          "approved gates, and keeps every source write blocked until phase-a "
+                          "and test-skeletons are approved again against the new plan. Nothing "
+                          "you can run does this.",
             }
         return {"can_write": True, "reason": None}
 

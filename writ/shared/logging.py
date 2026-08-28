@@ -90,6 +90,14 @@ STREAM_MAP: dict[str, str] = {
     "debug_gate_source_edit_denied": "audit",
     "tier_escalated": "audit",
     "session_end": "audit",
+    # A human re-opening planning, and the refusals of that request. Audit, not friction:
+    # the row IS the oversight record for a destructive governance act (two approved gates
+    # cleared on the strength of one typed phrase), and it is the only durable proof that
+    # the user asked for it rather than the agent. Registered here EXPLICITLY because an
+    # unregistered event falls to _DEFAULT_STREAM (friction), which would file the
+    # governance record where nobody audits.
+    "plan_reopened": "audit",
+    "plan_reopen_refused": "audit",
     # friction
     "repeated_denial": "friction",
     "hallucinated_rule_ids": "friction",

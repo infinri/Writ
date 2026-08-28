@@ -103,6 +103,7 @@ from writ.session.approval_workflow import (  # noqa: E402
     _GATE_VALIDATORS,
     cmd_advance_phase,
     cmd_current_phase,
+    cmd_reopen_planning,
 )
 # POL-6g-1: typed citations + the token-budget command set moved to their own modules;
 # re-imported so cmd_update / cmd_should_skip / cmd_format callers (main(), server.py

@@ -16,6 +16,14 @@ remember we want to fix all our findings, approved", which is a genuine approval
 not the bare word. The embedded tier ASKS instead of advancing, so recall stays high while
 the set of things that can advance a gate is one phrase wide.
 
+A THIRD TIER, "replan", authorizes a DIFFERENT act, and it is separate for the same
+one-phrase-by-user-directive reason the exact tier was narrowed to one word. `replan
+approved` re-opens planning: it returns a work session to the planning phase and clears
+both approved gates. That is destructive, so it must never be reachable from the bare word
+`approved`, which a user may type during implementation about anything at all. See
+REPLAN_PHRASE / is_replan_request. is_approval is UNTOUCHED by that tier, so every existing
+mint and advance path behaves byte for byte as it did.
+
 The exact tier was narrowed from seventeen phrases plus fuzzy matching plus seven regex
 shapes to that single word, by user directive, after a message merely DISCUSSING approval
 phrases fired both this predicate and the manual-testing grant. See is_approval.
@@ -63,6 +71,38 @@ def is_approval(prompt: str) -> bool:
         return False
 
 
+# The one phrase that re-opens planning, matched as the WHOLE prompt. SINGLE DEFINITION:
+# the hook advertises it, gates.py's implementation-phase refusal names it, and the audit
+# row records it, and all three have to be the same bytes or the user is told to type
+# something that does not fire.
+REPLAN_PHRASE = "replan approved"
+
+
+def is_replan_request(prompt: str) -> bool:
+    """Return True only when the WHOLE prompt is `replan approved`.
+
+    WHOLE-PROMPT EQUALITY IS THE GUARD, not a cleverer regex. This phrase clears two
+    approved gates, so the requirement is that it cannot be a prefix, a suffix, or a
+    substring of an ordinary sentence, and equality gives that structurally: `do not
+    replan`, `replan not approved`, `should we replan approved?` and `replan approved
+    because the schema changed` are all DIFFERENT STRINGS, so none of them can fire. The
+    last of those still reaches the embedded tier (it contains `approved`), which asks
+    instead of acting -- the right answer for a destructive operation stated loosely.
+
+    Normalization is byte-for-byte is_approval's: lowercase, strip surrounding whitespace,
+    strip trailing `.`/`!`/`,`. A user typing a full stop has not changed their mind, and
+    the two predicates must not disagree about what "the whole prompt" is.
+
+    Pure function, no I/O, fail-closed: any internal error returns False, so a defect
+    degrades to "no re-open requested", which is the safe direction for a reset.
+    """
+    try:
+        prompt = (prompt or "").strip().lower()
+        return re.sub(r"[.!,]+$", "", prompt).strip() == REPLAN_PHRASE
+    except Exception:
+        return False
+
+
 # The embedded tier's vocabulary, deliberately NARROWER than the exact tier's. The exact
 # set includes ok/good/go/yes/continue, and admitting those as embedded signals would make
 # "ok good work, now do X" ask the user to confirm a gate on an ordinary instruction. Only
@@ -88,14 +128,20 @@ _EMBEDDED_MAX_CHARS = 200
 
 
 def classify(prompt: str) -> str:
-    """Return the approval tier: "exact", "embedded", or "none".
+    """Return the approval tier: "exact", "replan", "embedded", or "none".
 
     "exact" is precisely what is_approval accepts, so today's mint-and-advance behavior
-    is preserved by construction. "embedded" is a strong approval word inside a longer
-    sentence: the hook ASKS the user to confirm and advances nothing, because the
-    expensive mistake is advancing a gate the user did not mean to approve. "none" is
-    everything else, and the hook does nothing at all for it (no directive, no telemetry
-    row, no project-root walk, no mode lookup).
+    is preserved by construction. "replan" is the whole-prompt re-open phrase, which
+    authorizes clearing the approved gates and nothing else. "embedded" is a strong
+    approval word inside a longer sentence: the hook ASKS the user to confirm and advances
+    nothing, because the expensive mistake is advancing a gate the user did not mean to
+    approve. "none" is everything else, and the hook does nothing at all for it (no
+    directive, no telemetry row, no project-root walk, no mode lookup).
+
+    THE REPLAN CHECK RUNS AHEAD OF THE EMBEDDED CHECK, and that order is load-bearing:
+    `replan approved` contains the word `approved`, so the embedded regex matches it and
+    it would otherwise classify as "embedded" and be answered with a question instead of
+    the reset the user asked for.
 
     Pure function, no I/O, fail-closed: any internal error returns "none".
     """
@@ -103,6 +149,8 @@ def classify(prompt: str) -> str:
         prompt = (prompt or "").strip()
         if is_approval(prompt):
             return "exact"
+        if is_replan_request(prompt):
+            return "replan"
         if not prompt or len(prompt) >= _EMBEDDED_MAX_CHARS:
             return "none"
         if prompt.endswith("?"):

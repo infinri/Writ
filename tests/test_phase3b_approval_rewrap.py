@@ -186,17 +186,27 @@ class TestNarrowedVocabularyIsSilent:
 
 class TestApprovalFallbackWhenNoGatePending:
     """The default session has no pending Work-mode gate, so an approval phrase
-    produces the 'No approval gate was advanced' fallback -- NOT the old
-    /writ-approve directive and NOT a phase advance."""
+    produces the no-gate-pending fallback: NOT the old /writ-approve directive and
+    NOT a phase advance."""
 
     @pytest.mark.parametrize("prompt", ["approved", "approved.", "approved!"])
     def test_no_pending_gate_emits_fallback(self, prompt: str) -> None:
         # Unique session per param so a stray prior advance cannot pollute it;
         # the default unclassified/null-mode session always hits the fallback.
+        #
+        # ASSERTS THE INTENT, NOT THE SENTENCE. This pinned the exact marker
+        # "[Writ: approval pattern detected]" and the exact phrase "No approval gate was
+        # advanced". The replan cycle split the one conflated no-gate/unreachable branch
+        # into four named ones and gave each marker a suffix saying what happened, so the
+        # marker is now "[Writ: approval pattern detected, nothing was advanced]" and the
+        # body says nothing was pending. The property this test exists for is unchanged:
+        # the fallback fires, and it says nothing advanced. Pinning the prefix and the
+        # meaning keeps that property without re-breaking on the next wording pass.
         stdout, code = _run_hook(prompt, session_id=f"phase3b-fallback-{prompt}")
         assert code == 0
-        assert "[Writ: approval pattern detected]" in stdout
-        assert "No approval gate was advanced" in stdout
+        assert "[Writ: approval pattern detected" in stdout
+        assert "nothing was advanced" in stdout
+        assert "nothing to advance" in stdout
 
     @pytest.mark.parametrize("prompt", ["approved"])
     def test_fallback_does_not_emit_writ_approve(self, prompt: str) -> None:

@@ -71,7 +71,9 @@ def sandbox_cwd(tmp_path, monkeypatch):
     return sandbox
 
 
-def write_bound_gate_token(session_id: str, token: str | None = None) -> str:
+def write_bound_gate_token(
+    session_id: str, token: str | None = None, gate: str | None = None
+) -> str:
     """Mint the gate token a genuine approval would mint for `session_id`; return it.
 
     The token file binds what the approval authorizes: line 1 the secret, line 2 the gate,
@@ -87,6 +89,14 @@ def write_bound_gate_token(session_id: str, token: str | None = None) -> str:
     of hardcoding a gate name that a later seed change would silently invalidate. Call it
     AFTER the cache is seeded, and once per advance (claiming consumes the file).
 
+    `gate` OVERRIDES the derived gate, for the approvals whose gate is not a member of the
+    mode's phase sequence and therefore cannot be derived from the cache at all:
+    gate_token.REPLAN_GATE, which authorizes re-opening planning and which
+    `_next_pending_gate` never returns by design. Default None keeps the derivation, so
+    every existing caller mints exactly the bytes it minted before. The alternative was a
+    second hand-rolled copy of the token format inside the replan tests, which is the
+    drift this helper exists to prevent.
+
     One helper rather than one per test module on purpose: this is the third comparison of
     the same binding in the codebase, and the last time two call sites answered one
     security question separately they drifted (see gate_token.py's module docstring).
@@ -97,10 +107,17 @@ def write_bound_gate_token(session_id: str, token: str | None = None) -> str:
     from writ.session.mode_engine import _next_pending_gate
 
     cache = _read_cache(session_id)
+    # session_id is threaded into BOTH derivations because the production mint does the
+    # same: cmd_current_phase reports next_gate and plan_hash from a cache read that
+    # carries the session, so a SESSION-SCOPED plan (.claude/plans/<sid>/plan.md) is what
+    # the claim later fingerprints. Deriving without it produced a token bound to the
+    # shared-root plan (usually absent, so an empty line 3) while the claim compared the
+    # scoped plan's real digest, and the advance was refused as plan drift.
+    derived_gate = gate if gate is not None else (_next_pending_gate(cache, session_id) or "")
     return mint_gate_token(
         session_id,
-        gate=_next_pending_gate(cache) or "",
-        plan_hash=plan_md_hash(cache.get("project_root")) or "",
+        gate=derived_gate,
+        plan_hash=plan_md_hash(cache.get("project_root"), session_id) or "",
         token=token,
     )
 
