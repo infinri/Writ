@@ -107,6 +107,7 @@ from tests.fixtures.session_state import (  # noqa: F401
     call_can_write,
     sandbox_cwd,
     write_bound_gate_token,
+    write_evidence_transcript,
 )
 
 SKILL_ROOT = Path(__file__).resolve().parent.parent
@@ -533,12 +534,15 @@ class TestBareApprovedWithNoGatePendingMustNotRegress:
         _seed_deadlocked_cache(project_root, sid)
 
         # The bare word is an EXACT-tier approval, and the exact tier mints a token
-        # unconditionally (even with no gate pending -- see auto-approve-gate.sh's own
-        # comment on why). Wrapped in _mint_cleanup so this real hook-minted token
-        # cannot leak into /tmp.
+        # only WITH evidence that an approval was asked for (approval-integrity
+        # cycle, defect 2). Even with no gate pending, see auto-approve-gate.sh's
+        # own comment on why the mint still happens in that state. Wrapped in
+        # _mint_cleanup so this real hook-minted token cannot leak into /tmp.
+        transcript_path = write_evidence_transcript(tmp_path)
         with _mint_cleanup(sid):
             stdout = _run_auto_approve_hook(
-                {"session_id": sid, "prompt": "approved"}, cwd=project_root,
+                {"session_id": sid, "prompt": "approved", "transcript_path": transcript_path},
+                cwd=project_root,
                 extra_env={"WRIT_CACHE_DIR": str(tmp_path / "cache")},
             )
         assert "replan approved" in stdout, (
@@ -1233,11 +1237,12 @@ class TestHookNoGateBranchesEmitTheReplanHint:
         cache_env = {"WRIT_CACHE_DIR": str(tmp_path / "cache")}
         os.makedirs(tmp_path / "cache", exist_ok=True)
         _seed_drift_rearmed_implementation_cache(project_root, sid)
+        transcript_path = write_evidence_transcript(tmp_path)
 
         with _mint_cleanup(sid):
             with _mock_advance_daemon(b'{"advanced": false, "reason": "No gates for this mode"}') as port:
                 stdout = _run_auto_approve_hook(
-                    {"session_id": sid, "prompt": "approved"},
+                    {"session_id": sid, "prompt": "approved", "transcript_path": transcript_path},
                     cwd=project_root,
                     extra_env={**cache_env, "WRIT_HOST": "127.0.0.1", "WRIT_PORT": str(port)},
                 )
@@ -1256,10 +1261,11 @@ class TestHookNoGateBranchesEmitTheReplanHint:
         cache_env = {"WRIT_CACHE_DIR": str(tmp_path / "cache")}
         os.makedirs(tmp_path / "cache", exist_ok=True)
         _seed_deadlocked_cache(project_root, sid)
+        transcript_path = write_evidence_transcript(tmp_path)
 
         with _mint_cleanup(sid):
             stdout = _run_auto_approve_hook(
-                {"session_id": sid, "prompt": "approved"},
+                {"session_id": sid, "prompt": "approved", "transcript_path": transcript_path},
                 cwd=project_root, extra_env=cache_env,
             )
         assert "replan approved" in stdout, (
@@ -1279,10 +1285,11 @@ class TestHookNoGateBranchesEmitTheReplanHint:
         os.makedirs(tmp_path / "cache", exist_ok=True)
         _seed_drift_rearmed_implementation_cache(project_root, sid)
         closed_port = _unused_port()
+        transcript_path = write_evidence_transcript(tmp_path)
 
         with _mint_cleanup(sid):
             stdout = _run_auto_approve_hook(
-                {"session_id": sid, "prompt": "approved"},
+                {"session_id": sid, "prompt": "approved", "transcript_path": transcript_path},
                 cwd=project_root,
                 extra_env={**cache_env, "WRIT_HOST": "127.0.0.1", "WRIT_PORT": str(closed_port)},
             )

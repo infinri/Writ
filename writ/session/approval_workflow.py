@@ -16,6 +16,7 @@ from writ.session.friction import _log_friction_event
 from writ.session.gate_token import (
     BINDING_GATE_MISMATCH,
     BINDING_PLAN_DRIFT,
+    BINDING_RULE_MISMATCH,
     BINDING_UNBOUND,
     REPLAN_GATE,
     claim_gate_token,
@@ -287,6 +288,15 @@ _BINDING_REFUSAL_REASONS: dict[str, str] = {
         "This gate token records nothing about what it authorizes (it is the pre-binding "
         "format), so it cannot be checked against the {target} gate. Approve again to "
         "mint a bound token."
+    ),
+    # Wording taken from the candidate route's equivalent refusal so the two read the
+    # same: they are the same question about two different objects. Registered HERE, in
+    # the one table the CLI and both gate routes read, so one refusal cannot be described
+    # three ways.
+    BINDING_RULE_MISMATCH: (
+        "That approval authorizes promoting {bound}, not {target}. Surface {target} for "
+        "review with `writ review {target} --session-id <session_id>`, have the user "
+        "reply \"approved\", then re-run the promotion with --token."
     ),
 }
 
@@ -824,5 +834,11 @@ def cmd_current_phase(session_id: str) -> None:
         # this to bind a promotion approval to one candidate, the same way it reads
         # plan_hash to bind a phase approval to one plan.
         "candidate_id": cache.get("pending_candidate_id") or "",
+        # The RULE `writ review <rule_id> --session-id <sid>` surfaced to the human, if
+        # any. The mint writes it as the token's fifth line, so an approval typed after a
+        # rule was shown authorizes promoting that ONE rule. Only one of these two can be
+        # set at a time: each surfacing clears the other, so a single approval can never
+        # carry two promotion credentials.
+        "rule_id": cache.get("pending_review_rule_id") or "",
     })
     sys.stdout.write("\n")

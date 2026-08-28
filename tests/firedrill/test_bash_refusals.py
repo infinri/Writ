@@ -38,7 +38,7 @@ from tests.firedrill._harness import (
 
 # A shrinking matrix should fail loudly, not silently reduce coverage (repo
 # convention: tests/test_role_write_scope.py pins its own cross-product size).
-assert len(generic_refusals()) == 24
+assert len(generic_refusals()) == 25
 assert len(ACTION_MARKERS) == 13
 
 

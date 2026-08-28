@@ -1136,7 +1136,7 @@ log_friction_event() {
 }
 
 # ── Gate token writer ───────────────────────────────────────────────────────
-# Writes the three-line gate-token file: the secret, the gate the approval
+# Writes the five-line gate-token file: the secret, the gate the approval
 # authorizes, and the plan fingerprint it was given for. Lives here beside
 # log_friction_event and writ_http_post because it is the third primitive
 # auto-approve-gate.sh shares with the rest of the surface.
@@ -1154,10 +1154,16 @@ log_friction_event() {
 # LINE 4 is the candidate a promotion is bound to, empty for every other approval. It
 # exists because the promotion route used to take the candidate from the request body, so
 # one approval authorized promoting whichever candidate the caller named.
-# Usage: write_gate_token_file <path> <token> <gate> <plan_hash> [candidate_id]
+# LINE 5 is the RULE a promotion approval authorizes, empty for every other approval, and
+# it is a separate line rather than a namespaced reuse of line 4 because a graduation
+# candidate id and a Rule id are different objects: one field holding either would leave
+# the next reader unable to tell WHICH object a token authorizes. An omitted fifth
+# argument writes an empty line 5, which is what a phase advance compares against and what
+# a rule promotion is refused for.
+# Usage: write_gate_token_file <path> <token> <gate> <plan_hash> [candidate_id] [rule_id]
 write_gate_token_file() {
-  local path="$1" secret="$2" gate="${3:-}" plan_hash="${4:-}" candidate="${5:-}"
-  printf '%s\n%s\n%s\n%s\n' "$secret" "$gate" "$plan_hash" "$candidate" > "$path"
+  local path="$1" secret="$2" gate="${3:-}" plan_hash="${4:-}" candidate="${5:-}" rule="${6:-}"
+  printf '%s\n%s\n%s\n%s\n%s\n' "$secret" "$gate" "$plan_hash" "$candidate" "$rule" > "$path"
   # The file holds a secret in a world-readable directory; the python writer chmods too.
   chmod 600 "$path" 2>/dev/null || true
 }

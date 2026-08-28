@@ -16,6 +16,12 @@ remember we want to fix all our findings, approved", which is a genuine approval
 not the bare word. The embedded tier ASKS instead of advancing, so recall stays high while
 the set of things that can advance a gate is one phrase wide.
 
+A FOURTH TIER, "override", is the whole prompt `approved anyway`. It authorizes the same
+act as the exact tier, with one requirement waived: the evidence that the preceding
+assistant turn actually asked for the approval. It exists because a fail-closed evidence
+check whose refusal names no way out would be a deadlock the moment the transcript became
+unreadable for a whole session. See OVERRIDE_PHRASE / is_override.
+
 A THIRD TIER, "replan", authorizes a DIFFERENT act, and it is separate for the same
 one-phrase-by-user-directive reason the exact tier was narrowed to one word. `replan
 approved` re-opens planning: it returns a work session to the planning phase and clears
@@ -103,6 +109,47 @@ def is_replan_request(prompt: str) -> bool:
         return False
 
 
+# The one phrase that WAIVES the evidence requirement, matched as the WHOLE prompt.
+# SINGLE DEFINITION, for the same reason REPLAN_PHRASE is: auto-approve-gate.sh reads this
+# constant and prints it in the ask directive, so the phrase the user is told to type and
+# the phrase that fires are the same bytes by construction. A one-character drift here
+# would tell the user to type something inert, which is exactly the deadlock this tier
+# exists to prevent.
+OVERRIDE_PHRASE = "approved anyway"
+
+
+def is_override(prompt: str) -> bool:
+    """Return True only when the WHOLE prompt is `approved anyway`.
+
+    WHY THIS TIER EXISTS AT ALL. The exact tier now requires evidence that the preceding
+    assistant turn asked for the approval, and it fails closed: no transcript_path, an
+    unreadable file, no assistant row and no marker all produce one question and no
+    advance. That direction is right, and it has a failure mode of its own. If
+    transcript_path were ever absent for a whole session, every approval would ask
+    forever and no gate could ever advance, and a refusal whose message names no way out
+    is a deadlock rather than a control. This phrase is the way out, and the hook's ask
+    directive names it verbatim so nobody has to remember it.
+
+    WHOLE-PROMPT EQUALITY IS THE GUARD, byte for byte as it is for REPLAN_PHRASE.
+    `approved anyway because the tests pass` is a DIFFERENT STRING, so it cannot fire; it
+    reaches the embedded tier, which asks, and that is the right answer for a waiver
+    stated loosely. An environment-variable escape was rejected in its place: it would be
+    invisible to the user in the moment they need it.
+
+    Normalization is byte-for-byte is_approval's: lowercase, strip surrounding whitespace,
+    strip trailing `.`/`!`/`,`. The three predicates must not disagree about what "the
+    whole prompt" is.
+
+    Pure function, no I/O, fail-closed: any internal error returns False, so a defect
+    degrades to "no override requested", which leaves the evidence requirement in force.
+    """
+    try:
+        prompt = (prompt or "").strip().lower()
+        return re.sub(r"[.!,]+$", "", prompt).strip() == OVERRIDE_PHRASE
+    except Exception:
+        return False
+
+
 # The embedded tier's vocabulary, deliberately NARROWER than the exact tier's. The exact
 # set includes ok/good/go/yes/continue, and admitting those as embedded signals would make
 # "ok good work, now do X" ask the user to confirm a gate on an ordinary instruction. Only
@@ -128,7 +175,7 @@ _EMBEDDED_MAX_CHARS = 200
 
 
 def classify(prompt: str) -> str:
-    """Return the approval tier: "exact", "replan", "embedded", or "none".
+    """Return the approval tier: "exact", "replan", "override", "embedded", or "none".
 
     "exact" is precisely what is_approval accepts, so today's mint-and-advance behavior
     is preserved by construction. "replan" is the whole-prompt re-open phrase, which
@@ -138,10 +185,14 @@ def classify(prompt: str) -> str:
     approve. "none" is everything else, and the hook does nothing at all for it (no
     directive, no telemetry row, no project-root walk, no mode lookup).
 
-    THE REPLAN CHECK RUNS AHEAD OF THE EMBEDDED CHECK, and that order is load-bearing:
-    `replan approved` contains the word `approved`, so the embedded regex matches it and
-    it would otherwise classify as "embedded" and be answered with a question instead of
-    the reset the user asked for.
+    "override" is the whole-prompt phrase `approved anyway`, which runs the exact tier's
+    mint-and-advance with the evidence step waived. See is_override for why a tier exists
+    for it rather than an environment variable.
+
+    THE REPLAN AND OVERRIDE CHECKS RUN AHEAD OF THE EMBEDDED CHECK, and that order is
+    load-bearing for both, for the same reason: each phrase CONTAINS the word `approved`,
+    so the embedded regex matches it, and either one would otherwise classify as
+    "embedded" and be answered with a question instead of the act the user asked for.
 
     Pure function, no I/O, fail-closed: any internal error returns "none".
     """
@@ -151,6 +202,8 @@ def classify(prompt: str) -> str:
             return "exact"
         if is_replan_request(prompt):
             return "replan"
+        if is_override(prompt):
+            return "override"
         if not prompt or len(prompt) >= _EMBEDDED_MAX_CHARS:
             return "none"
         if prompt.endswith("?"):

@@ -16,7 +16,7 @@ one approval authorizes exactly one gated action. A bare secret cannot keep that
 promise: whatever gate happened to be pending when the token was spent got the
 approval, so an "approved" typed at a plan.md could advance the test-skeletons gate,
 or be spent promoting a decision-memory candidate into the canon. The file is now
-four lines:
+five lines:
 
     line 1           the secret, as before
     line 2           the gate this approval authorizes, empty when none was pending
@@ -25,6 +25,15 @@ four lines:
                      advance. Added because the promotion route took the candidate from
                      the request body, so one approval authorized promoting whichever
                      candidate the caller named: an approval for C was spendable on D.
+    line 5           the RULE this approval authorizes promoting from ai-provisional to
+                     ai-promoted, empty for every other approval. Added for the same
+                     reason line 4 was, one object over: `writ review <rule_id>
+                     --promote` used to sit behind an interactive confirm that `echo y`
+                     satisfies, so an authority change feeding retrieval ranking could
+                     happen with no human present. A SEPARATE LINE, not a namespaced
+                     reuse of line 4: a graduation candidate id and a Rule id are
+                     different objects, and one field holding either would leave the
+                     next reader unable to tell WHICH object a token authorizes.
 
 read_gate_token() returns LINE ONE ONLY, so the non-destructive presence checks in
 the advance and promote-candidate routes keep comparing what they always compared.
@@ -60,6 +69,7 @@ BINDING_UNBOUND = "gate_token_unbound"
 BINDING_GATE_MISMATCH = "gate_token_gate_mismatch"
 BINDING_PLAN_DRIFT = "gate_token_plan_drift"
 BINDING_CANDIDATE_MISMATCH = "gate_token_candidate_mismatch"
+BINDING_RULE_MISMATCH = "gate_token_rule_mismatch"
 
 # The line-2 binding a re-open-planning approval carries, and the reason it is a NAME
 # rather than an empty line.
@@ -92,9 +102,10 @@ def mint_gate_token(
     gate: str,
     plan_hash: str,
     candidate_id: str = "",
+    rule_id: str = "",
     token: str | None = None,
 ) -> str:
-    """Write the four-line token file and return the token.
+    """Write the five-line token file and return the token.
 
     The bash writer (common.sh write_gate_token_file) produces the same bytes for the
     same inputs; the hook mints from bash so a broken writ package cannot cost the
@@ -108,6 +119,13 @@ def mint_gate_token(
     requires the two to match. Empty for every non-promotion approval, which is the
     common case and is what a phase advance compares against.
 
+    LINE 5 IS THE RULE, and it does for `writ review <rule_id> --promote` exactly what
+    line 4 does for the candidate route. The rule that `writ review <rule_id>
+    --session-id <sid>` surfaced to the human is recorded here, and the CLI requires the
+    two to match, so an approval surfaced for rule A can never promote rule B. Empty
+    authorizes no promotion at all: that is what an ordinary phase approval binds, and it
+    is also what a token minted before this line existed reads as.
+
     `token` exists so a test can drive one fixed value through both writers and
     compare bytes. Production callers omit it and get a fresh secret.
     """
@@ -115,7 +133,7 @@ def mint_gate_token(
         token = secrets.token_hex(16)
     path = gate_token_path(session_id)
     with open(path, "w") as f:
-        f.write(f"{token}\n{gate}\n{plan_hash}\n{candidate_id}\n")
+        f.write(f"{token}\n{gate}\n{plan_hash}\n{candidate_id}\n{rule_id}\n")
     # The secret sits in a world-readable directory; the bash writer chmods too.
     os.chmod(path, 0o600)
     return token
@@ -172,7 +190,11 @@ def _line(lines: list[str], index: int) -> str:
 
 
 def _binding_refusal(
-    lines: list[str] | None, gate: str, plan_hash: str, candidate_id: str = ""
+    lines: list[str] | None,
+    gate: str,
+    plan_hash: str,
+    candidate_id: str = "",
+    rule_id: str = "",
 ) -> str:
     """Return the refusal class for these token-file lines, or "" when they authorize.
 
@@ -187,6 +209,11 @@ def _binding_refusal(
     real candidate id against that empty value and is refused, which is the correct
     direction to fail for a credential minted before the binding it is being asked to
     carry.
+
+    THE RULE COMPARISON IS THE SAME PROPERTY ONE LINE DOWN, and it is stated separately
+    because it was added separately: a four-line token reads line 5 as "" (see _line's
+    "BOUNDS-SAFE ON PURPOSE"), a phase advance passes "" and still matches, and a rule
+    promotion passes a real rule id against that empty value and is refused.
     """
     if lines is None or len(lines) < 3:
         return BINDING_UNBOUND
@@ -196,11 +223,18 @@ def _binding_refusal(
         return BINDING_PLAN_DRIFT
     if _line(lines, 3) != (candidate_id or ""):
         return BINDING_CANDIDATE_MISMATCH
+    if _line(lines, 4) != (rule_id or ""):
+        return BINDING_RULE_MISMATCH
     return ""
 
 
 def gate_binding_refusal(
-    session_id: str, *, gate: str, plan_hash: str, candidate_id: str = ""
+    session_id: str,
+    *,
+    gate: str,
+    plan_hash: str,
+    candidate_id: str = "",
+    rule_id: str = "",
 ) -> str:
     """The refusal class for the on-disk token, or "" when it authorizes this gate.
 
@@ -209,7 +243,7 @@ def gate_binding_refusal(
     will fail.
     """
     return _binding_refusal(
-        _token_file_lines(session_id), gate, plan_hash, candidate_id
+        _token_file_lines(session_id), gate, plan_hash, candidate_id, rule_id
     )
 
 
@@ -237,6 +271,20 @@ def read_gate_candidate(session_id: str) -> str:
     """
     lines = _token_file_lines(session_id)
     return _line(lines, 3) if lines else ""
+
+
+def read_gate_rule(session_id: str) -> str:
+    """The rule this token authorizes promoting, or "" when it binds none.
+
+    "" covers three cases that need no distinguishing here: a non-promotion approval, a
+    token minted before line 5 existed, and an absent file. All three mean "this token
+    does not authorize promoting any rule", and the promote path refuses on the mismatch
+    rather than on the reason for it. Read SEPARATELY from read_gate_binding for the same
+    reason read_gate_candidate is: every existing caller of that function unpacks exactly
+    two values.
+    """
+    lines = _token_file_lines(session_id)
+    return _line(lines, 4) if lines else ""
 
 
 def gate_token_valid(token: str, expected: str) -> bool:
@@ -329,26 +377,30 @@ def claim_gate_token(
     gate: str,
     plan_hash: str,
     candidate_id: str = "",
+    rule_id: str = "",
 ) -> bool:
-    """Claim the token for ONE named gate against ONE plan fingerprint and ONE candidate.
+    """Claim the token for ONE gate, ONE plan fingerprint, ONE candidate and ONE rule.
 
     Refuses when the token is absent, already claimed, mismatched, bound to a
     different gate, bound to a plan fingerprint that no longer matches, bound to a
-    different candidate, or carries no binding at all (a pre-cycle token file). gate and
-    plan_hash are required: see the module docstring on why a default here would be a
-    fail-open bypass. candidate_id defaults to empty because that is what every phase
-    advance binds and passes, and only the promotion route has a candidate at all.
+    different candidate, bound to a different rule, or carries no binding at all (a
+    pre-cycle token file). gate and plan_hash are required: see the module docstring on
+    why a default here would be a fail-open bypass. candidate_id and rule_id default to
+    empty because that is what every phase advance binds and passes, and only the
+    promotion route has a candidate and only the promote path has a rule.
 
     The binding is checked BEFORE the claim so a refusal does not consume an approval
     that authorizes a different action, and again from the claimed bytes, which are
     the only bytes that were actually spent.
     """
-    if _binding_refusal(_token_file_lines(session_id), gate, plan_hash, candidate_id):
+    if _binding_refusal(
+        _token_file_lines(session_id), gate, plan_hash, candidate_id, rule_id
+    ):
         return False
     content = _claim_file(session_id)
     if content is None:
         return False
     lines = content.split("\n")
-    if _binding_refusal(lines, gate, plan_hash, candidate_id):
+    if _binding_refusal(lines, gate, plan_hash, candidate_id, rule_id):
         return False
     return gate_token_valid(supplied_token, lines[0].strip())

@@ -402,6 +402,15 @@ async def session_promotion_review(
     def _record() -> None:
         with server.writ_session.mutate_cache(session_id) as cache:
             cache["pending_candidate_id"] = candidate_id
+            # ONE SURFACED OBJECT AT A TIME. `writ review <rule_id> --session-id <sid>`
+            # records a pending RULE the same way this records a pending candidate, and
+            # the mint writes them as lines 5 and 4 of one token. If both could be set at
+            # once, a single "approved" would mint a token carrying two promotion
+            # credentials: the claim would still spend it once, so "one approval, one
+            # action" holds, but the human's approval could be spent on whichever of the
+            # two objects the agent chose to act on first. So each surfacing clears the
+            # other; the CLI's half of this pair clears pending_candidate_id.
+            cache["pending_review_rule_id"] = ""
 
     await asyncio.to_thread(_record)
     return {"candidate_id": candidate_id, **artifact}

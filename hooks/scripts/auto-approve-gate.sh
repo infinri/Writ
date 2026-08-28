@@ -2,12 +2,23 @@
 # Auto-approve gate: approval detection for the human phase gate.
 # UserPromptSubmit: fires at the start of every user turn.
 #
-# THREE TIERS, ONE AUTHORITY (cycle 1; the replan tier added later). bin/lib/
-# approval_match.py classifies the prompt as exact, replan, embedded or none, and each tier
-# authorizes exactly one act:
+# FOUR TIERS, ONE AUTHORITY (cycle 1; the replan tier added later, the override tier with
+# the evidence requirement). bin/lib/approval_match.py classifies the prompt as exact,
+# replan, override, embedded or none, and each tier authorizes exactly one act:
 #
-#   exact     the prompt IS an approval. The hook mints a bound single-use token and
-#             advances the pending gate, exactly as it did before the tier split.
+#   exact     the prompt IS an approval AND the preceding assistant turn asked for one.
+#             The hook mints a bound single-use token and advances the pending gate,
+#             exactly as it did before the tier split. WITHOUT that evidence it mints
+#             nothing, advances nothing, and asks (see the noevidence arm): the question
+#             nothing else in Writ answered is "was an approval requested at all", which
+#             is the gap a live near miss went through when the user answered a scope
+#             question with an approval word while a gate was pending.
+#   override  the whole prompt is `approved anyway`. The exact arm with the evidence step
+#             waived, because a refusal whose message names no way out is a deadlock: if
+#             transcript_path were ever absent for a whole session, every approval would
+#             ask forever and no gate could ever advance. The turn is recorded as
+#             approval_evidence_override, so a systemic transcript failure that forces
+#             users onto this phrase is measurable rather than invisible.
 #   replan    the whole prompt is `replan approved`. The hook mints a token bound to the
 #             "replan" gate and spends it in this same process on the local reset command,
 #             which returns a work session to planning and CLEARS both approved gates. It
@@ -56,14 +67,21 @@ try:
     sid = data.get('agent_id', '') or data.get('session_id', '')
     agent_id = data.get('agent_id', '')
     prompt = data.get('prompt', data.get('message', data.get('content', '')))
-    print(f'{sid}\n{prompt}\n{agent_id}')
+    print(f'{sid}\n{prompt}\n{agent_id}\n{data.get(\"transcript_path\", \"\")}')
 except Exception:
-    print('\n\n')
+    print('\n\n\n')
 " 2>/dev/null) || true
 
 SESSION_ID=$(echo "$PARSED" | head -1)
 PROMPT=$(echo "$PARSED" | sed -n '2p')
 AGENT_ID=$(echo "$PARSED" | sed -n '3p')
+# FIELD 4 INHERITS THE MULTI-LINE-PROMPT QUIRK the three fields above already carry: the
+# prompt is read with `sed -n '2p'`, so a prompt containing a newline shifts everything
+# after it. With a multi-line prompt line 4 is not a path, the evidence read below finds
+# no file, and the turn takes the ask path. Garbled reads as unreadable, which is the
+# fail-closed direction. Reordering the parse to put the prompt last would change which
+# prompts classify as exact, which is a separate decision with its own justification.
+TRANSCRIPT_PATH=$(echo "$PARSED" | sed -n '4p')
 
 # Fallback session ID
 # NO SYNTHESIZED SESSION ID. This used to fall back to the parent PID and then to
@@ -106,11 +124,24 @@ PROMPT_LOWER=$(echo "$PROMPT" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]
 # detector to drift). SEC-INJ-CMD-001: PROMPT_LOWER is passed as an argv element,
 # never interpolated into the python string. ONE interpreter start decides the tier,
 # where there used to be two (is_approval plus the substring scan).
-TIER=$(python3 -c "import sys; sys.path.insert(0, '$WRIT_DIR/bin/lib'); from approval_match import classify; print(classify(sys.argv[1]))" "$PROMPT_LOWER" 2>/dev/null || echo "none")
+# TWO LINES OUT OF ONE INTERPRETER: the tier, and the override phrase the ask directive
+# below has to advertise. The phrase is read from the module that DEFINES it rather than
+# spelled again here, because the user is told to type it verbatim and a one-character
+# drift would tell them to type something that does not fire. It rides this call because
+# this call already runs on every turn, so single-sourcing the phrase costs no process.
+TIER_OUT=$(python3 -c "import sys; sys.path.insert(0, '$WRIT_DIR/bin/lib'); import approval_match as m; print(m.classify(sys.argv[1])); print(m.OVERRIDE_PHRASE)" "$PROMPT_LOWER" 2>/dev/null || echo "none")
+TIER=${TIER_OUT%%$'\n'*}
+# Parameter expansion, so the split adds no process to the path every prompt takes. A
+# one-line answer is the failure fallback above, which classifies as "none" and never
+# reaches the arm that reads the phrase.
+case "$TIER_OUT" in
+    *$'\n'*) OVERRIDE_ADVERT=${TIER_OUT#*$'\n'} ;;
+    *) OVERRIDE_ADVERT="" ;;
+esac
 # Fail closed on anything unexpected (a broken module, an empty print): an unrecognized
 # tier must behave like "none", never like an approval.
 case "$TIER" in
-    exact|embedded|replan) ;;
+    exact|embedded|replan|override) ;;
     *) TIER="none" ;;
 esac
 
@@ -142,9 +173,14 @@ PHASE_JSON=$(python3 "$SESSION_HELPER" current-phase "$SESSION_ID" 2>/dev/null |
 # the way plan_hash binds a phase approval. Both arms of json_transform are updated
 # together: they are two spellings of one projection and a drift between them would mint
 # tokens whose binding depends on whether jq happened to be installed.
+# FIELD 7 is the RULE `writ review <rule_id> --session-id <sid>` surfaced, and it binds a
+# rule promotion the way field 6 binds a candidate promotion. A responder too old to
+# report it renders as empty, which mints an empty line 5: no effect on a phase advance,
+# and a rule promotion refused, which is the correct direction for a credential minted
+# before the binding it is being asked to carry.
 PHASE_FIELDS=$(printf '%s' "$PHASE_JSON" | json_transform \
-    '[(.phase // ""), (.mode // ""), (.next_gate // ""), (.plan_hash // ""), (if has("next_gate") then "1" else "" end), (.candidate_id // "")] | join("\t")' \
-    '"\t".join([str(d.get(k) or "") for k in ("phase", "mode", "next_gate", "plan_hash")] + ["1" if "next_gate" in d else ""] + [str(d.get("candidate_id") or "")])' \
+    '[(.phase // ""), (.mode // ""), (.next_gate // ""), (.plan_hash // ""), (if has("next_gate") then "1" else "" end), (.candidate_id // ""), (.rule_id // "")] | join("\t")' \
+    '"\t".join([str(d.get(k) or "") for k in ("phase", "mode", "next_gate", "plan_hash")] + ["1" if "next_gate" in d else ""] + [str(d.get("candidate_id") or ""), str(d.get("rule_id") or "")])' \
     2>/dev/null || echo "")
 # `cut -s`: a line with no tab is a parse that failed, and every field must then read
 # empty rather than repeating the whole line into CURRENT_MODE (which would compare equal
@@ -155,6 +191,7 @@ NEXT_GATE=$(printf '%s' "$PHASE_FIELDS" | cut -s -f3)
 PLAN_HASH=$(printf '%s' "$PHASE_FIELDS" | cut -s -f4)
 NEXT_GATE_REPORTED=$(printf '%s' "$PHASE_FIELDS" | cut -s -f5)
 CANDIDATE_ID=$(printf '%s' "$PHASE_FIELDS" | cut -s -f6)
+RULE_ID=$(printf '%s' "$PHASE_FIELDS" | cut -s -f7)
 
 # PRECEDENCE: the server's next_gate WINS; the planning/testing phase inference is
 # a FALLBACK, used only when the responder did not report the field at all (an
@@ -179,6 +216,42 @@ if [ -n "$NEXT_GATE" ]; then
     GATE_PENDING=1
 elif [ -z "$NEXT_GATE_REPORTED" ] && { [ "$CURRENT_PHASE" = "planning" ] || [ "$CURRENT_PHASE" = "testing" ]; }; then
     GATE_PENDING=1
+fi
+
+# ── The evidence requirement: an approval must have a referent ───────────────
+# WHAT THIS ANSWERS. Writ already answers "does this approval still cover the plan it was
+# given for" (line 3 of the token), "which gate does it authorize" (line 2) and "can it be
+# spent twice" (the claim-by-rename). It did not answer "was an approval REQUESTED at
+# all", and that is the gap the near miss went through: the user answered a scope question
+# with an approval word while the test-skeletons gate was pending and no skeletons had
+# been presented. Only a typo stopped the advance.
+#
+# GATED ON THE EXACT TIER, so the cost lands only where the authority does. The `none`
+# tier already exited above, so every turn but one starts exactly as many interpreters as
+# it did before this cycle; embedded never mints regardless of evidence; and replan keeps
+# its existing, stricter treatment and gains NOTHING here, because a whole-prompt
+# destructive phrase IS its own referent and cmd_reopen_planning re-reads mode, phase and
+# the pending gate authoritatively before it resets anything.
+#
+# SEC-INJ-CMD-001: TRANSCRIPT_PATH is payload-derived, so it is passed as an ARGV element
+# and never interpolated into the python program text. A path containing a quote would
+# otherwise execute.
+#
+# A MISSING TIER, NOT A FAILED ONE: the outcome is TIER=noevidence, which has its own arm
+# below rather than an early exit, so the turn still reaches the debug prompt log at the
+# tail exactly as every other tier does.
+if [ "$TIER" = "exact" ]; then
+    EVIDENCE_OUT=$(python3 -c "import sys; sys.path.insert(0, '$WRIT_DIR/bin/lib'); from approval_evidence import evidence_flags; asked, saw_text = evidence_flags(sys.argv[1]); print('1' if asked else ''); print('1' if saw_text else '')" "$TRANSCRIPT_PATH" 2>/dev/null || printf '\n\n')
+    EVIDENCE=${EVIDENCE_OUT%%$'\n'*}
+    case "$EVIDENCE_OUT" in
+        *$'\n'*) EVIDENCE_SAW_TEXT=${EVIDENCE_OUT#*$'\n'} ;;
+        *) EVIDENCE_SAW_TEXT="" ;;
+    esac
+    if [ -z "$EVIDENCE" ]; then
+        TIER="noevidence"
+    fi
+else
+    EVIDENCE_SAW_TEXT=""
 fi
 
 # The ONE place the re-open phrase is advertised, printed by the three branches that
@@ -310,7 +383,23 @@ DIRECTIVE
         _replan_hint "$GATE_PENDING"
     fi
     ;;
-exact)
+exact|override)
+    # THE OVERRIDE TIER IS THIS ARM WITH THE EVIDENCE STEP WAIVED, and the waiver is
+    # RECORDED. If transcript_path were ever absent for a whole session, an unrecorded
+    # waiver would mean nobody could tell a deliberate user override from a systemic
+    # transcript failure that had quietly forced every user onto the phrase. Audit rather
+    # than friction: this is the oversight record for an approval that advanced a gate
+    # with no request in front of it.
+    #
+    # Both interpolated values are hook-controlled, not tool input: OVERRIDE_ADVERT comes
+    # from approval_match.OVERRIDE_PHRASE and NEXT_GATE from a MODE_CONFIG gate sequence,
+    # so the JSON is assembled here rather than costing another interpreter start (the
+    # same reasoning common.sh's hook_timer_end records for hook_name).
+    if [ "$TIER" = "override" ]; then
+        log_friction_event "$SESSION_ID" "${CURRENT_MODE:-}" "approval_evidence_override" \
+            "{\"phrase\":\"${OVERRIDE_ADVERT}\",\"gate\":\"${NEXT_GATE:-}\"}"
+    fi
+
     # The project root: a cwd walk, resolved ONLY here, for the telemetry row below. The
     # gate decision itself uses the root the SERVER resolves (see the payload comment).
     PROJECT_ROOT=$(detect_project_root "$(pwd -P)")
@@ -332,7 +421,12 @@ exact)
         # earlier turn is bound to an earlier state: keeping it would make the user's
         # fresh approval be refused as a gate mismatch, with no way to clear it. The
         # newest approval is the authoritative one.
-        write_gate_token_file "$GATE_TOKEN_FILE" "$GATE_TOKEN" "${NEXT_GATE:-}" "${PLAN_HASH:-}" "${CANDIDATE_ID:-}"
+        #
+        # LINE 5 IS THE RULE a promotion approval authorizes, and it is a FIFTH line
+        # rather than a namespaced reuse of line 4: conflating a graduation candidate id
+        # with a Rule id in one field would leave the next reader unable to tell which
+        # object a token authorizes.
+        write_gate_token_file "$GATE_TOKEN_FILE" "$GATE_TOKEN" "${NEXT_GATE:-}" "${PLAN_HASH:-}" "${CANDIDATE_ID:-}" "${RULE_ID:-}"
     fi
 
     ADVANCED_TO=""
@@ -484,6 +578,44 @@ DIRECTIVE
 [Writ: approval pattern detected, nothing was advanced]
 No approval gate is pending in this phase/mode, so this approval had nothing to advance
 and no gate state changed.
+DIRECTIVE
+        _replan_hint "$GATE_PENDING"
+    fi
+    ;;
+noevidence)
+    # AN EXACT APPROVAL WITH NO REQUEST IN FRONT OF IT. Nothing is minted, nothing is
+    # advanced, and the turn produces ONE QUESTION instead of a silent advance. The user
+    # is never asked to avoid a normal English word: `approved` keeps its exact meaning
+    # and its exact power on any turn where the assistant actually asked.
+    #
+    # ONE AUDIT ROW, and no approval_pattern_match friction row alongside it: that row's
+    # `outcome` vocabulary describes what an advance ATTEMPT did, and no advance was
+    # attempted. This row is the record of the turn. Both flags are booleans this script
+    # computed and NEXT_GATE is a MODE_CONFIG gate name, so nothing here is tool input.
+    if [ -n "$TRANSCRIPT_PATH" ]; then HAD_TRANSCRIPT_PATH=true; else HAD_TRANSCRIPT_PATH=false; fi
+    if [ -n "$EVIDENCE_SAW_TEXT" ]; then HAD_ASSISTANT_TEXT=true; else HAD_ASSISTANT_TEXT=false; fi
+    log_friction_event "$SESSION_ID" "${CURRENT_MODE:-}" "approval_evidence_missing" \
+        "{\"gate\":\"${NEXT_GATE:-}\",\"had_transcript_path\":${HAD_TRANSCRIPT_PATH},\"had_assistant_text\":${HAD_ASSISTANT_TEXT}}"
+    if [ -n "$NEXT_GATE" ]; then
+        cat <<DIRECTIVE
+[Writ: approval detected with no request in front of it, nothing was advanced]
+The ${NEXT_GATE} gate is pending, but the assistant turn before this one did not ask for
+an approval, so no gate was advanced and NO approval token was minted.
+AGENT: present the artifact the ${NEXT_GATE} gate covers, then ask for the approval in the
+ritual words, for example "Test skeletons written: ClassName (N tests). Say approved to
+proceed." The user's next "approved" advances the ${NEXT_GATE} gate on that turn.
+USER: if you meant to approve with no request in front of it, reply exactly
+"${OVERRIDE_ADVERT}" on your own turn and the ${NEXT_GATE} gate advances then.
+DIRECTIVE
+    else
+        cat <<DIRECTIVE
+[Writ: approval detected with no request in front of it, nothing was advanced]
+No approval gate is pending in this phase/mode, and the assistant turn before this one did
+not ask for an approval either, so nothing was advanced and NO approval token was minted.
+AGENT: treat the prompt as an ordinary instruction. When you do need an approval, present
+the artifact first and ask in the ritual words ("... Say approved to proceed.").
+USER: if you meant to approve with no request in front of it, reply exactly
+"${OVERRIDE_ADVERT}" on your own turn.
 DIRECTIVE
         _replan_hint "$GATE_PENDING"
     fi

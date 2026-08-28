@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures.session_state import write_evidence_transcript
+
 SKILL_DIR = Path(__file__).resolve().parent.parent
 HOOKS = SKILL_DIR / "hooks" / "scripts"
 WRIT_SESSION_PY = str(SKILL_DIR / "bin" / "lib" / "writ-session.py")
@@ -191,7 +193,7 @@ class TestAutoApproveBehavior:
         _no_py_crash(r)
         assert "approval pattern detected" not in r.stdout
 
-    def test_approval_emits_directive(self, seeded) -> None:
+    def test_approval_emits_directive(self, seeded, tmp_path) -> None:
         # proves the deferred PROJECT_ROOT + CURRENT_MODE still feed the match path.
         # The approval-match path emits one of two directives depending on whether
         # a Work-mode gate is pending: the generic "[Writ: approval pattern
@@ -201,12 +203,20 @@ class TestAutoApproveBehavior:
         # siblings emit NEITHER), so accept both rather than pin one daemon gate
         # state -- the seeded session's gate state is daemon-resolved, not fixed
         # by the file-cache seed.
+        #
+        # A transcript fixture with a real approval-request marker is now required
+        # for the exact tier to reach either directive at all (approval-integrity
+        # cycle, defect 2): without it the hook would take the ask-directive path
+        # instead, and this deferred-variable test would stop proving what it was
+        # written for.
         sid, seed = seeded
         seed(mode="work")
+        transcript_path = write_evidence_transcript(tmp_path)
         env = json.dumps({
             "session_id": sid,
             "hook_event_name": "UserPromptSubmit",
             "prompt": "approved",
+            "transcript_path": transcript_path,
         })
         r = _run(AUTOAPPROVE, env)
         assert r.returncode == 0, f"exit {r.returncode}; stderr={r.stderr[:300]!r}"

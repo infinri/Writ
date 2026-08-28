@@ -273,6 +273,28 @@ def _setup_debug_code_gate(iso: Isolation) -> dict:
     }
 
 
+def _setup_bash_write_mint_gate_token(iso: Isolation) -> dict:
+    """Defect 1's mint-forging bypass (approval-integrity plan.md's Analysis): the
+    state guard already refuses commands naming `reopen-planning` and
+    `auto-approve-gate` (the only hook that mints), but the underscored python API
+    symbol `mint_gate_token` was not on that list, so an agent could mint its own
+    rule-promotion-bound token with one Bash(python3 -c ...) call and bypass the
+    CLI's `--token` requirement entirely. One-line command payload, no fixture: the
+    state-dir guard matches on command TEXT alone."""
+    cmd = (
+        "python3 -c \"from writ.session.gate_token import mint_gate_token; "
+        "mint_gate_token('forged-session', gate='', plan_hash='')\""
+    )
+    return {
+        "envelope": {
+            "session_id": iso.session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": cmd},
+        },
+    }
+
+
 def _setup_worktree_safety(iso: Isolation) -> dict:
     write_cache(iso, {"mode": "work"})
     cmd = "git worktree add .worktrees/featx featx"
@@ -510,6 +532,22 @@ REFUSALS: list[Refusal] = [
         shape="gate_decision",
         gate_name="debug-code-read",
         setup=_setup_debug_code_gate,
+    ),
+    Refusal(
+        id="bash-write-mint-gate-token",
+        script="writ-bash-write-gate.sh",
+        event="PreToolUse",
+        mechanism="permissionDecisionReason",
+        permission_decision="deny",
+        shape="gate_decision",
+        gate_name="bash-write",
+        setup=_setup_bash_write_mint_gate_token,
+        notes=(
+            "Approval-integrity plan.md, Defect 1's bypass: `mint_gate_token` joins "
+            "the state-dir guard's pattern list alongside `reopen-planning` and "
+            "`auto-approve-gate`. refusing_scripts() does not move, because "
+            "writ-bash-write-gate.sh is already declared for its sibling entries above."
+        ),
     ),
     Refusal(
         id="worktree-safety",

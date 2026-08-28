@@ -238,6 +238,207 @@ class TestTokenFileFormat:
 
 
 # ---------------------------------------------------------------------------
+# Approval-integrity cycle: line 5, the rule a promotion approval authorizes.
+#
+# NOT part of cycle 1's numbered capabilities (this file's original docstring); these
+# classes pin the approval-integrity plan's own capability list instead:
+#   - "mint_gate_token writes five lines and the bash writer produces byte-identical
+#     bytes for the same inputs."
+#   - "A four-line token still authorizes a phase advance, and is refused for a rule
+#     promotion."
+#   - "cmd_current_phase reports rule_id, and a responder that omits the field
+#     yields an empty line 5 (no effect on a phase advance, promotion refused)."
+#
+# RED today: mint_gate_token has no rule_id parameter, claim_gate_token/
+# _binding_refusal/gate_binding_refusal cannot be given one, BINDING_RULE_MISMATCH
+# and read_gate_rule() do not exist, write_gate_token_file (bin/lib/common.sh) still
+# writes only four lines, and cmd_current_phase's JSON has no "rule_id" key.
+# ---------------------------------------------------------------------------
+
+
+class TestTokenFileFormatRuleLine:
+    """Line 5: the rule id a promotion approval authorizes, empty for every other
+    approval. Mirrors TestTokenFileFormat's candidate-line tests one level down."""
+
+    def test_mint_gate_token_writes_five_lines_with_rule_id_on_line_five(self):
+        from writ.session.gate_token import gate_token_path, mint_gate_token
+
+        sid = _sid("ruleline")
+        with _mint_cleanup(sid):
+            mint_gate_token(sid, gate="", plan_hash="", rule_id="ENF-TEST-001")
+            with open(gate_token_path(sid)) as f:
+                lines = f.read().split("\n")
+            assert len(lines) >= 5, f"expected at least 5 lines, got {lines!r}"
+            assert lines[4] == "ENF-TEST-001"
+
+    def test_mint_gate_token_without_rule_id_writes_an_empty_fifth_line(self):
+        from writ.session.gate_token import gate_token_path, mint_gate_token
+
+        sid = _sid("ruleline-empty")
+        with _mint_cleanup(sid):
+            mint_gate_token(sid, gate="phase-a", plan_hash="abc123def456")
+            with open(gate_token_path(sid)) as f:
+                lines = f.read().split("\n")
+            assert lines[4] == ""
+
+    def test_bash_writer_and_mint_gate_token_are_byte_identical_with_a_rule_id(
+        self, tmp_path, monkeypatch,
+    ):
+        """The byte-parity contract, extended one line: write_gate_token_file gains
+        a sixth positional argument (rule_id) alongside its existing candidate_id
+        fifth, mirroring TestTokenFileFormat.test_bash_writer_and_mint_gate_token_
+        are_byte_identical exactly."""
+        import writ.session.gate_token as gt
+
+        sid = _sid("parity-rule")
+        fixed_token = uuid.uuid4().hex
+        py_path = tmp_path / "py-token"
+        bash_path = tmp_path / "bash-token"
+
+        monkeypatch.setattr(gt, "gate_token_path", lambda session_id: str(py_path))
+        gt.mint_gate_token(
+            sid, gate="", plan_hash="", rule_id="ENF-TEST-002", token=fixed_token,
+        )
+
+        script = (
+            f'set -euo pipefail\nsource "{COMMON_SH}"\n'
+            f'write_gate_token_file "{bash_path}" "{fixed_token}" "" "" "" "ENF-TEST-002"\n'
+        )
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=20)
+        assert r.returncode == 0, f"write_gate_token_file failed: {r.stderr}"
+
+        py_bytes = py_path.read_bytes()
+        bash_bytes = bash_path.read_bytes()
+        assert py_bytes == bash_bytes, f"python bytes: {py_bytes!r}\nbash bytes: {bash_bytes!r}"
+
+
+class TestClaimRefusesRuleMismatch:
+    """The new refusal class, BINDING_RULE_MISMATCH, mirroring
+    TestPromoteCandidateBinding's candidate-mismatch reasoning one level down: an
+    approval surfaced for rule A must never be spendable on rule B."""
+
+    def test_claim_with_a_different_rule_id_is_refused(self):
+        from writ.session.gate_token import claim_gate_token, mint_gate_token
+
+        sid = _sid("rulemismatch")
+        with _mint_cleanup(sid):
+            token = mint_gate_token(sid, gate="", plan_hash="", rule_id="ENF-RULE-A")
+            claimed = claim_gate_token(sid, token, gate="", plan_hash="", rule_id="ENF-RULE-B")
+            assert claimed is False
+
+    def test_claim_with_the_matching_rule_id_succeeds(self):
+        from writ.session.gate_token import claim_gate_token, mint_gate_token
+
+        sid = _sid("rulematch")
+        with _mint_cleanup(sid):
+            token = mint_gate_token(sid, gate="", plan_hash="", rule_id="ENF-RULE-A")
+            claimed = claim_gate_token(sid, token, gate="", plan_hash="", rule_id="ENF-RULE-A")
+            assert claimed is True
+
+    def test_gate_binding_refusal_names_the_rule_mismatch_class_non_destructively(self):
+        from writ.session.gate_token import (
+            BINDING_RULE_MISMATCH,
+            gate_binding_refusal,
+            gate_token_path,
+            mint_gate_token,
+        )
+
+        sid = _sid("rulemismatchclass")
+        with _mint_cleanup(sid):
+            mint_gate_token(sid, gate="", plan_hash="", rule_id="ENF-RULE-A")
+            refusal = gate_binding_refusal(sid, gate="", plan_hash="", rule_id="ENF-RULE-B")
+            assert refusal == BINDING_RULE_MISMATCH
+            assert os.path.exists(gate_token_path(sid)), (
+                "a non-destructive pre-check must not consume the token"
+            )
+
+    def test_read_gate_rule_returns_the_bound_rule_id(self):
+        from writ.session.gate_token import mint_gate_token, read_gate_rule
+
+        sid = _sid("readrule")
+        with _mint_cleanup(sid):
+            mint_gate_token(sid, gate="", plan_hash="", rule_id="ENF-RULE-C")
+            assert read_gate_rule(sid) == "ENF-RULE-C"
+
+    def test_read_gate_rule_is_empty_when_no_rule_is_bound(self):
+        from writ.session.gate_token import mint_gate_token, read_gate_rule
+
+        sid = _sid("readrule-empty")
+        with _mint_cleanup(sid):
+            mint_gate_token(sid, gate="phase-a", plan_hash="abc123def456")
+            assert read_gate_rule(sid) == ""
+
+
+class TestFourLineTokenBackwardCompatibleWithRuleBinding:
+    """A token minted before line 5 existed (candidate binding present, rule binding
+    absent) must keep advancing phases exactly as before, and must be refused for a
+    rule promotion, the SAME backward-compatible and fail-safe direction
+    _binding_refusal's own docstring already documents for the candidate line."""
+
+    def test_a_four_line_token_still_authorizes_a_phase_advance(self):
+        from writ.session.gate_token import claim_gate_token, mint_gate_token
+
+        sid = _sid("fourline-advance")
+        with _mint_cleanup(sid):
+            # No rule_id kwarg at all: exactly what every caller wrote before this
+            # cycle. _line() reads a short file's line 5 as "" (module docstring,
+            # "BOUNDS-SAFE ON PURPOSE"), which is exactly what a phase advance's
+            # default rule_id="" compares against.
+            token = mint_gate_token(sid, gate="phase-a", plan_hash="abc123def456")
+            claimed = claim_gate_token(sid, token, gate="phase-a", plan_hash="abc123def456")
+            assert claimed is True
+
+    def test_a_four_line_token_is_refused_for_a_rule_promotion(self):
+        from writ.session.gate_token import claim_gate_token, mint_gate_token
+
+        sid = _sid("fourline-promote")
+        with _mint_cleanup(sid):
+            token = mint_gate_token(sid, gate="", plan_hash="")
+            claimed = claim_gate_token(sid, token, gate="", plan_hash="", rule_id="ENF-RULE-A")
+            assert claimed is False
+
+
+class TestCmdCurrentPhaseReportsRuleBinding:
+    """Extends TestCmdCurrentPhaseReportsBinding one field: cmd_current_phase must
+    report the rule a review surfaced, the way it already reports the candidate a
+    promotion-review surfaced."""
+
+    def test_reports_the_pending_review_rule_id(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("WRIT_CACHE_DIR", str(tmp_path / "cache"))
+        (tmp_path / "cache").mkdir()
+        from writ.session.approval_workflow import cmd_current_phase
+        from writ.session.cache import _read_cache, _write_cache
+
+        sid = _sid("rulebinding")
+        cache = _read_cache(sid)
+        cache.update({
+            "mode": "work", "current_phase": "implementation", "gates_approved": [],
+            "project_root": str(tmp_path), "pending_review_rule_id": "ENF-TEST-777",
+        })
+        _write_cache(sid, cache)
+
+        result = _call_json(cmd_current_phase, sid)
+        assert result["rule_id"] == "ENF-TEST-777"
+
+    def test_rule_id_is_empty_string_when_no_rule_is_pending(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("WRIT_CACHE_DIR", str(tmp_path / "cache"))
+        (tmp_path / "cache").mkdir()
+        from writ.session.approval_workflow import cmd_current_phase
+        from writ.session.cache import _read_cache, _write_cache
+
+        sid = _sid("norulebinding")
+        cache = _read_cache(sid)
+        cache.update({
+            "mode": "work", "current_phase": "implementation", "gates_approved": [],
+            "project_root": str(tmp_path),  # no pending_review_rule_id key at all
+        })
+        _write_cache(sid, cache)
+
+        result = _call_json(cmd_current_phase, sid)
+        assert result["rule_id"] == ""
+
+
+# ---------------------------------------------------------------------------
 # Capability 7: read_gate_token stays line-1-only
 # ---------------------------------------------------------------------------
 

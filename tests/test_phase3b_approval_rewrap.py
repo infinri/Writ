@@ -40,6 +40,7 @@ from tests._daemon import _port, expected_cache_dir
 
 # autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
 from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
+from tests.fixtures.session_state import write_evidence_transcript
 
 WRIT_ROOT = Path(__file__).resolve().parent.parent
 HOOK = WRIT_ROOT / "hooks" / "scripts" / "auto-approve-gate.sh"
@@ -115,12 +116,21 @@ def _run_hook(
     session_id: str = "phase3b-test",
     cwd: str = str(WRIT_ROOT),
     env: dict | None = None,
+    transcript_path: str | None = None,
 ) -> tuple[str, int]:
     # cwd drives the hook's PROJECT_ROOT walk (auto-approve-gate.sh derives it
     # from os.getcwd() and feeds it to the server's plan.md validator), so an
     # isolated cwd makes the advance test hermetic. Defaults to WRIT_ROOT to
     # preserve behavior for every other caller.
-    stdin = json.dumps({"session_id": session_id, "prompt": prompt})
+    #
+    # transcript_path is OMITTED (None) by default: only the no-pending-gate
+    # fallback tests below need it (the approval-integrity cycle's evidence gate
+    # applies to the exact tier regardless of whether a gate is pending; see
+    # auto-approve-gate.sh's own comment on why the mint happens even then).
+    payload = {"session_id": session_id, "prompt": prompt}
+    if transcript_path is not None:
+        payload["transcript_path"] = transcript_path
+    stdin = json.dumps(payload)
     proc = subprocess.run(
         [str(HOOK)],
         input=stdin, capture_output=True, text=True,
@@ -190,7 +200,7 @@ class TestApprovalFallbackWhenNoGatePending:
     NOT a phase advance."""
 
     @pytest.mark.parametrize("prompt", ["approved", "approved.", "approved!"])
-    def test_no_pending_gate_emits_fallback(self, prompt: str) -> None:
+    def test_no_pending_gate_emits_fallback(self, prompt: str, tmp_path) -> None:
         # Unique session per param so a stray prior advance cannot pollute it;
         # the default unclassified/null-mode session always hits the fallback.
         #
@@ -202,23 +212,36 @@ class TestApprovalFallbackWhenNoGatePending:
         # body says nothing was pending. The property this test exists for is unchanged:
         # the fallback fires, and it says nothing advanced. Pinning the prefix and the
         # meaning keeps that property without re-breaking on the next wording pass.
-        stdout, code = _run_hook(prompt, session_id=f"phase3b-fallback-{prompt}")
+        #
+        # This is now reached only when evidence exists (approval-integrity cycle,
+        # defect 2): without it, an exact `approved` gets the ask directive instead
+        # of this fallback, so the fixture states the precondition explicitly.
+        transcript_path = write_evidence_transcript(tmp_path)
+        stdout, code = _run_hook(
+            prompt, session_id=f"phase3b-fallback-{prompt}", transcript_path=transcript_path,
+        )
         assert code == 0
         assert "[Writ: approval pattern detected" in stdout
         assert "nothing was advanced" in stdout
         assert "nothing to advance" in stdout
 
     @pytest.mark.parametrize("prompt", ["approved"])
-    def test_fallback_does_not_emit_writ_approve(self, prompt: str) -> None:
+    def test_fallback_does_not_emit_writ_approve(self, prompt: str, tmp_path) -> None:
         # The superseded design steered to /writ-approve. The current hook never does.
-        stdout, code = _run_hook(prompt, session_id=f"phase3b-noapprove-{prompt}")
+        transcript_path = write_evidence_transcript(tmp_path)
+        stdout, code = _run_hook(
+            prompt, session_id=f"phase3b-noapprove-{prompt}", transcript_path=transcript_path,
+        )
         assert code == 0
         assert "/writ-approve" not in stdout
 
     @pytest.mark.parametrize("prompt", ["approved"])
-    def test_fallback_does_not_advance(self, prompt: str) -> None:
+    def test_fallback_does_not_advance(self, prompt: str, tmp_path) -> None:
         # The fallback path is a no-op advance: it must NOT print the advance line.
-        stdout, code = _run_hook(prompt, session_id=f"phase3b-noadv-{prompt}")
+        transcript_path = write_evidence_transcript(tmp_path)
+        stdout, code = _run_hook(
+            prompt, session_id=f"phase3b-noadv-{prompt}", transcript_path=transcript_path,
+        )
         assert code == 0
         assert "gate approved ->" not in stdout
 
@@ -248,7 +271,8 @@ class TestApprovalAdvancesWhenGatePending:
         )
         try:
             stdout, code = _run_hook(
-                "approved", session_id=session_id, cwd=str(tmp_path)
+                "approved", session_id=session_id, cwd=str(tmp_path),
+                transcript_path=write_evidence_transcript(tmp_path),
             )
         finally:
             _cleanup_session(session_id)
@@ -298,7 +322,10 @@ class TestApprovalWorksInAnUnmarkedDirectory:
             pytest.skip("could not establish a Work-mode planning session")
         work = self._unmarked_project(tmp_path)
         try:
-            stdout, code = _run_hook("approved", session_id=session_id, cwd=str(work))
+            stdout, code = _run_hook(
+                "approved", session_id=session_id, cwd=str(work),
+                transcript_path=write_evidence_transcript(tmp_path),
+            )
         finally:
             _cleanup_session(session_id)
         assert code == 0
@@ -315,7 +342,10 @@ class TestApprovalWorksInAnUnmarkedDirectory:
             pytest.skip("could not establish a Work-mode planning session")
         work = self._unmarked_project(tmp_path)
         try:
-            stdout, code = _run_hook("approved", session_id=session_id, cwd=str(work))
+            stdout, code = _run_hook(
+                "approved", session_id=session_id, cwd=str(work),
+                transcript_path=write_evidence_transcript(tmp_path),
+            )
         finally:
             _cleanup_session(session_id)
         assert code == 0

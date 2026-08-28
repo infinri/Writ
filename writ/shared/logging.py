@@ -106,6 +106,38 @@ STREAM_MAP: dict[str, str] = {
     # governance record where nobody audits.
     "plan_reopened": "audit",
     "plan_reopen_refused": "audit",
+    # ── The approval-credential family: one family, ONE stream ──────────────
+    # Every refusal that decides whether a human approved an action, plus the two
+    # authority changes those refusals guard. Registered here EXPLICITLY because an
+    # unregistered event falls to _DEFAULT_STREAM (friction), which would file a
+    # governance decision where nobody audits.
+    #
+    # An exact `approved` with no approval request in the preceding assistant turn: no
+    # mint, no advance, one question. THIS ROW IS THE RECORD OF THE TURN, and it is the
+    # only one: the existing approval_pattern_match friction row is deliberately not
+    # written alongside it, because that row's `outcome` vocabulary describes what an
+    # advance attempt did and no advance was attempted.
+    "approval_evidence_missing": "audit",
+    # The `approved anyway` waiver. Recorded so a systemic transcript failure that forces
+    # every user onto the override phrase is MEASURABLE rather than invisible.
+    "approval_evidence_override": "audit",
+    # The rule-promotion path in the CLI (`writ review <rule_id> --promote`), one event
+    # per refusal class so a fail-closed gate can never read like an absent one, plus the
+    # successful authority change.
+    "rule_promotion_gate_bound": "audit",
+    "rule_promotion_claim_lost": "audit",
+    "rule_promoted": "audit",
+    # THE FOUR PRE-EXISTING BINDING REFUSALS, registered with their new sibling rather
+    # than left on the friction default. Leaving them there while the newest member of the
+    # same family is audited would mean a reader has to know which of the family is
+    # compliance-grade and which is signal. gate_token_rule_mismatch is the new one; the
+    # other four have been emitted by the two gate routes and the CLI since cycle 1.
+    "gate_token_unbound": "audit",
+    "gate_token_gate_mismatch": "audit",
+    "gate_token_plan_drift": "audit",
+    "gate_token_candidate_mismatch": "audit",
+    "gate_token_rule_mismatch": "audit",
+    "candidate_promotion_gate_bound": "audit",
     # friction
     "repeated_denial": "friction",
     "hallucinated_rule_ids": "friction",

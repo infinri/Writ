@@ -72,7 +72,7 @@ def sandbox_cwd(tmp_path, monkeypatch):
 
 
 def write_bound_gate_token(
-    session_id: str, token: str | None = None, gate: str | None = None
+    session_id: str, token: str | None = None, gate: str | None = None, rule_id: str = "",
 ) -> str:
     """Mint the gate token a genuine approval would mint for `session_id`; return it.
 
@@ -97,6 +97,12 @@ def write_bound_gate_token(
     second hand-rolled copy of the token format inside the replan tests, which is the
     drift this helper exists to prevent.
 
+    `rule_id` binds a rule-promotion approval to the one rule `writ review <rule_id>
+    --session-id <sid>` surfaced (line 5, added for the approval-integrity cycle).
+    Default "" keeps every existing caller minting exactly the bytes it minted before
+    that line existed; a caller exercising the rule-promotion binding passes the rule id
+    explicitly, the same way `gate=gate_token.REPLAN_GATE` is passed explicitly above.
+
     One helper rather than one per test module on purpose: this is the third comparison of
     the same binding in the codebase, and the last time two call sites answered one
     security question separately they drifted (see gate_token.py's module docstring).
@@ -114,12 +120,82 @@ def write_bound_gate_token(
     # shared-root plan (usually absent, so an empty line 3) while the claim compared the
     # scoped plan's real digest, and the advance was refused as plan drift.
     derived_gate = gate if gate is not None else (_next_pending_gate(cache, session_id) or "")
+    # rule_id is passed to mint_gate_token ONLY when a caller actually asks for a rule
+    # binding. This helper is shared by a dozen other test modules
+    # (tests/test_advance_phase_token_claim.py, tests/test_mode_engine.py, ... none of
+    # them in this cycle's scope) that call it with no opinion about rule_id at all;
+    # an unconditional rule_id=rule_id keyword would pass rule_id="" to every one of
+    # them, and mint_gate_token has no such parameter until this cycle's production
+    # change lands, which would TypeError every caller of this helper repo-wide rather
+    # than just the ones this cycle's tests actually exercise.
+    extra = {"rule_id": rule_id} if rule_id else {}
     return mint_gate_token(
         session_id,
         gate=derived_gate,
         plan_hash=plan_md_hash(cache.get("project_root"), session_id) or "",
         token=token,
+        **extra,
     )
+
+
+# ---------------------------------------------------------------------------
+# Approval-evidence transcript fixtures (bin/lib/approval_evidence.py, the exact-tier
+# evidence gate). One helper family instead of six hand-rolled JSONL writers across the
+# six test modules the evidence requirement touches (plan.md ## Files).
+# ---------------------------------------------------------------------------
+
+
+def assistant_text_row(text: str) -> dict:
+    """One assistant transcript row carrying a single text content block, the shape
+    hooks/scripts/writ-comms-output-gate.sh already reads (`message.content` a list of
+    `{"type": "text", "text": ...}` blocks joined)."""
+    return {"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}
+
+
+def assistant_tool_call_row() -> dict:
+    """An assistant row whose content carries NO text block at all, a tool-call-only
+    turn. Used to prove a trailing one of these does not erase evidence found in the
+    text turn before it (plan.md capability: "a trailing tool-call-only assistant row
+    does not erase evidence")."""
+    return {
+        "type": "assistant",
+        "message": {"content": [
+            {"type": "tool_use", "id": "toolu_fixture_1", "name": "Bash", "input": {"command": "echo hi"}},
+        ]},
+    }
+
+
+def user_row(text: str = "ok") -> dict:
+    """A user transcript row. At most ONE of these may follow the evidence turn and
+    still count (plan.md's tolerance for either transcript-append ordering); two or
+    more mean the request belongs to an earlier exchange."""
+    return {"type": "user", "message": {"content": text}}
+
+
+def write_transcript_jsonl(tmp_path, rows: list) -> str:
+    """Write a JSONL transcript fixture from already-shaped rows (dicts, JSON-
+    serialized here) or raw strings (written verbatim, the way to construct a
+    garbled/unparseable line). Returns the path as a string. A `tmp_path`-unique
+    filename lets a single test build more than one transcript without collision."""
+    import uuid as _uuid
+    from pathlib import Path as _Path
+
+    path = _Path(tmp_path) / f"transcript-{_uuid.uuid4().hex[:8]}.jsonl"
+    lines = [row if isinstance(row, str) else json.dumps(row) for row in rows]
+    path.write_text("\n".join(lines) + ("\n" if lines else ""))
+    return str(path)
+
+
+def write_evidence_transcript(tmp_path, marker: str = "Say approved to proceed.") -> str:
+    """The common case every OTHER test module needs (test_approval_tiers.py,
+    test_replan_reopen_planning.py, test_phase3b_approval_rewrap.py,
+    test_no_tool_prereqs.py, test_pol5b3b_smaller_hook_redundancy.py): one assistant
+    turn asking for approval with a marker phrase, so an exact `approved` on the next
+    turn has evidence in front of it and the existing mint/advance assertions in those
+    files keep testing what they were written for instead of the new ask-directive
+    path. Returns the transcript path, ready to drop into a hook envelope's
+    `transcript_path` field."""
+    return write_transcript_jsonl(tmp_path, [assistant_text_row(marker)])
 
 
 def call_can_write(writ_session, session_id, file_path, monkeypatch, capsys, skill_dir=None):

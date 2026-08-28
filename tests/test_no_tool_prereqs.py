@@ -33,6 +33,7 @@ import pytest
 
 # autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
 from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
+from tests.fixtures.session_state import write_evidence_transcript
 
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 COMMON_SH = SKILL_ROOT / "bin" / "lib" / "common.sh"
@@ -385,7 +386,15 @@ def _run_auto_approve_gate(tmp_path: Path, base_url: str, *, session_id: str,
     host, port = _host_port(base_url)
     tools = CORE_TOOLS + (["curl"] if curl_present else [])
     fake_bin = _limited_path_bin(tmp_path, tools)
-    stdin_payload = json.dumps({"session_id": session_id, "prompt": prompt})
+    # The approval-integrity cycle's exact tier requires evidence before it mints or
+    # advances (defect 2): every caller of this helper drives a bare `approved`
+    # meant to reach the /advance-phase POST, so the precondition is stated here
+    # once rather than at each of TestAdvancePhaseSurvivesCurlAbsence's call sites --
+    # this IS the "one envelope builder" the item's own name promises.
+    transcript_path = write_evidence_transcript(tmp_path)
+    stdin_payload = json.dumps({
+        "session_id": session_id, "prompt": prompt, "transcript_path": transcript_path,
+    })
     env = {
         **os.environ,
         "PATH": str(fake_bin),

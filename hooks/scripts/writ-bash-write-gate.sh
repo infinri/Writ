@@ -198,9 +198,27 @@ STATE_MATCH=""
 # THE COST, stated because it is real: a hook cannot be verified by triggering it from Bash
 # any more, and that is this repo's most reliable verification method. Tests still run it as
 # a subprocess (pytest is not gated), which is where that verification now belongs.
+#
+# The PYTHON API is the last pattern here, and it closes the bypass the CLI token gate
+# would otherwise leave wide open. `writ review <rule_id> --promote` now requires the
+# approval token, so the cheapest remaining route to an unapproved authority change is for
+# the agent to mint its own: one `python3 -c` importing the minter straight out of
+# writ.session.gate_token. The three names above guard the SCRIPT and the SUBCOMMAND; the
+# underscored module symbol was on neither list, so the guard was blind to the API. The
+# script and the API are two doors into one act, and refusing one of them is refusing
+# neither.
+#
+# FALSE-POSITIVE ANALYSIS, per this file's own hyphen lesson: the pattern is a raw
+# substring match on command text, no test file is NAMED after the symbol, and a pytest
+# invocation naming any of this cycle's test files (test_review_promote_authority.py,
+# test_gate_token_binding.py, test_approval_evidence.py) does not contain it, so the suite
+# stays runnable. The cost is the one every pattern here carries: a Bash command that
+# merely mentions the symbol is refused unless it is plain read-only inspection, so prose
+# naming it goes through a file with `git commit -F <file>`.
 for _state_pat in "$STATE_DIR_GUARD" "/tmp/writ-current-session" "writ-session-" \
                   "writ-manual-test-grant" "manual_test_grant" "writ-grant-" \
-                  "writ-gate-token" "reopen-planning" "auto-approve-gate"; do
+                  "writ-gate-token" "reopen-planning" "auto-approve-gate" \
+                  "mint_gate_token"; do
     case "$CMD_FOR_STATE_MATCH" in
         *"$_state_pat"*) STATE_MATCH="$_state_pat"; break ;;
     esac

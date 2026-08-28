@@ -42,6 +42,7 @@ from approval_match import is_approval  # noqa: E402
 # blanket safety rule (any subprocess run without an explicit cwd= inherits pytest's
 # process cwd, and this fixture is the one guaranteed-safe way to pin that).
 from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
+from tests.fixtures.session_state import write_evidence_transcript
 
 SKILL_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 HOOK_PATH = os.path.join(SKILL_ROOT, "hooks", "scripts", "auto-approve-gate.sh")
@@ -267,8 +268,15 @@ class TestHookBranchesOnTier:
 # ---------------------------------------------------------------------------
 
 
-def _envelope(session_id: str, prompt: str) -> str:
-    return json.dumps({"session_id": session_id, "prompt": prompt})
+def _envelope(session_id: str, prompt: str, transcript_path: str | None = None) -> str:
+    """`transcript_path` is OMITTED by default (None), which is what every hook-
+    integration test in this file except the exact-tier mint test below needs:
+    the embedded tier never mints regardless of evidence, so its envelopes are
+    untouched by the approval-integrity cycle's evidence gate."""
+    payload = {"session_id": session_id, "prompt": prompt}
+    if transcript_path is not None:
+        payload["transcript_path"] = transcript_path
+    return json.dumps(payload)
 
 
 def _seed_session(cache_dir: Path, session_id: str, **fields) -> Path:
@@ -301,16 +309,20 @@ class TestExactTierStillMintsABoundToken:
     """
 
     def test_an_exact_approval_mints_a_token_bound_to_the_pending_gate(self, tmp_path):
+        """The approval-integrity cycle's exact tier requires evidence before it
+        mints (plan.md, defect 2): this test now states that precondition with a
+        transcript fixture instead of relying on the old unconditional mint."""
         from writ.session.gate_token import gate_token_path
 
         sid = f"tier-exact-{uuid.uuid4().hex[:8]}"
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
         _seed_session(cache_dir, sid, mode="work", current_phase="planning", gates_approved=[])
+        transcript_path = write_evidence_transcript(tmp_path)
 
         token_path = gate_token_path(sid)
         try:
-            r = _run_hook(_envelope(sid, "approved"), str(cache_dir))
+            r = _run_hook(_envelope(sid, "approved", transcript_path), str(cache_dir))
             assert os.path.exists(token_path), f"no token file minted; hook stdout:\n{r.stdout}"
             with open(token_path) as f:
                 lines = f.read().split("\n")
