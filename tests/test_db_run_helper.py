@@ -113,7 +113,8 @@ _GET_SUBAGENT_ROLE_QUERY = (
     "            RETURN r.role_id AS role_id, r.name AS name,\n"
     "                   r.prompt_template AS prompt_template,\n"
     "                   r.model_preference AS model_preference,\n"
-    "                   r.dispatched_by AS dispatched_by\n"
+    "                   r.dispatched_by AS dispatched_by,\n"
+    "                   r.write_scope AS write_scope\n"
     "            LIMIT 1\n        "
 )
 _GET_ALL_EDGES_CROSS_TYPE_QUERY = (
@@ -574,6 +575,10 @@ class TestGetSubagentRole:
             "prompt_template": "explore the codebase",
             "model_preference": "sonnet",
             "dispatched_by": "orchestrator",
+            # Cycle M: the role's declared write scope, projected by the same clause.
+            # A list here, not None, so the projection assertion below distinguishes a
+            # declared scope from the absent case rather than agreeing on two omissions.
+            "write_scope": ["plan.md", "capabilities.md"],
         }
         return _FakeRecord({**defaults, **overrides})
 
@@ -593,6 +598,7 @@ class TestGetSubagentRole:
             "prompt_template": "explore the codebase",
             "model_preference": "sonnet",
             "dispatched_by": "orchestrator",
+            "write_scope": ["plan.md", "capabilities.md"],
         }
 
     def test_returns_none_when_no_role_matches(self) -> None:

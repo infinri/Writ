@@ -36,12 +36,18 @@ import re
 from writ.session.cache import _cache_path, _read_cache, mutate_cache
 from writ.session.config import DEFAULT_SESSION_BUDGET
 from writ.session.friction import _log_friction_event
-from writ.session.subagent_role import UNKNOWN_ROLE, resolve_role
+from writ.session.subagent_role import SOURCE_UNRESOLVED, UNKNOWN_ROLE, resolve_role
 
 CACHE_SOURCE_START = "subagent_start"
 CACHE_SOURCE_LAZY = "lazy_seed"
 
 SEED_EVENT = "subagent_seeded"
+
+# Recorded in the child cache next to the scope itself: "graph" when the role node
+# answered, "" when nothing was stamped. Without it, a role that declares no scope and a
+# dispatch whose fetch failed both read as None and the unenforced share is unmeasurable.
+SCOPE_SOURCE_GRAPH = "graph"
+SCOPE_SOURCE_NONE = ""
 
 # Both ids are interpolated into a cache filename, and the agent id comes off an untrusted
 # envelope. An allowlist, not a blocklist (ABS-SECURITY-024): session ids are uuids and
@@ -131,6 +137,8 @@ def seed_subagent_cache(agent_id: object, parent_session_id: object, *,
         role, role_source = resolve_role(agent, envelope_agent_type,
                                          projects_dir=projects_dir)
 
+    scope, scope_source = _declared_scope(cache_source, role, role_source)
+
     try:
         with mutate_cache(agent) as cache:
             # Re-checked INSIDE the lock: two hooks for one tool call can race here, and
@@ -154,6 +162,12 @@ def seed_subagent_cache(agent_id: object, parent_session_id: object, *,
             cache["cache_source"] = cache_source
             cache["agent_type"] = role
             cache["role_source"] = role_source
+            # Written on every path, and it is (None, "") on every path but the start one
+            # because the FETCH above is what is guarded. None is not []: the gate reads
+            # None as "no declared scope" and leaves today's authority alone, and [] as
+            # "this role writes nothing" and refuses every path.
+            cache["role_write_scope"] = scope
+            cache["role_scope_source"] = scope_source
             cache.update({k: (v.copy() if hasattr(v, "copy") else v)
                           for k, v in _CLEAN_OPERATIONAL_STATE.items()})
     except Exception:  # noqa: BLE001 - a cache write fault must not fail the hook
@@ -169,6 +183,41 @@ def seed_subagent_cache(agent_id: object, parent_session_id: object, *,
     except Exception:  # noqa: BLE001 - telemetry never fails the caller
         pass
     return True
+
+
+def _declared_scope(cache_source: str, role: str,
+                    role_source: str) -> tuple[list[str] | None, str]:
+    """(the role's declared write scope, where it came from) for this dispatch.
+
+    ONE FETCH PER DISPATCH, ON THE START PATH ONLY. A `subagent_start` cache exists because
+    `SubagentStart` fired, which means a real dispatch happened; a lazily seeded cache
+    exists because a hook noticed an agent nobody governed, and cycle K established that
+    such a cache confers no write authority at all. Fetching a scope for it would be
+    reading a boundary for an agent that is already outside every gate, so the lazy path
+    fetches nothing and stamps nothing and stays worth exactly what cycle K made it worth.
+
+    AN UNOBSERVED ROLE IS NOT FETCHED EITHER. `unknown` / `unresolved` name no role, so
+    there is no node to ask about, and asking would spend a round trip to be told so.
+
+    Never raises: a dispatch must not fail because a scope could not be read. The failure
+    degrades to None, which is today's decision, because ABSENCE IS NOT A POLICY.
+    """
+    if cache_source != CACHE_SOURCE_START:
+        return None, SCOPE_SOURCE_NONE
+    if not role or role == UNKNOWN_ROLE or role_source == SOURCE_UNRESOLVED:
+        return None, SCOPE_SOURCE_NONE
+    # Imported and called through the MODULE, resolved fresh at call time, matching this
+    # codebase's in-function import style -- and required by it: the scope fetcher is the
+    # seam the tests patch, and a name bound at this module's import would ignore the patch.
+    from writ.session import role_scope
+
+    try:
+        scope = role_scope.fetch_declared_scope(role)
+    except Exception:  # noqa: BLE001 - an unreadable scope is not a dispatch failure
+        return None, SCOPE_SOURCE_NONE
+    if scope is None:
+        return None, SCOPE_SOURCE_NONE
+    return scope, SCOPE_SOURCE_GRAPH
 
 
 def is_lazily_seeded(cache: dict | None) -> bool:

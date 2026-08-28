@@ -731,4 +731,10 @@ async def subagent_role_get(name: str) -> dict[str, Any]:
         "prompt_template": rec["prompt_template"],
         "model_preference": rec["model_preference"],
         "dispatched_by": rec["dispatched_by"] or [],
+        # NOT `or []` like dispatched_by above: absence and emptiness are different
+        # answers here. None means the role declares no write scope, which the write gate
+        # reads as "keep today's decision"; [] means the role declares it writes nothing,
+        # which refuses every path. Coalescing would turn every undeclared role into a
+        # role that may write nothing, i.e. deny every sub-agent write in the population.
+        "write_scope": rec["write_scope"],
     }

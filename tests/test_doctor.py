@@ -1342,6 +1342,11 @@ class TestRunAllChecks:
         # means "no readable stream", which the check reports as ok.
         monkeypatch.setattr(
             "writ.session.doctor._subagent_governance_census", lambda: None)
+        # subagent-role-scope-coverage otherwise opens a bolt connection to the real
+        # graph, so the outcome would depend on the machine (TEST-ISOLATE-001). An empty
+        # census means "no roles to judge", which the check reports as ok.
+        monkeypatch.setattr(
+            "writ.session.doctor._subagent_role_scope_census", lambda: [])
 
     def test_it_returns_one_result_per_registered_check(self, default_opts, monkeypatch) -> None:
         self._patch_all_ok(monkeypatch)
@@ -1381,6 +1386,9 @@ class TestRunAllChecks:
             # dispatched sub-agent's role is actually observed rather than defaulted.
             "stranded-telemetry-buffer",
             "subagent-role-coverage",
+            # Cycle M: how many sub-agent ROLES declare a write scope, so the roles whose
+            # writes are still unbounded are a number rather than a surprise.
+            "subagent-role-scope-coverage",
             # Cycle M-pre: how many sub-agents inherited a mode at all.
             "subagent-governance-census",
             "role-symlinks",

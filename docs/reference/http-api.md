@@ -51,7 +51,7 @@ All 49 endpoints, generated from the FastAPI route table. JSON bodies; no auth. 
 | POST | `/propose` | Propose an AI-generated rule. Runs structural gate, ingests if accepted |
 | POST | `/query` | Ranked list of matching domain rules. Mandatory rules excluded |
 | GET | `/rule/{rule_id}` | Full rule node. Optionally includes 1-hop graph context |
-| GET | `/subagent-role/{name}` | Return a SubagentRole node's canonical prompt template from the graph |
+| GET | `/subagent-role/{name}` | Return a SubagentRole node's canonical prompt template and its declared `write_scope` from the graph (`write_scope` is null when the role declares none and `[]` when it declares it writes nothing; the two are not coalesced). Read once per dispatch by the sub-agent seeder |
 
 ## session_state
 

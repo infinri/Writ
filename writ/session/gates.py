@@ -17,9 +17,17 @@ from writ.session.cache import _read_cache, mutate_cache
 from writ.session.friction import _log_friction_event
 from writ.session.locators import _find_debug_md, debug_path
 from writ.session.mode_engine import _effective_source_type, approved_gates_for_plan
+# The pure matcher only. The dispatch-time FETCHER in that module is never called from
+# here: the write path reads the scope the dispatch already stamped into the session cache,
+# so a write costs no graph query and no HTTP call, and the daemon route and the CLI
+# fallback cannot reach different verdicts.
+from writ.session.role_scope import path_in_scope
+# Where a resolved role's name and provenance literals live, so the gate names the
+# unobserved cases with the same constants the resolver stamps.
+from writ.session.subagent_role import SOURCE_UNRESOLVED, UNKNOWN_ROLE
 # One source for what "lazily seeded" means. Duplicating the literal here would be the
 # same defect cycle K removed: a constant restated in a second file goes stale silently.
-from writ.session.subagent_seed import is_lazily_seeded
+from writ.session.subagent_seed import CACHE_SOURCE_START, is_lazily_seeded
 
 # Fallback gate-categories.json path: <skill_root>/bin/lib/gate-categories.json. Used only
 # when a caller passes no skill_dir (hooks pass it); resolved from the skill root because this
@@ -269,13 +277,125 @@ def _validate_evidence_narrowing(debug_md_path: str) -> str | None:
     return None
 
 
+def _role_node_id(role: str) -> str:
+    """The SubagentRole node id a role name resolves to (writ-test-writer ->
+    ROL-TEST-WRITER-001), mirroring the derived convention in
+    `node_store.get_subagent_role`'s resolution clause.
+
+    DISPLAY ONLY. It is named in the refusal so the human who has to change a boundary can
+    find the file that declares it; nothing keys a decision on this string.
+    """
+    return "ROL-" + role.replace("writ-", "").upper() + "-001"
+
+
+def _role_scope_refusal(role: str, patterns: list, file_path: str) -> str:
+    """The refusal text for an out-of-scope write by a role that declares a scope.
+
+    IT NAMES NO ESCAPE, because there is none. Advertising one that does nothing is a
+    defect this codebase has already paid for once (an earlier plan.md refusal pointed at
+    `invalidate-gate`, which cannot clear an approval), and a role boundary is genuinely
+    not approvable: no gate, no phase change and no mode opens it. The only lever is a
+    human editing the role node, so that is the only lever named.
+
+    The RESOLVED path is disclosed when it differs from the requested one, because that is
+    the whole explanation for a symlink or `..` refusal: the raw string looks in scope and
+    the target is not.
+    """
+    resolved = os.path.realpath(file_path)
+    where = f"'{file_path}'"
+    if resolved != file_path:
+        where += f" (which resolves to '{resolved}')"
+    if patterns:
+        boundary = ("may write only these paths: " + ", ".join(str(p) for p in patterns)
+                    + f", and {where} matches none of them")
+    else:
+        boundary = f"declares no writable paths at all, and {where} is outside it"
+    return (
+        f"[ENF-ROLE-SCOPE] Write refused: your role ({role}) {boundary}. This is your "
+        "role's boundary, not a gate: no approval, no phase change and no other path "
+        "opens it. Do the work your role is for and report the rest to the orchestrator. "
+        f"The scope is declared on {_role_node_id(role)} in the graph, and only a human "
+        "editing that node changes it."
+    )
+
+
+def _check_role_scope_write(session_id: str, mode, file_path: str, cache: dict) -> dict | None:
+    """The role's own write boundary, or None when this role has no boundary to apply.
+
+    THE SCOPE IS COMPUTED FROM THE ROLE ALONE. This function reads exactly four cache
+    fields -- `agent_type` (the resolved role), `role_source` (where that role came from),
+    `cache_source` (how the cache came to exist) and `role_write_scope` (the scope stamped
+    from the role's graph node at dispatch) -- plus `is_subagent`. It never reads `mode`,
+    `current_phase`, `gates_approved`, `parent_session_id` or `project_root`. `mode` is a
+    parameter only because every friction row in this module carries it as a column.
+
+    The parent's approval is a PRECONDITION for the dispatch existing at all: SubagentStart
+    fired because a human approved the work that spawned this worker. It is never an INPUT
+    to the scope. "The parent's gates, narrowed by the role" is the same words with the
+    opposite property -- under it a parent who approves more widens the child -- so
+    authority would still inherit, which is the shape this arm exists to remove.
+
+    IT ABSTAINS UNLESS ALL FOUR CONDITIONS HOLD, and every abstention falls through to the
+    blanket sub-agent allow below, i.e. to exactly today's decision. ABSENCE IS NOT A
+    POLICY: a legacy cache, a lazily seeded one, an unresolved role, a role with no node at
+    all (general-purpose and any third-party agent), a role whose node declares nothing,
+    and a dispatch whose fetch failed are all MISSING RECORDS, and a missing record must
+    never harden into a refusal the user never asked for. The gap is made visible instead,
+    by `writ doctor`'s subagent-role-scope-coverage check.
+
+    The role resolution is re-checked HERE rather than inferred from the presence of a
+    stamped scope: two independent guards for one property, the same way `_authority_mode`
+    and the bypass narrowing are two guards for cycle K's.
+    """
+    # 1. A sub-agent, and a cache a real dispatch created. `subagent_start` excludes the
+    #    lazily seeded cache by construction (that value is `lazy_seed`), and it also
+    #    excludes a cache written before `cache_source` existed, which cycle K established
+    #    keeps today's authority rather than being retroactively narrowed.
+    if not cache.get("is_subagent"):
+        return None
+    if str(cache.get("cache_source") or "") != CACHE_SOURCE_START:
+        return None
+
+    # 2. The role was OBSERVED. An empty or `unknown` agent_type names no role, and an
+    #    `unresolved` role_source says the resolver ran and found nothing, so there is
+    #    nothing whose boundary this could be.
+    role = str(cache.get("agent_type") or "").strip()
+    if not role or role == UNKNOWN_ROLE:
+        return None
+    if str(cache.get("role_source") or "") == SOURCE_UNRESOLVED:
+        return None
+
+    # 3. A DECLARED scope, which an empty list is and None is not.
+    patterns = cache.get("role_write_scope")
+    if not isinstance(patterns, list):
+        return None
+
+    if path_in_scope(file_path, patterns):
+        _log_friction_event(session_id, mode, "write_attempt",
+                            file_path=file_path, result="allow",
+                            gate_status="role_scope_allow", agent_type=role)
+        return {"can_write": True, "reason": None}
+
+    # DELIBERATELY NOT _log_gate_denial. That helper increments `denial_counts`, which
+    # feeds the escalation machinery that tells the user which gate to approve, and a role
+    # boundary is not approvable. Counting it there would manufacture a remedy that does
+    # not exist. One write_attempt row, so the refusal is still countable.
+    _log_friction_event(session_id, mode, "write_attempt",
+                        file_path=file_path, result="deny",
+                        gate_status="role_scope_deny", agent_type=role)
+    return {"can_write": False, "reason": _role_scope_refusal(role, patterns, file_path)}
+
+
 def _check_exempt_write(session_id: str, mode, file_path: str, cache: dict, skill_dir: str) -> dict | None:
     """Categorical write exemptions checked before any mode/gate logic.
 
     Returns an allow result (and logs it) for skill-infra, global-settings, and
     sub-agent writes; None when none apply so the caller continues. Order matters:
-    skill_dir, then settings, then sub-agent -- a sub-agent editing the skill dir
-    logs skill_exempt, exactly as the original linear sequence did.
+    skill_dir, then settings, then the role scope, then sub-agent -- a sub-agent editing
+    the skill dir logs skill_exempt, exactly as the original linear sequence did, and a
+    role-scoped sub-agent is judged by its role before the blanket allow can grant it
+    everything. The role-scope arm is the only one of the four that can DENY; the other
+    three either allow or fall through.
     """
     # Skill infrastructure + global settings are NOT gated (you cannot require gate
     # approval to edit the gate itself), but the allow IS logged so Writ-on-Writ
@@ -308,6 +428,17 @@ def _check_exempt_write(session_id: str, mode, file_path: str, cache: dict, skil
             _log_friction_event(session_id, mode, "write_attempt",
                                 file_path=file_path, result="allow", gate_status="settings_exempt")
             return {"can_write": True, "reason": None}
+
+    # THE ROLE'S OWN BOUNDARY, ahead of the blanket allow so a role that declares one is
+    # judged by it, and returning None whenever it has no opinion so the blanket allow
+    # stays the fallthrough for every other case. It sits AFTER the two exemptions above
+    # on purpose: you cannot require a gate's permission to edit the gate, so on the Writ
+    # repo itself the skill-dir exemption still wins and the role scope is inert. That
+    # ordering must not change; the enforcement is real when a governed sub-agent writes
+    # into an ordinary project.
+    role_scoped = _check_role_scope_write(session_id, mode, file_path, cache)
+    if role_scoped is not None:
+        return role_scoped
 
     # Sub-agents bypass mode/gate checks. They are workers dispatched by an
     # orchestrator that already passed the human-approval gate; their scope

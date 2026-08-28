@@ -29,7 +29,8 @@ class NodeStoreMixin:
             RETURN r.role_id AS role_id, r.name AS name,
                    r.prompt_template AS prompt_template,
                    r.model_preference AS model_preference,
-                   r.dispatched_by AS dispatched_by
+                   r.dispatched_by AS dispatched_by,
+                   r.write_scope AS write_scope
             LIMIT 1
         """
         rec = await self._run_single(query, name=name)
@@ -41,6 +42,11 @@ class NodeStoreMixin:
             "prompt_template": rec["prompt_template"],
             "model_preference": rec["model_preference"],
             "dispatched_by": rec["dispatched_by"],
+            # NOT coalesced to []: a role that declares no write_scope must read back as
+            # None so the write gate can tell "no declared scope" (keep today's allow)
+            # from "declares nothing writable" (refuse every path). Neo4j returns null
+            # for an absent property and an empty array for a declared empty one.
+            "write_scope": rec["write_scope"],
         }
 
     async def create_methodology_node(

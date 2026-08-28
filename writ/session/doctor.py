@@ -203,6 +203,30 @@ def _count_neo4j_rules() -> int:
     return asyncio.run(_run())
 
 
+def _subagent_role_scope_census() -> list[dict]:
+    """[{"name": ..., "write_scope": ...}] for every SubagentRole node (async bridged).
+
+    `write_scope` is passed through UNCOALESCED: None means the node declares none and a
+    list (empty included) means it declares one, and that distinction is the whole point of
+    the check that reads this. One query over a five-node label, via the existing
+    get_all_nodes_by_type, so no new db method exists to keep in sync.
+    """
+    from writ.config import get_neo4j_password, get_neo4j_uri, get_neo4j_user
+    from writ.graph.db import Neo4jConnection
+
+    async def _run() -> list[dict]:
+        db = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
+        try:
+            return [
+                {"name": node.get("name"), "write_scope": node.get("write_scope")}
+                for node in await db.get_all_nodes_by_type("SubagentRole")
+            ]
+        finally:
+            await db.close()
+
+    return asyncio.run(_run())
+
+
 def _list_neo4j_constraint_names() -> list[str]:
     """Return every constraint name currently applied (async bridged)."""
     from writ.config import get_neo4j_password, get_neo4j_uri, get_neo4j_user
@@ -1535,6 +1559,67 @@ def _subagent_governance_census() -> dict | None:
     }
 
 
+def check_subagent_role_scope_coverage(opts: DoctorOptions) -> CheckResult:
+    """How many sub-agent roles declare a write scope, and which ones do not.
+
+    THE GAP IS THE POINT OF THE CHECK. A role that declares no `write_scope` keeps the
+    unconditional write allow every dispatched sub-agent has always had, which is the
+    correct degradation (a missing record must not become a refusal) but is invisible from
+    the gate: nothing is logged for enforcement that never fired. This is where the share
+    is reported, so "the boundary is not declared here" is a number rather than a surprise.
+
+    AN UNREACHABLE GRAPH IS UNMEASURED, NOT A FAILURE. The doctor already fails loudly on
+    Neo4j connectivity in its own check; failing again here would report one outage twice
+    and, worse, would read as an accusation against the corpus.
+
+    A CORPUS WHERE NOTHING DECLARES A SCOPE IS ONE WARN, NOT ONE PER ROLE. Roles are
+    authored by hand and an undeclared scope is a legitimate choice (writ-implementer's
+    scope is per-dispatch data, so no static glob can state it truthfully); the warn says
+    the mechanism is inert, not that the roles are wrong.
+    """
+    name = "subagent-role-scope-coverage"
+
+    try:
+        roles = _subagent_role_scope_census()
+    except Exception as exc:
+        return _ok(
+            name=name,
+            detail=(
+                f"Could not read SubagentRole nodes ({exc}), so declared write-scope "
+                "coverage is unmeasured; neo4j-connectivity is the check that judges "
+                "reachability."
+            ),
+        )
+
+    if not roles:
+        return _ok(
+            name=name,
+            detail="No SubagentRole nodes in the graph, so there is no scope to declare.",
+        )
+
+    # A LIST IS A DECLARATION, INCLUDING AN EMPTY ONE: `write_scope: []` is a role saying
+    # it writes nothing, which is the strictest declaration there is, not a missing one.
+    declared = [r for r in roles if isinstance(r.get("write_scope"), list)]
+    undeclared = sorted(
+        str(r.get("name") or "(unnamed)")
+        for r in roles if not isinstance(r.get("write_scope"), list)
+    )
+    detail = f"{len(declared)} of {len(roles)} sub-agent role(s) declare a write scope"
+    detail += f"; undeclared: {', '.join(undeclared)}." if undeclared else "."
+
+    if not declared:
+        return _warn(
+            name=name,
+            detail=(
+                detail + " No role declares one, so the write gate's role-scope arm never "
+                "fires and every dispatched sub-agent keeps the blanket write allow. "
+                "Declare write_scope in the role's bible/methodology/ROL-*.md frontmatter "
+                "and re-import if that is not intended."
+            ),
+        )
+    return _ok(name=name, detail=detail)
+
+
 def check_subagent_governance_census(opts: DoctorOptions) -> CheckResult:
     """How many sub-agents actually inherited a mode, and how many ran outside Writ?
 
@@ -1874,6 +1959,7 @@ _CHECKS: list[tuple[str, Callable[[DoctorOptions], CheckResult]]] = [
     ("hook-telemetry-coverage", check_hook_telemetry_coverage),
     ("stranded-telemetry-buffer", check_stranded_telemetry_buffer),
     ("subagent-role-coverage", check_subagent_role_coverage),
+    ("subagent-role-scope-coverage", check_subagent_role_scope_coverage),
     ("subagent-governance-census", check_subagent_governance_census),
     ("role-symlinks", check_role_symlinks),
     ("mode-gate-sanity", check_mode_gate_sanity),
