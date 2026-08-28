@@ -688,8 +688,18 @@ def _can_write_check(session_id: str, envelope: dict, skill_dir: str = "", cache
     basename = os.path.basename(file_path)
     current_phase = cache.get("current_phase")
 
+    # The plan.md implementation freeze denied and recorded NOTHING, so the one refusal a
+    # reader is most likely to ask about after the fact left no row. The record is emitted
+    # HERE, at the call site, rather than inside _check_special_files: that helper is pure
+    # (no IO, no telemetry) and every other deny in this module logs from the router, so
+    # keeping the emit here means one place to look and one function fewer with a side
+    # effect. Only the deny is recorded; the two allows it returns are not refusals.
     special = _check_special_files(basename, mode, current_phase)
     if special is not None:
+        if not special["can_write"]:
+            _log_friction_event(session_id, mode, "write_attempt",
+                                file_path=file_path, result="deny",
+                                gate_status="plan_frozen", phase=current_phase)
         return special
 
     # No mode: deny everything (plan.md handled above). Log the deny -- this is the
@@ -792,19 +802,41 @@ def _can_read_code_check(session_id: str, envelope: dict, skill_dir: str = "") -
         )
 
         if tool == "Grep":
-            return {"can_read": False, "reason": reason}
-
-        if tool == "Read":
-            return _classify_runtime_read(ti.get("file_path") or "", skill_dir, reason)
-
+            decision = {"can_read": False, "reason": reason}
+            target = ti.get("path") or ""
+        elif tool == "Read":
+            target = ti.get("file_path") or ""
+            decision = _classify_runtime_read(target, skill_dir, reason)
         # #5: Glob is file enumeration -- classify by its pattern's extension so a
         # source hunt (**/*.py) is blocked premature, but a log/doc/navigation glob
         # (**/*.log, src/**) is allowed. splitext on the pattern yields the extension;
         # no-extension or non-code patterns fall through to allow (fail-open).
-        if tool == "Glob":
-            return _classify_runtime_read(ti.get("pattern") or "", skill_dir, reason)
+        elif tool == "Glob":
+            target = ti.get("pattern") or ""
+            decision = _classify_runtime_read(target, skill_dir, reason)
+        else:
+            decision = {"can_read": True, "reason": None}
+            target = ""
 
-        return {"can_read": True, "reason": None}
+        # All three denies emitted NOTHING, so the runtime lens was the one gate whose
+        # refusals could not be counted. Recorded from the router rather than from each arm,
+        # so _classify_runtime_read stays pure and one call covers Read, Grep and Glob alike.
+        # read_denied, NOT read_blocked: the latter is summed into a published token floor by
+        # writ/analysis/token_audit.py::attribute_prevented, and a lens deny carries no byte
+        # estimate, so reusing that name would inflate the count with zero-token rows.
+        # The record must never be able to change the verdict. This call sits inside the
+        # function's fail-open handler, which turns ANY exception into can_read: True, so
+        # an unlucky raise in the logging path would convert a real deny into an allow:
+        # the gate would open because writing down that it closed failed. Its own handler
+        # keeps that impossible, and losing a row is strictly better than losing a refusal.
+        if not decision["can_read"]:
+            try:
+                _log_friction_event(session_id, cache.get("mode"), "read_denied",
+                                    tool_name=tool, file_path=target,
+                                    gate_status="runtime_lens_evidence_missing")
+            except Exception:  # noqa: BLE001 - a lost record must not become an allow
+                pass
+        return decision
     except Exception as exc:
         # Fail-open is deliberate (a gate bug must never wedge the agent), but an
         # allow-from-crash is otherwise indistinguishable from a legitimate allow.

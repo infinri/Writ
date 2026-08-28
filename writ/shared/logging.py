@@ -82,6 +82,14 @@ STREAM_MAP: dict[str, str] = {
     "citation_recorded": "audit",
     "committed_file_not_in_plan": "audit",
     "read_blocked": "audit",
+    # The runtime-lens read/search refusal (writ/session/gates.py::_can_read_code_check).
+    # A SEPARATE event from read_blocked, deliberately: writ/analysis/token_audit.py::
+    # attribute_prevented sums prevented_tokens_floor and counts blocked_count over
+    # read_blocked rows, and a lens deny carries no byte estimate, so reusing that name
+    # would inflate a published number with zero-token rows. Registered here EXPLICITLY
+    # because an unregistered event falls to _DEFAULT_STREAM (friction), which would file
+    # a governance refusal where nobody audits.
+    "read_denied": "audit",
     # Every gate's allow/deny, emitted on BOTH branches by log_gate_decision.
     "gate_decision": "audit",
     "exitplanmode_allow": "audit",

@@ -143,6 +143,7 @@ markers = [
     "perf: hook latency p95 regression floor tests (Item 4). Deselected by default; run with `make perf`",
     "integration: tests that require a live Claude Code install or external service",
     "no_friction_isolation: opt out of the autouse WRIT_FRICTION_LOG redirect (tests that exercise friction-log path resolution itself)",
+    "firedrill: the negative-controls fire drill (tests/firedrill/). Applied by that package's conftest.py to every item it collects, so a drill module added without its own pytestmark is still selectable by name: `make firedrill`. NOT deselected by default, because it is real coverage and it should fail CI",
 ]
 
 [build-system]

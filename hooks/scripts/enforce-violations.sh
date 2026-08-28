@@ -65,7 +65,13 @@ ids = [v.get('rule_id', 'unknown') for v in violations]
 print(', '.join(ids))
 " 2>/dev/null || echo "unknown")
 
-    echo "You have $VIOLATION_COUNT unresolved violations: [$RULE_IDS]. Fix these before completing." >&2
+    BLOCK_REASON="You have $VIOLATION_COUNT unresolved violations: [$RULE_IDS]. Fix these before completing."
+    # The strongest block in the system recorded NOTHING. This hook sources common.sh and
+    # called none of its helpers, so the one Stop hook with a real blocking exit 2 left no
+    # durable trace of having blocked anything. The reason carries the rule ids already
+    # computed for the message, so the audit row and the message say the same thing.
+    log_gate_decision "pending-violations" "deny" "$BLOCK_REASON" "$SESSION_ID"
+    echo "$BLOCK_REASON" >&2
     exit 2
 fi
 

@@ -1,0 +1,1526 @@
+{
+  "capture_window": {
+    "first_ts": "2026-08-28T17:51:31.803046+00:00",
+    "last_ts": "2026-08-28T19:26:13.038179+00:00"
+  },
+  "claude_code_version": "2.1.251 (Claude Code)",
+  "events_never_observed": [
+    "CwdChanged",
+    "PostCompact",
+    "SessionStart"
+  ],
+  "record_count": 2642,
+  "records": {
+    "PostToolUseFailure|writ-blackbox-capture|in": {
+      "count": 1,
+      "direction": "in",
+      "event": "PostToolUseFailure",
+      "first_ts": "2026-08-28T17:57:13.060885+00:00",
+      "hook": "writ-blackbox-capture",
+      "keys": {
+        "cwd": 1,
+        "duration_ms": 1,
+        "effort": 1,
+        "error": 1,
+        "hook_event_name": 1,
+        "is_interrupt": 1,
+        "permission_mode": 1,
+        "prompt_id": 1,
+        "session_id": 1,
+        "tool_input": 1,
+        "tool_name": 1,
+        "tool_use_id": 1,
+        "transcript_path": 1
+      },
+      "last_ts": "2026-08-28T17:57:13.060885+00:00",
+      "tool_input_keys": {
+        "Bash": {
+          "command": 1,
+          "description": 1
+        }
+      }
+    },
+    "PostToolUse|inject-tier-workflow|in": {
+      "count": 317,
+      "direction": "in",
+      "event": "PostToolUse",
+      "first_ts": "2026-08-28T17:51:31.803046+00:00",
+      "hook": "inject-tier-workflow",
+      "keys": {
+        "agent_id": 219,
+        "agent_type": 219,
+        "cwd": 313,
+        "duration_ms": 313,
+        "effort": 313,
+        "hook_event_name": 317,
+        "permission_mode": 313,
+        "prompt_id": 313,
+        "session_id": 317,
+        "tool_input": 317,
+        "tool_name": 317,
+        "tool_output": 4,
+        "tool_response": 313,
+        "tool_use_id": 313,
+        "transcript_path": 313
+      },
+      "last_ts": "2026-08-28T19:25:58.038060+00:00",
+      "tool_input_keys": {
+        "Bash": {
+          "command": 316,
+          "description": 142,
+          "run_in_background": 1,
+          "timeout": 2
+        },
+        "Write": {
+          "content": 1,
+          "file_path": 1
+        }
+      }
+    },
+    "PostToolUse|validate-file|in": {
+      "count": 51,
+      "direction": "in",
+      "event": "PostToolUse",
+      "first_ts": "2026-08-28T17:56:10.026170+00:00",
+      "hook": "validate-file",
+      "keys": {
+        "agent_id": 41,
+        "agent_type": 41,
+        "cwd": 50,
+        "duration_ms": 50,
+        "effort": 50,
+        "hook_event_name": 51,
+        "permission_mode": 50,
+        "prompt_id": 50,
+        "session_id": 51,
+        "tool_input": 51,
+        "tool_name": 51,
+        "tool_response": 50,
+        "tool_result_is_error": 1,
+        "tool_use_id": 50,
+        "transcript_path": 50
+      },
+      "last_ts": "2026-08-28T19:25:44.253883+00:00",
+      "tool_input_keys": {
+        "Edit": {
+          "file_path": 38,
+          "new_string": 38,
+          "old_string": 38,
+          "replace_all": 38
+        },
+        "Write": {
+          "content": 13,
+          "file_path": 13
+        }
+      }
+    },
+    "PostToolUse|validate-handoff|in": {
+      "count": 58,
+      "direction": "in",
+      "event": "PostToolUse",
+      "first_ts": "2026-08-28T17:56:10.025443+00:00",
+      "hook": "validate-handoff",
+      "keys": {
+        "agent_id": 43,
+        "agent_type": 43,
+        "cwd": 57,
+        "duration_ms": 57,
+        "effort": 57,
+        "hook_event_name": 58,
+        "permission_mode": 57,
+        "prompt_id": 57,
+        "session_id": 58,
+        "tool_input": 58,
+        "tool_name": 58,
+        "tool_response": 57,
+        "tool_result_is_error": 1,
+        "tool_use_id": 57,
+        "transcript_path": 57
+      },
+      "last_ts": "2026-08-28T19:25:44.253532+00:00",
+      "tool_input_keys": {
+        "Edit": {
+          "file_path": 45,
+          "new_string": 45,
+          "old_string": 45,
+          "replace_all": 45
+        },
+        "Write": {
+          "content": 13,
+          "file_path": 13
+        }
+      }
+    },
+    "PostToolUse|validate-rules|in": {
+      "count": 59,
+      "direction": "in",
+      "event": "PostToolUse",
+      "first_ts": "2026-08-28T17:56:10.024677+00:00",
+      "hook": "validate-rules",
+      "keys": {
+        "agent_id": 43,
+        "agent_type": 43,
+        "cwd": 58,
+        "duration_ms": 58,
+        "effort": 58,
+        "hook_event_name": 59,
+        "permission_mode": 58,
+        "prompt_id": 58,
+        "session_id": 59,
+        "tool_input": 59,
+        "tool_name": 59,
+        "tool_response": 58,
+        "tool_result_is_error": 1,
+        "tool_use_id": 58,
+        "transcript_path": 58
+      },
+      "last_ts": "2026-08-28T19:26:08.228560+00:00",
+      "tool_input_keys": {
+        "Edit": {
+          "file_path": 43,
+          "new_string": 43,
+          "old_string": 43,
+          "replace_all": 43
+        },
+        "Write": {
+          "content": 16,
+          "file_path": 16
+        }
+      }
+    },
+    "PostToolUse|writ-bible-authoring-push|in": {
+      "count": 65,
+      "direction": "in",
+      "event": "PostToolUse",
+      "first_ts": "2026-08-28T17:56:10.029352+00:00",
+      "hook": "writ-bible-authoring-push",
+      "keys": {
+        "agent_id": 48,
+        "agent_type": 48,
+        "cwd": 65,
+        "duration_ms": 65,
+        "effort": 65,
+        "hook_event_name": 65,
+        "permission_mode": 65,
+        "prompt_id": 65,
+        "session_id": 65,
+        "tool_input": 65,
+        "tool_name": 65,
+        "tool_response": 65,
+        "tool_use_id": 65,
+        "transcript_path": 65
+      },
+      "last_ts": "2026-08-28T19:25:44.253522+00:00",
+      "tool_input_keys": {
+        "Edit": {
+          "file_path": 50,
+          "new_string": 50,
+          "old_string": 50,
+          "replace_all": 50
+        },
+        "Write": {
+          "content": 15,
+          "file_path": 15
+        }
+      }
+    },
+    "PostToolUse|writ-mark-pending-test|in": {
+      "count": 57,
+      "direction": "in",
+      "event": "PostToolUse",
+      "first_ts": "2026-08-28T17:56:30.059614+00:00",
+      "hook": "writ-mark-pending-test",
+      "keys": {
+        "agent_id": 36,
+        "agent_type": 36,
+        "cwd": 54,
+        "duration_ms": 54,
+        "effort": 54,
+        "hook_event_name": 57,
+        "permission_mode": 54,
+        "prompt_id": 54,
+        "session_id": 57,
+        "tool_input": 57,
+        "tool_name": 57,
+        "tool_output": 1,
+        "tool_response": 54,
+        "tool_use_id": 54,
+        "transcript_path": 54
+      },
+      "last_ts": "2026-08-28T19:25:44.253754+00:00",
+      "tool_input_keys": {
+        "Edit": {
+          "file_path": 39,
+          "new_string": 39,
+          "old_string": 39,
+          "replace_all": 39
+        },
+        "Write": {
+          "content": 16,
+          "file_path": 18
+        }
+      }
+    },
+    "PostToolUse|writ-memory-capture|in": {
+      "count": 59,
+      "direction": "in",
+      "event": "PostToolUse",
+      "first_ts": "2026-08-28T18:14:19.419617+00:00",
+      "hook": "writ-memory-capture",
+      "keys": {
+        "agent_id": 39,
+        "agent_type": 39,
+        "cwd": 59,
+        "duration_ms": 59,
+        "effort": 59,
+        "hook_event_name": 59,
+        "permission_mode": 59,
+        "prompt_id": 59,
+        "session_id": 59,
+        "tool_input": 59,
+        "tool_name": 59,
+        "tool_response": 59,
+        "tool_use_id": 59,
+        "transcript_path": 59
+      },
+      "last_ts": "2026-08-28T19:26:08.227279+00:00",
+      "tool_input_keys": {
+        "Edit": {
+          "file_path": 46,
+          "new_string": 46,
+          "old_string": 46,
+          "replace_all": 46
+        },
+        "Write": {
+          "content": 13,
+          "file_path": 13
+        }
+      }
+    },
+    "PostToolUse|writ-quality-judge|in": {
+      "count": 15,
+      "direction": "in",
+      "event": "PostToolUse",
+      "first_ts": "2026-08-28T17:56:10.025256+00:00",
+      "hook": "writ-quality-judge",
+      "keys": {
+        "agent_id": 12,
+        "agent_type": 12,
+        "cwd": 15,
+        "duration_ms": 15,
+        "effort": 15,
+        "hook_event_name": 15,
+        "permission_mode": 15,
+        "prompt_id": 15,
+        "session_id": 15,
+        "tool_input": 15,
+        "tool_name": 15,
+        "tool_response": 15,
+        "tool_use_id": 15,
+        "transcript_path": 15
+      },
+      "last_ts": "2026-08-28T19:02:07.656211+00:00",
+      "tool_input_keys": {
+        "Write": {
+          "content": 15,
+          "file_path": 15
+        }
+      }
+    },
+    "PostToolUse|writ-web-capture|in": {
+      "count": 1,
+      "direction": "in",
+      "event": "PostToolUse",
+      "first_ts": "2026-08-28T19:17:46.607344+00:00",
+      "hook": "writ-web-capture",
+      "keys": {
+        "hook_event_name": 1,
+        "session_id": 1,
+        "tool_input": 1,
+        "tool_name": 1,
+        "tool_output": 1
+      },
+      "last_ts": "2026-08-28T19:17:46.607344+00:00",
+      "tool_input_keys": {
+        "Write": {
+          "content": 1,
+          "file_path": 1
+        }
+      }
+    },
+    "PreCompact|writ-precompact|in": {
+      "count": 3,
+      "direction": "in",
+      "event": "PreCompact",
+      "first_ts": "2026-08-28T19:16:13.886665+00:00",
+      "hook": "writ-precompact",
+      "keys": {
+        "hook_event_name": 3,
+        "session_id": 1
+      },
+      "last_ts": "2026-08-28T19:19:15.880142+00:00",
+      "tool_input_keys": {}
+    },
+    "PreToolUse|bash|in": {
+      "count": 6,
+      "direction": "in",
+      "event": "PreToolUse",
+      "first_ts": "2026-08-28T19:13:37.453292+00:00",
+      "hook": "bash",
+      "keys": {
+        "cwd": 2,
+        "hook_event_name": 6,
+        "session_id": 4,
+        "tool_input": 2,
+        "tool_name": 2
+      },
+      "last_ts": "2026-08-28T19:19:13.578723+00:00",
+      "tool_input_keys": {
+        "Write": {
+          "content": 2,
+          "file_path": 2
+        }
+      }
+    },
+    "PreToolUse|inject-tier-workflow|in": {
+      "count": 3,
+      "direction": "in",
+      "event": "PreToolUse",
+      "first_ts": "2026-08-28T19:12:50.809433+00:00",
+      "hook": "inject-tier-workflow",
+      "keys": {
+        "hook_event_name": 3,
+        "session_id": 3,
+        "tool_input": 3,
+        "tool_name": 3
+      },
+      "last_ts": "2026-08-28T19:20:08.606926+00:00",
+      "tool_input_keys": {
+        "Write": {
+          "content": 3,
+          "file_path": 3
+        }
+      }
+    },
+    "PreToolUse|pre-validate-file|in": {
+      "count": 99,
+      "direction": "in",
+      "event": "PreToolUse",
+      "first_ts": "2026-08-28T17:56:07.482662+00:00",
+      "hook": "pre-validate-file",
+      "keys": {
+        "agent_id": 54,
+        "agent_type": 54,
+        "cwd": 78,
+        "effort": 78,
+        "hook_event_name": 99,
+        "permission_mode": 78,
+        "prompt_id": 78,
+        "session_id": 99,
+        "tool_input": 99,
+        "tool_name": 99,
+        "tool_use_id": 78,
+        "transcript_path": 78
+      },
+      "last_ts": "2026-08-28T19:26:06.087879+00:00",
+      "tool_input_keys": {
+        "Edit": {
+          "file_path": 62,
+          "new_string": 62,
+          "old_string": 62,
+          "replace_all": 62
+        },
+        "Write": {
+          "content": 37,
+          "file_path": 37
+        }
+      }
+    },
+    "PreToolUse|validate-design-doc|in": {
+      "count": 21,
+      "direction": "in",
+      "event": "PreToolUse",
+      "first_ts": "2026-08-28T17:56:07.482421+00:00",
+      "hook": "validate-design-doc",
+      "keys": {
+        "agent_id": 14,
+        "agent_type": 14,
+        "cwd": 18,
+        "effort": 18,
+        "hook_event_name": 21,
+        "permission_mode": 18,
+        "prompt_id": 18,
+        "session_id": 21,
+        "tool_input": 21,
+        "tool_name": 21,
+        "tool_use_id": 18,
+        "transcript_path": 18
+      },
+      "last_ts": "2026-08-28T19:20:07.463492+00:00",
+      "tool_input_keys": {
+        "Write": {
+          "content": 21,
+          "file_path": 21
+        }
+      }
+    },
+    "PreToolUse|validate-file|in": {
+      "count": 3,
+      "direction": "in",
+      "event": "PreToolUse",
+      "first_ts": "2026-08-28T19:17:45.623700+00:00",
+      "hook": "validate-file",
+      "keys": {
+        "hook_event_name": 3,
+        "session_id": 3,
+        "tool_input": 3,
+        "tool_name": 3
+      },
+      "last_ts": "2026-08-28T19:20:07.654734+00:00",
+      "tool_input_keys": {
+        "Write": {
+          "content": 3,
+          "file_path": 3
+        }
+      }
+    },
+    "PreToolUse|validate-handoff|in": {
+      "count": 3,
+      "direction": "in",
+      "event": "PreToolUse",
+      "first_ts": "2026-08-28T19:17:45.674068+00:00",
+      "hook": "validate-handoff",
+      "keys": {
+        "hook_event_name": 3,
+        "session_id": 3,
+        "tool_input": 3,
+        "tool_name": 3
+      },
+      "last_ts": "2026-08-28T19:20:08.795074+00:00",
+      "tool_input_keys": {
+        "Write": {
+          "content": 3,
+          "file_path": 3
+        }
+      }
+    },
+    "PreToolUse|validate-rules|in": {
+      "count": 3,
+      "direction": "in",
+      "event": "PreToolUse",
+      "first_ts": "2026-08-28T19:17:45.574202+00:00",
+      "hook": "validate-rules",
+      "keys": {
+        "hook_event_name": 3,
+        "session_id": 3,
+        "tool_input": 3,
+        "tool_name": 3
+      },
+      "last_ts": "2026-08-28T19:20:07.740241+00:00",
+      "tool_input_keys": {
+        "Write": {
+          "content": 3,
+          "file_path": 3
+        }
+      }
+    },
+    "PreToolUse|validate-test-file|in": {
+      "count": 26,
+      "direction": "in",
+      "event": "PreToolUse",
+      "first_ts": "2026-08-28T17:56:07.481558+00:00",
+      "hook": "validate-test-file",
+      "keys": {
+        "agent_id": 15,
+        "agent_type": 14,
+        "cwd": 18,
+        "effort": 18,
+        "hook_event_name": 26,
+        "permission_mode": 18,
+        "prompt_id": 18,
+        "session_id": 26,
+        "tool_input": 26,
+        "tool_name": 26,
+        "tool_use_id": 18,
+        "transcript_path": 18
+      },
+      "last_ts": "2026-08-28T19:20:07.358870+00:00",
+      "tool_input_keys": {
+        "Write": {
+          "content": 21,
+          "file_path": 26
+        }
+      }
+    },
+    "PreToolUse|writ-bash-write-gate|in": {
+      "count": 372,
+      "direction": "in",
+      "event": "PreToolUse",
+      "first_ts": "2026-08-28T17:52:00.410013+00:00",
+      "hook": "writ-bash-write-gate",
+      "keys": {
+        "agent_id": 233,
+        "agent_type": 231,
+        "cwd": 332,
+        "effort": 332,
+        "hook_event_name": 372,
+        "permission_mode": 332,
+        "prompt_id": 332,
+        "session_id": 372,
+        "tool_input": 372,
+        "tool_name": 372,
+        "tool_use_id": 332,
+        "transcript_path": 332
+      },
+      "last_ts": "2026-08-28T19:26:13.038176+00:00",
+      "tool_input_keys": {
+        "Bash": {
+          "command": 372,
+          "description": 147,
+          "run_in_background": 1,
+          "timeout": 2
+        }
+      }
+    },
+    "PreToolUse|writ-bible-authoring-push|in": {
+      "count": 2,
+      "direction": "in",
+      "event": "PreToolUse",
+      "first_ts": "2026-08-28T19:20:06.101233+00:00",
+      "hook": "writ-bible-authoring-push",
+      "keys": {
+        "hook_event_name": 2,
+        "session_id": 2,
+        "tool_input": 2,
+        "tool_name": 2
+      },
+      "last_ts": "2026-08-28T19:20:08.515862+00:00",
+      "tool_input_keys": {
+        "Write": {
+          "content": 2,
+          "file_path": 2
+        }
+      }
+    },
+    "PreToolUse|writ-dispatch-discipline|in": {
+      "count": 31,
+      "direction": "in",
+      "event": "PreToolUse",
+      "first_ts": "2026-08-28T18:00:22.888073+00:00",
+      "hook": "writ-dispatch-discipline",
+      "keys": {
+        "agent_id": 1,
+        "cwd": 3,
+        "effort": 3,
+        "hook_event_name": 31,
+        "permission_mode": 3,
+        "prompt_id": 3,
+        "session_id": 31,
+        "tool_input": 31,
+        "tool_name": 31,
+        "tool_use_id": 3,
+        "transcript_path": 3
+      },
+      "last_ts": "2026-08-28T19:17:45.091133+00:00",
+      "tool_input_keys": {
+        "Agent": {
+          "description": 3,
+          "prompt": 3,
+          "subagent_type": 3
+        },
+        "Task": {
+          "prompt": 27,
+          "subagent_type": 27
+        },
+        "Write": {
+          "content": 1,
+          "file_path": 1
+        }
+      }
+    },
+    "PreToolUse|writ-dispatch-discipline|out": {
+      "count": 20,
+      "direction": "out",
+      "event": "PreToolUse",
+      "first_ts": "2026-08-28T19:12:02.772810+00:00",
+      "hook": "writ-dispatch-discipline",
+      "hook_specific_output_keys": {
+        "additionalContext": 13,
+        "hookEventName": 20,
+        "permissionDecision": 20,
+        "permissionDecisionReason": 7,
+        "updatedInput": 13
+      },
+      "keys": {
+        "hookSpecificOutput": 20
+      },
+      "last_ts": "2026-08-28T19:17:45.166967+00:00",
+      "mechanisms": {
+        "additionalContext": 13,
+        "permissionDecisionReason": 7
+      }
+    },
+    "PreToolUse|writ-mark-pending-test|in": {
+      "count": 2,
+      "direction": "in",
+      "event": "PreToolUse",
+      "first_ts": "2026-08-28T19:20:05.802982+00:00",
+      "hook": "writ-mark-pending-test",
+      "keys": {
+        "hook_event_name": 2,
+        "session_id": 2,
+        "tool_input": 2,
+        "tool_name": 2
+      },
+      "last_ts": "2026-08-28T19:20:08.219424+00:00",
+      "tool_input_keys": {
+        "Write": {
+          "content": 2,
+          "file_path": 2
+        }
+      }
+    },
+    "PreToolUse|writ-memory-capture|in": {
+      "count": 2,
+      "direction": "in",
+      "event": "PreToolUse",
+      "first_ts": "2026-08-28T19:20:06.012485+00:00",
+      "hook": "writ-memory-capture",
+      "keys": {
+        "hook_event_name": 2,
+        "session_id": 2,
+        "tool_input": 2,
+        "tool_name": 2
+      },
+      "last_ts": "2026-08-28T19:20:08.428089+00:00",
+      "tool_input_keys": {
+        "Write": {
+          "content": 2,
+          "file_path": 2
+        }
+      }
+    },
+    "PreToolUse|writ-memory-policy-guard|in": {
+      "count": 17,
+      "direction": "in",
+      "event": "PreToolUse",
+      "first_ts": "2026-08-28T17:56:27.910743+00:00",
+      "hook": "writ-memory-policy-guard",
+      "keys": {
+        "agent_id": 10,
+        "agent_type": 10,
+        "cwd": 14,
+        "effort": 14,
+        "hook_event_name": 17,
+        "permission_mode": 14,
+        "prompt_id": 14,
+        "session_id": 17,
+        "tool_input": 17,
+        "tool_name": 17,
+        "tool_use_id": 14,
+        "transcript_path": 14
+      },
+      "last_ts": "2026-08-28T19:20:07.565056+00:00",
+      "tool_input_keys": {
+        "Write": {
+          "content": 17,
+          "file_path": 17
+        }
+      }
+    },
+    "PreToolUse|writ-pre-write-dispatch|in": {
+      "count": 87,
+      "direction": "in",
+      "event": "PreToolUse",
+      "first_ts": "2026-08-28T17:56:07.475220+00:00",
+      "hook": "writ-pre-write-dispatch",
+      "keys": {
+        "agent_id": 57,
+        "agent_type": 57,
+        "cwd": 82,
+        "effort": 82,
+        "hook_event_name": 87,
+        "permission_mode": 82,
+        "prompt_id": 82,
+        "session_id": 85,
+        "tool_input": 87,
+        "tool_name": 87,
+        "tool_use_id": 82,
+        "transcript_path": 82
+      },
+      "last_ts": "2026-08-28T19:26:06.078890+00:00",
+      "tool_input_keys": {
+        "Edit": {
+          "file_path": 62,
+          "new_string": 62,
+          "old_string": 62,
+          "replace_all": 62
+        },
+        "Write": {
+          "content": 25,
+          "file_path": 25
+        }
+      }
+    },
+    "PreToolUse|writ-pre-write-dispatch|out": {
+      "count": 13,
+      "direction": "out",
+      "event": "PreToolUse",
+      "first_ts": "2026-08-28T18:17:15.377875+00:00",
+      "hook": "writ-pre-write-dispatch",
+      "hook_specific_output_keys": {
+        "additionalContext": 13,
+        "hookEventName": 13,
+        "permissionDecision": 13,
+        "permissionDecisionReason": 13
+      },
+      "keys": {
+        "hookSpecificOutput": 13
+      },
+      "last_ts": "2026-08-28T19:20:09.281305+00:00",
+      "mechanisms": {
+        "additionalContext": 13,
+        "permissionDecisionReason": 13
+      }
+    },
+    "PreToolUse|writ-pressure-audit|in": {
+      "count": 1,
+      "direction": "in",
+      "event": "PreToolUse",
+      "first_ts": "2026-08-28T19:17:45.374288+00:00",
+      "hook": "writ-pressure-audit",
+      "keys": {
+        "agent_id": 1,
+        "hook_event_name": 1,
+        "session_id": 1,
+        "tool_input": 1,
+        "tool_name": 1
+      },
+      "last_ts": "2026-08-28T19:17:45.374288+00:00",
+      "tool_input_keys": {
+        "Write": {
+          "content": 1,
+          "file_path": 1
+        }
+      }
+    },
+    "PreToolUse|writ-quality-judge|in": {
+      "count": 3,
+      "direction": "in",
+      "event": "PreToolUse",
+      "first_ts": "2026-08-28T19:17:45.724974+00:00",
+      "hook": "writ-quality-judge",
+      "keys": {
+        "hook_event_name": 3,
+        "session_id": 3,
+        "tool_input": 3,
+        "tool_name": 3
+      },
+      "last_ts": "2026-08-28T19:20:08.325542+00:00",
+      "tool_input_keys": {
+        "Write": {
+          "content": 3,
+          "file_path": 3
+        }
+      }
+    },
+    "PreToolUse|writ-read-junk-gate|in": {
+      "count": 63,
+      "direction": "in",
+      "event": "PreToolUse",
+      "first_ts": "2026-08-28T17:51:33.276344+00:00",
+      "hook": "writ-read-junk-gate",
+      "keys": {
+        "agent_id": 57,
+        "agent_type": 57,
+        "cwd": 63,
+        "effort": 63,
+        "hook_event_name": 63,
+        "permission_mode": 63,
+        "prompt_id": 63,
+        "session_id": 63,
+        "tool_input": 63,
+        "tool_name": 63,
+        "tool_use_id": 63,
+        "transcript_path": 63
+      },
+      "last_ts": "2026-08-28T19:18:13.881398+00:00",
+      "tool_input_keys": {
+        "Read": {
+          "file_path": 63,
+          "limit": 27,
+          "offset": 23
+        }
+      }
+    },
+    "PreToolUse|writ-run-pending-tests|in": {
+      "count": 1,
+      "direction": "in",
+      "event": "PreToolUse",
+      "first_ts": "2026-08-28T19:17:45.318048+00:00",
+      "hook": "writ-run-pending-tests",
+      "keys": {
+        "agent_id": 1,
+        "hook_event_name": 1,
+        "session_id": 1,
+        "tool_input": 1,
+        "tool_name": 1
+      },
+      "last_ts": "2026-08-28T19:17:45.318048+00:00",
+      "tool_input_keys": {
+        "Write": {
+          "content": 1,
+          "file_path": 1
+        }
+      }
+    },
+    "PreToolUse|writ-seed-probe|in": {
+      "count": 6,
+      "direction": "in",
+      "event": "PreToolUse",
+      "first_ts": "2026-08-28T19:19:42.151952+00:00",
+      "hook": "writ-seed-probe",
+      "keys": {
+        "agent_id": 5,
+        "agent_type": 4,
+        "hook_event_name": 6,
+        "session_id": 6,
+        "tool_input": 6,
+        "tool_name": 6
+      },
+      "last_ts": "2026-08-28T19:19:42.489204+00:00",
+      "tool_input_keys": {
+        "Read": {
+          "file_path": 4
+        }
+      }
+    },
+    "PreToolUse|writ-state-write-gate|in": {
+      "count": 81,
+      "direction": "in",
+      "event": "PreToolUse",
+      "first_ts": "2026-08-28T18:14:17.297909+00:00",
+      "hook": "writ-state-write-gate",
+      "keys": {
+        "agent_id": 51,
+        "agent_type": 51,
+        "cwd": 74,
+        "effort": 74,
+        "hook_event_name": 81,
+        "permission_mode": 74,
+        "prompt_id": 74,
+        "session_id": 81,
+        "tool_input": 81,
+        "tool_name": 81,
+        "tool_use_id": 74,
+        "transcript_path": 74
+      },
+      "last_ts": "2026-08-28T19:26:06.087835+00:00",
+      "tool_input_keys": {
+        "Edit": {
+          "content": 1,
+          "file_path": 63,
+          "new_string": 62,
+          "old_string": 62,
+          "replace_all": 62
+        },
+        "Write": {
+          "content": 18,
+          "file_path": 18
+        }
+      }
+    },
+    "PreToolUse|writ-worktree-safety|in": {
+      "count": 343,
+      "direction": "in",
+      "event": "PreToolUse",
+      "first_ts": "2026-08-28T17:52:00.410160+00:00",
+      "hook": "writ-worktree-safety",
+      "keys": {
+        "agent_id": 234,
+        "agent_type": 231,
+        "cwd": 342,
+        "effort": 332,
+        "hook_event_name": 343,
+        "permission_mode": 332,
+        "prompt_id": 332,
+        "session_id": 343,
+        "tool_input": 343,
+        "tool_name": 343,
+        "tool_use_id": 332,
+        "transcript_path": 332
+      },
+      "last_ts": "2026-08-28T19:26:13.038179+00:00",
+      "tool_input_keys": {
+        "Bash": {
+          "command": 342,
+          "description": 147,
+          "run_in_background": 1,
+          "timeout": 2
+        },
+        "Write": {
+          "content": 1,
+          "file_path": 1
+        }
+      }
+    },
+    "SessionEnd|writ-session-end|in": {
+      "count": 3,
+      "direction": "in",
+      "event": "SessionEnd",
+      "first_ts": "2026-08-28T19:16:13.634186+00:00",
+      "hook": "writ-session-end",
+      "keys": {
+        "hook_event_name": 3,
+        "session_id": 1
+      },
+      "last_ts": "2026-08-28T19:19:15.958057+00:00",
+      "tool_input_keys": {}
+    },
+    "Stop|writ-run-pending-tests|in": {
+      "count": 22,
+      "direction": "in",
+      "event": "Stop",
+      "first_ts": "2026-08-28T17:52:58.494654+00:00",
+      "hook": "writ-run-pending-tests",
+      "keys": {
+        "background_tasks": 21,
+        "cwd": 21,
+        "effort": 21,
+        "hook_event_name": 22,
+        "last_assistant_message": 21,
+        "permission_mode": 21,
+        "prompt_id": 21,
+        "session_crons": 21,
+        "session_id": 22,
+        "stop_hook_active": 21,
+        "transcript_path": 21
+      },
+      "last_ts": "2026-08-28T19:11:57.731684+00:00",
+      "tool_input_keys": {}
+    },
+    "SubagentStart|writ-subagent-start|in": {
+      "count": 20,
+      "direction": "in",
+      "event": "SubagentStart",
+      "first_ts": "2026-08-28T18:00:24.878041+00:00",
+      "hook": "writ-subagent-start",
+      "keys": {
+        "agent_id": 20,
+        "agent_type": 20,
+        "cwd": 4,
+        "hook_event_name": 20,
+        "prompt": 4,
+        "prompt_id": 4,
+        "session_id": 20,
+        "task": 5,
+        "transcript_path": 4
+      },
+      "last_ts": "2026-08-28T19:19:43.022868+00:00",
+      "tool_input_keys": {}
+    },
+    "SubagentStart|writ-subagent-start|out": {
+      "count": 22,
+      "direction": "out",
+      "event": "SubagentStart",
+      "first_ts": "2026-08-28T18:00:25.254930+00:00",
+      "hook": "writ-subagent-start",
+      "hook_specific_output_keys": {
+        "additionalContext": 22,
+        "hookEventName": 22
+      },
+      "keys": {
+        "hookSpecificOutput": 22
+      },
+      "last_ts": "2026-08-28T19:19:43.402475+00:00",
+      "mechanisms": {
+        "additionalContext": 22
+      }
+    },
+    "SubagentStop|writ-blackbox-capture|in": {
+      "count": 146,
+      "direction": "in",
+      "event": "SubagentStop",
+      "first_ts": "2026-08-28T17:51:42.596963+00:00",
+      "hook": "writ-blackbox-capture",
+      "keys": {
+        "agent_id": 146,
+        "agent_transcript_path": 146,
+        "agent_type": 146,
+        "background_tasks": 146,
+        "cwd": 146,
+        "effort": 146,
+        "hook_event_name": 146,
+        "last_assistant_message": 146,
+        "permission_mode": 146,
+        "prompt_id": 146,
+        "session_crons": 146,
+        "session_id": 146,
+        "stop_hook_active": 146,
+        "transcript_path": 146
+      },
+      "last_ts": "2026-08-28T19:20:19.394595+00:00",
+      "tool_input_keys": {}
+    },
+    "UserPromptSubmit|writ-rag-inject|in": {
+      "count": 55,
+      "direction": "in",
+      "event": "UserPromptSubmit",
+      "first_ts": "2026-08-28T17:57:01.643308+00:00",
+      "hook": "writ-rag-inject",
+      "keys": {
+        "agent_id": 1,
+        "cwd": 24,
+        "hook_event_name": 55,
+        "permission_mode": 23,
+        "prompt": 55,
+        "prompt_id": 23,
+        "session_id": 55,
+        "transcript_path": 24
+      },
+      "last_ts": "2026-08-28T19:20:15.955100+00:00",
+      "tool_input_keys": {}
+    },
+    "unknown|bash|in": {
+      "count": 5,
+      "direction": "in",
+      "event": "unknown",
+      "first_ts": "2026-08-28T19:13:37.589107+00:00",
+      "hook": "bash",
+      "keys": {
+        "agent_id": 1,
+        "session_id": 3,
+        "tool_input": 3,
+        "tool_name": 2
+      },
+      "last_ts": "2026-08-28T19:17:44.933728+00:00",
+      "tool_input_keys": {
+        "Write": {
+          "content": 2,
+          "file_path": 2
+        }
+      }
+    },
+    "unknown|inject-tier-workflow|in": {
+      "count": 2,
+      "direction": "in",
+      "event": "unknown",
+      "first_ts": "2026-08-28T18:04:41.681001+00:00",
+      "hook": "inject-tier-workflow",
+      "keys": {
+        "session_id": 2,
+        "tool_input": 2,
+        "tool_name": 2,
+        "tool_output": 1,
+        "tool_response": 1
+      },
+      "last_ts": "2026-08-28T19:19:21.094450+00:00",
+      "tool_input_keys": {
+        "Bash": {
+          "command": 2
+        }
+      }
+    },
+    "unknown|validate-design-doc|in": {
+      "count": 2,
+      "direction": "in",
+      "event": "unknown",
+      "first_ts": "2026-08-28T19:16:13.332524+00:00",
+      "hook": "validate-design-doc",
+      "keys": {
+        "command": 1,
+        "file_path": 1,
+        "session_id": 2,
+        "tool_input": 2,
+        "tool_name": 2
+      },
+      "last_ts": "2026-08-28T19:16:14.505375+00:00",
+      "tool_input_keys": {
+        "TodoWrite": {
+          "todos": 1
+        },
+        "Write": {
+          "content": 1,
+          "file_path": 1
+        }
+      }
+    },
+    "unknown|validate-file|in": {
+      "count": 2,
+      "direction": "in",
+      "event": "unknown",
+      "first_ts": "2026-08-28T19:12:49.968346+00:00",
+      "hook": "validate-file",
+      "keys": {
+        "tool_input": 2,
+        "tool_name": 2,
+        "tool_response": 2
+      },
+      "last_ts": "2026-08-28T19:21:52.102939+00:00",
+      "tool_input_keys": {
+        "Write": {}
+      }
+    },
+    "unknown|validate-handoff|in": {
+      "count": 3,
+      "direction": "in",
+      "event": "unknown",
+      "first_ts": "2026-08-28T19:12:49.729311+00:00",
+      "hook": "validate-handoff",
+      "keys": {
+        "session_id": 1,
+        "tool_input": 3,
+        "tool_name": 3,
+        "tool_response": 2
+      },
+      "last_ts": "2026-08-28T19:21:52.150117+00:00",
+      "tool_input_keys": {
+        "Write": {
+          "content": 1,
+          "file_path": 1,
+          "path": 2
+        }
+      }
+    },
+    "unknown|validate-rules|in": {
+      "count": 13,
+      "direction": "in",
+      "event": "unknown",
+      "first_ts": "2026-08-28T18:59:18.597534+00:00",
+      "hook": "validate-rules",
+      "keys": {
+        "session_id": 11,
+        "tool_input": 13,
+        "tool_name": 3,
+        "tool_response": 2
+      },
+      "last_ts": "2026-08-28T19:21:52.055635+00:00",
+      "tool_input_keys": {
+        "Write": {}
+      }
+    },
+    "unknown|validate-test-file|in": {
+      "count": 5,
+      "direction": "in",
+      "event": "unknown",
+      "first_ts": "2026-08-28T19:14:37.797831+00:00",
+      "hook": "validate-test-file",
+      "keys": {
+        "agent_id": 1,
+        "command": 1,
+        "file_path": 1,
+        "session_id": 5,
+        "tool_input": 5,
+        "tool_name": 5
+      },
+      "last_ts": "2026-08-28T19:16:14.450003+00:00",
+      "tool_input_keys": {
+        "TodoWrite": {
+          "todos": 1
+        },
+        "Write": {
+          "file_path": 4
+        }
+      }
+    },
+    "unknown|writ-bash-write-gate|in": {
+      "count": 226,
+      "direction": "in",
+      "event": "unknown",
+      "first_ts": "2026-08-28T18:04:41.525961+00:00",
+      "hook": "writ-bash-write-gate",
+      "keys": {
+        "session_id": 226,
+        "tool_input": 226,
+        "tool_name": 226
+      },
+      "last_ts": "2026-08-28T19:19:27.084938+00:00",
+      "tool_input_keys": {
+        "Bash": {
+          "command": 225
+        },
+        "Write": {}
+      }
+    },
+    "unknown|writ-bible-authoring-push|in": {
+      "count": 1,
+      "direction": "in",
+      "event": "unknown",
+      "first_ts": "2026-08-28T18:51:15.418315+00:00",
+      "hook": "writ-bible-authoring-push",
+      "keys": {},
+      "last_ts": "2026-08-28T18:51:15.418315+00:00",
+      "tool_input_keys": {}
+    },
+    "unknown|writ-dispatch-discipline|in": {
+      "count": 2,
+      "direction": "in",
+      "event": "unknown",
+      "first_ts": "2026-08-28T19:12:02.699912+00:00",
+      "hook": "writ-dispatch-discipline",
+      "keys": {
+        "agent_id": 2,
+        "agent_type": 2,
+        "prompt": 2,
+        "session_id": 2,
+        "tool_input": 2,
+        "tool_name": 2
+      },
+      "last_ts": "2026-08-28T19:12:03.491309+00:00",
+      "tool_input_keys": {
+        "Write": {
+          "content": 2,
+          "file_path": 2
+        }
+      }
+    },
+    "unknown|writ-mark-pending-test|in": {
+      "count": 12,
+      "direction": "in",
+      "event": "unknown",
+      "first_ts": "2026-08-28T19:14:39.129687+00:00",
+      "hook": "writ-mark-pending-test",
+      "keys": {
+        "agent_id": 1,
+        "session_id": 12,
+        "tool_input": 12,
+        "tool_response": 12,
+        "tool_result_is_error": 1
+      },
+      "last_ts": "2026-08-28T19:14:40.646262+00:00",
+      "tool_input_keys": {}
+    },
+    "unknown|writ-memory-capture|in": {
+      "count": 9,
+      "direction": "in",
+      "event": "unknown",
+      "first_ts": "2026-08-28T19:11:46.224486+00:00",
+      "hook": "writ-memory-capture",
+      "keys": {
+        "session_id": 9,
+        "tool_input": 9,
+        "tool_name": 9
+      },
+      "last_ts": "2026-08-28T19:14:41.604495+00:00",
+      "tool_input_keys": {
+        "Bash": {
+          "file_path": 1
+        },
+        "Write": {
+          "file_path": 6
+        }
+      }
+    },
+    "unknown|writ-memory-policy-guard|in": {
+      "count": 28,
+      "direction": "in",
+      "event": "unknown",
+      "first_ts": "2026-08-28T19:16:38.977390+00:00",
+      "hook": "writ-memory-policy-guard",
+      "keys": {
+        "session_id": 28,
+        "tool_input": 28,
+        "tool_name": 28
+      },
+      "last_ts": "2026-08-28T19:16:42.675189+00:00",
+      "tool_input_keys": {
+        "Write": {
+          "content": 28,
+          "file_path": 28
+        }
+      }
+    },
+    "unknown|writ-pre-write-dispatch|in": {
+      "count": 9,
+      "direction": "in",
+      "event": "unknown",
+      "first_ts": "2026-08-28T19:12:02.478269+00:00",
+      "hook": "writ-pre-write-dispatch",
+      "keys": {
+        "agent_id": 2,
+        "agent_type": 2,
+        "prompt": 2,
+        "session_id": 9,
+        "tool_input": 9,
+        "tool_name": 9
+      },
+      "last_ts": "2026-08-28T19:18:00.096685+00:00",
+      "tool_input_keys": {
+        "Write": {
+          "content": 9,
+          "file_path": 9
+        }
+      }
+    },
+    "unknown|writ-pre-write-dispatch|out": {
+      "count": 26,
+      "direction": "out",
+      "event": "unknown",
+      "first_ts": "2026-08-28T17:56:07.657695+00:00",
+      "hook": "writ-pre-write-dispatch",
+      "hook_specific_output_keys": {},
+      "keys": {},
+      "last_ts": "2026-08-28T19:24:47.909443+00:00",
+      "mechanisms": {}
+    },
+    "unknown|writ-pressure-audit|in": {
+      "count": 2,
+      "direction": "in",
+      "event": "unknown",
+      "first_ts": "2026-08-28T18:59:39.115386+00:00",
+      "hook": "writ-pressure-audit",
+      "keys": {
+        "session_id": 2
+      },
+      "last_ts": "2026-08-28T19:13:41.120905+00:00",
+      "tool_input_keys": {}
+    },
+    "unknown|writ-quality-judge|in": {
+      "count": 2,
+      "direction": "in",
+      "event": "unknown",
+      "first_ts": "2026-08-28T19:16:14.393142+00:00",
+      "hook": "writ-quality-judge",
+      "keys": {
+        "command": 1,
+        "file_path": 2,
+        "session_id": 2,
+        "tool_input": 2,
+        "tool_name": 2
+      },
+      "last_ts": "2026-08-28T19:16:14.614782+00:00",
+      "tool_input_keys": {
+        "TodoWrite": {
+          "todos": 1
+        },
+        "Write": {
+          "file_path": 1
+        }
+      }
+    },
+    "unknown|writ-rag-inject|in": {
+      "count": 27,
+      "direction": "in",
+      "event": "unknown",
+      "first_ts": "2026-08-28T19:11:46.658820+00:00",
+      "hook": "writ-rag-inject",
+      "keys": {
+        "agent_id": 3,
+        "agent_type": 3,
+        "prompt": 26,
+        "session_id": 27,
+        "tool_input": 4,
+        "tool_name": 4
+      },
+      "last_ts": "2026-08-28T19:14:55.926191+00:00",
+      "tool_input_keys": {
+        "Write": {
+          "content": 3,
+          "file_path": 3
+        }
+      }
+    },
+    "unknown|writ-read-junk-gate|in": {
+      "count": 85,
+      "direction": "in",
+      "event": "unknown",
+      "first_ts": "2026-08-28T18:04:41.618319+00:00",
+      "hook": "writ-read-junk-gate",
+      "keys": {
+        "session_id": 85,
+        "tool_input": 85,
+        "tool_name": 85
+      },
+      "last_ts": "2026-08-28T19:18:13.584838+00:00",
+      "tool_input_keys": {
+        "Read": {
+          "file_path": 81
+        }
+      }
+    },
+    "unknown|writ-session-end|in": {
+      "count": 5,
+      "direction": "in",
+      "event": "unknown",
+      "first_ts": "2026-08-28T19:12:46.758533+00:00",
+      "hook": "writ-session-end",
+      "keys": {
+        "session_id": 3
+      },
+      "last_ts": "2026-08-28T19:24:55.798779+00:00",
+      "tool_input_keys": {}
+    },
+    "unknown|writ-subagent-start|in": {
+      "count": 5,
+      "direction": "in",
+      "event": "unknown",
+      "first_ts": "2026-08-28T19:11:46.922778+00:00",
+      "hook": "writ-subagent-start",
+      "keys": {
+        "agent_id": 4,
+        "agent_type": 4,
+        "prompt": 2,
+        "session_id": 5,
+        "tool_input": 3,
+        "tool_name": 3
+      },
+      "last_ts": "2026-08-28T19:15:12.885075+00:00",
+      "tool_input_keys": {
+        "Write": {
+          "content": 2,
+          "file_path": 2
+        }
+      }
+    },
+    "unknown|writ-web-capture|in": {
+      "count": 5,
+      "direction": "in",
+      "event": "unknown",
+      "first_ts": "2026-08-28T19:14:29.023237+00:00",
+      "hook": "writ-web-capture",
+      "keys": {
+        "session_id": 5,
+        "tool_input": 5,
+        "tool_name": 5,
+        "tool_output": 5
+      },
+      "last_ts": "2026-08-28T19:14:29.640010+00:00",
+      "tool_input_keys": {
+        "Read": {
+          "file_path": 1
+        },
+        "WebFetch": {
+          "prompt": 3,
+          "url": 3
+        },
+        "WebSearch": {
+          "query": 1
+        }
+      }
+    },
+    "unknown|writ-worktree-safety|in": {
+      "count": 4,
+      "direction": "in",
+      "event": "unknown",
+      "first_ts": "2026-08-28T18:04:41.572034+00:00",
+      "hook": "writ-worktree-safety",
+      "keys": {
+        "command": 1,
+        "file_path": 1,
+        "session_id": 4,
+        "tool_input": 4,
+        "tool_name": 4
+      },
+      "last_ts": "2026-08-28T19:16:14.560025+00:00",
+      "tool_input_keys": {
+        "Bash": {
+          "command": 3
+        },
+        "TodoWrite": {
+          "todos": 1
+        }
+      }
+    }
+  },
+  "source_log": "~/.claude/writ-blackbox.jsonl"
+}

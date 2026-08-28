@@ -1,4 +1,4 @@
-.PHONY: test perf bench check check-venv validate test-graph-up test-graph-down
+.PHONY: test perf firedrill bench check check-venv validate test-graph-up test-graph-down
 
 # Pin the Python interpreter to the project venv. The system python3 on many
 # machines lacks onnxruntime (and other optional bench dependencies), which
@@ -49,6 +49,16 @@ test: check-venv test-graph-up
 perf: check-venv
 	$(PYTHON) -m pytest -m perf -o addopts= -p no:randomly -q \
 	  tests/test_hook_perf_floors.py tests/test_retrieval.py
+
+# The negative-controls fire drill, alone. Every case triggers a real refusing
+# surface (a hook subprocess, or a real call into writ/session/gates.py) and asserts
+# the refusal was returned in its declared form AND recorded in the right typed
+# stream. It runs in `make test` too; this target exists so a person can run it
+# without remembering the marker, and so the drill's own exit status is the whole
+# exit status. `-m firedrill` rather than a path so it keeps selecting the drill if
+# the files move.
+firedrill: check-venv
+	$(PYTHON) -m pytest -m firedrill -q
 
 bench: check-venv
 	$(PYTHON) -m pytest benchmarks/bench_targets.py -x -q

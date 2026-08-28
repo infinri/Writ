@@ -1427,7 +1427,12 @@ PY
 # 1. Credential targets: deny in any mode, no server needed (org boundary).
 CRED_HIT=$(printf '%s\n' "$TARGETS" | awk -F'\t' '$1=="cred"{print $2; exit}')
 if [ -n "$CRED_HIT" ]; then
-    emit_deny "[SEC-CREDENTIAL-WRITE] Refusing this Bash command: it writes to a credential/secret path ('$CRED_HIT'). Secret material must not be written or overwritten by the agent. Name non-secret templates .env.example / .env.sample / *.pub."
+    # log_gate_decision, not just emit_deny. The gate-state arm eight lines below makes both
+    # calls; this one made only the second, so the org's hardest write boundary was the one
+    # refusal with no audit row. The asymmetry between two sibling arms was the evidence.
+    CRED_REASON="[SEC-CREDENTIAL-WRITE] Refusing this Bash command: it writes to a credential/secret path ('$CRED_HIT'). Secret material must not be written or overwritten by the agent. Name non-secret templates .env.example / .env.sample / *.pub."
+    log_gate_decision "bash-write" "deny" "$CRED_REASON" "$CRED_HIT"
+    emit_deny "$CRED_REASON"
     exit 0
 fi
 

@@ -298,6 +298,57 @@ def corpus_footprint(
         raise typer.Exit(1)
 
 
+@app.command(name="blackbox-census")
+def blackbox_census(
+    log: str = typer.Option(None, "--log", help="Capture log to read (default: ~/.claude/writ-blackbox.jsonl)."),
+    out: str = typer.Option(None, "--out", help="Artifact to write (default: docs/reference/blackbox-census.json)."),
+    cc_version: str = typer.Option("unknown", "--cc-version", help="The Claude Code build this capture window came from."),
+    as_json: bool = typer.Option(False, "--json", help="Print the census to stdout instead of writing the artifact."),
+) -> None:
+    """Regenerate the payload census from a blackbox capture log.
+
+    Reads only; capture coverage is not changed here. The artifact substantiates the
+    `delivery_provenance` tags in writ/shared/delivery.py: an entry backed by no captured
+    record stays `unproven` rather than being asserted, which is what keeps the fire drill
+    from asserting a documentation claim. An absent or empty log is NOT an error; it yields
+    a well-formed artifact with zero records and every registered event listed under
+    events_never_observed, which is the correct state right after capture is switched on."""
+    from writ.analysis.blackbox import build_census, read_capture_records
+    from writ.shared.delivery import CENSUS_PATH
+
+    def _home_relative(path: Path) -> str:
+        home = Path(os.path.expanduser("~"))
+        try:
+            return "~/" + str(path.relative_to(home))
+        except ValueError:
+            return str(path)
+
+    log_path = Path(log) if log else Path(os.path.expanduser("~/.claude/writ-blackbox.jsonl"))
+    records = read_capture_records(log_path)
+    census = build_census(records, claude_code_version=cc_version)
+    # HOME-RELATIVE, never absolute. This artifact is COMMITTED, and the public mirror
+    # would otherwise carry the generating machine's home path (and so its username)
+    # forever. The provenance that matters is WHICH log this came from, which `~/...`
+    # states just as well while staying true on anyone else's machine.
+    census["source_log"] = _home_relative(log_path)
+    payload = json.dumps(census, indent=2, sort_keys=True) + "\n"
+    if as_json:
+        typer.echo(payload)
+        return
+    out_path = Path(out) if out else Path(CENSUS_PATH)
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(payload, encoding="utf-8")
+    except OSError as e:
+        typer.echo(f"blackbox-census: cannot write {out_path}: {e}", err=True)
+        raise typer.Exit(1)
+    typer.echo(
+        f"blackbox-census: {census['record_count']} records, "
+        f"{len(census['records'])} record classes, "
+        f"{len(census['events_never_observed'])} events never observed -> {out_path}"
+    )
+
+
 @app.command(name="efficacy-ab")
 def efficacy_ab(
     suite_dir: str = typer.Argument(..., help="Task-suite dir (e.g. tests/efficacy_suite)."),

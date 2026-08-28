@@ -9,10 +9,11 @@ make test            # starts the disposable Neo4j, then pytest tests/ --maxfail
 make test-graph-up   # create or start that instance and warm it (idempotent)
 make test-graph-down # stop it, keeping its data
 make bench           # benchmarks/bench_targets.py (contractual perf floors)
+make firedrill       # the negative-controls fire drill, alone (pytest -m firedrill)
 make check           # test + bench + writ validate
 ```
 
-Over 400 test modules, roughly 7,900 collected tests (2026-08-14). Always use the venv interpreter (`.venv/bin/python`): the system interpreter lacks `onnxruntime` and fails the embedding tests. The suite runs on its own daemon port (8799) and against its own Neo4j instance on 7688 (see below). Markers: `perf` (latency-floor tests), `integration` (needs a live `claude` CLI, gated behind `WRIT_INTEGRATION_TESTS=1`), `no_friction_isolation` (opts out of the log redirect).
+Over 400 test modules, roughly 7,900 collected tests (2026-08-14). Always use the venv interpreter (`.venv/bin/python`): the system interpreter lacks `onnxruntime` and fails the embedding tests. The suite runs on its own daemon port (8799) and against its own Neo4j instance on 7688 (see below). Markers: `perf` (latency-floor tests), `integration` (needs a live `claude` CLI, gated behind `WRIT_INTEGRATION_TESTS=1`), `no_friction_isolation` (opts out of the log redirect), `firedrill` (the negative-controls fire drill, below).
 
 `--maxfail=10`, not `-x`: on a suite this size `-x` reports exactly one failure per run, so reaching green costs one run per failure at minutes each. Ten gives the whole picture and still refuses to grind through a broken suite.
 
@@ -77,6 +78,34 @@ The costs, stated rather than discovered:
 - Runtime records are only as safe as the guard inside `clear_all`. That guard is real, but it is the last line rather than the design.
 
 The reasoning behind the default, the alternatives it rejected, and the connection-level tripwire it replaced are recorded in [ADR-test-graph-isolation](../adr/ADR-test-graph-isolation.md).
+
+## The negative-controls fire drill (`tests/firedrill/`)
+
+A negative control is a test that proves the refusing machinery still refuses. The drill triggers each declared refusing surface for real and asserts three things per refusal, plus a conditional fourth: TRIGGERED (a real subprocess, or a real call into `writ/session/gates.py`), SHAPE (the declared exit code or a stdout `hookSpecificOutput.permissionDecision`, with a non-empty reason matching at least one action marker), RECORD (a durable row in the stream that row belongs to, read through `read_streams`), and DELIVERY only where the classification has captured provenance.
+
+```bash
+make firedrill                                  # the convenience wrapper
+.venv/bin/python -m pytest -m firedrill -q      # by marker, wherever the files live
+.venv/bin/python -m pytest tests/firedrill -q   # by path
+```
+
+It is **not** deselected by default, so `make test` and CI both run it. Notes for anyone adding a case:
+
+- **The marker comes from `tests/firedrill/conftest.py`**, applied to every item collected under that directory, not from a `pytestmark` in each module. Coverage that comes from WHERE a file lives cannot go stale; a list of modules that each remembered to mark themselves goes stale the moment a fifth one does not.
+- **The drill opts out of the friction-log redirect** (`no_friction_isolation`, same conftest). `WRIT_FRICTION_LOG` collapses every typed stream into one file, and the drill's whole claim is about WHICH stream carries each record, so under the redirect every stream-routing assertion would be vacuous.
+- **`tests/firedrill/_census.py`** declares the inventory: per refusal, its script, event, trigger setup, declared mechanism, declared record shape, declared stream, and the action-marker set a reason must match. `tests/_inventory.py::derive_refusing_scripts` derives the same population from hook source, so a script that gains a refusal path and is not declared makes the drill red. That red is the point: do not narrow the derivation to match the census.
+- **`tests/firedrill/_harness.py`** is the only hook runner. It pins `WRIT_CACHE_DIR`, `WRIT_LOG_ROOT`, `WRIT_LOG_PROJECT`, `HOME` (blackbox capture writes under `$HOME`, so an unpinned HOME would append drill traffic to the developer's real capture log), `WRIT_NO_AUTOSTART=1` and a closed `WRIT_PORT`, and removes `WRIT_FRICTION_LOG`. The closed port is deliberate: every gate that consults the daemon then takes its local-fallback arm, which is the outage case and the arm most likely to lose a record.
+
+### The payload census artifact
+
+`docs/reference/blackbox-census.json` is what makes the drill's delivery layer a measurement rather than a doc claim. `writ/shared/delivery.py::delivery_provenance` returns `observed` only for an (event, mechanism) pair the artifact holds a record class for, and `unproven` otherwise; the drill asserts delivery only for `observed` entries and reports the rest by name. Regenerate it per Claude Code version:
+
+```bash
+.venv/bin/python -m writ.cli blackbox-census --cc-version "$(claude --version | awk '{print $1}')" \
+  --out docs/reference/blackbox-census.json
+```
+
+`writ/analysis/blackbox.py` is the pure reader behind it (records in, census out; it writes nothing and captures nothing) and `tests/test_blackbox_census.py` covers it in the normal suite. The artifact is keyed `<event>|<hook>|<direction>` and carries structure only: observed key names with counts, `tool_input` key sets per `tool_name`, `hookSpecificOutput` keys and mechanisms for OUT records, and a first/last timestamp. **Absence is stated, never inferred**: `events_never_observed` is derived from `hooks/hooks.json`, so "no data for this event" is a row in the file rather than a missing key. An absent or empty capture log is not an error; it yields a well-formed zero-record artifact, which is the correct state right after capture is switched on.
 
 ## Traps when writing tests
 

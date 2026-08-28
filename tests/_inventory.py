@@ -23,10 +23,29 @@ replaced. A vacuous test is a lie that reads like coverage.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 HOOKS_JSON = REPO / "hooks" / "hooks.json"
+HOOK_SCRIPTS_DIR = REPO / "hooks" / "scripts"
+
+# The THREE ways a hook script can refuse, and there are only three. Each pattern is matched
+# against source lines that are not whole-line comments, so a script that merely DESCRIBES a
+# deny in its header (writ-debug-code-gate.sh says "Emits a deny permissionDecision" on line
+# 7) is classified on its code, not its prose.
+_REFUSAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    # 1. The single-source PreToolUse funnels in bin/lib/common.sh.
+    ("emit_deny_or_ask", re.compile(r"\b(emit_deny|emit_ask)\b")),
+    # 2. A non-zero bash exit status. Zero is an allow, so the digit is part of the pattern.
+    ("nonzero_exit", re.compile(r"^\s*exit\s+[1-9][0-9]*\s*(?:#.*)?$")),
+    # 3. A permissionDecision of deny or ask, hand-built inside an embedded python block.
+    #    Both quoting styles, because the scripts use single quotes inside heredocs and
+    #    double quotes outside them.
+    ("permission_decision", re.compile(
+        r"""permissionDecision["']?\s*:\s*["'](deny|ask)["']"""
+    )),
+)
 
 
 def _hooks_manifest() -> dict:
@@ -72,6 +91,47 @@ def hook_script_names() -> list[str]:
             if token.endswith(".sh"):
                 names.add(token.rsplit("/", 1)[-1][:-3])
     return sorted(names)
+
+
+def _refusal_markers(source: str) -> list[str]:
+    """Which of the three refusal mechanisms this script's CODE uses, in pattern order."""
+    lines = [ln for ln in source.splitlines() if not ln.lstrip().startswith("#")]
+    found: list[str] = []
+    for name, pattern in _REFUSAL_PATTERNS:
+        if any(pattern.search(ln) for ln in lines):
+            found.append(name)
+    return found
+
+
+def refusing_script_markers() -> dict[str, list[str]]:
+    """Every hook script that can refuse, mapped to the mechanisms it refuses WITH.
+
+    Derived from `hooks/scripts/*.sh` source, never from a list. The mechanisms are returned
+    alongside the names so a triager reading a red completeness test can see WHY a script was
+    classified as refusing without re-deriving it by hand.
+    """
+    out: dict[str, list[str]] = {}
+    for path in sorted(HOOK_SCRIPTS_DIR.glob("*.sh")):
+        markers = _refusal_markers(path.read_text(encoding="utf-8", errors="replace"))
+        if markers:
+            out[path.name] = markers
+    return out
+
+
+def derive_refusing_scripts() -> list[str]:
+    """The canonical refusing-script population, derived from hook source.
+
+    ONE HOME for this population. The negative-controls fire drill declares a census of
+    refusals per script, and a census compared against a literal list copied into a drill
+    module would go stale the moment a new refusing script landed: that is the exact
+    duplication this module exists to delete.
+
+    THE DERIVATION IS DELIBERATELY NOT NARROWED TO WHAT IS ALREADY COVERED. A script that
+    refuses and is not declared anywhere must make the completeness test RED, because that
+    red is the only signal a new, untested refusal exists. Filtering this function down to
+    the declared set would make every future gap invisible, which is worse than the gap.
+    """
+    return sorted(refusing_script_markers())
 
 
 def doctor_check_names() -> list[str]:

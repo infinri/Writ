@@ -30,6 +30,12 @@ FILE="$HOOK_FILE_PATH"
 # Session ID (needed for sentinel-path lookup even before file checks)
 SESSION_ID="$HOOK_SESSION_ID"
 
+# The message BOTH exit-2 sites print. One string, because the two sites express the same
+# refusal at different moments (this turn's tail end, and the next turn's top of file) and
+# two wordings would drift. It names the gate that was cleared, the action, and who may take
+# it: only the user can re-approve, so a message that said "fix it" would be a deadlock.
+VALIDATE_RULES_BLOCK_MSG="[Writ: phase-a gate invalidated] A rule that was already loaded at planning time was violated, so the phase-a approval has been CLEARED and every source write stays blocked until it is approved again. Tell the user which rule was violated and what the plan has to change, then ask them to reply exactly \"approved\" in their own turn. Only the user can re-approve phase-a; nothing you can run does it."
+
 # Sentinel-driven gate-invalidation signal: a prior run (or the boundary-mode
 # block below) writes a per-session sentinel when it routes a finding to
 # invalidate-gate. Honor that signal as the only path to exit 2; remove the
@@ -42,6 +48,12 @@ if [ -n "$SESSION_ID" ]; then
     SENTINEL_PATH="${TMPDIR:-/tmp}/writ-validate-rules-invalidated-${SESSION_ID}"
     if [ -f "$SENTINEL_PATH" ]; then
         rm -f "$SENTINEL_PATH"
+        # THIS SITE WAS A BARE `exit 2` WITH NO ECHO AND NO STDERR AT ALL. The exit code
+        # blocks the turn, and the only text explaining why was printed by a different
+        # branch one full turn earlier, so the strongest PostToolUse refusal in the system
+        # arrived silent. A refusal that names no action is a deadlock, not a control.
+        # Additive: the exit code is unchanged, and only the message is new.
+        echo "$VALIDATE_RULES_BLOCK_MSG" >&2
         exit 2
     fi
 fi
@@ -310,8 +322,18 @@ _writ_session clear-pending-violations "$SESSION_ID" 2>/dev/null || true
 
 # Sentinel-driven final exit. Exit 2 only when the gate-invalidation block
 # wrote the sentinel; remove it after reading so the next run starts clean.
+# Same message as the top-of-file site, for the same reason: this exit 2 was bare too.
+# The findings report a few lines above already wrote to stderr on this path, which is
+# exactly why the drill isolates the fix at the OTHER site: a bare non-empty check here
+# would pass whether or not the echo exists.
+#
+# The echo and the exit stay TIGHT against the guard on purpose:
+# tests/test_exit_code_audit.py scans a fixed window of lines after
+# `if [ -f "$SENTINEL_PATH" ]` for a bare `exit 2`, so commentary inside the block pushes
+# the exit out of that window and reads as a missing blocking path.
 if [ -f "$SENTINEL_PATH" ]; then
     rm -f "$SENTINEL_PATH"
+    echo "$VALIDATE_RULES_BLOCK_MSG" >&2
     exit 2
 fi
 exit 0

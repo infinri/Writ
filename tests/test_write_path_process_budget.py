@@ -31,6 +31,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -143,6 +144,23 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def _isolated_env() -> dict:
+    """The ambient environment with HOME redirected to an empty throwaway directory.
+
+    HOME is load-bearing for THIS measurement, not hygiene. `blackbox_log` in
+    bin/lib/common.sh enables itself from the sentinel file `$HOME/.claude/writ-blackbox.on`
+    and then spawns one python per hook, so with capture switched on for a real session
+    every count here rises by one per write-path hook and the ratchet fails for a reason
+    that has nothing to do with the write path. Measured 2026-08-28: 31 python startups
+    with capture on versus the ratchet, and the diff under test had added no process at
+    all. A budget whose value depends on a developer's ambient debug switch is not a
+    budget, so the switch is excluded here rather than the number being raised.
+    """
+    env = os.environ.copy()
+    env["HOME"] = tempfile.mkdtemp(prefix="writ-budget-home-")
+    return env
+
+
 def _counts(hook: str) -> tuple[int, int]:
     """(python_startups, total_processes) for one hook run on the write envelope."""
     trace = Path("/tmp") / f"writ-budget-{hook}.trace"
@@ -150,6 +168,7 @@ def _counts(hook: str) -> tuple[int, int]:
         ["strace", "-f", "-qq", "-e", "trace=execve", "-o", str(trace),
          "bash", str(HOOKS / hook)],
         input=ENVELOPE, capture_output=True, text=True, timeout=180,
+        env=_isolated_env(),
     )
     if not trace.exists():
         pytest.skip(f"strace produced no trace for {hook}")
@@ -171,6 +190,7 @@ def _real_processes(hook: str) -> int:
         ["strace", "-f", "-qq", "-e", "trace=execve", "-o", str(trace),
          "bash", str(HOOKS / hook)],
         input=ENVELOPE, capture_output=True, text=True, timeout=180,
+        env=_isolated_env(),
     )
     if not trace.exists():
         pytest.skip(f"strace produced no trace for {hook}")
@@ -288,7 +308,7 @@ class TestInstrumentationSpawnsNothing:
             "exit 0\n"
         )
         trace = tmp_path / "trace.txt"
-        env = os.environ.copy()
+        env = _isolated_env()
         env["WRIT_CACHE_DIR"] = str(tmp_path / "cache")
         env["WRIT_LOG_ROOT"] = str(tmp_path / "logs")
         env["WRIT_PORT"] = "19999"
