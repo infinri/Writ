@@ -200,6 +200,11 @@ STREAM_MAP: dict[str, str] = {
     # created. Metrics, beside its lifecycle siblings, because the governance census
     # counts lazily seeded agents from it and reads that stream.
     "subagent_seeded": "metrics",
+    # The POSITIVE record that SubagentStart ran and its seed block did not. Metrics,
+    # beside subagent_start and subagent_seeded, because the governance census reads that
+    # one stream and has to separate "the hook never fired" from "it fired and the seed
+    # failed" without inferring either from a missing row.
+    "subagent_seed_failed": "metrics",
     "playbook_step_complete": "metrics",
     "phase_token_summary": "metrics",
     "phase_transition_time": "metrics",

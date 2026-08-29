@@ -1487,12 +1487,28 @@ def _subagent_governance_census() -> dict | None:
 
     Returns None when no stream is readable, which is NOT the same as "nothing is governed".
 
-    Four buckets, because averaging them hides the thing worth knowing:
-      governed   -- a `subagent_start` row: the event fired, the cache was made at spawn
-      lazy       -- a `subagent_seeded` row: a hook inside the agent made the cache
-      reachable  -- neither, but Writ hooks ran inside it (a daemon or hook row under its
-                    own agent id), so a future hook could seed it
-      unreachable-- only stop-side rows: Writ never ran anything inside it
+    Five buckets, because averaging them hides the thing worth knowing:
+      governed:    a `subagent_start` row and no unrepaired seed failure, so the event
+                   fired and the cache was made at spawn
+      lazy:        a `subagent_seeded` row that does NOT name the spawn path, so a hook
+                   inside the agent made the cache
+      seed_failed: a `subagent_seed_failed` row with no later seed of any kind, so the
+                   hook ran and the seeding inside it did not
+      reachable:   none of those, but Writ hooks ran inside it (a daemon or hook row under
+                   its own agent id), so a future hook could seed it
+      unreachable: only stop-side rows, so Writ never ran anything inside it
+
+    A SEED FAILURE IS A POSITIVE RECORD, NEVER AN INFERENCE FROM A MISSING ROW. A
+    `subagent_start` row is written at the END of the hook whether or not the seed block ran,
+    so that row alone stopped proving governance; what subtracts an agent from `governed` is
+    its own `subagent_seed_failed` row and nothing else. The archives hold no such row, so
+    every dispatch recorded before this event existed keeps exactly the classification it
+    had, and nothing is retroactively relabelled.
+
+    A SPAWN-MARKED SEED IS NOT A LAZY ONE. `seed_subagent_cache` logs `subagent_seeded` on
+    both paths, so counting every such row as lazy would count each governed dispatch twice
+    once spawn seeding works again. A row with no `cache_source` at all keeps its earlier
+    lazy meaning: it is not evidence that the spawn hook seeded.
 
     READS THE ARCHIVES. The wrong diagnosis that produced this cycle came from a grep that
     silently skipped 226 gzipped files holding 1,421 `subagent_start` rows, so a census that
@@ -1515,6 +1531,8 @@ def _subagent_governance_census() -> dict | None:
 
     started: set[str] = set()
     seeded: set[str] = set()
+    lazily_seeded: set[str] = set()
+    seed_failed: set[str] = set()
     completed: set[str] = set()
     active: set[str] = set()
     read_any = False
@@ -1534,7 +1552,12 @@ def _subagent_governance_census() -> dict | None:
                     if event == "subagent_start":
                         started.add(agent or str(row.get("session") or ""))
                     elif event == "subagent_seeded":
-                        seeded.add(agent or str(row.get("session") or ""))
+                        who = agent or str(row.get("session") or "")
+                        seeded.add(who)
+                        if str(row.get("cache_source") or "") != "subagent_start":
+                            lazily_seeded.add(who)
+                    elif event == "subagent_seed_failed":
+                        seed_failed.add(agent or str(row.get("session") or ""))
                     elif event == "subagent_complete":
                         completed.add(agent)
                     else:
@@ -1549,10 +1572,14 @@ def _subagent_governance_census() -> dict | None:
     if not read_any:
         return None
 
-    ungoverned = completed - started - seeded
+    # A later seed of any kind REPAIRS a failure, so only agents that were never seeded
+    # afterwards are held against the governed count.
+    unrepaired = seed_failed - seeded
+    ungoverned = completed - started - seeded - unrepaired
     return {
-        "governed": len(completed & started),
-        "lazy": len(completed & seeded),
+        "governed": len((completed & started) - unrepaired),
+        "lazy": len(completed & lazily_seeded),
+        "seed_failed": len(completed & unrepaired),
         "reachable": len(ungoverned & active),
         "unreachable": len(ungoverned - active),
         "total": len(completed),
@@ -1638,8 +1665,12 @@ def check_subagent_governance_census(opts: DoctorOptions) -> CheckResult:
 
     detail = (
         f"{census['governed']} governed at spawn, {census['lazy']} lazily seeded, "
+        f"{census['seed_failed']} whose seeding failed at spawn, "
         f"{census['reachable']} ungoverned but reachable, "
-        f"{census['unreachable']} unreachable, of {census['total']} dispatches."
+        f"{census['unreachable']} unreachable, of {census['total']} dispatches. "
+        "The seeding-failure count comes only from subagent_seed_failed rows, which no "
+        "archived dispatch carries, so a zero there means unrecorded rather than proven "
+        "clean."
     )
     covered = census["governed"] + census["lazy"]
     # Warn only when the MAJORITY is ungoverned. A handful of unreachable agents is the
