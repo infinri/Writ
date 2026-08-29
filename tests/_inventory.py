@@ -93,6 +93,30 @@ def hook_script_names() -> list[str]:
     return sorted(names)
 
 
+def matcher_tools_for_script(script_name: str) -> list[str]:
+    """The PreToolUse matcher's tool names for a registered hook script, split on `|`.
+
+    Derived from `hooks/hooks.json` rather than copied as a literal (e.g. `["Grep",
+    "Read", "Glob"]` hand-typed into a test), so a property test's tool FACTOR stays
+    locked to the real registration. Hand-listing it would let a future matcher edit
+    (a tool added or removed from `writ-debug-code-gate.sh`'s registration) leave the
+    test matrix silently narrower or stale than what Claude Code actually invokes the
+    hook for, the same duplication problem this module exists to delete (see the
+    module docstring's four-broken-pins story).
+
+    Returns [] when `script_name` is not registered under any event, so a caller can
+    fail loudly on an empty result rather than silently testing zero tools.
+    """
+    for _event, entries in (_hooks_manifest().get("hooks") or {}).items():
+        for entry in entries or []:
+            for hook in (entry.get("hooks") or []):
+                command = str(hook.get("command") or "")
+                if command.rstrip().endswith(f"/{script_name}"):
+                    matcher = entry.get("matcher") or ""
+                    return [t for t in matcher.split("|") if t]
+    return []
+
+
 def _refusal_markers(source: str) -> list[str]:
     """Which of the three refusal mechanisms this script's CODE uses, in pattern order."""
     lines = [ln for ln in source.splitlines() if not ln.lstrip().startswith("#")]

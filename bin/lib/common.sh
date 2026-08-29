@@ -61,6 +61,86 @@ except Exception:
 " "$p" 2>/dev/null | tr -d '[:space:]'
 }
 
+# The runtime-lens read gate's skip predicate.
+# writ_runtime_lens_check_required <session_id>
+#   exit 0  the expensive `writ-session.py can-read-code` check is REQUIRED
+#   exit 1  the runtime lens provably cannot deny for this session; skipping is safe
+#
+# THE PROPERTY. gates._can_read_code_check returns allow immediately unless
+# mode_engine._effective_source_type(cache) == "runtime", and that helper returns the
+# cache's own source_type when truthy, else MODE_CONFIG[mode]["source_type"], where
+# "debug" is the only mode carrying a static "runtime". So the check is required when
+# source_type == "runtime", or when source_type is falsy and mode == "debug".
+# tests/test_debug_lens_predicate.py evaluates that against the REAL gate over the
+# derived cross product of modes, source types and matcher tools.
+#
+# THE FAIL DIRECTION IS THE SAFETY ARGUMENT. Anything that does not resolve to a parsed
+# JSON OBJECT returns "check required": an absent file, an unreadable one, bytes that
+# are not JSON, a non-object top level, a session id that names no reachable path, or a
+# line this function cannot split unambiguously. Skipping on uncertainty would be a
+# silent gate bypass, so uncertainty always pays the full cost and never grants a read.
+#
+# ONE PROCESS FOR BOTH FIELDS, and the same WRIT_NO_JQ seam parsed_field uses. Each arm
+# emits a sentinel-prefixed, unit-separated line ONLY when the document parses and is an
+# object, and each field is emitted as "s:<value>" when it is a JSON string and "x"
+# otherwise. The arms never decide anything: the comparison against the literals "debug"
+# and "runtime" happens here, once, in bash. That is deliberate. jq's `//` falls through
+# on null and false while python's `or` also falls through on an empty string, and jq
+# calls 0 truthy where python calls it falsy; transporting the JSON TYPE rather than a
+# truthiness verdict means the two arms cannot disagree. A value that is not a string
+# can never be the string "runtime", so treating every non-string as "no usable
+# source_type" and deferring to the mode is safe in the required direction.
+#
+# The jq call is wrapped so absence is a normal input: jq exits 2 on a missing file and
+# 4/5 on a corrupt one, and every hook runs under `set -euo pipefail`, exactly as
+# writ_session_mode_direct documents.
+writ_runtime_lens_check_required() {
+    local _wrlc_path _wrlc_line _wrlc_tag _wrlc_mode _wrlc_source _wrlc_extra
+    _wrlc_path="$(writ_session_cache_dir)/writ-session-$1.json"
+    _wrlc_line=""
+    if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1; then
+        _wrlc_line="$({ jq -r --arg us $'\x1f' 'if type == "object" then
+    "WRLC" + $us
+    + (if (.mode | type) == "string" then "s:" + .mode else "x" end)
+    + $us
+    + (if (.source_type | type) == "string" then "s:" + .source_type else "x" end)
+else empty end' "$_wrlc_path" 2>/dev/null || true; })"
+    else
+        _wrlc_line="$(python3 -c '
+import json, sys
+US = chr(31)
+try:
+    with open(sys.argv[1]) as fh:
+        d = json.load(fh)
+except Exception:
+    sys.exit(0)
+if not isinstance(d, dict):
+    sys.exit(0)
+def tok(v):
+    return "s:" + v if isinstance(v, str) else "x"
+sys.stdout.write("WRLC" + US + tok(d.get("mode")) + US + tok(d.get("source_type")) + "\n")
+' "$_wrlc_path" 2>/dev/null || true)"
+    fi
+
+    # A value carrying a newline or a unit separator would shift the field boundaries,
+    # so a line this function cannot split unambiguously pays the check.
+    case "$_wrlc_line" in
+        *$'\n'*) return 0 ;;
+    esac
+    _wrlc_tag=""; _wrlc_mode=""; _wrlc_source=""; _wrlc_extra=""
+    IFS=$'\x1f' read -r _wrlc_tag _wrlc_mode _wrlc_source _wrlc_extra <<<"$_wrlc_line" || true
+    [ "$_wrlc_tag" = "WRLC" ] || return 0
+    [ -z "$_wrlc_extra" ] || return 0
+
+    [ "$_wrlc_source" = "s:runtime" ] && return 0
+    case "$_wrlc_source" in
+        "s:"|x)
+            [ "$_wrlc_mode" = "s:debug" ] && return 0
+            ;;
+    esac
+    return 1
+}
+
 # ── The session mode a telemetry / audit row is stamped with ─────────────────
 # Resolves that mode into the global _WRIT_ROW_MODE.
 #
