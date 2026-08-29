@@ -130,6 +130,78 @@ class TestDeliveryProvenance:
         assert delivery_provenance("Stop", "exit2_stderr") == "unproven"
 
 
+class TestNarrowedRecordsSemanticsPreserveProvenance:
+    """plan.md `dfacff61-23d5-474e-846c-2e2f0f0ea482`: `records` narrows by exactly
+    one thing: rows PROVEN synthetic move out into a `synthetic_records` sibling
+    with the identical entry shape. `writ.shared.delivery` needs no change at all
+    for this: it must keep reading exactly the `records` key, so a synthetic row's
+    mechanism can never satisfy a provenance claim, and a census with no proven-
+    synthetic rows at all answers exactly as it did before this sibling key
+    existed."""
+
+    def test_a_synthetic_records_sibling_never_satisfies_provenance(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        delivery_provenance = _delivery_provenance()
+        delivery_mod = _delivery_module()
+        census = tmp_path / "census.json"
+        census.write_text(json.dumps({
+            "records": {},
+            "synthetic_records": {
+                "PreToolUse|writ-state-write-gate.sh|out": {
+                    "count": 5,
+                    "mechanisms": ["permissionDecisionReason"],
+                },
+            },
+        }))
+        monkeypatch.setattr(delivery_mod, "CENSUS_PATH", census)
+
+        assert delivery_provenance("PreToolUse", "permissionDecisionReason") == "unproven", (
+            "a record class that exists ONLY under synthetic_records must not "
+            "satisfy delivery_provenance: a row known to be a probe is not evidence "
+            "of real delivery"
+        )
+
+    def test_a_log_with_no_proven_synthetic_rows_answers_exactly_as_before(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        delivery_provenance = _delivery_provenance()
+        delivery_mod = _delivery_module()
+        without_sibling = tmp_path / "no-sibling.json"
+        without_sibling.write_text(json.dumps({
+            "records": {
+                "PreToolUse|writ-state-write-gate.sh|out": {
+                    "count": 5,
+                    "mechanisms": ["permissionDecisionReason"],
+                },
+            },
+        }))
+        with_empty_sibling = tmp_path / "with-empty-sibling.json"
+        with_empty_sibling.write_text(json.dumps({
+            "records": {
+                "PreToolUse|writ-state-write-gate.sh|out": {
+                    "count": 5,
+                    "mechanisms": ["permissionDecisionReason"],
+                },
+            },
+            "synthetic_records": {},
+        }))
+
+        monkeypatch.setattr(delivery_mod, "CENSUS_PATH", without_sibling)
+        before = delivery_provenance("PreToolUse", "permissionDecisionReason")
+        monkeypatch.setattr(delivery_mod, "CENSUS_PATH", with_empty_sibling)
+        after = delivery_provenance("PreToolUse", "permissionDecisionReason")
+
+        assert before == "observed", (
+            "precondition failed: the pre-sibling artifact must already be observed "
+            f"for this comparison to mean anything, got {before!r}"
+        )
+        assert after == before, (
+            f"adding an empty synthetic_records sibling changed the verdict: "
+            f"before={before!r} after={after!r}"
+        )
+
+
 class TestDrillReportsUnprovenDeliverySet:
     """The drill-wide property: every declared refusal's delivery is EITHER
     reported (unproven) or asserted (observed), never silently skipped and never

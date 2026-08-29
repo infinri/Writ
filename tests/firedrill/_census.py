@@ -15,7 +15,7 @@ completeness check in test_refusal_inventory.py has one canonical list to read.
 
 COVERAGE NOTE (stated here rather than hidden): this census does not yet declare
 every bash-side refusal the plan's Analysis counts (33 across 14 scripts). It covers
-26 refusals across 15 scripts with a real, working trigger each, including the whole
+28 refusals across 15 scripts with a real, working trigger each, including the whole
 irreversible-destruction vector in writ-bash-write-gate.sh (the Neo4j-via-container
 statements and the five git-history patterns match on plain command text, so each is
 a one-line payload with no fixture, no live server and no classification step -- the
@@ -229,6 +229,43 @@ def _setup_pre_validate_commented_out(iso: Isolation) -> dict:
             "hook_event_name": "PreToolUse",
             "tool_name": "Write",
             "tool_input": {"file_path": str(target), "content": new_content},
+        },
+    }
+
+
+def _setup_pre_validate_shell_syntax(iso: Isolation) -> dict:
+    """Tier 1's replace_all fix (plan.md dfacff61-23d5-474e-846c-2e2f0f0ea482): a
+    real subprocess proof that the FIX, not only a unit test, is what makes this
+    refusal fire.
+
+    The target's FIRST "fi" occurs inside a comment (harmless to remove); its
+    SECOND is the real closing keyword of the one if-block below it. Today's bug
+    replaces only the first occurrence regardless of `replace_all`, so the
+    reconstructed content loses only the harmless comment text and parses fine --
+    this refusal cannot fire, which is why it was undeclared. Honouring
+    `replace_all: true` replaces BOTH, so the reconstructed content is missing its
+    closing `fi` and `bash -n` refuses it.
+    """
+    target = iso.project_root / "scripts" / "syntax_thing.sh"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        "#!/bin/bash\n"
+        "# note: fi appears here as trivia only\n"
+        "if true; then\n"
+        "  echo hello\n"
+        "fi\n"
+    )
+    return {
+        "envelope": {
+            "session_id": iso.session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Edit",
+            "tool_input": {
+                "file_path": str(target),
+                "old_string": "fi",
+                "new_string": "",
+                "replace_all": True,
+            },
         },
     }
 
@@ -502,6 +539,25 @@ REFUSALS: list[Refusal] = [
         shape="gate_decision",
         gate_name="shell-commented-out",
         setup=_setup_pre_validate_commented_out,
+    ),
+    Refusal(
+        id="pre-validate-shell-syntax",
+        script="pre-validate-file.sh",
+        event="PreToolUse",
+        mechanism="permissionDecisionReason",
+        permission_decision="deny",
+        shape="gate_decision",
+        gate_name="shell-syntax",
+        setup=_setup_pre_validate_shell_syntax,
+        check_action_marker=False,
+        notes=(
+            "Tier 1's replace_all fix, proved through a real subprocess refusal "
+            "that could not fire correctly before it (plan.md "
+            "dfacff61-23d5-474e-846c-2e2f0f0ea482). check_action_marker=False: "
+            "SHELL_REASON names the file and bash -n's own parse error but no "
+            "corrective action, a pre-existing property of that message, out of "
+            "this fix's scope and not loosened here to make the generic loop pass."
+        ),
     ),
     Refusal(
         id="validate-exit-plan",

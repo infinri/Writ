@@ -342,8 +342,15 @@ def blackbox_census(
     except OSError as e:
         typer.echo(f"blackbox-census: cannot write {out_path}: {e}", err=True)
         raise typer.Exit(1)
+    # The origin split rides on the SUMMARY LINE, not only inside the artifact. Roughly a
+    # third of the capture is hand-built probe payloads, so a bare record_count reads as a
+    # count of real Claude Code traffic and overstates the evidence by the contaminated share.
+    origins = census["origin_counts"]
     typer.echo(
-        f"blackbox-census: {census['record_count']} records, "
+        f"blackbox-census: {census['record_count']} records "
+        f"(harness {origins['harness']}, "
+        f"undetermined {origins['undetermined']}, "
+        f"synthetic {origins['synthetic']}), "
         f"{len(census['records'])} record classes, "
         f"{len(census['events_never_observed'])} events never observed -> {out_path}"
     )
