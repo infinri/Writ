@@ -157,7 +157,7 @@ try:
 except Exception:
     print('[ENF-POST-007] Pre-write validation failed for $FILE')
 " 2>/dev/null)
-  python3 -c "
+  DENY_REPLY=$(python3 -c "
 import json, sys
 print(json.dumps({
     'hookSpecificOutput': {
@@ -166,7 +166,8 @@ print(json.dumps({
         'permissionDecisionReason': sys.argv[1]
     }
 }))
-" "${REASON:-Pre-write validation failed}"
+" "${REASON:-Pre-write validation failed}") || DENY_REPLY=""
+  emit_hook_reply "$DENY_REPLY"
   log_gate_decision "pre-write-validation" "deny" "${REASON:-Pre-write validation failed}" "${FILE_PATH:-}"
   exit 0
 fi

@@ -133,7 +133,7 @@ PY
 # Emit deny directive. The assistant should either (a) revise the memory
 # to not encode a rule bypass, or (b) add an explicit override marker
 # with authorization.
-python3 <<'PY'
+DENY_REPLY=$(python3 <<'PY'
 import json
 reason = (
     "[Writ: memory rule-weakening blocked] This memory write would persist "
@@ -160,4 +160,6 @@ print(json.dumps({
     }
 }))
 PY
+) || DENY_REPLY=""
+emit_hook_reply "$DENY_REPLY"
 exit 0

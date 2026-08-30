@@ -391,7 +391,7 @@ load_hook_env() {
     # and log the RAW envelope -- the true CC payload, not Writ's normalized form. When OFF,
     # the parser reads stdin directly exactly as before: zero added cost on the hot path.
     local _bb_raw=""
-    if [ "${WRIT_BLACKBOX:-}" = "1" ] || [ -f "${HOME:-}/.claude/writ-blackbox.on" ]; then
+    if blackbox_enabled; then
         _bb_raw=$(cat)
         eval "$(printf '%s' "$_bb_raw" | _writ_parse_hook_stdin)"
     else
@@ -465,7 +465,9 @@ except Exception:
 # wiring it into a pipe is zero-overhead and behavior-neutral in production. Never fails
 # the caller. Log path: $WRIT_BLACKBOX_LOG (default ~/.claude/writ-blackbox.jsonl).
 # Usage:  printf '%s' "$STDIN_JSON" | blackbox_log in  "$(basename "$0")" "$SESSION_ID"
-#         printf '%s' "$OUTPUT"     | blackbox_log out "$(basename "$0")" "$SESSION_ID"
+# The "out" direction is NOT called from a hook script. emit_hook_reply below is the one
+# writer, so an out row can only ever hold the bytes that were actually sent; a hook that
+# cannot reach the logger cannot record a reconstruction of its reply instead of the reply.
 # Default cap on the capture log, 256 MiB. Named rather than inline so an operator
 # who finds capture stopped can grep for what bounded it. Override:
 # WRIT_BLACKBOX_MAX_BYTES.
@@ -586,11 +588,18 @@ writ_event_buffer_flush() {
     return 0
 }
 
+# Is capture on? WRIT_BLACKBOX=1 OR the sentinel file ~/.claude/writ-blackbox.on (the
+# sentinel works for already-running CC sessions that can't get a new env var; remove the
+# file to disable). ONE copy of the test, shared by load_hook_env, blackbox_log and
+# emit_hook_reply. A predicate: exit status only, never output.
+blackbox_enabled() {
+    [ "${WRIT_BLACKBOX:-}" = "1" ] || [ -f "${HOME:-}/.claude/writ-blackbox.on" ]
+}
+
 blackbox_log() {
-    # Enabled by WRIT_BLACKBOX=1 OR the sentinel file ~/.claude/writ-blackbox.on (the
-    # sentinel works for already-running CC sessions that can't get a new env var; remove
-    # the file to disable). Off => no-op that still drains stdin.
-    if [ "${WRIT_BLACKBOX:-}" != "1" ] && [ ! -f "${HOME:-}/.claude/writ-blackbox.on" ]; then
+    # Tested here as well as at every call site, so a future caller that forgets to test
+    # still no-ops. Off => no-op that still drains stdin.
+    if ! blackbox_enabled; then
         cat >/dev/null 2>&1; return 0
     fi
     local direction="${1:-?}" hook="${2:-?}" session="${3:-}"
@@ -663,6 +672,37 @@ except Exception:
     pass
 ' 2>/dev/null) || true
     [ -n "$rec" ] && printf '%s\n' "$rec" >> "$log" 2>/dev/null || true
+}
+
+# THE ONE PLACE A HOOK REPLY REACHES STDOUT. Prints the hookSpecificOutput envelope, then
+# records those same bytes. EMIT BEFORE LOG: capture must never sit between a hook and its
+# answer, so a capture failure can cost a row but never the reply.
+#
+# Empty payload => nothing at all, no stdout and no row. Several emitting python arms exit
+# without printing (writ-debug-code-gate's non-deny arm, the venv swap that rewrote
+# nothing), and an empty stdout is the allow they mean.
+#
+# CAPTURE OFF costs one variable test, one [ -f ] and one printf builtin: no fork. The
+# sentinel is tested HERE rather than left to blackbox_log, because `printf | blackbox_log`
+# forks a subshell before the logger gets to decide it has nothing to do.
+#
+# The hook label resolves the OUTERMOST BASH_SOURCE frame, not BASH_SOURCE[1]: inside
+# emit_deny the frame above this one is common.sh itself, so 20 refusals would file under
+# the hook name "common". Basename by parameter expansion, and only when capture is on,
+# because the basename binary is a 1.3ms fork against 0.018ms.
+# Usage: emit_hook_reply "$ENVELOPE" [hook] [session]
+emit_hook_reply() {
+    local _payload="${1:-}"
+    [ -n "$_payload" ] || return 0
+    printf '%s\n' "$_payload"
+    blackbox_enabled || return 0
+    local _hook="${2:-}" _session="${3:-${HOOK_SESSION_ID:-}}"
+    if [ -z "$_hook" ]; then
+        local _src="${BASH_SOURCE[${#BASH_SOURCE[@]}-1]:-$0}"
+        _hook="${_src##*/}"
+        _hook="${_hook%.sh}"
+    fi
+    printf '%s\n' "$_payload" | blackbox_log out "$_hook" "$_session"
 }
 
 # Convenience: extract a single SCALAR field (string/number) from parsed JSON.
@@ -1031,7 +1071,8 @@ print(json.dumps(items, indent=2, ensure_ascii=False))
 # validate-design-doc / validate-test-file / worktree-safety PreToolUse gates.
 # Usage: [ -n "$DENY" ] && emit_deny "$DENY"
 emit_deny() {
-  WRIT_DENY_REASON="$1" python3 <<'PY'
+  local _reply
+  _reply=$(WRIT_DENY_REASON="$1" python3 <<'PY'
 import json, os
 print(json.dumps({
     'hookSpecificOutput': {
@@ -1041,6 +1082,8 @@ print(json.dumps({
     }
 }))
 PY
+) || _reply=""
+  emit_hook_reply "$_reply"
 }
 
 # Emit a PreToolUse "ask" decision (Claude Code hookSpecificOutput contract): the
@@ -1050,7 +1093,8 @@ PY
 # one destination per line) cannot corrupt or forge the envelope (SEC-INJ-LOG-001).
 # Usage: [ -n "$ASK" ] && emit_ask "$ASK"
 emit_ask() {
-  WRIT_ASK_REASON="$1" python3 <<'PY'
+  local _reply
+  _reply=$(WRIT_ASK_REASON="$1" python3 <<'PY'
 import json, os
 print(json.dumps({
     'hookSpecificOutput': {
@@ -1060,6 +1104,8 @@ print(json.dumps({
     }
 }))
 PY
+) || _reply=""
+  emit_hook_reply "$_reply"
 }
 
 # Extract the rule objects (the fields used for violation pattern matching) from

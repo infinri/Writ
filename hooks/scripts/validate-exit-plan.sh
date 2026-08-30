@@ -81,7 +81,7 @@ print(json.dumps(entry))
 " "$SESSION_ID" "$VALIDATION_ERROR" 2>/dev/null | python3 "$FA" --stdin-json 2>/dev/null || true
 
     # Deny exit -- Claude stays in plan mode to fix the plan
-    python3 -c "
+    DENY_REPLY=$(python3 -c "
 import json, sys
 result = {
     'hookSpecificOutput': {
@@ -91,7 +91,8 @@ result = {
     }
 }
 print(json.dumps(result))
-" "$VALIDATION_ERROR"
+" "$VALIDATION_ERROR") || DENY_REPLY=""
+    emit_hook_reply "$DENY_REPLY"
     exit 0
 fi
 
@@ -115,7 +116,7 @@ log_friction_event "$SESSION_ID" "work" "exitplanmode_allow"
 # additionalContext shape as writ-read-rag.sh, the PreToolUse precedent. No
 # permissionDecision key: absent means no decision is expressed, so ExitPlanMode
 # still proceeds exactly as it does today.
-python3 <<'PY' || true
+ALLOW_REPLY=$(python3 <<'PY'
 import json
 
 print(json.dumps({
@@ -133,5 +134,7 @@ print(json.dumps({
     }
 }))
 PY
+) || ALLOW_REPLY=""
+emit_hook_reply "$ALLOW_REPLY"
 
 exit 0

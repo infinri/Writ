@@ -109,10 +109,12 @@ esac
 # reaches only the CC debug log (verified delivery rule); the model never saw
 # this self-review directive before. Additive, no decision.
 if [ -n "$AC_TEXT" ]; then
-    WRIT_AC="$AC_TEXT" python3 <<'PY' 2>>"$WRIT_HOOK_LOG_SINK" || true
+    AC_REPLY=$(WRIT_AC="$AC_TEXT" python3 <<'PY' 2>>"$WRIT_HOOK_LOG_SINK"
 import json, os
 print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": os.environ.get("WRIT_AC", "")}}))
 PY
+) || AC_REPLY=""
+    emit_hook_reply "$AC_REPLY"
 fi
 
 exit 0

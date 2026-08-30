@@ -239,8 +239,7 @@ except Exception:
 fi
 
 if [ "$DECISION" = "deny" ] || [ "$DECISION" = "ask" ]; then
-    [ -n "$HOOK_OUTPUT" ] && echo "$HOOK_OUTPUT"
-    printf '%s' "$HOOK_OUTPUT" | blackbox_log out writ-pre-write-dispatch "$SESSION_ID"
+    emit_hook_reply "$HOOK_OUTPUT" "" "$SESSION_ID"
 else
     # Applicability-scoped always-on (WRIT-BLUEPRINT 3.5), flag-gated. The write-scoped
     # rules deferred off the per-prompt channel inject HERE, at the write moment, when the
@@ -285,16 +284,21 @@ if rules:
         # only the CC debug log on PreToolUse (verified delivery rule); now the
         # file-context + write-scoped rules reach the model. Additive, no
         # permissionDecision -> does not touch the write gate (deny path above).
-        WRIT_AC="[Writ: file-context rules for $(basename "${DECISION_FILE:-unknown}")]
+        # The capture used to log ${RAG_RULES_RAW}${AO_WRITE_BLOCK}, the INGREDIENTS of
+        # this envelope rather than the envelope, so every row parsed as a non-object and
+        # filed under the event name "unknown". The reply is captured into a variable and
+        # that same variable is what reaches stdout and the capture log.
+        AC_REPLY=$(WRIT_AC="[Writ: file-context rules for $(basename "${DECISION_FILE:-unknown}")]
 ${RAG_RULES_RAW}
-${AO_WRITE_BLOCK}" python3 <<'PY' 2>>"$WRIT_HOOK_LOG_SINK" || true
+${AO_WRITE_BLOCK}" python3 <<'PY' 2>>"$WRIT_HOOK_LOG_SINK"
 import json, os
 print(json.dumps({"hookSpecificOutput": {
     "hookEventName": "PreToolUse",
     "additionalContext": os.environ.get("WRIT_AC", ""),
 }}))
 PY
-        printf '%s' "${RAG_RULES_RAW}${AO_WRITE_BLOCK}" | blackbox_log out writ-pre-write-dispatch "$SESSION_ID"
+) || AC_REPLY=""
+        emit_hook_reply "$AC_REPLY" "" "$SESSION_ID"
     fi
     # "$SESSION_ID" is required, not decorative: _cache_path() has no empty-id guard, so
     # `update ""` creates a REAL cache file named for the empty string and files this

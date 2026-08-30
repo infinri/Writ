@@ -510,7 +510,7 @@ PYSWAP
 ) || true
             if [ -n "$SWAP" ]; then
                 log_gate_decision "bash-venv-swap" "allow" "pytest routed to .venv/bin/python -m pytest" ""
-                printf '%s\n' "$SWAP"
+                emit_hook_reply "$SWAP"
             fi
         fi
         exit 0

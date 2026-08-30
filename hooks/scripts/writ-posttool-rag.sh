@@ -259,18 +259,21 @@ $RULES_TEXT"
         # No breadcrumb sink on this arm: the python fallback below keeps one, and a
         # second redirect made this hook carry three where the debug-gating contract
         # counts two. jq -n with --arg cannot fail on input it is not given.
-        jq -n -c --arg ac "$WRIT_AC" \
+        AC_REPLY=$(jq -n -c --arg ac "$WRIT_AC" \
             '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:$ac}}' \
-            2>/dev/null || true
+            2>/dev/null) || AC_REPLY=""
     else
-        WRIT_AC="$WRIT_AC" python3 <<'PY' 2>>"$WRIT_HOOK_LOG_SINK" || true
+        AC_REPLY=$(WRIT_AC="$WRIT_AC" python3 <<'PY' 2>>"$WRIT_HOOK_LOG_SINK"
 import json, os
 print(json.dumps({"hookSpecificOutput": {
     "hookEventName": "PostToolUse",
     "additionalContext": os.environ.get("WRIT_AC", ""),
 }}))
 PY
+) || AC_REPLY=""
     fi
+    # Both arms build the same envelope, so both reach stdout through the one funnel.
+    emit_hook_reply "$AC_REPLY" "" "$SESSION_ID"
 fi
 
 # Update session cache

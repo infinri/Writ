@@ -91,7 +91,7 @@ eval "$(parsed_fields "$DECISION_JSON" GATE_DECISION=decision GATE_REASON=reason
 # same JSON, exactly as it did when it ran unconditionally. The block itself is
 # unchanged; it is only reached less often.
 if [ "$GATE_DECISION" != "allow" ]; then
-printf '%s' "$DECISION_JSON" | python3 -c "
+DENY_REPLY=$(printf '%s' "$DECISION_JSON" | python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
@@ -107,7 +107,10 @@ print(json.dumps({
         'additionalContext': 'Runtime (debug) lens: read debug.md / logs / non-code and gather runtime evidence via Bash first, record Evidence + Narrowing in debug.md, then read code.',
     }
 }))
-" 2>/dev/null || true
+" 2>/dev/null) || DENY_REPLY=""
+# The arm above exits without printing on anything that is not a deny, which is why the
+# funnel no-ops on an empty payload rather than emitting a blank line.
+emit_hook_reply "$DENY_REPLY"
 fi
 
 # Decision record on BOTH branches, including the skip arm above. The `decision` field

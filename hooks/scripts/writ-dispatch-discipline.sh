@@ -140,8 +140,7 @@ else:
 PY
 )
 
-[ -n "$DECISION" ] && printf '%s' "$DECISION" | blackbox_log out writ-dispatch-discipline "$SESSION_ID"
-[ -n "$DECISION" ] && echo "$DECISION"
+emit_hook_reply "$DECISION" "" "$SESSION_ID"
 
 # THE AUDIT ROW SAYS WHAT WAS EMITTED, read back out of the JSON above rather than
 # inferred from "did we emit anything".

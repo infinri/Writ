@@ -435,10 +435,7 @@ print(json.dumps({
     }
 }))
 " "$ADDITIONAL_CONTEXT" "$PHASE_INFO" 2>/dev/null)
-    if [ -n "$SA_OUTPUT" ]; then
-        printf '%s\n' "$SA_OUTPUT"
-        printf '%s' "$SA_OUTPUT" | blackbox_log out writ-subagent-start "$AGENT_ID"
-    fi
+    emit_hook_reply "$SA_OUTPUT" "" "$AGENT_ID"
 fi
 
 # Log sub-agent start to friction log (common.sh already sourced at top).

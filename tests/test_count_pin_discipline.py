@@ -98,11 +98,18 @@ class TestTheInventoryDerivesFromTheSource:
                  "route_tuples")
 
     @pytest.mark.parametrize("name", ["hook_registrations", "hook_events",
-                                      "doctor_check_names", "route_tuples"])
+                                      "doctor_check_names", "route_tuples",
+                                      "envelope_emitting_scripts"])
     def test_each_derivation_is_non_empty(self, name) -> None:
         """ANTI-VACUITY, and it is the whole risk of this design: a derivation that
         silently returned nothing would make every dependent assertion pass on any tree,
-        which is worse than the duplicated literals it replaced."""
+        which is worse than the duplicated literals it replaced.
+
+        envelope_emitting_scripts (plan.md dfacff61-23d5-474e-846c-2e2f0f0ea482, CHECK 2)
+        joins the other four for the same reason: if a future edit breaks the scanner's
+        own matching, this population empties out and the suite must go red here, which
+        is the positive signal a check that only ever asserts emptiness cannot give.
+        """
         inventory = _inventory()
         _require(inventory, name)
         value = getattr(inventory, name)()

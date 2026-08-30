@@ -158,6 +158,209 @@ def derive_refusing_scripts() -> list[str]:
     return sorted(refusing_script_markers())
 
 
+# ── OUT-capture coverage (plan.md dfacff61-23d5-474e-846c-2e2f0f0ea482, Decision 2) ──
+#
+# Three source-derived populations that keep hook-reply capture structural. The funnel
+# `emit_hook_reply` lives in `bin/lib/common.sh`, which is OUTSIDE the scanned directory,
+# so the one place allowed to print an envelope needs no allowlist entry.
+_ENVELOPE_KEY = "hookSpecificOutput"
+_FUNNEL_HELPERS = re.compile(r"\b(emit_deny|emit_ask)\b")
+# `cat <<EOF` / `python3 <<'PY'` / `<<-DELIM`: the body streams from the next line to the
+# delimiter, so it belongs to the opening line's emission text rather than being read as a
+# command of its own.
+_HEREDOC_START = re.compile(r"<<-?\s*(?P<q>['\"]?)(?P<delim>\w+)(?P=q)")
+# A redirect operator with its optional file descriptor. Not `hooks_lint._REDIRECT`, which
+# matches `2>>"$SINK"` and would wave through two real emissions in this tree: a
+# stderr-only redirect leaves stdout exactly where it was.
+_REDIRECT_OP = re.compile(r"(?P<fd>[0-9]?)>{1,2}")
+_UNESCAPED_QUOTE = re.compile(r'(?<!\\)"')
+_ASSIGNMENT = re.compile(r"^\s*(?:local\s+|export\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)=")
+# An assignment whose value STARTS with the substitution, so the substitution is what the
+# variable receives. `WRIT_AC="text $(basename x)" python3 ...` does not match: there the
+# `=` is followed by a quote, and the command after it keeps its own stdout.
+_CAPTURING_ASSIGNMENT = re.compile(
+    r"^\s*(?:local\s+|export\s+)?[A-Za-z_][A-Za-z0-9_]*=(?P<open>\$\(|`)"
+)
+_STDOUT_COMMAND = re.compile(r"^\s*(echo|printf)\b")
+
+
+def _blanked_lines(source: str) -> list[str]:
+    """Whole-line comments blanked IN PLACE, keeping every line number intact.
+
+    `_refusal_markers` above drops comment lines because it only asks whether a pattern
+    occurs anywhere. CHECK 3 reports (script, line), so dropping would shift every number
+    it reports. Same predicate, different disposal.
+
+    Split on "\\n" and NOT with `str.splitlines()`, which also breaks on U+2028 and would
+    report every line after one off by one: `writ-pre-write-dispatch.sh` line 200 holds a
+    literal U+2028 inside a python string.
+    """
+    return ["" if ln.lstrip().startswith("#") else ln for ln in source.split("\n")]
+
+
+def _blanked_source(path: Path) -> str:
+    return "\n".join(_blanked_lines(path.read_text(encoding="utf-8", errors="replace")))
+
+
+def direct_blackbox_out_calls() -> list[str]:
+    """CHECK 1: hook scripts that still call `blackbox_log out` themselves.
+
+    Exact, with no false-positive surface. A hook that cannot reach the logger cannot
+    record something other than what it sent, so byte identity holds by construction
+    rather than by review. Must be empty.
+    """
+    return [
+        path.name
+        for path in sorted(HOOK_SCRIPTS_DIR.glob("*.sh"))
+        if "blackbox_log out" in _blanked_source(path)
+    ]
+
+
+def envelope_emitting_scripts(*, scripts_dir: Path = HOOK_SCRIPTS_DIR) -> list[str]:
+    """CHECK 2: hook scripts that build a hookSpecificOutput envelope or refuse through
+    the shared deny/ask helpers.
+
+    THE ANTI-VACUITY POPULATION. It is asserted NON-EMPTY in
+    `test_count_pin_discipline.py`, because a scanner whose matching silently broke would
+    empty this out and make every emptiness assertion beside it pass on any tree. That is
+    the positive signal a check that only ever asserts emptiness cannot give.
+    """
+    out: list[str] = []
+    for path in sorted(scripts_dir.glob("*.sh")):
+        src = _blanked_source(path)
+        if _ENVELOPE_KEY in src or _FUNNEL_HELPERS.search(src):
+            out.append(path.name)
+    return out
+
+
+def _has_odd_quotes(text: str) -> bool:
+    return len(_UNESCAPED_QUOTE.findall(text)) % 2 == 1
+
+
+def _substitution_tail(opening: str, start: int, opener: str) -> str | None:
+    """Whatever follows the substitution opened at `start`, or None when it does not
+    close on this line, which is the multi-line case where the emission sits INSIDE it."""
+    if opener == "`":
+        close = opening.find("`", start)
+        return None if close < 0 else opening[close + 1:]
+    depth = 1
+    for index in range(start, len(opening)):
+        if opening[index] == "(":
+            depth += 1
+        elif opening[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return opening[index + 1:]
+    return None
+
+
+def _is_captured(opening: str) -> bool:
+    """The emission's OWN output is consumed by an assignment, so it is a value rather
+    than a reply. This is what exempts every converted site and the three read-only uses
+    (reading permissionDecision back out, mutating an envelope, building into a variable)
+    without an exception each.
+
+    NOT "a `$(` appears somewhere on the line". That weaker rule read an env-var PREFIX
+    holding a substitution, `VAR="text $(basename x)" python3 <<PY`, as a capture: there
+    the substitution feeds a SEPARATE command and the heredoc's own output still goes
+    straight to stdout. Two live emissions had exactly that shape before this cycle
+    converted them, and CHECK 2 cannot see it either once the script reaches the funnel
+    on any other line, so a converted script gaining a new bare emission would have gone
+    green on all three checks.
+    """
+    match = _CAPTURING_ASSIGNMENT.match(opening)
+    if not match:
+        return False
+    tail = _substitution_tail(opening, match.end(), match.group("open"))
+    return tail is None or tail.strip() == ""
+
+
+def _is_stdout_redirected(opening: str) -> bool:
+    """A STDOUT redirect only. `2>>"$SINK"` is a stderr sink and leaves the envelope on
+    stdout, so it must not exempt the line."""
+    return any(m.group("fd") in ("", "1") for m in _REDIRECT_OP.finditer(opening))
+
+
+def _emission_end(lines: list[str], start: int) -> int:
+    """The last line of the command that opens at `start`.
+
+    Three continuations, applied in order, because a single command can use all three:
+    a backslash line join, an odd count of unescaped double quotes (how a `python3 -c "`
+    block runs on to the line that closes the quote), and a heredoc body running to its
+    delimiter.
+    """
+    end = start
+    last = len(lines) - 1
+    while end < last and lines[end].rstrip().endswith("\\"):
+        end += 1
+    if _has_odd_quotes("\n".join(lines[start:end + 1])):
+        j = end + 1
+        while j <= last and '"' not in lines[j]:
+            j += 1
+        if j <= last:
+            end = j
+    match = _HEREDOC_START.search("\n".join(lines[start:end + 1]))
+    if match:
+        delim = match.group("delim")
+        j = end + 1
+        while j <= last and lines[j].strip() != delim:
+            j += 1
+        if j <= last:
+            end = j
+    return end
+
+
+def _scan_script(path: Path) -> list[tuple[str, int]]:
+    lines = _blanked_lines(path.read_text(encoding="utf-8", errors="replace"))
+    findings: list[tuple[str, int]] = []
+    envelope_vars: set[str] = set()
+    index = 0
+    while index < len(lines):
+        opening = lines[index]
+        if not opening.strip():
+            index += 1
+            continue
+        end = _emission_end(lines, index)
+        block = "\n".join(lines[index:end + 1])
+        if _ENVELOPE_KEY in block:
+            if _is_captured(opening):
+                assigned = _ASSIGNMENT.match(opening)
+                if assigned:
+                    envelope_vars.add(assigned.group("name"))
+            elif not _is_stdout_redirected(opening):
+                findings.append((path.name, index + 1))
+        elif (envelope_vars and _STDOUT_COMMAND.match(opening)
+                and not _is_captured(opening) and not _is_stdout_redirected(opening)):
+            for name in envelope_vars:
+                if re.search(r"\$\{?" + re.escape(name) + r"\b", block):
+                    findings.append((path.name, index + 1))
+                    break
+        index = end + 1
+    return findings
+
+
+def bare_envelope_emissions(
+    *, scripts_dir: Path = HOOK_SCRIPTS_DIR
+) -> list[tuple[str, int]]:
+    """CHECK 3, the heuristic: (script, line) for every envelope emission that reaches
+    stdout without going through the funnel.
+
+    It catches the shape the two exact checks miss, a bare emission added to a script
+    that already calls the funnel. `scripts_dir` is a keyword rather than a constant so
+    the precision of the matching can be pinned against synthetic fixtures per shape,
+    the same parameterization `writ/hooks_lint.py::lint_hooks` uses for `plugin_root`.
+
+    WHAT IT DOES NOT COVER, stated rather than implied: an emission whose capture cannot
+    be decided from its own opening line, such as an envelope printed by a shell function
+    defined elsewhere and called bare. CHECK 2 catches that only when it lands in a
+    script that never reaches the funnel.
+    """
+    findings: list[tuple[str, int]] = []
+    for path in sorted(scripts_dir.glob("*.sh")):
+        findings.extend(_scan_script(path))
+    return sorted(set(findings))
+
+
 def doctor_check_names() -> list[str]:
     """The doctor's checks, in registry order, straight from `doctor._CHECKS`.
 
