@@ -90,7 +90,7 @@ Installs `writ-server.service` (waits for Neo4j, `Restart=on-failure`) and the d
 ```bash
 "$WRIT_DIR"/bin/writ status                    # daemon health + rule count
 test -f ~/.claude/commands/writ-approve.md && echo "/writ-approve installed"
-"$WRIT_DIR"/bin/writ doctor                    # 13 checks; writ doctor --fix repairs 6 of them
+"$WRIT_DIR"/bin/writ doctor                    # 22 checks; writ doctor --fix repairs 7 of them
 ```
 
 For a raw `/health` read that does not depend on `curl`:
