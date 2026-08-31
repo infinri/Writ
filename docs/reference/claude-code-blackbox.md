@@ -110,13 +110,23 @@ Headline changes measured between 2.1.183 and 2.1.220:
 
 ### The envelope at a glance
 
-Each captured line in the log is `{ts, hook, direction, payload, pid, session}` [observed]. Two
-things trip people up:
+Each captured line in the log is `{ts, hook, direction, payload, pid, session, event}`, plus
+`exit_code` on an `exit` row [observed]. Four things trip people up:
 - `hook` is the hook SCRIPT name (for example `validate-file`), NOT the event name. The event name
-  is inside, at `payload.hook_event_name`.
+  is usually inside, at `payload.hook_event_name`; `event` at the record level is the fallback for
+  a row whose payload cannot carry one.
 - `payload` is a JSON string, so it must be decoded twice. `direction` is `in` (the envelope
-  Claude Code delivered) or `out` (what the script sent back). The authoritative session key is
-  `payload.session_id`.
+  Claude Code delivered), `out` (what the script sent back) or `exit` (the script's own non-zero
+  exit status, written by the shared exit trap in `bin/lib/common.sh`; a zero exit writes no row).
+  The authoritative session key is `payload.session_id`.
+- `event` and `exit_code` POSTDATE the first 9,388-record corpus, so a row from it carries
+  NEITHER key. The distinction is load-bearing rather than cosmetic: a key that is ABSENT means
+  the row predates the field, and a key that is PRESENT and null means the writing process
+  observed no event. Test membership (`"event" in record`), never truthiness, or the two collapse.
+  `writ/analysis/blackbox.py` censuses them as `unknown` and `event_not_observed` respectively.
+- `pid` is the HOOK SHELL's pid, and was not always. Until 2026-08-31 it was the pid of the
+  ephemeral python encoder each `blackbox_log` call forks, so on a row from the old corpus an IN
+  row and an OUT row from one hook invocation carry DIFFERENT pids and cannot be joined.
 
 ### Event index
 

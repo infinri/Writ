@@ -403,7 +403,7 @@ load_hook_env() {
     # HOOK_SESSION_ID stays whatever the envelope carried, including "".
     # Log the raw envelope (the calling hook's basename labels it). Never affects the caller.
     if [ -n "${_bb_raw:-}" ]; then
-        printf '%s' "$_bb_raw" | blackbox_log in "$(basename "${BASH_SOURCE[1]:-$0}" .sh)" "${HOOK_SESSION_ID:-}" || true
+        printf '%s' "$_bb_raw" | blackbox_log in "$(basename "${BASH_SOURCE[1]:-$0}" .sh)" "${HOOK_SESSION_ID:-}" "${HOOK_EVENT:-}" || true
     fi
     _writ_seed_subagent_cache
 }
@@ -459,15 +459,36 @@ except Exception:
 # Black-box capture: append the RAW Claude-Code <-> hook payloads to a JSONL so the
 # actual contract can be inspected empirically (what CC sends a hook, and what the
 # hook returns to Claude) instead of inferred. Reads the payload from stdin.
-#   direction: "in"  = the envelope CC passed the hook (prompt, tool_input, agent_type, ...)
-#              "out" = what the hook emits back to Claude (stdout / additionalContext)
+#   direction: "in"   = the envelope CC passed the hook (prompt, tool_input, agent_type, ...)
+#              "out"  = what the hook emits back to Claude (stdout / additionalContext)
+#              "exit" = the hook's own non-zero exit status, written by the shared exit trap
 # Opt-in via WRIT_BLACKBOX=1 -> when unset this is a no-op that still drains stdin, so
 # wiring it into a pipe is zero-overhead and behavior-neutral in production. Never fails
 # the caller. Log path: $WRIT_BLACKBOX_LOG (default ~/.claude/writ-blackbox.jsonl).
-# Usage:  printf '%s' "$STDIN_JSON" | blackbox_log in  "$(basename "$0")" "$SESSION_ID"
+# Usage:  printf '%s' "$STDIN_JSON" | blackbox_log in "$(basename "$0")" "$SESSION_ID" \
+#                                                     "$HOOK_EVENT"
+#         blackbox_log exit "$hook" "$session" "$HOOK_EVENT" "$rc" </dev/null
+#
+# EVENT IS ALWAYS WRITTEN, as a string when the caller observed one and as JSON null when
+# it did not. `${x:-}` collapsing to "" would make "this row predates the schema" (key
+# ABSENT) indistinguishable from "this process observed no event" (key PRESENT, null), and
+# both are falsy under .get(), so the reader could not tell them apart either.
+#
+# EXIT_CODE IS WRITTEN ONLY ON AN exit ROW, and a non-numeric value DROPS THE ROW rather
+# than being coerced, so an exit row without a code cannot exist.
+#
+# PID IS THE HOOK SHELL'S OWN `$$`, passed in through the environment. It used to be the
+# encoder's os.getpid(), which is a DIFFERENT ephemeral python per call, so the
+# (hook, pid, session) join in writ/analysis/blackbox.py never matched a real IN row to a
+# real OUT row: all four real OUT classes in the committed census read
+# origins {harness: 0, undetermined: N}. `$$` stays the hook shell's pid inside both the
+# pipeline and the command substitution below, which is exactly the value the join needs.
+#
 # The "out" direction is NOT called from a hook script. emit_hook_reply below is the one
 # writer, so an out row can only ever hold the bytes that were actually sent; a hook that
 # cannot reach the logger cannot record a reconstruction of its reply instead of the reply.
+# The "exit" direction is likewise never called from a hook script: _writ_hook_exit_trap
+# owns it (tests/_inventory.py::direct_blackbox_exit_calls stays empty).
 # Default cap on the capture log, 256 MiB. Named rather than inline so an operator
 # who finds capture stopped can grep for what bounded it. Override:
 # WRIT_BLACKBOX_MAX_BYTES.
@@ -602,8 +623,19 @@ blackbox_log() {
     if ! blackbox_enabled; then
         cat >/dev/null 2>&1; return 0
     fi
-    local direction="${1:-?}" hook="${2:-?}" session="${3:-}"
+    local direction="${1:-?}" hook="${2:-?}" session="${3:-}" event="${4:-}" exit_code="${5:-}"
     local log="${WRIT_BLACKBOX_LOG:-$HOME/.claude/writ-blackbox.jsonl}"
+
+    # An exit row's whole content is its code, so a code that is not a number makes the row
+    # a claim with nothing behind it. Dropped rather than coerced or written as null: with
+    # no third state there is nothing for a reader to interpret. Same validation idiom as
+    # the size cap below, and it runs FIRST so an invalid row costs no `wc -c` either.
+    if [ "$direction" = "exit" ]; then
+        case "$exit_code" in
+            ''|*[!0-9]*)
+                cat >/dev/null 2>&1; return 0 ;;
+        esac
+    fi
 
     # SIZE CAP. Capture is a debug switch with no expiry: measured 2026-08-06, the
     # sentinel on this developer's machine was dated 19 June and the log had reached
@@ -659,15 +691,22 @@ blackbox_log() {
     # python encodes one JSON record to stdout (handles payload escaping); bash appends
     # it. Encoding-only keeps the file write out of python (no direct file open here).
     local rec
-    rec=$(WRIT_BB_DIR="$direction" WRIT_BB_HOOK="$hook" WRIT_BB_SID="$session" python3 -c '
+    rec=$(WRIT_BB_DIR="$direction" WRIT_BB_HOOK="$hook" WRIT_BB_SID="$session" \
+          WRIT_BB_EVENT="$event" WRIT_BB_EXIT="$exit_code" WRIT_BB_PID="$$" python3 -c '
 import os, sys, json, datetime
 try:
-    print(json.dumps({"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                      "hook": os.environ.get("WRIT_BB_HOOK", "?"),
-                      "direction": os.environ.get("WRIT_BB_DIR", "?"),
-                      "session": os.environ.get("WRIT_BB_SID", ""),
-                      "pid": os.getpid(),
-                      "payload": sys.stdin.read()}))
+    _dir = os.environ.get("WRIT_BB_DIR", "?")
+    _pid = os.environ.get("WRIT_BB_PID", "")
+    rec = {"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+           "hook": os.environ.get("WRIT_BB_HOOK", "?"),
+           "direction": _dir,
+           "session": os.environ.get("WRIT_BB_SID", ""),
+           "pid": int(_pid) if _pid.isdigit() else os.getpid(),
+           "event": os.environ.get("WRIT_BB_EVENT") or None,
+           "payload": sys.stdin.read()}
+    if _dir == "exit":
+        rec["exit_code"] = int(os.environ.get("WRIT_BB_EXIT", ""))
+    print(json.dumps(rec))
 except Exception:
     pass
 ' 2>/dev/null) || true
@@ -702,7 +741,7 @@ emit_hook_reply() {
         _hook="${_src##*/}"
         _hook="${_hook%.sh}"
     fi
-    printf '%s\n' "$_payload" | blackbox_log out "$_hook" "$_session"
+    printf '%s\n' "$_payload" | blackbox_log out "$_hook" "$_session" "${HOOK_EVENT:-}"
 }
 
 # Convenience: extract a single SCALAR field (string/number) from parsed JSON.
@@ -1458,6 +1497,36 @@ _writ_hook_exit_trap() {
     ( exit "$rc" )
     "$_h"
   done
+
+  # THE REFUSAL EXIT CODE, captured structurally. This trap is already the owner of every
+  # instrumented hook's exit path, so the eleventh non-zero exit site needs no registration:
+  # the alternative, an enumerated list, is measured in tests/firedrill/_census.py, which
+  # declares 7 of the 10 real sites.
+  #
+  # LAST, after the hook_execution append and after the registered handlers. Capture is a
+  # debug switch, and nothing with retention may be delayed or skipped by it. `exit "$rc"`
+  # below uses the saved status, so a failure here cannot change the hook's outcome.
+  #
+  # NON-ZERO ONLY. An unconditional row would add a python spawn to all 40 instrumented
+  # hooks whenever capture is on, and nothing is lost: the denominator (every hook's exit
+  # code, including 0) is the hook_execution row appended above.
+  #
+  # `[ "$rc" -ne 0 ]` FIRST because it is a builtin and the cheapest discriminator, then
+  # blackbox_enabled, which is one variable test and one `[ -f ]`. Neither forks, so capture
+  # off adds no process.
+  #
+  # `</dev/null`, NOT `printf '' |`: blackbox_log reads stdin, and a pipe forks a subshell
+  # before the logger can decide it has nothing to do. The redirect costs no process and
+  # gives the encoder the empty payload an exit row should carry.
+  #
+  # THE SESSION EXPRESSION IS REVERSED from the telemetry row's above, deliberately. The
+  # other side of the join is the IN row, which load_hook_env writes with
+  # ${HOOK_SESSION_ID:-}; preferring SESSION_ID here would key differently in every hook
+  # where the two differ and the join this row exists to feed could not fire.
+  if [ "$rc" -ne 0 ] && blackbox_enabled; then
+    blackbox_log exit "${_WRIT_HOOK_NAME:-unknown}" \
+      "${HOOK_SESSION_ID:-${SESSION_ID:-}}" "${HOOK_EVENT:-}" "$rc" </dev/null || true
+  fi
 
   exit "$rc"
 }

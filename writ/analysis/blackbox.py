@@ -17,6 +17,9 @@ switched on, so on the first generation nearly everything is in that list. That 
 correct starting state, not a defect. `hooks_never_captured`, `directions_never_observed`,
 `edit_replace_all`, `write_target_extensions` and `write_rows_without_file_path` extend that
 rule: each is present with an explicit zero or empty value even when it has nothing to say.
+The event name `event_not_observed` is the same rule applied to a single row: a process that
+observed no event says so, and only a row from before the record-level `event` field existed
+reads `unknown`.
 
 CONTAMINATION IS PARTITIONED, NOT FILTERED. Roughly a third of the live capture is hand-built
 probe payloads of shape `{session_id, tool_name, tool_input}` fed to hooks during latency
@@ -65,6 +68,25 @@ _STDOUT_MECHANISM = "stdout"
 
 _DIRECTION_IN = "in"
 _DIRECTION_OUT = "out"
+# The third direction: the hook's own non-zero exit status, written by the shared exit trap
+# in `bin/lib/common.sh`. Before it existed here, the resolution below mapped anything that
+# was not "out" to "in", so an exit row folded as an IN row with an empty payload and
+# disappeared into `synthetic_records` under the event name "unknown".
+_DIRECTION_EXIT = "exit"
+
+# The two exit MECHANISM names, both already declared by `writ.shared.delivery`. Named here
+# rather than inline for the same reason the origin buckets are: a name that exists only as a
+# string literal at one call site is the name that silently stops being written.
+_EXIT2_MECHANISM = "exit2_stderr"
+_EXIT_NONZERO_MECHANISM = "exit_nonzero_stderr"
+
+# The two stated non-answers for a record's event, and they are NOT interchangeable.
+# `unknown` means the row predates the record-level `event` field altogether (the key is
+# ABSENT); `event_not_observed` means the writing process observed no event and said so (the
+# key is PRESENT and null). `unknown` was the previous cycle's defect class, a capture bug
+# wearing the costume of a data category, so a new row never lands in it.
+_EVENT_UNKNOWN = "unknown"
+_EVENT_NOT_OBSERVED = "event_not_observed"
 
 # The three origins a captured row can be placed in. Named constants because all three are
 # reported as counts, and a bucket that exists only as a string literal at one call site is
@@ -88,9 +110,12 @@ _WRITE_TOOLS = ("Write", "Edit")
 def read_capture_records(path: str | Path) -> list[dict]:
     """Read one capture JSONL file into its raw records. Absent or empty file -> [].
 
-    Each row is `{"ts", "hook", "direction", "session", "pid", "payload"}`, where `payload`
-    is the RAW JSON-encoded string of the envelope or output Claude Code exchanged with the
-    hook. A line that does not parse as JSON contributes ZERO records and is skipped; the
+    Each row is `{"ts", "hook", "direction", "session", "pid", "event", "payload"}` plus
+    `exit_code` on an `exit` row, where `payload` is the RAW JSON-encoded string of the
+    envelope or output Claude Code exchanged with the hook. `event` and `exit_code` postdate
+    the first 9,388-record corpus, so a row from it carries NEITHER key, which is why
+    `_event_name` tests the `event` key by membership rather than reading it with `.get()`.
+    A line that does not parse as JSON contributes ZERO records and is skipped; the
     valid lines around it are still returned, because a single truncated append (the log is
     written by concurrent hooks) must not discard a whole capture window.
     """
@@ -117,13 +142,24 @@ def _parse_payload(record: dict) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _event_name(payload: dict, direction: str) -> str:
-    """The CC event this record belongs to.
+def _event_name(payload: dict, direction: str, record: dict) -> str:
+    """The CC event this record belongs to, resolved in three arms, in this order.
 
-    IN records name it at the top level (`hook_event_name`); OUT records name it inside
-    `hookSpecificOutput.hookEventName`, which is the field CC's own validator keys on.
-    Neither present -> "unknown", so a record is censused under a stated non-answer instead
-    of being dropped and silently reducing a count.
+    1. THE PAYLOAD. IN records name it at the top level (`hook_event_name`); OUT records
+    name it inside `hookSpecificOutput.hookEventName`, which is the field CC's own validator
+    keys on. The payload wins whenever it yields a name, so no existing row's classification
+    moves and the committed corpus censuses identically.
+
+    2. THE RECORD'S OWN `event` FIELD, by KEY MEMBERSHIP and never by truthiness. The writer
+    puts the key on every row it produces, as a string when the process observed an event and
+    as null when it did not, so `"event" in record` separates "this process observed no
+    event" (-> `event_not_observed`) from "this row predates the field". `.get()` truthiness
+    would collapse the two, which is the distinction the writer exists to preserve. An exit
+    row has no payload at all, and a plain-stdout OUT row's payload is not JSON, so this arm
+    is the only place either can name its event.
+
+    3. `unknown`, for a pre-schema row whose `event` key is ABSENT. A record is censused
+    under a stated non-answer rather than dropped and silently reducing a count.
     """
     if direction == _DIRECTION_OUT:
         hso = payload.get("hookSpecificOutput")
@@ -131,7 +167,9 @@ def _event_name(payload: dict, direction: str) -> str:
             return str(hso["hookEventName"])
     if payload.get("hook_event_name"):
         return str(payload["hook_event_name"])
-    return "unknown"
+    if "event" in record:
+        return str(record["event"]) if record["event"] else _EVENT_NOT_OBSERVED
+    return _EVENT_UNKNOWN
 
 
 def _bump(counter: dict, key: str) -> None:
@@ -239,6 +277,11 @@ def _new_entry(event: str, hook: str, direction: str, ts: str, origin: str) -> d
         entry["origins"] = {_ORIGIN_HARNESS: 0, _ORIGIN_UNDETERMINED: 0}
     if direction == _DIRECTION_IN:
         entry["tool_input_keys"] = {}
+    elif direction == _DIRECTION_EXIT:
+        # No `tool_input_keys` and no `hook_specific_output_keys`: an exit row has no bytes,
+        # so a key map on it would be an empty dict pretending to be a measurement.
+        entry["exit_codes"] = {}
+        entry["mechanisms"] = {}
     else:
         entry["hook_specific_output_keys"] = {}
         entry["mechanisms"] = {}
@@ -302,6 +345,47 @@ def _fold_out_record(entry: dict, payload: dict, event: str) -> None:
         _bump(entry["mechanisms"], mechanism)
 
 
+def _fold_exit_record(entry: dict, record: dict, event: str) -> None:
+    """EXIT half: the code, and the mechanism that code names.
+
+    The mechanism is validated through `classify_delivery` exactly as `_fold_out_record`
+    does, so a name `writ.shared.delivery` does not recognize is never counted. That is what
+    lets `delivery_provenance` answer `observed` for an exit mechanism at all: it reads this
+    entry's `mechanisms` map.
+
+    STATED OVERCLAIM BOUNDARY: the shared vocabulary's two names bundle the exit code AND the
+    stderr, and a captured record carries only the code. The mechanism is therefore recorded
+    on the strength of the code alone, the same shape as `_STDOUT_MECHANISM` above being read
+    off a payload with no recognized key. `observed` here is not proof that the stderr text
+    reached the user.
+    """
+    code = record.get("exit_code")
+    # A row whose code is absent or not an integer records NOTHING, neither a code nor a
+    # mechanism. The writer cannot produce one (bash validates the code and drops the row),
+    # so this covers the corrupted or hand-built row, which is the only case it was ever for:
+    # without it such a row bumps `exit_codes["None"]` and records a mechanism, and that is a
+    # false `observed` from `delivery_provenance` for a row carrying no evidence.
+    #
+    # BOOL IS REJECTED EXPLICITLY, and this is not redundant: `bool` subclasses `int`, so the
+    # obvious spelling `isinstance(code, int)` alone ADMITS `true` and `false`. Measured:
+    # `exit_code: true` recorded `exit_codes {"True": 1}` with `exit_nonzero_stderr`. Do not
+    # simplify this back to the single isinstance.
+    #
+    # ZERO IS REJECTED FOR THE SAME REASON BY A DIFFERENT TYPE. An exit row exists ONLY
+    # because the status was non-zero: `_writ_hook_exit_trap` writes one under
+    # `[ "$rc" -ne 0 ]`, so a row carrying `exit_code: 0` cannot come from the writer and is
+    # corruption rather than data. Neither mechanism name fits it either, since
+    # `exit2_stderr` means code 2 and `exit_nonzero_stderr` means some OTHER non-zero, and 0
+    # is neither. `False` and `0` reached the same wrong claim by different types; both now
+    # record nothing, which is the answer a bool, a string and a float already got.
+    if not isinstance(code, int) or isinstance(code, bool) or code == 0:
+        return
+    _bump(entry["exit_codes"], str(code))
+    mechanism = _EXIT2_MECHANISM if code == 2 else _EXIT_NONZERO_MECHANISM
+    if classify_delivery(event, mechanism) != "unknown":
+        _bump(entry["mechanisms"], mechanism)
+
+
 def build_census(
     records: list[dict],
     *,
@@ -344,11 +428,20 @@ def build_census(
     for record in records:
         if not isinstance(record, dict):
             continue
-        direction = _DIRECTION_OUT if record.get("direction") == _DIRECTION_OUT else _DIRECTION_IN
+        # Explicit three-way, still defaulting to `in`. Written as comparisons rather than a
+        # dict lookup because `record` is untrusted input and an unhashable `direction` value
+        # would raise on a lookup.
+        raw_direction = record.get("direction")
+        if raw_direction == _DIRECTION_OUT:
+            direction = _DIRECTION_OUT
+        elif raw_direction == _DIRECTION_EXIT:
+            direction = _DIRECTION_EXIT
+        else:
+            direction = _DIRECTION_IN
         hook = str(record.get("hook") or "?")
         ts = str(record.get("ts") or "")
         payload = _parse_payload(record)
-        event = _event_name(payload, direction)
+        event = _event_name(payload, direction, record)
 
         process = (hook, record.get("pid"), record.get("session"))
         if direction == _DIRECTION_IN:
@@ -392,6 +485,8 @@ def build_census(
             # `records` because they may be real, and the same reasoning applies here.
             if origin != _ORIGIN_SYNTHETIC:
                 _fold_write_axes(axes, payload)
+        elif direction == _DIRECTION_EXIT:
+            _fold_exit_record(entry, record, event)
         else:
             _fold_out_record(entry, payload, event)
 
@@ -408,9 +503,19 @@ def build_census(
     # A missing OUT class is precisely a missing key, which is the shape a reader mistakes for
     # "nothing to report". Named per event instead, so the 60-IN-against-4-OUT asymmetry is a
     # line in the artifact rather than something a reader has to notice.
+    #
+    # THE VOCABULARY HAS THREE MEMBERS, and that changes this key's shape permanently: every
+    # event that has never produced a captured refusal exit lists `exit` here, including
+    # events whose hooks refuse with a `permissionDecision` and contain no non-zero exit site
+    # at all. That is a true and permanent statement rather than a gap; the population that
+    # CAN produce an exit row is derivable from
+    # `tests/_inventory.py::nonzero_exit_scripts()`.
     directions_never_observed = {}
     for event in sorted(observed_directions):
-        missing = [d for d in (_DIRECTION_IN, _DIRECTION_OUT) if d not in observed_directions[event]]
+        missing = [
+            d for d in (_DIRECTION_IN, _DIRECTION_OUT, _DIRECTION_EXIT)
+            if d not in observed_directions[event]
+        ]
         if missing:
             directions_never_observed[event] = missing
 

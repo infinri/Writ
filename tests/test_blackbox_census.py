@@ -97,6 +97,29 @@ is missing):
   OUT row: inherits the origin of the most recent IN row sharing (hook, pid,
     session); with no such IN row it is undetermined, and it is NEVER harness by
     default (only ever harness through inheritance).
+
+NEW IN THIS CYCLE (plan.md `dfacff61-23d5-474e-846c-2e2f0f0ea482`, the event/exit_code/
+pid cycle). `writ/analysis/blackbox.py` does not exist to do this yet:
+
+  A third `direction`, "exit". `_new_entry` for an exit-direction record carries
+  `exit_codes: {}` and `mechanisms: {}`, and neither `tool_input_keys` nor
+  `hook_specific_output_keys` (an exit row has no bytes). The fold bumps
+  `exit_codes[str(exit_code)]` and bumps `mechanisms` with `exit2_stderr` for code 2,
+  `exit_nonzero_stderr` for any other non-zero code, each validated through
+  `writ.shared.delivery.classify_delivery` exactly as the OUT fold already does.
+
+  The event resolution gains a THIRD arm, tried in order: (1) the payload-derived
+  name, exactly as before, so no existing row's classification moves; (2) the
+  record's own "event" field, tested by MEMBERSHIP ("event" in record), never by
+  truthiness, yielding the string or "event_not_observed"; (3) "unknown", for a
+  pre-schema row where the "event" key is ABSENT altogether. A row whose payload
+  named nothing and whose record-level "event" key is present and JSON null must
+  census as "event_not_observed", never "unknown": that distinction is the entire
+  point of the writer recording the key as present-but-null on every row it
+  produces, and a reader using `.get()` truthiness would collapse the two.
+
+  `directions_never_observed`'s vocabulary gains "exit" as a third member, alongside
+  "in" and "out".
 """
 from __future__ import annotations
 
@@ -104,12 +127,14 @@ import ast
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
+from tests.firedrill._harness import build_env, make_isolation
 from writ.cli import app
 
 REPO = Path(__file__).resolve().parent.parent
@@ -726,20 +751,13 @@ class TestDirectionsNeverObserved:
         census = blackbox.build_census(records)
         never = census.get("directions_never_observed")
         assert never is not None, f"no directions_never_observed key: {census!r}"
-        assert never.get("PreToolUse") == ["out"], never
-
-    def test_an_event_observed_on_both_directions_has_no_gap(self) -> None:
-        blackbox = _blackbox_module()
-        _require(blackbox, "build_census")
-        records = [
-            {"ts": "t", "hook": "h", "direction": "in", "session": "s", "pid": 1,
-             "payload": json.dumps({"hook_event_name": "PreToolUse"})},
-            {"ts": "t", "hook": "h2", "direction": "out", "session": "s", "pid": 2,
-             "payload": json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse"}})},
-        ]
-        census = blackbox.build_census(records)
-        never = census.get("directions_never_observed") or {}
-        assert "PreToolUse" not in never, never
+        # THE ONE PIN THAT MOVES (plan.md dfacff61-23d5-474e-846c-2e2f0f0ea482,
+        # Decision 6): directions_never_observed's vocabulary gains a third member,
+        # "exit", so an event observed only on "in" is now missing BOTH of the other
+        # two, not just "out". This is the honest cost of the vocabulary change, named
+        # in the plan rather than discovered during implementation; nothing else about
+        # this test is weakened.
+        assert never.get("PreToolUse") == ["out", "exit"], never
 
     def test_an_absent_log_reports_no_gaps_because_nothing_was_observed(
         self, tmp_path
@@ -751,6 +769,393 @@ class TestDirectionsNeverObserved:
         assert census.get("directions_never_observed") == {}, (
             census.get("directions_never_observed")
         )
+
+
+class TestPidJoinFromARealSubprocessLog:
+    """Capability 2: build_census must attribute an OUT row's origin to its matching
+    IN row instead of "undetermined", proved from a log a REAL subprocess actually
+    wrote, never from hand-built rows sharing a literal pid.
+
+    This is the reader-side half of the pid defect (tests/test_blackbox_record_schema
+    .py::TestPidIsTheHooksOwnDollarDollar proves the writer side): the existing tests
+    in this file could not detect the join failure because they hand-build IN and OUT
+    rows with an identical literal pid (see TestOutRowOriginInheritance above), which
+    is exactly the shape that survived the defect. Here the IN row and the OUT row
+    come from ONE real bash process, through blackbox_log and emit_hook_reply exactly
+    as a real hook would call them, so this fails for real if (and only if) the two
+    rows land under different pids.
+    """
+
+    def test_an_out_row_from_a_real_process_inherits_its_matching_in_rows_harness_origin(
+        self, tmp_path
+    ) -> None:
+        blackbox = _blackbox_module()
+        _require(blackbox, "read_capture_records", "build_census")
+        common_sh = REPO / "bin" / "lib" / "common.sh"
+        iso = make_isolation(tmp_path, session_id="join-probe-session")
+        log_path = tmp_path / "capture.jsonl"
+        env = build_env(iso, extra={"WRIT_BLACKBOX": "1", "WRIT_BLACKBOX_LOG": str(log_path)})
+        script = tmp_path / "probe.sh"
+        script.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            f'source "{common_sh}"\n'
+            'hook_instrument "join-probe"\n'
+            "printf '%s' "
+            "'{\"hook_event_name\":\"PreToolUse\",\"transcript_path\":\"/x/t.jsonl\"}' "
+            '| blackbox_log in "join-probe" "sess-1"\n'
+            "emit_hook_reply "
+            "'{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\","
+            '"permissionDecisionReason":"no"}}\' "join-probe" "sess-1"\n'
+        )
+        proc = subprocess.run(
+            ["bash", str(script)], capture_output=True, text=True, env=env, timeout=60,
+        )
+        assert proc.returncode == 0, proc.stderr
+
+        records = blackbox.read_capture_records(log_path)
+        assert len(records) == 2, (
+            f"the probe must have written exactly one IN row and one OUT row, or "
+            f"this test proves nothing about the join: {records!r}"
+        )
+
+        census = blackbox.build_census(records)
+        out_entry = census.get("records", {}).get("PreToolUse|join-probe|out")
+        assert out_entry is not None, (
+            f"no PreToolUse|join-probe|out entry in the census: {census.get('records')!r}"
+        )
+        assert out_entry["origins"].get("harness") == 1, (
+            f"the OUT row did not inherit the IN row's harness origin from a REAL "
+            f"process; this is exactly the join failure the committed corpus shows "
+            f"as origins: {{harness: 0, undetermined: N}}: {out_entry!r}"
+        )
+        assert out_entry["origins"].get("undetermined", 0) == 0, out_entry
+
+
+class TestExitRowFolding:
+    """Capability 8: the census folds an exit row under "<event>|<hook>|exit",
+    counts the code in exit_codes, and records the mechanism exit2_stderr for code 2,
+    exit_nonzero_stderr for any other non-zero code."""
+
+    def test_an_exit_row_with_code_2_folds_under_exit2_stderr(self) -> None:
+        blackbox = _blackbox_module()
+        _require(blackbox, "build_census")
+        records = [{
+            "ts": "t", "hook": "h", "direction": "exit", "session": "s", "pid": 1,
+            "event": "Stop", "exit_code": 2, "payload": "",
+        }]
+        census = blackbox.build_census(records)
+        entry = census.get("records", {}).get("Stop|h|exit")
+        assert entry is not None, f"no Stop|h|exit entry: {census.get('records')!r}"
+        assert entry["count"] == 1, entry
+        assert entry.get("exit_codes", {}).get("2") == 1, entry
+        assert entry.get("mechanisms", {}).get("exit2_stderr") == 1, entry
+
+    def test_an_exit_row_with_a_different_nonzero_code_folds_under_exit_nonzero_stderr(
+        self,
+    ) -> None:
+        blackbox = _blackbox_module()
+        _require(blackbox, "build_census")
+        records = [{
+            "ts": "t", "hook": "h", "direction": "exit", "session": "s", "pid": 1,
+            "event": "Stop", "exit_code": 5, "payload": "",
+        }]
+        census = blackbox.build_census(records)
+        entry = census.get("records", {}).get("Stop|h|exit")
+        assert entry is not None, f"no Stop|h|exit entry: {census.get('records')!r}"
+        assert entry.get("exit_codes", {}).get("5") == 1, entry
+        assert entry.get("mechanisms", {}).get("exit_nonzero_stderr") == 1, entry
+        assert "exit2_stderr" not in entry.get("mechanisms", {}), (
+            f"code 5 must not also be tallied as exit2_stderr: {entry!r}"
+        )
+
+    def test_an_exit_entry_carries_no_in_or_out_specific_key_maps(self) -> None:
+        """An exit row has no bytes, so it must carry neither tool_input_keys (IN
+        only) nor hook_specific_output_keys (OUT only)."""
+        blackbox = _blackbox_module()
+        _require(blackbox, "build_census")
+        records = [{
+            "ts": "t", "hook": "h", "direction": "exit", "session": "s", "pid": 1,
+            "event": "Stop", "exit_code": 1, "payload": "",
+        }]
+        census = blackbox.build_census(records)
+        entry = census.get("records", {}).get("Stop|h|exit")
+        assert entry is not None, entry
+        assert "tool_input_keys" not in entry, entry
+        assert "hook_specific_output_keys" not in entry, entry
+
+    @pytest.mark.parametrize("record_overrides", [
+        pytest.param({}, id="exit_code_key_absent"),
+        pytest.param({"exit_code": "2"}, id="exit_code_is_a_string_not_an_int"),
+        pytest.param({"exit_code": True}, id="exit_code_is_the_bool_True"),
+        pytest.param({"exit_code": False}, id="exit_code_is_the_bool_False"),
+        pytest.param({"exit_code": 0}, id="exit_code_is_the_literal_integer_zero"),
+    ])
+    def test_a_code_the_writer_could_not_have_produced_contributes_no_exit_codes_entry_or_mechanism(
+        self, record_overrides: dict,
+    ) -> None:
+        """Pins the deliberate `isinstance(code, int)` guard in `_fold_exit_record`
+        (writ/analysis/blackbox.py). Without it, a hand-corrupted exit row carrying
+        no real code would still bump `exit_codes` (as "None" or as the literal
+        string) and record a mechanism, which would let `delivery_provenance` answer
+        "observed" for a row that carries no real evidence. Covers both a record
+        with no `exit_code` key at all and one whose `exit_code` is a string rather
+        than an int, so a fold that coerces with `int(str)` instead of checking the
+        type would still be caught here. Asserts the ABSENCE of the entry, not
+        merely that no exception was raised, so removing the guard makes this red.
+        Also covers `True` and `False`: `bool` is an `int` subclass in Python, so
+        the obvious spelling `isinstance(code, int)` silently admits both, a case
+        review caught by execution rather than one anybody predicted going in.
+        Also covers the literal integer `0`: the exit row is written only on a
+        non-zero status, so a row carrying `exit_code: 0` cannot come from the
+        writer and is corruption rather than data, and neither mechanism name fits
+        it (`exit2_stderr` means code 2, `exit_nonzero_stderr` means some other
+        non-zero code). `False` and `0` reach the identical wrong claim through
+        different types, one a bool that is-an-int, the other a real int that is
+        simply not a code the writer could have produced; both are recorded
+        together so a future reader who sees only one does not take the other for
+        an oversight.
+        """
+        blackbox = _blackbox_module()
+        _require(blackbox, "build_census")
+        record = {
+            "ts": "t", "hook": "h", "direction": "exit", "session": "s", "pid": 1,
+            "event": "Stop", "payload": "",
+        }
+        record.update(record_overrides)
+        census = blackbox.build_census([record])
+        entry = census.get("records", {}).get("Stop|h|exit")
+        assert entry is not None, (
+            f"precondition: the row must still be classified and folded as an exit "
+            f"entry, or the absence checked below would prove nothing about the "
+            f"guard specifically: records={sorted(census.get('records', {}))!r}"
+        )
+        assert entry.get("exit_codes", {}) == {}, (
+            f"a non-integer exit_code must contribute no exit_codes entry: {entry!r}"
+        )
+        assert entry.get("mechanisms", {}) == {}, (
+            f"a non-integer exit_code must record no mechanism either: {entry!r}"
+        )
+
+
+class TestEventFallbackByKeyMembership:
+    """Capability 9: a row whose "event" key is present and null, with no event in
+    its payload, censuses as "event_not_observed"; a pre-schema row whose "event" key
+    is ABSENT still censuses as "unknown". Pinned as three separate cases (absent,
+    present-and-null, present-with-a-real-value) so a truthiness-based reader
+    (`payload.get("event")` instead of `"event" in record`) cannot collapse the null
+    case into "unknown" and pass by accident.
+    """
+
+    def test_event_key_absent_is_a_pre_schema_row_and_still_censuses_as_unknown(
+        self,
+    ) -> None:
+        blackbox = _blackbox_module()
+        _require(blackbox, "build_census")
+        records = [{
+            "ts": "t", "hook": "h", "direction": "out", "session": "s", "pid": 1,
+            "payload": json.dumps({}),
+        }]
+        census = blackbox.build_census(records)
+        by_key = census.get("records", {})
+        assert "unknown|h|out" in by_key, (
+            f"a pre-schema OUT row (no record-level event key, no payload event) "
+            f"must still census as unknown: {by_key!r}"
+        )
+        assert "event_not_observed|h|out" not in by_key, by_key
+
+    def test_event_key_present_and_null_censuses_as_event_not_observed_not_unknown(
+        self,
+    ) -> None:
+        blackbox = _blackbox_module()
+        _require(blackbox, "build_census")
+        records = [{
+            "ts": "t", "hook": "h", "direction": "out", "session": "s", "pid": 1,
+            "event": None, "payload": json.dumps({}),
+        }]
+        census = blackbox.build_census(records)
+        by_key = census.get("records", {})
+        assert "event_not_observed|h|out" in by_key, (
+            f"a row whose event key is present and null must census as "
+            f"event_not_observed, never unknown: {by_key!r}"
+        )
+        assert "unknown|h|out" not in by_key, (
+            f"the present-and-null row was folded under unknown, which means the "
+            f"reader used truthiness instead of key membership: {by_key!r}"
+        )
+
+    def test_event_key_present_with_a_real_value_wins_over_no_payload_event(
+        self,
+    ) -> None:
+        blackbox = _blackbox_module()
+        _require(blackbox, "build_census")
+        records = [{
+            "ts": "t", "hook": "h", "direction": "out", "session": "s", "pid": 1,
+            "event": "Stop", "payload": json.dumps({}),
+        }]
+        census = blackbox.build_census(records)
+        by_key = census.get("records", {})
+        assert "Stop|h|out" in by_key, (
+            f"a row with no payload-derived event must fall back to its record-level "
+            f"event field when that field carries a real value: {by_key!r}"
+        )
+        assert "unknown|h|out" not in by_key, by_key
+        assert "event_not_observed|h|out" not in by_key, by_key
+
+
+class TestPreSchemaFixtureCensusesIdentically:
+    """Capability 10: a fixture of pre-schema rows (no "event" key, no "exit_code"
+    key, encoder pids) censuses identically under the new reader: same record
+    classes, counts, origins and axes.
+
+    Deliberately reuses the identical-literal-pid IN/OUT shape the ADR names as the
+    reason the pid defect survived: the OLD corpus really does have that shape, so
+    proving it is untouched is the honest backward-compatibility check, not a
+    stronger claim that begs the pid question this file's sibling module answers.
+    """
+
+    def test_old_corpus_shape_keeps_its_record_classes_counts_and_origins(self) -> None:
+        blackbox = _blackbox_module()
+        _require(blackbox, "build_census")
+        records = [
+            {"ts": "2026-08-20T00:00:00+00:00", "hook": "h", "direction": "in",
+             "session": "s1", "pid": 100,
+             "payload": json.dumps({"hook_event_name": "PreToolUse", "transcript_path": "/x"})},
+            {"ts": "2026-08-20T00:05:00+00:00", "hook": "h", "direction": "out",
+             "session": "s1", "pid": 100,
+             "payload": json.dumps({"hookSpecificOutput": {
+                 "hookEventName": "PreToolUse", "permissionDecisionReason": "no",
+             }})},
+        ]
+        census = blackbox.build_census(records)
+        in_entry = census["records"]["PreToolUse|h|in"]
+        out_entry = census["records"]["PreToolUse|h|out"]
+        assert in_entry["count"] == 1 and out_entry["count"] == 1, (in_entry, out_entry)
+        assert in_entry["origins"]["harness"] == 1, in_entry
+        assert out_entry["origins"]["harness"] == 1, out_entry
+        assert out_entry["mechanisms"].get("permissionDecisionReason") == 1, out_entry
+        # origin_counts tallies every ROW, not every record class: one IN row plus
+        # one OUT row that inherits its origin are both harness, hence 2.
+        assert census["origin_counts"] == {"synthetic": 0, "harness": 2, "undetermined": 0}, (
+            census["origin_counts"]
+        )
+        assert census["directions_never_observed"] == {"PreToolUse": ["exit"]}, (
+            "an old-format record with no exit row must report exit (and only exit) "
+            f"as never observed for PreToolUse: {census['directions_never_observed']!r}"
+        )
+        assert census["edit_replace_all"] == {"true": 0, "false": 0, "absent": 0}, (
+            census["edit_replace_all"]
+        )
+
+
+class TestDirectionsNeverObservedGainsExit:
+    """Capability 11: directions_never_observed reports "exit" for an event whose
+    captured rows are all "in" and "out"."""
+
+    def test_an_event_observed_on_in_and_out_but_never_exit_lists_only_exit_as_missing(
+        self,
+    ) -> None:
+        blackbox = _blackbox_module()
+        _require(blackbox, "build_census")
+        records = [
+            {"ts": "t", "hook": "h", "direction": "in", "session": "s", "pid": 1,
+             "payload": json.dumps({"hook_event_name": "PreToolUse"})},
+            {"ts": "t", "hook": "h", "direction": "out", "session": "s", "pid": 1,
+             "payload": json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse"}})},
+        ]
+        census = blackbox.build_census(records)
+        never = census.get("directions_never_observed") or {}
+        assert never.get("PreToolUse") == ["exit"], never
+
+    def test_an_event_observed_on_all_three_directions_has_no_gap(self) -> None:
+        """SUPERSEDES TestDirectionsNeverObserved::test_an_event_observed_on_both_
+        directions_has_no_gap (retired): that test's premise was "both directions"
+        as the complete set, which the third direction "exit" falsified, so it came
+        to assert a falsehood (an event seen on in and out but never exit DOES have
+        a gap, "exit"); this test covers the true no-gap case with a real exit row
+        present, so do not re-add the retired assertion.
+
+        STRENGTHENED (audit finding, see the class docstring in the diff history):
+        without the positive assertion below, this test passed for a reason that had
+        nothing to do with exit support. `build_census` today resolves any direction
+        that is not "out" to "in" (writ/analysis/blackbox.py:347), so the exit record
+        below currently folds as an IN row with an empty payload: event "unknown",
+        origin synthetic, filed under synthetic_records["unknown|h|in"]. It never
+        touches "PreToolUse" at all. Proved by removing the exit record from this
+        fixture entirely: `directions_never_observed` stays free of "PreToolUse"
+        either way, because current code only ever checks the ("in", "out") pair, so
+        "PreToolUse" having both was already enough, and the exit record was inert.
+
+        The property this test asserts IS worth keeping: it catches a reader that
+        adds "exit" to the vocabulary but never clears it once an exit row IS
+        observed, a realistic implementation slip. So the fix is to ASSERT the exit
+        row was actually classified as an exit row first, which is false today (it
+        is filed under synthetic_records["unknown|h|in"] instead), so this precondition
+        goes red now for the right reason and still proves the real property once
+        exit rows fold correctly.
+        """
+        blackbox = _blackbox_module()
+        _require(blackbox, "build_census")
+        records = [
+            {"ts": "t", "hook": "h", "direction": "in", "session": "s", "pid": 1,
+             "payload": json.dumps({"hook_event_name": "PreToolUse"})},
+            {"ts": "t", "hook": "h", "direction": "out", "session": "s", "pid": 1,
+             "payload": json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse"}})},
+            {"ts": "t", "hook": "h", "direction": "exit", "session": "s", "pid": 1,
+             "event": "PreToolUse", "exit_code": 2, "payload": ""},
+        ]
+        census = blackbox.build_census(records)
+
+        by_key = census.get("records", {})
+        assert "PreToolUse|h|exit" in by_key, (
+            f"precondition: the exit record must actually be classified and folded "
+            f"as an exit row, or the absence-of-gap assertion below cannot tell "
+            f"exit support from the exit record being silently folded as IN (and "
+            f"therefore ignored): records={sorted(by_key)!r} "
+            f"synthetic_records={sorted(census.get('synthetic_records', {}))!r}"
+        )
+
+        never = census.get("directions_never_observed") or {}
+        assert "PreToolUse" not in never, never
+
+
+class TestDeliveryProvenanceObservesTheExitMechanism:
+    """Capability 12: delivery_provenance("Stop", "exit_nonzero_stderr") returns
+    "observed" against a census artifact holding an exit entry with that mechanism,
+    and "unproven" against a zero-record artifact.
+
+    writ/shared/delivery.py needs NO code change this cycle (plan.md's "Not in
+    scope" section): EXIT_MECHANISMS and delivery_provenance's generic mechanism-
+    membership check already exist. This pins the READ side of that integration
+    directly against a hand-authored artifact shaped the way build_census will
+    produce one, independent of whether build_census can produce it yet.
+    """
+
+    def test_observed_against_an_artifact_holding_the_exit_mechanism(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        import writ.shared.delivery as delivery
+
+        artifact = {
+            "records": {
+                "Stop|h|exit": {
+                    "event": "Stop", "hook": "h", "direction": "exit",
+                    "count": 1, "mechanisms": {"exit_nonzero_stderr": 1},
+                },
+            },
+        }
+        path = tmp_path / "census.json"
+        path.write_text(json.dumps(artifact))
+        monkeypatch.setattr(delivery, "CENSUS_PATH", path)
+        assert delivery.delivery_provenance("Stop", "exit_nonzero_stderr") == delivery.OBSERVED
+
+    def test_unproven_against_a_zero_record_artifact(self, tmp_path, monkeypatch) -> None:
+        import writ.shared.delivery as delivery
+
+        path = tmp_path / "census.json"
+        path.write_text(json.dumps({"records": {}}))
+        monkeypatch.setattr(delivery, "CENSUS_PATH", path)
+        assert delivery.delivery_provenance("Stop", "exit_nonzero_stderr") == delivery.UNPROVEN
 
 
 class TestAbsentLogCarriesEveryNewKeyWithAZeroOrEmptyValue:

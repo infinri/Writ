@@ -71,15 +71,58 @@ and puts a file write between the hook and its answer.
 There is also a live precedent for a trap collision in this tree. The note at
 `tests/test_write_path_process_budget.py` line 79 records that `pre-validate-file.sh` and
 `inject-tier-workflow.sh` each installed their own `trap ... EXIT` and silently REPLACED the
-instrumentation trap, discarding audit records with 365-day retention. A capture trap would
-be the third claimant on that slot. Its one genuine advantage, seeing the exit code, is
-unusable anyway: the capture record has no field for one.
+instrumentation trap, discarding audit records with 365-day retention.
+
+TWO CLAIMS THAT FOLLOWED THAT PRECEDENT IN THE ORIGINAL TEXT WERE WRONG, and plan
+`dfacff61-23d5-474e-846c-2e2f0f0ea482` proved both by implementing the thing they said could
+not be done. They are corrected here rather than left to contradict
+`ADR-blackbox-record-schema.md`.
+
+The trap slot is NOT contested. `hook_instrument` already owns it for all 40 instrumented
+hooks, and `writ_on_exit` APPENDS handlers rather than replacing the trap, so exit work is
+registered rather than claimed. A capture row written inside `_writ_hook_exit_trap` is not a
+third claimant on the slot; it is one more line in the single owner. The precedent above is
+an argument against a hook installing its OWN trap, which is what
+`tests/test_exit_trap_ownership.py::TestNoHookStealsTheTrap` now prevents, and not an
+argument against the shared trap doing more work.
+
+The exit code is no longer unrepresentable. It was true when this ADR was written that the
+capture record had no field for one. `blackbox_log` now takes an `exit_code` and writes it on
+a `direction: "exit"` row, so the "one genuine advantage" named above has been taken, through
+the existing trap and without the stdout redirect this alternative was refused for.
+
+What survives unchanged is the actual reason (a) was refused: the `tee` and
+redirect-to-temp-file variants put capture machinery in the path of the reply. Recording an
+exit CODE at the end of the trap does not, which is why that half was separable.
 
 **(b) A wrapper script named in `hooks.json`.** Refused on cost and blast radius. It edits
 44 registrations, makes one wrapper bug break every hook at once, and adds a bash start to
-every hook invocation whether or not capture is on. It is NOT refused forever. It is the
-only shape that could capture an exit code, so the deferred cycle below should re-price it
-rather than treat this ADR as having settled it.
+every hook invocation whether or not capture is on. It is NOT refused forever, and the
+deferred cycle below should re-price it rather than treat this ADR as having settled it.
+
+CORRECTED 2026-08-31. The middle clause of this paragraph read "It is the only shape that
+could capture an exit code". That was true when written and plan
+`dfacff61-23d5-474e-846c-2e2f0f0ea482` falsified it: the shared exit trap in
+`bin/lib/common.sh::_writ_hook_exit_trap` captured the exit code with no wrapper and no new
+trap, by reading `$rc` in the handler that already owns every instrumented hook's exit path.
+So the exit code is no longer a reason to re-price (b).
+
+Three things a wrapper would still buy that BOTH the emit-site funnel and the exit trap are
+structurally blind to, named from the code rather than asserted. First, plain stdout: the
+funnel only sees what is passed to `emit_hook_reply`, so the roughly 44 inline emission sites
+counted in the deferred section below would each need converting, while a wrapper owning the
+child's stdout would capture all of them at once. Second, the stderr TEXT of a refusal: the
+exit trap records the CODE only, and `blackbox_log` never reads stderr at all, so what the
+harness actually surfaces to the user is unrecorded. Third, an exit status the trap cannot
+report because the trap never ran: `hook_instrument` converts HUP, INT and TERM into explicit
+exits (129, 130, 143), but SIGKILL cannot be trapped, and a failure before `hook_instrument`
+installs the trap leaves no trap at all. A wrapper reads the child's wait status from outside
+the process either way.
+
+That is what is still open, and it is the standing question rather than a decision this
+correction makes. None of the three has been measured against (b)'s costs above (44
+registrations edited, one wrapper bug breaking every hook, a bash start per invocation), so
+nothing here says a wrapper is now worth it.
 
 ## What is deferred, and why it is ONE cycle rather than two
 
@@ -87,19 +130,49 @@ Plain stdout and refusal exit codes are both out of scope here, and they are the
 of work because they need the same change first: the capture record must gain an `event`
 and an `exit_code`.
 
-PLAIN STDOUT. It reaches the model only on `UserPromptSubmit`, `UserPromptExpansion` and
-`SessionStart` (`writ/shared/delivery.py::STDOUT_TO_MODEL_EVENTS`). Routing those emitters
-through this funnel would manufacture the defect this cycle fixes. An OUT row's event is
-read from `hookSpecificOutput.hookEventName` (`writ/analysis/blackbox.py`), so a plain-text
-payload carries no event, `_parse_payload` returns `{}`, `_event_name` returns `unknown`,
-and the row is shaped exactly like the 68 rows this cycle deleted.
+STATUS, CORRECTED 2026-08-31. The schema half of that deferral has LANDED, and the work split
+into two cycles rather than the one this heading predicted. Plan
+`dfacff61-23d5-474e-846c-2e2f0f0ea482`'s record-schema cycle gave the record its `event` and
+its `exit_code` and brought refusal exit codes in with them; plain stdout is still deferred.
+The two paragraphs below are kept rather than rewritten, because they are the reasoning that
+produced that cycle, and each is marked with what is true now.
 
-EXIT CODES. `blackbox_log`'s record schema carries `ts`, `hook`, `direction`, `session`,
-`pid` and `payload`. The mechanism Claude Code actually reacts to on a Stop-hook block is a
-non-zero exit with stderr, and that cannot be represented at all.
+PLAIN STDOUT, STILL DEFERRED. It reaches the model only on `UserPromptSubmit`,
+`UserPromptExpansion` and `SessionStart` (`writ/shared/delivery.py::STDOUT_TO_MODEL_EVENTS`).
+Routing those emitters through this funnel would manufacture the defect this cycle fixes. An
+OUT row's event was read only from `hookSpecificOutput.hookEventName`
+(`writ/analysis/blackbox.py`), so a plain-text payload carried no event, `_parse_payload`
+returned `{}`, `_event_name` returned `unknown`, and the row was shaped exactly like the 68
+rows this cycle deleted. THAT BLOCKER IS GONE: `_event_name` now falls back to the record's
+own `event` field, so a plain-text payload can carry its event and this work needs no further
+schema change. What defers it now is only its size, measured: roughly 44 inline emission
+sites, about 22 in `writ-rag-inject.sh` plus three more through its two single-sourced
+directive emitters, about 21 in `auto-approve-gate.sh`, and 1 in
+`writ-manual-test-grant.sh`. All of them are on UserPromptSubmit, so the whole population
+buys one additional event.
 
-So the next author should give the record an `event` and an `exit_code` and bring plain
-stdout and refusal exit codes in together, re-pricing alternative (b) at that point.
+EXIT CODES, LANDED. This paragraph used to read: "`blackbox_log`'s record schema carries
+`ts`, `hook`, `direction`, `session`, `pid` and `payload`. The mechanism Claude Code actually
+reacts to on a Stop-hook block is a non-zero exit with stderr, and that cannot be represented
+at all." Both sentences were true when this ADR was written, and the first is now false. The
+record also carries `event`, on every row the writer produces, as a string when the process
+observed one and as JSON null when it did not; and `exit_code`, on a third `direction` value,
+`exit`, written by `_writ_hook_exit_trap` on a non-zero status. `pid` is now the hook shell's
+own `$$` rather than the ephemeral encoder's. `ADR-blackbox-record-schema.md` is the decision
+record for all three.
+
+THE SIX-FIELD SHAPE STILL DESCRIBES THE CORPUS ON DISK, which is why the old sentence is
+quoted above rather than deleted. Capture has been OFF since before the schema change, so all
+9,388 committed records predate it: no `event` key, no `exit_code` key, and encoder pids. A
+reader checking the record shape against that corpus will find six fields and should.
+`docs/reference/blackbox-census.json` is untouched and stale by standing ruling for the same
+reason.
+
+REPRESENTABLE IS NOT OBSERVED, which is the distinction `delivery_provenance` exists to hold.
+A non-zero exit with stderr can now be RECORDED. No capture session has run since the change,
+so nothing has been recorded yet, no event's coverage has moved on the strength of it, and
+`delivery_provenance("Stop", "exit_nonzero_stderr")` correctly still answers `unproven`.
+Alternative (b) should be re-priced when the plain-stdout cycle is scoped.
 
 ## Consequences accepted
 
@@ -156,3 +229,25 @@ population by definition, and PostToolUse plain stdout reaches only the Claude C
 log, so it is a delivery question rather than a capture question. It stays declared in the
 fire-drill census as an `exit_nonzero_stderr` refusal, which is the mechanism that actually
 carries its failure arm.
+
+
+## Later note, 2026-08-31: one superseded premise had propagated to three claims
+
+This ADR now carries corrections in three places, and they are not three separate mistakes.
+One premise was load-bearing for all of them: that `blackbox_log`'s record schema could not
+represent an exit code. It was true when this file was written, and it supported a claim in
+alternative (a) (a capture trap's advantage is "unusable anyway"), a claim in alternative (b)
+(a wrapper is "the only shape that could capture an exit code"), and the EXIT CODES paragraph
+in the deferred section. Plan `dfacff61-23d5-474e-846c-2e2f0f0ea482` falsified the premise,
+and each claim written on top of it had to be corrected separately, at different points in the
+document, because nothing linked them.
+
+A READER SHOULD THEREFORE TREAT ANY REMAINING UNQUALIFIED STATEMENT ABOUT THE CAPTURE RECORD
+SCHEMA IN THIS FILE AS WRITTEN BEFORE 2026-08-31, and check it against
+`bin/lib/common.sh::blackbox_log` and `ADR-blackbox-record-schema.md` rather than trusting it.
+Three instances were found and dated; a fourth may not have been.
+
+The boundary stated in those corrections still holds here. The record can now REPRESENT an
+event, an exit code and a third `direction` value. No capture session has run since the
+change, so nothing has been observed on the strength of it, and
+`docs/reference/blackbox-census.json` is untouched and stale by standing ruling.

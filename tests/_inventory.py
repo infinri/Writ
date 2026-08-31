@@ -361,6 +361,51 @@ def bare_envelope_emissions(
     return sorted(set(findings))
 
 
+# ── Exit-code capture coverage (plan.md dfacff61-23d5-474e-846c-2e2f0f0ea482) ──
+#
+# Two more source-derived populations, holding refusal-exit capture by DERIVATION rather
+# than by a list of exit sites. The one enumerated list in this tree,
+# `tests/firedrill/_census.py`, declares 7 of the 10 real non-zero exit sites, which is the
+# measured cost of registering each one; a shared trap needs no registration for the
+# eleventh.
+
+
+def direct_blackbox_exit_calls() -> list[str]:
+    """Hook scripts that call `blackbox_log exit` themselves. Must be empty.
+
+    The exit-row sibling of `direct_blackbox_out_calls`, and the same argument: the shared
+    exit trap in `bin/lib/common.sh` is the one writer, so a hook that cannot reach the logger
+    cannot record an exit code other than the one it actually returned.
+    """
+    return [
+        path.name
+        for path in sorted(HOOK_SCRIPTS_DIR.glob("*.sh"))
+        if "blackbox_log exit" in _blanked_source(path)
+    ]
+
+
+def nonzero_exit_scripts() -> list[str]:
+    """Hook scripts with a non-zero exit site, filtered out of `refusing_script_markers()`.
+
+    Derived from that population's OWN `nonzero_exit` marker rather than re-scanning, so the
+    two cannot disagree about what a non-zero exit is. It is asserted NON-EMPTY by
+    `test_blackbox_record_schema.py`, because a silently-empty derivation would make the
+    subset check beside it (every member is auto-instrumented by `common.sh`, so its exit
+    reaches the shared trap) pass on any tree.
+
+    KNOWN LIMIT OF THE DERIVATION, stated rather than worked around: `_REFUSAL_PATTERNS`'s
+    `nonzero_exit` regex matches a LITERAL digit, so `exit "$WARN_EXIT"`
+    (`validate-rules.sh` lines 255 and 263) does not match it. `validate-rules.sh` is in the
+    population anyway through its two `exit 2` sites, so no script is missed today. Widening
+    that regex is deliberately NOT done here: it is shared with the fire drill's completeness
+    check, and changing it changes that check's meaning too.
+    """
+    return sorted(
+        name for name, markers in refusing_script_markers().items()
+        if "nonzero_exit" in markers
+    )
+
+
 def doctor_check_names() -> list[str]:
     """The doctor's checks, in registry order, straight from `doctor._CHECKS`.
 
