@@ -97,10 +97,17 @@ per-event table in this Part was done on 2.1.220. Nobody has re-walked those tab
 2.1.251, so relabelling this Part would convert an unverified claim into an asserted one. The
 tables are therefore UNVERIFIED on the current build, which is not the same as known-stale: no
 field below has been shown to have changed, and none has been shown to have survived either.
-Passages later in this document that cite the 9,388-record corpus are citing that 2.1.251
-artifact; the tables are not. Re-walking needs a live capture session, and capture is currently
-OFF (Part 3), which also means the committed census is itself stale in two ways recorded in
-Part 3.
+Passages later in this document that cite the 9,388-record corpus are citing an earlier
+2.1.251 artifact; the tables are not.
+
+UPDATED 2026-08-31. A capture session HAS since run, from 2026-08-28 to 2026-08-31, and the
+committed census was regenerated from it: 13,477 records, 70 record classes, stamped 2.1.251.
+The two staleness defects this paragraph used to record are therefore CLOSED, and the sentence
+that recorded them is removed rather than left to mislead. What did NOT change is the reason
+the tables stay unverified: a census counts which keys appeared, while the per-event tables
+below describe what each field MEANS and when it is present, and nobody has re-walked them
+field by field against 2.1.251. Capture is OFF again as of that regeneration, measured at about
+275 ms per write across the 15 write-path hooks while it was on.
 
 Schema claims below are scoped to 2.1.220 where re-observed on 2026-08-01; claims seen only on
 the older build carry `[observed 2.1.183]`. The public changelog for 2.1.184-2.1.220 announces
@@ -720,11 +727,27 @@ unreadable or malformed artifact yields `unproven` for everything, because absen
 never evidence. `CENSUS_PATH` is read fresh on every call, so a regenerated artifact takes effect
 without restarting the daemon.
 
-**The committed artifact is STALE in two independent ways, and neither is fixable without a
-capture session.** First, it still lists `PostToolUse` under `directions_never_observed` even
-though `writ-posttool-rag.sh` was converted to the funnel in `1eb48b1`
-(`hooks/scripts/writ-posttool-rag.sh:276`), so that entry now describes the capture window rather
-than the code. Second, it holds ZERO `exit`-direction rows, because the `event` and `exit_code`
-record fields and the two exit mechanisms all postdate it. Regenerating it needs a real capture
-session and capture is off, so anywhere this document cites that artifact, read it as a snapshot
-of one window (2026-08-28 to 2026-08-29, stamped 2.1.251) and nothing more.
+**BOTH STALENESS DEFECTS ARE CLOSED as of 2026-08-31**, and this paragraph records what the
+regeneration actually showed rather than only that it happened. The artifact used to list
+`PostToolUse` under `directions_never_observed` despite `writ-posttool-rag.sh` having been
+converted to the funnel in `1eb48b1`, and it held zero `exit`-direction rows because the `event`
+and `exit_code` fields postdated it. A capture session from 2026-08-28 to 2026-08-31 fixed both:
+13,477 records, 70 record classes.
+
+WHAT THE REGENERATION PROVED, and it is the funnel's own argument confirmed on real traffic. OUT
+record classes went from 4 to 14, and nine hooks that had never produced a single OUT row now do
+(`pre-validate-file`, `validate-test-file`, `writ-bash-write-gate`, `writ-debug-code-gate`,
+`writ-read-rag`, `writ-state-write-gate`, `writ-worktree-safety`, `writ-quality-judge`,
+`inject-tier-workflow`), none of them edited individually. `writ-bash-write-gate|out` carries
+`harness: 5` and `writ-quality-judge|out` carries `harness: 3`, where every OUT class in the
+previous artifact read `harness: 0`, because the recorded pid used to be the per-call encoder's
+and the origin join could never match. Real refusal exits appear for the first time:
+`writ-comms-output-gate` 30 and `enforce-violations` 3.
+
+WHAT IT STILL DOES NOT PROVE, which matters more than what it does. Every exit row files under
+`event_not_observed` rather than under `Stop`, so `Stop` remains in `directions_never_observed`
+and 11 of 12 events still carry no attributed exit row. That is not a capture gap: those hooks
+read stdin with a bare `cat`, never call `load_hook_env`, and so observe no event name, and the
+record says so instead of guessing. `delivery_provenance("Stop", "exit_nonzero_stderr")`
+therefore still answers `unproven`, correctly. Capture is OFF again; it cost about 275 ms per
+write across the 15 write-path hooks while on.
