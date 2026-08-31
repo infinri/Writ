@@ -76,19 +76,31 @@ Every fact in Part 2 carries a tag so you know how sure we are:
 
 ---
 
-## Part 2: Technical reference (build 2.1.220; baseline 2.1.183)
+## Part 2: Technical reference (field walk on build 2.1.220; baseline 2.1.183)
 
 ### Header
 
 | Field | Value |
 |---|---|
-| Claude Code version | `2.1.220 (Claude Code)` [observed]; baseline capture was `2.1.183` |
+| Claude Code version | The field-by-field walk below was done on `2.1.220 (Claude Code)` [observed]; baseline capture was `2.1.183`. The most recent capture and its census are stamped `2.1.251 (Claude Code)` and were NOT walked field by field (see the provenance gap below the table) |
 | Model in session | `claude-fable-5` (from SessionStart.model) [observed]; `claude-opus-4-8[1m]` on 2.1.183 |
 | Capture date | 2026-08-11 (sub-agent transcript pass: 42 captured SubagentStop payloads, 130 transcript files); 2026-08-01 (refresh); 2026-06-19 (baseline) [observed] |
 | Host OS | Linux x86_64 [observed] |
 | Live capture source | `~/.claude/writ-blackbox.jsonl` (raw envelopes; refresh filtered to real sessions only, because the same file also collects synthetic test-fixture envelopes that would poison the schema) [observed] |
 | Doc reference | https://code.claude.com/docs/en/hooks [doc] |
 | Doc reference (alias) | https://docs.anthropic.com/en/docs/claude-code/hooks redirects to the page above [doc] |
+
+**The provenance gap, stated rather than papered over.** The newest capture window and the
+census built from it are stamped `2.1.251 (Claude Code)` and cover 2026-08-28 to 2026-08-29
+(`docs/reference/blackbox-census.json`, 9,388 records). The field-by-field walk behind every
+per-event table in this Part was done on 2.1.220. Nobody has re-walked those tables against
+2.1.251, so relabelling this Part would convert an unverified claim into an asserted one. The
+tables are therefore UNVERIFIED on the current build, which is not the same as known-stale: no
+field below has been shown to have changed, and none has been shown to have survived either.
+Passages later in this document that cite the 9,388-record corpus are citing that 2.1.251
+artifact; the tables are not. Re-walking needs a live capture session, and capture is currently
+OFF (Part 3), which also means the committed census is itself stale in two ways recorded in
+Part 3.
 
 Schema claims below are scoped to 2.1.220 where re-observed on 2026-08-01; claims seen only on
 the older build carry `[observed 2.1.183]`. The public changelog for 2.1.184-2.1.220 announces
@@ -119,14 +131,29 @@ Each captured line in the log is `{ts, hook, direction, payload, pid, session, e
   Claude Code delivered), `out` (what the script sent back) or `exit` (the script's own non-zero
   exit status, written by the shared exit trap in `bin/lib/common.sh`; a zero exit writes no row).
   The authoritative session key is `payload.session_id`.
-- `event` and `exit_code` POSTDATE the first 9,388-record corpus, so a row from it carries
-  NEITHER key. The distinction is load-bearing rather than cosmetic: a key that is ABSENT means
+- `event` and `exit_code` [added 2026-08-31] POSTDATE the first 9,388-record corpus, so a row
+  from it carries NEITHER key. The distinction is load-bearing rather than cosmetic: a key that
+  is ABSENT means
   the row predates the field, and a key that is PRESENT and null means the writing process
   observed no event. Test membership (`"event" in record`), never truthiness, or the two collapse.
   `writ/analysis/blackbox.py` censuses them as `unknown` and `event_not_observed` respectively.
 - `pid` is the HOOK SHELL's pid, and was not always. Until 2026-08-31 it was the pid of the
   ephemeral python encoder each `blackbox_log` call forks, so on a row from the old corpus an IN
   row and an OUT row from one hook invocation carry DIFFERENT pids and cannot be joined.
+
+**What an `out` row covers, and what it does not.** Every JSON envelope a hook replies with goes
+through one funnel: `emit_hook_reply` (`bin/lib/common.sh:733-745`) prints the payload and then
+logs THAT SAME variable, and `blackbox_log out` may not appear anywhere under `hooks/scripts/`
+(`tests/_inventory.py::direct_blackbox_out_calls` must be empty). So an `out` row holds the bytes
+that were sent rather than a reconstruction of them. That is NOT the same claim as "every hook's
+output is captured now", and the difference is large. Per
+`docs/adr/ADR-blackbox-record-schema.md`, PLAIN STDOUT is roughly 44 inline emission sites that
+print text directly: about 22 in `writ-rag-inject.sh` plus 3 more through its two shared directive
+emitters (`emit_mode_directive`, `emit_post_compact_directive`), about 21 in
+`auto-approve-gate.sh`, and 1 in the manual-test-grant hook. All of them are on
+UserPromptSubmit, all are deferred by that ADR with the cost stated, and none produces an `out`
+row today. The consequence for a reader of the capture log: the absence of an `out` row for a
+UserPromptSubmit hook says nothing about whether that hook emitted.
 
 ### Event index
 
@@ -323,12 +350,28 @@ Exit codes [doc]:
 | 2 | Block. stdout and JSON are ignored; stderr is sent to the AI as an error. The exact effect is per-event (see the Event index). |
 | other non-zero | Non-blocking error for most hooks. The transcript shows a hook-error notice plus the first line of stderr. |
 
-Observed gating behavior on this build [observed]: our gate never uses exit 2. It replies with
-exit 0 plus JSON.
+Gating behavior in this tree: the PreToolUse gate replies with exit 0 plus JSON, and exit 2 is
+used elsewhere. An earlier version of this sentence said "our gate never uses exit 2", which was
+wrong about our own code. Three real blocking sites disprove it:
+`hooks/scripts/enforce-violations.sh:75` (registered on Stop; blocks the stop while violations
+are pending) and `hooks/scripts/validate-rules.sh:57` and `:337` (both registered on PostToolUse;
+each fires only when the gate-invalidation sentinel is present). All three write their reason to
+stderr before exiting, because exit 2 discards stdout, so a blocking exit with no echo is a
+refusal that names no action.
+
+The PreToolUse shapes below are unchanged and still hold:
 - **Allow is silence:** an allowed action produces exit 0 and NO output.
 - **Deny:** exit 0 with `{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision":
   "deny", "permissionDecisionReason": "...", "additionalContext": "..."}}`.
 - **Force-swap allow:** exit 0 with `permissionDecision: "allow"` plus `updatedInput`.
+
+The two exit-code paths now have names in the shared delivery vocabulary: `exit2_stderr` and
+`exit_nonzero_stderr` in `writ/shared/delivery.py:69-77`. Both classify to the `USER` bucket
+rather than `MODEL`, on the reading that the harness surfaces a non-zero exit's stderr and no
+captured record shows that text arriving in the model's context. That is the documented
+contract's best reading, NOT a capture result, which is why the same module's
+`delivery_provenance` returns `unproven` for them: the committed census holds zero
+`exit`-direction rows (Part 3).
 
 Universal JSON reply fields [doc]: `continue` (false stops Claude entirely), `stopReason` (shown
 when `continue` is false), `suppressOutput`, `systemMessage`, `terminalSequence` (a terminal
@@ -391,23 +434,49 @@ These are the replies that change the pending action. The first row is verified 
 | WorktreeCreate | stdout path or `hookSpecificOutput.worktreePath` | Sets the created worktree path; a missing path fails creation. | [doc] |
 | PermissionDenied | `hookSpecificOutput.retry` | `true` lets the model retry the denied call. | [doc] |
 
-Force-swap recipe (PreToolUse), the verified shape on this build:
+Force-swap recipe (PreToolUse). The JSON shape is the one verified live on this build; the shell
+around it is the pattern the live implementation uses
+(`hooks/scripts/writ-dispatch-discipline.sh:54-143`):
 
 ```bash
-#!/bin/bash
-d=$(cat)
-printf '%s' "$d" | python3 -c '
-import sys, json
-d  = json.load(sys.stdin)
-ti = d.get("tool_input", {})
+#!/usr/bin/env bash
+# PreToolUse (matcher: Task). Exit is always 0; the decision rides in the JSON reply.
+set -euo pipefail
+
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+WRIT_DIR="$(cd "$HOOK_DIR/../.." && pwd)"
+source "$WRIT_DIR/bin/lib/common.sh"
+load_hook_env                 # reads stdin once; sets HOOK_ENVELOPE and HOOK_SESSION_ID
+SESSION_ID="$HOOK_SESSION_ID"
+
+# Build the envelope INTO A VARIABLE, never straight to stdout. The quoted '<<PY'
+# delimiter means the shell substitutes nothing inside the body, and the payload rides in
+# on an env var instead of being spliced into the program text.
+DECISION=$(WRIT_PARSED_ENVELOPE="$HOOK_ENVELOPE" python3 <<'PY'
+import json, os
+parsed = json.loads(os.environ.get("WRIT_PARSED_ENVELOPE") or "{}")
+ti = parsed.get("tool_input") or {}
 if ti.get("subagent_type") == "general-purpose":
-    ti["subagent_type"] = "writ-explorer"     # your swap
-print(json.dumps({"hookSpecificOutput": {
-    "hookEventName": "PreToolUse",
-    "permissionDecision": "allow",
-    "updatedInput": ti}}))                      # whole object back
-'
+    ti["subagent_type"] = "writ-explorer"          # your swap
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "allow",
+        "updatedInput": ti}}))                     # whole object back, a replacement
+PY
+)
+
+# ONE writer for stdout. An empty payload is a no-op, which is how "allow is silence"
+# stays the default path.
+emit_hook_reply "$DECISION" "" "$SESSION_ID"
 ```
+
+The teaching point is still `updatedInput`: pass the WHOLE `tool_input` object back, because it
+replaces the original rather than merging into it. What changed is the plumbing. Since `1eb48b1`
+no script under `hooks/scripts/` may print an envelope directly to stdout; an earlier version of
+this snippet piped a `python3 -c` block's stdout straight through, sourced nothing, and called no
+funnel, which is exactly the shape `tests/_inventory.py::bare_envelope_emissions` flags. Capturing
+into a variable and emitting once is what makes the `out` row byte-identical to the reply, and it
+also keeps capture off the critical path: `emit_hook_reply` prints first and logs second.
 
 ### The subagent-spawn naming question (recorded, not resolved)
 
@@ -451,12 +520,43 @@ distinct agents have a `subagent_start` row and 2,219 do not, and the sets do **
 Every agent in the second group arrives at `SubagentStop` with `agent_type: ""`. So an empty
 `agent_type` is the signature of a spawn path that skipped `SubagentStart` entirely, not a
 property of the build. Of those 2,219, 1,425 still produced rows under their own agent id (Writ
-hooks ran inside them) and 794 produced only stop-side rows.
+hooks ran inside them) and 794 produced only stop-side rows. These four counts come from the
+`var/logs` archives, including the 226 gzipped ones (`bin/lib/common.sh:411-419` carries the same
+measurement), NOT from the blackbox JSONL corpus discussed elsewhere in this document, so they
+are not expected to reconcile with its 9,388 records.
 
 **Sidecar lifetime differs between the two.** For a governed dispatch the sidecar
 (`agent-<agent_id>.meta.json`) survives the agent's completion; for the ungoverned population
 none of 57 completed agents still had one, while 68 from the same session persisted. Any design
 that reads the sidecar must therefore treat it as ephemeral and persist what it learns.
+
+**A `subagent_start` row is NECESSARY but NOT SUFFICIENT, and was fixed in `170cfa6`.** The
+paragraphs above call the population with a start row "governed". Read that as "has a start row".
+The row alone was never proof, and for two cycles it was actively misleading.
+`hooks/scripts/writ-subagent-start.sh` passed the parent's ENTIRE session cache JSON as an unread
+`argv[1]` to its python blocks; the seeder never read it, because the inheritance logic had moved
+into `writ/session/subagent_seed.py`, which re-reads the parent cache from the session id itself.
+Linux caps a single argv string at MAX_ARG_STRLEN (131072 here; the live parent measured 181529
+bytes), so past that threshold `execve` failed E2BIG before python started and `2>/dev/null || true`
+swallowed the error. The start row is written at the END of the hook whether or not the seed block
+ran, so a dispatch could carry a `subagent_start` row and still run with NO mode, NO inherited
+gates and NO plan directory. Outside the skill directory every write from such a sub-agent hit the
+`[ENF-GATE-MODE]` no-mode deny, and the role write-scope authority that requires
+`cache_source == "subagent_start"` had never once fired on a real dispatch.
+
+It read as a KNOWN LIMITATION rather than a defect because it was threshold-triggered by session
+age: seeding works while the parent cache is small and stops once the cache crosses the cap, and a
+long session is exactly when sub-agents get used most. So the missing telemetry looked like the
+already-documented ungoverned population above, which had a ready innocent explanation.
+
+Fixed in `170cfa6`. The unread argument is deleted rather than worked around (the bounded session
+id goes in on named env variables and the cache is read in process), the seed block now reports
+`seeded` or `skipped` and fires exactly one bounded `subagent_seed_failed` record on an empty
+result, and `writ/session/doctor.py:1485-1586` splits the census into `governed`, `lazy`,
+`seed_failed`, `reachable` and `unreachable`. `governed` subtracts an agent only on that agent's
+OWN `subagent_seed_failed` row and never on a missing one, so archives written before that record
+existed are not retroactively relabelled and a zero in `seed_failed` means unrecorded rather than
+proven clean.
 
 ### Sub-agent transcripts, and queued input misdelivered into a sub-agent turn
 
@@ -512,6 +612,14 @@ PostToolUseFailure envelope (field is `error`, a string); the SessionStart, Suba
 SubagentStop envelopes. Closed in the 2026-08-01 refresh: the Stop, SessionEnd, PreCompact, and
 PostCompact envelopes (all captured live on 2.1.220).
 
+**Nothing in the numbered list below was closed by the 2026-08-28 to 2026-08-31 cycles**
+(`30b1ac0`, `1eb48b1`, `170cfa6`), and saying so is the point: a reader should neither
+re-investigate one of these believing recent work moved it, nor assume one quietly closed. Those
+three cycles changed OUR record schema, OUR emission funnel and OUR sub-agent seeding. Every gap
+1 through 6 is a question about Claude Code's own behavior, and answering any of them needs a
+live capture session with the triggering condition exercised. Capture is currently OFF, so none
+of them moved. Gaps 7 through 10 are new, opened by those same cycles.
+
 Still open:
 1. **CwdChanged did not fire** for a directory change made inside a Bash command (`cd` within one
    command). The change took effect (later envelopes carried the new directory), but no CwdChanged
@@ -535,6 +643,30 @@ Still open:
    ConfigChange (edit a settings file mid-session); UserPromptExpansion (invoke a slash command).
 6. The two doc URLs are one page (a redirect), so there is no independent second documentation
    source.
+7. **The exit-code delivery answer is UNPROVEN, not observed.** `exit2_stderr` and
+   `exit_nonzero_stderr` (`writ/shared/delivery.py:69-77`) classify to the `USER` bucket on the
+   documented contract's best reading. No captured record backs it: the committed census holds
+   zero `exit`-direction rows, and its only observed mechanisms are `additionalContext` and
+   `permissionDecisionReason`. `delivery_provenance` therefore answers `unproven` for every
+   exit-code entry, and the fire drill reports that rather than asserting the classification.
+   Closing this needs a capture window containing a real refusal.
+8. **Plain stdout is uncaptured, at roughly 44 sites.** All of them are on UserPromptSubmit and
+   all are deferred by `docs/adr/ADR-blackbox-record-schema.md` (see "What an `out` row covers"
+   above). Until that is done, absence of an `out` row for a UserPromptSubmit hook is evidence of
+   nothing.
+9. **Whether SubagentStart carries task text is now UNSETTLED rather than settled, in our own
+   artifacts.** The 2.1.220 walk recorded no task text on 17/17 real spawns. The committed
+   2.1.251 census's `SubagentStart|writ-subagent-start|in` record class holds 124 rows, of which
+   35 carry a `task` key and 28 carry a `prompt` key, while only 12 of the 124 carry
+   `transcript_path` or `prompt_id`, which is the harness fingerprint the census partitions on
+   (`writ/analysis/blackbox.py:179-196`). By arithmetic at least 23 of the `task`-bearing rows
+   are not harness-origin and could be hand-built probe payloads. So the artifact cannot settle
+   this in EITHER direction, and neither number should be read as Claude Code behavior. It is
+   recorded here as a question for the next capture session, not as a correction to the tables
+   above.
+10. **The Part 2 per-event tables are unverified on the current build.** See the provenance gap
+    under the header: the walk is 2.1.220, the newest capture is 2.1.251, and the two have not
+    been reconciled field by field.
 
 ---
 
@@ -547,3 +679,52 @@ read two sources: the capture log `~/.claude/writ-blackbox.jsonl` for hook envel
 session's own transcript for per-tool input and result shapes. Tag every field by source, mark
 what would not fire, and re-stamp the version. Turn capture off when done (`rm
 ~/.claude/writ-blackbox.on`).
+
+The sentinel and the log path are both read by `blackbox_enabled` in `bin/lib/common.sh:616-618`:
+capture is on when `WRIT_BLACKBOX=1` or the sentinel file exists, and the log defaults to
+`${HOME}/.claude/writ-blackbox.jsonl` (override `WRIT_BLACKBOX_LOG`). As of 2026-08-31 the
+sentinel is absent, so capture is OFF. That splits what can be checked today: a claim about this
+tree's own code (which hook emits what, the record schema, the wiring) is verifiable by reading
+the code, and a claim about what Claude Code sends or accepts is not verifiable at all until
+capture is turned back on.
+
+Then fold the log into the committed artifact:
+
+```bash
+writ blackbox-census --log ~/.claude/writ-blackbox.jsonl \
+  --out docs/reference/blackbox-census.json --cc-version 2.1.251
+```
+
+`writ/cli.py:301-354` implements it. It reads only; it changes no capture coverage. An absent or
+empty log is deliberately NOT an error: it yields a well-formed artifact with zero records and
+every registered event listed under `events_never_observed`, which is the correct state right
+after capture is switched on.
+
+**The census partitions every row by ORIGIN**, into `harness`, `synthetic` and `undetermined`
+(`writ/analysis/blackbox.py:179-196`), on a POSITIVE fingerprint rather than on absence:
+synthetic when `hook_event_name` is wholly missing, which no real Claude Code envelope omits;
+harness when the payload carries `transcript_path` or `prompt_id`; undetermined when it carries
+`hook_event_name` and neither fingerprint field. The split exists because roughly a third of one
+capture window was hand-built latency-probe payloads fed to hooks during a measurement, and
+without the split a bare `record_count` reads as a count of real Claude Code traffic and
+overstates the evidence by the contaminated share. The committed artifact records 4,650 harness,
+2,754 synthetic and 1,984 undetermined out of 9,388. Proven-synthetic rows move to a
+`synthetic_records` sibling; undetermined rows STAY in `records`, because moving a row out on the
+strength of a missing field is the same error pointed the other way, and it would strip `out`
+record classes of the evidence the provenance check reads.
+
+That artifact is what `writ/shared/delivery.py::delivery_provenance` reads to back or refuse an
+"observed" claim. An (event, mechanism) pair comes back `observed` only when some record class
+for that event lists that mechanism with a non-zero count, and `unproven` otherwise. An absent,
+unreadable or malformed artifact yields `unproven` for everything, because absence of evidence is
+never evidence. `CENSUS_PATH` is read fresh on every call, so a regenerated artifact takes effect
+without restarting the daemon.
+
+**The committed artifact is STALE in two independent ways, and neither is fixable without a
+capture session.** First, it still lists `PostToolUse` under `directions_never_observed` even
+though `writ-posttool-rag.sh` was converted to the funnel in `1eb48b1`
+(`hooks/scripts/writ-posttool-rag.sh:276`), so that entry now describes the capture window rather
+than the code. Second, it holds ZERO `exit`-direction rows, because the `event` and `exit_code`
+record fields and the two exit mechanisms all postdate it. Regenerating it needs a real capture
+session and capture is off, so anywhere this document cites that artifact, read it as a snapshot
+of one window (2026-08-28 to 2026-08-29, stamped 2.1.251) and nothing more.
