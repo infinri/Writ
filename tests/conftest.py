@@ -180,6 +180,33 @@ def pytest_sessionfinish(session, exitstatus):
         pass
 
 
+def _isolation_report_line(total: int, census: dict, rebuild_seconds: float) -> str:
+    """The single line the preflight prints, and the reason it prints one. (cycle 9)
+
+    Without it the only evidence that the start state is deterministic would be
+    "two consecutive runs matched", and a preflight that silently did NOTHING
+    against a graph that happened to be clean produces exactly that same
+    evidence. The line carries three facts a run cannot fake: the number of
+    nodes that existed before the delete (proof the wipe had work to do), the
+    per-label census of what that was (proof of WHICH residue existed, records
+    included), and the seconds the rebuild cost (the price this cycle adds,
+    printed on every run so it cannot drift unnoticed).
+
+    The census is printed WHOLE, biggest label first, never truncated to a top
+    N. Truncation would drop exactly the labels this cycle exists to remove:
+    after the first wipe the record counts are single digits against a corpus
+    in the hundreds, so a "top 8" line would report a clean sweep by omitting
+    the sweepings.
+    """
+    labels = ", ".join(
+        f"{label} {n}" for label, n in sorted(census.items(), key=lambda kv: (-kv[1], kv[0]))
+    )
+    return (
+        f"graph isolation: wiped {total} nodes ({labels or 'no labels'}), "
+        f"corpus rebuilt in {rebuild_seconds:.1f}s"
+    )
+
+
 def _preflight_isolated_graph() -> None:
     """Refuse to start a run that cannot be isolated. (cycle 8)
 
@@ -205,6 +232,31 @@ def _preflight_isolated_graph() -> None:
         once, loudly, with the per-label census attached, instead of by two
         hundred individual failures with no cause on them.
 
+    CYCLE 9: THE RUN ALSO STARTS FROM A KNOWN GRAPH, NOT AN INHERITED ONE.
+    Between the isolation verdict and the corpus warm the preflight now
+    censuses every label, deletes every node, and rebuilds. The reason is that
+    clear_all preserves the record labels by default and an isolated run skips
+    the end-of-suite restore, so whatever a module left behind survived to the
+    next run forever: measured at 651 record nodes of 1,119, 57 percent of the
+    graph being residue from previous runs. Two consecutive runs against that
+    graph are two different experiments.
+
+    THE THREE STEPS ARE ORDERED AND THE ORDER IS ASSERTED (see
+    tests/test_cycle8_graph_isolation.py::TestSessionStartPreflightWiring). The
+    census must precede the delete or it can only ever report zero. The delete
+    must follow the classification, because a target that was never confirmed
+    isolated must receive no delete statement at all. The delete must precede
+    the warm, or the warm is what gets undone.
+
+    The wipe is safe HERE and would be wrong anywhere else. A Decision record
+    has no file to rebuild from, which is a statement about a graph somebody
+    cares about; the disposable instance holds only test residue, and the guard
+    inside clear_all still refuses if the target turns out not to be disposable
+    after all. That refusal is converted to a UsageError below rather than
+    allowed to escape: anything leaving pytest_sessionstart that is not a
+    UsageError becomes an INTERNALERROR with a traceback and no remedy on it,
+    and a refusal that names no way out is a deadlock.
+
     Every graph read happens in a worker thread, for the reason the bible/ warm
     below already documents: calling asyncio.run on the MAIN thread here, before
     pytest's event-loop policy is set up, leaves the main thread's current loop
@@ -212,14 +264,20 @@ def _preflight_isolated_graph() -> None:
     happens on the main thread.
     """
     import concurrent.futures
+    import time
+
+    from writ.graph.db._safety import FullWipeRefused
 
     from tests._corpus import ensure_corpus, is_complete, methodology_counts, neo4j_reachable
     from tests._graph import (
         STATE_ISOLATED,
         classify_isolation,
+        count,
         isolation_refusal_message,
+        label_census,
         resolved_uri,
         targets_production,
+        wipe_everything,
     )
 
     uri = resolved_uri()
@@ -244,12 +302,47 @@ def _preflight_isolated_graph() -> None:
         if state != STATE_ISOLATED:
             raise pytest.UsageError(f"graph isolation: {state}\n{isolation_refusal_message(uri)}")
 
-        # Warm a cold instance. ensure_corpus is a no-op when the graph is already
-        # complete (one census read), so a warm instance costs nothing here.
+        # Step 1 of 3: what is here BEFORE anything is deleted. Two reads: the
+        # unfiltered per-label census (methodology_counts cannot serve, it
+        # projects onto a methodology-only label list and reports zero for
+        # every record label), and the node total, which is not the sum of the
+        # census because a node carrying two labels is counted under both.
         try:
-            ex.submit(ensure_corpus).result(timeout=180)
+            census = ex.submit(lambda: label_census()).result(timeout=60)
+            before_total = ex.submit(
+                lambda: count("MATCH (n) RETURN count(n) AS c")
+            ).result(timeout=60)
+        except Exception as exc:  # noqa: BLE001
+            raise pytest.UsageError(
+                f"graph isolation: pre-wipe census failed ({exc})\n"
+                f"{isolation_refusal_message(uri)}"
+            ) from exc
+
+        # Step 2 of 3: the delete. Lambda-wrapped rather than submitted bare so
+        # the call is a call, both here and to the source-order assertions that
+        # pin this sequence.
+        try:
+            ex.submit(lambda: wipe_everything()).result(timeout=180)
+        except FullWipeRefused as exc:
+            raise pytest.UsageError(
+                f"graph isolation: whole-graph wipe refused ({exc})\n"
+                f"{isolation_refusal_message(uri)}"
+            ) from exc
+
+        # Step 3 of 3: rebuild, and time it. The seconds go on the report line
+        # every run because this is the cost the wipe adds; a printed cost
+        # cannot drift unnoticed the way a one-off measurement can.
+        rebuild_started = time.monotonic()
+        try:
+            ex.submit(lambda: ensure_corpus()).result(timeout=300)
         except Exception:  # noqa: BLE001
             pass  # the completeness check below is the verdict, not this call
+        rebuild_seconds = time.monotonic() - rebuild_started
+
+        # Emitted BEFORE the completeness verdict, so a run that refuses for an
+        # incomplete corpus still tells the operator what was deleted and how
+        # long the failed rebuild took.
+        print(_isolation_report_line(before_total, census, rebuild_seconds))
 
         # Refuse rather than propagate: any exception escaping pytest_sessionstart
         # that is not a UsageError becomes an INTERNALERROR with a traceback and no

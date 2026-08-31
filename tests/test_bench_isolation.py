@@ -60,18 +60,33 @@ BENCH_RULE_ID = "BENCH-INGEST-001"
 
 @pytest_asyncio.fixture()
 async def db():
-    """Live Neo4j connection, matching bench_targets.py's skip contract.
+    """Live Neo4j connection. Unreachable skips; reachable-but-empty HEALS, then FAILS.
 
-    Skips (rather than fails) when Neo4j is unreachable or the corpus is
-    empty -- same posture as benchmarks/bench_targets.py's module-scoped
-    `db` fixture, so this test degrades the same way in an environment
-    without a live graph.
+    The stated goal of the original fixture, degrading the same way in an
+    environment without a live graph, is preserved exactly: the no-graph case
+    is the UNREACHABLE one and it still skips. What changed is the other
+    branch. An empty corpus used to skip too, and that is the masking class
+    `tests/_corpus.py::classify_corpus_state` was written to forbid: reachable
+    but empty is 'empty', and tests must FAIL, because that exact state has
+    already hidden a real regression here by reading as a skip.
+
+    An empty corpus is also reachable from a green run rather than only from a
+    broken environment. Modules that call `clear_all()` with no reimport sort
+    before this one alphabetically (`test_abstraction_artifact_validate.py`,
+    `test_authoring.py`, and `test_infrastructure.py:26-29` is the clearest
+    shape of the class), so the graph can legitimately be empty by the time
+    this fixture runs. So the fixture heals first, through the same
+    `ensure_corpus` every other graph-dependent test uses, and only a graph
+    still empty AFTER the heal is a finding. That finding fails, carrying the
+    per-label census, rather than skipping with no cause attached.
 
     Teardown ALWAYS runs the BENCH-INGEST-001 cleanup itself, independent of
     whether the production code under test has its own (buggy or fixed)
-    cleanup path -- this is what keeps the RED run from poisoning the
+    cleanup path: this is what keeps the RED run from poisoning the
     shared graph.
     """
+    from tests._corpus import ensure_corpus, methodology_counts
+
     conn = Neo4jConnection(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
     reachable = True
     count = 0
@@ -83,8 +98,18 @@ async def db():
         await conn.close()
         pytest.skip("Neo4j unreachable")
     if count == 0:
+        ensure_corpus()
+        count = await conn.count_rules()
+    if count == 0:
+        census = methodology_counts()
         await conn.close()
-        pytest.skip("Neo4j has no rules. Run: `writ import-markdown`")
+        pytest.fail(
+            "Neo4j is reachable and answered, but holds zero rules after "
+            "ensure_corpus() was given a chance to heal it. A reachable-but-empty "
+            "graph must FAIL, never skip (tests/_corpus.py::classify_corpus_state): "
+            "an empty graph reading as a skip has already masked a real regression "
+            f"in this suite. Live counts by label: {sorted(census.items())}"
+        )
 
     yield conn
 

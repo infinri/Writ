@@ -97,6 +97,25 @@ def _guarded_by_flag(body: str, call_marker: str, flag_name: str) -> bool:
     return any("if" in line and flag_name in line for line in lines[:call_idx])
 
 
+def _call_index(body: str, func_name: str, what: str) -> int:
+    """Text position of `func_name`'s CALL inside `body`, i.e. `f"{func_name}("`.
+
+    Deliberately searches for the opening paren rather than the bare name: every
+    function this file checks imports its helpers in one `from tests._graph
+    import (...)` tuple at the top of the body, so a bare-name search finds the
+    import listing (whatever position the names happen to be typed in) rather
+    than the call, and two names imported on the same line would compare as
+    "equal" order regardless of which one actually runs first. Fails loudly
+    (never returns a sentinel silently) when the call is absent, because absence
+    here means the seam has not been wired yet, not that this test found nothing
+    to check.
+    """
+    idx = body.find(f"{func_name}(")
+    if idx == -1:
+        pytest.fail(f"skeleton: _preflight_isolated_graph does not call {what}() yet")
+    return idx
+
+
 # ---------------------------------------------------------------------------
 # Capability 2: apply_isolation_env sets the three connection vars + forces
 # WRIT_TEST_GRAPH=1, leaving any caller-set value untouched.
@@ -461,6 +480,86 @@ class TestSessionStartPreflightWiring:
         transport that actually leaked."""
         assert "_refuse_production_graph_when_isolated" not in conftest_source
         assert "Neo4jConnection.__init__" not in conftest_source
+
+    # -----------------------------------------------------------------------
+    # cycle 9: ORDER assertions for the wipe the preflight now issues between
+    # the isolation verdict and the corpus warm. Text-position comparisons,
+    # matching this class's own idiom above (source inspection, no live
+    # graph): plan.md places the wipe strictly after `classify_isolation`
+    # has already decided STATE_ISOLATED and strictly before `ensure_corpus`
+    # rebuilds, "or the warm would be undone".
+    # -----------------------------------------------------------------------
+
+    def test_wipe_is_called_after_the_isolation_classifier_decides(
+        self, conftest_source: str
+    ) -> None:
+        body = _extract_function_source(conftest_source, "_preflight_isolated_graph")
+        if not body:
+            pytest.fail("skeleton: _preflight_isolated_graph is not defined")
+        classify_idx = _call_index(body, "classify_isolation", "classify_isolation")
+        wipe_idx = _call_index(body, "wipe_everything", "wipe_everything")
+        assert classify_idx < wipe_idx, (
+            "wipe_everything() must be called strictly after classify_isolation() "
+            "has already decided the state; issuing the wipe first could reach "
+            "a target that was never confirmed isolated (plan.md: 'never delete "
+            "from a target that was not approved')"
+        )
+
+    def test_wipe_is_called_before_ensure_corpus_warms_the_corpus(
+        self, conftest_source: str
+    ) -> None:
+        body = _extract_function_source(conftest_source, "_preflight_isolated_graph")
+        if not body:
+            pytest.fail("skeleton: _preflight_isolated_graph is not defined")
+        wipe_idx = _call_index(body, "wipe_everything", "wipe_everything")
+        ensure_idx = _call_index(body, "ensure_corpus", "ensure_corpus")
+        assert wipe_idx < ensure_idx, (
+            "wipe_everything() must be called before ensure_corpus(): calling "
+            "it after would undo the warm the wipe is supposed to precede "
+            "(plan.md: 'before ensure_corpus (or the warm would be undone)')"
+        )
+
+    def test_census_is_taken_before_the_wipe_so_it_has_something_to_report(
+        self, conftest_source: str
+    ) -> None:
+        """The census must run before the delete, not after: a census taken
+        post-wipe could only ever report zero, which would make the report
+        line's "what was deleted" half permanently vacuous (plan.md: "This is
+        what makes the wipe report a positive signal instead of an absence")."""
+        body = _extract_function_source(conftest_source, "_preflight_isolated_graph")
+        if not body:
+            pytest.fail("skeleton: _preflight_isolated_graph is not defined")
+        census_idx = _call_index(body, "label_census", "label_census")
+        wipe_idx = _call_index(body, "wipe_everything", "wipe_everything")
+        assert census_idx < wipe_idx, (
+            "label_census() must run before wipe_everything(), or the census "
+            "can only ever report zero deleted nodes"
+        )
+
+    def test_wipe_and_census_route_through_tests_graph(
+        self, conftest_source: str
+    ) -> None:
+        """plan.md Files: 'so the suite keeps exactly one module that opens a
+        graph'. Parses the function's own `from tests._graph import (...)`
+        tuple rather than grepping the body for the bare names, because both
+        names could otherwise be satisfied by an import from anywhere (or by
+        merely mentioning them in a comment)."""
+        body = _extract_function_source(conftest_source, "_preflight_isolated_graph")
+        if not body:
+            pytest.fail("skeleton: _preflight_isolated_graph is not defined")
+        tree = ast.parse(body)
+        imported_from_graph: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "tests._graph":
+                imported_from_graph.update(alias.name for alias in node.names)
+        missing = {"wipe_everything", "label_census"} - imported_from_graph
+        assert not missing, (
+            f"_preflight_isolated_graph must import {sorted(missing)} from "
+            "tests._graph, the suite's one module that opens a graph "
+            "connection, so the census and the wipe cannot become a second "
+            "place that decides where the graph is. Currently imported from "
+            f"tests._graph: {sorted(imported_from_graph)}"
+        )
 
 
 # ---------------------------------------------------------------------------

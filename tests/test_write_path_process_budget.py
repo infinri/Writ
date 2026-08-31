@@ -30,11 +30,12 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 
 import pytest
+
+from tests._strace import trace_execve
 
 REPO = Path(__file__).resolve().parent.parent
 HOOKS = REPO / "hooks" / "scripts"
@@ -163,17 +164,10 @@ def _isolated_env() -> dict:
 
 def _counts(hook: str) -> tuple[int, int]:
     """(python_startups, total_processes) for one hook run on the write envelope."""
-    trace = Path("/tmp") / f"writ-budget-{hook}.trace"
-    subprocess.run(
-        ["strace", "-f", "-qq", "-e", "trace=execve", "-o", str(trace),
-         "bash", str(HOOKS / hook)],
-        input=ENVELOPE, capture_output=True, text=True, timeout=180,
-        env=_isolated_env(),
+    text = trace_execve(
+        ["bash", str(HOOKS / hook)],
+        input=ENVELOPE, timeout=180, env=_isolated_env(),
     )
-    if not trace.exists():
-        pytest.skip(f"strace produced no trace for {hook}")
-    text = trace.read_text(errors="replace")
-    trace.unlink(missing_ok=True)
     total = text.count("execve(")
     python = sum(1 for ln in text.splitlines() if 'python3"' in ln)
     return python, total
@@ -185,17 +179,10 @@ _EXECVE_OK = re.compile(r"\)\s+= 0$")
 def _real_processes(hook: str) -> int:
     """Successful execve only. See the note at REAL_PROCESS_BUDGET: a PATH miss is a
     failed execve inside an already-forked child, not a new process."""
-    trace = Path("/tmp") / f"writ-real-{hook}.trace"
-    subprocess.run(
-        ["strace", "-f", "-qq", "-e", "trace=execve", "-o", str(trace),
-         "bash", str(HOOKS / hook)],
-        input=ENVELOPE, capture_output=True, text=True, timeout=180,
-        env=_isolated_env(),
+    text = trace_execve(
+        ["bash", str(HOOKS / hook)],
+        input=ENVELOPE, timeout=180, env=_isolated_env(),
     )
-    if not trace.exists():
-        pytest.skip(f"strace produced no trace for {hook}")
-    text = trace.read_text(errors="replace")
-    trace.unlink(missing_ok=True)
     return sum(1 for ln in text.splitlines() if "execve(" in ln and _EXECVE_OK.search(ln))
 
 
@@ -307,20 +294,14 @@ class TestInstrumentationSpawnsNothing:
             'hook_instrument "spawn-probe"\n'
             "exit 0\n"
         )
-        trace = tmp_path / "trace.txt"
         env = _isolated_env()
         env["WRIT_CACHE_DIR"] = str(tmp_path / "cache")
         env["WRIT_LOG_ROOT"] = str(tmp_path / "logs")
         env["WRIT_PORT"] = "19999"
         (tmp_path / "cache").mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            ["strace", "-f", "-qq", "-e", "trace=execve", "-o", str(trace),
-             "bash", str(script)],
-            capture_output=True, text=True, timeout=180, env=env,
-        )
-        if not trace.exists():
-            pytest.skip("strace produced no trace")
-        return trace.read_text(errors="replace").splitlines()
+        return trace_execve(
+            ["bash", str(script)], timeout=180, env=env,
+        ).splitlines()
 
     def test_instrumenting_a_hook_spawns_no_mktemp(self, tmp_path) -> None:
         lines = self._execve_lines(tmp_path)

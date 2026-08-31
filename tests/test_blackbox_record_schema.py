@@ -71,6 +71,7 @@ from pathlib import Path
 
 import pytest
 
+from tests._strace import trace_execve_result
 from tests.firedrill._harness import build_env, make_isolation, real_blackbox_snapshot
 
 REPO = Path(__file__).resolve().parent.parent
@@ -340,15 +341,10 @@ class TestCaptureOffAddsNoRowAndNoProcessForANonzeroExit:
                 'hook_instrument "trace-exit-probe"\n'
                 f"exit {code}\n"
             )
-            trace = iso_dir / "trace.txt"
-            result = subprocess.run(
-                ["strace", "-f", "-qq", "-e", "trace=execve", "-o", str(trace),
-                 "bash", str(script)],
-                env=env, capture_output=True, text=True, timeout=60,
+            result, text = trace_execve_result(
+                ["bash", str(script)], env=env, timeout=60,
             )
-            if not trace.exists():
-                pytest.skip("strace produced no trace")
-            return result, trace.read_text(errors="replace").count("execve(")
+            return result, text.count("execve(")
 
         baseline_result, baseline_count = _traced(0)
         measured_result, measured_count = _traced(2)

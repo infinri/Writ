@@ -288,6 +288,74 @@ def wipe_corpus() -> None:
     asyncio.run(_q())
 
 
+def wipe_everything() -> None:
+    """Delete EVERY node, records included. Routes through clear_all(frozenset()).
+
+    The one caller is `tests/conftest.py::_preflight_isolated_graph`, which runs
+    only on an isolated run and only after `classify_isolation` has already
+    returned STATE_ISOLATED. That is what makes this operation correct here and
+    wrong everywhere else: the preservation rule exists because a `Decision`
+    record has no file to rebuild from, which is a statement about a graph
+    somebody cares about, and the disposable instance holds nothing anybody
+    would miss.
+
+    Permission is NOT re-derived here. `clear_all` resolves an empty preserve
+    set to `assert_full_wipe_allowed` (writ/graph/db/maintenance_store.py),
+    which refuses with `FullWipeRefused` before a session is opened, so a
+    missing `WRIT_TEST_GRAPH` marker or a production (host, port) deletes
+    nothing. A second copy of that check in this module would be a second
+    answer to a question that already has one, and the copies are what drift.
+    An UNREACHABLE instance is not this function's refusal to make: the
+    preflight classifies reachability and refuses before calling here, so the
+    wipe is never issued against a target that was not approved.
+
+    No Cypher text lives in this function, deliberately. The whole-graph delete
+    is issued by `clear_all`, which is the routing
+    `tests/test_graph_dump.py::TestNoRawWholeGraphDeletes` exists to require.
+    """
+
+    async def _q() -> None:
+        db = connection()
+        try:
+            await db.clear_all(preserve_labels=frozenset())
+        finally:
+            await db.close()
+
+    asyncio.run(_q())
+
+
+def label_census() -> dict[str, int]:
+    """Node counts for EVERY label present, unfiltered. One round trip.
+
+    The unfiltered form of the scan `tests/_corpus.py::methodology_counts`
+    already runs. That one projects onto a fixed methodology label list, so it
+    reports zero for `Memory`, `Decision`, `FileChange`, `Commit` and `Project`
+    no matter how many exist, which makes it useless as the "what was deleted"
+    half of the wipe report: the residue this cycle removes is exactly the
+    labels it cannot see.
+
+    A node carrying two labels is counted under both, so the values sum to more
+    than the node count. Callers that need a node total ask for one (`count`)
+    rather than adding these up.
+    """
+
+    async def _q() -> dict[str, int]:
+        db = connection()
+        out: dict[str, int] = {}
+        try:
+            async with db._driver.session(database=db._database) as s:
+                res = await s.run(
+                    "MATCH (n) UNWIND labels(n) AS lbl RETURN lbl AS label, count(*) AS c"
+                )
+                async for rec in res:
+                    out[rec["label"]] = rec["c"]
+            return out
+        finally:
+            await db.close()
+
+    return asyncio.run(_q())
+
+
 def replay_dump(root: Path | None = None) -> bool:
     """Replay the tracked `writ-corpus.cypher` into the resolved instance.
 

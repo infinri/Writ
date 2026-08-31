@@ -77,6 +77,7 @@ sys.path.insert(0, str(SKILL_ROOT / "bin" / "lib"))
 import approval_match  # noqa: E402
 from approval_match import is_approval  # noqa: E402
 
+from tests._strace import trace_execve  # noqa: E402
 from tests.fixtures.session_state import (  # noqa: E402
     assistant_text_row,
     assistant_tool_call_row,
@@ -599,20 +600,15 @@ class TestNoneTierNeverInvokesTheEvidenceReader:
         fake_home = tmp_path / "home"
         fake_home.mkdir(parents=True, exist_ok=True)
         (fake_home / ".claude").mkdir(parents=True, exist_ok=True)
-        trace = tmp_path / "trace.log"
         env = {
             **os.environ, "WRIT_CACHE_DIR": str(cache_dir), "HOME": str(fake_home),
             "WRIT_HOST": "127.0.0.1", "WRIT_PORT": str(_closed_port()),
         }
-        subprocess.run(
-            ["strace", "-f", "-qq", "-s", "500", "-e", "trace=execve", "-o", str(trace),
-             "bash", str(HOOK_PATH)],
+        text = trace_execve(
+            ["bash", str(HOOK_PATH)],
             input=json.dumps({"session_id": sid, "prompt": self.NON_APPROVAL_PROMPT}),
-            cwd=str(tmp_path), capture_output=True, text=True, env=env, timeout=60,
+            cwd=str(tmp_path), env=env, timeout=60, str_limit=500,
         )
-        if not trace.exists():
-            pytest.skip("strace produced no trace")
-        text = trace.read_text(errors="replace")
         assert "approval_evidence" not in text, (
             f"a non-approval prompt must never invoke the evidence reader:\n{text}"
         )
@@ -630,21 +626,16 @@ class TestNoneTierNeverInvokesTheEvidenceReader:
         fake_home = tmp_path / "home"
         fake_home.mkdir(parents=True, exist_ok=True)
         (fake_home / ".claude").mkdir(parents=True, exist_ok=True)
-        trace = tmp_path / "trace.log"
         env = {
             **os.environ, "WRIT_CACHE_DIR": str(cache_dir), "HOME": str(fake_home),
             "WRIT_HOST": "127.0.0.1", "WRIT_PORT": str(_closed_port()),
         }
         with _mint_cleanup(sid):
-            subprocess.run(
-                ["strace", "-f", "-qq", "-s", "500", "-e", "trace=execve", "-o", str(trace),
-                 "bash", str(HOOK_PATH)],
+            text = trace_execve(
+                ["bash", str(HOOK_PATH)],
                 input=json.dumps({"session_id": sid, "prompt": "approved"}),
-                cwd=str(tmp_path), capture_output=True, text=True, env=env, timeout=60,
+                cwd=str(tmp_path), env=env, timeout=60, str_limit=500,
             )
-        if not trace.exists():
-            pytest.skip("strace produced no trace")
-        text = trace.read_text(errors="replace")
         assert "approval_evidence" in text, (
             f"an exact-tier approval must invoke the evidence reader:\n{text}"
         )

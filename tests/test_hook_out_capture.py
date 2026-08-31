@@ -52,6 +52,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._strace import trace_execve_result
+
 REPO = Path(__file__).resolve().parent.parent
 COMMON_SH = REPO / "bin" / "lib" / "common.sh"
 HOOKS_DIR = REPO / "hooks" / "scripts"
@@ -235,22 +237,14 @@ class TestEmitHookReplyCaptureOff:
         env["HOME"] = str(home)
         env.pop("WRIT_BLACKBOX", None)
 
-        def _traced(name: str, command: str):
-            trace = tmp_path / name
-            result = subprocess.run(
-                ["strace", "-f", "-qq", "-e", "trace=execve", "-o", str(trace),
-                 "bash", "-c", command],
-                env=env, capture_output=True, text=True, timeout=30,
+        def _traced(command: str):
+            result, text = trace_execve_result(
+                ["bash", "-c", command], env=env, timeout=30,
             )
-            if not trace.exists():
-                pytest.skip("strace produced no trace")
-            return result, trace.read_text(errors="replace").count("execve(")
+            return result, text.count("execve(")
 
-        baseline_result, baseline_count = _traced(
-            "baseline.trace", f'source "{COMMON_SH}"',
-        )
+        baseline_result, baseline_count = _traced(f'source "{COMMON_SH}"')
         measured_result, measured_count = _traced(
-            "measured.trace",
             f"source \"{COMMON_SH}\" && emit_hook_reply '{PAYLOAD}' myhook sess-1",
         )
 

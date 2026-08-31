@@ -44,7 +44,15 @@ Over 400 test modules, roughly 7,900 collected tests (2026-08-14). Always use th
 
 ## The anti-masking contracts
 
-Roughly half the suite needs a reachable Neo4j. The rule, encoded in `tests/_corpus.py::classify_corpus_state`: **unreachable is the only legitimate skip; a reachable-but-empty graph must FAIL.** An empty graph previously masked a real regression as a skip. What the classifier actually gates on is narrower than the file's census constant suggests: `classify_corpus_state` returns `ready` only when the rule count reaches `MIN_RULES` (280) **and** the SubagentRole count reaches `EXPECTED["SubagentRole"]` (5). The `EXPECTED` mapping records a wider census (5 SubagentRole, 15 Playbook, 13 Skill, 20 Phase), but the SubagentRole entry is the only one the classifier reads; the other three document the shipped corpus rather than gate a run. On an isolated run (the default, below) the session-start preflight warms a cold instance from the tracked `writ-corpus.cypher` and `pytest_sessionfinish` skips the restore, because a throwaway instance has nothing to repair. Under `WRIT_TEST_NO_ISOLATION=1` the old behaviour stands unchanged: the probe self-heals from `bible/`, and `pytest_sessionfinish` restores the shipped corpus from `writ-corpus.cypher` on every run (the earlier count-gated restore left methodology nodes missing after a run).
+There are two, and they are the same idea applied to two different resources.
+
+**Contract one, the graph.** Roughly half the suite needs a reachable Neo4j. The rule, encoded in `tests/_corpus.py::classify_corpus_state`: **unreachable is the only legitimate skip; a reachable-but-empty graph must FAIL.** An empty graph previously masked a real regression as a skip. What the classifier actually gates on is narrower than the file's census constant suggests: `classify_corpus_state` returns `ready` only when the rule count reaches `MIN_RULES` (280) **and** the SubagentRole count reaches `EXPECTED["SubagentRole"]` (5). The `EXPECTED` mapping records a wider census (5 SubagentRole, 15 Playbook, 13 Skill, 20 Phase), but the SubagentRole entry is the only one the classifier reads; the other three document the shipped corpus rather than gate a run. On an isolated run (the default, below) the session-start preflight warms a cold instance from the tracked `writ-corpus.cypher` and `pytest_sessionfinish` skips the restore, because a throwaway instance has nothing to repair. Under `WRIT_TEST_NO_ISOLATION=1` the old behaviour stands unchanged: the probe self-heals from `bible/`, and `pytest_sessionfinish` restores the shipped corpus from `writ-corpus.cypher` on every run (the earlier count-gated restore left methodology nodes missing after a run). The bench isolation fixture in `tests/test_bench_isolation.py` is the shape to copy when a fixture finds an empty corpus: heal through `ensure_corpus`, re-count, and FAIL with the per-label census if it is still empty. Only the unreachable branch skips.
+
+**Contract two, a measurement that cannot run must FAIL, never skip.** The strace-based tests hold ratchets: the write-path process budget, the prompt-path python budget, the "a non-approval prompt never reads the transcript" guard. Nine sites used to end with `if not trace.exists(): pytest.skip(...)`, which fails the contract twice over. A skip in a 8,780-test run is invisible, and it appears exactly when the machine is loaded enough to regress. Worse, `Path.exists()` is true for a zero-byte file, so an EMPTY trace counted as a successful measurement and `assert "approval_evidence" not in text` passed vacuously against an empty string: a green result from a measurement that never happened.
+
+Route every traced run through `tests/_strace.py::trace_execve`, which returns the trace text and raises `UnmeasurableTrace` (a `RuntimeError` subclass, so no pytest skip machinery is reachable) when the trace is **missing, empty, or holds no `execve(` line**. The failure message names the exit status, the tail of strace's stderr and the attempt count, so the first real failure diagnoses itself. It makes exactly two attempts, the second on a fresh trace path and a fresh subprocess, and every call writes to its own temp directory, so a leftover file from a crashed earlier run can never be read as this run's measurement. `trace_execve_result` is the same thing for the two sites that also assert on the traced program's own exit status.
+
+The one skip that stays is `shutil.which("strace") is None`: a missing tool is a fact about the machine, not a failed measurement. `tests/_strace.py::unmeasurable_skip_sites` scans `tests/` for the old shape and is pinned EMPTY, so the three lines cannot come back the next time somebody sees a flake. It is AST-based rather than a grep, which is why the docstrings that quote the old shape verbatim are not findings.
 
 ## The suite runs against its own Neo4j instance
 
@@ -58,6 +66,22 @@ make test-graph-up            # create when absent, start when stopped, wait for
 make test-graph-down          # stop it; the data stays, so the next `up` starts warm
 bash scripts/test-graph.sh status
 ```
+
+### The start state is wiped, not inherited
+
+**An isolated run begins from a graph holding nothing but the freshly warmed corpus.** Before the first test is collected, `_preflight_isolated_graph` censuses every label, deletes every node through `tests/_graph.py::wipe_everything` (which routes to `clear_all(preserve_labels=frozenset())` and contains no Cypher of its own), then rebuilds and times the corpus. The wipe is issued only after the isolation classifier has already returned the isolated state, so a production or unreachable target receives zero delete statements; if `clear_all` refuses anyway, the `FullWipeRefused` is converted to a `pytest.UsageError` carrying the isolation remedy rather than escaping as an INTERNALERROR with no way out on it.
+
+Why this is needed at all: `clear_all` preserves `Memory`, `Decision`, `FileChange`, `Commit` and `Project` by default, `ensure_corpus` checks floor counts and never restores records, and an isolated run skips the end-of-suite restore. So residue accumulated across runs and never left. Measured before the fix: 651 record nodes out of 1,119, 57 percent of the graph, growing every run. Two consecutive runs against that graph were two different experiments.
+
+The preflight prints exactly one line per run:
+
+```text
+graph isolation: wiped 468 nodes (Rule 288, Abstraction 62, Category 22, ...), corpus rebuilt in 2.1s
+```
+
+Read it as three facts, not decoration. The count is proof the wipe had work to do (a preflight that silently did nothing against an already-clean graph produces the same "the two runs matched" evidence as one that worked). The census names WHICH residue existed, records included, and is printed whole rather than truncated to a top N, because after the first wipe the record counts are single digits against a corpus in the hundreds. The seconds are the cost this adds, printed every run so it cannot drift unnoticed; the documented trigger for reconsidering the corpus source is a rebuild past 30 seconds.
+
+Under `WRIT_TEST_NO_ISOLATION=1` none of this runs: no census, no wipe, no report line, and the pre-existing `bible/` warm path is reached unchanged.
 
 `make test` depends on `test-graph-up`, so the documented entry point never fails for a missing container. **Bare `pytest` starts nothing and refuses instead**, at session start, before the first test, in three cases: the resolved URI is the production `(host, port)`; the disposable instance does not answer; the instance answers but the corpus replay left it below the census. A refusal costs one command to clear. The rejected alternative, skipping, is cheap to produce and indistinguishable from a green run, which this repo has already paid for twice.
 
