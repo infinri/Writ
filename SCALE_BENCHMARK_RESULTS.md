@@ -148,7 +148,7 @@ Search quality against a 193 question test set (47 of them deliberately ambiguou
 
 | Metric | Floor | 2026-08-01 | 2026-08-05 | 2026-08-06 |
 |---|---|---:|---:|---:|
-| Hit rate at 5 (index-eligible, n=169) | at least 0.90 | -- | 0.9290 | **0.9231** |
+| Hit rate at 5 (index-eligible, n=169) | at least 0.90 | not measured | 0.9290 | **0.9231** |
 | Mean reciprocal rank at 5 (ambiguous, n=47) | at least 0.45 | 0.5681 | 0.6167 | 0.6082 |
 | Hit rate at 5 (all 193) | at least 0.75 | 0.7824 | 0.8187 | 0.8083 |
 | Domain hit rate at 5 | at least 0.90 | 0.9323 | 0.9534 | 0.9585 |

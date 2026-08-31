@@ -46,7 +46,7 @@ All 49 endpoints, generated from the FastAPI route table. JSON bodies; no auth. 
 | POST | `/conflicts` | CONFLICTS_WITH edges between provided rules |
 | POST | `/feedback` | Record positive or negative feedback for a rule |
 | GET | `/health` | Service status, rule count, index state, last ingestion timestamp |
-| POST | `/methodology-companion` | Methodology by workflow-state (floor u push u pull) -- CHANNEL 2 (1.5) |
+| POST | `/methodology-companion` | Methodology by workflow-state (floor u push u pull): CHANNEL 2 (1.5) |
 | POST | `/prompt-bundle` | #8: the three per-prompt injection channels in ONE warm call |
 | POST | `/propose` | Propose an AI-generated rule. Runs structural gate, ingests if accepted |
 | POST | `/query` | Ranked list of matching domain rules. Mandatory rules excluded |

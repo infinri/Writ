@@ -1,4 +1,4 @@
-# writ.toml.example -- copy to writ.toml and fill in the secrets below.
+# writ.toml.example: copy to writ.toml and fill in the secrets below.
 # writ.toml is gitignored so credentials never land in version control.
 # On a fresh clone:  cp writ.toml.example writ.toml   then edit the secrets.
 

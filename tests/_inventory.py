@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -415,6 +416,206 @@ def doctor_check_names() -> list[str]:
     from writ.session import doctor
 
     return [name for name, _fn in doctor._CHECKS]
+
+
+# ── Documentation style ratchet (plan.md dfacff61-23d5-474e-846c-2e2f0f0ea482) ──
+#
+# The user's standing rule: no em dash, and no double hyphen standing in for one; hyphens
+# only to join words, with commas, colons, semicolons or parentheses for clause breaks.
+# `hooks/scripts/writ-comms-output-gate.sh` enforces it on the assistant's REPLY text, which
+# is a population disjoint from this one: that gate never reads a file, so a document written
+# with the pattern in its body passes it cleanly. These two derivations cover files at rest.
+
+_HYPHEN = chr(0x2D)
+# A space, two hyphens, a space. Assembled from `_HYPHEN` rather than typed, the same way the
+# runtime gate builds its dash constants with `chr(...)`, so this module's own source stays
+# clean of the sequence it forbids. Bare long-option flags are excluded for free: `--verbose`
+# has no trailing space inside the match, so naming a CLI flag in prose is not a violation.
+_EMDASH_SUBSTITUTE = re.compile(" " + (_HYPHEN * 2) + " ")
+# An opening or closing fence, either delimiter, indented or not. Matching the same line
+# shape for both is what lets the marker pairing below track a block.
+_FENCE = re.compile(r"^\s*(?:`{3,}|~{3,})")
+_INLINE_SPAN = re.compile(r"`[^`]*`")
+
+
+def _is_style_sweep_excluded(rel: str) -> bool:
+    """The four exclusion CATEGORIES, each with its reason, because a bare list rots.
+
+    Anything tracked, markdown and not named here is guarded by default.
+    """
+    # Rendered from the graph's ROL nodes and byte-compared against that export by
+    # `tests/test_fix5_role_coverage.py`, so a prose edit here reads as drift.
+    if rel.startswith("agents/"):
+        return True
+    # Mechanically appended by the session-end hook's printf, which re-emits the pattern on
+    # every append no matter how often the file is swept.
+    if rel == ".claude/session-metrics.md":
+        return True
+    # A LIVE FORMAT SPEC, not documentation. `_FILES_LINE_RE` in
+    # `writ/session/approval_workflow.py` parses every plan's `## Files` bullet on that exact
+    # separator, and `tests/test_plan_template.py` both asserts the substring and runs the
+    # real `_validate_phase_a` against the template itself, so sweeping it would make the
+    # shipped template fail the validator it documents.
+    if rel == "templates/plan-template.md":
+        return True
+    # DEFERRED to increment 2, NOT permanently exempt. These paths quote verbatim harness
+    # output, including the real "PreToolUse:Agent hook error" string with the separator
+    # before "Failed with non-blocking status code", so sweeping them would falsify recorded
+    # evidence and break the grep a future triager runs against the real error text.
+    if rel.startswith("docs/pressure-runs/"):
+        return True
+    return False
+
+
+def _unterminated_fence_line(text: str) -> int | None:
+    """The 1-based line of a fence marker that never closes, or None when every fence pairs.
+
+    THE UNSCANNABLE PREDICATE, kept separate from the scan so the decision to refuse is one
+    readable line at the call site. "No finding" and "could not read the tail" have to be
+    distinguishable from the caller's own behavior rather than from a separate probe someone
+    remembers to run: an unclosed fence is an ordinary markdown typo, and this guard exists
+    for files nobody has written yet.
+    """
+    open_at: int | None = None
+    for number, line in enumerate(text.split("\n"), start=1):
+        if _FENCE.match(line):
+            open_at = None if open_at is not None else number
+    return open_at
+
+
+def _prose_lines(text: str) -> list[str]:
+    """CLOSED fenced blocks and inline code spans blanked IN PLACE, one entry per source line.
+
+    Blanked rather than deleted so reported line numbers stay true: a fence above a
+    violation must not shift the line the violation is reported on, which is the same reason
+    `_blanked_lines` above exists.
+
+    ONLY A CLOSED FENCE EXEMPTS ITS BODY. Pairing markers, instead of toggling a flag, is
+    what keeps an unclosed fence from blanking every remaining line in the file: the earlier
+    toggle turned one stray fence marker into a scanner that returned [] for a real violation
+    in the tail and read as clean. The exemption is a property of a COMPLETE block, so an
+    incomplete one degrades to prose here rather than to silence.
+
+    That degradation is a SECOND line of defense, not the primary one. `emdash_substitute_hits`
+    refuses such a file outright through `_unterminated_fence_line`, because a clean tail after
+    an unclosed fence would otherwise still look clean. This helper is written so that a future
+    caller which skips that check gets over-reporting rather than under-reporting, which is the
+    safe direction for a ratchet.
+
+    Split on "\\n" and NOT with `str.splitlines()`, which also breaks on U+2028 and would
+    report every line after one of those off by one.
+    """
+    lines = text.split("\n")
+    fenced: set[int] = set()
+    open_index: int | None = None
+    for index, line in enumerate(lines):
+        if not _FENCE.match(line):
+            continue
+        if open_index is None:
+            open_index = index
+        else:
+            fenced.update(range(open_index, index + 1))
+            open_index = None
+    if open_index is not None:
+        # The unterminated marker itself is still a marker, so it carries no prose; its body
+        # is deliberately left OUT of `fenced` and scanned.
+        fenced.add(open_index)
+    return [
+        "" if index in fenced else _INLINE_SPAN.sub("", line)
+        for index, line in enumerate(lines)
+    ]
+
+
+def style_swept_docs(*, repo: Path = REPO) -> list[str]:
+    """The guarded documentation population: every TRACKED markdown path, minus four
+    categories, as repo-relative strings.
+
+    THE POPULATION COMES FROM `git ls-files`, NEVER FROM A FILESYSTEM WALK, and that is a
+    correctness requirement rather than a preference. Both search tools available when this
+    was written are wrong in opposite directions: the shell's wrapped grep silently DROPPED
+    `templates/plan-template.md`, the highest-risk path in the sweep, and the agent-side
+    search tool omits the whole `bible/` tree on a root search while silently INCLUDING
+    gitignored content (`RESUME.md`, the root `plan.md`, nine `plan-*.ARCHIVED.md`: about 355
+    lines). An unscoped recursive walk also reaches `.venv/lib/python3.12/site-packages`,
+    which inflated one measurement from 2,406 to 5,696. Tracked-ness is the only definition
+    of "ours" that neither over- nor under-counts, so `tests/test_doc_style_ratchet.py` pins
+    that a known-gitignored path carrying the pattern is absent from this list.
+
+    NEW DOCUMENTATION IS IN THE POPULATION BY DEFAULT. That default is what makes this a
+    ratchet instead of a snapshot; the exclusions below are categories with reasons, never an
+    enumeration of today's files.
+    """
+    listed = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=str(repo), capture_output=True, text=True, check=True,
+    ).stdout
+    out: list[str] = []
+    for rel in listed.split("\0"):
+        if not rel or not rel.endswith(".md") or _is_style_sweep_excluded(rel):
+            continue
+        # Tracked AND still on disk. An index entry for a file deleted but not yet
+        # committed would otherwise raise on read, turning a scan into an error.
+        if (repo / rel).is_file():
+            out.append(rel)
+    return sorted(out)
+
+
+def emdash_substitute_hits(
+    *, docs: list[Path] | None = None, repo: Path = REPO
+) -> list[tuple[Path | str, int]]:
+    """(path, 1-based line) for every double-hyphen em-dash substitute in PROSE. Must be
+    empty for the derived population, which is the ratchet.
+
+    AN UNSCANNABLE FILE RAISES; IT NEVER RETURNS []. A fence that never closes is the one
+    construct here that can suppress arbitrarily many lines, and the earlier toggle turned a
+    single stray marker into a scanner that blanked the rest of the file, so a real violation
+    in the tail returned [] and read as clean. Silence is the one failure mode this guard
+    cannot have, so the file is refused loudly instead, with the opener's line in the message.
+
+    WHY LOUD REFUSAL RATHER THAN SCANNING THE TAIL AS PROSE (both were on the table): an
+    unterminated fence whose tail happens to be clean would still return [] under the
+    scan-the-tail shape, so the defect would be invisible in exactly the case where nothing
+    else flags it. Refusal is detectable from this function's own behavior for EVERY
+    unterminated fence, not only the ones that happen to hide an occurrence. The cost, stated
+    rather than hidden: the scan stops at the first unscannable file instead of reporting all
+    of them, which is acceptable because the fix (close the fence) is unambiguous and is also
+    the fix the markdown itself needs.
+
+    CODE SPANS ARE EXEMPT BY PROPERTY, NOT BY A LIST ENTRY. Closed fenced blocks and inline
+    spans are blanked before the scan, exactly as
+    `hooks/scripts/writ-comms-output-gate.sh:96-98` already does for the reply channel. That
+    is what exempts a doc which documents this very rule by quoting the pattern in backticks,
+    with no exclusion entry and no staleness: the carve-out is a consequence of the rule, so
+    every future doc gets it too.
+
+    `docs` is a keyword so the scanner's precision can be pinned against synthetic files
+    under `tmp_path`, the same parameterization `envelope_emitting_scripts(*, scripts_dir=)`
+    uses. It also keeps the exemption tests independent of any live document's wording,
+    which the standing directive against asserting on documentation prose requires.
+
+    KNOWN LIMITS, stated rather than worked around. The population is markdown, so
+    `writ.toml.example` is swept by this cycle but not guarded by it; widening to other
+    extensions pulls in source comments and string literals, which are load-bearing. And
+    only the double-hyphen substitute is scanned, not the em dash and en dash glyphs the
+    runtime gate also refuses, because those two populations were never measured here.
+    """
+    if docs is None:
+        docs = [repo / rel for rel in style_swept_docs(repo=repo)]
+    findings: list[tuple[Path | str, int]] = []
+    for doc in docs:
+        text = Path(doc).read_text(encoding="utf-8", errors="replace")
+        unterminated = _unterminated_fence_line(text)
+        if unterminated is not None:
+            raise ValueError(
+                f"cannot scan {doc} for em-dash substitutes: the fence opened at line "
+                f"{unterminated} never closes, so no line after it can be read as prose or "
+                f"as code. Close the fence, or delete the stray marker; until then this file "
+                f"cannot be certified clean and must not be reported as such."
+            )
+        for number, line in enumerate(_prose_lines(text), start=1):
+            if _EMDASH_SUBSTITUTE.search(line):
+                findings.append((doc, number))
+    return sorted(findings, key=lambda finding: (str(finding[0]), finding[1]))
 
 
 def route_tuples() -> list[tuple[str, str]]:
