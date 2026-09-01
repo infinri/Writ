@@ -15,8 +15,13 @@ import importlib
 import json
 import os
 import sys
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+import writ.server as server
+import writ.server.routes.query as qroute
+from writ.server.models import PromptBundleRequest
 
 # autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
 # The `mode set work` call below sits behind a daemon-liveness skip, which is why the
@@ -179,6 +184,75 @@ class TestExtractAndSplit:
 
 
 # --------------------------------------------------------------------------- #
+# 3b. tag_overlap -- pure helper marking ranked rules already delivered by this
+# turn's always-on channel (Cycle A part 1, ranked/always-on field dedup).
+#
+# Additive, never destructive: writ/server/routes/query.py:284 caches
+# extract_rule_objects(qresp) via --add-rule-objects for the compliance-matching
+# path, which needs trigger+statement. If tagging stripped those fields off the
+# rule dict instead of setting a flag, that cache would be corrupted -- so this
+# helper must ADD `already_injected: true` for an overlapping id and touch
+# nothing else. The renderer (writ/session/budget_tracking.py:cmd_format,
+# tested in tests/test_ranked_alwayson_dedup.py) decides what to do with the
+# flag; this helper only computes it.
+#
+# RED until writ/retrieval/prompt_bundle.py defines tag_overlap.
+# --------------------------------------------------------------------------- #
+class TestTagOverlap:
+    def test_marks_overlapping_rule_ids(self):
+        pb = _imp("writ.retrieval.prompt_bundle")
+        rules = [
+            {"rule_id": "A-001", "trigger": "t", "statement": "s"},
+            {"rule_id": "B-001", "trigger": "t2", "statement": "s2"},
+        ]
+        tagged = pb.tag_overlap(rules, {"A-001"})
+        by_id = {r["rule_id"]: r for r in tagged}
+        assert by_id["A-001"]["already_injected"] is True
+        assert not by_id["B-001"].get("already_injected")
+
+    def test_no_overlap_leaves_every_rule_unmarked(self):
+        pb = _imp("writ.retrieval.prompt_bundle")
+        rules = [{"rule_id": "A-001", "trigger": "t", "statement": "s"}]
+        tagged = pb.tag_overlap(rules, set())
+        assert not tagged[0].get("already_injected")
+
+    def test_additive_preserves_every_original_field(self):
+        """The property the docstring at query.py:284 protects: tagging must
+        never strip trigger/statement (or anything else) off the rule dict."""
+        pb = _imp("writ.retrieval.prompt_bundle")
+        rule = {"rule_id": "A-001", "trigger": "t", "statement": "s",
+                "violation": "v", "pass_example": "p", "score": 0.8}
+        tagged = pb.tag_overlap([rule], {"A-001"})[0]
+        for key, value in rule.items():
+            assert tagged[key] == value
+
+    def test_does_not_mutate_the_input_dicts(self):
+        pb = _imp("writ.retrieval.prompt_bundle")
+        rule = {"rule_id": "A-001", "trigger": "t", "statement": "s"}
+        pb.tag_overlap([rule], {"A-001"})
+        assert "already_injected" not in rule
+
+    def test_empty_rules_list_returns_empty_list(self):
+        pb = _imp("writ.retrieval.prompt_bundle")
+        assert pb.tag_overlap([], {"A-001"}) == []
+
+    def test_rule_missing_rule_id_is_left_unmarked(self):
+        pb = _imp("writ.retrieval.prompt_bundle")
+        rule = {"trigger": "t", "statement": "s"}
+        tagged = pb.tag_overlap([rule], {"A-001"})[0]
+        assert not tagged.get("already_injected")
+
+    def test_result_order_and_count_match_input(self):
+        pb = _imp("writ.retrieval.prompt_bundle")
+        rules = [{"rule_id": f"R-{i}"} for i in range(4)]
+        tagged = pb.tag_overlap(rules, {"R-1", "R-3"})
+        assert len(tagged) == 4
+        assert [r["rule_id"] for r in tagged] == [r["rule_id"] for r in rules]
+        marked = {r["rule_id"] for r in tagged if r.get("already_injected")}
+        assert marked == {"R-1", "R-3"}
+
+
+# --------------------------------------------------------------------------- #
 # 4. hook wiring: the channels go through /prompt-bundle, friction stays client-side
 # --------------------------------------------------------------------------- #
 class TestHookWiring:
@@ -198,6 +272,102 @@ class TestHookWiring:
         src = open(HOOK_SH).read()
         assert "always_on_inject" in src
         assert "broad_meta" in src and "method_meta" in src
+
+
+# --------------------------------------------------------------------------- #
+# 4b. the channel-1-error early return must still skip the always-on Neo4j
+# reads entirely (Cycle A part 1's reorder put this at risk: always_on_bundle
+# now resolves BEFORE channel 1's render but the error check still runs right
+# after channel 1's RETRIEVAL, so the early return has to fire before
+# always_on_bundle is ever called, not just before its result is used).
+#
+# Asserting the returned shape is unchanged is not enough: a version that
+# resolves always_on_bundle and THEN returns the (still byte-identical) error
+# dict would pass a shape-only check while doing the exact Neo4j reads the
+# early return exists to avoid. So this asserts the spy was NEVER CALLED, and
+# -- since a spy that is never called because nothing ran is not evidence --
+# a sibling test proves the same spy setup DOES register a call when the
+# success path actually reaches it, and the faked query_rules itself is
+# asserted to have been invoked so a False negative (bailing out earlier, e.g.
+# on the server._pipeline is None guard) cannot be mistaken for the early
+# return firing correctly.
+#
+# No daemon, no graph: query_rules and always_on_bundle are monkeypatched as
+# module attributes of writ.server.routes.query (the handler calls both as
+# bare names, so patching the module attribute is what the handler actually
+# sees), mirroring tests/test_query_route_project_scope.py's route-coroutine-
+# direct-call style.
+# --------------------------------------------------------------------------- #
+def _minimal_cache(**overrides):
+    cache = {
+        "loaded_rule_ids_by_phase": {}, "current_phase": "",
+        "loaded_rule_ids": [], "remaining_budget": 1500,
+        "last_injected_rule_ids": [], "detected_domain": "",
+    }
+    cache.update(overrides)
+    return cache
+
+
+class TestPromptBundleErrorPathSkipsAlwaysOn:
+    @pytest.mark.asyncio
+    async def test_error_response_never_calls_always_on_or_cmd_update(self, monkeypatch):
+        monkeypatch.setattr(server, "_pipeline", object())  # sentinel: just not None
+        monkeypatch.setattr(server.writ_session, "_read_cache", lambda sid: _minimal_cache())
+
+        fake_query_rules = AsyncMock(return_value={"error": "channel 1 blew up"})
+        fake_always_on = AsyncMock(return_value={"rules": [], "total_tokens": 0})
+        # cmd_update is a plain sync function invoked via asyncio.to_thread in the
+        # handler (never awaited directly) -- MagicMock, not AsyncMock, or calling it
+        # returns an unawaited coroutine instead of actually recording the call.
+        fake_cmd_update = MagicMock()
+        monkeypatch.setattr(qroute, "query_rules", fake_query_rules)
+        monkeypatch.setattr(qroute, "always_on_bundle", fake_always_on)
+        monkeypatch.setattr(server.writ_session, "cmd_update", fake_cmd_update)
+
+        result = await qroute.prompt_bundle(PromptBundleRequest(session_id="s1", prompt="x"))
+
+        # Evidence the handler actually reached (and returned from) the error
+        # branch, not some other path -- a MagicMock spy that was never invoked
+        # would also be "not called" if the handler bailed out on the
+        # server._pipeline guard instead, which would prove nothing about the
+        # capability under test.
+        fake_query_rules.assert_called_once()
+        assert result["error"] is True
+        assert result == {
+            "always_on_block": "", "rules_text": "", "methodology_block": "",
+            "nudge": "", "error": True,
+            "broad_meta": None, "ao_meta": None, "method_meta": None,
+        }
+
+        # The discriminating assertion: a version that resolves always-on and
+        # THEN returns the identical error dict would pass every assertion
+        # above while still doing the Neo4j reads the early return exists to
+        # skip. Only this catches that.
+        fake_always_on.assert_not_called()
+        fake_cmd_update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_success_path_does_call_always_on(self, monkeypatch):
+        """Anti-vacuity companion to the test above: the SAME spy/monkeypatch
+        setup, on a NON-error channel-1 response, must show always_on_bundle
+        WAS called. This proves the spy is capable of observing a real call on
+        this exact code path -- so the 'not called' result in the error-path
+        test is evidence of the early return, not of a spy that never fires."""
+        monkeypatch.setattr(server, "_pipeline", object())
+        monkeypatch.setattr(server.writ_session, "_read_cache", lambda sid: _minimal_cache())
+
+        fake_query_rules = AsyncMock(return_value={"rules": [], "mode": "standard"})
+        fake_always_on = AsyncMock(return_value={"rules": [], "total_tokens": 0})
+        fake_cmd_update = MagicMock()  # sync, see comment on the test above
+        monkeypatch.setattr(qroute, "query_rules", fake_query_rules)
+        monkeypatch.setattr(qroute, "always_on_bundle", fake_always_on)
+        monkeypatch.setattr(server.writ_session, "cmd_update", fake_cmd_update)
+        monkeypatch.setattr(server, "_run_cmd_format_locked", lambda payload: "")
+
+        result = await qroute.prompt_bundle(PromptBundleRequest(session_id="s1", prompt="x"))
+
+        assert result["error"] is False
+        fake_always_on.assert_called_once()
 
 
 # --------------------------------------------------------------------------- #

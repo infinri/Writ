@@ -10,6 +10,7 @@ Every `writ` command, generated from the Typer app. Run `writ <command> --help` 
 | `writ add` | Add a new rule to the graph with relationship suggestion and validation |
 | `writ analyze-friction` | Summarize workflow-friction.log: event counts, hook p95s, top rules, gate activity |
 | `writ audit-session` | Per-session timeline + summary from workflow-friction.log |
+| `writ blackbox-census` | Regenerate the payload census from a blackbox capture log |
 | `writ compress` | Cluster rules into abstraction nodes for compressed retrieval |
 | `writ corpus-footprint` | No-API corpus footprint: rank per-rule bloat (WASTE) cut-candidates. Proposes, never applies |
 | `writ doctor` | Run the operability self-diagnostic; exit non-zero if any check fails |
@@ -24,6 +25,7 @@ Every `writ` command, generated from the Typer app. Run `writ <command> --help` 
 | `writ harvest` | Harvest git commits + transcript plans into decision-memory records |
 | `writ import-cypher` | Rebuild the graph from a Cypher dump script produced by export-cypher |
 | `writ import-markdown` | Import bible content (Rules + methodology) into the graph. Validates schema. Triggers export |
+| `writ injection-footprint` | Measure ONE probe turn's rendered injection: bytes per channel, per rule, per field |
 | `writ logs backup` | Copy the compressed archive generations to an off-root destination |
 | `writ logs list` | List projects under the log root with their streams and archive counts |
 | `writ logs rotate` | Rotate, compress, prune, and sweep the Writ log streams (the P2 backstop) |
@@ -54,4 +56,4 @@ The hook-facing dispatcher; hooks call it when the daemon is unreachable. Simple
 | Kind | Subcommands |
 |---|---|
 | simple | `aggregate-findings`, `auto-feedback`, `check-escalation`, `clear-pending-violations`, `clear-rules-for-compaction`, `coverage`, `coverage-map`, `coverage-rollup`, `current-phase`, `lens`, `pending-violations`, `read`, `reset-after-compaction`, `staleness-check`, `synthesis-gate`, `triangulation-gate` |
-| complex | `add-pending-violation`, `advance-phase`, `can-read-code`, `can-write`, `carry-forward-mode`, `format`, `invalidate-gate`, `metrics`, `mode`, `partition-scope`, `record-analysis`, `scope-estimate`, `should-skip`, `update` |
+| complex | `add-pending-violation`, `advance-phase`, `can-read-code`, `can-write`, `carry-forward-mode`, `format`, `invalidate-gate`, `metrics`, `mode`, `partition-scope`, `record-analysis`, `reopen-planning`, `scope-estimate`, `should-skip`, `update` |

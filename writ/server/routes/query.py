@@ -214,7 +214,7 @@ async def prompt_bundle(request: PromptBundleRequest) -> dict[str, Any]:
     import json as _json
     from writ.retrieval.prompt_bundle import (
         always_on_rule_ids, compute_nudge, extract_rule_objects, render_always_on,
-        split_format,
+        split_format, tag_overlap,
     )
 
     if server._pipeline is None:
@@ -267,25 +267,20 @@ async def prompt_bundle(request: PromptBundleRequest) -> dict[str, Any]:
     ))
     if "error" in qresp:
         # Match the legacy hook: a /query error aborted the whole injection (the
-        # always-on + methodology channels ran AFTER it), so return early.
+        # always-on + methodology channels ran AFTER it), so return early. This return
+        # is why channel 2 is RESOLVED below rather than above: the ranked channel's
+        # RENDER needs the always-on ids, but its RETRIEVAL does not, so the always-on
+        # Neo4j reads stay skipped on the error path exactly as they were, and the
+        # response shape here is unchanged (no always_on_block, no always-on cache
+        # update, no ao_meta).
         out["error"] = True
         return out
-    else:
-        out["nudge"] = compute_nudge(qresp)
-        text, meta = split_format(await asyncio.to_thread(server._run_cmd_format_locked, qresp))
-        out["rules_text"] = text
-        rule_ids = meta.get("rule_ids", []) or []
-        cost = meta.get("cost", 0) or 0
-        await asyncio.to_thread(server.writ_session.cmd_update, sid, [
-            "--add-rules", _json.dumps(rule_ids),
-            "--cost", str(cost),
-            "--inc-queries",
-            "--set-last-injected-rule-ids", _json.dumps(rule_ids),
-            "--add-rule-objects", _json.dumps(extract_rule_objects(qresp)),
-        ])
-        out["broad_meta"] = {"rule_ids": rule_ids, "cost": cost}
 
-    # --- Channel 2: always-on ---
+    # --- Channel 2 data, resolved early (the ranked channel's render needs it) ---
+    # Ordering, not new work. always_on_bundle depends on nothing from channel 1 (two
+    # read-only Neo4j queries plus pure filtering), and the ranked render needs to know
+    # which of its hits the always-on block already delivered this turn. Resolved here;
+    # EMITTED after channel 1, so the pieces of `out` are still filled in channel order.
     aoresp = await always_on_bundle(
         mode=(mode or "universal"),
         at=("prompt" if request.always_on_filter else None),
@@ -293,13 +288,42 @@ async def prompt_bundle(request: PromptBundleRequest) -> dict[str, Any]:
     )
     ao_json = aoresp if isinstance(aoresp, dict) else {}
     block, ao_tokens, ao_count = render_always_on(ao_json)
+    # The RENDERED ids, never the eligible ones. _renderable_always_on drops a rule
+    # missing its trigger or statement, and both consumers below depend on that filter:
+    # the citation record must not name a rule the agent never saw, and the field dedup
+    # must not point the reader at a block that does not contain the rule.
+    ao_ids = always_on_rule_ids(ao_json)
+
+    # --- Channel 1 (render) ---
+    out["nudge"] = compute_nudge(qresp)
+    # Field-level dedup: a ranked hit already in this turn's always-on block renders a
+    # pointer instead of repeating its trigger and statement. tag_overlap COPIES, so
+    # `qresp` below still carries every field for the --add-rule-objects cache the
+    # compliance-matching path reads.
+    render_payload = dict(qresp)
+    render_payload["rules"] = tag_overlap(qresp.get("rules") or [], ao_ids)
+    text, meta = split_format(
+        await asyncio.to_thread(server._run_cmd_format_locked, render_payload)
+    )
+    out["rules_text"] = text
+    rule_ids = meta.get("rule_ids", []) or []
+    cost = meta.get("cost", 0) or 0
+    await asyncio.to_thread(server.writ_session.cmd_update, sid, [
+        "--add-rules", _json.dumps(rule_ids),
+        "--cost", str(cost),
+        "--inc-queries",
+        "--set-last-injected-rule-ids", _json.dumps(rule_ids),
+        "--add-rule-objects", _json.dumps(extract_rule_objects(qresp)),
+    ])
+    out["broad_meta"] = {"rule_ids": rule_ids, "cost": cost}
+
+    # --- Channel 2: always-on (emit) ---
     out["always_on_block"] = block
     if block and ao_tokens > 0:
         # Record the IDs, not just the token count. This channel injects rules into the
         # prompt; recording only tokens left _validate_phase_a validating citations
         # against a set with no always-on rule in it, so the gate reported the agent's
         # correct citations as hallucinated and spent the user's approval token.
-        ao_ids = always_on_rule_ids(ao_json)
         await asyncio.to_thread(server.writ_session.cmd_update, sid, [
             "--add-always-on-tokens", str(ao_tokens),
             "--add-always-on-rules", _json.dumps(ao_ids),

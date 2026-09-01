@@ -298,6 +298,34 @@ def corpus_footprint(
         raise typer.Exit(1)
 
 
+@app.command(name="injection-footprint")
+def injection_footprint(
+    mode: str = typer.Option("work", "--mode", help="Session mode to measure (work, debug, review, ...)."),
+    prompt: str = typer.Option(..., "--prompt", help="The probe prompt to retrieve against."),
+    base_url: str = typer.Option(f"http://{DEFAULT_HOST}:{DEFAULT_PORT}", "--base-url",
+                                 help="Writ daemon base URL."),
+    budget: int = typer.Option(None, "--budget", help="Budget tokens (default: the fresh-session budget)."),
+    at: str = typer.Option("prompt", "--at", help="Always-on injection point to filter by."),
+    as_json: bool = typer.Option(False, "--json", help="Emit the report as JSON."),
+) -> None:
+    """Measure ONE probe turn's rendered injection: bytes per channel, per rule, per field.
+
+    Read-only diagnostic. /always-on is a GET and /query is posted without a session_id, so
+    a measurement run mutates no session cache and leaves no retrieval telemetry row. Fails
+    loud (exit 2) when the daemon is unreachable rather than reporting zero bytes, because a
+    zero-byte report from a stopped daemon reads as a win."""
+    from writ.analysis import injection_footprint as ifp
+    kwargs = {"base_url": base_url, "mode": mode, "probe_prompt": prompt, "at": at}
+    if budget is not None:
+        kwargs["budget_tokens"] = budget
+    try:
+        report = ifp.build_report(**kwargs)
+    except ifp.InjectionFootprintError as e:
+        typer.echo(f"INJECTION FOOTPRINT CANARY FAILED: {e}", err=True)
+        raise typer.Exit(2)
+    typer.echo(ifp.render_json(report) if as_json else ifp.render_text(report))
+
+
 @app.command(name="blackbox-census")
 def blackbox_census(
     log: str = typer.Option(None, "--log", help="Capture log to read (default: ~/.claude/writ-blackbox.jsonl)."),
