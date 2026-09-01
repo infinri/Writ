@@ -254,7 +254,7 @@ if [ -n "$META_LINE" ]; then
         --add-rules "$NEW_RULE_IDS" \
         --cost "$COST" \
         --inc-queries \
-        --add-rule-objects "$RULE_OBJECTS" 2>/dev/null || true
+        --add-rule-objects "$RULE_OBJECTS" 2>>"$WRIT_HOOK_LOG_SINK" || true
 
     # Log rag_query event via the shared helper (reuse $MODE from the gate check
     # above; mode is fixed within a single hook invocation). Centralizes the parse

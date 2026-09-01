@@ -45,10 +45,27 @@ DISPATCH_DISCIPLINE = HOOKS / "writ-dispatch-discipline.sh"
 SUBAGENT_START = HOOKS / "writ-subagent-start.sh"
 SUBAGENT_STOP = HOOKS / "writ-subagent-stop.sh"
 
-# The six always-on WRIT_HOOK_LOG heredoc stderr sinks gated behind WRIT_DEBUG
-# via the shared hook_log_sink helper (same pattern as writ-rag-inject.sh):
-# each sources common.sh, defines WRIT_HOOK_LOG_SINK="$(hook_log_sink)" after
-# the source, and routes every `2>>` breadcrumb through $WRIT_HOOK_LOG_SINK.
+# MEMBERSHIP IS DERIVED; ONLY THE COUNTS ARE DATA.
+#
+# This was a hand-written list of six (script, count) pairs, and it was wrong in
+# the way a hand-written population is always eventually wrong: it OMITTED
+# writ-pre-write-dispatch.sh and writ-rag-inject.sh, both of which define the
+# gated sink and route breadcrumbs through it. Nothing failed, because a hook
+# missing from a list is a hook nobody checks. The omission surfaced on
+# 2026-09-01 only because routing writ-pre-write-dispatch.sh's mutating update to
+# the sink put it in the population that tests/test_hook_stderr_logging.py DERIVES
+# from, and the two definitions of "which hooks are gated" then disagreed.
+#
+# So membership now comes from the tree: any hook that defines
+# WRIT_HOOK_LOG_SINK from hook_log_sink is in, automatically, the day it does.
+# The per-hook COUNT stays an explicit literal, because that is the tripwire this
+# module exists to be: a sink appearing or vanishing must fail here and be
+# reviewed, not be absorbed by a derivation. test_every_gated_hook_has_a_count
+# below is what keeps the two halves honest, so a newly gated hook fails loudly
+# instead of silently joining with no expectation attached.
+SINK_DEFINITION = 'WRIT_HOOK_LOG_SINK="$(hook_log_sink)"'
+GATED_SINK_USE = '2>>"$WRIT_HOOK_LOG_SINK"'
+
 QUALITY_JUDGE = HOOKS / "writ-quality-judge.sh"
 POSTTOOL_RAG = HOOKS / "writ-posttool-rag.sh"
 VERIFY_BEFORE_CLAIM = HOOKS / "writ-verify-before-claim.sh"
@@ -56,15 +73,73 @@ VALIDATE_EXIT_PLAN = HOOKS / "validate-exit-plan.sh"
 READ_RAG = HOOKS / "writ-read-rag.sh"
 INJECT_TIER_WORKFLOW = HOOKS / "inject-tier-workflow.sh"
 
+
+def _hooks_defining_the_gated_sink() -> list[Path]:
+    return sorted(
+        (path for path in HOOKS.glob("*.sh") if SINK_DEFINITION in path.read_text()),
+        key=lambda path: path.name,
+    )
+
+
+# Expected number of $WRIT_HOOK_LOG_SINK-routed `2>>` breadcrumb sinks per hook.
+# writ-read-rag.sh went 1 -> 2 and writ-pre-write-dispatch.sh 1 -> 2 on 2026-09-01,
+# when their mutating `_writ_session update` calls stopped sending stderr to
+# /dev/null, which tests/test_hook_stderr_logging.py forbids for exactly that call.
+EXPECTED_GATED_SINKS: dict[str, int] = {
+    "inject-tier-workflow.sh": 1,
+    "validate-exit-plan.sh": 1,
+    "writ-posttool-rag.sh": 2,
+    "writ-pre-write-dispatch.sh": 2,
+    "writ-quality-judge.sh": 1,
+    "writ-rag-inject.sh": 8,
+    "writ-read-rag.sh": 2,
+    "writ-verify-before-claim.sh": 1,
+}
+
 # (script, expected number of $WRIT_HOOK_LOG_SINK-routed `2>>` breadcrumb sinks)
 HOOK_LOG_SINK_HOOKS = [
-    (QUALITY_JUDGE, 1),
-    (POSTTOOL_RAG, 2),
-    (VERIFY_BEFORE_CLAIM, 1),
-    (VALIDATE_EXIT_PLAN, 1),
-    (READ_RAG, 1),
-    (INJECT_TIER_WORKFLOW, 1),
+    (path, EXPECTED_GATED_SINKS.get(path.name, -1))
+    for path in _hooks_defining_the_gated_sink()
 ]
+
+
+def test_the_gated_sink_population_is_not_empty():
+    """Anti-vacuity. A derivation that matched nothing would collapse every
+    parametrization below to zero cases and this module would read green while
+    checking no hook at all."""
+    assert HOOK_LOG_SINK_HOOKS, (
+        "no hook defines WRIT_HOOK_LOG_SINK from hook_log_sink; either the gating "
+        "was removed tree-wide or SINK_DEFINITION has drifted"
+    )
+
+
+def test_every_gated_hook_has_a_count():
+    """The seam between the derived half and the literal half.
+
+    A hook that starts defining the sink joins the population automatically, and
+    without this it would join with no expected count and be waved through. It
+    fails here instead, which is the review the count table exists to force."""
+    missing = sorted(
+        path.name for path, count in HOOK_LOG_SINK_HOOKS if count == -1
+    )
+    assert missing == [], (
+        f"hook(s) define WRIT_HOOK_LOG_SINK but have no entry in "
+        f"EXPECTED_GATED_SINKS: {missing}. Add the expected sink count "
+        "deliberately; do not let a new gated hook join uncounted."
+    )
+
+
+def test_no_counted_hook_has_left_the_population():
+    """The other direction: a name in EXPECTED_GATED_SINKS that no longer defines
+    the sink is a stale expectation, and a stale expectation on an absent hook is
+    a count pin guarding nothing."""
+    derived = {path.name for path, _ in HOOK_LOG_SINK_HOOKS}
+    stale = sorted(set(EXPECTED_GATED_SINKS) - derived)
+    assert stale == [], (
+        f"EXPECTED_GATED_SINKS names hook(s) that no longer define "
+        f"WRIT_HOOK_LOG_SINK: {stale}"
+    )
+
 
 HARDCODED_HOOK_DEBUG_LOG = Path("/tmp/writ-hook-debug.log")
 HARDCODED_PROMPT_DEBUG_LOG = Path("/tmp/writ-prompt-debug.log")

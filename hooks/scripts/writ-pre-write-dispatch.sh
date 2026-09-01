@@ -439,7 +439,7 @@ PY
         _writ_session update "$SESSION_ID" \
             --add-rules "$NEW_RULE_IDS" \
             --cost "${COST:-0}" \
-            --inc-queries 2>/dev/null || true
+            --inc-queries 2>>"$WRIT_HOOK_LOG_SINK" || true
         if [ -n "$DECISION_FILE" ]; then
             _writ_session update "$SESSION_ID" \
                 --add-queried-rules-for-file "$DECISION_FILE" "$NEW_RULE_IDS" 2>/dev/null || true

@@ -418,13 +418,38 @@ class TestUntouchedTailInvariants:
     change) and keep passing after the rag_query adoption -- these are NOT
     the RED target of this cycle."""
 
+    @staticmethod
+    def _expected_sinks(hook_path) -> int:
+        """DERIVED, not restated. tests/test_debug_gating.py owns
+        HOOK_LOG_SINK_HOOKS; that module's declared job is reviewing those
+        numbers, and this one only needs to know the count did not move while it
+        was changing something else nearby.
+
+        These were two literals here and two more in that table, so adding one
+        legitimate gated sink to writ-read-rag.sh on 2026-09-01 broke two files
+        for one change, which is the duplication tests/_inventory.py exists to
+        delete.
+        """
+        from tests.test_debug_gating import HOOK_LOG_SINK_HOOKS
+
+        by_name = {path.name: count for path, count in HOOK_LOG_SINK_HOOKS}
+        assert hook_path.name in by_name, (
+            f"{hook_path.name} is not in HOOK_LOG_SINK_HOOKS; the canonical "
+            "table and this derivation disagree about which hooks are gated"
+        )
+        return by_name[hook_path.name]
+
     def test_read_rag_hook_log_sink_redirect_count(self):
         content = READ_RAG_HOOK.read_text()
-        assert content.count('2>>"$WRIT_HOOK_LOG_SINK"') == 1
+        assert content.count('2>>"$WRIT_HOOK_LOG_SINK"') == self._expected_sinks(
+            READ_RAG_HOOK
+        )
 
     def test_posttool_rag_hook_log_sink_redirect_count(self):
         content = POSTTOOL_RAG_HOOK.read_text()
-        assert content.count('2>>"$WRIT_HOOK_LOG_SINK"') == 2
+        assert content.count('2>>"$WRIT_HOOK_LOG_SINK"') == self._expected_sinks(
+            POSTTOOL_RAG_HOOK
+        )
 
     def test_read_rag_retains_injected_context_strings(self):
         content = READ_RAG_HOOK.read_text()

@@ -277,7 +277,20 @@ session_id = sys.argv[1]
 helper = sys.argv[2]
 plan_file = sys.argv[3]
 project_root = sys.argv[4]
-cache = json.loads(sys.argv[5])
+try:
+    cache = json.loads(sys.argv[5])
+except (json.JSONDecodeError, ValueError) as _e:
+    # PSR-006 bug class, and this was the last unguarded argv callsite in the tree.
+    # Both this block's stdout and its stderr are pointed at the user's stderr by the
+    # invocation below (2>&1 >&2), so an unhandled JSONDecodeError here surfaces a raw
+    # traceback in the UI, which is the exact symptom PSR-006 reported. An unreadable
+    # cache means no loaded rules, so every finding routes as if nothing was cited,
+    # which is the conservative direction for a gate.
+    sys.stderr.write(
+        f'[writ-hook json.loads recovery] argv[5] (cache) in validate-rules.sh: {_e}\n'
+        f'  len={len(sys.argv[5])} sample={sys.argv[5][:200]!r}\n'
+    )
+    cache = {}
 sentinel_path = sys.argv[7]
 
 loaded_rule_ids = {r['rule_id'] for r in cache.get('loaded_rules', [])}
