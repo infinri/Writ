@@ -193,8 +193,12 @@ def _blanked_lines(source: str) -> list[str]:
     it reports. Same predicate, different disposal.
 
     Split on "\\n" and NOT with `str.splitlines()`, which also breaks on U+2028 and would
-    report every line after one off by one: `writ-pre-write-dispatch.sh` line 200 holds a
-    literal U+2028 inside a python string.
+    report every line after one off by one: `writ-pre-write-dispatch.sh` holds a literal
+    U+2028 inside a python string, at line 308 as of the write-path spawn-reduction
+    cycle (it was line 200 before). The LINE NUMBER drifts with every edit to that hook
+    and nothing asserts it, so re-derive it rather than trusting it; what does not drift
+    is that a real file in this tree contains the character, which is the whole reason
+    this function does not use `str.splitlines()`.
     """
     return ["" if ln.lstrip().startswith("#") else ln for ln in source.split("\n")]
 

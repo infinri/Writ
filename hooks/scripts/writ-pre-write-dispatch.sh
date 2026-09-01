@@ -11,9 +11,29 @@
 # Hook type: PreToolUse (matcher: Write|Edit)
 # Exit: always 0
 
-SKILL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+# THE SKILL DIR, RESOLVED WITHOUT A FORK. This used to be
+# `SKILL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"`, one `dirname` process on every
+# single write for a value common.sh:10-11 recomputes from its OWN location one line
+# later anyway. The old spelling was a bootstrap problem, not carelessness: the source
+# below needs a path to common.sh before common.sh has told us anything. Sourcing
+# through a relative path breaks that circle, and ${0%/*} is a parameter expansion,
+# so it costs no process at all.
+#
+# ${0%/*} leaves $0 UNCHANGED when $0 holds no slash (invocation by bare name found on
+# PATH). hooks.json and the suite both invoke this file by path, so that form never
+# occurs here; the guard is written out rather than left implied.
+case "$0" in
+    */*) _WRIT_BOOTSTRAP_DIR="${0%/*}" ;;
+    *)   _WRIT_BOOTSTRAP_DIR="." ;;
+esac
+source "$_WRIT_BOOTSTRAP_DIR/../../bin/lib/common.sh"
+# _WRIT_SKILL_DIR is common.sh's single resolution of the same directory. This value is
+# not decorative: it travels to the server as `skill_dir` in the /pre-write-check body
+# and the gate resolves skill-dir exemptions from it, so byte identity with the retired
+# spelling is ASSERTED (tests/test_write_path_process_budget.py, class
+# TestSkillDirResolvedWithoutDirname), not assumed.
+SKILL_DIR="$_WRIT_SKILL_DIR"
 SESSION_HELPER="$SKILL_DIR/bin/lib/writ-session.py"
-source "$SKILL_DIR/bin/lib/common.sh"
 
 # WRIT_HOOK_LOG stderr breadcrumb sink, gated by WRIT_DEBUG: /dev/null when unset,
 # ${WRIT_HOOK_LOG:-/tmp/writ-hooks.log} when WRIT_DEBUG=1 (single source: common.sh).
@@ -22,14 +42,64 @@ WRIT_HOOK_LOG_SINK="$(hook_log_sink)"
 # PSR-003c follow-up: capture any stderr (Python tracebacks etc.) to a
 # debug log so the next time a hook traceback shows in the Claude Code
 # UI we can read the actual exception. tee preserves stderr propagation
-# so behavior is unchanged. Gated behind WRIT_DEBUG (default OFF): the sink
-# is /dev/null unless WRIT_DEBUG=1, so no debug file is opened in production.
-exec 2> >(tee -a "$(_writ_debug_enabled && echo "${WRIT_HOOK_LOG:-/tmp/writ-hook-debug.log}" || echo /dev/null)" >&2)
+# so behavior is unchanged.
+#
+# THE GATE IS ON THE FORK, NOT ON THE DESTINATION FILE, and this hook is deliberately
+# the only one of the four that spells it this way. The previous spelling was
+# unconditional: `exec 2> >(tee -a "$(_writ_debug_enabled && echo ... || echo
+# /dev/null)" >&2)`. With WRIT_DEBUG unset that still forked tee, wrote every stderr
+# byte into /dev/null and re-emitted the same bytes to stderr, which buys nothing
+# because the file sink was already the null device. Measured before the change: one
+# `tee` execve with WRIT_DEBUG unset and one with it set, 44 total execve attempts in
+# both states, so the fork was paid on every write regardless of the gate. After:
+# 29 attempts with debug unset (no tee), 30 with debug set (tee). Skipping the redirect
+# entirely also removes a buffering hop that could reorder stderr against stdout, so
+# the quiet path is MORE faithful, not less.
+#
+# THE COST, NAMED: this process can no longer start teeing later. That is theoretical
+# here (WRIT_DEBUG is fixed at exec, and the old line read it exactly once too), but
+# the REAL cost is uniformity. writ-dispatch-discipline.sh, writ-subagent-start.sh and
+# writ-subagent-stop.sh keep the unconditional idiom because they are not on the write
+# path and changing them is outside this cycle's approved scope. Do NOT "restore
+# consistency" by putting the fork back here; see
+# docs/adr/ADR-write-path-branch-budget.md for the whole argument.
+if _writ_debug_enabled; then
+    exec 2> >(tee -a "${WRIT_HOOK_LOG:-/tmp/writ-hook-debug.log}" >&2)
+fi
 
 
-# Read stdin once
+# READ STDIN ONCE, AND KEEP THE `cat`. `IFS= read -r -d ''` was measured against it
+# rather than reasoned about, and it LOST: bash's read builtin does unbuffered
+# single-byte reads from a NON-SEEKABLE fd, and the write path carries the whole file
+# in tool_input.content.
+#
+# THE MEASUREMENT, taken on the channel this hook actually reads: stdin delivered
+# through a PIPE, which is how Claude Code hands a hook its envelope. Median of seven
+# runs: 1 KB cat 2.09 ms against read 1.66 ms (0.80x), 64 KB 2.42 ms against 28.65 ms
+# (11.8x), 1 MB 6.96 ms against 444.64 ms (63.9x). The abort criterion was 1.25x at any
+# size, so this is not close.
+#
+# DO NOT RE-MEASURE THIS WITH `< file`. An earlier attempt did, reported 1.8x at 1 MB
+# and read as acceptable. That number is not a competing result, it is a measurement of
+# the wrong channel: a SEEKABLE fd lets bash read in blocks and seek back, where a PIPE
+# forces the unbuffered single-byte reads. Isolated at 1 MB, same script and payload,
+# `read` takes 0.44 s from a pipe against 0.01 s from a regular-file redirect, and a
+# second independent run of the same comparison put it at 446.0 ms against 14.6 ms. No
+# hook is ever handed a seekable stdin, so only the pipe figure describes this line.
+#
+# It also returns exit status 1 when it finds no NUL even after reading all 1,048,576
+# bytes, so it reports failure on success, and it truncates at the first NUL where
+# command substitution drops the NUL and keeps the rest. Recorded as NOT TAKEN in
+# docs/adr/ADR-write-path-branch-budget.md so the next reader does not re-derive it.
 STDIN_DATA=$(cat)
-printf '%s' "$STDIN_DATA" | blackbox_log in writ-pre-write-dispatch
+# CAPTURE DRAIN GATED AT THE CALL SITE, the same shape load_hook_env already uses at
+# bin/lib/common.sh:394. blackbox_log's disabled arm drains the pipe it was handed,
+# which forks a `cat` on every write while capture is OFF. Gating here means the pipe
+# is never created, so there is nothing to drain. The guard INSIDE blackbox_log stays:
+# it protects every other caller.
+if blackbox_enabled; then
+    printf '%s' "$STDIN_DATA" | blackbox_log in writ-pre-write-dispatch
+fi
 
 # Item 4c: ONE parse turns stdin into session_id + write context + check body. Was
 # two separate calls in v1.1.0 (session_id parse, then envelope parse).
@@ -64,9 +134,9 @@ except (ValueError, json.JSONDecodeError):
 if not isinstance(data, dict):
     data = {}
 # Strip embedded newlines before stripping the ends: this output is split positionally
-# by head -1 / sed -n 2p / tail -n +3, so a newline inside the session id emits four
-# lines and CHECK_BODY becomes a stray line glued to the real JSON body. Mirrored in
-# pre-write-parse.jq; see the longer note there.
+# by line (element 0, element 1, elements 2 onward), so a newline inside the session id
+# emits four lines and CHECK_BODY becomes a stray line glued to the real JSON body.
+# Mirrored in pre-write-parse.jq; see the longer note there.
 sid = (data.get('agent_id') or data.get('session_id') or '')
 sid = sid.replace('\n', ' ').replace('\r', ' ').strip() if isinstance(sid, str) else ''
 ti = data.get('tool_input', {})
@@ -102,9 +172,43 @@ print(write_ctx)
 print(body)
 " "$STDIN_DATA" "$SKILL_DIR" 2>/dev/null)
 
-SESSION_ID=$(echo "$PARSED_INPUT" | head -1)
-WRITE_CTX=$(echo "$PARSED_INPUT" | sed -n 2p)
-CHECK_BODY=$(echo "$PARSED_INPUT" | tail -n +3)
+# ONE BUILTIN READ OF THE WHOLE STRING, replacing three external processes paid per
+# write (one per field). mapfile -t strips only the trailing newline of each element,
+# and the herestring appends exactly one newline, so an empty PARSED_INPUT yields a
+# single empty element rather than no elements.
+#
+# CHECK_BODY IS "${_PARSE_LINES[@]:2}" JOINED BY NEWLINES, NOT "${_PARSE_LINES[2]}".
+# The retired spelling took line 3 ONWARD, so a four-line parse sent lines 3 and 4 as
+# the body. The single-index form truncates to line 3 alone, and the two FAIL
+# DIFFERENTLY, which is why this is not a style question: the joined body is rejected by
+# the server, so curl fails, RESULT comes back empty and the write gate is SKIPPED,
+# while the truncated body can still parse and the gate then runs on a PARTIAL request.
+# Both outcomes are unacceptable; reproducing the old semantics exactly means this
+# conversion changes no failure mode. Executed proof, both spellings over one corpus:
+# tests/test_pre_write_dispatch_line_split.py.
+#
+# printf -v joins without touching IFS (an IFS save-and-restore is wrong when IFS is
+# unset: restoring "" would silently change word splitting for the rest of the script).
+# With an empty slice printf still applies the format once, giving a lone newline, which
+# the strip below turns back into the empty string.
+#
+# THE STRIP TAKES THE WHOLE TRAILING NEWLINE RUN, not one newline, and the differential
+# caught this: the old arm captured through `$( )`, which strips ALL trailing newlines,
+# so a PARSED_INPUT that itself ends in a newline yielded a trailing EMPTY element here
+# and a body one byte longer than the old spelling produced. `${X##*[!\n]}` is the
+# trailing run of newlines (the whole string when it holds no other character), and
+# removing that suffix reproduces the command-substitution behaviour exactly.
+#
+# Every read carries an explicit :- default. Command substitution strips ALL trailing
+# newlines, so a parse whose last field is empty yields FEWER elements than the reader
+# expects and the index is UNSET, not empty. Measured: under `set -u` that is an
+# "unbound variable" abort; with the default it is the empty string at exit status 0.
+mapfile -t _PARSE_LINES <<<"$PARSED_INPUT"
+SESSION_ID="${_PARSE_LINES[0]:-}"
+WRITE_CTX="${_PARSE_LINES[1]:-}"
+printf -v CHECK_BODY '%s\n' "${_PARSE_LINES[@]:2}"
+_CHECK_BODY_NL_RUN="${CHECK_BODY##*[!$'\n']}"
+CHECK_BODY="${CHECK_BODY%"$_CHECK_BODY_NL_RUN"}"
 
 # NO SYNTHESIZED ID, AND NO EARLY EXIT. This used to call `detect_session_id ""`, which
 # invented an id from PPID or md5(cwd:user).
@@ -145,8 +249,12 @@ fi
 
 # Item 4c: single python3 spawn computes decision + reason + file_path + payload
 # + hookSpecificOutput JSON + RAG metadata. Was three sequential json.load() spawns
-# plus an inline hookSpecificOutput builder. Output is tab-separated lines the
-# shell reads with `mapfile` to avoid further parsing spawns.
+# plus an inline hookSpecificOutput builder. Output is one field per line, read below
+# with `mapfile` so the split itself costs no further process.
+#
+# That last sentence has been in this file since Item 4c landed and was FALSE until the
+# write-path spawn-reduction cycle: it sat directly above seven per-field external
+# process calls plus a whitespace strip. It is true now.
 DISPATCH_BLOB=$(python3 -c "
 import json, sys
 result_raw = sys.argv[1] or '{}'
@@ -203,15 +311,27 @@ sys.stdout.write(str(tokens) + '\n')
 sys.stdout.write(mode + '\n')
 " "$RESULT" "$CHECK_BODY" 2>/dev/null || echo "")
 
-DECISION=$(echo "$DISPATCH_BLOB" | sed -n '1p')
-DECISION_FILE=$(echo "$DISPATCH_BLOB" | sed -n '2p')
-HOOK_OUTPUT=$(echo "$DISPATCH_BLOB" | sed -n '3p')
-RAG_RULES_RAW=$(echo "$DISPATCH_BLOB" | sed -n '4p')
-NEW_RULE_IDS=$(echo "$DISPATCH_BLOB" | sed -n '5p')
-COST=$(echo "$DISPATCH_BLOB" | sed -n '6p')
+# The same builtin read as the PARSED_INPUT split above: ONE mapfile instead of eight
+# external processes (seven per-field reads plus the whitespace strip on MODE).
+mapfile -t _BLOB_LINES <<<"$DISPATCH_BLOB"
+DECISION="${_BLOB_LINES[0]:-}"
+DECISION_FILE="${_BLOB_LINES[1]:-}"
+HOOK_OUTPUT="${_BLOB_LINES[2]:-}"
+RAG_RULES_RAW="${_BLOB_LINES[3]:-}"
+NEW_RULE_IDS="${_BLOB_LINES[4]:-}"
+COST="${_BLOB_LINES[5]:-}"
 # A11: mode from the /pre-write-check envelope -> the closing timer call (no
 # separate `mode get`). Empty for the early-exit timers above (degenerate paths).
-MODE=$(echo "$DISPATCH_BLOB" | sed -n '7p' | tr -d '[:space:]')
+#
+# THE INDEX IS UNSET ON THE NORMAL PATH, not an exotic one. Command substitution strips
+# ALL trailing newlines, so a response carrying an empty mode arrives as SIX elements,
+# not seven, and the explicit :- default is the only reason element 6 reads as the empty
+# string instead of aborting under `set -u`. The whitespace strip is a pattern
+# expansion, not a process; the two spellings agree on every case in the corpus at
+# tests/test_pre_write_dispatch_line_split.py, and where a future locale makes them
+# disagree the expansion result is the one this hook takes.
+MODE="${_BLOB_LINES[6]:-}"
+MODE="${MODE//[[:space:]]/}"
 
 DECISION="${DECISION:-allow}"
 # write_attempt (emitted by the gate, writ/session/gates.py) is the canonical
@@ -288,7 +408,18 @@ if rules:
         # this envelope rather than the envelope, so every row parsed as a non-object and
         # filed under the event name "unknown". The reply is captured into a variable and
         # that same variable is what reaches stdout and the capture log.
-        AC_REPLY=$(WRIT_AC="[Writ: file-context rules for $(basename "${DECISION_FILE:-unknown}")]
+        # The display name, computed without a `basename` process. Two steps because
+        # bash cannot nest :- inside ##*/ in one expansion. The two spellings agree on
+        # every ordinary path and differ on exactly three inputs, all pinned WITH their
+        # values in tests/test_pre_write_dispatch_line_split.py rather than assumed
+        # away: a trailing slash (basename "/a/b/" is "b", the expansion is empty), a
+        # bare "/" (basename is "/", the expansion is empty), and a leading-dash
+        # argument, where the expansion is the SAFER answer because GNU basename with no
+        # `--` separator reads "-rf" as an option, exits 1 and prints nothing. This value
+        # only ever reaches the display header below, never a gate decision.
+        _DECISION_NAME="${DECISION_FILE:-unknown}"
+        _DECISION_NAME="${_DECISION_NAME##*/}"
+        AC_REPLY=$(WRIT_AC="[Writ: file-context rules for ${_DECISION_NAME}]
 ${RAG_RULES_RAW}
 ${AO_WRITE_BLOCK}" python3 <<'PY' 2>>"$WRIT_HOOK_LOG_SINK"
 import json, os

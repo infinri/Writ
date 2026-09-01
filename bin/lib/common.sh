@@ -563,8 +563,39 @@ writ_event_buffer_append() {
     fi
     local buf
     buf="$(writ_event_buffer_path "$session")"
-    mkdir -p "${buf%/*}" 2>/dev/null || true
-    printf '%s' "$row" >> "$buf" 2>/dev/null || true
+    _writ_buffer_append "$buf" "$row"
+    return 0
+}
+
+# Append a buffer row, paying a `mkdir` process only when one is actually needed.
+#
+# WHY THIS IS NOT A BARE `[ -d ] || mkdir -p`. The event-buffer append above runs once
+# at exit on every instrumented hook, so an unconditional `mkdir -p` is 10 processes on
+# a single file write and the largest per-write item left in this library. But the
+# unconditional call WAS doing real work in one case: if the cache directory is removed
+# mid-session it silently recreates it and the row lands. A bare directory test would
+# skip the create, the append would fail, and the `|| true` beside it would swallow the
+# loss in silence -- trading a telemetry or audit row for a process, which is the wrong
+# trade for a record that proves a gate ran.
+#
+# So: test the directory, skip the create while it exists, and if the append fails
+# ANYWAY, create the directory and retry ONCE. The mkdir stays reachable exactly when it
+# is needed and never otherwise, and that is provable by deleting the directory between
+# two calls rather than by reading this comment.
+#
+# Never fails the caller: telemetry failure must not become enforcement failure. A
+# caller that needs to KNOW whether the row landed (the gate-decision path, which falls
+# through to a synchronous emit) tests the append itself instead of calling this.
+_writ_buffer_append() {
+    local _buf="${1:-}" _row="${2:-}" _dir
+    [ -n "$_buf" ] || return 0
+    _dir="${_buf%/*}"
+    [ -d "$_dir" ] || mkdir -p "$_dir" 2>/dev/null || true
+    if printf '%s' "$_row" >> "$_buf" 2>/dev/null; then
+        return 0
+    fi
+    mkdir -p "$_dir" 2>/dev/null || true
+    printf '%s' "$_row" >> "$_buf" 2>/dev/null || true
     return 0
 }
 
@@ -593,8 +624,10 @@ writ_friction_buffer_append() {
     [ "${#row}" -le "$WRIT_EVENT_ROW_MAX" ] || return 1
     local buf
     buf="$(writ_event_buffer_path "$session")"
-    mkdir -p "${buf%/*}" 2>/dev/null || true
-    printf '%s' "$row" >> "$buf" 2>/dev/null || true
+    # Same guarded append as the hook_execution rows above: no `mkdir` process while the
+    # buffer directory exists, and a create-and-retry so a directory removed mid-session
+    # costs a process rather than the row.
+    _writ_buffer_append "$buf" "$row"
     return 0
 }
 
@@ -1594,9 +1627,16 @@ log_gate_decision() {
   # the text a human needs, and silently shortening it is worse than paying for a spawn
   # on the rare long denial.
   if [ "${#_gd_row}" -le "${WRIT_EVENT_ROW_MAX:-3072}" ]; then
-    local _gd_buf
+    local _gd_buf _gd_dir
     _gd_buf="$(writ_event_buffer_path "${SESSION_ID:-${HOOK_SESSION_ID:-}}")"
-    mkdir -p "${_gd_buf%/*}" 2>/dev/null || true
+    # GUARDED, BUT NOT RETRIED, and the difference is deliberate. The guard is the same
+    # as _writ_buffer_append's: no `mkdir` process while the directory exists. The retry
+    # is NOT needed here because this path already has a durability fallback -- a failed
+    # buffered append falls through to _gd_emit_now below, which writes the audit record
+    # synchronously. Retrying the buffer instead would take the row off the durable path
+    # to save a spawn on the one branch where the spawn is warranted.
+    _gd_dir="${_gd_buf%/*}"
+    [ -d "$_gd_dir" ] || mkdir -p "$_gd_dir" 2>/dev/null || true
     if printf '%s' "$_gd_row" >> "$_gd_buf" 2>/dev/null; then
       return 0
     fi
