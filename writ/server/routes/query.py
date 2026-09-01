@@ -249,32 +249,38 @@ async def prompt_bundle(request: PromptBundleRequest) -> dict[str, Any]:
     }
 
     # --- Channel 1: broad /query ---
-    qresp = await query_rules(QueryRequest(
-        query=prompt,
-        budget_tokens=remaining_budget,
-        exclude_rule_ids=exclude_ids,
-        prefer_rule_ids=(prefer_ids or None),
-        domain=(detected_domain if detected_domain and detected_domain != "universal" else None),
-        # This is the hot per-prompt retrieval and the session is right here, so its
-        # retrieval_result row is session-correlated even though the four hooks that POST
-        # /query directly do not send one yet.
-        session_id=sid,
-        # The project scope, which this internal request used to DROP: the field
-        # existed on QueryRequest and /query forwarded it, but the constructor here
-        # never set it, so the one route that runs on every prompt was unscoped no
-        # matter what the hook sent. Passed as a root, resolved once inside query_rules.
-        project_root=request.project_root,
-    ))
-    if "error" in qresp:
-        # Match the legacy hook: a /query error aborted the whole injection (the
-        # always-on + methodology channels ran AFTER it), so return early. This return
-        # is why channel 2 is RESOLVED below rather than above: the ranked channel's
-        # RENDER needs the always-on ids, but its RETRIEVAL does not, so the always-on
-        # Neo4j reads stay skipped on the error path exactly as they were, and the
-        # response shape here is unchanged (no always_on_block, no always-on cache
-        # update, no ao_meta).
-        out["error"] = True
-        return out
+    # include_ranked=False skips the RETRIEVAL, not just the render: suppression is a
+    # request-time decision, so the Neo4j read is never paid for and the "error" early
+    # return below cannot abort channels 2 and 3 either. exclude_ids is still computed
+    # above because channel 3 uses it.
+    qresp: dict[str, Any] = {}
+    if request.include_ranked:
+        qresp = await query_rules(QueryRequest(
+            query=prompt,
+            budget_tokens=remaining_budget,
+            exclude_rule_ids=exclude_ids,
+            prefer_rule_ids=(prefer_ids or None),
+            domain=(detected_domain if detected_domain and detected_domain != "universal" else None),
+            # This is the hot per-prompt retrieval and the session is right here, so its
+            # retrieval_result row is session-correlated even though the four hooks that POST
+            # /query directly do not send one yet.
+            session_id=sid,
+            # The project scope, which this internal request used to DROP: the field
+            # existed on QueryRequest and /query forwarded it, but the constructor here
+            # never set it, so the one route that runs on every prompt was unscoped no
+            # matter what the hook sent. Passed as a root, resolved once inside query_rules.
+            project_root=request.project_root,
+        ))
+        if "error" in qresp:
+            # Match the legacy hook: a /query error aborted the whole injection (the
+            # always-on + methodology channels ran AFTER it), so return early. This return
+            # is why channel 2 is RESOLVED below rather than above: the ranked channel's
+            # RENDER needs the always-on ids, but its RETRIEVAL does not, so the always-on
+            # Neo4j reads stay skipped on the error path exactly as they were, and the
+            # response shape here is unchanged (no always_on_block, no always-on cache
+            # update, no ao_meta).
+            out["error"] = True
+            return out
 
     # --- Channel 2 data, resolved early (the ranked channel's render needs it) ---
     # Ordering, not new work. always_on_bundle depends on nothing from channel 1 (two
@@ -295,27 +301,36 @@ async def prompt_bundle(request: PromptBundleRequest) -> dict[str, Any]:
     ao_ids = always_on_rule_ids(ao_json)
 
     # --- Channel 1 (render) ---
-    out["nudge"] = compute_nudge(qresp)
-    # Field-level dedup: a ranked hit already in this turn's always-on block renders a
-    # pointer instead of repeating its trigger and statement. tag_overlap COPIES, so
-    # `qresp` below still carries every field for the --add-rule-objects cache the
-    # compliance-matching path reads.
-    render_payload = dict(qresp)
-    render_payload["rules"] = tag_overlap(qresp.get("rules") or [], ao_ids)
-    text, meta = split_format(
-        await asyncio.to_thread(server._run_cmd_format_locked, render_payload)
-    )
-    out["rules_text"] = text
-    rule_ids = meta.get("rule_ids", []) or []
-    cost = meta.get("cost", 0) or 0
-    await asyncio.to_thread(server.writ_session.cmd_update, sid, [
-        "--add-rules", _json.dumps(rule_ids),
-        "--cost", str(cost),
-        "--inc-queries",
-        "--set-last-injected-rule-ids", _json.dumps(rule_ids),
-        "--add-rule-objects", _json.dumps(extract_rule_objects(qresp)),
-    ])
-    out["broad_meta"] = {"rule_ids": rule_ids, "cost": cost}
+    if request.include_ranked:
+        out["nudge"] = compute_nudge(qresp)
+        # Field-level dedup: a ranked hit already in this turn's always-on block renders a
+        # pointer instead of repeating its trigger and statement. tag_overlap COPIES, so
+        # `qresp` below still carries every field for the --add-rule-objects cache the
+        # compliance-matching path reads.
+        render_payload = dict(qresp)
+        render_payload["rules"] = tag_overlap(qresp.get("rules") or [], ao_ids)
+        text, meta = split_format(
+            await asyncio.to_thread(server._run_cmd_format_locked, render_payload)
+        )
+        out["rules_text"] = text
+        rule_ids = meta.get("rule_ids", []) or []
+        cost = meta.get("cost", 0) or 0
+        await asyncio.to_thread(server.writ_session.cmd_update, sid, [
+            "--add-rules", _json.dumps(rule_ids),
+            "--cost", str(cost),
+            "--inc-queries",
+            "--set-last-injected-rule-ids", _json.dumps(rule_ids),
+            "--add-rule-objects", _json.dumps(extract_rule_objects(qresp)),
+        ])
+        out["broad_meta"] = {"rule_ids": rule_ids, "cost": cost}
+    else:
+        # A SENTINEL, never an empty result. A zero-rule broad_meta is the abstention
+        # signal (retrieval ran and found nothing), so recording a configuration choice
+        # that way would corrupt every census that counts retrievals by source. `nudge`
+        # stays "" for the same reason: compute_nudge on a skipped channel reads
+        # "NO_RULES", which would tell the caller to propose a rule for an absence it
+        # asked for.
+        out["broad_meta"] = {"suppressed": True}
 
     # --- Channel 2: always-on (emit) ---
     out["always_on_block"] = block

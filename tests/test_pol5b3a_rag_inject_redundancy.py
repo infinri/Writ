@@ -144,9 +144,32 @@ class TestRedundancyRemoved:
             "methodology-companion META is handled server-side; no hook-side parse_writ_meta"
         )
 
-    def test_orchestrator_meta_double_parse_collapsed(self) -> None:
-        n = SRC.count('echo "$ORCH_METHOD_META_JSON" | parse_writ_meta')
-        assert n == 1, f"orchestrator-methodology META must route through parse_writ_meta once; found {n}"
+    def test_orchestrator_meta_parse_moved_server_side(self) -> None:
+        """WAS test_orchestrator_meta_double_parse_collapsed, which asserted the
+        orchestrator companion's META was parsed EXACTLY ONCE (it had been parsed
+        twice; POL-5b-3a collapsed it to one).
+
+        Plan dfacff61 deleted the hand-rolled orchestrator companion outright: a
+        master now goes through the shared /prompt-bundle call like every other
+        session, and the endpoint parses and applies the companion META
+        server-side. So the count is zero, not one, and the redundancy the old
+        assertion guarded cannot recur by any edit to this hook, because there is
+        no hook-side parse left to duplicate.
+
+        Re-keyed to the state that actually holds rather than deleted outright:
+        an equality-to-one pin would now have to be an equality-to-zero pin, and
+        this says WHY zero is right. It sits beside its two siblings above, which
+        make the same "moved server-side" claim for the broad and methodology
+        channels.
+        """
+        assert SRC.count('echo "$ORCH_METHOD_META_JSON" | parse_writ_meta') == 0, (
+            "the hand-rolled orchestrator companion META parse is back; the "
+            "master must use the shared /prompt-bundle path, which parses and "
+            "applies that META server-side"
+        )
+        assert "ORCH_METHOD_META_JSON" not in SRC, (
+            "the orchestrator companion's hook-side META variable is back"
+        )
 
 
 # --------------------------------------------------------------------------- #

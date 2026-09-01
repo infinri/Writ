@@ -91,7 +91,7 @@ EXPECTED_GATED_SINKS: dict[str, int] = {
     "writ-posttool-rag.sh": 2,
     "writ-pre-write-dispatch.sh": 2,
     "writ-quality-judge.sh": 1,
-    "writ-rag-inject.sh": 8,
+    "writ-rag-inject.sh": 7,
     "writ-read-rag.sh": 2,
     "writ-verify-before-claim.sh": 1,
 }

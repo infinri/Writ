@@ -284,17 +284,19 @@ class TestOrchestratorSessionFlagRead:
         assert result["is_orchestrator"] is False
 
     # writ-pretool-rag.sh was removed in the 2026-05-10 cleanup (superseded by
-    # writ-pre-write-dispatch.sh). The is_orchestrator early-exit check still
-    # lives in writ-rag-inject.sh and writ-posttool-rag.sh.
-
-    def test_writ_posttool_rag_references_is_orchestrator(self) -> None:
-        """writ-posttool-rag.sh contains an is_orchestrator check for early exit."""
-        hook = f"{SKILL_DIR}/hooks/scripts/writ-posttool-rag.sh"
-        with open(hook) as f:
-            source = f.read()
-        assert "is_orchestrator" in source, (
-            "writ-posttool-rag.sh must read is_orchestrator to decide early exit"
-        )
+    # writ-pre-write-dispatch.sh). writ-posttool-rag.sh's is_orchestrator early
+    # exit is REMOVED too (plan dfacff61, Decision 3): its justification was a
+    # claim about the write gate the gate never made (`grep -c is_orchestrator
+    # writ/session/gates.py` returns 0), and the extension map a few lines
+    # below it already stops any extension the map does not know, .md
+    # included. A literal-string pin on writ-posttool-rag.sh containing
+    # "is_orchestrator" would therefore FAIL on a CORRECT deletion while
+    # proving nothing about behavior either way, so there is deliberately no
+    # replacement source-text test here. tests/test_orchestrator_injection.py
+    # proves the actual behavior (POST /query count against a stub daemon,
+    # for both a .py and a .md write, orchestrator and not) directly instead.
+    # The check below is unaffected: writ-rag-inject.sh still reads the flag,
+    # just to gate the ranked channel rather than to skip the whole hook.
 
     def test_writ_rag_inject_references_is_orchestrator(self) -> None:
         """writ-rag-inject.sh contains an is_orchestrator check to skip /query."""

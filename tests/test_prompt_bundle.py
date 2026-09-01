@@ -371,6 +371,190 @@ class TestPromptBundleErrorPathSkipsAlwaysOn:
 
 
 # --------------------------------------------------------------------------- #
+# 4c. include_ranked: bool = True, a per-channel toggle on THIS endpoint
+# (plan dfacff61, Decision 2), so an orchestrator master can suppress the
+# ranked channel without a second endpoint or a second render path. Channels
+# 2 (always-on) and 3 (methodology) are untouched by the flag on purpose.
+#
+# `False` is not a valid `error`, `rules_text` or `broad_meta` reading here on
+# accident: bool is an int in Python, so every truthiness/identity check below
+# is written against the LITERAL (`is False`, `== ""`, `== {"suppressed": True}`),
+# never a bare `not x`, which a stray `0` or `True` could satisfy by coincidence.
+# --------------------------------------------------------------------------- #
+class TestIncludeRankedField:
+    def test_field_defaults_true(self):
+        req = PromptBundleRequest(session_id="s1")
+        assert req.include_ranked is True
+
+    def test_field_accepts_false(self):
+        req = PromptBundleRequest(session_id="s1", include_ranked=False)
+        assert req.include_ranked is False
+
+
+class TestPromptBundleSuppressedRankedChannel:
+    """Capability 1 (capabilities.md): include_ranked=false returns an empty
+    rules_text and broad_meta == {"suppressed": true}, while always_on_block
+    and methodology_block are both still non-empty.
+
+    An empty broad_meta (rather than the {"suppressed": True} sentinel) would
+    be indistinguishable from a zero-rule rag_query, which is the ABSTENTION
+    signal every census that counts retrievals by source relies on, so the
+    shape matters, not just the emptiness of rules_text.
+
+    MUTATION (plan.md verification table): defaulting include_ranked to True
+    at the call site (accepting the field but never actually wiring it into
+    the channel-1 guard) turns this red.
+    """
+
+    @pytest.mark.asyncio
+    async def test_suppressed_shape(self, monkeypatch):
+        monkeypatch.setattr(server, "_pipeline", object())
+        monkeypatch.setattr(server.writ_session, "_read_cache", lambda sid: _minimal_cache())
+        fake_query_rules = AsyncMock(return_value={"rules": [{"rule_id": "R1", "score": 0.9}]})
+        fake_always_on = AsyncMock(return_value={
+            "total_tokens": 42,
+            "rules": [{"rule_id": "AO-1", "trigger": "t", "statement": "s"}],
+        })
+        # mode="work" below routes channel 3 to the methodology source, so the
+        # companion itself must be mocked too, or it would try to hit the
+        # real (absent) pipeline through the "_pipeline = object()" sentinel.
+        fake_companion = AsyncMock(return_value={"rules": [{"rule_id": "M-1"}]})
+        fake_cmd_update = MagicMock()
+        monkeypatch.setattr(qroute, "query_rules", fake_query_rules)
+        monkeypatch.setattr(qroute, "always_on_bundle", fake_always_on)
+        monkeypatch.setattr(qroute, "methodology_companion", fake_companion)
+        monkeypatch.setattr(server.writ_session, "cmd_update", fake_cmd_update)
+        # Always returns non-empty text regardless of payload: if a correct
+        # implementation never calls this for the suppressed channel 1, its
+        # return value is irrelevant there; if an incorrect one still calls it
+        # for channel 1, rules_text becomes non-empty and the assertion below
+        # (rather than this helper) is what turns red.
+        monkeypatch.setattr(
+            server, "_run_cmd_format_locked",
+            lambda payload: 'companion text\nWRIT_META:{"rule_ids": [], "cost": 5}',
+        )
+
+        result = await qroute.prompt_bundle(PromptBundleRequest(
+            session_id="s1", prompt="x", mode="work", include_ranked=False,
+        ))
+
+        assert result["error"] is False
+        assert result["rules_text"] == ""
+        assert result["broad_meta"] == {"suppressed": True}
+        assert result["always_on_block"] != ""
+        assert result["methodology_block"] != ""
+
+        # Retrieval itself must not run either: suppression is a request-time
+        # decision, not a render-time one that still pays for the Neo4j read
+        # and throws the text away.
+        fake_query_rules.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_suppressed_channel_never_runs_the_ranked_cache_update(self, monkeypatch):
+        """MUTATION: leaving the channel-1 --add-rules / --set-last-injected-
+        rule-ids / --add-rule-objects update running when include_ranked=False
+        turns this red, even though the shape assertions above would still
+        look right, because the update is a side effect the shape alone
+        cannot see. Channel 2's update must still run: only channel 1 is
+        suppressed."""
+        monkeypatch.setattr(server, "_pipeline", object())
+        monkeypatch.setattr(server.writ_session, "_read_cache", lambda sid: _minimal_cache())
+        fake_query_rules = AsyncMock(return_value={"rules": [{"rule_id": "SHOULD-NOT-RECORD"}]})
+        fake_always_on = AsyncMock(return_value={
+            "total_tokens": 10, "rules": [{"rule_id": "AO-1", "trigger": "t", "statement": "s"}],
+        })
+        fake_cmd_update = MagicMock()
+        monkeypatch.setattr(qroute, "query_rules", fake_query_rules)
+        monkeypatch.setattr(qroute, "always_on_bundle", fake_always_on)
+        monkeypatch.setattr(server.writ_session, "cmd_update", fake_cmd_update)
+
+        await qroute.prompt_bundle(PromptBundleRequest(
+            session_id="s1", prompt="x", include_ranked=False,
+        ))
+
+        flags_seen: set[str] = set()
+        for call in fake_cmd_update.call_args_list:
+            flags_seen.update(a for a in call.args[-1] if isinstance(a, str) and a.startswith("--"))
+        assert "--add-rules" not in flags_seen, (
+            f"channel 1's cache update ran even though it was suppressed: {flags_seen}"
+        )
+        assert "--add-always-on-rules" in flags_seen, (
+            "channel 2's update must still run when only channel 1 is suppressed"
+        )
+
+
+class TestPromptBundleDefaultUnchanged:
+    """Capability 2 (capabilities.md), the anti-vacuity control the plan names
+    explicitly: a caller that never mentions include_ranked must see EXACTLY
+    today's shape. Without this, a change that disabled every channel (or
+    quietly defaulted the field to False) could make the suppressed-shape
+    test above look like a delivered feature.
+
+    MUTATION (plan.md verification table): making the channel-1 guard
+    unconditional (`if False:` around the ranked retrieval, i.e. always
+    suppressed) turns this red: a default of True on the field alone is not
+    enough if the guard itself does not read it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_include_ranked_omitted_still_populates_rules_text_and_broad_meta(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(server, "_pipeline", object())
+        monkeypatch.setattr(server.writ_session, "_read_cache", lambda sid: _minimal_cache())
+        fake_query_rules = AsyncMock(return_value={"rules": [{"rule_id": "R1", "score": 0.9}]})
+        fake_always_on = AsyncMock(return_value={"rules": [], "total_tokens": 0})
+        fake_cmd_update = MagicMock()
+        monkeypatch.setattr(qroute, "query_rules", fake_query_rules)
+        monkeypatch.setattr(qroute, "always_on_bundle", fake_always_on)
+        monkeypatch.setattr(server.writ_session, "cmd_update", fake_cmd_update)
+        monkeypatch.setattr(
+            server, "_run_cmd_format_locked",
+            lambda payload: 'some rules text\nWRIT_META:{"rule_ids": ["R1"], "cost": 12}',
+        )
+
+        req = PromptBundleRequest(session_id="s1", prompt="x")  # include_ranked NOT set
+        result = await qroute.prompt_bundle(req)
+
+        fake_query_rules.assert_called_once()
+        assert result["error"] is False
+        assert result["rules_text"] != ""
+        assert result["broad_meta"] is not None
+        assert "rule_ids" in result["broad_meta"] and "cost" in result["broad_meta"]
+
+
+class TestPromptBundleSuppressedNudge:
+    """Capability 3 (capabilities.md): include_ranked=false returns
+    nudge == "", not "NO_RULES". compute_nudge({"rules": []}) reads
+    "NO_RULES", which tells the master to propose a rule to fix an absence
+    that is a configuration choice, not a retrieval miss, so the nudge
+    computation must not run on the skipped channel at all, not merely be fed
+    an empty qresp.
+
+    MUTATION (plan.md verification table): leaving compute_nudge(qresp)
+    running on the skipped channel turns this red.
+    """
+
+    @pytest.mark.asyncio
+    async def test_nudge_is_empty_not_no_rules(self, monkeypatch):
+        monkeypatch.setattr(server, "_pipeline", object())
+        monkeypatch.setattr(server.writ_session, "_read_cache", lambda sid: _minimal_cache())
+        # If compute_nudge ran on this, it would read "NO_RULES": the exact
+        # failure this test exists to catch.
+        fake_query_rules = AsyncMock(return_value={"rules": []})
+        fake_always_on = AsyncMock(return_value={"rules": [], "total_tokens": 0})
+        monkeypatch.setattr(qroute, "query_rules", fake_query_rules)
+        monkeypatch.setattr(qroute, "always_on_bundle", fake_always_on)
+        monkeypatch.setattr(server.writ_session, "cmd_update", MagicMock())
+
+        result = await qroute.prompt_bundle(PromptBundleRequest(
+            session_id="s1", prompt="x", include_ranked=False,
+        ))
+
+        assert result["nudge"] == ""
+
+
+# --------------------------------------------------------------------------- #
 # 5. live endpoint shape (skips when no daemon on the suite's test port)
 # --------------------------------------------------------------------------- #
 class TestPromptBundleEndpointLive:

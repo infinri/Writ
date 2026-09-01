@@ -76,6 +76,11 @@ class PromptBundleRequest(BaseModel):
     prompt: str = ""          # keyword-extracted prompt: query text + companion prompt + always-on context
     effort: str = ""
     always_on_filter: bool = True
+    # Channel 1 (the ranked /query pool) only. An orchestrator master turns it off so
+    # the shared path still delivers the always-on floor and the methodology companion,
+    # which is why this is a per-channel field on the existing request rather than a
+    # second endpoint or a second render path.
+    include_ranked: bool = True
     # The per-prompt hot path. Forwarded to the internal channel-1 QueryRequest,
     # which dropped the project entirely before this cycle: a fix that stopped at
     # /query would have tested green and left the route that runs on every prompt

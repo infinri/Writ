@@ -42,15 +42,32 @@ HOOK = f"{SKILL_DIR}/hooks/scripts/writ-rag-inject.sh"
 
 
 class TestOrchestratorMethodologyCompanionStructural:
-    """Structural: the hook's orchestrator branch must reference the
-    methodology companion path so a future regression that re-introduces
-    the silent skip is caught at lint time."""
+    """Structural: the orchestrator branch must not short-circuit before the
+    shared /prompt-bundle call that now carries both the always-on floor and
+    the methodology companion (plan dfacff61, Decision 2).
 
-    def test_orchestrator_branch_invokes_methodology(self) -> None:
+    RE-KEYED (was: "the word 'methodology' appears anywhere in the branch").
+    That guard passed for a branch that mentions methodology only in a
+    comment, including the CURRENT, pre-fix branch, which says "methodology
+    context" in a comment two lines above the `exit 0` that stops it from
+    ever being delivered for the always-on floor. Per HARD CONSTRAINT
+    (dedup-before-name-swap), the replacement is keyed on the MECHANISM that
+    now guarantees delivery: the branch falls through past its own closing
+    `fi` into the shared bundle call instead of returning early, not on a
+    second name to grep for.
+
+    MUTATION: restoring `exit 0` inside the `IS_ORCHESTRATOR` branch (the
+    pre-fix shape, which short-circuited immediately after the hand-rolled
+    companion call) turns this red. The OLD "methodology" substring guard
+    would NOT have caught that exact mutation, because the word still
+    appears in a comment two lines above the exit it is meant to catch.
+    """
+
+    def test_orchestrator_branch_has_no_early_exit(self) -> None:
         with open(HOOK) as f:
             body = f.read()
 
-        # Locate the orchestrator branch -- everything between the
+        # Locate the orchestrator branch: everything between the
         # `if [ "$IS_ORCHESTRATOR" = "true" ]; then` and its closing `fi`
         # before the next major block.
         m = re.search(
@@ -61,14 +78,11 @@ class TestOrchestratorMethodologyCompanionStructural:
         assert m is not None, "could not locate orchestrator branch in hook source"
         branch_body = m.group(1)
 
-        # Methodology references: either a node_types=Skill query or
-        # a friction-event with query_source=methodology. Either is
-        # evidence that methodology fires inside the branch.
-        has_node_types_skill = "Skill" in branch_body and "node_types" in branch_body
-        has_methodology_marker = "methodology" in branch_body.lower()
-        assert has_node_types_skill or has_methodology_marker, (
-            "orchestrator branch does NOT invoke the methodology companion. "
-            "Branch body:\n" + branch_body[:1500]
+        assert "exit 0" not in branch_body, (
+            "the orchestrator branch still short-circuits before reaching the "
+            "shared /prompt-bundle call, so a master would keep receiving zero "
+            "always-on rules per turn regardless of what the branch's comments "
+            "say. Branch body:\n" + branch_body[:1500]
         )
 
 
@@ -204,6 +218,16 @@ class TestOrchestratorMethodologyCompanionEndToEnd:
         assert result.returncode == 0, (
             f"hook returned {result.returncode}; "
             f"stderr={result.stderr[:1000]}"
+        )
+
+        # Drain the session event buffer first, which is what a real turn's Stop hook
+        # does. Since the orchestrator branch stopped hand-rolling its own companion
+        # call and started using the shared /prompt-bundle path, these rows are
+        # BUFFERED (writ_friction_buffer_append) rather than appended synchronously, so
+        # reading the stream without a drain measures the buffer, not the router.
+        subprocess.run(
+            [sys.executable, os.path.join(SKILL_DIR, "bin", "lib", "writ-flush-events.py"), sid],
+            capture_output=True, text=True, cwd=str(project_root), timeout=60, check=False,
         )
 
         # Inspect the router's metrics stream (rag_query -> metrics) for the

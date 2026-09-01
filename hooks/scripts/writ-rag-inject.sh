@@ -20,8 +20,8 @@ source "$WRIT_DIR/bin/lib/common.sh"
 WRIT_HOST="${WRIT_HOST:-localhost}"
 WRIT_PORT="${WRIT_PORT:-8765}"
 # #8: the broad /query + /always-on + /methodology-companion channels are fetched in ONE
-# warm call to /prompt-bundle (below). COMPANION_URL is still used by the orchestrator branch.
-COMPANION_URL="http://${WRIT_HOST}:${WRIT_PORT}/methodology-companion"
+# warm call to /prompt-bundle (below), for an orchestrator master too, so this hook no
+# longer holds a second URL for the companion channel.
 WRIT_HEALTH_URL="http://${WRIT_HOST}:${WRIT_PORT}/health"
 WRIT_DEBUG_LOG="${WRIT_DEBUG_LOG:-/tmp/writ-rag-debug.log}"
 
@@ -480,7 +480,7 @@ if parsed_bool "$CACHE" "post_compact_pending"; then
 fi
 
 if [ "$IS_ORCHESTRATOR" = "true" ]; then
-    debug "orchestrator mode: skipping broad /query, firing methodology companion + status line"
+    debug "orchestrator mode: suppressing the ranked channel, keeping the always-on floor + companion"
     # Still emit mode-classification directive if no mode set
     if [ -z "$CURRENT_MODE" ]; then
         emit_mode_directive "$SESSION_HELPER" "$SESSION_ID"
@@ -499,77 +499,14 @@ except Exception:
     print('[Writ: orchestrator mode active]')
 " 2>/dev/null)
     echo "$STATUS_LINE"
-
-    # PSR-008 Finding 1: orchestrator master must still surface
-    # methodology context (skills, playbooks). The broad coding-rule
-    # RAG is intentionally suppressed -- workers cover that domain --
-    # but methodology nodes guide workflow decisions the orchestrator
-    # itself owns. Fires when CURRENT_MODE=work AND prompt is non-trivial.
-    ORCH_REMAINING_BUDGET=$(echo "$CACHE_DATA" | json_transform 'if (.remaining_budget // null) == null then 8000 else .remaining_budget end' "(8000 if d.get('remaining_budget') is None else d.get('remaining_budget'))" 2>/dev/null || echo '8000')
-    ORCH_LOADED_RULE_IDS=$(echo "$CACHE_DATA" | python3 "$WRIT_DIR/bin/lib/writ_phase_scoped_rules.py" 2>/dev/null || echo '[]')
-
-    if [ "${CURRENT_MODE:-}" = "work" ] && [ "${ORCH_REMAINING_BUDGET:-0}" -gt 600 ] && [ ${#PROMPT} -ge $MIN_QUERY_LENGTH ]; then
-        ORCH_METHOD_REQUEST=$(python3 -c "
-import json, sys
-try:
-    exclude = json.loads(sys.argv[2])
-except (json.JSONDecodeError, ValueError) as _e:
-    sys.stderr.write(
-        f'[writ-hook json.loads recovery] argv[2] (exclude_rule_ids) in writ-rag-inject.sh '
-        f'orchestrator companion request: {_e}\\n  sample={sys.argv[2][:200]!r}\\n'
-    )
-    exclude = []
-print(json.dumps({
-    'mode': 'work',
-    'prompt': sys.argv[1],
-    'exclude_rule_ids': exclude,
-    'budget_tokens': 2000,
-    'project_root': sys.argv[3],
-}))
-" "$PROMPT" "$ORCH_LOADED_RULE_IDS" "${_PROJECT_ROOT:-}" 2>/dev/null)
-
-        if [ -n "$ORCH_METHOD_REQUEST" ]; then
-            # Documented daemon-down-equivalent raw curl: no companion block, same as a
-            # stopped daemon produces.
-            ORCH_METHOD_RESPONSE=$(curl ${WRIT_CURL_TRANSPORT} -s --connect-timeout 0.5 --max-time 2 -X POST "$COMPANION_URL" \
-                -H "Content-Type: application/json" \
-                -d "$ORCH_METHOD_REQUEST" 2>/dev/null) || true
-
-            if [ -n "$ORCH_METHOD_RESPONSE" ]; then
-                ORCH_METHOD_FORMAT=$(echo "$ORCH_METHOD_RESPONSE" | _writ_session format 2>/dev/null) || true
-                ORCH_METHOD_TEXT=""
-                ORCH_METHOD_META=""
-                if [ -n "$ORCH_METHOD_FORMAT" ]; then
-                    ORCH_METHOD_TEXT=$(echo "$ORCH_METHOD_FORMAT" | grep -v "^WRIT_META:" || true)
-                    ORCH_METHOD_META=$(echo "$ORCH_METHOD_FORMAT" | grep "^WRIT_META:" | head -1 || true)
-                fi
-
-                if [ -n "$ORCH_METHOD_TEXT" ]; then
-                    echo ""
-                    echo "[Writ: methodology companion]"
-                    echo "$ORCH_METHOD_TEXT"
-                fi
-
-                if [ -n "$ORCH_METHOD_META" ]; then
-                    ORCH_METHOD_META_JSON="${ORCH_METHOD_META#WRIT_META:}"
-                    ORCH_METHOD_FIELDS=$(echo "$ORCH_METHOD_META_JSON" | parse_writ_meta)
-                    ORCH_METHOD_RULE_IDS=$(echo "$ORCH_METHOD_FIELDS" | sed -n '1p'); ORCH_METHOD_RULE_IDS="${ORCH_METHOD_RULE_IDS:-[]}"
-                    ORCH_METHOD_COST=$(echo "$ORCH_METHOD_FIELDS" | sed -n '2p'); ORCH_METHOD_COST="${ORCH_METHOD_COST:-0}"
-
-                    if [ "$ORCH_METHOD_RULE_IDS" != "[]" ]; then
-                        _writ_session update "$SESSION_ID" \
-                            --add-rules "$ORCH_METHOD_RULE_IDS" \
-                            --cost "$ORCH_METHOD_COST" \
-                            --inc-queries 2>>"$WRIT_HOOK_LOG_SINK" || true
-                    fi
-
-                    log_rag_query_event "$SESSION_ID" "${CURRENT_MODE:-}" "methodology" "$ORCH_METHOD_COST" "$ORCH_METHOD_RULE_IDS" "$EFFORT" "UserPromptSubmit" "stdout"
-                fi
-            fi
-        fi
-    fi
-
-    exit 0
+    # NO exit HERE, and that absence is the fix. This branch used to hand-roll a
+    # methodology-companion call and return, which skipped the always-on channel
+    # entirely: RANKED_INCLUDE_WHERE excludes every mandatory rule from the ranked pool
+    # by construction, so the always-on block is a mandatory rule's ONLY delivery path
+    # and a master received none of them. The branch now falls through into the shared
+    # /prompt-bundle call below, which turns the ranked channel off per request
+    # (include_ranked=false) and keeps channels 2 and 3. Step 8b returns for a master
+    # once those are emitted, so nothing from step 9 onward changes for one.
 fi
 
 # 2. Minimum query length gate
@@ -585,6 +522,10 @@ fi
 # degrades exactly as before. The endpoint returns the three rendered pieces SEPARATELY
 # so they keep their legacy emit order around the bash-side mode reminders (step 9b).
 case "${WRIT_ALWAYS_ON_FILTER:-1}" in 1|on|true|yes) _AO_FILTER_BOOL=true ;; *) _AO_FILTER_BOOL=false ;; esac
+# Channel 1 off for an orchestrator master, on for everyone else. Derived HERE, from the
+# one flag, so no new session state exists to disagree with it. Like _AO_FILTER_BOOL this
+# must stay a bare true/false: it goes on the wire as a JSON boolean.
+if [ "$IS_ORCHESTRATOR" = "true" ]; then _INCLUDE_RANKED_BOOL=false; else _INCLUDE_RANKED_BOOL=true; fi
 # jq builds this request when present: five strings and a boolean assembled from
 # variables already in the shell cost a 9.5ms interpreter start plus 4.9 for `import
 # json`, against 2.3 for jq. --arg is used for every value so a prompt containing quotes,
@@ -600,11 +541,12 @@ if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1; then
         --arg effort "$EFFORT" \
         --arg project_root "${_PROJECT_ROOT:-}" \
         --argjson always_on_filter "$_AO_FILTER_BOOL" \
-        '{session_id: $session_id, mode: $mode, prompt: $prompt, effort: $effort, project_root: $project_root, always_on_filter: $always_on_filter}' \
+        --argjson include_ranked "$_INCLUDE_RANKED_BOOL" \
+        '{session_id: $session_id, mode: $mode, prompt: $prompt, effort: $effort, project_root: $project_root, always_on_filter: $always_on_filter, include_ranked: $include_ranked}' \
         2>/dev/null) || BUNDLE_REQUEST=""
 fi
 if [ -z "$BUNDLE_REQUEST" ]; then
-    BUNDLE_REQUEST=$(WRIT_SID="$SESSION_ID" WRIT_MODE="${CURRENT_MODE:-}" WRIT_PROMPT="$PROMPT" WRIT_EFFORT="$EFFORT" WRIT_AOF="$_AO_FILTER_BOOL" WRIT_PROOT="${_PROJECT_ROOT:-}" python3 -c "
+    BUNDLE_REQUEST=$(WRIT_SID="$SESSION_ID" WRIT_MODE="${CURRENT_MODE:-}" WRIT_PROMPT="$PROMPT" WRIT_EFFORT="$EFFORT" WRIT_AOF="$_AO_FILTER_BOOL" WRIT_IRK="$_INCLUDE_RANKED_BOOL" WRIT_PROOT="${_PROJECT_ROOT:-}" python3 -c "
 import os, json
 print(json.dumps({
     'session_id': os.environ['WRIT_SID'],
@@ -613,6 +555,7 @@ print(json.dumps({
     'effort': os.environ.get('WRIT_EFFORT', ''),
     'project_root': os.environ.get('WRIT_PROOT', ''),
     'always_on_filter': os.environ.get('WRIT_AOF', 'true') == 'true',
+    'include_ranked': os.environ.get('WRIT_IRK', 'true') == 'true',
 }))" 2>/dev/null)
 fi
 
@@ -728,7 +671,16 @@ def rag(src, meta):
 lines = []
 bm = b.get('broad_meta')
 if bm is not None:
-    lines.append(rag('broad', bm))
+    # A suppressed ranked channel (include_ranked=false) is NOT a zero-rule
+    # rag_query: a zero-rule rag_query is the abstention signal every census
+    # that counts retrievals by source relies on, so recording the
+    # suppression that way would be indistinguishable from a real retrieval
+    # that came back empty.
+    if bm.get('suppressed'):
+        lines.append({'session': sid, 'mode': mode, 'event': 'rag_channel_suppressed',
+                      'channel': 'broad', 'event_name': 'UserPromptSubmit', 'mechanism': 'stdout'})
+    else:
+        lines.append(rag('broad', bm))
 ao = b.get('ao_meta')
 if ao is not None and int(ao.get('tokens', 0)) > 0:
     lines.append({'session': sid, 'mode': mode, 'event': 'always_on_inject',
@@ -776,6 +728,21 @@ fi
 if [ -n "$RULES_TEXT" ]; then
     echo "$RULES_TEXT"
     debug "injected rules"
+fi
+
+# 8b. The orchestrator master's single exit. Everything a master gets is now emitted:
+# the status line (printed by the branch near step 1d), the always-on floor above, and
+# the companion here, in the same two lines step 11c uses. Everything from step 9 down is
+# deliberately out of scope for a master: the work-mode reminder tells the reader to enter
+# /plan and write plan.md, which is the planner worker's job, and the mode directive was
+# already emitted by the branch, so delivering either again would be a misdirection.
+if [ "$IS_ORCHESTRATOR" = "true" ]; then
+    if [ -n "$METHOD_BLOCK" ]; then
+        echo ""
+        echo "$METHOD_BLOCK"
+    fi
+    debug "orchestrator mode: emitted always-on floor + companion, skipping steps 9+"
+    exit 0
 fi
 
 # 9. Inject mode classification directive if no mode set yet

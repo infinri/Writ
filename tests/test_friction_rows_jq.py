@@ -53,7 +53,16 @@ def rag(src, meta):
 lines = []
 bm = b.get('broad_meta')
 if bm is not None:
-    lines.append(rag('broad', bm))
+    # A suppressed ranked channel (include_ranked=false) is NOT a zero-rule
+    # rag_query: a zero-rule rag_query is the abstention signal every census
+    # that counts retrievals by source relies on, so recording the
+    # suppression that way would be indistinguishable from a real retrieval
+    # that came back empty.
+    if bm.get('suppressed'):
+        lines.append({'session': sid, 'mode': mode, 'event': 'rag_channel_suppressed',
+                      'channel': 'broad', 'event_name': 'UserPromptSubmit', 'mechanism': 'stdout'})
+    else:
+        lines.append(rag('broad', bm))
 ao = b.get('ao_meta')
 if ao is not None and int(ao.get('tokens', 0)) > 0:
     lines.append({'session': sid, 'mode': mode, 'event': 'always_on_inject',
@@ -88,7 +97,19 @@ BUNDLES = [
                                "note": 'quotes " and $(cmd) and \\ backslash'}}),
     "not json",
     "",
+    # Appended, not inserted: every index above is asserted on by literal
+    # position elsewhere in this file (e.g. BUNDLES[2] in
+    # test_a_zero_token_always_on_inject_is_dropped), so a new shape goes at
+    # the end to avoid shifting them. The suppressed-ranked-channel shape
+    # (plan dfacff61, capability "For a bundle whose broad_meta is
+    # {suppressed: true} ..."): a work-mode master with the ranked channel off.
+    json.dumps({"broad_meta": {"suppressed": True},
+                "ao_meta": {"tokens": 1220, "count": 12, "rule_ids": ["X"] * 12}}),
 ]
+
+# Named separately from BUNDLES[-1] so TestSuppressedRankedChannelRow reads
+# without counting list positions.
+SUPPRESSED_BUNDLE = BUNDLES[-1]
 
 ENVS = [
     {"WRIT_SID": "s1", "WRIT_MODE": "work", "WRIT_EFFORT": "high"},
@@ -156,6 +177,51 @@ class TestRowParity:
         which under `set -euo pipefail` would abort the hook."""
         for bad in ("not json", ""):
             assert _jq_rows(bad, ENVS[0]) == []
+
+
+class TestSuppressedRankedChannelRow:
+    """plan.md capability: 'For a bundle whose broad_meta is {"suppressed":
+    true}, the jq row builder and the python fallback emit identical parsed
+    rows'. Neither arm may emit a rag_query row for the suppressed channel,
+    because a zero-rule rag_query is the abstention signal every census that
+    counts retrievals by source relies on.
+
+    This class asserts the SPECIFIC shape on top of the generic
+    TestRowParity.test_jq_matches_python parametrization above (which, now
+    that SUPPRESSED_BUNDLE is appended to BUNDLES, already proves the two
+    arms AGREE with each other on this input): agreement alone would also
+    hold if BOTH arms regressed to emitting a plain rag_query for a
+    suppressed channel, so this checks each arm against the capability
+    itself, not only against the other arm.
+
+    MUTATION (plan.md verification table, "suppression row"): emitting a
+    zero-rule rag_query for 'broad' instead of the suppression row turns this
+    red. In the jq filter today it turns THIS red without needing a
+    deliberate mutation, since the production filter does not yet know the
+    "suppressed" key at all.
+    """
+
+    def test_jq_and_python_agree_on_the_suppressed_shape(self) -> None:
+        assert _jq_rows(SUPPRESSED_BUNDLE, ENVS[0]) == _py_rows(SUPPRESSED_BUNDLE, ENVS[0])
+
+    def test_the_suppressed_row_replaces_a_zero_rule_broad_query(self) -> None:
+        rows = _jq_rows(SUPPRESSED_BUNDLE, ENVS[0])
+        broad_queries = [
+            r for r in rows if r.get("event") == "rag_query" and r.get("query_source") == "broad"
+        ]
+        suppressed = [r for r in rows if r.get("event") == "rag_channel_suppressed"]
+        assert broad_queries == [], (
+            f"the suppressed ranked channel produced a rag_query row: {broad_queries}"
+        )
+        assert len(suppressed) == 1, rows
+        assert suppressed[0].get("channel") == "broad", suppressed[0]
+
+    def test_the_always_on_row_is_unaffected_by_the_suppression(self) -> None:
+        """The suppression is per-channel: channel 2's row must still appear,
+        proving the suppressed branch did not swallow the whole bundle."""
+        rows = _jq_rows(SUPPRESSED_BUNDLE, ENVS[0])
+        always_on = [r for r in rows if r.get("event") == "always_on_inject"]
+        assert len(always_on) == 1, rows
 
 
 class TestTheHookKeepsBothArms:

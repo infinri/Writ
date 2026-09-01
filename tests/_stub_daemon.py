@@ -25,6 +25,13 @@ the transport to TCP rather than the unix socket whenever `WRIT_PORT` is set,
 which conftest does unconditionally, so a loopback listener reaches both routes
 with no socket plumbing.
 
+A THIRD ROUTE, ADDED LATER: `POST /query`, the one `writ-posttool-rag.sh`'s
+`rag_query` helper calls (bin/lib/common.sh:2177). It exists so a post-write
+test can count retrievals deterministically ("exactly one POST /query for an
+orchestrator's .py write, zero for its .md write"), instead of depending on
+whatever the live corpus finds relevant for a given query string, which is
+non-deterministic across corpus edits and gives no way to prove a COUNT.
+
 WHAT IT CANNOT PROVE, stated here rather than discovered at review
 ------------------------------------------------------------------
 The bodies are literals, so a measurement against this stub proves the hook's
@@ -49,10 +56,12 @@ USAGE
     from tests._stub_daemon import StubDaemon
 
     with StubDaemon(pre_write_check={"decision": "allow", ...},
-                    always_on={"rules": []}) as stub:
+                    always_on={"rules": []},
+                    query={"mode": "standard", "rules": [...]}) as stub:
         env = {**os.environ, "WRIT_HOST": "127.0.0.1", "WRIT_PORT": str(stub.port)}
         ...run the hook...
         assert stub.saw("POST", "/pre-write-check")
+        assert len(stub.matching("POST", "/query")) == 1
 
 Pass an `int` instead of a dict to serve a bare status with no body, which is
 how the negative-control test makes `/pre-write-check` 404.
@@ -79,11 +88,13 @@ from urllib.parse import parse_qs, urlparse
 # whole point is determinism.
 STUB_HOST = "127.0.0.1"
 
-# Routes this stub knows about. Anything else is a 404 on purpose: the hook is
-# supposed to reach only these two, and a silent 200 for a third route would
-# hide a new daemon dependency instead of surfacing it.
+# Routes this stub knows about. Anything else is a 404 on purpose: a hook under
+# test is supposed to reach only the routes its caller wires up, and a silent
+# 200 for an unwired route would hide a new daemon dependency instead of
+# surfacing it.
 PRE_WRITE_CHECK = ("POST", "/pre-write-check")
 ALWAYS_ON = ("GET", "/always-on")
+QUERY = ("POST", "/query")
 
 
 class RecordedRequest:
@@ -122,20 +133,23 @@ class RecordedRequest:
 
 
 class StubDaemon:
-    """A loopback stub serving canned `/pre-write-check` and `/always-on`.
+    """A loopback stub serving canned `/pre-write-check`, `/always-on` and `/query`.
 
-    `pre_write_check` and `always_on` each take either a dict (served as a 200
-    with that JSON body) or an int (served as that bare status with an empty
-    body, which is how a caller makes the route 404).
+    `pre_write_check`, `always_on` and `query` each take either a dict (served
+    as a 200 with that JSON body) or an int (served as that bare status with an
+    empty body, which is how a caller makes the route 404).
     """
 
     def __init__(self, *, pre_write_check: dict | int | None = None,
-                 always_on: dict | int | None = None) -> None:
+                 always_on: dict | int | None = None,
+                 query: dict | int | None = None) -> None:
         self._canned: dict[tuple[str, str], dict | int] = {}
         if pre_write_check is not None:
             self._canned[PRE_WRITE_CHECK] = pre_write_check
         if always_on is not None:
             self._canned[ALWAYS_ON] = always_on
+        if query is not None:
+            self._canned[QUERY] = query
         self.requests: list[RecordedRequest] = []
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None

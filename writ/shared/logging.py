@@ -193,6 +193,12 @@ STREAM_MAP: dict[str, str] = {
     # Key NAMES only: that file holds neo4j.password and bitbucket.token.
     "config_resolved": "metrics",
     "rag_query": "metrics",
+    # One per-prompt injection channel was turned off by request (today: the ranked
+    # channel, for an orchestrator master sending include_ranked=false). Beside rag_query
+    # because the census that counts retrievals by source reads that one stream and has to
+    # separate "the channel ran and found nothing" (a zero-rule rag_query, the abstention
+    # signal) from "the channel was never asked".
+    "rag_channel_suppressed": "metrics",
     "always_on_inject": "metrics",
     "subagent_start": "metrics",
     "subagent_complete": "metrics",
