@@ -487,3 +487,24 @@ class TestInterpreterArgDirectoryIsNotAWriteTarget:
             f"a not-yet-existing path could be a file about to be created and "
             f"must stay gated; extractor emitted {got}"
         )
+
+
+# --------------------------------------------------------------------------- #
+# 8. project-boundary predicate interaction (plan.md capability 26, "a
+#    project-boundary predicate on writes"). The classifier's cwd-only filter is
+#    DELIBERATELY left open by that plan (writ-bash-write-gate.sh:1394-1400,
+#    "Scratch writes outside the repo are not plan-gated") -- closing it would
+#    convert routine pre-approval scratch writes into [ENF-GATE-PLAN] refusals
+#    with no way out, the "refusal names no action" defect. This is a
+#    REGRESSION PIN on that CURRENT, intentionally-unchanged behaviour, not a
+#    new capability the project-boundary predicate adds: a Bash-mediated write
+#    outside the hook's cwd never reaches _can_write_check (or the new
+#    predicate inside it) at all, because the classifier emits no row for it.
+# --------------------------------------------------------------------------- #
+class TestOutOfCwdTargetHasNoLocalRow:
+    def test_a_target_outside_the_hooks_cwd_emits_no_local_row(self):
+        got = _extract("echo x > /home/other-project/src/thing.py", cwd="/proj")
+        assert not any(kind == "local" for kind, _ in got), (
+            f"an out-of-cwd target must not be classified 'local' (the declared "
+            f"gap plan.md leaves open); extractor emitted {got}"
+        )

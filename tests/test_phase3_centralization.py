@@ -148,6 +148,21 @@ def _load_plan_rules(session_id: str) -> None:
     writ_session.cmd_update(session_id, ["--add-rules", json.dumps(VALID_PLAN_RULE_IDS)])
 
 
+def _record_project_root(session_id: str, project_root) -> None:
+    """Record the project the test actually writes into.
+
+    `cmd_mode` stamps `cache["project_root"] = os.getcwd()`, and the autouse `sandbox_cwd`
+    fixture has pointed the cwd at `<tmp_path>/cwd-sandbox`, while the `project_root`
+    fixture hands back the SIBLING `<tmp_path>/project`, each carrying its own `.git`. A
+    test that skips this records one project and then writes into a different one, which
+    the write gate now refuses by design. It only looked fine while the gate was
+    path-blind. Same read/mutate/write shape as _approve_gate above.
+    """
+    cache = writ_session._read_cache(session_id)
+    cache["project_root"] = str(project_root)
+    writ_session._write_cache(session_id, cache)
+
+
 def _approve_gate(session_id: str, gate: str) -> None:
     """Directly add a gate to the session cache (simulates advance-phase)."""
     cache = writ_session._read_cache(session_id)
@@ -226,6 +241,7 @@ class TestCanWrite:
         """Work mode: source files allowed only after both gates."""
         _set_mode(session_id, "work")
         capsys.readouterr()
+        _record_project_root(session_id, project_root)
         _approve_gate(session_id, "phase-a")
         _approve_gate(session_id, "test-skeletons")
 
@@ -240,16 +256,33 @@ class TestCanWrite:
         assert result["decision"] == "allow"
 
     def test_exclusions_from_categories(self, session_id, project_root, monkeypatch, capsys):
-        """Test files and conftest.py bypass gate checks."""
+        """Test files and conftest.py bypass THE GATES, inside this project.
+
+        The exemption exists so a project's own test skeletons stay writable BEFORE
+        approval, so it is exemption from the GATES and not from everything: these globs
+        let `*` span `/`, so `*/tests/*` is satisfied by a path under an entirely different
+        project, and an unscoped reading would make it a bypass of the project boundary
+        reachable with nothing approved. The third assertion pins that scoping, and it is
+        also what keeps the first two from passing merely because the boundary is off.
+        """
         _set_mode(session_id, "work")
         capsys.readouterr()
-        # No gates approved -- but test files are excluded from gate checks
+        _record_project_root(session_id, project_root)
+        # No gates approved, but test files are excluded from the gate checks.
 
         result = _call_can_write(session_id, str(project_root / "tests" / "test_foo.py"), monkeypatch, capsys)
         assert result["decision"] == "allow"
 
         result = _call_can_write(session_id, str(project_root / "conftest.py"), monkeypatch, capsys)
         assert result["decision"] == "allow"
+
+        foreign = project_root.parent / "other-project" / "tests" / "test_foo.py"
+        result = _call_can_write(session_id, str(foreign), monkeypatch, capsys)
+        assert result["decision"] == "deny", (
+            "the exclusion list exempts a path from the GATES, not from the project "
+            f"boundary; got {result}"
+        )
+        assert "ENF-PROJECT-BOUNDARY" in result["reason"]
 
 
 # ===========================================================================

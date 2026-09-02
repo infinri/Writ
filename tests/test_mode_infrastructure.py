@@ -374,19 +374,49 @@ class TestModeCanWrite:
         assert result["decision"] == "deny"
 
     def test_work_allows_after_both_gates(self, session_id, project_root, monkeypatch, capsys):
-        """Work mode: source file allowed after both phase-a and test-skeletons."""
+        """Work mode: source file allowed after both phase-a and test-skeletons.
+
+        `project_root` is stamped alongside the gates because `cmd_mode` records
+        `os.getcwd()`, which the autouse `sandbox_cwd` fixture has pointed at
+        `<tmp_path>/cwd-sandbox`, while the `project_root` fixture hands back the SIBLING
+        `<tmp_path>/project`. Unstamped, this test recorded one project and then wrote into
+        a different one, and only passed because the write gate was path-blind. The second
+        assertion is why the first is not vacuous: with the root now recorded correctly, a
+        path outside it still denies, so the allow above is "inside the declared project"
+        and not "the boundary is off".
+        """
         writ_session.cmd_mode(session_id, "set", "work")
         cache = writ_session._read_cache(session_id)
         cache["gates_approved"] = ["phase-a", "test-skeletons"]
         cache["current_phase"] = "implementation"
+        cache["project_root"] = str(project_root)
         writ_session._write_cache(session_id, cache)
 
         result = self._call_can_write(session_id, str(project_root / "service.py"), monkeypatch, capsys)
         assert result["decision"] == "allow"
 
+        outside = project_root.parent / "other-project" / "service.py"
+        result = self._call_can_write(session_id, str(outside), monkeypatch, capsys)
+        assert result["decision"] == "deny", (
+            "an approved plan for this project must not authorize a write into another "
+            f"project's tree; got {result}"
+        )
+        assert "ENF-PROJECT-BOUNDARY" in result.get("reason", "")
+
     def test_work_allows_test_files_without_gates(self, session_id, project_root, monkeypatch, capsys):
-        """Work mode: test files bypass gate checks (in exclusions list)."""
+        """Work mode: test files bypass THE GATES (in exclusions list), inside this project.
+
+        The exemption's stated purpose is that a project's own test skeletons stay writable
+        BEFORE approval, so it is scoped to the project and not to any path shaped like a
+        test. `project_root` is stamped for the reason given on
+        test_work_allows_after_both_gates: `cmd_mode` records the sandboxed cwd, not this
+        fixture's directory.
+        """
         writ_session.cmd_mode(session_id, "set", "work")
+        cache = writ_session._read_cache(session_id)
+        cache["project_root"] = str(project_root)
+        writ_session._write_cache(session_id, cache)
+
         result = self._call_can_write(
             session_id, str(project_root / "tests" / "test_foo.py"), monkeypatch, capsys
         )

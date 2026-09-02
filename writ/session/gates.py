@@ -17,6 +17,20 @@ from writ.session.cache import _read_cache, mutate_cache
 from writ.session.friction import _log_friction_event
 from writ.session.locators import _find_debug_md, debug_path
 from writ.session.mode_engine import _effective_source_type, approved_gates_for_plan
+# The project-write boundary, as pure functions for the same reason role_scope's matcher is
+# pure: the write gate runs in the daemon AND in a CLI subprocess, so a predicate that
+# needed anything only one of them could reach would allow in one and deny in the other.
+from writ.session.project_boundary import (
+    KIND_APPROVED,
+    KIND_DISPATCH,
+    KIND_PRE_APPROVAL,
+    boundary_refusal,
+    boundary_root,
+    declared_absolute_paths,
+    in_scratch_zone,
+    is_contained,
+    resolve_target,
+)
 # The pure matcher only. The dispatch-time FETCHER in that module is never called from
 # here: the write path reads the scope the dispatch already stamped into the session cache,
 # so a write costs no graph query and no HTTP call, and the daemon route and the CLI
@@ -386,6 +400,105 @@ def _check_role_scope_write(session_id: str, mode, file_path: str, cache: dict) 
     return {"can_write": False, "reason": _role_scope_refusal(role, patterns, file_path)}
 
 
+def _check_project_boundary(session_id: str, mode, file_path: str, recorded_root, kind: str) -> dict | None:
+    """The project-write boundary, or None when the write is in bounds or unjudgeable.
+
+    IT CAN ONLY CONVERT AN ALLOW INTO A DENY. Every call site guards an arm that was about
+    to allow, so no existing refusal changes its tag and the pre-approval baseline is
+    unchanged envelope for envelope: a non-excluded path before approval still reaches
+    `[ENF-GATE-PLAN]` because this is never consulted first.
+
+    THE ORDER OF THE FOUR CHECKS IS THE FILE-READ BUDGET. Containment answers the dominant
+    case (an in-project write) with one marker walk, two `realpath` calls and one prefix
+    comparison, and returns before the scratch zone is resolved or the plan is opened. The
+    plan is read only for an out-of-project write on the approved arm, where
+    `approved_gates_for_plan` has already opened it once this request.
+
+    Returns None rather than an allow, so the caller's own allow (and its own friction row,
+    `all_approved` or `excluded`) still happens. The deny emits ONE `write_attempt` row and
+    deliberately NOT a `_log_gate_denial`: that helper increments `denial_counts`, which
+    feeds the escalation that tells the user which pending gate to approve, and the remedy
+    here is an edited plan plus a FRESH approval, not the advance of a pending gate. Same
+    reasoning, same shape as the role-scope deny above.
+    """
+    root = boundary_root(recorded_root)
+    if not root:
+        return None
+    target = resolve_target(file_path, root)
+    if is_contained(target, root):
+        return None
+    if in_scratch_zone(target, root):
+        return None
+    if kind == KIND_APPROVED and target in declared_absolute_paths(root, session_id):
+        return None
+    _log_friction_event(session_id, mode, "write_attempt",
+                        file_path=file_path, result="deny",
+                        gate_status="project_boundary_deny", boundary_kind=kind)
+    return {"can_write": False, "reason": boundary_refusal(kind, file_path, target, root)}
+
+
+def _check_subagent_boundary(session_id: str, mode, file_path: str, cache: dict) -> dict | None:
+    """The dispatched sub-agent's half of the boundary, or None to keep today's decision.
+
+    The blanket sub-agent allow below justifies itself by the orchestrator having already
+    cleared a human approval gate. That approval was granted FOR A PLAN, IN A PROJECT, so
+    the bypass's own justification names the boundary, and granting the child a wider
+    surface than the approval it stands on inverts it.
+
+    IT DEFERS TO A DECLARED ROLE SCOPE BY ARM ORDER, NOT BY RE-READING THE SCOPE. A declared
+    list, empty included, is decided by `_check_role_scope_write` ABOVE, which returns
+    non-None and never reaches here, so `path_in_scope` stays the sole judge and the `None`
+    versus `[]` distinction is honored without this function reading that field at all.
+
+    An explicit `isinstance(role_write_scope, list) -> return None` guard was written here
+    first and REMOVED, because in the one state where it was not simply redundant it was
+    wrong. STATE THE HARNESS WITH THE RESULT: that state was reached with
+    `role_scope.fetch_declared_scope` PATCHED to return a list, and it is NOT reachable
+    through the shipped corpus. Unpatched, the real seeder stamps `None` for every spelling
+    tried (`'unknown '`, `' unknown'`, `'   '`, `'unknown'`), measured, so the reachable
+    count is zero. Two independent reasons: the fetcher strips the role itself before the
+    request, so `'   '` returns None without a round trip and the padded spellings collapse
+    to `'unknown'`, and no `SubagentRole` node is named `unknown` (the corpus declares five,
+    all `writ-*`), so that request answers with no `write_scope`.
+
+    What the patched measurement DID establish, and why the guard is gone: on that
+    constructed cache the guard deferred to a judge that had already abstained, because
+    `subagent_seed._declared_scope` compares the RAW role to `unknown` while the arm above
+    compares the STRIPPED role. So NOTHING judged the path and the verdict went from DENY
+    (confined to the parent's project) to ALLOW (unbounded), both directions measured. A
+    guard whose only non-redundant effect is to remove the last judge is worse than no
+    guard, independently of how the input arrived.
+
+    What would make the state reachable: a role node named `unknown`, or the two guards
+    otherwise disagreeing about which roles are judgeable. They already disagree up to
+    whitespace, which is a latent trap for a future DIRECT caller of `seed_subagent_cache`
+    (both real callers pre-strip) and a defect in that comparison, not something a second
+    read of the field here can fix. Field-independence is pinned instead, by
+    TestBoundaryArmIgnoresRoleWriteScope.
+
+    `cache_source == "subagent_start"` is required, the same first two conditions the
+    role-scope arm uses, so a `lazy_seed` cache abstains and cycle K's property holds: a
+    lazily seeded cache decides exactly as no cache at all, reason string included.
+
+    The root comes from the PARENT's cache, because a sub-agent cache deliberately does not
+    stamp `project_root` (stamping the parent's would make every mode rotation look
+    contested). No parent, or a parent with no project recorded, abstains: absence is not a
+    policy, and this arm does NOT honor the plan's `## Files` either, because a sub-agent
+    may write `plan.md` itself, so honoring the declaration here would be self-grantable.
+    """
+    if not cache.get("is_subagent"):
+        return None
+    if str(cache.get("cache_source") or "") != CACHE_SOURCE_START:
+        return None
+    parent_session_id = str(cache.get("parent_session_id") or "")
+    if not parent_session_id:
+        return None
+    parent_root = _read_cache(parent_session_id).get("project_root") or ""
+    if not parent_root:
+        return None
+    return _check_project_boundary(session_id, mode, file_path, parent_root, KIND_DISPATCH)
+
+
 def _check_exempt_write(session_id: str, mode, file_path: str, cache: dict, skill_dir: str) -> dict | None:
     """Categorical write exemptions checked before any mode/gate logic.
 
@@ -439,6 +552,15 @@ def _check_exempt_write(session_id: str, mode, file_path: str, cache: dict, skil
     role_scoped = _check_role_scope_write(session_id, mode, file_path, cache)
     if role_scoped is not None:
         return role_scoped
+
+    # THE PROJECT THE DISPATCH STANDS ON, between the role's own boundary and the blanket
+    # allow. It runs AFTER the role scope so a declared scope stays the sole judge, and
+    # BEFORE the blanket allow so an undeclared role is confined instead of unbounded. It
+    # returns None for every case it cannot judge, so the blanket allow is still the
+    # fallthrough for everything else.
+    dispatched = _check_subagent_boundary(session_id, mode, file_path, cache)
+    if dispatched is not None:
+        return dispatched
 
     # Sub-agents bypass mode/gate checks. They are workers dispatched by an
     # orchestrator that already passed the human-approval gate; their scope
@@ -597,6 +719,14 @@ def _check_work_gate(session_id: str, mode, file_path: str, current_phase, cache
         config = _load_categories(categories_path)
 
         if _matches_any(file_path, config.get('exclusions', [])):
+            # The exclusion allow is BOUNDED because `_matches_any` lets `*` span `/` and
+            # matches the raw path, so `*/tests/*` is satisfied by
+            # `/any/other/project/tests/x.py`. Left unguarded it would be a one-line bypass
+            # of the whole boundary, reachable before any approval.
+            bounded = _check_project_boundary(session_id, mode, file_path,
+                                              cache.get("project_root"), KIND_PRE_APPROVAL)
+            if bounded is not None:
+                return bounded
             _log_friction_event(session_id, mode, "write_attempt",
                                 file_path=file_path, result="allow", gate_status="excluded")
             return {"can_write": True, "reason": None}
@@ -635,7 +765,16 @@ def _check_work_gate(session_id: str, mode, file_path: str, current_phase, cache
         _log_gate_denial(session_id, cache, "test-skeletons", file_path, reason)
         return {"can_write": False, "reason": reason}
 
-    # Both gates approved
+    # Both gates approved. The approval was granted for a plan, and a plan is for a
+    # project, so it authorizes writes to THAT project plus whatever its `## Files` section
+    # declares by absolute path. Before this arm was bounded, an approved plan for one repo
+    # authorized a write to any absolute path on the filesystem (measured: post-approval,
+    # `/etc/passwd-probe.txt` allowed). Checked BEFORE the allow row is emitted, so a
+    # refusal leaves exactly one `write_attempt` and not an allow followed by a deny.
+    bounded = _check_project_boundary(session_id, mode, file_path,
+                                      cache.get("project_root"), KIND_APPROVED)
+    if bounded is not None:
+        return bounded
     _log_friction_event(session_id, mode, "write_attempt",
                         file_path=file_path, result="allow", gate_status="all_approved",
                         phase=current_phase)
