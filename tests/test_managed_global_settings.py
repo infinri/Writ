@@ -1,6 +1,6 @@
-"""Contract for the outputStyle managed-settings key (plan.md capabilities 1-13,
-plus the safety guard the dispatch brief requires in addition to the capability
-list).
+"""Contract for the settings keys Writ ships a default for (plan.md capabilities
+1-13, plus the safety guard the dispatch brief requires in addition to the
+capability list).
 
 Pins the three-state overwrite policy (ABSENT/EQUAL/DIFFERENT, plus the explicit-null
 case) that `bin/lib/writ_install.py` gains through a `MANAGED_SETTINGS` declaration
@@ -16,6 +16,16 @@ under the specific regression named in their own comment: the templates/settings
 ownership boundary (capability 14, lives in tests/test_settings_template_sync.py, not
 here) and the two argparse-required-target guards in
 TestNoDefaultEverResolvesToTheRealSettingsFile below.
+
+THIS CYCLE (.claude/plans/dfacff61-23d5-474e-846c-2e2f0f0ea482/plan.md and
+capabilities.md) adds a second managed key, `effortLevel: "high"`. The three-state
+contract itself is already proven generically above for any MANAGED_SETTINGS entry
+and is not restated per key. What is genuinely new is marked with its own comment
+block near the end of this file: the spelling pin for the new pair, two assertions
+that used to name OUTPUT_STYLE_KEY specifically and now iterate the declaration so a
+third key is covered for free, and the end-to-end case for the value already present
+in this machine's real settings file (kept, per never-clobber, and never touched by
+any test here). The Capability N numbering below is unchanged from the prior cycle.
 
 SAFETY (non-negotiable): every settings target in this module is a tmp_path file,
 passed with --target (subprocess calls) or as the explicit `target` argument (the
@@ -43,6 +53,8 @@ INSTALL_MODULE = REPO / "bin" / "lib" / "writ_install.py"
 
 OUTPUT_STYLE_KEY = "outputStyle"
 SHIPPED_VALUE = "Concise"
+EFFORT_KEY = "effortLevel"
+EFFORT_SHIPPED_VALUE = "high"
 REAL_SETTINGS_FILE = Path.home() / ".claude" / "settings.json"
 
 
@@ -83,17 +95,40 @@ def _installer_entries() -> tuple[tuple[str, ...], tuple[str, ...]]:
     return module.BASE_ALLOW, module.DENY
 
 
-_OMIT = object()
-
-
-def _permissions_complete_doc(output_style: object = _OMIT) -> dict:
-    """A settings document holding every shipped permission entry, with
-    outputStyle omitted, or set to a caller-chosen value (including None, for the
-    explicit-null case)."""
+def _permissions_complete_doc() -> dict:
+    """A settings document holding every shipped permission entry and NO
+    managed settings key: the managed-EMPTY boundary case ('a file missing
+    every managed key'). Existing callers (TestCheckSettingsAbsentState,
+    TestMissingAllowEntriesAcceptsATargetSeam) already pass zero arguments, so
+    this split does not change what they mean; the one caller that used to pass
+    output_style (TestCheckSettingsDifferentState) moves to
+    _managed_complete_doc below."""
     allow, deny = _installer_entries()
-    doc: dict = {"permissions": {"allow": list(allow), "deny": list(deny)}}
-    if output_style is not _OMIT:
-        doc[OUTPUT_STYLE_KEY] = output_style
+    return {"permissions": {"allow": list(allow), "deny": list(deny)}}
+
+
+def _managed_complete_doc(**overrides: object) -> dict:
+    """A settings document holding every shipped permission entry PLUS every
+    MANAGED_SETTINGS pair at its shipped value, with named overrides applied
+    last (an override of None is kept, for the explicit-null case, since it is
+    set through dict.update rather than tested for truthiness).
+
+    Reads MANAGED_SETTINGS from the module AT CALL TIME, so a third managed
+    key is covered by every caller of this helper with no test edit.
+
+    CALL-TIME HAZARD, load-bearing (plan.md 'A trap in the drift test that the
+    new helper would spring'): calling this AFTER a test has monkeypatched
+    MANAGED_SETTINGS fills whatever synthetic entry the monkeypatch added too,
+    which would make a drift proof built from this helper assert nothing.
+    TestManagedSettingsDriftIsDetectedByConstruction builds its seed BEFORE its
+    monkeypatch for exactly this reason; see the comment on that test.
+    """
+    module = _writ_install_module()
+    _require(module, "MANAGED_SETTINGS")
+    doc = _permissions_complete_doc()
+    for key, shipped in module.MANAGED_SETTINGS:
+        doc[key] = shipped
+    doc.update(overrides)
     return doc
 
 
@@ -333,11 +368,24 @@ class TestCheckSettingsDifferentState:
     Mutation: report the DIFFERENT state as missing, or print the finding without
     the [check-settings] prefix (plan.md mutation 9) -> red, either the exit code
     flips non-zero or the doctor's parser would treat the line as a finding.
+
+    REPAIRED this cycle (plan.md 'The one existing test the declaration change
+    BREAKS'): the seed used to hold every permission entry plus outputStyle
+    alone. Once a second managed key is declared, that document is
+    managed-INCOMPLETE (it never mentions the second key), so
+    cmd_check_settings would ALSO append that key to `missing` and return
+    EXIT_PRECONDITION, failing this test's returncode == 0 assertion for a
+    reason that has nothing to do with what this test is meant to prove.
+    _managed_complete_doc fills every declared key at its shipped value first,
+    so the override below is the ONLY divergence in the document, restoring
+    this test's exact subject.
     """
 
     def test_exits_zero_and_prefixes_the_divergence(self, tmp_path):
+        module = _writ_install_module()
+        _require(module, "MANAGED_SETTINGS")
         target = tmp_path / "settings.json"
-        target.write_text(json.dumps(_permissions_complete_doc(output_style="Explanatory")))
+        target.write_text(json.dumps(_managed_complete_doc(**{OUTPUT_STYLE_KEY: "Explanatory"})))
         proc = _run_installer("check-settings", "--target", str(target))
         assert proc.returncode == 0, (
             f"a machine where the user chose a different outputStyle reported "
@@ -352,6 +400,16 @@ class TestCheckSettingsDifferentState:
         assert all(line.startswith("[check-settings]") for line in divergence_lines), (
             f"a DIFFERENT-state line without the prefix would be parsed by the "
             f"doctor as a finding: {divergence_lines!r}"
+        )
+        # The seed is managed-complete except for the one override above: no OTHER
+        # declared key may appear on a non-prefixed (missing) line, or this test
+        # would be passing because the fixture regressed to managed-INCOMPLETE,
+        # not because the DIFFERENT-state contract held.
+        other_keys = [key for key, _shipped in module.MANAGED_SETTINGS if key != OUTPUT_STYLE_KEY]
+        missing_lines = [line for line in lines if not line.startswith("[check-settings]")]
+        assert not any(key in line for key in other_keys for line in missing_lines), (
+            f"another managed key was reported missing; the seed is not "
+            f"managed-complete except for the one overridden key: {lines!r}"
         )
 
 
@@ -406,11 +464,22 @@ class TestManagedSettingsDriftIsDetectedByConstruction:
     def test_checker_reports_it_missing(self, tmp_path, monkeypatch, capsys):
         module = _writ_install_module()
         _require(module, "MANAGED_SETTINGS", "cmd_check_settings", "EXIT_OK")
+        target = tmp_path / "settings.json"
+        # ORDER IS REQUIRED. _managed_complete_doc reads module.MANAGED_SETTINGS AT
+        # CALL TIME, so the seed must be built BEFORE the monkeypatch below to be
+        # complete against the REAL declaration only: the synthetic entry does not
+        # exist yet when this call runs, so it cannot be filled in.
+        # MEASURED, both orderings, rather than reasoned: seeding AFTER the
+        # monkeypatch gives the seed the synthetic key too, the checker reports
+        # nothing missing, rc becomes EXIT_OK, and `assert rc != EXIT_OK` below
+        # FAILS. So the wrong order breaks this test LOUDLY. An earlier version of
+        # this comment claimed it would pass while asserting nothing; that was
+        # wrong, and the correction is recorded here because a trap that announces
+        # itself needs a different kind of care than one that hides.
+        target.write_text(json.dumps(_managed_complete_doc()))
         monkeypatch.setattr(
             module, "MANAGED_SETTINGS", module.MANAGED_SETTINGS + (self.SYNTHETIC_ENTRY,),
         )
-        target = tmp_path / "settings.json"
-        target.write_text(json.dumps(_permissions_complete_doc(output_style=SHIPPED_VALUE)))
         args = argparse.Namespace(target=str(target))
         rc = module.cmd_check_settings(args)
         out = capsys.readouterr()
@@ -424,6 +493,18 @@ class TestManagedSettingsDriftIsDetectedByConstruction:
             f"as missing; it is checking a hardcoded key instead of iterating the "
             f"declaration: {combined!r}"
         )
+        # The synthetic entry must be the ONLY missing item. If a REAL declared key
+        # (e.g. effortLevel) also showed up as missing here, rc != EXIT_OK above
+        # would be satisfied by that real gap instead of by the synthetic probe,
+        # which is the exact vacuous-test hazard the call-order comment above
+        # exists to prevent; this is the second half of that same guarantee.
+        for real_key, _real_shipped in module.MANAGED_SETTINGS:
+            if real_key == key:
+                continue
+            assert ("%s:" % real_key) not in combined, (
+                f"a real declared key {real_key!r} was reported missing alongside "
+                f"the synthetic probe; the seed was not managed-complete: {combined!r}"
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -448,6 +529,27 @@ class TestManagedSettingsDeclaration:
         _require(module, "MANAGED_SETTINGS")
         assert ("outputStyle", "Concise") in module.MANAGED_SETTINGS, (
             f"MANAGED_SETTINGS does not contain the observed pair: "
+            f"{module.MANAGED_SETTINGS!r}"
+        )
+
+    def test_contains_the_effort_level_pair(self):
+        """capabilities.md item 1 (this cycle): MANAGED_SETTINGS contains
+        ("effortLevel", "high"), pinned with `in` for the same reason as the
+        outputStyle pair above: the tuple is expected to keep growing.
+
+        The two halves of this pair rest on different evidence (plan.md D1):
+        the KEY is OBSERVED in a real settings.json Claude Code itself writes;
+        the VALUE "high" is DOCUMENTATION-sourced, not observed on this
+        machine (this machine's own file carries "xhigh" instead).
+
+        Mutation: misspell the key as 'effortlevel', or ship the
+        machine-observed 'xhigh' in place of the documentation-sourced default
+        (capabilities.md item 1's named mutation) -> red.
+        """
+        module = _writ_install_module()
+        _require(module, "MANAGED_SETTINGS")
+        assert (EFFORT_KEY, EFFORT_SHIPPED_VALUE) in module.MANAGED_SETTINGS, (
+            f"MANAGED_SETTINGS does not contain the effort-level pair: "
             f"{module.MANAGED_SETTINGS!r}"
         )
 
@@ -546,6 +648,150 @@ class TestCheckPermissionsAllowlistNamesASettingsKey:
             f"plan.md requires it to name both kinds of item once a settings "
             f"key can be one of them: {result.detail!r}"
         )
+
+
+# --------------------------------------------------------------------------- #
+# NEW THIS CYCLE: the second managed key, effortLevel: "high"
+# (.claude/plans/dfacff61-23d5-474e-846c-2e2f0f0ea482/plan.md, capabilities.md)
+#
+# The three-state contract (ABSENT/EQUAL/DIFFERENT/explicit-null) is already
+# proven generically above for any MANAGED_SETTINGS entry; nothing here repeats
+# it per key. What is genuinely new: the two assertions below that used to name
+# OUTPUT_STYLE_KEY specifically above (so a third key would still be invisible
+# to the suite), and the end-to-end case for the value already present in this
+# machine's real settings file.
+# --------------------------------------------------------------------------- #
+
+
+class TestWriterPopulatesEveryDeclaredManagedKey:
+    """capabilities.md item 2: 'A settings.json created from nothing carries
+    every pair MANAGED_SETTINGS declares, at its shipped value, with the
+    expected pairs read from the declaration rather than from a literal key
+    list.'
+
+    TestWriterCreatesFromNothing above only ever checks OUTPUT_STYLE_KEY, so a
+    THIRD managed key would still be invisible to the suite. This iterates the
+    declaration instead, so a third entry is covered with no test edit.
+
+    Mutation: `break` at the end of the writer's ABSENT branch
+    (bin/lib/writ_install.py:474) -> red here, because only the first declared
+    key (outputStyle) would be written; every single-key assertion elsewhere in
+    this file stays green, since outputStyle is written before the break.
+    """
+
+    def test_fresh_file_carries_every_managed_pair(self, tmp_path):
+        module = _writ_install_module()
+        _require(module, "MANAGED_SETTINGS")
+        target = tmp_path / "settings.json"
+        assert not target.exists()
+        proc = _run_installer("settings", "--target", str(target), "--skill-dir", str(REPO))
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        doc = json.loads(target.read_text())
+        for key, shipped in module.MANAGED_SETTINGS:
+            assert key in doc, f"{key!r} missing from a freshly written settings file: {doc!r}"
+            assert doc[key] == shipped, (
+                f"{key!r} was written as {doc[key]!r}, not the shipped {shipped!r}"
+            )
+
+
+class TestCheckSettingsReportsEveryDeclaredKeyMissing:
+    """capabilities.md item 3: 'check-settings against a file holding every
+    permission entry and NO managed key exits non-zero and names every
+    declared key with its value, each on a line carrying no [check-settings]
+    prefix, with the expected keys read from the declaration.'
+
+    TestCheckSettingsAbsentState above only ever checks OUTPUT_STYLE_KEY; this
+    iterates the declaration so a third key is covered for free.
+
+    Mutation: `break` at the end of the checker's ABSENT branch
+    (bin/lib/writ_install.py:397) -> red here, only the first declared key
+    would be named as missing.
+    """
+
+    def test_names_every_declared_key_and_its_shipped_value(self, tmp_path):
+        module = _writ_install_module()
+        _require(module, "MANAGED_SETTINGS")
+        target = tmp_path / "settings.json"
+        target.write_text(json.dumps(_permissions_complete_doc()))
+        proc = _run_installer("check-settings", "--target", str(target))
+        assert proc.returncode != 0, "a file missing every managed key reported as complete"
+        lines = (proc.stdout + proc.stderr).splitlines()
+        for key, shipped in module.MANAGED_SETTINGS:
+            quoted_value = json.dumps(shipped)
+            finding_lines = [line for line in lines if key in line and quoted_value in line]
+            assert finding_lines, (
+                f"no line named the missing key {key!r} and its value {quoted_value}: "
+                f"{lines!r}"
+            )
+            assert not any(line.startswith("[check-settings]") for line in finding_lines), (
+                f"the missing-key finding for {key!r} is prefixed, so the doctor's "
+                f"parser would drop it as a non-finding: {finding_lines!r}"
+            )
+
+
+class TestEffortLevelXhighSurvivesThePatcherAndChecksClean:
+    """capabilities.md item 5, the D2 case made concrete for the real key: 'A
+    settings file already carrying effortLevel: "xhigh" survives the patcher
+    with xhigh intact at exit 0, with both "xhigh" and "high" named in the
+    output as JSON-quoted values, and check-settings against that same file
+    then exits 0.'
+
+    xhigh is Claude Code's own default and the only effort level ever OBSERVED
+    as a settings-file value on this machine (plan.md D1), so this is the
+    exact machine state the never-clobber policy exists to protect, made D2
+    concrete rather than abstract.
+
+    SUBSTRING TRAP, load-bearing (plan.md 'A substring trap in the D2
+    assertions'): "high" is a substring of "xhigh", so a bare `"high" in
+    combined` check would pass vacuously against output that only ever prints
+    "xhigh". Both assertions below match the JSON-quoted forms the installer
+    actually prints via json.dumps (bin/lib/writ_install.py:477, 479,
+    399-401): '"high"' and '"xhigh"' are not substrings of one another because
+    of the leading quote.
+
+    Mutation: assign doc[key] = shipped unconditionally in the writer (the
+    never-clobber loop at bin/lib/writ_install.py:471-474) -> red, "xhigh" is
+    clobbered to "high" in the written file.
+    """
+
+    OBSERVED_VALUE = "xhigh"
+
+    def _seed_with_the_observed_value(self, target: Path) -> None:
+        target.write_text(
+            json.dumps(_managed_complete_doc(**{EFFORT_KEY: self.OBSERVED_VALUE}))
+        )
+
+    def test_patcher_keeps_xhigh_and_names_both_values_as_json(self, tmp_path):
+        target = tmp_path / "settings.json"
+        self._seed_with_the_observed_value(target)
+        proc = _run_installer("settings", "--target", str(target), "--skill-dir", str(REPO))
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        doc = json.loads(target.read_text())
+        assert doc[EFFORT_KEY] == self.OBSERVED_VALUE, (
+            f"a foreign effortLevel was overwritten; Writ must never clobber a "
+            f"user's /config choice: {doc!r}"
+        )
+        combined = proc.stdout + proc.stderr
+        assert json.dumps(self.OBSERVED_VALUE) in combined, (
+            f"the observed value must be named as JSON, not matched as a bare "
+            f"substring that 'high' would also satisfy: {combined!r}"
+        )
+        assert json.dumps(EFFORT_SHIPPED_VALUE) in combined, (
+            f"Writ's shipped default must be named as JSON: {combined!r}"
+        )
+
+    def test_check_settings_then_exits_zero(self, tmp_path):
+        target = tmp_path / "settings.json"
+        self._seed_with_the_observed_value(target)
+        proc = _run_installer("check-settings", "--target", str(target))
+        assert proc.returncode == 0, (
+            f"a machine where effortLevel differs from Writ's shipped default "
+            f"reported non-zero, which would make the doctor permanently red: "
+            f"{proc.stdout!r} {proc.stderr!r}"
+        )
+        combined = proc.stdout + proc.stderr
+        assert json.dumps(self.OBSERVED_VALUE) in combined, combined
+        assert json.dumps(EFFORT_SHIPPED_VALUE) in combined, combined
 
 
 # --------------------------------------------------------------------------- #

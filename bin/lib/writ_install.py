@@ -123,6 +123,7 @@ DENY = (
 # the two cannot drift apart about which keys exist. Adding a key is one entry here.
 MANAGED_SETTINGS = (
     ("outputStyle", "Concise"),
+    ("effortLevel", "high"),
 )
 
 # Absent key, distinct from a key present with a falsy value: an explicit null is the

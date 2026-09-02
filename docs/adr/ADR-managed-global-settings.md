@@ -232,3 +232,83 @@ carries `model`, `workspace`, `version` and `context_window`. So the field is un
 and may not exist. The minimal probe is to tee the statusLine stdin to a file for one
 session and read it back. Until somebody runs that probe, the read-back in Decision 3 is
 the whole of what Writ verifies, and this document says so rather than implying more.
+
+Scoped to the output style, and no wider. That last sentence is too pessimistic for the
+second managed key: a positive signal for the EFFECTIVE effort level already exists in
+this repo. See the amendment below.
+
+## Amendment: the second managed key, `effortLevel: "high"`
+
+Date: 2026-09-02. The user's directive: "lets add effort high to our configs that ship
+with writ".
+
+Every mechanism decision above is unchanged and none of them is reopened. Decision 1
+already said adding the next key is one tuple entry, and that is literally what shipped:
+
+    MANAGED_SETTINGS = (
+        ("outputStyle", "Concise"),
+        ("effortLevel", "high"),
+    )
+
+The writer, the read-back checker, the shared state reader and the summary count all
+derive from that tuple and none of them names a key, so no function changed. What is
+recorded here is the one thing that is a decision rather than a mechanism: the VALUE, and
+the evidence each half of it rests on.
+
+### The two halves rest on different evidence, and the difference matters
+
+The KEY SPELLING is OBSERVED. `effortLevel` is present in the user's live
+`~/.claude/settings.json`, written there by Claude Code itself. That is the same evidence
+class that justified `outputStyle`, and it is the strongest class available for the reason
+stated at the top of this document: Claude Code ignores an unknown settings key with no
+error and no warning, so a successful write proves nothing about the spelling.
+
+The VALUE `high` is DOCUMENTATION-sourced, not observed. The vocabulary is recorded in this
+repo rather than recalled: `docs/reference/claude-code-blackbox.md:36` lists the valid
+levels as `low`, `medium`, `high`, `xhigh` and `max`, taken from observed hook payloads,
+and `docs/reference/claude-code-blackbox.md:125-133` shows the payload shape
+(`{"effort": {"level": "xhigh"}}`). The only level ever observed as a settings-file VALUE
+on this machine is `xhigh`, which is Claude Code's own default. So `high` ships as a chosen
+default, and this document does not claim it was observed in that position.
+
+No value validation is added. The "allowlist of VALUES" rejection above still stands and
+applies with more force here, because the level list is documentation-only: Writ must not
+enforce a set it has only read about.
+
+### Never-clobber ships a default, it does not migrate a choice
+
+This is the consequence a reader must not be surprised by, and it applies to the machine
+that prompted the change. `effortLevel` is already present in that machine's settings file
+with the value `xhigh`, so the PRESENT AND DIFFERENT branch of Decision 2 keeps `xhigh`,
+prints the two inform lines, and `check-settings` reports the divergence on a
+`[check-settings]`-prefixed line at exit 0. `writ doctor` stays green and nothing is
+reverted. The shipped default therefore reaches only a settings file where the key is
+ABSENT, which in practice means a fresh install.
+
+Moving an existing machine to `high` is the user's own action through `/config` or by
+editing the file. No step of this change does it, and no per-key policy field was added to
+force this one key through. The reasoning in Decision 2 is stronger here rather than
+weaker: the patcher runs on every bootstrap and on every `writ doctor --fix`, so a
+clobbering writer would silently overwrite a deliberate effort choice on a schedule, and
+effort level is a cost decision the user pays for directly, because thinking tokens bill as
+output.
+
+### The one fact that differs from the first key: a positive signal already exists
+
+For `outputStyle`, "did the setting actually take effect" has no positive signal, and the
+section above is correct about that. For effort it is available today, already built, and
+not queued: `bin/lib/common.sh:2226-2229` records `effort` on every `rag_query`
+friction-log entry, omitting it only when Claude Code sent none. The value is sourced from
+the hook payload's own `effort.level` (`bin/lib/writ-prompt-parse.py:122-123` reads
+`effort.level` off the payload; `hooks/scripts/writ-rag-inject.sh:92` carries it as
+`EFFORT` and passes it to `log_rag_query_event`). So the EFFECTIVE effort level of a turn
+is observable in an artifact Writ already writes, which is exactly the class of signal the
+statusLine probe was queued to look for.
+
+It is deliberately NOT a capability, and the reason is the one above rather than laziness.
+Never-clobber means this machine keeps `xhigh`, so the recorded value cannot move here: a
+checkbox for it would be one nobody can tick, and no test in this repo can exercise it
+without writing to the real settings file, which nothing in this cycle is permitted to do.
+It is recorded here instead as the way a future reader confirms the shipped default took
+effect on a fresh install: patch a machine where the key is absent, run one turn, and read
+`effort` off that turn's `rag_query` friction-log entry.

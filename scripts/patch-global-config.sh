@@ -14,11 +14,12 @@
 #      at a writ-statusline.sh (survives plugin-upgrade path changes), and leave a
 #      foreign statusLine untouched (never clobber the user's choice).
 #   3. Writes the plain top-level settings keys Writ ships a default for
-#      (bin/lib/writ_install.py's MANAGED_SETTINGS declaration; outputStyle is the
-#      only one today). A plugin can ship style DEFINITIONS but not the outputStyle
-#      VALUE, so this patch is the delivery path. Policy: write when absent, and
-#      never clobber a value you already set, because this runs on every bootstrap
-#      and on every `writ doctor --fix`.
+#      (bin/lib/writ_install.py's MANAGED_SETTINGS declaration; outputStyle and
+#      effortLevel today). No plugin field carries these VALUES: a plugin can ship
+#      output-style DEFINITIONS but not the SELECTED style, and no manifest field
+#      sets a reasoning effort level at all, so this patch is the delivery path.
+#      Policy: write when absent, and never clobber a value you already set,
+#      because this runs on every bootstrap and on every `writ doctor --fix`.
 #   4. Renders templates/CLAUDE.md into ~/.claude/CLAUDE.md (backup-if-exists,
 #      skip-if-identical). A missing settings.json is CREATED, not an error.
 #

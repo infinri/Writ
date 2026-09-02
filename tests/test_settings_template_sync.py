@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -46,6 +47,24 @@ INSTALL_VAR = "${WRIT_DIR}"
 
 def _load(path: Path) -> dict:
     return json.loads(path.read_text())
+
+
+def _writ_install_module():
+    """Import bin/lib/writ_install.py in-process to read MANAGED_SETTINGS.
+
+    Mirrors the same six-line helper used twice already
+    (tests/test_managed_global_settings.py, tests/test_hygiene_cycle_d.py). A
+    third copy is a deliberate trade named in plan.md: a shared home in
+    tests/_inventory.py is the right destination if a fourth consumer ever
+    appears, but is not worth adding for one.
+    """
+    sys.path.insert(0, str(SKILL / "bin" / "lib"))
+    try:
+        import writ_install
+
+        return writ_install
+    finally:
+        sys.path.pop(0)
 
 
 def _commands(doc: dict) -> dict[str, list[str]]:
@@ -69,23 +88,39 @@ class TestTemplateExists:
         assert (_load(TEMPLATE).get("hooks") or {}), "template registers no hooks"
 
     def test_it_owns_only_hooks(self):
-        """permissions, statusLine and outputStyle stay owned by
+        """permissions, statusLine and every MANAGED_SETTINGS key stay owned by
         patch-global-config.sh's own merge (bin/lib/writ_install.py's
-        MANAGED_SETTINGS declaration owns outputStyle specifically), so this file
-        has exactly one job and cannot fight that step.
+        MANAGED_SETTINGS declaration owns each of those keys specifically), so
+        this file has exactly one job and cannot fight that step.
 
-        Capability 14 (plan.md / capabilities.md): 'templates/settings.json
-        carries no outputStyle key, so exactly one writer owns it.'
+        Capability 14 (prior cycle) / capabilities.md item 6 (this cycle):
+        'templates/settings.json carries none of the keys MANAGED_SETTINGS
+        declares, with the key list derived from the declaration.'
 
-        This assertion is already true today (MANAGED_SETTINGS is new production
-        code that touches only ~/.claude/settings.json, never this template), so
-        it does not go red on its own from the cycle's implementation. It is a
-        regression guard: mutation -- add `outputStyle` to templates/settings.json
-        (plan.md mutation 13) -- makes it red, proving the assertion is load-bearing
-        rather than vacuous.
+        DERIVED, not hand-named (HARD CONSTRAINT: never pin a hardcoded key list
+        the module's own declaration can grow past): the two STRUCTURAL keys
+        (permissions, statusLine) are owned by the patcher's own merge rather
+        than by the declaration, so they stay named; the managed part of the
+        list is read from MANAGED_SETTINGS, so a third managed key is covered
+        with no edit to this test.
+
+        This assertion is already true today for every currently-declared key,
+        so it does not go red on its own from the cycle's implementation. It is
+        a regression guard: mutation -- add `effortLevel` to
+        templates/settings.json (capabilities.md item 6's named mutation) --
+        makes it red, and it still reds under the pre-existing mutation this
+        test already caught (adding `outputStyle`), because outputStyle is
+        itself one of the derived keys.
         """
+        module = _writ_install_module()
+        assert hasattr(module, "MANAGED_SETTINGS"), (
+            "skeleton: writ_install has no MANAGED_SETTINGS yet"
+        )
         doc = _load(TEMPLATE)
-        for key in ("permissions", "statusLine", "outputStyle"):
+        owned_elsewhere = ("permissions", "statusLine") + tuple(
+            key for key, _shipped in module.MANAGED_SETTINGS
+        )
+        for key in owned_elsewhere:
             assert key not in doc, (
                 f"template must not carry '{key}'; patch-global-config.sh owns it"
             )
