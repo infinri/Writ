@@ -69,10 +69,23 @@ class TestTemplateExists:
         assert (_load(TEMPLATE).get("hooks") or {}), "template registers no hooks"
 
     def test_it_owns_only_hooks(self):
-        """permissions and statusLine stay owned by patch-global-config.sh's own merge,
-        so this file has exactly one job and cannot fight that step."""
+        """permissions, statusLine and outputStyle stay owned by
+        patch-global-config.sh's own merge (bin/lib/writ_install.py's
+        MANAGED_SETTINGS declaration owns outputStyle specifically), so this file
+        has exactly one job and cannot fight that step.
+
+        Capability 14 (plan.md / capabilities.md): 'templates/settings.json
+        carries no outputStyle key, so exactly one writer owns it.'
+
+        This assertion is already true today (MANAGED_SETTINGS is new production
+        code that touches only ~/.claude/settings.json, never this template), so
+        it does not go red on its own from the cycle's implementation. It is a
+        regression guard: mutation -- add `outputStyle` to templates/settings.json
+        (plan.md mutation 13) -- makes it red, proving the assertion is load-bearing
+        rather than vacuous.
+        """
         doc = _load(TEMPLATE)
-        for key in ("permissions", "statusLine"):
+        for key in ("permissions", "statusLine", "outputStyle"):
             assert key not in doc, (
                 f"template must not carry '{key}'; patch-global-config.sh owns it"
             )

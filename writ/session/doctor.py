@@ -416,15 +416,25 @@ def _socket_answers(path: str) -> bool:
         conn.close()
 
 
-def _missing_allow_entries() -> list[str]:
-    """Shipped Writ permission entries absent from ~/.claude/settings.json.
+def _missing_allow_entries(
+    target: Path = Path.home() / ".claude" / "settings.json",
+) -> list[str]:
+    """Shipped Writ permission entries and managed settings keys absent from `target`.
 
-    Asks writ_install.py, the module that OWNS the entry list, instead of keeping a
-    copy here. A copy drifts, and a drifted copy makes this check silently
-    always-fail. Raises when the file cannot be read or parsed, so the check can
-    report that distinctly from "entries are missing".
+    Asks writ_install.py, the module that OWNS both lists, instead of keeping a copy
+    here. A copy drifts, and a drifted copy makes this check silently always-fail.
+    Raises when the file cannot be read or parsed, so the check can report that
+    distinctly from "entries are missing".
+
+    `target` defaults to the real per-user settings file, because `writ doctor` with no
+    argument has to diagnose the actual machine. This is read-only: nothing here writes.
+    The parameter is the seam a test uses to point the whole diagnosis path at a temp
+    file instead of mocking subprocess.run and asserting on a mock's own return value.
+
+    A managed key the user set to a different value is deliberately NOT returned:
+    check-settings prints it on a `[check-settings]`-prefixed line, which the parse below
+    drops, because Writ's policy is to keep that value rather than to fix it.
     """
-    target = Path.home() / ".claude" / "settings.json"
     proc = subprocess.run(
         ["python3", str(_INSTALL_MODULE), "check-settings", "--target", str(target)],
         capture_output=True, text=True, timeout=30,
@@ -1081,14 +1091,16 @@ def check_permissions_allowlist(opts: DoctorOptions) -> CheckResult:
         )
 
     if not missing:
-        return _ok(name=name, detail="Writ permission entries present.")
+        return _ok(name=name, detail="Writ permission entries and settings keys present.")
 
     return _fail(
         name=name,
         detail=(
-            f"{len(missing)} Writ permission entr(ies) missing from "
-            "~/.claude/settings.json, so read-only Writ commands prompt on every "
-            "call. Fix with `bash scripts/patch-global-config.sh`."
+            f"{len(missing)} Writ item(s) missing from ~/.claude/settings.json "
+            "(permission entries and/or managed settings keys): a missing permission "
+            "entry makes read-only Writ commands prompt on every call, and a missing "
+            "settings key means Writ's shipped default was never applied. Fix with "
+            "`bash scripts/patch-global-config.sh`."
         ),
         fixable=True,
         fix=_patch_global_config,

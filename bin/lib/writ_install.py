@@ -118,6 +118,17 @@ DENY = (
     "Bash(*/.claude/gates/*approve*)",
 )
 
+# Plain top-level settings keys Writ ships a default for. Both the writer (cmd_settings)
+# and the read-back checker (cmd_check_settings) iterate this and neither names a key, so
+# the two cannot drift apart about which keys exist. Adding a key is one entry here.
+MANAGED_SETTINGS = (
+    ("outputStyle", "Concise"),
+)
+
+# Absent key, distinct from a key present with a falsy value: an explicit null is the
+# user's value, so `key in doc` and not `doc.get(key)` decides.
+_UNSET = object()
+
 # `Edit(/abs/dir/**)` / `Bash(/abs/dir/*)` style entries, from which the pruner reads the
 # directory. Mirrors the sed expression the bash pruner used.
 _DIR_ENTRY_RE = re.compile(r"^(?:Edit|Write|Bash)\((/[^*?]+)/\*\*?\)$")
@@ -234,7 +245,7 @@ def _load_settings(target):
 
 
 # --------------------------------------------------------------------------- #
-# settings.json: permissions + statusLine
+# settings.json: permissions + statusLine + managed settings keys
 # --------------------------------------------------------------------------- #
 
 
@@ -260,6 +271,18 @@ def _stale_entries(allow, skill_dir):
         if not os.path.isdir(directory):
             drop.append(entry)
     return drop
+
+
+def _managed_settings_state(doc):
+    """[(key, shipped, current)] for every MANAGED_SETTINGS entry; current is _UNSET
+    when the key is absent.
+
+    The only place in this module that inspects a managed key, so the writer and the
+    checker can never disagree about which STATE a settings file is in. They deliberately
+    disagree about what to DO about a state.
+    """
+    return [(key, shipped, doc[key] if key in doc else _UNSET)
+            for key, shipped in MANAGED_SETTINGS]
 
 
 def _append_new(existing, incoming):
@@ -324,7 +347,8 @@ def _request_over_socket(sock_path, method, url, body=None, timeout=None):
 
 
 def cmd_check_settings(args):
-    """Report which shipped permission entries are ABSENT from a settings file.
+    """Report which shipped permission entries and managed settings keys
+    (MANAGED_SETTINGS) are ABSENT from a settings file.
 
     Read-only: writes nothing, ever. Exists so `writ doctor` can diagnose a
     half-applied install without holding its own copy of the entry list. A second
@@ -336,6 +360,12 @@ def cmd_check_settings(args):
     location, so a legitimately moved install would report them missing forever.
     What this answers is "did the patch run at all", and BASE_ALLOW + DENY answer
     that.
+
+    A managed key set to something other than the shipped value is NOT a finding: the
+    writer's policy is to keep it, so reporting it missing would leave the doctor
+    permanently red on a machine where the user chose otherwise and would offer a fix
+    that by policy cannot fix it. It prints on a `[check-settings]`-prefixed line, which
+    is the marker the doctor's parser reads as "not a finding".
 
     Exit 0 when nothing is missing, EXIT_PRECONDITION when something is, and
     EXIT_WRITE_FAILURE for a file that cannot be parsed.
@@ -358,17 +388,30 @@ def cmd_check_settings(args):
     current_deny = permissions.get("deny")
     current_deny = current_deny if isinstance(current_deny, list) else []
 
-    expected = len(BASE_ALLOW) + len(DENY)
+    expected = len(BASE_ALLOW) + len(DENY) + len(MANAGED_SETTINGS)
     missing = [entry for entry in BASE_ALLOW if entry not in current_allow]
     missing += [entry for entry in DENY if entry not in current_deny]
 
+    for key, shipped, current in _managed_settings_state(doc):
+        if current is _UNSET:
+            missing.append("%s: %s" % (key, json.dumps(shipped)))
+        elif current != shipped:
+            print("[check-settings] %s is set to %s, not Writ's %s; that is your choice "
+                  "to keep, so it is not a finding."
+                  % (key, json.dumps(current), json.dumps(shipped)))
+
     if not missing:
-        print("[check-settings] all %d entries present in %s." % (expected, target))
+        # "nothing missing" rather than "all present": absence is the only thing this
+        # branch establishes. A managed key the user set to another value is counted
+        # here, and "present" could be read as "matches Writ's default", which is the
+        # claim the divergence line above exists to NOT make.
+        print("[check-settings] nothing missing from %s: %d shipped entries and keys "
+              "checked." % (target, expected))
         return EXIT_OK
 
     for entry in missing:
         print(entry)
-    print("[check-settings] %d of %d entries missing from %s; re-run "
+    print("[check-settings] %d of %d entries and keys missing from %s; re-run "
           "scripts/patch-global-config.sh." % (len(missing), expected, target),
           file=sys.stderr)
     return EXIT_PRECONDITION
@@ -420,6 +463,21 @@ def cmd_settings(args):
         print("[settings] To use the Writ context meter, set statusLine.command to: %s"
               % statusline_cmd)
 
+    # Never clobber a managed key the user already set. This runs on every bootstrap and
+    # on every `writ doctor --fix`, so overwriting would silently revert a deliberate
+    # /config choice again and again. Unlike statusLine, these keys carry no ownership
+    # marker, so "refresh ours" is not definable: the only options are clobber or leave.
+    written = []
+    for key, shipped, current in _managed_settings_state(doc):
+        if current is _UNSET:
+            doc[key] = shipped
+            written.append((key, shipped))
+        elif current != shipped:
+            print("[settings] %s is set to %s; leaving your choice untouched."
+                  % (key, json.dumps(current)))
+            print("[settings] Writ ships %s for this key; change it with /config if you "
+                  "want Writ's default." % json.dumps(shipped))
+
     new_text = _dump(doc)
     current = _read_text(target) if existed else ""
     if current is None:
@@ -427,7 +485,7 @@ def cmd_settings(args):
 
     if existed and current == new_text:
         print("[settings] No changes needed: %s already contains the Writ permission "
-              "+ statusLine entries." % target)
+              "entries, statusLine and managed settings keys." % target)
         return EXIT_OK
 
     if args.dry_run:
@@ -438,6 +496,11 @@ def cmd_settings(args):
     if rc != EXIT_OK:
         return rc
     print("[settings] %s %s" % ("Patched" if existed else "Created", target))
+    # After the write, never before the --dry-run branch above: a preview that writes
+    # nothing must not claim the key was set.
+    for key, shipped in written:
+        print("[settings] Set %s to %s (Writ's default; change it any time with /config)."
+              % (key, json.dumps(shipped)))
     return EXIT_OK
 
 
@@ -756,13 +819,16 @@ def build_parser():
         sub.add_argument("--dry-run", action="store_true",
                          help="print what would change; write nothing")
 
-    settings = subparsers.add_parser("settings", help="merge permissions + statusLine")
+    settings = subparsers.add_parser(
+        "settings", help="merge permissions + statusLine + managed settings keys")
     settings.add_argument("--target", required=True)
     add_common(settings)
     settings.set_defaults(func=cmd_settings)
 
     check_settings = subparsers.add_parser(
-        "check-settings", help="report shipped permission entries absent from a settings file")
+        "check-settings",
+        help="report shipped permission entries and managed settings keys absent from a "
+             "settings file")
     check_settings.add_argument("--target", required=True)
     check_settings.set_defaults(func=cmd_check_settings)
 
