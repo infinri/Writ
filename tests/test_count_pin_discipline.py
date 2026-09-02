@@ -86,6 +86,43 @@ def _exact_count_literals(path: Path) -> list[tuple[int, int]]:
     return out
 
 
+def _call_can_write_importers(tests_dir: Path = TESTS) -> set[str]:
+    """AST ORACLE for the write-gate surface population (plan.md
+    dfacff61-23d5-474e-846c-2e2f0f0ea482, D2). Repo-relative POSIX paths of every
+    `test_*.py` module whose PARSED imports pull `call_can_write` out of
+    `tests.fixtures.session_state`.
+
+    Lives HERE, in the test file, not in `tests/_inventory.py`: an oracle sharing a
+    module with the derivation could be broken by the same edit that breaks the
+    derivation, which would make it witness nothing.
+
+    `ast.walk(tree)`, over the WHOLE tree, deliberately not `tree.body`. One real
+    importer (`tests/test_w5_fixture_dedup_c.py:197`) imports inside a function
+    body rather than at module level, so a body-only walk would see three
+    importers instead of four and this oracle would under-report by exactly the
+    case the population's derivation is supposed to still catch.
+
+    MUST NOT reimplement the derivation's regex here: resolving `ast.ImportFrom`
+    nodes is a mechanism the raw-text scan does not share, which is what lets this
+    function witness membership rather than restate the scan it is checking.
+    """
+    importers: set[str] = set()
+    for path in sorted(Path(tests_dir).rglob("test_*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            if node.module != "tests.fixtures.session_state":
+                continue
+            if any(alias.name == "call_can_write" for alias in node.names):
+                importers.add(str(path.relative_to(REPO).as_posix()))
+                break
+    return importers
+
+
 # --------------------------------------------------------------------------- #
 # Capability 1, 2: the inventory derives, and a broken derivation fails loudly
 # --------------------------------------------------------------------------- #
@@ -99,7 +136,9 @@ class TestTheInventoryDerivesFromTheSource:
 
     @pytest.mark.parametrize("name", ["hook_registrations", "hook_events",
                                       "doctor_check_names", "route_tuples",
-                                      "envelope_emitting_scripts", "style_swept_docs"])
+                                      "envelope_emitting_scripts", "style_swept_docs",
+                                      "can_write_surface_modules", "write_gate_hook_modules",
+                                      "write_gate_regression_modules"])
     def test_each_derivation_is_non_empty(self, name) -> None:
         """ANTI-VACUITY, and it is the whole risk of this design: a derivation that
         silently returned nothing would make every dependent assertion pass on any tree,
@@ -111,6 +150,17 @@ class TestTheInventoryDerivesFromTheSource:
         scanner's own matching, this population empties out and the suite must go red
         here, which is the positive signal a check that only ever asserts emptiness
         cannot give.
+
+        can_write_surface_modules, write_gate_hook_modules and write_gate_regression_modules
+        (plan.md dfacff61-23d5-474e-846c-2e2f0f0ea482, the write-gate regression population)
+        join for the same reason, with a limit stated plainly rather than implied: this
+        `len(value) >= 3` floor is a floor of THREE against a population measured at
+        roughly 71 members. A scan regression that narrowed the real population all the
+        way down to five members would still pass this parametrize case. That gap is
+        exactly why the per-pattern precision, import-oracle, subdirectory-floor and
+        union-contract guards below exist; this test's non-emptiness check does not
+        cover what those four cover, and nothing in this docstring should be read as
+        implying otherwise.
         """
         inventory = _inventory()
         _require(inventory, name)
@@ -140,6 +190,252 @@ class TestTheInventoryDerivesFromTheSource:
             if hook.get("command")
         )
         assert len(inventory.hook_registrations()) == commands
+
+
+# --------------------------------------------------------------------------- #
+# The write-gate regression population (plan.md dfacff61-23d5-474e-846c-2e2f0f0ea482):
+# two arms plus a union, and the four guards that give the derivation teeth. NO COUNT
+# IS PINNED ANYWHERE BELOW; every numeric literal here is a fixture the test itself
+# built under tmp_path, never a measurement of the real tree.
+# --------------------------------------------------------------------------- #
+
+class TestWriteGateDerivationsExist:
+    """Capability 1: the three names, and the shape every other derivation in this
+    module already returns (a sorted list of `str`, forward-slash separated, no
+    repeats). Reds today on the missing attribute; once implemented, reds again
+    if the return shape drifts from that convention.
+    """
+
+    def test_it_exists_with_the_three_write_gate_derivations(self) -> None:
+        # MUTATION: rename or remove any one of the three functions.
+        inventory = _inventory()
+        _require(inventory, "can_write_surface_modules", "write_gate_hook_modules",
+                 "write_gate_regression_modules")
+
+    @pytest.mark.parametrize("name", [
+        "can_write_surface_modules", "write_gate_hook_modules",
+        "write_gate_regression_modules",
+    ])
+    def test_the_derivation_returns_sorted_posix_paths_with_no_repeats(self, name) -> None:
+        inventory = _inventory()
+        _require(inventory, name)
+        value = getattr(inventory, name)()
+        assert isinstance(value, list), f"{name}() returned {type(value)}, not a list"
+        assert all(isinstance(item, str) for item in value), (
+            f"{name}() returned a non-string member: {value!r}"
+        )
+        assert value == sorted(value), f"{name}() is not sorted: {value!r}"
+        assert all("\\" not in item for item in value), (
+            f"{name}() returned a non-POSIX separator: {value!r}"
+        )
+        assert len(value) == len(set(value)), f"{name}() repeats a path: {value!r}"
+
+
+class TestPerPatternPrecisionOnASyntheticTree:
+    """Capabilities 3 and 4: one witness per authored alternative, per arm, built
+    under `tmp_path` only. Each fixture module names exactly ONE alternative and
+    nothing else either pattern recognizes, so dropping any single alternative
+    from either regex reds exactly the one parametrize case built on that
+    alternative, never its siblings and never the non-emptiness guard above (the
+    real tree stays large enough to satisfy that regardless of which single
+    alternative broke). The COUNT of witnesses (four plus four) is the predicate's
+    own arity, not a snapshot of today's real-tree membership, which is why a
+    literal count is legitimate in this class and nowhere else in this file.
+    """
+
+    _SURFACE_ALTERNATIVES = ("_can_write_check", "cmd_can_write", "call_can_write",
+                              "can-write")
+    _HOOK_ALTERNATIVES = ("writ-bash-write-gate", "pre-write-check",
+                          "writ-state-write-gate", "writ-pre-write-dispatch")
+
+    def _plant(self, tmp_path: Path, marker: str) -> str:
+        """A single `test_*.py` module naming exactly `marker`, as a bare comment
+        so the fixture stays valid Python with no other executable content."""
+        stem = re.sub(r"[^a-z0-9]+", "_", marker.lower()).strip("_")
+        name = f"test_{stem}.py"
+        (tmp_path / name).write_text(f"# fixture: mentions {marker} once, nothing else\n")
+        return name
+
+    @pytest.mark.parametrize("alternative", _SURFACE_ALTERNATIVES)
+    def test_each_surface_alternative_is_found_alone(self, tmp_path, alternative) -> None:
+        # MUTATION: delete `alternative` from the surface pattern's alternation.
+        inventory = _inventory()
+        _require(inventory, "can_write_surface_modules")
+        name = self._plant(tmp_path, alternative)
+        found = inventory.can_write_surface_modules(tests_dir=tmp_path)
+        assert len(found) == 1 and found[0].endswith(name), (
+            f"{alternative!r} alone did not surface {name}: {found!r}"
+        )
+
+    @pytest.mark.parametrize("alternative", _HOOK_ALTERNATIVES)
+    def test_each_hook_alternative_is_found_alone(self, tmp_path, alternative) -> None:
+        # MUTATION: delete `alternative` from the hook pattern's alternation, or
+        # drop `writ-pre-write-dispatch` specifically (the measured correction).
+        inventory = _inventory()
+        _require(inventory, "write_gate_hook_modules")
+        name = self._plant(tmp_path, alternative)
+        found = inventory.write_gate_hook_modules(tests_dir=tmp_path)
+        assert len(found) == 1 and found[0].endswith(name), (
+            f"{alternative!r} alone did not surface {name}: {found!r}"
+        )
+
+
+class TestTheImportOracleWitnessesSurfaceMembership:
+    """Capability 5: an oracle independent of the regex. `_call_can_write_importers`
+    (this file, above) resolves `ast.ImportFrom` nodes; the derivation is a regex
+    over raw file text; the two disagree by construction rather than one
+    restating the other, so this is not the tautology "x is in scan(x)".
+    """
+
+    def test_every_real_importer_of_call_can_write_is_in_the_surface_population(self) -> None:
+        # MUTATION: drop `call_can_write` from the surface pattern's alternation.
+        inventory = _inventory()
+        _require(inventory, "can_write_surface_modules")
+        importers = _call_can_write_importers()
+        assert importers, (
+            "the oracle itself found no real importer of call_can_write to witness "
+            "with; that is a fact about the tree, not about the derivation, and "
+            "would make this guard vacuous"
+        )
+        population = set(inventory.can_write_surface_modules())
+        missing = importers - population
+        assert not missing, (
+            f"real importers of call_can_write are missing from "
+            f"can_write_surface_modules(): {sorted(missing)}"
+        )
+
+    def test_the_oracle_itself_finds_the_nested_function_body_importer(self) -> None:
+        """PASSES ALREADY, because `_call_can_write_importers` above is written
+        correctly (ast.walk over the WHOLE tree). This is not a skeleton gap; it
+        guards the oracle helper's own correctness against a future edit that
+        narrows it to `tree.body` only, which would make it silently under-report
+        by exactly the one importer whose import statement sits inside a function
+        (tests/test_w5_fixture_dedup_c.py:197) rather than at module level.
+
+        MUTATION: change `_call_can_write_importers` to iterate `tree.body`
+        instead of `ast.walk(tree)`.
+        """
+        importers = _call_can_write_importers()
+        assert "tests/test_w5_fixture_dedup_c.py" in importers, importers
+
+
+class TestUnionCarriesBothTestSubpackages:
+    """Capability 6: the floor floors DIRECTORIES, not module names. Narrowing the
+    population's `rglob("test_*.py")` to `glob("test_*.py")` is a one-character
+    edit that silently drops both `tests/firedrill/` and `tests/plugin/` while
+    leaving roughly 60 members in place, so non-emptiness, every synthetic
+    per-pattern case above and the import oracle all stay green; this is the only
+    guard among the four that would notice.
+    """
+
+    def test_at_least_one_member_is_under_tests_firedrill(self) -> None:
+        # MUTATION: change the population's `rglob` to `glob`.
+        inventory = _inventory()
+        _require(inventory, "write_gate_regression_modules")
+        modules = inventory.write_gate_regression_modules()
+        firedrill = [m for m in modules if m.startswith("tests/firedrill/")]
+        assert firedrill, f"no write-gate member under tests/firedrill/: {modules!r}"
+
+    def test_at_least_one_member_is_under_tests_plugin(self) -> None:
+        # MUTATION: change the population's `rglob` to `glob`.
+        # tests/plugin/ contributes exactly one member today (test_hooks_routing.py),
+        # so this arm of the floor is tight by construction, not generous.
+        inventory = _inventory()
+        _require(inventory, "write_gate_regression_modules")
+        modules = inventory.write_gate_regression_modules()
+        plugin = [m for m in modules if m.startswith("tests/plugin/")]
+        assert plugin, f"no write-gate member under tests/plugin/: {modules!r}"
+
+
+class TestUnionEqualsTheSetUnionOfBothArms:
+    """Capability 7: restates the implementation, on purpose. A union that
+    silently returned a single arm would pass non-emptiness, every synthetic
+    per-pattern case and the import oracle above; nothing else in this file
+    would see it, which is why the union gets its own explicit contract.
+    """
+
+    def test_union_equals_the_set_union_of_the_two_arms(self) -> None:
+        # MUTATION: make write_gate_regression_modules `return` one arm verbatim.
+        inventory = _inventory()
+        _require(inventory, "can_write_surface_modules", "write_gate_hook_modules",
+                 "write_gate_regression_modules")
+        surface = set(inventory.can_write_surface_modules())
+        hooks = set(inventory.write_gate_hook_modules())
+        union = set(inventory.write_gate_regression_modules())
+        assert union == surface | hooks, (
+            f"union is not the set union of the two arms: union has "
+            f"{union ^ (surface | hooks)} extra or missing"
+        )
+        assert surface <= union, "the surface arm is not a subset of the union"
+        assert hooks <= union, "the hook arm is not a subset of the union"
+
+    def test_union_has_no_repeated_path(self) -> None:
+        inventory = _inventory()
+        _require(inventory, "write_gate_regression_modules")
+        union = inventory.write_gate_regression_modules()
+        assert len(union) == len(set(union)), f"union repeats a path: {union!r}"
+
+
+class TestCommentAndDocstringMentionsCountTowardMembership:
+    """Capability 8, and the polarity argument stated as an executable assertion
+    rather than left in prose: CHECK 1, CHECK 2, CHECK 3 and the style ratchet in
+    `tests/_inventory.py` report VIOLATIONS, where a comment match is a false
+    alarm that would block a correct change, which is why `_blanked_source`
+    exists for them. This population instead SELECTS TESTS TO RUN: a false
+    negative here is a shipped regression, which is the defect class this whole
+    cycle exists to close. So the derivation must read raw file text and must
+    NOT reuse `_blanked_source`.
+    """
+
+    def test_a_pattern_named_only_in_a_module_docstring_is_a_member(self, tmp_path) -> None:
+        # MUTATION: narrow the derivation to skip triple-quoted string literals
+        # (docstrings) before scanning, e.g. by extracting only executable source
+        # via an AST body walk. This is a DIFFERENT narrowing than reading
+        # `_blanked_source` (below), which blanks only whole-line `#` comments and
+        # leaves docstrings untouched.
+        inventory = _inventory()
+        _require(inventory, "can_write_surface_modules")
+        (tmp_path / "test_docstring_only.py").write_text(
+            '"""This module only discusses call_can_write in its module docstring."""\n'
+        )
+        found = inventory.can_write_surface_modules(tests_dir=tmp_path)
+        assert len(found) == 1 and found[0].endswith("test_docstring_only.py"), found
+
+    def test_a_pattern_named_only_in_a_comment_is_a_member(self, tmp_path) -> None:
+        # MUTATION: change the derivation to scan `_blanked_source(path)` instead
+        # of the file's raw text; `_blanked_source` blanks whole-line `#` comments,
+        # which is exactly what this fixture's only mention sits inside.
+        inventory = _inventory()
+        _require(inventory, "write_gate_hook_modules")
+        (tmp_path / "test_comment_only.py").write_text(
+            "# this test only names writ-pre-write-dispatch in a trailing comment\n"
+        )
+        found = inventory.write_gate_hook_modules(tests_dir=tmp_path)
+        assert len(found) == 1 and found[0].endswith("test_comment_only.py"), found
+
+
+class TestEmptyTreeAndTheHelperPyBoundary:
+    """Capability 9: the two edge cases at the population's own boundary. An
+    empty synthetic tests directory must degrade to `[]` on all three
+    derivations rather than raising, and a same-directory `helper.py` that names
+    a pattern is not a member, because it is not a `test_*.py` module and pytest
+    itself would never collect it either.
+    """
+
+    def test_all_three_derivations_return_empty_list_on_an_empty_tree(self, tmp_path) -> None:
+        inventory = _inventory()
+        _require(inventory, "can_write_surface_modules", "write_gate_hook_modules",
+                 "write_gate_regression_modules")
+        assert inventory.can_write_surface_modules(tests_dir=tmp_path) == []
+        assert inventory.write_gate_hook_modules(tests_dir=tmp_path) == []
+        assert inventory.write_gate_regression_modules(tests_dir=tmp_path) == []
+
+    def test_a_non_test_helper_module_naming_a_pattern_is_not_a_member(self, tmp_path) -> None:
+        # MUTATION: widen the collection glob from `test_*.py` to `*.py`.
+        inventory = _inventory()
+        _require(inventory, "can_write_surface_modules")
+        (tmp_path / "helper.py").write_text("call_can_write = None  # not a test module\n")
+        assert inventory.can_write_surface_modules(tests_dir=tmp_path) == []
 
 
 # --------------------------------------------------------------------------- #

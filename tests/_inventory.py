@@ -30,6 +30,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 HOOKS_JSON = REPO / "hooks" / "hooks.json"
 HOOK_SCRIPTS_DIR = REPO / "hooks" / "scripts"
+TESTS = REPO / "tests"
 
 # The THREE ways a hook script can refuse, and there are only three. Each pattern is matched
 # against source lines that are not whole-line comments, so a script that merely DESCRIBES a
@@ -635,4 +636,177 @@ def route_tuples() -> list[tuple[str, str]]:
         (method, route.path)
         for route in app.routes
         for method in (getattr(route, "methods", None) or [""])
+    )
+
+
+# ── The write-gate regression population (plan.md dfacff61-23d5-474e-846c-2e2f0f0ea482) ──
+#
+# The cycle that shipped as e881c6d had four regressions from one cause: its Verification
+# section listed the regression modules BY HAND, and the list omitted
+# `tests/test_mode_infrastructure.py::TestModeCanWrite` and
+# `tests/test_phase3_centralization.py::TestCanWrite`, the two modules whose entire subject
+# is the can-write decision. Nothing could have noticed, because the population was not
+# derived from the property. These three derivations derive it.
+#
+# TWO ARMS PLUS A UNION, and the split is mechanical rather than aesthetic. A caller wants
+# the union: one list of files for one pytest process. The arms stay separately observable
+# because the guards in `test_count_pin_discipline.py` get their discriminating power from
+# that. Several modules match BOTH arms today, so in a single merged population a mutation
+# that broke one whole arm's pattern set would leave those dual-matched modules in place,
+# and a floor or witness assertion made against the merged set would still pass with half
+# the population silently gone.
+#
+# THE PREDICATE IS AUTHORED; ONLY THE POPULATION IS DERIVED, which is the same distinction
+# `_REFUSAL_PATTERNS` above already draws: a derivation derives the POPULATION from the
+# source tree, and its predicate is code. So every authored alternative carries its own
+# executable witness on a synthetic tree, and no alternative can be deleted silently.
+#
+# NO COUNT IS PINNED ANYWHERE. This population grows with every new test module, and a
+# count pin on a growing population is the exact breakage this module exists to delete.
+_CAN_WRITE_SURFACE = re.compile(r"_can_write_check|cmd_can_write|call_can_write|can-write")
+_WRITE_GATE_HOOKS = re.compile(
+    r"writ-bash-write-gate|pre-write-check|writ-state-write-gate|writ-pre-write-dispatch"
+)
+
+
+def _matching_test_modules(pattern: re.Pattern[str], tests_dir: Path) -> list[str]:
+    """Collected test modules whose RAW text matches, as sorted relative POSIX paths.
+
+    RAW TEXT: comments are not blanked and docstrings are not stripped, and the polarity is
+    inverted from every other scanner in this module. CHECK 1, CHECK 2, CHECK 3 and the
+    style ratchet report VIOLATIONS, where a comment match is a false alarm that blocks a
+    correct change, which is why `_refusal_markers` and `_blanked_source` exist for them.
+    This population SELECTS TESTS TO RUN: a false positive costs a few seconds of runtime,
+    a false negative costs a shipped regression, and four shipped regressions are the reason
+    these derivations exist. So `_blanked_source` is deliberately NOT reused here, and
+    `test_count_pin_discipline.py::TestCommentAndDocstringMentionsCountTowardMembership`
+    holds that decision as an executable assertion rather than as prose.
+
+    `rglob`, NOT `glob`. `pyproject.toml` sets no `testpaths` and no `python_files`, so
+    pytest collects on the default `test_*.py` pattern, which reaches the two test
+    sub-packages (`tests/firedrill/`, `tests/plugin/`). Narrowing to `glob` is a
+    one-character edit that silently drops both while leaving 60-odd members in place, so
+    non-emptiness, the synthetic per-pattern cases and the import oracle would all stay
+    green; the subdirectory floor is the only guard that sees it.
+
+    `test_*.py` is also what keeps this file OUT of its own populations, structurally rather
+    than through an exclusion entry: `_inventory.py` is not a module pytest collects, so the
+    file that defines the patterns cannot be pulled in by defining them. Non-test helpers
+    under `tests/` are excluded by that same glob even when they name a pattern
+    (`tests/firedrill/_census.py` names `writ-state-write-gate` twice).
+
+    Paths come back relative to `tests_dir.parent`, so the default yields the repo-relative
+    `tests/test_bash_write_gate.py` that a caller can paste straight into a pytest
+    invocation, and a synthetic tree under `tmp_path` still yields a readable relative path
+    instead of raising on a directory outside the repo.
+    """
+    root = Path(tests_dir).parent
+    return sorted(
+        path.relative_to(root).as_posix()
+        for path in Path(tests_dir).rglob("test_*.py")
+        if pattern.search(path.read_text(encoding="utf-8", errors="replace"))
+    )
+
+
+def can_write_surface_modules(*, tests_dir: Path = TESTS) -> list[str]:
+    """Test modules that name the can-write decision surface.
+
+    FOUR AUTHORED ALTERNATIVES, and they name the real surface rather than a guess at it:
+    `writ/session/gates.py` holds the single decision function `_can_write_check` (whose
+    docstring says it is "Used by both cmd_can_write (CLI) and /pre-write-check (HTTP
+    endpoint)"), `cmd_can_write` in the same module is the CLI entry,
+    `writ/session/cli_dispatch.py` registers the `can-write` subcommand, and
+    `tests/fixtures/session_state.py` exposes `call_can_write` as the shared in-process
+    caller.
+
+    THIS ARM HAS AN INDEPENDENT ORACLE, and the hook arm cannot have one. Fixtures here are
+    imported by name per module rather than registered in a root conftest, which
+    `tests/fixtures/session_state.py` states as this repo's convention, so the dependency is
+    carried by a resolvable import statement.
+    `test_count_pin_discipline.py::_call_can_write_importers` therefore witnesses membership
+    by resolving `ast.ImportFrom` nodes, a mechanism this regex does not share, instead of
+    restating the scan it checks.
+
+    THE RESIDUAL HOLE, stated because nothing in the derivation keeps it closed: a test that
+    reached the gate through a fixture whose name matches no alternative would be a FALSE
+    NEGATIVE. Measured when this was written, the hole is empty: `tests/conftest.py`,
+    `tests/plugin/conftest.py` and `tests/firedrill/conftest.py` define no can-write fixture.
+
+    `tests_dir` is a keyword for the reason `envelope_emitting_scripts(*, scripts_dir=)` and
+    `style_swept_docs(*, repo=)` give: the precision of the matching gets pinned per
+    alternative against synthetic fixtures under `tmp_path`, never against a real module's
+    current wording.
+    """
+    return _matching_test_modules(_CAN_WRITE_SURFACE, tests_dir)
+
+
+def write_gate_hook_modules(*, tests_dir: Path = TESTS) -> list[str]:
+    """Test modules that name a write-gate hook script or the endpoint one of them calls.
+
+    `writ-pre-write-dispatch` is a MEASURED correction to the three-string set an earlier
+    hand scan used, not a defensive addition. It is the PreToolUse hook Claude Code invokes
+    on every Write and Edit, 26 test modules name it, and fifteen of those were in neither
+    recorded scan, including `tests/test_pre_write_dispatch_line_split.py` and
+    `tests/test_debug_gating.py`: precisely the modules a write-gate change should run.
+    With it, the union reconciles with the recorded measurement of 71 modules, which the
+    three-string set does not (it gives 56).
+
+    TWO CANDIDATE DERIVATIONS FOR THIS PREDICATE WERE REJECTED, both wrong in a way that
+    reads as rigorous:
+
+    1. Derive the names from `hooks/hooks.json` matchers containing `Write`, `Edit` or
+       `NotebookEdit`. Wrong direction twice over: a matcher describes the TOOL, not whether
+       the script consults a write decision, so it admits `validate-design-doc.sh`,
+       `validate-test-file.sh` and `pre-validate-file.sh` while MISSING
+       `writ-bash-write-gate.sh`, which is registered on `Bash`. The population would blur
+       from "the write gate" to "anything on the write path" and still lose the arm's first
+       member.
+    2. Derive them from hook source naming the CLI subcommand or the route
+       (`hooks/scripts/*.sh` matching `can-write` or `pre-write-check`). That yields
+       `writ-bash-write-gate.sh` and `writ-pre-write-dispatch.sh` only, and drops
+       `writ-state-write-gate.sh`, which decides Write and Edit refusals with its own logic
+       and never names the can-write surface. Under-inclusion is the failure mode these
+       derivations exist to remove.
+
+    NO ORACLE IS POSSIBLE FOR THIS ARM, and saying so is better than dressing up a
+    tautology. Test modules reach these hook scripts by spawning a path built from a string,
+    so the only machine-readable trace of that dependency IS the string this scan looks for.
+    An assertion written with the same regex would restate it. A floor is the strongest
+    instrument available here, which is why the directory floor exists and why each
+    alternative is witnessed separately on a synthetic tree instead.
+
+    A WITNESS FLOOR MADE OF REAL MODULE NAMES was rejected on measurement: the natural
+    witness for `writ-state-write-gate` is `tests/test_gate_token_protection.py`, whose
+    docstring also names `writ-bash-write-gate`, so dropping the state-gate alternative
+    would leave that witness in the population and the floor would pass. Each synthetic
+    fixture names exactly one alternative, so it has no such masking.
+    """
+    return _matching_test_modules(_WRITE_GATE_HOOKS, tests_dir)
+
+
+def write_gate_regression_modules(*, tests_dir: Path = TESTS) -> list[str]:
+    """The caller-facing population: every test module a write-gate change should run.
+
+    A SET UNION OF THE TWO ARMS, never a third regex combining all eight alternatives. The
+    merged regex returns the same members today and would silently diverge the moment either
+    arm changed, so this is computed FROM the arms and
+    `test_count_pin_discipline.py::TestUnionEqualsTheSetUnionOfBothArms` pins the
+    RELATIONSHIP rather than a number. That contract earns its place: a union that quietly
+    returned a single arm passes non-emptiness, passes every synthetic per-pattern case and
+    passes the import oracle, so nothing else would see it.
+
+    The union exists so a caller never has to know there are two arms. One line:
+
+        .venv/bin/python -c "import tests._inventory as inv; print(' '.join(inv.write_gate_regression_modules()))"
+
+    WHAT THIS CANNOT DO, stated rather than implied: nothing here forces a future plan to
+    CALL it, and a derivation whose only consumer is a plan's prose is dead code. What it
+    does is make the population self-defending, so the answer cannot be silently narrow when
+    it IS called, and make the call one line so a hand-written list has no excuse. The teeth
+    are the four guards in `test_count_pin_discipline.py` (per-pattern precision, the import
+    oracle, the subdirectory floor, the union contract), not enforcement.
+    """
+    return sorted(
+        set(can_write_surface_modules(tests_dir=tests_dir))
+        | set(write_gate_hook_modules(tests_dir=tests_dir))
     )
