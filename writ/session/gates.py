@@ -714,6 +714,16 @@ def _check_work_gate(session_id: str, mode, file_path: str, current_phase, cache
     the deny. (Telemetry note: an excluded path written once both gates are approved
     now logs gate_status="all_approved" instead of "excluded" -- same allow
     decision; the only behavioral change from the reorder.)
+
+    THE ARM ORDER ON THE NOT-BOTH-APPROVED PATH, in the order the code checks it:
+    exclusions allow (bounded by the pre-approval project boundary), then drift denies
+    with [ENF-GATE-DRIFT], then the OS SCRATCH ZONE allows with
+    gate_status="scratch_zone", then [ENF-GATE-PLAN], then [ENF-GATE-TEST]. The scratch
+    arm sits after drift on purpose -- drift is the one refusal here that says "ALL writes
+    blocked" and stays strictly stronger than every other arm -- and ahead of both gate
+    denials, because the defect it fixes is the whole pre-approval window and not just the
+    plan gate. Placing it beside the exclusions arm would have matched how exclusions
+    already behave and was rejected for widening the drift state.
     """
     # The approved set is the PLAN-PAIRED one, computed by the same function the advance
     # path uses (mode_engine.approved_gates_for_plan). Reading `gates_approved` alone here
@@ -754,6 +764,39 @@ def _check_work_gate(session_id: str, mode, file_path: str, current_phase, cache
             )
             _log_gate_denial(session_id, cache, drifted[0], file_path, reason)
             return {"can_write": False, "reason": reason}
+
+        # THE SCRATCH ZONE, IN THE PRE-APPROVAL WINDOW. `in_scratch_zone` has always
+        # SUPPRESSED the project-boundary refusal for the OS temporary directory, and its
+        # docstring states why (the harness instructs every agent to work in a scratchpad
+        # there). Suppressing a refusal is not an allow, so before this arm the write fell
+        # through to [ENF-GATE-PLAN] below, whose named action, approve the plan, does not
+        # unblock writing a scratch file. Measured live in a work-mode session with no
+        # gates approved: /tmp/writ-scratch-xyz and /tmp/scratch.py both denied, on both
+        # write doors. Recorded as an accepted cost in
+        # docs/adr/ADR-project-write-boundary.md and now closed.
+        #
+        # AFTER THE DRIFT CHECK, ON PURPOSE. Drift is a deliberately loud stop signal
+        # ("DO NOT attempt more writes") and stays strictly stronger than every other arm
+        # in this function; the measured defect lives entirely in the pre-approval window,
+        # so this is the smallest placement that fixes it. Placing it beside the exclusions
+        # arm above would have matched how exclusions already behave and was rejected for
+        # widening the drift state.
+        #
+        # THE ROOT IS RESOLVED EXACTLY AS THE BOUNDARY RESOLVES IT: boundary_root, then
+        # resolve_target, including _check_project_boundary's own empty-root abstain. A
+        # target resolved differently from the boundary's own resolution would let the two
+        # disagree about one path, and a relative envelope path with no root would resolve
+        # against the process cwd, which is Writ's install dir in the daemon and the
+        # project in the CLI fallback, so the two doors would answer differently for one
+        # write. No recorded project, no exemption: absence is not a policy and today's
+        # decision stands.
+        scratch_root = boundary_root(cache.get("project_root"))
+        if scratch_root and in_scratch_zone(resolve_target(file_path, scratch_root),
+                                            scratch_root):
+            _log_friction_event(session_id, mode, "write_attempt",
+                                file_path=file_path, result="allow",
+                                gate_status="scratch_zone", phase=current_phase)
+            return {"can_write": True, "reason": None}
 
         if "phase-a" not in approved_gates:
             reason = (

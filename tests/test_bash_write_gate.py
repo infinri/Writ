@@ -592,12 +592,13 @@ class TestInterpreterArgDirectoryIsNotAWriteTarget:
 #    earlier. A confinement enforced on one door is not a confinement, and the
 #    silence was indistinguishable from an allow.
 #
-#    THE REMEDY FOR C1, DELIBERATELY DEFERRED to its own cycle: a scratch-zone
-#    allow arm in gates._check_work_gate. It belongs there and not in this
-#    producer because both doors go through _can_write_check, so one arm restores
-#    pre-approval scratch usability on both and parity survives. Special-casing
-#    the OS temp dir in the classifier instead would reproduce the old silence and
-#    restore the divergence, while leaving the parity property green.
+#    THE REMEDY FOR C1 HAS SHIPPED: a scratch-zone allow arm in
+#    gates._check_work_gate, placed after the drift check and before
+#    [ENF-GATE-PLAN]. It belongs there and not in this producer because both doors
+#    go through _can_write_check, so one arm restores pre-approval scratch
+#    usability on both and parity survives. Special-casing the OS temp dir in the
+#    classifier instead would have reproduced the old silence and restored the
+#    divergence, while leaving the parity property green.
 # --------------------------------------------------------------------------- #
 class TestOutOfCwdTargetIsWorkGated:
     """An out-of-cwd target is classified `outside` AND decided like a `local` one.
@@ -629,10 +630,13 @@ class TestOutOfCwdTargetIsWorkGated:
         # project boundary abstains on it and the decision comes from the same work gate
         # that decides the in-cwd file; otherwise the two denials could agree for
         # different reasons.
-        # MEASURED: both deny with [ENF-GATE-PLAN]. The out-of-cwd refusal is
-        # consequence C1 in the approved plan, the accepted cost of two-door parity,
-        # whose named remedy is a scratch-zone allow arm in gates._check_work_gate,
-        # deferred to its own cycle.
+        # MEASURED, AND STILL DENY AFTER THE SCRATCH ARM SHIPPED, for a reason worth
+        # naming so nobody reads this as the arm being broken: _seed below records no
+        # project_root, cache.py defaults it to "", and the arm routes through
+        # boundary_root, which abstains on an empty root. So this asserts door AGREEMENT
+        # in a rootless session, not the behavior of a real pre-approval scratch write.
+        # The arm's own two-door coverage is the directional pin in
+        # tests/test_write_door_parity.py, which stamps a root and moves the zone.
         sid = f"bwg-{uuid.uuid4().hex[:8]}"
         _seed(sid, mode="work", gates_approved=[], current_phase=None)
         (tmp_path / "src").mkdir()

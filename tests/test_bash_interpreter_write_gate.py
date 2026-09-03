@@ -221,8 +221,11 @@ class TestShellRedirectVector:
         # silent, because the out-of-repo target now emits an `outside` row and takes
         # the same can-write round trip an in-repo target takes. That pre-approval
         # refusal is consequence C1 in the approved plan, the accepted cost of two-door
-        # parity, whose named remedy is a scratch-zone allow arm in
-        # gates._check_work_gate, deferred to its own cycle.
+        # parity. Its named remedy, a scratch-zone allow arm in
+        # gates._check_work_gate, has since SHIPPED, and this still denies because the
+        # fixture records no project_root: the arm routes through boundary_root, which
+        # abstains on an empty root. Real pre-approval scratch behavior is pinned in
+        # tests/test_write_door_parity.py and tests/test_scratch_zone_write_arm.py.
         target = "/tmp/writ-scratch-xyz"
         out = _run_hook(gate, f"echo x > {target}")
         assert out is not None, "the out-of-repo redirect was silent; it reached no gate"
@@ -259,8 +262,11 @@ class TestExemptionsAreReused:
         # MEASURED after cycle L, in this PRE-APPROVAL session: this denies with
         # [ENF-GATE-PLAN] ("Say approved to proceed") where it used to be silent. That
         # refusal is consequence C1 in the approved plan, the accepted cost of two-door
-        # parity, whose named remedy is a scratch-zone allow arm in
-        # gates._check_work_gate, deferred to its own cycle.
+        # parity. Its named remedy, a scratch-zone allow arm in
+        # gates._check_work_gate, has since SHIPPED, and this still denies because the
+        # fixture records no project_root: the arm routes through boundary_root, which
+        # abstains on an empty root. Real pre-approval scratch behavior is pinned in
+        # tests/test_write_door_parity.py and tests/test_scratch_zone_write_arm.py.
         target = "/tmp/scratch.py"
         out = _run_hook(gate, f"""python3 -c "open('{target}','w')" """)
         assert out is not None, (

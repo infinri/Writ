@@ -230,6 +230,44 @@ def _mutant_hook(tmp_path: Path, name: str, mutate) -> str:
     return str(script)
 
 
+def test_the_scratch_zone_is_allowed_pre_approval_on_both_doors(doors) -> None:
+    """THE DIRECTIONAL PIN. `test_the_two_doors_agree[pre_approval-os scratch zone]` above is
+    SYMMETRIC -- it only asserts the two doors match each other, and before this cycle's arm
+    both doors denied the zone target together, so that row is already green and cannot
+    detect the fix's absence. This test asserts the DIRECTION as well as the agreement: in
+    the pre-approval state, the `os scratch zone` target must ALLOW on both doors, and
+    `plainly outside everything` must still REFUSE on both, driving the real hook subprocess
+    for the Bash half exactly as `_bash_door` does everywhere else in this file.
+    """
+    sid = f"parity-{uuid.uuid4().hex[:8]}"
+    _seed(sid, _pre_approval(str(doors.root)))
+    targets = _targets(doors)
+
+    zone_target = targets["os scratch zone"]
+    zone_bash_allow, zone_decision = _bash_door(doors.env, sid, str(doors.root), zone_target)
+    zone_write_allow = _write_door(sid, zone_target)
+    assert zone_bash_allow is True, (
+        f"Bash door refused the pre-approval scratch-zone target {zone_target!r}: "
+        f"{zone_decision!r}"
+    )
+    assert zone_write_allow is True, (
+        f"Write door refused the pre-approval scratch-zone target {zone_target!r}"
+    )
+
+    outside_target = targets["plainly outside everything"]
+    outside_bash_allow, outside_decision = _bash_door(
+        doors.env, sid, str(doors.root), outside_target
+    )
+    outside_write_allow = _write_door(sid, outside_target)
+    assert outside_bash_allow is False, (
+        f"Bash door allowed the pre-approval out-of-zone target {outside_target!r}: "
+        f"{outside_decision!r}"
+    )
+    assert outside_write_allow is False, (
+        f"Write door allowed the pre-approval out-of-zone target {outside_target!r}"
+    )
+
+
 @pytest.mark.parametrize("state", ["pre_approval", "post_approval"])
 @pytest.mark.parametrize("label", _TARGET_LABELS)
 def test_the_two_doors_agree(doors, state, label) -> None:

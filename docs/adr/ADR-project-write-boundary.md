@@ -147,17 +147,24 @@ role-scope ADR's property that the scope is a function of the role alone. The ar
 - **`## Files` is NOT enforced file by file inside the project.** The implementer
   legitimately writes files a plan under-specifies (`__init__.py`, `conftest.py`, the plan
   itself), so a bullet-by-bullet check would refuse routine work today.
-- **The bash gate's non-local filter is left OPEN, and MEASURED.**
-  `writ-bash-write-gate.sh:1394-1400` sends only cwd-contained targets to the gate and drops
-  the rest, with the recorded rationale "Scratch writes outside the repo are not
-  plan-gated". A Bash-mediated write outside the hook's cwd therefore never reaches this
-  predicate. Routing them all through the gate would convert routine PRE-approval scratch
-  writes into `[ENF-GATE-PLAN]` refusals whose named action (approve the plan) does not
-  unblock writing a scratch file, which is the "refusal names no way out" defect. Closing it
-  correctly needs a scratch-zone exemption placed ahead of the work gate, which loosens a
-  currently-closed Write/Edit deny, so it is a separate decision with its own measurement.
-  It is left open rather than silently open: a test asserts the classifier's current output,
-  so changing that line fails a test that names this interaction.
+- **The bash gate's non-local filter is now CLOSED, and the cost it predicted was paid and
+  then fixed.** It formerly sent only cwd-contained targets to the gate and dropped the rest,
+  so a Bash-mediated write outside the hook's cwd never reached this predicate: measured, a
+  heredoc write succeeded to a path the Write tool had refused seconds earlier. A confinement
+  enforced on one of two doors is not a confinement, so the producer now emits an `outside`
+  row and the consumer feeds it to the same `can-write` round trip a project-local target
+  takes. The prediction recorded here was exact: doing that converted routine PRE-approval
+  scratch writes into `[ENF-GATE-PLAN]` refusals whose named action, approve the plan, does
+  not unblock writing a scratch file, which is the "refusal names no way out" defect. That
+  cost was accepted for one cycle and then removed by the scratch-zone allow arm in
+  `_check_work_gate`, placed AFTER the drift check and immediately before `[ENF-GATE-PLAN]`.
+  Placing it beside the exclusions arm was rejected: it would have widened the drift state,
+  a deliberately loud stop signal, and the defect measured lived entirely in the
+  pre-approval window. An `exclusions` entry in `gate-categories.json` was rejected too, on
+  the same self-grant property as the boundary escape and because `_matches_any` treats `*`
+  as `.*`, so it spans `/`. The arm resolves its root through `boundary_root` and
+  `resolve_target` exactly as this predicate does, and inherits the empty-root abstain: a
+  session with no recorded project keeps refusing.
 - **The pre-existing basename-only `plan.md` / `capabilities.md` allow is untouched.** It
   lets a write to another project's `plan.md` through. Orthogonal, and fixing it changes a
   different arm.
