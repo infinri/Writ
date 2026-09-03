@@ -27,6 +27,14 @@
 # fires on the ordinary spelling, not a containment boundary. `-C <dir>` is stepped over
 # as a git global option but is NOT used to resolve the target path: resolution stays
 # relative to the hook's cwd, exactly as before.
+#
+# A CONTROL OPERATOR WITH NO SPACE IN FRONT OF IT hid the invocation the same way the
+# discarded newline did: shlex(posix=False) forces whitespace_split, so
+# `echo prep; git worktree add scratch/x x` tokenized as ['echo','prep;','git',...] --
+# ONE segment whose verb is `echo`, and the real invocation never sat in command
+# position. Tokens are re-split on `;`, `&&`, `&`, `|` and `||` by
+# writ.session.bash_tokens.split_control_operators, the SAME text
+# writ-bash-write-gate.sh uses (mirrored inline below for a failed package import).
 set -euo pipefail
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 WRIT_DIR="$(cd "$HOOK_DIR/../.." && pwd)"
@@ -51,10 +59,139 @@ esac
 # Output is one TSV row, or nothing at all when no real invocation was found:
 #   deny<TAB><target><TAB><reason>      target is project-local and not gitignored
 #   allow<TAB><target>                  a real invocation with a gitignored target
-VERDICT=$(WRIT_WT_CMD="$CMD" python3 <<'PY' 2>/dev/null || true
+VERDICT=$(WRIT_WT_CMD="$CMD" WRIT_DIR="$WRIT_DIR" python3 <<'PY' 2>/dev/null || true
 import os, re, shlex, sys
 
 cmd = os.environ.get("WRIT_WT_CMD", "")
+
+# The package is reachable from here only through this insert: hooks run the SYSTEM
+# python3, which has no install of it. Same two lines writ-bash-write-gate.sh uses.
+sys.path.insert(0, os.environ.get("WRIT_DIR", ""))
+
+# ── Control-operator splitting ──────────────────────────────────────────────
+# SINGLE SOURCE is writ.session.bash_tokens.split_control_operators, the SAME text
+# writ-bash-write-gate.sh carries. The mirror below is that module's marker-delimited
+# block, verbatim, and it runs ONLY if the package import fails; the import after it
+# REBINDS the name, so the package copy is what runs whenever it resolves. A failed
+# import must degrade to the same behavior and never silently back to the defect, which
+# is why this is a mirror and not a comment. Used below to keep a glued separator from
+# hiding a `git worktree add`. tests/test_bash_control_operator_split.py asserts the
+# copies are textually identical and compute identical token streams.
+
+# MIRROR BEGIN split_control_operators
+def split_control_operators(tokens):
+    """Re-split posix=False shlex tokens so every control operator is its own token.
+
+    What makes this not a str.replace:
+
+      * a QUOTED span is never split. shlex already terminated it, and
+        `sed -i -e 's/a/b/;s/c/d/' f` must stay one argument. A backslash escapes the
+        next character for the same reason (`s/a/b/\\;s/c/d/`).
+      * `&&` is matched before `&`, and `||` before `|`.
+      * an `&` belonging to a REDIRECT is left alone: `2>&1`, `>&2` and `<&3` are
+        file-descriptor duplicates, not background operators, and splitting them would
+        change how every redirect is read.
+      * an `&` immediately followed by `>` is the `&>` redirect operator, so it opens a
+        new token instead of becoming one, which is how bash lexes `foo&>file`.
+
+    Deliberately NOT split: `>` itself. `foo>bar`, an operator glued to the verb IN FRONT
+    of it, is a different mechanism with no boundary to recover, and both hook headers
+    disclose it as an open limit.
+    """
+    out = []
+    for tok in tokens:
+        out.extend(_split_one_token(tok))
+    return out
+
+
+def _split_one_token(tok):
+    """One token -> the pieces it really is. Returns [tok] when nothing splits."""
+    pieces = []
+    buf = []
+    quote = None
+    after_redir = False
+    i = 0
+    n = len(tok)
+
+    def flush():
+        if buf:
+            pieces.append("".join(buf))
+            del buf[:]
+
+    while i < n:
+        ch = tok[i]
+        if quote is not None:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            buf.append(ch)
+            buf.append(tok[i + 1])
+            after_redir = False
+            i += 2
+            continue
+        if ch == "'" or ch == '"':
+            quote = ch
+            buf.append(ch)
+            after_redir = False
+            i += 1
+            continue
+        if ch == ">":
+            buf.append(ch)
+            i += 1
+            if i < n and tok[i] == ">":          # >>
+                buf.append(tok[i])
+                i += 1
+            elif i < n and tok[i] == "|":        # >| clobber override
+                buf.append(tok[i])
+                i += 1
+            after_redir = True
+            continue
+        if ch == "<":
+            while i < n and tok[i] == "<":       # <, <<, <<<
+                buf.append(tok[i])
+                i += 1
+            after_redir = True
+            continue
+        if ch == "&":
+            if after_redir:                      # fd dup: 2>&1, >&2, <&3
+                buf.append(ch)
+                after_redir = False
+                i += 1
+                continue
+            if i + 1 < n and tok[i + 1] == ">":  # the `&>` redirect operator
+                flush()
+                buf.append(ch)
+                i += 1
+                continue
+            op = "&&" if tok.startswith("&&", i) else "&"
+            flush()
+            pieces.append(op)
+            i += len(op)
+            continue
+        if ch == "|":
+            op = "||" if tok.startswith("||", i) else "|"
+            flush()
+            pieces.append(op)
+            i += len(op)
+            continue
+        if ch == ";":
+            flush()
+            pieces.append(";")
+            i += 1
+            continue
+        buf.append(ch)
+        after_redir = False
+        i += 1
+    flush()
+    return pieces or [tok]
+# MIRROR END split_control_operators
+try:
+    from writ.session.bash_tokens import split_control_operators   # noqa: F811
+except Exception:
+    pass
 
 # NEWLINE IS A COMMAND SEPARATOR, AND shlex THROWS IT AWAY. `shlex.split` treats "\n" as
 # ordinary whitespace, so it never appears as a token and the "\n" entry in CONTROL below
@@ -126,6 +263,11 @@ def strip_heredoc_bodies(toks):
 
 
 tokens = strip_heredoc_bodies(tokens)
+# A glued separator hid the invocation exactly the way the discarded newline did:
+# `echo prep; git worktree add scratch/x x` tokenized as ['echo','prep;','git',...], ONE
+# segment whose verb is `echo`. AFTER heredoc stripping on purpose, so a body line is
+# never re-split and can never contribute a segment.
+tokens = split_control_operators(tokens)
 
 CONTROL = {"|", "||", "&&", ";", "&", SEP}
 ASSIGNMENT = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*=')

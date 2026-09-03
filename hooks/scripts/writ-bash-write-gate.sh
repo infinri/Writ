@@ -41,8 +41,40 @@
 # COVERAGE LIMIT (no silent caps): only common LITERAL vectors are detected
 # (`>`/`>>`/`2>`/`&>`/`>|`, `tee`, `dd of=`, `cp`/`mv`/`install` dest incl. -t,
 # `sed -i`, and the inline-interpreter forms above). Obfuscated writes --
-# var-indirection, eval/base64, a path assembled from pieces, glued `foo>bar` -- WILL
-# evade. This narrows the hole, it does not seal it.
+# var-indirection, eval/base64, a path assembled from pieces -- WILL evade. This
+# narrows the hole, it does not seal it.
+#
+# A CONTROL OPERATOR WITH NO SPACE IN FRONT OF IT USED TO EVADE, and the honest version
+# of that is: the CATEGORY was disclosed here (as "glued `foo>bar`") and THIS INSTANCE
+# was not. shlex(posix=False) forces whitespace_split, so `echo x > .env; ls` tokenized
+# as ['echo','x','>','.env;','ls']: the target read as `.env;`, whose BASENAME is not a
+# credential, and the command after the operator never reached command position, where
+# verb_at is the only thing that looks. Measured live in work mode with both gates
+# approved: `echo x > .env ; ls` denied and `echo x > .env; ls` was ALLOWED SILENTLY.
+# Tokens are now re-split on `;`, `&&`, `&`, `|` and `||` before segmentation
+# (writ.session.bash_tokens.split_control_operators, mirrored in the extractor below),
+# with quoted spans and redirect fd-dups (`2>&1`) excepted.
+#
+# WHAT REMAINS IN THAT FAMILY, so the fix is not read as wider than it is:
+#   * `foo>src/x.py` -- an operator glued to the verb IN FRONT of it, a different
+#     mechanism with no token boundary to recover. The `&>` spelling (`foo&>src/x.py`)
+#     IS seen, because an `&` in that position can only start a redirect.
+#   * a shell KEYWORD in verb position: `then`, `do`, `else` and `{` are not stepped
+#     over the way the WRAPPERS prefixes are, so the write in
+#     `if true; then cp a src/x.py; fi` is not seen even though the `;` now splits.
+#   * an unquoted command substitution or paren group whose body writes is now SEEN,
+#     with an imprecision rather than a miss: `(cd x; cp a src/y.py)` yields the target
+#     `src/y.py)`, stray paren included. Gated with a cosmetically wrong path beats the
+#     previous silence, and stripping trailing punctuation per consumer is exactly the
+#     per-consumer patching the single re-split replaced.
+#   * a NEWLINE separator: shlex discards newlines, so `CONTROL`'s "\n" member matches
+#     nothing and a multi-line command is judged as ONE segment whose verb is the first
+#     line's. writ-worktree-safety.sh pre-splits newlines outside quotes and strips
+#     heredoc bodies for exactly this reason; this hook does not, and porting it needs
+#     the heredoc stripper too or a document ABOUT a write becomes a refusal. Deferred
+#     to its own cycle rather than bolted on here. MEASURED, not read: through this
+#     hook's own extractor, "ls\ncp seed.txt src/x.py" emits NO row while
+#     "ls ; cp seed.txt src/x.py" emits `local /proj/src/x.py`.
 #
 # ── Second vector: EGRESS ────────────────────────────────────────────────────
 # The file name still says "write" because renaming it would churn hooks.json, the
@@ -89,7 +121,11 @@
 # COVERAGE LIMIT, egress (same honesty as the write block above): only literal,
 # tokenizable command shapes are seen. Obfuscation WILL evade -- base64/gzip piped into
 # an interpreter, `python3 -c` with urllib, `node -e`, heredoc-fed uploads,
-# variable-indirected URLs and hosts, glued forms the tokenizer does not split, and any
+# variable-indirected URLs and hosts,
+# the glued forms the write block above still names (an operator glued to the verb in
+# front of it, a shell keyword in verb position; a control operator glued to the token
+# BEFORE it is split as of this cycle and is no longer in this list),
+# and any
 # verb not named above (ftp, aws s3 cp, rclone, git remotes over http). Still-uncovered
 # prefixes, because each takes non-flag positional arguments of its own before the
 # command and a naive skip would mis-read the verb: timeout, stdbuf, nice, setsid,
@@ -627,6 +663,131 @@ def is_gate_state(path):
 NONFILE = {"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/zero", "-", ""}
 CONTROL = {"|", "||", "&&", ";", "&", "\n"}
 REDIR = re.compile(r'^(?:&|[0-9]*)>>?')
+
+# ── Control-operator splitting ──────────────────────────────────────────────
+# SINGLE SOURCE is writ.session.bash_tokens.split_control_operators. The mirror below is
+# that module's marker-delimited block, verbatim, and it runs ONLY if the package import
+# fails (the hooks run under the system python3 and reach the package through the
+# sys.path insert above); the import after it REBINDS the name, so the package copy is
+# what runs whenever it resolves. A failed import must degrade to the same behavior and
+# never silently back to the defect, which is why this is a mirror and not a comment.
+# tests/test_bash_control_operator_split.py asserts the copies are textually identical
+# and compute identical token streams.
+
+# MIRROR BEGIN split_control_operators
+def split_control_operators(tokens):
+    """Re-split posix=False shlex tokens so every control operator is its own token.
+
+    What makes this not a str.replace:
+
+      * a QUOTED span is never split. shlex already terminated it, and
+        `sed -i -e 's/a/b/;s/c/d/' f` must stay one argument. A backslash escapes the
+        next character for the same reason (`s/a/b/\\;s/c/d/`).
+      * `&&` is matched before `&`, and `||` before `|`.
+      * an `&` belonging to a REDIRECT is left alone: `2>&1`, `>&2` and `<&3` are
+        file-descriptor duplicates, not background operators, and splitting them would
+        change how every redirect is read.
+      * an `&` immediately followed by `>` is the `&>` redirect operator, so it opens a
+        new token instead of becoming one, which is how bash lexes `foo&>file`.
+
+    Deliberately NOT split: `>` itself. `foo>bar`, an operator glued to the verb IN FRONT
+    of it, is a different mechanism with no boundary to recover, and both hook headers
+    disclose it as an open limit.
+    """
+    out = []
+    for tok in tokens:
+        out.extend(_split_one_token(tok))
+    return out
+
+
+def _split_one_token(tok):
+    """One token -> the pieces it really is. Returns [tok] when nothing splits."""
+    pieces = []
+    buf = []
+    quote = None
+    after_redir = False
+    i = 0
+    n = len(tok)
+
+    def flush():
+        if buf:
+            pieces.append("".join(buf))
+            del buf[:]
+
+    while i < n:
+        ch = tok[i]
+        if quote is not None:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            buf.append(ch)
+            buf.append(tok[i + 1])
+            after_redir = False
+            i += 2
+            continue
+        if ch == "'" or ch == '"':
+            quote = ch
+            buf.append(ch)
+            after_redir = False
+            i += 1
+            continue
+        if ch == ">":
+            buf.append(ch)
+            i += 1
+            if i < n and tok[i] == ">":          # >>
+                buf.append(tok[i])
+                i += 1
+            elif i < n and tok[i] == "|":        # >| clobber override
+                buf.append(tok[i])
+                i += 1
+            after_redir = True
+            continue
+        if ch == "<":
+            while i < n and tok[i] == "<":       # <, <<, <<<
+                buf.append(tok[i])
+                i += 1
+            after_redir = True
+            continue
+        if ch == "&":
+            if after_redir:                      # fd dup: 2>&1, >&2, <&3
+                buf.append(ch)
+                after_redir = False
+                i += 1
+                continue
+            if i + 1 < n and tok[i + 1] == ">":  # the `&>` redirect operator
+                flush()
+                buf.append(ch)
+                i += 1
+                continue
+            op = "&&" if tok.startswith("&&", i) else "&"
+            flush()
+            pieces.append(op)
+            i += len(op)
+            continue
+        if ch == "|":
+            op = "||" if tok.startswith("||", i) else "|"
+            flush()
+            pieces.append(op)
+            i += len(op)
+            continue
+        if ch == ";":
+            flush()
+            pieces.append(";")
+            i += 1
+            continue
+        buf.append(ch)
+        after_redir = False
+        i += 1
+    flush()
+    return pieces or [tok]
+# MIRROR END split_control_operators
+try:
+    from writ.session.bash_tokens import split_control_operators   # noqa: F811
+except Exception:
+    pass
 
 # ── Egress allowlist ────────────────────────────────────────────────────────
 # SINGLE SOURCE is writ.config.get_egress_allow_hosts (writ.toml [egress] allow_hosts
@@ -1278,6 +1439,12 @@ try:
     tokens = shlex.split(cmd, comments=False, posix=False)
 except ValueError:
     sys.exit(0)   # unbalanced quotes etc -> fail open (no false deny)
+# posix=False forces whitespace_split, so `> a.txt; bar` leaves `a.txt;` ONE token: the
+# target reads as `a.txt;` and the `;` never splits a segment. Re-split here, once, so
+# the redirect loop, the cmd0 write arms, the interpreter scan and the egress pass all
+# see the same corrected stream. Values and segmentation are the same defect from two
+# ends, so they are fixed in one place rather than per consumer.
+tokens = split_control_operators(tokens)
 
 # Segment on control operators so each command's dest logic is scoped. Each segment
 # carries one extra bit -- whether the control token BEFORE it was a pipe -- which the

@@ -198,3 +198,36 @@ class TestTheNewlineSplitDoesNotReopenTheFalsePositive:
         assert decision == "deny", (
             "the heredoc skip consumed the commands that follow the terminator"
         )
+
+
+class TestAGluedSeparatorDoesNotHideTheInvocation:
+    """Same mechanism as the discarded newline this file was written for, one door over:
+    shlex(posix=False) forces whitespace_split, so `echo prep; git worktree add ...`
+    tokenized as ['echo','prep;','git',...] -- ONE segment whose verb is `echo`, and a
+    real invocation after a glued separator was allowed silently. The splitter is the
+    same text writ-bash-write-gate.sh uses; leaving one door fixed and one broken is the
+    divergence this cycle exists to prevent."""
+
+    @pytest.mark.parametrize("op", [";", "&&", "&", "|", "||"])
+    @pytest.mark.parametrize("spacing", ["", " "])
+    def test_a_real_invocation_after_a_separator_is_still_denied(
+            self, op, spacing, cache_root, project):
+        cmd = "echo prep%s%s git worktree add scratch/x x" % (spacing, op)
+        decision, reason = _run(cmd, cache_root, project)
+        assert decision == "deny", (cmd, decision, reason)
+        assert "ENF-PROC-WORKTREE-001" in reason, (cmd, reason)
+
+    @pytest.mark.parametrize("op", [";", "&&", "&", "|", "||"])
+    def test_a_gitignored_target_after_a_glued_separator_still_allows(
+            self, op, cache_root, project):
+        # Both directions: a hook that denies everything passes the class above.
+        decision, _reason = _run(
+            "echo prep%s git worktree add .worktrees/x x" % op, cache_root, project)
+        assert decision is None, op
+
+    @pytest.mark.parametrize("op", [";", "&&"])
+    def test_a_quoted_mention_after_a_glued_separator_is_still_not_an_invocation(
+            self, op, cache_root, project):
+        decision, _reason = _run(
+            "echo prep%s echo 'git worktree add scratch/x x'" % op, cache_root, project)
+        assert decision is None, op
