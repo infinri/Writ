@@ -243,11 +243,22 @@ class TestAdditiveNotDestructive:
         assert obj["statement"] == rule["statement"]
         assert obj["trigger"] and obj["statement"]  # non-empty, not just present as keys
 
-    def test_tagging_does_not_disturb_severity_authority_domain_or_score(self, monkeypatch, capsys):
+    def test_tagging_does_not_disturb_severity_or_score_and_leaves_human_authority_hidden(self, monkeypatch, capsys):
+        """Renamed after the header slot shrank (plan.md at
+        .claude/plans/dfacff61-23d5-474e-846c-2e2f0f0ea482/): severity always renders,
+        `human` authority (the constant case) renders nothing, and domain is dropped
+        from the header entirely. The literal here used to pin all three fields
+        unconditionally; it now pins the same real property (tagging does not
+        disturb the header) against the new shape. Full shape coverage (both
+        authority branches, the domain drop, the absence case) lives in
+        tests/test_ranked_header_fields.py.
+        """
         rule = _rule(rule_id="ENF-FIELDS-001", severity="critical", authority="human",
                      domain="testing", score=0.77, already_injected=True)
         text, _ = _render(monkeypatch, capsys, [rule])
-        assert "[ENF-FIELDS-001] (critical, human, testing) score=0.770" in text
+        assert "[ENF-FIELDS-001] (critical) score=0.770" in text
+        assert "testing" not in text  # domain dropped, never rendered
+        assert ", human" not in text  # human authority is the constant case: hidden
 
 
 # --------------------------------------------------------------------------- #

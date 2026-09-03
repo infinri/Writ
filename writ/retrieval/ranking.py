@@ -231,14 +231,30 @@ def filter_proximity_seeds(
     return seeds
 
 
+# The fields the injected header renders (writ/session/budget_tracking.py:cmd_format).
+# Every projection in this module carries them, so the header shows real values.
+_HEADER_FIELDS = ("severity", "authority")
+
+
+def _carry_header_fields(entry: dict, rule: dict) -> None:
+    """Copy the header fields onto a projected entry, only when the source declares
+    them. Never defaulted here: the formatter owns how absence looks, and a second
+    default in this module is what let these fields go missing."""
+    for f in _HEADER_FIELDS:
+        if f in rule:
+            entry[f] = rule[f]
+
+
 def _project_rules(
     rules: list[dict], limit: int, str_fields: list[str], include_relationships: bool = False
 ) -> list[dict]:
     """Project the top-`limit` rules to a budget mode's field set. Base fields
-    (rule_id/node_type/score) always come first, then `str_fields` (default ''),
-    then relationships (default []) only in full mode. Single source for the
-    per-mode projection shared by summary/standard/full. Key order is preserved
-    because it is the serialized output contract."""
+    (rule_id/node_type/score) come first, then the header fields
+    (severity/authority, copied only when the source declares them), then
+    `str_fields` (default ''), then relationships (default []) only in full
+    mode. Single source for the per-mode projection shared by
+    summary/standard/full. Key order is a stability convention, not a wire
+    contract: every consumer reads by key."""
     out: list[dict] = []
     for rule in rules[:limit]:
         d = {
@@ -246,6 +262,7 @@ def _project_rules(
             "node_type": rule.get("node_type", "Rule"),
             "score": rule.get("score", 0.0),
         }
+        _carry_header_fields(d, rule)
         for f in str_fields:
             d[f] = rule.get(f, "")
         if include_relationships:
@@ -328,11 +345,13 @@ def _summary_with_abstractions(
             })
         elif not abst:
             # Ungrouped rule: fall back to statement+trigger.
-            result.append({
+            entry = {
                 "rule_id": rid,
                 "score": rule.get("score", 0.0),
-                "statement": rule.get("statement", ""),
-                "trigger": rule.get("trigger", ""),
-            })
+            }
+            _carry_header_fields(entry, rule)
+            entry["statement"] = rule.get("statement", "")
+            entry["trigger"] = rule.get("trigger", "")
+            result.append(entry)
 
     return result

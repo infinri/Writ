@@ -630,9 +630,10 @@ class RetrievalPipeline:
                 "node_type": meta.get("node_type", "Rule"),
                 "score": round(final_score, 4),
                 "authority": meta.get("authority", "human"),
-                # severity + domain surfaced so the render shows them instead of "(?, ?, ?)".
+                # severity + authority are the render-header fields, and this dict alone
+                # cannot put them on the line: writ.retrieval.ranking._carry_header_fields
+                # must carry them through the per-mode projection in apply_context_budget.
                 "severity": meta.get("severity", "medium"),
-                "domain": meta.get("domain", ""),
                 "statement": meta.get("statement", ""),
                 "trigger": meta.get("trigger", ""),
                 "violation": meta.get("violation", ""),

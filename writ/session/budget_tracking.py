@@ -376,7 +376,7 @@ def cmd_format() -> None:
     for rule in rules:
         # Summary-mode abstraction entries (_summary_with_abstractions) carry an
         # abstraction_id + summary, not rule fields. Render them as the abstraction summary
-        # they are -- otherwise the rule formatter shows "[UNKNOWN] (?, ?, ?) score=0.000"
+        # they are -- otherwise the rule formatter shows "[UNKNOWN] (?, ?) score=0.000"
         # and drops the summary text entirely (the observed garbage-injection bug).
         if rule.get("abstraction_id"):
             covered = len(rule.get("rule_ids", []))
@@ -392,10 +392,12 @@ def cmd_format() -> None:
         rid = rule.get("rule_id", "UNKNOWN")
         severity = rule.get("severity", "?")
         authority = rule.get("authority", "?")
-        domain = rule.get("domain", "?")
         score = rule.get("score", 0)
 
-        lines.append(f"[{rid}] ({severity}, {authority}, {domain}) score={score:.3f}")
+        # severity always; authority only when it is not "human" (405 of 406 corpus
+        # nodes). Absence stays "?". See docs/adr/ADR-ranked-header-fields.md.
+        slot = severity if authority == "human" else f"{severity}, {authority}"
+        lines.append(f"[{rid}] ({slot}) score={score:.3f}")
 
         # Field-level dedup against this turn's always-on channel. `already_injected`
         # is set by writ.retrieval.prompt_bundle.tag_overlap for a ranked hit whose
