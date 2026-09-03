@@ -55,18 +55,71 @@
 # (writ.session.bash_tokens.split_control_operators, mirrored in the extractor below),
 # with quoted spans and redirect fd-dups (`2>&1`) excepted.
 #
+# ── Same seam, third instance: A WRITE HIDDEN INSIDE A SHELL GROUP ──────────
+# Two mechanisms, both measured, both closed as of this cycle.
+#
+# NO ROW AT ALL: verb_at resolved seg[0] and stepped over a prefix only by membership in
+# WRAPPERS, so a group character that OCCUPIED verb position or was GLUED to it became
+# "the verb" and matched none of the cmd0 arms. Measured through this extractor before the
+# fix: `(cp seed.txt src/y.py)`, `( cp seed.txt src/y.py)` and `{ cp seed.txt src/y.py; }`
+# each emitted the EMPTY SET, while the bare `cp seed.txt src/y.py` emitted
+# `local <cwd>/src/y.py`. Reserved words failed for a second reason: the `;` split already
+# isolates `then` and `do` ALONE in seg[0], and neither is in WRAPPERS, so the write in
+# `if true; then cp a src/x.py; fi` was invisible too. BOTH substitution syntaxes measured
+# the same way, which is why they are one case and not a subshell fix plus a guess:
+# `$(cp seed.txt src/y.py)` and `` `cp seed.txt src/y.py` `` each emitted the empty set as
+# well. verb_at now steps over GROUP_VERB_TOKENS (bash's group openers plus the reserved
+# words a command list follows) and strips a glued `(`, `$(` or backtick off the verb,
+# reusing its own membership-test precedent rather than inventing a second shape. `[`, `[[`
+# and `test` are deliberately NOT stepped: they ARE the verb, and the seg_is_test redirect
+# suppression depends on it. A glued `{` is NOT stripped, and that is EXECUTED rather than
+# read: `bash -c '{echo hi; }'` is a syntax error (`syntax error near unexpected token
+# `}'`) while `bash -c '{ echo hi; }'` prints hi, so the glued spelling does not parse at
+# all and cannot be a bypass vector.
+#
+# A CORRUPTED VALUE, WHICH COST IN BOTH DIRECTIONS: the redirect path never consults the
+# verb, so a redirect inside a group WAS seen, with its target keeping the group's trailing
+# closer. `(echo x > src/y.py)` yielded `<cwd>/src/y.py)`, which defeats NONFILE (an
+# exact-string set) and defeats the basename-driven credential classifier exactly as
+# `.env;` did. The SAME corruption refused ordinary work: `(echo x > /dev/null)` emitted
+# the row `outside /dev/null)`, because `/dev/null)` is not the NONFILE member
+# `/dev/null` and resolves as an out-of-repo absolute path, so every `(cmd > /dev/null)`
+# was work-gated. Normalized in ONE place, at the head of the classification loop where
+# every vector's targets are already collected and none is yet classified, never per
+# consumer: an UNBALANCED trailing `)` is counted off (`src/note(1))` becomes
+# `src/note(1)`, so a filename holding a BALANCED pair survives), and a trailing BACKTICK
+# comes off on PARITY, since a backtick is its own closer and "more closers than openers"
+# is undefined for it. A closer that sits ALONE on its own token (`( cp a src/y.py )`) is
+# not a value to normalize at all but SYNTAX, so GROUP_CLOSER_TOKENS drops it where
+# segments are built; before this cycle a bare `)` was a valid positional argument to
+# every write arm, measured as the phantom row `local <cwd>/)` from
+# `( echo x | tee src/y.py )`. END TO END before the fix, work mode, BOTH gates approved:
+# `cp seed.txt <secret>` denied with [SEC-CREDENTIAL-WRITE] while
+# `(cp seed.txt <secret>)` and `(echo x > <secret>)` were ALLOWED SILENTLY.
+#
+# ACCEPTED COST of the normalization: a file whose name really ends in an UNBALANCED `)`
+# is gated under the name without it. Fail-closed and cosmetic, because the row still
+# exists and a credential named `.env)` normalizes INTO a deny rather than out of one.
+#
+# THE TOKENIZER FIX IS RULED OUT, so the next reader does not reach for it: making `(` or
+# `)` a token boundary in split_control_operators would break the arithmetic depth counter
+# below (which counts the LITERAL `((` and `))` inside ONE token), the process-
+# substitution guard in redir_target (`rest.startswith("(")`), and `$(...)`, which would
+# be blown open into unrelated top-level segments. See
+# docs/adr/ADR-bash-control-operator-tokenizer.md.
+#
 # WHAT REMAINS IN THAT FAMILY, so the fix is not read as wider than it is:
 #   * `foo>src/x.py` -- an operator glued to the verb IN FRONT of it, a different
 #     mechanism with no token boundary to recover. The `&>` spelling (`foo&>src/x.py`)
 #     IS seen, because an `&` in that position can only start a redirect.
-#   * a shell KEYWORD in verb position: `then`, `do`, `else` and `{` are not stepped
-#     over the way the WRAPPERS prefixes are, so the write in
-#     `if true; then cp a src/x.py; fi` is not seen even though the `;` now splits.
-#   * an unquoted command substitution or paren group whose body writes is now SEEN,
-#     with an imprecision rather than a miss: `(cd x; cp a src/y.py)` yields the target
-#     `src/y.py)`, stray paren included. Gated with a cosmetically wrong path beats the
-#     previous silence, and stripping trailing punctuation per consumer is exactly the
-#     per-consumer patching the single re-split replaced.
+#   * a substitution inside an ASSIGNMENT: `out=$(cp a src/y.py)` matches ASSIGNMENT on
+#     `out=$(cp`, so verb_at steps the whole token and resolves `a` as the verb.
+#   * the FIRST command of a `case` branch: `case $x in a) cp a src/y.py;; esac` leaves
+#     `a)` in verb position, and stepping over it would need pattern-list parsing.
+#   * a FUNCTION DEFINITION body: `f() { cp a src/x.py; }` resolves its verb to `f()`.
+#     OUT OF SCOPE rather than missed: the body writes only when the function is CALLED,
+#     so the definition is not itself a write, and the call resolves to the verb `f`,
+#     which is the wrapper-script limit already disclosed above.
 #   * a NEWLINE separator: shlex discards newlines, so `CONTROL`'s "\n" member matches
 #     nothing and a multi-line command is judged as ONE segment whose verb is the first
 #     line's. writ-worktree-safety.sh pre-splits newlines outside quotes and strips
@@ -123,8 +176,12 @@
 # an interpreter, `python3 -c` with urllib, `node -e`, heredoc-fed uploads,
 # variable-indirected URLs and hosts,
 # the glued forms the write block above still names (an operator glued to the verb in
-# front of it, a shell keyword in verb position; a control operator glued to the token
-# BEFORE it is split as of this cycle and is no longer in this list),
+# front of it, a substitution inside an assignment, a `case` branch's first command; a
+# control operator glued to the token BEFORE it, and a shell keyword or group opener in
+# verb position, are both split/stepped as of the cycles above and are no longer in this
+# list -- `(curl -d @f https://host)` now resolves the verb `curl` and asks, with the
+# destination host carrying a cosmetic trailing `)` that can only ADD a prompt, never
+# remove one),
 # and any
 # verb not named above (ftp, aws s3 cp, rclone, git remotes over http). Still-uncovered
 # prefixes, because each takes non-flag positional arguments of its own before the
@@ -675,6 +732,142 @@ REDIR = re.compile(r'^(?:&|[0-9]*)>>?')
 # and compute identical token streams.
 
 # MIRROR BEGIN split_control_operators
+# The marker name is historical: this block is now every bash-token helper the two Bash
+# gates SHARE, not the splitter alone. The markers keep their spelling because they are
+# the anchor tests/test_bash_control_operator_split.py slices on.
+
+# Tokens that occupy VERB POSITION without being the verb. A group opener, or a reserved
+# word that a COMMAND LIST follows, is stepped over exactly the way the WRAPPERS prefixes
+# are, because what follows is a real command that really writes: `if true; then cp a
+# src/x.py; fi` runs cp, and `(cp a src/x.py)` runs cp.
+#
+# Each member, and why it is here:
+#   ( {                  group openers; a command list follows directly.
+#   then do else         reserved words a command list follows directly.
+#   if elif while until  a CONDITION follows, which is itself a command list:
+#                        `if cp seed.txt .env; then :; fi` really runs cp.
+#   !                    pipeline negation; `! cp a b` runs cp.
+#
+# DELIBERATELY ABSENT, each for a reason:
+#   [ [[ test            these ARE the verb, and the write gate suppresses redirects for
+#                        a segment whose verb is one of them (seg_is_test). Stepping over
+#                        `[[` would make `"$x"` the verb, un-suppress the span, and read
+#                        `if [[ "$x" > "config.txt" ]]` as a write to config.txt.
+#   (( $((               ARITHMETIC, not a group. The write gate's own `((`/`))` depth
+#                        counter owns that spelling; see strip_group_opener.
+#   for select case in   what follows is a VARIABLE NAME or a WORD, not a command, so
+#                        stepping resolves a WRONG verb instead of recovering a hidden
+#                        one. A loop BODY is still covered, because `do` is here.
+#   fi done esac } )     closers; nothing follows them inside their segment. A BARE `)`
+#                        gets its own treatment; see GROUP_CLOSER_TOKENS.
+#   coproc function      both take an optional NAME before the command, the same reason
+#                        timeout / stdbuf / nice / setsid / xargs / watch are not
+#                        WRAPPERS.
+GROUP_VERB_TOKENS = frozenset({
+    "(", "{", "!", "if", "elif", "then", "else", "while", "until", "do",
+})
+
+# Openers that GLUE to the verb, leaving no token boundary to recover:
+# shlex.split('(cp seed.txt src/y.py)', posix=False) -> ['(cp', 'seed.txt', 'src/y.py)'].
+#
+# All three MEASURED silent through this hook's extractor before the fix, which is why the
+# two substitution spellings are one case rather than a subshell fix plus a guess:
+#   $(cp seed.txt src/y.py)   -> set()
+#   `cp seed.txt src/y.py`    -> set()
+#   (cp seed.txt src/y.py)    -> set()
+# The backtick is the older command-substitution syntax and runs the write exactly as
+# `$(...)` does, so leaving it out would be a one-character bypass of this fix.
+#
+# `{` is NOT here, and the reason is EXECUTED rather than read: `bash -c '{echo hi; }'` is
+# a SYNTAX ERROR (`syntax error near unexpected token `}'`) while `bash -c '{ echo hi; }'`
+# prints hi. A glued `{` does not merely fail to open a group, it does not parse at all,
+# so the spelling cannot be a bypass vector and stripping it would only invent a verb for
+# a command bash refuses to run. The bare `{` is in GROUP_VERB_TOKENS instead.
+GROUP_OPENER_PREFIXES = ("$(", "(", "`")
+# Arithmetic spellings, which must survive stripping untouched.
+ARITH_OPENERS = ("((", "$((")
+
+# A group closer that sits ALONE on its own token is SYNTAX, not an argument, and it has
+# to be dropped where segments are built rather than normalized where values are
+# classified. Two reasons, one measured and one structural:
+#
+#   * MEASURED, before this cycle: `( echo x | tee src/y.py )` already emitted the
+#     phantom row ('local', '/proj/)') beside the real one, because the tee arm collects
+#     every argument that is not a flag and not a redirect, and a bare `)` is neither.
+#     A fully spaced subshell puts the closer on its own token, so `( cp seed.txt
+#     src/y.py )` would resolve `cand[-1]` -- the copy DESTINATION -- to `)`, losing the
+#     real target as well as inventing a phantom one, which trades this cycle's blind
+#     spot for a worse defect.
+#   * STRUCTURAL: strip_unbalanced_close cannot help, because the bare token IS the
+#     closer and stripping it would yield "", a NONFILE member, which would DELETE rows
+#     rather than correct them. So the token never becomes an argument in the first
+#     place.
+#
+# `]`, `]]` and `))` are deliberately NOT here: the write gate COUNTS those tokens to
+# suppress redirects inside a comparison or arithmetic span, so dropping them would
+# un-suppress the span. `}` is not here either: bash requires a `;` or `&` before it, the
+# splitter already makes that boundary, and a lone `}` therefore never shares a segment
+# with a write.
+GROUP_CLOSER_TOKENS = frozenset({")"})
+
+
+def strip_group_opener(tok):
+    """A verb-position token with its glued group opener removed.
+
+    `(cp` -> `cp`. `$(cp` -> `cp`. `` `cp `` -> `cp`. `(` -> `(`, because nothing would be
+    left to be a verb and GROUP_VERB_TOKENS handles the bare opener. `((total` and `$((3`
+    -> unchanged, the arithmetic depth counter owns those. `{cp` -> unchanged, because bash
+    does not parse it at all (see GROUP_OPENER_PREFIXES). A QUOTED token -> unchanged,
+    because shlex(posix=False) leaves the quote character ON, and a quoted mention must
+    never reach command position.
+    """
+    out = tok
+    while not out.startswith(ARITH_OPENERS):
+        for p in GROUP_OPENER_PREFIXES:
+            if out.startswith(p) and len(out) > len(p):
+                out = out[len(p):]
+                break
+        else:
+            break
+    return out
+
+
+def strip_unbalanced_close(tok):
+    """A collected value with a group's trailing closer removed: `src/y.py)` -> `src/y.py`,
+    `` src/y.py` `` -> `src/y.py`.
+
+    COUNTED, not rstripped, with one rule per closing character because the two
+    substitution syntaxes close differently:
+
+      * `)` comes off only while the token holds MORE `)` than `(`, which is what a group
+        closer looks like from inside the token that ended the group. A filename carrying a
+        BALANCED pair therefore survives: `src/note(1))` -> `src/note(1)`, where
+        rstrip(")") would have produced `src/note(1`.
+      * a BACKTICK is its own closer, so "more closers than openers" is undefined for it
+        and the rule is PARITY: a trailing backtick comes off only while the token's
+        backtick count is ODD.
+
+    Never returns the empty string: a one-character token is left alone, because "" is a
+    NONFILE member and turning a target into a NONFILE member would DELETE a row that
+    exists today instead of correcting it.
+
+    Two measured defects motivate it, in OPPOSITE directions: `(echo x > <secret>)` was a
+    silent allow because `<secret>)` is not a credential basename, and
+    `(echo x > /dev/null)` emitted ('outside', '/dev/null)') because `/dev/null)` misses
+    the NONFILE exact-string set, so ordinary work was being gated.
+    """
+    out = tok
+    while len(out) > 1:
+        if out.endswith(")") and out.count(")") > out.count("("):
+            out = out[:-1]
+            continue
+        if out.endswith("`") and out.count("`") % 2:
+            out = out[:-1]
+            continue
+        break
+    return out
+
+
 def split_control_operators(tokens):
     """Re-split posix=False shlex tokens so every control operator is its own token.
 
@@ -786,6 +979,9 @@ def _split_one_token(tok):
 # MIRROR END split_control_operators
 try:
     from writ.session.bash_tokens import split_control_operators   # noqa: F811
+    from writ.session.bash_tokens import (                         # noqa: F811
+        GROUP_CLOSER_TOKENS, GROUP_VERB_TOKENS, strip_group_opener,
+        strip_unbalanced_close)
 except Exception:
     pass
 
@@ -935,11 +1131,21 @@ def verb_at(seg):
     STRICT wrapper's options could not be classified. SINGLE SOURCE: both the write
     extractor's cmd0 and the egress pass resolve through this, so the two vectors cannot
     drift on what "the command" is.
+
+    GROUP CONSTRUCTS are stepped over before anything else: a group opener (bare or glued,
+    `(cp`) and a reserved word a command list follows (`then`, `if`, `!`, ...) sit in verb
+    position without being the verb, and reading one AS the verb is what made
+    `(cp seed.txt <secret>)` a silent allow. `[`, `[[` and `test` are NOT stepped, because
+    they ARE the verb and seg_is_test suppression depends on that.
     """
     assigns = []
     i = 0
     while i < len(seg):
-        tok = dequote(seg[i])
+        raw = strip_group_opener(seg[i])
+        if raw in GROUP_VERB_TOKENS:
+            i += 1                    # a group opener or reserved word, not the verb
+            continue
+        tok = dequote(raw)
         if ASSIGNMENT.match(tok):
             assigns.append(tok)
             i += 1
@@ -1450,6 +1656,17 @@ tokens = split_control_operators(tokens)
 # carries one extra bit -- whether the control token BEFORE it was a pipe -- which the
 # egress pass needs to know that local data feeds the segment. Write extraction below
 # unpacks the pair and is otherwise untouched.
+#
+# A BARE group closer never enters a segment: a fully spaced subshell puts the `)` on its
+# OWN token, and a bare `)` is a valid positional argument to every write arm below (the
+# cp/mv/install destination is `cand[-1]`, the sed -i file is `files[-1]`, and the tee
+# loop takes any non-flag argument), so it would both invent a phantom target AND lose the
+# real one. MEASURED before this cycle, when nothing yet stepped over the opener:
+# `( echo x | tee src/y.py )` already emitted the phantom row ('local', '/proj/)') beside
+# the real target. Dropped HERE, as syntax, rather than normalized with the values below,
+# because the bare token IS the closer: stripping it would yield "", a NONFILE member, and
+# would delete rows instead of correcting them. `]`, `]]` and `))` are NOT dropped -- the
+# loops below COUNT them to suppress redirects inside a comparison or arithmetic span.
 segments, cur, piped = [], [], False
 for t in tokens:
     if t in CONTROL:
@@ -1457,6 +1674,8 @@ for t in tokens:
             segments.append((cur, piped))
         cur = []
         piped = t == "|"
+    elif t in GROUP_CLOSER_TOKENS:
+        continue
     else:
         cur.append(t)
 if cur:
@@ -1579,7 +1798,17 @@ if stdin_interpreter:
     interp_hits.update(hits)
 
 seen = set()
-for t in raw_targets:
+for raw in raw_targets:
+    # ONE normalization point for every write vector's collected targets: downstream of
+    # ALL collection, upstream of ALL classification, so NONFILE, the credential
+    # classifier, the gate-state check, the dedup and the abspath all see the same
+    # corrected value. A group's trailing `)` or backtick used to survive into every one
+    # of them, and it cost in BOTH directions: `(echo x > src/y.py)` yielded
+    # `<cwd>/src/y.py)` (a secret spelled that way was a silent allow) and
+    # `(echo x > /dev/null)` yielded the row `outside /dev/null)`, work-gating a
+    # NONFILE target (ordinary work refused). Stripping punctuation per consumer is
+    # exactly what the control-operator ADR rejected.
+    t = strip_unbalanced_close(raw)
     if t in NONFILE or t in seen:
         continue
     seen.add(t)

@@ -158,16 +158,21 @@ the import costs no package initialization on the hook hot path.
 
 ## Consequences
 
-**Newly gated for ordinary writes, and STILL A MISS FOR SECRETS.** Splitting inside a
+**Newly gated for ordinary writes, and AT THE TIME STILL A MISS FOR SECRETS.** Splitting inside a
 token also splits the body of an unquoted command substitution or a paren group: `(cd x; cp
 a src/y.py)` tokenizes as `['(cd', 'x;', 'cp', 'a', 'src/y.py)']` and now segments, so the
 `cp` destination is extracted as `src/y.py)` with a stray paren, where before the fix it
-produced no target, no gate call and no audit row. For an ordinary path that is a net gain
-with a cosmetically wrong character.
+produced no target, no gate call and no audit row. For an ordinary path that reads as a net
+gain with a cosmetically wrong character, and the cycle O amendment below records the
+measurement that refutes the word "cosmetically": a stray `)` also defeats the NONFILE
+exact-string set, so `(echo x > /dev/null)` emitted `('outside', '/dev/null)')` and every
+`(cmd > /dev/null)` was work-gated.
 
-CALLING IT COSMETIC IS FALSE FOR A CREDENTIAL PATH, and the measurement says so. Group
-constructs defeat the credential guard by TWO separate mechanisms, both present before this
-cycle and both still present after it (verified by reverting):
+CALLING IT COSMETIC WAS FALSE FOR A CREDENTIAL PATH, and the measurement said so. Group
+constructs defeated the credential guard by TWO separate mechanisms, both present before
+this cycle and both still present after it (verified by reverting). BOTH ARE CLOSED by the
+cycle O amendment below; the measurements are kept because they are the evidence that
+amendment rests on:
 
 - The VERB carries the group character, so no arm matches and there is NO ROW AT ALL.
   Measured through the extractor: `(cp seed.txt src/y.py)` and `( cp seed.txt src/y.py)`
@@ -183,18 +188,20 @@ denies with `[SEC-CREDENTIAL-WRITE]`, while `(cp seed.txt <secret>)` and
 `(echo x > <secret>)` are ALLOWED SILENTLY. So a credential write is still hidden by
 wrapping it in a group, and this cycle did not change that either way.
 
-Not corrected here, deliberately. Trailing-punctuation stripping is the per-consumer
-patching this design replaced, and hardening the classifier against malformed input would
-treat the symptom rather than the tokenizer that produced it. The group-construct blind
-spot is its own cycle, and it is a SECURITY item rather than a tidiness one: the honest
-statement is that the credential guard is defeated by a paren today.
+CORRECTED IN THE CYCLE O AMENDMENT BELOW, not here. This cycle deliberately stopped at the
+tokenizer: trailing-punctuation stripping per consumer is the patching this design
+replaced, and hardening the classifier against malformed input would treat the symptom.
+The amendment keeps both of those rejections and closes the hole in the two places the
+mechanisms actually live: verb resolution, and one normalization point ahead of
+classification.
 
 **Residue that stays open, so the fix is not read as wider than it is.**
 
 - `foo>src/x.py`, the operator glued to the verb in front of it.
-- A shell KEYWORD in verb position: `then`, `do`, `else` and `{` are not stepped over the
-  way the `WRAPPERS` prefixes are, so in `if true; then cp a src/x.py; fi` the segment's
-  verb resolves to `then` and the write is not seen, even though the `;` now splits.
+- A shell KEYWORD or a GROUP OPENER in verb position. Open when this ADR was written,
+  CLOSED by the cycle O amendment below; the residue that remains is enumerated there
+  (a substitution inside an assignment, a `case` branch's first command, and a function
+  definition body).
 - The NEWLINE separator in the write gate. MEASURED this cycle rather than read: through
   the hook's own embedded extractor, `WRIT_BASH_CMD="ls\ncp seed.txt src/x.py"` with
   `WRIT_CWD=/proj` emits NO row, while the `;`-separated control `"ls ; cp seed.txt
@@ -216,3 +223,219 @@ every case" is shell semantics, not an observation of a file appearing on this m
 no test in this cycle opens or creates a credential file (organization credential ban).
 Nothing here proves any behavior of the tokenizer under a Claude Code envelope shape that
 the synthetic envelopes in the test harness do not reproduce.
+
+## Amendment (cycle O): group constructs in verb position
+
+The residue this ADR left open ("a shell KEYWORD in verb position") and the miss it
+disclosed but did not fix ("the credential guard is defeated by a paren today") are both
+CLOSED here. The tokenizer is untouched: nothing about `split_control_operators`,
+segmentation or quoting changed. What changed is which token is called the verb, and what
+one loop does to a value before classifying it.
+
+### The two mechanisms, as measured
+
+MEASURED through the write gate's own embedded extractor with `WRIT_CWD=/proj`, before the
+fix:
+
+```
+cp seed.txt src/y.py                        -> {('local', '/proj/src/y.py')}   (control)
+(cp seed.txt src/y.py)                      -> set()
+( cp seed.txt src/y.py)                     -> set()
+( cp seed.txt src/y.py )                    -> set()
+{ cp seed.txt src/y.py; }                   -> set()
+$(cp seed.txt src/y.py)                     -> set()
+`cp seed.txt src/y.py`                      -> set()
+if true; then cp seed.txt src/y.py; fi      -> set()
+while true; do cp seed.txt src/y.py; done   -> set()
+(echo x > src/y.py)                         -> {('local', '/proj/src/y.py)')}
+(echo x > /dev/null)                        -> {('outside', '/dev/null)')}
+( echo x | tee src/y.py )                   -> {('local', '/proj/src/y.py'),
+                                                ('local', '/proj/)')}
+```
+
+1. NO ROW AT ALL. `verb_at` stepped over a prefix only by membership in `WRAPPERS`, so a
+   group character occupying verb position (`(`, `{`) or glued to it (`(cp`, `$(cp`,
+   `` `cp ``) became "the verb" and matched none of the `cmd0` write arms. Reserved words
+   failed for a second reason: the `;` split isolates `then` and `do` ALONE in `seg[0]`,
+   and neither is in `WRAPPERS`.
+2. A CORRUPTED VALUE, COSTING IN BOTH DIRECTIONS. The redirect path never consults the
+   verb, so a redirect inside a group WAS seen, with the group's trailing closer still on
+   its target. `src/y.py)` defeats the basename-driven credential classifier exactly as
+   `.env;` did, and `/dev/null)` defeats the `NONFILE` exact-string set, which made every
+   ordinary `(cmd > /dev/null)` work-gated. The missed secret and the refused chore are the
+   same corrupted value read by two different arms.
+
+End to end through the real hook, work mode, BOTH gates approved: `cp seed.txt <secret>`
+denied with `[SEC-CREDENTIAL-WRITE]` while `(cp seed.txt <secret>)` and
+`(echo x > <secret>)` were ALLOWED SILENTLY.
+
+### Decision
+
+`writ/session/bash_tokens.py` gains `GROUP_VERB_TOKENS`, `GROUP_OPENER_PREFIXES`,
+`ARITH_OPENERS`, `GROUP_CLOSER_TOKENS`, `strip_group_opener` and
+`strip_unbalanced_close`, INSIDE the existing `# MIRROR BEGIN/END
+split_control_operators` block, so the two hooks share one authored source and the
+existing textual-identity test catches drift. The marker strings keep their spelling (they
+are what `tests/test_bash_control_operator_split.py` slices on); a comment inside the block
+records that the name is now historical and the block carries every shared bash-token
+helper.
+
+- Both hooks' `verb_at` loops step over a token that is in `GROUP_VERB_TOKENS` after
+  `strip_group_opener` has removed a glued opener. The two `verb_at` BODIES stay separate,
+  because the write gate parses sudo/doas short-option grammar strictly while the worktree
+  hook only answers "is the verb git"; the shared thing is the stepping vocabulary, not the
+  function.
+- The write gate applies `strip_unbalanced_close` at ONE place, the head of the
+  classification loop, which is downstream of every collection vector (the redirect loop,
+  the six `cmd0` arms, the inline-interpreter pass) and upstream of every judgement
+  (`NONFILE`, the credential classifier, the gate-state realpath, the `seen` dedup, the
+  abspath and the local/outside split). The worktree hook applies it at the ONE place a
+  `target` is assigned.
+- A closer standing ALONE on its own token is dropped where SEGMENTS are built, in both
+  hooks, and it is not a normalization case at all. See "The bare closer" below.
+
+### The stepping set, member by member
+
+IN: `(` and `{` (group openers, a command list follows directly); `then`, `do`, `else`
+(reserved words a command list follows directly); `if`, `elif`, `while`, `until` (what
+follows is a CONDITION, which is itself a command list that really runs, as in `if cp seed.txt
+.env; then :; fi` executes the `cp`); `!` (pipeline negation).
+
+OUT, each for a stated reason:
+
+- `[`, `[[`, `test`: LOAD-BEARING exclusion. These ARE the verb, and the write gate
+  suppresses redirects for a segment whose verb is one of them (`seg_is_test`). Stepping
+  over `[[` would make `"$x"` the verb, un-suppress the span, and read
+  `if [[ "$x" > "config.txt" ]]; then echo hi; fi` as a write to `config.txt`.
+- `((`, `$((`: arithmetic, not a group. The extractor counts the LITERAL substrings `((`
+  and `))` as a depth counter, which owns that spelling, so `strip_group_opener` returns
+  such a token unchanged.
+- `for`, `select`, `case`, `in`: what follows is a VARIABLE NAME or a WORD, not a command,
+  so stepping would resolve a WRONG verb rather than recover a hidden one. A loop BODY is
+  still covered, because `do` is in the set.
+- `fi`, `done`, `esac`, `}`, `)`: closers; nothing follows them inside their segment.
+- `coproc`, `function`: both take an optional NAME before the command, the same reason
+  `timeout`, `stdbuf`, `nice`, `setsid`, `xargs` and `watch` are absent from `WRAPPERS`.
+
+### Three glued prefixes, and why the two substitution syntaxes are one case
+
+`GROUP_OPENER_PREFIXES = ("$(", "(", "`")`. All three were MEASURED silent (see the table
+above), which is the evidence that made them one case rather than a subshell fix plus a
+guess. The backtick is the older command-substitution spelling; bash runs the substitution
+and the `cp` inside it executes either way, so resolving the substitution's first word as
+the verb is correct semantics, and it can only ADD rows when that word is one of the write
+arms. Leaving it out would have been a one-character bypass of this fix.
+
+`{` is deliberately NOT in the tuple, and the reason is EXECUTED rather than read:
+`bash -c '{echo hi; }'` is a syntax error (`syntax error near unexpected token `}'`) while
+`bash -c '{ echo hi; }'` prints `hi`. A glued `{` does not merely fail to open a group, it
+does not parse at all, so the spelling cannot be a bypass vector and stripping it would
+invent a verb for a command bash refuses to run. The bare `{` is in `GROUP_VERB_TOKENS`
+instead.
+
+RETRACTED, because the first pass at this decision got it wrong and the reason should not
+survive in the record: the backtick was initially left out on the argument that "unbalanced
+trailing" is undefined for a character that is its own closer. Parity expresses it fine, so
+the argument was wrong rather than merely cautious.
+
+### Two counting rules, never `rstrip`
+
+`strip_unbalanced_close` is COUNTED, with one rule per closing character:
+
+- `)` comes off only while the token holds MORE `)` than `(`, which is what a group closer
+  looks like from inside the token that ended the group. `src/note(1))` therefore becomes
+  `src/note(1)`, where `rstrip(")")` would have produced `src/note(1`.
+- a BACKTICK is its own closer, so "more closers than openers" is undefined for it and the
+  rule is PARITY: a trailing backtick comes off only while the token's backtick count is
+  ODD. `` src/y.py` `` becomes `src/y.py`, and `` src/a`b`.txt `` is untouched.
+
+It never returns the empty string: a one-character token is left alone, because `""` is a
+`NONFILE` member and turning a target into a `NONFILE` member would DELETE a row that
+exists today rather than correct it.
+
+`}` needs no rule: bash requires a `;` or `&` before a brace group's `}`, and the splitter
+already makes that boundary, so `{ cp seed.txt src/y.py; }` yields a clean token.
+
+### The bare closer, which is SYNTAX and not a value
+
+A fully spaced subshell puts the closer on its OWN token, and a bare `)` is a valid
+positional argument to every write arm: the `cp`/`mv`/`install` destination is `cand[-1]`
+and the `sed -i` file is `files[-1]`, both filtered only on "not a flag and not a
+redirect", and the `tee` loop takes any non-flag argument. So `( cp seed.txt src/y.py )`
+would have resolved the DESTINATION to `)`, which is a phantom target AND a lost real one:
+the fix would have traded the blind spot for a worse defect. The same shape was already
+live before this cycle on the arm that needs no verb, measured: `( echo x | tee src/y.py )`
+emitted the phantom row `('local', '/proj/)')` beside the real target.
+
+`strip_unbalanced_close` cannot answer it, structurally: the bare token IS the closer, so
+stripping would yield `""`, which the "never empty" rule forbids for a reason. The token is
+therefore dropped where SEGMENTS are built, in both hooks, as one more thing that is not a
+command word, in the same place and the same shape as the existing `CONTROL` check, one line
+beside it. `GROUP_CLOSER_TOKENS` holds `)` only: `]`, `]]` and `))` are COUNTED by the
+comparison and arithmetic suppression, so dropping them would un-suppress those spans, and
+a lone `}` never shares a segment with a write.
+
+### Alternatives rejected
+
+1. **Making `(` or `)` a token boundary in `split_control_operators`.** The obvious fix and
+   the one the next reader will reach for. It would break three things that work today:
+   the arithmetic depth counter (it counts the LITERAL `((` and `))` inside ONE token, so
+   it REQUIRES them glued); the process-substitution guard `if rest.startswith("("):
+   return None` inside `redir_target` (splitting `>(cmd)` would make the `>` look like it
+   targets a bare `(`); and `$(...)`, which would be blown open into unrelated top-level
+   segments. This amendment touches neither the splitter's behavior nor segmentation.
+2. **Per-consumer trailing-punctuation stripping.** Rejected again, for the same reason
+   this ADR rejected it: it is the patching the single re-split replaced, and it would put
+   the same rule in nine places that already agree on one list.
+3. **A second shared module beside `bash_tokens.py`.** Rejected: the mirror block already
+   exists, is already asserted byte-identical across three files, and a second sharing
+   mechanism would need its own drift test.
+4. **Normalizing egress hosts.** Rejected: egress destinations have no single collection
+   list to normalize at, and the direction of the error is fail-closed, because an
+   unmatched allowlist entry can only ADD a confirmation prompt, never remove one.
+   `(curl -d @f https://example.invalid)` now asks, with the host carrying a cosmetic `)`.
+
+### Accepted cost
+
+A file whose name really ends in an UNBALANCED `)` is gated under the name without it
+(`cp a 'src/weird)'` records `src/weird`). The direction is fail-closed: the row still
+exists, and a credential named `.env)` normalizes INTO a deny rather than out of one. A
+test pins it so it is documented behavior rather than a surprise.
+
+The BOUNDARY direction is safe for a structural reason worth stating, because it is the
+other half of the verdict: normalization can only SHORTEN a path, and a shorter path cannot
+become contained in a root that did not contain the longer one, so a target outside the
+project cannot normalize its way inside. Measured across the cases the test pins:
+`/etc/foo)` normalizes to `/etc/foo` and stays out of project; `.env)` becomes a credential
+where it was not one; a balanced `src/note(1)` is untouched; and a lone `)` returns itself
+rather than the empty string, which would have deleted the row instead of correcting it.
+
+One live behavior LOOSENS, and it is the correct one: `(echo x > /dev/null)` goes from the
+row `outside /dev/null)` to NO row. That row only ever existed by corruption; the
+uncorrected `/dev/null` is a `NONFILE` member and has never produced one.
+
+### Residue that stays open
+
+- A substitution inside an ASSIGNMENT: `out=$(cp a src/y.py)` matches `ASSIGNMENT` on
+  `out=$(cp`, so `verb_at` steps the whole token and resolves `a` as the verb.
+- The FIRST command of a `case` branch: `case $x in a) cp a src/y.py;; esac` leaves `a)` in
+  verb position, and stepping over it needs pattern-list parsing.
+- A FUNCTION DEFINITION body: `f() { cp a src/x.py; }` resolves its verb to `f()`. Out of
+  scope rather than missed, because the body writes only when the function is CALLED, and
+  the call resolves to the verb `f`, which is the already-disclosed wrapper-script limit.
+- `foo>src/x.py` and the NEWLINE separator in the write gate, both unchanged and both still
+  disclosed in that hook's header.
+
+### Measured versus inferred
+
+MEASURED: every extractor row in the table above and its after-state counterpart; the real
+write-gate hook's `permissionDecision` in work mode with both gates approved, for the
+ungrouped control and for each group spelling; the real worktree hook's decision for the
+three grouped `git worktree add` forms and for a gitignored target inside a group; the
+egress row for a transfer verb inside a subshell; and the four bash grammar probes,
+including the `{echo hi; }` syntax error.
+
+NOT MEASURED, stated plainly: a write LANDING ON DISK through the full Claude Code path.
+"Bash writes the file in every one of these spellings" is shell semantics, not an
+observation of a file appearing on this machine. No test in this cycle creates, opens or
+reads a credential file; the classifier is path-only (organization credential ban).
