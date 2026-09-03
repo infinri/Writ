@@ -10,8 +10,11 @@ which bypasses the Write/Edit/NotebookEdit gate stack entirely. Two protections:
   2. WORK-GATE for Bash (hooks/scripts/writ-bash-write-gate.sh): the redirect/copy
      TARGET path is extracted and fed to the same server gate the Write tool uses,
      so a Bash write to project source is plan-gated exactly like a Write. Targets
-     outside the repo (scratch /tmp) are not work-gated; obfuscated writes evade
-     (documented coverage limit, not full coverage).
+     outside the repo are work-gated too as of cycle L (they emit an `outside` row
+     and take the same can-write round trip), because the Write door's project
+     boundary refuses exactly those paths and skipping them here left that
+     boundary enforceable on one of the two write doors; obfuscated writes still
+     evade (documented coverage limit, not full coverage).
 """
 from __future__ import annotations
 
@@ -21,6 +24,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -213,9 +217,15 @@ class TestBashExtractor:
     def test_stderr_redirect_to_file_is_a_write(self):
         assert _extract("make build 2> logs/err.log") == {("local", "/proj/logs/err.log")}
 
-    def test_outside_repo_targets_not_workgated(self):
-        assert _extract("echo x > /tmp/scratch") == set()
-        assert _extract("cat a | tee -a /tmp/log.txt") == set()
+    def test_outside_repo_targets_emit_an_outside_row(self):
+        # MEASURED after cycle L: an out-of-repo target used to emit NO row, so it
+        # reached no gate and left no audit line. It now emits `outside`, which the
+        # consumer feeds to the same can-write the Write tool uses. Pre-approval that
+        # means an OS-scratch write is refused with [ENF-GATE-PLAN]: consequence C1 in
+        # the approved plan, the accepted cost of two-door parity, whose named remedy is
+        # a scratch-zone allow arm in gates._check_work_gate, deferred to its own cycle.
+        assert _extract("echo x > /tmp/scratch") == {("outside", "/tmp/scratch")}
+        assert _extract("cat a | tee -a /tmp/log.txt") == {("outside", "/tmp/log.txt")}
 
     def test_tee_dd_cp_mv_sed_targets(self):
         assert _extract("cat a | tee src/b.py") == {("local", "/proj/src/b.py")}
@@ -361,16 +371,32 @@ class TestHookEndToEnd:
         assert out is not None and out.get("permissionDecision") == "deny"
         assert "ENF-GATE-PLAN" in out.get("permissionDecisionReason", "")
 
-    def test_outside_repo_write_allowed_in_work_mode(self, tmp_path: Path):
+    def test_outside_repo_write_is_decided_in_work_mode(self, tmp_path: Path):
+        # THIS TEST DOES NOT EXECUTE IN THIS ENVIRONMENT (no daemon answers on the test
+        # port), so its name is documentation and not evidence; the executable pin for
+        # the same property is TestOutOfCwdTargetIsWorkGated below, which reaches the
+        # gate through the CLI fallback. The skip guard is left exactly as it was.
         if not _test_daemon_up():
             pytest.skip("test daemon not running on test port")
         sid = f"bwg-{uuid.uuid4().hex[:8]}"
         subprocess.run([sys.executable, HELPER, "mode", "set", "work", sid],
                        capture_output=True)
-        # write target /tmp/... is outside tmp_path (the repo root) -> not work-gated.
-        out = _run_hook("echo x > /tmp/writ-scratch-xyz", sid, str(tmp_path))
+        # The target is outside tmp_path (the repo root). It used to produce no row and
+        # no verdict; as of cycle L it is DECIDED, by the same _can_write_check the
+        # Write tool calls, so this asserts AGREEMENT with that door rather than
+        # silence. Pre-approval both refuse, which is consequence C1 in the approved
+        # plan, the accepted cost of two-door parity, whose named remedy is a
+        # scratch-zone allow arm in gates._check_work_gate, deferred to its own cycle.
+        gates = _imp("writ.session.gates")
+        target = "/tmp/writ-scratch-xyz"
+        out = _run_hook(f"echo x > {target}", sid, str(tmp_path))
+        write_door = gates._can_write_check(
+            sid, {"tool_input": {"file_path": target}}, SKILL_ROOT)
         subprocess.run([sys.executable, HELPER, "clear", sid], capture_output=True)
-        assert out is None
+        assert write_door["can_write"] is False, write_door
+        assert out is not None, "the out-of-repo target was silent; it reached no gate"
+        assert out.get("permissionDecision") == "deny", out
+        assert "ENF-GATE-PLAN" in out.get("permissionDecisionReason", ""), out
 
 
 # --------------------------------------------------------------------------- #
@@ -436,6 +462,40 @@ class TestMatcherWired:
         assert "writ-bash-write-gate.sh" in scripts
 
 
+class TestTemplatePlaceholderIsNotAPath:
+    """A quoted literal holding an unresolved placeholder is a TEMPLATE, not a path.
+
+    PATH_CAND excludes braces, so a run scanned out of `check('<brace>d<brace>/x/y')`
+    drops the placeholder and leaves `/x/y`, which reads as an absolute path nobody
+    named. That phantom was harmless while out-of-repo targets produced no row at all;
+    once this cycle work-gated them it became a REFUSAL, and it fired twice within
+    minutes on ordinary agent tooling (a test harness building a subprocess argument
+    with an f-string). CODE_PUNCT already lists the braces as characters meaning "this
+    token is code, not a filename"; it was simply never applied to runs taken from
+    inside a quoted literal.
+
+    The two positives below are the point: the skip is keyed on the placeholder, not on
+    being out of repo, so a genuine absolute path outside the project is still gated.
+    """
+
+    def test_a_placeholder_literal_yields_no_target(self) -> None:
+        brace_open, brace_close = chr(123), chr(125)
+        cmd = ('python3 -c "from x import check; check(\'%sd%s/elsewhere/pkg\')"'
+               % (brace_open, brace_close))
+        assert _extract(cmd, cwd="/proj") == set(), (
+            "an unresolved placeholder literal is a template; the phantom path "
+            "reached the work gate and refused real agent tooling"
+        )
+
+    def test_a_real_absolute_path_outside_the_repo_is_still_a_target(self) -> None:
+        got = _extract("python3 -c \"check('/home/other/pkg/thing.py')\"", cwd="/proj")
+        assert got == {("outside", "/home/other/pkg/thing.py")}, got
+
+    def test_a_real_path_inside_the_repo_is_still_a_target(self) -> None:
+        got = _extract("python3 -c \"open('/proj/src/app.py','w')\"", cwd="/proj")
+        assert got == {("local", "/proj/src/app.py")}, got
+
+
 class TestInterpreterArgDirectoryIsNotAWriteTarget:
     """The inline-interpreter args scan fed DIRECTORY paths to the work gate.
 
@@ -468,6 +528,25 @@ class TestInterpreterArgDirectoryIsNotAWriteTarget:
             f"false-positive; extractor emitted {got}"
         )
 
+    def test_existing_directory_outside_cwd_is_not_a_target(self, tmp_path) -> None:
+        # The out-of-cwd half of the carve-out, unproven until the `outside` row existed.
+        # The two tests above run the directory INSIDE cwd, so a broken carve-out shows up
+        # there as a `local` row and their `k == "local"` assertions catch it. Out of cwd a
+        # break now emits `outside` instead, which those assertions cannot see. Asserting
+        # the row set is EMPTY covers both spellings, so this cannot decay the same way.
+        outside_dir = tmp_path / "elsewhere" / "pkg"
+        outside_dir.mkdir(parents=True)
+        cwd = tmp_path / "proj"
+        cwd.mkdir()
+        got = _extract(
+            f"python3 -c \"from x import check; check('{outside_dir}')\"",
+            cwd=str(cwd),
+        )
+        assert got == set(), (
+            f"an existing directory outside cwd must not be a write target; "
+            f"extractor emitted {got}"
+        )
+
     def test_existing_file_arg_is_still_a_target(self, tmp_path) -> None:
         (tmp_path / "app.py").write_text("x = 1\n")
         got = _extract(
@@ -490,21 +569,84 @@ class TestInterpreterArgDirectoryIsNotAWriteTarget:
 
 
 # --------------------------------------------------------------------------- #
-# 8. project-boundary predicate interaction (plan.md capability 26, "a
-#    project-boundary predicate on writes"). The classifier's cwd-only filter is
-#    DELIBERATELY left open by that plan (writ-bash-write-gate.sh:1394-1400,
-#    "Scratch writes outside the repo are not plan-gated") -- closing it would
-#    convert routine pre-approval scratch writes into [ENF-GATE-PLAN] refusals
-#    with no way out, the "refusal names no action" defect. This is a
-#    REGRESSION PIN on that CURRENT, intentionally-unchanged behaviour, not a
-#    new capability the project-boundary predicate adds: a Bash-mediated write
-#    outside the hook's cwd never reaches _can_write_check (or the new
-#    predicate inside it) at all, because the classifier emits no row for it.
+# 8. project-boundary parity on the Bash door. THE GAP IS CLOSED as of cycle L.
+#
+#    THE OLD ARGUMENT FOR LEAVING IT OPEN, kept because it is the reason the
+#    remedy below is NAMED instead of forgotten: the classifier's cwd-only filter
+#    was DELIBERATELY left open by plan.md capability 26 ("a project-boundary
+#    predicate on writes"), on the grounds that closing it "would convert routine
+#    pre-approval scratch writes into [ENF-GATE-PLAN] refusals with no way out,
+#    the 'refusal names no action' defect".
+#
+#    THAT COST IS REAL, AND NOW MEASURED rather than predicted: pre-approval,
+#    `echo x > /tmp/writ-scratch-xyz` denies with [ENF-GATE-PLAN] where it used
+#    to be silent (see tests/test_bash_interpreter_write_gate.py's two out-of-repo
+#    pins for the measurement). It is consequence C1 in the approved plan, and it
+#    was accepted at approval as the price of the parity requirement.
+#
+#    WHAT OVERRULED IT: with no row emitted, an out-of-cwd Bash write reached
+#    _can_write_check not at all, while the Write door refused exactly those paths
+#    through writ/session/project_boundary.py. So a boundary the user had approved
+#    was enforceable on one of the two write doors -- measured live as a Bash
+#    heredoc write that succeeded on a path the Write tool had refused minutes
+#    earlier. A confinement enforced on one door is not a confinement, and the
+#    silence was indistinguishable from an allow.
+#
+#    THE REMEDY FOR C1, DELIBERATELY DEFERRED to its own cycle: a scratch-zone
+#    allow arm in gates._check_work_gate. It belongs there and not in this
+#    producer because both doors go through _can_write_check, so one arm restores
+#    pre-approval scratch usability on both and parity survives. Special-casing
+#    the OS temp dir in the classifier instead would reproduce the old silence and
+#    restore the divergence, while leaving the parity property green.
 # --------------------------------------------------------------------------- #
-class TestOutOfCwdTargetHasNoLocalRow:
-    def test_a_target_outside_the_hooks_cwd_emits_no_local_row(self):
-        got = _extract("echo x > /home/other-project/src/thing.py", cwd="/proj")
-        assert not any(kind == "local" for kind, _ in got), (
-            f"an out-of-cwd target must not be classified 'local' (the declared "
-            f"gap plan.md leaves open); extractor emitted {got}"
+class TestOutOfCwdTargetIsWorkGated:
+    """An out-of-cwd target is classified `outside` AND decided like a `local` one.
+
+    Deliberately NOT "no `local` row appears". That assertion is now true for two
+    different reasons -- the row says `outside` (the fix) or no row was emitted at all
+    (the defect) -- so it cannot tell the fix from its absence, and it read as a PASS
+    after the behaviour it was written to pin had been deliberately reversed. Each pin
+    below names the row exactly, or checks the decision that row earns.
+    """
+
+    OUT_OF_CWD = "/home/other-project/src/thing.py"
+
+    def test_a_target_outside_the_hooks_cwd_emits_an_outside_row(self):
+        # EXACT set equality, not membership and not an absence: emitting nothing and
+        # emitting `local` are both failures, and catching the first is the point.
+        got = _extract(f"echo x > {self.OUT_OF_CWD}", cwd="/proj")
+        assert got == {("outside", self.OUT_OF_CWD)}, (
+            f"an out-of-cwd target must emit exactly one `outside` row so it reaches "
+            f"the same gate the Write door uses; extractor emitted {got}"
         )
+
+    def test_an_out_of_cwd_target_reaches_the_same_decision_as_a_local_one(
+        self, tmp_path: Path
+    ) -> None:
+        # The row is only half the fix: the consumer's kind test has to FEED `outside`
+        # to the same can-write a `local` row gets. Two targets, one session, one
+        # verdict. The out-of-cwd target sits in the OS scratch zone on purpose, so the
+        # project boundary abstains on it and the decision comes from the same work gate
+        # that decides the in-cwd file; otherwise the two denials could agree for
+        # different reasons.
+        # MEASURED: both deny with [ENF-GATE-PLAN]. The out-of-cwd refusal is
+        # consequence C1 in the approved plan, the accepted cost of two-door parity,
+        # whose named remedy is a scratch-zone allow arm in gates._check_work_gate,
+        # deferred to its own cycle.
+        sid = f"bwg-{uuid.uuid4().hex[:8]}"
+        _seed(sid, mode="work", gates_approved=[], current_phase=None)
+        (tmp_path / "src").mkdir()
+        scratch = os.path.join(tempfile.gettempdir(), "writ-outside-cwd-probe.py")
+        assert not scratch.startswith(str(tmp_path)), (
+            "the probe path must be OUTSIDE the hook's cwd or this pin proves nothing"
+        )
+        local_out = _run_hook("echo x > src/foo.py", sid, str(tmp_path))
+        outside_out = _run_hook(f"echo x > {scratch}", sid, str(tmp_path))
+        for name, out in (("local", local_out), ("outside", outside_out)):
+            assert out is not None, (
+                f"the {name} target was silent, so it reached no gate at all"
+            )
+            assert out.get("permissionDecision") == "deny", (name, out)
+            assert "ENF-GATE-PLAN" in out.get("permissionDecisionReason", ""), (name, out)
+        assert (outside_out["permissionDecision"]
+                == local_out["permissionDecision"]), (local_out, outside_out)

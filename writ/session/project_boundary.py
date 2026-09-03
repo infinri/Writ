@@ -27,9 +27,14 @@ from __future__ import annotations
 
 import os
 import tempfile
+from pathlib import Path
 
 from writ.session import locators
-from writ.session.locators import ROOT_FROM_NONE, resolve_project_root
+from writ.session.locators import (
+    ROOT_FROM_NONE,
+    _project_transcript_dir,
+    resolve_project_root,
+)
 
 # The three authorities a refusal can be issued under. One parameter, three values, no
 # booleans: `kind` selects both whether the plan's `## Files` declaration is honored (only
@@ -119,6 +124,48 @@ def in_scratch_zone(target: str, root: str) -> bool:
     if is_contained(root, zone):
         return False
     return is_contained(target, zone)
+
+
+def in_project_memory_dir(target: str, root: str) -> bool:
+    """True when the resolved `target` sits DIRECTLY in THIS project's own memory dir.
+
+    Claude Code keeps per-project memory at `~/.claude/projects/<encoded-root>/memory/`, and
+    an agent writes there every session. That directory is outside every project it belongs
+    to, so this boundary refused all of it: measured for this repo, `is_contained` False and
+    `in_scratch_zone` False, which left a plan-declared absolute path as the only way to
+    write memory at all. It is the project's OWN sidecar, derived from the project root, so
+    it is exempted HERE rather than in `gates._check_exempt_write`: that helper runs ahead of
+    mode and phase logic and returns an allow, which is more than this defect needs. Lifting
+    the boundary refusal only leaves the work gate in charge of the write.
+
+    KEYED ON THE FORWARD DERIVATION FROM `root`, through the same
+    `locators._project_transcript_dir` the harvester uses, so one encoding serves both
+    directions. The REVERSE recognizer (`memory_capture.derive_project_from_memory_path`,
+    keyed on the parent segment being named `memory`) is deliberately NOT reused: as an
+    ALLOWLIST that key is narrower than the policy, so it would exempt any file whose parent
+    directory is called `memory`, including another project's `src/memory/` and
+    `/etc/memory/`. Forward from the root exempts exactly one directory, and another
+    project's memory dir stays refused.
+
+    EXACT DIRNAME EQUALITY, the same comparison the settings exemption in
+    `gates._check_exempt_write` makes. No prefix and no glob: a subdirectory under the memory
+    dir is NOT exempt, and `*` spans `/` in this repo's dialect (see the module docstring),
+    so a directory-shaped pattern would exempt any depth and `..` would walk out of it.
+
+    `target` is expected to be `resolve_target`'s output, like every other predicate here.
+    Only the DERIVED directory is realpath'd, because HOME or `~/.claude` may be a symlink
+    and both sides of the comparison have to be resolved the same way. No HOME means no
+    derivation and no exemption: absence is not a grant.
+    """
+    if not target or not root:
+        return False
+    home = os.environ.get("HOME", "")
+    if not home:
+        return False
+    memory_dir = os.path.realpath(
+        str(_project_transcript_dir(root, Path(home) / ".claude") / "memory")
+    )
+    return os.path.dirname(target) == memory_dir
 
 
 def declared_absolute_paths(root: str, session_id: str | None = None) -> set[str]:

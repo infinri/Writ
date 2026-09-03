@@ -22,6 +22,12 @@ from pathlib import Path
 from writ.session.cache import _merge_queried_by_file
 from writ.session.commit_capture import _derive_change_id, _queried_for_path
 from writ.session.friction import _log_friction_event
+# The ~/.claude/projects/<encoded> derivation lives in locators now (stdlib-only, below
+# every caller) because the WRITE PATH reads it too. Imported rather than redefined so the
+# encoding has one definition, and re-exported from this module so
+# harvester._project_transcript_dir stays the patchable seam this module's tests use and
+# commit_capture's lazy import keeps resolving.
+from writ.session.locators import _project_transcript_dir
 from writ.session.name_status import parse_name_status
 from writ.session.plan_harvest import harvest_plan
 from writ.session.registration import ensure_project_registered
@@ -118,11 +124,6 @@ def _git_commits(repo: str, since: str | None) -> list[dict]:
             "files": files,
         })
     return commits
-
-
-def _project_transcript_dir(repo_root: str, claude_home: Path) -> Path:
-    """The ~/.claude/projects/<encoded> dir for repo_root (each '/' and '.' -> '-')."""
-    return claude_home / "projects" / re.sub(r"[/.]", "-", repo_root)
 
 
 def _collect_plan_writes(transcript_dir: Path) -> list[dict]:

@@ -1250,3 +1250,143 @@ class TestFixturesNeverNameARealProjectRoot:
         )
         hits = [needle for needle in forbidden if needle in source]
         assert hits == [], f"a fixture named a real, non-tmp_path root: {hits}"
+
+
+# --------------------------------------------------------------------------------- #
+# Capability L1: this project's own Claude memory directory is exempt on all three
+# kinds, and the exemption is keyed on the FORWARD derivation from the root.
+# --------------------------------------------------------------------------------- #
+
+
+class TestProjectMemoryDirectoryIsExempt:
+    """SEAM CONTRACT for the implementer: gates.py binds `in_project_memory_dir` with
+    `from writ.session.project_boundary import ...`, so the conditionality test below
+    patches the name ON `gates` (the live seam), the same way TestScratchZoneGuard...
+    patches `tempfile.gettempdir` on the module both sides share. Patching
+    project_boundary's attribute would not reach the bound name.
+
+    The memory dir is DERIVED here with the production function rather than spelled out, so
+    the two directions cannot drift; the encoding itself has exactly one literal pin, at
+    tests/test_decision_memory_harvester.py::TestPureFunctions::
+    test_project_transcript_dir_encoding, and is deliberately not restated.
+    """
+
+    def _memory_dir(self, root, home) -> Path:
+        from writ.session.locators import _project_transcript_dir
+        d = _project_transcript_dir(os.path.realpath(str(root)), home / ".claude") / "memory"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    @pytest.fixture()
+    def home(self, tmp_path, monkeypatch) -> Path:
+        h = tmp_path / "home"
+        (h / ".claude").mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(h))
+        return h
+
+    def test_post_approval_write_to_the_memory_dir_is_allowed(self, fake_project, home) -> None:
+        gates = _gates_module()
+        root, _outside = fake_project
+        target = str(self._memory_dir(root, home) / "MEMORY.md")
+        result = gates._can_write_check("pb-L1-a", _envelope(target), "",
+                                        _post_approval_cache(str(root)))
+        assert result["can_write"] is True, result["reason"]
+
+    def test_pre_approval_write_to_the_memory_dir_is_allowed(self, fake_project, home) -> None:
+        # Pre-approval this path reaches the boundary through the EXCLUDED arm, because
+        # gate-categories' `*/.claude/*.md` matches it (`*` spans `/` in fnmatch). That is
+        # the arm that refused every memory write before this exemption existed. If this
+        # assertion fails with [ENF-GATE-PLAN] instead, the exclusion does NOT cover the
+        # path and the pre-approval half of D1 needs its own decision: report that, do not
+        # widen gate-categories to make the test pass.
+        gates = _gates_module()
+        root, _outside = fake_project
+        target = str(self._memory_dir(root, home) / "MEMORY.md")
+        result = gates._can_write_check("pb-L1-b", _envelope(target), "",
+                                        _pre_approval_cache(str(root)))
+        assert result["can_write"] is True, result["reason"]
+
+    def test_dispatched_subagent_write_to_the_parents_memory_dir_is_allowed(
+        self, cache_dir, fake_project, home
+    ) -> None:
+        gates = _gates_module()
+        root, _outside = fake_project
+        parent_sid = "pb-L1-parent"
+        _write_cache_for(parent_sid, {"project_root": str(root)})
+        cache = {
+            "is_subagent": True, "cache_source": "subagent_start",
+            "agent_type": "writ-implementer", "role_source": "envelope",
+            "role_write_scope": None, "parent_session_id": parent_sid,
+        }
+        target = str(self._memory_dir(root, home) / "MEMORY.md")
+        result = gates._can_write_check("pb-L1-child", _envelope(target), "", cache)
+        assert result["can_write"] is True, result["reason"]
+
+    def test_another_projects_memory_dir_is_still_refused(
+        self, tmp_path, fake_project, home
+    ) -> None:
+        gates = _gates_module()
+        root, _outside = fake_project
+        other = tmp_path / "other-proj"
+        other.mkdir()
+        target = str(self._memory_dir(other, home) / "MEMORY.md")
+        result = gates._can_write_check("pb-L1-c", _envelope(target), "",
+                                        _post_approval_cache(str(root)))
+        assert result["can_write"] is False
+        assert "ENF-PROJECT-BOUNDARY" in (result["reason"] or "")
+
+    def test_a_directory_merely_named_memory_is_still_refused(
+        self, tmp_path, fake_project, home
+    ) -> None:
+        # The REJECTED key, pinned. derive_project_from_memory_path recognizes a memory path
+        # by its parent segment alone; as an allowlist that exempts any file whose parent is
+        # called `memory`, anywhere on disk.
+        gates = _gates_module()
+        root, _outside = fake_project
+        decoy = tmp_path / "somewhere" / "memory"
+        decoy.mkdir(parents=True)
+        result = gates._can_write_check("pb-L1-d", _envelope(str(decoy / "MEMORY.md")), "",
+                                        _post_approval_cache(str(root)))
+        assert result["can_write"] is False
+        assert "ENF-PROJECT-BOUNDARY" in (result["reason"] or "")
+
+    def test_a_subdirectory_of_the_memory_dir_is_still_refused(self, fake_project, home) -> None:
+        # Exact dirname equality, not a prefix and not a glob: ONE directory is exempt.
+        gates = _gates_module()
+        root, _outside = fake_project
+        deeper = self._memory_dir(root, home) / "nested"
+        deeper.mkdir(parents=True, exist_ok=True)
+        result = gates._can_write_check("pb-L1-e", _envelope(str(deeper / "MEMORY.md")), "",
+                                        _post_approval_cache(str(root)))
+        assert result["can_write"] is False
+        assert "ENF-PROJECT-BOUNDARY" in (result["reason"] or "")
+
+    def test_the_same_target_is_refused_when_home_points_elsewhere(
+        self, tmp_path, fake_project, home, monkeypatch
+    ) -> None:
+        # Keyed on the DERIVATION, not on the string "memory": the identical path denies once
+        # HOME no longer derives it.
+        gates = _gates_module()
+        root, _outside = fake_project
+        target = str(self._memory_dir(root, home) / "MEMORY.md")
+        other_home = tmp_path / "home2"
+        (other_home / ".claude").mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(other_home))
+        result = gates._can_write_check("pb-L1-f", _envelope(target), "",
+                                        _post_approval_cache(str(root)))
+        assert result["can_write"] is False
+        assert "ENF-PROJECT-BOUNDARY" in (result["reason"] or "")
+
+    def test_the_allow_is_attributable_to_the_memory_arm(
+        self, fake_project, home, monkeypatch
+    ) -> None:
+        # Conditionality at the live seam: with the arm disabled the same write denies, so
+        # the allow above cannot come from some other arm abstaining.
+        gates = _gates_module()
+        root, _outside = fake_project
+        target = str(self._memory_dir(root, home) / "MEMORY.md")
+        monkeypatch.setattr(gates, "in_project_memory_dir", lambda target, root: False)
+        result = gates._can_write_check("pb-L1-g", _envelope(target), "",
+                                        _post_approval_cache(str(root)))
+        assert result["can_write"] is False
+        assert "ENF-PROJECT-BOUNDARY" in (result["reason"] or "")

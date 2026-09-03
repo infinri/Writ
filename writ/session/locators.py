@@ -10,6 +10,7 @@ import glob
 import hashlib
 import os
 import re
+from pathlib import Path
 
 # The files whose presence marks a project root. The root walk tests `any` of
 # these, so order is irrelevant -- this is the single source for the set that
@@ -63,6 +64,22 @@ def resolve_project_root(explicit: str = "", start: str = "") -> tuple[str, str]
             break
         path = parent
     return start, ROOT_FROM_CWD
+
+
+def _project_transcript_dir(repo_root: str, claude_home: Path) -> Path:
+    """The ~/.claude/projects/<encoded> dir for repo_root (each '/' and '.' -> '-').
+
+    MOVED HERE FROM harvester.py, byte-unchanged, because it is now read on the WRITE
+    PATH: project_boundary derives this project's own memory directory from the boundary
+    root with it, and that module is a pure predicate module imported by gates.py at
+    module scope. Importing the harvester there would put git subprocesses, plan_harvest
+    and graph registration on every write. locators is stdlib-only and already sits below
+    every caller, so ONE definition serves the harvester, commit_capture and the boundary.
+    harvester re-exports the name, so harvester._project_transcript_dir stays the seam its
+    own tests patch, and the encoding keeps exactly one pin
+    (tests/test_decision_memory_harvester.py::TestPureFunctions).
+    """
+    return claude_home / "projects" / re.sub(r"[/.]", "-", repo_root)
 
 
 # ── Session-scoped gate artifacts ───────────────────────────────────────────────

@@ -10,11 +10,20 @@
 #      secret paths. The classifier is writ.session.gates._is_credential_path
 #      (imported -- SINGLE SOURCE, no drift; a minimal inline fallback runs only
 #      if the package import fails). The file is NEVER opened (org credential ban).
-#   2. WORK-GATE (project-local targets): feed the abspath to the same server
-#      gate the Write tool uses (POST /session/<id>/can-write -> _can_write_check),
-#      so a Bash write to project source is plan-gated like a Write. Targets
-#      outside the repo (e.g. /tmp scratch) are not work-gated -- mirrors
-#      writ-worktree-safety, which also acts only on project-local paths.
+#   2. WORK-GATE (EVERY target, in-repo and out): feed the abspath to the same server
+#      gate the Write tool uses (POST /session/<id>/can-write -> _can_write_check), so a
+#      Bash write is decided exactly as a Write to the same path. Out-of-repo targets are
+#      fed too, and that is the point: the Write tool's gate confines writes to the
+#      approved project (writ/session/project_boundary.py), so skipping them here made
+#      that boundary enforceable on one of the two write doors, measured as a Bash write
+#      to a path the Write tool had just refused. This step refuses nothing by itself and
+#      decides nothing: the verdict is whatever _can_write_check returns for that path, so
+#      both doors now agree by construction. Note what the OS temp dir and this project's
+#      own ~/.claude memory dir get from the boundary predicate: it SUPPRESSES ITS OWN
+#      REFUSAL for them, which is not an allow. The work gate still runs, so a pre-approval
+#      write to /tmp is refused with [ENF-GATE-PLAN] on BOTH doors. That is the accepted
+#      cost of parity (C1 in this cycle's plan); the remedy, a scratch-zone allow arm in
+#      _check_work_gate, is deferred to its own cycle.
 #
 # Redirect detection is QUOTE-AWARE: shlex(posix=False) keeps quote chars on
 # tokens, so a quoted '>' (e.g. `grep '>' app.pem`) is NOT treated as an operator;
@@ -541,8 +550,10 @@ esac
 # Extract write targets (shell vectors AND inline-interpreter arguments) plus egress
 # destinations in ONE python spawn.
 # Output lines: "<kind>\t<path>" where kind is `cred` (credential, deny everywhere),
-# `state` (Writ gate state, deny everywhere) or `local` (project-local abspath,
-# work-gate it); plus "egress\t<host>\t<detail>" per non-allowlisted destination.
+# `state` (Writ gate state, deny everywhere), `local` (an abspath under cwd) or `outside`
+# (an abspath that is not). `local` and `outside` are BOTH work-gated by the same
+# can-write round trip; the kinds stay distinct so the row still says where the path was.
+# Plus "egress\t<host>\t<detail>" per non-allowlisted destination.
 TARGETS=$(WRIT_BASH_CMD="$CMD" WRIT_CWD="$(pwd)" WRIT_DIR="$WRIT_DIR" python3 <<'PY' 2>/dev/null || true
 import os, re, shlex, sys
 
@@ -1236,10 +1247,30 @@ def token_literals(tok):
 
 
 def scan_tokens(toks):
-    """Project-path candidates carried by these tokens."""
+    """Project-path candidates carried by these tokens.
+
+    A literal containing ANY BRACE CHARACTER is skipped whole, which is wider than the
+    templates that motivated it and is meant to be: PATH_CAND excludes braces,
+    so scanning an f-string like `check('<brace>d<brace>/elsewhere/pkg')` drops the
+    placeholder and yields the run `/elsewhere/pkg`: an absolute path nobody named. The
+    phantom was harmless while an out-of-repo target produced no row, and became a
+    REFUSAL the moment this gate started work-gating those. CODE_PUNCT already names the
+    braces as "this token is code, not a filename"; token_literals applies that test only
+    to a BARE token, never to the spans it pulls out of quotes, which is the gap.
+
+    Skipping cannot hide a real write, and the width is why. A brace-bearing literal was
+    NEVER captured as itself even before this change, template or not: PATH_CAND split it
+    at the brace and emitted a fragment, so the choice here is between a wrong path and no
+    path, never between a right path and none. For a template the resolved target is not
+    the text on the line at all, which is the same already-documented limit as a path
+    assembled from pieces or held in a variable. A static filename that merely contains a
+    brace loses a fragment nobody could have gated correctly anyway.
+    """
     out = []
     for tok in toks:
         for lit in token_literals(tok):
+            if "{" in lit or "}" in lit:
+                continue
             out += [c for c in PATH_CAND.findall(lit) if looks_like_path(c)]
     return out
 
@@ -1395,9 +1426,14 @@ for t in raw_targets:
     # Interpreter-only exemption; see the interp_hits comment above.
     if t in interp_hits and os.path.isdir(ap):
         continue
-    # Work-gate only project-local targets. Scratch writes outside the repo are not plan-gated.
+    # Work-gate EVERY target. `local` and `outside` both reach the same can-write decision
+    # below and differ only in what the row says. An out-of-repo target used to produce NO
+    # ROW, so it reached no gate and left no audit line, which is what made the Write
+    # tool's project boundary enforceable on one write door and not the other.
     if ap == cwd or ap.startswith(cwd + os.sep):
         print(f"local\t{ap}")
+    else:
+        print(f"outside\t{ap}")
 
 # Egress pass: same tokens, same segments, second question -- does this command SEND
 # local data to a host that is not allowlisted? A verb the tokenizer put in a quoted
@@ -1463,10 +1499,13 @@ if [ -n "$STATE_HIT" ]; then
     exit 0
 fi
 
-# 2. Project-local targets: run the SAME write gate the Write tool uses.
+# 2. Write targets, in-repo and out: run the SAME write gate the Write tool uses.
 SKILL_DIR="$WRIT_DIR"
 while IFS=$'\t' read -r kind path; do
-    [ "$kind" = "local" ] || continue
+    case "$kind" in
+        local|outside) ;;
+        *) continue ;;
+    esac
     [ -z "$path" ] && continue
     # This loop runs once PER PATH found in the Bash command, so each interpreter start
     # here is paid per path, not per command. jq builds the body with --arg (the path is
@@ -1526,7 +1565,7 @@ done <<< "$TARGETS"
 # 3. Egress destinations: ASK the user. Placed LAST on purpose -- every deny above
 # outranks a confirmation, so this is reached only by a command with nothing stronger
 # against it. No mode is read and no server is called here: a pure-egress command has
-# no `local` target, so the loop above never ran.
+# no write target, so the loop above never ran.
 EGRESS_HITS=$(printf '%s\n' "$TARGETS" | awk -F'\t' '$1=="egress"')
 if [ -n "$EGRESS_HITS" ]; then
     DESTS="" HOSTS=""

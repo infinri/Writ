@@ -27,6 +27,7 @@ from writ.session.project_boundary import (
     boundary_refusal,
     boundary_root,
     declared_absolute_paths,
+    in_project_memory_dir,
     in_scratch_zone,
     is_contained,
     resolve_target,
@@ -408,11 +409,13 @@ def _check_project_boundary(session_id: str, mode, file_path: str, recorded_root
     unchanged envelope for envelope: a non-excluded path before approval still reaches
     `[ENF-GATE-PLAN]` because this is never consulted first.
 
-    THE ORDER OF THE FOUR CHECKS IS THE FILE-READ BUDGET. Containment answers the dominant
+    THE ORDER OF THE FIVE CHECKS IS THE FILE-READ BUDGET. Containment answers the dominant
     case (an in-project write) with one marker walk, two `realpath` calls and one prefix
     comparison, and returns before the scratch zone is resolved or the plan is opened. The
-    plan is read only for an out-of-project write on the approved arm, where
-    `approved_gates_for_plan` has already opened it once this request.
+    memory-directory exemption is a pure derivation from the root plus one `realpath`, so it
+    too returns before any plan read. The plan is read only for an out-of-project write on
+    the approved arm, where `approved_gates_for_plan` has already opened it once this
+    request.
 
     Returns None rather than an allow, so the caller's own allow (and its own friction row,
     `all_approved` or `excluded`) still happens. The deny emits ONE `write_attempt` row and
@@ -428,6 +431,13 @@ def _check_project_boundary(session_id: str, mode, file_path: str, recorded_root
     if is_contained(target, root):
         return None
     if in_scratch_zone(target, root):
+        return None
+    # THIS PROJECT'S OWN MEMORY DIRECTORY, on all three kinds. `~/.claude/projects/<encoded
+    # root>/memory` is the project's sidecar, derived from the root it belongs to, and an
+    # agent writes it every session: while planning, after approval, and inside a dispatch
+    # alike, which is why this is not restricted to the approved arm. It sits ahead of the
+    # declared set because it costs one string derivation and opens no plan.
+    if in_project_memory_dir(target, root):
         return None
     if kind == KIND_APPROVED and target in declared_absolute_paths(root, session_id):
         return None
