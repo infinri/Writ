@@ -50,6 +50,7 @@ from tests.test_bash_write_gate import (
     _extractor_src,
     _run_hook,
     _seed,
+    nested_cmd_flags,
     wrapper_names,
 )
 
@@ -329,15 +330,20 @@ class TestUnchangedSudoAndEnvControls:
 
 
 # --------------------------------------------------------------------------- #
-# 6. deletion stays out of scope; find -exec stays deferred; the false positive
-#    this fix must not introduce stays silent
+# 6. deletion stays out of scope; find's exec family (-exec/-execdir/-ok/-okdir)
+#    is now CLOSED by cycle Q -- the matrix lives in
+#    tests/test_bash_nested_command_gate.py; the false positive this fix must
+#    not introduce stays silent
 # --------------------------------------------------------------------------- #
 class TestMustStaySilentAfterTheFix:
     def test_find_pipe_xargs_rm_stays_silent(self):
-        # Deletion is OUT OF SCOPE for this gate by recorded ruling (the hook's
-        # own :359-361: "rm -rf, DROP TABLE and TRUNCATE are OUT OF SCOPE on
-        # purpose"). `rm` matches no write arm, so this stays silent after the fix
-        # exactly as it was measured before it.
+        # Deletion is OUT OF SCOPE for this gate by recorded ruling (the hook's own
+        # ruling, quoted rather than located by line: "rm -rf, DROP TABLE and TRUNCATE
+        # are OUT OF SCOPE on purpose". CITED BY TEXT ON PURPOSE: this citation has gone
+        # stale twice, once per cycle, because each cycle inserts header lines ABOVE the
+        # ruling it points at, so a line number is wrong by construction here.
+        # `rm` matches no write arm, so this stays silent after the fix exactly as
+        # it was measured before it.
         assert _extract("find . | xargs rm") == set()
 
     def test_xargs_rm_rf_stays_silent(self):
@@ -346,17 +352,18 @@ class TestMustStaySilentAfterTheFix:
     def test_timeout_rm_rf_stays_silent(self):
         assert _extract("timeout 5 rm -rf src") == set()
 
-    @pytest.mark.parametrize("cmd", [
-        r"find . -name x -exec cp {} src/y.py \;",
-        "find . -name x -exec cp {} src/y.py +",
-        r"find . -name x -execdir cp {} src/y.py \;",
-        "find . -name x -execdir cp {} src/y.py +",
-    ])
-    def test_all_four_find_exec_spellings_stay_silent(self, cmd):
-        # DEFERRED to its own cycle: the nested command sits inside an argument
-        # list with a terminator, not in front of the command, so no prefix step
-        # can reach it. Pinned so the deferral is visible rather than assumed.
-        assert _extract(cmd) == set(), cmd
+    @pytest.mark.parametrize("flag", sorted(nested_cmd_flags(_extractor_src())))
+    def test_the_find_exec_deferral_is_closed_for_every_flag(self, flag):
+        # WAS `test_all_four_find_exec_spellings_stay_silent`, which asserted
+        # set() and pinned the deferral so it stayed visible. Cycle Q closes it:
+        # the nested command is spliced into `segments`, so cmd0 resolves to
+        # `cp`. The flag axis is DERIVED from the hook's own NESTED_CMD_FLAGS
+        # (four members as of this cycle: -exec, -execdir, -ok, -okdir), so a
+        # flag added later is covered here without an edit. Terminator forms,
+        # consumers, the egress half and the accepted costs are in
+        # tests/test_bash_nested_command_gate.py.
+        cmd = r"find . -name x %s cp {} %s \;" % (flag, TARGET)
+        assert _extract(cmd) == {EXPECTED_TARGET}, cmd
 
     def test_no_false_positive_on_this_repos_own_test_command(self):
         # The one false-positive risk the fix could plausibly introduce: `timeout`
