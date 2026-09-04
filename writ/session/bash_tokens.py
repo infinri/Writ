@@ -55,9 +55,16 @@ safe to paste inline.
 #                        one. A loop BODY is still covered, because `do` is here.
 #   fi done esac } )     closers; nothing follows them inside their segment. A BARE `)`
 #                        gets its own treatment; see GROUP_CLOSER_TOKENS.
-#   coproc function      both take an optional NAME before the command, the same reason
-#                        timeout / stdbuf / nice / setsid / xargs / watch are not
-#                        WRAPPERS.
+#   coproc function      both take an OPTIONAL NAME before the command, and an optional
+#                        name is not distinguishable from the command itself, so stepping
+#                        over it resolves a WRONG verb as often as it recovers a hidden
+#                        one. That reason stands on its own. It used to be given as "the
+#                        same reason timeout / stdbuf / nice / setsid / xargs / watch are
+#                        not WRAPPERS", and that analogy is dead: as of cycle P those six
+#                        ARE WRAPPERS entries in writ-bash-write-gate.sh, with STRICT
+#                        flag tables, and the one genuine positional among them
+#                        (`timeout DURATION`) is stepped precisely because a duration HAS
+#                        a checkable shape, which an optional name does not.
 GROUP_VERB_TOKENS = frozenset({
     "(", "{", "!", "if", "elif", "then", "else", "while", "until", "do",
 })

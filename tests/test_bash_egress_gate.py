@@ -57,6 +57,7 @@ from tests.test_bash_write_gate import (
     _extract,
     _extractor_src,
     _seed,
+    wrapper_names,
 )
 from tests.test_strict_mode import DEAD_PORT
 
@@ -102,6 +103,18 @@ def _run_hook(cmd: str, sid: str, cwd: str, extra_env: dict | None = None) -> di
     if not out:
         return None
     return json.loads(out).get("hookSpecificOutput", {})
+
+
+def uncovered_prefix_names(source: str) -> set[str]:
+    """Names-only block the hook header carries beside the corrected egress residue
+    passage (cycle P), parsed rather than read: the reasons stay in the prose above
+    the block, so this needs no prose handling and no covered name can appear
+    incidentally through a reason sentence mentioning it."""
+    start = source.index("# UNCOVERED PREFIXES BEGIN")
+    start = source.index("\n", start) + 1
+    end = source.index("# UNCOVERED PREFIXES END", start)
+    body = " ".join(line.lstrip("#").strip() for line in source[start:end].splitlines())
+    return {n.strip() for n in body.split(",") if n.strip()}
 
 
 # --------------------------------------------------------------------------- #
@@ -593,12 +606,21 @@ class TestHonestCoverageLimits:
         assert "coverage limit" in src
 
     def test_header_names_the_prefixes_that_remain_uncovered(self):
-        # After the verb-prefix fixes, the residue is the wrappers that take non-flag
-        # positionals of their own (a naive skip would mis-read the verb). Naming a
-        # closed hole as open, or an open one as closed, are both dishonest.
-        src = Path(HOOK_SH).read_text().lower()
-        for prefix in ("timeout", "stdbuf", "xargs", "setsid"):
-            assert prefix in src, prefix
+        # After cycle P the six wrapper prefixes are COVERED, so asserting their names
+        # appear in the header passes for the wrong reason (`timeout`, `stdbuf`,
+        # `xargs` and `setsid` each still appear in the file as `WRAPPERS` keys, so a
+        # bare substring pin would keep passing after the fix). The ratchet is now the
+        # CONSISTENCY of the header's uncovered-prefix block with the hook's own
+        # WRAPPERS table: naming a covered prefix as uncovered, or closing a prefix
+        # without updating the block, both redden here.
+        src = Path(HOOK_SH).read_text()
+        names = uncovered_prefix_names(src)
+        assert names, "the uncovered-prefix block is empty"
+        assert {"find -exec", "find -execdir"} <= names, names
+        covered = wrapper_names(_extractor_src())
+        assert covered
+        overlap = {n for n in names if n.split()[0] in covered}
+        assert not overlap, f"named uncovered but present in WRAPPERS: {sorted(overlap)}"
 
     def test_header_names_the_destination_overrides_that_remain_uncovered(self):
         # A leading proxy assignment IS covered now; an inherited proxy environment,

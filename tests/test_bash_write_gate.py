@@ -18,6 +18,7 @@ which bypasses the Write/Edit/NotebookEdit gate stack entirely. Two protections:
 """
 from __future__ import annotations
 
+import ast
 import importlib
 import json
 import os
@@ -62,6 +63,24 @@ def _extractor_src() -> str:
     start = text.index("\n", marker) + 1
     end = text.index("\nPY\n", start)
     return text[start:end]
+
+
+_WRAPPERS_TABLE = "WRAPPERS"
+
+
+def wrapper_names(source: str) -> set[str]:
+    """The prefix names the extractor's WRAPPERS table knows, parsed out of the hook's
+    own source rather than listed here. Lives in this module (not the new wrapper-prefix
+    module or the egress module) because tests/test_bash_egress_gate.py imports FROM this
+    module and tests/test_bash_control_operator_split.py imports from the egress module,
+    so anything both the new prefix module and the egress ratchet need must sit at the
+    base of that chain or the import graph cycles."""
+    for node in ast.walk(ast.parse(source)):
+        if (isinstance(node, ast.Assign)
+                and any(getattr(t, "id", "") == _WRAPPERS_TABLE for t in node.targets)
+                and isinstance(node.value, ast.Dict)):
+            return {k.value for k in node.value.keys if isinstance(k, ast.Constant)}
+    raise AssertionError("WRAPPERS table not found in the extractor source")
 
 
 def _extract(cmd: str, cwd: str = "/proj") -> set[tuple[str, str]]:

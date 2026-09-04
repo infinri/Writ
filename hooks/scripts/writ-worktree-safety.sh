@@ -119,9 +119,16 @@ sys.path.insert(0, os.environ.get("WRIT_DIR", ""))
 #                        one. A loop BODY is still covered, because `do` is here.
 #   fi done esac } )     closers; nothing follows them inside their segment. A BARE `)`
 #                        gets its own treatment; see GROUP_CLOSER_TOKENS.
-#   coproc function      both take an optional NAME before the command, the same reason
-#                        timeout / stdbuf / nice / setsid / xargs / watch are not
-#                        WRAPPERS.
+#   coproc function      both take an OPTIONAL NAME before the command, and an optional
+#                        name is not distinguishable from the command itself, so stepping
+#                        over it resolves a WRONG verb as often as it recovers a hidden
+#                        one. That reason stands on its own. It used to be given as "the
+#                        same reason timeout / stdbuf / nice / setsid / xargs / watch are
+#                        not WRAPPERS", and that analogy is dead: as of cycle P those six
+#                        ARE WRAPPERS entries in writ-bash-write-gate.sh, with STRICT
+#                        flag tables, and the one genuine positional among them
+#                        (`timeout DURATION`) is stepped precisely because a duration HAS
+#                        a checkable shape, which an optional name does not.
 GROUP_VERB_TOKENS = frozenset({
     "(", "{", "!", "if", "elif", "then", "else", "while", "until", "do",
 })
@@ -422,8 +429,21 @@ tokens = split_control_operators(tokens)
 
 CONTROL = {"|", "||", "&&", ";", "&", SEP}
 ASSIGNMENT = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*=')
-# Transparent prefixes that sit IN FRONT of the real verb, same list and same reason as
-# writ-bash-write-gate.sh's WRAPPERS. Parsed permissively (any dash token is stepped
+# Transparent prefixes that sit IN FRONT of the real verb. Same REASON as
+# writ-bash-write-gate.sh's WRAPPERS, but as of cycle P NO LONGER THE SAME LIST, and the
+# divergence is stated rather than left to be discovered: that gate's set grew to
+# thirteen (timeout, nice, stdbuf, watch, setsid, xargs, each with a STRICT flag table,
+# plus timeout's duration positional) and this one stayed at seven.
+#
+# The set here was deliberately NOT grown in that cycle. Three reasons, all of them about
+# evidence rather than effort: this gate's parsing is permissive-only by design (see
+# below), it has no positional mechanism for a `timeout DURATION`, and the evasion is
+# INFERRED here, not measured. `timeout 5 git worktree remove x` evading THIS hook by the
+# same mechanism is a reasoned suspicion read off the code, not a measurement, and
+# growing the set on that basis would be a second unmeasured change in a module the
+# cycle had no evidence about. Disclosed in that gate's uncovered-prefix prose too.
+#
+# Parsed permissively (any dash token is stepped
 # over, plus the next token for the few flags that take a value), because this gate only
 # has to answer "is the verb git", not "which file does it write".
 WRAPPERS = {"command", "env", "exec", "nohup", "time", "sudo", "doas"}

@@ -44,6 +44,15 @@
 # var-indirection, eval/base64, a path assembled from pieces -- WILL evade. This
 # narrows the hole, it does not seal it.
 #
+# A WRAPPER PREFIX in front of one of those vectors is stepped over by verb_at, not by
+# each consumer, so `timeout 5 cp seed.txt src/y.py`, `nice -n 5 tee src/y.py` and
+# `ls | xargs sed -i s/a/b/ src/y.py` are gated exactly as the unprefixed forms are; see
+# WRAPPERS in the extractor for the thirteen prefixes and their flag tables. What that
+# does NOT reach is a body that arrives as ONE QUOTED STRING: `bash -c "cp seed.txt
+# src/y.py"` and `watch -n1 'cp seed.txt src/y.py'` both emit the empty set, because the
+# quoted command is a single token and no consumer arm matches it. The uncovered-prefix
+# block in the egress limit below carries the full residue.
+#
 # A CONTROL OPERATOR WITH NO SPACE IN FRONT OF IT USED TO EVADE, and the honest version
 # of that is: the CATEGORY was disclosed here (as "glued `foo>bar`") and THIS INSTANCE
 # was not. shlex(posix=False) forces whitespace_split, so `echo x > .env; ls` tokenized
@@ -161,8 +170,10 @@
 # proxy URL's credentials never reach the retained audit reason).
 #
 # The verb is resolved by verb_at(), NOT seg[0]: leading NAME=value assignments, the
-# wrapper prefixes (command / env / exec / nohup / time, and sudo / doas) with their own
-# flags, and a leading backslash all sit in FRONT of the real command. One helper serves
+# wrapper prefixes (command / env / exec / nohup / time, sudo / doas, and as of cycle P
+# timeout / nice / stdbuf / watch / setsid / xargs) with their own flags and, for
+# `timeout`, its own duration positional, and a leading backslash all sit in FRONT of the
+# real command. One helper serves
 # both the egress pass and the write extractor, so `FOO=1 tee f`, `env FOO=1 cp a b` and
 # `sudo cp a b` are gated as writes for the same reason `FOO=1 curl -d @f https://host`
 # prompts. sudo/doas are parsed STRICTLY, mirroring sudo's real short-option grammar for
@@ -183,10 +194,49 @@
 # destination host carrying a cosmetic trailing `)` that can only ADD a prompt, never
 # remove one),
 # and any
-# verb not named above (ftp, aws s3 cp, rclone, git remotes over http). Still-uncovered
-# prefixes, because each takes non-flag positional arguments of its own before the
-# command and a naive skip would mis-read the verb: timeout, stdbuf, nice, setsid,
-# xargs, watch. Still-uncovered destination overrides, because they are not command
+# verb not named above (ftp, aws s3 cp, rclone, git remotes over http).
+#
+# STILL-UNCOVERED PREFIXES. This passage used to name timeout, stdbuf, nice, setsid,
+# xargs and watch here, "because each takes non-flag positional arguments of its own
+# before the command and a naive skip would mis-read the verb". That reason was true of
+# exactly ONE of the six. All six are now WRAPPERS entries with STRICT flag tables, and
+# `timeout`'s single duration positional is stepped by WRAPPER_POSITIONALS with a shape
+# check; the other five have no positional at all. What remains uncovered, with the
+# reason for each, and then the names alone in a machine-readable block:
+#
+#   find -exec / -execdir   A DIFFERENT MECHANISM, deferred to its own cycle: the nested
+#                           command sits INSIDE an argument list with a terminator (`\;`,
+#                           `';'` or `+`), not in front of the command, so no prefix step
+#                           can reach it. All four spellings measured silent.
+#   sh -c / bash -c / eval  Behavior deliberately unchanged; the real reason is the
+#                           false-positive cost of gating every `bash -c`, not the false
+#                           one this file used to give. See the NOT COVERED note beside
+#                           INLINE_INTERPRETERS for the measured spellings.
+#   coproc / function       Both take an OPTIONAL NAME, which is not distinguishable from
+#                           the command; see GROUP_VERB_TOKENS.
+#   ionice / chrt / flock / unbuffer / script / parallel / su -c / strace
+#                           Further transparent prefixes with no table here yet. Each is
+#                           a table away, not a mechanism away; none is measured.
+#
+# Three per-spelling MISSES the new tables knowingly accept, each pinned as a silence in
+# tests/test_bash_wrapper_prefix_gate.py rather than left to be rediscovered: the obsolete
+# numeric `nice -5 cp ...` (an unknown option letter, so it bails), the glued
+# optional-argument short `xargs -iX cp {} src/y.py` (unknown letter after `-i`), and any
+# prefix whose command arrives as ONE QUOTED STRING (`watch -n1 'cp seed.txt src/y.py'`).
+# They are spellings of COVERED prefixes, so they are deliberately NOT in the block below:
+# the block is names only, and a name there must not also be a WRAPPERS key.
+#
+# UNCOVERED PREFIXES BEGIN (names only; the reasons are in the prose above)
+# find -exec, find -execdir, sh -c, bash -c, eval, coproc, function,
+# ionice, chrt, flock, unbuffer, script, parallel, su -c, strace
+# UNCOVERED PREFIXES END
+#
+# The worktree gate carries its OWN prefix set (writ-worktree-safety.sh) and it was NOT
+# grown this cycle: its parsing is permissive-only by design, it has no positional
+# mechanism, and the prefix evasion there is INFERRED rather than measured, so
+# `timeout 5 git worktree remove x` is an unmeasured suspicion, not a closed hole.
+#
+# Still-uncovered destination overrides, because they are not command
 # tokens at all: an INHERITED proxy environment (as opposed to a leading assignment on
 # the command itself, which is covered), wget's `-e use_proxy=`, and endpoints read from
 # a `-K`/`.curlrc` config file. A payload whose
@@ -760,9 +810,16 @@ REDIR = re.compile(r'^(?:&|[0-9]*)>>?')
 #                        one. A loop BODY is still covered, because `do` is here.
 #   fi done esac } )     closers; nothing follows them inside their segment. A BARE `)`
 #                        gets its own treatment; see GROUP_CLOSER_TOKENS.
-#   coproc function      both take an optional NAME before the command, the same reason
-#                        timeout / stdbuf / nice / setsid / xargs / watch are not
-#                        WRAPPERS.
+#   coproc function      both take an OPTIONAL NAME before the command, and an optional
+#                        name is not distinguishable from the command itself, so stepping
+#                        over it resolves a WRONG verb as often as it recovers a hidden
+#                        one. That reason stands on its own. It used to be given as "the
+#                        same reason timeout / stdbuf / nice / setsid / xargs / watch are
+#                        not WRAPPERS", and that analogy is dead: as of cycle P those six
+#                        ARE WRAPPERS entries in writ-bash-write-gate.sh, with STRICT
+#                        flag tables, and the one genuine positional among them
+#                        (`timeout DURATION`) is stepped precisely because a duration HAS
+#                        a checkable shape, which an optional name does not.
 GROUP_VERB_TOKENS = frozenset({
     "(", "{", "!", "if", "elif", "then", "else", "while", "until", "do",
 })
@@ -1098,6 +1155,78 @@ SUDO_NOVALUE_FLAGS = frozenset({
 })
 DOAS_VALUE_FLAGS = frozenset({"-u", "-a", "-C"})
 DOAS_NOVALUE_FLAGS = frozenset({"-L", "-n", "-s"})
+# ── The six prefixes closed in cycle P: xargs / timeout / nice / stdbuf / watch /
+# setsid ───────────────────────────────────────────────────────────────────────
+#
+# All six were MEASURED silent through this extractor before these tables existed, on
+# BOTH halves, because verb_at is the single source for the write pass and the egress
+# pass: `timeout 5 cp seed.txt src/y.py`, `nice -n 5 cp ...`, `stdbuf -oL cp ...`,
+# `watch -n1 cp ...`, `setsid cp ...` and `ls | xargs cp -t src` each emitted the EMPTY
+# SET, as did `ls | xargs curl -d @f https://host`, `timeout 5 curl ...` and
+# `setsid curl ...`, while the bare `cp seed.txt src/y.py` emitted `local <cwd>/src/y.py`.
+#
+# All six go in STRICT (both sets present), not PERMISSIVE. PERMISSIVE skips any dash
+# token, which handles a glued value by accident but reads a SPACED value of an UNKNOWN
+# flag as the verb. STRICT bails to ("", len(seg), []) on an unknown flag instead, so the
+# trade is the same in every entry below: a mis-classified or unknown flag costs a MISS
+# (no cmd0 arm, no egress row) and NEVER a prompt naming the wrong command. That is
+# fail-closed for the verb and fail-open for detection, the precedent the sudo entry set.
+# A bailed segment's plain redirects are still extracted, because the redirect loop never
+# consults the verb.
+#
+# Each table was decided from the documented option grammar and then VERIFIED against the
+# installed binary's own --help on this machine: coreutils 9.4 (timeout, nice, stdbuf),
+# util-linux 2.39.3 (setsid), findutils 4.9.0 (xargs), procps-ng 4.0.4 (watch). Two
+# divergences from the grammar the plan was written against were found and corrected here:
+# procps-ng 4.0.4 has `-r/--no-rerun` (added below; it would otherwise have bailed) and no
+# `--no-linewrap` (dropped), and xargs `-o/--open-tty` needed its short spelling. `watch
+# -q` was the entry flagged as most likely to differ and it did not: 4.0.4 spells it
+# `-q, --equexit <cycles>`, a REQUIRED value, so it is listed as VALUE.
+SETSID_VALUE_FLAGS = frozenset()
+SETSID_NOVALUE_FLAGS = frozenset({
+    "-c", "--ctty", "-f", "--fork", "-w", "--wait", "-V", "--version", "-h", "--help",
+})
+STDBUF_VALUE_FLAGS = frozenset({"-i", "--input", "-o", "--output", "-e", "--error"})
+STDBUF_NOVALUE_FLAGS = frozenset({"--help", "--version"})
+# The obsolete `nice -5 cmd` spelling is a KNOWN MISS: `-5` is an unknown option letter,
+# so it bails and detects nothing. Handling it would mean treating a numeric option letter
+# as an adjustment, a second parsing shape for one deprecated spelling; the miss is
+# accepted and named in the uncovered-prefix prose in the header.
+NICE_VALUE_FLAGS = frozenset({"-n", "--adjustment"})
+NICE_NOVALUE_FLAGS = frozenset({"--help", "--version"})
+# `--differences[=permanent]` is NOVALUE on purpose: an optional long-option value must be
+# glued with `=`, and the long branch checks novalue_flags FIRST, so `--differences=permanent`
+# consumes exactly one token.
+WATCH_VALUE_FLAGS = frozenset({"-n", "--interval", "-q", "--equexit"})
+WATCH_NOVALUE_FLAGS = frozenset({
+    "-b", "--beep", "-c", "--color", "-C", "--no-color", "-d", "--differences",
+    "-e", "--errexit", "-g", "--chgexit", "-p", "--precise", "-r", "--no-rerun",
+    "-t", "--no-title", "-w", "--no-wrap", "-x", "--exec", "-h", "--help",
+    "-v", "--version",
+})
+# GNU xargs' OPTIONAL-argument spellings (`-e`, `-i`, `-l`, `--eof`, `--replace`,
+# `--max-lines`) are listed NOVALUE, which makes the common spelling resolve
+# (`xargs -i cp {} src/y.py` -> cp) while the GLUED spelling hits an unknown letter after
+# the flag and bails (`xargs -iX cp ...` -> no detection). That miss is named in the
+# header prose. MEASURED here rather than read off --help, which prints
+# `--max-lines=MAX-LINES` as though the value were required: `printf 'a\n' | xargs
+# --max-lines 3 echo hi` fails with "xargs: 3: No such file or directory", so the spaced
+# value really is the command and NOVALUE is the correct classification.
+XARGS_VALUE_FLAGS = frozenset({
+    "-a", "--arg-file", "-d", "--delimiter", "-E", "-I", "-L",
+    "-n", "--max-args", "-P", "--max-procs", "-s", "--max-chars",
+    "--process-slot-var",
+})
+XARGS_NOVALUE_FLAGS = frozenset({
+    "-0", "--null", "-r", "--no-run-if-empty", "-p", "--interactive",
+    "-t", "--verbose", "-x", "--exit", "-o", "--open-tty", "--show-limits",
+    "--help", "--version",
+    "-e", "--eof", "-i", "--replace", "-l", "--max-lines",
+})
+TIMEOUT_VALUE_FLAGS = frozenset({"-s", "--signal", "-k", "--kill-after"})
+TIMEOUT_NOVALUE_FLAGS = frozenset({
+    "--preserve-status", "--foreground", "-v", "--verbose", "--help", "--version",
+})
 # Wrapper -> (flags whose value is the NEXT token, flags known to take no value).
 #
 # A None second element means PERMISSIVE: any dash token is skipped. Safe for these
@@ -1118,7 +1247,25 @@ WRAPPERS = {
     "time": (frozenset({"-o", "--output", "-f", "--format"}), None),
     "sudo": (SUDO_VALUE_FLAGS, SUDO_NOVALUE_FLAGS),
     "doas": (DOAS_VALUE_FLAGS, DOAS_NOVALUE_FLAGS),
+    "timeout": (TIMEOUT_VALUE_FLAGS, TIMEOUT_NOVALUE_FLAGS),
+    "nice": (NICE_VALUE_FLAGS, NICE_NOVALUE_FLAGS),
+    "stdbuf": (STDBUF_VALUE_FLAGS, STDBUF_NOVALUE_FLAGS),
+    "watch": (WATCH_VALUE_FLAGS, WATCH_NOVALUE_FLAGS),
+    "setsid": (SETSID_VALUE_FLAGS, SETSID_NOVALUE_FLAGS),
+    "xargs": (XARGS_VALUE_FLAGS, XARGS_NOVALUE_FLAGS),
 }
+# How many NON-FLAG positional arguments of its own a wrapper takes before the command.
+# ONE member, because only one of the thirteen wrappers has a genuine positional:
+# `timeout DURATION COMMAND`. A side table rather than a third element in the WRAPPERS
+# tuple, so the twelve other entries stay byte-identical and no existing prefix changes
+# behavior by one token (.get(name, 0) is 0 for all of them).
+WRAPPER_POSITIONALS = {"timeout": 1}
+# The step is SHAPE-CHECKED, not blind: coreutils spells a duration as a float with an
+# optional s/m/h/d suffix. A token that does not look like one is NOT skipped and becomes
+# the verb, which is the fail-closed direction for DETECTION -- the only command that
+# lands there is one `timeout` itself rejects (it requires a duration), so the cost is at
+# worst an extra row for a command that never runs, never a lost row for one that does.
+DURATION = re.compile(r"^[0-9]+(?:\.[0-9]+)?[smhd]?$")
 # Assignments that silently move the real destination. `no_proxy` is excluded: it
 # DISABLES proxying, it does not redirect. Compared lowercased, so HTTPS_PROXY counts.
 PROXY_ASSIGN_NAMES = {"http_proxy", "https_proxy", "all_proxy"}
@@ -1201,6 +1348,15 @@ def verb_at(seg):
             if unknown:
                 return "", len(seg), []       # unknown option letter: bail, detect nothing
             i += 2 if takes_next else 1
+        # The wrapper's OWN positional arguments, after its flags. Placement here is what
+        # makes every spelling work: the flag loop exits by `break` on the first non-dash
+        # token (`timeout 5 cp`), or on `--` (`timeout -- 5 cp`), or after consuming a
+        # value (`timeout -s KILL 5 cp`, `timeout -k 1 5 cp`), and the step runs in all
+        # four cases. A bail inside the flag loop RETURNS outright, so the step is never
+        # reached with an unclassified option.
+        for _ in range(WRAPPER_POSITIONALS.get(name, 0)):
+            if i < len(seg) and DURATION.match(dequote(seg[i])):
+                i += 1
     return "", len(seg), assigns
 
 
@@ -1487,12 +1643,35 @@ def redir_target(tok, nxt):
 # NOT COVERED, knowingly: `python -m MODULE` (module execution, not inline code -- a
 # module that itself writes, like py_compile, is not seen; the check bails there
 # because everything after `-m` is the module's own arguments, `-c`/`-p` included);
-# `sh -c` / `bash -c` (their body is shell, already parsed by the vectors above, and
-# gating every `bash -c` would gate most tooling); awk/sed program text; an
+# awk/sed program text; an
 # interpreter reached through a variable, an alias or a wrapper script; a path built
 # by concatenation or held in a variable (`open(P,'w')`); base64/eval-obfuscated
 # source; and a path whose basename carries no recognized extension and no `/`, `./`
 # or `~/` sigil (`open('scratch','w')`).
+#
+# `sh -c` / `bash -c` / `eval` ALSO NOT COVERED, and the reason stated here used to be
+# FALSE. It said their body is shell, "already parsed by the vectors above". It is not.
+# MEASURED through this extractor with WRIT_CWD=/proj:
+#
+#   bash -c "echo x > src/y.py"      -> set()
+#   bash -c "cp seed.txt src/y.py"   -> set()
+#   bash -c "echo x | tee src/y.py"  -> set()
+#   sh -c "echo x > src/y.py"        -> set()
+#   bash -c 'echo x > src/y.py'      -> set()
+#   bash -c echo x > src/y.py        -> local /proj/src/y.py   (UNQUOTED ONLY)
+#
+# In every quoted spelling the body is ONE token, and a token beginning with a quote
+# character never matches REDIR, so nothing in it is parsed by any vector. Only the
+# unquoted spelling, which nobody writes, is seen, and it is seen because at that point
+# the redirect belongs to the OUTER command.
+#
+# The REAL reason these three stay open is the FALSE-POSITIVE COST: gating every
+# `bash -c` would gate most tooling, and this gate's posture is to narrow a hole rather
+# than to prompt on every shell invocation. Their behavior is deliberately UNCHANGED by
+# cycle P; only this reason changed. A disclosure that misstates WHY a hole is open is
+# worse than one that admits it, because it stops the next reader re-examining it, and
+# that is exactly what happened: the wrong reason survived long enough to be quoted in
+# three other documents as a bare list item.
 INLINE_INTERPRETERS = frozenset({"python", "node", "nodejs", "perl", "ruby", "php"})
 INLINE_CODE_FLAGS = frozenset({"-c", "-e", "-E", "-r", "-p", "--eval", "--print"})
 INLINE_GLUED_FLAGS = ("-c", "-e", "-E", "-r", "-p")
