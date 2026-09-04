@@ -106,6 +106,10 @@ SHARED_NAMES = {
     "ARITH_OPENERS",
     "strip_group_opener", "strip_unbalanced_close",
     "split_control_operators",
+    # cycle R: the newline pre-split and the REPAIRED heredoc stripper moved into the
+    # same block, so both hooks run one copy. Named here so the existing per-copy exec
+    # tests below cover them without a second mechanism.
+    "SEP", "split_commands", "heredoc_terminator", "strip_heredoc_bodies",
 }
 
 CWD = "/proj"

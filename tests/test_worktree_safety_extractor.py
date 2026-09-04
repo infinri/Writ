@@ -199,6 +199,24 @@ class TestTheNewlineSplitDoesNotReopenTheFalsePositive:
             "the heredoc skip consumed the commands that follow the terminator"
         )
 
+    def test_an_invocation_on_the_heredoc_openers_own_line_is_caught(
+        self, cache_root, project
+    ):
+        """The 1.7.0 stripper consumed tokens from immediately AFTER the opener and
+        scanned forward for the terminator, so everything on the opener's OWN line was
+        swallowed with the body and this invocation was allowed. The same-line boundary
+        (cycle R) is what makes it visible. This is the one place that repair changes a
+        verdict in THIS hook: it has no redirect vector, so the destination half of the
+        defect is unobservable here, which is why the bug survived with zero coverage."""
+        command = (
+            "cat <<'EOF' > notes.md ; git worktree add scratch/feature-x feature-x\n"
+            "some notes\n"
+            "EOF\n"
+        )
+        decision, reason = _run(command, cache_root, project)
+        assert decision == "deny", (command, decision, reason)
+        assert "ENF-PROC-WORKTREE-001" in reason, reason
+
 
 class TestAGluedSeparatorDoesNotHideTheInvocation:
     """Same mechanism as the discarded newline this file was written for, one door over:

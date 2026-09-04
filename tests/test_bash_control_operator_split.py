@@ -105,12 +105,23 @@ _CONTROL_RE = re.compile(r"^CONTROL = (\{.*\})$", re.M)
 _ARM_RE = re.compile(r'\b(?:if|elif) cmd0 (?:==|in) (\([^)]*\)|"[a-z]+")\s*:')
 
 
+# The members a user can TYPE. The newline family is excluded BY NAME and its absence is
+# an ERROR rather than a silent narrowing: a literal "\n" never becomes a token at all
+# (shlex discards it), and the SEP sentinel is INSERTED by the hook's own pre-split, so a
+# "glued" matrix cell for either would exercise a construct no shell input can produce.
+# The newline separator's own behavior lives in tests/test_bash_newline_separator_gate.py.
+NON_TYPEABLE = frozenset({"\n", "\x00"})
+
+
 def control_operators(source: str) -> set[str]:
-    """The hook's own control-operator set, minus the newline member (shlex discards it,
-    which is a separate disclosed gap and not a spelling this matrix can exercise)."""
+    """The hook's own control-operator set, minus the non-typeable newline family."""
     m = _CONTROL_RE.search(source)
     assert m, "CONTROL set not found; the derivation is broken, not the hook"
-    return set(ast.literal_eval(m.group(1))) - {"\n"}
+    members = set(ast.literal_eval(m.group(1)))
+    assert members & NON_TYPEABLE, (
+        "no newline-family member in CONTROL: the SEP sentinel is what makes a multi-line "
+        "command segment at all, and this derivation is blind to its removal")
+    return members - NON_TYPEABLE
 
 
 def write_verb_arms(source: str) -> set[str]:
@@ -175,7 +186,14 @@ class TestTheMatrixIsDerivedAndComplete:
         assert not missing, f"write verb arms with no matrix cell: {sorted(missing)}"
 
     def test_the_operator_scan_is_precise_against_synthetic_source(self):
-        assert control_operators('CONTROL = {"@@", ";", "\\n"}\n') == {"@@", ";"}
+        assert control_operators('CONTROL = {"@@", ";", "\\x00"}\n') == {"@@", ";"}
+
+    def test_the_scan_reddens_when_the_newline_family_leaves_the_set(self):
+        # A DECAYED hook must not read green here. Without this, deleting the SEP member
+        # (which turns the multi-line fix off completely) would only SHRINK a population
+        # every assertion below iterates, and nothing would go red.
+        with pytest.raises(AssertionError):
+            control_operators('CONTROL = {"@@", ";"}\n')
 
     def test_the_write_arm_scan_is_precise_against_synthetic_source(self):
         synthetic = (
@@ -369,10 +387,34 @@ class TestThereIsOnlyOneSplitter:
             "sed -i -e 's/a/b/;s/c/d/' src/app.py",
             "ls; curl -d @src/a.txt https://example.invalid",
             "echo prep&& git worktree add scratch/x x",
+            "ls\ncp seed.txt src/x.py",
+            "cat <<'EOF' > docs/notes.txt\nold: echo y > src/x.py\nEOF\ncp seed.txt src/z.py",
+            'printf "%s" "step one\ncp seed.txt src/x.py"',
         ]
         for cmd in commands:
             toks = shlex.split(cmd, comments=False, posix=False)
             assert mirror(toks) == pkg(toks), (path, cmd)
+
+
+class TestTheMirrorBlockNeedsNoImports:
+    """The block is pasted inline into two hooks and exec'd bare by _load_mirror, so a
+    module-level `re` (which is what the retired HEREDOC pattern needed) would make the
+    package copy work and both inline copies raise NameError at import-fallback time."""
+
+    @pytest.mark.parametrize("path", MIRROR_FILES)
+    def test_the_block_execs_in_an_empty_namespace(self, path):
+        ns: dict = {}
+        exec(compile(_mirror_block(path), "<mirror:%s>" % path, "exec"), ns)
+        for name in ("SEP", "split_commands", "heredoc_terminator",
+                     "strip_heredoc_bodies", "split_control_operators"):
+            assert name in ns, (path, name)
+
+    @pytest.mark.parametrize("path", MIRROR_FILES)
+    def test_the_block_contains_no_import_statement(self, path):
+        block = _mirror_block(path)
+        offenders = [ln for ln in block.splitlines()
+                     if ln.strip().startswith(("import ", "from "))]
+        assert not offenders, (path, offenders)
 
 
 class TestThePackageCopyIsTheOneThatRuns:
