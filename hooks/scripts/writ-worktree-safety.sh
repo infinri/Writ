@@ -519,9 +519,11 @@ ASSIGNMENT = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*=')
 # writ-bash-write-gate.sh's WRAPPERS, but as of cycle P NO LONGER THE SAME LIST, and the
 # divergence is stated rather than left to be discovered: that gate's set grew to
 # thirteen (timeout, nice, stdbuf, watch, setsid, xargs, each with a STRICT flag table,
-# plus timeout's duration positional) and this one stayed at seven.
+# plus timeout's duration positional), then to SIXTEEN in cycle S (flock, ionice, chrt,
+# with flock's mandatory lock target and chrt's priority joining that positional table),
+# and this one stayed at seven.
 #
-# The set here was deliberately NOT grown in that cycle. Three reasons, all of them about
+# The set here was deliberately NOT grown in either cycle. Three reasons, all of them about
 # evidence rather than effort: this gate's parsing is permissive-only by design (see
 # below), it has no positional mechanism for a `timeout DURATION`, and the evasion is
 # INFERRED here, not measured. `timeout 5 git worktree remove x` evading THIS hook by the

