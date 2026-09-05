@@ -94,6 +94,14 @@ STREAM_MAP: dict[str, str] = {
     "gate_decision": "audit",
     "exitplanmode_allow": "audit",
     "exitplanmode_denial": "audit",
+    # The THIRD outcome of that same decision: the hook ran but judged nothing,
+    # because no project root resolved. Registered EXPLICITLY, beside its two
+    # siblings, for the reason stated above read_denied: an unregistered event falls
+    # to _DEFAULT_STREAM (friction), and filing one outcome of a gate decision where
+    # nobody audits is exactly how the silent skip this event exists to announce
+    # survived unnoticed. All three outcomes of one decision belong on one stream, or
+    # a reader of the gate's record cannot tell "allowed" from "never ran".
+    "exitplanmode_skipped": "audit",
     "debug_gate_root_cause_populated": "audit",
     "debug_gate_source_edit_denied": "audit",
     "tier_escalated": "audit",

@@ -57,6 +57,11 @@ from writ.session.cache import (  # noqa: E402
 from writ.session.locators import (  # noqa: E402
     _find_debug_md,
     _find_plan_md,
+    # Re-exported for the same reason as _find_plan_md above: hooks load THIS file by
+    # path with importlib and reach the resolver as `mod.resolve_project_root`.
+    # validate-exit-plan.sh does exactly that, so that the plan-format gate and the
+    # phase-a gate judge the plan at the same root.
+    resolve_project_root,
 )
 from writ.session.mode_engine import (  # noqa: E402
     MODE_CONFIG,
