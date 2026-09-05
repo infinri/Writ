@@ -413,6 +413,64 @@ def apply_phase_advance(
         }
 
 
+def write_gate_artifact(project_root: str, session_id: str, gate: str, *, mode: str | None) -> bool:
+    """Create ONE session's `<gate>.approved` artifact. The single writer for both paths.
+
+    The path is <project_root>/.claude/gates/<session_id>/<gate>.approved. The flat file
+    this replaces was shared by every session working the same repo, so one session's
+    approval read as every session's and a re-arm in one deleted the others' files.
+
+    `project_root` is the root the CALLER already resolved for this same advance, never
+    cache["project_root"]: the artifact has to land where the readers look, and every
+    reader derives the root itself by walking markers up from the user's cwd or from the
+    edited file.
+
+    Deliberately NOT part of apply_phase_advance. That function is the cache-mutation
+    unit: it sees only the cache's project_root, and both callers run it under
+    mutate_cache's per-session flock, where a makedirs plus a file write on a possibly
+    network-mounted project directory does not belong. It is also driven by more than
+    twenty hermetic tests on plain dicts, which a filesystem side effect would give an
+    environment dependency.
+
+    Returns True when the artifact was written. An invalid session or gate component
+    makes the locators return "", which writes NOTHING and returns False: the advance
+    that precedes this call has already succeeded and the cache is the source of truth,
+    so refusing here costs the audit artifact and no enforcement. The friction row is
+    what makes the refusal visible instead of silent, and had_root separates the two
+    causes (an absent root, a bad component) that collapse into the same empty string.
+
+    A FAILED WRITE IS A REFUSAL TOO, never an exception. By the time this runs the
+    advance is durably committed and the gate token is spent, so letting an OSError out
+    would fail the caller's request for something that already happened, and on the route
+    it would also skip the phase_advance, decision-capture and playbook_step_complete
+    emits that follow. That is the same reasoning the route already applies to its other
+    post-advance side effect, capture_decision_at_approve. `reason` separates the two: a
+    path component this function refused to join, or a disk that would not take the write.
+    """
+    session_gate_dir = gate_dir(project_root, session_id)
+    gate_file = gate_artifact_path(project_root, session_id, gate)
+    if session_gate_dir and gate_file:
+        try:
+            os.makedirs(session_gate_dir, exist_ok=True)
+            with open(gate_file, "w") as f:
+                f.write(session_id + "\n")
+        except OSError as exc:
+            _log_friction_event(
+                session_id, mode, "gate_artifact_refused",
+                gate=gate, reason="write_failed", error=str(exc),
+                had_root=bool(project_root),
+            )
+            return False
+        return True
+
+    _log_friction_event(
+        session_id, mode, "gate_artifact_refused",
+        gate=gate, reason="invalid_session_or_gate_path_component",
+        had_root=bool(project_root),
+    )
+    return False
+
+
 def _log_phase_token_summary(session_id: str, mode, cache: dict, old_phase: str) -> None:
     """Emit phase_token_summary from the token snapshots accumulated during old_phase."""
     snapshots = cache.get("token_snapshots", [])
@@ -567,26 +625,16 @@ def cmd_advance_phase(session_id: str, project_root: str = "", token: str = "") 
     # the claim both mutual-excludes concurrent advances and spends the token.
     _log_phase_token_summary(session_id, mode, cache, old_phase)
 
-    # Create gate file on disk as artifact (not source of truth), under THIS SESSION's own
-    # directory: <project_root>/.claude/gates/<session_id>/<gate>.approved. The flat path
-    # this replaces was shared by every session working in the same repo, so one session's
-    # approval read as every session's and a re-arm in one deleted the others' files.
+    # Create the gate file on disk as an artifact (not the source of truth), through the
+    # ONE writer the live route calls too. This used to be inline here, which is how the
+    # route ran for months committing advances that never stamped anything.
     #
-    # An invalid session component writes NOTHING (locators.gate_artifact_path returns "").
-    # The advance itself already succeeded and the cache is the source of truth, so
-    # refusing here costs the audit artifact and no enforcement: the friction row is what
-    # makes the refusal visible instead of silent.
-    session_gate_dir = gate_dir(project_root, session_id)
-    gate_file = gate_artifact_path(project_root, session_id, target_gate)
-    if session_gate_dir and gate_file:
-        os.makedirs(session_gate_dir, exist_ok=True)
-        with open(gate_file, "w") as f:
-            f.write(session_id + "\n")
-    else:
-        _log_friction_event(
-            session_id, mode, "gate_artifact_refused",
-            gate=target_gate, reason="invalid_session_or_gate_path_component",
-        )
+    # The root is the one THIS command resolved above (_detect_project_root), the same
+    # root the validator judged, not the cache's.
+    #
+    # A refusal writes NOTHING and does not fail the advance: it already succeeded and the
+    # cache is the source of truth, so it costs the audit artifact and no enforcement.
+    write_gate_artifact(project_root, session_id, target_gate, mode=mode)
 
     _emit_json({
         "advanced": True,

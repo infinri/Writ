@@ -30,6 +30,7 @@ from writ.session.approval_workflow import (
     _BINDING_REFUSAL_REASONS,
     _GATE_VALIDATORS,
     apply_phase_advance,
+    write_gate_artifact,
 )
 from writ.session.gate_token import BINDING_CANDIDATE_MISMATCH, BINDING_UNBOUND
 from writ.session.locators import _find_plan_md, resolve_project_root
@@ -287,6 +288,31 @@ async def session_advance_phase(
                 confirmation_source=source, artifacts_validated=artifacts,
                 session_id=session_id,
             )
+        # The audit artifact, through the SAME writer the CLI calls. This route committed
+        # advances for months without ever creating one, and the readers that treat a
+        # missing file as "invalidated, not yet re-approved" have been reading that
+        # absence as a refusal.
+        #
+        # Here rather than inside apply_phase_advance for two reasons. That function is
+        # the cache-mutation unit and sees only the cache's project_root, which is the
+        # wrong root (below); and putting os.makedirs plus a file write inside it would
+        # move both under mutate_cache's per-session flock, reversing the deliberate
+        # ordering cmd_advance_phase's C2 comment records (gate-file creation stays
+        # outside that lock). Inside _apply and after the `with` closes keeps the write
+        # out of the lock, in one thread hop, with nothing between the committed cache
+        # mutation and the stamp that could return early or raise.
+        #
+        # The root is the one THIS request resolved (resolve_project_root, above), the
+        # same root the validator judged and capture_decision_at_approve snapshots. NOT
+        # cache["project_root"], which is stamped once at mode-set time from whatever cwd
+        # set the mode and is never re-derived per advance. plan_md_hash reads the cache
+        # value for the opposite reason: the mint and the claim have to hash the same
+        # file, which is self-consistency between two cache-derived values. The artifact
+        # has to land where the READERS look, and every one of them derives the root
+        # itself by walking markers up from the user's cwd, so a root the validator never
+        # inspected would stamp "approved" into a directory nothing was judged in and be
+        # invisible to all of them.
+        write_gate_artifact(project_root, session_id, target_gate, mode=mode)
 
     await asyncio.to_thread(_apply)
     # project_root/root_tier/validated travel back so the approval hook can TELL the
