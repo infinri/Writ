@@ -29,6 +29,8 @@ Analyzers read archives plus live files (`read_streams` unions every generation,
 
 `writ logs tail --stream <s> -n N` (bounded backward read), `writ logs stats` (live line/byte counts, archive counts, timestamp range), `writ logs list` (projects and streams), `GET /dashboard` (HTML render of the same analyzer lenses; delegates, never recomputes). Daemon stdout under systemd lives in journald: `journalctl --user -u writ-server`.
 
+`GET /health` reports `audit_log` and `friction_log`: the file a row of each stream would actually land in for that daemon right now, both from `writ.shared.logging.emit_destination`, the same function the router uses to choose a file. `audit_log` is where every gate decision goes. With `WRIT_FRICTION_LOG` set both name that one collapsed file, which is also the value `tests/_daemon.py` and `scripts/lib/writ-server-lib.sh` compare against to detect a daemon pinned elsewhere.
+
 ## Caveats
 
 The Writ self-repo's pre-2026-07 legacy `workflow-friction.log` is ~86% test-synthetic; real project streams are clean. `calibration.jsonl` holds placeholder LLM verdicts unless the `anthropic` SDK was installed (see `docs/reference/architecture.md`, known seams).

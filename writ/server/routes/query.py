@@ -4,7 +4,8 @@
 11 routes: /query, /methodology-companion, /prompt-bundle, /analyze,
 /rule/{rule_id}, /propose, /feedback, /conflicts, /health, /always-on,
 /subagent-role/{name}. Plus the /health helpers (_health_status,
-_count_categories, _route_distribution) and the _ALWAYS_ON_PROCESS_MODES const.
+_count_categories, _route_distribution, _log_destinations) and the
+_ALWAYS_ON_PROCESS_MODES const.
 
 Mutable/monkeypatched daemon state (_db, _pipeline, _trigger_index, _llm_client,
 _instrumentation, _startup_time, writ_session, _run_cmd_format_locked) is read
@@ -23,7 +24,6 @@ from fastapi import APIRouter
 import writ.server as server
 from writ.analysis import AnalyzeRequest, AnalyzeResponse
 from writ.analysis.analyzer import run_analysis
-from writ.analysis.friction import resolve_log_path
 from writ.graph.db import Neo4jConnection
 from writ.graph.predicates import INJECTION_RULE_WHERE
 from writ.server.models import (
@@ -34,7 +34,7 @@ from writ.server.models import (
     PromptBundleRequest,
     QueryRequest,
 )
-from writ.shared.logging import emit, emit_exception
+from writ.shared.logging import emit, emit_destination, emit_exception
 from writ.shared.tokens import estimate_tokens
 
 router = APIRouter()
@@ -548,6 +548,33 @@ async def _route_distribution(db: Neo4jConnection) -> dict[str, int]:
     return distribution
 
 
+def _log_destinations() -> dict[str, str]:
+    """The files THIS daemon's rows actually land in, keyed as /health reports them.
+
+    ONE copy, spread into BOTH /health returns. A two-branch payload is exactly where
+    the next copy would drift, and a reporter that was fixed for one caller and left
+    wrong for another is the defect this cycle exists to close.
+
+    Both values come from `writ.shared.logging.emit_destination`, the same function
+    `emit` uses to choose a file, so the report cannot drift from the write. With
+    `WRIT_FRICTION_LOG` set the two values are EQUAL and equal to that variable, which
+    is the truth (every stream collapses into it) and is also the alignment value
+    `tests/_daemon.py` and `scripts/lib/writ-server-lib.sh` compare against.
+
+    `audit_log` is a SECOND field rather than a rename because `write_attempt`,
+    `gate_decision` and every other gate verdict are AUDIT-classified by design
+    (STREAM_MAP), so "the friction log" is the wrong place to send the reader who is
+    looking for a write decision. That reader is why this exists: with the variable
+    unset, this endpoint used to publish `resolve_log_path()`'s bare cwd-relative
+    `workflow-friction.log`, a file this repo last wrote to on 2026-07-01, while all
+    780 `write_attempt` rows sat in `audit.jsonl`.
+    """
+    return {
+        "audit_log": str(emit_destination("audit")),
+        "friction_log": str(emit_destination("friction")),
+    }
+
+
 @router.get("/health")
 async def health() -> dict[str, Any]:
     """Service status, rule count, index state, last ingestion timestamp.
@@ -555,6 +582,13 @@ async def health() -> dict[str, Any]:
     Includes `cache_dir` (FIX-2): the session-cache directory this daemon resolved.
     ensure-server.sh compares it against the caller's expected dir to detect and realign
     a server-cache desync (a daemon started under a divergent TMPDIR).
+
+    Includes `audit_log` and `friction_log` (cycle S): the files a row of each stream
+    would actually land in, from `writ.shared.logging.emit_destination`. `audit_log` is
+    where every gate decision goes. `friction_log` is unchanged for its existing
+    readers, which compare it against their own `WRIT_FRICTION_LOG`, and is no longer
+    the friction-log RESOLVER's answer, which with that variable unset is a bare
+    cwd-relative `workflow-friction.log` that nothing writes to.
     """
     from writ.server.transport import tcp_readonly_enabled
 
@@ -568,6 +602,14 @@ async def health() -> dict[str, Any]:
             "error": "Database not connected.",
             "cache_dir": cache_dir,
             "tcp_readonly": tcp_readonly_enabled(),
+            # The log destinations are reported on THIS branch too, for the same reason
+            # tcp_readonly is: where this daemon's rows land does not depend on the
+            # graph being up, and "where are the gate decisions" is exactly the question
+            # asked of a daemon that is not answering. It also stops the two alignment
+            # readers seeing a not_ready daemon as PERMANENTLY diverged: they compare
+            # /health's friction_log against their own WRIT_FRICTION_LOG, and a missing
+            # key read as None, which never equals a set variable.
+            **_log_destinations(),
         }
 
     rule_count = await server._db.count_rules()
@@ -595,9 +637,11 @@ async def health() -> dict[str, Any]:
         "index_state": "warm" if index_warm else "cold",
         "startup_time": server._startup_time.isoformat() if server._startup_time else None,
         "cache_dir": cache_dir,
-        # The friction-log path this daemon writes to. The test suite aligns on
-        # this (like cache_dir) so daemon-emitted events don't pollute the repo log.
-        "friction_log": str(resolve_log_path()),
+        # Where this daemon's rows actually land, one field per stream an operator asks
+        # about. See _log_destinations: both come from the router's own destination
+        # function, so the report cannot drift from the write, and `friction_log` keeps
+        # its name because two readers compare it against their own WRIT_FRICTION_LOG.
+        **_log_destinations(),
         # Whether THIS daemon bounds its TCP port to reads plus the named POST reads.
         # Reported for the same reason cache_dir is: the caller cannot know it. The
         # flag lives in the service's environment (a systemd drop-in), so `writ

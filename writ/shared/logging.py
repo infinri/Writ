@@ -650,6 +650,35 @@ def _roll_if_oversize(project: str, stream: str, target: Path) -> None:
         return  # roll failed: leave the live file in place, append proceeds
 
 
+def emit_destination(stream: str, project: str | None = None) -> Path:
+    """The file `emit` would append a `stream` row to RIGHT NOW.
+
+    THE SINGLE SOURCE for the destination decision, and a function rather than a
+    comment because a comment is what failed. `writ.analysis.friction.resolve_log_path`
+    answers a DIFFERENT question (the CLI's `--log` default and the dashboard's env
+    read), and with `WRIT_FRICTION_LOG` unset its answer is the bare cwd-relative
+    `workflow-friction.log`, which nothing writes to. `writ/session/doctor.py::
+    _observed_hook_names` already rejected it by name for that reason and used
+    `stream_path`; `/health` did not, and published a path last written to in July while
+    every gate row went to `audit.jsonl`.
+
+    Both branches of the decision live here, so a reporter cannot answer one way while
+    the writer goes another: with `WRIT_FRICTION_LOG` set every stream collapses into
+    that one file (test isolation and single-log operators), else the row lands in the
+    per-project stream file.
+
+    `project` defaults to the resolution `emit` uses (the request's scope when a daemon
+    route declared one, else this process's cwd). `emit` passes its own already-resolved
+    value in so the git identity is derived once per event and not twice.
+    """
+    override = os.environ.get("WRIT_FRICTION_LOG")
+    if override:
+        return Path(override)
+    if project is None:
+        project = resolve_project(_REQUEST_PROJECT_ROOT.get())
+    return stream_path(project, stream)
+
+
 def emit(
     stream: str | None,
     event: str,
@@ -671,21 +700,27 @@ def emit(
     # "never raises" is the contract every hook and converted except-handler relies on.
     line = json.dumps(entry, default=str) + "\n"
 
-    friction_log = os.environ.get("WRIT_FRICTION_LOG")
-    if friction_log:
+    resolved_stream = stream if stream is not None else stream_for(event)
+
+    # The collapse is READ here and DECIDED in emit_destination, which owns both
+    # branches, so /health cannot report one file while this function appends to
+    # another (cycle S). A collapsed file is never rolled: it is a path the caller
+    # chose, and archiving it into a per-project archive dir would be wrong.
+    if os.environ.get("WRIT_FRICTION_LOG"):
         try:
-            _append_line(Path(friction_log), line)
+            _append_line(emit_destination(resolved_stream), line)
         except OSError:
             _fallback(line, event)
         return
 
-    resolved_stream = stream if stream is not None else stream_for(event)
     # The request's project when a daemon route declared one, else this process's cwd.
     # See _REQUEST_PROJECT_ROOT on why the scope has to come from the caller. Passed
     # through resolve_project rather than used as a path segment directly, so the
     # sanitizing and the NotInRepoError fallback stay in one place (SEC-INJ-PATH-001).
+    # Resolved once here and handed DOWN, so adding the seam costs no second identity
+    # derivation per event.
     project = resolve_project(_REQUEST_PROJECT_ROOT.get())
-    target = stream_path(project, resolved_stream)
+    target = emit_destination(resolved_stream, project)
 
     _roll_if_oversize(project, resolved_stream, target)
 
