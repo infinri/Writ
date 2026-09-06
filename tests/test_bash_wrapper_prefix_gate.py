@@ -29,6 +29,21 @@ hook layer (not the embedded extractor above), with an out-of-project write targ
     ionice -c3 cp README.md ~/outside_probe.txt          -> ALLOW (blind, no output)
     chrt -b 0 cp README.md ~/outside_probe.txt           -> ALLOW (blind, no output)
 
+CORRECTED (plan.md dfacff61-23d5-474e-846c-2e2f0f0ea482, the bash-expansion-boundary
+cycle): the two measurements above were taken FROM A CWD OUTSIDE THE PROJECT, and that is
+the whole explanation for the first row's DENY -- with cwd outside, `<cwd>/~/outside_
+probe.txt` is out of project too (any relative-looking join is), so the deny came from the
+CWD boundary, not from `~` being resolved. At measurement time the write gate had (and
+still has, until that cycle's fix lands) no tilde/parameter expansion at all: the token
+`~/outside_probe.txt` reached classification as the literal seven-and-more characters it
+is. The verdict is real and the wrapper-prefix CONTRAST it proves (flock/ionice/chrt blind,
+nice caught) is still valid and still what this module's tests below pin; only the READING
+of the first row as "evidence that tilde targets are handled" is wrong, and that
+misreading is why the tilde-classification gap stayed invisible for as long as it did. No
+executable assertion in this module depends on the `~/outside_probe.txt` spelling (the
+full-hook tests below use `.env` and an egress host instead), so nothing here goes red from
+this correction.
+
 flock, ionice and chrt are not yet WRAPPERS members, so verb_at returns the wrapper's own
 name as cmd0 for all three, matching none of the write arms and no egress verb -- the exact
 mechanism as cycle P, not the bash-side hot-path (which is not re-checked here; see plan.md

@@ -15,11 +15,18 @@ completeness check in test_refusal_inventory.py has one canonical list to read.
 
 COVERAGE NOTE (stated here rather than hidden): this census does not yet declare
 every bash-side refusal the plan's Analysis counts (33 across 14 scripts). It covers
-28 refusals across 15 scripts with a real, working trigger each, including the whole
+29 refusals across 15 scripts with a real, working trigger each, including the whole
 irreversible-destruction vector in writ-bash-write-gate.sh (the Neo4j-via-container
 statements and the five git-history patterns match on plain command text, so each is
 a one-line payload with no fixture, no live server and no classification step -- the
-cheapest family in the file). Not yet declared: writ-dispatch-discipline.sh's
+cheapest family in the file) and the bash-expansion-boundary cycle's new `unknown`
+row's `ask` arm (plan.md dfacff61-23d5-474e-846c-2e2f0f0ea482): declared with
+`generic=False` (like the two validate-rules.sh sites below) because
+tests/test_bash_refusals.py's own generic-loop count pin
+(`assert len(generic_refusals()) == 26`) is out of that cycle's scope; the real,
+working trigger for it is exercised in tests/test_bash_expansion_boundary_gate.py,
+which is also the oracle for the unresolved-variable's own exact reason text. Not
+yet declared: writ-dispatch-discipline.sh's
 reroute-vs-deny escalation, writ-memory-policy-guard.sh, and
 writ-pre-write-dispatch.sh's gate-denial/escalation paths -- each needs a multi-step
 fixture (a live escalation history, or a memory-write classification) this cycle's
@@ -332,6 +339,33 @@ def _setup_bash_write_mint_gate_token(iso: Isolation) -> dict:
     }
 
 
+def _setup_bash_write_unresolved_variable_ask(iso: Isolation) -> dict:
+    """The bash-expansion-boundary cycle's `unknown` row kind, its own ask arm
+    (plan.md dfacff61-23d5-474e-846c-2e2f0f0ea482): a write target whose
+    parameter expansion cannot be resolved from the hook's own environment
+    neither denies nor silently allows, it asks. The variable name carries no
+    prefix this repo's real agent-issued commands would ever set (unlike
+    `$HOME`/`$TMPDIR`/`$PWD`, which are always present in the hook's own
+    environment and so never reach this branch), so its absence here is a
+    property of the spelling, not a coincidence of this harness's own env
+    build. `mode` is seeded (unlike this file's credential/state siblings,
+    which are matched by the bash-side hardcoded arms before any mode
+    dispatch): today, with no expand_word, this target is plain literal
+    `local` and would otherwise hit `[ENF-GATE-MODE] No mode declared` instead
+    of the silent conversation-mode allow that is the actual pre-fix defect,
+    which would make a red run harder to triage for the wrong reason."""
+    write_cache(iso, {"mode": "conversation"})
+    cmd = "cp README.md $WRIT_CENSUS_SENTINEL_UNSET_VAR/probe.txt"
+    return {
+        "envelope": {
+            "session_id": iso.session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": cmd},
+        },
+    }
+
+
 def _setup_worktree_safety(iso: Isolation) -> dict:
     write_cache(iso, {"mode": "work"})
     cmd = "git worktree add .worktrees/featx featx"
@@ -603,6 +637,31 @@ REFUSALS: list[Refusal] = [
             "the state-dir guard's pattern list alongside `reopen-planning` and "
             "`auto-approve-gate`. refusing_scripts() does not move, because "
             "writ-bash-write-gate.sh is already declared for its sibling entries above."
+        ),
+    ),
+    Refusal(
+        id="bash-write-unresolved-variable-ask",
+        script="writ-bash-write-gate.sh",
+        event="PreToolUse",
+        mechanism="permissionDecisionReason",
+        permission_decision="ask",
+        shape="gate_decision",
+        gate_name="bash-write",
+        setup=_setup_bash_write_unresolved_variable_ask,
+        generic=False,
+        check_action_marker=False,
+        notes=(
+            "Bash-expansion-boundary cycle (plan.md dfacff61-23d5-474e-846c-2e2f0f0ea482): "
+            "the `unknown` row kind's own ask arm, declared here so this census's "
+            "script-level completeness check does not read the new decision path as an "
+            "undeclared gap. NOT run through the generic loop -- "
+            "tests/test_bash_refusals.py's `assert len(generic_refusals()) == 26` count "
+            "pin is out of that cycle's scope -- exercised as a real subprocess refusal "
+            "in tests/test_bash_expansion_boundary_gate.py, which is also the oracle for "
+            "the unresolved-variable's exact reason text. check_action_marker=False: "
+            "plan.md's own stated ask-reason contract is 'naming the variable and the "
+            "spelling', not one of ACTION_MARKERS' recorded phrases, and that contract "
+            "is pinned directly in the dedicated test rather than loosened here."
         ),
     ),
     Refusal(

@@ -1193,3 +1193,264 @@ this family recorded; and the real hook's `permissionDecision` for a prefixed IN
 write, which needs the session daemon and is proved at the extractor layer only. INFERRED,
 not measured, and unchanged from cycle P: `timeout 5 git worktree remove x` evading the
 worktree gate by the same mechanism.
+
+## Amendment (cycle T): the value side of the seam, where expansion must happen, and one word that is two tokens
+
+Every earlier amendment in this file is about the SAME question asked on the TOKEN side:
+which token is the verb, where does one command end and the next begin, what is a group
+opener. This cycle is the first on the VALUE side. The tokenizer was right; the string it
+handed forward was not the string the shell would use.
+
+`writ-bash-write-gate.sh` collects a write target as a WORD and the classification loop
+joins it under cwd (`ap = t if os.path.isabs(t) else normpath(join(cwd, t))`). No shell
+expansion ran first, so a word that LOOKS relative and really lands in the user's home read
+as in-project. The gate did not fail to answer. It answered `local` for a path nothing
+would write to, and it wrote an audit row naming that fictional path, which is the failure
+that makes a later reviewer read green.
+
+### Measured before the fix, and again after it
+
+Through the gate's own embedded extractor, `WRIT_CWD=/proj`, `HOME=/home/u`, with a real
+`bash -c 'printf "%s" WORD'` process as the oracle for every spelling rather than a
+hand-written expectation table (`~NAME` is an existing login name on the measuring host;
+an unknown login name correctly stays literal on both sides):
+
+```
+                          BEFORE                  AFTER                  shell writes
+cp README.md ~/x          local /proj/~/x         outside /home/u/x      /home/u/x
+cp README.md ~NAME/x      local /proj/~NAME/x     outside /home/NAME/x   /home/NAME/x
+cp README.md ~            local /proj/~           outside /home/u        /home/u
+cp README.md $HOME/x      local /proj/$HOME/x     outside /home/u/x      /home/u/x
+cp README.md ${HOME}/x    local /proj/${HOME}/x   outside /home/u/x      /home/u/x
+cp README.md "$HOME/x"    local /proj/$HOME/x     outside /home/u/x      /home/u/x
+dd if=/dev/zero of=~/x    local /proj/~/x         outside /home/u/x      /home/u/x
+
+cp README.md '~/x'        local /proj/~/x         local /proj/~/x        ~/x
+cp README.md "~/x"        local /proj/~/x         local /proj/~/x        ~/x
+cp README.md '$HOME/x'    local /proj/$HOME/x     local /proj/$HOME/x    $HOME/x
+cp README.md src/~/x      local /proj/src/~/x     local /proj/src/~/x    src/~/x
+```
+
+The bottom four are the whole reason this is delicate: a real shell leaves them ALONE, they
+really do land in the project, and a fix that resolves them converts one bypass class into
+four FALSE REFUSALS on a human-oversight boundary. A false refusal there is the worse of
+the two failures, because it teaches the user to wave the gate through.
+
+The same seventeen spellings were then driven through the WHOLE hook with a `PreToolUse`
+envelope, in work mode with both gates approved and `project_root` set to the repo, daemon
+pointed at a closed port so the local can-write fallback answered: the seven flip from a
+SILENT ALLOW to `[ENF-PROJECT-BOUNDARY]`, the ten correct rows are unchanged tag for tag,
+and `$NOPE_UNSET/x` flips from a silent allow to an ask.
+
+Two measurement traps were hit and are recorded because either one would have produced a
+green run that proved nothing. The first driver seeded its session cache by writing a file
+whose NAME it guessed; the hook never read it, every row denied with `[ENF-GATE-MODE]`, and
+six of the nine EXPANDS rows "agreed" with the expectation. The second bound the approval to
+"no plan.md at all" while `project_root` was the real repo, so `[ENF-GATE-DRIFT]` denied
+everything instead. Both are the same shape: a DENY that agrees with the expected verdict
+and comes from a different predicate. The driver now asserts the deny TAG, not just the
+decision.
+
+### The load-bearing finding: quoting does not survive to the classification point
+
+`shlex.split(..., posix=False)` keeps the quote characters ON each token, so quoting IS
+known while a segment is being read. It was destroyed at COLLECTION, at two lines:
+`raw_targets.append(dequote(tgt))` for the redirect vector, and
+`args = [dequote(a) for a in seg[cmd_arg0:]]` feeding all four `cmd0` arms.
+
+By the classification loop, `"$HOME/x"` and `'$HOME/x'` are the same seven bytes. Bash
+expands the first and not the second, so their correct answers are OPPOSITE and no code
+reading those bytes can separate them. Any fix placed at the classification point is
+therefore wrong in one direction BY CONSTRUCTION.
+
+### Decision: expand at COLLECTION, in one function, and leave the classification line alone
+
+`expand_word(raw)` is defined immediately after `dequote`, because it is dequote's
+replacement in VALUE positions and the two have to be read together. It returns
+`(value, unresolved)`. `raw_targets` carries pairs. The five append sites change; the
+classification line is UNCHANGED, because an expanded `~/x` is already absolute and its
+existing is-absolute branch does the right thing with no edit. That is the smallest blast
+radius available.
+
+`dequote` stays exactly where it is for verb, flag, wrapper-positional and egress-host
+resolution. Those consumers ask what a token SAYS; this one asks what it will BECOME.
+`expand_word` also subsumes dequote's job and does it better: dequote strips quotes only
+when the first and last characters match, so a partially quoted `$HOME"/x"` reached
+classification with its quote characters attached; the scan drops them wherever they appear.
+
+Performed, and only these: tilde expansion (leading, and after an `=` whose prefix is a
+valid shell name, and after every `:` in such a word), `$NAME` and `${NAME}` parameter
+expansion outside quotes and inside double quotes, and backslash escaping with bash's
+different rules inside and outside double quotes.
+
+`strip_unbalanced_close` runs as `expand_word`'s FIRST step and the existing call at the
+head of the classification loop STAYS. That is not the second competing normalization point
+this ADR's main body rejects: the function is idempotent, the later call still normalizes
+interpreter hits and the `dd of=` substring, and the earlier one exists for one measured
+reason. `(cp README.md ~)` reaches `expand_word` as the token `~)`, whose tilde-prefix
+would be `)` rather than a login name, so the word would stay literal while the shell still
+copies into `$HOME`.
+
+### The assignment rule is a SHAPE rule, and it was settled by the oracle, not by the manual
+
+The plan deliberately refused to assert an answer for a tilde after an `=` inside a word and
+left both spellings for a real bash to decide. Measured:
+
+```
+of=~/x                    -> of=/home/u/x          EXPANDS
+foo_1=~/x                 -> foo_1=/home/u/x       EXPANDS
+a=b:~/x                   -> a=b:/home/u/x         EXPANDS (again, after the unquoted `:`)
+fo-o=~/x                  -> fo-o=~/x              LITERAL
+2bad=~/x                  -> 2bad=~/x              LITERAL
+--opt=~/x                 -> --opt=~/x             LITERAL
+cp --target-directory=~/x -> cp --target-directory=~/x   LITERAL
+```
+
+So the rule is: the text before the `=` must be a valid shell NAME. That matters here
+because `dd of=` is a write form this gate collects AND SLICES, which makes the expanding
+half a real bypass, while `cp --target-directory=` is correct today precisely because the
+other half is not. A rule read off documentation instead of executed would have gotten one
+of these two backwards.
+
+`NAME+=~/x` also expands in a real shell and is NOT expanded here. It is disclosed rather
+than handled because it can reach no collected target: `of+=` is not a `dd` operand, and any
+other assignment-shaped word stays a RELATIVE path even after the tilde inside it resolves,
+which the `foo_1=` and `a=b:` rows above show directly.
+
+The login-name charset is `[A-Za-z_][A-Za-z0-9_.-]*`, and the DOT is load-bearing: a dotted
+login name is one of the measured bypasses and a naive `[A-Za-z0-9_]` identifier leaves
+exactly that spelling open. The leading character excludes `+`, `-` and digits, which is
+what keeps `~+`, `~-` and `~N` literal BY THE RULE rather than by `getpwnam` happening to
+fail on them. An unknown login name stays literal, which is what bash does, so that arm is
+correct rather than merely conservative. `pwd` is imported under a `try`, so an unavailable
+module leaves `~name` literal instead of taking the whole extractor (and with it every
+credential and egress row) down.
+
+### The unresolved variable: ASK, and why the other two answers are worse
+
+`$NOPE_UNSET/x` resolves to `/x`, the filesystem ROOT, because an unset variable expands to
+nothing. This hook cannot know whether an arbitrary name is set in the shell that will run
+the command.
+
+- DENY is out. It refuses a write that may be entirely legitimate, which is the wrong
+  direction on an oversight boundary and is the failure this whole cycle is shaped to avoid.
+- LEAVE LITERAL, the behavior before this cycle, is NOT neutral. The gate does not decline
+  to answer; it AFFIRMATIVELY classifies the target as in-project and writes an audit row
+  naming `<cwd>/$NOPE_UNSET/x`. A guard that is permissive only because a value is missing
+  is not a policy, and an audit trail that records a fictional path is what makes a later
+  reviewer read green.
+- ASK is this file's OWN precedent rather than a new policy. The egress pass already decided
+  the identical question for the identical shape: when `--resolve` or a proxy flag makes the
+  apparent host stop being evidence, its stated rule is that "the safe answer to 'cannot be
+  trusted' is the prompt, not silence". An unresolved expansion makes the apparent PATH stop
+  being evidence in exactly the same way.
+
+Two scoping decisions carry it, and both are the same trap as the quoting finding above:
+
+- The flag is computed INSIDE `expand_word`, where quoting still exists. Recomputing it at
+  the classification point would raise a false ask on `'$NOPE_UNSET/x'`, a legitimate
+  in-project write, because there the two spellings are again the same bytes. Both halves
+  are pinned: the bare form asks, the single-quoted form stays `local`.
+- The check is ordered AFTER `is_cred` and `is_gate_state`, so `cp seed.txt $NOPE_UNSET/.env`
+  still DENIES with `SEC-CREDENTIAL-WRITE` rather than asking. The credential arm classifies
+  on BASENAME, which survives an unresolved prefix intact, so ordering is the only thing
+  that had to be right.
+
+An `unknown` row produces NO `local`/`outside` row, because there is no path to feed the
+work gate. The bash arm reads those rows with the same `awk` shape the `cred`, `state` and
+`egress` arms use, sits AFTER the work-gate loop so every deny still outranks it, and sits
+immediately BEFORE the egress arm because a write target is this gate's primary vector and
+only one ask can fire per command. It is declared in `tests/firedrill/_census.py` so the
+refusal census does not read a new decision path as an unexplained gap.
+
+Frequency, so the ask is not read as a new tax: it fires only when a WRITE TARGET still
+carries a `$NAME` absent from the hook's own environment. `$HOME`, `$TMPDIR` and `$PWD` are
+present there and resolve, so they never reach it. What remains is a variable assigned
+earlier in the same command line and a variable exported in the agent's shell but not the
+hook's, both genuinely unknowable here and both able to land outside the project.
+
+The residue is disclosed rather than papered over: the forms in the header's
+`UNEXPANDED FORMS BEGIN/END` block do NOT raise the ask and stay literal, so a `$(...)` or
+`${VAR:-/etc}` write target is still classified as in-project. An ask worded for "an unset
+variable" about a mechanism that is not one MISNAMES what is unknown, which is worse than
+admitting the gap.
+
+### Where the change lives: ONE production file, and the mirror is NOT touched
+
+Verified by reading both files rather than assumed. The `MIRROR BEGIN/END
+split_control_operators` block spans lines 922 to 1323 in `writ-bash-write-gate.sh` and 93
+to 494 in `writ-worktree-safety.sh`; `verb_at` and `dequote` are in NEITHER copy's block
+(1659 and 2044 in the write gate, 564 and 552 in the worktree hook), and the collection
+sites and classification loop are all downstream of `MIRROR END` with no counterpart
+anywhere else. So `writ/session/bash_tokens.py` and `writ-worktree-safety.sh` do not change
+and the textual-identity assertion in `tests/test_bash_control_operator_split.py` stays
+green by construction.
+
+`expand_word` is deliberately NOT placed in the mirror even though a future cycle may want
+it in the worktree hook. The mirror is the block the two gates SHARE; putting a helper there
+that only one hook calls makes the other carry dead text that its own identity test then
+pins. Adding it when the second caller exists is one edit; adding it now is churn plus a
+speculative abstraction. A test asserts `expand_word` is not defined between the markers.
+
+### Two defects RECORDED, not fixed
+
+1. **The worktree hook has the same blindness pointing the OTHER WAY.** Traced through
+   `writ-worktree-safety.sh`: `positionals()` dequotes, `target =
+   strip_unbalanced_close(pos[2])`, then `abs_target = os.path.abspath(target)`. For
+   `git worktree add ~/evil x` that yields `<repo_root>/~/evil`, which passes the
+   `startswith(repo_root + os.sep)` test, so the hook treats it as PROJECT-LOCAL, asks
+   whether `~` is gitignored, and DENIES with a message telling the user to add `~/` to
+   `.gitignore`. The shell creates the worktree at `$HOME/evil`, which is out of project and
+   therefore none of that gate's business; the correct verdict is `sys.exit(0)`. Same
+   blindness, opposite cost: a FALSE REFUSAL with an absurd remedy rather than a bypass,
+   because that hook's predicate gates what is LOCAL while this one gates what is OUTSIDE.
+   It is not the same fix. It needs its own oracle population over `git worktree add`
+   spellings and its own analysis of the gitignore question, and widening now would be a
+   second change in a module this cycle has no oracle for. The current verdict is MEASURED
+   through that hook's own extractor and PINNED, with a comment naming it a separate defect
+   in the opposite direction, so a later change to it cannot pass quietly.
+
+2. **A quote-then-unquoted word is TWO tokens, and no expansion rule can reunite them.**
+   Found by this cycle's test file, not by the plan. `shlex.split('cp x "$HOME"/y',
+   posix=False)` yields `['cp', 'x', '"$HOME"', '/y']`, FOUR tokens and not three, so the
+   `cp` destination picker (`cand[-1]`, the last non-flag positional) takes only the
+   trailing `/y` fragment and silently drops the quoted `"$HOME"` fragment as an earlier,
+   ignored positional. The classified path is `/y`. This is a token-BOUNDARY defect and not
+   an expansion one: `expand_word` runs PER TOKEN, so it cannot rejoin what the tokenizer
+   already split. The unquoted-then-quoted spelling (`$HOME"/y"`) and the tilde-then-quoted
+   spelling (`~/"y"`) both stay ONE token and are handled correctly, which is what isolates
+   the defect to the adjacency rule rather than to quoting in general. The entry is left as
+   a FAILING assertion in `tests/test_bash_expansion_boundary_gate.py` rather than removed
+   or relabelled, because the desired end state really is "resolves like `$HOME/y`" and its
+   redness is the signal that this gap needs its own cycle. Fixing it means changing the
+   tokenizer, which is the mirrored block, which is a different change with a different
+   blast radius.
+
+### A finding about the existing evidence, which is why this survived
+
+`tests/test_bash_wrapper_prefix_gate.py`'s module docstring and this hook's own cycle-S
+header block both recorded a measurement in which `cp README.md ~/outside_probe.txt` DENIED
+with `[ENF-PROJECT-BOUNDARY]`. That measurement was taken "from a cwd outside the project",
+and that is the whole explanation: with cwd outside, `<cwd>/~/outside_probe.txt` is out of
+project too, so the deny came from the CWD and not from `~` being resolved. The verdict is
+real and the wrapper-prefix contrast it proves is still valid, but the note READ as evidence
+that tilde targets were handled, and that is what stopped anyone re-examining them. Both
+notes are corrected. No executable assertion depended on that spelling, so nothing went red
+from the correction.
+
+### Measured versus inferred
+
+MEASURED: the twenty-six extractor rows above, before and after; the seventeen full-hook
+`permissionDecision` values before and after, including the deny TAG; every expansion rule
+against a real `bash` process, including the two assignment-position spellings the plan
+refused to assert and the `NAME+=` form recorded as residue; the `~+` / `~-` / `~N`
+divergences, the last with a `pushd` prelude so the directory stack actually has an entry;
+the `unknown` ask through the full hook and through the firedrill census harness; the
+credential deny ordering on both the unresolved and the expanded-tilde spellings; the
+worktree hook's current verdict for `git worktree add ~/evil x`; and fifteen mutations of
+the shipped code, each confirming the test that claims to cover it actually reddens.
+
+NOT MEASURED, stated plainly: a write LANDING ON DISK through the full Claude Code path,
+which a `PreToolUse` hook test cannot show at all, the same boundary every earlier cycle in
+this family recorded. INFERRED, not measured: nothing new this cycle. The worktree hook's
+own blindness is MEASURED, and only its FIX is deferred.

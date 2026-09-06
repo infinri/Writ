@@ -253,6 +253,115 @@
 #     limit already disclosed above, reached through an opener instead of a verb.
 # See docs/adr/ADR-bash-control-operator-tokenizer.md, cycle R amendment.
 #
+# ── Same seam, seventh instance: THE EXPANSIONS A SHELL PERFORMS BEFORE THE WRITE ──
+# Every vector above collects a write target as a WORD, and the classification loop below
+# joins that word under cwd. Nothing performed the expansions a real shell performs first,
+# so a word that LOOKS relative and really lands in the user's home read as in-project.
+# The gate did not fail to answer: it answered `local` for a path nothing would write to,
+# and the audit row named that fictional path too, which is what makes a later reviewer
+# read green. MEASURED through this extractor with WRIT_CWD=/proj and HOME=/home/u, before
+# the fix and then after it, against a real `bash -c 'printf "%s" WORD'` as the oracle for
+# every spelling (`~NAME` is an EXISTING login name on the measuring host, resolved through
+# the password database; an unknown one correctly stays literal on both sides):
+#
+#                             BEFORE                  AFTER                 shell writes
+#   cp README.md ~/x          local /proj/~/x         outside /home/u/x     /home/u/x
+#   cp README.md ~NAME/x      local /proj/~NAME/x     outside /home/NAME/x  /home/NAME/x
+#   cp README.md ~            local /proj/~           outside /home/u       /home/u
+#   cp README.md $HOME/x      local /proj/$HOME/x     outside /home/u/x     /home/u/x
+#   cp README.md ${HOME}/x    local /proj/${HOME}/x   outside /home/u/x     /home/u/x
+#   cp README.md "$HOME/x"    local /proj/$HOME/x     outside /home/u/x     /home/u/x
+#   dd if=/dev/zero of=~/x    local /proj/~/x         outside /home/u/x     /home/u/x
+#
+# and the four that were already right, which the fix must NOT move:
+#
+#   cp README.md '~/x'        local /proj/~/x         local /proj/~/x       ~/x
+#   cp README.md "~/x"        local /proj/~/x         local /proj/~/x       ~/x
+#   cp README.md '$HOME/x'    local /proj/$HOME/x     local /proj/$HOME/x   $HOME/x
+#   cp README.md src/~/x      local /proj/src/~/x     local /proj/src/~/x   src/~/x
+#
+# The same seventeen spellings were driven through the WHOLE hook with a PreToolUse
+# envelope, in work mode with both gates approved and project_root set: the seven rows
+# above flip from a SILENT ALLOW to `[ENF-PROJECT-BOUNDARY]`, the ten correct ones are
+# unchanged tag for tag, and `$NOPE_UNSET/x` flips from a silent allow to an ask.
+#
+# EXPANSION RUNS AT COLLECTION, NOT AT CLASSIFICATION, and that placement is forced rather
+# than preferred. shlex(posix=False) keeps the quote characters ON each token, so quoting
+# IS still known while a segment is being read; the two collection sites below used to
+# hand `dequote`'s OUTPUT forward, and dequote DESTROYS that evidence. By the classification
+# loop, `"$HOME/x"` and `'$HOME/x'` are the same seven bytes and their correct answers are
+# OPPOSITE, because bash expands the first and not the second. No code reading those bytes
+# can separate them, so a fix placed there is wrong in one direction by construction:
+# either the six rows above stay open, or these four spellings, which a real shell leaves
+# ALONE and which really do land in the project, become false refusals:
+#
+#   "~/x"        '~/x'        '$HOME/x'        src/~/x
+#
+# A false refusal on a human-oversight boundary is the worse failure of the two: it trains
+# the user to wave the gate through. So `expand_word` (beside dequote, below) takes the RAW
+# token, and `raw_targets` carries (value, unresolved) PAIRS forward. The classification
+# line itself is untouched: an expanded `~/x` is already absolute, so its existing
+# is-absolute branch does the right thing with no edit at all.
+#
+# THE ASSIGNMENT RULE IS A SHAPE RULE, and `dd of=` is why it is not academic here. A tilde
+# expands after an `=` only when the text before the `=` is a valid shell NAME
+# ([A-Za-z_][A-Za-z0-9_]*), and then again after every `:` in that same word. All six rows
+# were measured, not read off a manual: `of=~/x`, `foo_1=~/x` and `a=b:~/x` expand, while
+# `fo-o=~/x`, `2bad=~/x` and `--opt=~/x` do NOT, which is also why `cp
+# --target-directory=~/x` is correct today and stays correct. `dd of=` is a write form this
+# gate collects and slices, so the expanding half is a real bypass. `NAME+=~/x` expands in
+# a real shell too and is NOT expanded here; it reaches no collected target (`of+=` is not
+# a dd operand, and any other assignment-shaped word stays a relative path even expanded),
+# so it is disclosed rather than handled.
+#
+# A LOGIN NAME MAY CONTAIN A DOT. `~name` resolves through the password database, and the
+# charset is [A-Za-z_][A-Za-z0-9_.-]* rather than a naive [A-Za-z0-9_] identifier, because
+# a dotted login name is one of the measured bypasses and the naive spelling leaves exactly
+# that spelling open. An unknown name stays LITERAL, which is what bash does, so that is
+# correct rather than merely safe.
+#
+# AN UNRESOLVED VARIABLE ASKS. It is neither a deny nor a silent allow, and this is the
+# file's OWN precedent rather than a new policy: the egress pass already ruled that when a
+# flag makes the apparent host stop being evidence, "the safe answer to 'cannot be trusted'
+# is the prompt, not silence". `$NOPE/x` expands to `/x`, the filesystem ROOT, in a real
+# shell, and this hook cannot know whether an arbitrary name is set in the shell that will
+# run the command. Denying refuses work that may be legitimate; leaving it literal is not
+# neutral, because the gate would AFFIRMATIVELY classify `<cwd>/$NOPE/x` as in-project and
+# write an audit row naming a path nothing wrote to. So such a target emits an `unknown`
+# row and NO `local`/`outside` row, and the bash arm below turns it into one confirmation
+# naming the variable. The flag is computed INSIDE expand_word, where quoting still exists:
+# recomputing it at the classification point would raise a false ask on the legitimate
+# in-project `'$NOPE/x'`, which is the same trap as above with the same answer. The check
+# is ordered AFTER the credential and gate-state arms, so `cp seed.txt $NOPE/.env` still
+# DENIES rather than asking.
+#
+# WHAT IS DELIBERATELY NOT EXPANDED, each a different mechanism this gate has no theory
+# about, and each leaving the word LITERAL (so it classifies in-project): command
+# substitution in both syntaxes, process substitution, arithmetic expansion, brace
+# expansion, pathname expansion (globbing), the parameter-expansion OPERATOR forms
+# (${VAR:-x}, ${VAR#p} and relatives), positional and special parameters, and the three
+# directory-stack tildes named in the machine-readable block below. None of them raises the
+# unknown ask either: an ask worded for "an unset variable" about a mechanism that is not
+# one misnames what is unknown, which is worse than admitting the gap.
+#
+# `~+` is $PWD, which IS this hook's own cwd, so expanding it or not gives the same
+# classification and there is nothing to close. `~-` is $OLDPWD and `~N` is the directory
+# stack: both are state of the INVOKING shell that this hook does not have and cannot
+# reconstruct, and inventing a value for them is how a wrong refusal gets built.
+#
+# A MID-PATH TILDE (`src/~/x`) IS NOT RESIDUE and is deliberately absent from that block:
+# bash does not expand it either, so the gate and the shell AGREE, which is why that
+# spelling is correct today and must stay correct. The same goes for a tilde whose word
+# opens with a quoted run before the `=`-or-`:` offset (`a="b:"~/x`): the offsets are
+# computed on the raw word, so the tilde stays literal there, which is the miss direction
+# and reaches no collected target.
+#
+# UNEXPANDED FORMS BEGIN (names only; the reasons are in the prose above)
+# tilde-pwd, tilde-oldpwd, tilde-dirstack
+# UNEXPANDED FORMS END
+#
+# See docs/adr/ADR-bash-control-operator-tokenizer.md, cycle T amendment.
+#
 # ── Second vector: EGRESS ────────────────────────────────────────────────────
 # The file name still says "write" because renaming it would churn hooks.json, the
 # generated docs/reference/hooks.md, the matcher-wiring test and the docs for no
@@ -827,9 +936,19 @@ esac
 # `state` (Writ gate state, deny everywhere), `local` (an abspath under cwd) or `outside`
 # (an abspath that is not). `local` and `outside` are BOTH work-gated by the same
 # can-write round trip; the kinds stay distinct so the row still says where the path was.
-# Plus "egress\t<host>\t<detail>" per non-allowlisted destination.
+# Plus "unknown\t<spelling>\t<variable>" per target whose expansion could not be resolved
+# (it ASKS; it produces no local/outside row, because there is no path to gate), and
+# "egress\t<host>\t<detail>" per non-allowlisted destination.
 TARGETS=$(WRIT_BASH_CMD="$CMD" WRIT_CWD="$(pwd)" WRIT_DIR="$WRIT_DIR" python3 <<'PY' 2>/dev/null || true
 import os, re, shlex, sys
+
+# `~name` resolves through the password database (see expand_word), so an unavailable
+# module must leave that spelling LITERAL rather than raise, taking the whole extractor
+# (and with it every credential and egress row) down with it.
+try:
+    import pwd
+except Exception:
+    pwd = None
 
 cmd = os.environ.get("WRIT_BASH_CMD", "")
 cwd = os.environ.get("WRIT_CWD", "") or os.getcwd()
@@ -2046,6 +2165,185 @@ def dequote(t):
         return t[1:-1]
     return t
 
+
+# ── The value side: what a real shell resolves a WRITE TARGET to ────────────
+# expand_word is dequote's replacement in VALUE positions only, which is why the two sit
+# together. dequote stays exactly where it is for verb/flag/host resolution above: those
+# consumers ask what a token SAYS, and this one asks what it will BECOME.
+#
+# The full argument for the placement, the four spellings that must NOT be expanded and
+# the unresolved-variable ask is in the header, under "Same seam, seventh instance". The
+# short version, because it is the one thing a reader must not have to reconstruct: by the
+# classification loop below, `"$HOME/x"` and `'$HOME/x'` are the SAME BYTES and their
+# correct answers are opposite, so expansion can only be correct while the raw token, with
+# its quote characters still attached, is in hand.
+#
+# Returns a 2-TUPLE (value, unresolved): the string bash would produce for this word under
+# the expansions below, and the NAME of the first simple-name parameter that could not be
+# resolved from this hook's own environment ("" when everything resolved). The name rather
+# than a bare bool, because the confirmation this drives has to say WHICH variable the gate
+# could not see; an ask that cannot name what is unknown is not much better than silence.
+# Simple names only, resolved from the environment: the mechanism is parameter expansion,
+# and keying this on the literal name HOME is the shape that leaves $TMPDIR/x open.
+LOGIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*")
+PARAM_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+ASSIGN_PREFIX = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def expand_word(raw):
+    # strip_unbalanced_close runs FIRST, and the existing call at the head of the
+    # classification loop STAYS. That is not a second competing normalization point (the
+    # control-operator ADR rejects those): the function is idempotent, and the later call
+    # still normalizes interpreter hits and the `dd of=` substring, which never pass
+    # through here. This call exists for one measured reason: `(cp README.md ~)` reaches
+    # this function as the token `~)`, whose tilde-prefix would be `)`, not a login name,
+    # so the word would stay literal while the shell still copies into $HOME.
+    tok = strip_unbalanced_close(raw)
+
+    # Tilde-expandable OFFSETS, decided by the word's SHAPE before the scan starts, because
+    # that is what the rule is about: a tilde expands at the start of a word and (only
+    # when the text before the first `=` is a valid shell NAME) immediately after that
+    # `=` and after every following `:`. Measured, not read off a manual: `of=~/x`,
+    # `foo_1=~/x` and `a=b:~/x` expand; `fo-o=~/x`, `2bad=~/x` and `--opt=~/x` do not.
+    # `dd of=` is a collected write form, so the expanding half is a live bypass, and
+    # `cp --target-directory=~/x` is correct today precisely because the other half is not.
+    tilde_at = {0}
+    assign = ASSIGN_PREFIX.match(tok)
+    if assign:
+        tilde_at.add(assign.end())
+        tilde_at.update(j + 1 for j in range(assign.end(), len(tok)) if tok[j] == ":")
+
+    out = []
+    unresolved = ""
+    quote = ""
+    i = 0
+    while i < len(tok):
+        ch = tok[i]
+
+        # Single quotes: no expansion and no escape of any kind exists in here. THIS is
+        # the arm that keeps '~/x' and '$HOME/x' the in-project literals a real shell
+        # makes them, and it is the whole reason expansion cannot run after dequote.
+        if quote == "'":
+            if ch == "'":
+                quote = ""
+            else:
+                out.append(ch)
+            i += 1
+            continue
+
+        # A quote character is DROPPED wherever it appears, which is strictly better than
+        # dequote's matched-outer-pair rule: dequote left `$HOME"/x"` with its quote
+        # characters attached and the classified path carried them into the audit row.
+        if quote == "" and ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if quote == '"' and ch == '"':
+            quote = ""
+            i += 1
+            continue
+
+        # Backslash. Outside quotes it escapes ANY next character, which is what keeps
+        # `\~/x` and `\$HOME/x` literal. Inside double quotes it escapes only these four;
+        # in front of anything else there it is an ordinary backslash.
+        if ch == "\\":
+            nxt = tok[i + 1] if i + 1 < len(tok) else ""
+            if nxt and (quote == "" or (quote == '"' and nxt in ('$', '`', '"', '\\'))):
+                out.append(nxt)
+                i += 2
+                continue
+            out.append(ch)
+            i += 1
+            continue
+
+        # Parameter expansion, $NAME and ${NAME}, outside quotes and inside DOUBLE quotes.
+        # The brace form must accept ONLY a bare name: `${VAR:-/etc}` and its relatives are
+        # a different mechanism (an operator with its own semantics), so they fall through
+        # and stay literal rather than being half-understood.
+        if ch == "$":
+            name = ""
+            step = 0
+            if tok.startswith("${", i):
+                close = tok.find("}", i + 2)
+                if close != -1 and PARAM_NAME.fullmatch(tok[i + 2:close]):
+                    name = tok[i + 2:close]
+                    step = close + 1 - i
+            else:
+                m = PARAM_NAME.match(tok, i + 1)
+                if m:
+                    name = m.group(0)
+                    step = m.end() - i
+            if name:
+                val = os.environ.get(name)
+                if val is None:
+                    # Left LITERAL so the confirmation can quote the spelling back, and
+                    # RECORDED so the row below is `unknown` rather than an affirmative
+                    # in-project claim about <cwd>/$NAME/x, a path nothing writes to. An
+                    # unset name expands to NOTHING in a real shell, so the write really
+                    # lands at /x, the filesystem root.
+                    unresolved = unresolved or name
+                    out.append(tok[i:i + step])
+                else:
+                    out.append(val)
+                i += step
+                continue
+
+        # Tilde, only outside quotes and only at an offset the shape rule above admits.
+        # The tilde-prefix runs to the first `/` or to the end of the word.
+        if ch == "~" and quote == "" and i in tilde_at:
+            j = i + 1
+            while j < len(tok) and tok[j] != "/":
+                j += 1
+            name = tok[i + 1:j]
+            val = None
+            if not name:
+                # HOME first, the password database second, which is the same order and
+                # the same fallback bash uses, so `~/x` still resolves with HOME unset.
+                #
+                # `val is None`, NOT `not val`: HOME PRESENT BUT EMPTY is a third state,
+                # and bash uses the empty value rather than falling back. Measured:
+                # `env -i HOME= bash -c 'printf %s ~/x'` prints `/x`, while with HOME
+                # genuinely unset the same command prints the password-database home. The
+                # falsiness test conflated them, and where a project root IS the invoking
+                # user's home the passwd answer reads as IN-PROJECT for a write the shell
+                # sends to the filesystem root, which is the bypass class this whole block
+                # exists to close. The parameter-expansion branch below already tests
+                # `is None` for the same reason.
+                val = os.environ.get("HOME")
+                if val is None and pwd is not None:
+                    try:
+                        val = pwd.getpwuid(os.getuid()).pw_dir
+                    except Exception:
+                        val = None
+            elif pwd is not None and LOGIN_NAME.fullmatch(name):
+                # The charset admits a DOT and must: `~lucio.saldivar/x` is one of the
+                # measured bypasses, and a naive [A-Za-z0-9_] identifier leaves exactly
+                # that spelling open. It must NOT admit a leading `+`, `-` or digit,
+                # because those are the three directory-stack forms (`~+`, `~-`, `~N`),
+                # disclosed residue in the header's UNEXPANDED FORMS block, kept literal
+                # BY THIS RULE rather than by getpwnam happening to fail on them.
+                try:
+                    val = pwd.getpwnam(name).pw_dir
+                except Exception:
+                    # An unknown login name stays LITERAL, which is what bash does with it,
+                    # so this is correct rather than merely conservative.
+                    val = None
+            # `val is not None`, NOT `if val`, for the same reason as the HOME lookup
+            # above: a tilde that RESOLVED to the empty string still resolved, and bash
+            # substitutes it (`HOME= ; ~/x` is `/x`). None is the only "did not resolve"
+            # answer, and it is what an unknown login name and the three directory-stack
+            # forms produce, so both still fall through and stay literal.
+            if val is not None:
+                out.append(val)
+                i = j
+                continue
+
+        out.append(ch)
+        i += 1
+
+    return "".join(out), unresolved
+
+
 def redir_target(tok, nxt):
     """The file a redirect token writes to, or None (not a redirect / fd-dup /
     process substitution). Assumes posix=False tokens, so a quoted '>' (which keeps
@@ -2366,22 +2664,32 @@ for seg, _piped_in in segments:
         nxt = seg[i + 1] if i + 1 < len(seg) else None
         tgt = redir_target(tok, nxt)
         if tgt is not None:
-            raw_targets.append(dequote(tgt))
+            raw_targets.append(expand_word(tgt))
             if tgt == nxt:
                 skip_next = True
     # 2. command-specific write destinations (skip pure test/arith commands).
     if seg_is_test:
         continue
-    args = [dequote(a) for a in seg[cmd_arg0:]]
+    # expand_word, NOT dequote, and on the RAW token: this is the collection point, the
+    # last place quoting still exists. `pairs` carries (value, unresolved) per argument;
+    # `args` is the values alone, because every shape test below (a leading `-`, an `of=`
+    # prefix, a REDIR match) asks about the VALUE and the four arms are otherwise unchanged.
+    # A pair is appended to raw_targets only for the argument that really is the write
+    # destination, so an unresolved variable in a SOURCE argument raises no confirmation.
+    pairs = [expand_word(a) for a in seg[cmd_arg0:]]
+    args = [v for v, _unres in pairs]
     if cmd0 == "tee":
-        for a in args:
+        for j, a in enumerate(args):
             if a.startswith("-"):
                 continue
             if a.startswith(("<", ">")) or REDIR.match(a):  # redirect / process-sub ends the list
                 break
-            raw_targets.append(a)
+            raw_targets.append(pairs[j])
     elif cmd0 == "dd":
-        raw_targets += [a[3:] for a in args if a.startswith("of=") and a[3:]]
+        # The `of=` prefix is sliced off the EXPANDED word, which is what makes the
+        # assignment-position tilde a real shell expands there reach classification as the
+        # home directory it resolves to instead of as a relative path under cwd.
+        raw_targets += [(v[3:], u) for v, u in pairs if v.startswith("of=") and v[3:]]
     elif cmd0 in ("cp", "mv", "install"):
         tdir = None
         skip = False
@@ -2390,20 +2698,22 @@ for seg, _piped_in in segments:
                 skip = False; continue
             if a in ("-t", "--target-directory"):
                 if j + 1 < len(args):
-                    tdir = args[j + 1]; skip = True
+                    tdir = pairs[j + 1]; skip = True
             elif a.startswith("--target-directory="):
-                tdir = a.split("=", 1)[1]
+                tdir = (a.split("=", 1)[1], pairs[j][1])
             elif a.startswith("-t") and len(a) > 2:
-                tdir = a[2:]
+                tdir = (a[2:], pairs[j][1])
         if tdir is not None:
             raw_targets.append(tdir)        # -t DIR: the dir IS the write dest
         else:
-            cand = [a for a in args if not a.startswith("-") and REDIR.match(a) is None]
+            cand = [pairs[j] for j, a in enumerate(args)
+                    if not a.startswith("-") and REDIR.match(a) is None]
             if len(cand) >= 2:              # last positional is the destination
                 raw_targets.append(cand[-1])
     elif cmd0 == "sed":
         if any(a == "-i" or a.startswith("-i") or a == "--in-place" or a.startswith("--in-place") for a in args):
-            files = [a for a in args if not a.startswith("-") and REDIR.match(a) is None]
+            files = [pairs[j] for j, a in enumerate(args)
+                     if not a.startswith("-") and REDIR.match(a) is None]
             if files:                       # the edited file is the LAST positional (skip the script)
                 raw_targets.append(files[-1])
 
@@ -2438,7 +2748,11 @@ for seg, piped_in in segments:
         form = "stdin"
     if form == "flag":
         hits = scan_tokens(args)
-        raw_targets += hits
+        # NOT expanded, and that is the correct answer rather than an omission: a tilde
+        # inside a source-code string literal is expanded by NEITHER the shell (it sits
+        # inside the interpreter's own quoted argument) nor the interpreter, so the write
+        # really does land under cwd and the existing join already says so.
+        raw_targets += [(h, "") for h in hits]
         interp_hits.update(hits)
     elif form == "stdin":
         stdin_interpreter = True
@@ -2459,11 +2773,11 @@ if stdin_interpreter:
     # than beside `tokens` so a command that is not a stdin-fed interpreter never pays
     # the extra pass.
     hits = scan_tokens(split_control_operators(raw_tokens))
-    raw_targets += hits
+    raw_targets += [(h, "") for h in hits]   # not expanded, for the reason on the arm above
     interp_hits.update(hits)
 
 seen = set()
-for raw in raw_targets:
+for raw, unresolved in raw_targets:
     # ONE normalization point for every write vector's collected targets: downstream of
     # ALL collection, upstream of ALL classification, so NONFILE, the credential
     # classifier, the gate-state check, the dedup and the abspath all see the same
@@ -2482,6 +2796,15 @@ for raw in raw_targets:
         continue
     if is_gate_state(t):
         print(f"state\t{t}")
+        continue
+    # An expansion this hook could not resolve makes the apparent path stop being
+    # evidence, so no `local`/`outside` row is emitted for it at all: there is no path to
+    # feed the work gate, and printing one would be an affirmative in-project claim about
+    # a path nothing writes to. Ordered AFTER the two arms above ON PURPOSE, so a
+    # credential-shaped target still DENIES rather than merely asking (is_cred classifies
+    # on basename, which survives an unresolved prefix intact).
+    if unresolved:
+        print(f"unknown\t{t}\t{unresolved}")
         continue
     ap = t if os.path.isabs(t) else os.path.normpath(os.path.join(cwd, t))
     # Interpreter-only exemption; see the interp_hits comment above.
@@ -2622,6 +2945,34 @@ print(json.dumps({'tool_input': {'file_path': os.environ['WRIT_AP']}, 'skill_dir
     fi
     log_gate_decision "bash-write" "allow" "no gate objection" "$path"
 done <<< "$TARGETS"
+
+# 2b. Write targets whose expansion could not be resolved: ASK the user. Placed AFTER the
+# work-gate loop so every deny above still outranks a confirmation, and immediately BEFORE
+# the egress arm because a write target is this gate's primary vector and only one ask can
+# fire per command. An unset name expands to NOTHING in a real shell, so the write really
+# lands at the filesystem root; the gate cannot know whether the name is set in the shell
+# that will run the command, and the honest answer to "this cannot be trusted" is the
+# prompt, not silence. See the seventh-instance block in the header for why this is not a
+# deny and not a silent allow.
+UNKNOWN_HITS=$(printf '%s\n' "$TARGETS" | awk -F'\t' '$1=="unknown"')
+if [ -n "$UNKNOWN_HITS" ]; then
+    UNK_LIST="" UNK_VARS=""
+    while IFS=$'\t' read -r _ukind uword uvar; do
+        [ -n "$uword" ] || continue
+        # uvar is never empty on an `unknown` row: the extractor sets it to the NAME it
+        # could not resolve, which is the whole reason the row exists.
+        UNK_LIST="${UNK_LIST}
+  - ${uword}   (\$${uvar} is not set in the environment this hook was given)"
+        UNK_VARS="${UNK_VARS}${UNK_VARS:+, }\$${uvar}"
+    done <<< "$UNKNOWN_HITS"
+    UNK_REASON="[ENF-BASH-WRITE-UNRESOLVED] This Bash command writes to a target Writ cannot resolve:
+${UNK_LIST}
+
+An unset variable expands to nothing, so a target spelled that way can land at the filesystem root or anywhere else outside this project, and Writ will not claim it is in-project when it cannot tell. Confirm only if you meant to write there. To be gated on the real path instead of asked, spell the destination out, or set the variable in this shell before running the command."
+    log_gate_decision "bash-write" "ask" "$UNK_REASON" "$UNK_VARS"
+    emit_ask "$UNK_REASON"
+    exit 0
+fi
 
 # 3. Egress destinations: ASK the user. Placed LAST on purpose -- every deny above
 # outranks a confirmation, so this is reached only by a command with nothing stronger
