@@ -1104,7 +1104,66 @@ esac
 # turn that read-only grep into a `[SEC-CREDENTIAL-WRITE]` deny. The existing pins for
 # that behavior go through the extractor directly and so are structurally blind to this
 # mutation, which is why the pin for it drives the REAL hook instead.
-TARGETS=$(WRIT_BASH_CMD="$CMD" WRIT_CWD="$(pwd)" WRIT_DIR="$WRIT_DIR" python3 <<'PY' 2>/dev/null || true
+#
+# THE COMMAND CROSSES AS A PATH, NOT AS A VALUE, and this is the whole gate's
+# availability rather than a refactor. `WRIT_BASH_CMD="$CMD"` put the model-controlled
+# command in ONE environment string, and Linux caps a single argv/env string at
+# MAX_ARG_STRLEN (32 pages, 131,072 bytes here). Measured on this machine: a credential
+# probe of 131,014 characters DENIED and one of 131,060 was SILENT, rc 0. execve failed
+# before python started, `2>/dev/null || true` swallowed it, TARGETS came back empty, and
+# the consumer below read that as "nothing to gate". Every arm past this line (credential,
+# gate state, work gate, unresolved target, egress) was switched off by command LENGTH.
+# See docs/adr/ADR-hook-exec-argument-boundary.md, which decides this class.
+#
+# A FILE PATH IS BOUNDED BY CONSTRUCTION, which is the enforcer the ADR asks to be named:
+# it is built from a fixed `mktemp` template, so its size cannot depend on the payload.
+# The costs, stated rather than hidden: the command text lands on disk transiently, so it
+# is created by `mktemp` (mode 600, unpredictable name, never a fixed path a symlink could
+# aim at) and removed through `writ_on_exit`, not `trap ... EXIT`, because bash allows one
+# EXIT trap and installing a second one silently disabled a hook's telemetry once already
+# (pinned by tests/test_exit_trap_ownership.py).
+#
+# "EVERY EXIT PATH" WOULD BE AN OVERSTATEMENT, so it is not claimed. `writ_on_exit` covers
+# normal exits and the fault paths; an UNTRAPPED FATAL SIGNAL does not run it, and review
+# reproduced that with a restrictive `ulimit -f`, where the write died on SIGXFSZ (rc 153)
+# and left a partial file holding real command text. SIGKILL, an OOM kill, SIGSEGV and a
+# power loss are the same shape, and the window is the hook's whole remaining runtime
+# rather than a narrow race.
+#
+# WHY THAT IS ACCEPTED RATHER THAN ENGINEERED AROUND: mode 600 means the only reader is
+# this uid, and this uid is the agent's own, which already holds the command in its
+# process arguments and its environment. So the file adds no reader that did not already
+# have the text, and trapping every fatal signal to shorten a window that exposes nothing
+# new would be machinery bought for an appearance. A command carrying a secret is a
+# separate concern that predates this transport.
+#
+# WHY NOT STDIN, which the ADR prefers: stdin is already occupied by the quoted heredoc
+# that carries this ~1,900-line program. Moving the program to a file would free stdin and
+# delete this temp file, and that is the right end state, but seven test modules slice the
+# program out of this hook by searching for that heredoc marker (the FIRST one in the
+# file, which is why no comment above this line may spell it) and one compares its mirror
+# block textually against writ/session/bash_tokens.py, so it is a structural refactor of
+# the most heavily pinned file in the repo and is named as the follow-up instead. Passing
+# the ~100 KB program on argv is the ADR's "bounded in practice" trap at its worst.
+#
+# A FAILED mktemp OR A FAILED WRITE IS A FAULT, NOT AN EMPTY COMMAND. This is the same
+# distinction the sentinel makes below: "no command to look at" and "the command could not
+# be handed over" are different states, and only one of them is safe to allow.
+CMD_FILE=$(mktemp "${TMPDIR:-/tmp}/writ-bashcmd.XXXXXXXXXX" 2>/dev/null) || CMD_FILE=""
+_writ_bash_gate_cleanup() { [ -n "${CMD_FILE:-}" ] && rm -f "$CMD_FILE"; }
+writ_on_exit _writ_bash_gate_cleanup
+if [ -z "$CMD_FILE" ] || ! printf '%s' "$CMD" > "$CMD_FILE" 2>/dev/null; then
+    writ_decider_fault "writ-bash-write-gate" "bash-write-extractor" \
+        "the command could not be handed to the extractor (no writable temporary file), so no credential, gate-state, write-target or egress check ran on it"
+    exit 0
+fi
+
+# `|| true` STAYS, and the sentinel below is why that is now safe. Under `set -e` a
+# non-zero python here would abort the hook (a visible hook error, but also no decision),
+# so the status is not read from `$?`; it is read from whether the block PRINTED that it
+# finished. That is ADR property 3: the outcome is observed, never inferred from an empty
+# value.
+TARGETS=$(WRIT_BASH_CMD_FILE="$CMD_FILE" WRIT_CWD="$(pwd)" WRIT_DIR="$WRIT_DIR" python3 <<'PY' 2>/dev/null || true
 import os, re, shlex, sys
 
 # `~name` resolves through the password database (see expand_word), so an unavailable
@@ -1115,8 +1174,27 @@ try:
 except Exception:
     pwd = None
 
-cmd = os.environ.get("WRIT_BASH_CMD", "")
+# The command arrives as a PATH and is read here, in process. See the note above this
+# heredoc for why the value itself no longer crosses. `errors="surrogateescape"` is not
+# decoration: `os.environ` decoded the retired env string that way, so a command carrying
+# a byte that is not valid UTF-8 has to produce the SAME python string through the file or
+# the transport would quietly change a verdict. No default and no try/except: an
+# unreadable command file is a fault, and a fault must reach the consumer as a MISSING
+# completion sentinel, not as an empty command that reads like "nothing to gate".
+with open(os.environ["WRIT_BASH_CMD_FILE"], encoding="utf-8", errors="surrogateescape") as _cmd_fh:
+    cmd = _cmd_fh.read()
 cwd = os.environ.get("WRIT_CWD", "") or os.getcwd()
+
+# THE COMPLETION SENTINEL, printed as this block's LAST line on every path that finished.
+# The consumer used to collapse two states into one: "ran and found nothing", which is the
+# hot path for almost every command, and "did not run", which is the defect this cycle
+# closes. Both looked like empty output. This row says which. Its spelling can never
+# collide with a real row: every row's first field is one of cred/state/local/outside/
+# unknown/egress, and the consumer STRIPS this line before any arm sees TARGETS. The text
+# is spelled here as a literal and in bash as WRIT_EXTRACTOR_SENTINEL (common.sh) because
+# this heredoc is QUOTED, so no bash value interpolates into it; see the note there for why
+# two literals beat a third env channel.
+STATUS_COMPLETE = "status\tcomplete"
 
 # Credential classification: SINGLE SOURCE is writ.session.gates._is_credential_path.
 sys.path.insert(0, os.environ.get("WRIT_DIR", ""))
@@ -2750,6 +2828,12 @@ def scan_tokens(toks):
 try:
     raw_tokens = shlex.split(split_commands(cmd), comments=False, posix=False)
 except ValueError:
+    # THE SENTINEL PRINTS BEFORE THIS EXIT, because this is a COMPLETED decision and not
+    # a fault: unbalanced quotes are a deliberate fail-open ("no false deny"). Without the
+    # print, every quote-unbalanced command would reach the consumer with no sentinel, be
+    # read as a decider fault, and ASK, which is a real usability regression rather than a
+    # safety gain. Pinned as a capability in its own right.
+    print(STATUS_COMPLETE)
     sys.exit(0)   # unbalanced quotes etc -> fail open (no false deny)
 # posix=False forces whitespace_split, so `> a.txt; bar` leaves `a.txt;` ONE token: the
 # target reads as `a.txt;` and the `;` never splits a segment. Re-split here, once, so
@@ -3022,8 +3106,39 @@ for seg, piped_in in segments:
             continue
         egress_seen.add(row)
         print(f"egress\t{row[0]}\t{row[1]}")
+
+# LAST LINE, unconditionally: the block ran to completion. Every earlier exit prints it
+# too (there is one, the unbalanced-quotes fail-open above). An exception anywhere in
+# between reaches here through no path at all, which is exactly the signal the consumer
+# needs.
+print(STATUS_COMPLETE)
 PY
 )
+
+# THREE OUTCOMES, NOT TWO. `[ -z "$TARGETS" ] && exit 0` was the consumer half of the
+# defect above: it read "the extractor did not run" and "the extractor ran and found
+# nothing" as the same thing, and answered both with a silent allow.
+#
+#   last line is the sentinel, other lines present -> strip it and fall into the code
+#     below unchanged, so every awk filter and the can-write loop see exactly what they
+#     saw before this cycle.
+#   the sentinel alone -> exit 0, silently, the hot path for almost every command.
+#   no sentinel -> the block did not run to completion. Fault path: ask, and record it.
+#
+# STRIPPED HERE, ONCE, rather than asking six consumers to ignore a `status` row: five
+# arms below key on the first TSV column and the can-write loop reads a two-field row
+# positionally, so a leaked sentinel would invent an unresolved target (an ask on a
+# command that has none) or a phantom write path. Strip once and none of them can be
+# surprised. Command substitution already dropped the trailing newline, so the sentinel is
+# the text after the last newline, or the whole value when it is the only line.
+_TARGETS_LAST="${TARGETS##*$'\n'}"
+if [ "$_TARGETS_LAST" != "$WRIT_EXTRACTOR_SENTINEL" ]; then
+    writ_decider_fault "writ-bash-write-gate" "bash-write-extractor" \
+        "the Bash write/egress extractor did not finish, so this command was not checked for credential writes, gate-state writes, out-of-project writes or data egress"
+    exit 0
+fi
+TARGETS="${TARGETS%"$_TARGETS_LAST"}"
+TARGETS="${TARGETS%$'\n'}"
 
 [ -z "$TARGETS" ] && exit 0
 

@@ -45,7 +45,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import uuid
 from pathlib import Path
 
@@ -58,6 +57,7 @@ from tests.test_bash_write_gate import (
     _extractor_src,
     _seed,
     nested_cmd_flags,
+    run_extractor,
     wrapper_names,
 )
 from tests.test_strict_mode import DEAD_PORT
@@ -76,14 +76,17 @@ def _sid() -> str:
 def _extract_egress(cmd: str, cwd: str = "/proj", extra_env: dict | None = None) -> set[tuple[str, str]]:
     """Run the extractor on a command; return the set of (host, detail) pairs
     from its `egress\\t<host>\\t<detail>` output lines (new contract; the
-    existing `cred`/`state`/`local` lines are covered by `_extract`)."""
-    env = dict(os.environ, WRIT_BASH_CMD=cmd, WRIT_CWD=cwd)
+    existing `cred`/`state`/`local` lines are covered by `_extract`).
+
+    Through `run_extractor`: the command crosses on a FILE, the same way the hook
+    hands it over, and the completion sentinel is stripped before these rows are
+    read."""
+    env = dict(os.environ)
     if extra_env:
         env.update(extra_env)
-    p = subprocess.run([sys.executable, "-c", _extractor_src()], env=env,
-                       capture_output=True, text=True)
+    _p, lines = run_extractor(cmd, cwd, env=env)
     out = set()
-    for line in p.stdout.splitlines():
+    for line in lines:
         parts = line.split("\t", 2)
         if len(parts) == 3 and parts[0] == "egress":
             out.add((parts[1], parts[2]))

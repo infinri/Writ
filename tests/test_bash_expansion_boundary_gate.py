@@ -61,7 +61,6 @@ import getpass
 import os
 import shlex
 import subprocess
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -73,9 +72,9 @@ from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
 from tests.test_bash_write_gate import (
     HOOK_SH,
     SKILL_ROOT,
-    _extractor_src,
     _run_hook,
     _seed,
+    run_extractor,
 )
 from tests.test_project_boundary import _post_approval_cache
 from tests.test_worktree_safety_extractor import _run as _run_worktree_hook
@@ -147,12 +146,10 @@ def _extract_rows(cmd: str, cwd: Path, env: dict) -> list[tuple[str, ...]]:
     the 2-column shape tests/test_bash_write_gate.py's `_extract()` assumes,
     because the `unknown` row this cycle adds may carry more than one field
     after the kind column."""
-    full_env = dict(env, WRIT_BASH_CMD=cmd, WRIT_CWD=str(cwd))
-    p = subprocess.run([sys.executable, "-c", _extractor_src()], env=full_env,
-                       capture_output=True, text=True, timeout=15)
+    p, lines = run_extractor(cmd, str(cwd), env=env, timeout=15)
     assert p.returncode == 0, (cmd, p.returncode, p.stdout, p.stderr)
     rows: list[tuple[str, ...]] = []
-    for line in p.stdout.splitlines():
+    for line in lines:
         if "\t" in line:
             rows.append(tuple(line.split("\t")))
     return rows

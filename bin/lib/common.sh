@@ -1141,43 +1141,132 @@ print(json.dumps(items, indent=2, ensure_ascii=False))
 # Emit a PreToolUse "deny" decision (Claude Code hookSpecificOutput contract)
 # carrying the given reason. Single source for the deny envelope shared by the
 # validate-design-doc / validate-test-file / worktree-safety PreToolUse gates.
+#
+# THE REASON RIDES STDIN, NOT AN ENVIRONMENT STRING, and that is a size decision rather
+# than a style one (docs/adr/ADR-hook-exec-argument-boundary.md, property 2). MAX_ARG_STRLEN
+# caps each ENV string exactly as it caps each argument, and the Bash gate's reasons embed
+# extractor row values (a credential path, an unresolved spelling, an egress host), which
+# `flat()` collapses but does NOT truncate, so a reason is as long as the command token it
+# quotes. Those reasons were unreachable at size only while the extractor died first; the
+# command-file transport in writ-bash-write-gate.sh makes them reachable, and an oversized
+# env string here would move the silence one layer down: execve fails, `_reply` falls back to
+# "", and emit_hook_reply returns 0 on an empty payload, so the DENY disappears exactly as
+# the extractor's verdict used to. Stdin has no per-string cap. The process count is
+# unchanged (one python either way) and no call site changes.
+#
+# THE PROGRAM MOVES OFF THE HEREDOC FOR THE SAME REASON: a quoted heredoc IS stdin, so a
+# payload cannot use it. It is a SINGLE-quoted `-c` program instead, which needs the JSON
+# keys spelled with double quotes and must contain no apostrophe, so nothing in it can be
+# interpolated by bash (no `$`, no backtick, no quote to close). The two Bash-side gates
+# cannot take this route (their programs are ~1,900 and ~600 lines), which is why they
+# pass a FILE PATH and this one passes the value.
+#
+# surrogateescape on the way in mirrors how os.environ already decoded this value, so a
+# reason quoting a command token that is not valid UTF-8 renders the same as before rather
+# than raising. json.dumps then escapes it (ensure_ascii), so stdout stays pure ASCII.
 # Usage: [ -n "$DENY" ] && emit_deny "$DENY"
 emit_deny() {
   local _reply
-  _reply=$(WRIT_DENY_REASON="$1" python3 <<'PY'
-import json, os
+  _reply=$(printf '%s' "$1" | python3 -c 'import json, sys
 print(json.dumps({
-    'hookSpecificOutput': {
-        'hookEventName': 'PreToolUse',
-        'permissionDecision': 'deny',
-        'permissionDecisionReason': os.environ.get('WRIT_DENY_REASON', '')
+    "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": sys.stdin.buffer.read().decode("utf-8", "surrogateescape")
     }
-}))
-PY
-) || _reply=""
+}))') || _reply=""
   emit_hook_reply "$_reply"
 }
 
 # Emit a PreToolUse "ask" decision (Claude Code hookSpecificOutput contract): the
 # tool is neither allowed nor denied, the USER confirms it. Single source for the ask
-# envelope, the twin of emit_deny above. The reason rides an env var into python, which
-# does the JSON encoding, so newlines and quotes inside a reason (the egress guard lists
-# one destination per line) cannot corrupt or forge the envelope (SEC-INJ-LOG-001).
+# envelope, the twin of emit_deny above. The reason rides STDIN into python, which does
+# the JSON encoding, so newlines and quotes inside a reason (the egress guard lists one
+# destination per line) cannot corrupt or forge the envelope (SEC-INJ-LOG-001), and no
+# per-string exec cap can silently empty it. See emit_deny above for the whole argument;
+# it applies here unchanged, and one step harder: this is the envelope a DECIDER FAULT
+# reports itself with (writ_decider_fault below), so an ask that goes silent at size
+# would hide the very failure it exists to announce.
 # Usage: [ -n "$ASK" ] && emit_ask "$ASK"
 emit_ask() {
   local _reply
-  _reply=$(WRIT_ASK_REASON="$1" python3 <<'PY'
-import json, os
+  _reply=$(printf '%s' "$1" | python3 -c 'import json, sys
 print(json.dumps({
-    'hookSpecificOutput': {
-        'hookEventName': 'PreToolUse',
-        'permissionDecision': 'ask',
-        'permissionDecisionReason': os.environ.get('WRIT_ASK_REASON', '')
+    "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "ask",
+        "permissionDecisionReason": sys.stdin.buffer.read().decode("utf-8", "surrogateescape")
     }
-}))
-PY
-) || _reply=""
+}))') || _reply=""
   emit_hook_reply "$_reply"
+}
+
+# THE COMPLETION SENTINEL the two Bash-side decision blocks print as their LAST line, and
+# the text their consumers compare against. Held here because both gates
+# (writ-bash-write-gate.sh, writ-worktree-safety.sh) read it and neither should own it.
+#
+# It exists because "the decision block ran and found nothing" and "the decision block did
+# not run" both used to arrive as an empty string, and the consumer answered both with a
+# silent allow. This row makes the first state say so out loud, which leaves the second one
+# nameable (ADR property 3: the outcome is observed, never inferred).
+#
+# THE PYTHON SIDE SPELLS THE SAME TEXT AS A LITERAL (`STATUS_COMPLETE`) rather than reading
+# it from here, and the reason is structural: both blocks are QUOTED heredocs, so nothing
+# bash-side interpolates into them, and one of the two is additionally run STANDALONE by
+# seven test harnesses. Adding a third environment channel to carry a five-word constant
+# would cost more than the second literal does, because the drift is deliberately NOT
+# silent: a mismatch makes every command look like a fault, so the whole Bash surface
+# starts asking on the first run rather than quietly loosening.
+WRIT_EXTRACTOR_SENTINEL=$'status\tcomplete'
+
+# A DECIDER THAT DID NOT RUN TO COMPLETION. The one shared answer for all three write
+# doors (writ-bash-write-gate.sh, writ-worktree-safety.sh, writ-pre-write-dispatch.sh):
+# their decision block crossed an exec boundary, that exec failed, and the empty value
+# it left behind used to read as "nothing to gate".
+#
+# Usage: writ_decider_fault <hook> <stage> <what could not be decided>
+#   <hook> and <stage> are SOURCE LITERALS at every call site, never payload-derived.
+#   The third argument reaches the USER, never the log row.
+#
+# THE POSTURE, and it is two postures because the two states are not the same claim:
+#
+#   python3 PRESENT, block incomplete -> ASK. This is a fault and it should be loud. The
+#     Bash gate already asks in exactly this epistemic state (an unresolvable target, an
+#     unnameable destination): "this cannot be trusted" is answered by the prompt, not by
+#     silence. An ask costs one confirmation and cannot be self-approved by the agent.
+#   python3 ABSENT -> ALLOW, exit 0, and say so once on stderr. Asking here would be
+#     worse than dishonest: on such a machine EVERY Writ decision path is inert
+#     (writ_critical's row, log_friction_event, log_gate_decision, emit_deny and emit_ask
+#     are all interpreter-bound), so an ask would imply a protection that does not exist
+#     while making every write-shaped command unusable. Stderr is the only surface that
+#     survives, and it is used. Without this probe the ask path itself goes silent:
+#     emit_ask cannot build its envelope and emit_hook_reply returns 0 on an empty
+#     payload, which is the same defect one layer down.
+#
+# `command -v` is a BUILTIN: the probe forks nothing, and it runs only on the fault path,
+# so the hot path pays for none of this.
+#
+# NON-BLOCKING IS NOT SILENT (user directive 2026-08-01, docs/reference/session-and-gates.md
+# section 8): the compensating control is visibility. Every fault writes TWO records. One
+# `[WRIT CRITICAL]` line on stderr, which Claude Code surfaces in the session and which
+# needs no interpreter, and one `gate_decider_incomplete` row on the audit stream carrying
+# `hook` and `stage` ONLY, both source literals, because a row built from the value that
+# killed the block would die exactly where the block died.
+writ_decider_fault() {
+  local _hook="${1:-unknown}" _stage="${2:-unknown}" _what="${3:-}"
+  if ! command -v python3 >/dev/null 2>&1; then
+    # No interpreter: no row can be written and no envelope can be built. One line, and
+    # it names the scope honestly: not this hook, the whole enforcement surface.
+    printf '[WRIT CRITICAL] %s: no python3 on PATH, so NO Writ Bash or write decision can be made on this machine. This command was allowed unchecked (%s).\n' \
+      "$_hook" "$_stage" >&2
+    return 0
+  fi
+  writ_critical "$_hook" \
+    "the $_stage decision block did not run to completion, so this tool call was not judged; asking the user instead of allowing it unseen" \
+    "${SESSION_ID:-${HOOK_SESSION_ID:-unknown}}"
+  log_friction_event "${SESSION_ID:-${HOOK_SESSION_ID:-}}" "${MODE:-}" "gate_decider_incomplete" \
+    "{\"hook\": \"$_hook\", \"stage\": \"$_stage\"}"
+  emit_ask "[ENF-DECIDER-INCOMPLETE] Writ could not judge this tool call: ${_what:-the decision block did not run to completion}. That is an infrastructure fault in Writ, not a finding about this command, so nothing is claimed about it either way. Confirm only if you already know it is safe. Writ's own record of the fault is the gate_decider_incomplete row on the audit stream ($_hook / $_stage)."
 }
 
 # Extract the rule objects (the fields used for violation pattern matching) from
@@ -1647,14 +1736,37 @@ log_gate_decision() {
   _gd_emit_now "${1:-}" "${2:-}" "${3:-}" "${4:-}"
 }
 
+# The bound on the two UNBOUNDED fields of an audit row, and the enforcer the
+# exec-argument ADR asks to be NAMED: a `${var:0:N}` substring expansion, applied below.
+# 4,000 CHARACTERS, which is at most 16 KB in the worst multibyte case, against the
+# 131,072-byte MAX_ARG_STRLEN cap on a single env string.
+#
+# WHY TRUNCATION HERE AND TRANSPORT IN emit_deny, which are opposite answers to the same
+# limit: emit_deny's value is what the USER reads, so shortening it would shorten the
+# explanation of a refusal, and stdin costs nothing. This row is EVIDENCE, and it crosses
+# as two env strings with `|| true` behind it, so an oversized reason would silently drop
+# the AUDIT ROW for a denial while the denial itself still reached the model: the record
+# and the refusal would disagree. A reason long enough to hit this bound is already
+# quoting a command token nobody will read in full; losing the row entirely is the only
+# outcome that cannot be recovered later.
+WRIT_GD_FIELD_MAX=4000
+
 _gd_emit_now() {
   # Same resolution as the buffered path above, and it matters more here: this is the
   # branch every DENIAL takes, the record that proves a gate blocked something.
   _writ_row_mode
+  # reason/target are the only two fields carrying tool input (a denial's text, a file
+  # path), so they are the only two that can reach the cap; gate, decision, session and
+  # mode are all short by construction. Truncated, not dropped: see WRIT_GD_FIELD_MAX.
+  #
+  # BOUND THROUGH A LOCAL, not `${3:0:N}` directly: substring expansion has no `:-`
+  # default, so under `set -u` (which every hook sets) it ABORTS on a caller that passed
+  # fewer than four arguments, where the old `${3:-}` degraded to the empty string.
+  local _gd_now_reason="${3:-}" _gd_now_target="${4:-}"
   WRIT_GD_GATE="${1:-}" \
   WRIT_GD_DECISION="${2:-}" \
-  WRIT_GD_REASON="${3:-}" \
-  WRIT_GD_TARGET="${4:-}" \
+  WRIT_GD_REASON="${_gd_now_reason:0:${WRIT_GD_FIELD_MAX}}" \
+  WRIT_GD_TARGET="${_gd_now_target:0:${WRIT_GD_FIELD_MAX}}" \
   WRIT_GD_SESSION="${SESSION_ID:-${HOOK_SESSION_ID:-}}" \
   WRIT_GD_MODE="$_WRIT_ROW_MODE" \
   python3 -c '
@@ -1819,10 +1931,19 @@ if not isinstance(d, dict):
 d.setdefault('skill_dir', os.environ.get('WRIT_SD', ''))
 print(json.dumps(d))
 " "$cw_body" 2>/dev/null) || cw_post_body="$cw_body"
+            # THE BODY GOES ON CURL'S STDIN (`--data-binary @-`), not on its argv.
+            # `-d "$cw_post_body"` put the whole tool envelope in ONE argument, and this
+            # envelope carries a write's CONTENT: measured on this machine, `curl -d` with
+            # a 132,000-byte value fails to exec at all ("Argument list too long", rc 126)
+            # while 130,000 succeeds, so a large write could never reach the daemon and
+            # every such call silently took the local-fallback branch below. `--data-binary`
+            # rather than `-d` because `-d` strips newlines from a file/stdin body, and
+            # `printf` is a builtin, so this adds no process. The Content-Type header stays
+            # explicit, which is the only thing `-d` was giving us here.
             local cw_result=""
-            cw_result=$(curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.1 --max-time 0.5 \
+            cw_result=$(printf '%s' "$cw_post_body" | curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.1 --max-time 0.5 \
                 -X POST "${WRIT_SESSION_BASE}/session/${session_id}/can-write" \
-                -H "Content-Type: application/json" -d "$cw_post_body" 2>/dev/null) || true
+                -H "Content-Type: application/json" --data-binary @- 2>/dev/null) || true
             if [ -n "$cw_result" ]; then
                 # Normalize the server's {"can_write":bool,"reason":...} into the
                 # {"decision":"allow|deny","reason":...} shape the fallback consumer
@@ -1944,11 +2065,19 @@ sys.stdout.write('WRIT_META:' + json.dumps({
             # producing malformed JSON that the server rejects -- see the same
             # gotcha documented on log_friction_event above.
             local check_body="${2:-"{}"}"
+            # THE BODY GOES ON CURL'S STDIN, for the reason spelled out on the can-write
+            # arm above: this body embeds the write's full `content`, `-d` puts it in one
+            # argv string, and MAX_ARG_STRLEN refuses the exec above ~131,000 bytes. The
+            # consequence was not a wrong decision but a MISSING one at the daemon: curl
+            # never ran, `pwc_result` came back empty, and every write over the cap fell
+            # through to the local evaluator below, losing the server's write_attempt row
+            # and its RAG rules. Fixing the argv on the hook side (writ-pre-write-dispatch.sh)
+            # without fixing this line would leave the door shut one layer further in.
             local pwc_result=""
-            pwc_result=$(curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.2 --max-time 1 \
+            pwc_result=$(printf '%s' "$check_body" | curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.2 --max-time 1 \
                 -X POST "${WRIT_SESSION_BASE}/pre-write-check" \
                 -H "Content-Type: application/json" \
-                -d "$check_body" 2>/dev/null) || true
+                --data-binary @- 2>/dev/null) || true
             if [ -n "$pwc_result" ]; then
                 echo "$pwc_result"
                 return 0

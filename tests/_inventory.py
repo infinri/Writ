@@ -810,3 +810,219 @@ def write_gate_regression_modules(*, tests_dir: Path = TESTS) -> list[str]:
         set(can_write_surface_modules(tests_dir=tests_dir))
         | set(write_gate_hook_modules(tests_dir=tests_dir))
     )
+
+
+# ── Exec-boundary payload census (plan.md dfacff61-23d5-474e-846c-2e2f0f0ea482) ──
+#
+# The ADR's own census rotted in one cycle: it claimed "one other site with this
+# shape" and "every other match passes its payload on stdin or passes bounded
+# values", and verification found both halves false. This derivation replaces the
+# prose with a MECHANISM: a payload-derived value is one that flows from the hook's
+# payload interface (the identifiers `load_hook_env` defines, `HOOK_ENVELOPE` /
+# `HOOK_COMMAND` / `HOOK_FILE_PATH`, plus any variable a script assigns from a bare
+# `$(cat)` of its own stdin) into a `python3` invocation's argv or env, directly or
+# through a chain of ordinary bash assignments. `tests/test_exec_boundary_census.py`
+# holds the population found here against an authored MAP of site to (status,
+# reason), so a site that disappears, or a `fixed` entry the detector still sees
+# crossing, reddens that test rather than this one.
+_EXB_PY3_TOKEN = re.compile(r"(?<![\w./-])python3(?![\w.-])")
+_EXB_HEREDOC_MARK = re.compile(r"<<-?\s*(?P<q>['\"]?)(?P<delim>\w+)(?P=q)")
+_EXB_BARE_CAT_ASSIGN = re.compile(
+    r"^\s*(?:local\s+|export\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)=\$\(\s*cat\s*\)\s*$"
+)
+_EXB_ASSIGN_TARGETS = re.compile(
+    r"(?:^\s*|[;&|(]\s*|&&\s*|\|\|\s*)(?:local\s+|export\s+)?"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?:\+?=(?!=))"
+)
+_EXB_PRINTF_V = re.compile(r"\bprintf\s+-v\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b")
+_EXB_MAPFILE = re.compile(r"\bmapfile\s+(?:-t\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b")
+_EXB_PIPE_SEP = re.compile(r"(?<!\|)\|(?!\|)")
+# The three names `load_hook_env` defines that carry MODEL-CONTROLLED, unbounded
+# text: the whole envelope, the Bash command, and the resolved write path. The
+# other names that function sets (HOOK_SESSION_ID, HOOK_TOOL_NAME, ...) are
+# internally bounded (session ids are capped at 128 characters) and are not roots.
+_EXB_PAYLOAD_ROOTS = ("HOOK_ENVELOPE", "HOOK_COMMAND", "HOOK_FILE_PATH")
+
+
+def _exb_var_ref(name: str) -> re.Pattern[str]:
+    return re.compile(r"\$\{?" + re.escape(name) + r"\b")
+
+
+def _exb_payload_roots(source: str) -> set[str]:
+    roots = {n for n in _EXB_PAYLOAD_ROOTS if _exb_var_ref(n).search(source)}
+    for line in source.split("\n"):
+        m = _EXB_BARE_CAT_ASSIGN.match(line)
+        if m:
+            roots.add(m.group("name"))
+    return roots
+
+
+def _exb_assignment_targets(line: str) -> set[str]:
+    """Every variable NAME a single line assigns, across the three assignment
+    shapes this tree actually uses: `NAME=...`, `printf -v NAME`, `mapfile NAME`.
+    Anchored so a python source line living INSIDE a `-c "..."` string (`data =
+    json.loads(raw)`, indented, `=` surrounded by spaces) never matches: bash
+    assignment has no space before `=`, and the `^` branch requires the name at
+    the line's own start (after only whitespace), which an indented python
+    statement is not.
+    """
+    names = {m.group("name") for m in _EXB_ASSIGN_TARGETS.finditer(line)}
+    names |= {m.group("name") for m in _EXB_PRINTF_V.finditer(line)}
+    names |= {m.group("name") for m in _EXB_MAPFILE.finditer(line)}
+    return names
+
+
+def _exb_dash_c_span_end(lines: list[str], start: int) -> int:
+    """The last line of a (possibly multi-line) double-quoted argument opened at
+    `lines[start]`: extends while the accumulated text carries an ODD count of
+    unescaped `"`, the same continuation `_emission_end` above tracks for a
+    `python3 -c` block. A no-op (`end == start`) when the line's own quotes
+    already balance, so calling this unconditionally on every assignment-opening
+    line is safe."""
+    text = lines[start]
+    end = start
+    last = len(lines) - 1
+    while len(re.findall(r'(?<!\\)"', text)) % 2 == 1 and end < last:
+        end += 1
+        text += "\n" + lines[end]
+    return end
+
+
+def _exb_assignment_spans(lines: list[str]) -> list[tuple[int, int]]:
+    """(start, end) 0-based indices for every assignment STATEMENT. `end` extends
+    past `start` only when that line itself opens an assignment (so an unrelated
+    multi-line quote elsewhere in the file can never merge two unrelated spans)."""
+    spans: list[tuple[int, int]] = []
+    n = len(lines)
+    i = 0
+    while i < n:
+        end = _exb_dash_c_span_end(lines, i) if _exb_assignment_targets(lines[i]) else i
+        spans.append((i, end))
+        i = end + 1
+    return spans
+
+
+def _exb_derived_vars(source: str, roots: set[str]) -> set[str]:
+    """Transitive closure over assignment statements: a name joins the derived set
+    when its OWN assignment statement (its opening line, plus any `-c "..."`
+    continuation it opens) references a root or an already-derived name. Iterates
+    to a fixed point, so a value copied through several plain assignments is still
+    traced -- this tree's own write door needs it: `writ-pre-write-dispatch.sh`'s
+    `DISPATCH_BLOB` reads `$CHECK_BODY`, itself three assignments removed from the
+    `STDIN_DATA` root (`STDIN_DATA` -> `PARSED_INPUT` -> `_PARSE_LINES` ->
+    `CHECK_BODY`), not one.
+    """
+    lines = source.split("\n")
+    spans = _exb_assignment_spans(lines)
+    derived: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        watched = roots | derived
+        if not watched:
+            break
+        watched_re = re.compile(
+            r"\$\{?(?:" + "|".join(re.escape(w) for w in sorted(watched, key=len, reverse=True)) + r")\b"
+        )
+        for start, end in spans:
+            names: set[str] = set()
+            for ln in lines[start:end + 1]:
+                names |= _exb_assignment_targets(ln)
+            names -= watched
+            if not names:
+                continue
+            text = "\n".join(lines[start:end + 1])
+            if watched_re.search(text) and not names <= derived:
+                derived |= names
+                changed = True
+    return derived
+
+
+def _exb_trim_before_pipe(text: str) -> str:
+    """Drop everything up to and including the LAST single `|` in `text`: a value
+    piped INTO python3 (`echo "$HOOK_ENVELOPE" | python3 -c "..."`) crosses to
+    `echo`'s argv, not python3's, and is a different site with a different fix."""
+    matches = list(_EXB_PIPE_SEP.finditer(text))
+    if not matches:
+        return text
+    return text[matches[-1].end():]
+
+
+def _exb_heredoc_skip(lines: list[str], body_start: int, delim: str) -> int:
+    """The index AFTER a heredoc's terminator line. Applied to EVERY heredoc this
+    scan meets, quoted or not: a heredoc body is the payload's STDIN destination,
+    which the ADR treats as the unbounded, safe channel regardless of what it
+    interpolates, so this derivation does not descend into it looking for a nested
+    crossing (a documented limit, not an oversight -- see the module return value's
+    docstring)."""
+    j = body_start
+    while j < len(lines) and lines[j].strip() != delim:
+        j += 1
+    return j + 1
+
+
+def exec_boundary_payload_sites(*, scripts_dir: Path = HOOK_SCRIPTS_DIR) -> dict[str, dict[str, object]]:
+    """Every `python3` invocation in `scripts_dir` whose ARGV or ENV carries a
+    payload-derived value, as `"<script>:<line>"` -> `{"script", "line"}`.
+
+    `scripts_dir` is a keyword for the reason `envelope_emitting_scripts(*,
+    scripts_dir=)` gives: the detector's precision is pinned against synthetic
+    fixtures under `tmp_path` in `tests/test_exec_boundary_census.py`, never against
+    a real script's current wording. Call it a second time with `scripts_dir=REPO /
+    "bin" / "lib"` to reach `common.sh`, which sits outside `hooks/scripts/` (the
+    ADR's own census sentence was scoped to that directory and missed
+    `common.sh:1811` for exactly that reason); the two calls are never merged
+    inside this function; a caller wanting both composes the two dicts.
+
+    KNOWN LIMIT, stated rather than worked around: a value that crosses only
+    inside an UNQUOTED heredoc's own nested command substitution
+    (`writ-memory-policy-guard.sh`'s inner `python3 -c
+    "...sys.argv[1]..." "$CONTENT"`, spliced into an outer `<<PY` body) is not
+    traced, because every heredoc body here is skipped uniformly regardless of
+    quoting (see `_exb_heredoc_skip`). That site is catalogued in the census by
+    file:line rather than produced by this derivation.
+    """
+    sites: dict[str, dict[str, object]] = {}
+    for path in sorted(Path(scripts_dir).glob("*.sh")):
+        source = path.read_text(encoding="utf-8", errors="replace")
+        lines = source.split("\n")
+        roots = _exb_payload_roots(source)
+        if not roots:
+            continue
+        watched = sorted(roots | _exb_derived_vars(source, roots), key=len, reverse=True)
+        if not watched:
+            continue
+        watched_re = re.compile(r"\$\{?(?:" + "|".join(re.escape(w) for w in watched) + r")\b")
+        n = len(lines)
+        i = 0
+        while i < n:
+            text = lines[i]
+            end = i
+            while text.endswith("\\") and end < n - 1:
+                end += 1
+                text = text[:-1] + " " + lines[end]
+            if text.lstrip().startswith("#"):
+                i = end + 1
+                continue
+            py_match = _EXB_PY3_TOKEN.search(text)
+            heredoc = _EXB_HEREDOC_MARK.search(text)
+            if heredoc and (not py_match or py_match.start() < heredoc.start()):
+                if py_match:
+                    before = _exb_trim_before_pipe(text[:py_match.start()])
+                    after = text[py_match.start():heredoc.start()]
+                    if watched_re.search(before + after):
+                        sites[f"{path.name}:{i + 1}"] = {"script": path.name, "line": i + 1}
+                i = _exb_heredoc_skip(lines, end + 1, heredoc.group("delim"))
+                continue
+            if py_match:
+                span_end = _exb_dash_c_span_end(lines, end)
+                before = _exb_trim_before_pipe(text[:py_match.start()])
+                after = text[py_match.start():]
+                if span_end != end:
+                    after += "\n" + "\n".join(lines[end + 1:span_end + 1])
+                if watched_re.search(before + after):
+                    sites[f"{path.name}:{i + 1}"] = {"script": path.name, "line": i + 1}
+                i = span_end + 1
+                continue
+            i = end + 1
+    return sites

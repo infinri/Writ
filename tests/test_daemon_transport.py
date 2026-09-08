@@ -405,11 +405,21 @@ class TestClientsAndDiagnostic:
         each one carries the transport.
         """
         source = (REPO / "bin" / "lib" / "common.sh").read_text()
+        # A PIPED curl COUNTS, and it has to: two daemon calls now read their request
+        # body from stdin (`printf '%s' "$body" | curl ... --data-binary @-`) because a
+        # write's content on `-d` is one argv string and MAX_ARG_STRLEN refuses the exec
+        # above ~131,000 bytes (plan dfacff61-23d5-474e-846c-2e2f0f0ea482). Those lines
+        # start with `printf`, so the three original shapes stopped seeing them and this
+        # guard silently went from 9 invocations to 7. The population is derived from the
+        # MECHANISM (a curl invocation, however the line reaches it) rather than from the
+        # spellings that existed when it was written; the alternative, lowering the floor
+        # or listing the two lines, would leave the next piped call unguarded.
         invocations = [
             line for line in source.splitlines()
             if line.lstrip().startswith(("curl ", "$(curl "))
             or ("=$(curl " in line)
             or ("(curl " in line and not line.lstrip().startswith("#"))
+            or ("| curl " in line and not line.lstrip().startswith("#"))
         ]
         assert len(invocations) >= 9, (
             f"expected the known daemon invocations, found {len(invocations)}"

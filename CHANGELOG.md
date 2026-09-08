@@ -4,6 +4,48 @@ All notable changes to Writ are documented in this file. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- **Both write doors and the worktree gate switched off, silently, above roughly 128 KiB of
+  command or content.** Measured one size at a time before anything was changed: the Bash
+  gate DENIED a credential-write probe at 131,014 characters and was SILENT at 131,060, rc 0
+  both times; the Write/Edit door denied a write to a credential path at 100, 50,000 and
+  120,000 bytes of content and allowed it silently at 131,000, 140,000 and 300,000, rc 0
+  every time. One defect with three faces, and the same shape as the sub-agent seed bug this
+  ADR was written for: a value whose size nothing bounds crosses an `execve` boundary (the
+  Bash command as an environment string, the write's content as an argv string), the failure
+  of that exec is discarded by `2>/dev/null || true`, and the consumer reads the resulting
+  EMPTY value as a decision, which in all three cases was an allow. The Write door was the
+  worst of the three: by the failing line the server had ALREADY decided and written its
+  `write_attempt` row, so a gate that ran and refused was reported to the model as an allow.
+  What flips: the credential arm, the gate-state arm, the work gate, the unresolved-target
+  ask, the egress ask and the worktree refusal all now decide at 131,060 characters, at
+  300,000 bytes and at 200,000 characters of denial reason, where before the first two were
+  silent. What deliberately does not flip: an ordinary command still produces byte-identical
+  output, a command with unbalanced quotes still allows SILENTLY (a deliberate no-false-deny
+  fail-open, which now prints the completion sentinel before exiting so it is not read as a
+  fault), and a daemon outage is still a fail-open. The transports, per site: the two
+  Bash-side gates carry their PROGRAM on stdin as a heredoc, so the command goes to a
+  `mktemp` file and the PATH crosses (bounded by construction from a fixed template, removed
+  through `writ_on_exit`, costing one `mktemp` and one `rm` on commands that reach the
+  extractor and nothing at all on commands that miss the prefilter, measured 21 -> 23 and
+  5 -> 5 execve); the Write door's translator is a `python3 -c` program, so stdin was free
+  and its two values cross as NUL-separated records, verified with `od -c` rather than
+  assumed. `[ -z "$TARGETS" ] && exit 0` conflated "the extractor ran and found nothing"
+  with "the extractor did not run", so both blocks now print `status<TAB>complete` as their
+  last line and the consumers are three-way. A decider that could not run now ASKS instead
+  of allowing, with two positive records (one `[WRIT CRITICAL]` line and one
+  `gate_decider_incomplete` audit row bounded to source literals); a machine with no
+  `python3` allows, exits 0, and says once that no Writ write decision can be made there at
+  all. Also fixed, measured while fixing the above: `curl -d "$body"` put the request body
+  on ARGV, so a large write could never reach the daemon even with the hook side corrected
+  (`curl -d` refuses 132,000 bytes with rc 126 and accepts 130,000); the `pre-write-check`
+  and `can-write` call sites now pass their body on curl's stdin. The ADR's hand-written
+  census of exec-boundary sites is replaced by a derived one plus a ratchet, because its two
+  claims ("ONE other site", "every other match passes its payload on stdin or passes bounded
+  values") were both false within one cycle; the sites left open, including the memory-policy
+  guard as the recommended next one, are named there with their reasons.
+
 ### Changed
 
 - **An approved plan now authorizes writes to ITS project, not to the whole filesystem.** The write gate was measured one envelope at a time before anything was designed, and it was path-blind in both directions: before approval every path denies with `[ENF-GATE-PLAN]`, and once both work gates were approved every path allowed, `/etc/passwd-probe.txt` and another checkout's source file included. A new predicate (`writ/session/project_boundary.py`) admits a write when its resolved path is inside the resolved project root, or inside the OS scratch zone, or equal to a path the approved plan's `## Files` section declares as an ABSOLUTE path; a refusal is `[ENF-PROJECT-BOUNDARY]`. What flips, honestly: post-approval, `/etc/passwd-probe.txt` and any other project's source path go from ALLOW to DENY, `/tmp/outside-the-repo.py` stays ALLOW because it is the scratch zone, and all three pre-approval measurements are unchanged tag for tag (replayed through the CLI surface against the real repo, seven envelopes, seven matches). What deliberately does NOT flip: nothing loosens anywhere, because the predicate guards only arms that were about to ALLOW and can never change an existing deny's tag; `## Files` is still not enforced file by file INSIDE the project (the implementer legitimately writes files a plan under-specifies); the basename-only `plan.md` / `capabilities.md` allow is untouched; non-work modes are untouched, because none of them has a plan, so none has a declared surface to derive a boundary from or an escape to name, and a refusal with no named action is a deadlock this repo has already shipped once. The escape is the plan and not an allowlist for one mechanical reason: adding a `## Files` bullet changes plan.md's bytes, so `plan_md_hash` changes, `approved_gates_for_plan` drops both gates, and `[ENF-GATE-DRIFT]` blocks every write until the user replies `approved` again. Widening the boundary therefore requires the user's word rather than the agent's, and "enforce with an escape" does not degrade into "enforce with a bypass". Dispatched sub-agents are covered too, because the blanket `subagent_bypass` justifies itself by an approval the orchestrator already cleared, and that approval was granted FOR A PLAN IN A PROJECT, so the bypass's own justification named a boundary it did not enforce; the new arm DEFERS to a declared role scope rather than stacking with it (a list, empty included, leaves `path_in_scope` the sole judge), takes its root from the parent's cache, and abstains for a `lazy_seed` cache, no `parent_session_id`, or a parent with no project recorded. ONE zone is exempt, `tempfile.gettempdir()` resolved at call time because the mechanism is "storage the OS designates as ephemeral" and not a directory with a particular name, and the exemption is SKIPPED when the project root is itself inside that zone: a project living in the temp directory would otherwise exempt every sibling checkout beside it, and that same guard is what keeps the test file honest, since pytest's `tmp_path` is inside the temp directory and without it most of the file would have passed for the wrong reason. Two things were checked by EXECUTION rather than argued: the common in-project write opens no plan file (a test patches `locators._find_plan_md` to raise on any call beyond the one the gate already needs), and a same-path pair proves the DECLARATION is what flips the verdict, because the two obvious capabilities used different paths at different depths and a depth-driven mutation leaves both of them GREEN. The Bash gate's cwd-only target filter is left OPEN and PINNED rather than silently open: a Bash-mediated write outside the hook's cwd still never reaches this predicate, closing it needs a scratch-zone exemption ahead of the work gate (which would loosen a currently-closed deny), and a test asserts the classifier's current output so changing that line fails a test naming this interaction. Recorded in `docs/adr/ADR-project-write-boundary.md`.

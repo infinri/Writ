@@ -114,13 +114,52 @@ def nested_terminator_chars(source: str) -> set[str]:
     return _named_string_set(source, "NESTED_TERMINATOR_CHARS")
 
 
+# The extractor's COMPLETION SENTINEL, printed as its last line on every path that ran to
+# completion (single source in bash: common.sh's WRIT_EXTRACTOR_SENTINEL). It is stripped
+# by `run_extractor` below for the same reason the hook strips it before its own consumer
+# arms: a row-shaped line that is not a row would be read as one.
+EXTRACTOR_SENTINEL = "status\tcomplete"
+
+
+def run_extractor(cmd: str, cwd: str = "/proj", *, env: dict | None = None,
+                   src: str | None = None, timeout: float | None = None):
+    """Run the embedded extractor on CMD and return `(proc, lines)`, where `lines` is its
+    stdout minus the completion sentinel.
+
+    THE COMMAND GOES ON A FILE, exactly as the hook now hands it over
+    (`WRIT_BASH_CMD_FILE`). Every harness in this suite routes through here rather than
+    setting its own env var: a harness still feeding `WRIT_BASH_CMD` would pin the
+    extractor through a transport production no longer has, which is the "a test that
+    MODELS a path is blind to it" failure. The extractor has no default for the variable
+    and no try/except around the open, so a harness that forgot it fails loudly instead of
+    silently extracting from an empty command.
+
+    `errors="surrogateescape"` on the write mirrors the extractor's own read, so a command
+    carrying a byte that is not valid UTF-8 survives the round trip byte for byte.
+
+    `src` runs a MUTATED copy of the extractor (the conditionality proofs); `env` supplies
+    a base environment where a test needs one (HOME, OLDPWD, an unset variable).
+    """
+    base = dict(os.environ if env is None else env)
+    fd, cmd_path = tempfile.mkstemp(prefix="writ-test-bashcmd-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape") as fh:
+            fh.write(cmd)
+        base.update(WRIT_BASH_CMD_FILE=cmd_path, WRIT_CWD=str(cwd))
+        proc = subprocess.run(
+            [sys.executable, "-c", src if src is not None else _extractor_src()],
+            env=base, capture_output=True, text=True, timeout=timeout)
+    finally:
+        os.unlink(cmd_path)
+    lines = [ln for ln in proc.stdout.splitlines() if ln != EXTRACTOR_SENTINEL]
+    return proc, lines
+
+
 def _extract(cmd: str, cwd: str = "/proj") -> set[tuple[str, str]]:
     """Run the extractor on a command; return the set of (kind, path) it emits."""
-    env = dict(os.environ, WRIT_BASH_CMD=cmd, WRIT_CWD=cwd)
-    p = subprocess.run([sys.executable, "-c", _extractor_src()], env=env,
-                       capture_output=True, text=True)
+    _proc, lines = run_extractor(cmd, cwd)
     out = set()
-    for line in p.stdout.splitlines():
+    for line in lines:
         if "\t" in line:
             kind, path = line.split("\t", 1)
             out.add((kind, path))

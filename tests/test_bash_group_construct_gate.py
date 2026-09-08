@@ -52,10 +52,8 @@ shipping uncovered.
 """
 from __future__ import annotations
 
-import os
 import re
 import subprocess
-import sys
 import uuid
 from pathlib import Path
 
@@ -78,6 +76,7 @@ from tests.test_bash_write_gate import (
     _extractor_src,
     _run_hook,
     _seed,
+    run_extractor,
 )
 from tests.test_worktree_safety_extractor import _run  # noqa: F401
 from tests.test_worktree_safety_extractor import cache_root, project  # noqa: F401
@@ -543,11 +542,12 @@ def _mutate(src: str, old: str, new: str) -> str:
 
 
 def _mutated_extract(mutated_src: str, cmd: str, cwd: str = CWD) -> set:
-    env = dict(os.environ, WRIT_BASH_CMD=cmd, WRIT_CWD=cwd)
-    p = subprocess.run([sys.executable, "-c", mutated_src], env=env,
-                       capture_output=True, text=True)
+    # Same command-file transport as the unmutated harness (`run_extractor`, which also
+    # strips the completion sentinel): a mutation proof that fed the retired
+    # `WRIT_BASH_CMD` would be proving something about a transport the hook no longer has.
+    _p, lines = run_extractor(cmd, cwd, src=mutated_src)
     rows = set()
-    for line in p.stdout.splitlines():
+    for line in lines:
         if "\t" in line:
             k, v = line.split("\t", 1)
             rows.add((k, v))

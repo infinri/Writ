@@ -46,6 +46,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.test_bash_write_gate import run_extractor
+
 SKILL_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 HOOK_SH = os.path.join(SKILL_ROOT, "hooks", "scripts", "writ-bash-write-gate.sh")
 
@@ -71,11 +73,14 @@ def _extractor_src() -> str:
 
 
 def _extract(cmd: str, cwd: str, src: str | None = None) -> set[tuple[str, ...]]:
-    """Run the extractor (optionally a mutated copy) and return the rows it emits."""
-    env = dict(os.environ, WRIT_BASH_CMD=cmd, WRIT_CWD=cwd, WRIT_DIR=SKILL_ROOT)
-    p = subprocess.run([sys.executable, "-c", src if src is not None else _extractor_src()],
-                       env=env, capture_output=True, text=True, timeout=60)
-    return {tuple(line.split("\t")) for line in p.stdout.splitlines() if line}
+    """Run the extractor (optionally a mutated copy) and return the rows it emits.
+
+    REUSED, NOT DUPLICATED: `run_extractor` from tests/test_bash_write_gate.py hands the
+    command over on a FILE (`WRIT_BASH_CMD_FILE`), which is the transport the hook itself
+    uses, and strips the completion sentinel from the rows."""
+    env = dict(os.environ, WRIT_DIR=SKILL_ROOT)
+    _p, lines = run_extractor(cmd, cwd, env=env, src=src, timeout=60)
+    return {tuple(line.split("\t")) for line in lines if line}
 
 
 @pytest.fixture()

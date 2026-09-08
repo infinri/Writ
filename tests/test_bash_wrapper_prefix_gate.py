@@ -69,9 +69,6 @@ is pinned as a derived consistency ratchet in tests/test_bash_egress_gate.py
 from __future__ import annotations
 
 import ast
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -89,6 +86,7 @@ from tests.test_bash_write_gate import (
     _run_hook,
     _seed,
     nested_cmd_flags,
+    run_extractor,
     wrapper_names,
 )
 
@@ -587,9 +585,10 @@ class TestFlockPositional:
         the positional step, which would raise IndexError instead of returning silently (a
         crash also yields empty stdout, so the returncode check is what actually catches
         this -- `_extract` alone cannot distinguish a clean silence from a traceback)."""
-        env = dict(os.environ, WRIT_BASH_CMD="flock", WRIT_CWD=CWD)
-        p = subprocess.run([sys.executable, "-c", _extractor_src()], env=env,
-                           capture_output=True, text=True)
+        # The returncode is what this test actually reads, so it goes through
+        # `run_extractor` (the command-file transport) for the process and ignores its
+        # sentinel-stripped rows.
+        p, _lines = run_extractor("flock", CWD)
         assert p.returncode == 0, p.stderr
         assert _extract("flock") == set()
 
@@ -825,10 +824,10 @@ class TestUncoveredPrefixRatchetIsBidirectional:
 #    target exists before mutating, so a stale target cannot silently pass.
 # --------------------------------------------------------------------------- #
 def _mutated_egress(mutated_src: str, cmd: str, cwd: str = CWD) -> set[tuple[str, str]]:
-    env = dict(os.environ, WRIT_BASH_CMD=cmd, WRIT_CWD=cwd)
-    p = subprocess.run([sys.executable, "-c", mutated_src], env=env,
-                       capture_output=True, text=True)
-    return {(parts[1], parts[2]) for line in p.stdout.splitlines()
+    # Command-file transport (`run_extractor`), matching the hook and the unmutated
+    # harnesses; the sentinel is stripped before the rows are read.
+    _p, lines = run_extractor(cmd, cwd, src=mutated_src)
+    return {(parts[1], parts[2]) for line in lines
             if len(parts := line.split("\t", 2)) == 3 and parts[0] == "egress"}
 
 

@@ -255,10 +255,45 @@ fi
 # That last sentence has been in this file since Item 4c landed and was FALSE until the
 # write-path spawn-reduction cycle: it sat directly above seven per-field external
 # process calls plus a whitespace strip. It is true now.
-DISPATCH_BLOB=$(python3 -c "
+#
+# RESULT AND CHECK_BODY CROSS ON STDIN, NOT ON ARGV, and that is what keeps a decision from
+# being thrown away. CHECK_BODY embeds the write's own `content`, so `"$RESULT"
+# "$CHECK_BODY"` put a model-controlled value of unbounded size in a single argument, and
+# Linux caps a single argv string at MAX_ARG_STRLEN (32 pages, 131,072 bytes here).
+# Measured: this door denied a credential-path write at 100, 50,000 and 120,000 bytes of
+# content and allowed it SILENTLY at 131,000, 140,000 and 300,000, rc 0 every time. execve
+# failed, DISPATCH_BLOB came back empty, and `DECISION="${DECISION:-allow}"` below turned
+# the missing translation into an allow.
+#
+# THIS IS THE WORSE OF THE TWO DOORS, because by this line the SERVER HAS ALREADY DECIDED:
+# RESULT holds its verdict and its write_attempt row is already on the audit stream. The
+# process that died was only translating that verdict into the Claude Code reply envelope,
+# so a gate that ran and refused was reported to the model as an allow. See
+# docs/adr/ADR-hook-exec-argument-boundary.md.
+#
+# STDIN IS FREE HERE, which is why this site needs no temp file where the two Bash-side
+# gates do: this program arrives as a `-c` argument string rather than as a quoted
+# heredoc, so nothing else is using the channel the ADR prefers. Spelled that way on
+# purpose: tests/test_pre_write_dispatch_parsing.py counts the python invocations in this
+# file by TEXT, so a comment that spells one reads as a fifth spawn.
+#
+# NUL SEPARATES THE TWO RECORDS, and a newline would be wrong: CHECK_BODY is lines 2 onward
+# of the parse JOINED BY NEWLINES, so it can legitimately contain one, while neither value
+# can contain a NUL (both arrived through command substitution, which strips them). This is
+# the same `printf '%s\0'` form the `xargs -0` idiom rests on; verified with `od -c` rather
+# than trusted, and `printf` is a builtin, so the pipeline costs no additional process.
+#
+# ORDER IS LOAD-BEARING: record 0 is the server's RESULT (the decision) and record 1 is the
+# request body (the file path). Swapping them reads the decision out of the request, which
+# has no `decision` field, so every write would translate to "allow".
+DISPATCH_BLOB=$(printf '%s\0%s' "$RESULT" "$CHECK_BODY" | python3 -c "
 import json, sys
-result_raw = sys.argv[1] or '{}'
-body_raw = sys.argv[2] or '{}'
+_records = sys.stdin.buffer.read().split(b'\x00')
+# surrogateescape matches how os.environ / sys.argv already decoded these bytes, so a path
+# or content byte that is not valid UTF-8 cannot turn a decision into a crash. A missing
+# record decodes to '' and then defaults to '{}', which is the same shape argv gave.
+result_raw = (_records[0].decode('utf-8', 'surrogateescape') if len(_records) > 0 else '') or '{}'
+body_raw = (_records[1].decode('utf-8', 'surrogateescape') if len(_records) > 1 else '') or '{}'
 try:
     result = json.loads(result_raw)
 except (ValueError, json.JSONDecodeError):
@@ -309,7 +344,7 @@ sys.stdout.write(rag_rules.replace('\n', ' ') + '\n')
 sys.stdout.write(json.dumps(rule_ids) + '\n')
 sys.stdout.write(str(tokens) + '\n')
 sys.stdout.write(mode + '\n')
-" "$RESULT" "$CHECK_BODY" 2>/dev/null || echo "")
+" 2>/dev/null || echo "")
 
 # The same builtin read as the PARSED_INPUT split above: ONE mapfile instead of eight
 # external processes (seven per-field reads plus the whitespace strip on MODE).
@@ -333,7 +368,26 @@ COST="${_BLOB_LINES[5]:-}"
 MODE="${_BLOB_LINES[6]:-}"
 MODE="${MODE//[[:space:]]/}"
 
-DECISION="${DECISION:-allow}"
+# THE OUTCOME IS OBSERVED, NOT DEFAULTED. `DECISION="${DECISION:-allow}"` stood here, and
+# it is the line that erased a completed refusal: RESULT is non-empty (the hook exited
+# above if it were), so the server ANSWERED, and an empty DECISION can only mean the
+# translator did not run. Defaulting that to "allow" reported a decision that exists as a
+# decision that never happened.
+#
+# The decision line IS the status here, so no separate sentinel is needed: the translator
+# writes `decision` first and its own `decision = result.get('decision', 'allow') or
+# 'allow'` can never produce an empty string.
+#
+# ASK, NOT ALLOW, and not a second decision parser either. Re-reading the verdict out of
+# RESULT with a bash substring test was considered and rejected: it would be a second
+# parser coupled to the server's JSON serialization, and a serialization change would turn
+# it back into a silent allow. The server's own write_attempt row is already on the audit
+# stream, so the trail stays complete without a second reader.
+if [ -z "$DECISION" ]; then
+    writ_decider_fault "writ-pre-write-dispatch" "pre-write-translator" \
+        "the write gate ANSWERED but its verdict could not be turned into a reply, so this write was neither allowed nor refused by Writ"
+    exit 0
+fi
 # write_attempt (emitted by the gate, writ/session/gates.py) is the canonical
 # write-decision telemetry; the bare pre_write_decision event was retired (1.3).
 

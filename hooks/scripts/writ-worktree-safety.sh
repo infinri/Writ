@@ -68,13 +68,61 @@ case "$CMD" in
     *) exit 0 ;;
 esac
 
-# Output is one TSV row, or nothing at all when no real invocation was found:
+# THE COMMAND CROSSES AS A PATH, NOT AS A VALUE, exactly as in writ-bash-write-gate.sh
+# and for the same measured reason: `WRIT_WT_CMD="$CMD"` put the model-controlled command
+# in ONE environment string, Linux caps a single env string at MAX_ARG_STRLEN (32 pages,
+# 131,072 bytes here), and over that cap execve failed before python started. With
+# `2>/dev/null || true` behind it that left VERDICT empty, and the consumer below read
+# empty as "no real invocation": a project-local, non-gitignored worktree was created with
+# no refusal and no record. See docs/adr/ADR-hook-exec-argument-boundary.md.
+#
+# The path is bounded BY CONSTRUCTION (a fixed `mktemp` template), which is the enforcer
+# the ADR asks to be named. `writ_on_exit` rather than `trap ... EXIT` because bash allows
+# one EXIT trap and a second silently replaces hook_instrument's telemetry trap
+# (tests/test_exit_trap_ownership.py). Stdin is not available here either: it carries this
+# block's own program as a quoted heredoc. A failed `mktemp` or a failed write is a FAULT,
+# not an empty command.
+#
+# Cleanup covers normal exits and the fault paths, NOT an untrapped fatal signal: see the
+# sibling note in writ-bash-write-gate.sh for the reproduction (a `ulimit -f` write dying
+# on SIGXFSZ leaves command text behind) and for why mode 600 plus the agent's own uid
+# makes that window expose nothing a reader did not already have.
+WT_CMD_FILE=$(mktemp "${TMPDIR:-/tmp}/writ-wtcmd.XXXXXXXXXX" 2>/dev/null) || WT_CMD_FILE=""
+_writ_worktree_cleanup() { [ -n "${WT_CMD_FILE:-}" ] && rm -f "$WT_CMD_FILE"; }
+writ_on_exit _writ_worktree_cleanup
+if [ -z "$WT_CMD_FILE" ] || ! printf '%s' "$CMD" > "$WT_CMD_FILE" 2>/dev/null; then
+    writ_decider_fault "writ-worktree-safety" "worktree-target-check" \
+        "the command could not be handed to the worktree checker (no writable temporary file), so it was not checked for a project-local worktree target"
+    exit 0
+fi
+
+# Output is one TSV row followed by the completion sentinel, or the sentinel alone when no
+# real invocation was found:
 #   deny<TAB><target><TAB><reason>      target is project-local and not gitignored
 #   allow<TAB><target>                  a real invocation with a gitignored target
-VERDICT=$(WRIT_WT_CMD="$CMD" WRIT_DIR="$WRIT_DIR" python3 <<'PY' 2>/dev/null || true
+#   status<TAB>complete                 ALWAYS the last line; see the consumer below
+#
+# `|| true` stays: under `set -e` a non-zero python here would abort the hook before it
+# could report anything. The status is read from what the block PRINTED, not from `$?`.
+VERDICT=$(WRIT_WT_CMD_FILE="$WT_CMD_FILE" WRIT_DIR="$WRIT_DIR" python3 <<'PY' 2>/dev/null || true
 import os, re, shlex, sys
 
-cmd = os.environ.get("WRIT_WT_CMD", "")
+# Read in process, from the path the env carries. `errors="surrogateescape"` matches how
+# `os.environ` decoded the retired env string, so a command carrying a byte that is not
+# valid UTF-8 produces the same python string through either transport. No default and no
+# try/except: an unreadable command file must reach the consumer as a MISSING sentinel,
+# which is a fault, not as an empty command, which reads as "nothing here".
+with open(os.environ["WRIT_WT_CMD_FILE"], encoding="utf-8", errors="surrogateescape") as _cmd_fh:
+    cmd = _cmd_fh.read()
+
+# The completion sentinel, printed as this block's LAST line on EVERY path that finished:
+# the unbalanced-quotes fail-open, the three exits that found no real `git worktree add`
+# target to judge, and the two arms that print a verdict. All of those are COMPLETED
+# decisions; only a crash may leave the sentinel unprinted, which is the whole signal. The
+# consumer compares against common.sh's WRIT_EXTRACTOR_SENTINEL; the text is a literal here
+# because this heredoc is QUOTED, so no bash value can interpolate into it, and a drift
+# between the two makes every worktree command ASK rather than quietly loosening.
+STATUS_COMPLETE = "status\tcomplete"
 
 # The package is reachable from here only through this insert: hooks run the SYSTEM
 # python3, which has no install of it. Same two lines writ-bash-write-gate.sh uses.
@@ -504,6 +552,7 @@ except Exception:
 try:
     tokens = shlex.split(split_commands(cmd), comments=False, posix=False)
 except ValueError:
+    print(STATUS_COMPLETE)   # a COMPLETED decision, so the sentinel prints first
     sys.exit(0)          # unbalanced quotes etc -> fail open, never a false deny
 
 tokens = strip_heredoc_bodies(tokens)
@@ -655,12 +704,14 @@ for seg in segments:
         break
 
 if target is None:
+    print(STATUS_COMPLETE)
     sys.exit(0)
 
 # Absolute paths or paths outside the repo tree are not project-local.
 repo_root = os.getcwd()
 abs_target = os.path.abspath(target)
 if not abs_target.startswith(repo_root + os.sep) and abs_target != repo_root:
+    print(STATUS_COMPLETE)
     sys.exit(0)
 # Compute path relative to repo root.
 rel = os.path.relpath(abs_target, repo_root)
@@ -671,6 +722,7 @@ if not os.path.exists(ignore_path):
         f"ENF-PROC-WORKTREE-001: project-local worktree target '{rel}' but no .gitignore "
         f"exists. Add an entry for '{rel}' (or a parent like '.worktrees/') before "
         f"creating the worktree.")))
+    print(STATUS_COMPLETE)
     sys.exit(0)
 with open(ignore_path) as f:
     ignored = [line.strip() for line in f if line.strip() and not line.startswith("#")]
@@ -687,11 +739,35 @@ else:
         f"ENF-PROC-WORKTREE-001: project-local worktree target '{rel}' is not matched by "
         f"any .gitignore entry. Add '{top}/' to .gitignore before creating the "
         f"worktree.")))
+
+# LAST LINE, unconditionally. An exception between the read above and this print reaches
+# here through no path at all, which is precisely the signal the consumer needs.
+print(STATUS_COMPLETE)
 PY
 )
 
-# No row at all means no real `git worktree add` in this command: nothing to record, the
-# same silence the old case-arm early exit produced for a non-matching command.
+# THREE OUTCOMES, NOT TWO. `[ -z "$VERDICT" ] && exit 0` conflated "no real `git worktree
+# add` in this command", which is the hot path, with "the checker never ran", which is the
+# defect above, and answered both with silence.
+#
+#   last line is the sentinel, a row in front of it -> strip it and decide as before.
+#   the sentinel alone -> exit 0 silently, the same silence the old case-arm early exit
+#     produced for a non-matching command.
+#   no sentinel -> the block did not run to completion. Fault path: ask, and record it.
+#
+# THE SENTINEL IS STRIPPED BEFORE THE READ, not ignored by it: the `read` below is
+# POSITIONAL on the first line, so a sentinel arriving as line one (which is exactly what
+# a no-row run produces) would be parsed as a decision word, and `$WT_DECISION` would hold
+# "status".
+_VERDICT_LAST="${VERDICT##*$'\n'}"
+if [ "$_VERDICT_LAST" != "$WRIT_EXTRACTOR_SENTINEL" ]; then
+    writ_decider_fault "writ-worktree-safety" "worktree-target-check" \
+        "the worktree target check did not finish, so this command was not checked for a project-local worktree that would be added to this repository's tree"
+    exit 0
+fi
+VERDICT="${VERDICT%"$_VERDICT_LAST"}"
+VERDICT="${VERDICT%$'\n'}"
+
 [ -z "$VERDICT" ] && exit 0
 
 IFS=$'\t' read -r WT_DECISION WT_TARGET WT_REASON <<< "$VERDICT"

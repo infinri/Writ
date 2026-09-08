@@ -92,6 +92,16 @@ STREAM_MAP: dict[str, str] = {
     "read_denied": "audit",
     # Every gate's allow/deny, emitted on BOTH branches by log_gate_decision.
     "gate_decision": "audit",
+    # A write/Bash decider that did NOT run to completion, so the gate reached no
+    # verdict at all. Beside gate_decision for the same reason exitplanmode_skipped
+    # sits beside its two siblings below: this is the THIRD outcome of a governance
+    # decision, and filing it on friction (where an unregistered event falls) would
+    # leave the reader of a gate's record unable to tell "allowed" from "never ran".
+    # The 365-day audit retention is the point: a silent-allow window has to stay
+    # reconstructible after the fact, which is how long it took to find the last one.
+    # The row carries only source literals (hook, stage): a row built from the value
+    # that killed the decider would die exactly where the decider did.
+    "gate_decider_incomplete": "audit",
     "exitplanmode_allow": "audit",
     "exitplanmode_denial": "audit",
     # The THIRD outcome of that same decision: the hook ran but judged nothing,

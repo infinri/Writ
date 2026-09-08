@@ -42,6 +42,7 @@ from tests.test_bash_write_gate import (
     _extractor_src,
     _run_hook,
     _seed,
+    run_extractor,
 )
 
 WT_HOOK = os.path.join(SKILL_ROOT, "hooks", "scripts", "writ-worktree-safety.sh")
@@ -62,14 +63,18 @@ EXPECTED_TDIR = ("local", CWD + "/" + TDIR)
 # helpers
 # --------------------------------------------------------------------------- #
 def _extract_rows(cmd: str, cwd: str = CWD, extra_env: dict | None = None):
-    """(kind, path) rows the embedded extractor emits (egress rows excluded)."""
-    env = dict(os.environ, WRIT_BASH_CMD=cmd, WRIT_CWD=cwd)
+    """(kind, path) rows the embedded extractor emits (egress rows excluded).
+
+    Through `run_extractor`, which hands the command over on a FILE and strips the
+    completion sentinel, because that is the transport the hook itself now uses; a
+    harness still setting `WRIT_BASH_CMD` would pin a transport production no longer
+    has."""
+    env = dict(os.environ)
     if extra_env:
         env.update(extra_env)
-    p = subprocess.run([sys.executable, "-c", _extractor_src()], env=env,
-                       capture_output=True, text=True)
+    _p, lines = run_extractor(cmd, cwd, env=env)
     rows = set()
-    for line in p.stdout.splitlines():
+    for line in lines:
         parts = line.split("\t", 2)
         if len(parts) == 2:
             rows.add((parts[0], parts[1]))

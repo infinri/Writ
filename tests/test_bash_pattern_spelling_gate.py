@@ -11,7 +11,10 @@ is `exit 0`, so the disagreement is a SILENT ALLOW. The fix normalizes a COPY of
 command (`CMD_N`, tab/newline to space, quote characters removed, space runs
 collapsed) and routes the five fail-open sites onto it, while three sites
 deliberately keep the raw text (`_readonly_inspection`, the two inner regex
-discriminators, and the extractor's own `WRIT_BASH_CMD` input).
+discriminators, and the extractor's own command input, which since plan
+dfacff61-23d5-474e-846c-2e2f0f0ea482 crosses as a `mktemp` FILE PATH in
+`WRIT_BASH_CMD_FILE` rather than as the `WRIT_BASH_CMD` env string; what must stay
+raw is the command text written into that file, not the variable that carried it).
 
 WHY THIS FILE DOES NOT USE `tests/test_bash_write_gate.py::_extract`. `_extract`
 slices the embedded python extractor out of the hook and runs it standalone, which
@@ -630,10 +633,12 @@ class TestGitCommitMultilineSecondLine:
 # Capability 15: the extractor's own input must stay raw.
 # --------------------------------------------------------------------------- #
 class TestExtractorInputStaysRaw:
-    """WRIT_BASH_CMD must stay `$CMD`. Reddened by setting it to the normalized
-    copy: a quote-stripped `grep '>' app.pem` tokenizes with a bare `>` sitting in
-    redirect position, which the extractor would then read as a credential-write
-    target, turning a read-only grep into a false SEC-CREDENTIAL-WRITE deny."""
+    """The extractor's command file must be written from `$CMD`, never from `$CMD_N`
+    (the retired spelling was `WRIT_BASH_CMD="$CMD"`; the property is the same one).
+    Reddened by writing the normalized copy instead: a quote-stripped `grep '>' app.pem`
+    tokenizes with a bare `>` sitting in redirect position, which the extractor would
+    then read as a credential-write target, turning a read-only grep into a false
+    SEC-CREDENTIAL-WRITE deny."""
 
     def test_quoted_redirect_char_through_the_real_hook_stays_allowed(self, tmp_path):
         sid = f"pattern-extract-{uuid.uuid4().hex[:8]}"
@@ -711,12 +716,18 @@ class TestNormalizationBlockSpawnsNoProcess:
         a regression of the order the loop actually reached (74s at 500,000). It is not a
         tight timing threshold, so a loaded machine cannot flip it.
 
-        SIZE IS DELIBERATELY UNDER 128 KiB. At about 131,050 characters the hook goes
-        SILENT on this exact credential probe, on HEAD as well as here: the extractor's
-        command is handed over through the environment and an oversized value makes the
-        spawn fail, which is the MAX_ARG_STRLEN class. That is a PRE-EXISTING fail-open
-        of the whole gate, measured but out of this cycle's scope, and testing above the
-        cliff would assert the bug rather than the fix.
+        SIZE STAYS UNDER 128 KiB, AND THE REASON HAS CHANGED. It used to be that at about
+        131,050 characters this exact credential probe went SILENT, because the
+        extractor's command was handed over through the environment and MAX_ARG_STRLEN
+        (32 pages) made the spawn fail: a pre-existing fail-open of the whole gate,
+        measured but out of that cycle's scope. That cliff is CLOSED (plan
+        dfacff61-23d5-474e-846c-2e2f0f0ea482): the command now crosses as a `mktemp`
+        file path, and the oversized case is pinned as a DENY in
+        tests/test_exec_boundary_write_doors.py, which owns both sides of the limit.
+        This test keeps its 120,000 spaces because its subject is the normalization's
+        COST, not the transport: the figure it is compared against (1.88s at 80,000
+        spaces for the retired fixed-point loop) was measured at this size, and the
+        module docstring above scopes this file to the pattern layer.
 
         Reddened by restoring the fixed-point loop, or by any collapse that leaves two
         adjacent spaces so the credential arm's `cp ` pattern no longer matches.

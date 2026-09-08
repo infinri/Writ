@@ -289,8 +289,18 @@ OLD_CHUNK2_SPLIT = (
     "MODE=$(echo \"$DISPATCH_BLOB\" | sed -n '7p' | tr -d '[:space:]')\n"
 )
 
-_CHUNK2_START = '"$RESULT" "$CHECK_BODY" 2>/dev/null || echo "")'
-_CHUNK2_END = 'DECISION="${DECISION:-allow}"'
+# ANCHOR ROT, FIXED RATHER THAN WORKED AROUND. Both anchors used to be the two strings
+# plan dfacff61-23d5-474e-846c-2e2f0f0ea482 deleted: the translator's argv
+# (`"$RESULT" "$CHECK_BODY" 2>/dev/null || echo "")`, now two NUL-separated records on its
+# stdin) and the silent-allow default (`DECISION="${DECISION:-allow}"`, now an
+# observed-outcome branch). The REGION this module measures, the mapfile split of the seven
+# DISPATCH_BLOB fields, is untouched by that cycle; only the fences around it moved. The
+# start anchor is the translator program's last line plus the substitution's closing form,
+# which is unique in the file (`" 2>/dev/null || echo "")` alone is not: the `RESULT=`
+# assignment above matches it too, and `str.find` would have taken that one and swallowed
+# the whole python program into the "split block").
+_CHUNK2_START = 'sys.stdout.write(mode + \'\\n\')\n" 2>/dev/null || echo "")'
+_CHUNK2_END = 'if [ -z "$DECISION" ]; then'
 
 
 @functools.lru_cache(maxsize=None)
