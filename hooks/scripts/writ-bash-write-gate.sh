@@ -502,6 +502,64 @@ SESSION_ID="$HOOK_SESSION_ID"
 CMD="$HOOK_COMMAND"
 [ -z "$CMD" ] && exit 0
 
+# Every `case` guard below asks whether the raw command TEXT contains a substring, and
+# most of them want the verb followed by ONE literal space. A shell asks a different
+# question: whether the first WORD of a command resolves to that verb. The two disagree on
+# every spelling where the separator is not a single literal space, or where a quote
+# character sits between the letters and the separator, and each guard's default arm is
+# `exit 0`, so a disagreement is a SILENT ALLOW. `CMD_N` is a normalized COPY, computed
+# once here, that the five fail-open sites below match against instead. The raw `CMD`
+# survives untouched, because four other sites REQUIRE it and each says so at its own arm.
+#
+# Three pieces, each settled on its own:
+#   1. TAB AND NEWLINE BECOME A SPACE. Space, tab and newline are exactly bash's default
+#      IFS whitespace, which is why the class stops there: carriage return, vertical tab
+#      and form feed are NOT token separators to bash, so translating them would model a
+#      shell that does not exist. Same bracket-class idiom as bin/lib/common.sh.
+#   2. QUOTE CHARACTERS ARE REMOVED IN PLACE, with no space inserted, which is what a
+#      shell does for adjacent quoting: `"cp" x` and `auto-approve"-"gate` collapse the
+#      way the shell collapses them. The class is spelled `[$'\x22\x27']` because the
+#      code points are unambiguous at a glance; the plan claimed `[\"\']` would also
+#      strip BACKSLASHES, and REVIEW MEASURED THAT CLAIM FALSE: in bash 5.2.21 both
+#      spellings produce byte-identical output on inputs carrying backslashes,
+#      apostrophes and Windows paths. The spelling is a readability choice, nothing more,
+#      and the wrong reason is recorded here rather than quietly dropped because it was
+#      stated confidently in three files before anyone ran it.
+#   3. SPACE RUNS COLLAPSE, which is required rather than tidy. `git reset --hard`,
+#      `git tag -d `, `git branch -D`, `docker exec`, `docker compose exec`, `sed -i` and
+#      `sed --in-place` each need exactly one space, and `git<TAB><TAB>commit` and
+#      `git  reset  --hard` are legal shell that one space does not match. The mechanism
+#      is an IFS word split and rejoin: ONE PASS, forking nothing, which is the per-call
+#      cost claim tests/test_bash_pattern_spelling_gate.py pins on this marker block.
+#
+#      IT WAS A FIXED-POINT LOOP FIRST, and that was quadratic in the longest whitespace
+#      run: review MEASURED `while [[ "$CMD_N" == *"  "* ]]` at 0.03s for 10,000
+#      consecutive spaces, 0.46s at 40,000 and 1.88s at 80,000, on EVERY Bash call,
+#      before any guard. A heredoc or a pasted blob reaches that size without trying, so
+#      it was a hang the user would feel and, if the hook harness times out and fails
+#      open, a bypass of every guard here. The single pass does 400,000 spaces in 0.03s.
+#
+#      THE ORDER OF THE TWO LINES BELOW IS LOAD-BEARING. `read -ra` reads ONE LINE, so on
+#      raw input it would TRUNCATE a multi-line command and blind every guard after the
+#      first newline, which is why the plan rejected it. That objection dies once the
+#      line above has already turned every newline into a space: by the time `read` runs
+#      there is no newline left to stop at. Swapping these two lines reintroduces the
+#      truncation. `extglob` (a `+( )` class) is the other alternative, enabled nowhere
+#      in this repo, and turning it on changes pattern semantics for every `case` here.
+#
+# NOT HANDLED, so the normalization is not read as wider than it is: backslash escaping
+# (`c\p`, `git\ reset`), ANSI-C quoting (`cp$'\x20'x`), and the mid-word quote splits
+# (`"c"p`, `c"p"`) on the write and egress path, which reach the extractor once normalized
+# and die there on `shlex.split(posix=False)`. Each needs the per-verb token walk this
+# layer deliberately does not attempt, and each is pinned as a strict xfail rather than
+# left to be rediscovered.
+# CMD NORMALIZATION BEGIN
+CMD_N="${CMD//[$'\t\n']/ }"
+CMD_N="${CMD_N//[$'\x22\x27']/}"
+read -ra _cmd_words <<< "$CMD_N"
+CMD_N="${_cmd_words[*]}"
+# CMD NORMALIZATION END
+
 # Gate state is protected by a blanket path check BEFORE the write-verb early exit
 # below, and it STAYS ahead of everything: it asks only whether the command TEXT names
 # a protected path, so it needs no write verb, no interpreter it recognizes and no
@@ -522,6 +580,17 @@ CMD="$HOOK_COMMAND"
 # (exec-capable), sed (its `w` command writes), sort (-o writes), rg (--pre
 # executes) and file (-C compiles to disk) stay excluded, so the minter and the
 # store remain un-invocable and un-writable through this allowance.
+#
+# ALWAYS CALLED ON THE RAW COMMAND, never on the normalized copy, and that is a
+# load-bearing decision rather than an oversight. This function asks what a command CAN
+# DO, so it is the one ALLOW arm on the two guards that protect execution vectors.
+# Removing quote characters first would make MORE commands qualify as read-only
+# inspection (a quoted verb like `"cat"` would resolve), which LOOSENS that arm, and an
+# allow-side test cannot see a new allow, so a loosening belongs in a cycle that can
+# measure the allow side. The cost is stated rather than discovered later: the guards
+# above and below now match more spellings, so a quoted-verb inspection naming gate state
+# (`"cat" writ-grant-x.json`) is REFUSED where the bare `cat` spelling is allowed. That
+# asymmetry is fail-closed, the Read tool covers it, and a test pins it deliberately.
 _readonly_inspection() {
     case "$1" in
         *'$('* | *'${'* | *'`'* | *';'* | *'&'* | *'>'* | *'<'* | *$'\n'*) return 1 ;;
@@ -552,7 +621,17 @@ STATE_DIR_GUARD="${WRIT_CACHE_DIR:-$WRIT_DIR/var/session}"
 # the test file's name is scrubbed before matching rather than the module pattern
 # being dropped. Scrubbing, not exempting: a command naming the test file AND the
 # module still matches on the module.
-CMD_FOR_STATE_MATCH="${CMD//test_manual_test_grant.py/}"
+#
+# NORMALIZE FIRST, SCRUB SECOND, and the order is the point: a quoted spelling of the test
+# file name (`"test_manual_test_grant.py"`) has to collapse before the scrub can find it,
+# or the one named exemption stops applying to the spellings the fix newly matches.
+# This guard takes the NORMALIZED copy because it is the ONLY layer protecting an
+# EXECUTION vector: the extractor classifies write TARGETS and never sees an attempt to
+# RUN the minter, so a miss here is the whole decision. All ten patterns below are
+# quote-free single tokens with no internal space, so normalization can only ADD matches,
+# and the mid-identifier quote split (`auto-approve"-"gate`) is therefore closed HERE,
+# unlike the write-side `"c"p`, which reaches the extractor and dies there instead.
+CMD_FOR_STATE_MATCH="${CMD_N//test_manual_test_grant.py/}"
 
 # WHICH pattern matched is recorded, because the refusal used to interpolate
 # $STATE_DIR_GUARD unconditionally: a command matching the grant module was told
@@ -685,10 +764,35 @@ _irrev_script_target() {
 # A reason to refuse, or nothing. Read-only inspection is exempt FIRST: planning the cycle
 # that added this guard needed three greps for DETACH DELETE, and a guard that refuses
 # those makes the codebase unsearchable. Same escape the gate-state guard uses.
+#
+# TWO SPELLINGS ARE PASSED IN, and the split is per CONSUMER rather than per function.
+# $1 is the RAW command; $2 is the normalized copy. This site has NO second layer, so a
+# missed spelling is a complete pass-through of a destructive command, which is why every
+# phrase match here reads $2:
+#   - `_readonly_inspection` takes $1. See its own header for why the raw text is the
+#     load-bearing choice there.
+#   - `lower` is folded from $2, so every arm below that needs exactly one space
+#     (`docker exec`, `docker compose exec`, `git reset --hard`, `git tag -d `) sees a tab,
+#     a quoted verb and a doubled space the way a shell would.
+#   - the case-SENSITIVE `git branch -D` arm reads $2 as well. Normalization only
+#     translates whitespace and drops quote characters, so it preserves case and cannot
+#     turn `-D` into `-d`.
+#   - `_irrev_script_target` takes $2 for a second reason beyond the space. Its `read -ra`
+#     reads ONE LINE, so a script invoked on the second line of a multi-line command was
+#     never walked at all; the newline translation flattens that before it is called. And
+#     the quote removal is what makes `python3 "benchmarks/bench_targets.py"` walkable,
+#     since the raw token ends in a quote character and never matches the `*.py` glob, so
+#     the script's content was never read.
+# RESIDUE, disclosed rather than patched spelling by spelling, because each needs a
+# per-verb argument walk instead of a phrase match: an interposed global flag
+# (`git -C /tmp reset --hard`), reordered flags (`git reset HEAD~1 --hard`), an
+# abbreviated long flag (`git reset --har`), an alias or wrapper script, and a value
+# assembled from a variable (`V=--hard; git reset $V`). The first two are pinned as
+# strict xfails in tests/test_bash_pattern_spelling_gate.py.
 _irreversible_reason() {
-    local cmd="$1" lower
+    local cmd="$1" norm="$2" lower
     _readonly_inspection "$cmd" && return 0
-    lower="${cmd,,}"
+    lower="${norm,,}"
 
     # 1. Graph destruction through a container or a shell (the 2026-08-08 vector). BOTH a
     #    graph-reaching verb AND a destructive statement are required, so writing prose
@@ -705,7 +809,7 @@ _irreversible_reason() {
     # 2. Graph destruction through a script (the 2026-08-05 vector). Nothing in the command
     #    text says the script wipes the graph, so the FILE decides. One bounded read and no
     #    external process: the $(<file) form is a builtin.
-    local script; script="$(_irrev_script_target "$cmd")"
+    local script; script="$(_irrev_script_target "$norm")"
     if [ -n "$script" ] && [ -f "$script" ]; then
         local body; body="$(<"$script")"
         if [[ "${body,,}" =~ $_IRREV_CYPHER_RE ]]; then
@@ -722,7 +826,10 @@ _irreversible_reason() {
         *"git reset --hard"*) git_match="git reset --hard" ;;
         *"git tag -d "*)      git_match="git tag -d" ;;
     esac
-    case "$cmd" in *"git branch -D"*) git_match="git branch -D" ;; esac
+    # Case-SENSITIVE on purpose (`-D` deletes unmerged, `-d` refuses to), so it cannot
+    # read `lower`. It reads the normalized copy instead: normalization touches only
+    # whitespace and quote characters, so case survives it intact.
+    case "$norm" in *"git branch -D"*) git_match="git branch -D" ;; esac
     case "$lower" in
         *"git clean"*) case "$lower" in *" -f"*) git_match="git clean -f" ;; esac ;;
     esac
@@ -741,7 +848,7 @@ _irreversible_reason() {
     return 0
 }
 
-IRREV_REASON="$(_irreversible_reason "$CMD")"
+IRREV_REASON="$(_irreversible_reason "$CMD" "$CMD_N")"
 if [ -n "$IRREV_REASON" ]; then
     log_gate_decision "irreversible" "deny" "$IRREV_REASON" ""
     emit_deny "$IRREV_REASON"
@@ -789,6 +896,10 @@ fi
 # stopped, and no in-repo secret would help because the agent can read the repo.
 # What closes the loop is the review_block_lifted audit event plus the human at the
 # commit prompt. Same posture the rest of this file documents for its own vectors.
+#
+# STAYS ON THE RAW COMMAND. The outer glob needs no adjacent space and the inner regex is
+# already `[[:space:]]`-based, so no measured spelling is blind at this site and there is
+# nothing for normalization to buy.
 case "$CMD" in
     *"review_findings"* | *"review-findings"*)
         if printf '%s' "$CMD" | grep -qE \
@@ -816,6 +927,11 @@ esac
 # HONEST LIMIT, same as the arms above: a command-text check is a confirmation boundary,
 # not containment. An agent that writes an intermediate script and runs that is not
 # stopped. What closes the loop is the route being gone.
+#
+# STAYS ON THE RAW COMMAND, and here the normalized copy would actively BREAK it: the
+# regex's character classes literally CONTAIN the quote characters
+# (`[^[:space:]"']*`), so feeding quote-stripped text changes what the pattern means. The
+# outer glob needs no adjacent space either.
 case "$CMD" in
     *"/update"*)
         # A SCHEME IS REQUIRED, and that is not cosmetic. The first draft matched the
@@ -837,7 +953,17 @@ esac
 
 _GIT_COMMIT_RE='(^|[;&|]|&&|\|\|)[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*(env[[:space:]]+|command[[:space:]]+|sudo[[:space:]]+|nohup[[:space:]]+)*git([[:space:]]+-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?)*[[:space:]]+commit([[:space:]]|$)'
 
-case "$CMD" in
+# THE OUTER ARM READS THE NORMALIZED COPY, THE INNER GREP KEEPS THE RAW COMMAND, and the
+# second half is a regression this fix would otherwise introduce. The arm is a substring
+# match needing one literal space, so `git<TAB>commit` opened nothing; on the normalized
+# copy it opens, and the inner regex is already `[[:space:]]+`-based, so it then matches
+# the tab spelling on the raw text with no change. But grep is LINE ORIENTED and that
+# regex anchors on `(^|[;&|]|&&|\|\|)`, so feeding it newline-flattened text would stop
+# matching a `git commit` that begins the SECOND line of a multi-line command, turning a
+# working ask into silence. Routing the inner grep onto the normalized copy would also
+# start matching `echo "; git commit"`, and a false ask at this site is user-visible
+# friction by this arm's own recorded standard.
+case "$CMD_N" in
     *"git commit"* | *"git -"*" commit"*)
         if printf '%s' "$CMD" | grep -qE "$_GIT_COMMIT_RE"; then
             # `check` exits 1 and prints the reason when blocking, 0 and silent when
@@ -863,11 +989,33 @@ esac
 # verb (the vast majority -- ls, git, grep, test runs) never spawns the python
 # extractor. Loose on purpose (a stray match only costs one spawn, never a false deny
 # or a false ask -- the extractor decides).
-case "$CMD" in
+#
+# MATCHED AGAINST THE NORMALIZED COPY, because this arm's `*) exit 0` default is the whole
+# hole: a miss exits BEFORE the extractor, which is the only place credential-write,
+# gate-state-write, out-of-project-write and egress decisions are made. Every verb glob
+# below wants one literal space, so a tab, a quoted verb or a doubled space skipped the
+# extractor entirely. No pattern here contains a quote character, so quote removal cannot
+# unmatch any of them, and the widening is free in VERDICT terms rather than merely cheap:
+# the consumer below starts with `[ -z "$TARGETS" ] && exit 0`, and every deny and ask
+# past it is driven by a ROW the extractor emitted, so nothing downstream reads "the
+# prefilter matched" as evidence. The price of a newly matched command is one python start
+# plus one `$(pwd)` subshell, and the newly matched class is narrow: a quoted token ending
+# in a write or egress verb with another word after it (`git commit -m "cp fix"`), plus
+# doubled-space and tab spellings. The `pytest*` arm is prefix-anchored and exits 0 either
+# way, so a newly matching spelling there changes nothing but which line exits.
+#
+# The marker block is what tests/test_bash_pattern_spelling_gate.py DERIVES its population
+# from: it parses every `*"..."*` literal between the markers and keeps the ones containing
+# a space, which is precisely the vulnerable shape. A verb glob added here without a probe
+# reddens that test instead of sitting outside a stale list, so the markers must wrap this
+# arm's literals and nothing else.
+case "$CMD_N" in
+    # PREFILTER PATTERNS BEGIN
     *">"* | *"tee "* | *"dd "* | *"cp "* | *"mv "* | *"install "* \
     | *"sed -i"* | *"sed --in-place"* | *"--in-place"* | *"--target-directory"* \
     | *"wget "* | *"scp "* | *"rsync "* | *"sftp "* | *"gist "* \
     | *"nc "* | *"ncat "* | *"netcat "* | *"telnet "* | *"curl "* ) ;;
+    # PREFILTER PATTERNS END
     pytest*|"python -m pytest"*|"python3 -m pytest"*)
         # Interpreter force-swap: when the project has a venv, a bare pytest /
         # python3 -m pytest runs the SYSTEM interpreter and fails on venv-only
@@ -921,7 +1069,15 @@ PYSWAP
         # pipe in it pays one spawn even when it writes nothing. That is the price of
         # not being blind to the one stdin form that carries no marker at all.
         # Placed AFTER the pytest arm so `python3 -m pytest` still gets the venv swap.
-        case "$CMD" in
+        #
+        # THE SECOND STAGE READS THE NORMALIZED COPY, for the same reason the arm above
+        # does: its own `*) exit 0` is a fail-open past the extractor. Stage 1 is
+        # whitespace-blind already (`*python*` needs no separator), so the miss was
+        # entirely here, where every flag glob carries the space that precedes a real
+        # flag: `python3<TAB>-c "open('src/x.py','w')"` cleared stage 1 and exited at
+        # stage 2's default. MEASURED, not predicted: both spellings are pinned in
+        # tests/test_bash_pattern_spelling_gate.py against the same verdict.
+        case "$CMD_N" in
             *" -c"* | *" -e"* | *" -E"* | *" -r"* | *" -p"* \
             | *"--eval"* | *"--print"* | *"<"* | *" - "* | *" -" | *"|"*) ;;
             *) exit 0 ;;
@@ -939,6 +1095,15 @@ esac
 # Plus "unknown\t<spelling>\t<variable>" per target whose expansion could not be resolved
 # (it ASKS; it produces no local/outside row, because there is no path to gate), and
 # "egress\t<host>\t<detail>" per non-allowlisted destination.
+#
+# THE EXTRACTOR GETS THE RAW COMMAND, and this is the most important non-regression on the
+# normalization path. Redirect detection here is quote-AWARE by design:
+# `shlex.split(posix=False)` keeps the quote characters on tokens, which is what stops
+# `grep '>' app.pem` being read as a redirect into a credential file. Feeding the
+# normalized copy in would strip those quotes, put a bare `>` in redirect position, and
+# turn that read-only grep into a `[SEC-CREDENTIAL-WRITE]` deny. The existing pins for
+# that behavior go through the extractor directly and so are structurally blind to this
+# mutation, which is why the pin for it drives the REAL hook instead.
 TARGETS=$(WRIT_BASH_CMD="$CMD" WRIT_CWD="$(pwd)" WRIT_DIR="$WRIT_DIR" python3 <<'PY' 2>/dev/null || true
 import os, re, shlex, sys
 
