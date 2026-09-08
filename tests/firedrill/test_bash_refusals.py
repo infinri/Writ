@@ -14,6 +14,7 @@ live `/analyze` stub) so they get dedicated tests rather than the generic loop.
 """
 from __future__ import annotations
 
+import json
 import socket
 from pathlib import Path
 
@@ -374,3 +375,132 @@ class TestIrreversibleGitNegativeControls:
         assert result.permission_decision() is None, (
             f"the reversible form {cmd!r} must not be refused: stdout={result.stdout!r}"
         )
+
+
+class TestColoredRunnerOutputDoesNotDisableThePendingTestsRefusal:
+    """Plan: colored runner output must not disable the pending-tests Stop refusal.
+
+    `FORCE_COLOR=3` is live on this machine's ambient environment, and
+    `writ-run-pending-tests.sh` inherits whatever env its own caller has, so a new
+    end-to-end case that only RELIES on inheriting it would pass in CI for the wrong
+    reason: `.github/workflows/pr.yml` sets no `FORCE_COLOR`, so no color reaches the
+    child there and the defect never triggers. Both cases below pin the colorizing
+    variable in the child env explicitly via `extra_env`, never by inheritance, so
+    they redden on any machine, not only one that happens to already export it.
+
+    Two cases, each isolating a different half of the fix (plan.md Decision 1):
+    `test_force_color_pinned_...` goes green if EITHER arm lands (the parser strip in
+    `bin/lib/emit-summary.py` or the `env -u FORCE_COLOR -u PY_COLORS NO_COLOR=1`
+    hygiene prefix in `writ-run-pending-tests.sh`), so it is not the parser's own
+    witness; `test_project_runner_with_unconditional_sgr_...` uses a stub runner that
+    prints its failure line pre-colored regardless of any environment variable, so it
+    is immune to the hygiene arm and reddens if and only if the parser strip is
+    missing -- which is what makes it the parser's witness (plan.md: pytest's own
+    `--color` CLI flag outranks every environment variable, so producer-side
+    suppression can never be a guarantee).
+    """
+
+    def test_force_color_pinned_end_to_end_refusal_survives(self, tmp_path) -> None:
+        """Reddens only if BOTH arms of the fix are reverted (the `_strip_ansi()` call
+        in `bin/lib/emit-summary.py`'s `main()`, AND the `env -u FORCE_COLOR -u
+        PY_COLORS NO_COLOR=1` prefix in `writ-run-pending-tests.sh`); either arm alone
+        keeps this case green. Also carries the hygiene assertion (plan.md Decision 4):
+        the produced `last-test-run.log` must contain no escape byte, since a log full
+        of color costs the agent tokens for nothing, and a broken suppression prefix
+        would show up here as a runner that never produces the refusal at all.
+        """
+        entry = by_id("run-pending-tests")
+        iso = make_isolation(tmp_path, session_id="color-force-color-pinned")
+        setup = entry.setup(iso)
+        result = run_hook(
+            entry.script, setup["envelope"], iso, extra_env={"FORCE_COLOR": "3"}
+        )
+        assert result.returncode == 1, (
+            "expected the refusal to survive with FORCE_COLOR=3 pinned in the child "
+            f"env; got exit {result.returncode}, stdout={result.stdout!r} "
+            f"stderr={result.stderr!r}"
+        )
+        assert "ENF-TEST-001" in result.stderr, (
+            f"stderr must carry the rule id: {result.stderr!r}"
+        )
+        audit = result.audit()
+        assert audit, "audit stream is empty; writ-run-pending-tests.sh recorded nothing"
+        rows = [
+            r for r in audit
+            if r.get("event") == "gate_decision"
+            and r.get("gate") == "pending-tests"
+            and r.get("decision") == "deny"
+        ]
+        assert rows, f"no pending-tests gate_decision deny row: {audit!r}"
+
+        log_path = iso.cache_dir / iso.session_id / "last-test-run.log"
+        assert log_path.is_file(), f"no log written at {log_path}"
+        log_bytes = log_path.read_bytes()
+        assert b"\x1b" not in log_bytes, (
+            "the log the agent may read (`Full log: ...`) still carries escape "
+            f"bytes: {log_bytes!r}"
+        )
+
+    def test_project_runner_with_unconditional_sgr_isolates_the_parser_arm(
+        self, tmp_path
+    ) -> None:
+        """Reddens if and only if the `_strip_ansi()` call is removed from `main()` in
+        `bin/lib/emit-summary.py`. The stub runner below prints its FAILED line with a
+        hardcoded SGR escape unconditionally, never consulting `FORCE_COLOR`,
+        `NO_COLOR` or `PY_COLORS`, so the hygiene prefix cannot mask this one -- unlike
+        the sibling test above, this case cannot go green from the hygiene arm alone.
+        """
+        iso = make_isolation(tmp_path, session_id="color-project-runner-sgr")
+
+        tests_dir = iso.project_root / "tests"
+        tests_dir.mkdir(parents=True, exist_ok=True)
+        test_file = tests_dir / "test_stub.py"
+        test_file.write_text("def test_one():\n    pass\n")
+
+        stub = iso.project_root / "stub_runner.sh"
+        stub.write_text(
+            "#!/bin/bash\n"
+            "printf '\\x1b[31mFAILED tests/test_stub.py::test_one - "
+            "AssertionError: stub failure\\x1b[0m\\n'\n"
+            "exit 1\n"
+        )
+
+        claude_dir = iso.project_root / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        (claude_dir / "writ.json").write_text(json.dumps({
+            "extends_defaults": False,
+            "patterns": [{
+                "name": "stub-runner",
+                "src_match": [],
+                "test_match": ["*/tests/test_*.py"],
+                "runner_command": f"bash {stub}",
+            }],
+        }))
+
+        write_cache(iso, {"mode": "work", "current_phase": "implementation"})
+        marker_dir = iso.cache_dir / iso.session_id
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        (marker_dir / "pending-tests.txt").write_text(str(test_file) + "\n")
+
+        result = run_hook(
+            "writ-run-pending-tests.sh",
+            {"session_id": iso.session_id, "hook_event_name": "Stop"},
+            iso,
+        )
+        assert result.returncode == 1, (
+            "expected the parser strip alone to surface the refusal against a runner "
+            f"that colors unconditionally; got exit {result.returncode}, "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+        assert "ENF-TEST-001" in result.stderr, (
+            f"stderr must carry the rule id: {result.stderr!r}"
+        )
+        audit = result.audit()
+        assert audit, "audit stream is empty; writ-run-pending-tests.sh recorded nothing"
+        rows = [
+            r for r in audit
+            if r.get("event") == "gate_decision"
+            and r.get("gate") == "pending-tests"
+            and r.get("decision") == "deny"
+        ]
+        assert rows, f"no pending-tests gate_decision deny row: {audit!r}"

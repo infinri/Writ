@@ -6,6 +6,49 @@ All notable changes to Writ are documented in this file. The format follows [Kee
 
 ### Fixed
 
+- **Colored runner output silently disabled the pending-tests Stop refusal.** `FORCE_COLOR=3`
+  is live in this environment, `hooks/scripts/writ-run-pending-tests.sh` passed it to its
+  child, and pytest wrote SGR escapes into the log even with stdout redirected to a file.
+  Every text pattern in `bin/lib/emit-summary.py` is anchored with `^` under `re.M`
+  (`^FAILED`, `^E\s+`, `^(FAILURES!|ERRORS!)`, `^\d+\) .*::.+$`, `^--- FAIL: `), and the
+  runners color the LEADING token of exactly those lines, so an escape byte sat between the
+  line start and the anchor's first literal character and nothing matched. The hook does not
+  trust the runner's exit code by design (PHPUnit and strict-warning pytest runs exit
+  non-zero with no failing test), so it read the empty summary as a pass and exited 0 with a
+  real test failure on disk. Measured on the same bytes of the real log the hook produced:
+  unmodified, the parser printed nothing and the hook exited 0; with the SGR escapes removed,
+  the same bytes produced `[ENF-TEST-001] 1 test failure(s). First: FAILED tests/...`. The
+  failure mode is silence, which is why it survived, and it stayed green in CI because the
+  workflow sets no `FORCE_COLOR`, so the color never reached the child there. Two arms, and
+  they are not symmetric. THE GUARD is one `_strip_ansi()` call in `emit-summary.py`'s
+  `main()`, applied after the log read and before the format dispatch, so all five anchored
+  patterns and all four formats see normalized text from a single site and a format added
+  later inherits it. HYGIENE, explicitly not the guard, is an
+  `env -u FORCE_COLOR -u PY_COLORS NO_COLOR=1` prefix on the runner invocation, because the
+  log path is handed to the agent to read and escape bytes cost tokens for nothing. The
+  producer arm cannot be the control: `runner_command` is project configuration, read by
+  `bin/lib/test_paths.py` from the project's own Writ config file, so a project can configure
+  `pytest --color=yes`, and `--color` outranks every environment variable in pytest's
+  precedence chain, which was read off the installed `_pytest/_io/terminalwriter.py` rather
+  than assumed (`PY_COLORS=1`, then `PY_COLORS=0`, then `NO_COLOR`, then `FORCE_COLOR`, then
+  isatty, which is why both variables are unset and not just one). The asymmetry is pinned:
+  one end-to-end case runs against a stub runner that colors unconditionally, so only the
+  parser arm can make it pass, and a separate assertion requires the produced
+  `last-test-run.log` to carry no escape byte, so only the hygiene arm can make that one
+  pass. The strip is SGR only, and widening now requires a fixture carrying the new sequence
+  taken from real runner output. What deliberately does not change: the `json` format is
+  byte-unaffected, because `json.loads` rejects a raw escape byte inside a string (measured,
+  `Invalid control character`) so a parseable document carries color only as the
+  six-character escaped spelling, which the pattern does not match; a colored PASSING log
+  still produces an empty summary and exit 0 for all three text formats. The repository had
+  already learned this on the test side, where `tests/_ansi.py` has carried the identical
+  regex under a docstring opening "CI forces color" since it was written, and never applied
+  it to the production parser whose no-match is an ALLOW: another one-copy-fixed divergence,
+  recorded in `docs/adr/ADR-guard-input-normalization.md`. Acceptance was two PRE-EXISTING
+  firedrill pins for this exact rule turning green under the real hook
+  (`test_triggered_shape_and_record[run-pending-tests]` and
+  `test_exit_code_is_pinned_at_one[run-pending-tests]`), not new tests alone.
+
 - **Both write doors and the worktree gate switched off, silently, above roughly 128 KiB of
   command or content.** Measured one size at a time before anything was changed: the Bash
   gate DENIED a credential-write probe at 131,014 characters and was SILENT at 131,060, rc 0

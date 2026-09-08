@@ -87,7 +87,25 @@ run_group() {
     local rc=0
     {
         echo "===== $fmt: $cmd ====="
-        timeout 60s bash -c "$cmd" 2>&1
+        # HYGIENE, NOT THE GUARD. The log below is handed to the agent to read
+        # (`Full log: <path>`), and a log full of escape bytes costs tokens and
+        # reads badly, so color is suppressed at the producer. The GUARD against
+        # colored output disabling this refusal lives in bin/lib/emit-summary.py,
+        # which strips SGR escapes before its line-anchored patterns run. It has
+        # to live there and not here: `runner_command` is project configuration
+        # (bin/lib/test_paths.py reads `<cwd>/.claude/writ.json`), so a project
+        # can configure `pytest --color=yes`, and `--color` outranks every
+        # variable below. Deleting this prefix must NOT re-disable the refusal.
+        #
+        # The two variables are the ones in pytest's own precedence chain, read
+        # off `_pytest/_io/terminalwriter.py` rather than swept speculatively:
+        # `PY_COLORS=1` wins, then `PY_COLORS=0`, then a truthy `NO_COLOR`, then
+        # a truthy `FORCE_COLOR`, then isatty. So `NO_COLOR=1` beats FORCE_COLOR
+        # but NOT `PY_COLORS=1`, which is the whole reason both are unset.
+        # `env` execs `timeout`, so the status `|| rc=$?` captures is still
+        # timeout's, 124 on a timeout included, and the child is the only process
+        # affected: nothing is exported into this hook.
+        env -u FORCE_COLOR -u PY_COLORS NO_COLOR=1 timeout 60s bash -c "$cmd" 2>&1
     } >> "$LOG" || rc=$?
     if [ $rc -ne 0 ]; then
         OVERALL_RC=$rc
