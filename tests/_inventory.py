@@ -975,12 +975,28 @@ def exec_boundary_payload_sites(*, scripts_dir: Path = HOOK_SCRIPTS_DIR) -> dict
     inside this function; a caller wanting both composes the two dicts.
 
     KNOWN LIMIT, stated rather than worked around: a value that crosses only
-    inside an UNQUOTED heredoc's own nested command substitution
-    (`writ-memory-policy-guard.sh`'s inner `python3 -c
-    "...sys.argv[1]..." "$CONTENT"`, spliced into an outer `<<PY` body) is not
-    traced, because every heredoc body here is skipped uniformly regardless of
-    quoting (see `_exb_heredoc_skip`). That site is catalogued in the census by
-    file:line rather than produced by this derivation.
+    inside an UNQUOTED heredoc's own nested command substitution is not traced,
+    because every heredoc body here is skipped uniformly regardless of quoting
+    (see `_exb_heredoc_skip`).
+
+    THE EXAMPLE THIS PARAGRAPH USED TO NAME IS GONE, and the retirement is the
+    point rather than housekeeping. It named `writ-memory-policy-guard.sh`'s
+    inner `python3 -c "...sys.argv[1]..." "$CONTENT"`, spliced into an outer
+    `<<PY` body, and said the site was catalogued in the census by file:line
+    because this derivation could not see it. That splice was a LIVE
+    decision-flipping fail-open (an oversized memory write allowed silently),
+    and it has been removed: the content now goes on a pipe and the program to
+    `bin/lib/memory-policy-scan.py`. Naming a fixed site as the standing example
+    of an open limit is how a docstring starts arguing the opposite of the truth,
+    so the limit keeps its statement and loses its instance.
+
+    The limit is no longer the only thing standing between that shape and a
+    green run either: `nested_program_splice_sites` below DERIVES exactly this
+    mechanism (an unquoted interpreter heredoc whose body interpolates), which is
+    what a hand-catalogued file:line could never do. The two derivations are
+    deliberately separate: this one answers "does a payload cross an exec
+    boundary", that one answers "does bash rewrite the program before the
+    interpreter reads it", and a site can be either without being both.
     """
     sites: dict[str, dict[str, object]] = {}
     for path in sorted(Path(scripts_dir).glob("*.sh")):
@@ -1025,4 +1041,83 @@ def exec_boundary_payload_sites(*, scripts_dir: Path = HOOK_SCRIPTS_DIR) -> dict
                 i = span_end + 1
                 continue
             i = end + 1
+    return sites
+
+
+# ── Nested-program splice sites (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3) ──
+#
+# The mechanism the memory-policy-guard cycle removes: an UNQUOTED interpreter heredoc
+# (`python3 <<PY`, not `<<'PY'`) whose BODY bash itself expands before python ever starts,
+# because an unquoted heredoc delimiter undergoes the same expansions as double-quoted
+# text. A `$(...)` inside the body is a nested command substitution spliced into the
+# outer program's TEXT (the live bug this cycle fixes, `writ-memory-policy-guard.sh:52`
+# and `:71`); a bare `$VAR` or `${VAR}` is the LATENT hazard the plan names but does not
+# ship a fix for, because no shipped pattern contains one today. Both are the same
+# MECHANISM -- text the shell rewrites before the interpreter reads it -- so one detector
+# finds both.
+#
+# ENUMERATED BY HAND FIRST, then derived, matching this module's own convention
+# (`can_write_surface_modules`'s docstring states the same discipline): `hooks/scripts/*.sh`
+# holds exactly three unquoted `python3 <<DELIM` sites whose body interpolates --
+# `writ-memory-policy-guard.sh` lines 52 and 71 (both fixed this cycle) and
+# `writ-pressure-audit.sh:19` (recorded, not fixed; see the map in
+# `tests/test_exec_boundary_census.py`). `bin/lib/*.sh` holds none. MEASURED (not
+# reasoned): running this derivation over both roots before this cycle's implementation
+# lands returns exactly those three keys and nothing else.
+_NPS_HEREDOC_MARK = re.compile(r"<<-?\s*(?P<q>['\"]?)(?P<delim>\w+)(?P=q)")
+_NPS_PY_TOKEN = re.compile(r"(?<![\w./-])python3(?![\w.-])")
+# A `${`, a `$(`, a backtick, or a bare `$VAR` (a `$` immediately followed by an
+# identifier-starting character). Deliberately NOT a bare trailing `$`: bash cannot start
+# an expansion on a `$` with nothing after it, so it survives an unquoted heredoc
+# unchanged, and a detector that flagged it would report a hazard that cannot fire --
+# exactly the distinction the plan draws between the live splice and the latent one.
+_NPS_INTERPOLATION = re.compile(r"\$\{|\$\(|`|\$[A-Za-z_][A-Za-z0-9_]*")
+
+
+def nested_program_splice_sites(*, scripts_dir: Path = HOOK_SCRIPTS_DIR) -> dict[str, dict[str, object]]:
+    """Every unquoted interpreter heredoc whose body interpolates, as `"<script>:<line>"`
+    -> `{"script", "line"}`, the line being the heredoc's OPENING line (where `python3`
+    and `<<DELIM` both appear on the same logical line), not a line inside the body.
+
+    `scripts_dir` is a keyword for the reason `exec_boundary_payload_sites(*,
+    scripts_dir=)` gives: the detector's precision is pinned against synthetic fixtures
+    under `tmp_path` in `tests/test_exec_boundary_census.py`, never against a real
+    script's current wording. Call it a second time with `scripts_dir=REPO / "bin" /
+    "lib"` to cover that root too; the two calls are never merged inside this function,
+    matching `exec_boundary_payload_sites`'s own split.
+
+    A HEREDOC WHOSE DELIMITER IS QUOTED (`<<'PY'`, `<<"PY"`) IS NEVER FLAGGED, no matter
+    what its body contains: bash does not expand anything inside a quoted heredoc, so a
+    `$(` or `$VAR` there is inert text, exactly as it would be inside a single-quoted
+    string. This is the same distinction `_exb_heredoc_skip` above states it does NOT
+    need to draw, because that derivation skips every heredoc body uniformly regardless
+    of quoting; this one exists BECAUSE the quoting is exactly what matters here.
+
+    ONLY A `python3` INVOCATION IS IN SCOPE. The population this cycle enumerated by
+    hand is three `python3 <<DELIM` sites and nothing else; widening to every
+    interpreter this tree might one day heredoc into is unmeasured and left for that
+    day, matching `can_write_surface_modules`'s own "residual hole, stated because
+    nothing keeps it closed" discipline.
+    """
+    sites: dict[str, dict[str, object]] = {}
+    for path in sorted(Path(scripts_dir).glob("*.sh")):
+        lines = _blanked_lines(path.read_text(encoding="utf-8", errors="replace"))
+        n = len(lines)
+        i = 0
+        while i < n:
+            line = lines[i]
+            heredoc = _NPS_HEREDOC_MARK.search(line)
+            if heredoc and _NPS_PY_TOKEN.search(line):
+                delim = heredoc.group("delim")
+                quoted = bool(heredoc.group("q"))
+                body_start = i + 1
+                j = body_start
+                while j < n and lines[j].strip() != delim:
+                    j += 1
+                body = "\n".join(lines[body_start:j])
+                if not quoted and _NPS_INTERPOLATION.search(body):
+                    sites[f"{path.name}:{i + 1}"] = {"script": path.name, "line": i + 1}
+                i = j + 1
+                continue
+            i += 1
     return sites

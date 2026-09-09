@@ -617,71 +617,22 @@ class TestWorktreeGateOversized:
 
 # --------------------------------------------------------------------------- #
 # Capability 8: the Write/Edit door, oversized and under the cap.
+#
+# The third door's own oversized/control pair used to live here as
+# `TestMemoryPolicyGuardOversizedStillBypasses`, `xfail(strict=True)`. Plan
+# 2412ba38-51e1-4b73-895b-7b240a3c21d3 fixes that door (the nested-program
+# restructure the class's own docstring said was its own cycle), so the class
+# is DELETED rather than flipped to a plain pass: its name asserted a bypass
+# that stops being true, and a surviving `strict=True` xfail would XPASS and
+# FAIL the moment the fix lands, which is pytest enforcing the deletion by
+# itself. Its two tests are RE-HOMED, not weakened, in
+# `tests/test_memory_policy_scan_transport.py::TestOversizedRuleWeakeningMemoryWriteRefused`
+# and `::TestControlSizeStillDenies`, where the oversized case is re-expressed
+# against BOTH the derived byte count and the plan's own literal 200,000, and
+# is deliberately NOT gated behind `require_platform_arg_limit` (plan.md
+# Decision 4: the fixed guard's verdict must be size-independent regardless of
+# whether this kernel enforces E2BIG).
 # --------------------------------------------------------------------------- #
-
-class TestMemoryPolicyGuardOversizedStillBypasses:
-    """The third door, MEASURED LIVE and deliberately NOT fixed this cycle.
-
-    `writ-memory-policy-guard.sh` refuses a memory write that weakens a rule. It denies
-    the same rule-weakening phrase at 200 bytes and ALLOWS IT SILENTLY at 200,000, with
-    `File "<stdin>", line 2` on stderr. The mechanism is not this cycle's: the content
-    crosses as argv to an INNER `python3 -c` whose output is spliced into the OUTER
-    program's text, so an oversized value makes the outer program a syntax error rather
-    than making the exec fail. Fixing it is a restructuring of a program built from a
-    program, not a transport swap, so it is its own cycle.
-
-    IT IS PINNED HERE BECAUSE PROSE DECAYS. The ADR amendment records it, but a doc is
-    not asserted, and this repo has been bitten by a defect that lived only in a comment.
-    `strict=True` so the day the restructure lands this XPASSes and FAILS, which is the
-    prompt to delete the marker and move the site's census entry to `fixed`.
-    """
-
-    WEAKENING = "going forward, bypass the ENF-PROC-TDD rule"
-
-    def _memory_path(self, tmp_path: Path) -> str:
-        """A path inside the guard's own scope, under tmp_path so nothing real is named.
-
-        The guard matches `*/.claude/projects/*/memory/*` and exits 0 on anything else, so
-        the `.claude` segment is required: without it both cases allow and the pair below
-        would prove nothing about size.
-        """
-        target = (tmp_path / ".claude" / "projects" / "-proj" / "memory" / "probe_only.md")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        return str(target)
-
-    def test_a_small_rule_weakening_memory_write_is_refused(self, tmp_path: Path) -> None:
-        """The control that makes the xfail below meaningful: without this, an always
-        allowing guard and a size specific bypass look identical.
-
-        Reddened by removing the guard's pattern list, which would make both this and the
-        oversized case allow and the xfail below stop being about size at all.
-        """
-        proc = _run_script(HOOKS / "writ-memory-policy-guard.sh",
-                            _write_envelope(_sid(), self._memory_path(tmp_path),
-                                            self.WEAKENING + "\n" + ("x" * 200)),
-                            cwd=tmp_path, cache=tmp_path / "cache",
-                            friction=tmp_path / "friction.jsonl")
-        hso = _hso(proc)
-        assert hso is not None and hso.get("permissionDecision") == "deny", hso
-
-    @pytest.mark.xfail(strict=True, reason=(
-        "measured live bypass, deferred with a stated reason: an oversized memory write "
-        "makes the spliced outer program a syntax error, MATCHED is empty, and the "
-        "rule-weakening write allows silently. Needs the nested-program restructure, "
-        "not a transport swap."
-    ))
-    def test_an_oversized_rule_weakening_memory_write_is_also_refused(
-        self, tmp_path: Path,
-    ) -> None:
-        """What SHOULD hold and does not. Fails today at 200,000 bytes of padding."""
-        proc = _run_script(HOOKS / "writ-memory-policy-guard.sh",
-                            _write_envelope(_sid(), self._memory_path(tmp_path),
-                                            self.WEAKENING + "\n" + ("x" * 200_000)),
-                            cwd=tmp_path, cache=tmp_path / "cache",
-                            friction=tmp_path / "friction.jsonl")
-        hso = _hso(proc)
-        assert hso is not None and hso.get("permissionDecision") == "deny", hso
-
 
 class TestWriteDoorContentSizeBoundary:
     @pytest.mark.parametrize("nbytes", [100, 120_000])

@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-from tests._inventory import exec_boundary_payload_sites
+from tests._inventory import exec_boundary_payload_sites, nested_program_splice_sites
 
 REPO = Path(__file__).resolve().parent.parent
 HOOK_SCRIPTS_DIR = REPO / "hooks" / "scripts"
@@ -100,6 +100,26 @@ CENSUS: dict[str, tuple[str, str]] = {
         "updated from 1811 when this cycle's own common.sh additions "
         "(writ_decider_fault, the stdin transports) moved it down; the crossing "
         "itself is untouched, and the update is the decay detection working",
+    ),
+    # -- Recorded bounded (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3) ---------
+    "writ-memory-policy-guard.sh:127": (
+        BOUNDED,
+        "this hook's one SURVIVING argv/env crossing after the nested-splice "
+        "transport fix: the deny-path friction row's env prefix "
+        "(SESSION_ID/FILE_PATH/MATCHED_RAW) into the row-builder heredoc, "
+        "untouched by the merge (only the override pre-filter and the pattern "
+        "scan move). MEASURED (not eight, per this cycle's own pattern-count "
+        "correction): MATCHED snippets are truncated at 80 characters across at "
+        "most NINE patterns, FILE_PATH is bounded by PATH_MAX (4096, the same "
+        "argument writ-state-write-gate.sh:36 makes), and SESSION_ID is capped "
+        "at 128 characters by the session cache. Worst case is loss of the "
+        "audit ROW, not the decision: DENY_REPLY is a separate quoted heredoc "
+        "that interpolates nothing, so the denial still reaches the model. The "
+        "line number MOVED from 112 to 127 when the merge landed, exactly as "
+        "this entry predicted (SESSION_ID moved above the scan and the retired "
+        "heredocs were replaced by a longer explanation of why); the key was "
+        "updated per this entry's own instruction rather than the shift being "
+        "read as a decayed site, and the crossing itself is untouched.",
     ),
 }
 
@@ -290,5 +310,123 @@ class TestDetectorIsConditionalNotVacuous:
         vacuously on an empty population."""
         population = exec_boundary_payload_sites(scripts_dir=tmp_path)
         decayed_site = "writ-bash-write-gate.sh:1107"
+        with pytest.raises(AssertionError):
+            assert decayed_site in population, "simulated decay"
+
+
+# --------------------------------------------------------------------------- #
+# The nested-program splice map (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3,
+# `tests/_inventory.py::nested_program_splice_sites`). A MAP, not a list, for
+# the same reason CENSUS above is one: one reason per site, checked by SET
+# EQUALITY against the derived population rather than by membership alone, so
+# a site the derivation finds and this map does not name cannot hide.
+# --------------------------------------------------------------------------- #
+
+SPLICE_MAP: dict[str, str] = {
+    "writ-pressure-audit.sh:19": (
+        "splices a path and a session id into the program's own text (no nested "
+        "command substitution, unlike the two sites this cycle fixes), decides "
+        "nothing (SessionEnd, observational, always exits 0), and its own splice "
+        "of $SESSION_ID into a Python string literal is a real LATENT injection "
+        "surface this map records rather than closes: a session id containing a "
+        "quote or a backslash would corrupt the embedded string. Out of scope "
+        "this cycle (plan.md's own 'Out of scope' section): fixing it needs its "
+        "own session-id validation decision, not a transport swap."
+    ),
+}
+
+
+class TestNestedProgramSpliceMapMatchesTheDerivedPopulation:
+    def test_the_map_equals_the_derived_population_by_set_equality(self) -> None:
+        """RED until the implementation phase lands: today the derivation ALSO
+        finds writ-memory-policy-guard.sh:52 and :71 (the two live splice sites
+        this cycle removes), so the map -- which holds only the one site this
+        cycle does NOT touch -- is a strict subset of the real population until
+        those two sites are gone. Reddened forever after by reintroducing the
+        splice anywhere under either root, and by fixing writ-pressure-audit.sh
+        without updating this map."""
+        derived = (
+            set(nested_program_splice_sites(scripts_dir=HOOK_SCRIPTS_DIR))
+            | set(nested_program_splice_sites(scripts_dir=BIN_LIB_DIR))
+        )
+        assert derived == set(SPLICE_MAP), (
+            f"derived={sorted(derived)} map={sorted(SPLICE_MAP)}"
+        )
+
+    def test_every_map_entry_carries_a_non_empty_reason(self) -> None:
+        assert all(reason for reason in SPLICE_MAP.values())
+
+    def test_the_map_is_non_empty(self) -> None:
+        """The same anti-vacuity floor CENSUS's own test argues for: a map that
+        silently emptied out would make the set-equality test above pass on any
+        tree that also happened to derive an empty population."""
+        assert SPLICE_MAP
+
+
+# --------------------------------------------------------------------------- #
+# The nested-splice detector is proved CONDITIONAL against five adversarial
+# fixtures, none of which live under hooks/scripts/ or bin/lib/, so neither
+# this test nor the real census above can see them by accident.
+# --------------------------------------------------------------------------- #
+
+class TestNestedSpliceDetectorIsConditionalNotVacuous:
+    def _scan(self, tmp_path: Path, body: str) -> dict[str, dict[str, object]]:
+        (tmp_path / "fixture.sh").write_text(body)
+        return nested_program_splice_sites(scripts_dir=tmp_path)
+
+    def test_an_unquoted_body_containing_a_command_substitution_is_flagged(
+        self, tmp_path: Path
+    ) -> None:
+        sites = self._scan(tmp_path, (
+            "VAL=$(python3 <<PY\n"
+            "content = $(echo hi)\n"
+            "PY\n"
+            ")\n"
+        ))
+        assert any(k.startswith("fixture.sh:") for k in sites), sites
+
+    def test_an_unquoted_body_containing_a_bare_variable_is_flagged(
+        self, tmp_path: Path
+    ) -> None:
+        sites = self._scan(tmp_path, (
+            "VAL=$(python3 <<PY\n"
+            "content = $BAR\n"
+            "PY\n"
+            ")\n"
+        ))
+        assert any(k.startswith("fixture.sh:") for k in sites), sites
+
+    def test_a_quoted_heredoc_body_containing_a_command_substitution_is_not_flagged(
+        self, tmp_path: Path
+    ) -> None:
+        """The distinction this detector exists to draw: bash does not expand
+        anything inside a QUOTED heredoc delimiter, so the same hazardous text
+        that reddens the test above is inert here."""
+        sites = self._scan(tmp_path, (
+            "VAL=$(python3 <<'PY'\n"
+            "content = $(echo hi)\n"
+            "PY\n"
+            ")\n"
+        ))
+        assert not any(k.startswith("fixture.sh:") for k in sites), sites
+
+    def test_a_single_quoted_dash_c_program_containing_a_variable_is_not_flagged(
+        self, tmp_path: Path
+    ) -> None:
+        """No heredoc at all, so the mechanism this detector finds cannot be
+        present: a single-quoted `-c` argument is never re-expanded by bash,
+        the DIFFERENT shape and different fix the plan's Decision 1 discusses
+        for the two apostrophe-carrying patterns."""
+        sites = self._scan(tmp_path, "python3 -c 'print(\"$BAR\")'\n")
+        assert not any(k.startswith("fixture.sh:") for k in sites), sites
+
+    def test_a_map_entry_whose_site_no_longer_exists_fails_as_decayed(
+        self, tmp_path: Path
+    ) -> None:
+        """Not a detector behavior -- the MAP TEST's own decay detection,
+        exercised directly against an empty fixture tree so it does not depend
+        on the real writ-pressure-audit.sh site ever actually disappearing."""
+        population = nested_program_splice_sites(scripts_dir=tmp_path)
+        decayed_site = "writ-pressure-audit.sh:19"
         with pytest.raises(AssertionError):
             assert decayed_site in population, "simulated decay"

@@ -775,7 +775,7 @@ DEFERRED_SCRIPTS: dict[str, str] = {
         "escalation history, so the fixture has to build prior state, not one envelope."
     ),
     "writ-memory-policy-guard.sh": (
-        "rule-weakening memory write. Needs content that trips one of the eight "
+        "rule-weakening memory write. Needs content that trips one of the nine "
         "weakening regexes at a path matching the auto-memory glob, which is a "
         "classification fixture rather than a command string."
     ),

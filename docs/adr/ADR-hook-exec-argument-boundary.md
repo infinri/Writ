@@ -170,6 +170,113 @@ and `can-write`) now pass their body on curl's stdin with `--data-binary @-`. Th
 the `format` arm carry bodies built in place from short literals or a bounded /query
 response, and none of them decides a write.
 
+## Amendment, 2026-09-08 (second): the fourth door, where the program was built out of a program
+
+Same day, third cycle, and the decision above was not re-opened again. The site the first
+amendment named as THE RECOMMENDED NEXT SITE was fixed:
+`hooks/scripts/writ-memory-policy-guard.sh`. It is the fourth write door and it was the
+only one of the four whose fail-open was measured as a live DECISION FLIP on
+model-controlled content, so the bullet that recorded it as open is retired below rather
+than left to read as current.
+
+    memory door, rule-weakening write:  200 bytes DENY, 131,000 DENY,
+                                        200,000 SILENT ALLOW, rc 0
+
+**Why it needed a restructure and not a transport swap.** The other three doors put an
+unbounded value on a crossing and lost it. This one put the value on an INNER `python3 -c`
+whose OUTPUT was interpolated into an OUTER program's text, inside an unquoted heredoc:
+
+    MATCHED=$(python3 <<PY
+    content = $(python3 -c "import sys,json; print(json.dumps(sys.argv[1]))" "$CONTENT" 2>/dev/null)
+
+Over the cap the inner exec failed, `2>/dev/null` hid it, the substitution yielded nothing,
+the outer program's first statement became `content = `, and the SyntaxError left `MATCHED`
+empty for `[ -z "$MATCHED" ] && exit 0` to read as "nothing to gate". So the failure
+arrived as a syntax error in a program bash had assembled, one layer further out than the
+class this ADR was written for, and the same shape appeared TWICE in the file (the override
+pre-filter and the pattern scan).
+
+**The transport is the OPPOSITE of the Bash door's, and that contrast is the point.** There
+stdin was already occupied by the quoted heredoc carrying that hook's ~1,900-line program,
+so the command had to take a `mktemp` file and this ADR recorded moving the program to a
+file as "the right end state", deferred because seven test modules slice that program out
+by its heredoc marker. Here the constraint runs the other way: the program is small and
+fixed and NO test slices it, so the program moved to `bin/lib/memory-policy-scan.py` and
+stdin was free for the payload:
+
+    VERDICT=$(printf '%s' "$CONTENT" | python3 "$SCAN" 2>/dev/null) || true
+
+`printf` is a bash BUILTIN, so the content reaches no argv and no environment at all: bash
+writes it into the pipe itself. That is STRONGER than property 2 ("a payload that must
+cross goes on STDIN, never on the command line") rather than merely compliant with it, and
+it deletes the nested substitution instead of bounding it. This cycle simply took the end
+state the first amendment already argued for, in the one hook where nothing is coupled to
+the program's location.
+
+**Why a FILE and not a `python3 -c` argument**, since that is the same decision's other
+form and a later reader will want to collapse it. Two of the NINE patterns carry a single
+quote in their own Python source (`r'\bdon\'?t...'`, `r'["\']?i\s+trust\s+you...'`), a
+single-quoted `-c` argument cannot contain one, and whether `r"\bdon'?t"` matches exactly
+what `r'\bdon\'?t'` matched is the kind of claim this repository has been burned by reading
+instead of running. A file keeps every pattern byte-identical (verified with `md5sum` over
+the extracted block of both files, not by eye), makes the list testable in process, and
+cannot be reopened by a future pattern that happens to contain a quote. The count is NINE,
+measured against the live source: the plan for this cycle and several comments said eight.
+
+**Property 3 again, and here the allow needs a POSITIVE WORD.** The scan prints
+`verdict<TAB>override`, `verdict<TAB>clean` or `verdict<TAB>match<TAB><json>`, then
+`status<TAB>complete` as its LAST line. The consumer is three-way and its default arm is a
+FAULT, not a clean: an unrecognized or missing verdict asks through `writ_decider_fault`,
+so "the block said nothing useful" can never again be read as "nothing to gate". That is
+the difference from the Bash door, where a sentinel with no rows in front of it IS a
+completed decision and allows; here the completed allow has a name of its own. The
+`2>/dev/null || true` stays, and it is safe for the reason property 3 gives: the status is
+read from whether the block printed that it finished, never from `$?`.
+
+**The override marker short-circuits before the pattern list is touched**, and that
+ordering is a capability with its own pin rather than an accident of layout, because a merge
+of two blocks into one is exactly where it could be lost. The marker is no more forgeable
+than before: it was and remains an unauthenticated declaration inside model-controlled
+content, matched by the same two `re.search` calls, and the guard's own deny text tells the
+model about it. The ONE new surface is the stdout channel the verdict travels back on, and
+it is closed by construction: the only content-derived bytes are inside a `json.dumps`
+string, which cannot hold a raw newline or tab, and the verdict is read from the FIRST line
+while the sentinel is read from the LAST.
+
+**A machine with no `python3` behaves DIFFERENTLY at this door, and it was measured rather
+than reasoned.** The other three reach `writ_decider_fault`'s own `command -v python3`
+probe and allow with one `[WRIT CRITICAL]` line. This hook never gets that far: its content
+parse one line earlier is `echo "$HOOK_ENVELOPE" | python3 -c ...` under `set -euo
+pipefail`, so the hook aborts with rc 127, empty stdout and empty stderr. That is the
+visible hook-error class this reference's section 8 names as the compensating control, NOT
+a silent allow, so there is no second hole here and no interpreter probe was added on that
+account. The measured outcome is pinned, so a future `|| CONTENT=""` at that line would
+turn the crash into exactly the silence this cycle removed and would redden a test.
+
+**The process count fell, measured with strace rather than asserted.** Per memory-path
+write: 5 python starts to 2 on the clean path, 8 to 5 on the deny path (the retired shape
+cost four starts for the decision, two outer heredocs plus two inner `-c` calls). The
+whole-path ratchet in `tests/test_write_path_process_budget.py` is unmoved, and the reason
+is a checked predicate rather than a claim: its probe envelope targets a path this guard's
+own `*/.claude/projects/*/memory/*` case rejects before any scan runs.
+
+**The mechanism is now DERIVED, not described.** `tests/_inventory.py::nested_program_splice_sites`
+finds every unquoted interpreter heredoc whose body interpolates, over `hooks/scripts/` and
+`bin/lib/`, and a map with one reason per site is held against it by SET EQUALITY. It holds
+exactly one entry after this cycle, `writ-pressure-audit.sh:19`, recorded rather than
+fixed: it splices a path and a session id into program text, has no nested command
+substitution, decides nothing (SessionEnd, observational), and its `$SESSION_ID` splice
+into a Python string literal is a real latent injection surface that needs its own
+session-id validation decision. The detector is proved conditional against five adversarial
+fixtures. The exec-boundary population is UNCHANGED at 68 sites, which was predicted and
+then measured: the retired heredocs were never visible to that derivation (heredoc bodies
+are skipped uniformly) and the piped form is correctly not flagged, so a `fixed` census
+entry here would have passed before AND after, which is the vacuous pin this repository has
+been bitten by. The one crossing this hook KEEPS is the deny-path friction row's env prefix,
+recorded `bounded` with its enforcers named (`[:80]` snippets across at most nine patterns,
+`PATH_MAX` for the file path), whose worst case is the loss of the audit ROW and not the
+decision.
+
 ## Alternatives rejected
 
 - **Truncate the parent state before passing it.** Rejected: it keeps an argument that has
@@ -223,22 +330,23 @@ response, and none of them decides a write.
 
   Its one stated limit: a value that crosses only inside an UNQUOTED heredoc's own nested
   command substitution is not traced, because heredoc bodies are skipped uniformly. That
-  is exactly the shape of the site named next.
+  was exactly the shape of the site the list below used to name next, and it is why the
+  second amendment added a SECOND derivation for the mechanism rather than widening this
+  one: `nested_program_splice_sites` asks whether bash rewrites the program before the
+  interpreter reads it, which is a different question from whether a payload crosses.
 
 - **Sites left open after the 2026-09-08 amendment, each with its reason.** These are
   recorded, not fixed, and the census map is where their status lives:
 
-  - `writ-memory-policy-guard.sh` is THE RECOMMENDED NEXT SITE, and it is a live
-    decision-flipping fail-open rather than a latent one. The crossing value is the memory
-    file's content, model-controlled and unbounded, and the shape is worse than the class
-    above: an inner `python3 -c` receives the content as argv and its output is
-    INTERPOLATED INTO THE OUTER PROGRAM TEXT, so over the cap the inner call yields
-    nothing, the outer program becomes `content = ` (a syntax error), the match is empty
-    and the memory write is allowed. Measured 2026-09-08 with the same rule-weakening
-    phrase in both payloads: 200 bytes DENY, 200,000 bytes SILENT. It was excluded from
-    the amendment because a program spliced from another program has to be restructured,
-    the same shape appears twice in the file, and mixing that into a transport swap would
-    double the cycle.
+  - `writ-memory-policy-guard.sh` WAS "THE RECOMMENDED NEXT SITE" here, a live
+    decision-flipping fail-open rather than a latent one, and it is FIXED as of the second
+    amendment above. The bullet is rewritten rather than deleted because the entry it
+    replaced is the reason a reader trusts this list: a recommendation left standing next
+    to a shipped fix is how the census this section already had to replace once started
+    rotting. Nothing is left open at that site; its remaining argv/env crossing is
+    recorded `bounded` in `tests/test_exec_boundary_census.py`, and the retired mechanism
+    is now derived by `tests/_inventory.py::nested_program_splice_sites` rather than
+    described in prose here.
   - `writ-state-write-gate.sh` is the same class with no consequence, and the enforcer is
     nameable: the only unbounded value crossing is the TARGET PATH, and a path long enough
     to break `execve` (over 131,072 bytes) is far past the kernel's `PATH_MAX` of 4,096,

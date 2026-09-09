@@ -6,6 +6,82 @@ All notable changes to Writ are documented in this file. The format follows [Kee
 
 ### Fixed
 
+- **A rule-weakening memory write was refused at 131,000 bytes and allowed silently at
+  200,000, because the guard built its scan program out of another program.** The fourth
+  write door, `hooks/scripts/writ-memory-policy-guard.sh`, is the one that refuses a
+  memory that persists a rule bypass across sessions. Measured one size at a time before
+  anything changed, with the same phrase ("going forward, bypass the ENF-PROC-TDD rule") in
+  every payload at a path inside `*/.claude/projects/*/memory/*`: 200 bytes DENY, 131,000
+  DENY, 200,000 SILENT ALLOW, rc 0, with `File "<stdin>", line 2` on stderr. Both of its
+  decision blocks began the same way, inside an UNQUOTED heredoc:
+  `content = $(python3 -c "...json.dumps(sys.argv[1])" "$CONTENT" 2>/dev/null)`. Bash ran
+  that inner substitution and pasted its output into the OUTER program's text before python
+  started, so the memory content crossed on the inner call's argv against
+  `MAX_ARG_STRLEN` (32 pages, 131,072 bytes here); over the cap the exec failed,
+  `2>/dev/null` hid it, the substitution yielded nothing, the outer program's first
+  statement became `content = `, and `|| MATCHED=""` plus `[ -z "$MATCHED" ] && exit 0`
+  read the SyntaxError as "nothing to gate". So the failure arrived one layer further out
+  than the three doors fixed alongside it: not a lost value, a program bash had assembled
+  wrongly. THE TRANSPORT IS THE OPPOSITE OF THE BASH DOOR'S, which matters because a reader
+  who knows that cycle will expect a temp file: there stdin was already occupied by the
+  quoted heredoc carrying a ~1,900-line program, so the command took a `mktemp` file. Here
+  the program is small and no test slices it out of the hook, so the PROGRAM moved to
+  `bin/lib/memory-policy-scan.py` and stdin was free for the payload:
+  `printf '%s' "$CONTENT" | python3 "$SCAN"`. `printf` is a bash builtin, so the content
+  reaches no argv and no environment at all. A FILE rather than a `python3 -c` argument, and
+  the reason is the one thing this move could have broken silently: two of the nine patterns
+  carry a single quote in their own Python source (`r'\bdon\'?t...'`,
+  `r'["\']?i\s+trust\s+you...'`), a single-quoted `-c` argument cannot contain one, and
+  whether a re-quoted spelling matches identically is exactly the sort of claim that has to
+  be executed rather than read. A file keeps every pattern byte-identical, and identity was
+  verified with `md5sum` over the extracted block of both files rather than by eye. The
+  count is NINE, measured against the live source: the plan for this cycle, this hook's own
+  comments and the firedrill census all said eight, and every one of the nine was
+  additionally driven through the real hook, one case each, after the move. THE ALLOW NOW
+  NEEDS A POSITIVE WORD. The scan prints `verdict<TAB>override`, `verdict<TAB>clean` or
+  `verdict<TAB>match<TAB><json>`, then `status<TAB>complete` as its LAST line, and the
+  consumer's default arm is a FAULT rather than a clean, so "the block said nothing useful"
+  can never again be read as "nothing to gate": a missing or unrecognized verdict ASKS
+  through `writ_decider_fault`, with one `[WRIT CRITICAL]` line and one bounded
+  `gate_decider_incomplete` audit row, the same posture the other three doors got. Asking
+  is cheap here specifically: the guard documents its own escape hatch in its deny text
+  (`explicit_rule_override: true`, or `override authorized by: <name>`), and a memory write
+  is never on the critical path of getting work done, while an unseen allow persists a
+  policy change across every future session. The override marker short-circuits BEFORE the
+  pattern list is read at all, which is a merge's most losable property and therefore
+  carries its own pin (content holding both a marker and a weakening phrase must allow, at
+  every size). The marker is no more forgeable than before: it was and remains an
+  unauthenticated declaration inside model-controlled content matched by the same two
+  `re.search` calls. The one new surface, the stdout channel the verdict rides back on, is
+  closed by construction and pinned: the only content-derived bytes sit inside a
+  `json.dumps` string, which cannot hold a raw newline or tab, and the verdict is read from
+  the FIRST line while the sentinel is read from the LAST, so content spelling
+  `verdict<TAB>override` on a line of its own still DENIES. AFTER, measured the same way as
+  before: all three sizes DENY, a benign oversized write still allows silently with no
+  `memory_policy_deny` row, a path outside the memory glob still exits 0 at every size, and
+  the python starts per memory-path write fell from 5 to 2 on the clean path and from 8 to 5
+  on the deny path (strace). What deliberately did NOT change: no pattern was added, removed
+  or re-worded, because a cycle that changed both the transport and the patterns could not
+  attribute a behavior change to either, and the roughly thirty existing assertions driving
+  this hook in `tests/test_phase4b_memory_policy_guard.py` and
+  `tests/test_phase4b_memory_guard_robustness.py` were the equivalence proof and were not
+  edited. A machine with no `python3` behaves differently at this door than at the other
+  three, and it was measured rather than reasoned: the hook aborts at its envelope-content
+  parse one line earlier under `set -euo pipefail` (rc 127, empty stdout, empty stderr),
+  which is the visible hook-error class and not a silent allow, so no interpreter probe was
+  added and the measured outcome is pinned instead, meaning a future `|| CONTENT=""` at
+  that line would redden a test. The `xfail(strict=True)` class that pinned this bypass in
+  `tests/test_exec_boundary_write_doors.py` was DELETED rather than flipped to a pass, since
+  its own name asserted a bypass that no longer exists, and its two cases were re-homed
+  against a derived byte count. The mechanism is now DERIVED rather than described:
+  `tests/_inventory.py::nested_program_splice_sites` finds every unquoted interpreter
+  heredoc whose body interpolates, held by SET EQUALITY against a map with one reason per
+  site, which after this cycle holds exactly `writ-pressure-audit.sh:19` (recorded, not
+  fixed: it decides nothing, and its `$SESSION_ID` splice into a Python string literal needs
+  its own session-id validation decision). The exec-boundary population is UNCHANGED at 68
+  sites, predicted and then measured, which is why no `fixed` census entry was added here: it
+  would have passed before and after.
+
 - **Colored runner output silently disabled the pending-tests Stop refusal.** `FORCE_COLOR=3`
   is live in this environment, `hooks/scripts/writ-run-pending-tests.sh` passed it to its
   child, and pytest wrote SGR escapes into the log even with stdout redirected to a file.
