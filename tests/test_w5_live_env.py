@@ -25,12 +25,24 @@ Cycle 5.2 removes two defect classes from the test suite:
   skipping the dual-location-dedup invariant off this machine). The fix
   resolves both via `Path(__file__).resolve()` hops to the checkout root.
 
-INTENTIONAL EXCEPTION / over-correction guard: `tests/test_advance_phase_token_gate.py`
-also hardcodes `localhost:8765`, but with a documented comment stating it is
-a security-integration test of the DEPLOYED daemon and deliberately targets
-:8765. It is NOT in the 5.2 Files list and must stay untouched; this guard
-asserts it STILL contains the literal (GREEN now and after every other fix
-lands).
+SUPERSEDED EXCEPTION (corrected 2026-09-09): this file used to carry
+`test_advance_phase_token_gate_keeps_documented_8765`, a survivor /
+over-correction guard asserting that `tests/test_advance_phase_token_gate.py`
+must KEEP hardcoding `localhost:8765`, on the premise that it was a
+documented security-integration test of the DEPLOYED daemon. That premise is
+reversed by a measured reason: the old form appended one
+`agent_self_approval_blocked` row per run into the operator's real
+`var/logs/github.com/infinri/Writ/audit.jsonl` (1518 rows before, 1519
+after), because `bin/lib/writ_daemon_client.py`'s `post_json` prefers an
+EXISTING unix socket over `base_url` and that module never passed an
+explicit `socket_path` -- so the port literal was never even the mechanism
+that chose the destination. The survivor guard is retired (an assertion
+that a future sweep must NOT fix the file this cycle fixes cannot be left
+standing alongside the fix) and replaced below by a MECHANISM guard over a
+DERIVED population: no module under `tests/` -- named or not yet
+written -- may bind a module-level constant to the production daemon port,
+and `test_advance_phase_token_gate.py` must import the isolated-daemon
+helper rather than target :8765 directly.
 
 This guard is FULLY HERMETIC: it is a pure source-text scan. It does NOT
 import, execute, or collect fixtures from any target file, does NOT touch a
@@ -55,10 +67,21 @@ RED today (2026-07-16, pre-implementation):
 
 GREEN only once each corresponding fix in plan.md Cycle 5.2 lands.
 
-The one exception is `test_advance_phase_token_gate_keeps_documented_8765`,
-which is a survivor / over-correction guard: it passes today and must keep
-passing after every other fix in this file lands, since that file is
-deliberately excluded from the port-helper migration.
+GREEN today (2026-09-09) for the new Group D mechanism guard below, unlike
+the still-RED Group A/B/C guards above: `test_advance_phase_token_gate.py`'s
+own source-level migration off the hardcoded `localhost:8765` literal and
+onto `tests._daemon.start_isolated_daemon` lands together with this file's
+guard in the same testing-phase pass, so
+`test_no_module_binds_a_constant_to_the_production_daemon_port` and
+`test_advance_phase_token_gate_imports_the_isolated_daemon_helper` both pass
+against today's tree. Confirmed as a genuine (non-vacuous) regression pin by
+mutation: reintroducing a `SERVER = "http://localhost:8765"` constant, or
+removing the `start_isolated_daemon` import, reddens the corresponding
+guard. What remains RED is runtime, not source text:
+`test_advance_phase_token_gate.py` still fails to COLLECT, because
+`tests/_daemon.py` does not yet define `start_isolated_daemon` /
+`stop_isolated_daemon` (assigned to the implementation phase) -- see that
+module's own docstring.
 """
 
 from __future__ import annotations
@@ -115,20 +138,91 @@ def test_advance_populates_gates_approved_uses_port_helper() -> None:
     _assert_uses_port_helper("test_advance_populates_gates_approved.py")
 
 
-def test_advance_phase_token_gate_keeps_documented_8765() -> None:
-    """Survivor / over-correction guard -- GREEN now AND after this cycle.
+# ---------------------------------------------------------------------------
+# Group D -- the production daemon port is a MECHANISM, not a literal
+# (retired 2026-09-09 survivor: test_advance_phase_token_gate_keeps_documented_8765
+# asserted the OPPOSITE of this cycle's fix and could not be left standing
+# alongside it)
+# ---------------------------------------------------------------------------
 
-    tests/test_advance_phase_token_gate.py deliberately targets the DEPLOYED
-    :8765 daemon (documented security-integration comment ~:27-30) and is NOT
-    in the 5.2 Files list. This guard fails loud if a future sweep
-    over-corrects it onto the _port() helper alongside the three real fixes.
+# `^[A-Z_]+ = "http://localhost:8765"` -- a module-level constant bound to the
+# production daemon's default port, the exact shape SERVER used to take in
+# test_advance_phase_token_gate.py before this cycle.
+_PORT_CONSTANT_RE = re.compile(r'^[A-Z_][A-Z0-9_]*\s*=\s*"http://localhost:8765"', re.M)
+
+
+def _all_test_modules() -> list[Path]:
+    """Every .py file under tests/ -- the DERIVED population this guard scans.
+
+    A hardcoded file list is exactly the blind spot this replaces: the
+    retired survivor guard named ONE file by hand and asserted the opposite
+    of this cycle's fix, so a population that has to be re-typed per new
+    test module is a population that silently stops covering the next one.
+    """
+    return sorted(TESTS_DIR.rglob("*.py"))
+
+
+def test_population_is_non_empty() -> None:
+    """The population the mechanism guard below scans must not be empty.
+
+    Reddened by a glob that matches nothing (a typo'd pattern, or pointing
+    at the wrong directory): a population of zero would make the guard below
+    pass vacuously on every file it never actually looked at.
+    """
+    modules = _all_test_modules()
+    assert len(modules) > 0, f"expected at least one .py file under {TESTS_DIR}"
+
+
+def test_no_module_binds_a_constant_to_the_production_daemon_port() -> None:
+    """No module under tests/ may hardcode `SOMENAME = "http://localhost:8765"`.
+
+    Reddened by adding such a constant to any test module, including a new
+    one this guard has never seen before: THE PORT WAS NEVER THE MECHANISM
+    that routed a request onto the operator's live daemon --
+    `bin/lib/writ_daemon_client.py`'s `post_json` prefers an EXISTING unix
+    socket over `base_url`, so a hardcoded `:8765` constant is not merely
+    unclean, it is the literal mechanism that let
+    `test_advance_phase_token_gate.py` write a security-shaped
+    `agent_self_approval_blocked` row into the operator's real
+    `audit.jsonl` on every run. This supersedes the retired
+    `test_advance_phase_token_gate_keeps_documented_8765`, which asserted
+    the opposite of this cycle's fix.
+    """
+    offenders = []
+    for path in _all_test_modules():
+        src = path.read_text()
+        if _PORT_CONSTANT_RE.search(src):
+            offenders.append(str(path.relative_to(TESTS_DIR)))
+    assert offenders == [], (
+        "these test modules bind a module-level constant to the production "
+        f"daemon port (http://localhost:8765): {offenders}. Route through "
+        "tests._daemon._port() (Group A modules), or, for "
+        "test_advance_phase_token_gate.py, an OS-assigned free port via "
+        "tests._daemon.start_isolated_daemon, instead of a literal."
+    )
+
+
+def test_advance_phase_token_gate_imports_the_isolated_daemon_helper() -> None:
+    """tests/test_advance_phase_token_gate.py must start and own its own
+    daemon (tests._daemon.start_isolated_daemon) rather than targeting the
+    deployed daemon directly.
+
+    Reddened by removing that import (e.g. reverting to
+    `SERVER = "http://localhost:8765"` plus a bare urllib POST) -- exactly
+    the regression the retired survivor guard used to protect against in the
+    opposite direction.
     """
     src = _read("test_advance_phase_token_gate.py")
-    assert "localhost:8765" in src, (
-        "test_advance_phase_token_gate.py must still hardcode "
-        "'localhost:8765' -- it is a documented security-integration test of "
-        "the deployed daemon and is intentionally excluded from the 5.2 "
-        "port-helper migration; this is an over-correction guard"
+    assert "from tests._daemon import" in src and "start_isolated_daemon" in src, (
+        "test_advance_phase_token_gate.py must import start_isolated_daemon "
+        "from tests._daemon so it starts and owns its own daemon instead of "
+        "targeting the operator's deployed :8765 singleton"
+    )
+    assert "localhost:8765" not in src, (
+        "test_advance_phase_token_gate.py must no longer hardcode "
+        "'localhost:8765'; the port must come from an OS-assigned free port "
+        "(tests.fixtures.net.free_port(), via "
+        "tests._daemon.start_isolated_daemon), not a literal"
     )
 
 
