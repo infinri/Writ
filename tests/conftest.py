@@ -117,6 +117,86 @@ def _isolate_friction_log(request, tmp_path, monkeypatch):
     yield
 
 
+@pytest.fixture(scope="session")
+def _daemon_leak_state() -> dict:
+    """The chain's first link: one process-table snapshot, taken before the first module
+    boundary the guard below reaches.
+
+    THIS IS WHY THE OPERATOR'S OWN DAEMON NEEDS NO EXCLUSION. It is already running when
+    this snapshot is taken, so it is in the baseline and can never be reported as a
+    survivor. That is structural, not a name in a list, and it holds for whatever else the
+    machine happens to be running too.
+    """
+    from tests._daemon_leak import live_snapshot
+
+    return {"snapshot": live_snapshot()}
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _daemon_leak_guard(_daemon_leak_state):
+    """Fail the module that leaves a live Writ daemon behind, whatever launched it.
+
+    WHY A RUNTIME CHAIN AND NOT A SOURCE DETECTOR (recorded in full in
+    docs/adr/ADR-daemon-leak-guard.md): the launcher of the daemon this cycle's diagnosis
+    found squatting port 19998 was never established, so a detector that recognizes known
+    launch sites would have missed the one process that motivated it. This asks the
+    process table instead, and the process table is the population.
+
+    ONE SNAPSHOT PER MODULE BOUNDARY, CHAINED: each boundary compares against the previous
+    boundary's snapshot and then becomes the next baseline, so a leak is attributed to the
+    module that caused it rather than to a chunk of two hundred, and the end of the last
+    module is the end of the session. Cost is one `ps` per module. The new snapshot is
+    stored BEFORE the failure is raised, so one leak is reported once, by its own module,
+    instead of once per module for the rest of the run.
+
+    The suite's own daemon is excluded by PORT, resolved live from WRIT_PORT the same way
+    tests/_daemon.py::_port() resolves it, because that daemon's lifecycle belongs to
+    pytest_sessionfinish rather than to any module. A survivor ON the suite port is
+    therefore out of this guard's reach by design; `curl localhost:$WRIT_PORT/health`
+    answers that one by hand.
+
+    An UNMEASURED snapshot fails instead of reading clean, and "unmeasured" includes a
+    snapshot that came back FULL but TRUNCATED (`live_snapshot` proves it can still see
+    this process's own whole command line). A guard that goes green because it could not
+    look is the failure mode this repo has already paid for, once in this cycle.
+    """
+    from tests._daemon_leak import (
+        UnmeasurableSnapshot,
+        confirm_survivors,
+        find_survivors,
+        format_report,
+        health_of,
+        live_snapshot,
+        suite_port,
+    )
+
+    yield
+    baseline = _daemon_leak_state["snapshot"]
+    current = live_snapshot()
+    _daemon_leak_state["snapshot"] = current
+    try:
+        survivors = find_survivors(baseline, current, suite_port=suite_port())
+    except UnmeasurableSnapshot as refusal:
+        pytest.fail(f"daemon leak guard: {refusal}", pytrace=False)
+    # A dying process is not a leak, and this boundary snapshot is taken the instant the
+    # module's own teardown returns. MEASURED: a correctly stopped daemon is still listed
+    # for 0.05 to 0.10 seconds after its /health goes silent, and during a 2056-test run
+    # this guard reported one such process. The re-check asks the same question again
+    # rather than exempting anything, and only costs time on a hit.
+    survivors = confirm_survivors(survivors)
+    if survivors:
+        reports = "\n".join(
+            format_report(survivor, health_of(survivor["port"])) for survivor in survivors
+        )
+        pytest.fail(
+            f"daemon leak guard: {len(survivors)} Writ daemon(s) started during this "
+            f"module are still running at its end. They are NOT signalled from here: a "
+            f"process the suite did not prove it started is the operator's to stop.\n"
+            f"{reports}",
+            pytrace=False,
+        )
+
+
 def pytest_sessionfinish(session, exitstatus):
     """Re-migrate rules after test suite completes so CLI queries work
     immediately.

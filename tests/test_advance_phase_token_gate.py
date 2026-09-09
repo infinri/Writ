@@ -144,6 +144,15 @@ def own_daemon(_production_audit_guard, tmp_path_factory):
     AF_UNIX byte cap, or the socket file never appears. Reddened (as a hang or
     an unguarded failure instead of a skip) by pointing the fixture at a port
     nothing serves.
+
+    Teardown asserts the STOP VERDICT rather than discarding it: this is the
+    loud channel D2 needs, per plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3.
+    A `stop_isolated_daemon` that still returns None (today's behaviour) makes
+    this teardown fail with a TypeError on `None["stopped"]`, which is a
+    correct red for the stated reason (no verdict yet), not a silent pass; a
+    `stop_isolated_daemon` that returns a verdict but with `stopped: False`
+    must fail this same assertion by name, with the port and surviving pids
+    in the message, rather than let the module finish looking clean.
     """
     tmp_dir = tmp_path_factory.mktemp("advance-phase-token-gate")
     log_root = tmp_dir / "logs"
@@ -161,7 +170,12 @@ def own_daemon(_production_audit_guard, tmp_path_factory):
         )
     daemon["log_root"] = str(log_root)
     yield daemon
-    stop_isolated_daemon(daemon)
+    verdict = stop_isolated_daemon(daemon)
+    assert verdict["stopped"], (
+        f"own_daemon teardown could not stop the isolated daemon on port "
+        f"{verdict.get('port')}: surviving pids {verdict.get('pids')}, "
+        f"health {verdict.get('health')!r}"
+    )
 
 
 def _post_advance(daemon: dict, session_id: str, body: dict) -> dict:

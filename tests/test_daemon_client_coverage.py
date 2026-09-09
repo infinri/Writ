@@ -352,6 +352,12 @@ class TestFallbacksSurvive:
             "WRIT_DIR": str(REPO),
             "WRIT_SOCKET": str(tmp_path / "absent.sock"),
             "WRIT_PORT": "19998",  # nothing listening
+            # STATED, not inherited. conftest sets this for the whole session, but the
+            # no-daemon fallback is this test's SUBJECT, and an auto-started daemon on
+            # 19998 is the one thing that stops it being measured. A monkeypatch.delenv,
+            # an env-scrubbing parent, or a run of this module outside that conftest's
+            # rootdir would all remove the session default.
+            "WRIT_NO_AUTOSTART": "1",
         }
         result = subprocess.run(
             ["bash", str(HOOKS / hook)],
@@ -377,6 +383,9 @@ class TestFallbacksSurvive:
             "WRIT_DIR": str(REPO),
             "WRIT_SOCKET": str(stale),
             "WRIT_PORT": "19998",
+            # Same reason as the sibling test above: the stale-socket fallback cannot be
+            # measured against a daemon this hook was allowed to start on 19998.
+            "WRIT_NO_AUTOSTART": "1",
         }
         result = subprocess.run(
             ["bash", str(HOOKS / "writ-memory-capture.sh")],
@@ -387,6 +396,65 @@ class TestFallbacksSurvive:
             f"a stale socket made the hook exit {result.returncode}: "
             f"{result.stderr[:200]}"
         )
+
+
+# --------------------------------------------------------------------------- #
+# plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3, capability 2: the guard is a
+# BEHAVIORAL property, not merely an exit code
+# --------------------------------------------------------------------------- #
+
+class TestNoAutostartLeavesThePortClosed:
+    """D1's guard (`WRIT_NO_AUTOSTART`, `writ-rag-inject.sh:48`) must actually stop a
+    daemon from being spawned, not merely let the hook exit 0 while one comes up in
+    the background. `TestFallbacksSurvive` above only ever checked the exit code;
+    this is the check the diagnosis found missing, and the exact gap D1 exploited:
+    the 19998 daemon that squatted `DEAD_PORT` for 3h21m came up with the hook
+    reporting a clean exit the whole time.
+    """
+
+    def test_the_hook_does_not_open_the_port_it_was_pointed_at(self, tmp_path) -> None:
+        """An OS-assigned port, not a literal: reusing a fixed literal (19998, the
+        port this cycle's diagnosis found squatted) would risk this test passing
+        only because nothing else happened to be racing for that one number.
+
+        Reddened by removing or breaking the
+        `[ -z "${WRIT_NO_AUTOSTART:-}" ]` check at `writ-rag-inject.sh:48`: with the
+        guard stated EXPLICITLY in the env dict below (not inherited from
+        conftest's session-wide default), the hook would then reach the auto-start
+        branch and open a real listener on the port under test.
+        """
+        import socket
+
+        from tests.fixtures.net import free_port
+
+        port = free_port()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.5)
+            assert probe.connect_ex(("localhost", port)) != 0, (
+                f"port {port} was not closed before the hook ran"
+            )
+        env = {
+            **os.environ,
+            "WRIT_DIR": str(REPO),
+            "WRIT_HOST": "localhost",
+            "WRIT_PORT": str(port),
+            "WRIT_SOCKET": str(tmp_path / "absent.sock"),
+            "WRIT_NO_AUTOSTART": "1",
+        }
+        result = subprocess.run(
+            ["bash", str(HOOKS / "writ-rag-inject.sh")],
+            input='{"session_id": "leak-probe", "prompt": "does this hook leak a daemon"}',
+            cwd=str(REPO), env=env, capture_output=True, text=True, timeout=90,
+        )
+        assert result.returncode == 0, (
+            f"writ-rag-inject.sh exited {result.returncode}: {result.stderr[:200]}"
+        )
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.5)
+            assert probe.connect_ex(("localhost", port)) != 0, (
+                f"port {port} now has a listener: writ-rag-inject.sh auto-started a "
+                f"daemon on it despite WRIT_NO_AUTOSTART being set"
+            )
 
 
 # --------------------------------------------------------------------------- #

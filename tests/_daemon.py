@@ -15,6 +15,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+from tests._daemon_leak import _serve_pattern, live_snapshot
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -203,12 +205,55 @@ def _kill_writ_serve_on_port(port: int, force: bool = False) -> None:
     deliberately not stop-server.sh: that script locates the process with lsof
     (not always installed) and, on the default port, stops the operator's
     systemd unit instead of a process.
+
+    THE PATTERN IS `_serve_pattern`, ONE SPELLING-INDEPENDENT SUBSTRING, and it
+    is shared with the pid lookup below so a stop and its verification can
+    never disagree about what a daemon is. The former literal
+    `writ serve --port {port}` matched exactly ONE of the three launch
+    spellings `scripts/lib/writ-server-lib.sh:93-99` can produce: the
+    `<venv>/bin/writ` console script. It could not match
+    `<python> -m writ.cli serve --port N`, which is what bare `writ` resolves
+    to through a PATH shim, because the words "writ serve" never appear
+    together in it. That is defect D2: a stop that missed reported success.
     """
-    args = ["pkill", *(["-9"] if force else []), "-f", f"writ serve --port {port}"]
+    args = ["pkill", *(["-9"] if force else []), "-f", _serve_pattern(port)]
     try:
         subprocess.run(args, capture_output=True, check=False, timeout=10)
     except (subprocess.SubprocessError, OSError):
         pass
+
+
+def _pids_serving_port(port: int) -> tuple[bool, list[int]]:
+    """(measured, pids) for the processes whose command line names `port`.
+
+    `writ_ensure_server` backgrounds the daemon under `nohup` inside a flock
+    subshell (`scripts/lib/writ-server-lib.sh:104-105`) and does not hand the
+    pid back, so the process table is the only place a caller can learn it
+    without changing that launcher. This helper never raises, because all three
+    of its callers are start or teardown paths that must complete.
+
+    IT RETURNS A PAIR RATHER THAN A LIST, and that is the whole point of the
+    signature. `live_snapshot` performs the truncation self-check, and an
+    earlier revision of this function then ignored the result and searched
+    whatever came back, so an uncertifiable table answered "no pid for that
+    port": the read-green-because-it-could-not-look failure mode reappearing one
+    level BELOW the guard written to prevent it. An empty list and "I could not
+    see" are different facts and now have different values, so each caller has
+    to say which one it is acting on:
+
+      * `start_isolated_daemon` records `pids_measured` beside the pids, so a
+        payload cannot claim an identity it never read.
+      * `stop_isolated_daemon` carries the same flag into its verdict, so
+        `survivors: []` cannot be mistaken for "nothing survived".
+      * `_wait_for_isolated_down` requires `measured` before it will call a
+        process absent, because an unmeasured table would otherwise let a LIVE
+        daemon be certified `stopped: True`.
+    """
+    pattern = _serve_pattern(port)
+    snapshot = live_snapshot()
+    return bool(snapshot["measured"]), sorted(
+        pid for pid, cmdline in snapshot["processes"].items() if pattern in cmdline
+    )
 
 
 def _wait_for_isolated_health(port: int, attempts: int = 40) -> dict | None:
@@ -240,11 +285,34 @@ def _wait_for_socket_file(socket_path: str, attempts: int = 20) -> bool:
 
 
 def _wait_for_isolated_down(port: int, attempts: int = 20) -> bool:
-    """True once nothing answers the health route on `port`, so "stopped" can be
-    a VERIFIED state rather than a signal that was sent."""
+    """True once nothing answers the health route on `port` AND no process naming
+    that port is left in the table, so "stopped" can be a VERIFIED state rather
+    than a signal that was sent.
+
+    BOTH CONDITIONS, and the second was added on measurement rather than for
+    symmetry. After the term, the daemon stops answering /health at about 0.10
+    to 0.16s while its process leaves the process table 0.05 to 0.10s LATER
+    (three runs, idle machine). /health silence alone therefore returns while a
+    dying process is still listed, and the module-boundary leak guard reads the
+    table: during a 2056-test run it reported exactly that process as a
+    survivor on a teardown that was working correctly. Waiting for the reap
+    makes this verdict agree with what the guard can see, and costs at most one
+    extra 0.25s poll on the normal path.
+
+    AN UNMEASURED TABLE IS NOT AN ABSENT PROCESS. `measured` is required before
+    an empty pid list counts as "gone", so a `ps` that cannot be certified
+    leaves this returning False, the caller escalates to SIGKILL and then
+    reports `stopped: False`. Reading blindness as absence here would certify a
+    LIVE daemon as stopped, which is the one answer this function exists to
+    refuse to give.
+    """
     for _ in range(attempts):
+        # Health first, so the process table is only read once the daemon has
+        # already gone quiet rather than on every poll of a daemon still up.
         if _isolated_health(port, timeout=0.5) is None:
-            return True
+            measured, pids = _pids_serving_port(port)
+            if measured and not pids:
+                return True
         time.sleep(0.25)
     return False
 
@@ -263,10 +331,13 @@ def start_isolated_daemon(
     up -- ensure-server.sh missing, the socket path over the AF_UNIX byte cap,
     nothing answering /health, or the socket file never appearing -- so the
     caller can skip with a stated reason. Otherwise returns
-    {"port", "base_url", "socket_path", "cache_dir", "log_root", "health"},
-    where "health" is that daemon's OWN /health payload: the caller verifies
-    the log destination the SERVER process resolved rather than assuming the
-    env plumbing took effect.
+    {"port", "base_url", "socket_path", "cache_dir", "log_root", "health",
+    "pids"}, where "health" is that daemon's OWN /health payload (the caller
+    verifies the log destination the SERVER process resolved rather than
+    assuming the env plumbing took effect) and "pids" is the process-table
+    identity of the daemon on that port, read after the health and socket
+    checks pass, so the teardown can verify what it signalled instead of
+    trusting that a signal arrived.
 
     THE ENV DICT IS BUILT EXPLICITLY, and each part of it closes a measured trap:
 
@@ -345,6 +416,7 @@ def start_isolated_daemon(
         _kill_writ_serve_on_port(port)
         return None
 
+    pids_measured, pids = _pids_serving_port(port)
     return {
         "port": port,
         "base_url": f"http://localhost:{port}",
@@ -352,30 +424,79 @@ def start_isolated_daemon(
         "cache_dir": cache_dir,
         "log_root": log_root,
         "health": health,
+        # Read from the process table AFTER the health and socket checks pass,
+        # so a pid is only reported for a daemon that actually came up, and the
+        # teardown has an identity to verify against rather than a signal it
+        # sent into the dark. `pids_measured` travels with it because an empty
+        # list from an uncertifiable table would otherwise read as "this daemon
+        # has no process".
+        "pids": pids,
+        "pids_measured": pids_measured,
     }
 
 
-def stop_isolated_daemon(daemon: dict | None) -> None:
-    """Stop the daemon start_isolated_daemon returned, by its exact port.
+def stop_isolated_daemon(daemon: dict | None) -> dict:
+    """Stop the daemon start_isolated_daemon returned, by its exact port, and
+    return the VERDICT: {"port", "pids", "stopped", "survivors", "health",
+    "pids_measured"}.
 
     Escalates to SIGKILL only if the daemon still answers /health after the
     term, so "stopped" is a verified state and not a signal that was sent.
     Removes the throwaway socket file too: a socket outliving its listener is
     exactly the stale-but-present file `writ serve` unlinks and takes over.
-    No-op on None (the caller skipped) or on a payload with no port.
+    A no-daemon verdict on None (the caller skipped) or on a payload with no
+    port: `stopped: True` because nothing is running to stop, and `port: None`,
+    which is the field that tells a verified teardown apart from a call that
+    had nothing to tear down.
+
+    IT RETURNS A VERDICT AND NEVER RAISES, and the reason is the socket unlink
+    two paragraphs up. Raising mid-teardown would skip that unlink and convert
+    one defect (a daemon that would not stop) into two (a daemon that would not
+    stop, plus a stale socket the next `writ serve` takes over). So the
+    teardown completes on every path, including `stopped: False`, and the
+    owning fixture asserts the verdict afterwards:
+    `tests/test_advance_phase_token_gate.py::own_daemon` is the only live
+    caller and does exactly that. Before this cycle the second
+    `_wait_for_isolated_down` result was DISCARDED, so a stop that missed
+    reported nothing at all.
+
+    `pids_measured: False` says the process table could not be certified while
+    this teardown ran, which is what keeps `survivors: []` from reading as
+    "nothing survived". It travels WITH the verdict rather than being raised,
+    for the same reason nothing else here raises, and it cannot accompany
+    `stopped: True`: an uncertifiable table never satisfies
+    `_wait_for_isolated_down`.
     """
+    verdict: dict = {
+        "port": None, "pids": [], "stopped": True, "survivors": [], "health": None,
+        "pids_measured": True,
+    }
     if not daemon:
-        return
+        return verdict
     port = daemon.get("port")
     if port is None:
-        return
+        return verdict
+    verdict["port"] = port
+    # `pids_measured` describes THIS teardown's reads, not the payload's: it is the AND
+    # over every table read below, so one blind read makes the whole verdict say so.
+    measured, pids = _pids_serving_port(port)
+    verdict["pids_measured"] = measured
+    verdict["pids"] = list(daemon.get("pids") or pids)
     _kill_writ_serve_on_port(port)
-    if not _wait_for_isolated_down(port):
+    stopped = _wait_for_isolated_down(port)
+    if not stopped:
         _kill_writ_serve_on_port(port, force=True)
-        _wait_for_isolated_down(port)
+        stopped = _wait_for_isolated_down(port)
+    verdict["stopped"] = stopped
+    if not stopped:
+        verdict["health"] = _isolated_health(port, timeout=0.5)
+        survivors_measured, survivors = _pids_serving_port(port)
+        verdict["pids_measured"] = verdict["pids_measured"] and survivors_measured
+        verdict["survivors"] = survivors
     socket_path = daemon.get("socket_path")
     if socket_path:
         try:
             os.unlink(socket_path)
         except OSError:
             pass
+    return verdict

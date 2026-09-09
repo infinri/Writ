@@ -1121,3 +1121,135 @@ def nested_program_splice_sites(*, scripts_dir: Path = HOOK_SCRIPTS_DIR) -> dict
                 continue
             i += 1
     return sites
+
+
+# ── Daemon-starting hooks (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3) ──
+#
+# The production side of the daemon-leak cycle. A hook that can reach a daemon launch and
+# does not consult `WRIT_NO_AUTOSTART` will spawn a real daemon on whatever WRIT_PORT it
+# was handed, which is how a throwaway port ends up squatted by a live daemon for hours.
+#
+# TWO LAUNCH SHAPES, and they are mechanisms rather than names: the shared flock-guarded
+# entry point `writ_ensure_server` (`scripts/lib/writ-server-lib.sh`), and a bare
+# `nohup ... serve`, which is what that entry point does internally and what a hook would
+# have to write for itself to bypass it.
+#
+# THE SCOPE BOUNDARY `hooks/scripts/` IS STRUCTURAL, NOT AN EXEMPTION LIST. Those are the
+# scripts Claude Code invokes automatically on events, so a launch there fires without
+# anybody asking for it; `scripts/bootstrap.sh` and `scripts/ensure-server.sh` exist
+# BECAUSE an operator asked for a daemon, and guarding them would break their only job.
+#
+# ENUMERATED BY HAND FIRST, then derived, the discipline `can_write_surface_modules`
+# states: the population today is `writ-rag-inject.sh` (guarded, the check on line 48)
+# and `session-start-bootstrap.sh` (its `writ_ensure_server` on line 107 was the unguarded
+# one this cycle closed). `writ-worktree-safety.sh` and `writ-bash-write-gate.sh` both
+# name `nohup` in a wrapper-prefix table and neither can launch anything, which is why the
+# `nohup` alternative requires a `serve` token on the same command.
+_DSH_LAUNCH_PATTERNS = (
+    re.compile(r"\bwrit_ensure_server\b"),
+    re.compile(r"\bnohup\b.*\bserve\b"),
+)
+_DSH_GUARD = re.compile(r"\bWRIT_NO_AUTOSTART\b")
+_DSH_IF = re.compile(r"^\s*if\b")
+_DSH_ELIF = re.compile(r"^\s*elif\b")
+_DSH_ELSE = re.compile(r"^\s*else\b")
+_DSH_FI = re.compile(r"^\s*fi\b")
+
+
+def _dsh_launch_match(block: str) -> re.Match[str] | None:
+    for pattern in _DSH_LAUNCH_PATTERNS:
+        match = pattern.search(block)
+        if match:
+            return match
+    return None
+
+
+def _dsh_guard_verdict(source: str) -> bool | None:
+    """None when this script cannot reach a daemon launch; otherwise whether EVERY launch
+    it can reach is conditioned on `WRIT_NO_AUTOSTART`.
+
+    THE GUARD IS READ AS A MECHANISM, NOT AS A MENTION OF THE NAME. A launch counts as
+    guarded when an OPEN `if`/`elif` condition around it tests the variable, or when the
+    variable is tested earlier in the launch's own command list (the one-line
+    `[ -z "${WRIT_NO_AUTOSTART:-}" ] && writ_ensure_server` shape). Naming the variable in
+    a comment cannot satisfy it: whole-line comments are blanked by `_blanked_lines`, and a
+    trailing comment sits AFTER the launch token, where this predicate does not look. An
+    `else` branch clears the condition it belongs to rather than inheriting it, because a
+    launch reached only when the guard IS set is the opposite of guarded.
+
+    Command spans come from `_emission_end`, so a launch on the third line of a
+    backslash-continued command (`writ-rag-inject.sh` writes it that way) is found, and
+    the `if` bookkeeping is not thrown off by shell keywords appearing inside a heredoc
+    body or a `python3 -c "..."` block.
+
+    KNOWN OVER-REPORTING, MEASURED rather than reasoned, and stated in the direction it
+    really fails. A launch token inside a heredoc BODY is matched, not skipped:
+    `_emission_end` folds the body into the same block as the command that opens it and
+    this scan searches the whole block, so an inert `nohup something serve --port 1 &`
+    sitting in a python string inside `<<'PY'` is classified as a real launch and, having
+    no conditional around it, reads as UNGUARDED. Measured against a synthetic script:
+    `{'probe-heredoc.sh': False}`, and the same for a `writ_ensure_server` token in the
+    same position. An earlier revision of this paragraph claimed the opposite ("not seen
+    at all"), which was wrong in the more dangerous direction: it promised a MISS where
+    the code produces a FALSE POSITIVE.
+
+    The real population is unaffected today, because both of its entries carry a genuine
+    launch and both read True, so this is a false-positive surface for a FUTURE hook
+    rather than a live miscount.
+    `tests/test_daemon_leak_guard.py::TestDaemonStartingHooksReadsIntoHeredocBodies` pins
+    the behaviour so the next person to add an interpreter heredoc meets a documented
+    property instead of a mystery red. Teaching the walk to genuinely skip a quoted
+    heredoc body is a change to the block scan itself, which this cycle's plan does not
+    cover.
+    """
+    lines = _blanked_lines(source)
+    conditions: list[str] = []
+    verdicts: list[bool] = []
+    index = 0
+    while index < len(lines):
+        end = _emission_end(lines, index)
+        block = "\n".join(lines[index:end + 1])
+        opening = lines[index]
+        match = _dsh_launch_match(block)
+        if match:
+            verdicts.append(
+                bool(_DSH_GUARD.search(block[:match.start()]))
+                or any(_DSH_GUARD.search(condition) for condition in conditions)
+            )
+        if _DSH_IF.match(opening):
+            conditions.append(block)
+        elif conditions and _DSH_ELIF.match(opening):
+            conditions[-1] = block
+        elif conditions and _DSH_ELSE.match(opening):
+            conditions[-1] = ""
+        elif conditions and _DSH_FI.match(opening):
+            conditions.pop()
+        index = end + 1
+    if not verdicts:
+        return None
+    return all(verdicts)
+
+
+def daemon_starting_hooks(*, scripts_dir: Path = HOOK_SCRIPTS_DIR) -> dict[str, bool]:
+    """Every hook script that can reach a daemon launch, mapped to whether that launch
+    consults `WRIT_NO_AUTOSTART`.
+
+    A MAP, NOT A BOOLEAN OVER THE TREE, and that is the load-bearing choice. A hook that
+    DECAYS (keeps its launch, loses its guard) stays in the population with a False value
+    and fails the completeness assertion by name, where a whole-tree AND would report the
+    same red for any cause and a filtered list of "the unguarded ones" would let a hook
+    drop out of the population silently by losing its launch instead of gaining a guard.
+
+    `scripts_dir` is a keyword for the reason `envelope_emitting_scripts(*, scripts_dir=)`
+    gives: the derivation's precision is pinned against synthetic fixtures under
+    `tmp_path` in `tests/test_daemon_leak_guard.py`, never against the real tree's current
+    wording alone. That module also asserts this map NON-EMPTY against the real
+    `hooks/scripts/`, because a derivation that silently returned `{}` would make the
+    completeness assertion beside it pass on any tree.
+    """
+    out: dict[str, bool] = {}
+    for path in sorted(Path(scripts_dir).glob("*.sh")):
+        verdict = _dsh_guard_verdict(path.read_text(encoding="utf-8", errors="replace"))
+        if verdict is not None:
+            out[path.name] = verdict
+    return out

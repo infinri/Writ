@@ -478,12 +478,6 @@ from tests._strace import trace_execve_result  # noqa: E402
 
 DISPATCH_HOOK = "writ-pre-write-dispatch.sh"
 
-# A port nothing listens on, CHOSEN rather than inherited. conftest pins WRIT_PORT at
-# the suite's own daemon port and several modules start a real daemon there, so
-# inheriting it would let this branch measure a LIVE daemon during a full-suite run and
-# read green while measuring the wrong branch. Asserted closed before the measurement.
-DEAD_PORT = "19998"
-
 # Canned response bodies. Literals, so two runs of the same branch see the same input.
 # Shapes taken from the real routes: writ/server/routes/gate.py's /pre-write-check
 # returns decision/reason/rag_rules/rag_meta/mode (+max_denial_count on a refusal), and
@@ -600,6 +594,35 @@ def _port_is_closed(port: str) -> bool:
         return sock.connect_ex((STUB_HOST, int(port))) != 0
 
 
+def _dead_port() -> str:
+    """A port nothing listens on, ASSIGNED BY THE OS AND CHECKED, never a literal.
+
+    Two separate defects made the `DEAD_PORT = "19998"` constant this replaces wrong, and
+    only the first was known when it was written. Inheriting conftest's WRIT_PORT would
+    measure the suite's OWN live daemon, which is why the constant existed. But a FIXED
+    literal is a rendezvous point across modules and across runs, and that is what
+    actually failed: a leaked daemon squatted 19998 for 3h21m, so the daemon-down branch
+    measured a LIVE daemon and the deny-reply comparison reported a plausible wrong
+    answer with no failing precondition anywhere.
+
+    THE CHECK LIVES HERE, ONE COPY, so every port in this module arrives with its
+    precondition instead of arriving with a comment reminding the next test to copy an
+    assertion. Refuses loudly, naming the port, rather than handing back a port something
+    answers on: this helper's whole job is that the daemon-down branch is really down.
+    """
+    from tests.fixtures.net import free_port
+
+    port = str(free_port())
+    if not _port_is_closed(port):
+        raise RuntimeError(
+            f"the OS handed out port {port} and something is already listening on it, so "
+            f"this measurement would report the daemon-down branch while measuring a LIVE "
+            f"daemon. Find the listener (`ss -ltnp | grep {port}`) and stop it, then re-run; "
+            f"a Writ daemon on a throwaway port is a leak, not a fixture."
+        )
+    return port
+
+
 def _run_dispatch(env: dict, *, argv0: str | None = None, cwd: str | None = None):
     """Trace one run of the dispatch hook; return (CompletedProcess, trace text)."""
     return trace_execve_result(
@@ -701,15 +724,60 @@ def _proof_live_deny(proc, stub) -> None:
     )
 
 
+class TestDeadPortAntiVacuity:
+    """Capability 18 (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3): `_dead_port()`
+    must actually check the port it hands back, or it passes every other test in this
+    module (including the sibling budget tests below and
+    `test_the_daemon_down_deny_reply_matches_the_pre_change_capture`) while measuring a
+    LIVE daemon and calling it the daemon-down branch.
+
+    CORRECTLY RED as of the testing phase: `_dead_port` does not exist yet in this
+    module (the `DEAD_PORT = "19998"` literal at the top of this file is what it
+    replaces), so this test fails with a NameError, not a failed assertion.
+    """
+
+    def test_dead_port_refuses_a_port_that_has_a_listener(self, monkeypatch) -> None:
+        """Reddened by a `_dead_port()` that returns `tests.fixtures.net.free_port()`'s
+        result unchecked, without probing it: binds a real listener on an OS-assigned
+        port, makes the port source return exactly that port, and asserts `_dead_port()`
+        refuses rather than handing back a port something is listening on.
+
+        The port source is patched in TWO places on purpose, because this module does
+        not yet import `free_port` anywhere and the implementation has not been
+        written: `tests.fixtures.net.free_port` covers a `_dead_port()` that resolves
+        the name locally at call time (this repo's own convention, e.g.
+        `tests/_daemon.py:309`), and this module's own `free_port` attribute (patched
+        only if present) covers a `_dead_port()` that imports it at module load time
+        instead.
+        """
+        import socket
+        import sys
+
+        from tests.fixtures import net as _net
+
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind((STUB_HOST, 0))
+        listener.listen(1)
+        bound_port = listener.getsockname()[1]
+        try:
+            monkeypatch.setattr(_net, "free_port", lambda: bound_port)
+            this_module = sys.modules[__name__]
+            if hasattr(this_module, "free_port"):
+                monkeypatch.setattr(this_module, "free_port", lambda: bound_port)
+            with pytest.raises(Exception) as excinfo:
+                _dead_port()
+            assert str(bound_port) in str(excinfo.value), (
+                f"expected the refusal to name the port {bound_port}: {excinfo.value}"
+            )
+        finally:
+            listener.close()
+
+
 class TestDispatchBranchBudgets:
     """Four named branches, four constants, four positive proofs."""
 
     def test_daemon_down_deny_within_branch_budget(self) -> None:
-        assert _port_is_closed(DEAD_PORT), (
-            f"something is listening on {DEAD_PORT}, so this would measure a LIVE "
-            f"daemon while claiming to measure the daemon-down branch"
-        )
-        proc, text = _run_dispatch(_branch_env(DEAD_PORT))
+        proc, text = _run_dispatch(_branch_env(_dead_port()))
         _proof_daemon_down_deny(proc)
         attempts = _attempts(text)
         budget = BRANCH_ATTEMPT_BUDGETS["daemon_down_deny"]
@@ -871,7 +939,7 @@ class TestDecisionOutputUnchangedByTheSpawnRemovals:
     }
 
     def test_the_daemon_down_deny_reply_matches_the_pre_change_capture(self) -> None:
-        proc, _text = _run_dispatch(_branch_env(DEAD_PORT))
+        proc, _text = _run_dispatch(_branch_env(_dead_port()))
         assert _reply(proc) == self.PRE_CHANGE_DENY_REPLY, (
             "the deny reply changed across the spawn removals.\n"
             f"got:      {_reply(proc)!r}\n"
@@ -998,7 +1066,7 @@ class TestSkillDirResolvedWithoutDirname:
         which is a claim about this hook, rather than on the absence of the name,
         which would be a claim about a file this cycle did not touch.
         """
-        _proc, text = _run_dispatch(_branch_env(DEAD_PORT))
+        _proc, text = _run_dispatch(_branch_env(_dead_port()))
         dirnames = [ln for ln in text.splitlines() if re.search(r'execve\("[^"]*/dirname"', ln)]
         assert len(dirnames) == 1, (
             f"expected exactly one dirname (bin/lib/common.sh:10) and found "
@@ -1037,7 +1105,7 @@ class TestBufferAppendKeepsTheRow:
         env = _isolated_env()
         env["WRIT_CACHE_DIR"] = str(cache)
         env["WRIT_LOG_ROOT"] = str(tmp_path / "logs")
-        env["WRIT_PORT"] = DEAD_PORT
+        env["WRIT_PORT"] = _dead_port()
         lines = trace_execve(["bash", str(script)], timeout=180, env=env).splitlines()
         return lines, cache / f"writ-events-{self.SESSION}.buf"
 
@@ -1094,7 +1162,7 @@ class TestBufferAppendKeepsTheRow:
         env = _isolated_env()
         env["WRIT_CACHE_DIR"] = str(cache)
         env["WRIT_LOG_ROOT"] = str(tmp_path / "logs")
-        env["WRIT_PORT"] = DEAD_PORT
+        env["WRIT_PORT"] = _dead_port()
         lines = trace_execve(["bash", str(script)], timeout=180, env=env).splitlines()
         offenders = [ln for ln in lines if "/mkdir" in ln]
         assert offenders == [], f"mkdir spawned for an existing directory: {offenders}"
