@@ -21,23 +21,14 @@ directly. The non-work and all-approved no-op cases are reframed at the level
 where the no-advance decision actually lives: _next_pending_gate returning None
 is the signal both callers use to skip apply_phase_advance entirely.
 
-TestAdvancePopulatesGatesApproved is an end-to-end check against the live daemon
-(skips if unreachable; needs a restart to pick up the server.py change) proving
-_advance actually calls apply_phase_advance and persists gates_approved.
+The end-to-end check against the live daemon (TestAdvancePopulatesGatesApproved)
+was retired 2026-09-09 because it skipped unconditionally on a server-reachability
+probe and so never asserted anything; its property is covered in process by
+tests/test_phase_advance_unified.py::TestCrossPathParity, which drives the real
+route and asserts gates_approved == ["phase-a", "test-skeletons"].
 """
 
 from __future__ import annotations
-
-import json
-import os
-import tempfile
-import urllib.error
-import urllib.request
-import uuid
-
-import pytest
-
-from tests._daemon import _port
 
 
 # ---------------------------------------------------------------------------
@@ -116,81 +107,3 @@ class TestRecordApprovedGate:
         }
         assert _next_pending_gate(cache) is None
         assert cache["gates_approved"] == ["phase-a", "test-skeletons"]
-
-
-# ---------------------------------------------------------------------------
-# Integration: the live /advance-phase route persists gates_approved
-# ---------------------------------------------------------------------------
-
-SERVER = f"http://localhost:{_port()}"
-
-
-def _server_up() -> bool:
-    try:
-        with urllib.request.urlopen(f"{SERVER}/health", timeout=2):
-            return True
-    except (urllib.error.URLError, OSError):
-        return False
-
-
-def _cache_path(session_id: str) -> str:
-    return os.path.join(tempfile.gettempdir(), f"writ-session-{session_id}.json")
-
-
-def _token_path(session_id: str) -> str:
-    return os.path.join(tempfile.gettempdir(), f"writ-gate-token-{session_id}")
-
-
-def _post_advance(session_id: str, body: dict) -> dict:
-    req = urllib.request.Request(
-        f"{SERVER}/session/{session_id}/advance-phase",
-        data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=5) as resp:
-        return json.loads(resp.read())
-
-
-class TestAdvancePopulatesGatesApproved:
-    def test_advance_from_testing_records_test_skeletons_gate(self):
-        if not _server_up():
-            pytest.skip("Writ server unreachable")
-        sid = f"gatesync-{uuid.uuid4().hex[:8]}"
-        token = uuid.uuid4().hex
-        # A realistic work session at the testing gate: planning already approved.
-        with open(_cache_path(sid), "w") as f:
-            json.dump(
-                {"mode": "work", "current_phase": "testing", "gates_approved": ["phase-a"]},
-                f,
-            )
-        # A BOUND token: line 1 the secret, line 2 the gate it authorizes, line 3 the plan
-        # fingerprint. The route claims through claim_gate_token with no unbound fallback,
-        # so a bare one-line secret is refused before any gate logic runs. The two binding
-        # lines are written literally rather than derived from this process's cache,
-        # because the DAEMON recomputes them from ITS cache read: the gate is the one the
-        # seed above leaves pending, and the fingerprint is empty because the seeded cache
-        # carries no project_root for plan_md_hash to hash.
-        with open(_token_path(sid), "w") as f:
-            f.write(f"{token}\ntest-skeletons\n\n")
-        try:
-            result = _post_advance(sid, {"confirmation_source": "tool", "token": token})
-            # The advance itself must have happened (rules out a trivial pass via refusal).
-            assert result.get("phase") == "implementation", (
-                f"advance must reach implementation; got {result}"
-            )
-            with open(_cache_path(sid)) as f:
-                cache = json.load(f)
-            assert cache.get("current_phase") == "implementation", cache
-            assert "test-skeletons" in cache.get("gates_approved", []), (
-                "advancing the live path from testing must record the test-skeletons "
-                f"gate in gates_approved; got {cache.get('gates_approved')!r}"
-            )
-            # The prior approval must be preserved, not clobbered.
-            assert "phase-a" in cache.get("gates_approved", []), cache
-        finally:
-            for p in (_cache_path(sid), _token_path(sid)):
-                try:
-                    os.remove(p)
-                except OSError:
-                    pass

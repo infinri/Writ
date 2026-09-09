@@ -51,10 +51,15 @@ daemon or Neo4j, and does NOT read the operator's real
 reference that path).
 
 RED today (2026-07-16, pre-implementation):
-- test_phase_advance_unified.py, test_phase6_promote_route_token.py,
-  test_advance_populates_gates_approved.py each still hardcode
-  `localhost:8765` and contain no `_port` reference -> both asserts in
-  `_assert_uses_port_helper` fail.
+- test_phase_advance_unified.py still hardcodes `localhost:8765` and contains
+  no `_port` reference -> both asserts in `_assert_uses_port_helper` fail.
+  (The two sibling per-file guards named here originally, over
+  test_phase6_promote_route_token.py and test_advance_populates_gates_approved.py,
+  were removed 2026-09-09: the first module was deleted outright and the second
+  lost its HTTP client, so `_read`'s existence assert and the `_port` assert had
+  no subject left. Their real property, "no module binds a constant to the
+  production daemon port", is carried for every module by the Group D mechanism
+  guard below over a derived population.)
 - test_validate_rules.py still contains `/tmp/` literals and no `tmp_path`
   reference -> both asserts fail.
 - test_pol5a_statusline.py and test_pol5c_removal.py contain no
@@ -126,16 +131,6 @@ def _assert_uses_port_helper(filename: str) -> None:
 def test_phase_advance_unified_uses_port_helper() -> None:
     """tests/test_phase_advance_unified.py's SERVER must resolve via _port()."""
     _assert_uses_port_helper("test_phase_advance_unified.py")
-
-
-def test_phase6_promote_route_token_uses_port_helper() -> None:
-    """tests/test_phase6_promote_route_token.py's SERVER must resolve via _port()."""
-    _assert_uses_port_helper("test_phase6_promote_route_token.py")
-
-
-def test_advance_populates_gates_approved_uses_port_helper() -> None:
-    """tests/test_advance_populates_gates_approved.py's SERVER must resolve via _port()."""
-    _assert_uses_port_helper("test_advance_populates_gates_approved.py")
 
 
 # ---------------------------------------------------------------------------

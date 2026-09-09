@@ -743,7 +743,13 @@ class TestPromoteCandidateBinding:
     this route: an unbound token is now refused here too. Keeping it accepted left the
     exact fail-open branch class this cycle deleted from the advance route sitting on the
     route whose side effect is a bible/ canon write, so anything able to put one line
-    into /tmp/writ-gate-token-<sid> held an unbound approval for Writ's own memory."""
+    into /tmp/writ-gate-token-<sid> held an unbound approval for Writ's own memory.
+
+    A fourth case is a conversion, not a new property: tests/test_phase6_promote_route_
+    token.py::TestPromoteCandidateTokenGate::test_tokenless_promote_is_refused skipped
+    unconditionally on a live-daemon probe and never ran, and it was the one test in that
+    retired module with no other cover in this suite, so it moves here rather than
+    disappearing with the rest of the file."""
 
     @pytest.mark.asyncio
     async def test_a_token_bound_to_a_phase_gate_is_refused(self, monkeypatch):
@@ -856,6 +862,69 @@ class TestPromoteCandidateBinding:
                 f"the unbound refusal must log its own class; got {events}"
             )
             assert "candidate_promotion_gate_bound" not in events
+
+    @pytest.mark.asyncio
+    async def test_a_tokenless_promote_is_refused_before_any_canon_write(self, monkeypatch):
+        """Converted from tests/test_phase6_promote_route_token.py::
+        TestPromoteCandidateTokenGate::test_tokenless_promote_is_refused, retired for
+        skipping unconditionally on a live-daemon probe and never running. No token=
+        argument is passed at all, unlike the unbound sibling above, which writes a
+        one-line file; this test writes no token file, so it needs neither
+        _mint_cleanup nor the autouse leak fixture's forgiveness -- the fixture still
+        watches it.
+
+        REGRESSION ANCHOR, not a red-then-green step: the route already refuses a
+        tokenless promote, so this is green on arrival, exactly like
+        tests/test_daemon_client_coverage.py::TestNoAutostartLeavesThePortClosed.
+
+        The retired test's two assertions (`promoted is False`, and the word "token"
+        somewhere in the serialized result) cannot tell this refusal apart from the
+        UNBOUND refusal one arm downstream, and both hold even against a broken route:
+        weakening the absent-token arm at writ/server/routes/gate.py:468 from
+        `if not server.gate_token_valid(token, expected_token):` to
+        `if token and not server.gate_token_valid(token, expected_token):` lets a
+        tokenless request fall through to the binding read at line 527, which returns
+        promoted=False and a message that also contains "token" (BINDING_UNBOUND's
+        reason). So the discriminating assertions are the friction-log events, not the
+        response body: that mutation reddens the agent_self_approval_blocked /
+        BINDING_UNBOUND pair below, while the body assertions and promote_calls stay
+        green. `promote_calls == []` is carried as defense in depth, not as the
+        assertion that mutation moves: four independent arms in this route refuse a
+        tokenless promote (lines 468, 528, 546, 568), so no single-line mutation can
+        make `promoted` come back True or reach the promoter.
+        """
+        import writ.promotion as promotion_module
+        import writ.server as server_module
+        from writ.server import SessionPromoteCandidateRequest
+        from writ.server.routes.gate import session_promote_candidate
+        from writ.session.gate_token import BINDING_UNBOUND, gate_token_path
+
+        promote_calls: list[tuple] = []
+        events: list[str] = []
+
+        async def _stub_promote(*args, **_kwargs):
+            promote_calls.append(args)
+            return {"promoted": True, "graduated_via": "test-stub"}
+
+        monkeypatch.setattr(server_module, "_db", object())
+        monkeypatch.setattr(server_module, "_pipeline", object())
+        monkeypatch.setattr(promotion_module, "promote_candidate", _stub_promote)
+        monkeypatch.setattr(
+            server_module, "log_friction_event",
+            lambda session_id=None, mode=None, event="", **extra: events.append(event),
+        )
+
+        sid = _sid("promote-notoken")
+        assert not os.path.exists(gate_token_path(sid))
+
+        result = await session_promote_candidate(
+            sid, SessionPromoteCandidateRequest(candidate_id="cand-1")
+        )
+        assert result.get("promoted") is False
+        assert "token" in json.dumps(result).lower()
+        assert promote_calls == []
+        assert "agent_self_approval_blocked" in events
+        assert BINDING_UNBOUND not in events
 
 
 # ---------------------------------------------------------------------------
