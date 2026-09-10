@@ -1,6 +1,6 @@
 # Anthropic plugin marketplace submission packet
 
-Maintainer reference for submitting `writ@writ` to the official Anthropic plugin marketplace at https://claude.ai/settings/plugins/submit. The positioning appendix at the bottom absorbs the former PROMOTIONAL-BRIEF.md.
+Maintainer reference for submitting `writ@writ` to the official Anthropic plugin marketplace. The submission URL is https://clau.de/plugin-directory-submission, which is what the community repo's own close-external-prs bot tells submitters to use; an earlier version of this doc gave https://claude.ai/settings/plugins/submit, which is not the address their automation advertises. The positioning appendix at the bottom absorbs the former PROMOTIONAL-BRIEF.md.
 
 > **Listing status: MEASURED 2026-09-10, and re-checkable in one command.**
 > This block used to be an external claim carrying its own warning that no command in this
@@ -32,13 +32,42 @@ Maintainer reference for submitting `writ@writ` to the official Anthropic plugin
 > theoretical ceiling, not something anyone does", and against a realistic hand-curated
 > instructions file the per-turn cost is roughly comparable.
 >
+> **THE ROOT CAUSE IS A FREEZE, NOT NEGLECT, and it changes the ask.** There IS an auto-bump
+> bot, `.github/workflows/bump-plugin-shas.yml`, which opens a per-entry PR to advance each
+> listing's sha. `writ` is one of 49 slugs in `.github/freeze-shas.txt`, whose header says:
+>
+> > "Point-in-time snapshot (2026-06-13) of entries that genuinely fail 'validate-plugins' at
+> > upstream HEAD (manifest lost at new SHA, or a field the bump surfaces as an error).
+> > Freezing avoids bumping them into a red PR ... remove a slug once its upstream is fixed to
+> > let it freshen again."
+>
+> "Manifest lost at new SHA" is this repo's history scrub: the bumper looked for
+> `.claude-plugin/marketplace.json` at the new commit, did not find it, and held the entry at
+> v1.0.0 rather than open a perpetually-red PR. So the four-month drift is a switched-off
+> bump, not an unnoticed listing.
+>
+> **The freeze condition no longer holds.** Verified 2026-09-10: the manifest is present at
+> public `main` (`e6086594`, pushed 2026-08-15) at 1057 bytes, parses, and declares plugin
+> `writ`; `tests/plugin/test_plugin_validate_cli.py` passes locally. That is exactly the state
+> the freeze file names as grounds for removal.
+>
+> **Nothing lifts it automatically.** `bump-plugin-shas.yml` only READS the list, and
+> `owner-liveness-sweep.yml` states "nothing is edited or removed". Removal is a manual edit
+> inside Anthropic's pipeline. The community repo is a nightly READ-ONLY MIRROR of that
+> pipeline, so `freeze-shas.txt` cannot be reached by a pull request; external PRs are
+> auto-closed unless the author has write access.
+>
+> **Use the URL their own automation advertises**, not the one this doc used to give. The
+> close-external-prs bot routes submitters to https://clau.de/plugin-directory-submission.
+>
 > **Practical conclusion, unchanged and reinforced.** Do not promote `writ@claude-community`
-> anywhere, least of all on the README's first screen, until a re-submission re-pins the sha.
-> The working route is the self-hosted one the README already documents:
-> `claude plugin marketplace add infinri/Writ`. The community repo auto-closes direct pull
-> requests, so the ONLY update path is a re-submission through the claude.ai form below,
-> which re-pins the sha and refreshes the copy. That is an operator action; no command in
-> this tree performs it.
+> anywhere, least of all on the README's first screen, until the freeze is lifted and a bump
+> lands. The working route is the self-hosted one the README already documents:
+> `claude plugin marketplace add infinri/Writ`.
+>
+> **Sequencing that matters:** a de-freeze bumps the entry to whatever `main` holds at that
+> moment. Public `main` is 2026-08-15 while local work runs well ahead of it, so PUSH FIRST
+> or the bump lands on a mid-August tree. Ask for the de-freeze after the push, not before.
 
 ## Pre-submission checklist
 
@@ -52,7 +81,8 @@ Maintainer reference for submitting `writ@writ` to the official Anthropic plugin
 - [ ] **Fresh-install smoke**: dated result, needs a re-run before submitting. `tests/plugin/test_fresh_install_smoke.py` ran green with `WRIT_INTEGRATION_TESTS=1` on 2026-08-01 (clone, marketplace add, install, bootstrap, health), and bootstrap was made idempotent across container provenance the same day (a pre-existing `writ-neo4j` container is reused instead of colliding with `compose up`). That run measured the tree as it stood on 2026-08-01, not the commit being submitted, so re-run it against the submission sha and re-date this line before opening the form.
 - [ ] **Screenshots captured** (below).
 - [x] **Existing community listing located and its state measured**: done 2026-09-10, see the status block above. The entry exists, its sha resolves to "Release v1.0.0", and all three advertised numbers are wrong. This settles what the re-submission has to correct; it does not settle the re-submission, which only the operator can perform.
-- [ ] **Re-submission opened**: the one action no command in this tree can take. The community repo auto-closes direct pull requests, so the form at https://claude.ai/settings/plugins/submit is the only path that re-pins the sha. Until it lands, `writ@claude-community` serves v1.0.0 and must not be promoted.
+- [ ] **Push `main`**: do this BEFORE asking for the de-freeze. A bump lands on whatever `main` holds at that moment, so asking while public `main` trails local work bumps the listing to a stale tree and spends the request.
+- [ ] **De-freeze requested**: the one action no command in this tree can take. `writ` is held in `.github/freeze-shas.txt`; that file is a nightly mirror of Anthropic's internal pipeline, external PRs are auto-closed, and no workflow removes a slug on its own. Ask through https://clau.de/plugin-directory-submission using the message under "De-freeze request" below. Until it lands, `writ@claude-community` serves v1.0.0 and must not be promoted.
 
 ## Listing copy
 
@@ -85,6 +115,34 @@ rule-shaped files, and citing it is how one fact became two published numbers be
 
 **URLs**: repo / issues / README / CHANGELOG under https://github.com/infinri/Writ.
 
+## De-freeze request
+
+Send this through https://clau.de/plugin-directory-submission AFTER pushing `main`, and
+re-read the two facts it asserts before sending, because both decay: the public `main` sha,
+and whether `writ` is still listed in `.github/freeze-shas.txt`.
+
+> The `writ` entry in the community marketplace is held in `.github/freeze-shas.txt` from the
+> 2026-06-13 snapshot of entries that failed `validate-plugins` at upstream HEAD. In our case
+> the cause was "manifest lost at new SHA": a history rewrite moved
+> `.claude-plugin/marketplace.json`, so `bump-plugin-shas.yml` could not resolve it at the new
+> commit and correctly held the entry rather than opening a red PR.
+>
+> That condition no longer holds. `.claude-plugin/marketplace.json` is present at
+> `github.com/infinri/Writ` on `main`, parses, and declares the `writ` plugin;
+> `claude plugin validate` exits 0 against it. Per the freeze file's own guidance, "remove a
+> slug once its upstream is fixed to let it freshen again", could you remove `writ` from the
+> freeze list so the bump workflow can advance it?
+>
+> The currently pinned sha `d3c33d3e35adc30dc4448d0829801f5a8a9138da` is "Release v1.0.0" from
+> 2026-05-10, so the listing installs a build that predates every install fix since. Its
+> description is also stale: it advertises 276 rules across 12 domains, where the shipped
+> corpus is 288 rules across 16 domains, and it leads with a "726x context reduction" figure
+> we no longer publish, because our own benchmark notes record it as measured against a
+> theoretical baseline nobody uses. Refreshed copy is in
+> `docs/marketplace/SUBMISSION.md` under "Listing copy" if it helps, though the freeze removal
+> is the part that matters; once the bump runs, the copy question resolves itself on the next
+> submission cycle.
+
 ## Screenshots (capture before opening the form)
 
 1. Rule injection: a session showing the `--- WRIT RULES ---` block on a real prompt.
@@ -97,7 +155,7 @@ Dark theme, 14-16pt font, redact personal paths.
 
 ## Procedure
 
-1. Log in at https://claude.ai/settings/plugins/submit and fill the form from the copy above; the marketplace source is `github.com/infinri/Writ` (marketplace name `writ` is declared in `.claude-plugin/marketplace.json`).
+1. Log in at https://clau.de/plugin-directory-submission and fill the form from the copy above; the marketplace source is `github.com/infinri/Writ` (marketplace name `writ` is declared in `.claude-plugin/marketplace.json`).
 2. Submit, note the confirmation, and expect a review cadence of days.
 3. Post-acceptance: cross-link the listing from the README; re-sync listing copy if Anthropic edits it in review.
 4. On rejection: capture the reason verbatim, file an issue, address, resubmit.
