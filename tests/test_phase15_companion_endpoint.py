@@ -14,18 +14,12 @@ empty pre-authoring.
 
 from __future__ import annotations
 
-import json
-import urllib.error
-import urllib.request
-
 import pytest
+from httpx import ASGITransport, AsyncClient
 
-from tests._daemon import _port
 from writ import server
 from writ.server import CompanionRequest, methodology_companion
 from writ.retrieval.trigger_index import MethodologyTriggerIndex
-
-SERVER = f"http://localhost:{_port()}"
 
 
 def _node(node_id, *, floor_modes=None, trigger_keywords=None,
@@ -79,21 +73,60 @@ class TestCompanionShaping:
 
 
 class TestCompanionLive:
-    def test_live_endpoint_reachable_and_well_shaped(self) -> None:
-        # Shape-only: the exact contents depend on the daemon's startup index
-        # state (which can lag the graph mid-suite); matching is pinned by the
-        # in-memory index tests + the monkeypatch shaping tests. Here we only
-        # confirm the endpoint is reachable and returns the cmd_format shape.
-        body = json.dumps({"mode": "work", "prompt": "refactor the parser module"}).encode()
-        req = urllib.request.Request(
-            f"{SERVER}/methodology-companion", data=body,
-            headers={"Content-Type": "application/json"}, method="POST",
+    """ROUTE (Decision 4, plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3): the
+    `except (URLError, OSError) -> pytest.skip` this class used to carry is
+    gone. /methodology-companion is driven over its own URL in process, with a
+    real MethodologyTriggerIndex installed exactly the way
+    TestCompanionShaping installs one -- no daemon involved, because the
+    endpoint reads only `server._trigger_index`.
+    """
+
+    async def _post(self, monkeypatch, idx: MethodologyTriggerIndex, mode: str, prompt: str) -> dict:
+        monkeypatch.setattr(server, "_trigger_index", idx)
+        async with AsyncClient(
+            transport=ASGITransport(app=server.app), base_url="http://test"
+        ) as ac:
+            resp = await ac.post("/methodology-companion", json={"mode": mode, "prompt": prompt})
+        # Asserted FIRST, for the reason server_routes.py:200-214 records: an
+        # error payload has no `rules` key and would satisfy every shape
+        # assertion below just as well.
+        assert resp.status_code == 200, (
+            f"POST /methodology-companion returned {resp.status_code}, not 200: "
+            f"{resp.text}. MUTATION: dropping the router registration for this "
+            f"path, or renaming it, produces exactly this 404 -- the regression "
+            f"class the module's four in-process TestCompanionShaping tests are "
+            f"structurally blind to, since they call the coroutine directly."
         )
-        try:
-            with urllib.request.urlopen(req, timeout=3) as r:
-                data = json.loads(r.read())
-        except (urllib.error.URLError, OSError) as e:
-            pytest.skip(f"Writ server unreachable: {e}")
-        assert data.get("mode") == "summary"
-        assert isinstance(data.get("rules"), list)
-        assert "total_tokens" in data and "over_budget" in data
+        data = resp.json()
+        assert "error" not in data, (
+            f"POST /methodology-companion returned the error sentinel instead of "
+            f"a bundle: {data}"
+        )
+        return data
+
+    @pytest.mark.asyncio
+    async def test_reachable_with_a_matching_floor_node(self, monkeypatch) -> None:
+        idx = MethodologyTriggerIndex([_node("SKL-FLOOR-LIVE-001", floor_modes=["work"])])
+        data = await self._post(monkeypatch, idx, "work", "")
+        assert {r["rule_id"] for r in data["rules"]} == {"SKL-FLOOR-LIVE-001"}
+        assert isinstance(data.get("total_tokens"), int) and "over_budget" in data
+        # `mode` is a POLARITY property in principle (decision 5, module 1), but
+        # methodology_companion hardcodes `"mode": "summary"` regardless of
+        # branch (writ/server/routes/query.py:191-198): there is no second value
+        # this handler can ever return, so the fallback the plan itself states
+        # applies -- mode is asserted as one of the endpoint's declared values,
+        # named against the input (a floor-sized index of 1 node) that produced it.
+        assert data["mode"] in {"summary"}, (
+            f"mode must be one of the endpoint's declared values for a "
+            f"floor-matching index; got {data['mode']!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_reachable_with_no_matching_node(self, monkeypatch) -> None:
+        idx = MethodologyTriggerIndex([_node("SKL-FLOOR-LIVE-002", floor_modes=["debug"])])
+        data = await self._post(monkeypatch, idx, "work", "")
+        assert data["rules"] == []
+        assert data["mode"] in {"summary"}, (
+            f"mode must be one of the endpoint's declared values for a "
+            f"non-matching index; got {data['mode']!r}"
+        )

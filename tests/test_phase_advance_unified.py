@@ -34,16 +34,11 @@ import io
 import json
 import os
 import secrets
-import tempfile
-import urllib.error
-import urllib.request
 import uuid
 from datetime import datetime, timezone
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-
-from tests._daemon import _port
 
 # autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
 from tests.fixtures.session_state import sandbox_cwd, write_bound_gate_token  # noqa: F401
@@ -59,8 +54,6 @@ from writ.server import app
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-SERVER = f"http://localhost:{_port()}"
-
 PLAN_CONTENT = """\
 ## Files
 - service.py
@@ -74,33 +67,6 @@ Implement the thing with care and verify behavior.
 ## Capabilities
 - [ ] the thing works
 """
-
-
-def _server_up() -> bool:
-    try:
-        with urllib.request.urlopen(f"{SERVER}/health", timeout=2):
-            return True
-    except (urllib.error.URLError, OSError):
-        return False
-
-
-def _post_advance(session_id: str, body: dict) -> dict:
-    req = urllib.request.Request(
-        f"{SERVER}/session/{session_id}/advance-phase",
-        data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=5) as resp:
-        return json.loads(resp.read())
-
-
-def _cache_path(session_id: str) -> str:
-    return os.path.join(tempfile.gettempdir(), f"writ-session-{session_id}.json")
-
-
-def _token_path(session_id: str) -> str:
-    return os.path.join(tempfile.gettempdir(), f"writ-gate-token-{session_id}")
 
 
 def _make_base_cache() -> dict:
@@ -1070,51 +1036,11 @@ class TestTerminalAndNonWorkNoAdvance:
         cache = {"mode": "work", "gates_approved": ["phase-a"]}
         assert _next_pending_gate(cache) == "test-skeletons"
 
-    # Integration: advance-from-complete via the live daemon -------------------
-
-    def test_advance_from_complete_returns_error_and_does_not_mutate_cache(self):
-        """The route-level terminal guard: a session with current_phase='complete'
-        must return an error signal without mutating the cache. Skips when the
-        daemon is unreachable. This mirrors test_phase_machine_reset.py's live case.
-        """
-        if not _server_up():
-            pytest.skip("Writ server unreachable")
-
-        sid = f"terminal-guard-{uuid.uuid4().hex[:8]}"
-        token = uuid.uuid4().hex
-
-        # Seed a throwaway session cache at the complete phase.
-        cache_seed = {
-            "mode": "work",
-            "current_phase": "complete",
-            "gates_approved": ["phase-a", "test-skeletons"],
-            "denial_counts": {},
-            "phase_transitions": [],
-        }
-        with open(_cache_path(sid), "w") as f:
-            json.dump(cache_seed, f)
-        with open(_token_path(sid), "w") as f:
-            f.write(token)
-
-        try:
-            result = _post_advance(sid, {"confirmation_source": "tool", "token": token})
-
-            # The response must signal an error or a complete state, not a real advance.
-            is_error = "error" in result
-            is_complete_signal = result.get("phase") == "complete" or result.get("from") == "complete"
-            assert is_error or is_complete_signal, (
-                f"advance-from-complete must return an error or complete signal; got {result}"
-            )
-            # The cache must not have advanced past complete.
-            with open(_cache_path(sid)) as f:
-                after = json.load(f)
-            assert after.get("current_phase") == "complete", (
-                f"cache current_phase must remain 'complete' after a refused terminal advance; "
-                f"got {after.get('current_phase')!r}"
-            )
-        finally:
-            for p in (_cache_path(sid), _token_path(sid)):
-                try:
-                    os.remove(p)
-                except OSError:
-                    pass
+    # advance-from-complete via the live daemon was DELETED here (plan.md
+    # 2412ba38-51e1-4b73-895b-7b240a3c21d3, decision 5 module 10): the property
+    # is owned in process by
+    # test_phase_machine_reset.py::test_advance_from_complete_is_refused_and_does_not_spend_the_approval,
+    # which drives the real route with a VALID token and discriminates all four
+    # refusal arms by key. `_server_up`, `_post_advance`, `_cache_path`,
+    # `_token_path`, the `SERVER` constant and the `from tests._daemon import
+    # _port` import were removed with it as delete-covered orphans.

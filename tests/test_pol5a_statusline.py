@@ -25,38 +25,18 @@ import json
 import os
 import re
 import subprocess
-import sys
-import tempfile
 import time
 import uuid
 from pathlib import Path
 
 import pytest
 
-from tests._daemon import _health_url, _port
-
-
-def _server_up() -> bool:
-    """True iff a daemon answers /health on the test port (WRIT_PORT)."""
-    try:
-        import urllib.error
-        import urllib.request
-
-        with urllib.request.urlopen(_health_url(), timeout=1) as r:
-            return r.status == 200
-    except (urllib.error.URLError, OSError):
-        return False
-
-
-requires_server = pytest.mark.skipif(
-    not _server_up(), reason="test-port daemon unreachable"
-)
+from tests._hook_runner import count_requests, hook_env, isolated_daemon  # noqa: F401
+from tests.fixtures.net import free_port
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 STATUSLINE_HOOK = SKILL_DIR / "hooks" / "scripts" / "writ-statusline.sh"
-SESSION_HELPER = str(SKILL_DIR / "bin" / "lib" / "writ-session.py")
 GLOBAL_SETTINGS = Path.home() / ".claude" / "settings.json"
-SESSION_BASE = f"http://localhost:{_port()}"
 
 
 # --------------------------------------------------------------------------- #
@@ -81,19 +61,33 @@ def _statusline_payload(pct, session_id: str, *, include_ctx: bool = True) -> di
 
 
 def _run_statusline(
-    pct, session_id: str, *, include_ctx: bool = True, raw_stdin: str | None = None
+    pct, session_id: str, *, daemon: dict | None = None,
+    include_ctx: bool = True, raw_stdin: str | None = None,
 ) -> tuple[str, str, int]:
-    """Invoke the statusLine hook with a JSON envelope (or raw stdin)."""
+    """Invoke the statusLine hook with a JSON envelope (or raw stdin).
+
+    `daemon=None` (the default, for every class but TestContextPercentWrite)
+    points WRIT_SESSION_BASE at a port `free_port()` just proved free,
+    resolved FRESH per call rather than a module constant: nothing here is a
+    suite-port-gated skip site (tests/_inventory.py::
+    daemon_reachability_skip_sites()) and nothing is a module-level literal
+    Group D's guard would otherwise have to scan. `daemon=<owned daemon>`
+    (TestContextPercentWrite) merges `hook_env(daemon)` (WRIT_SOCKET wins over
+    WRIT_SESSION_BASE per bin/lib/common.sh:1817-1823 when both are set and
+    the socket exists) and sets WRIT_SESSION_BASE to the daemon's own
+    base_url, the variable writ_daemon_client.post_json actually reads.
+    """
     stdin = (
         raw_stdin
         if raw_stdin is not None
         else json.dumps(_statusline_payload(pct, session_id, include_ctx=include_ctx))
     )
-    env = {
-        **os.environ,
-        "SKILL_DIR": str(SKILL_DIR),
-        "WRIT_SESSION_BASE": SESSION_BASE,
-    }
+    env = {**os.environ, "SKILL_DIR": str(SKILL_DIR)}
+    if daemon is not None:
+        env.update(hook_env(daemon))
+        env["WRIT_SESSION_BASE"] = daemon["base_url"]
+    else:
+        env["WRIT_SESSION_BASE"] = f"http://localhost:{free_port()}"
     result = subprocess.run(
         ["bash", str(STATUSLINE_HOOK)],
         input=stdin,
@@ -103,23 +97,13 @@ def _run_statusline(
     return result.stdout, result.stderr, result.returncode
 
 
-def _run_session(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [sys.executable, SESSION_HELPER, *args],
-        capture_output=True, text=True, timeout=5,
-    )
-
-
-def _read_cache(session_id: str) -> dict:
-    result = _run_session("read", session_id)
-    try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return {}
-
-
-def _cleanup_session(session_id: str) -> None:
-    path = Path(tempfile.gettempdir()) / f"writ-session-{session_id}.json"
+def _cleanup_session(session_id: str, cache_dir: str | None = None) -> None:
+    """Unlink the session file from `cache_dir`, or no-op when no daemon was
+    involved (nothing was ever written). Never guesses tempfile.gettempdir():
+    a shared /tmp path is not a directory any test of ours names."""
+    if cache_dir is None:
+        return
+    path = Path(cache_dir) / f"writ-session-{session_id}.json"
     if path.exists():
         path.unlink()
 
@@ -205,30 +189,64 @@ class TestRenderBands:
 
 
 # --------------------------------------------------------------------------- #
-# 2. context_percent round-trip
+# 2. context_percent round-trip -- OWNED DAEMON, hook subprocess (Decision 4,
+# plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3, module 7)
 # --------------------------------------------------------------------------- #
-@requires_server
 class TestContextPercentWrite:
     """statusLine re-sources context_percent for should-skip via the endpoint.
 
-    Both tests POST context_percent to the daemon and read it back; the statusline
-    hook's write is a best-effort daemon POST with no subprocess fallback, so these
-    skip gracefully when no test-port daemon answers (rather than failing in no-daemon CI).
+    The class docstring's claim -- "a best-effort daemon POST with no
+    subprocess fallback" -- is exactly why a green cache read alone would not
+    prove the daemon served it: each test reads the value back out of the
+    DAEMON (GET /session/{id}, the same route session_read wraps) and asserts
+    the POST /context-percent delta at exactly one, the in-run positive that
+    the write was actually served rather than silently dropped.
     """
 
-    def test_context_percent_round_trips_to_cache(self, session_id: str) -> None:
-        """The native used_percentage lands in the session cache's context_percent."""
-        _run_statusline(63, session_id)
-        cache = _read_cache(session_id)
-        assert cache.get("context_percent") == 63, (
-            f"statusLine must write context_percent=63; got {cache.get('context_percent')!r}"
-        )
+    def _read_from_daemon(self, daemon: dict, session_id: str) -> dict:
+        import urllib.request
 
-    def test_zero_percent_writes_zero(self, session_id: str) -> None:
+        with urllib.request.urlopen(
+            f"{daemon['base_url']}/session/{session_id}", timeout=10
+        ) as resp:
+            return json.loads(resp.read())
+
+    def test_context_percent_round_trips_to_cache(
+        self, session_id: str, isolated_daemon
+    ) -> None:
+        """The native used_percentage lands in the DAEMON's own cache."""
+        pattern = f'"POST /session/{session_id}/context-percent HTTP'
+        before = count_requests(isolated_daemon, pattern)
+        _run_statusline(63, session_id, daemon=isolated_daemon)
+        after = count_requests(isolated_daemon, pattern)
+        assert after == before + 1, (
+            f"the best-effort POST /context-percent must be served exactly "
+            f"once by the daemon; before={before}, after={after}"
+        )
+        cache = self._read_from_daemon(isolated_daemon, session_id)
+        assert cache.get("context_percent") == 63, (
+            f"statusLine must write context_percent=63 into the DAEMON's own "
+            f"cache; got {cache.get('context_percent')!r}"
+        )
+        _cleanup_session(session_id, isolated_daemon["cache_dir"])
+
+    def test_zero_percent_writes_zero(self, session_id: str, isolated_daemon) -> None:
         """A fresh window writes 0, not a stale/absent value."""
-        _run_statusline(0, session_id)
-        cache = _read_cache(session_id)
+        pattern = f'"POST /session/{session_id}/context-percent HTTP'
+        before = count_requests(isolated_daemon, pattern)
+        _run_statusline(0, session_id, daemon=isolated_daemon)
+        after = count_requests(isolated_daemon, pattern)
+        assert after == before + 1, (
+            f"a fresh window (0%) must still be POSTed exactly once, not "
+            f"silently dropped as falsy; before={before}, after={after}"
+        )
+        cache = self._read_from_daemon(isolated_daemon, session_id)
         assert cache.get("context_percent") == 0
+        _cleanup_session(session_id, isolated_daemon["cache_dir"])
+    # MUTATION: pointing WRIT_SESSION_BASE at a port nothing serves reddens
+    # both round-trip assertions while the hook still exits 0, which is the
+    # whole difference between the old test (skip-gated, never ran) and these
+    # two (decision 5, module 7).
 
 
 # --------------------------------------------------------------------------- #
@@ -258,7 +276,10 @@ class TestGracefulDegrade:
             input=json.dumps(payload),
             capture_output=True, text=True,
             cwd=str(SKILL_DIR),
-            env={**os.environ, "SKILL_DIR": str(SKILL_DIR), "WRIT_SESSION_BASE": SESSION_BASE},
+            env={
+                **os.environ, "SKILL_DIR": str(SKILL_DIR),
+                "WRIT_SESSION_BASE": f"http://localhost:{free_port()}",
+            },
             timeout=15,
         )
         assert result.returncode == 0

@@ -174,6 +174,40 @@ async def route_db(
     await conn.close()
 
 
+@pytest.fixture()
+def route_pipeline(live_pipeline, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """The session-scoped `live_pipeline` installed at `writ.server._pipeline` for
+    ONE test, and the ONE owner of "the real app in process with a REAL retrieval
+    pipeline behind it".
+
+    THE INSTALL IS THE WHOLE FIXTURE, and it is shared because four route
+    consumers in one cycle needed it (`test_diagnose_playbooks`,
+    `test_prompt_bundle`, `test_always_on_citations`, and the citation
+    acceptance's own bundle call): four private `monkeypatch.setattr(server,
+    "_pipeline", ...)` lines are four places for the seam to drift, and
+    `writ.server._pipeline` is a module global set only inside `lifespan`
+    (`writ/server/__init__.py:146,205`), which is the same sanctioned seam
+    `route_db` uses one attribute over.
+
+    THE PIPELINE IS NOT REBUILT PER TEST. `conftest.py`'s `live_pipeline` is
+    SESSION-scoped and indexes the graph once, which is also why every consumer
+    asserting on retrieval runs its corpus precondition BEFORE requesting this
+    fixture: a repair after the build is invisible to the index.
+
+    FUNCTION-SCOPED FOR THE RESTORE, for the reason `route_db` states: `monkeypatch`
+    is function-scoped, and a hand-rolled restore that a failure path skips leaves
+    a foreign pipeline installed at a process global every other module in the run
+    also reads.
+
+    Returns the pipeline itself so a caller can read the object it installed. The
+    annotation is `Any` rather than `RetrievalPipeline` deliberately: that import
+    pulls the retrieval stack in at MODULE import time, which is exactly what
+    `live_pipeline` defers by importing `build_pipeline` inside its own body.
+    """
+    monkeypatch.setattr(_server, "_pipeline", live_pipeline)
+    return live_pipeline
+
+
 @pytest_asyncio.fixture()
 async def always_on(
     route_db: Neo4jConnection,

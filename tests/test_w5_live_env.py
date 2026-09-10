@@ -113,24 +113,18 @@ def _read(filename: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _assert_uses_port_helper(filename: str) -> None:
-    src = _read(filename)
-    assert "localhost:8765" not in src, (
-        f"{filename} must not hardcode the interactive-daemon literal "
-        "'localhost:8765'; it must route through tests._daemon._port() so "
-        "the test targets the isolated test-port daemon (WRIT_PORT=8799 per "
-        "tests/conftest.py), not the operator's live :8765 singleton"
-    )
-    assert "_port" in src, (
-        f"{filename} must import and use `_port` from tests._daemon "
-        '(`from tests._daemon import _port` + '
-        '`SERVER = f"http://localhost:{_port()}"`) to resolve SERVER'
-    )
-
-
-def test_phase_advance_unified_uses_port_helper() -> None:
-    """tests/test_phase_advance_unified.py's SERVER must resolve via _port()."""
-    _assert_uses_port_helper("test_phase_advance_unified.py")
+# `_assert_uses_port_helper` and its one caller,
+# `test_phase_advance_unified_uses_port_helper`, were removed here (plan.md
+# 2412ba38-51e1-4b73-895b-7b240a3c21d3, decision 6): the cycle-3 sweep deletes
+# `test_phase_advance_unified.py`'s only `_port`-referencing test along with
+# `SERVER` and the `from tests._daemon import _port` import, so this guard's
+# second assertion (`"_port" in src`) would go FALSE while the file still
+# EXISTS -- RED, not skipped, because `_read` only asserts `path.exists()`.
+# Nothing is lost: the module now names no daemon address at all, and the
+# derived Group D guard below (`test_no_module_binds_a_constant_to_the_
+# production_daemon_port`) carries the "must not hardcode :8765" half of the
+# property for every module under tests/, named or not yet written -- the
+# Group A consolidation this file's own docstring queued.
 
 
 # ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ import importlib
 import json
 import os
 import sys
+import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -24,10 +25,12 @@ import writ.server.routes.query as qroute
 from writ.server.models import PromptBundleRequest
 
 # autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
-# The `mode set work` call below sits behind a daemon-liveness skip, which is why the
-# sentinel probe that found the other 26 modules reported this one clean: with no daemon
-# listening the test skipped and never reached the deletion.
 from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
+
+# ROUTE fixtures (Decision 4): no daemon, no socket. Imported explicitly per this
+# repo's convention (tests/fixtures/server_routes.py's own module docstring) --
+# never registered in a root conftest.
+from tests.fixtures.server_routes import isolated_cache, route_db, route_pipeline
 
 SKILL_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 HOOK_SH = os.path.join(SKILL_ROOT, "hooks", "scripts", "writ-rag-inject.sh")
@@ -37,14 +40,6 @@ def _imp(name):
     if SKILL_ROOT not in sys.path:
         sys.path.insert(0, SKILL_ROOT)
     return importlib.import_module(name)
-
-
-def _test_daemon_up() -> bool:
-    try:
-        from tests._daemon import _daemon_health
-        return _daemon_health() is not None
-    except Exception:
-        return False
 
 
 # --------------------------------------------------------------------------- #
@@ -555,32 +550,65 @@ class TestPromptBundleSuppressedNudge:
 
 
 # --------------------------------------------------------------------------- #
-# 5. live endpoint shape (skips when no daemon on the suite's test port)
+# 5. live endpoint shape -- ROUTE (Decision 4, plan.md
+# 2412ba38-51e1-4b73-895b-7b240a3c21d3): no daemon, no socket. route_db and
+# route_pipeline install everything /prompt-bundle needs; isolated_cache points
+# both the route's server-side cache read/write and this test's own reads at
+# the SAME dir. Converts the module's one skip-gated integration test; the
+# ~20 direct qroute.prompt_bundle unit tests above are structurally blind to
+# the wiring this proves (route registration, corpus preconditions, the
+# server-side cache read/write /prompt-bundle actually does).
 # --------------------------------------------------------------------------- #
 class TestPromptBundleEndpointLive:
-    def test_endpoint_returns_rendered_pieces(self):
-        if not _test_daemon_up():
-            pytest.skip("test daemon not running on test port")
-        import subprocess
-        import uuid
-        helper = os.path.join(SKILL_ROOT, "bin", "lib", "writ-session.py")
+    @pytest.mark.asyncio
+    async def test_endpoint_returns_rendered_pieces(
+        self, isolated_cache, route_db, route_pipeline
+    ) -> None:
+        from httpx import ASGITransport, AsyncClient
+        from writ.session.cache import _read_cache, _write_cache
+
         sid = f"pbtest-{uuid.uuid4().hex[:8]}"
-        subprocess.run([sys.executable, helper, "mode", "set", "work", sid], capture_output=True)
-        from tests._daemon import _port
-        body = json.dumps({
+        cache = _read_cache(sid)
+        cache["mode"] = "work"
+        before_queries = cache.get("queries", 0)
+        _write_cache(sid, cache)
+
+        body = {
             "session_id": sid, "mode": "work",
             "prompt": "refactor the SQL query builder to use parameterized queries",
             "effort": "", "always_on_filter": True,
-        })
-        r = subprocess.run(
-            ["curl", "-s", "-X", "POST", f"http://localhost:{_port()}/prompt-bundle",
-             "-H", "Content-Type: application/json", "-d", body],
-            capture_output=True, text=True,
+        }
+        async with AsyncClient(
+            transport=ASGITransport(app=server.app), base_url="http://test"
+        ) as ac:
+            resp = await ac.post("/prompt-bundle", json=body)
+        assert resp.status_code == 200, (
+            f"POST /prompt-bundle returned {resp.status_code}, not 200: {resp.text}"
         )
-        subprocess.run([sys.executable, helper, "clear", sid], capture_output=True)
-        data = json.loads(r.stdout)
+        data = resp.json()
         for key in ("always_on_block", "rules_text", "methodology_block", "nudge",
                     "error", "broad_meta", "ao_meta", "method_meta"):
             assert key in data, key
         assert data["error"] is False
         assert isinstance(data["always_on_block"], str)
+
+        # NON-EMPTY, not merely a string: the corpus precondition route_db
+        # already owns (require_injection_population) is what makes this
+        # non-vacuous. MUTATION: returning an empty always_on_block while every
+        # other key stays present reddens only this assertion, which is why
+        # the two travel together (plan.md decision 5, module 2).
+        assert data["always_on_block"] != "", (
+            "always_on_block must be non-empty against the real injection-rule "
+            "population route_db's precondition already proved present"
+        )
+
+        # THE IN-RUN POSITIVE: the SERVER's own `queries` counter
+        # (writ/server/routes/query.py:321, --inc-queries) must have moved,
+        # attributing this response to the request rather than to a cache
+        # default.
+        after = _read_cache(sid)
+        assert after.get("queries", 0) == before_queries + 1, (
+            f"the server-side queries counter must increment by exactly one per "
+            f"/prompt-bundle call; before={before_queries}, "
+            f"after={after.get('queries', 0)}"
+        )

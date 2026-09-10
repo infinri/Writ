@@ -22,6 +22,7 @@ replaced. A vacuous test is a lie that reads like coverage.
 """
 from __future__ import annotations
 
+import ast
 import json
 import re
 import subprocess
@@ -1253,3 +1254,341 @@ def daemon_starting_hooks(*, scripts_dir: Path = HOOK_SCRIPTS_DIR) -> dict[str, 
         if verdict is not None:
             out[path.name] = verdict
     return out
+
+
+# ── Daemon-reachability skip sites (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3) ──
+#
+# THE CONVENTION THIS EXISTS TO STOP REGROWING: a test class that skips because "the Writ
+# server is unreachable" on the SUITE port, which `tests/conftest.py` forces and which
+# `pytest_sessionstart` deliberately starts nothing on, so every test behind that skip has
+# never executed once. Ten such modules were converted in one cycle, and before the
+# population was derived it had been hand-listed three times in one session with a
+# different answer each time: a site can produce three runtime skips (three parametrized
+# cases), or two (an import-time class mark), or ZERO (a start that succeeds), so a census
+# of what FIRED is not the population.
+#
+# IT KEYS ON THE ADDRESS. Not on a class name (`...Live` is the symptom, and a name-keyed
+# guard is the defect this repo has already paid for), not on the reason string, and not on
+# `/health` either: `tests/test_phase15_companion_endpoint.py` reached its skip through an
+# `except (URLError, OSError)` around `/methodology-companion` and never probed health at
+# all, so a health-keyed detector missed it. Eight differently-named local predicates
+# (`_server_up`, `_test_daemon_up`, `_daemon_up`, `_health`, `_port_busy`,
+# `daemon_cache_dir`, `_daemon_health`, `_ensure_aligned_daemon`) resolved to that ONE
+# address, which is the argument for keying on what a condition RESOLVES to rather than on
+# what it is called.
+#
+# WHAT IT MUST NOT CATCH, and the discrimination is MECHANICAL rather than a reason string.
+# Roughly forty other sites skip on "Neo4j unreachable" and every one is legitimate:
+# `tests/_corpus.py` states the posture (unreachable is the only legitimate skip, and
+# reachable-but-empty must FAIL), and a daemon differs from a database only in that a test
+# can START one. A Neo4j condition resolves through `tests/_corpus.py::neo4j_reachable` to
+# `writ.config.get_neo4j_uri()`, and a driver exception carries no HTTP address, so neither
+# reaches the suite address. Three further non-members, each measured against the source
+# rather than read off its wording: a socket BIND failure from `HTTPServer(("127.0.0.1",
+# free_port()), ...)`, a missing-TOOL `skipif(shutil.which(...) is None)`, and an absent
+# optional dependency. `tests/test_daemon_skip_ownership.py` plants the first two of those
+# on a synthetic tree and asserts NON-membership, so a future widening reddens immediately
+# instead of quietly enrolling forty legitimate skips.
+_DAEMON_HELPER = TESTS / "_daemon.py"
+
+# THE TWO ALTERNATIVES a reaching condition can resolve THROUGH, and both are names rather
+# than addresses because an address is what they produce. `_port` is the live resolver in
+# `tests/_daemon.py` (a function, not a constant, so the suite's port is honoured whenever
+# the module was imported); `TEST_DAEMON_PORT` is the constant `tests/conftest.py` assigns
+# it from, imported by `tests/test_daemon_test_port.py` today. The suite port LITERAL is
+# read from that same constant's VALUE below and is never spelled here, so a change to the
+# suite port cannot leave a stale digit in this detector.
+_SUITE_ADDRESS_RESOLVERS = ("_port", "TEST_DAEMON_PORT")
+
+# The three owners that already exist, matched over RAW module text for the reason
+# `write_gate_hook_modules` gives for its own arm: a module's owner is a DEPENDENCY it
+# carries, and the only machine-readable trace of it is the name it imports. The SITE is a
+# code SHAPE and is read off the AST instead, because a mention in prose is not a skip.
+_SANCTIONED_OWNER_MARKERS = (
+    "start_isolated_daemon",
+    "tests._hook_runner",
+    "tests._prompt_turn",
+    "tests.fixtures.server_routes",
+)
+
+# A module that reaches a daemon START without a sanctioned owner. Its integration tests DO
+# execute, so its defect is a different one (four copies of one hand-rolled start on the
+# SUITE port, all four sharing one defective stop) and it is not the unowned arm.
+_SELF_STARTED_MARKERS = (
+    "ensure-server.sh",
+    "writ_ensure_server",
+    "ensure_daemon_aligned",
+    "start_test_daemon",
+)
+
+# `pytest.skip` and `pytest.mark.skipif` in the spellings the suite actually writes, plus
+# the bare `from pytest import skip` form. Matched on the dotted call name so a `self.skip`
+# or an unrelated `.skipif` attribute on some other object cannot enter the population.
+_SKIP_CALLS = ("pytest.skip", "skip")
+_SKIPIF_CALLS = ("pytest.mark.skipif", "mark.skipif", "skipif")
+
+
+def _suite_port_literals() -> set[object]:
+    """The suite port as both a string and an int, from `tests.conftest.TEST_DAEMON_PORT`.
+
+    IMPORTED INSIDE THE FUNCTION, not at module top level, for the same reason
+    `tests/_daemon.py` and `tests/_hook_runner.py` keep a stdlib-only top level: importing
+    the root conftest applies the suite's env isolation, and `import tests._inventory` is a
+    one-liner an operator runs outside pytest (see `write_gate_regression_modules`).
+
+    BOTH TYPES, because a module can name the port either way: `tests/_daemon.py::_port`
+    returns the string form out of the environment, while a module that binds its own
+    constant writes the int (`ALT_PORT = <suite port>` in
+    `tests/test_fix2_cache_alignment.py`, whose four self-heal tests skip on it).
+    """
+    from tests.conftest import TEST_DAEMON_PORT
+
+    return {TEST_DAEMON_PORT, int(TEST_DAEMON_PORT)}
+
+
+def _daemon_probe_names(*, helper: Path = _DAEMON_HELPER) -> set[str]:
+    """Every function in `tests/_daemon.py` whose call reaches the port resolver.
+
+    DERIVED BY SCANNING THAT MODULE, never typed as a list, which is the difference between
+    a probe set that stays true and one that goes stale the next time a helper is added
+    there. Transitive: `daemon_cache_dir` -> `_daemon_health` -> `_health_url` -> `_port`
+    is four hops and every one of them is a suite-address probe, while `_isolated_health`,
+    `start_isolated_daemon` and `stop_isolated_daemon` take a port as an ARGUMENT and reach
+    the resolver at no depth, which is exactly why an owned isolated daemon's start-failure
+    skip is not a suite-address site.
+    """
+    tree = ast.parse(Path(helper).read_text(encoding="utf-8", errors="replace"))
+    called: dict[str, set[str]] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            called[node.name] = {
+                child.func.id
+                for child in ast.walk(node)
+                if isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
+            }
+    reaching = {name for name in _SUITE_ADDRESS_RESOLVERS if name in called}
+    changed = True
+    while changed:
+        changed = False
+        for name, callees in called.items():
+            if name not in reaching and callees & reaching:
+                reaching.add(name)
+                changed = True
+    return reaching
+
+
+def _dotted_call_name(func: ast.AST) -> str:
+    parts: list[str] = []
+    node = func
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _referenced_names(node: ast.AST) -> set[str]:
+    """Every identifier an expression or body mentions, as bare names.
+
+    ATTRIBUTES CONTRIBUTE THEIR LAST SEGMENT, so `self._ensure_aligned_daemon(...)` resolves
+    through the method of that name: `tests/test_methodology_companion_orchestrator.py`
+    reaches its skip that way and a Name-only walk would miss it.
+    """
+    names: set[str] = set()
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name):
+            names.add(child.id)
+        elif isinstance(child, ast.Attribute):
+            names.add(child.attr)
+    return names
+
+
+def _names_the_suite_port(node: ast.AST, literals: set[object]) -> bool:
+    """Whether a subtree contains the suite port as a literal.
+
+    EXACT EQUALITY against the two forms, so a docstring that merely mentions the port in a
+    sentence is not a match: the constant compared against is the whole string, not a
+    substring of the prose around it.
+    """
+    for child in ast.walk(node):
+        if isinstance(child, ast.Constant) and not isinstance(child.value, bool):
+            try:
+                if child.value in literals:
+                    return True
+            except TypeError:
+                continue
+    return False
+
+
+def _resolves_to_suite_address(
+    node: ast.AST, names: set[str], literals: set[object]
+) -> bool:
+    return bool(_referenced_names(node) & names) or _names_the_suite_port(node, literals)
+
+
+def _suite_address_names(
+    tree: ast.Module, probes: set[str], literals: set[object]
+) -> set[str]:
+    """Every name IN ONE MODULE that resolves to the suite address, to a fixpoint.
+
+    Resolution goes through what the plan calls one level and what the code has to compute
+    as a closure, because the levels compose in real modules: a name imported from
+    `tests/_daemon.py`, a `def` (at any nesting, including a method) whose body mentions
+    such a name, and an assignment whose VALUE mentions one, e.g.
+    `SERVER = f"http://localhost:{_port()}"` and then `_server_up()` reading SERVER and then
+    `up = _server_up()`. The loop runs to a fixpoint rather than in source order, so a
+    helper defined below its caller resolves the same as one defined above it.
+
+    A LOCAL ASSIGNMENT COUNTS, and it has to: the condition at the skip is often a plain
+    local (`started_daemon = self._ensure_aligned_daemon(...)`, then
+    `if not started_daemon:`), and requiring a module-level binding would miss three of the
+    four self-started modules.
+    """
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name in probes:
+                    names.add(alias.asname or alias.name)
+    definitions: list[tuple[list[str], ast.AST]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            definitions.append(([node.name], node))
+        elif isinstance(node, ast.Assign):
+            definitions.append(
+                ([t.id for t in node.targets if isinstance(t, ast.Name)], node.value)
+            )
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            target = [node.target.id] if isinstance(node.target, ast.Name) else []
+            definitions.append((target, node.value))
+    changed = True
+    while changed:
+        changed = False
+        for targets, body in definitions:
+            pending = [name for name in targets if name not in names]
+            if not pending:
+                continue
+            if _resolves_to_suite_address(body, names, literals):
+                names.update(pending)
+                changed = True
+    return names
+
+
+def _skip_call_lines(body: list[ast.stmt]) -> set[int]:
+    lines: set[int] = set()
+    for statement in body:
+        for child in ast.walk(statement):
+            if isinstance(child, ast.Call) and _dotted_call_name(child.func) in _SKIP_CALLS:
+                lines.add(child.lineno)
+    return lines
+
+
+def _daemon_skip_site_lines(
+    tree: ast.Module, names: set[str], literals: set[object]
+) -> list[int]:
+    """The 1-based line of every skip whose REACHING CONDITION is the suite address.
+
+    TWO RECOGNIZED SHAPES, because both occur in the tree:
+
+    1. An `if <probe>` guard, or a `skipif(<probe>)` evaluated at import time (a decorator,
+       a `pytestmark`, or a mark bound to a module constant and applied to a class).
+    2. A `pytest.skip` inside an `except` handler around a request to that address. This is
+       the shape a health-keyed detector cannot see, and the one
+       `tests/test_phase15_companion_endpoint.py` carried.
+
+    THE EXCEPTION TYPES ARE NOT PART OF THE PREDICATE. What makes the second shape a member
+    is that the `try` body reaches the suite address; keying on `URLError`/`OSError` would
+    be keying on a name again, and a handler catching bare `Exception` around the same
+    request is the same defect.
+    """
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If):
+            if _resolves_to_suite_address(node.test, names, literals):
+                lines |= _skip_call_lines(node.body) | _skip_call_lines(node.orelse)
+        elif isinstance(node, ast.Try):
+            handled = set()
+            for handler in node.handlers:
+                handled |= _skip_call_lines(handler.body)
+            if handled and any(
+                _resolves_to_suite_address(statement, names, literals)
+                for statement in node.body
+            ):
+                lines |= handled
+        elif isinstance(node, ast.Call) and _dotted_call_name(node.func) in _SKIPIF_CALLS:
+            arguments: list[ast.AST] = list(node.args) + [kw.value for kw in node.keywords]
+            if any(
+                _resolves_to_suite_address(argument, names, literals)
+                for argument in arguments
+            ):
+                lines.add(node.lineno)
+    return sorted(lines)
+
+
+def _daemon_skip_owner(source: str) -> str | None:
+    """`"sanctioned"` | `"self-started"` | None for a module that carries a site.
+
+    SANCTIONED WINS when a module carries both markers, which is the plan's own definition
+    ("self-started: reaches a daemon START but NOT through a sanctioned owner") and the live
+    case: `tests/test_fix2_cache_alignment.py` takes the shared owner for its converted test
+    and still hand-rolls a suite-port start for its four self-heal tests, so its owner
+    verdict describes the module while the self-started FINDING is recorded against the
+    start mechanism the four copies share.
+    """
+    if any(marker in source for marker in _SANCTIONED_OWNER_MARKERS):
+        return "sanctioned"
+    if any(marker in source for marker in _SELF_STARTED_MARKERS):
+        return "self-started"
+    return None
+
+
+def daemon_reachability_skip_sites(
+    *, tests_dir: Path = TESTS
+) -> dict[str, dict[str, object]]:
+    """Every collected test module carrying a suite-port-gated skip, as
+    `"<module>"` -> `{"owner": "sanctioned" | "self-started" | None, "sites": [<line>, ...]}`.
+
+    A MAP, NOT A LIST OF OFFENDERS, and that is the load-bearing choice rather than a
+    convenience. A module that keeps its skip site and loses its owner (a decayed
+    conversion, or a new `TestSomethingLive` written next month) MOVES INTO the unowned arm
+    and fails BY NAME, where a filtered list of "the unowned ones" would let it drop out of
+    the population silently. `tests/test_daemon_skip_ownership.py` holds that property by
+    deleting a planted module's owner import and rescanning.
+
+    THE UNOWNED ARM (`owner is None`) IS THE DEFECT: the module probes an address and starts
+    nothing, so every test behind the site has never executed. The two owned states are not
+    defects here, and each has its own reason: a sanctioned module's skip is a start-failure
+    carrying the daemon's own stated reason, and a self-started module's tests DO run.
+
+    NON-EMPTINESS IS SOMEONE ELSE'S ASSERTION, deliberately. This returns `{}` for a tree
+    with no qualifying module, including an empty one, because an emptiness assertion over
+    the unowned arm passes just as well on a scan that matched NOTHING; the floor that makes
+    it non-vacuous lives beside it in `tests/test_daemon_skip_ownership.py`, which asserts
+    this map non-empty on the real tree.
+
+    Keys are POSIX paths relative to `tests_dir` ITSELF (not its parent, unlike
+    `_matching_test_modules`, whose callers paste them into a pytest invocation), so a
+    synthetic tree under `tmp_path` keys on the bare filename planted there.
+
+    `rglob("test_*.py")` for the reason `_matching_test_modules` records: pytest collects on
+    that default pattern and it reaches `tests/firedrill/` and `tests/plugin/`, and it is
+    also what keeps this module and every non-test helper under `tests/` out of the
+    population structurally rather than by an exclusion entry.
+    """
+    probes = set(_SUITE_ADDRESS_RESOLVERS) | _daemon_probe_names()
+    literals = _suite_port_literals()
+    root = Path(tests_dir)
+    sites: dict[str, dict[str, object]] = {}
+    for path in sorted(root.rglob("test_*.py")):
+        source = path.read_text(encoding="utf-8", errors="replace")
+        tree = ast.parse(source)
+        names = _suite_address_names(tree, probes, literals)
+        lines = _daemon_skip_site_lines(tree, names, literals)
+        if not lines:
+            continue
+        sites[path.relative_to(root).as_posix()] = {
+            "owner": _daemon_skip_owner(source),
+            "sites": lines,
+        }
+    return sites

@@ -1,7 +1,8 @@
 """The ONE owner of "run a production hook script as a subprocess against a
-daemon this module owns": the module-scoped daemon fixture, the hook-subprocess
-env in its two shapes, the session-cache seeder, the seeded-cache read-back
-check, the hook runner, and the access-log request counter.
+daemon this module owns": the daemon START (one context manager, two module
+fixtures over it), the hook-subprocess env in its two shapes, the session-cache
+seeder, the seeded-cache read-back check, the hook runner, and the access-log
+request counter.
 
 WHY A SECOND OWNER BESIDE `tests/_prompt_turn.py`, which is the proven pattern
 and the right precedent. That module's subject is one production TURN: two
@@ -23,6 +24,21 @@ is the part whose drift is SILENT (a green-looking run against the operator's
 daemon on 8765, which is what a dropped `WRIT_SOCKET` produces); a fixture
 body's drift is LOUD (a daemon that does not start fails the module). So the
 silent one got one owner and the loud one stayed where it is.
+
+THE START ITSELF IS ONE CONTEXT MANAGER AND THE PRECONDITION IS NOT IN IT, which
+is the split this cycle added. `instrumented_daemon(tmp_dir)` owns the start, the
+access-log positive control and the asserted stop verdict; `isolated_hook_daemon`
+is that plus the injection-rule population `/prompt-bundle`'s always-on channel
+selects from, and `isolated_daemon` is that with NO corpus precondition at all.
+The corpus-free sibling exists on measurement rather than for symmetry: four of
+this cycle's consumers (`test_fix2_cache_alignment`, `test_pol5a_statusline`,
+`test_inc1b_daemon_alignment`, `test_bash_write_gate`) retrieve NOTHING, so
+reusing the injection-rule precondition would fail four modules on a predicate
+unrelated to their subject, which is the same class of error as a skip that hides
+a real state. A module whose subject needs a DIFFERENT population calls
+`require_population` in its own module fixture and then this context manager
+(`test_fix3_metrics.py::owned_daemon`, two lines), because the precondition is a
+fact about that module's PROPERTY rather than about the daemon.
 
 THE INSTRUMENT IS THE DAEMON'S OWN ACCESS LOG. `writ serve` runs uvicorn with
 `log_level="info"` and the default access log (`writ/cli.py:467,491`), and
@@ -48,6 +64,7 @@ import json
 import os
 import subprocess
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -97,34 +114,36 @@ def count_requests(daemon: dict, pattern: str) -> int:
     return sum(1 for line in daemon_requests(daemon) if pattern in line)
 
 
-@pytest.fixture(scope="module")
-def isolated_hook_daemon(tmp_path_factory):
-    """One daemon this MODULE owns, on an OS-assigned free port, with its
-    instrument proven before any test can read it.
+@contextmanager
+def instrumented_daemon(tmp_dir):
+    """One daemon the CALLER owns, on an OS-assigned free port, with its
+    instrument proven before the caller can read it and its stop verdict
+    asserted afterwards. `with instrumented_daemon(tmp_dir) as daemon:`.
 
-    ALL of these tests need a daemon PROCESS: every one of them is a bash hook
-    subprocess that curls, and no in-process ASGI transport can serve a
-    subprocess.
+    THE ONE OWNER OF THE START, so the three things that travel with it cannot
+    drift apart: the isolation (log root, socket, cache dir under `tmp_dir`), the
+    access-log positive control, and the verified stop. A caller adds only what
+    its own subject requires, which today is a corpus precondition or nothing.
 
-    MODULE SCOPE IS MANDATORY, not a preference. `tests/conftest.py:135`'s
-    `_daemon_leak_guard` is module-scoped and autouse and fails any module that
-    leaves a live daemon behind, excluding only the suite port, so a
-    session-scoped daemon would be reported as a leak at the first module
-    boundary it survived.
+    A CONTEXT MANAGER RATHER THAN A PARAMETERIZED FIXTURE, because the two
+    fixtures below differ in the PREDICATE each runs before the start, and a
+    fixture parameter only one caller ever varies is the shape this repo already
+    rejected once for `isolated_prompt_daemon`. It also lets a module fixture that
+    needs its own precondition compose the two in two lines
+    (`test_fix3_metrics.py::owned_daemon`) instead of copying the start.
 
     THE PORT IS NEVER NAMED HERE: `start_isolated_daemon` takes one from
     `tests/fixtures/net.py::free_port`. An OS-assigned port is out of reach of
     `conftest.py`'s `pytest_sessionfinish` (which stops the daemon answering on
     `WRIT_PORT`) and out of the leak guard's suite-port exclusion, which is why
-    this fixture stops its own daemon and ASSERTS the verdict.
+    this stops its own daemon and ASSERTS the verdict.
 
-    The socket path is `<basetemp>/hookd<n>/writ.sock`, MEASURED at 56 bytes on
-    this machine (`/tmp/pytest-of-lucio.saldivar/pytest-61/hookd0/writ.sock`)
-    against `writ/config.py::MAX_SOCKET_PATH` = 107. That figure is a function of
-    TMPDIR and the user name, which is why an over-cap path is a STATED
-    start-verdict reason rather than a silent None, and why the only skip in this
-    whole chain is a daemon that could not start, carrying the daemon's own
-    distinct reason.
+    The socket path is `<tmp_dir>/writ.sock`, MEASURED at 56 bytes on this machine
+    (`/tmp/pytest-of-lucio.saldivar/pytest-61/hookd0/writ.sock`) against
+    `writ/config.py::MAX_SOCKET_PATH` = 107. That figure is a function of TMPDIR
+    and the user name, which is why an over-cap path is a STATED start-verdict
+    reason rather than a silent None, and why the only skip in this whole chain is
+    a daemon that could not start, carrying the daemon's own distinct reason.
 
     `tcp_readonly` is left FALSE, and here that is load-bearing twice over: these
     hooks POST `/prompt-bundle`, `/query` and `/analyze` over TCP, and
@@ -132,23 +151,13 @@ def isolated_hook_daemon(tmp_path_factory):
     posture would answer 403 to the very calls whose round trips these tests
     count.
 
-    THE CORPUS IS CHECKED BEFORE THE START, never after, for the reason
-    `tests/_prompt_turn.py:79-82` gives and which applies unchanged: the daemon
-    builds its indexes AT STARTUP, so a repair afterwards is invisible to the
-    process that needed it. The population is the one `/prompt-bundle`'s
-    always-on channel selects from, `INJECTION_RULE_WHERE` imported from the
-    production predicate so this precondition cannot drift from what
-    `writ/server/routes/query.py:705` interpolates.
+    THE STOP IS IN A `finally` and the verdict is asserted after it. The `with`
+    body is a fixture's own `yield`, and pytest can CLOSE that generator instead
+    of resuming it (GeneratorExit at the yield), which would carry a bare cleanup
+    path straight past the stop and leave a live daemon on an OS-assigned port
+    that no later guard can attribute to us.
     """
-    from writ.graph.predicates import INJECTION_RULE_WHERE
-
-    from tests._corpus import require_population
-
-    require_population(
-        f"MATCH (r:Rule) WHERE {INJECTION_RULE_WHERE} RETURN count(r)",
-        "the injection-rule population /prompt-bundle's always-on channel selects from",
-    )
-    tmp_dir = tmp_path_factory.mktemp("hookd")
+    tmp_dir = Path(tmp_dir)
     daemon = start_isolated_daemon(
         log_root=str(tmp_dir / "logs"),
         socket_path=str(tmp_dir / "writ.sock"),
@@ -178,14 +187,74 @@ def isolated_hook_daemon(tmp_path_factory):
         # one this failure is for.
         stop_isolated_daemon(daemon)
         pytest.fail(refusal, pytrace=False)
-    yield daemon
-    verdict = stop_isolated_daemon(daemon)
+    try:
+        yield daemon
+    finally:
+        verdict = stop_isolated_daemon(daemon)
     assert verdict["stopped"], (
-        f"isolated_hook_daemon teardown could not stop the daemon on port "
+        f"instrumented_daemon teardown could not stop the daemon on port "
         f"{verdict.get('port')}: pids {verdict.get('pids')}, surviving pids "
         f"{verdict.get('survivors')}, table measured "
         f"{verdict.get('pids_measured')}, health {verdict.get('health')!r}"
     )
+
+
+@pytest.fixture(scope="module")
+def isolated_hook_daemon(tmp_path_factory):
+    """`instrumented_daemon` plus the injection-rule corpus precondition, for a
+    module whose hooks RETRIEVE.
+
+    ALL of these tests need a daemon PROCESS: every one of them is a bash hook
+    subprocess that curls, and no in-process ASGI transport can serve a
+    subprocess.
+
+    MODULE SCOPE IS MANDATORY, not a preference. `tests/conftest.py:135`'s
+    `_daemon_leak_guard` is module-scoped and autouse and fails any module that
+    leaves a live daemon behind, excluding only the suite port, so a
+    session-scoped daemon would be reported as a leak at the first module
+    boundary it survived.
+
+    THE CORPUS IS CHECKED BEFORE THE START, never after, for the reason
+    `tests/_prompt_turn.py:79-82` gives and which applies unchanged: the daemon
+    builds its indexes AT STARTUP, so a repair afterwards is invisible to the
+    process that needed it. The population is the one `/prompt-bundle`'s
+    always-on channel selects from, `INJECTION_RULE_WHERE` imported from the
+    production predicate so this precondition cannot drift from what
+    `writ/server/routes/query.py:705` interpolates.
+    """
+    from writ.graph.predicates import INJECTION_RULE_WHERE
+
+    from tests._corpus import require_population
+
+    require_population(
+        f"MATCH (r:Rule) WHERE {INJECTION_RULE_WHERE} RETURN count(r)",
+        "the injection-rule population /prompt-bundle's always-on channel selects from",
+    )
+    with instrumented_daemon(tmp_path_factory.mktemp("hookd")) as daemon:
+        yield daemon
+
+
+@pytest.fixture(scope="module")
+def isolated_daemon(tmp_path_factory):
+    """`instrumented_daemon` with NO corpus precondition, for a module whose
+    subject is the daemon PROCESS itself.
+
+    THE ABSENCE OF A PRECONDITION IS THE POINT, and it is measured per consumer
+    rather than assumed: `test_fix2_cache_alignment` asserts on the `cache_dir`
+    the server process resolved, `test_pol5a_statusline` on a `POST
+    /context-percent` round trip, `test_inc1b_daemon_alignment` on cache-dir
+    alignment and a PostCompact reset, and `test_bash_write_gate` on a write-gate
+    round trip decided from the session cache. None of the four retrieves a rule,
+    so `isolated_hook_daemon`'s injection-rule population would fail all four on
+    a predicate that has nothing to do with their subject: the same class of
+    error as a skip that hides a real state, in the opposite direction.
+
+    MODULE SCOPE for the reason `isolated_hook_daemon` gives: the leak guard is
+    module-scoped and autouse, so a longer-lived daemon on an OS-assigned port
+    reads as a leak at the first module boundary it survives.
+    """
+    with instrumented_daemon(tmp_path_factory.mktemp("isod")) as daemon:
+        yield daemon
 
 
 def hook_env(daemon: dict | None = None, *, cache_dir: str | None = None) -> dict:

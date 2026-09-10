@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import writ_server_source
+from tests._hook_runner import isolated_daemon  # noqa: F401  (module fixture)
 
 SKILL = Path(__file__).resolve().parent.parent
 ENSURE = SKILL / "scripts" / "ensure-server.sh"
@@ -77,13 +78,21 @@ def _ensure(port: int, cache_dir: str, timeout: int = 20, friction_log: str | No
 
 
 class TestHealthCacheDir:
-    def test_health_reports_cache_dir(self) -> None:
-        from tests._daemon import _port
+    """OWNED DAEMON over HTTP (Decision 4/5, plan.md
+    2412ba38-51e1-4b73-895b-7b240a3c21d3, module 6). Converts the module's
+    key-presence test: a daemon reporting the WRONG dir satisfied `"cache_dir"
+    in h`, which is the FIX-2 defect this module exists for.
+    """
 
-        h = _health(int(_port()))
-        if h is None:
-            pytest.skip("test-port daemon unreachable")
-        assert "cache_dir" in h, f"/health must report cache_dir; got keys {sorted(h)}"
+    def test_health_reports_the_cache_dir_the_start_was_handed(self, isolated_daemon) -> None:
+        expected = isolated_daemon["cache_dir"]
+        reported = isolated_daemon["health"].get("cache_dir")
+        assert reported == expected, (
+            f"/health must report the cache_dir this daemon's start was handed "
+            f"({expected!r}), not merely carry a cache_dir key; got {reported!r}"
+        )
+    # MUTATION: having /health report tempfile.gettempdir() instead of the
+    # resolved dir keeps the key present and reddens this equality.
 
 
 class TestStartPathsPinCacheDir:

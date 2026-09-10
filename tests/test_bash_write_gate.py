@@ -31,11 +31,16 @@ from pathlib import Path
 
 import pytest
 
-# autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
-# The two `mode set work` calls below sit behind a daemon-liveness skip, which is why the
-# sentinel probe that found the other 26 modules reported this one clean: with no daemon
-# listening the tests skipped and never reached the deletion.
+# autouse: pins cwd to a sandbox so a stray cache write cannot touch THIS
+# repo's own gate artifacts.
 from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
+
+# OWNED DAEMON module fixture (Decision 4, plan.md
+# 2412ba38-51e1-4b73-895b-7b240a3c21d3): TestHookEndToEnd's two daemon tests
+# take this shared harness. Imported explicitly per this repo's convention
+# (tests/_hook_runner.py's own module docstring) -- never registered in a root
+# conftest.
+from tests._hook_runner import isolated_daemon  # noqa: F401
 
 SKILL_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 HOOKS_JSON = os.path.join(SKILL_ROOT, "hooks", "hooks.json")
@@ -166,25 +171,18 @@ def _extract(cmd: str, cwd: str = "/proj") -> set[tuple[str, str]]:
     return out
 
 
-def _test_daemon_up() -> bool:
-    """Health of the daemon on the SUITE's port (conftest forces WRIT_PORT=8799).
-    Checked at run time, not collection: the suite does not auto-start a session
-    daemon (a cold one tips perf floors -- see conftest), so the full-hook
-    work-gate tests skip unless a daemon is already answering on the test port."""
-    try:
-        from tests._daemon import _daemon_health
-        return _daemon_health() is not None
-    except Exception:
-        return False
-
-
-def _run_hook(cmd: str, sid: str, cwd: str) -> dict | None:
+def _run_hook(cmd: str, sid: str, cwd: str, *, env: dict | None = None) -> dict | None:
     """Invoke the full hook with a synthetic Bash envelope. Returns the parsed
-    hookSpecificOutput on a deny, or None when the hook allows (empty stdout)."""
+    hookSpecificOutput on a deny, or None when the hook allows (empty stdout).
+
+    `env=None` inherits the current process env exactly as before (every
+    caller but TestHookEndToEnd's two daemon tests); `env=hook_env(daemon)`
+    routes the hook at an owned daemon this module's own fixture starts.
+    """
     envelope = json.dumps({"session_id": sid, "tool_name": "Bash",
                            "tool_input": {"command": cmd}})
     p = subprocess.run(["bash", HOOK_SH], input=envelope, cwd=cwd,
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, env=env)
     out = p.stdout.strip()
     if not out:
         return None
@@ -445,43 +443,80 @@ class TestHookEndToEnd:
         _seed(sid, mode="work")
         assert _run_hook("ls -la", sid, str(tmp_path)) is None
 
-    def test_work_mode_project_write_denied(self, tmp_path: Path):
-        # Full hook -> daemon round-trip. Skips when no daemon answers on the test
-        # port (the suite does not auto-start one); the verdict itself is covered
-        # deterministically by TestWorkGateVerdict.
-        if not _test_daemon_up():
-            pytest.skip("test daemon not running on test port")
+    def test_work_mode_project_write_denied(self, tmp_path: Path, isolated_daemon):
+        """Full hook -> DAEMON round trip (Decision 4, OWNED DAEMON, hook
+        subprocess, plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3, module 8).
+        THE ADDITION THAT GIVES THIS TEST A REASON TO EXIST: the
+        per-session can-write delta is asserted at exactly one. Without it a
+        converted test merely restates TestWorkGateVerdict's in-process
+        verdict, which the module's own (former) comment said was the
+        deterministic cover; the DAEMON PATH is the only thing this test can
+        prove that the in-process tests cannot.
+
+        THE ROUTE IS `/session/<id>/can-write`, MEASURED, not read off a
+        docstring. This assertion first named `/pre-write-check`, which the
+        plan and the test both took from a neighbouring comment, and it read a
+        delta of zero against a hook that had plainly reached the daemon. The
+        artifact settled it: the daemon's own access log showed
+        `"POST /session/<sid>/can-write HTTP/1.1" 200 OK`, one per test, and
+        `writ-bash-write-gate.sh:3186` curls exactly that. The string
+        `pre-write-check` does not appear in that hook at all; it belongs to
+        the Write/Edit dispatch hook. A route name is a fact about the caller,
+        so it comes from the caller.
+        """
+        from tests._hook_runner import count_requests, hook_env, seed_session_cache
+
         sid = f"bwg-{uuid.uuid4().hex[:8]}"
-        subprocess.run([sys.executable, HELPER, "mode", "set", "work", sid],
-                       capture_output=True)
+        seed_session_cache(isolated_daemon["health"]["cache_dir"], sid, "work")
         (tmp_path / "src").mkdir()
-        out = _run_hook("echo x > src/foo.py", sid, str(tmp_path))
-        subprocess.run([sys.executable, HELPER, "clear", sid], capture_output=True)
+        pattern = f'"POST /session/{sid}/can-write HTTP'
+        before = count_requests(isolated_daemon, pattern)
+        out = _run_hook(
+            "echo x > src/foo.py", sid, str(tmp_path), env=hook_env(isolated_daemon)
+        )
+        after = count_requests(isolated_daemon, pattern)
+        assert after == before + 1, (
+            f"the hook must reach the daemon's /pre-write-check exactly once; "
+            f"before={before}, after={after}"
+        )
         assert out is not None and out.get("permissionDecision") == "deny"
         assert "ENF-GATE-PLAN" in out.get("permissionDecisionReason", "")
+    # MUTATION: pointing the harness at a socket and port nothing serves takes
+    # the delta to 0 and reddens both, while the hook's local credential
+    # backstop still answers, which is why the delta and not the verdict is
+    # the load-bearing half.
 
-    def test_outside_repo_write_is_decided_in_work_mode(self, tmp_path: Path):
-        # THIS TEST DOES NOT EXECUTE IN THIS ENVIRONMENT (no daemon answers on the test
-        # port), so its name is documentation and not evidence; the executable pin for
-        # the same property is TestOutOfCwdTargetIsWorkGated below, which reaches the
-        # gate through the CLI fallback. The skip guard is left exactly as it was.
-        if not _test_daemon_up():
-            pytest.skip("test daemon not running on test port")
+    def test_outside_repo_write_is_decided_in_work_mode(self, tmp_path: Path, isolated_daemon):
+        """As above, over the DAEMON, plus the module's distinct property:
+        agreement between the Bash door and the Write door on a target
+        outside the repo. The target is outside tmp_path (the repo root). It
+        used to produce no row and no verdict; as of cycle L it is DECIDED, by
+        the same _can_write_check the Write tool calls, so this asserts
+        AGREEMENT with that door rather than silence. Pre-approval both
+        refuse, which is consequence C1 in the approved plan, the accepted
+        cost of two-door parity, whose named remedy is a scratch-zone allow
+        arm in gates._check_work_gate, deferred to its own cycle.
+        """
+        from tests._hook_runner import count_requests, hook_env, seed_session_cache
+
         sid = f"bwg-{uuid.uuid4().hex[:8]}"
-        subprocess.run([sys.executable, HELPER, "mode", "set", "work", sid],
-                       capture_output=True)
-        # The target is outside tmp_path (the repo root). It used to produce no row and
-        # no verdict; as of cycle L it is DECIDED, by the same _can_write_check the
-        # Write tool calls, so this asserts AGREEMENT with that door rather than
-        # silence. Pre-approval both refuse, which is consequence C1 in the approved
-        # plan, the accepted cost of two-door parity, whose named remedy is a
-        # scratch-zone allow arm in gates._check_work_gate, deferred to its own cycle.
+        seed_session_cache(isolated_daemon["health"]["cache_dir"], sid, "work")
         gates = _imp("writ.session.gates")
         target = "/tmp/writ-scratch-xyz"
-        out = _run_hook(f"echo x > {target}", sid, str(tmp_path))
+        # Route measured from the caller, not read off a docstring. See the
+        # sibling test above for the artifact that settled it.
+        pattern = f'"POST /session/{sid}/can-write HTTP'
+        before = count_requests(isolated_daemon, pattern)
+        out = _run_hook(
+            f"echo x > {target}", sid, str(tmp_path), env=hook_env(isolated_daemon)
+        )
+        after = count_requests(isolated_daemon, pattern)
         write_door = gates._can_write_check(
             sid, {"tool_input": {"file_path": target}}, SKILL_ROOT)
-        subprocess.run([sys.executable, HELPER, "clear", sid], capture_output=True)
+        assert after == before + 1, (
+            f"the out-of-repo target must still reach the daemon's "
+            f"/pre-write-check exactly once; before={before}, after={after}"
+        )
         assert write_door["can_write"] is False, write_door
         assert out is not None, "the out-of-repo target was silent; it reached no gate"
         assert out.get("permissionDecision") == "deny", out
