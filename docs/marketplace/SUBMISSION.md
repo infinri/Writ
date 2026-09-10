@@ -2,18 +2,43 @@
 
 Maintainer reference for submitting `writ@writ` to the official Anthropic plugin marketplace at https://claude.ai/settings/plugins/submit. The positioning appendix at the bottom absorbs the former PROMOTIONAL-BRIEF.md.
 
-> **Listing status: an external claim, last checked 2026-08-01, NOT re-verified since.**
-> Everything in this block describes a repository this project does not control, so no
-> command in this tree can confirm it is still true. Re-check it by hand before opening
-> the form. As of 2026-08-01: Writ IS already listed in
-> `anthropics/claude-plugins-community` (entry name `writ`), but the listing is stale in
-> every way that matters: it is pinned to an orphaned pre-history-scrub commit from
-> 2026-05-10 ("Release v1.0.0") that has NO marketplace.json and predates every 1.5.1
-> install fix, so a `writ@claude-community` install serves a three-month-old, install-broken
-> Writ. The listing's own description carried the numbers it was published with
-> (276 rules / 30 mandatory / 726x), none of which match this tree today.
-> The community repo auto-closes direct PRs; the ONLY update path is a re-submission
-> through the claude.ai form below, which re-pins the sha and refreshes the copy.
+> **Listing status: MEASURED 2026-09-10, and re-checkable in one command.**
+> This block used to be an external claim carrying its own warning that no command in this
+> tree could confirm it. That is why it sat five weeks stale and was nearly used as the basis
+> for a README change. It is now a measurement with the command that produced it:
+>
+> ```
+> gh api repos/anthropics/claude-plugins-community/contents/.claude-plugin/marketplace.json \
+>   -H "Accept: application/vnd.github.raw"
+> ```
+>
+> That manifest holds 2282 entries. Exactly one matches `writ`, pinned by explicit sha to
+> `d3c33d3e35adc30dc4448d0829801f5a8a9138da`, with a description advertising
+> "726x context reduction" and "276 rules across 12 domains".
+>
+> **THE PIN RESOLVES, which is worse than "install-broken".** `git cat-file -t` in this clone
+> reports "no such commit", because the history scrub orphaned it locally, but
+> `gh api repos/infinri/Writ/commits/d3c33d3e...` returns it as "Release v1.0.0". So
+> `claude plugin install writ@claude-community` does NOT fail to fetch. It succeeds and
+> delivers v1.0.0, which predates every 1.5.1 install fix. A failed fetch produces a bug
+> report; a silent four-month-old install produces a bad first impression with no signal at
+> all. The earlier wording invited a reader to assume the route was inert. It is not.
+>
+> **Every advertised number is wrong**, and by more than age. Against the tracked
+> `writ-corpus.cypher` today: 288 rules, not 276; 32 mandatory, not 30; 16 rule domains, not
+> 12. The `726x` figure is not refreshed here and is not carried into the copy below, for the
+> reason `SCALE_BENCHMARK_RESULTS.md` states about its own successor figure: a multiplier of
+> that shape is measured against pasting a 1.19-million-token corpus into every message, "a
+> theoretical ceiling, not something anyone does", and against a realistic hand-curated
+> instructions file the per-turn cost is roughly comparable.
+>
+> **Practical conclusion, unchanged and reinforced.** Do not promote `writ@claude-community`
+> anywhere, least of all on the README's first screen, until a re-submission re-pins the sha.
+> The working route is the self-hosted one the README already documents:
+> `claude plugin marketplace add infinri/Writ`. The community repo auto-closes direct pull
+> requests, so the ONLY update path is a re-submission through the claude.ai form below,
+> which re-pins the sha and refreshes the copy. That is an operator action; no command in
+> this tree performs it.
 
 ## Pre-submission checklist
 
@@ -26,6 +51,8 @@ Maintainer reference for submitting `writ@writ` to the official Anthropic plugin
 - [x] **No secrets in repo**: `writ.toml` is gitignored; the shipped template carries only the documented dev Neo4j default.
 - [ ] **Fresh-install smoke**: dated result, needs a re-run before submitting. `tests/plugin/test_fresh_install_smoke.py` ran green with `WRIT_INTEGRATION_TESTS=1` on 2026-08-01 (clone, marketplace add, install, bootstrap, health), and bootstrap was made idempotent across container provenance the same day (a pre-existing `writ-neo4j` container is reused instead of colliding with `compose up`). That run measured the tree as it stood on 2026-08-01, not the commit being submitted, so re-run it against the submission sha and re-date this line before opening the form.
 - [ ] **Screenshots captured** (below).
+- [x] **Existing community listing located and its state measured**: done 2026-09-10, see the status block above. The entry exists, its sha resolves to "Release v1.0.0", and all three advertised numbers are wrong. This settles what the re-submission has to correct; it does not settle the re-submission, which only the operator can perform.
+- [ ] **Re-submission opened**: the one action no command in this tree can take. The community repo auto-closes direct pull requests, so the form at https://claude.ai/settings/plugins/submit is the only path that re-pins the sha. Until it lands, `writ@claude-community` serves v1.0.0 and must not be promoted.
 
 ## Listing copy
 
@@ -35,10 +62,20 @@ Maintainer reference for submitting `writ@writ` to the official Anthropic plugin
 > Hybrid-RAG rule retrieval plus workflow gates for Claude Code: the right rules per prompt, no risky writes before an approved plan.
 
 **Short description**:
-> Writ is a Claude Code harness with two co-equal layers. A librarian retrieves the rules that fit the current task through a five-stage hybrid pipeline (BM25 + vector + graph traversal + weighted ranking, with an abstention gate) over a Neo4j knowledge graph: sub-millisecond ranked retrieval, roughly flat retrieved tokens as the corpus grows (749x reduction versus prompt-stuffing at 10,000 rules, measured 2026-08-01). A process keeper of 41 hook scripts and a session state machine enforces mode-based workflow gates: plan approval, then test skeletons, then implementation, and approval requires a token only the user's keystroke produces. 288 rules ship out of the box across security, clean code, architecture, testing, performance, and process, with authoring tooling to grow your own.
+> Writ is a Claude Code harness with two co-equal layers. A librarian retrieves the rules that fit the current task through a five-stage hybrid pipeline (BM25 + vector + graph traversal + weighted ranking, with an abstention gate) over a Neo4j knowledge graph: sub-millisecond ranked retrieval, and retrieved tokens that stay roughly flat as the rulebook grows rather than scaling with it. A process keeper of hook scripts and a session state machine enforces mode-based workflow gates: plan approval, then test skeletons, then implementation, and approval requires a token only the user's keystroke produces. 288 rules ship out of the box across 16 domains, led by security (76), code quality (45), architecture (28), testing (21), process (19) and performance (19), with authoring tooling to grow your own.
 
-(Rule count re-verified against `writ-corpus.cypher` on 2026-08-14; re-run the count
-before submitting if the corpus has moved since.)
+NO REDUCTION MULTIPLIER IN THE COPY, deliberately. The live listing leads with "726x" and an
+earlier draft here carried "749x". `SCALE_BENCHMARK_RESULTS.md` measures that class of figure
+against pasting the entire 10,000-rule corpus (1.19 million tokens) into every message, and
+says so itself: "a theoretical ceiling, not something anyone does, since no context window
+holds it." Against the realistic comparison, a hand-curated instructions file of about 5,000
+tokens, the per-turn cost is roughly comparable while covering the whole shipped rulebook.
+The flatness is the honest claim; the multiplier is a number about a baseline nobody uses.
+
+(Counts DERIVED from `writ-corpus.cypher`, the tracked canonical dump, on 2026-09-10:
+288 rules, 32 mandatory, 16 rule domains. Re-derive rather than copy this line if the corpus
+has moved. Do not count `bible/`: it is a gitignored derived export holding only 160
+rule-shaped files, and citing it is how one fact became two published numbers before.)
 
 **Long description**: mirror README "The problem" + "What Writ does about it" verbatim (kept current there; do not fork the text here).
 
@@ -52,7 +89,7 @@ before submitting if the corpus has moved since.)
 
 1. Rule injection: a session showing the `--- WRIT RULES ---` block on a real prompt.
 2. Gate denial: a Write blocked with `[ENF-GATE-PLAN]` before plan approval.
-3. `writ status` / `curl localhost:8765/health` showing the live corpus (288 rules, 32 mandatory as of 2026-08-14, warm index; capture whatever the live daemon actually reports).
+3. `writ status` / `curl localhost:8765/health` showing the live corpus (288 rules, 32 mandatory as derived from the tracked dump on 2026-09-10, warm index; capture whatever the live daemon actually reports rather than these figures).
 4. The `/dashboard` friction analytics view, or the `/explore` graph explorer.
 5. Optional: the architecture pages under `docs/architecture/`.
 
