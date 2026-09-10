@@ -53,11 +53,11 @@ This module now runs in CI (it starts its own daemon from this checkout rather t
 depending on the operator's interactive singleton), where the old form skipped
 unconditionally on an unreachable :8765 and covered nothing.
 
-CORRECTLY RED as of the testing phase: tests/_daemon.py does not yet define
-start_isolated_daemon / stop_isolated_daemon (assigned to the implementation phase), so this
-module currently fails to COLLECT (ImportError), not merely to pass. Every test below is
-written against the contract those two functions and tests/_audit_stream.py's helpers must
-satisfy.
+Every test below is written against the contract tests/_daemon.py's
+start_isolated_daemon / stop_isolated_daemon and tests/_audit_stream.py's helpers satisfy.
+Those functions have existed since the cycle that added this module, so the paragraph that
+used to sit here, claiming this file was CORRECTLY RED because they were not yet defined,
+described a state that ended when they landed and is removed rather than carried forward.
 """
 
 from __future__ import annotations
@@ -139,20 +139,22 @@ def own_daemon(_production_audit_guard, tmp_path_factory):
     module end (stop_isolated_daemon) so the rest of the suite sees the same
     world it would without this file.
 
-    Skips, with a stated reason, when the daemon cannot be brought up: nothing
-    answers /health on the free port, the throwaway socket path is over the
-    AF_UNIX byte cap, or the socket file never appears. Reddened (as a hang or
-    an unguarded failure instead of a skip) by pointing the fixture at a port
-    nothing serves.
+    Skips with the START VERDICT'S OWN reason when the daemon cannot be brought
+    up, rather than reciting a generic list of causes here. `start_isolated_daemon`
+    distinguishes four (the launcher missing, the throwaway socket path over the
+    AF_UNIX byte cap, a raised or timed-out start, and health-never-answered as
+    separate from socket-file-never-appeared), and only it knows which one it saw;
+    a skip message assembled at this end is a guess wearing a fact's clothes.
+    Reddened (as a hang or an unguarded failure instead of a skip) by pointing the
+    fixture at a port nothing serves.
 
-    Teardown asserts the STOP VERDICT rather than discarding it: this is the
-    loud channel D2 needs, per plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3.
-    A `stop_isolated_daemon` that still returns None (today's behaviour) makes
-    this teardown fail with a TypeError on `None["stopped"]`, which is a
-    correct red for the stated reason (no verdict yet), not a silent pass; a
-    `stop_isolated_daemon` that returns a verdict but with `stopped: False`
-    must fail this same assertion by name, with the port and surviving pids
-    in the message, rather than let the module finish looking clean.
+    Teardown asserts the STOP VERDICT rather than discarding it, because a stop
+    whose own "is it down" check is thrown away reports nothing when it misses:
+    the teardown that this replaced matched one spelling of the launch command,
+    silently matched nothing, unlinked the socket anyway, and left the daemon
+    running. A `stop_isolated_daemon` returning `stopped: False` must fail this
+    assertion by name, with the port and surviving pids in the message, rather
+    than let the module finish looking clean.
     """
     tmp_dir = tmp_path_factory.mktemp("advance-phase-token-gate")
     log_root = tmp_dir / "logs"
@@ -162,12 +164,8 @@ def own_daemon(_production_audit_guard, tmp_path_factory):
         cache_dir=str(tmp_dir / "cache"),
         tcp_readonly=True,
     )
-    if daemon is None:
-        pytest.skip(
-            "could not bring up this module's isolated daemon (free port "
-            "unanswered, socket path over the AF_UNIX byte cap, or the "
-            "socket file never appeared)"
-        )
+    if not daemon.get("started"):
+        pytest.skip(daemon["reason"])
     daemon["log_root"] = str(log_root)
     yield daemon
     verdict = stop_isolated_daemon(daemon)

@@ -65,6 +65,7 @@ import tests._daemon_leak as _leak_module
 from tests._daemon import (
     _pids_serving_port,
     _wait_for_isolated_down,
+    start_isolated_daemon,
     stop_isolated_daemon,
 )
 from tests._daemon_leak import (
@@ -869,3 +870,40 @@ class TestStopIsolatedDaemonWithNothingToStop:
             "the no-port path unlinked a file it never bound; only a teardown that "
             "identified a port may remove a socket"
         )
+
+
+# --------------------------------------------------------------------------- #
+# Added for plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3: the start-side verdict
+# gets the same treatment the stop-side verdict already has above. Covered here
+# rather than riding a module that owns a real daemon because this ONE failure
+# cause needs no daemon at all: writ/config.py::socket_path_usable is checked
+# before any mkdir and before any subprocess, so an over-cap socket path starts
+# nothing and can be exercised hermetically.
+# --------------------------------------------------------------------------- #
+
+
+class TestStartIsolatedDaemonRejectsAnOverCapSocketPath:
+    """`start_isolated_daemon` returns a VERDICT carrying its reason instead of
+    a bare `None`, for the one failure cause among its four that this module
+    can prove without starting anything."""
+
+    def test_an_over_cap_socket_path_returns_started_false_naming_the_cap(
+        self, tmp_path,
+    ) -> None:
+        """Reddened by today's bare `return None` on this branch: `None` has
+        no `started` key, so `verdict["started"]` raises a TypeError instead
+        of reading False; also reddened by a reason string that drops either
+        the offending byte length or the 107-byte AF_UNIX cap it was measured
+        against."""
+        over_cap_socket = str(tmp_path / ("x" * 120)) + "/writ.sock"
+        byte_length = len(os.fsencode(over_cap_socket))
+        assert byte_length > 107, "fixture path must itself be over the cap"
+        verdict = start_isolated_daemon(
+            log_root=str(tmp_path / "logs"),
+            socket_path=over_cap_socket,
+            cache_dir=str(tmp_path / "cache"),
+        )
+        assert verdict["started"] is False
+        assert verdict["port"] is None
+        assert str(byte_length) in verdict["reason"], verdict["reason"]
+        assert "107" in verdict["reason"], verdict["reason"]

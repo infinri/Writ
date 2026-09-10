@@ -324,20 +324,33 @@ def start_isolated_daemon(
     tcp_readonly: bool = False,
     port: int | None = None,
     timeout: float = 40.0,
-) -> dict | None:
+) -> dict:
     """Start a daemon this caller OWNS, fully isolated, on an OS-assigned free port.
 
-    Returns None (never raises, never hangs) when the daemon cannot be brought
-    up -- ensure-server.sh missing, the socket path over the AF_UNIX byte cap,
-    nothing answering /health, or the socket file never appearing -- so the
-    caller can skip with a stated reason. Otherwise returns
-    {"port", "base_url", "socket_path", "cache_dir", "log_root", "health",
-    "pids"}, where "health" is that daemon's OWN /health payload (the caller
-    verifies the log destination the SERVER process resolved rather than
-    assuming the env plumbing took effect) and "pids" is the process-table
-    identity of the daemon on that port, read after the health and socket
-    checks pass, so the teardown can verify what it signalled instead of
-    trusting that a signal arrived.
+    RETURNS A STARTED VERDICT, never raises and never hangs. On success, today's
+    keys plus `"started": True`: {"started", "port", "base_url", "socket_path",
+    "cache_dir", "log_root", "health", "pids", "pids_measured"}, where "health"
+    is that daemon's OWN /health payload (the caller verifies the log
+    destination the SERVER process resolved rather than assuming the env
+    plumbing took effect) and "pids" is the process-table identity of the daemon
+    on that port, read after the health and socket checks pass, so the teardown
+    can verify what it signalled instead of trusting that a signal arrived.
+
+    On failure, {"started": False, "reason": "<what happened>", "port": None},
+    with a DISTINCT reason per cause. It used to return a bare `None` for all
+    four, which left every caller's skip message a guess -- the same asymmetry
+    cycle 18 removed from `stop_isolated_daemon`, one function earlier. The
+    fourth `if` collapsed two causes (health never answered, socket file never
+    appeared) and they are now two sentences, because the orchestrator's first
+    probe of this helper hit the byte cap with a 118-byte path, created no
+    directories, and said nothing at all.
+
+    `"port": None` on every failure path is deliberate rather than lossy:
+    `stop_isolated_daemon` already short-circuits to its no-daemon verdict on a
+    payload with no port, and by the time a failure is returned
+    `_kill_writ_serve_on_port` has already run, so there is genuinely nothing
+    left to tear down. The port travels in the reason string instead, where a
+    skip message can show it.
 
     THE ENV DICT IS BUILT EXPLICITLY, and each part of it closes a measured trap:
 
@@ -369,13 +382,33 @@ def start_isolated_daemon(
     - `WRIT_TCP_READONLY` matches the deployed daemon's posture (state-changing
       routes over the socket only) when the caller asks for it.
     """
-    from writ.config import socket_path_usable
+    from writ.config import MAX_SOCKET_PATH, socket_path_usable
 
     ensure = _REPO_ROOT / "scripts" / "ensure-server.sh"
     if not ensure.exists():
-        return None
+        return {
+            "started": False,
+            "reason": (
+                f"cannot start an isolated daemon: the launcher "
+                f"scripts/ensure-server.sh is missing (looked for {ensure})"
+            ),
+            "port": None,
+        }
     if not socket_path_usable(socket_path):
-        return None
+        # The byte count and the cap both travel in the message: the cap is a
+        # kernel limit on the BYTE string (writ/config.py:40), so a caller whose
+        # TMPDIR or user name pushed it over needs the two numbers to see by how
+        # much. This branch returns before any mkdir and before any subprocess,
+        # so nothing has been started here and nothing needs tearing down.
+        return {
+            "started": False,
+            "reason": (
+                f"cannot start an isolated daemon: the socket path is "
+                f"{len(os.fsencode(socket_path))} bytes, over the "
+                f"{MAX_SOCKET_PATH}-byte usable AF_UNIX cap ({socket_path})"
+            ),
+            "port": None,
+        }
     if port is None:
         from tests.fixtures.net import free_port
 
@@ -407,17 +440,49 @@ def start_isolated_daemon(
             cwd=str(_REPO_ROOT), env=env,
             capture_output=True, timeout=timeout, check=False,
         )
-    except (subprocess.SubprocessError, OSError):
+    except (subprocess.SubprocessError, OSError) as exc:
         _kill_writ_serve_on_port(port)
-        return None
+        return {
+            "started": False,
+            "reason": (
+                f"cannot start an isolated daemon: scripts/ensure-server.sh "
+                f"raised {type(exc).__name__} for port {port} within the "
+                f"{timeout}s ceiling ({exc})"
+            ),
+            "port": None,
+        }
 
     health = _wait_for_isolated_health(port)
-    if health is None or not _wait_for_socket_file(socket_path):
+    if health is None:
         _kill_writ_serve_on_port(port)
-        return None
+        return {
+            "started": False,
+            "reason": (
+                f"cannot start an isolated daemon: nothing answered /health on "
+                f"port {port} after the start returned"
+            ),
+            "port": None,
+        }
+    if not _wait_for_socket_file(socket_path):
+        # SPLIT from the health case above, which the single `if` used to
+        # collapse. `writ serve` binds TCP first and falls back to TCP-only on an
+        # unusable or already-served socket, so a daemon that answers /health is
+        # NOT evidence its socket came up: these are two different failures and a
+        # caller's skip message has to be able to say which one it saw.
+        _kill_writ_serve_on_port(port)
+        return {
+            "started": False,
+            "reason": (
+                f"cannot start an isolated daemon: the daemon on port {port} "
+                f"answered /health but its socket file never appeared at "
+                f"{socket_path}"
+            ),
+            "port": None,
+        }
 
     pids_measured, pids = _pids_serving_port(port)
     return {
+        "started": True,
         "port": port,
         "base_url": f"http://localhost:{port}",
         "socket_path": socket_path,

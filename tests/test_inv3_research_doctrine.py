@@ -20,26 +20,24 @@ Wired:
 
 Parse/validity + edge + lint tests are hermetic. Retrieval/e2e tests require the
 nodes ingested into the live graph + a warmed daemon (the implementation does that
-via `writ import-markdown` + restart); they skip when the server is unreachable.
-Mirrors tests/test_diagnose_playbooks.py and tests/test_debug_playbook_injection.py.
+via `writ import-markdown` + restart); they run against a per-module isolated
+daemon (tests/_prompt_turn.py) rather than skipping on an unreachable shared
+address. Mirrors tests/test_diagnose_playbooks.py and
+tests/test_debug_playbook_injection.py: the live-hook tests here run the real
+UserPromptSubmit hook and then the real Stop hook back-to-back from the same
+project cwd, because production only ever drains a turn's buffered rag_query
+rows onto the `metrics` stream from the Stop hook.
 """
 from __future__ import annotations
 
 import json
 import os
 import re
-import subprocess
-import sys
-import tempfile
-import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
 
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from writ.shared.logging import read_streams, resolve_project  # noqa: E402
 
 # Exercises the router's cwd-based project-scope resolution to a tmp subdir;
 # opt out of the autouse WRIT_FRICTION_LOG redirect so rag_query telemetry
@@ -54,18 +52,15 @@ from writ.graph.ingest import (
     validate_parsed_node,
 )
 
-from tests._daemon import _port
 from tests.conftest import writ_server_source
+from tests._prompt_turn import run_prompt_turn, seed_session_cache
+from tests._prompt_turn import isolated_prompt_daemon  # noqa: F401
 
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 METHODOLOGY = SKILL_DIR / "bible" / "methodology"
 RESEARCH_RULES = SKILL_DIR / "bible" / "research" / "rules.md"
 HOOK = str(SKILL_DIR / "hooks" / "scripts" / "writ-rag-inject.sh")
-# #8: the per-mode methodology query_source map (incl investigate ->
-# investigation-doctrine) + the companion call moved from the hook into the warm
-# /prompt-bundle endpoint; the hook delivers the rendered bundle via one curl.
-SERVER = f"http://localhost:{_port()}"
 
 RESEARCH_PLAYBOOK = "PBK-PROC-RESEARCH-001"
 SOURCE_EVAL_TECHNIQUE = "TEC-PROC-SOURCE-EVAL-001"
@@ -87,57 +82,34 @@ RESEARCH_SYMPTOM = (
 MAGENTO_TOKENS = ["magento", "mview", "cron_schedule", "php-spx", "innodb"]
 
 
-def _server_up() -> bool:
-    try:
-        with urllib.request.urlopen(f"{SERVER}/health", timeout=2):
-            return True
-    except (urllib.error.URLError, OSError):
-        return False
+def _triage_message(
+    expected_source: str, events: list[dict], stdout: str, queries_delta: int,
+) -> str:
+    """One failure message that carries every triage rung, so a reader tells a
+    DRAIN failure from a RETRIEVAL failure without re-running anything.
 
-
-def _seed_cache(cache_dir: str, sid: str, mode: str) -> str:
-    """Seed a non-orchestrator session cache in the server's cache dir."""
-    path = os.path.join(cache_dir, f"writ-session-{sid}.json")
-    with open(path, "w") as f:
-        json.dump(
-            {
-                "mode": mode,
-                "is_orchestrator": False,
-                "is_subagent": False,
-                "current_phase": None,
-                "loaded_rule_ids": [],
-                "loaded_rule_ids_by_phase": {},
-                "remaining_budget": 8000,
-                "context_percent": 0,
-                "queries": 0,
-                "files_written": [],
-                "loaded_rules": [],
-            },
-            f,
-        )
-    return path
-
-
-def _run_hook_events(tmp_path, sid: str, prompt: str) -> tuple[int, str, list[dict]]:
-    """Run writ-rag-inject.sh against the live server in a tmp project cwd;
-    return (returncode, stderr, parsed rag_query events from the P1 metrics
-    stream). rag_query is a `metrics`-stream event; the project scope derives
-    from the hook's cwd, resolved the same way the router does."""
-    project_root = tmp_path / "proj"
-    project_root.mkdir(exist_ok=True)
-    (project_root / ".git").mkdir(exist_ok=True)  # marker for router project scope
-
-    envelope = json.dumps({"session_id": sid, "prompt": prompt})
-    result = subprocess.run(
-        ["bash", HOOK],
-        input=envelope,
-        capture_output=True,
-        text=True,
-        cwd=str(project_root),
-        timeout=15,
+    The discriminator comes from the mechanism, not from a guess: a drain
+    problem cannot be selective, because it takes the whole list (every
+    query_source, plus the `hook_execution` rows), and its symptom is
+    `events == []`. A retrieval problem is ONE source missing from a NON-EMPTY
+    list. The `queries` delta then splits the empty case in two: zero means the
+    turn never reached this daemon at all (transport), positive means the daemon
+    served it and nothing landed (drain)."""
+    rag_events = [e for e in events if e.get("event") == "rag_query"]
+    sources = sorted({e.get("query_source") for e in rag_events})
+    return (
+        f"no rag_query with query_source={expected_source!r} in the drained "
+        f"turn.\n"
+        f"rung 1 (transport vs drain): events empty={not events}, "
+        f"daemon queries delta={queries_delta}\n"
+        f"rung 2 ('broad' present -- retrieval + drain both worked): "
+        f"{'broad' in sources}\n"
+        f"rung 3 (companion header rendered on stdout): "
+        f"{'[Writ: methodology companion]' in stdout}\n"
+        f"query_source values seen: {sources}\n"
+        f"events:\n{json.dumps(events, indent=2)}\n"
+        f"stdout:\n{stdout}"
     )
-    events = read_streams(resolve_project(str(project_root)), ["metrics"])
-    return result.returncode, result.stderr, events
 
 
 class TestResearchNodesParse:
@@ -289,11 +261,13 @@ class TestInvestigateArmStructural:
 class TestInvestigateDoctrineRetrieval:
     """Integration: a research symptom surfaces the doctrine via /query."""
 
-    def test_symptom_surfaces_research_playbook(self) -> None:
-        if not _server_up():
-            pytest.skip("Writ server unreachable")
+    def test_symptom_surfaces_research_playbook(self, isolated_prompt_daemon) -> None:
+        """Reddened by the research symptom no longer ranking
+        PBK-PROC-RESEARCH-001 into the top-k Playbook/Technique hits for
+        domain=process -- a content or ranking regression in the graph, not a
+        harness defect."""
         req = urllib.request.Request(
-            f"{SERVER}/query",
+            f"{isolated_prompt_daemon['base_url']}/query",
             data=json.dumps({
                 "query": RESEARCH_SYMPTOM,
                 "node_types": ["Playbook", "Technique"],
@@ -313,53 +287,81 @@ class TestInvestigateDoctrineRetrieval:
 
 
 class TestInvestigateArmEndToEnd:
-    """Run the hook with a seeded investigate-mode cache; assert the friction log."""
+    """Run the real two-hook turn with a seeded mode; assert the drained stream."""
 
-    def test_investigate_mode_fires_doctrine_query(self, tmp_path) -> None:
-        if not _server_up():
-            pytest.skip("Writ server unreachable")
+    def test_investigate_mode_fires_doctrine_query(
+        self, isolated_prompt_daemon, tmp_path,
+    ) -> None:
+        """Reddened by the Stop hook draining a buffer under a different
+        WRIT_CACHE_DIR or a different cwd than the UserPromptSubmit hook used
+        (the drain then finds nothing), or by removing the Stop-hook run from
+        the turn entirely (the drain never happens at all, events == [])."""
+        daemon = isolated_prompt_daemon
         sid = f"investigate-doctrine-e2e-{uuid.uuid4().hex[:8]}"
-        cache_dir = os.environ.get("WRIT_CACHE_DIR", tempfile.gettempdir())
-        cache_path = _seed_cache(cache_dir, sid, "investigate")
+        cache_path = seed_session_cache(
+            daemon["health"]["cache_dir"], sid, "investigate",
+        )
         try:
-            rc, stderr, events = _run_hook_events(tmp_path, sid, RESEARCH_SYMPTOM)
+            events, stdout, queries_delta = run_prompt_turn(
+                daemon, tmp_path, sid, RESEARCH_SYMPTOM,
+            )
         finally:
             try:
                 os.unlink(cache_path)
             except FileNotFoundError:
                 pass
-        assert rc == 0, f"hook returned {rc}; stderr={stderr[:800]}"
         doctrine_q = [
             e for e in events
             if e.get("event") == "rag_query"
             and e.get("query_source") == "investigation-doctrine"
         ]
-        assert doctrine_q, (
-            "no rag_query with query_source=investigation-doctrine in investigate-mode run. "
-            f"events:\n{json.dumps(events, indent=2)}"
+        assert doctrine_q, _triage_message(
+            "investigation-doctrine", events, stdout, queries_delta,
         )
 
-    def test_conversation_mode_does_not_fire_doctrine(self, tmp_path) -> None:
-        """Mode-gating oracle: the arm must NOT fire outside investigate."""
-        if not _server_up():
-            pytest.skip("Writ server unreachable")
+    def test_conversation_mode_does_not_fire_doctrine(
+        self, isolated_prompt_daemon, tmp_path,
+    ) -> None:
+        """Mode-gating oracle: the arm must NOT fire outside investigate. The
+        absence is asserted alongside its companion methodology-conversation
+        row from the SAME channel, one dict key apart
+        (writ/server/routes/query.py:349-353), so it cannot be a dead channel
+        wearing a correct decline's face. Reddened by either: (a) a regression
+        that makes the doctrine arm fire outside investigate mode, or (b) a
+        channel-3 failure (mode unresolved, the remaining_budget > 600 gate, or
+        a companion error) that would ALSO remove the companion row this test
+        requires to be present."""
+        daemon = isolated_prompt_daemon
         sid = f"conv-doctrine-e2e-{uuid.uuid4().hex[:8]}"
-        cache_dir = os.environ.get("WRIT_CACHE_DIR", tempfile.gettempdir())
-        cache_path = _seed_cache(cache_dir, sid, "conversation")
+        cache_path = seed_session_cache(
+            daemon["health"]["cache_dir"], sid, "conversation",
+        )
         try:
-            rc, stderr, events = _run_hook_events(tmp_path, sid, RESEARCH_SYMPTOM)
+            events, stdout, queries_delta = run_prompt_turn(
+                daemon, tmp_path, sid, RESEARCH_SYMPTOM,
+            )
         finally:
             try:
                 os.unlink(cache_path)
             except FileNotFoundError:
                 pass
-        assert rc == 0, f"hook returned {rc}; stderr={stderr[:800]}"
         doctrine_q = [
             e for e in events
             if e.get("event") == "rag_query"
             and e.get("query_source") == "investigation-doctrine"
+        ]
+        companion_q = [
+            e for e in events
+            if e.get("event") == "rag_query"
+            and e.get("query_source") == "methodology-conversation"
         ]
         assert not doctrine_q, (
             f"investigation-doctrine must NOT fire in conversation mode; events:\n"
             f"{json.dumps(events, indent=2)}"
+        )
+        assert companion_q, (
+            "conversation mode must still fire its own methodology-conversation "
+            "companion row; without it, this absence is indistinguishable from "
+            "channel 3 having died entirely.\n"
+            + _triage_message("methodology-conversation", events, stdout, queries_delta)
         )
