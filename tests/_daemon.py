@@ -379,6 +379,20 @@ def start_isolated_daemon(
     - `WRIT_LOG` is popped so `writ_default_server_log`'s resolution order
       falls to `$WRIT_LOG_ROOT/server.log`; an inherited WRIT_LOG outranks the
       log root and would append the daemon's stdout to whatever file it names.
+    - `ANTHROPIC_API_KEY` is popped, and this one is about MONEY rather than
+      isolation. Startup builds a live `LlmAnalyzer` (`writ/server/__init__.py:212`)
+      whose lazy client passes `api_key=None` straight to
+      `anthropic.AsyncAnthropic` (`writ/analysis/llm.py:188-196`), which then
+      reads this variable out of the environment; and an isolated daemon always
+      starts in CALIBRATION mode, because a fresh log root has no
+      `calibration.jsonl`, where `should_escalate` returns True unconditionally
+      (`writ/analysis/instrumentation.py:59-60`). So any `/analyze` request that
+      retrieves at least one rule would place a REAL paid API call, once per run,
+      from a test. MEASURED here on 2026-09-10: the variable is not set on this
+      machine (so nothing has been billing) and `POST /analyze` with `x = 1`
+      retrieves no rules and answers `pass` without reaching the client at all.
+      The pop is the defence for the machines and the CI where the key IS set,
+      and it costs nothing where it is not.
     - `WRIT_TCP_READONLY` matches the deployed daemon's posture (state-changing
       routes over the socket only) when the caller asks for it.
     """
@@ -420,6 +434,7 @@ def start_isolated_daemon(
     env = dict(os.environ)
     env.pop("WRIT_FRICTION_LOG", None)
     env.pop("WRIT_LOG", None)
+    env.pop("ANTHROPIC_API_KEY", None)
     env.update(
         {
             "WRIT_HOST": "localhost",

@@ -1,6 +1,15 @@
 """The ONE owner of the prompt-turn harness the two prompt-injection modules
-duplicated: the isolated-daemon fixture, the session-cache seeder, the hook
-subprocess env, and the two-hook turn runner.
+duplicated: the isolated-daemon fixture and the two-hook turn runner.
+
+`hook_env` and `seed_session_cache` NOW LIVE IN `tests/_hook_runner.py` and are
+imported back here, so `tests/test_debug_playbook_injection.py:45` and
+`tests/test_inv3_research_doctrine.py:56` keep importing both names from this
+module unchanged. The move is the same argument this module was written for, one
+scope up: three more modules drive hook subprocesses against their own isolated
+daemon, and the env dict is the piece whose drift is SILENT, so it exists once
+for the whole suite rather than once per harness. The daemon fixture stays HERE,
+because the two fixtures differ in exactly one load-bearing way (the corpus
+predicate each needs) and a fixture body's drift is loud.
 
 WHY ONE OWNER. `tests/test_debug_playbook_injection.py` and
 `tests/test_inv3_research_doctrine.py` each carried a near-copy of `_seed_cache`
@@ -35,13 +44,17 @@ inside `run_prompt_turn`, so importing this module pulls in no `writ.*` tree.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from tests._daemon import start_isolated_daemon, stop_isolated_daemon
+
+# Re-exported, not redefined: `hook_env` is used by `run_prompt_turn` below and
+# `seed_session_cache` only by this module's two consumers, which import it from
+# here. One definition, in tests/_hook_runner.py.
+from tests._hook_runner import hook_env, seed_session_cache  # noqa: F401
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -76,6 +89,12 @@ def _require_retrievable_corpus() -> int:
     """Make the corpus a CHECKED precondition of starting the daemon, replaying it
     only when it is absent. Returns the count it verified.
 
+    THE PREDICATE IS THIS MODULE'S; THE COUNT-REPAIR-FAIL BODY IS NOT. That body
+    is `tests/_corpus.py::require_population`, which owns the mechanism for every
+    caller that needs a population checked before a daemon start, so this cycle's
+    second such caller added a CALLER rather than a copy. The predicate stays here
+    because it is what makes this precondition different from the other one's.
+
     ORDER IS LOAD-BEARING: this runs BEFORE `start_isolated_daemon`, because the
     daemon builds its indexes AT STARTUP, so a replay afterwards is invisible to
     the process that needed it.
@@ -103,35 +122,13 @@ def _require_retrievable_corpus() -> int:
     message because the entire purpose is that a future empty graph reports the number
     it saw instead of surfacing as an empty-list assertion three layers away.
     """
-    from tests import _corpus, _graph
+    from tests._corpus import require_population
 
-    present = _graph.count(_CORPUS_PRECONDITION_QUERY)
-    if present:
-        return present
-    # THE REPAIR IS DELEGATED, NOT REIMPLEMENTED. `tests/_corpus.py::ensure_corpus`
-    # is the one owner of "refill a wiped graph" (conftest and a dozen modules call
-    # it), and it is strictly better than a bare `replay_dump`: it re-imports
-    # `bible/` FIRST, which its docstring names as the source of truth and which is
-    # MERGE-only, and falls back to the tracked dump only where `bible/` is absent,
-    # as it is on this disposable instance. A first draft of this function called
-    # `replay_dump` directly and so could never take the source-of-truth path.
-    _corpus.ensure_corpus()
-    present = _graph.count(_CORPUS_PRECONDITION_QUERY)
-    if not present:
-        # ensure_corpus returns SILENTLY when it cannot heal (its docstring leaves the
-        # verdict to the caller), so the loud half is this function's own job.
-        pytest.fail(
-            f"corpus precondition unmet: the isolated graph holds {present} "
-            f"Playbook/Technique node(s) with domain='process' even after "
-            f"tests/_corpus.py::ensure_corpus, and "
-            f"{_graph.count('MATCH (n) RETURN count(n)')} nodes in total. A daemon "
-            f"started now would index an empty corpus, so every retrieval assertion "
-            f"here would fail as an empty RESULT instead of as a missing PRECONDITION. "
-            f"Restore with tests/_corpus.py::ensure_corpus() or any pytest session "
-            f"(its session-start preflight rebuilds).",
-            pytrace=False,
-        )
-    return present
+    return require_population(
+        _CORPUS_PRECONDITION_QUERY,
+        "Playbook/Technique nodes with domain='process', the population both "
+        "direct-`/query` retrieval modules select from",
+    )
 
 
 @pytest.fixture(scope="module")
@@ -191,93 +188,6 @@ def isolated_prompt_daemon(tmp_path_factory):
         f"{verdict.get('survivors')}, table measured "
         f"{verdict.get('pids_measured')}, health {verdict.get('health')!r}"
     )
-
-
-def seed_session_cache(
-    cache_dir: str, sid: str, mode: str, *, current_phase: str | None = None,
-) -> str:
-    """Seed a non-orchestrator session cache in the DAEMON's own cache dir.
-
-    `/prompt-bundle` reads the session cache SERVER-SIDE
-    (`writ/server/routes/query.py:228`, `_read_cache(sid)`), so the seed must
-    land in the dir that daemon resolved. Callers therefore pass
-    `daemon["health"]["cache_dir"]`, which is what the SERVER PROCESS reports,
-    rather than what the fixture asked for.
-
-    The union of the two `_seed_cache` copies this replaces, which differed in
-    exactly one field: the debug module set `current_phase` to "implementation"
-    for work mode and the inv3 module always wrote None.
-    """
-    path = os.path.join(cache_dir, f"writ-session-{sid}.json")
-    with open(path, "w") as handle:
-        json.dump(
-            {
-                "mode": mode,
-                "is_orchestrator": False,
-                "is_subagent": False,
-                "current_phase": current_phase,
-                "loaded_rule_ids": [],
-                "loaded_rule_ids_by_phase": {},
-                "remaining_budget": 8000,
-                "context_percent": 0,
-                "queries": 0,
-                "files_written": [],
-                "loaded_rules": [],
-            },
-            handle,
-        )
-    return path
-
-
-def hook_env(daemon: dict) -> dict:
-    """The subprocess env for BOTH hook runs of a turn, built ONCE so the two
-    cannot drift. Every entry closes a measured trap.
-
-    - `WRIT_SOCKET` is the arm that actually WINS. `bin/lib/common.sh:1817` takes
-      the socket whenever `WRIT_SOCKET` is set and that socket exists, AHEAD of
-      `WRIT_HOST`/`WRIT_PORT`, so setting it is what makes the transport
-      deterministic instead of dependent on whether the operator's default
-      socket happens to exist.
-    - `WRIT_HOST` and `WRIT_PORT` are not redundant beside it. The hook builds
-      its URL from them (`writ-rag-inject.sh:565`), and `_writ_transport_for`
-      (`common.sh:227-236`) applies the socket flag ONLY to a URL whose port is
-      `WRIT_SESSION_PORT`, so both spellings must name the same daemon or the
-      socket is silently not used. They also make the exit-7 TCP retry
-      (`common.sh:253-256`) land on this same isolated daemon.
-    - `WRIT_CACHE_DIR` is taken from what the SERVER PROCESS reports, and must
-      be IDENTICAL for the two runs: `writ_event_buffer_flush` spawns the drain
-      only when `[ -s "$buf" ]`, and `writ_event_buffer_path` is under this dir,
-      so a Stop hook with a different cache dir looks for a buffer that is not
-      there and drains nothing, silently.
-    - `WRIT_FRICTION_LOG` is POPPED, not merely assumed absent. It is
-      `emit_destination`'s collapse branch: surviving into the child, it puts
-      EVERY stream in one file and no `metrics` row exists to read. Both calling
-      modules carry `no_friction_isolation`, which makes
-      `tests/conftest.py:110-113` delete it, and popping it here means a stray
-      ambient value cannot undo that either.
-    - `WRIT_NO_AUTOSTART` is set explicitly even though conftest forces it at
-      import. Without it, `writ-rag-inject.sh:48-79` launches a REAL daemon on
-      whatever port it was handed when its health check fails; that daemon
-      outlives the test and fails the module on the leak guard. Setting it here
-      is how this leak class stays closed rather than inherited.
-
-    `WRIT_LOG_ROOT` is deliberately INHERITED (`tests/conftest.py:109` points it
-    at the per-test `tmp_path/logs`), because it is both the drain's destination
-    and the test's read side, and this env is built at CALL time so the
-    function-scoped monkeypatch has already applied.
-    """
-    env = dict(os.environ)
-    env.pop("WRIT_FRICTION_LOG", None)
-    env.update(
-        {
-            "WRIT_SOCKET": daemon["socket_path"],
-            "WRIT_HOST": "localhost",
-            "WRIT_PORT": str(daemon["port"]),
-            "WRIT_CACHE_DIR": daemon["health"]["cache_dir"],
-            "WRIT_NO_AUTOSTART": "1",
-        }
-    )
-    return env
 
 
 def _queries_count(cache_dir: str, sid: str) -> int:

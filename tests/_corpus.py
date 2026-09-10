@@ -175,6 +175,55 @@ def graph_is_warm() -> bool:
         return False
 
 
+def require_population(count_query: str, subject: str) -> int:
+    """The ONE synchronous "count, repair, fail loud with the number it saw"
+    precondition for a graph population a test selects from. Returns the count.
+
+    Callers are fixtures that START A DAEMON, and the ORDER is the reason this is
+    synchronous and separate from `ensure_corpus`: the daemon builds its indexes
+    AT STARTUP, so this has to run and finish BEFORE the start, and a repair
+    afterwards is invisible to the process that needed it. That also rules out
+    reusing `tests/fixtures/server_routes.py::require_injection_population`,
+    which asserts nearly the right thing but is async and does not repair.
+
+    THE REPAIR IS DELEGATED, NOT REIMPLEMENTED: `ensure_corpus` above is the one
+    owner of "refill a wiped graph" (conftest and a dozen modules call it), and
+    it re-imports `bible/` FIRST, the source of truth and MERGE-only, falling
+    back to the tracked dump only where `bible/` is absent, as it is on the
+    disposable test instance.
+
+    THE LOUD HALF IS HERE, because `ensure_corpus` returns SILENTLY when it
+    cannot heal and leaves the verdict to the caller. It FAILS rather than skips,
+    which is this module's stated contract (`classify_corpus_state`: a reachable
+    but empty graph is 'empty' and must fail; only unreachable may skip), and the
+    count and the total travel in the message so a future empty graph reports a
+    missing PRECONDITION rather than surfacing as an empty-list assertion three
+    layers down.
+    """
+    import pytest
+
+    from tests._graph import count
+
+    present = count(count_query)
+    if present:
+        return present
+    ensure_corpus()
+    present = count(count_query)
+    if not present:
+        pytest.fail(
+            f"corpus precondition unmet: the graph holds {present} node(s) in "
+            f"{subject}, even after tests/_corpus.py::ensure_corpus, and "
+            f"{count('MATCH (n) RETURN count(n)')} nodes in total. A daemon started "
+            f"now would index an empty corpus, so every retrieval assertion behind "
+            f"this precondition would fail as an empty RESULT instead of as a missing "
+            f"PRECONDITION. Restore with tests/_corpus.py::ensure_corpus() or any "
+            f"pytest session (its session-start preflight rebuilds). The query was: "
+            f"{count_query}",
+            pytrace=False,
+        )
+    return present
+
+
 def ensure_corpus() -> None:
     """Self-heal: if the live graph is missing methodology nodes, refill it.
 
