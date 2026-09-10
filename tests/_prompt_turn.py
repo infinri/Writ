@@ -103,22 +103,32 @@ def _require_retrievable_corpus() -> int:
     message because the entire purpose is that a future empty graph reports the number
     it saw instead of surfacing as an empty-list assertion three layers away.
     """
-    from tests import _graph
+    from tests import _corpus, _graph
 
     present = _graph.count(_CORPUS_PRECONDITION_QUERY)
     if present:
         return present
-    _graph.replay_dump()
+    # THE REPAIR IS DELEGATED, NOT REIMPLEMENTED. `tests/_corpus.py::ensure_corpus`
+    # is the one owner of "refill a wiped graph" (conftest and a dozen modules call
+    # it), and it is strictly better than a bare `replay_dump`: it re-imports
+    # `bible/` FIRST, which its docstring names as the source of truth and which is
+    # MERGE-only, and falls back to the tracked dump only where `bible/` is absent,
+    # as it is on this disposable instance. A first draft of this function called
+    # `replay_dump` directly and so could never take the source-of-truth path.
+    _corpus.ensure_corpus()
     present = _graph.count(_CORPUS_PRECONDITION_QUERY)
     if not present:
+        # ensure_corpus returns SILENTLY when it cannot heal (its docstring leaves the
+        # verdict to the caller), so the loud half is this function's own job.
         pytest.fail(
             f"corpus precondition unmet: the isolated graph holds {present} "
-            f"Playbook/Technique node(s) with domain='process' even after a "
-            f"`writ import-cypher` replay, and {_graph.count('MATCH (n) RETURN count(n)')} "
-            f"nodes in total. A daemon started now would index an empty corpus, so every "
-            f"retrieval assertion here would fail as an empty RESULT instead of as a "
-            f"missing PRECONDITION. Restore with tests/_graph.py::replay_dump() or any "
-            f"pytest session (its session-start preflight rebuilds).",
+            f"Playbook/Technique node(s) with domain='process' even after "
+            f"tests/_corpus.py::ensure_corpus, and "
+            f"{_graph.count('MATCH (n) RETURN count(n)')} nodes in total. A daemon "
+            f"started now would index an empty corpus, so every retrieval assertion "
+            f"here would fail as an empty RESULT instead of as a missing PRECONDITION. "
+            f"Restore with tests/_corpus.py::ensure_corpus() or any pytest session "
+            f"(its session-start preflight rebuilds).",
             pytrace=False,
         )
     return present
