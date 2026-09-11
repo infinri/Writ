@@ -42,6 +42,12 @@ Prerequisite for the writ-on arm: the daemon must be up.
 - At `--reps 1` the verdict is `insufficient_n` **by design**: one draw cannot beat agentic non-determinism. A single run proves the loop works, never a lever.
 - **Do not misread the generic verdict** ("pass = cost drops and defect-caught holds"). That semantic fits a summary-vs-full lever; it does not fit writ-on/off, where Writ deliberately spends more to buy coverage. For on/off, read the two numbers (catch-rate delta at what cost premium), not the flag.
 
+## What this harness has not shown
+
+Everything Writ has measured so far measures what the search **costs** and how well it ranks. None of it measures whether an AI given the right rule **actually complies** more often than one given nothing. That is Writ's central claim and it is currently unproven.
+
+The harness to test it exists. It runs matched Claude Code sessions with Writ on and Writ off against a deliberately planted security defect, scoring whether the defect was caught and at what cost. It has not been run at a scale that proves anything. At one repetition the result is reported as insufficient by design, because a single run cannot beat the randomness in how AI sessions unfold. What is still needed: many repetitions with a noise floor, a defect suite broader than the single planted case, and a cheaper scoring judge.
+
 ## Deferred before this is a real gate
 
 N-rep distributions with a noise floor and confidence interval; a broader defect suite beyond IDOR; full-vs-summary and placement levers as variant profiles (needs a server-side render-mode parameter that does not exist); per-lever verdict semantics; a cheaper, calibrated LLM judge.

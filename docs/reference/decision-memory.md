@@ -4,6 +4,12 @@ Writ records *why files changed*, mechanically, and plays it back. Source of tru
 
 Provenance: this feature family (decision capture, session recall, pushing per-file reasons onto commits and open PRs) is adapted from concepts pioneered by JolliAI. The recall eviction policy is adapted from Jolli's ContextCompiler (the policy, not the code; `writ/session/recall.py` documents the adaptation). Writ's addition is rule grounding: every decision carries its governing rule IDs, and those are never evicted from the recall digest.
 
+## What this is, and what it is not
+
+This is not conversational memory. Writ does not read your chat history and guess what mattered. It builds the record mechanically, from things that already exist.
+
+**Be clear on what this is.** It is an attribution trail: what the AI was shown and what it claimed to apply. It is not proof that a rule was followed. That is still a reviewer's job, which is exactly why the pull request channel exists. And it is only possible because Writ owns the approval gate. A memory layer bolted onto an AI has no approved plan to join against.
+
 ## Records
 
 Three record types plus a registry, all deliberately outside every retrieval registry (they can never enter RAG; recall is a separate query by design):

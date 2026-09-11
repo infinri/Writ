@@ -82,7 +82,8 @@ Maintainer reference for submitting `writ@writ` to the official Anthropic plugin
 - [ ] **Screenshots captured** (below).
 - [x] **Existing community listing located and its state measured**: done 2026-09-10, see the status block above. The entry exists, its sha resolves to "Release v1.0.0", and all three advertised numbers are wrong. This settles what the re-submission has to correct; it does not settle the re-submission, which only the operator can perform.
 - [ ] **Push `main`**: do this BEFORE asking for the de-freeze. A bump lands on whatever `main` holds at that moment, so asking while public `main` trails local work bumps the listing to a stale tree and spends the request.
-- [ ] **De-freeze requested**: the one action no command in this tree can take. `writ` is held in `.github/freeze-shas.txt`; that file is a nightly mirror of Anthropic's internal pipeline, external PRs are auto-closed, and no workflow removes a slug on its own. Ask through https://clau.de/plugin-directory-submission using the message under "De-freeze request" below. Until it lands, `writ@claude-community` serves v1.0.0 and must not be promoted.
+- [x] **De-freeze requested**: filed 2026-09-11 as https://github.com/anthropics/claude-plugins-community/issues/2386, "Manual bump request: writ pin stale at v1.0.0, and remove from freeze-shas". Awaiting action by that repo's maintainers. Until the bump lands, `writ@claude-community` serves v1.0.0 and must not be promoted.
+- [ ] **Bump confirmed**: check by searching `writ` in the community catalog manifest rather than by watching the issue, because the public catalog syncs nightly from the internal pipeline and the entry moves on that cadence rather than when the issue is closed.
 
 ## Listing copy
 
@@ -117,9 +118,22 @@ rule-shaped files, and citing it is how one fact became two published numbers be
 
 ## De-freeze request
 
-Send this through https://clau.de/plugin-directory-submission AFTER pushing `main`, and
-re-read the two facts it asserts before sending, because both decay: the public `main` sha,
-and whether `writ` is still listed in `.github/freeze-shas.txt`.
+SENT 2026-09-11 as issue #2386. Kept here as the template for the next one, and as the record
+of which channel actually worked.
+
+THE CHANNEL IS A GITHUB ISSUE, not a form, and the short link is a trap. The
+close-external-prs bot advertises https://clau.de/plugin-directory-submission, which 302s to
+`code.claude.com/docs/en/plugins`, documentation rather than a form. The official docs name two
+submission forms (`platform.claude.com/plugins/submit` for individual authors, and a claude.ai
+admin-settings path for Team or Enterprise orgs), but both are for SUBMITTING a plugin, which
+re-enters review. A stale pin on an already-approved entry is a maintenance request, and issue
+#2384 from another author ("Manual bump request: `recall` pin stale ...") is the precedent that
+settles the shape. Issues are open on that repo; pull requests are what get auto-closed.
+
+Before sending another, re-read the two facts the message asserts, because both decay: the
+public `main` sha, and whether `writ` is still listed in `.github/freeze-shas.txt`. Validation
+was confirmed against the pin target on 2026-09-10: a fresh clone of public `main` validated
+with `claude plugin validate`, exit 0, including `--strict`.
 
 > The `writ` entry in the community marketplace is held in `.github/freeze-shas.txt` from the
 > 2026-06-13 snapshot of entries that failed `validate-plugins` at upstream HEAD. In our case
@@ -150,6 +164,8 @@ and whether `writ` is still listed in `.github/freeze-shas.txt`.
 3. `writ status` / `curl localhost:8765/health` showing the live corpus (288 rules, 32 mandatory as derived from the tracked dump on 2026-09-10, warm index; capture whatever the live daemon actually reports rather than these figures).
 4. The `/dashboard` friction analytics view, or the `/explore` graph explorer.
 5. Optional: the architecture pages under `docs/architecture/`.
+
+**Items 1 and 2 are also the README's demonstration assets, so the capture work counts once.** `README.md`'s "See it refuse, in about a minute" section ships the command sequence plus the denial text quoted verbatim from the string literal at `writ/session/gates.py:801-809`, and deliberately ships **no** composed output: nothing there is paraphrased or reconstructed. The two captures above are the real output that section is missing. Until they exist, the section stands on the commands and the one string that already lives in source; when they are captured, paste them in rather than approximating them.
 
 Dark theme, 14-16pt font, redact personal paths.
 

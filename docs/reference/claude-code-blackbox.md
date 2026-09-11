@@ -3,6 +3,21 @@
 This document explains what Claude Code sends to hooks and what hooks can return.
 It is designed as a quick reference for non-developers and junior developers.
 
+It is a version-pinned, empirical map of exactly what Claude Code hands a hook script and
+exactly what a script can hand back. Captured live on build 2.1.220 and compared against
+2.1.183. Every single field carries an evidence tag: observed in real data, documented but not
+seen, or unverified. The build pin covers the original capture, and this file has kept growing
+since: it also carries findings observed on 2026-08-11 and 2026-08-14, each stamped with its own
+date. Read the tag next to a claim rather than the version at the top.
+
+It records five events that moved from documented only to actually observed, payload fields the
+public changelog never announced, and the mechanism that lets a script rewrite a tool call
+before it runs without the AI ever seeing the change. It is written so a non-engineer can follow
+the idea in the opening sections and an engineer can build against the detail in the reference
+tables that follow.
+
+It is useful whether or not you use Writ. It is the reference this project wishes had existed.
+
 ## What this is
 
 A **hook** is an automatic checkpoint in Claude Code. When an event happens, Claude Code sends a

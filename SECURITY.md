@@ -28,6 +28,18 @@ The bind address is configurable through `WRIT_HOST` (see `scripts/install-serve
 
 **What Writ stores.** The rule corpus, session state, decision records, and logs go into Neo4j and into `var/` inside the installation. Session logs can contain file paths, command text, and excerpts of your code. Before publishing a graph dump, an audit log, or a benchmark result, read it. Paths and command lines carry more about your environment and your employer than people expect.
 
+### What Writ does not guarantee
+
+**Writ constrains a cooperative agent; it is not an adversarial sandbox.** Writ assumes the AI uses its tools in the ordinary way and is not deliberately searching for ways around the harness. Under that assumption the gates hold. Against an AI actively working around them they do not, and the gaps are written down here rather than glossed:
+
+* Writes made through shell commands are inspected, and as of 1.7.0 that inspection reads inside interpreter one-liners too (`python -c`, `node -e`, `perl -e`, `ruby -e`, `php -r`, including heredoc and piped forms). The gaps that remain are named in the hook itself rather than left vague: a path assembled from shell variables, `eval` or base64, an `sh -c` wrapper (whose quoted body is not inspected at all, measured, rather than merely having its prefix left unstripped), program text handed to awk or sed, an interpreter reached through a variable or alias, and `python -m MODULE`, which is deliberately unscanned because matching it would refuse every `python -m pytest` run.
+* When the background service is unreachable, hooks **allow rather than block**. This is the specification, not a bug. An infrastructure outage must never lock you out of your own repository.
+* Subagents (helper AIs spawned by the main one) skip the write gates by design. Their limits come from the tools their role grants them, not from re-checking work the human already approved.
+
+If you need enforcement against an AI that is actively adversarial, Writ is not that tool. What Writ can do is mechanically refuse selected tool actions until configured workflow conditions are satisfied. Whether that produces better engineering outcomes is a different question, and the limit below, together with the central claim recorded as unproven in [`README.md`](README.md#evidence-and-limits), is why it is still open.
+
+It can tell that a plan exists. It cannot tell whether the plan is any good. The checks confirm the shape of the thing, not the thought behind it. A plausible plan and a careful one look identical to a machine, so this replaces none of your judgement, and reviewing the work is still your job. Writ relocates oversight. It does not remove it.
+
 ## What leaves your machine
 
 Short answer: your rules and your code do not. The longer answer, because "nothing is sent anywhere" is the kind of absolute worth checking rather than trusting.
