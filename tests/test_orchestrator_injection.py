@@ -33,9 +33,8 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
-import time
-import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -45,7 +44,11 @@ import pytest
 SKILL_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SKILL_DIR))
 
-from tests._daemon import _port, expected_cache_dir  # noqa: E402
+from tests._hook_runner import (  # noqa: E402
+    hook_env,
+    instrumented_daemon,
+    verify_seeded_mode,
+)
 from tests._stub_daemon import StubDaemon  # noqa: E402
 from writ.shared.logging import read_streams, resolve_project  # noqa: E402
 
@@ -59,11 +62,17 @@ POSTTOOL_HOOK = SKILL_DIR / "hooks" / "scripts" / "writ-posttool-rag.sh"
 MIN_QUERY_LENGTH = 10  # hooks/scripts/writ-rag-inject.sh:28
 
 # read_streams/resolve_project is the P1 per-project router, keyed off
-# WRIT_LOG_ROOT (always set per-test by conftest's autouse _isolate_friction_log
-# fixture). WRIT_FRICTION_LOG, a separate legacy single-file var, is also set
-# per-test by that same fixture unless a module opts out via this marker, and
-# some code on this path still prefers it when set, which would route events
-# away from the per-project stream this file reads. Mirrors
+# WRIT_LOG_ROOT, which conftest's autouse _isolate_friction_log fixture sets
+# per-test IN THIS PROCESS. It does NOT reach the module-scoped daemon started
+# below: that fixture is function-scoped, so it has not applied when a
+# module-scoped start runs, and this comment used to claim otherwise. The
+# daemon's own copy is set explicitly by tests/_daemon.py::start_isolated_daemon
+# for exactly that reason, and tests/_hook_runner.py::instrumented_daemon reads
+# the resulting audit_log back out of /health rather than inferring it.
+# WRIT_FRICTION_LOG, a separate legacy single-file var, is also set per-test by
+# that same fixture unless a module opts out via this marker, and some code on
+# this path still prefers it when set, which would route events away from the
+# per-project stream this file reads. Mirrors
 # tests/test_methodology_companion_orchestrator.py, which reads the exact
 # same events.
 pytestmark = pytest.mark.no_friction_isolation
@@ -74,40 +83,12 @@ pytestmark = pytest.mark.no_friction_isolation
 # one already answering on the test port. conftest deliberately does NOT
 # start a daemon itself (daemon-dependent tests are meant to skip when none
 # answers); bringing one up mid-suite would change the world for every later
-# test. Mirrors tests/test_phase3b_approval_rewrap.py::_start_own_daemon /
-# _stop_own_daemon and tests/test_methodology_companion_orchestrator.py's
-# _ensure_aligned_daemon, aligned to the SAME expected_cache_dir() the rest of
-# the suite already uses (so _read_cache in this process sees the same files
-# the daemon-side cmd_update writes), rather than a private per-file cache dir.
+# test. `own_daemon` is `corpus` followed by `instrumented_daemon`
+# (tests/_hook_runner.py), which owns the start (an OS-assigned free port, a
+# throwaway log root/socket/cache dir under this module's own tmp dir), the
+# access-log positive control and the asserted stop verdict, so this module no
+# longer hand-rolls any of the three.
 # --------------------------------------------------------------------------- #
-
-
-def _start_own_daemon() -> bool:
-    ensure = SKILL_DIR / "scripts" / "ensure-server.sh"
-    if not ensure.exists():
-        return False
-    env = {
-        **os.environ,
-        "WRIT_PORT": _port(),
-        "WRIT_HOST": "localhost",
-        "WRIT_CACHE_DIR": expected_cache_dir(),
-        "WRIT_REALIGN_CACHE": "1",
-        "WRIT_NO_AUTOSTART": "",  # this explicit start IS the daemon
-    }
-    subprocess.run(["bash", str(ensure)], capture_output=True, text=True,
-                    env=env, timeout=40, check=False)
-    health = f"http://localhost:{_port()}/health"
-    for _ in range(40):
-        try:
-            with urllib.request.urlopen(health, timeout=2):
-                return True
-        except Exception:  # noqa: BLE001
-            time.sleep(0.5)
-    return False
-
-
-def _stop_own_daemon() -> None:
-    subprocess.run(["pkill", "-f", f"writ serve --port {_port()}"], capture_output=True)
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -136,14 +117,12 @@ def corpus():
 
 
 @pytest.fixture(scope="module")
-def own_daemon(corpus):
+def own_daemon(corpus, tmp_path_factory):
     # `corpus` is requested EXPLICITLY, not left to autouse ordering: the daemon
     # builds its retrieval indexes at startup, so a heal that ran after it came up
     # would leave the daemon warm on an empty graph.
-    if not _start_own_daemon():
-        pytest.skip("could not start a daemon on the test port (Neo4j down?)")
-    yield
-    _stop_own_daemon()
+    with instrumented_daemon(tmp_path_factory.mktemp("orch-inject")) as daemon:
+        yield daemon
 
 
 # --------------------------------------------------------------------------- #
@@ -151,8 +130,18 @@ def own_daemon(corpus):
 # --------------------------------------------------------------------------- #
 
 
+def _default_cache_dir() -> str:
+    """The CLI-side fallback a daemonless hook run resolves to
+    (bin/lib/writ-session.py): WRIT_CACHE_DIR or gettempdir(). Only
+    TestOrchestratorPromptGating's three daemonless tests take this default;
+    every daemon-backed test below passes the daemon's OWN reported cache_dir
+    explicitly instead.
+    """
+    return os.environ.get("WRIT_CACHE_DIR") or tempfile.gettempdir()
+
+
 def _seed_cache(session_id: str, cache_dir: str | None = None, **overrides) -> Path:
-    cache_dir_path = Path(cache_dir) if cache_dir else Path(expected_cache_dir())
+    cache_dir_path = Path(cache_dir) if cache_dir else Path(_default_cache_dir())
     cache_dir_path.mkdir(parents=True, exist_ok=True)
     base = {
         "session_id": session_id, "mode": "work", "is_orchestrator": True,
@@ -171,7 +160,7 @@ def _seed_cache(session_id: str, cache_dir: str | None = None, **overrides) -> P
 
 
 def _cleanup_session(session_id: str, cache_dir: str | None = None) -> None:
-    cache_dir_path = Path(cache_dir) if cache_dir else Path(expected_cache_dir())
+    cache_dir_path = Path(cache_dir) if cache_dir else Path(_default_cache_dir())
     for suffix in ("", ".lock"):
         try:
             (cache_dir_path / f"writ-session-{session_id}.json{suffix}").unlink()
@@ -179,7 +168,7 @@ def _cleanup_session(session_id: str, cache_dir: str | None = None) -> None:
             pass
 
 
-def _drain_event_buffer(session_id: str, cwd: Path) -> None:
+def _drain_event_buffer(session_id: str, cwd: Path, env: dict) -> None:
     """Do what a real turn's Stop hook does before reading the router's streams.
 
     The shared /prompt-bundle path BUFFERS its friction rows
@@ -187,11 +176,12 @@ def _drain_event_buffer(session_id: str, cwd: Path) -> None:
     35.3ms interpreter start per prompt to append them, and `writ_event_buffer_flush`
     releases them at turn end. Reading a stream straight after one hook run therefore
     measures the buffer, not the router. Run from `cwd` so the drain resolves the same
-    project scope the hook did.
+    project scope the hook did, and with `env` (hook_env(daemon)) so the flush reads
+    the SAME WRIT_CACHE_DIR/WRIT_LOG_ROOT the hook run wrote under.
     """
     subprocess.run(
         [sys.executable, str(SKILL_DIR / "bin" / "lib" / "writ-flush-events.py"), session_id],
-        capture_output=True, text=True, cwd=str(cwd), timeout=60, check=False,
+        capture_output=True, text=True, cwd=str(cwd), env=env, timeout=60, check=False,
     )
 
 
@@ -223,27 +213,35 @@ class TestOrchestratorFullFloor:
     PROMPT = ("Please continue implementing the retrieval budget fix: confirm "
               "the always-on floor renders and the ranked channel stays off.")
 
-    def _run(self, tmp_path):
+    def _run(self, daemon, tmp_path):
         sid = f"orch-floor-{uuid.uuid4().hex[:8]}"
         project_root = tmp_path / "proj"
         project_root.mkdir()
         (project_root / ".git").mkdir()
-        _seed_cache(sid, mode="work", is_orchestrator=True)
-        result = _run_rag_inject(sid, self.PROMPT, project_root)
-        return result, sid, project_root
+        cache_dir = daemon["health"]["cache_dir"]
+        _seed_cache(sid, cache_dir, mode="work", is_orchestrator=True)
+        verify_seeded_mode(daemon, sid, "work")
+        result = _run_rag_inject(sid, self.PROMPT, project_root, env=hook_env(daemon))
+        return result, sid, project_root, cache_dir
 
     def test_always_active_rules_block_reaches_stdout(self, own_daemon, tmp_path):
-        result, sid, _ = self._run(tmp_path)
+        result, sid, _, cache_dir = self._run(own_daemon, tmp_path)
         try:
             assert result.returncode == 0, result.stderr[:800]
             assert "=== ALWAYS-ACTIVE RULES ===" in result.stdout, result.stdout[:1500]
         finally:
-            _cleanup_session(sid)
+            _cleanup_session(sid, cache_dir)
 
-    def test_cache_records_always_on_rule_ids_and_tokens(self, own_daemon, tmp_path):
-        result, sid, _ = self._run(tmp_path)
+    def test_cache_records_always_on_rule_ids_and_tokens(
+        self, own_daemon, tmp_path, monkeypatch
+    ):
+        result, sid, _, cache_dir = self._run(own_daemon, tmp_path)
         try:
             assert result.returncode == 0, result.stderr[:800]
+            # _read_cache resolves WRIT_CACHE_DIR in THIS process at call time,
+            # which is a different question from where the daemon's own
+            # /prompt-bundle read the seed; pin it to the same dir explicitly.
+            monkeypatch.setenv("WRIT_CACHE_DIR", cache_dir)
             from writ.session.cache import _read_cache
             cache = _read_cache(sid)
             tokens = cache.get("always_on_tokens_used")
@@ -260,18 +258,18 @@ class TestOrchestratorFullFloor:
                 f"always_on_rule_ids is empty; the master's floor was never recorded: {cache}"
             )
         finally:
-            _cleanup_session(sid)
+            _cleanup_session(sid, cache_dir)
 
     def test_methodology_companion_block_still_present(self, own_daemon, tmp_path):
         """MUTATION (plan.md verification table, 'companion still emitted'):
         moving the new orchestrator exit ABOVE the methodology-block emit
         turns this red while leaving the always-on tests above green."""
-        result, sid, _ = self._run(tmp_path)
+        result, sid, _, cache_dir = self._run(own_daemon, tmp_path)
         try:
             assert result.returncode == 0, result.stderr[:800]
             assert "[Writ: methodology companion]" in result.stdout, result.stdout[:1500]
         finally:
-            _cleanup_session(sid)
+            _cleanup_session(sid, cache_dir)
 
     def test_suppressed_ranked_channel_is_logged_not_a_zero_rule_query(
         self, own_daemon, tmp_path
@@ -279,10 +277,10 @@ class TestOrchestratorFullFloor:
         """MUTATION (plan.md verification table, 'suppression row'): emitting
         a zero-rule rag_query for 'broad' instead of the suppression row
         turns this red."""
-        result, sid, project_root = self._run(tmp_path)
+        result, sid, project_root, cache_dir = self._run(own_daemon, tmp_path)
         try:
             assert result.returncode == 0, result.stderr[:800]
-            _drain_event_buffer(sid, project_root)
+            _drain_event_buffer(sid, project_root, hook_env(own_daemon))
             events = read_streams(resolve_project(str(project_root)), ["metrics"])
             always_on = [e for e in events if e.get("event") == "always_on_inject"]
             suppressed = [e for e in events if e.get("event") == "rag_channel_suppressed"]
@@ -298,7 +296,7 @@ class TestOrchestratorFullFloor:
                 f"rag_query instead of a suppression: {zero_rule_broad}"
             )
         finally:
-            _cleanup_session(sid)
+            _cleanup_session(sid, cache_dir)
 
 
 # --------------------------------------------------------------------------- #
@@ -340,19 +338,25 @@ class TestPhaseAValidatorAcceptsTheFloor:
         )
 
     def test_accepts_a_real_always_on_id_and_rejects_a_fabricated_one(
-        self, own_daemon, tmp_path
+        self, own_daemon, tmp_path, monkeypatch
     ):
         sid = f"orch-cite-{uuid.uuid4().hex[:8]}"
         project_root = tmp_path / "proj"
         project_root.mkdir()
         (project_root / ".git").mkdir()
         (project_root / "pyproject.toml").write_text("[project]\nname='x'\n")
-        _seed_cache(sid, mode="work", is_orchestrator=True)
+        cache_dir = own_daemon["health"]["cache_dir"]
+        _seed_cache(sid, cache_dir, mode="work", is_orchestrator=True)
+        verify_seeded_mode(own_daemon, sid, "work")
+        # _validate_phase_a below resolves WRIT_CACHE_DIR in THIS process at
+        # call time, so it is pinned to the same dir the daemon reports.
+        monkeypatch.setenv("WRIT_CACHE_DIR", cache_dir)
         try:
             result = _run_rag_inject(
                 sid,
                 "Continue implementing the budget fix and confirm the always-on floor.",
                 project_root,
+                env=hook_env(own_daemon),
             )
             assert result.returncode == 0, result.stderr[:800]
 
@@ -369,7 +373,7 @@ class TestPhaseAValidatorAcceptsTheFloor:
             err = _validate_phase_a(str(project_root), sid)
             assert err is not None and "hallucinated" in err and self.FABRICATED in err, err
         finally:
-            _cleanup_session(sid)
+            _cleanup_session(sid, cache_dir)
 
 
 # --------------------------------------------------------------------------- #

@@ -23,12 +23,16 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 
 import pytest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from tests._hook_runner import (  # noqa: E402
+    hook_env,
+    instrumented_daemon,
+    verify_seeded_mode,
+)
 from writ.shared.logging import read_streams, resolve_project  # noqa: E402
 
 # Exercises the router's cwd-based project-scope resolution to a tmp subdir;
@@ -86,51 +90,34 @@ class TestOrchestratorMethodologyCompanionStructural:
         )
 
 
+@pytest.fixture(scope="module")
+def own_daemon(tmp_path_factory):
+    """This module's own isolated daemon, behind an `ensure_corpus()`
+    precondition, replacing the hand-rolled `_ensure_aligned_daemon` /
+    `_stop_daemon` pair that used to start and stop a daemon on the SUITE
+    port (matched by `pkill -f "writ serve --port {_port()}"`, defect D2).
+
+    `ensure_corpus()` RATHER THAN `require_population`, deliberately: the
+    population this test needs is the methodology one, whose predicate is a
+    PRIVATE constant in `tests/_prompt_turn.py` (`Playbook|Technique` with
+    `domain='process'`); copying that predicate here is the duplication this
+    program keeps paying for, and promoting it is a change to a module with
+    three other consumers. `ensure_corpus()` is the established repair (the
+    sibling module's own fixture, `tests/test_orchestrator_injection.py::corpus`,
+    documents it the same way) and it runs BEFORE the start, because the
+    daemon builds its retrieval indexes AT STARTUP: a repair after it came up
+    would leave it warm on an empty graph.
+    """
+    from tests._corpus import ensure_corpus
+
+    ensure_corpus()
+    with instrumented_daemon(tmp_path_factory.mktemp("methodology-orch")) as daemon:
+        yield daemon
+
+
 class TestOrchestratorMethodologyCompanionEndToEnd:
     """End-to-end: run the hook with a seeded orchestrator cache and a
     user prompt, verify the friction log gets a methodology rag_query."""
-
-    def _ensure_aligned_daemon(self, cache_dir: str) -> bool:
-        """Start (and realign) the daemon on WRIT_PORT against cache_dir.
-
-        Mirrors test_fix2_cache_alignment: ensure-server.sh with WRIT_REALIGN_CACHE=1
-        guarantees a daemon whose cache_dir matches where this test seeded, so the
-        hook's HTTP session read sees the orchestrator cache. Returns True once
-        /health answers, False if it never comes up (no Neo4j, etc.)."""
-        import time
-        import urllib.request
-
-        from tests._daemon import _port
-
-        ensure = Path(SKILL_DIR) / "scripts" / "ensure-server.sh"
-        if not ensure.exists():
-            return False
-        env = {
-            **os.environ,
-            "WRIT_PORT": _port(),
-            "WRIT_HOST": "localhost",
-            "WRIT_CACHE_DIR": cache_dir,
-            "WRIT_REALIGN_CACHE": "1",  # realign a leftover misaligned daemon
-            "WRIT_NO_AUTOSTART": "",     # this explicit start IS the daemon
-        }
-        subprocess.run(["bash", str(ensure)], capture_output=True, text=True,
-                       env=env, timeout=40, check=False)
-        health = f"http://localhost:{_port()}/health"
-        for _ in range(40):
-            try:
-                with urllib.request.urlopen(health, timeout=2):
-                    return True
-            except Exception:  # noqa: BLE001
-                time.sleep(0.5)
-        return False
-
-    def _stop_daemon(self) -> None:
-        """Stop the daemon this test started, by exact port (never the 8765
-        interactive singleton)."""
-        from tests._daemon import _port
-
-        subprocess.run(["pkill", "-f", f"writ serve --port {_port()}"],
-                       capture_output=True)
 
     def _seed_orchestrator_cache(
         self, cache_dir: str, session_id: str
@@ -155,33 +142,22 @@ class TestOrchestratorMethodologyCompanionEndToEnd:
             )
 
     def test_orchestrator_fires_methodology_companion(
-        self, tmp_path
+        self, own_daemon, tmp_path
     ) -> None:
-        """End-to-end: invoke the hook against the LIVE server with a
-        seeded orchestrator cache. The hook delegates session reads to
-        the running Writ server via HTTP, so the cache must live in
-        the server's CACHE_DIR (default tempfile.gettempdir()). Use a
-        unique session ID and clean up after.
+        """End-to-end: invoke the hook against this module's OWN isolated
+        daemon with a seeded orchestrator cache. The hook delegates session
+        reads to that daemon via HTTP, so the cache must live in the dir the
+        daemon's own /health reports, not the test's tmp_path. Use a unique
+        session ID and clean up after.
 
         Pass criterion: the project's P1 metrics stream gets at least one
         rag_query with query_source=methodology."""
         import uuid
         sid = f"orch-method-e2e-{uuid.uuid4().hex[:8]}"
-        # Seed at the server's cache dir (writ-session.py:58 resolution), not
-        # the test's tmp_path. Hardcoding "/tmp" missed the dir under TMPDIR.
-        server_cache_dir = os.environ.get("WRIT_CACHE_DIR", tempfile.gettempdir())
-        cache_path = os.path.join(server_cache_dir, f"writ-session-{sid}.json")
-        self._seed_orchestrator_cache(server_cache_dir, sid)
-
-        # This end-to-end path needs a LIVE daemon aligned to server_cache_dir on
-        # WRIT_PORT: the hook reads the seeded orchestrator cache over HTTP. It used
-        # to get one for free because writ-rag-inject.sh auto-started a daemon when
-        # none answered -- but that auto-start is a leak (the daemon outlived the
-        # run), so the suite now forces WRIT_NO_AUTOSTART=1. Start an aligned daemon
-        # explicitly and stop it in finally, rather than depend on the leak.
-        started_daemon = self._ensure_aligned_daemon(server_cache_dir)
-        if not started_daemon:
-            pytest.skip("could not start an aligned daemon on the test port")
+        cache_dir = own_daemon["health"]["cache_dir"]
+        cache_path = os.path.join(cache_dir, f"writ-session-{sid}.json")
+        self._seed_orchestrator_cache(cache_dir, sid)
+        verify_seeded_mode(own_daemon, sid, "work")
 
         try:
             # Project root the hook runs in; a .git marker makes the router's
@@ -205,15 +181,16 @@ class TestOrchestratorMethodologyCompanionEndToEnd:
                 capture_output=True,
                 text=True,
                 cwd=str(project_root),
+                env=hook_env(own_daemon),
                 timeout=15,
             )
         finally:
-            # Always clean up the seeded cache and the daemon this test started.
+            # own_daemon's own teardown stops the daemon and asserts the
+            # verdict; this cleans up only the seeded cache this test wrote.
             try:
                 os.unlink(cache_path)
             except FileNotFoundError:
                 pass
-            self._stop_daemon()
         # Hook must not error out.
         assert result.returncode == 0, (
             f"hook returned {result.returncode}; "
@@ -227,7 +204,8 @@ class TestOrchestratorMethodologyCompanionEndToEnd:
         # reading the stream without a drain measures the buffer, not the router.
         subprocess.run(
             [sys.executable, os.path.join(SKILL_DIR, "bin", "lib", "writ-flush-events.py"), sid],
-            capture_output=True, text=True, cwd=str(project_root), timeout=60, check=False,
+            capture_output=True, text=True, cwd=str(project_root),
+            env=hook_env(own_daemon), timeout=60, check=False,
         )
 
         # Inspect the router's metrics stream (rag_query -> metrics) for the

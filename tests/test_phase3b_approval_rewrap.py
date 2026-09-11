@@ -29,14 +29,12 @@ import json
 import os
 import re
 import subprocess
-import time
-import urllib.request
 import uuid
 from pathlib import Path
 
 import pytest
 
-from tests._daemon import _port, expected_cache_dir
+from tests._hook_runner import hook_env, instrumented_daemon, verify_seeded_mode
 
 # autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
 from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
@@ -48,55 +46,8 @@ SESSION_HELPER = WRIT_ROOT / "bin" / "lib" / "writ-session.py"
 PYTHON = WRIT_ROOT / ".venv" / "bin" / "python"
 
 
-def _start_own_daemon() -> bool:
-    """Start a daemon on the TEST port, aligned to the test cache dir.
-
-    Two earlier attempts at this were wrong, both caught by review:
-
-      1. Popping WRIT_CACHE_DIR to reach the interactive daemon. It worked only because
-         the hook's curl hardcoded :8765 and so bypassed the suite's WRIT_PORT isolation,
-         and it wrote genuine phase_advance rows into the real audit log -- fabricated
-         approvals in the stream that exists to record real ones.
-      2. Calling _daemon.start_test_daemon() from inside a test. conftest deliberately
-         does NOT start a daemon (it only realigns one that already exists) because
-         daemon-dependent tests are meant to skip when none answers, "same as CI". Bringing
-         one up mid-suite changed the world for every later test and could stop/restart the
-         daemon other tests were mid-request against.
-
-    So this owns the lifecycle: start here, stop in the fixture teardown, by exact port,
-    never touching the interactive singleton. Mirrors
-    test_methodology_companion_orchestrator._ensure_aligned_daemon.
-    """
-    ensure = WRIT_ROOT / "scripts" / "ensure-server.sh"
-    if not ensure.exists():
-        return False
-    env = {
-        **os.environ,
-        "WRIT_PORT": _port(),
-        "WRIT_HOST": "localhost",
-        "WRIT_CACHE_DIR": expected_cache_dir(),
-        "WRIT_REALIGN_CACHE": "1",
-        "WRIT_NO_AUTOSTART": "",  # this explicit start IS the daemon
-    }
-    subprocess.run(["bash", str(ensure)], capture_output=True, text=True,
-                   env=env, timeout=40, check=False)
-    health = f"http://localhost:{_port()}/health"
-    for _ in range(40):
-        try:
-            with urllib.request.urlopen(health, timeout=2):
-                return True
-        except Exception:  # noqa: BLE001
-            time.sleep(0.5)
-    return False
-
-
-def _stop_own_daemon() -> None:
-    """Stop only the daemon this module started, matched by its exact port."""
-    subprocess.run(["pkill", "-f", f"writ serve --port {_port()}"], capture_output=True)
-
-
-def _cleanup_session(session_id: str) -> None:
-    session_dir = Path(expected_cache_dir())
+def _cleanup_session(session_id: str, cache_dir: str) -> None:
+    session_dir = Path(cache_dir)
     for path in (
         session_dir / f"writ-session-{session_id}.json",
         # mutate_cache leaves a sibling .lock file; removing only the .json left the
@@ -164,17 +115,23 @@ def _setup_work_planning_session(session_id: str, env: dict | None = None) -> bo
 
 
 @pytest.fixture(scope="module")
-def own_daemon():
+def own_daemon(tmp_path_factory):
     """A daemon this module starts and stops, for the end-to-end advance cases.
 
-    Module-scoped so one start/stop covers all three tests instead of thrashing the
-    port, and torn down so the rest of the suite sees the same world it would without
-    this file (conftest's contract: no daemon unless a test brings its own).
+    `instrumented_daemon` (tests/_hook_runner.py) owns the start (an
+    OS-assigned free port, a throwaway log root/socket/cache dir under this
+    module's own tmp dir), the access-log positive control and the asserted
+    stop verdict. Module-scoped so one start/stop covers all three tests
+    instead of thrashing the port, and torn down so the rest of the suite
+    sees the same world it would without this file (conftest's contract: no
+    daemon unless a test brings its own).
+
+    NO CORPUS PRECONDITION: `auto-approve-gate.sh` retrieves nothing, so
+    `isolated_hook_daemon`'s injection-rule population would fail this module
+    on a predicate unrelated to its subject.
     """
-    if not _start_own_daemon():
-        pytest.skip("could not start a daemon on the test port (Neo4j down?)")
-    yield
-    _stop_own_daemon()
+    with instrumented_daemon(tmp_path_factory.mktemp("phase3b-rewrap")) as daemon:
+        yield daemon
 
 
 class TestNarrowedVocabularyIsSilent:
@@ -252,8 +209,10 @@ class TestApprovalAdvancesWhenGatePending:
 
     def test_work_planning_approval_advances(self, tmp_path: Path, own_daemon) -> None:
         session_id = f"phase3b-advance-planning-{uuid.uuid4().hex[:8]}"
-        if not _setup_work_planning_session(session_id):
+        env = hook_env(own_daemon)
+        if not _setup_work_planning_session(session_id, env=env):
             pytest.skip("could not establish a Work-mode planning session")
+        verify_seeded_mode(own_daemon, session_id, "work")
         # Hermetic project: a .git marker makes tmp_path itself the PROJECT_ROOT
         # (auto-approve-gate.sh checks the cwd first), and a gate-valid plan.md
         # lets the phase-a validator pass regardless of the ambient repo's plan.md
@@ -271,11 +230,11 @@ class TestApprovalAdvancesWhenGatePending:
         )
         try:
             stdout, code = _run_hook(
-                "approved", session_id=session_id, cwd=str(tmp_path),
+                "approved", session_id=session_id, cwd=str(tmp_path), env=env,
                 transcript_path=write_evidence_transcript(tmp_path),
             )
         finally:
-            _cleanup_session(session_id)
+            _cleanup_session(session_id, own_daemon["health"]["cache_dir"])
         assert code == 0
         # No skip-on-refusal: the daemon is up (checked above) and the session was
         # seeded in the daemon's own cache, so a refusal here is a real failure. The
@@ -318,16 +277,18 @@ class TestApprovalWorksInAnUnmarkedDirectory:
 
     def test_unmarked_cwd_advances(self, tmp_path: Path, own_daemon) -> None:
         session_id = f"phase3b-unmarked-{uuid.uuid4().hex[:8]}"
-        if not _setup_work_planning_session(session_id):
+        env = hook_env(own_daemon)
+        if not _setup_work_planning_session(session_id, env=env):
             pytest.skip("could not establish a Work-mode planning session")
+        verify_seeded_mode(own_daemon, session_id, "work")
         work = self._unmarked_project(tmp_path)
         try:
             stdout, code = _run_hook(
-                "approved", session_id=session_id, cwd=str(work),
+                "approved", session_id=session_id, cwd=str(work), env=env,
                 transcript_path=write_evidence_transcript(tmp_path),
             )
         finally:
-            _cleanup_session(session_id)
+            _cleanup_session(session_id, own_daemon["health"]["cache_dir"])
         assert code == 0
         assert "[Writ: planning gate approved -> testing]" in stdout, stdout
 
@@ -338,16 +299,18 @@ class TestApprovalWorksInAnUnmarkedDirectory:
         marker file above the work directory could stamp an unrelated plan silently.
         """
         session_id = f"phase3b-named-{uuid.uuid4().hex[:8]}"
-        if not _setup_work_planning_session(session_id):
+        env = hook_env(own_daemon)
+        if not _setup_work_planning_session(session_id, env=env):
             pytest.skip("could not establish a Work-mode planning session")
+        verify_seeded_mode(own_daemon, session_id, "work")
         work = self._unmarked_project(tmp_path)
         try:
             stdout, code = _run_hook(
-                "approved", session_id=session_id, cwd=str(work),
+                "approved", session_id=session_id, cwd=str(work), env=env,
                 transcript_path=write_evidence_transcript(tmp_path),
             )
         finally:
-            _cleanup_session(session_id)
+            _cleanup_session(session_id, own_daemon["health"]["cache_dir"])
         assert code == 0
         assert str(work / "plan.md") in stdout, (
             "the advance confirmation must name the validated plan; got: " + stdout

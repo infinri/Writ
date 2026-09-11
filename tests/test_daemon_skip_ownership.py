@@ -57,22 +57,53 @@ def _unowned(sites: dict) -> dict:
 # scan matched something, not because it matched nothing.
 # --------------------------------------------------------------------------- #
 class TestRealTreeIsFullyOwned:
-    def test_pre_filter_population_is_non_empty(self) -> None:
-        """The population the emptiness assertion below depends on.
+    def test_scanned_population_is_non_empty(self) -> None:
+        """REPLACES `test_pre_filter_population_is_non_empty` (RETIRED, not
+        merely renamed): plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3 converts
+        the entire CURRENT population of suite-port-gated skips (four
+        modules), so `daemon_reachability_skip_sites()` is now legitimately
+        `{}` on the real tree BY SUCCESS: a floor that required it non-empty
+        would demand a live module stay defective forever, which is a
+        property this program just finished removing and cannot honestly
+        restore.
 
-        Without this floor, `test_unowned_set_is_empty` could pass on a scan
-        that matched nothing at all -- the vacuous-detector failure this
-        program has hit three times in one session. MUTATION: this is the
-        same one `test_empty_tree_returns_no_sites` names below: pointing the
-        scan at a directory with no qualifying modules zeroes this out, and a
-        detector whose matching silently broke in the real tree would do the
-        same.
+        What the retired floor actually protected (the emptiness verdict
+        came from a scan that looked, not a scan that matched nothing) is
+        re-based onto the SAME walk the detector iterates,
+        `daemon_reachability_scanned_modules()`, so the matched map and this
+        floor cannot disagree about what was scanned: one walk, two views.
+
+        MUTATION: a narrowed glob, a wrong default `tests_dir`, or a scan that
+        silently reaches nothing all zero this out, exactly as they would
+        have zeroed the retired floor.
         """
-        sites = inventory.daemon_reachability_skip_sites()
-        assert sites != {}, (
-            "daemon_reachability_skip_sites() returned no sites at all on the "
-            "real tree; the unowned-set emptiness assertion beside this one "
-            "would pass vacuously on a scan that matched nothing"
+        scanned = inventory.daemon_reachability_scanned_modules()
+        assert scanned, (
+            "daemon_reachability_scanned_modules() returned no modules at "
+            "all on the real tree; test_unowned_set_is_empty beside it would "
+            "pass vacuously on a scan that matched nothing"
+        )
+
+    def test_scanned_population_is_empty_on_an_empty_directory(self, tmp_path: Path) -> None:
+        """Non-vacuity's other half: a function that always answered
+        non-empty regardless of what tree it was pointed at would satisfy
+        the assertion above without ever having looked. MUTATION: the same
+        failure `test_empty_tree_returns_no_sites` guards for the matched map
+        below."""
+        assert list(inventory.daemon_reachability_scanned_modules(tests_dir=tmp_path)) == []
+
+    def test_matched_map_is_a_subset_of_the_scanned_population(self) -> None:
+        """`daemon_reachability_skip_sites` ITERATES the scanned list rather
+        than re-deriving its own glob, so every matched module must also be a
+        scanned one. MUTATION: the two functions independently walking
+        different globs would let a matched module escape this population
+        without failing here."""
+        scanned = set(inventory.daemon_reachability_scanned_modules())
+        matched = set(inventory.daemon_reachability_skip_sites())
+        assert matched <= scanned, (
+            f"daemon_reachability_skip_sites() matched modules the scan "
+            f"never walked, which can only happen if the two functions use "
+            f"different globs: {matched - scanned}"
         )
 
     def test_unowned_set_is_empty(self) -> None:
@@ -80,6 +111,18 @@ class TestRealTreeIsFullyOwned:
         sanctioned or self-started. A module that keeps its site and loses its
         owner (a decayed conversion, or a new `...Live` class written without
         one) fails this BY NAME rather than dropping out of the population.
+
+        On the real tree this is EMPTY BY SUCCESS after
+        plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3: the four modules that
+        used to populate it were converted onto a sanctioned owner or an
+        OS-assigned port, so none of them names the suite address any more.
+        This test keeps asserting only the UNOWNED arm, never `sites == {}`,
+        because a future sanctioned or self-started member is legitimate and
+        must not redden a guard aimed at a different defect. The guard's
+        LIVENESS stays provable forever via two things that do not depend on
+        the real tree staying non-empty: the synthetic tree's planted unowned
+        modules (`TestSyntheticTreePrecision`) and the map property
+        (`TestOwnerIsAMapPropertyNotAList`).
         """
         sites = inventory.daemon_reachability_skip_sites()
         unowned = _unowned(sites)
@@ -91,7 +134,7 @@ class TestRealTreeIsFullyOwned:
 
     def test_empty_tree_returns_no_sites(self, tmp_path: Path) -> None:
         """MUTATION: pointing the scan at an empty directory is exactly the
-        failure `test_pre_filter_population_is_non_empty` guards against -- a
+        failure `test_scanned_population_is_non_empty` guards against: a
         detector silently scanning the wrong tree, or a glob narrowed to match
         nothing, would zero out the real-tree population and let
         `test_unowned_set_is_empty` pass vacuously.
@@ -289,6 +332,38 @@ class TestSyntheticTreePrecision:
                 f"got {lines!r}"
             )
 
+    def test_scanned_population_holds_all_five_while_matched_map_holds_three(
+        self, synthetic_tree: Path
+    ) -> None:
+        """The re-based floor's own precision arm (plan.md
+        2412ba38-51e1-4b73-895b-7b240a3c21d3, decision 5): `daemon_reachability_scanned_modules`
+        is the SAME walk `daemon_reachability_skip_sites` iterates, so on this
+        five-module synthetic tree the scanned population must hold all five
+        planted modules while the matched map holds only the three
+        address-probe shapes, the superset relation that makes "scanned but
+        not matched" (the Neo4j and pkill-tool shapes) a state distinguishable
+        from "never scanned at all", rather than an inference.
+        """
+        scanned = set(inventory.daemon_reachability_scanned_modules(tests_dir=synthetic_tree))
+        sites = inventory.daemon_reachability_skip_sites(tests_dir=synthetic_tree)
+        assert scanned == {
+            _SyntheticTree.IF_PROBE,
+            _SyntheticTree.EXCEPT_HANDLER,
+            _SyntheticTree.SANCTIONED,
+            _SyntheticTree.NEO4J_SKIP,
+            _SyntheticTree.PKILL_SKIP,
+        }, f"expected all five planted modules to be SCANNED; got {sorted(scanned)}"
+        assert set(sites) == {
+            _SyntheticTree.IF_PROBE,
+            _SyntheticTree.EXCEPT_HANDLER,
+            _SyntheticTree.SANCTIONED,
+        }, f"expected exactly three planted modules to be MATCHED; got {sorted(sites)}"
+        assert set(sites) < scanned, (
+            "the matched map must be a STRICT subset of the scanned "
+            "population, so 'scanned but not matched' is a distinguishable "
+            "state rather than an inference"
+        )
+
 
 # --------------------------------------------------------------------------- #
 # The MAP property: a module that keeps its site and loses its owner fails BY
@@ -346,4 +421,138 @@ class TestSuitePortIsImportedNeverSpelled:
         assert "TEST_DAEMON_PORT" in src, (
             "tests/_inventory.py must import tests.conftest.TEST_DAEMON_PORT "
             "so the suite port is a resolved mechanism, never a spelled literal"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# The D2 ratchet (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3, decision 6):
+# `pkill_invocation_sites()` maps module -> the line of every COMMAND LIST
+# whose first element is the constant "pkill", read off the AST. That
+# predicate is the MECHANISM (a process kill being spawned), not a name: it
+# catches `subprocess.run(["pkill", ...])` however the pattern string is
+# spelled, and deliberately does not catch `shutil.which("pkill")`, which is
+# a missing-TOOL probe and stays legitimate in
+# `tests/test_fix2_cache_alignment.py`'s class mark.
+#
+# Unlike `daemon_reachability_skip_sites`, this walk is not limited to
+# `test_*.py`: `tests/_daemon.py` (not a `test_*.py` module) is one of the
+# sites today and the ONLY one this cycle leaves behind, so a `test_*.py`-only
+# glob would structurally miss the one legitimate spawner.
+# --------------------------------------------------------------------------- #
+class _PkillSyntheticTree:
+    """One shape each: a module that SPAWNS pkill (a member) and a module
+    that only probes for the pkill TOOL via `shutil.which` (never a member,
+    the discrimination D2's own docstring states).
+    """
+
+    SPAWNS_PKILL = "test_pkill_spawn_unowned.py"
+    TOOL_PROBE_ONLY = "test_pkill_tool_probe_only.py"
+
+    SPAWNS_PKILL_SOURCE = (
+        "import subprocess\n\n\n"
+        "def _stop(port: int) -> None:\n"
+        "    subprocess.run(['pkill', '-f', f'writ serve --port {port}'],\n"
+        "                   capture_output=True)\n\n\n"
+        "def test_something():\n"
+        "    _stop(1)\n"
+        "    assert True\n"
+    )
+
+    TOOL_PROBE_ONLY_SOURCE = (
+        "import shutil\n\n"
+        "import pytest\n\n\n"
+        "@pytest.mark.skipif(shutil.which('pkill') is None, reason='pkill required')\n"
+        "def test_something():\n"
+        "    assert True\n"
+    )
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        (root / self.SPAWNS_PKILL).write_text(self.SPAWNS_PKILL_SOURCE)
+        (root / self.TOOL_PROBE_ONLY).write_text(self.TOOL_PROBE_ONLY_SOURCE)
+
+
+@pytest.fixture()
+def pkill_synthetic_tree(tmp_path: Path) -> Path:
+    _PkillSyntheticTree(tmp_path)
+    return tmp_path
+
+
+class TestPkillInvocationSites:
+    """RED until `tests/_inventory.py` defines `pkill_invocation_sites`; every
+    test below raises AttributeError until it lands.
+    """
+
+    def test_real_tree_key_set_is_daemon_only(self) -> None:
+        """Today the population is five files and six call sites
+        (`tests/_daemon.py:219`, `tests/test_fix2_cache_alignment.py:57,58`,
+        `tests/test_methodology_companion_orchestrator.py:132`,
+        `tests/test_orchestrator_injection.py:110`,
+        `tests/test_phase3b_approval_rewrap.py:95`). After this cycle's four
+        conversions, `tests/_daemon.py` (the one module that builds its
+        pattern from `_serve_pattern` and verifies the result) is the ONLY
+        one left.
+
+        MUTATION: reintroducing any `subprocess.run(["pkill", ...])` call to
+        a module under `tests/` adds a second key and reddens this equality;
+        deleting the one remaining call from `tests/_daemon.py` empties it.
+        The assertion is on the KEY SET, never on the line numbers, so
+        editing `tests/_daemon.py` cannot break it on its own; the lines
+        travel in the failure message.
+        """
+        sites = inventory.pkill_invocation_sites()
+        assert set(sites) == {"_daemon.py"}, (
+            f"expected the pkill-invocation key set to be exactly "
+            f"{{'_daemon.py'}} after this cycle's conversions; got "
+            f"{sorted(sites)} (lines: {sites})"
+        )
+
+    def test_real_tree_scan_is_not_a_constant(self, tmp_path: Path) -> None:
+        """Non-vacuity companion to the real-tree assertion above, proven the
+        same way the skip detector's is: a function that always answered
+        `{"_daemon.py"}` regardless of what tree it was pointed at would
+        satisfy that equality without ever having scanned anything.
+        MUTATION: a scan hardcoded to that literal, or one that silently
+        reaches nothing, would still pass the assertion above; pointing the
+        SAME function at an empty directory and requiring `{}` catches both.
+        """
+        assert inventory.pkill_invocation_sites(tests_dir=tmp_path) == {}
+
+    def test_module_that_spawns_pkill_is_a_member(
+        self, pkill_synthetic_tree: Path
+    ) -> None:
+        sites = inventory.pkill_invocation_sites(tests_dir=pkill_synthetic_tree)
+        assert _PkillSyntheticTree.SPAWNS_PKILL in sites, (
+            f"a subprocess.run(['pkill', ...]) command list must be a "
+            f"member whatever its pattern string spells; saw {sorted(sites)}"
+        )
+        lines = sites[_PkillSyntheticTree.SPAWNS_PKILL]
+        assert isinstance(lines, list) and lines and all(
+            isinstance(n, int) and n > 0 for n in lines
+        ), f"expected a non-empty list of positive 1-based line numbers; got {lines!r}"
+
+    def test_tool_probe_only_is_not_a_member(self, pkill_synthetic_tree: Path) -> None:
+        """MUTATION: the discrimination this asserts against. A future
+        widening that started treating `shutil.which("pkill")` as a spawn
+        would put this file in the map and redden this test, exactly the
+        over-widening that would also break
+        `test_fix2_cache_alignment.py`'s legitimate class mark."""
+        sites = inventory.pkill_invocation_sites(tests_dir=pkill_synthetic_tree)
+        assert _PkillSyntheticTree.TOOL_PROBE_ONLY not in sites, (
+            f"shutil.which('pkill') is a missing-TOOL probe, not a spawn, "
+            f"and must never enter the population; saw {sorted(sites)}"
+        )
+
+    def test_exactly_the_one_planted_spawn_is_a_member(
+        self, pkill_synthetic_tree: Path
+    ) -> None:
+        """Precision in both directions at once, matching
+        `TestSyntheticTreePrecision::test_exactly_the_three_planted_sites_are_members`'s
+        convention: the non-member shape above is not smuggled in through
+        some other match, and the map holds nothing this synthetic tree did
+        not plant."""
+        sites = inventory.pkill_invocation_sites(tests_dir=pkill_synthetic_tree)
+        assert set(sites) == {_PkillSyntheticTree.SPAWNS_PKILL}, (
+            f"expected exactly the one planted pkill-spawning module as a "
+            f"member; got {sorted(sites)}"
         )

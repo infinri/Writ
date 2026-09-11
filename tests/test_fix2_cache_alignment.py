@@ -29,7 +29,9 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import writ_server_source
+from tests._daemon import stop_isolated_daemon
 from tests._hook_runner import isolated_daemon  # noqa: F401  (module fixture)
+from tests.fixtures.net import free_port
 
 SKILL = Path(__file__).resolve().parent.parent
 ENSURE = SKILL / "scripts" / "ensure-server.sh"
@@ -37,7 +39,6 @@ ENSURE = SKILL / "scripts" / "ensure-server.sh"
 # (SERVER-SINGLETON); ensure-server.sh sources it. The start-path source-shape checks read it.
 LIB = SKILL / "scripts" / "lib" / "writ-server-lib.sh"
 RAG_INJECT = SKILL / "hooks" / "scripts" / "writ-rag-inject.sh"
-ALT_PORT = 8799
 
 
 def _health(port: int, timeout: float = 2.0):
@@ -48,20 +49,22 @@ def _health(port: int, timeout: float = 2.0):
         return None
 
 
-def _port_busy(port: int) -> bool:
-    return _health(port) is not None
-
-
-def _kill_alt_daemon(port: int) -> None:
-    # Precise: only the `writ serve --port <port>` process; never the bare-`writ serve` session daemon.
-    subprocess.run(["pkill", "-f", f"writ serve --port {port}"], capture_output=True)
-    subprocess.run(["pkill", "-f", f"uvicorn.*--port {port}"], capture_output=True)
-    time.sleep(1)
-
-
-def _ensure(port: int, cache_dir: str, timeout: int = 20, friction_log: str | None = None,
+def _ensure(daemon: dict, cache_dir: str, timeout: int = 20, friction_log: str | None = None,
             realign: bool = False):
-    env = {**os.environ, "WRIT_PORT": str(port), "WRIT_HOST": "localhost", "WRIT_CACHE_DIR": cache_dir}
+    """Drive ensure-server.sh on `daemon`'s port, the LAUNCHER under test.
+
+    `daemon` is the `alt_daemon` fixture's payload ({"port", "socket_path"}), not a bare
+    port: it is the same object the fixture's teardown stops, so what this starts and
+    what stop_isolated_daemon stops cannot disagree about the port. WRIT_SOCKET is
+    pinned to a throwaway path under the fixture's own tmp_path for the same reason
+    start_isolated_daemon pins it: an unset WRIT_SOCKET would let the daemon resolve
+    the operator's default `~/.cache/writ/run/writ.sock`.
+    """
+    port = daemon["port"]
+    env = {
+        **os.environ, "WRIT_PORT": str(port), "WRIT_HOST": "localhost",
+        "WRIT_CACHE_DIR": cache_dir, "WRIT_SOCKET": daemon["socket_path"],
+    }
     if friction_log is not None:
         env["WRIT_FRICTION_LOG"] = friction_log
     # Post-systemd, realign-on-mismatch is opt-in (off by default so ensure-server
@@ -75,6 +78,40 @@ def _ensure(port: int, cache_dir: str, timeout: int = 20, friction_log: str | No
             return h
         time.sleep(0.5)
     return None
+
+
+@pytest.fixture()
+def alt_daemon(tmp_path):
+    """An OS-assigned port plus a throwaway socket, for `TestEnsureServerSelfHeal`,
+    which keeps its hand-rolled `_ensure` because the LAUNCHER is its subject
+    (`start_isolated_daemon` runs ensure-server.sh exactly once and cannot express
+    "re-ensure this same port with a different cache dir"). This fixture owns only
+    the two things that were never part of that subject: the port and the stop.
+
+    REACHABLE BUT WRONG MUST FAIL, NEVER SKIP: a `free_port()` that already answers
+    /health is a harness fault (an OS-assigned port a previous run failed to
+    release, say), not a legitimate "already in use" skip, so this fails loud with
+    the port named before the fixture ever hands it to a test. That replaces the
+    four `_port_busy(ALT_PORT)` collision skips this module used to carry, all
+    members of `daemon_reachability_skip_sites()` only because `ALT_PORT = 8799`
+    was the suite-port literal; an OS-assigned port has no suite address to skip on.
+    """
+    port = free_port()
+    reachable = _health(port)
+    assert reachable is None, (
+        f"free_port() returned {port}, which already answers /health "
+        f"({reachable!r}): a reachable-but-unexpected daemon on a supposedly free "
+        f"port is a harness fault, not a skip"
+    )
+    daemon = {"port": port, "socket_path": str(tmp_path / "writ.sock")}
+    yield daemon
+    verdict = stop_isolated_daemon(daemon)
+    assert verdict["stopped"], (
+        f"alt_daemon teardown could not stop the daemon on port "
+        f"{verdict.get('port')}: pids {verdict.get('pids')}, surviving pids "
+        f"{verdict.get('survivors')}, table measured {verdict.get('pids_measured')}, "
+        f"health {verdict.get('health')!r}"
+    )
 
 
 class TestHealthCacheDir:
@@ -132,75 +169,67 @@ class TestStartPathsPinCacheDir:
 
 @pytest.mark.skipif(shutil.which("pkill") is None, reason="pkill required for isolated-daemon cleanup")
 class TestEnsureServerSelfHeal:
-    def test_realign_restarts_misaligned_daemon(self, tmp_path) -> None:
-        if _port_busy(ALT_PORT):
-            pytest.skip(f"alt port {ALT_PORT} already in use")
+    """Drives the LAUNCHER (`_ensure`, kept hand-rolled) twice on ONE port with
+    different envs and watches it decide: realign, refuse to realign, or no-op
+    when already aligned. `alt_daemon` owns only the port (OS-assigned, never
+    the suite's) and the stop (`stop_isolated_daemon`, verdict asserted below);
+    `start_isolated_daemon` cannot be substituted here because it runs
+    ensure-server.sh exactly once and cannot express "re-ensure this same port
+    with a different cache dir", which is the property every test below needs.
+    """
+
+    def test_realign_restarts_misaligned_daemon(self, alt_daemon, tmp_path) -> None:
         dir_a = str(tmp_path / "A"); dir_b = str(tmp_path / "B")
         os.makedirs(dir_a, exist_ok=True); os.makedirs(dir_b, exist_ok=True)
-        try:
-            h_a = _ensure(ALT_PORT, dir_a, realign=True)
-            if h_a is None:
-                pytest.skip("could not start isolated daemon (env/Neo4j unavailable)")
-            assert h_a.get("cache_dir") == dir_a, f"daemon should serve cache_dir A; got {h_a.get('cache_dir')}"
-            # Re-ensure with a DIFFERENT cache dir -> opt-in self-heal must restart + realign.
-            h_b = _ensure(ALT_PORT, dir_b, realign=True)
-            assert h_b is not None and h_b.get("cache_dir") == dir_b, \
-                f"ensure-server must realign a misaligned daemon to B; got {h_b and h_b.get('cache_dir')}"
-        finally:
-            _kill_alt_daemon(ALT_PORT)
+        h_a = _ensure(alt_daemon, dir_a, realign=True)
+        if h_a is None:
+            pytest.skip(f"could not start isolated daemon on port {alt_daemon['port']} "
+                        f"(env/Neo4j unavailable)")
+        assert h_a.get("cache_dir") == dir_a, f"daemon should serve cache_dir A; got {h_a.get('cache_dir')}"
+        # Re-ensure with a DIFFERENT cache dir -> opt-in self-heal must restart + realign.
+        h_b = _ensure(alt_daemon, dir_b, realign=True)
+        assert h_b is not None and h_b.get("cache_dir") == dir_b, \
+            f"ensure-server must realign a misaligned daemon to B; got {h_b and h_b.get('cache_dir')}"
 
-    def test_default_does_not_realign_misaligned_daemon(self, tmp_path) -> None:
+    def test_default_does_not_realign_misaligned_daemon(self, alt_daemon, tmp_path) -> None:
         """Systemd-safety default (f5f21e6): with WRIT_REALIGN_CACHE unset, ensure-server
         is start-only -- it must NOT kill+restart a running-but-misaligned daemon (that
         would fight the systemd-managed daemon). Pins the default that the systemd
         migration introduced; the inverse of the opt-in realign test above."""
-        if _port_busy(ALT_PORT):
-            pytest.skip(f"alt port {ALT_PORT} already in use")
         dir_a = str(tmp_path / "A"); dir_b = str(tmp_path / "B")
         os.makedirs(dir_a, exist_ok=True); os.makedirs(dir_b, exist_ok=True)
-        try:
-            h_a = _ensure(ALT_PORT, dir_a)  # default: realign OFF
-            if h_a is None:
-                pytest.skip("could not start isolated daemon (env/Neo4j unavailable)")
-            assert h_a.get("cache_dir") == dir_a
-            # Re-ensure with a DIFFERENT cache dir, realign OFF -> daemon stays on A.
-            h_b = _ensure(ALT_PORT, dir_b)
-            assert h_b is not None and h_b.get("cache_dir") == dir_a, \
-                f"default ensure-server must NOT realign (systemd-safety); expected A, got {h_b and h_b.get('cache_dir')}"
-        finally:
-            _kill_alt_daemon(ALT_PORT)
+        h_a = _ensure(alt_daemon, dir_a)  # default: realign OFF
+        if h_a is None:
+            pytest.skip(f"could not start isolated daemon on port {alt_daemon['port']} "
+                        f"(env/Neo4j unavailable)")
+        assert h_a.get("cache_dir") == dir_a
+        # Re-ensure with a DIFFERENT cache dir, realign OFF -> daemon stays on A.
+        h_b = _ensure(alt_daemon, dir_b)
+        assert h_b is not None and h_b.get("cache_dir") == dir_a, \
+            f"default ensure-server must NOT realign (systemd-safety); expected A, got {h_b and h_b.get('cache_dir')}"
 
-    def test_idempotent_when_aligned(self, tmp_path) -> None:
-        if _port_busy(ALT_PORT):
-            pytest.skip(f"alt port {ALT_PORT} already in use")
+    def test_idempotent_when_aligned(self, alt_daemon, tmp_path) -> None:
         dir_a = str(tmp_path / "A"); os.makedirs(dir_a, exist_ok=True)
-        try:
-            h1 = _ensure(ALT_PORT, dir_a, realign=True)
-            if h1 is None:
-                pytest.skip("could not start isolated daemon")
-            t1 = h1.get("startup_time")
-            h2 = _ensure(ALT_PORT, dir_a, realign=True)  # realign on but already aligned -> must NOT restart
-            assert h2 is not None and h2.get("startup_time") == t1, \
-                "ensure-server must not restart an already-aligned daemon (startup_time unchanged)"
-        finally:
-            _kill_alt_daemon(ALT_PORT)
+        h1 = _ensure(alt_daemon, dir_a, realign=True)
+        if h1 is None:
+            pytest.skip(f"could not start isolated daemon on port {alt_daemon['port']}")
+        t1 = h1.get("startup_time")
+        h2 = _ensure(alt_daemon, dir_a, realign=True)  # realign on but already aligned -> must NOT restart
+        assert h2 is not None and h2.get("startup_time") == t1, \
+            "ensure-server must not restart an already-aligned daemon (startup_time unchanged)"
 
-    def test_realign_restarts_on_friction_mismatch(self, tmp_path) -> None:
+    def test_realign_restarts_on_friction_mismatch(self, alt_daemon, tmp_path) -> None:
         """Same cache_dir, divergent friction-log -> ensure-server must restart and
         realign the daemon onto the caller's WRIT_FRICTION_LOG (audit #4)."""
-        if _port_busy(ALT_PORT):
-            pytest.skip(f"alt port {ALT_PORT} already in use")
         cache = str(tmp_path / "C"); os.makedirs(cache, exist_ok=True)
         fa = str(tmp_path / "fa.log"); fb = str(tmp_path / "fb.log")
-        try:
-            h_a = _ensure(ALT_PORT, cache, friction_log=fa, realign=True)
-            if h_a is None:
-                pytest.skip("could not start isolated daemon (env/Neo4j unavailable)")
-            assert h_a.get("friction_log") == fa, \
-                f"daemon should serve friction_log A; got {h_a.get('friction_log')}"
-            # Re-ensure: same cache, DIFFERENT friction-log -> opt-in self-heal must realign.
-            h_b = _ensure(ALT_PORT, cache, friction_log=fb, realign=True)
-            assert h_b is not None and h_b.get("friction_log") == fb, \
-                f"ensure-server must realign friction-log to B; got {h_b and h_b.get('friction_log')}"
-        finally:
-            _kill_alt_daemon(ALT_PORT)
+        h_a = _ensure(alt_daemon, cache, friction_log=fa, realign=True)
+        if h_a is None:
+            pytest.skip(f"could not start isolated daemon on port {alt_daemon['port']} "
+                        f"(env/Neo4j unavailable)")
+        assert h_a.get("friction_log") == fa, \
+            f"daemon should serve friction_log A; got {h_a.get('friction_log')}"
+        # Re-ensure: same cache, DIFFERENT friction-log -> opt-in self-heal must realign.
+        h_b = _ensure(alt_daemon, cache, friction_log=fb, realign=True)
+        assert h_b is not None and h_b.get("friction_log") == fb, \
+            f"ensure-server must realign friction-log to B; got {h_b and h_b.get('friction_log')}"

@@ -156,6 +156,23 @@ def instrumented_daemon(tmp_dir):
     of resuming it (GeneratorExit at the yield), which would carry a bare cleanup
     path straight past the stop and leave a live daemon on an OS-assigned port
     that no later guard can attribute to us.
+
+    THE SECOND CONTROL IS THE AUDIT DESTINATION, read out of what the DAEMON
+    reports rather than out of the env dict handed to the launcher, because the
+    variable being set and the server having resolved it are two different facts.
+    It belongs here rather than in each caller because it is a property of the
+    START: conftest's `_isolate_friction_log` is FUNCTION-scoped and a daemon
+    fixture is MODULE-scoped, so at start time `WRIT_LOG_ROOT` may not be
+    monkeypatched yet and `writ_default_server_log`'s resolution order
+    (`scripts/lib/writ-server-lib.sh:141-149`) falls past it to the plugin data
+    dir or the skill's own `var` log tree, with the daemon's audit stream
+    resolving alongside. That is the exposure measured in the three hook modules
+    plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3 converted, and the same class of
+    defect `tests/test_advance_phase_token_gate.py` was rewritten for after it was
+    caught writing `agent_self_approval_blocked` rows into the operator's real
+    `audit.jsonl`. `start_isolated_daemon` closes it by setting `WRIT_LOG_ROOT`
+    explicitly; asserting it here is what turns "closed" from an inference over
+    four passing callers into a fact one fixture refuses to yield without.
     """
     tmp_dir = Path(tmp_dir)
     daemon = start_isolated_daemon(
@@ -185,6 +202,21 @@ def instrumented_daemon(tmp_dir):
         # ("a process the suite did not prove it started is the operator's to
         # stop"). The stop verdict is not asserted here: the diagnosis above is the
         # one this failure is for.
+        stop_isolated_daemon(daemon)
+        pytest.fail(refusal, pytrace=False)
+    audit_log = daemon["health"].get("audit_log")
+    if not audit_log or not str(audit_log).startswith(daemon["log_root"]):
+        refusal = (
+            f"the daemon on port {daemon['port']} reports audit_log "
+            f"{audit_log!r}, which is not under the throwaway log root this "
+            f"fixture handed its start ({daemon['log_root']}). Every row that "
+            f"daemon writes would land in the operator's real audit stream, so "
+            f"this fails at the start that resolved it rather than being "
+            f"inferred from the callers that happened to pass."
+        )
+        # Stopped before the refusal for the reason measured above: a failure
+        # raised between the start and the `yield` skips a fixture's own
+        # teardown, which would turn one loud failure into two.
         stop_isolated_daemon(daemon)
         pytest.fail(refusal, pytrace=False)
     try:

@@ -1313,7 +1313,8 @@ _SANCTIONED_OWNER_MARKERS = (
 
 # A module that reaches a daemon START without a sanctioned owner. Its integration tests DO
 # execute, so its defect is a different one (four copies of one hand-rolled start on the
-# SUITE port, all four sharing one defective stop) and it is not the unowned arm.
+# SUITE port, all four sharing one defective stop, all four retired by plan.md
+# 2412ba38-51e1-4b73-895b-7b240a3c21d3) and it is not the unowned arm.
 _SELF_STARTED_MARKERS = (
     "ensure-server.sh",
     "writ_ensure_server",
@@ -1338,8 +1339,12 @@ def _suite_port_literals() -> set[object]:
 
     BOTH TYPES, because a module can name the port either way: `tests/_daemon.py::_port`
     returns the string form out of the environment, while a module that binds its own
-    constant writes the int (`ALT_PORT = <suite port>` in
-    `tests/test_fix2_cache_alignment.py`, whose four self-heal tests skip on it).
+    constant writes the int (`ALT_PORT = <suite port>`, the shape
+    `tests/test_fix2_cache_alignment.py` carried until plan.md
+    2412ba38-51e1-4b73-895b-7b240a3c21d3 moved its four self-heal tests onto an
+    OS-assigned port). NO LIVE MODULE BINDS SUCH A CONSTANT TODAY, so the int arm is
+    kept for the next one rather than for a current member: a resolver narrowed to the
+    string form would go quiet on the shape it was written for.
     """
     from tests.conftest import TEST_DAEMON_PORT
 
@@ -1392,8 +1397,11 @@ def _referenced_names(node: ast.AST) -> set[str]:
     """Every identifier an expression or body mentions, as bare names.
 
     ATTRIBUTES CONTRIBUTE THEIR LAST SEGMENT, so `self._ensure_aligned_daemon(...)` resolves
-    through the method of that name: `tests/test_methodology_companion_orchestrator.py`
-    reaches its skip that way and a Name-only walk would miss it.
+    through the method of that name. That was how
+    `tests/test_methodology_companion_orchestrator.py` reached its skip, and a Name-only walk
+    would have missed it; plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3 converted that module
+    onto a sanctioned owner, so the rule has no live subject today and is kept for the next
+    class-based module that dispatches its probe through a method.
     """
     names: set[str] = set()
     for child in ast.walk(node):
@@ -1442,8 +1450,9 @@ def _suite_address_names(
 
     A LOCAL ASSIGNMENT COUNTS, and it has to: the condition at the skip is often a plain
     local (`started_daemon = self._ensure_aligned_daemon(...)`, then
-    `if not started_daemon:`), and requiring a module-level binding would miss three of the
-    four self-started modules.
+    `if not started_daemon:`), and requiring a module-level binding would have missed three
+    of the four self-started modules this rule was derived from, all four since converted by
+    plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3.
     """
     names: set[str] = set()
     for node in ast.walk(tree):
@@ -1530,17 +1539,43 @@ def _daemon_skip_owner(source: str) -> str | None:
     """`"sanctioned"` | `"self-started"` | None for a module that carries a site.
 
     SANCTIONED WINS when a module carries both markers, which is the plan's own definition
-    ("self-started: reaches a daemon START but NOT through a sanctioned owner") and the live
-    case: `tests/test_fix2_cache_alignment.py` takes the shared owner for its converted test
-    and still hand-rolls a suite-port start for its four self-heal tests, so its owner
-    verdict describes the module while the self-started FINDING is recorded against the
-    start mechanism the four copies share.
+    ("self-started: reaches a daemon START but NOT through a sanctioned owner"). It was
+    derived from a measured case rather than chosen: `tests/test_fix2_cache_alignment.py`
+    took the shared owner for one converted test while four self-heal tests still hand-rolled
+    a suite-port start, so its owner verdict described the MODULE while the self-started
+    finding was recorded against the start mechanism those copies shared. plan.md
+    2412ba38-51e1-4b73-895b-7b240a3c21d3 moved that module's start onto an OS-assigned port,
+    so the precedence rule now has no live subject and stays for the next module that mixes
+    the two.
     """
     if any(marker in source for marker in _SANCTIONED_OWNER_MARKERS):
         return "sanctioned"
     if any(marker in source for marker in _SELF_STARTED_MARKERS):
         return "self-started"
     return None
+
+
+def daemon_reachability_scanned_modules(*, tests_dir: Path = TESTS) -> list[str]:
+    """Every test module the detector below WALKS, matched or not, as POSIX paths relative
+    to `tests_dir` ITSELF (the same keying `daemon_reachability_skip_sites` uses).
+
+    ONE WALK, TWO VIEWS. `daemon_reachability_skip_sites` ITERATES this list rather than
+    re-deriving its own glob, so the matched map and this population cannot disagree about
+    what was scanned. A second `rglob` beside the first would be a MODEL of the walk, and a
+    model is blind to the walk it models.
+
+    IT EXISTS BECAUSE THE NON-VACUITY FLOOR HAD TO MOVE, and that re-base is not a
+    weakening. The floor protects exactly one fact: an emptiness verdict over the unowned
+    arm came from a scan that LOOKED. It used to prove that by requiring the matched map
+    non-empty, which requires some live module to STAY defective; plan.md
+    2412ba38-51e1-4b73-895b-7b240a3c21d3 converted the last four members, so the matched map
+    is now `{}` on the real tree by success and a floor resting on a match would have gone
+    red for the right reason. Resting on the scan instead, it still catches every way the
+    detector can go blind (a narrowed glob, a wrong default `tests_dir`, a scan that reaches
+    nothing) and survives the population being FIXED.
+    """
+    root = Path(tests_dir)
+    return [path.relative_to(root).as_posix() for path in sorted(root.rglob("test_*.py"))]
 
 
 def daemon_reachability_skip_sites(
@@ -1564,31 +1599,90 @@ def daemon_reachability_skip_sites(
     NON-EMPTINESS IS SOMEONE ELSE'S ASSERTION, deliberately. This returns `{}` for a tree
     with no qualifying module, including an empty one, because an emptiness assertion over
     the unowned arm passes just as well on a scan that matched NOTHING; the floor that makes
-    it non-vacuous lives beside it in `tests/test_daemon_skip_ownership.py`, which asserts
-    this map non-empty on the real tree.
+    it non-vacuous lives beside it in `tests/test_daemon_skip_ownership.py` and rests on
+    `daemon_reachability_scanned_modules`, because after plan.md
+    2412ba38-51e1-4b73-895b-7b240a3c21d3 this map is `{}` ON THE REAL TREE BY SUCCESS: the
+    four modules that populated it were converted, so a floor keyed on a MATCH would demand
+    a live module stay defective forever.
 
     Keys are POSIX paths relative to `tests_dir` ITSELF (not its parent, unlike
     `_matching_test_modules`, whose callers paste them into a pytest invocation), so a
     synthetic tree under `tmp_path` keys on the bare filename planted there.
 
-    `rglob("test_*.py")` for the reason `_matching_test_modules` records: pytest collects on
-    that default pattern and it reaches `tests/firedrill/` and `tests/plugin/`, and it is
-    also what keeps this module and every non-test helper under `tests/` out of the
-    population structurally rather than by an exclusion entry.
+    THE WALK IS `daemon_reachability_scanned_modules`'s, `rglob("test_*.py")` for the reason
+    `_matching_test_modules` records: pytest collects on that default pattern and it reaches
+    `tests/firedrill/` and `tests/plugin/`, and it is also what keeps this module and every
+    non-test helper under `tests/` out of the population structurally rather than by an
+    exclusion entry.
     """
     probes = set(_SUITE_ADDRESS_RESOLVERS) | _daemon_probe_names()
     literals = _suite_port_literals()
     root = Path(tests_dir)
     sites: dict[str, dict[str, object]] = {}
-    for path in sorted(root.rglob("test_*.py")):
-        source = path.read_text(encoding="utf-8", errors="replace")
+    for module in daemon_reachability_scanned_modules(tests_dir=root):
+        source = (root / module).read_text(encoding="utf-8", errors="replace")
         tree = ast.parse(source)
         names = _suite_address_names(tree, probes, literals)
         lines = _daemon_skip_site_lines(tree, names, literals)
         if not lines:
             continue
-        sites[path.relative_to(root).as_posix()] = {
+        sites[module] = {
             "owner": _daemon_skip_owner(source),
             "sites": lines,
         }
+    return sites
+
+
+# ── The D2 ratchet (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3, decision 6) ──
+#
+# Four modules hand-rolled a daemon stop as `pkill -f "writ serve --port N"`, a literal that
+# matches exactly ONE of the three launch spellings `scripts/lib/writ-server-lib.sh:93-99`
+# can produce, so a miss left a daemon squatting the port every later module resolves. All
+# four copies are retired; this is what stops a fifth, because retiring a population and
+# leaving nothing to stop its regrowth is how this one grew in the first place.
+#
+# IT KEYS ON THE MECHANISM, NOT ON THE PATTERN STRING. A command list whose FIRST element is
+# the constant "pkill" is a process kill being spawned, however its `-f` argument is spelled,
+# so the next hand-rolled stop is a member before anyone reads its regex. It deliberately
+# does NOT catch `shutil.which("pkill")`, which is a missing-TOOL probe and stays legitimate
+# in `tests/test_fix2_cache_alignment.py`'s class mark; that discrimination is planted on a
+# synthetic tree in `tests/test_daemon_skip_ownership.py` rather than argued.
+#
+# THE WALK IS `rglob("*.py")`, NOT `test_*.py`, and the difference is load-bearing rather
+# than incidental: `tests/_daemon.py` is not a collected module and is the ONE legitimate
+# spawner (it builds its pattern from `_serve_pattern` and VERIFIES the result through
+# `_wait_for_isolated_down` instead of trusting the signal), so a collected-modules-only
+# glob would structurally miss the only member the real tree is supposed to have.
+_PKILL_PROGRAM = "pkill"
+
+
+def _pkill_command_lines(tree: ast.Module) -> list[int]:
+    """The 1-based line of every list or tuple literal whose first element is `"pkill"`."""
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.List, ast.Tuple)) and node.elts:
+            first = node.elts[0]
+            if isinstance(first, ast.Constant) and first.value == _PKILL_PROGRAM:
+                lines.add(node.lineno)
+    return sorted(lines)
+
+
+def pkill_invocation_sites(*, tests_dir: Path = TESTS) -> dict[str, list[int]]:
+    """Every module under `tests/` that SPAWNS `pkill`, as `"<module>"` -> `[<line>, ...]`.
+
+    Keys are POSIX paths relative to `tests_dir` ITSELF, the same keying
+    `daemon_reachability_skip_sites` uses, so a synthetic tree under `tmp_path` keys on the
+    bare filename planted there.
+
+    THE ASSERTION BELONGS ON THE KEY SET, NEVER ON THE LINE NUMBERS. The lines travel so a
+    failure can say where to look, but any edit to `tests/_daemon.py` moves them, and a
+    guard that reddens on an unrelated edit is a guard someone deletes.
+    """
+    root = Path(tests_dir)
+    sites: dict[str, list[int]] = {}
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        lines = _pkill_command_lines(tree)
+        if lines:
+            sites[path.relative_to(root).as_posix()] = lines
     return sites

@@ -200,11 +200,25 @@ def _kill_writ_serve_on_port(port: int, force: bool = False) -> None:
     """pkill the `writ serve` process whose command line names exactly `port`.
 
     Matched by PORT, so it can only ever reach the daemon the caller started;
-    the interactive singleton on another port is structurally out of reach.
-    Mirrors tests/test_phase3b_approval_rewrap.py::_stop_own_daemon, and is
-    deliberately not stop-server.sh: that script locates the process with lsof
-    (not always installed) and, on the default port, stops the operator's
+    the interactive singleton on another port is structurally out of reach. It
+    is deliberately not stop-server.sh: that script locates the process with
+    lsof (not always installed) and, on the default port, stops the operator's
     systemd unit instead of a process.
+
+    IT STAYS PRIVATE, and the caller count is the weaker half of the reason.
+    plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3 retired the four hand-rolled
+    stops that would have reached past the underscore (three modules now stop
+    through `tests/_hook_runner.py::instrumented_daemon` and one through
+    `stop_isolated_daemon` directly), so today there are ZERO external callers
+    and the name is no longer a lie. The stronger half holds even if a fifth
+    appears: this function SENDS A SIGNAL AND RETURNS NOTHING, while
+    `stop_isolated_daemon` sends it, waits for the health route to go quiet AND
+    the process table to reap, escalates to SIGKILL, unlinks the socket and
+    returns a verdict a caller can assert. Publishing the unverified half would
+    advertise it as the sanctioned way to stop a daemon, which is the defect
+    this program removed one layer up when `stop_isolated_daemon` stopped
+    discarding its second `_wait_for_isolated_down` result. `_serve_pattern`
+    and `_pids_serving_port` stay private for the same reason.
 
     THE PATTERN IS `_serve_pattern`, ONE SPELLING-INDEPENDENT SUBSTRING, and it
     is shared with the pid lookup below so a stop and its verification can
@@ -534,11 +548,25 @@ def stop_isolated_daemon(daemon: dict | None) -> dict:
     one defect (a daemon that would not stop) into two (a daemon that would not
     stop, plus a stale socket the next `writ serve` takes over). So the
     teardown completes on every path, including `stopped: False`, and the
-    owning fixture asserts the verdict afterwards:
-    `tests/test_advance_phase_token_gate.py::own_daemon` is the only live
-    caller and does exactly that. Before this cycle the second
-    `_wait_for_isolated_down` result was DISCARDED, so a stop that missed
+    owning fixture asserts the verdict afterwards, which every live caller does
+    (`tests/_hook_runner.py::instrumented_daemon`,
+    `tests/test_advance_phase_token_gate.py::own_daemon` and
+    `tests/test_fix2_cache_alignment.py::alt_daemon`). Before this cycle the
+    second `_wait_for_isolated_down` result was DISCARDED, so a stop that missed
     reported nothing at all.
+
+    THERE ARE TWO SUPPORTED CALLER SHAPES, not one, and the second is why this
+    reads its payload entirely through `.get`. The first is the dict
+    `start_isolated_daemon` returned. The second is a HAND-BUILT
+    `{"port": p, "socket_path": s}` from a module that owns its own START and
+    only wants the verified stop: `tests/test_fix2_cache_alignment.py::alt_daemon`
+    builds exactly that, because `TestEnsureServerSelfHeal` drives
+    ensure-server.sh twice on one port with different envs and
+    `start_isolated_daemon` runs that launcher exactly once. A missing `pids`
+    falls back to a fresh process-table read here, so the verdict is derived
+    rather than trusted from the payload, and the fixture that built the payload
+    is the one that asserts `stopped`. No behaviour differs between the two
+    shapes.
 
     `pids_measured: False` says the process table could not be certified while
     this teardown ran, which is what keeps `survivors: []` from reading as
