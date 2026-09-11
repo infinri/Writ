@@ -1730,7 +1730,11 @@ is not a ratchet.
   `"c"p` into two tokens, the same defect as the strict xfail at `partial_quote_prefix` in
   `tests/test_bash_expansion_boundary_gate.py`. That layer is shared with two sibling hooks
   through the `MIRROR BEGIN/END` block, so it carries different risk and gets its own
-  cycle.
+  cycle. **CLOSED by cycle V below**, which is the cycle this bullet predicted: the
+  adjacency repair reunites the two tokens and the rewritten `dequote` resolves the verb.
+  Both strict xfails named here (`partial_quote_prefix` and
+  `test_mid_word_quote_split_credential_write_would_deny`) are retired and their behaviors
+  now pass unmarked.
 - BACKSLASH ESCAPING (`c\p`, `git\ reset`) and ANSI-C quoting (`cp$'\x20'x`), same token
   layer, same deferral.
 
@@ -1739,7 +1743,11 @@ phrase match, so each is the deferred token layer and not a pattern tweak. The f
 and the `"c"p` split are pinned as `xfail(strict=True)` in
 `tests/test_bash_pattern_spelling_gate.py`, so a later cycle that closes any of them turns
 that test GREEN, which strict mode reports as a failure and forces updating this
-disclosure rather than leaving it stale.
+disclosure rather than leaving it stale. THAT MECHANISM FIRED, exactly once and exactly as
+designed: cycle V closed the `"c"p` split, the strict xfail went green, the run reported a
+failure, and this section was updated instead of drifting. The first two (the interposed
+global flag and the reordered flags) are the irreversibility PHRASE match, a different
+mechanism, and they remain pinned and still xfail.
 
 ### The population is DERIVED, which is what keeps the new test from decaying
 
@@ -1774,3 +1782,218 @@ destructive command on the SECOND LINE of a multi-line command was a phrase-matc
 came to be CORRECTED: `case` glob matching is not line-anchored, so `*"git reset --hard"*`
 already matched straight across an embedded newline. The genuinely line-bound blindness was
 `_irrev_script_target`'s `read -ra`, and that is what the fix addresses.
+
+## Amendment (cycle V): one shell word arriving as TWO tokens, and the quote rule that forced
+
+Eighth instance of the seam, and the second one that lives inside `shlex.split` itself
+rather than around it. Cycle O found that `posix=False` forces `whitespace_split=True`, so
+a control operator glued to a token stays glued and the command after it never reaches
+command position. This cycle is the same call read from the other side: `posix=False` also
+ends a token at the CLOSING QUOTE of a span that STARTED that token, so ONE shell word
+arrives as TWO tokens whenever an unquoted fragment is glued after a leading quoted span.
+
+    shlex.split('cp x "$HOME"/y', comments=False, posix=False)
+    -> ['cp', 'x', '"$HOME"', '/y']        one bash word, TWO tokens
+
+A token that starts UNQUOTED absorbs the quoted spans that follow instead, which is why
+only one of the two spellings was ever broken and why the defect read as cosmetic for four
+cycles: `cp x $HOME"/y"` and `cp x ~/"y"` are each ONE token and always were.
+
+### Measured before the fix
+
+The whole splitting table was re-measured at the start of implementation rather than read
+off the plan, because the direction of each consequence depends on it. Every row below is
+`shlex.split(s, comments=False, posix=False)`:
+
+| spelling | tokens |
+|---|---|
+| `cp x "$HOME"/y` | `['cp', 'x', '"$HOME"', '/y']` |
+| `cp x $HOME"/y"` | `['cp', 'x', '$HOME"/y"']` |
+| `cp x ~/"y"` | `['cp', 'x', '~/"y"']` |
+| `cp x "a"b"c"` | `['cp', 'x', '"a"', 'b"c"']` |
+| `cp x 'single'/y` | `['cp', 'x', "'single'", '/y']` |
+| `cp x "$HOME"/y "$HOME"/z` | `['cp', 'x', '"$HOME"', '/y', '"$HOME"', '/z']` |
+| `"c"p readme .env` | `['"c"', 'p', 'readme', '.env']` |
+| `cat <<'EOF'>f` | `['cat', "<<'EOF'>f"]` |
+| `curl -d @f "https://example.invalid"/p` | `['curl', '-d', '@f', '"https://example.invalid"', '/p']` |
+| `git worktree add "scratch"/x main` | `['git', 'worktree', 'add', '"scratch"', '/x', 'main']` |
+
+The last row of that table is the one that decides the algorithm: `cp x "$HOME"/y` and
+`cp x "$HOME" /y` produce the IDENTICAL token list. The glued word and the spaced pair are
+indistinguishable once tokenization has happened, so the repair cannot be a post-pass over
+tokens alone.
+
+Three DIFFERENT consequences were measured through the write gate's own extractor, and
+whether the leftover fragment starts with `/` decides the direction:
+
+* `cp x "$HOME"escape.txt` classified PROJECT-LOCAL while bash writes outside the project.
+  A genuine boundary ESCAPE, in the permissive direction.
+* `cp x "src"/escape.txt` classified as `/escape.txt`, OUTSIDE the project, while bash
+  writes `src/escape.txt` inside it. An over-block, in the restrictive direction.
+* `echo hi > "$HOME"/escape.txt` kept the quoted head and dropped the FILENAME entirely.
+
+### Decision: repair at the RAW tokenization layer, reading the original string
+
+`rejoin_glued_words(text, toks)` walks the token list against the text shlex was handed and
+merges a token into its predecessor when the GAP between their matches is EMPTY. The
+correctness argument is one sentence: `posix=False` disables quote removal and backslash
+collapsing, so every token is an exact contiguous substring of `text`, and with
+`whitespace_split=True` shlex never splits on punctuation, so the quote boundary is the
+ONLY zero-width split it makes. Merging on an empty gap therefore reverses exactly that
+split and nothing else. A whitespace gap is a real word boundary and is left alone.
+
+Merging is transitive by construction, because a merged token is still an exact substring
+of `text`: `"a"b"c"` arrives as `['"a"', 'b"c"']` and leaves as `['"a"b"c"']`, while
+`cp x "$HOME"/y "$HOME"/z` keeps its two destinations apart because the gap between `/y`
+and `"$HOME"` is a space.
+
+### Alternative rejected: asking shlex where it was
+
+The obvious route is a live `shlex.shlex` instance with `whitespace_split=True`, reading
+`instream.tell()` around each `get_token()` to learn whether two tokens were adjacent. It
+was measured and it cannot work: `tell()` reports ADJACENT for both `cp x "$HOME"/y` and
+`cp x "$HOME" /y`, so shlex's own state does not separate a glued word from two words. The
+information only exists in the original string.
+
+### The signature takes TWO arguments, and that is forced rather than preferred
+
+A one-argument `split_words(text)` would have to call `shlex.split` itself. The shared
+block may not: it is pasted inline into both Bash hooks, it has to load under `python -S`,
+and `tests/test_bash_control_operator_split.py::TestTheMirrorBlockNeedsNoImports` fails any
+mirror block holding a line that starts with `import ` or `from `, as well as any block
+that does not exec in an EMPTY namespace. So `shlex` stays at the two call sites and the
+shared helper takes the one extra thing the algorithm genuinely needs.
+
+`text` is the string HANDED TO shlex, which is `split_commands(cmd)` and NOT the raw
+command. `split_commands` rewrites every unquoted newline into a spaced SEP sentinel, so
+token offsets are offsets into the REWRITTEN text; passing `cmd` would fail every lookup on
+a multi-line command, the fail-safe would return the list unchanged, and the repair would
+silently do nothing on exactly the commands the newline cycle exists for. Both call sites
+therefore bind the rewritten string to a local and use that local twice.
+
+### `dequote` moved into the mirror, and the move is PART of the fix
+
+Landing the rejoin alone is not a partial fix, it is a trade of one defect for two. Merging
+moves quote characters INTO tokens that other consumers hand to `dequote`, and the
+matched-OUTER-pair rule both hooks carried (`t[0] == t[-1] and t[0] in ("'", '"')`) then
+leaves them on, because the merged token no longer ends with a quote:
+
+* `host_of` starts `s = dequote(raw).strip()`. With the rejoin and the old rule,
+  `curl -d @src/a.txt "https://example.invalid"/p` resolves the host
+  `example.invalid"`, with a trailing quote. An allowlisted host stops matching and turns
+  into a false ask.
+* `positionals()` in the worktree hook calls `dequote(args[i])`. With the rejoin and the
+  old rule, `git worktree add "scratch"/x main` records `"scratch"/x`, quotes and all,
+  which is both a wrong gitignore question and a wrong audit row.
+
+So `dequote` became a quote-state WALK (remove quote characters wherever they appear, no
+expansion) and moved into the mirror block, where the existing tests hold the three copies
+identical. It KEEPS its name, which is load-bearing rather than cosmetic:
+`tests/test_bash_wrapper_prefix_gate.py` mutates the hook source on the literal string
+`WRAPPER_POSITIONAL_SHAPES[name].match(dequote(seg[i]))`, so a rename would make that
+mutation detector fail its own precondition.
+
+The old four-line local `dequote` in each hook was DELETED rather than left in place. Both
+sat AFTER the mirror block and after the package import, so a leftover copy would win
+silently and the hook would keep the old rule while every mirror test still passed. That
+shadowing risk is pinned structurally (no `def dequote(` outside the marker span in either
+hook) as well as behaviorally.
+
+### Ordering: before the stripper, before the splitter
+
+The rejoin runs on the RAW shlex output. `split_control_operators` only ever splits a token
+FURTHER, so it cannot repair an adjacency, and running it first would leave the fragments
+apart. It also UNDOES any control operator the rejoin re-glues: `echo x > "src/log.txt"; ls`
+merges to `"src/log.txt";` and is immediately re-split into `"src/log.txt"` and `;`, because
+a quoted span is never re-split. The token stream reaching the redirect loop is identical to
+before this cycle. That invariant used to be credited to shlex alone in the test that owns
+it, and the reason comment was corrected in place: the assertion still holds, but it now
+holds because a merge is undone one step later, not because nothing touched it.
+
+`strip_heredoc_bodies` is unaffected: the SEP sentinel is emitted space-padded, so it can
+never be merged into a neighbour, and the glued opener `<<'EOF'>f` is ALREADY one token
+because it starts unquoted and absorbs. The disclosed glued-opener residue is therefore
+unchanged in both direction and value.
+
+### Trade accepted: a fail-safe that declines rather than guesses
+
+A wrong merge is worse than the defect it repairs, so if a token is not found at or after
+the cursor, or a gap holds anything other than whitespace, the ORIGINAL list is returned and
+NOTHING is merged. The failure mode is the defect this cycle fixes, never a token stream
+that says something the shell never said.
+
+### Deliberately NOT done
+
+Switching either hook to `posix=True` would fix the adjacency for free. It is declined
+because posix mode performs quote removal, which destroys the quoting evidence that
+`expand_word` and the mention-versus-use tests depend on: `"$HOME/x"` and `'$HOME/x'` are
+the same bytes after quote removal and have OPPOSITE correct answers, and a quoted mention
+of an operator would become an operator. The `foo>bar` limit (an operator glued to the verb
+IN FRONT of it) has no boundary to recover and is untouched, as is the heredoc residue.
+
+### Two defects the DOCUMENTATION of this fix caused, both found by running it
+
+Both are the same shape and worth recording together: a guard that reads TEXT cannot tell
+a description of a thing from the thing, and the one document most likely to describe the
+raw call is the docstring of the function that repairs it.
+
+**The import-prefix detector.** The planned `rejoin_glued_words` docstring word-wrapped so
+that one line began with the word `import`, which trips
+`test_the_block_contains_no_import_statement`: that detector reads line PREFIXES, so it
+cannot separate an import statement from an English sentence that happens to start with
+the word. The prose was re-wrapped (same words) rather than the detector loosened, and the
+docstring now says so at the point of the wrap, because the next person to reflow that
+paragraph will otherwise rediscover it by going red.
+
+**The raw-call population read False on its own documentation.**
+`bash_token_split_sites()` in `tests/_inventory.py` blanks whole-line `#` comments and
+then looks for `shlex.split(` per line. The new docstring SHOWS the raw call three times,
+as python string data rather than as comments, so the blanking did not reach it and BOTH
+hooks read False while both real call sites were correctly wrapped. The derivation's own
+stated rule is "a mention is not a call"; its predicate simply did not implement that rule
+for prose written inside a string.
+
+The fix brings `_bts_verdict` up to the standard its sibling `python_shlex_split_callers`
+already set, which reads through `ast` "so the call SHAPE is what counts": each
+`python3 <<'PY'` heredoc body is extracted and parsed, every string literal becomes a
+PROSE span, and a match inside one is a mention. It FAILS CLOSED at every uncertainty, a
+body that does not parse contributes no spans, so its matches count as calls and the
+script reads False, because a guard that cannot tell must demand a look rather than pass
+quietly.
+
+**The obvious fix was rejected on a MEASUREMENT, and the measurement is the point.** The
+tempting repair is to skip the `MIRROR BEGIN/END` span, justified by the block's
+zero-import contract: if the block cannot import shlex, nothing inside it can call
+shlex.split, so anything matching there must be prose. That argument is TRUE for the
+standalone module `writ/session/bash_tokens.py` and FALSE for the two pasted hook copies.
+In `writ-bash-write-gate.sh` the heredoc opens at line 1166, its first line is
+`import os, re, shlex, sys`, and the mirror span runs from 1284 to 1787 INSIDE that same
+program, so `shlex` is in scope there at runtime. Planting
+`return shlex.split(text, posix=False)` between the markers was executed: the body still
+parses, the prose spans are unchanged at 628 lines, and the verdict flips True to False
+purely by detection. Skipping the span would have traded a false POSITIVE that is loud for
+a blind spot that is silent, and that mutation is now pinned as a test.
+
+### Measured versus inferred
+
+MEASURED: the ten-row splitting table above, re-run at implementation time and matching the
+plan's prediction on every row including the two that decide the algorithm; the three
+consequence rows through the real extractor, each compared against a real `bash -c` oracle
+rather than a hand-written expected string; the credential deny through the real hook; the
+egress host and the worktree path through their own real callers, with the worktree hook's
+quoted spelling producing a reason string BYTE-IDENTICAL to the unquoted control spelling;
+and the `shlex`-in-scope finding that rejected the mirror-span exclusion, executed as a
+planted call rather than argued from the zero-import contract.
+
+ONE TEST WAS REPLACED RATHER THAN SATISFIED, disclosed because a deleted assertion is the
+easiest thing to hide. The worktree case asserted that no `'` appeared in the reason before
+the word `gitignore`. That is unsatisfiable on ANY tree, defect or none, because the hook's
+own message wraps the path in single quotes as ordinary English prose
+(`target 'scratch/x' is not matched`): it failed identically on the correct implementation
+and was therefore blind to the property named above it. It is replaced by a PARITY
+assertion, that the quoted spelling and the unquoted `git worktree add scratch/x main`
+produce byte-identical output through the same helper, which is the claim the fix actually
+makes and which reddens if either the rejoin or the corrected dequote is dropped.
+
+NOT MEASURED, stated plainly: a write LANDING ON DISK through the full Claude Code path,
+the same boundary every earlier cycle in this family recorded.

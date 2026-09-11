@@ -309,33 +309,6 @@ def _case_env(fx: Fixture, case: Case) -> dict:
     return fx.env_empty_home if case.home == "empty" else fx.env_no_home
 
 
-# The one MATCH case `expand_word` cannot satisfy, because the defect is in the TOKENIZER
-# and not in expansion. Measured: `shlex.split('cp x "$HOME"/y', posix=False)` yields
-# ['cp', 'x', '"$HOME"', '/y'], two tokens, so the destination picker takes only the
-# trailing fragment and the quoted one is dropped as an earlier positional. `expand_word`
-# runs per already-collected token and cannot reunite them, so closing this needs a
-# tokenizer change, which is a different cycle with its own evidence.
-#
-# strict=True ON PURPOSE: when that cycle lands, this flips to XPASS and FAILS, which is
-# the prompt to delete the marker. A non-strict xfail would let a fixed defect go on
-# advertising itself as broken forever.
-TOKEN_BOUNDARY_XFAIL = {
-    "partial_quote_prefix": (
-        "token-boundary defect, not an expansion one: shlex.split(posix=False) splits "
-        '\'"$HOME"/x\' into two tokens and the destination picker sees only "/x". '
-        "Closing it requires a tokenizer change, out of scope for this cycle."
-    ),
-}
-
-
-def _match_param(case: "Case"):
-    """Wrap a case in pytest.param when a known separate defect makes it xfail."""
-    reason = TOKEN_BOUNDARY_XFAIL.get(case.id)
-    if reason is None:
-        return case
-    return pytest.param(case, marks=pytest.mark.xfail(strict=True, reason=reason))
-
-
 def _case_dest(case: Case) -> str:
     """Substitute the probe basename WITHOUT str.format.
 
@@ -383,7 +356,7 @@ class TestMatchClassAgreesWithTheRealShell:
     the fix into false refusals."""
 
     @pytest.mark.parametrize(
-        "case", [_match_param(c) for c in MATCH_CASES], ids=[c.id for c in MATCH_CASES],
+        "case", MATCH_CASES, ids=[c.id for c in MATCH_CASES],
     )
     def test_gate_abspath_equals_the_oracles(self, boundary_fixture, case):
         fx = boundary_fixture

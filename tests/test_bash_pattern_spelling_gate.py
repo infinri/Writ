@@ -764,11 +764,6 @@ class TestDeferredResidueStrictXfail:
     def _sid(self) -> str:
         return f"pattern-residue-{uuid.uuid4().hex[:8]}"
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "mid-word quote split ('\"c\"p') reaches the extractor once normalized, "
-        "but shlex.split(posix=False) still splits it into two tokens and dequote "
-        "only strips a matched OUTER pair -- the same defect as the strict xfail "
-        "at partial_quote_prefix in tests/test_bash_expansion_boundary_gate.py"))
     def test_mid_word_quote_split_credential_write_would_deny(self, tmp_path):
         sid = self._sid()
         _seed(sid, mode="conversation")

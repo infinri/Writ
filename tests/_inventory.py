@@ -26,6 +26,7 @@ import ast
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -1253,6 +1254,181 @@ def daemon_starting_hooks(*, scripts_dir: Path = HOOK_SCRIPTS_DIR) -> dict[str, 
         verdict = _dsh_guard_verdict(path.read_text(encoding="utf-8", errors="replace"))
         if verdict is not None:
             out[path.name] = verdict
+    return out
+
+
+# ── Raw Bash tokenizer sites (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3) ──
+#
+# `shlex.split(text, posix=False)` ends a token at the closing quote of a span that
+# started it, so one shell word arrives as two tokens and every consumer downstream reads
+# a fragment. `writ/session/bash_tokens.py` calls itself SINGLE SOURCE but never calls
+# shlex: it post-processes an already-split list, so the RAW call is duplicated in both
+# hooks OUTSIDE the mirror markers, where the mirror tests cannot see it.
+#
+# KEYED ON THE CALL, NOT ON A SCRIPT NAME. The population is every hook script that makes
+# the call at all, and the value is whether EVERY such call is wrapped. A hook that keeps
+# its call and loses the wrap reads False and fails by name.
+#
+# WHOLE-LINE COMMENTS ARE BLANKED, because both hooks DESCRIBE the call in prose several
+# times (writ-bash-write-gate.sh names it on lines 553, 1101 and 1328) and a mention is
+# not a call.
+#
+# KNOWN FAIL-CLOSED LIMIT, stated in the direction it really fails: the wrap must be on
+# the SAME line as the call. A call broken across lines reads as UNWRAPPED, which reports
+# a False for a site that may be correct. That is a demand to look, never a silent pass,
+# and both production call sites are written on one line for exactly this reason.
+#
+# A MENTION IN A DOCSTRING IS NOT A CALL EITHER, and blanking `#` comments does not reach
+# one. The shared MIRROR block documents the very defect this guard exists for, so its
+# `rejoin_glued_words` docstring SHOWS the raw call three times (`writ-bash-write-gate.sh`
+# lines 1541, 1546 and 1548; `writ-worktree-safety.sh` 398, 403 and 405). Those lines are
+# python string data, not `#` comments, so the comment blanking above leaves them standing
+# and BOTH hooks read False while both real call sites are correctly wrapped. MEASURED,
+# which is why this is written as a mechanism and not as a list of line numbers.
+#
+# SO THE PREDICATE READS CODE THROUGH `ast`, the standard `python_shlex_split_callers`
+# below already sets ("so the call SHAPE is what counts"). The hooks' python lives inside
+# `python3 <<'PY'` heredocs, so each body is extracted, parsed, and every STRING LITERAL
+# it contains becomes a PROSE span; a regex match inside a prose span is a mention and is
+# skipped. Shell cannot call `shlex.split` at all, so scoping to python bodies loses no
+# real call site.
+#
+# EXCLUDING THE MIRROR SPAN WOULD HAVE BEEN THE WRONG FIX, and the reason is measured
+# rather than argued: the zero-import contract holds for the standalone module
+# `writ/session/bash_tokens.py`, NOT for the two pasted hook copies. In
+# `writ-bash-write-gate.sh` the heredoc opens at line 1166, its first line is
+# `import os, re, shlex, sys`, and the mirror block runs INSIDE that same program, so
+# `shlex` is in scope there at runtime and a real call added inside the markers would
+# execute normally. Skipping the span would convert today's false POSITIVE into a
+# permanent blind spot, which is the worse direction.
+#
+# FAIL-CLOSED AT EVERY UNCERTAINTY, stated in the direction it really fails: a heredoc
+# body that does not parse as python contributes NO prose spans, so every match inside it
+# counts as a CALL and the script reads False. A guard that cannot tell demands a look; it
+# never passes quietly. `_blanked_lines` is REUSED here (never modified: five other guards
+# call it and its docstring pins line-number stability) to find heredoc OPENERS, because
+# an opener named inside a comment hijacks the scan otherwise. MEASURED: the prose at
+# `writ-bash-write-gate.sh` line 220 names `cat <<'EOF' > docs/notes.txt`, and scanning
+# raw lines started a body there that swallowed the rest of the file, leaving the real
+# program unparsed and both verdicts False for the wrong reason.
+_BTS_CALL = re.compile(r"shlex\.split\(")
+_BTS_WRAP = "rejoin_glued_words("
+_BTS_HEREDOC = re.compile(r"<<-?\s*(?P<q>['\"]?)(?P<word>[A-Za-z_][A-Za-z0-9_]*)(?P=q)")
+
+
+def _bts_python_bodies(source: str) -> list[tuple[str, int]]:
+    """(body text, index of the body's FIRST line) for every heredoc in `source`.
+
+    Openers are looked for in the COMMENT-BLANKED view and bodies are sliced from the RAW
+    one, so a documented opener cannot start a body while a real body keeps its exact
+    text. Both delimiter spellings are accepted (`<<'PY'` in the hooks, bare `<<PY` in the
+    synthetic fixtures) and an unterminated heredoc simply runs to end of file.
+    """
+    lines = source.split("\n")
+    openers = _blanked_lines(source)
+    bodies: list[tuple[str, int]] = []
+    i = 0
+    while i < len(lines):
+        match = _BTS_HEREDOC.search(openers[i])
+        if match is None:
+            i += 1
+            continue
+        word = match.group("word")
+        start = i + 1
+        end = start
+        while end < len(lines) and lines[end].strip() != word:
+            end += 1
+        bodies.append(("\n".join(lines[start:end]), start))
+        i = end + 1
+    return bodies
+
+
+def _bts_prose_spans(source: str) -> dict[int, list[tuple[int, int]]]:
+    """Line index -> the (start col, end col) ranges on it that are python STRING DATA.
+
+    Only bodies that PARSE contribute, which is the fail-closed half: an unparsed body
+    yields nothing here, so its mentions count as calls.
+    """
+    spans: dict[int, list[tuple[int, int]]] = {}
+    for body, offset in _bts_python_bodies(source):
+        try:
+            tree = ast.parse(body)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+                continue
+            if node.end_lineno is None:
+                continue
+            for lineno in range(node.lineno, node.end_lineno + 1):
+                low = node.col_offset if lineno == node.lineno else 0
+                high = node.end_col_offset if lineno == node.end_lineno else sys.maxsize
+                spans.setdefault(offset + lineno - 1, []).append((low, high))
+    return spans
+
+
+def _bts_verdict(source: str) -> bool | None:
+    """None when this script never calls shlex.split; otherwise whether EVERY call it
+    makes is nested inside a rejoin_glued_words(...) call on the same line.
+
+    A match that sits inside a `#` comment or inside a python string literal is a MENTION
+    and does not enter the verdict at all, so a script that only DESCRIBES the call stays
+    out of the population rather than reading False.
+    """
+    spans = _bts_prose_spans(source)
+    verdicts: list[bool] = []
+    for index, line in enumerate(_blanked_lines(source)):
+        for match in _BTS_CALL.finditer(line):
+            if any(low <= match.start() < high for low, high in spans.get(index, ())):
+                continue
+            verdicts.append(_BTS_WRAP in line[:match.start()])
+    if not verdicts:
+        return None
+    return all(verdicts)
+
+
+def bash_token_split_sites(*, scripts_dir: Path = HOOK_SCRIPTS_DIR) -> dict[str, bool]:
+    """Every hook script that tokenizes Bash text with `shlex.split`, mapped to whether
+    every one of its calls is wrapped by the adjacency repair.
+
+    `scripts_dir` is a keyword for the reason `daemon_starting_hooks(*, scripts_dir=)`
+    gives: the derivation's precision is pinned against SYNTHETIC scripts under `tmp_path`
+    in tests/test_bash_quote_adjacency_gate.py, never against the real tree's current
+    wording alone. That module also asserts this map NON-EMPTY against the real
+    hooks/scripts/, because a derivation that silently returned {} would make the
+    completeness assertion beside it pass on any tree.
+    """
+    out: dict[str, bool] = {}
+    for path in sorted(Path(scripts_dir).glob("*.sh")):
+        verdict = _bts_verdict(path.read_text(encoding="utf-8", errors="replace"))
+        if verdict is not None:
+            out[path.name] = verdict
+    return out
+
+
+def python_shlex_split_callers(*, package_dir: Path = REPO / "writ") -> dict[str, int]:
+    """Every module under `writ/` that CALLS shlex.split, mapped to how many calls it
+    makes. EMPTY today, and that is the point: the map above is scoped to hooks/scripts/,
+    so without this a future tokenizer added under writ/ would not merely read False, it
+    would never be in a population at all. Read through `ast`, so the call SHAPE is what
+    counts and the several docstring mentions in writ/session/bash_tokens.py (lines 3, 7
+    and 86) are not miscounted as calls.
+    """
+    out: dict[str, int] = {}
+    for path in sorted(Path(package_dir).rglob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        except SyntaxError:
+            continue
+        count = 0
+        for node in ast.walk(tree):
+            func = getattr(node, "func", None)
+            if (isinstance(node, ast.Call)
+                    and isinstance(func, ast.Attribute) and func.attr == "split"
+                    and isinstance(func.value, ast.Name) and func.value.id == "shlex"):
+                count += 1
+        if count:
+            out[str(path.relative_to(REPO))] = count
     return out
 
 

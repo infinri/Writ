@@ -88,10 +88,15 @@ def _mirror_block(path: str) -> str:
     return text[start:end].strip("\n")
 
 
-def _load_mirror(path: str):
+def _mirror_ns(path: str) -> dict:
+    """The MIRROR block execed in an empty namespace, every name it defines intact."""
     ns: dict = {}
     exec(compile(_mirror_block(path), "<mirror:%s>" % path, "exec"), ns)
-    return ns["split_control_operators"]
+    return ns
+
+
+def _load_mirror(path: str):
+    return _mirror_ns(path)["split_control_operators"]
 
 
 def _package_splitter():
@@ -99,6 +104,38 @@ def _package_splitter():
         sys.path.insert(0, SKILL_ROOT)
     from writ.session.bash_tokens import split_control_operators
     return split_control_operators
+
+
+def _package_rejoin_glued_words():
+    """`writ.session.bash_tokens.rejoin_glued_words`, or a skeleton failure while it does
+    not exist yet (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3 ## Files): a bare import
+    would raise ImportError at the wrong layer and read as a broken test rather than as
+    the not-yet-implemented production function it actually is."""
+    if SKILL_ROOT not in sys.path:
+        sys.path.insert(0, SKILL_ROOT)
+    import writ.session.bash_tokens as bash_tokens
+    fn = getattr(bash_tokens, "rejoin_glued_words", None)
+    if fn is None:
+        pytest.fail(
+            "skeleton: writ.session.bash_tokens.rejoin_glued_words does not exist yet "
+            "(plan.md ## Files: writ/session/bash_tokens.py)"
+        )
+    return fn
+
+
+def _package_dequote():
+    """`writ.session.bash_tokens.dequote`, or a skeleton failure while the MIRROR-block
+    quote-state walk has not replaced the hooks' local matched-outer-pair rule yet."""
+    if SKILL_ROOT not in sys.path:
+        sys.path.insert(0, SKILL_ROOT)
+    import writ.session.bash_tokens as bash_tokens
+    fn = getattr(bash_tokens, "dequote", None)
+    if fn is None:
+        pytest.fail(
+            "skeleton: writ.session.bash_tokens.dequote does not exist yet -- it moves "
+            "into the MIRROR block as a quote-state walk (plan.md ## Files)"
+        )
+    return fn
 
 
 # --------------------------------------------------------------------------- #
@@ -277,9 +314,20 @@ class TestTheFdDupSurvivesAndTheSeparatorStillSplits:
 # --------------------------------------------------------------------------- #
 class TestRedirectSpellingsKeepTheirMeaning:
     def test_a_quoted_target_followed_by_a_glued_separator_still_resolves(self):
-        # Correct TODAY (shlex ends a token at a closing quote with no following
-        # whitespace) and the invariant the splitter rests on: a quoted span is never
-        # re-split.
+        # CORRECTED REASON (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3 ## Ordering):
+        # this used to be credited to shlex alone ("a quoted span is never re-split"),
+        # which is no longer the whole story once rejoin_glued_words sits in front of
+        # split_control_operators. shlex already ends a token at the closing quote no
+        # matter what is glued right after it, so the quoted target and `;` arrive as
+        # separate tokens with a ZERO-WIDTH gap between them:
+        #   shlex.split('echo x > "src/log.txt"; ls', posix=False)
+        #   == ['echo', 'x', '>', '"src/log.txt"', ';', 'ls']
+        # rejoin_glued_words reads that empty gap as a quote-boundary split and merges
+        # them into '"src/log.txt";', and split_control_operators immediately re-splits
+        # that back into '"src/log.txt"' and ';', because a quoted span inside a token
+        # is never re-split. The token stream reaching the redirect loop is identical
+        # either way, so the assertion still holds -- it now holds because a merge is
+        # undone one step later, not because nothing touched it.
         assert EXPECTED_TARGET in _extract_rows('echo x > "%s"; ls' % TARGET)
 
     def test_clobber_override_still_resolves(self):
@@ -401,6 +449,53 @@ class TestThereIsOnlyOneSplitter:
             assert mirror(toks) == pkg(toks), (path, cmd)
 
 
+# --------------------------------------------------------------------------- #
+# 7b. the two NEW shared names (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3) must
+# hold the same identity property as split_control_operators: all three copies
+# agree with the package, over the same kind of command list.
+# --------------------------------------------------------------------------- #
+class TestRejoinGluedWordsAndDequoteAgreeAcrossAllThreeCopies:
+    """The mirror is only as good as its weakest shared name: split_control_operators
+    could stay identical across all three copies while a NEWLY added name drifted, and
+    nothing above would notice. Same commands TestThereIsOnlyOneSplitter uses (the
+    measured truth table for the rejoin, the fully-quoted and matched-outer-pair
+    spellings for dequote), so a drift here is measured against the same evidence the
+    production code was designed against."""
+
+    REJOIN_COMMANDS = [
+        'cp x "$HOME"/y', 'cp x "a"b"c"', "cp x 'single'/y",
+        'cp x "$HOME"/y "$HOME"/z', '"c"p readme .env', 'cp x "$HOME" /y',
+    ]
+    DEQUOTE_TOKENS = [
+        '"c"p', '"a"b"c"', '"$HOME"/y', "'single'/y", '"cp"', "'(cp'", "'-exec'",
+    ]
+
+    @pytest.mark.parametrize("path", MIRROR_FILES)
+    def test_rejoin_glued_words_agrees_with_the_package(self, path):
+        import shlex
+        pkg = _package_rejoin_glued_words()
+        mirror_fn = _mirror_ns(path).get("rejoin_glued_words")
+        if mirror_fn is None:
+            pytest.fail(
+                "skeleton: %s's MIRROR block has no rejoin_glued_words yet "
+                "(plan.md ## Files)" % path
+            )
+        for text in self.REJOIN_COMMANDS:
+            toks = shlex.split(text, comments=False, posix=False)
+            assert mirror_fn(text, toks) == pkg(text, toks), (path, text)
+
+    @pytest.mark.parametrize("path", MIRROR_FILES)
+    def test_dequote_agrees_with_the_package(self, path):
+        pkg = _package_dequote()
+        mirror_fn = _mirror_ns(path).get("dequote")
+        if mirror_fn is None:
+            pytest.fail(
+                "skeleton: %s's MIRROR block has no dequote yet (plan.md ## Files)" % path
+            )
+        for tok in self.DEQUOTE_TOKENS:
+            assert mirror_fn(tok) == pkg(tok), (path, tok)
+
+
 class TestTheMirrorBlockNeedsNoImports:
     """The block is pasted inline into two hooks and exec'd bare by _load_mirror, so a
     module-level `re` (which is what the retired HEREDOC pattern needed) would make the
@@ -408,10 +503,14 @@ class TestTheMirrorBlockNeedsNoImports:
 
     @pytest.mark.parametrize("path", MIRROR_FILES)
     def test_the_block_execs_in_an_empty_namespace(self, path):
-        ns: dict = {}
-        exec(compile(_mirror_block(path), "<mirror:%s>" % path, "exec"), ns)
+        ns = _mirror_ns(path)
+        # rejoin_glued_words and dequote join this list as of plan.md
+        # 2412ba38-51e1-4b73-895b-7b240a3c21d3: dequote MOVES here from its old spot
+        # after the block and after the package import in both hooks, and
+        # rejoin_glued_words is new. Reddens today: neither name is in the block yet.
         for name in ("SEP", "split_commands", "heredoc_terminator",
-                     "strip_heredoc_bodies", "split_control_operators"):
+                     "strip_heredoc_bodies", "split_control_operators",
+                     "rejoin_glued_words", "dequote"):
             assert name in ns, (path, name)
 
     @pytest.mark.parametrize("path", MIRROR_FILES)

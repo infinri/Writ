@@ -13,6 +13,24 @@ of the command before it and never reaches command position. Measured: a credent
 spelled `echo x > .env; ls` was ALLOWED, because `.env;` is not a credential BASENAME,
 while `echo x > .env ; ls` was denied.
 
+A SECOND SPLITTING DEFECT lives in the same call, pointing the other way. `posix=False`
+also ends a token at the closing quote of a span that STARTED that token, so ONE shell word
+arrives as TWO tokens whenever an unquoted fragment is glued after a leading quoted span.
+
+    shlex.split('cp x "$HOME"/y', comments=False, posix=False)
+    -> ['cp', 'x', '"$HOME"', '/y']        one bash word, TWO tokens
+
+A token that starts UNQUOTED absorbs the quoted spans that follow instead, which is why
+only one of the two spellings was ever broken. Three DIFFERENT consequences were measured
+through the write gate's own extractor, and whether the leftover fragment starts with `/`
+decides the direction: `cp x "$HOME"escape.txt` read as project-local while bash wrote
+OUTSIDE the project (a boundary ESCAPE, more permissive); `cp x "src"/escape.txt` read as
+`/escape.txt` outside the project while bash wrote `src/escape.txt` (an over-block); and
+`echo hi > "$HOME"/escape.txt` kept the quoted head and dropped the FILENAME.
+rejoin_glued_words repairs it, and the dequote beside it is PART of that repair rather
+than a tidy-up: merging moves quote characters INTO tokens other consumers dequote, so
+landing the rejoin alone would trade one defect for two.
+
 Both hooks that tokenize Bash text share this: hooks/scripts/writ-bash-write-gate.sh
 (write targets, credential classification, egress destinations) and
 hooks/scripts/writ-worktree-safety.sh (`git worktree add` detection). Each MIRRORS the
@@ -291,6 +309,108 @@ def _split_one_token(tok):
         i += 1
     flush()
     return pieces or [tok]
+
+
+def rejoin_glued_words(text, toks):
+    """`toks` with every pair shlex split at a QUOTE BOUNDARY put back together.
+
+    `shlex.split(s, comments=False, posix=False)` ends a token at the closing quote of a
+    span that STARTED that token, so ONE shell word arrives as TWO tokens whenever an
+    unquoted fragment is glued after a leading quoted span. A token that starts UNQUOTED
+    absorbs instead, which is why only one of these two spellings was ever broken:
+
+        shlex.split('cp x "$HOME"/y', comments=False, posix=False)
+        -> ['cp', 'x', '"$HOME"', '/y']        one bash word, TWO tokens
+        shlex.split('cp x $HOME"/y"', comments=False, posix=False)
+        -> ['cp', 'x', '$HOME"/y"']            one bash word, one token
+
+    Three DIFFERENT consequences were measured through the real extractor, which is why
+    the three spellings in the retired xfails all looked cosmetic: whether the leftover
+    fragment starts with `/` decides the direction. `cp x "$HOME"escape.txt` read as
+    project-local while bash wrote OUTSIDE the project (an escape, more permissive);
+    `cp x "src"/escape.txt` read as `/escape.txt` outside the project while bash wrote
+    `src/escape.txt` (an over-block); `echo hi > "$HOME"/escape.txt` kept the quoted head
+    and dropped the FILENAME.
+
+    TWO ARGUMENTS, and the second one is forced. This block may not import shlex: it is
+    pasted inline into both Bash hooks and
+    tests/test_bash_control_operator_split.py::TestTheMirrorBlockNeedsNoImports rejects
+    any import statement inside the markers, including one that merely OPENS a wrapped
+    line of this very docstring, which is why this sentence is wrapped the way it is.
+    So the caller keeps shlex and hands over both the text it split and the tokens it
+    got. `text` is the string GIVEN to shlex, which is the
+    `split_commands` output and not the raw command: token offsets are offsets into the
+    rewritten text.
+
+    ADJACENCY IS READ OFF THE TEXT, NOT OFF shlex. A live `shlex.shlex` with
+    whitespace_split=True, read through `instream.tell()` around each `get_token()`,
+    reports adjacent for BOTH `cp x "$HOME"/y` and `cp x "$HOME" /y`, so its own state
+    cannot separate a glued word from two words. `posix=False` disables quote removal and
+    backslash collapsing, so every token is an exact contiguous substring of `text`, and
+    the GAP between consecutive matches decides it: empty means one word, whitespace means
+    two. shlex with whitespace_split never splits on punctuation, so the quote boundary is
+    the ONLY zero-width split it makes and merging on an empty gap reverses exactly that.
+
+    FAIL-SAFE, because a wrong merge is worse than the defect it repairs: if a token is
+    not found at or after the cursor, or a gap holds anything other than whitespace, the
+    ORIGINAL list is returned and nothing is merged at all.
+    """
+    out = []
+    pos = 0
+    for tok in toks:
+        start = text.find(tok, pos)
+        if start < 0 or text[pos:start].strip():
+            return list(toks)
+        if out and start == pos:
+            out[-1] = out[-1] + tok
+        else:
+            out.append(tok)
+        pos = start + len(tok)
+    return out
+
+
+def dequote(tok):
+    """`tok` with its quote CHARACTERS removed, the way a real shell removes them.
+
+    `"c"p` -> `cp`. `"a"b"c"` -> `abc`. `"$HOME"/y` -> `$HOME/y`. `'single'/y` ->
+    `single/y`. `"cp"` -> `cp` and `'(cp'` -> `(cp`, both unchanged from the rule this
+    replaces.
+
+    NO EXPANSION HAPPENS HERE, and that split is the whole reason two functions exist.
+    This one answers what a word SAYS, which is what verb, flag and host resolution ask.
+    What a word BECOMES is `expand_word`'s question, it is asked only in VALUE positions,
+    and it must keep reading the RAW token because `"$HOME/x"` and `'$HOME/x'` are the
+    same bytes after quote removal and have opposite correct answers.
+
+    REPLACES the matched-OUTER-pair rule both hooks carried
+    (`t[0] == t[-1] and t[0] in ("'", '"')`), which was correct only for a word quoted end
+    to end. It returned `"c"p`, `"$HOME"/y` and `'single'/y` UNCHANGED and turned
+    `"a"b"c"` into `a"b"c`. That was survivable only while shlex handed those spellings
+    over as two tokens; once rejoin_glued_words hands them over as ONE, the old rule
+    leaves quote characters inside a resolved verb, an egress HOST and a recorded worktree
+    PATH.
+
+    A BACKSLASH IS LEFT ALONE, including the character after it. Every consumer here asks
+    about a name, the write gate's own verb walk already strips a leading backslash
+    because `\\git` is git, and collapsing escapes would change what a quoted mention looks
+    like to those consumers for no measured gain.
+
+    Every token reaching this function has BALANCED quotes: shlex.split raises ValueError
+    on an unbalanced one and both hooks fail open on that before any token exists.
+    """
+    out = []
+    quote = ""
+    for ch in tok:
+        if quote:
+            if ch == quote:
+                quote = ""
+            else:
+                out.append(ch)
+        elif ch == "'" or ch == '"':
+            quote = ch
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 # ── A NEWLINE IS A COMMAND SEPARATOR, AND shlex THROWS IT AWAY ───────────────
