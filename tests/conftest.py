@@ -197,6 +197,26 @@ def _daemon_leak_guard(_daemon_leak_state):
         )
 
 
+# The gate-token leak chain, registered for the whole tests/ tree by the same one-line
+# import convention `tests/fixtures/session_state.py`'s `sandbox_cwd` uses per module.
+# All three live in tests/_gate_token_leak.py rather than here, so the proof in
+# tests/test_gate_token_leak_guard.py can load the REAL fixtures into a nested pytest run
+# with `-p tests._gate_token_leak` and drive them, instead of asserting against a
+# re-implementation of them (a conftest cannot be loaded that way, and a synthetic module
+# placed under tests/ to reach this one would trigger the graph wipe and the daemon stop
+# in pytest_sessionstart / pytest_sessionfinish above).
+#
+# WHY IT IS SAFE TREE-WIDE. `_sweep_gate_tokens` is opt-in through a module's own
+# GATE_TOKEN_SESSION_PREFIX constant and is one getattr for every module that declares
+# none, and `_gate_token_leak_guard` REPORTS and never removes. Divergences from the daemon
+# guard above are recorded in docs/adr/ADR-gate-token-leak-guard.md.
+from tests._gate_token_leak import (  # noqa: E402,F401
+    _gate_token_leak_guard,
+    _gate_token_leak_state,
+    _sweep_gate_tokens,
+)
+
+
 def pytest_sessionfinish(session, exitstatus):
     """Re-migrate rules after test suite completes so CLI queries work
     immediately.

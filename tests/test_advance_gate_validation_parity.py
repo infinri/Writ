@@ -28,6 +28,16 @@ from writ.server import SessionAdvancePhaseRequest
 from writ.session.cache import _read_cache, _write_cache
 from writ.session.gate_token import gate_token_path
 
+# The namespace every session id in this module is minted under, which is what lets
+# tests/_gate_token_leak.py::_sweep_gate_tokens remove this module's own /tmp files after
+# each test and nobody else's. Its 14 tests mint `f"vp-{uuid.uuid4().hex[:8]}"` ids, so
+# without it every run left new 0600 files in a shared directory, forever.
+#
+# THE SWEEP IS AT TEARDOWN, so the two tests below that deliberately END with the token
+# still on disk (test_no_root_keeps_the_token and test_no_pending_gate_validates_nothing)
+# assert exactly what they always did; the file goes away afterwards.
+GATE_TOKEN_SESSION_PREFIX = "vp-"
+
 PLAN_OK = """# Plan
 
 ## Files

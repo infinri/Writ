@@ -74,6 +74,17 @@ from writ.server import app
 # ---------------------------------------------------------------------------
 
 _TEST_SCOPE = "test-dm-1c"
+
+# The namespace every session id in this module is minted under, which is what lets
+# tests/_gate_token_leak.py::_sweep_gate_tokens remove this module's own /tmp files after
+# each test and nobody else's. DERIVED from _TEST_SCOPE rather than restated, because all
+# 13 minting ids here are built from that constant (`f"{_TEST_SCOPE}-srv3-..."`), and a
+# second literal would drift the day somebody renames the scope.
+#
+# THE SWEEP IS AT TEARDOWN, so the test below that deliberately ends with the token still
+# on disk asserts exactly what it always did; the file goes away afterwards.
+GATE_TOKEN_SESSION_PREFIX = f"{_TEST_SCOPE}-"
+
 _TEST_REPO_ROOT = "/tmp/fake-test-1c-repo"
 _TEST_BIBLE_ROOT = "bible"
 

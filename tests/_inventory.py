@@ -1862,3 +1862,253 @@ def pkill_invocation_sites(*, tests_dir: Path = TESTS) -> dict[str, list[int]]:
         if lines:
             sites[path.relative_to(root).as_posix()] = lines
     return sites
+
+
+# ── Gate-token minting modules (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3) ──
+#
+# THE POPULATION IS "CAN MINT A REAL /tmp GATE TOKEN FROM PYTHON", and the value is WHICH
+# NEUTRALIZER holds it. A kind rather than a bool, for the reason `daemon_starting_hooks`
+# gives for its own map: a module that changes hands (loses its prefix declaration, keeps
+# an unrelated `os.remove`) reads DIFFERENTLY instead of silently staying True, and a
+# module that loses its neutralizer altogether stays in the population and fails by name.
+#
+# TWO ARMS, BOTH FAIL TOWARD INCLUSION:
+#   A1  a call to `mint_gate_token` or `write_bound_gate_token`, the two python writers.
+#   A2  a FUNCTION whose body BOTH names a token path (`gate_token_path`, or a string
+#       literal containing the filename prefix) AND makes a write call. Function scope is
+#       the whole discrimination: `tests/test_advance_phase_token_claim.py:98-100` builds
+#       a path and opens it for writing inside one test, which is a real hand-rolled mint,
+#       while `tests/test_production_audit_stream_isolation.py:222-244` and
+#       `tests/test_phase3_approval_flow.py:74-76` only assert that the string appears in
+#       somebody else's source. A module-scope OR of the two facts cannot tell them apart.
+#
+# WHAT THIS MAP CANNOT SEE, STATED IN THE DIRECTION IT FAILS. THREE gaps, and "fail toward
+# inclusion" above describes how each ARM decides once a candidate is in front of it, not a
+# promise that nothing can be missed.
+#
+#   1. SHELL-DRIVEN MINTS. Whether a subprocess of `auto-approve-gate.sh` reaches its mint
+#      at line 333 or 429 is a fact about the caller's runtime path, not about source text.
+#      Enrolling them by source trace would mean enrolling every module that names the hook
+#      (`rg -l "auto-approve-gate.sh" tests/` returns 24, of which the measured leakers are
+#      two), which would demand a declaration from ~22 modules that are not broken.
+#   2. CONSUMPTION. A module whose every mint is spent by a successful advance carries no
+#      removal in source and reads `none` correctly, because the file survives the moment
+#      the advance refuses.
+#   3. A COMPUTED FILE MODE. `_gtm_has_write_call` recognizes `open(path, "w")` only when
+#      the mode is a string LITERAL, so arm A2 is blind to a hand-rolled mint that builds
+#      its mode through a variable or an expression (`open(path, mode)`). That direction is
+#      a MISS, not a false positive: such a module would be absent from the population
+#      rather than misclassified inside it. Nothing in the tree writes a token that way
+#      today, and the alternative (treating every `open()` in a function that names a token
+#      path as a write) would pull in the read-back assertions that check a minted file's
+#      contents. Left as a stated limit rather than papered over, because arm A1 already
+#      catches every mint that goes through the two real writers, which is all of them
+#      today.
+#
+# All three are covered by the RUNTIME layer in `tests/_gate_token_leak.py`, which watches
+# the filesystem and does not care how a file arrived.
+#
+# HELPER MODULES ARE OUT OF THE POPULATION by the `test_*.py` naming filter, structurally
+# rather than by an exclusion entry: `tests/fixtures/session_state.py` calls the mint at
+# line 132, but it runs no tests, so its mints belong to whichever module calls it.
+#
+# THE KEY IS THE MODULE, NOT THE NODE ID, because after this cycle the MECHANISM is
+# module-scoped: `GATE_TOKEN_SESSION_PREFIX` is a module constant and the sweeper applies
+# to every test in the module. A node-id key would invent a granularity the mechanism does
+# not have and go stale on every test rename. The offending TEST is still named, more
+# precisely, by the runtime layer: it prints the leaked paths, and the session id inside a
+# leaked path is what identifies the case.
+_GTM_MINTERS = ("mint_gate_token", "write_bound_gate_token")
+_GTM_PATH_HELPER = "gate_token_path"
+_GTM_PATH_LITERAL = "writ-gate-token-"
+_GTM_PREFIX_CONST = "GATE_TOKEN_SESSION_PREFIX"
+_GTM_LEAK_FIXTURES = ("_no_leaked_gate_tokens", "_mint_cleanup")
+_GTM_REMOVERS = ("remove", "unlink")
+_GTM_WRITE_METHODS = ("write_text",)
+
+
+def _gtm_called_name(node: ast.AST) -> str:
+    """The simple name of whatever `node` calls: `f()` -> "f", `a.b.f()` -> "f".
+
+    The LAST segment only, deliberately. A module reaches the same writer as
+    `mint_gate_token(...)`, `gate_token.mint_gate_token(...)` or through an aliased import,
+    and keying on the dotted spelling would put each of those in a different population.
+    """
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return ""
+
+
+def _gtm_str_constants(node: ast.AST) -> list[str]:
+    """Every string literal inside `node`, f-string segments included.
+
+    f-strings matter: `f"writ-gate-token-{sid}"` is a `JoinedStr` whose literal half is an
+    ordinary `Constant`, and that is how most hand-rolled paths in this tree are written.
+    """
+    return [
+        sub.value
+        for sub in ast.walk(node)
+        if isinstance(sub, ast.Constant) and isinstance(sub.value, str)
+    ]
+
+
+def _gtm_names_a_token_path(node: ast.AST) -> bool:
+    """True when `node` names the path helper or spells the filename prefix itself."""
+    for sub in ast.walk(node):
+        if isinstance(sub, (ast.Name, ast.Attribute)) and _gtm_called_name(sub) == _GTM_PATH_HELPER:
+            return True
+    return any(_GTM_PATH_LITERAL in text for text in _gtm_str_constants(node))
+
+
+def _gtm_has_write_call(node: ast.AST) -> bool:
+    """True when `node` opens a file for writing or calls a `write_text`-style writer.
+
+    `open(...)` counts only with a write MODE, read from the second positional argument or
+    the `mode=` keyword, so `open(path)` and `open(path, "r")` (the shape a test that only
+    READS a token uses) stay out.
+
+    THE MODE MUST BE A STRING LITERAL, which is gap 3 in the header above: `open(path,
+    mode)` is invisible here, so arm A2 MISSES a mint that computes its mode rather than
+    misclassifying it. Recognizing a non-literal mode would mean treating every `open()`
+    beside a token path as a write, which pulls in the read-back assertions that check a
+    minted file's contents.
+    """
+    for sub in ast.walk(node):
+        if not isinstance(sub, ast.Call):
+            continue
+        name = _gtm_called_name(sub.func)
+        if name in _GTM_WRITE_METHODS:
+            return True
+        if name != "open":
+            continue
+        modes = [arg for arg in sub.args[1:2]]
+        modes += [kw.value for kw in sub.keywords if kw.arg == "mode"]
+        for mode in modes:
+            if isinstance(mode, ast.Constant) and isinstance(mode.value, str):
+                if "w" in mode.value or "a" in mode.value or "x" in mode.value:
+                    return True
+    return False
+
+
+def _gtm_is_minter(tree: ast.Module) -> bool:
+    """Arm A1 or arm A2: can anything in this module put a real token file on disk."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and _gtm_called_name(node.func) in _GTM_MINTERS:
+            return True
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if _gtm_names_a_token_path(node) and _gtm_has_write_call(node):
+            return True
+    return False
+
+
+def _gtm_declares_prefix(tree: ast.Module) -> bool:
+    """True when the module assigns `GATE_TOKEN_SESSION_PREFIX` at MODULE level.
+
+    Module level is the mechanism, not a style point: the sweeper reads the constant off
+    `request.module`, so a name bound inside a function or a class body is invisible to it
+    and must not read as neutralized.
+    """
+    for statement in tree.body:
+        targets: list[ast.AST] = []
+        if isinstance(statement, ast.Assign):
+            targets = list(statement.targets)
+        elif isinstance(statement, ast.AnnAssign):
+            targets = [statement.target]
+        for target in targets:
+            if isinstance(target, ast.Name) and target.id == _GTM_PREFIX_CONST:
+                return True
+    return False
+
+
+def _gtm_carries_leak_fixture(tree: ast.Module) -> bool:
+    """True when the module DEFINES or IMPORTS one of the strict per-test cleanup helpers."""
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in _GTM_LEAK_FIXTURES:
+            return True
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if alias.name in _GTM_LEAK_FIXTURES or alias.asname in _GTM_LEAK_FIXTURES:
+                    return True
+    return False
+
+
+def _gtm_removes_a_token(tree: ast.Module) -> bool:
+    """True when the module both names a token path and calls a remover on something.
+
+    The pairing is what keeps this honest: a module that unlinks a cache file and happens
+    to mention a token path in prose is not cleaning up a token, and neither is one that
+    names the path but removes nothing.
+    """
+    if not _gtm_names_a_token_path(tree):
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and _gtm_called_name(node.func) in _GTM_REMOVERS:
+            return True
+    return False
+
+
+def _gtm_patches_the_path(tree: ast.Module) -> bool:
+    """True when a `setattr`-style patch names `gate_token_path`, so the mint never
+    reaches the real /tmp at all. Both spellings count: the dotted string monkeypatch
+    takes, and a direct reference to the helper object."""
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and _gtm_called_name(node.func) == "setattr"):
+            continue
+        for argument in list(node.args) + [kw.value for kw in node.keywords]:
+            if _gtm_called_name(argument) == _GTM_PATH_HELPER:
+                return True
+            if any(_GTM_PATH_HELPER in text for text in _gtm_str_constants(argument)):
+                return True
+    return False
+
+
+def _gtm_kind(tree: ast.Module) -> str:
+    """Which neutralizer holds this module, in plan.md's stated precedence.
+
+    Precedence, highest first: `prefix-sweeper`, `leak-fixture`, `explicit-remove`,
+    `path-patched`, `none`. A module carrying two is reported by the STRONGEST, because
+    that is the one a reader has to break to make it leak again.
+    """
+    if _gtm_declares_prefix(tree):
+        return "prefix-sweeper"
+    if _gtm_carries_leak_fixture(tree):
+        return "leak-fixture"
+    if _gtm_removes_a_token(tree):
+        return "explicit-remove"
+    if _gtm_patches_the_path(tree):
+        return "path-patched"
+    return "none"
+
+
+def gate_token_minting_modules(*, tests_dir: Path = TESTS) -> dict[str, str]:
+    """Every collected test module that can mint a real `/tmp` gate token FROM PYTHON,
+    mapped to the neutralizer it carries: `"prefix-sweeper"`, `"leak-fixture"`,
+    `"explicit-remove"`, `"path-patched"` or `"none"`.
+
+    `tests_dir` is a keyword for the reason `daemon_starting_hooks(*, scripts_dir=)` and
+    `bash_token_split_sites(*, scripts_dir=)` carry theirs: every discrimination this
+    derivation makes is pinned against SYNTHETIC modules under `tmp_path` in
+    `tests/test_gate_token_leak_guard.py`, never against the real tree's current wording
+    alone. That module also asserts this map NON-EMPTY against the real `tests/`, because
+    a derivation that silently returned `{}` would make the no-member-is-`none` assertion
+    beside it pass on any tree at all -- the vacuous-detector failure this module's own
+    header says the repo has hit three times.
+
+    Keys are POSIX paths relative to `tests_dir` ITSELF, the same keying
+    `pkill_invocation_sites` uses, so a synthetic tree under `tmp_path` keys on the bare
+    filename planted there. The walk is `rglob("test_*.py")`, which is what pytest
+    collects on, so it reaches `tests/firedrill/` and `tests/plugin/` and keeps every
+    non-test helper under `tests/` out of the population structurally.
+    """
+    root = Path(tests_dir)
+    out: dict[str, str] = {}
+    for path in sorted(root.rglob("test_*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        if not _gtm_is_minter(tree):
+            continue
+        out[path.relative_to(root).as_posix()] = _gtm_kind(tree)
+    return out
