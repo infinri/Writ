@@ -49,7 +49,6 @@ Per TEST-TDD-001 / SKL-PROC-WRIT-FAILURE-001: skeletons approved before implemen
 from __future__ import annotations
 
 import contextlib
-import glob
 import json
 import os
 import shutil
@@ -149,16 +148,22 @@ def _mint_cleanup(sid: str):
 
 @pytest.fixture(autouse=True)
 def _no_leaked_gate_tokens():
-    before = set(glob.glob("/tmp/writ-gate-token-*"))
+    """The same confined safety net tests/test_gate_token_binding.py carries, sharing
+    its one decision: `confined_leak_sweep` removes -- and fails this test on -- only
+    the files whose session id could NOT belong to a live session, and returns the rest
+    as `left_alone`, untouched on disk and reported instead of deleted, because this
+    suite cannot tell such a file from an approval a human typed in another window."""
+    from tests._gate_token_leak import (
+        confined_leak_sweep,
+        live_snapshot,
+        warn_about_left_alone,
+    )
+
+    before = live_snapshot()
     yield
-    after = set(glob.glob("/tmp/writ-gate-token-*"))
-    leaked = after - before
-    for path in leaked:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-    assert not leaked, f"test leaked gate token file(s) (now removed): {sorted(leaked)}"
+    removed, left_alone = confined_leak_sweep(before)
+    warn_about_left_alone(left_alone)
+    assert not removed, f"test leaked gate token file(s) (now removed): {sorted(removed)}"
 
 
 def _read_stream_rows(project: str, stream: str) -> list[dict]:

@@ -164,6 +164,109 @@ go stale on every test rename. The offending TEST is still named, more precisely
 runtime layer: it prints the leaked paths, and the session id inside a leaked path is what
 identifies the case.
 
+### 6. The per-test deleters are CONFINED: only the DELETION narrows, never the detection
+
+Added by the second cycle on this mechanism (plan.md
+2412ba38-51e1-4b73-895b-7b240a3c21d3), which closes the hazard the first cycle recorded and
+deliberately left open in the third bullet of "Alternatives considered" below.
+
+Five test modules run a per-test autouse `_no_leaked_gate_tokens`: four define it
+(`tests/test_gate_token_binding.py`, `tests/test_approval_evidence.py`,
+`tests/test_replan_reopen_planning.py`, `tests/test_review_promote_authority.py`) and a
+fifth registers it by importing it (`tests/test_phase_machine_reset.py:37`). It listed the
+whole shared `/tmp/writ-gate-token-*` namespace before and after every test and deleted
+everything that appeared in between, which is precisely the thing decision 1 refuses to do:
+between the two snapshots a real Claude Code session in another window can mint an
+approval, and the fixture removed it and failed a test that had done nothing wrong.
+
+**The deletion now discriminates on the SHAPE of the session id.**
+`tests/_gate_token_leak.py::confined_leak_sweep` removes only the files whose session id
+could NOT belong to a live session, returns them as `removed` (the caller still fails its
+own test by name, exactly as before), and returns the rest as `left_alone`, untouched on
+disk. `could_be_a_live_session` is the rule: an id that is non-empty and drawn only from
+`[0-9a-f-]` could BE a real client-assigned uuid, so a test may not delete the file
+carrying it. That alphabet is `_UUID_ALPHABET`, the same frozenset `prefix_is_safe` already
+used, so the shape rule has ONE definition across the mechanism rather than five copies.
+
+`could_be_a_live_session` is a second function rather than `not prefix_is_safe(...)`
+because the two answer different questions. `prefix_is_safe` also refuses a glob
+metacharacter, since a DECLARED prefix is interpolated into a sweep pattern; a DISCOVERED
+filename is never interpolated, it is handed to `os.remove` whole. Negating it would
+classify a leaked file named `writ-gate-token-vp-*` as probably-live and leave it, which is
+false and would quietly stop the suite catching a real leak. Both are False for the empty
+string, and for OPPOSITE reasons: an empty PREFIX is the opening of every id there is,
+while an empty COMPLETE id cannot be a uuid, so `/tmp/writ-gate-token-` is this suite's own
+leak and is removed like any other. Both halves are pinned.
+
+**The hand-off is what makes this safe: detection MOVES, it does not disappear.** A
+uuid-shaped file that appears mid-test is no longer deleted, and it is no longer this
+test's business to judge, but `_gate_token_leak_guard` (decision 1) still snapshots at the
+next module boundary, still reports the path, and still FAILS the module, with
+`format_report` naming it as probably a live session's own approval. So a non-uuid-shaped
+leak fails its own test by name as it always did, and a uuid-shaped leak fails one module
+later with the path named. Per-test failure was the wrong granularity for that class, not
+an acceptable cost: it blames a test for a file a human minted in another window, which is
+a false positive by construction.
+
+`left_alone` is a RETURNED, NAMED value rather than a filter applied inside the sweep, so
+the decision to skip a shape class is visible at all five call sites instead of buried in
+one. A future fixture that ignores the second element of the tuple is visibly ignoring it.
+The per-test report channel is `warnings.warn(..., ForeignGateTokenWarning)`: a `print` on
+a PASSING test is swallowed by pytest's capture exactly when it matters, and a failure is
+the false positive above, while a warning lands in the end-of-run summary attributed to the
+test that saw it, survives `-q`, and can be escalated by anyone who wants
+`-W error::tests._gate_token_leak.ForeignGateTokenWarning`.
+
+**Why the warning is raised by `warn_about_left_alone` instead of inline in each fixture,
+measured rather than styled.** When one of these fixtures fails its `assert not removed`,
+pytest's teardown traceback echoes the fixture's own source from its `def` line down to the
+failing statement. A `warnings.warn(..., ForeignGateTokenWarning, ...)` written inline
+would therefore put that class name in the OUTPUT of a run where nothing was left alone and
+no warning was raised, and the anti-vacuity test that proves the confined fixture still
+deletes and still fails reads exactly that string. Keeping the class name out of the
+fixture body keeps a report a report.
+
+The extraction is a strict superset of what each copy already did (same directory, same
+prefix match, same `os.remove` tolerating `OSError`, same `assert not <removed>` message
+shape) plus one further change this module's stated philosophy demands: the before-snapshot
+goes through `live_snapshot()`, which raises `UnmeasurableTmp` on an unscannable `/tmp`
+instead of silently returning an empty set and letting the teardown call every surviving
+file a leak.
+
+`tests/_inventory.py::gate_token_directory_deleters(*, tests_dir=TESTS)` holds the
+population, keyed on the MECHANISM rather than on a fixture name, so a sixth copy calling
+itself anything else still fails by name. A function enters through arm A by doing all
+three of naming the token namespace, LISTING a directory and calling a remover, or by
+delegating to `confined_leak_sweep`; a module enters through arm B by IMPORTING an arm-A
+function, which is the only way `tests/test_phase_machine_reset.py` can be covered without
+editing it. `tests/_gate_token_leak.py::sweep_prefix` lists and removes in one function and
+would be arm A, but the walk collects `test_*.py` only, so it is out. That is deliberate,
+not luck: it deletes only inside a namespace a module DECLARED and `prefix_is_safe`
+validated, which is the sanctioned form, and it is recorded here so the omission is not
+read later as an oversight.
+
+**The road not taken, first: extract the whole FIXTURE into one tree-wide autouse.**
+Rejected for the reason the third bullet below already gives for the sweeper: the per-test
+delete-and-fail fixture is not the same object as the module-scoped guard, and registering
+it tree-wide would fail every test in the other ~200 modules that legitimately ends holding
+a token (`tests/test_advance_gate_validation_parity.py:207,233` and
+`tests/test_decision_memory_capture.py:1244` are exactly those). Five modules opted into
+strict per-test cleanup; that opt-in stays theirs. Only the DECISION is shared.
+
+**The road not taken, second: delete the five fixtures and give each module a
+`GATE_TOKEN_SESSION_PREFIX` instead.** This looks like the cheapest fix, because the
+sweeper in decision 2 is already namespace-scoped, already escapes glob metacharacters and
+already validates its prefix, and all five modules use distinguishable ids. It is blocked,
+measured rather than guessed: `bin/lib/analyzers-regex.sh:292-295` refuses any ALL-CAPS
+identifier containing `TOKEN` assigned a string literal of eight or more characters, and of
+the five prefixes needed, `evidence-`, `reviewpromote-` and `advance-from-complete-` are
+refused at write time (the first cycle hit this same wall and deferred two modules for it).
+The four ways to make it land (renaming the constant, shortening the value, adding an
+allowlist entry, building the value by concatenation) are all evasions of a guard whose
+stated purpose this change does not satisfy, and narrowing that scanner is its own cycle.
+It would not be equivalent even if it landed: the sweeper does not FAIL on removal, so
+these five modules would lose the per-test leak detection they deliberately opted into.
+
 ## Alternatives considered
 
 - **Copy `_no_leaked_gate_tokens` into the five leaking modules.** Rejected on reading its
@@ -185,10 +288,11 @@ identifies the case.
   dropped.
 - **Have the guard delete what it finds, like the six fixtures do.** Rejected outright, and
   it is the single most important decision here. The suite cannot prove it wrote the file
-  it is looking at. The six existing copies carry exactly this hazard today (they remove
+  it is looking at. The existing per-test copies carried exactly this hazard (they removed
   ANY `/tmp/writ-gate-token-*` file that appeared during a test, including one a real
-  session minted concurrently); this cycle does not fix them, but it makes sure the new
-  mechanism cannot add to it.
+  session minted concurrently); the first cycle did not fix them, it only made sure the new
+  mechanism could not add to it. **Decision 6 closes that, and this bullet is the reason it
+  exists:** the copies now delete only what cannot be a live session's own approval.
 - **A source-only detector, with no runtime layer.** Rejected because the property is a
   RUNTIME property. Whether a file remains depends on three things source text cannot see:
   whether a shell subprocess reached one of the hook's two mint sites, whether an advance
@@ -243,6 +347,17 @@ identifies the case.
   ones inside a declared namespace are removed the next time their own module runs, because
   the sweeper globs the namespace rather than diffing the test; the rest are an operator
   action.
+- **A test in the five confined modules can no longer delete a live approval, and the cost
+  is one module of latency on one shape class.** A uuid-shaped file that appears during one
+  of those tests survives, the test passes carrying a `ForeignGateTokenWarning` that names
+  the path, and the module-scoped guard fails the module at its next boundary with the same
+  path. A test that genuinely leaks a uuid-shaped token of its own (a future test written
+  with a bare `uuid4()` id) is therefore reported one level coarser than before, by module
+  instead of by test. That is the accepted cost of never deleting a human's approval, and
+  it is bounded: the leak gets LOUDER (a failed module) rather than quieter.
+  `tests/test_gate_token_deleter_confinement.py` calls the four modules' own `_sid` helpers
+  live and requires each result to be rejected by `could_be_a_live_session`, so the day one
+  of them is rewritten as a bare `uuid4()` that test says so.
 - No production source changes, so no daemon restart is needed to adopt any of this.
   `writ/session/gate_token.py`, `hooks/scripts/auto-approve-gate.sh` and the hardcoded
   `/tmp` are untouched: that hardcoding is deliberate, so the bash writer and the python

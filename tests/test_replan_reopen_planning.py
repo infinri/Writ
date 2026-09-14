@@ -240,21 +240,23 @@ def _mint_cleanup(sid: str):
 
 @pytest.fixture(autouse=True)
 def _no_leaked_gate_tokens():
-    """Safety net for every test in this file: removes any /tmp/writ-gate-token-*
-    still present after a test and fails it loudly, so a forgotten `_mint_cleanup`
-    cannot leave a stray approval-shaped file in the real /tmp."""
-    import glob
+    """Safety net for every test in this file, sharing the one decision
+    tests/test_gate_token_binding.py's identical fixture uses: a forgotten
+    `_mint_cleanup` still leaves a stray approval-shaped file loudly failing this test,
+    but only the files whose session id could NOT belong to a live session are deleted.
+    The rest come back as `left_alone`, untouched and reported, because this suite
+    cannot tell one from an approval a human typed in another window."""
+    from tests._gate_token_leak import (
+        confined_leak_sweep,
+        live_snapshot,
+        warn_about_left_alone,
+    )
 
-    before = set(glob.glob("/tmp/writ-gate-token-*"))
+    before = live_snapshot()
     yield
-    after = set(glob.glob("/tmp/writ-gate-token-*"))
-    leaked = after - before
-    for path in leaked:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-    assert not leaked, f"test leaked gate token file(s) (now removed): {sorted(leaked)}"
+    removed, left_alone = confined_leak_sweep(before)
+    warn_about_left_alone(left_alone)
+    assert not removed, f"test leaked gate token file(s) (now removed): {sorted(removed)}"
 
 
 def _call_json(fn, *args) -> dict:

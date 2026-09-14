@@ -2112,3 +2112,165 @@ def gate_token_minting_modules(*, tests_dir: Path = TESTS) -> dict[str, str]:
             continue
         out[path.relative_to(root).as_posix()] = _gtm_kind(tree)
     return out
+
+
+# ── Gate-token DIRECTORY deleters (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3) ──
+#
+# A DIFFERENT PROPERTY FROM THE MAP ABOVE, AND DELIBERATELY ITS OWN MAP. That one answers
+# "does this module neutralize its OWN mint", and it already rates `"leak-fixture"` as a
+# neutralizer, which stays true. This one answers "when this module deletes a gate-token
+# file it DISCOVERED by listing a shared directory, can it tell that file from a live
+# session's own approval". Folding confinement into the other map's five-value precedence
+# would change the meaning of an existing value and break the synthetic pins that hold it.
+# One map, one property.
+#
+# THE POPULATION IS THE MECHANISM, NOT A FIXTURE NAME, because a sixth copy is free to
+# call itself anything. A function enters through either arm:
+#
+#   A-direct     ONE function that does all three: names the token namespace (a reference
+#                to `gate_token_path`, or a string constant carrying the filename prefix,
+#                via `_gtm_names_a_token_path`), obtains paths from a DIRECTORY LISTING
+#                (`glob`, `iglob`, `listdir`, `scandir`, `rglob`), and calls a remover
+#                (`_GTM_REMOVERS`). The conjunction is what keeps it honest, and it is what
+#                structurally excludes the SAFE pattern: `_mint_cleanup`
+#                (`tests/test_gate_token_protection.py:100-107` and its four siblings)
+#                removes a path it NAMED and lists nothing, so it never enters at all. It
+#                also excludes `tests/test_gate_token_leak_guard.py`, which globs for
+#                sentinels and removes named paths but never both in one function.
+#   A-delegated  a call to `confined_leak_sweep`, which does the listing and the removal on
+#                the caller's behalf. This arm is not optional and it is not a convenience:
+#                after the four fixtures were rewired onto that one decision, NONE of them
+#                spells a glob or an `os.remove` any more, so an A-direct-only derivation
+#                would return `{}` against the real tree and every assertion about this map
+#                would pass on any tree at all. Measured by running it, not read.
+#
+#   B (import)   a module that BINDS an arm-A function defined in another collected test
+#                module. `tests/test_phase_machine_reset.py:37` registers the fixture by
+#                importing it rather than copying its body, and a derivation matching only
+#                copied text would miss exactly that member. Resolution goes through the
+#                IMPORTED MODULE's stem, not the bare name: four modules define a function
+#                called `_no_leaked_gate_tokens`, so a name-only match would resolve to an
+#                arbitrary one of them.
+#
+# VALUES. An arm-A function that also calls `confined_leak_sweep` or
+# `could_be_a_live_session` reads `"confined"`; one that does not reads `"unconfined"`; a
+# module whose arm-A functions disagree reads `"unconfined"`, because the copy that cannot
+# discriminate is the one a reader has to fix. An arm-B module reads
+# `f"inherits:{stem}"`.
+#
+# KNOWN AND DELIBERATE BOUNDARY: `tests/_gate_token_leak.py::sweep_prefix` lists and
+# removes in one function and would be arm A, but the walk collects `test_*.py` only, so it
+# is out. That is correct rather than lucky -- it deletes only inside a namespace a module
+# DECLARED and `prefix_is_safe` validated, which is the sanctioned form -- and
+# `docs/adr/ADR-gate-token-leak-guard.md` records it so the omission is not read later as
+# an oversight.
+_GTD_LISTERS = ("glob", "iglob", "listdir", "scandir", "rglob")
+_GTD_DELEGATED_SWEEPERS = ("confined_leak_sweep",)
+_GTD_DISCRIMINATORS = ("confined_leak_sweep", "could_be_a_live_session")
+
+
+def _gtd_calls_any(node: ast.AST, names: tuple[str, ...]) -> bool:
+    """True when anything inside `node` CALLS one of `names`, matched on the last name
+    segment per `_gtm_called_name`, so `glob.glob(...)`, `iglob(...)` and an aliased import
+    all land in the same population."""
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Call) and _gtm_called_name(sub.func) in names:
+            return True
+    return False
+
+
+def _gtd_is_directory_deleter(func: ast.AST) -> bool:
+    """Arm A: can this ONE function delete a gate-token file it discovered by listing."""
+    if _gtd_calls_any(func, _GTD_DELEGATED_SWEEPERS):
+        return True
+    return (
+        _gtm_names_a_token_path(func)
+        and _gtd_calls_any(func, _GTD_LISTERS)
+        and _gtd_calls_any(func, _GTM_REMOVERS)
+    )
+
+
+def _gtd_deleting_functions(tree: ast.Module) -> list[ast.AST]:
+    """Every arm-A function in the module, nested definitions included: a fixture defined
+    inside a class body or a helper closure deletes just as effectively as a module-level
+    one."""
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and _gtd_is_directory_deleter(node)
+    ]
+
+
+def _gtd_kind(functions: list[ast.AST]) -> str:
+    """`"confined"` only when EVERY arm-A function in the module discriminates."""
+    for func in functions:
+        if not _gtd_calls_any(func, _GTD_DISCRIMINATORS):
+            return "unconfined"
+    return "confined"
+
+
+def _gtd_inherited_stem(tree: ast.Module, definers: dict[str, set[str]]) -> str:
+    """Arm B: the stem of the module this one IMPORTS an arm-A function from, or `""`.
+
+    `from tests.test_gate_token_binding import _no_leaked_gate_tokens` and the bare
+    `from test_defines_the_deleter import _the_directory_deleter` a synthetic tree writes
+    both resolve through the last segment of the imported module, so the answer names the
+    module that actually defines the deleter rather than whichever module happens to share
+    the function's name.
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom) or not node.module:
+            continue
+        stem = node.module.rsplit(".", 1)[-1]
+        defined = definers.get(stem)
+        if not defined:
+            continue
+        if any(alias.name in defined for alias in node.names):
+            return stem
+    return ""
+
+
+def gate_token_directory_deleters(*, tests_dir: Path = TESTS) -> dict[str, str]:
+    """Every collected test module that can delete a gate-token file it DISCOVERED by
+    listing a directory, mapped to `"confined"`, `"unconfined"`, or
+    `f"inherits:{module_stem}"`.
+
+    `tests_dir` is a keyword for the reason `gate_token_minting_modules(*, tests_dir=)` and
+    `daemon_starting_hooks(*, scripts_dir=)` carry theirs: every discrimination here is
+    pinned against SYNTHETIC modules under `tmp_path` in
+    `tests/test_gate_token_deleter_confinement.py`, never against the real tree's current
+    wording alone. That module also asserts this map NON-EMPTY against the real `tests/`,
+    because a derivation that silently returned `{}` would make the no-member-is-
+    `"unconfined"` assertion beside it pass on any tree at all.
+
+    Keys are POSIX paths relative to `tests_dir` ITSELF and the walk is `rglob("test_*.py")`,
+    matching `gate_token_minting_modules` exactly, so a synthetic tree under `tmp_path` keys
+    on the bare filename planted there and non-test helpers under `tests/` stay out
+    structurally.
+    """
+    root = Path(tests_dir)
+    trees: dict[Path, ast.Module] = {}
+    for path in sorted(root.rglob("test_*.py")):
+        try:
+            trees[path] = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        except SyntaxError:
+            continue
+    out: dict[str, str] = {}
+    definers: dict[str, set[str]] = {}
+    for path, tree in trees.items():
+        functions = _gtd_deleting_functions(tree)
+        if not functions:
+            continue
+        out[path.relative_to(root).as_posix()] = _gtd_kind(functions)
+        definers[path.stem] = {
+            func.name for func in functions if isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+    for path, tree in trees.items():
+        key = path.relative_to(root).as_posix()
+        if key in out:
+            continue
+        stem = _gtd_inherited_stem(tree, definers)
+        if stem:
+            out[key] = f"inherits:{stem}"
+    return out

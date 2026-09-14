@@ -22,6 +22,32 @@ THREE OBJECTS, and the split between them is the design:
   * `_sweep_gate_tokens` -- the per-test prevention, opt-in through a module's own
     `GATE_TOKEN_SESSION_PREFIX` constant.
 
+A FOURTH GROUP, added by plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3: the deciding half
+of the five per-test deleters. `ForeignGateTokenWarning`, `session_id_from_path`,
+`could_be_a_live_session`, `confined_leak_sweep` and `warn_about_left_alone` exist because
+four test modules used to glob this whole shared namespace before and after every test and
+delete everything that appeared in between, which cannot tell a file the test wrote from
+one a real session minted in another window. `confined_leak_sweep` still removes (and still
+reports as a leak) every file whose session id CANNOT be a real one, and leaves the rest on
+disk as `left_alone`. Only the DELETION narrows: `_gate_token_leak_guard` above still sees,
+reports and fails on a left-alone file at the module boundary, so nothing stops being
+detected, and the shape rule lives in `_UUID_ALPHABET` once rather than in five copies.
+
+WHY THE WARNING IS RAISED BY `warn_about_left_alone` AND NOT INLINE IN EACH FIXTURE, the
+one place this module departs from plan.md's own code block. MEASURED by building both
+fixtures and running the shipped negative control
+(`tests/test_gate_token_deleter_confinement.py::TestTheRealBindingFixtureConfinesItsDeletion::test_a_non_uuid_shaped_file_minted_mid_test_is_deleted_and_the_run_fails`)
+against each, not reasoned from reading pytest. Both arms plant one `leakproof-<hex>` file
+mid-test and agree on everything the control checks except one bit: exit code 1, the leaked
+path named, the file removed -- and `ForeignGateTokenWarning` present in the output, which
+is False for the shipped extraction and TRUE for the inline version. pytest echoes a failing
+fixture's source from its `def` line down to the failing statement, so with the warn inline
+the class name is printed as SOURCE on a run where `left_alone` was empty and
+`warnings.warn` never executed. That control exists to prove the confined fixture still
+deletes and still fails; a class name echoed from unexecuted source would make it pass on
+text nothing emitted. Keeping the name out of the fixture body is what keeps a report a
+report.
+
 THE GUARD DELETES NOTHING, EVER, and that is the deliberate divergence from its daemon
 sibling that needed its own record (`docs/adr/ADR-gate-token-leak-guard.md`). A
 `/tmp/writ-gate-token-*` file that appears mid-suite may be a REAL approval the operator
@@ -61,6 +87,7 @@ from __future__ import annotations
 import glob
 import os
 import re
+import warnings
 
 import pytest
 
@@ -98,6 +125,22 @@ class UnmeasurableTmp(Exception):
     already paid for elsewhere, so "measured, zero gate-token files" and "unmeasured" are
     different outcomes with different behaviour, never one code path answering to two
     names. This is raised; it is never returned as an empty, clean result.
+    """
+
+
+class ForeignGateTokenWarning(UserWarning):
+    """A gate-token file that appeared mid-test and was LEFT because its session id could
+    belong to a live session.
+
+    Never a failure. The file is not the test's to judge: a real Claude Code session mints
+    into this same directory the instant its operator types an approval, and failing the
+    test that happened to be running would blame a test for a human's file. The
+    module-scoped `_gate_token_leak_guard` reports the same path again at the next module
+    boundary and DOES fail there, so nothing stops being detected -- the report simply
+    moves to the granularity that can afford it.
+
+    A `UserWarning` subclass so anyone who wants the per-test report to be fatal can ask
+    for it: `-W error::tests._gate_token_leak.ForeignGateTokenWarning`.
     """
 
 
@@ -216,6 +259,110 @@ def sweep_prefix(prefix: str, *, tmp_dir: str = TMP) -> list[str]:
     for path in matched:
         _remove_quietly(path)
     return matched
+
+
+def session_id_from_path(path: str) -> str:
+    """The `<sid>` half of `.../writ-gate-token-<sid>`.
+
+    A basename that does not carry the marker is returned WHOLE, never as an empty string:
+    a caller that silently compared "" it did not mean to produce would be asking the
+    shape question about nothing. The BASENAME is what is read, so a path whose directory
+    happens to spell the marker cannot smuggle a directory name into the answer.
+    """
+    marker = "writ-gate-token-"
+    name = os.path.basename(path)
+    return name[len(marker):] if name.startswith(marker) else name
+
+
+def could_be_a_live_session(session_id: str) -> bool:
+    """True when `session_id` is non-empty and drawn ONLY from `_UUID_ALPHABET`.
+
+    A real Claude Code session id is a client-assigned dashed uuid, so a COMPLETE id drawn
+    only from `[0-9a-f-]` could BE one, and a test may not delete the file carrying it.
+
+    WHY THIS IS NOT `not prefix_is_safe(...)`, which is the obvious-looking reuse.
+    `prefix_is_safe` answers a different question and carries a second arm this one must
+    not inherit: it also refuses any prefix containing a glob metacharacter, because a
+    DECLARED prefix is interpolated into a sweep pattern. A DISCOVERED filename is never
+    interpolated into anything; it is handed to `os.remove` whole. Negating that function
+    would classify a leaked file named `writ-gate-token-vp-*` as "could be a live session"
+    and leave it, which is false -- no uuid contains `*` -- and would quietly stop the
+    suite catching a real leak. The two share `_UUID_ALPHABET` so the alphabet rule has one
+    definition and cannot drift.
+
+    THE EMPTY STRING IS FALSE HERE FOR THE OPPOSITE REASON it is False there.
+    `prefix_is_safe("")` refuses because an empty PREFIX is the opening of every id there
+    is. This refuses because an empty COMPLETE id cannot BE a uuid, so a file literally
+    named `/tmp/writ-gate-token-` is this suite's own leak and is removed and reported like
+    any other. Same answer, opposite reasoning, and both are pinned.
+    """
+    if not session_id:
+        return False
+    return all(char in _UUID_ALPHABET for char in session_id.lower())
+
+
+def confined_leak_sweep(
+    before: frozenset[str], *, tmp_dir: str = TMP
+) -> tuple[list[str], list[str]]:
+    """Re-list `tmp_dir` and decide, file by file, what a TEST is allowed to delete.
+
+    Of the paths that appeared since `before`, only those whose session id could NOT belong
+    to a live session are removed; they come back as `removed`, and the caller fails its
+    test on them exactly as it did before this function existed. The rest come back as
+    `left_alone`, untouched on disk.
+
+    `left_alone` is RETURNED and NAMED rather than filtered away inside here, so the
+    decision to skip a shape class is visible at every call site instead of buried in one.
+    A future fixture that ignores the second element of this tuple is visibly ignoring it.
+
+    A file present in `before` is in NEITHER list whatever its shape, which is what makes a
+    pre-existing leftover -- or the operator's own approval, minted before the run started
+    -- structurally unable to be lost or blamed.
+
+    Raises `UnmeasurableTmp` (through `live_snapshot`) when `tmp_dir` cannot be scanned,
+    rather than reporting a clean empty sweep: a deleter that could not look has not
+    measured anything, and this repo has already paid for a guard that read green because
+    it was blind.
+    """
+    appeared = find_leaks(frozenset(before), live_snapshot(tmp_dir=tmp_dir))
+    removed: list[str] = []
+    left_alone: list[str] = []
+    for path in appeared:
+        if could_be_a_live_session(session_id_from_path(path)):
+            left_alone.append(path)
+            continue
+        _remove_quietly(path)
+        removed.append(path)
+    return removed, left_alone
+
+
+def warn_about_left_alone(left_alone: list[str]) -> None:
+    """Report every path `confined_leak_sweep` refused to delete, and nothing when it
+    refused none.
+
+    A NAMED HELPER rather than three lines inside each fixture, and the reason is measured
+    rather than stylistic: the two fixtures were BUILT and the negative control RUN against
+    each, and they differ in exactly one bit (see this module's docstring for the numbers).
+    When one of those fixtures fails its `assert not removed`, pytest's teardown traceback
+    echoes the fixture's own source from its `def` line down to the failing statement, so a
+    `warnings.warn(..., ForeignGateTokenWarning, ...)` written inline puts that class name
+    in the output of a run where NO file was left alone and no warning was raised. The
+    anti-vacuity half of `tests/test_gate_token_deleter_confinement.py` reads exactly that
+    string to prove the confined fixture still deletes and still fails; source echoed as if
+    it were a report would make it pass on text nothing emitted. Keeping the class name out
+    of the fixture body keeps the report a report.
+
+    `stacklevel=2` so the warning is attributed to the fixture that saw the file rather
+    than to this line.
+    """
+    if not left_alone:
+        return
+    warnings.warn(
+        f"gate token deleter: left {len(left_alone)} file(s) whose session id could "
+        f"belong to a live session, so they were NOT deleted: " + ", ".join(left_alone),
+        ForeignGateTokenWarning,
+        stacklevel=2,
+    )
 
 
 @pytest.fixture(scope="session")

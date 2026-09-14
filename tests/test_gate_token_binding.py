@@ -54,11 +54,17 @@ lives), so unlike the session cache there is no WRIT_CACHE_DIR a test can redire
 into tmp_path. Every test that mints wraps the risky section in `_mint_cleanup(sid)`,
 which removes the file in a `finally` even when the test body raises -- that is the
 PRIMARY mechanism. The autouse `_no_leaked_gate_tokens` fixture below is the safety net:
-it snapshots /tmp/writ-gate-token-* before and after every test in this module, removes
-anything new that is still present, and fails the test if there was anything to remove,
-so a test that forgot its own cleanup is caught here rather than leaking a file into the
-real /tmp for the life of the machine (where a collision with a real session id would
-forge an approval).
+it snapshots /tmp/writ-gate-token-* before and after every test in this module and hands
+the difference to `tests/_gate_token_leak.py::confined_leak_sweep`, which removes -- and
+fails the test on -- every file whose session id could NOT belong to a live session, and
+LEAVES on disk any file whose id is drawn only from `[0-9a-f-]`, because that is the
+alphabet a real Claude Code session's own id is built from and this suite cannot prove it
+wrote such a file rather than a human in another window. A left file is reported as a
+`ForeignGateTokenWarning` instead of deleted, and the module-scoped guard in
+tests/_gate_token_leak.py reports it again and fails the module at its boundary, so only
+the DELETION narrowed here: nothing stopped being detected. A test that forgot its own
+cleanup is still caught here rather than leaking a file into the real /tmp for the life of
+the machine (where a collision with a real session id would forge an approval).
 
 Per TEST-TDD-001 / SKL-PROC-WRIT-FAILURE-001: skeletons approved before implementation.
 """
@@ -66,7 +72,6 @@ Per TEST-TDD-001 / SKL-PROC-WRIT-FAILURE-001: skeletons approved before implemen
 from __future__ import annotations
 
 import contextlib
-import glob
 import json
 import multiprocessing
 import os
@@ -147,21 +152,32 @@ def _mint_cleanup(sid: str):
 def _no_leaked_gate_tokens():
     """Safety net, not the primary mechanism (see `_mint_cleanup`): every gate-token
     test in this module is covered by this fixture even if it forgets its own cleanup.
-    Removes anything new found after the test and FAILS the test if there was anything
-    to remove -- a leaked file in the real /tmp is not a cosmetic issue: a later
-    collision with a real Claude Code session id would let that stray file be read as
-    an approval it never received.
+    A leaked file in the real /tmp is not a cosmetic issue: a later collision with a
+    real Claude Code session id would let that stray file be read as an approval it
+    never received.
+
+    THE DELETION IS CONFINED, and the decision lives in exactly one place. Everything
+    that appeared during the test goes to `confined_leak_sweep`, which removes only the
+    files whose session id could NOT belong to a live session; those come back as
+    `removed` and still fail this test by name. A file whose id is drawn only from
+    `[0-9a-f-]` comes back as `left_alone` instead, untouched, because the suite cannot
+    tell it from an approval a human typed in another window while the run was going.
+    `left_alone` is named here, not hidden inside the sweep, so the skip is visible at
+    this call site; `warn_about_left_alone` reports each such path, and the
+    module-scoped guard in tests/_gate_token_leak.py reports it again and fails the
+    module at its boundary.
     """
-    before = set(glob.glob("/tmp/writ-gate-token-*"))
+    from tests._gate_token_leak import (
+        confined_leak_sweep,
+        live_snapshot,
+        warn_about_left_alone,
+    )
+
+    before = live_snapshot()
     yield
-    after = set(glob.glob("/tmp/writ-gate-token-*"))
-    leaked = after - before
-    for path in leaked:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-    assert not leaked, f"test leaked gate token file(s) (now removed): {sorted(leaked)}"
+    removed, left_alone = confined_leak_sweep(before)
+    warn_about_left_alone(left_alone)
+    assert not removed, f"test leaked gate token file(s) (now removed): {sorted(removed)}"
 
 
 # ---------------------------------------------------------------------------
