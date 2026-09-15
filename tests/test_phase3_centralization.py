@@ -19,12 +19,22 @@ import sys
 # as test-method parameters, which ruff misreads as redefinitions of this import.
 from tests.fixtures.session_state import (  # noqa: F401
     call_can_write,
+    module_session_id,
     project_root,
     # autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
     sandbox_cwd,
     session_id,
     write_bound_gate_token,
 )
+
+# The namespace this module mints into, opting its advance-phase mint into the teardown
+# sweeper in tests/_gate_token_leak.py. DERIVED from the same function the shared
+# `session_id` fixture uses for its default, so the declared namespace and the id actually
+# minted cannot drift apart. Before this, this module and
+# tests/test_mode_infrastructure.py both took the fixture's single literal default and
+# wrote the identical /tmp/writ-gate-token-test-session path, which no per-module sweeper
+# can own (docs/adr/ADR-gate-token-leak-guard.md, decision 5).
+GATE_TOKEN_SESSION_PREFIX = module_session_id(__name__)
 
 # ---------------------------------------------------------------------------
 # Import the session helper as a module (it's not in a package)

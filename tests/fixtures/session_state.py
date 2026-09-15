@@ -21,16 +21,39 @@ import json
 import pytest
 
 
+def module_session_id(module_name: str) -> str:
+    """The session id for ONE consuming module, derived from that module's own name.
+
+    ONE DEFINITION, TWO READERS. The `session_id` fixture below calls it to build the
+    default id, and a consuming module that also declares GATE_TOKEN_SESSION_PREFIX calls
+    it with its own `__name__` to declare exactly the namespace it mints into. Spelling
+    the value twice is how the sweeper would come to sweep a namespace nothing writes.
+
+    THE TRAILING SEPARATOR IS DELIBERATE. The value doubles as a sweep prefix, and
+    `bin/lib/analyzers-regex.sh` (NAMESPACE_PREFIX, line 379) exempts a lowercase
+    hyphen-or-underscore value that ENDS in a bare separator from the credential-literal
+    finding. Ending it here means the value is writable as a plain literal anywhere,
+    including in another test's expectation map, instead of being refused at write time by
+    the pre-write scanner and pushing the next author toward one of the four evasions
+    docs/adr/ADR-gate-token-leak-guard.md lines 264 to 266 already names and rejects.
+    """
+    stem = module_name.rpartition(".")[2]
+    return f"test-session-{stem.replace('_', '-')}-"
+
+
 @pytest.fixture()
 def session_id(tmp_path, monkeypatch, request):
     """Provide a session ID and redirect cache to tmp_path.
 
-    The returned name is cosmetic (never asserted; it is only used as a
-    cache-file key), so it defaults to a shared literal. A consuming file may
-    override it via indirect parametrization (`request.param`) if needed.
+    The DEFAULT is derived from the requesting module, so two modules importing this
+    fixture can never mint the same `/tmp/writ-gate-token-<sid>` file again. Before this,
+    tests/test_mode_infrastructure.py and tests/test_phase3_centralization.py both got the
+    literal "test-session" and both wrote one shared path; a per-module sweeper cannot own
+    a namespace two modules write into. `request.param` still wins, so a consuming file
+    that overrides the id by indirect parametrization is unaffected.
     """
     monkeypatch.setenv("WRIT_CACHE_DIR", str(tmp_path))
-    return getattr(request, "param", "test-session")
+    return getattr(request, "param", module_session_id(request.module.__name__))
 
 
 @pytest.fixture()

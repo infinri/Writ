@@ -2114,6 +2114,107 @@ def gate_token_minting_modules(*, tests_dir: Path = TESTS) -> dict[str, str]:
     return out
 
 
+# ── Gate-token mint WRAPPING (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3, Decision 2) ──
+#
+# A THIRD QUESTION, asked of ONE module rather than of the tree, and it exists because
+# `gate_token_minting_modules` cannot answer it. That map says which NEUTRALIZER a module
+# carries, and a module reads `"leak-fixture"` the moment it so much as imports
+# `_mint_cleanup`. For `tests/test_phase_advance_unified.py` that is exactly the claim the
+# plan refuses to accept on its own: the module mints at FIVE sites in four different id
+# shapes, so "it imports the helper" is compatible with four of the five still being bare.
+# This derivation names the sites instead, so the assertion is over the population of
+# mints rather than over the presence of an import.
+_GTM_MINT_WRAPPERS = ("_mint_cleanup",)
+
+
+def gate_token_mint_wrapping(module_path: Path) -> tuple[list[int], list[int]]:
+    """The line numbers of the gate-token mints in ONE module, split into those that sit
+    inside a `_mint_cleanup` block and those that do not.
+
+    BOTH LISTS ARE RETURNED, and the wrapped one is what stops this reading clean on a
+    module with no mints at all: a caller asserting only `unwrapped == []` would pass on
+    an empty file. Line CONTAINMENT is the test rather than direct parentage, because two
+    of the five real sites mint inside a nested closure and one wraps a `return`.
+
+    KEYED ON THE HELPER, NOT ON `with`. Only a `with` whose context expression CALLS a
+    name in `_GTM_MINT_WRAPPERS` opens a span, so a mint inside an unrelated context
+    manager still reads unwrapped -- the mutation `tests/test_gate_token_leak_guard.py`
+    drives to prove this is not "is this Call inside any With node".
+    """
+    tree = ast.parse(Path(module_path).read_text(encoding="utf-8", errors="replace"))
+    spans: list[tuple[int, int]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.With, ast.AsyncWith)):
+            continue
+        if not any(
+            isinstance(item.context_expr, ast.Call)
+            and _gtm_called_name(item.context_expr.func) in _GTM_MINT_WRAPPERS
+            for item in node.items
+        ):
+            continue
+        spans.append((node.lineno, node.end_lineno or node.lineno))
+    wrapped: list[int] = []
+    unwrapped: list[int] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and _gtm_called_name(node.func) in _GTM_MINTERS):
+            continue
+        if any(start <= node.lineno <= end for start, end in spans):
+            wrapped.append(node.lineno)
+        else:
+            unwrapped.append(node.lineno)
+    return sorted(wrapped), sorted(unwrapped)
+
+
+# ── Shared `session_id` fixture importers (plan.md 2412ba38-..., Decision 1) ──
+#
+# THE POPULATION THAT CAN COLLIDE ON ONE DEFAULT. `tests/fixtures/session_state.py`'s
+# `session_id` fixture is imported EXPLICITLY per module rather than registered in a root
+# conftest, so the set of modules sharing its default is a set of import edges and nothing
+# else. Before this cycle that default was one literal, and two members of this population
+# wrote the same `/tmp/writ-gate-token-<sid>` path; the default is now derived from the
+# requesting module, and this population is what the derived ids are checked for collision
+# ACROSS (`tests/test_gate_token_leak_guard.py`), so a fifth importer is covered by being
+# added to the tree rather than to a list.
+#
+# MODULE LEVEL ONLY, and that is the mechanism rather than a style rule: pytest registers a
+# fixture from the name bound in the module's own namespace, so an import inside a function
+# body registers nothing. `tests/test_w5_fixture_dedup_c.py:197` is exactly that shape -- it
+# imports the three shared objects inside one test to assert they are callable -- and it
+# shares no default with anyone. A walk that counted it would report a collision risk for a
+# module that cannot take the fixture at all.
+_SSI_FIXTURE_MODULE = "tests.fixtures.session_state"
+_SSI_FIXTURE_NAME = "session_id"
+
+
+def shared_session_id_importers(*, tests_dir: Path = TESTS) -> list[str]:
+    """Every collected test module that imports the SHARED `session_id` fixture, as sorted
+    POSIX paths relative to `tests_dir`.
+
+    `tests_dir` is a keyword for the reason `gate_token_minting_modules(*, tests_dir=)`
+    carries its own: every discrimination here is pinned against SYNTHETIC modules under
+    `tmp_path`, never against the real tree's current wording alone, and that module also
+    asserts this population NON-EMPTY against the real `tests/`.
+
+    THE MODULE IS PART OF THE MATCH. A `session_id` imported from anywhere else is a
+    different fixture with a different default and cannot collide on this one, so the
+    import's own module path is compared, not just the imported name.
+    """
+    root = Path(tests_dir)
+    out: list[str] = []
+    for path in sorted(root.rglob("test_*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        except SyntaxError:
+            continue
+        for statement in tree.body:
+            if not isinstance(statement, ast.ImportFrom) or statement.module != _SSI_FIXTURE_MODULE:
+                continue
+            if any(alias.name == _SSI_FIXTURE_NAME for alias in statement.names):
+                out.append(path.relative_to(root).as_posix())
+                break
+    return sorted(out)
+
+
 # ── Gate-token DIRECTORY deleters (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3) ──
 #
 # A DIFFERENT PROPERTY FROM THE MAP ABOVE, AND DELIBERATELY ITS OWN MAP. That one answers

@@ -43,6 +43,17 @@ from httpx import ASGITransport, AsyncClient
 # autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
 from tests.fixtures.session_state import sandbox_cwd, write_bound_gate_token  # noqa: F401
 
+# ONLY `_mint_cleanup`, never `_no_leaked_gate_tokens` beside it. This module's five mint
+# sites use four uuid-suffixed id shapes plus the bare literal "..", so no single
+# GATE_TOKEN_SESSION_PREFIX can cover them and a declared one would read as fixed while
+# four shapes stayed bare (docs/adr/ADR-gate-token-leak-guard.md, decision 5). The helper
+# is IMPORTED from where it lives rather than copied: tests/test_phase_machine_reset.py:37
+# already takes this same edge, and a sixth copy would classify identically while adding
+# drift. Its sibling `_no_leaked_gate_tokens` is an AUTOUSE delete-and-fail fixture, so
+# binding that name here would register it for every test in this module and change the
+# pass/fail semantics of tests this has no business touching.
+from tests.test_gate_token_binding import _mint_cleanup
+
 # The real FastAPI app: the module-level route driver below posts to it in-process
 # through ASGITransport, exactly as tests/test_session_routes.py::TestSessionAdvancePhase
 # does. No patch("writ.server.writ_session", ...) anywhere in this file -- the real
@@ -458,11 +469,17 @@ class TestCrossPathParity:
             # A BOUND token (gate + plan fingerprint) derived from the cache as the
             # production mint derives it, re-read per advance so the second call binds
             # test-skeletons rather than the phase-a gate the first one spent.
-            token = write_bound_gate_token(session_id, secrets.token_hex(16))
-            capsys.readouterr()
-            monkeypatch.setattr("sys.stdin", io.StringIO("approved"))
-            ws.cmd_advance_phase(session_id, str(project_root), token)
-            capsys.readouterr()  # drain output
+            #
+            # WRAPPED so /tmp/writ-gate-token-<sid> is removed even when the advance is
+            # refused or an assertion below fails. A successful advance CONSUMES the file,
+            # so the helper is a no-op on the happy path and the whole point on every
+            # other one.
+            with _mint_cleanup(session_id):
+                token = write_bound_gate_token(session_id, secrets.token_hex(16))
+                capsys.readouterr()
+                monkeypatch.setattr("sys.stdin", io.StringIO("approved"))
+                ws.cmd_advance_phase(session_id, str(project_root), token)
+                capsys.readouterr()  # drain output
 
         _advance_once()  # planning -> testing (phase-a gate)
         _advance_once()  # testing  -> implementation (test-skeletons gate)
@@ -505,15 +522,20 @@ class TestCrossPathParity:
             # A fresh BOUND token per advance, derived from the cache exactly as
             # write_bound_gate_token derives it for Path B, so the second call
             # binds test-skeletons rather than the phase-a gate the first spent.
-            token = write_bound_gate_token(session_id, secrets.token_hex(16))
-            return asyncio.run(
-                _drive_advance_via_route(
-                    session_id,
-                    project_root=str(project_root),
-                    token=token,
-                    confirmation_source="tool",
+            #
+            # WRAPPED for the reason Path B's twin above gives; the `return` runs the
+            # helper's `finally` before the value leaves the block, so a refused advance
+            # clears the file just as a successful one does.
+            with _mint_cleanup(session_id):
+                token = write_bound_gate_token(session_id, secrets.token_hex(16))
+                return asyncio.run(
+                    _drive_advance_via_route(
+                        session_id,
+                        project_root=str(project_root),
+                        token=token,
+                        confirmation_source="tool",
+                    )
                 )
-            )
 
         _advance_once()  # planning -> testing (phase-a gate)
         _advance_once()  # testing  -> implementation (test-skeletons gate)
@@ -709,26 +731,29 @@ class TestGateArtifactResolvedRoot:
         cache["project_root"] = str(root_c)
         ws._write_cache(session_id, cache)
 
-        token = write_bound_gate_token(session_id, secrets.token_hex(16))
-        result = asyncio.run(
-            _drive_advance_via_route(
-                session_id,
-                project_root=str(root_r),
-                token=token,
-                confirmation_source="tool",
+        # WRAPPED through the final assertion, not just the mint: a failure below here
+        # would otherwise leave /tmp/writ-gate-token-root-mismatch-<hex> behind forever.
+        with _mint_cleanup(session_id):
+            token = write_bound_gate_token(session_id, secrets.token_hex(16))
+            result = asyncio.run(
+                _drive_advance_via_route(
+                    session_id,
+                    project_root=str(root_r),
+                    token=token,
+                    confirmation_source="tool",
+                )
             )
-        )
-        assert result.get("phase") == "testing", f"the advance did not go through: {result}"
+            assert result.get("phase") == "testing", f"the advance did not go through: {result}"
 
-        artifact_r = root_r / ".claude" / "gates" / session_id / "phase-a.approved"
-        artifact_c = root_c / ".claude" / "gates" / session_id / "phase-a.approved"
-        assert artifact_r.exists(), (
-            f"artifact must exist under the resolved root {root_r}, not {root_c}"
-        )
-        assert not artifact_c.exists(), (
-            f"artifact must NOT be written under cache['project_root'] ({root_c}) "
-            "when it differs from the root the route resolved"
-        )
+            artifact_r = root_r / ".claude" / "gates" / session_id / "phase-a.approved"
+            artifact_c = root_c / ".claude" / "gates" / session_id / "phase-a.approved"
+            assert artifact_r.exists(), (
+                f"artifact must exist under the resolved root {root_r}, not {root_c}"
+            )
+            assert not artifact_c.exists(), (
+                f"artifact must NOT be written under cache['project_root'] ({root_c}) "
+                "when it differs from the root the route resolved"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -892,19 +917,22 @@ class TestGateArtifactWriteFailure:
         ws.cmd_mode(session_id, "set", "work")
         ws.cmd_update(session_id, ["--add-rules", json.dumps(["TEST-CI-001"])])
 
-        token = write_bound_gate_token(session_id, secrets.token_hex(16))
-        result = asyncio.run(
-            _drive_advance_via_route(
-                session_id, project_root=str(root), token=token, confirmation_source="tool",
+        # WRAPPED through the final assertion, not just the mint: a failure below here
+        # would otherwise leave /tmp/writ-gate-token-write-fail-<hex> behind forever.
+        with _mint_cleanup(session_id):
+            token = write_bound_gate_token(session_id, secrets.token_hex(16))
+            result = asyncio.run(
+                _drive_advance_via_route(
+                    session_id, project_root=str(root), token=token, confirmation_source="tool",
+                )
             )
-        )
 
-        assert result.get("phase") == "testing", (
-            f"a failed artifact write must not fail the advance; got {result}"
-        )
-        assert "phase-a" in ws._read_cache(session_id).get("gates_approved", []), (
-            "the committed advance must still be recorded in the cache"
-        )
+            assert result.get("phase") == "testing", (
+                f"a failed artifact write must not fail the advance; got {result}"
+            )
+            assert "phase-a" in ws._read_cache(session_id).get("gates_approved", []), (
+                "the committed advance must still be recorded in the cache"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -962,21 +990,26 @@ class TestRefusedArtifactDoesNotFailAdvance:
         ws.cmd_mode(session_id, "set", "work")
         ws.cmd_update(session_id, ["--add-rules", json.dumps(["TEST-CI-001"])])
 
-        token = write_bound_gate_token(session_id, secrets.token_hex(16))
-        capsys.readouterr()
-        monkeypatch.setattr("sys.stdin", io.StringIO("approved"))
-        ws.cmd_advance_phase(session_id, str(project_root), token)
-        out = capsys.readouterr().out.strip()
-        result = json.loads(out)
+        # WRAPPED through the final assertion. The id here is the bare literal "..", whose
+        # token path is /tmp/writ-gate-token-.. -- an ordinary FILENAME (the ".." is not a
+        # path component of its own), so the helper's os.remove takes that file and
+        # nothing else. This is the shape no declared prefix could ever have covered.
+        with _mint_cleanup(session_id):
+            token = write_bound_gate_token(session_id, secrets.token_hex(16))
+            capsys.readouterr()
+            monkeypatch.setattr("sys.stdin", io.StringIO("approved"))
+            ws.cmd_advance_phase(session_id, str(project_root), token)
+            out = capsys.readouterr().out.strip()
+            result = json.loads(out)
 
-        assert result.get("advanced") is True, (
-            f"a refused artifact write must not fail the advance itself: {result}"
-        )
-        cache = ws._read_cache(session_id)
-        assert "phase-a" in cache.get("gates_approved", []), (
-            "the gate must still be recorded as approved even though the artifact "
-            "write was refused"
-        )
+            assert result.get("advanced") is True, (
+                f"a refused artifact write must not fail the advance itself: {result}"
+            )
+            cache = ws._read_cache(session_id)
+            assert "phase-a" in cache.get("gates_approved", []), (
+                "the gate must still be recorded as approved even though the artifact "
+                "write was refused"
+            )
 
 
 # ---------------------------------------------------------------------------

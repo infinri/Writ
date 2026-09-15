@@ -154,8 +154,10 @@ Two things it cannot see, stated in the direction they fail:
   covered by the runtime guard and by their own prefix declarations instead.
 - **Consumption.** A module whose every mint is spent by a successful advance carries no
   removal in source and reads `none` correctly, because the file survives the moment the
-  advance refuses. That is the latent sixth module, and it is also why five further modules
-  read `none` while leaving nothing on disk today (see Consequences).
+  advance refuses. That is the latent sixth module, and it was also why five further
+  modules read `none` while leaving nothing on disk on most runs. Decision 7 wires all
+  five, so no member of the map reads `none` any more; the gap this bullet describes is
+  unchanged, and it is what a sixth such module would land in.
 
 The key is the MODULE, not the pytest node id, because after this cycle the MECHANISM is
 module-scoped: the constant is a module attribute and the sweeper applies to every test in
@@ -267,6 +269,107 @@ stated purpose this change does not satisfy, and narrowing that scanner is its o
 It would not be equivalent even if it landed: the sweeper does not FAIL on removal, so
 these five modules would lose the per-test leak detection they deliberately opted into.
 
+### 7. The last five `none` modules are wired, each by the mechanism its own id shapes allow
+
+Added by the third cycle on this mechanism (plan.md
+2412ba38-51e1-4b73-895b-7b240a3c21d3). The first cycle recorded five modules that the map
+rated `none` and left them outside its file list; this one wires all five, so
+`gate_token_minting_modules()` now maps no module to `none` and the strict xfail that
+recorded the deferral is deleted. Two of the five were measured LEAKING, not latent:
+`tests/test_mode_infrastructure.py::TestModeAdvancePhase::test_advance_denied_for_nonwork_mode`
+and `tests/test_phase3_centralization.py::TestAdvancePhase::test_advance_fails_without_plan_md`
+each end on a REFUSED advance, so nothing consumes the token, and each left a real file
+behind when run alone. A later test on the same path consumed it, which is why a
+full-module run looked clean and the single-node run did not.
+
+**The identical-id collision is fixed UPSTREAM, in the shared fixture, not labelled
+downstream with a shared prefix.** Those two modules did not merely share a prefix: both
+import `session_id` from `tests/fixtures/session_state.py`, neither parametrizes it, and
+its default was one literal, so both wrote the same 37-byte path
+`/tmp/writ-gate-token-test-session`. The sweeper is keyed per module and its docstring
+promises to remove "this module's OWN gate-token files", so giving both the same declared
+prefix would have made that promise false for both, with no way for the next reader to tell
+which module owns the file. Instead the fixture's DEFAULT is now derived from the requesting
+module (`module_session_id(request.module.__name__)`), and each of the two declares
+`GATE_TOKEN_SESSION_PREFIX = module_session_id(__name__)` from the same function, so the
+declared namespace and the id actually minted have ONE definition and cannot drift.
+`request.param` is still consulted first, so a consumer overriding the id by indirect
+parametrization is unaffected; none does today.
+
+The blast radius is the import edge, and it is DERIVED rather than assumed:
+`tests/_inventory.py::shared_session_id_importers()` walks the tree for a module-level
+`from tests.fixtures.session_state import ... session_id ...`, which is four modules today,
+two of which (`tests/test_mode_switch_midsession.py`, `tests/test_gate_artifact_cleanup.py`)
+mint no token at all and would never appear in the other map. Module level is the mechanism,
+not a style rule: pytest registers a fixture from the name bound in the module's own
+namespace, so `tests/test_w5_fixture_dedup_c.py`'s function-body import registers nothing
+and shares no default. A fifth importer gets its own id automatically, because the id is a
+function of the module name; the two residual overlap shapes (two modules with the same stem
+in different subdirectories, and a stem that EXTENDS another's) are pinned by a capability
+asserting no derived id equals or is a string PREFIX of another, since a prefix is what a
+glob-based sweep actually cares about.
+
+**`tests/test_phase_advance_unified.py` is WRAPPED, not prefixed, and that is the second
+decision here.** Its five mint sites use `parity-pathb-<8hex>`, `parity-patha-<8hex>`,
+`root-mismatch-<8hex>`, `write-fail-<8hex>` and the bare literal `".."`. No string prefixes
+all five, so any single declared constant would have moved the module out of `none` while
+four shapes stayed bare: it would read as fixed and would not be. The module imports
+`_mint_cleanup` from `tests.test_gate_token_binding` instead and wraps each site through its
+final assertion, so a refused advance and a failed assertion both still clear the file. The
+helper is imported from where it lives rather than copied, because
+`tests/test_phase_machine_reset.py:37` already takes that exact edge and because
+`_gtm_carries_leak_fixture` recognizes a DEFINITION as readily as an IMPORT, so a sixth copy
+would classify identically while adding drift. Consolidating the five existing copies is
+still the deferred item the second bullet under "Alternatives considered" describes, with
+the three semantic differences that must be preserved.
+
+Two things that import deliberately does NOT bring. It does not bind
+`_no_leaked_gate_tokens` beside it: that sibling is an autouse delete-and-fail fixture, and
+binding its name would register it for every test in that module and change the pass/fail
+semantics of tests this cycle has no business touching. And it does not enrol the module in
+`gate_token_directory_deleters()`: arm B resolves an import through the imported module's
+stem AND requires the imported NAME to be one of that module's arm-A functions, and
+`definers["test_gate_token_binding"]` holds `_no_leaked_gate_tokens` only, because
+`_mint_cleanup` removes a path it NAMED and lists no directory. Both halves are pinned, the
+second one positively: the import edge now exists and arm B is genuinely evaluated and
+refused on the name, where before the edge was absent and the same assertion held vacuously.
+
+"The module now imports a cleanup helper" is not evidence that all five sites are covered,
+so that claim is derived too:
+`tests/_inventory.py::gate_token_mint_wrapping(module_path)` returns the mint line numbers
+split into wrapped and unwrapped, and the assertion requires a NON-EMPTY wrapped list beside
+the empty unwrapped one, so a derivation that found no mint at all cannot read clean. It
+keys on `_mint_cleanup` specifically rather than on any `with` block, pinned by a synthetic
+module that mints inside an unrelated context manager and must still read unwrapped.
+
+The remaining three modules take a plain declared prefix, each naming a namespace its own
+ids already sit inside: `test-hardening-` for `tests/test_hardening.py` (whose module-local
+fixture returns `test-hardening-session`) and `aw-` for
+`tests/test_pol6f_approval_workflow_extraction.py` (whose ids are `f"aw-{uuid4().hex[:8]}"`).
+`aw-` is three characters, so `bin/lib/analyzers-regex.sh` IDENT_ASSIGN never reaches it;
+`test-hardening-` is reached and exempt because NAMESPACE_PREFIX forgives a lowercase value
+ending in a bare separator, which is also why `module_session_id` terminates its value with a
+hyphen. That termination is for single-source-of-truth with the sweep pattern first and the
+scanner second, not an evasion of it.
+
+**The replacement for the deleted xfail is a POSITIVE population assertion.** The strict
+marker said in its own reason string that it would XPASS once the five were wired, so
+leaving it would have reddened the suite. It is gone, together with the `UNWIRED_*`
+constants, and the test under it is an ordinary unmarked assertion that no member of the map
+reads `none`. It cannot pass vacuously: the derivation is asserted non-empty against the real
+tree beside it. What a future author reads when a sixth module lands unwired is built by
+`unwired_module_report()` and pinned on synthetic input, so the refusal exists and is
+readable without waiting for a red run. It names the offenders, all three sanctioned
+neutralizers in `_gtm_kind` precedence order, the file each one lives in, and the map to
+update, because a refusal that names no action is a deadlock.
+
+**What this cycle does NOT do, stated so it is not read later as an oversight.** The file
+`/tmp/writ-gate-token-test-session` on the build machine is left in place. After this change
+no module mints the id `test-session` at all, so no declared prefix covers that exact name,
+and it is a pre-existing leftover sitting inside the session baseline where it can never fail
+anything. Removing it is an operator action, exactly as the bullet below says of the other
+leftovers.
+
 ## Alternatives considered
 
 - **Copy `_no_leaked_gate_tokens` into the five leaking modules.** Rejected on reading its
@@ -334,15 +437,20 @@ these five modules would lose the per-test leak detection they deliberately opte
   and rejected, because it leaves a file behind on every unrelated failure, which is the
   unbounded growth this whole mechanism exists to stop. Recorded here, and in
   `_sweep_gate_tokens`'s own docstring, rather than designed away.
-- **The map reports five modules as `none` that leave nothing on disk today**
-  (`test_hardening.py`, `test_mode_infrastructure.py`, `test_phase3_centralization.py`,
-  `test_phase_advance_unified.py`, `test_pol6f_approval_workflow_extraction.py`). Measured,
-  not read: running all five together moved the `/tmp` file count 39 to 39. Every one of
-  them mints through `write_bound_gate_token` and removes nothing, and every one is held
-  only by a successful advance consuming the token, which is precisely the latent shape
-  decision 5 says the map exists to name. They are outside this cycle's planned file list,
-  so they are recorded here rather than edited: the fix is one constant each, and an
-  unplanned edit is invisible to the commit audit.
+- **The five modules that once read `none` are wired, and the earlier reading of them as
+  "latent" was WRONG for two of them.** The first cycle recorded `test_hardening.py`,
+  `test_mode_infrastructure.py`, `test_phase3_centralization.py`,
+  `test_phase_advance_unified.py` and `test_pol6f_approval_workflow_extraction.py` as
+  minting but leaving nothing on disk, measured by running all five together and watching
+  the `/tmp` count hold at 39. That measurement was true and the conclusion drawn from it
+  was not: a MODULE run masks this class of leak, because a later test on the same path
+  consumes the token the earlier refusal left behind. Run alone,
+  `test_mode_infrastructure.py::TestModeAdvancePhase::test_advance_denied_for_nonwork_mode`
+  and `test_phase3_centralization.py::TestAdvancePhase::test_advance_fails_without_plan_md`
+  each left a real 37-byte file, and because both took the shared fixture's single literal
+  default it was the SAME file. Decision 7 wires all five; the map now maps no module to
+  `none`, and the two nodes above are the operational check, run one at a time with the
+  `/tmp` listing compared across each.
 - The 39 leftover files from previous runs are left in place by the guard, by design. The
   ones inside a declared namespace are removed the next time their own module runs, because
   the sweeper globs the namespace rather than diffing the test; the rest are an operator

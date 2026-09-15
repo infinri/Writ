@@ -26,6 +26,12 @@ SKILL_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 FACADE_PATH = os.path.join(SKILL_ROOT, "bin", "lib", "writ-session.py")
 AW_PATH = os.path.join(SKILL_ROOT, "writ", "session", "approval_workflow.py")
 
+# The namespace this module mints into, opting both of its `_write_token` call sites into
+# the teardown sweeper in tests/_gate_token_leak.py. It is the opening every session id
+# built below already carries (`f"aw-{uuid4().hex[:8]}"`), so the sweep pattern
+# /tmp/writ-gate-token-aw-* reaches this module's own files and nothing else.
+GATE_TOKEN_SESSION_PREFIX = "aw-"
+
 PLAN = """# Plan
 ## Files
 - foo.py

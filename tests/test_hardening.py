@@ -31,6 +31,14 @@ spec.loader.exec_module(writ_session)
 
 SKILL_DIR = os.path.join(os.path.dirname(__file__), os.pardir)
 
+# The namespace this module mints into, opting its advance-phase mint into the teardown
+# sweeper in tests/_gate_token_leak.py. It is the opening of the id the module-local
+# `session_id` fixture below already returns, so the sweep pattern
+# /tmp/writ-gate-token-test-hardening-* reaches this module's own file and nothing else.
+# The fixture keeps its own literal rather than moving to the shared one: that literal is
+# already unique, and migrating it is churn this cycle does not need.
+GATE_TOKEN_SESSION_PREFIX = "test-hardening-"
+
 
 @pytest.fixture()
 def session_id(tmp_path, monkeypatch):
