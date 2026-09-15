@@ -19,23 +19,27 @@ about the defect this file exists to catch.
 
 THE FIXTURE, modeled on `tests/test_write_door_parity.py`'s `doors`: a project root at
 `tmp_path/"proj"` carrying a `.git` marker, and a zone at `tmp_path/"osscratch"` that is a
-SIBLING of the root and not an ancestor, with `tempfile.tempdir` monkeypatched to it so the
-root is genuinely outside the zone. `TMPDIR` is set to the same directory too, matching that
-fixture's convention, even though no test here drives a subprocess: `tempfile.gettempdir()`
-memoizes `tempfile.tempdir` once pytest has built a `tmp_path`, so setting only one spelling
-is the trap this repo has already been burned by once.
+SIBLING of the root and not an ancestor. THE ZONE IS A CACHE VALUE NOW, NOT A PROCESS
+ENVIRONMENT: `in_scratch_zone(target, root, zone)` is a pure three-argument predicate
+(`writ/session/project_boundary.py` imports no `tempfile` at all), and `gates.py` resolves
+`zone` from `cache.get("scratch_zone")`. Every fixture that intends the scratch arm to be
+REACHABLE therefore stamps `scratch_zone` explicitly via `_pre_approval_cache`'s now-required
+`zone` argument, exactly the way `project_root` was already required; no test here
+monkeypatches `tempfile` or `TMPDIR`.
 
 `boundary_root` ABSTAINS ON AN EMPTY RECORDED ROOT (`writ/session/cache.py:274` defaults
 `project_root` to `""`), so every fixture below that intends the arm to FIRE stamps a root
 explicitly, and the empty/relative-root case is pinned as its own deliberate capability
-(`TestNoRecordedProjectAbstains`) rather than left to happen by fixture accident.
+(`TestNoRecordedProjectAbstains`) rather than left to happen by fixture accident. The
+zone-absent case gets the same treatment (`TestAbsentZoneStampDeniesTheZoneShapedTarget`):
+a stamped root with NO stamped zone must still deny a zone-shaped target, a decision this
+file states rather than a side effect of a fixture that forgot to stamp one.
 
 No test in this file asserts on README, HANDBOOK, ADR or any other doc prose.
 """
 from __future__ import annotations
 
 import os
-import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -59,50 +63,56 @@ def _friction_rows() -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
-def _pre_approval_cache(root: str, **overrides) -> dict:
+def _pre_approval_cache(root: str, zone: str, **overrides) -> dict:
+    """`zone` is REQUIRED, with no default: a fixture that forgets to stamp it must fail
+    loudly (a TypeError at call time) rather than read green through a fail-closed deny
+    that happens to match an expected deny."""
     cache = {
         "mode": "work",
         "current_phase": None,
         "gates_approved": [],
         "gates_approved_plan": {},
         "project_root": root,
+        "scratch_zone": zone,
         "is_subagent": False,
     }
     cache.update(overrides)
     return cache
 
 
-def _drifted_cache(root: str) -> dict:
+def _drifted_cache(root: str, zone: str) -> dict:
     """Both work gates carry a hash that does not match the plan on disk (there is none --
     `plan_md_hash` returns None for a root with no plan.md), which is the state
     `_check_work_gate`'s `drifted` list is computed from."""
     return _pre_approval_cache(
-        root,
+        root, zone,
         gates_approved=["phase-a", "test-skeletons"],
         gates_approved_plan={"phase-a": "stale-hash", "test-skeletons": "stale-hash"},
     )
 
 
-def _test_skeletons_pending_cache(root: str) -> dict:
+def _test_skeletons_pending_cache(root: str, zone: str) -> dict:
     """`phase-a` approved and bound to "no plan.md at all" (None on both sides of the
     comparison, genuinely equal); `test-skeletons` never granted."""
     return _pre_approval_cache(
-        root,
+        root, zone,
         gates_approved=["phase-a"],
         gates_approved_plan={"phase-a": None},
     )
 
 
 @pytest.fixture()
-def zone(tmp_path, monkeypatch) -> SimpleNamespace:
-    """A project root and a sibling OS-scratch zone, both spellings of the zone patched."""
+def zone(tmp_path) -> SimpleNamespace:
+    """A project root and a sibling OS-scratch zone. `in_scratch_zone(target, root, zone)`
+    is a pure three-argument predicate now (no `tempfile` import in
+    `project_boundary.py`), so the zone travels as an explicit cache value
+    (`_pre_approval_cache`'s `zone` argument) rather than as a monkeypatched
+    `tempfile.gettempdir`/`TMPDIR`."""
     root = tmp_path / "proj"
     root.mkdir()
     (root / ".git").mkdir()
     z = tmp_path / "osscratch"
     z.mkdir()
-    monkeypatch.setenv("TMPDIR", str(z))
-    monkeypatch.setattr(tempfile, "tempdir", str(z))
     return SimpleNamespace(root=root, zone=z)
 
 
@@ -119,7 +129,7 @@ class TestPreApprovalScratchWriteIsAllowed:
 
     def test_a_file_directly_in_the_zone_is_allowed(self, zone) -> None:
         gates = _gates_module()
-        cache = _pre_approval_cache(str(zone.root))
+        cache = _pre_approval_cache(str(zone.root), str(zone.zone))
         target = str(zone.zone / "scratch.py")
         result = gates._can_write_check("sza-1a", _envelope(target), "", cache)
         assert result["can_write"] is True
@@ -127,14 +137,14 @@ class TestPreApprovalScratchWriteIsAllowed:
 
     def test_a_file_nested_a_directory_deeper_is_allowed(self, zone) -> None:
         gates = _gates_module()
-        cache = _pre_approval_cache(str(zone.root))
+        cache = _pre_approval_cache(str(zone.root), str(zone.zone))
         target = str(zone.zone / "nested" / "scratch.py")
         result = gates._can_write_check("sza-1b", _envelope(target), "", cache)
         assert result["can_write"] is True
 
     def test_the_allow_emits_one_write_attempt_row_tagged_scratch_zone(self, zone) -> None:
         gates = _gates_module()
-        cache = _pre_approval_cache(str(zone.root))
+        cache = _pre_approval_cache(str(zone.root), str(zone.zone))
         target = str(zone.zone / "scratch.py")
         result = gates._can_write_check("sza-1c", _envelope(target), "", cache)
         assert result["can_write"] is True
@@ -161,7 +171,7 @@ class TestDriftStillRefusesAScratchWrite:
 
     def test_drifted_session_denies_a_zone_target_with_enf_gate_drift(self, zone) -> None:
         gates = _gates_module()
-        cache = _drifted_cache(str(zone.root))
+        cache = _drifted_cache(str(zone.root), str(zone.zone))
         target = str(zone.zone / "scratch.py")
         result = gates._can_write_check("sza-2", _envelope(target), "", cache)
         assert result["can_write"] is False
@@ -182,7 +192,7 @@ class TestTestSkeletonsWindowAlsoAllows:
         self, zone
     ) -> None:
         gates = _gates_module()
-        cache = _test_skeletons_pending_cache(str(zone.root))
+        cache = _test_skeletons_pending_cache(str(zone.root), str(zone.zone))
         target = str(zone.zone / "scratch.py")
         result = gates._can_write_check("sza-3", _envelope(target), "", cache)
         assert result["can_write"] is True
@@ -210,7 +220,7 @@ class TestCredentialInsideTheZoneStillDenies:
         self, zone, basename
     ) -> None:
         gates = _gates_module()
-        cache = _pre_approval_cache(str(zone.root))
+        cache = _pre_approval_cache(str(zone.root), str(zone.zone))
         target = str(zone.zone / basename)
         result = gates._can_write_check(f"sza-4-{basename}", _envelope(target), "", cache)
         assert result["can_write"] is False
@@ -224,20 +234,20 @@ class TestCredentialInsideTheZoneStillDenies:
 
 class TestRootInsideTheZoneStillRefusesSiblings:
     """`in_scratch_zone` switches the exemption OFF when the project root is itself inside
-    the OS temp directory (`project_boundary.py:123-125`), so a sibling under that same
-    directory must still deny pre-approval. This is the pre-approval direction of the guard
-    `tests/test_project_boundary.py:737-749` already pins post-approval."""
+    the stamped zone (`project_boundary.py`'s `in_scratch_zone`), so a sibling under that
+    same directory must still deny pre-approval. This is the pre-approval direction of the
+    guard `tests/test_project_boundary.py:737-749` already pins post-approval."""
 
     def test_a_sibling_under_the_same_zone_denies_with_enf_gate_plan(
-        self, tmp_path, monkeypatch
+        self, tmp_path
     ) -> None:
         gates = _gates_module()
         root = tmp_path / "proj"
         root.mkdir()
         (root / ".git").mkdir()
-        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))  # tmp_path is now the zone,
-        # and root sits inside it -- exactly the condition that switches the exemption off.
-        cache = _pre_approval_cache(str(root))
+        # tmp_path is stamped AS the zone, and root sits inside it -- exactly the
+        # condition that switches the exemption off.
+        cache = _pre_approval_cache(str(root), str(tmp_path))
         target = str(tmp_path / "scratch-write.py")
         result = gates._can_write_check("sza-5", _envelope(target), "", cache)
         assert result["can_write"] is False
@@ -256,7 +266,7 @@ class TestNonScratchOutOfRepoStillRefused:
 
     def test_a_directory_outside_the_project_and_the_zone_denies(self, zone) -> None:
         gates = _gates_module()
-        cache = _pre_approval_cache(str(zone.root))
+        cache = _pre_approval_cache(str(zone.root), str(zone.zone))
         target = str(zone.root.parent / "elsewhere" / "thing.py")
         result = gates._can_write_check("sza-6a", _envelope(target), "", cache)
         assert result["can_write"] is False
@@ -267,7 +277,7 @@ class TestNonScratchOutOfRepoStillRefused:
         # matching this suite's hard constraint (tests/test_project_boundary.py's module
         # docstring, HARD CONSTRAINT 1).
         gates = _gates_module()
-        cache = _pre_approval_cache(str(zone.root))
+        cache = _pre_approval_cache(str(zone.root), str(zone.zone))
         target = "/etc/writ-scratch-arm-probe.txt"
         result = gates._can_write_check("sza-6b", _envelope(target), "", cache)
         assert result["can_write"] is False
@@ -295,7 +305,7 @@ class TestZoneEscapesAreNotInTheZone:
         elsewhere.mkdir()
         link = zone.zone / "escape_link"
         os.symlink(elsewhere, link, target_is_directory=True)
-        cache = _pre_approval_cache(str(zone.root))
+        cache = _pre_approval_cache(str(zone.root), str(zone.zone))
         target = str(link / "x.py")
         result = gates._can_write_check("sza-7a", _envelope(target), "", cache)
         assert result["can_write"] is False
@@ -303,7 +313,7 @@ class TestZoneEscapesAreNotInTheZone:
 
     def test_a_dot_dot_spelling_out_of_the_zone_denies(self, zone) -> None:
         gates = _gates_module()
-        cache = _pre_approval_cache(str(zone.root))
+        cache = _pre_approval_cache(str(zone.root), str(zone.zone))
         target = os.path.join(str(zone.zone), "..", "elsewhere", "x.py")
         result = gates._can_write_check("sza-7b", _envelope(target), "", cache)
         assert result["can_write"] is False
@@ -323,11 +333,37 @@ class TestNoRecordedProjectAbstains:
 
     @pytest.mark.parametrize("root", ["", "relative/path"])
     def test_empty_or_relative_root_still_denies_a_zone_target(self, zone, root) -> None:
+        # The zone STAYS stamped here, on purpose: varying only the root isolates the
+        # ROOT abstain, so this class does not silently become a second test of the
+        # zone-absent abstain (TestAbsentZoneStampDeniesTheZoneShapedTarget, below).
         gates = _gates_module()
-        cache = _pre_approval_cache(root)
+        cache = _pre_approval_cache(root, str(zone.zone))
         target = str(zone.zone / "scratch.py")
         sid = f"sza-8-{root or 'empty'}".replace("/", "-")
         result = gates._can_write_check(sid, _envelope(target), "", cache)
+        assert result["can_write"] is False
+        assert "ENF-GATE-PLAN" in (result["reason"] or "")
+
+
+# --------------------------------------------------------------------------------- #
+# The zone-absent abstain is a decision, not an accident (fail-closed on the OTHER key).
+# --------------------------------------------------------------------------------- #
+
+
+class TestAbsentZoneStampDeniesTheZoneShapedTarget:
+    """The mirror of `TestNoRecordedProjectAbstains`, on the OTHER key: a stamped root
+    with NO stamped zone must deny a zone-shaped target with `[ENF-GATE-PLAN]`, not fall
+    back to resolving a zone live. `scratch_zone("")` returns `""`, and
+    `in_scratch_zone(target, root, "")` is False for every target -- there is no live
+    `tempfile.gettempdir()` left to fall back to at all."""
+
+    def test_a_stamped_root_with_no_stamped_zone_denies_a_zone_shaped_target(
+        self, zone
+    ) -> None:
+        gates = _gates_module()
+        cache = _pre_approval_cache(str(zone.root), "")
+        target = str(zone.zone / "scratch.py")
+        result = gates._can_write_check("sza-10", _envelope(target), "", cache)
         assert result["can_write"] is False
         assert "ENF-GATE-PLAN" in (result["reason"] or "")
 
@@ -347,7 +383,7 @@ class TestTheArmIsConditional:
         self, zone, monkeypatch
     ) -> None:
         gates = _gates_module()
-        cache = _pre_approval_cache(str(zone.root))
+        cache = _pre_approval_cache(str(zone.root), str(zone.zone))
         target = str(zone.zone / "scratch.py")
 
         baseline = gates._can_write_check("sza-9-baseline", _envelope(target), "", cache)
@@ -356,7 +392,7 @@ class TestTheArmIsConditional:
             "mutation from an arm that never worked in the first place"
         )
 
-        monkeypatch.setattr(gates, "in_scratch_zone", lambda target, root: False)
+        monkeypatch.setattr(gates, "in_scratch_zone", lambda target, root, zone: False)
         mutated = gates._can_write_check("sza-9-mutated", _envelope(target), "", cache)
         assert mutated["can_write"] is False
         assert "ENF-GATE-PLAN" in (mutated["reason"] or "")

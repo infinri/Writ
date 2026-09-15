@@ -88,7 +88,16 @@ role-scope ADR's property that the scope is a function of the role alone. The ar
   file.
 - **A literal `/tmp/claude-<uid>` prefix for the scratch zone.** Rejected as a name
   recognizer. The mechanism is "ephemeral storage the OS designates", so the zone is
-  `tempfile.gettempdir()`, resolved at call time.
+  `tempfile.gettempdir()`, resolved ONCE at `mode set` and stamped into the session cache,
+  not resolved at write time (see the divergence bullet in Consequences). That same
+  reasoning is what later ruled out a hardcoded `/tmp` FALLBACK for a cache carrying no
+  stamp: a default spelled as a name is the same name recognizer wearing a different hat.
+- **Threading the calling process's temp directory through the `can-write` payload**, the
+  way `skill_dir` is threaded. Rejected: it makes the daemon trust a value the caller
+  supplies. Today an agent-influenced `TMPDIR` can only reach the decision during the
+  daemon-unreachable fallback window; threading it would extend that trust to the daemon
+  path too, so the bypass would be available whenever the daemon is UP as well. That trades
+  a narrow outage-gated hole for a permanent one.
 - **Glob patterns for containment.** Rejected outright. This repo has already paid for
   exclusion globs where `*` spans `/` and matches the raw path, so a directory-shaped
   pattern exempts any depth and `..` escapes it. Containment is a resolved-prefix comparison
@@ -165,6 +174,38 @@ role-scope ADR's property that the scope is a function of the role alone. The ar
   as `.*`, so it spans `/`. The arm resolves its root through `boundary_root` and
   `resolve_target` exactly as this predicate does, and inherits the empty-root abstain: a
   session with no recorded project keeps refusing.
+- **The scratch zone was a PER-PROCESS answer, and is now a stamped session value.**
+  `in_scratch_zone` resolved `os.path.realpath(tempfile.gettempdir())` fresh on every call.
+  The write gate runs in two OS processes (the daemon, and the CLI subprocess the Bash gate
+  shells out to when the daemon is unreachable), and `tempfile.gettempdir()` is derived from
+  `TMPDIR` per process, so the two doors could answer differently for one path. Measured
+  twice: through the real gate on identical session state (`can_write=false` with
+  `[ENF-GATE-PLAN]` under no `TMPDIR`, which is the daemon's environment read from
+  `/proc/<pid>/environ`, versus `can_write=true` under `TMPDIR=/var/tmp/...`), and directly
+  on the predicate. Two preconditions make it real and both were measured: the alternate
+  directory must EXIST and be writable, or `gettempdir()` silently falls through its
+  candidate list to `/tmp`, and it must sit OUTSIDE the daemon's zone, because a directory
+  nested under `/tmp` is also inside `/tmp` and the two processes then agree by accident.
+  The fix follows `project_root`'s own precedent exactly: `mode_engine._apply_mode_set`
+  stamps `cache["scratch_zone"]` beside `cache["project_root"]`, and both doors read that
+  stamp through `project_boundary.scratch_zone` instead of the environment.
+  `in_scratch_zone(target, root, zone)` is a pure three-argument predicate and the module
+  imports no `tempfile` at all, which is what its own docstring already claimed for every
+  other predicate in it. The process that declares the mode is the one whose answer wins,
+  because it is already the authority for `project_root`: a caller who can move the entire
+  boundary by choosing a cwd is not further constrained by also choosing a zone.
+- **An absent stamp FAILS CLOSED, and there is no live fallback.** `scratch_zone("")`
+  returns `""` and the exemption is off for that session. Three reasons: the divergence can
+  only convert a DENY into an ALLOW, so absence belongs on the deny side; absence here
+  removes an EXEMPTION rather than the only JUDGE, so containment, the project's own memory
+  directory and the approved plan's `## Files` still decide the write and this is not the
+  deadlock `boundary_root`'s abstain avoids; and a hardcoded default is barred by the
+  name-recognizer rejection above. It reaches only a cache carrying a `project_root` but no
+  `scratch_zone`, which is a cache written before the field existed; any `mode set` or
+  `mode init` re-stamps. Because `_SCRATCH` ("paths under the OS temporary directory need no
+  declaration") is FALSE in that state, `boundary_refusal` takes the resolved zone as a
+  REQUIRED parameter and selects a sentence that names the repair instead, so the reader is
+  not sent in a circle by a refusal that names no way out.
 - **The pre-existing basename-only `plan.md` / `capabilities.md` allow is untouched.** It
   lets a write to another project's `plan.md` through. Orthogonal, and fixing it changes a
   different arm.

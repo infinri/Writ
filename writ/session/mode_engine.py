@@ -10,6 +10,7 @@ investigation callers resolve the names unchanged.
 import glob
 import os
 import sys
+import tempfile
 
 from writ.session.cache import _read_cache, _write_cache, mutate_cache, record_transition
 from writ.session.friction import _log_friction_event
@@ -356,6 +357,14 @@ def _apply_mode_set(
     # mode-bearing cache records its project so the rotation carry's same-project
     # guard has a positive per-cache identity check (safe under parallel jobs).
     cache["project_root"] = os.getcwd()
+    # Stamp the OS scratch zone the SAME WAY, and for the same reason one layer down: the
+    # write gate runs in two processes and `tempfile.gettempdir()` is a per-process answer,
+    # so a zone resolved at write time lets the daemon and the CLI fallback allow and deny
+    # the same path. Resolving it HERE fixes it for the session, and the process that
+    # declares the mode is the one whose answer wins, because it is already the authority
+    # for `project_root` above -- a caller that can move the whole boundary by choosing a
+    # cwd is not constrained by also choosing a zone.
+    cache["scratch_zone"] = os.path.realpath(tempfile.gettempdir())
 
     # Fresh workflow state
     new_phase = _initial_phase_for_mode(mode)

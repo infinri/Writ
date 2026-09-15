@@ -26,7 +26,6 @@ recur through this module.
 from __future__ import annotations
 
 import os
-import tempfile
 from pathlib import Path
 
 from writ.session import locators
@@ -105,13 +104,46 @@ def is_contained(target: str, root: str) -> bool:
     return target == base or target.startswith(base + os.sep)
 
 
-def in_scratch_zone(target: str, root: str) -> bool:
+def scratch_zone(recorded: str) -> str:
+    """The resolved scratch zone a write is judged against, or "" for no exemption.
+
+    THE MIRROR OF `boundary_root`, and for the same reason. `mode_engine._apply_mode_set`
+    stamps `scratch_zone` as `os.path.realpath(tempfile.gettempdir())` in the process that
+    declares the mode, and both write-gate processes read THAT value here instead of
+    resolving one of their own. `tempfile.gettempdir()` is a per-process answer, so a zone
+    resolved at call time made the daemon and the CLI fallback answer differently for one
+    path whenever their `TMPDIR` values differed (measured: `can_write` false under no
+    TMPDIR, true under an existing writable TMPDIR outside `/tmp`).
+
+    "" MEANS NO EXEMPTION, NOT "RESOLVE IT YOURSELF". An empty or relative recorded value
+    returns "" and `in_scratch_zone` then answers False for every target. Falling back to a
+    live `tempfile.gettempdir()` here would reinstate the exact divergence this function
+    exists to remove, and it would reinstate it silently, in the one state (an old cache)
+    where nobody is looking.
+
+    A RELATIVE VALUE IS REFUSED rather than resolved against the calling process's cwd,
+    which inside the daemon is Writ's own install dir. Same refusal `boundary_root` makes,
+    through the same reasoning.
+    """
+    recorded = str(recorded or "")
+    if not recorded or not os.path.isabs(recorded):
+        return ""
+    return os.path.realpath(recorded)
+
+
+def in_scratch_zone(target: str, root: str, zone: str) -> bool:
     """True when `target` is ephemeral scratch storage that needs no declaration.
 
-    The zone is the OS-DESIGNATED temporary directory, read through `tempfile.gettempdir()`
-    at call time, because the mechanism is "storage the OS designates as ephemeral" and not
-    "a directory with a particular name". The harness instructs every agent to work in a
-    scratchpad there, so this is the one zone the predicate must exempt itself.
+    `zone` is `scratch_zone`'s output: the session's stamped OS temporary directory, already
+    resolved, or "" when nothing was stamped. THE PARAMETER IS THE POINT. This module's
+    docstring promises a pure predicate that reads no process or session state, and the
+    `tempfile.gettempdir()` call this function used to make was the one place it broke that
+    promise -- and the one place the two write-gate processes could disagree.
+
+    NO ZONE, NO EXEMPTION. The exemption is the only thing absence removes; containment, the
+    project's own memory directory and the approved plan's `## Files` all still judge the
+    write, so an in-project write is unaffected and an out-of-project one keeps a named way
+    out. That is why fail-closed here is not the deadlock `boundary_root`'s abstain avoids.
 
     THE EXEMPTION IS SKIPPED WHEN THE PROJECT ROOT IS ITSELF INSIDE THE ZONE. A project
     living in the temp directory would otherwise exempt every sibling checkout beside it,
@@ -120,7 +152,8 @@ def in_scratch_zone(target: str, root: str) -> bool:
     that roots a project there has the zone inert by construction and its "outside" sibling
     denies on containment alone rather than passing for the wrong reason.
     """
-    zone = os.path.realpath(tempfile.gettempdir())
+    if not zone:
+        return False
     if is_contained(root, zone):
         return False
     return is_contained(target, zone)
@@ -248,6 +281,18 @@ _REARM = (
 
 _SCRATCH = "Paths under the OS temporary directory need no declaration."
 
+# The sentence for a session with NO stamped zone, because `_SCRATCH` is FALSE in that
+# state: the exemption is off, so telling the reader the temporary directory needs no
+# declaration sends them in a circle. A refusal must name the way out, and the way out here
+# is the same command that stamps the zone in the first place -- said with what else that
+# command does, so nobody reads it as a flag they can flip mid-cycle.
+_NO_ZONE = (
+    "This session recorded no scratch zone, so the temporary-directory exemption is OFF "
+    "for it (an older session cache predates the field). `writ-session.py mode set work "
+    "<session-id>` re-stamps it, and note what else that does: it starts a fresh planning "
+    "phase and re-arms both work gates, so it is a restart of the cycle and not a flag."
+)
+
 
 def _where(file_path: str, target: str) -> str:
     """The requested path, plus the resolved one when they differ.
@@ -262,7 +307,7 @@ def _where(file_path: str, target: str) -> str:
     return where
 
 
-def boundary_refusal(kind: str, file_path: str, target: str, root: str) -> str:
+def boundary_refusal(kind: str, file_path: str, target: str, root: str, zone: str) -> str:
     """The refusal text for one out-of-project write.
 
     EVERY VARIANT NAMES THE ACTION THAT UNBLOCKS IT, in the string itself, which is the only
@@ -273,15 +318,22 @@ def boundary_refusal(kind: str, file_path: str, target: str, root: str) -> str:
     texts and not one with a placeholder: before approval the declaration is not yet
     binding, after approval it is one edit plus one word from the user, and inside a
     dispatch the child holds neither lever.
+
+    `zone` is `scratch_zone`'s output and it SELECTS THE LAST SENTENCE, because the
+    "needs no declaration" line is false for a session that recorded no zone: the exemption
+    is off for it, and a reader who acts on that sentence is sent in a circle. The parameter
+    is REQUIRED, with no default: exactly one call site exists, and a default would let a
+    future caller omit the fact the sentence is chosen by.
     """
     where = _where(file_path, target)
+    scratch = _SCRATCH if zone else _NO_ZONE
     if kind == KIND_DISPATCH:
         return (
             f"[{TAG}] Write refused: {where} is outside the project you were dispatched "
             f"for ('{root}'). A sub-agent can neither amend the approved plan nor ask the "
             "user, so there is nothing here for you to approve or retry. Stop and report "
             "to the orchestrator which path you need and why; the orchestrator can declare "
-            f"it in plan.md's `## Files` and get the user's approval. {_SCRATCH}"
+            f"it in plan.md's `## Files` and get the user's approval. {scratch}"
         )
     if kind == KIND_PRE_APPROVAL:
         return (
@@ -289,10 +341,10 @@ def boundary_refusal(kind: str, file_path: str, target: str, root: str) -> str:
             "paths INSIDE the project (tests, migrations, __init__.py, .claude) are "
             "writable now, so this project's test skeletons are unaffected. To write "
             f"outside the project, {_DECLARE}. That declaration takes effect once the plan "
-            f"is approved, not before. {_SCRATCH}"
+            f"is approved, not before. {scratch}"
         )
     return (
         f"[{TAG}] Write refused: {where} is outside this project ('{root}'), and the "
         f"approved plan's `## Files` section does not declare it. To write it, {_DECLARE}. "
-        f"{_REARM} {_SCRATCH}"
+        f"{_REARM} {scratch}"
     )

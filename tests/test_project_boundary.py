@@ -72,7 +72,6 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 from pathlib import Path
 from unittest import mock
 
@@ -691,36 +690,41 @@ class TestScratchZoneGuardBothDirections:
     missing, EVERY other 'outside is refused' assertion in this file would flip
     to allow the moment the real OS tempdir happens to contain tmp_path -- which
     it always does -- so this class isolates the mechanism with an explicitly
-    monkeypatched zone, independent of that coincidence.
+    chosen zone, independent of that coincidence.
 
-    SEAM CONTRACT for the implementer: `in_scratch_zone` must call
-    `tempfile.gettempdir()` as a qualified attribute access (matching this
-    module's own `import tempfile` usage), not a name bound once at import time
-    via `from tempfile import gettempdir` -- these tests monkeypatch
-    `tempfile.gettempdir` itself, which only takes effect if the callee re-reads
-    it through the shared module object.
+    THE CONTRACT for the implementer: `in_scratch_zone(target, root, zone)` is a pure
+    three-argument predicate. `zone` is `scratch_zone()`'s output (an absolute
+    `realpath`, or `""` for no exemption); the function reads no process state at all,
+    and `writ/session/project_boundary.py` imports no `tempfile`. These tests pass the
+    zone as an explicit argument -- never by monkeypatching `tempfile.gettempdir`, which
+    this module no longer calls.
     """
 
-    def test_exempt_when_root_is_not_inside_the_zone(self, tmp_path, monkeypatch) -> None:
+    def test_exempt_when_root_is_not_inside_the_zone(self, tmp_path) -> None:
         mod = _pb_module()
         root = tmp_path / "proj"
         root.mkdir()
         zone = tmp_path / "os-scratch"  # sibling of root, not an ancestor
         zone.mkdir()
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(zone))
         target = zone / "scratch-file.py"
-        assert mod.in_scratch_zone(str(target), str(root)) is True
+        assert mod.in_scratch_zone(str(target), str(root), str(zone)) is True
 
-    def test_not_exempt_when_root_is_inside_the_zone(self, tmp_path, monkeypatch) -> None:
+    def test_not_exempt_when_root_is_inside_the_zone(self, tmp_path) -> None:
         mod = _pb_module()
         root = tmp_path / "proj"
         root.mkdir()
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))  # ancestor of root
-        target = tmp_path / "scratch-file.py"  # inside the redefined zone too
-        assert mod.in_scratch_zone(str(target), str(root)) is False
+        target = tmp_path / "scratch-file.py"  # inside the zone too
+        assert mod.in_scratch_zone(str(target), str(root), str(tmp_path)) is False
 
-    def test_end_to_end_write_allowed_when_root_outside_the_redefined_zone(
-        self, tmp_path, monkeypatch
+    def test_not_exempt_when_the_zone_is_empty(self, tmp_path) -> None:
+        mod = _pb_module()
+        root = tmp_path / "proj"
+        root.mkdir()
+        target = tmp_path / "scratch-file.py"
+        assert mod.in_scratch_zone(str(target), str(root), "") is False
+
+    def test_end_to_end_write_allowed_when_root_outside_the_zone(
+        self, tmp_path
     ) -> None:
         gates = _gates_module()
         root = tmp_path / "proj"
@@ -728,25 +732,67 @@ class TestScratchZoneGuardBothDirections:
         (root / ".git").mkdir()
         zone = tmp_path / "os-scratch"
         zone.mkdir()
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(zone))
-        cache = _post_approval_cache(str(root))
+        cache = _post_approval_cache(str(root), scratch_zone=str(zone))
         target = str(zone / "scratch-write.py")
         result = gates._can_write_check("pb-16-a", _envelope(target), "", cache)
         assert result["can_write"] is True
 
-    def test_end_to_end_write_denied_when_root_inside_the_redefined_zone(
-        self, tmp_path, monkeypatch
+    def test_end_to_end_write_denied_when_root_inside_the_zone(
+        self, tmp_path
     ) -> None:
         gates = _gates_module()
         root = tmp_path / "proj"
         root.mkdir()
         (root / ".git").mkdir()
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
-        cache = _post_approval_cache(str(root))
+        cache = _post_approval_cache(str(root), scratch_zone=str(tmp_path))
         target = str(tmp_path / "scratch-write.py")
         result = gates._can_write_check("pb-16-b", _envelope(target), "", cache)
         assert result["can_write"] is False
         assert "ENF-PROJECT-BOUNDARY" in (result["reason"] or "")
+
+
+# --------------------------------------------------------------------------------- #
+# Capability 7: `scratch_zone()` abstains deliberately.
+# --------------------------------------------------------------------------------- #
+
+
+class TestScratchZonePureFunction:
+    """The mirror of `TestBoundaryRootPureFunction`, for the same reason: `scratch_zone`
+    is `boundary_root`'s counterpart, resolving the recorded cache value or abstaining to
+    `""` rather than ever falling back to a live `tempfile.gettempdir()`."""
+
+    def test_empty_recorded_value_yields_empty_string(self) -> None:
+        mod = _pb_module()
+        assert mod.scratch_zone("") == ""
+
+    def test_relative_recorded_value_yields_empty_string(self) -> None:
+        mod = _pb_module()
+        assert mod.scratch_zone("relative/path") == ""
+
+    def test_absolute_recorded_value_yields_its_realpath(self, tmp_path) -> None:
+        mod = _pb_module()
+        target = tmp_path / "zone"
+        target.mkdir()
+        assert mod.scratch_zone(str(target)) == os.path.realpath(str(target))
+
+    def test_none_recorded_value_yields_empty_string(self) -> None:
+        """`_read_cache`'s backfill stores `""` for a missing key, but a caller reading
+        the raw dict via `.get` can still hand this function `None`; it must not raise."""
+        mod = _pb_module()
+        assert mod.scratch_zone(None) == ""
+
+
+class TestProjectBoundaryModuleReadsNoProcessState:
+    """`project_boundary.py`'s own module docstring claims every predicate in it is pure
+    and reads no session or process state. `in_scratch_zone` was the one exception
+    (`tempfile.gettempdir()`); this pins that the import is gone, not merely unused."""
+
+    def test_module_imports_no_tempfile(self) -> None:
+        mod = _pb_module()
+        assert not hasattr(mod, "tempfile"), (
+            "writ/session/project_boundary.py must not import tempfile at all -- "
+            "the zone is a parameter now, not something this module resolves itself"
+        )
 
 
 # --------------------------------------------------------------------------------- #
@@ -757,13 +803,15 @@ class TestScratchZoneGuardBothDirections:
 class TestCredentialDenyPrecedesBoundary:
     """No named mutation in Verification step 4; this pins an ORDERING property a
     future reorder inside _can_write_check could silently break. The root is
-    placed OUTSIDE the redefined scratch zone deliberately: if the ordering
-    regressed and exempt/boundary logic ran before the credential guard, the
-    scratch exemption WOULD grant this write, flipping the assertion from deny to
-    allow -- non-vacuous, not merely 'still denies for an unrelated reason'."""
+    placed OUTSIDE the scratch zone deliberately AND THE ZONE IS STAMPED: the
+    exemption WOULD grant this write were the credential guard not running first, so
+    the deny is attributable to SEC-CREDENTIAL-WRITE and not to a missing scratch_zone
+    stamp -- non-vacuous, not merely 'still denies for an unrelated reason'. A cache
+    with no zone stamped would deny this same target for the WRONG reason (the absent
+    exemption, not the credential arm), which is exactly why this test must stamp one."""
 
     def test_credential_file_inside_the_scratch_zone_is_denied_not_exempted(
-        self, tmp_path, monkeypatch
+        self, tmp_path
     ) -> None:
         gates = _gates_module()
         root = tmp_path / "proj"
@@ -771,8 +819,7 @@ class TestCredentialDenyPrecedesBoundary:
         (root / ".git").mkdir()
         zone = tmp_path / "os-scratch"
         zone.mkdir()
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(zone))
-        cache = _post_approval_cache(str(root))
+        cache = _post_approval_cache(str(root), scratch_zone=str(zone))
         target = str(zone / ".env")
         result = gates._can_write_check("pb-17", _envelope(target), "", cache)
         assert result["can_write"] is False

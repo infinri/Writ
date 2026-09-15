@@ -272,6 +272,17 @@ def _default_cache() -> dict:
         # Project where the mode was declared (stamped at mode-set). Enables the
         # rotation carry's same-project guard; "" means "unknown project".
         "project_root": "",
+        # The OS scratch zone the write gate judges against, stamped at mode-set beside
+        # project_root by mode_engine._apply_mode_set as
+        # os.path.realpath(tempfile.gettempdir()). It lives HERE rather than being resolved
+        # at write time because the write gate runs in TWO processes (the daemon and the CLI
+        # fallback) and tempfile.gettempdir() is a per-process answer, so a zone resolved at
+        # call time let the two doors allow and deny the same path (measured). "" means NO
+        # EXEMPTION, never "resolve it yourself": _read_cache's backfill gives a cache
+        # written before this field existed that same "", and project_boundary.scratch_zone
+        # turns it into a fail-closed abstain instead of a live fallback that would
+        # reinstate the divergence in the one state nobody inspects.
+        "scratch_zone": "",
     }
 
 

@@ -31,6 +31,7 @@ from writ.session.project_boundary import (
     in_scratch_zone,
     is_contained,
     resolve_target,
+    scratch_zone,
 )
 # The pure matcher only. The dispatch-time FETCHER in that module is never called from
 # here: the write path reads the scope the dispatch already stamped into the session cache,
@@ -401,7 +402,8 @@ def _check_role_scope_write(session_id: str, mode, file_path: str, cache: dict) 
     return {"can_write": False, "reason": _role_scope_refusal(role, patterns, file_path)}
 
 
-def _check_project_boundary(session_id: str, mode, file_path: str, recorded_root, kind: str) -> dict | None:
+def _check_project_boundary(session_id: str, mode, file_path: str, recorded_root,
+                            recorded_zone, kind: str) -> dict | None:
     """The project-write boundary, or None when the write is in bounds or unjudgeable.
 
     IT CAN ONLY CONVERT AN ALLOW INTO A DENY. Every call site guards an arm that was about
@@ -423,14 +425,22 @@ def _check_project_boundary(session_id: str, mode, file_path: str, recorded_root
     feeds the escalation that tells the user which pending gate to approve, and the remedy
     here is an edited plan plus a FRESH approval, not the advance of a pending gate. Same
     reasoning, same shape as the role-scope deny above.
+
+    `recorded_zone` TRAVELS WITH `recorded_root`, both out of the same cache, because the
+    scratch zone is now a stamped session value rather than something either write-gate
+    process resolves for itself. It is resolved AFTER the empty-root abstain so a cache with
+    no project pays nothing for it; the cost is one `isabs` plus one `realpath` and no file
+    read. An absent zone removes the EXEMPTION only, so containment, the memory dir and the
+    declared `## Files` all still judge the write.
     """
     root = boundary_root(recorded_root)
     if not root:
         return None
+    zone = scratch_zone(recorded_zone)
     target = resolve_target(file_path, root)
     if is_contained(target, root):
         return None
-    if in_scratch_zone(target, root):
+    if in_scratch_zone(target, root, zone):
         return None
     # THIS PROJECT'S OWN MEMORY DIRECTORY, on all three kinds. `~/.claude/projects/<encoded
     # root>/memory` is the project's sidecar, derived from the root it belongs to, and an
@@ -444,7 +454,8 @@ def _check_project_boundary(session_id: str, mode, file_path: str, recorded_root
     _log_friction_event(session_id, mode, "write_attempt",
                         file_path=file_path, result="deny",
                         gate_status="project_boundary_deny", boundary_kind=kind)
-    return {"can_write": False, "reason": boundary_refusal(kind, file_path, target, root)}
+    return {"can_write": False,
+            "reason": boundary_refusal(kind, file_path, target, root, zone)}
 
 
 def _check_subagent_boundary(session_id: str, mode, file_path: str, cache: dict) -> dict | None:
@@ -503,10 +514,17 @@ def _check_subagent_boundary(session_id: str, mode, file_path: str, cache: dict)
     parent_session_id = str(cache.get("parent_session_id") or "")
     if not parent_session_id:
         return None
-    parent_root = _read_cache(parent_session_id).get("project_root") or ""
+    parent_cache = _read_cache(parent_session_id)
+    parent_root = parent_cache.get("project_root") or ""
     if not parent_root:
         return None
-    return _check_project_boundary(session_id, mode, file_path, parent_root, KIND_DISPATCH)
+    # The zone comes out of the SAME parent-cache read as the root, so the two can never
+    # describe different parent caches. The child's own cache stamps neither, for the same
+    # reason: a sub-agent cache is not a session working the project, and inheriting either
+    # would make `rotation._sessions_claiming_project` count it as one.
+    parent_zone = parent_cache.get("scratch_zone") or ""
+    return _check_project_boundary(session_id, mode, file_path, parent_root, parent_zone,
+                                   KIND_DISPATCH)
 
 
 def _check_exempt_write(session_id: str, mode, file_path: str, cache: dict, skill_dir: str) -> dict | None:
@@ -744,7 +762,8 @@ def _check_work_gate(session_id: str, mode, file_path: str, current_phase, cache
             # `/any/other/project/tests/x.py`. Left unguarded it would be a one-line bypass
             # of the whole boundary, reachable before any approval.
             bounded = _check_project_boundary(session_id, mode, file_path,
-                                              cache.get("project_root"), KIND_PRE_APPROVAL)
+                                              cache.get("project_root"),
+                                              cache.get("scratch_zone"), KIND_PRE_APPROVAL)
             if bounded is not None:
                 return bounded
             _log_friction_event(session_id, mode, "write_attempt",
@@ -790,9 +809,15 @@ def _check_work_gate(session_id: str, mode, file_path: str, current_phase, cache
         # project in the CLI fallback, so the two doors would answer differently for one
         # write. No recorded project, no exemption: absence is not a policy and today's
         # decision stands.
+        #
+        # THE ZONE IS RESOLVED THE SAME WAY THE BOUNDARY RESOLVES IT TOO, out of the cache
+        # via `scratch_zone`, and it inherits the same abstain. No stamped zone means no
+        # exemption and NEVER a live `tempfile.gettempdir()`: resolving one here is exactly
+        # what let the daemon and the CLI fallback answer differently for one path.
         scratch_root = boundary_root(cache.get("project_root"))
-        if scratch_root and in_scratch_zone(resolve_target(file_path, scratch_root),
-                                            scratch_root):
+        zone = scratch_zone(cache.get("scratch_zone"))
+        if scratch_root and zone and in_scratch_zone(
+                resolve_target(file_path, scratch_root), scratch_root, zone):
             _log_friction_event(session_id, mode, "write_attempt",
                                 file_path=file_path, result="allow",
                                 gate_status="scratch_zone", phase=current_phase)
@@ -825,7 +850,8 @@ def _check_work_gate(session_id: str, mode, file_path: str, current_phase, cache
     # `/etc/passwd-probe.txt` allowed). Checked BEFORE the allow row is emitted, so a
     # refusal leaves exactly one `write_attempt` and not an allow followed by a deny.
     bounded = _check_project_boundary(session_id, mode, file_path,
-                                      cache.get("project_root"), KIND_APPROVED)
+                                      cache.get("project_root"),
+                                      cache.get("scratch_zone"), KIND_APPROVED)
     if bounded is not None:
         return bounded
     _log_friction_event(session_id, mode, "write_attempt",

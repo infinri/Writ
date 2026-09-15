@@ -85,10 +85,19 @@ def doors(tmp_path, monkeypatch) -> SimpleNamespace:
     monkeypatch.setenv("WRIT_PORT", "19999")
     monkeypatch.setenv("WRIT_NO_AUTOSTART", "1")
     monkeypatch.setenv("HOME", str(home))
-    # BOTH spellings of the scratch zone, deliberately. The subprocess reads TMPDIR; this
-    # process reads tempfile.gettempdir(), which returns the memoized tempfile.tempdir once
-    # pytest has built a tmp_path, so TMPDIR alone would point the two doors at different
-    # zones and every row would agree for the wrong reason.
+    # BOTH spellings of the scratch zone, still: the Bash door's subprocess writes its own
+    # temp files under this directory and `tmp_path` (used by the "plainly outside
+    # everything" / memory-dir targets elsewhere in this fixture) must stay outside it, so
+    # both spellings still matter for THAT. What no longer matters is which zone
+    # `in_scratch_zone` itself resolves: it is a pure three-argument predicate now
+    # (`writ/session/project_boundary.py` imports no `tempfile`), and both doors read the
+    # zone from `cache["scratch_zone"]` (stamped below by `_pre_approval`/`_post_approval`)
+    # instead of resolving `tempfile.gettempdir()` live. Before this cycle, this double
+    # spelling was the ONLY thing that stopped the two doors reading different zones for
+    # this fixture's "os scratch zone" row -- that is what the stamp does now.
+    # `tests/test_scratch_zone_process_parity.py` is the module that measures the
+    # divergence this neutralization exists to avoid, with two REAL processes and two REAL
+    # different `TMPDIR` values.
     monkeypatch.setenv("TMPDIR", str(zone))
     monkeypatch.setattr(tempfile, "tempdir", str(zone))
 
@@ -125,19 +134,20 @@ def _seed(sid: str, payload: dict) -> None:
     cache._write_cache(sid, payload)
 
 
-def _pre_approval(root: str) -> dict:
+def _pre_approval(root: str, zone: str) -> dict:
     return {"mode": "work", "current_phase": None, "gates_approved": [],
-            "gates_approved_plan": {}, "project_root": root, "is_subagent": False}
+            "gates_approved_plan": {}, "project_root": root, "scratch_zone": zone,
+            "is_subagent": False}
 
 
-def _post_approval(root: str) -> dict:
+def _post_approval(root: str, zone: str) -> dict:
     """Both gates approved, bound to "no plan.md at all": plan_md_hash is None on both sides
     of approved_gates_for_plan's comparison, which its docstring calls genuinely equal, so
     the state needs no plan file. Same shape as tests/test_project_boundary.py's fixture."""
     return {"mode": "work", "current_phase": "implementation",
             "gates_approved": ["phase-a", "test-skeletons"],
             "gates_approved_plan": {"phase-a": None, "test-skeletons": None},
-            "project_root": root, "is_subagent": False}
+            "project_root": root, "scratch_zone": zone, "is_subagent": False}
 
 
 def _write_door(sid: str, target: str) -> bool:
@@ -240,7 +250,7 @@ def test_the_scratch_zone_is_allowed_pre_approval_on_both_doors(doors) -> None:
     for the Bash half exactly as `_bash_door` does everywhere else in this file.
     """
     sid = f"parity-{uuid.uuid4().hex[:8]}"
-    _seed(sid, _pre_approval(str(doors.root)))
+    _seed(sid, _pre_approval(str(doors.root), str(doors.zone)))
     targets = _targets(doors)
 
     zone_target = targets["os scratch zone"]
@@ -272,8 +282,8 @@ def test_the_scratch_zone_is_allowed_pre_approval_on_both_doors(doors) -> None:
 @pytest.mark.parametrize("label", _TARGET_LABELS)
 def test_the_two_doors_agree(doors, state, label) -> None:
     sid = f"parity-{uuid.uuid4().hex[:8]}"
-    _seed(sid, _pre_approval(str(doors.root)) if state == "pre_approval"
-          else _post_approval(str(doors.root)))
+    _seed(sid, _pre_approval(str(doors.root), str(doors.zone)) if state == "pre_approval"
+          else _post_approval(str(doors.root), str(doors.zone)))
     target = _targets(doors)[label]
     # Bash first: the Write door's deny path mutates the cache (denial_counts), and running
     # the doors in this order keeps the Bash verdict independent of that write.
@@ -292,7 +302,7 @@ def test_the_harness_produces_both_verdicts(doors) -> None:
     list the parametrization walks to the table's own keys."""
     assert set(_targets(doors)) == set(_TARGET_LABELS)
     sid = f"parity-{uuid.uuid4().hex[:8]}"
-    _seed(sid, _post_approval(str(doors.root)))
+    _seed(sid, _post_approval(str(doors.root), str(doors.zone)))
     inside = str(doors.root / "src" / "app.py")
     outside = str(doors.elsewhere / "thing.py")
     assert _bash_door(doors.env, sid, str(doors.root), inside)[0] is True
@@ -312,7 +322,7 @@ def test_an_out_of_repo_target_reaches_the_gate_and_records_it(doors) -> None:
     than reading the buffer file.
     """
     sid = f"parity-{uuid.uuid4().hex[:8]}"
-    _seed(sid, _post_approval(str(doors.root)))
+    _seed(sid, _post_approval(str(doors.root), str(doors.zone)))
     target = str(doors.memory / "MEMORY.md")
     allow, _decision = _bash_door(doors.env, sid, str(doors.root), target)
     assert allow is True
@@ -334,7 +344,7 @@ def test_the_parity_property_goes_red_without_the_fix(doors, tmp_path, name, mut
     which the Write door refuses through the BOUNDARY rather than through the work gate, so
     the disagreement is attributable to this fix and not to mode state."""
     sid = f"parity-{uuid.uuid4().hex[:8]}"
-    _seed(sid, _post_approval(str(doors.root)))
+    _seed(sid, _post_approval(str(doors.root), str(doors.zone)))
     target = str(doors.other_memory / "MEMORY.md")
     script = _mutant_hook(tmp_path, name, mutate)
     bash_allow, _decision = _bash_door(doors.env, sid, str(doors.root), target, script=script)
