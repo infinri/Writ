@@ -48,6 +48,14 @@ SESSION_START_BOOTSTRAP = SKILL_ROOT / "hooks" / "scripts" / "session-start-boot
 
 SCAN_ROOTS = [SKILL_ROOT / "scripts", SKILL_ROOT / "hooks", SKILL_ROOT / "bin"]
 
+# The gate-token session namespace this module mints under. Module level is
+# required, not stylistic: tests/_gate_token_leak.py reads this off
+# `request.module` and sweeps only `/tmp/writ-gate-token-<prefix>*`, so a value
+# declared anywhere else is invisible to the sweeper. It matches the session ids
+# this module already uses (approve-no-curl, approve-payload, approve-confirm,
+# approve-reject-unspent).
+GATE_TOKEN_SESSION_PREFIX = "approve-"
+
 # Tools every hook/script in this suite may legitimately need that are NOT part of
 # the jq/curl/envsubst question. jq, curl and envsubst are added per-test, never here.
 CORE_TOOLS = [

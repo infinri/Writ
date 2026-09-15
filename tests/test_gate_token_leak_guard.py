@@ -132,38 +132,18 @@ SIX_WIRED_MODULES = {
 }
 
 # ---------------------------------------------------------------------------
-# The two DEFERRALS this cycle shipped with, both ruled rather than assumed, and
-# both marked strict so they cannot be forgotten. A strict xfail that starts
-# passing FAILS the suite, which is what turns each of these into a prompt to
-# delete the marker instead of a comment nobody re-reads.
+# The DEFERRAL this file still carries, ruled rather than assumed, and marked
+# strict so it cannot be forgotten. A strict xfail that starts passing FAILS the
+# suite, which is what turns it into a prompt to delete the marker instead of a
+# comment nobody re-reads.
+#
+# The scanner deferral that used to sit here is GONE. It covered
+# test_no_tool_prereqs.py and test_phase3b_approval_rewrap.py, whose
+# `approve-` and `phase3b-` prefixes the pre-write credential scanner refused;
+# the credential-scanner cycle exempted namespace-shaped values, both modules
+# now declare their prefix at module level, and all six wired cases below run
+# unmarked.
 # ---------------------------------------------------------------------------
-
-# Wiring these two needs a module constant whose name contains TOKEN bound to a
-# value of exactly eight characters, and that is the one shape the pre-write
-# credential scanner refuses.
-SCANNER_BLOCKED_MODULES = (
-    "test_no_tool_prereqs.py",
-    "test_phase3b_approval_rewrap.py",
-)
-
-SCANNER_XFAIL_REASON = (
-    "DEFERRED to the scanner cycle, ruled. bin/lib/analyzers-regex.sh:292 "
-    "(IDENT_ASSIGN) refuses any ALL-CAPS identifier containing TOKEN that is "
-    "assigned a string literal of 8 or more characters, and the prefixes "
-    "test_phase3b_approval_rewrap.py and test_no_tool_prereqs.py need "
-    "(phase3b- and approve-) are exactly 8 characters, so the pre-write gate "
-    "refuses the declaration. The three ways to make it land today -- renaming "
-    "the constant, shortening the value below 8, or adding an allowlist entry "
-    "-- are exactly the evasions this repo keeps a keystone against, and the "
-    "constant legitimately contains TOKEN because it is about gate tokens. "
-    "Narrowing the scanner (a namespace prefix carries no entropy and is not a "
-    "secret) is its own cycle with its own tests. Deferring is cheap and "
-    "MEASURED: both modules use FIXED session ids, so each rewrites one file in "
-    "place rather than growing without bound, unlike the vp- and test-dm-1c- "
-    "namespaces, which are already wired. strict=True on purpose: the day the "
-    "scanner is narrowed these XPASS and fail, which is the prompt to delete "
-    "this marker and wire both modules."
-)
 
 UNWIRED_NONE_MEMBERS = (
     "test_hardening.py",
@@ -182,11 +162,11 @@ UNWIRED_XFAIL_REASON = (
     "one thing the map is honest about being unable to see, that a successful "
     "advance CONSUMES each token. That is the same latent shape as the sixth "
     "module plan.md's correction 3 found, and it survives the moment any of "
-    "those advances refuses. They are not wired here for two reasons: plan.md "
-    "says the implementer STOPS rather than editing an unplanned file, and "
-    "several of them need prefixes of 8 or more characters not beginning "
-    "`test`, which would hit the same scanner refusal as "
-    "SCANNER_BLOCKED_MODULES above and produce a second partial pass. "
+    "those advances refuses. They are not wired here because plan.md's Files "
+    "section does not name them and the implementer STOPS rather than editing "
+    "an unplanned file. The scanner refusal that was the second reason is GONE "
+    "as of the credential-scanner cycle: a namespace prefix ending in a "
+    "separator is exempt now, so nothing but scope keeps these five unwired. "
     "strict=True on purpose: this XPASSes and fails once they are wired, which "
     "is the prompt to delete this marker."
 )
@@ -203,22 +183,15 @@ GLOB_METACHARACTER_PREFIXES = ("*", "?", "[", "]", "[0-9a-f]", "vp-*", "2412ba38
 
 
 def _wired_module_params() -> list:
-    """One parametrize entry per wired module, xfailing only the two the scanner
-    blocks. Built from `SCANNER_BLOCKED_MODULES` rather than by listing node ids,
-    so the deferral and the population stay one fact: adding a seventh module, or
-    unblocking one of these two, changes the marks without touching this function.
+    """One parametrize entry per wired module, all of them unmarked. The two
+    entries that used to carry a conditional xfail (the scanner refused their
+    `approve-` and `phase3b-` prefixes) run like the other four now that the
+    credential scanner exempts namespace-shaped values and both modules declare
+    their prefix at module level. Derived from `SIX_WIRED_MODULES` rather than
+    from a hand-listed set of node ids, so a seventh module is covered by
+    adding it to the map alone.
     """
-    return [
-        pytest.param(
-            module_name,
-            marks=(
-                pytest.mark.xfail(strict=True, reason=SCANNER_XFAIL_REASON)
-                if module_name in SCANNER_BLOCKED_MODULES
-                else ()
-            ),
-        )
-        for module_name in sorted(SIX_WIRED_MODULES)
-    ]
+    return [module_name for module_name in sorted(SIX_WIRED_MODULES)]
 
 
 # --------------------------------------------------------------------------- #

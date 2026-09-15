@@ -289,22 +289,94 @@ SECRET_PATTERNS = [
 ]
 
 # Identifier-based: API_KEY = "...", SECRET = "...", PASSWORD = "...", etc.
+#
+# THE PREFIX IS PART OF THE LITERAL. Requiring the quote immediately after the
+# assignment let every prefixed string through with a real secret inside it:
+# `API_TOKEN = f"<secret>"`, `r"<secret>"`, `rb"<secret>"` and C#'s `@"<secret>"`
+# all read as no-match while the bare form was caught. At most two characters,
+# letters/underscore/$/@ only: `(` and `[` are excluded on purpose, because
+# accepting them would match `API_TOKEN = os.environ.get("MY_SERVICE_TOKEN")`,
+# where the captured value is an env var NAME, and make every correct credential
+# lookup a finding.
 IDENT_ASSIGN = re.compile(
     r"\b(?:[A-Z_]*(?:API_?KEY|SECRET|PASSWORD|TOKEN|PRIVATE_?KEY|ACCESS_?KEY|AUTH_?KEY)[A-Z_]*)"
-    r"\s*[:=]\s*['\"]([^'\"]{8,})['\"]"
+    r"\s*[:=]\s*[A-Za-z_$@]{0,2}['\"]([^'\"]{8,})['\"]"
 )
 # Lowercase variant (Python attribute / dict key assignment).
 IDENT_ASSIGN_LOWER = re.compile(
     r"\b(?:api_key|secret|password|token|private_key|access_key|auth_key)\b"
-    r"\s*[:=]\s*['\"]([^'\"]{8,})['\"]",
+    r"\s*[:=]\s*[A-Za-z_$@]{0,2}['\"]([^'\"]{8,})['\"]",
     re.IGNORECASE,
 )
 
 # Allowlist: obvious placeholders the linter should not flag.
-PLACEHOLDER = re.compile(
-    r"^(your[-_]?|example|placeholder|change[-_]?me|fake|dummy|test|sample|todo|xxx+|\.\.\.|<.+>)",
-    re.IGNORECASE,
+#
+# ANCHORED AT BOTH ENDS, and that is the point of this shape. This used to be a
+# `^`-anchored pattern consulted with `.match()`, which anchors only the START of
+# the captured value, so six characters of decoy laundered an arbitrary real
+# secret: `API_TOKEN = "{name}<real secret>"` and the `<placeholder><real secret>`
+# form were both ADMITTED, at any length, any case, any entropy, while the same
+# secret bare was flagged. A placeholder has to be a placeholder ALL THE WAY
+# THROUGH, not a placeholder glued to a payload. Consulted with `fullmatch`.
+#
+# TAIL is the alphabet a placeholder may continue in: lowercase, digits, `.`,
+# `_`, `-`. Deliberately NO uppercase, which is what refuses
+# `"test" + <mixed-case secret>`, and that is why the words below are made
+# case-insensitive through a SCOPED `(?i:...)` group instead of a global
+# re.IGNORECASE flag -- a global flag makes `[a-z]` match uppercase too and
+# re-opens the hole it is here to close.
+#
+# TWO SHAPES, not interchangeable:
+#
+#  * WORD entries stay PREFIX matches followed by TAIL, because `"test-mode-engine"`
+#    and `"your-api-key-here"` are real admitted values in this tree.
+#  * BRACKET entries are TEMPLATE shapes. A value is a template when it is made of
+#    `<...>` / `{...}` interpolations and TAIL glue and nothing else, with at least
+#    one interpolation present: `"{session_cache}"` (bin/lib/test_paths.py:150) and
+#    `f"{_TEST_SCOPE}-"` (tests/test_decision_memory_capture.py:86) qualify;
+#    `"{name}<real secret>"` does not, because the payload sits outside both the
+#    braces and TAIL. A plain `fullmatch` of `\{.+\}` would have refused
+#    `{_TEST_SCOPE}-` and broken an already-wired module, which is why the template
+#    form is a segment grammar rather than one greedy `.+`. The INSIDE of an
+#    interpolation is unrestricted on purpose: it is a variable name the source
+#    already contains, never the literal's payload.
+_PLACEHOLDER_TAIL = r"[a-z0-9._-]"
+_PLACEHOLDER_WORD = (
+    r"(?i:your[-_]?|example|placeholder|change[-_]?me|fake|dummy|test|sample|todo|xxx+|\.\.\.)"
 )
+_TEMPLATE_SEGMENT = r"(?:<[^<>]*>|\{[^{}]*\})"
+PLACEHOLDER = re.compile(
+    "(?:"
+    + _PLACEHOLDER_WORD + _PLACEHOLDER_TAIL + "*"
+    + "|"
+    + _PLACEHOLDER_TAIL + "*" + _TEMPLATE_SEGMENT
+    + "(?:" + _TEMPLATE_SEGMENT + "|" + _PLACEHOLDER_TAIL + ")*"
+    + ")"
+)
+
+# A NAMESPACE PREFIX, not a credential. It BEGINS with a lowercase letter, so a
+# value opening on a digit (`3f9a2b7c...-`) is still caught; the rest is lowercase
+# letters, digits, hyphen and underscore; and it ENDS in a bare separator, which is
+# the property that does the most work: a generated secret never ends in a trailing
+# `-` or `_`. Measured against
+# 200,000 freshly generated samples of each of six realistic secret shapes (hex32,
+# base64url, mixed password, AWS access key id, AWS 40-char secret, uuid), 1.2M in
+# total: zero matches. It admits `phase3b-`, `approve-`, `evidence-`,
+# `reviewpromote-` and `advance-from-complete-`, the namespace prefixes this repo's
+# own test modules declare, and it still flags every weak-but-real password,
+# including `aaaaaaaa` and `password123456`, because none of those ends in a
+# separator.
+#
+# ENTROPY WAS TRIED AND IS DISPROVEN, do not reintroduce it: `password123456` and
+# `advance-from-complete-` tie exactly at 3.664 bits/char, and `aaaaaaaa` (0.000)
+# sits below every prefix here, so the populations overlap in both directions.
+#
+# THE DISCLOSED BLIND SPOT: a real secret hand-crafted as `word-word-` is exempted
+# by this. See docs/adr/ADR-credential-literal-value-shape.md.
+#
+# `fullmatch`, not `match` with a `$`: `$` also matches before a trailing newline,
+# and the whole value has to satisfy the shape for the judgment to hold.
+NAMESPACE_PREFIX = re.compile(r"[a-z][a-z0-9_-]*[-_]")
 
 # SEC-CRYPTO-RAND-001: non-CSPRNG near crypto-specific identifiers.
 CRYPTO_RNG = [
@@ -357,7 +429,7 @@ for line_no, line in enumerate(lines, start=1):
         m = ident_re.search(line)
         if m:
             literal = m.group(1)
-            if not PLACEHOLDER.match(literal):
+            if not PLACEHOLDER.fullmatch(literal) and not NAMESPACE_PREFIX.fullmatch(literal):
                 emit(line_no, "SEC-CRYPTO-KEY-001", "credential-literal-assign",
                      f"Credential assigned to string literal in source (load from env or secrets manager)",
                      "error")

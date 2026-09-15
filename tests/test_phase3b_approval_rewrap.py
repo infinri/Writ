@@ -45,6 +45,14 @@ HOOK = WRIT_ROOT / "hooks" / "scripts" / "auto-approve-gate.sh"
 SESSION_HELPER = WRIT_ROOT / "bin" / "lib" / "writ-session.py"
 PYTHON = WRIT_ROOT / ".venv" / "bin" / "python"
 
+# The gate-token session namespace this module mints under. Module level is
+# required, not stylistic: tests/_gate_token_leak.py reads this off
+# `request.module` and sweeps only `/tmp/writ-gate-token-<prefix>*`, so a value
+# declared anywhere else is invisible to the sweeper. Every session id this
+# module mints under is `phase3b-*`, and several of them append a fresh
+# uuid suffix, so each run adds a file rather than rewriting one in place.
+GATE_TOKEN_SESSION_PREFIX = "phase3b-"
+
 
 def _cleanup_session(session_id: str, cache_dir: str) -> None:
     session_dir = Path(cache_dir)

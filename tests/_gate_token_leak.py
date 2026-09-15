@@ -75,12 +75,14 @@ here run at every module boundary and before every test in all four suite chunks
 
 ON THE FILENAME LITERAL. `writ-gate-token-` is written inline at each of the four places
 that need it, exactly as plan.md's own sweeper code writes it, rather than bound once to a
-module constant. That is not a style preference and not a workaround: this repo's
-pre-write credential scanner (`bin/lib/analyzers-regex.sh::IDENT_ASSIGN`) flags any
-ALL-CAPS identifier CONTAINING `TOKEN` assigned to a string literal of eight characters or
-more, so a constant spelled that way is refused at write time. The scanner is wrong about
-this line (a filename prefix is not a credential) and the fix belongs in the scanner; the
-literal stays fully visible here either way.
+module constant. The scanner no longer forces that: the credential-scanner cycle added
+`NAMESPACE_PREFIX` to `bin/lib/analyzers-regex.sh`, and `writ-gate-token-` is all
+lowercase, hyphen-separated and ends in a bare separator, so it is exempt and a constant
+spelled that way now lands at write time. Collapsing the four literals into one constant
+is therefore possible and is deliberately NOT done here: `tests/conftest.py` imports this
+module at conftest import time and its fixtures run at every module boundary in every
+suite chunk, so refactoring this guard's own surface is not a scanner cycle's work. The
+literal stays fully visible at all four sites either way.
 """
 from __future__ import annotations
 
