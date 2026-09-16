@@ -22,7 +22,14 @@ from pathlib import Path
 
 import pytest
 
-from tests.firedrill._census import DEFERRED_SCRIPTS, deferred_scripts, refusing_scripts
+from tests.firedrill._census import (
+    ACTION_MARKERS,
+    DEFERRED_SCRIPTS,
+    by_id,
+    deferred_scripts,
+    matches_action_marker,
+    refusing_scripts,
+)
 
 REPO = Path(__file__).resolve().parent.parent.parent
 HOOKS_JSON = REPO / "hooks" / "hooks.json"
@@ -165,3 +172,105 @@ class TestFiredrillMarkerScopesThisPackage:
             if line.startswith("tests/firedrill/") and "::" in line
         ]
         assert not leaked, f"a firedrill test leaked into -m 'not firedrill': {leaked}"
+
+
+def _marker_map() -> dict:
+    """`ACTION_MARKERS` as the marker-to-owners map, or a loud failure.
+
+    The structural half of this cycle's defect 2 (plan.md
+    2412ba38-51e1-4b73-895b-7b240a3c21d3): the marker set was a bare tuple with the
+    owning hook named only in a trailing comment, so nothing verified that the named
+    hook exists, that a trigger for it exists, or that the attribution was ever true.
+    """
+    if not isinstance(ACTION_MARKERS, dict):
+        pytest.fail(
+            f"skeleton: ACTION_MARKERS is a {type(ACTION_MARKERS).__name__}, not the "
+            "map from marker phrase to the census refusal ids that must emit it "
+            "(plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3 ## Files, "
+            "tests/firedrill/_census.py)",
+            pytrace=False,
+        )
+    assert ACTION_MARKERS, (
+        "the marker map is empty, so every guard over it below would pass on any tree "
+        "and matches_action_marker would match nothing at all"
+    )
+    return ACTION_MARKERS
+
+
+class TestEveryActionMarkerHasAResolvableOwner:
+    """Capability 11: a marker's owner is a census refusal id, so the claim
+    "this hook emits this phrase" is something a test can drive rather than a comment.
+
+    An id and not a script name, because an id carries a real `setup(iso)`; a script
+    name alone does not say which trigger to build, and two of these scripts refuse on
+    more than one path.
+    """
+
+    def test_the_marker_population_is_a_non_empty_map(self) -> None:
+        markers = _marker_map()
+        assert all(isinstance(owners, (tuple, list)) for owners in markers.values()), (
+            "every marker's owners must be a sequence of census refusal ids: "
+            f"{ {m: o for m, o in markers.items() if not isinstance(o, (tuple, list))} }"
+        )
+
+    def test_every_marker_declares_an_owner_that_the_census_resolves_with_a_setup(
+        self,
+    ) -> None:
+        markers = _marker_map()
+        problems = []
+        for marker, owners in markers.items():
+            if not owners:
+                problems.append(f"{marker!r}: declares no owning refusal id")
+                continue
+            for refusal_id in owners:
+                try:
+                    entry = by_id(refusal_id)
+                except KeyError:
+                    problems.append(
+                        f"{marker!r}: owner {refusal_id!r} is not a refusal this census "
+                        "declares"
+                    )
+                    continue
+                if not callable(entry.setup):
+                    problems.append(
+                        f"{marker!r}: owner {refusal_id!r} carries no callable setup, so "
+                        "no test can drive it to prove the marker is still emitted"
+                    )
+        assert not problems, "\n".join(problems)
+
+    def test_every_marker_is_lowercase(self) -> None:
+        """Capability 12. `matches_action_marker` lowercases the REASON and compares it
+        against the markers as written, so a marker carrying a capital letter can never
+        match anything: it would be unmatchable by construction, which is the silent
+        weakening this map exists to prevent.
+        """
+        markers = _marker_map()
+        uppercase = [m for m in markers if m != m.lower()]
+        assert not uppercase, (
+            f"these markers can never match a lowercased reason: {uppercase}"
+        )
+
+
+class TestMatchesActionMarkerKeepsItsContractOverTheMap:
+    """Capability 15: iterating a dict yields its keys, so converting the tuple to a map
+    must leave the runtime predicate's behaviour exactly as it was.
+    """
+
+    def test_a_reason_carrying_a_declared_marker_matches_whatever_its_case(self) -> None:
+        markers = _marker_map()
+        failed = [
+            marker
+            for marker in markers
+            if not matches_action_marker(f"ENF-TEST-000: {marker.upper()} and re-run.")
+        ]
+        assert not failed, (
+            f"a reason carrying these declared markers did not match: {failed}"
+        )
+
+    def test_a_reason_carrying_no_declared_marker_does_not_match(self) -> None:
+        markers = _marker_map()
+        reason = "ENF-TEST-000: this refusal names a quokka-shaped counterweight."
+        assert not matches_action_marker(reason), (
+            "a reason naming no declared action matched anyway, so the predicate cannot "
+            f"tell a refusal that names a way out from one that does not: {sorted(markers)}"
+        )

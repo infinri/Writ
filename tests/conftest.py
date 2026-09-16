@@ -368,7 +368,13 @@ def _preflight_isolated_graph() -> None:
 
     from writ.graph.db._safety import FullWipeRefused
 
-    from tests._corpus import ensure_corpus, is_complete, methodology_counts, neo4j_reachable
+    from tests._corpus import (
+        corpus_shortfall,
+        ensure_corpus,
+        is_complete,
+        methodology_counts,
+        neo4j_reachable,
+    )
     from tests._graph import (
         STATE_ISOLATED,
         classify_isolation,
@@ -458,9 +464,13 @@ def _preflight_isolated_graph() -> None:
             ) from exc
 
     if not is_complete(counts):
+        # The shortfall comes from the census already in hand, so this costs no extra
+        # graph read. It is computed HERE because this is the only place that holds both
+        # halves: without it the refusal can only repeat the whole census and leave the
+        # reader to compare it against a floor that is printed nowhere.
         raise pytest.UsageError(
             "graph isolation: corpus incomplete after warm\n"
-            f"{isolation_refusal_message(uri, counts=counts)}"
+            f"{isolation_refusal_message(uri, counts=counts, shortfall=corpus_shortfall(counts))}"
         )
 
 

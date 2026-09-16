@@ -45,11 +45,14 @@ _DEBUG_DOCTRINE_RULE_ID = "ENF-PROC-DEBUG-001"
 # Nothing is pinned above zero: those totals are facts about today's dump, and
 # MIN_RULES belongs to tests/_corpus.py.
 #
-# forbidden_responses is NOT redundant with `corpus_ready`: tests/_corpus.py's
-# completeness predicate is `Rule >= MIN_RULES` plus EXPECTED's four methodology
-# labels (line 22), and ForbiddenResponse is in neither, so a graph with zero FRB
-# nodes reads "complete", ensure_corpus no-ops, and
-# test_always_on_includes_existing_rule_and_frb_nodes fails as an empty result.
+# forbidden_responses USED TO BE non-redundant with `corpus_ready` for a reason that
+# is now closed: the completeness predicate was `Rule >= MIN_RULES` plus EXPECTED's
+# four hand-written methodology labels, and ForbiddenResponse was in neither, so a
+# graph with zero FRB nodes read "complete" and ensure_corpus no-opped. As of
+# 2026-09-16 the floor is DERIVED from the tracked writ-corpus.cypher, so every label
+# the corpus ships is floored, ForbiddenResponse included. This query stays because it
+# is a direct precondition for the test that reads FRB rows, which is worth asserting
+# at its own altitude rather than through a whole-corpus predicate.
 _POPULATION_QUERIES = {
     "injection_rules": (
         f"MATCH (r:Rule) WHERE {INJECTION_RULE_WHERE} RETURN count(r) AS c"

@@ -97,7 +97,7 @@ async def _drive_advance_via_route(
 ) -> dict:
     """POST /session/{session_id}/advance-phase against the REAL FastAPI app in-process.
 
-    THE ONE ROUTE DRIVER IN THIS SUITE. TestCrossPathParity._run_path_a and every
+    THE ONE ROUTE DRIVER IN THIS MODULE. TestCrossPathParity._run_path_a and every
     artifact test below call this same function rather than each hand-rolling a
     second copy of the ASGITransport dance -- a second copy is the duplication this
     repo's ## Files-parser and writ_gate_dir incidents both came from (plan.md,

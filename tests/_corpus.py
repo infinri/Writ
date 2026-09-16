@@ -14,19 +14,23 @@ import concurrent.futures
 import subprocess
 from pathlib import Path
 
+from tests._inventory import corpus_floor
 from tests._writ_cmd import WRIT_CMD_PREFIX
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Complete-corpus expectations; kept in step with the bible/ corpus.
-EXPECTED = {"SubagentRole": 5, "Playbook": 15, "Skill": 13, "Phase": 20}
-MIN_RULES = 280
+# Complete-corpus expectations, DERIVED from the tracked writ-corpus.cypher rather than
+# written down here. Hand-written, this map floored four labels plus Rule while _LABELS
+# declared eleven and named neither Abstraction nor Category, so is_complete() returned
+# True on a graph holding ZERO AntiPattern, Technique, ForbiddenResponse,
+# PressureScenario, Rationalization or WorkedExample and ensure_corpus() then no-opped on
+# it. Deriving the label LIST from the same source is what pulls those labels in without
+# anyone remembering them, and what lets a label type added to the corpus later enter the
+# floor the same way.
+EXPECTED = corpus_floor()
+MIN_RULES = EXPECTED["Rule"]
 
-_LABELS = [
-    "Rule", "Skill", "Playbook", "AntiPattern", "Phase", "SubagentRole",
-    "Technique", "ForbiddenResponse", "PressureScenario", "Rationalization",
-    "WorkedExample",
-]
+_LABELS = sorted(EXPECTED)
 
 
 def classify_corpus_state(
@@ -156,10 +160,34 @@ def clear_label(label: str) -> int:
     return _run_coro(_q)
 
 
+def corpus_shortfall(counts: dict[str, int]) -> dict[str, tuple[int, int]]:
+    """`{label: (live, required)}` for every declared label below the floor.
+
+    THE VERDICT IS A MAP, NOT A BOOL, and that is the whole point: a census that fails
+    the floor can then be reported BY NAME with its live and required count, which is what
+    the session-start refusal prints. "The corpus is incomplete" names no label and
+    therefore no action.
+
+    A label absent from `counts` entirely counts as zero rather than as satisfied. That
+    is the measured shape of the defect this replaces: the census was projected onto a
+    hand-written label list, so Abstraction and Category carried no KEY at all, and a
+    floor that only compared the keys it was handed could not see them.
+
+    Labels the census carries but the corpus does not declare are not a shortfall. The
+    floor is a minimum, so a graph holding more labels or more nodes than the tracked
+    dump passes: adding to `bible/` before `writ export-cypher` runs is the common case.
+    """
+    return {
+        label: (counts.get(label, 0), required)
+        for label, required in EXPECTED.items()
+        if counts.get(label, 0) < required
+    }
+
+
 def is_complete(counts: dict[str, int] | None = None) -> bool:
-    """True if the live graph has the full corpus (all methodology types at expected counts)."""
+    """True if the live graph has the full corpus (every declared label at or above the floor)."""
     c = counts if counts is not None else methodology_counts()
-    return c.get("Rule", 0) >= MIN_RULES and all(c.get(k, 0) >= v for k, v in EXPECTED.items())
+    return not corpus_shortfall(c)
 
 
 def graph_is_warm() -> bool:

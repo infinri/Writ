@@ -44,34 +44,55 @@ from typing import Callable
 
 from tests.firedrill._harness import Isolation, write_cache
 
-# ── The action-marker set ────────────────────────────────────────────────────────
+# ── The action-marker map ────────────────────────────────────────────────────────
 #
-# Each phrase below is copied from an ACTUAL refusal reason already in this codebase
-# (see the comment on the matching census entry for which one), not invented in the
-# abstract. A refusal reason that matches none of these is real signal that the
-# message may be a deadlock rather than a control -- report it, do not loosen the
-# marker set to make it pass.
-ACTION_MARKERS: tuple[str, ...] = (
-    "fix",                          # enforce-violations.sh, writ-verify-before-claim.sh
-    "read the log",                 # writ-run-pending-tests.sh (emit-summary.py)
-    "re-send",                      # writ-comms-output-gate.sh
-    "template",                     # writ-bash-write-gate.sh credential deny
-    "ask the user",                 # writ-bash-write-gate.sh / writ-state-write-gate.sh state deny
-    "re-issue",                     # writ-read-junk-gate.sh (enforce mode)
-    "bypass",                       # validate-test-file.sh
-    "must name",                    # validate-design-doc.sh
-    "delete it",                    # pre-validate-file.sh (shell-commented-out)
-    "write it by filling in",       # validate-exit-plan.sh
-    "add missing keys",             # validate-handoff.sh
-    "record it in debug.md",        # writ-debug-code-gate.sh
-    "before creating the worktree", # writ-worktree-safety.sh
-    "spell the path literally",     # writ-worktree-safety.sh ask arm (unresolvable
-                                     # tilde/parameter, plan.md
-                                     # 2412ba38-51e1-4b73-895b-7b240a3c21d3)
-)
+# Each phrase below is copied from an ACTUAL refusal reason already in this codebase,
+# not invented in the abstract. A refusal reason that matches none of these is real
+# signal that the message may be a deadlock rather than a control. Report it, do not
+# loosen the marker set to make it pass.
+#
+# THE OWNERSHIP IS DATA, NOT A COMMENT. This was a bare tuple with the owning hook named
+# in a trailing comment and an `assert len(ACTION_MARKERS) == 14` standing in for a
+# liveness check. An arithmetic pin cannot see a marker whose owning hook REWORDED its
+# refusal, so the marker would go dead while still counting, and every refusal reason
+# read through matches_action_marker would be checked against one phrase fewer. Mapping
+# each marker to the census refusal ids that must emit it makes that claim drivable:
+# tests/firedrill/test_bash_refusals.py runs every owner below as a real subprocess and
+# asserts the phrase is in the reason it actually emitted.
+#
+# IDS, NOT SCRIPT NAMES. An id carries a real `setup(iso)` the drill can drive; a script
+# name alone does not say which trigger to build, and two of these scripts refuse on more
+# than one path.
+#
+# EVERY OWNER MUST EMIT ITS PHRASE, not "at least one of them". Two markers here are
+# owned by a pair, and "at least one" would let the second hook rot invisibly, which is
+# the decay this map exists to stop.
+#
+# EVERY PAIR BELOW WAS MEASURED by driving the owner through the real `run_hook`
+# subprocess and reading the reason it emitted, rather than by reading hook source: five
+# of these phrases are not literals in the script that emits them (three are emitted by a
+# python module the hook delegates to, and `before creating the worktree` is assembled
+# across two f-string lines and exists in no source file at all).
+ACTION_MARKERS: dict[str, tuple[str, ...]] = {
+    "fix": ("enforce-violations", "verify-before-claim"),
+    "read the log": ("run-pending-tests",),
+    "re-send": ("comms-output-gate",),
+    "template": ("bash-write-credential",),
+    "ask the user": ("bash-write-state", "state-write-gate"),
+    "re-issue": ("read-junk-enforce",),
+    "bypass": ("validate-test-file",),
+    "must name": ("validate-design-doc",),
+    "delete it": ("pre-validate-commented-out",),
+    "write it by filling in": ("validate-exit-plan",),
+    "add missing keys": ("validate-handoff",),
+    "record it in debug.md": ("debug-code-gate",),
+    "before creating the worktree": ("worktree-safety",),
+    "spell the path literally": ("worktree-safety-unresolvable-tilde-ask",),
+}
 
 
 def matches_action_marker(reason: str) -> bool:
+    """Unchanged by the map: iterating a dict yields its keys, which are the phrases."""
     low = (reason or "").lower()
     return any(marker in low for marker in ACTION_MARKERS)
 

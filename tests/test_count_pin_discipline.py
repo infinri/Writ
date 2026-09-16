@@ -138,7 +138,7 @@ class TestTheInventoryDerivesFromTheSource:
                                       "doctor_check_names", "route_tuples",
                                       "envelope_emitting_scripts", "style_swept_docs",
                                       "can_write_surface_modules", "write_gate_hook_modules",
-                                      "write_gate_regression_modules"])
+                                      "write_gate_regression_modules", "corpus_floor"])
     def test_each_derivation_is_non_empty(self, name) -> None:
         """ANTI-VACUITY, and it is the whole risk of this design: a derivation that
         silently returned nothing would make every dependent assertion pass on any tree,
@@ -561,4 +561,146 @@ class TestFixtureCountsAreUntouched:
         assert expected in values, (
             f"{filename} no longer asserts == {expected}; this cycle was not supposed to "
             "touch fixture conservation counts"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# The corpus floor (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3, defect 1).
+# `corpus_floor(*, dump=None)` derives label to count from the tracked
+# writ-corpus.cypher. EVERY exact map below is asserted against a dump this test
+# wrote under tmp_path, so the literals describe the FIXTURE and never the repo's
+# current corpus size; the only assertion made against the real dump is
+# derived-against-derived, because a test asserting the real per-label number
+# would recreate the hand-written population this cycle removes.
+# --------------------------------------------------------------------------- #
+
+
+def _create_line(label: str, key: str) -> str:
+    """One node-creating line in the dump's own shape."""
+    return "CREATE (:%s {name: '%s', _dump_id: '%s'});" % (label, key, key)
+
+
+def _write_dump(tmp_path: Path, lines: list[str]) -> Path:
+    dump = tmp_path / "writ-corpus.cypher"
+    dump.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return dump
+
+
+def _create_lines_in(path: Path) -> int:
+    """An ORACLE for the real dump's node-creating line count, deliberately not the
+    derivation's mechanism: a plain `str.startswith` over the file's lines, no regex,
+    no label capture. It answers "how many lines create a node" without answering
+    "which label", which is what lets it witness the derivation's total instead of
+    restating it.
+    """
+    return sum(
+        1
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.startswith("CREATE (:")
+    )
+
+
+class TestCorpusFloorDerivesFromTheDump:
+    """Capabilities 1 and 3: the derivation reads the tracked dump, is exact about
+    what it counts, and refuses with a remedy when the dump is not there.
+    """
+
+    def test_it_returns_exactly_the_labels_and_counts_in_a_synthetic_dump(
+        self, tmp_path
+    ) -> None:
+        inventory = _inventory()
+        _require(inventory, "corpus_floor")
+        dump = _write_dump(tmp_path, [
+            _create_line("Rule", "R-1"),
+            _create_line("Rule", "R-2"),
+            _create_line("Rule", "R-3"),
+            _create_line("Widget", "W-1"),
+            _create_line("Widget", "W-2"),
+            _create_line("Gadget", "G-1"),
+        ])
+        assert inventory.corpus_floor(dump=dump) == {"Rule": 3, "Widget": 2, "Gadget": 1}
+
+    def test_the_label_list_comes_from_the_dump_not_from_a_declared_list(
+        self, tmp_path
+    ) -> None:
+        """The second-order half of defect 1: `_LABELS` could not floor Abstraction or
+        Category because nobody had written them down. A label the derivation has never
+        heard of must enter the population purely because the dump creates it.
+        """
+        inventory = _inventory()
+        _require(inventory, "corpus_floor")
+        dump = _write_dump(tmp_path, [_create_line("NeverDeclaredAnywhere", "X-1")])
+        assert inventory.corpus_floor(dump=dump) == {"NeverDeclaredAnywhere": 1}
+
+    def test_lines_that_do_not_create_a_node_are_not_counted(self, tmp_path) -> None:
+        inventory = _inventory()
+        _require(inventory, "corpus_floor")
+        dump = _write_dump(tmp_path, [
+            "// a comment naming CREATE (:Rule { and nothing else",
+            ":begin",
+            "CREATE INDEX rule_id_idx FOR (n:Rule) ON (n.rule_id);",
+            _create_line("Rule", "R-1"),
+            "MATCH (a:Rule), (b:Rule) CREATE (a)-[:RELATES_TO]->(b);",
+            "  " + _create_line("Rule", "R-indented"),
+            ":commit",
+        ])
+        assert inventory.corpus_floor(dump=dump) == {"Rule": 1}
+
+    def test_a_multi_label_node_line_raises_and_names_the_line(self, tmp_path) -> None:
+        """Capability 2, the one shape that could make this derivation UNDER-count in
+        silence. `CREATE (:A:B {` is not matched by a single-label pattern, so it would
+        drop out of the population without a trace; the sum-versus-lines reconciliation
+        turns that into a refusal that names the offending line.
+        """
+        inventory = _inventory()
+        _require(inventory, "corpus_floor")
+        offending = "CREATE (:Rule:Deprecated {name: 'R-2', _dump_id: 'R-2'});"
+        dump = _write_dump(tmp_path, [_create_line("Rule", "R-1"), offending])
+
+        with pytest.raises(Exception) as excinfo:
+            inventory.corpus_floor(dump=dump)
+        message = str(excinfo.value)
+        assert offending in message, (
+            "the refusal must quote the line it could not classify, or the reader has "
+            f"to find it themselves: {message!r}"
+        )
+
+    def test_an_absent_dump_raises_naming_the_path_and_the_way_out(
+        self, tmp_path
+    ) -> None:
+        """Capability 3. This derivation runs at IMPORT of tests/_corpus.py, so a bare
+        traceback here surfaces as a collection error with no remedy attached, which is
+        the deadlock shape this repo has already shipped once.
+        """
+        inventory = _inventory()
+        _require(inventory, "corpus_floor")
+        absent = tmp_path / "writ-corpus.cypher"
+
+        with pytest.raises(Exception) as excinfo:
+            inventory.corpus_floor(dump=absent)
+        message = str(excinfo.value)
+        assert str(absent) in message, f"the refusal must name the path it read: {message!r}"
+        assert "export-cypher" in message, (
+            "a guard that names no action is a deadlock: the refusal must name the "
+            f"command that produces the dump: {message!r}"
+        )
+
+    def test_on_the_real_dump_the_map_sums_to_the_dumps_own_node_line_count(self) -> None:
+        """DERIVED AGAINST DERIVED, the only assertion this file makes about the real
+        corpus. Both sides move together when the corpus grows, so no number here can
+        go stale; what it catches is the derivation silently dropping node lines, which
+        is the failure that would re-empty the floor.
+        """
+        inventory = _inventory()
+        _require(inventory, "corpus_floor")
+        from tests._graph import DUMP_FILENAME
+
+        dump = REPO / DUMP_FILENAME
+        assert dump.is_file(), f"the tracked corpus dump is missing at {dump}"
+        floor = inventory.corpus_floor()
+        assert floor, "corpus_floor() derived no labels from the real dump"
+        assert sum(floor.values()) == _create_lines_in(dump), (
+            "the derived floor does not account for every node-creating line in the "
+            f"dump: derived {sum(floor.values())} across {sorted(floor)}, but the dump "
+            f"has {_create_lines_in(dump)} node-creating lines"
         )

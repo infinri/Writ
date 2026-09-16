@@ -3,7 +3,9 @@
 Status: accepted (test graph isolation cycle, 2026-08-13). Amended 2026-08-31 by the suite
 start state cycle: Decision 6 adds the session start wipe, and Decision 3 gains a recorded
 divergence between what it says the isolated instance is warmed FROM and what the code
-actually does.
+actually does. Amended 2026-09-16 by the corpus floor cycle: Decision 6's completeness
+verdict stops being a hand written list of expectations and is derived from the tracked
+corpus dump, which adds one new session start refusal (see the amendment below).
 
 ## Context
 
@@ -283,6 +285,61 @@ Counts only, never node ids: records carry per-run session ids and timestamps, s
 legitimately differ and asserting on them would fail on a correct system. The per-run half
 is shipped as `tests/test_suite_start_idempotence.py`, which proves in seconds what the
 two-run procedure costs 22 minutes to prove.
+
+## Amendment (2026-09-16): the completeness floor is derived from `writ-corpus.cypher`
+
+CONTEXT. Decision 6's third refusal asks `tests/_corpus.py::is_complete` whether the warm
+left the isolated instance holding the whole corpus, and that predicate was hand written.
+It floored `Rule` plus four labels, while the label list beside it declared eleven and
+named neither `Abstraction` nor `Category`. So it returned True on a graph holding ZERO
+`AntiPattern`, `Technique`, `ForbiddenResponse`, `PressureScenario`, `Rationalization` or
+`WorkedExample`, the preflight accepted that graph, and `ensure_corpus` then no-opped on
+it. A floor written by hand is blind to every label nobody remembered to write down, which
+is a different failure from being merely stale.
+
+DECISION. `tests/_inventory.py::corpus_floor()` derives the population, label to count,
+from the tracked `writ-corpus.cypher`, and `tests/_corpus.py` reads `EXPECTED`, `MIN_RULES`
+and `_LABELS` from it. The label LIST comes from the corpus too, so `Abstraction` and
+`Category` entered the floor without anyone naming them, and a label type added to the
+corpus later enters it the same way.
+
+THE SOURCE IS THE DUMP, NOT `bible/`, and that follows from what this ADR already records
+about the two. Neo4j is canonical, `writ-corpus.cypher` is the tracked shipped form, and
+`bible/` is a local, gitignored, derived export refreshed with `writ export-cypher`. A
+floor derived from `bible/` would be underivable exactly where it matters most: on CI and
+on a clean checkout, neither of which has one. The dump is present in every checkout, is
+what CI replays, and is already what `tests/_graph.py::replay_dump` uses.
+
+REJECTED: keep the floors hand written and add a drift test that compares them against the
+corpus. That test has to read the corpus to know what the floor should be, which is this
+derivation with a second copy to keep in step, and it still cannot floor a label nobody put
+on the list. `Abstraction` and `Category` are that failure, measured. Also rejected: a
+presence only floor of one node per declared label, which fixes the blindness but loosens
+`Rule` from its real floor down to one, waving through the half replayed corpus this repo
+has already been bitten by.
+
+THE NEW REFUSAL, stated because a developer will meet it. Deriving moves `Rule` and `Skill`
+up to what the dump actually ships and gives nine labels a floor they never had. On CI, on
+a clean checkout and on the disposable instance the graph is replayed FROM this dump, so
+the floor is met by construction. On a developer machine the preflight warms from `bible/`
+first, the divergence Decision 3 already records, so exactly one tree can newly refuse: one
+whose `bible/` holds FEWER nodes of some label than the tracked dump. The comparison is
+`>=`, so the opposite direction is safe, and adding nodes to `bible/` before running
+`writ export-cypher` is the common case.
+
+Because that refusal is new, it names the way out rather than only the problem, which is
+the standing rule here: a guard that names no action is a deadlock, not a control.
+`tests/_corpus.py::corpus_shortfall` returns the verdict as `{label: (live, required)}`
+instead of a bool, the preflight passes it to `isolation_refusal_message`, and the message
+prints, per short label, what the graph has, what the floor requires, and two remedies:
+`writ export-cypher` when the corpus legitimately changed, or the existing
+`WRIT_TEST_NO_ISOLATION=1`. The block is emitted only when a shortfall is supplied, so the
+production target and unreachable refusals, which measure no corpus, still print no census
+and no remedy for one.
+
+Query budget is unchanged. The derivation is one file read of a tracked file and zero graph
+queries, `methodology_counts` keeps its single round trip, and `corpus_shortfall` is pure
+over a census the preflight already holds.
 
 ## Alternatives considered
 

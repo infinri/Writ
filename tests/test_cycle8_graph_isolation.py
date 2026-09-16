@@ -410,6 +410,66 @@ class TestIsolationRefusalMessage:
         msg = isolation_refusal_message(PRODUCTION_URI)
         assert "Rule" not in msg
 
+    def test_the_shortfall_block_names_each_short_label_live_required_and_the_remedy(
+        self,
+    ) -> None:
+        """Capability 8 (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3): the tightened
+        floor can now refuse a tree whose `bible/` shrank below the tracked dump, and a
+        refusal that names no action is a deadlock this repo has already shipped once.
+        So the block names, per short label, what the graph HAS, what the floor
+        REQUIRES, and the two ways out.
+
+        The counts below are this test's own fixture, not a measurement of the corpus:
+        each is asserted on the LINE that names its label, so a number colliding with
+        some unrelated number elsewhere in the message cannot make this pass.
+        """
+        from tests._graph import isolation_refusal_message
+
+        shortfall = {"Rule": (3, 17), "Abstraction": (0, 5)}
+        msg = isolation_refusal_message(
+            "bolt://localhost:7688", shortfall=shortfall
+        )
+
+        for label, (live, required) in shortfall.items():
+            named = [line for line in msg.splitlines() if label in line]
+            assert named, f"the refusal never names the short label {label}: {msg!r}"
+            assert any(
+                str(live) in line and str(required) in line for line in named
+            ), (
+                f"no line names {label} with both its live count ({live}) and its "
+                f"required count ({required}): {named!r}"
+            )
+        assert "export-cypher" in msg, (
+            "the refusal must name the remedy that refreshes the tracked dump when the "
+            f"corpus legitimately changed: {msg!r}"
+        )
+        assert "WRIT_TEST_NO_ISOLATION" in msg, (
+            "the pre-existing opt-out must still be named on the shortfall refusal"
+        )
+
+    def test_the_shortfall_block_is_absent_when_no_shortfall_is_supplied(self) -> None:
+        """The conditionality proof for the block above, and the guard on the behaviour
+        `test_counts_are_absent_from_the_message_when_not_supplied` already pins: the
+        production-target and unreachable refusals read no census and no floor, so they
+        must not print a remedy for a shortfall they never measured.
+
+        Both arms in one test on purpose. A test that only asserted the absence would
+        pass on a message that never learned to emit the block at all.
+        """
+        from tests._graph import isolation_refusal_message
+
+        with_shortfall = isolation_refusal_message(
+            "bolt://localhost:7688", shortfall={"Rule": (3, 17)}
+        )
+        without = isolation_refusal_message(PRODUCTION_URI)
+
+        assert "export-cypher" in with_shortfall
+        assert "export-cypher" not in without, (
+            "the shortfall remedy is printed unconditionally; the production-target and "
+            f"unreachable refusals have no shortfall to remedy: {without!r}"
+        )
+        assert "Abstraction" not in without
+
 
 # ---------------------------------------------------------------------------
 # Capabilities 6, 7, 8 (wiring half): the session-start preflight in
@@ -464,6 +524,27 @@ class TestSessionStartPreflightWiring:
         body = _extract_function_source(conftest_source, "_preflight_isolated_graph")
         assert "ensure_corpus" in body
         assert "is_complete" in body
+
+    def test_preflight_hands_the_shortfall_to_the_refusal_it_already_builds(
+        self, conftest_source: str
+    ) -> None:
+        """Capability 8, wiring half (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3).
+        The preflight holds the census that failed the floor, so it is the only place
+        that can say WHICH labels are short; without the shortfall the refusal can only
+        repeat the whole census and leave the reader to compare it against a floor they
+        cannot see.
+        """
+        body = _extract_function_source(conftest_source, "_preflight_isolated_graph")
+        if not body:
+            pytest.fail("skeleton: _preflight_isolated_graph is not defined")
+        assert "corpus_shortfall" in body, (
+            "_preflight_isolated_graph must compute the shortfall from the census it "
+            "already read (tests._corpus.corpus_shortfall)"
+        )
+        assert "shortfall=" in body, (
+            "the shortfall must reach tests._graph.isolation_refusal_message, or the "
+            "session-start refusal still says only that the corpus is incomplete"
+        )
 
     def test_pytest_sessionstart_calls_the_preflight(self, conftest_source: str) -> None:
         body = _extract_function_source(conftest_source, "pytest_sessionstart")

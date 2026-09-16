@@ -40,9 +40,88 @@ from tests.firedrill._harness import (
 # A shrinking matrix should fail loudly, not silently reduce coverage (repo
 # convention: tests/test_role_write_scope.py pins its own cross-product size).
 assert len(generic_refusals()) == 26
-# 14: the worktree-tilde-expansion cycle (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3)
-# adds "spell the path literally" for writ-worktree-safety.sh's new ask arm.
-assert len(ACTION_MARKERS) == 14
+
+# THE MARKER COUNT PIN IS GONE, with no count replacing it (plan.md
+# 2412ba38-51e1-4b73-895b-7b240a3c21d3, defect 2). `assert len(ACTION_MARKERS) == 14`
+# could not see a marker whose owning hook reworded its refusal, which is the decay
+# that silently weakens matches_action_marker for every refusal that reads it.
+# TestEveryDeclaredActionMarkerIsStillEmitted below replaces it: a new marker needs an
+# owner that resolves in the census and actually emits the phrase, and a marker whose
+# owner stopped emitting it fails BY NAME rather than by arithmetic.
+
+# A phrase no hook in this repository emits, used to prove the liveness detector is
+# CONDITIONAL rather than reporting "present" for anything it is asked about.
+_SENTINEL_NEVER_EMITTED = "quokka-shaped counterweight"
+
+
+def _refusal_reason(result, entry) -> str:
+    """The refusal text `entry` declares it emits, read through its declared mechanism.
+
+    THE ONE DISPATCH, shared by the generic loop and the marker-liveness test below.
+    A second copy is how the two come to disagree about what a reason IS: this repo
+    has paid for that twice (the `## Files` parser, and `writ_gate_dir`), and a
+    liveness test reading a hand-built or separately-dispatched reason would be
+    checking a MODEL of the refusal rather than the artifact the agent receives.
+
+    The shape assertion travels with the read, because a reason lifted from a hook
+    that never actually refused is not a refusal reason at all.
+    """
+    if entry.mechanism == "permissionDecisionReason":
+        decision = result.permission_decision()
+        assert decision == entry.permission_decision, (
+            f"{entry.id}: expected permissionDecision={entry.permission_decision!r}, "
+            f"got {decision!r}; stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+        return result.permission_reason()
+    if entry.mechanism in ("exit2_stderr", "exit_nonzero_stderr"):
+        assert result.returncode == entry.exit_code, (
+            f"{entry.id}: expected exit {entry.exit_code}, got {result.returncode}; "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+        return result.stderr
+    pytest.fail(f"{entry.id}: unknown declared mechanism {entry.mechanism!r}")
+
+
+def _marker_owners(marker: str) -> tuple[str, ...]:
+    """The census refusal ids declared to emit `marker`, or a loud failure.
+
+    Ids rather than script names: an id carries a real `setup(iso)` this drill can
+    drive, while a script name alone does not say which trigger to build.
+    """
+    if not isinstance(ACTION_MARKERS, dict):
+        pytest.fail(
+            f"skeleton: ACTION_MARKERS is a {type(ACTION_MARKERS).__name__}, not the "
+            "map from marker phrase to owning census refusal ids that plan.md "
+            "2412ba38-51e1-4b73-895b-7b240a3c21d3 ## Files assigns to "
+            f"tests/firedrill/_census.py, so {marker!r} has no declared owner to drive",
+            pytrace=False,
+        )
+    owners = ACTION_MARKERS[marker]
+    assert owners, f"{marker!r} declares no owning refusal, so nothing exercises it"
+    return tuple(owners)
+
+
+def _first_declared_pair() -> tuple[str, str]:
+    """One (marker, owner) pair, DERIVED from the map rather than named here.
+
+    Sorted so the mutation proof drives the same owner on every machine and every run,
+    and derived so the pair cannot outlive the map it came from.
+    """
+    if not isinstance(ACTION_MARKERS, dict):
+        pytest.fail(
+            f"skeleton: ACTION_MARKERS is a {type(ACTION_MARKERS).__name__}, not the "
+            "map from marker phrase to owning census refusal ids (plan.md "
+            "2412ba38-51e1-4b73-895b-7b240a3c21d3 ## Files), so there is no declared "
+            "pair to prove the detector conditional on",
+            pytrace=False,
+        )
+    pairs = sorted(
+        (marker, refusal_id)
+        for marker, owners in ACTION_MARKERS.items()
+        for refusal_id in owners
+    )
+    assert pairs, "the marker map declares no owner at all, so this proof is vacuous"
+    return pairs[0]
 
 
 class TestHarnessEnvBuilder:
@@ -107,21 +186,7 @@ class TestEachDeclaredBashRefusal:
         setup = entry.setup(iso)
         result = run_hook(entry.script, setup["envelope"], iso, extra_env=setup.get("extra_env"))
 
-        if entry.mechanism == "permissionDecisionReason":
-            decision = result.permission_decision()
-            assert decision == entry.permission_decision, (
-                f"{entry.id}: expected permissionDecision={entry.permission_decision!r}, "
-                f"got {decision!r}; stdout={result.stdout!r} stderr={result.stderr!r}"
-            )
-            reason = result.permission_reason()
-        elif entry.mechanism in ("exit2_stderr", "exit_nonzero_stderr"):
-            assert result.returncode == entry.exit_code, (
-                f"{entry.id}: expected exit {entry.exit_code}, got {result.returncode}; "
-                f"stdout={result.stdout!r} stderr={result.stderr!r}"
-            )
-            reason = result.stderr
-        else:
-            pytest.fail(f"{entry.id}: unknown declared mechanism {entry.mechanism!r}")
+        reason = _refusal_reason(result, entry)
 
         # SHAPE, reason half: non-empty first (the precondition that makes the marker
         # comparison meaningful), then the marker match itself.
@@ -506,3 +571,107 @@ class TestColoredRunnerOutputDoesNotDisableThePendingTestsRefusal:
             and r.get("decision") == "deny"
         ]
         assert rows, f"no pending-tests gate_decision deny row: {audit!r}"
+
+
+class TestEveryDeclaredActionMarkerIsStillEmitted:
+    """Capability 13: the marker population fails BY NAME, replacing the arithmetic pin
+    that could not see a marker whose owning hook reworded its refusal.
+
+    PARAMETRIZED BY MARKER OVER THE MAP, so the population IS the parametrization and no
+    marker can go unexercised, and the per-marker id names the phrase in the run output.
+
+    READ FROM THE REAL EMITTED REASON, not from hook source, and that is a measured
+    decision rather than a preference (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3,
+    defect 2). Five of the declared phrases are not literals in the script their comment
+    names: three are emitted by a python module the hook delegates to, and `before
+    creating the worktree` exists in no source file at all, because
+    writ-worktree-safety.sh assembles it across two f-string lines. A static scan would
+    redden on a healthy tree and would still prove nothing about what the hook emits.
+
+    TRIAGE RULE FOR A RED HERE, stated where whoever meets it will read it: a marker its
+    owner no longer emits is the defect this test exists to find. Report it. If the
+    phrase moved, update the marker to the phrase the hook actually emits. If the
+    attribution was wrong, re-point the marker at the refusal that does emit it.
+    Widening the marker to something vaguer, or setting `check_action_marker=False` to
+    turn this green, is the loosening the census's own header comment forbids.
+    """
+
+    @pytest.mark.parametrize(
+        "marker",
+        list(ACTION_MARKERS)
+        or [pytest.param("<ACTION_MARKERS declares no marker>", id="action-markers-empty")],
+    )
+    def test_each_declared_owner_still_emits_the_marker(self, tmp_path, marker) -> None:
+        owners = _marker_owners(marker)
+        misses = []
+        for refusal_id in owners:
+            try:
+                entry = by_id(refusal_id)
+            except KeyError:
+                misses.append(f"{refusal_id}: no such refusal in the census")
+                continue
+            iso = make_isolation(
+                tmp_path / refusal_id, session_id=f"marker-{refusal_id}"
+            )
+            setup = entry.setup(iso)
+            result = run_hook(
+                entry.script, setup["envelope"], iso, extra_env=setup.get("extra_env")
+            )
+            reason = _refusal_reason(result, entry)
+            if marker not in reason.lower():
+                misses.append(
+                    f"{refusal_id} ({entry.script}) emitted no {marker!r}; its reason "
+                    f"was: {reason!r}"
+                )
+
+        assert not misses, (
+            f"the action marker {marker!r} is no longer emitted by every refusal "
+            "declared to own it. EVERY owner must emit it: 'at least one owner' would "
+            "let the second hook rot invisibly, which is the decay this replaces.\n"
+            + "\n".join(misses)
+        )
+
+    def test_the_detector_is_conditional_proved_by_mutation_on_one_real_reason(
+        self, tmp_path
+    ) -> None:
+        """Capability 14. A detector that answered "present" for anything, or that
+        compared against a reason built in this file rather than captured from the
+        subprocess, would pass the case above for every marker on any tree.
+
+        Both halves are asserted on the SAME captured reason, through the same
+        `run_hook` route and the same `_refusal_reason` dispatch: the declared marker is
+        present in it and a phrase no hook emits is absent from it. That the second half
+        can be absent while the first is present is what makes the detector CONDITIONAL,
+        and conditional is all this pair proves.
+
+        WHAT IT DOES NOT ADDRESS, stated because an earlier wording here claimed it did:
+        `matches_action_marker` is a plain substring test, so the one-word marker `fix`
+        would match inside `prefix` or `fixture` as happily as on its own. Nothing here
+        tests that. This drives `_first_declared_pair()`, which is
+        ("add missing keys", "validate-handoff"), and the absent half is a multi-word
+        sentinel, so neither half can tell a whole-word match from a substring one. The
+        hole is latent rather than live: measured, both declared `fix` owners emit it as
+        a standalone word today (enforce-violations "fix these before completing.",
+        verify-before-claim "fix them (re-review and re-post"). Where it would bite is a
+        future refusal whose reason carries `prefix` or `fixture` and names no action at
+        all: it would read as marker-carrying here and in the generic loop alike.
+        Closing it means a word-boundary match in `matches_action_marker`, a decision
+        about the runtime predicate rather than about this test.
+        """
+        marker, refusal_id = _first_declared_pair()
+        entry = by_id(refusal_id)
+        iso = make_isolation(tmp_path, session_id=f"marker-mutation-{refusal_id}")
+        setup = entry.setup(iso)
+        result = run_hook(
+            entry.script, setup["envelope"], iso, extra_env=setup.get("extra_env")
+        )
+        reason = _refusal_reason(result, entry).lower()
+
+        assert marker in reason, (
+            f"{refusal_id} ({entry.script}) emitted no {marker!r}: {reason!r}"
+        )
+        assert _SENTINEL_NEVER_EMITTED not in reason, (
+            "a phrase no hook in this repository emits was found in a real refusal "
+            f"reason, so this detector cannot tell a live marker from any string at "
+            f"all: {reason!r}"
+        )

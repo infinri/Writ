@@ -2441,3 +2441,75 @@ def gate_token_directory_deleters(*, tests_dir: Path = TESTS) -> dict[str, str]:
         if stem:
             out[key] = f"inherits:{stem}"
     return out
+
+
+# --------------------------------------------------------------------------- #
+# The corpus floor: label to node count, derived from the tracked corpus dump.
+# --------------------------------------------------------------------------- #
+#
+# THE SOURCE IS THE DUMP, NOT `bible/`. HANDBOOK.md states the ownership: Neo4j is
+# canonical, `writ-corpus.cypher` is the tracked shipped form of the corpus, and `bible/`
+# is a derived, local, untracked export refreshed with `writ export-cypher`. The dump is
+# present in every checkout, is what CI replays and what `tests/_graph.py::replay_dump`
+# uses; `bible/` is gitignored, so a floor derived from it would be underivable on CI and
+# on the disposable test instance.
+_CORPUS_CREATE_PREFIX = "CREATE (:"
+_CORPUS_NODE_LINE = re.compile(r"^CREATE \(:(?P<label>[A-Za-z_][A-Za-z0-9_]*) \{")
+
+
+def corpus_floor(*, dump: Path | None = None) -> dict[str, int]:
+    """Node count by label for every label the tracked corpus dump creates.
+
+    The LABEL LIST comes from the corpus too, which is the second-order half of the
+    defect this replaces: `tests/_corpus.py::_LABELS` was hand-written and named neither
+    `Abstraction` nor `Category`, so nothing could floor them, and a label type added to
+    the corpus later would have been invisible the same way.
+
+    THE ONE SHAPE THAT COULD MAKE THIS UNDER-COUNT IN SILENCE is a multi-label node
+    (`CREATE (:A:B {`), which the single-label pattern does not match and would drop from
+    the population without a trace. So the sum of the derived map is reconciled against
+    the number of node-creating lines the scan SAW, and a disagreement raises naming the
+    lines it could not classify. Both sides of that comparison are derived, so the
+    reconciliation introduces no count literal.
+
+    `dump` is a keyword for the reason `envelope_emitting_scripts(*, scripts_dir=)` and
+    `style_swept_docs(*, repo=)` carry theirs: this derivation's precision is pinned
+    against synthetic dumps under `tmp_path` in `tests/test_count_pin_discipline.py`,
+    never against the live corpus's current size. The default resolves through
+    `tests._graph.DUMP_FILENAME` inside the body, so there is one spelling of the dump's
+    name and no import cycle.
+    """
+    if dump is None:
+        from tests._graph import DUMP_FILENAME
+
+        dump = REPO / DUMP_FILENAME
+    path = Path(dump)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"cannot derive the corpus floor: no tracked corpus dump at {path}. Every "
+            f"graph-dependent test's completeness check reads this population, so an "
+            f"absent dump is a missing precondition rather than an empty corpus. "
+            f"Regenerate it with `writ export-cypher` from a checkout whose graph holds "
+            f"the corpus, or check the file out again; it is tracked."
+        )
+    counts: dict[str, int] = {}
+    seen = 0
+    unclassified: list[str] = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.startswith(_CORPUS_CREATE_PREFIX):
+            continue
+        seen += 1
+        match = _CORPUS_NODE_LINE.match(line)
+        if match is None:
+            unclassified.append(line)
+            continue
+        counts[match.group("label")] = counts.get(match.group("label"), 0) + 1
+    if sum(counts.values()) != seen:
+        raise ValueError(
+            f"cannot derive the corpus floor from {path}: it creates {seen} node(s) but "
+            f"only {sum(counts.values())} of them carry a single label this scan can "
+            f"attribute, so the missing ones would drop out of the floor in silence. "
+            f"A multi-label node (CREATE (:A:B {{) is the shape that does this. The "
+            f"line(s) it could not classify:\n" + "\n".join(unclassified)
+        )
+    return counts

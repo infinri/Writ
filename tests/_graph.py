@@ -154,7 +154,7 @@ def classify_isolation(*, opted_out: bool, is_production: bool, reachable: bool)
     return STATE_ISOLATED
 
 
-def isolation_refusal_message(resolved_uri: str, counts=None) -> str:
+def isolation_refusal_message(resolved_uri: str, counts=None, *, shortfall=None) -> str:
     """The one refusal text, shared by all three session-start refusals.
 
     One helper rather than three messages at three raise sites: the reasons
@@ -163,6 +163,18 @@ def isolation_refusal_message(resolved_uri: str, counts=None) -> str:
     how two of them go stale. `counts` is supplied only for the incomplete
     case, and only then does the message report a census -- the other two
     refusals never read one, so they must not print one they do not have.
+
+    `shortfall` is `{label: (live, required)}` from
+    `tests/_corpus.py::corpus_shortfall`, and it exists because the corpus floor
+    is now derived from the tracked dump rather than hand-written. That tightening
+    turns one previously silent state into a refusal: a tree whose `bible/` holds
+    FEWER nodes of some label than `writ-corpus.cypher` does, which is a real
+    divergence but not one the developer can act on from a census alone, because
+    the floor they fell below is not printed anywhere. So the block names, per
+    short label, what the graph HAS and what the floor REQUIRES, then the two ways
+    out. It is emitted ONLY when a shortfall is supplied, for the same reason the
+    census is: the production-target and unreachable refusals measured no corpus,
+    so they must not print a remedy for a shortfall nobody observed.
     """
     lines = [
         "Refusing to start: this run has no isolated Neo4j instance.",
@@ -181,6 +193,21 @@ def isolation_refusal_message(resolved_uri: str, counts=None) -> str:
             "",
             "It answered, but the corpus replay left it incomplete. Live counts by label:",
             *[f"        {label} = {n}" for label, n in sorted(counts.items())],
+        ]
+    if shortfall is not None:
+        lines += [
+            "",
+            "Below the corpus floor derived from the tracked "
+            f"{DUMP_FILENAME} (label: live of required):",
+            *[
+                f"        {label}: {live} of {required}"
+                for label, (live, required) in sorted(shortfall.items())
+            ],
+            "",
+            "That gap is one direction only: a corpus holding MORE than the tracked dump",
+            "is fine, so this is a tree whose bible/ shrank below what the dump ships.",
+            "    writ export-cypher          refresh the tracked dump if the corpus"
+            " legitimately changed",
         ]
     lines += [
         "",
