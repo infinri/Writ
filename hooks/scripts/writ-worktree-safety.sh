@@ -47,6 +47,39 @@
 # instead, which is why the miss was a wrong gitignore question rather than a wrong verb).
 # A closer standing ALONE on its own token (`( git worktree add scratch/x )`) is dropped
 # where segments are built (GROUP_CLOSER_TOKENS), so it can never be read as a path.
+#
+# THE TARGET IS EXPANDED THE WAY A REAL SHELL EXPANDS IT before anything asks where it
+# lands. `os.path.abspath` never expands a tilde, so `git worktree add ~/evil b` joined
+# under the repo root, classified PROJECT-LOCAL, and was REFUSED with advice to add `~/`
+# to .gitignore for a directory the shell creates at $HOME/evil: a false refusal whose
+# remedy cannot work, because the worktree was never inside the project at all. A
+# governance tool whose refusals give impossible advice teaches the agent to route around
+# guards, and that habit outlives the bug. The expansion is expand_word, the SAME text
+# writ-bash-write-gate.sh runs (EXPAND markers below), not a second expander: tilde with
+# and without a login name, `$NAME` and `${NAME}` simple names, quote removal and
+# backslash escapes. So `"~/x"`, `'~/x'`, `'$HOME/x'` and `\~/x` stay project-local,
+# exactly as a real shell keeps them literal, and their remedies keep working.
+#
+# FOUR FORMS THIS HOOK CANNOT RESOLVE, and they ASK rather than refuse. `~+` is $PWD,
+# `~-` is $OLDPWD and `~N` is the directory stack: all three are state of the INVOKING
+# shell that this hook does not have and cannot reconstruct, and an unset simple name in
+# the FIRST path segment (`$NOPE/x`) expands to nothing in a real shell. For each of them
+# the CLASSIFICATION would be unchanged (project-local either way) but the REMEDY would be
+# impossible: literal `~+/evil` yields "add `~+/` to .gitignore" for a directory bash
+# creates at $PWD/evil, the same impossible-remedy defect in miniature. Widening
+# expand_word to resolve them would change a SHARED text and with it the write gate's
+# behavior, which this hook has no oracle for. Deny would refuse legitimate work with a
+# remedy computed from a literal no shell will create, and silence would add a quiet allow
+# to a gate whose job is to record a decision, so the answer is the prompt. The test is on
+# the FIRST path segment only, because that is the only thing the gitignore question is
+# asked about: `scratch/$NOPE/x` still denies naming `scratch/`, since gitignoring the top
+# directory really does cover everything under it.
+#
+# UNRESOLVED FORMS BEGIN (names only; the reasons are in the prose above)
+# tilde-pwd, tilde-oldpwd, tilde-dirstack, unresolved-parameter
+# UNRESOLVED FORMS END
+#
+# See docs/adr/ADR-bash-control-operator-tokenizer.md, cycle T amendment.
 set -euo pipefail
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 WRIT_DIR="$(cd "$HOOK_DIR/../.." && pwd)"
@@ -99,6 +132,9 @@ fi
 # Output is one TSV row followed by the completion sentinel, or the sentinel alone when no
 # real invocation was found:
 #   deny<TAB><target><TAB><reason>      target is project-local and not gitignored
+#   ask<TAB><target><TAB><reason>       the target's FIRST segment carries a form this
+#                                       hook cannot resolve, so whether the worktree
+#                                       lands inside the repo is unknown
 #   allow<TAB><target>                  a real invocation with a gitignored target
 #   status<TAB>complete                 ALWAYS the last line; see the consumer below
 #
@@ -106,6 +142,14 @@ fi
 # could report anything. The status is read from what the block PRINTED, not from `$?`.
 VERDICT=$(WRIT_WT_CMD_FILE="$WT_CMD_FILE" WRIT_DIR="$WRIT_DIR" python3 <<'PY' 2>/dev/null || true
 import os, re, shlex, sys
+
+# `~name` resolves through the password database (see expand_word below), so an
+# unavailable module must leave that spelling LITERAL rather than raise and take the
+# whole extractor down with it. Same guard, same reason, as writ-bash-write-gate.sh.
+try:
+    import pwd
+except Exception:
+    pwd = None
 
 # Read in process, from the path the env carries. `errors="surrogateescape"` matches how
 # `os.environ` decoded the retired env string, so a command carrying a byte that is not
@@ -652,6 +696,189 @@ try:
 except Exception:
     pass
 
+# ── The value side: what a real shell resolves the worktree TARGET to ──────
+# SINGLE SOURCE is writ.session.bash_expand.expand_word, the SAME text
+# writ-bash-write-gate.sh carries. The marked block below is that module's
+# marker-delimited block, verbatim, and the import after it REBINDS the name, so the
+# package copy is what runs whenever it resolves. Its OWN marker family (EXPAND, not
+# MIRROR) because the mirror above execs in an empty namespace and may carry no imports,
+# while this text needs os, re, pwd and strip_unbalanced_close.
+# tests/test_bash_expansion_boundary_gate.py asserts the copies are byte-identical and
+# compute identical (value, unresolved) pairs.
+#
+# dequote is NOT replaced anywhere above: those consumers ask what a token SAYS (is the
+# verb git, is this token a flag), and this one asks what the word will BECOME. By the
+# classification below, `"~/x"` and `~/x` are the SAME BYTES with OPPOSITE correct
+# answers, so expansion can only be correct while the RAW token, quote characters still
+# attached, is in hand. That is the whole reason positionals() stopped dequoting.
+#
+# The three directory-stack tildes it leaves literal are not silent residue here: see the
+# UNRESOLVED FORMS block in this file's header, and the ask arm below.
+# EXPAND BEGIN expand_word
+LOGIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*")
+PARAM_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+ASSIGN_PREFIX = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def expand_word(raw):
+    # strip_unbalanced_close runs FIRST, and the existing call at the head of the
+    # classification loop STAYS. That is not a second competing normalization point (the
+    # control-operator ADR rejects those): the function is idempotent, and the later call
+    # still normalizes interpreter hits and the `dd of=` substring, which never pass
+    # through here. This call exists for one measured reason: `(cp README.md ~)` reaches
+    # this function as the token `~)`, whose tilde-prefix would be `)`, not a login name,
+    # so the word would stay literal while the shell still copies into $HOME.
+    tok = strip_unbalanced_close(raw)
+
+    # Tilde-expandable OFFSETS, decided by the word's SHAPE before the scan starts, because
+    # that is what the rule is about: a tilde expands at the start of a word and (only
+    # when the text before the first `=` is a valid shell NAME) immediately after that
+    # `=` and after every following `:`. Measured, not read off a manual: `of=~/x`,
+    # `foo_1=~/x` and `a=b:~/x` expand; `fo-o=~/x`, `2bad=~/x` and `--opt=~/x` do not.
+    # `dd of=` is a collected write form, so the expanding half is a live bypass, and
+    # `cp --target-directory=~/x` is correct today precisely because the other half is not.
+    tilde_at = {0}
+    assign = ASSIGN_PREFIX.match(tok)
+    if assign:
+        tilde_at.add(assign.end())
+        tilde_at.update(j + 1 for j in range(assign.end(), len(tok)) if tok[j] == ":")
+
+    out = []
+    unresolved = ""
+    quote = ""
+    i = 0
+    while i < len(tok):
+        ch = tok[i]
+
+        # Single quotes: no expansion and no escape of any kind exists in here. THIS is
+        # the arm that keeps '~/x' and '$HOME/x' the in-project literals a real shell
+        # makes them, and it is the whole reason expansion cannot run after dequote.
+        if quote == "'":
+            if ch == "'":
+                quote = ""
+            else:
+                out.append(ch)
+            i += 1
+            continue
+
+        # A quote character is DROPPED wherever it appears, which is strictly better than
+        # dequote's matched-outer-pair rule: dequote left `$HOME"/x"` with its quote
+        # characters attached and the classified path carried them into the audit row.
+        if quote == "" and ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if quote == '"' and ch == '"':
+            quote = ""
+            i += 1
+            continue
+
+        # Backslash. Outside quotes it escapes ANY next character, which is what keeps
+        # `\~/x` and `\$HOME/x` literal. Inside double quotes it escapes only these four;
+        # in front of anything else there it is an ordinary backslash.
+        if ch == "\\":
+            nxt = tok[i + 1] if i + 1 < len(tok) else ""
+            if nxt and (quote == "" or (quote == '"' and nxt in ('$', '`', '"', '\\'))):
+                out.append(nxt)
+                i += 2
+                continue
+            out.append(ch)
+            i += 1
+            continue
+
+        # Parameter expansion, $NAME and ${NAME}, outside quotes and inside DOUBLE quotes.
+        # The brace form must accept ONLY a bare name: `${VAR:-/etc}` and its relatives are
+        # a different mechanism (an operator with its own semantics), so they fall through
+        # and stay literal rather than being half-understood.
+        if ch == "$":
+            name = ""
+            step = 0
+            if tok.startswith("${", i):
+                close = tok.find("}", i + 2)
+                if close != -1 and PARAM_NAME.fullmatch(tok[i + 2:close]):
+                    name = tok[i + 2:close]
+                    step = close + 1 - i
+            else:
+                m = PARAM_NAME.match(tok, i + 1)
+                if m:
+                    name = m.group(0)
+                    step = m.end() - i
+            if name:
+                val = os.environ.get(name)
+                if val is None:
+                    # Left LITERAL so the confirmation can quote the spelling back, and
+                    # RECORDED so the row below is `unknown` rather than an affirmative
+                    # in-project claim about <cwd>/$NAME/x, a path nothing writes to. An
+                    # unset name expands to NOTHING in a real shell, so the write really
+                    # lands at /x, the filesystem root.
+                    unresolved = unresolved or name
+                    out.append(tok[i:i + step])
+                else:
+                    out.append(val)
+                i += step
+                continue
+
+        # Tilde, only outside quotes and only at an offset the shape rule above admits.
+        # The tilde-prefix runs to the first `/` or to the end of the word.
+        if ch == "~" and quote == "" and i in tilde_at:
+            j = i + 1
+            while j < len(tok) and tok[j] != "/":
+                j += 1
+            name = tok[i + 1:j]
+            val = None
+            if not name:
+                # HOME first, the password database second, which is the same order and
+                # the same fallback bash uses, so `~/x` still resolves with HOME unset.
+                #
+                # `val is None`, NOT `not val`: HOME PRESENT BUT EMPTY is a third state,
+                # and bash uses the empty value rather than falling back. Measured:
+                # `env -i HOME= bash -c 'printf %s ~/x'` prints `/x`, while with HOME
+                # genuinely unset the same command prints the password-database home. The
+                # falsiness test conflated them, and where a project root IS the invoking
+                # user's home the passwd answer reads as IN-PROJECT for a write the shell
+                # sends to the filesystem root, which is the bypass class this whole block
+                # exists to close. The parameter-expansion branch below already tests
+                # `is None` for the same reason.
+                val = os.environ.get("HOME")
+                if val is None and pwd is not None:
+                    try:
+                        val = pwd.getpwuid(os.getuid()).pw_dir
+                    except Exception:
+                        val = None
+            elif pwd is not None and LOGIN_NAME.fullmatch(name):
+                # The charset admits a DOT and must: `~lucio.saldivar/x` is one of the
+                # measured bypasses, and a naive [A-Za-z0-9_] identifier leaves exactly
+                # that spelling open. It must NOT admit a leading `+`, `-` or digit,
+                # because those are the three directory-stack forms (`~+`, `~-`, `~N`),
+                # disclosed residue in each caller's own unexpanded-forms header block,
+                # kept literal BY THIS RULE rather than by getpwnam happening to fail on
+                # them.
+                try:
+                    val = pwd.getpwnam(name).pw_dir
+                except Exception:
+                    # An unknown login name stays LITERAL, which is what bash does with it,
+                    # so this is correct rather than merely conservative.
+                    val = None
+            # `val is not None`, NOT `if val`, for the same reason as the HOME lookup
+            # above: a tilde that RESOLVED to the empty string still resolved, and bash
+            # substitutes it (`HOME= ; ~/x` is `/x`). None is the only "did not resolve"
+            # answer, and it is what an unknown login name and the three directory-stack
+            # forms produce, so both still fall through and stay literal.
+            if val is not None:
+                out.append(val)
+                i = j
+                continue
+
+        out.append(ch)
+        i += 1
+
+    return "".join(out), unresolved
+# EXPAND END expand_word
+try:
+    from writ.session.bash_expand import expand_word   # noqa: F811
+except Exception:
+    pass
+
 try:
     pre = split_commands(cmd)
     tokens = rejoin_glued_words(pre, shlex.split(pre, comments=False, posix=False))
@@ -708,6 +935,31 @@ def flat(field):
     return " ".join(str(field).split())
 
 
+_DIGITS = "0123456789"
+
+
+def dirstack_form(raw):
+    """The directory-stack tilde prefix `raw` opens with (`~+`, `~-`, `~N`), or "".
+
+    These three are the forms expand_word deliberately leaves literal: bash resolves them
+    from the INVOKING shell's $PWD, $OLDPWD and directory stack, which this hook does not
+    have and cannot reconstruct. Read off the RAW token, so a quoted or escaped spelling
+    never matches: such a word starts with its quote character or backslash and bash keeps
+    it literal too, which is what makes today's project-local answer CORRECT for it.
+
+    An explicit digit string rather than str.isdigit(), which is Unicode-aware and would
+    silently widen the shape while reading as a faithful translation.
+    """
+    if not raw.startswith("~") or len(raw) < 2:
+        return ""
+    if raw[1] not in "+-" and raw[1] not in _DIGITS:
+        return ""
+    j = 1
+    while j < len(raw) and raw[j] != "/":
+        j += 1
+    return raw[:j]
+
+
 def verb_at(seg):
     """(effective verb, index of its first argument) for one segment.
 
@@ -750,7 +1002,15 @@ def verb_at(seg):
 
 
 def positionals(args):
-    """Non-flag arguments, with the value of each value-taking flag consumed."""
+    """Non-flag arguments as RAW tokens, with the value of each value-taking flag
+    consumed.
+
+    RAW, not dequoted, and that is the seam this hook's tilde fix turns on: `"~/x"` and
+    `~/x` are the same bytes after dequote and have OPPOSITE correct answers, so a value
+    that has already been dequoted cannot be expanded correctly. Flag detection still asks
+    what a token SAYS, so it keeps the dequoted view; the caller dequotes the two
+    subcommand words and EXPANDS the path.
+    """
     out, i = [], 0
     while i < len(args):
         a = dequote(args[i])
@@ -759,7 +1019,7 @@ def positionals(args):
                 i += 1                      # `--flag value`: skip the value too
             i += 1
             continue
-        out.append(a)
+        out.append(args[i])
         i += 1
     return out
 
@@ -784,7 +1044,7 @@ for t in tokens:
 if cur:
     segments.append(cur)
 
-target = None
+target_raw = None
 for seg in segments:
     if not seg:
         continue
@@ -792,18 +1052,27 @@ for seg in segments:
     if verb != "git":
         continue
     pos = positionals(seg[arg0:])
-    # `git [globals] worktree add [opts] <path> [branch]`
-    if len(pos) >= 3 and pos[0] == "worktree" and pos[1] == "add":
+    # `git [globals] worktree add [opts] <path> [branch]`. The two subcommand words are
+    # DEQUOTED here (they are read for what they SAY) while the path stays raw.
+    if len(pos) >= 3 and dequote(pos[0]) == "worktree" and dequote(pos[1]) == "add":
         # ONE normalization point, the only place a target is set: `(git worktree add
         # scratch/x)` carries the group's `)` on the PATH (the four-positional form
         # carries it on the branch name instead), and a `)` in the recorded target is
         # both a wrong gitignore question and a wrong audit row.
-        target = strip_unbalanced_close(pos[2])
+        target_raw = strip_unbalanced_close(pos[2])
         break
 
-if target is None:
+if target_raw is None:
     print(STATUS_COMPLETE)
     sys.exit(0)
+
+# THE WORD IS EXPANDED THE WAY A REAL SHELL EXPANDS IT, before anything asks where it
+# lands. `os.path.abspath` never expands a tilde, so `~/evil` joined under the repo root,
+# classified PROJECT-LOCAL, and was REFUSED with advice to add `~/` to .gitignore for a
+# directory the shell creates at $HOME/evil: a false refusal whose remedy cannot work.
+# expand_word is the SAME text writ-bash-write-gate.sh runs (EXPAND markers above), not a
+# second expander.
+target, unresolved = expand_word(target_raw)
 
 # Absolute paths or paths outside the repo tree are not project-local.
 repo_root = os.getcwd()
@@ -813,6 +1082,25 @@ if not abs_target.startswith(repo_root + os.sep) and abs_target != repo_root:
     sys.exit(0)
 # Compute path relative to repo root.
 rel = os.path.relpath(abs_target, repo_root)
+top = rel.split(os.sep)[0]
+
+# A FIRST SEGMENT THIS HOOK COULD NOT RESOLVE IS NOT EVIDENCE, so it is neither refused
+# nor waved through. The test is on `top` and not on the whole path because the gitignore
+# question is asked about `top` alone: `scratch/$NOPE/x` still DENIES naming `scratch/`,
+# since gitignoring the top directory really does cover everything under it. `unresolved`
+# is computed INSIDE expand_word, where quoting still exists, so the legitimately literal
+# `'$NOPE/x'` never lands here.
+stack_form = dirstack_form(target_raw)
+if stack_form or (unresolved and "$" in top):
+    what = stack_form or ("$" + unresolved)
+    print("ask\t%s\t%s" % (flat(target_raw), flat(
+        f"ENF-PROC-WORKTREE-001: the worktree target '{target_raw}' carries '{what}', "
+        f"which this hook cannot resolve, so it cannot tell whether the worktree lands "
+        f"inside this repository or outside it. Spell the path literally and re-run, or "
+        f"confirm to create it as written.")))
+    print(STATUS_COMPLETE)
+    sys.exit(0)
+
 # Check .gitignore for a matching entry.
 ignore_path = os.path.join(repo_root, ".gitignore")
 if not os.path.exists(ignore_path):
@@ -825,7 +1113,7 @@ if not os.path.exists(ignore_path):
 with open(ignore_path) as f:
     ignored = [line.strip() for line in f if line.strip() and not line.startswith("#")]
 # Match the rel path against gitignore patterns. Simple prefix match for directories.
-top = rel.split(os.sep)[0]
+# `top` is computed once above, where the unresolvable-form ask needs it too.
 matched = any(
     top == p.strip("/") or p.rstrip("/") == top or p.startswith(top + "/")
     for p in ignored
@@ -879,6 +1167,11 @@ IFS=$'\t' read -r WT_DECISION WT_TARGET WT_REASON <<< "$VERDICT"
 if [ "$WT_DECISION" = "deny" ]; then
     log_gate_decision "worktree-safety" "deny" "$WT_REASON" "${WT_TARGET:-}"
     emit_deny "$WT_REASON"
+elif [ "$WT_DECISION" = "ask" ]; then
+    # ITS OWN ARM, because the else below records an ALLOW: an ask row falling through it
+    # would log the opposite of the decision the hook just made.
+    log_gate_decision "worktree-safety" "ask" "$WT_REASON" "${WT_TARGET:-}"
+    emit_ask "$WT_REASON"
 else
     log_gate_decision "worktree-safety" "allow" "worktree target is gitignored" "${WT_TARGET:-}"
 fi

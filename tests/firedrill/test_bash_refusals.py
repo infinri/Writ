@@ -40,7 +40,9 @@ from tests.firedrill._harness import (
 # A shrinking matrix should fail loudly, not silently reduce coverage (repo
 # convention: tests/test_role_write_scope.py pins its own cross-product size).
 assert len(generic_refusals()) == 26
-assert len(ACTION_MARKERS) == 13
+# 14: the worktree-tilde-expansion cycle (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3)
+# adds "spell the path literally" for writ-worktree-safety.sh's new ask arm.
+assert len(ACTION_MARKERS) == 14
 
 
 class TestHarnessEnvBuilder:

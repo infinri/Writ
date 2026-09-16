@@ -2525,6 +2525,7 @@ def egress_socket(verb, args, fed):
 # could not see; an ask that cannot name what is unknown is not much better than silence.
 # Simple names only, resolved from the environment: the mechanism is parameter expansion,
 # and keying this on the literal name HOME is the shape that leaves $TMPDIR/x open.
+# EXPAND BEGIN expand_word
 LOGIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*")
 PARAM_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 ASSIGN_PREFIX = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
@@ -2660,8 +2661,9 @@ def expand_word(raw):
                 # measured bypasses, and a naive [A-Za-z0-9_] identifier leaves exactly
                 # that spelling open. It must NOT admit a leading `+`, `-` or digit,
                 # because those are the three directory-stack forms (`~+`, `~-`, `~N`),
-                # disclosed residue in the header's UNEXPANDED FORMS block, kept literal
-                # BY THIS RULE rather than by getpwnam happening to fail on them.
+                # disclosed residue in each caller's own unexpanded-forms header block,
+                # kept literal BY THIS RULE rather than by getpwnam happening to fail on
+                # them.
                 try:
                     val = pwd.getpwnam(name).pw_dir
                 except Exception:
@@ -2682,6 +2684,15 @@ def expand_word(raw):
         i += 1
 
     return "".join(out), unresolved
+# EXPAND END expand_word
+# THE PACKAGE COPY IS THE ONE THAT RUNS whenever the import resolves, the same
+# pattern and the same reason as the MIRROR block above: the inline copy exists so a
+# failed import degrades to identical behavior rather than silently back to the
+# defect. hooks/scripts/writ-worktree-safety.sh carries this same block.
+try:
+    from writ.session.bash_expand import expand_word   # noqa: F811
+except Exception:
+    pass
 
 
 def redir_target(tok, nxt):

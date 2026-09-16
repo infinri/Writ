@@ -65,6 +65,9 @@ ACTION_MARKERS: tuple[str, ...] = (
     "add missing keys",             # validate-handoff.sh
     "record it in debug.md",        # writ-debug-code-gate.sh
     "before creating the worktree", # writ-worktree-safety.sh
+    "spell the path literally",     # writ-worktree-safety.sh ask arm (unresolvable
+                                     # tilde/parameter, plan.md
+                                     # 2412ba38-51e1-4b73-895b-7b240a3c21d3)
 )
 
 
@@ -379,6 +382,26 @@ def _setup_worktree_safety(iso: Isolation) -> dict:
     }
 
 
+def _setup_worktree_safety_unresolvable_tilde_ask(iso: Isolation) -> dict:
+    """The worktree-tilde-expansion cycle's own `ask` arm (plan.md
+    2412ba38-51e1-4b73-895b-7b240a3c21d3): `~+/evil` is one of the three
+    directory-stack tilde forms expand_word deliberately leaves literal (bash
+    resolves them from the INVOKING shell's own $PWD/$OLDPWD/directory stack,
+    which this hook has no access to), so the hook cannot tell whether the
+    worktree lands inside this repository or outside it and asks rather than
+    guessing a gitignore remedy that might be wrong in either direction."""
+    write_cache(iso, {"mode": "work"})
+    cmd = "git worktree add ~+/evil evil-branch"
+    return {
+        "envelope": {
+            "session_id": iso.session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": cmd},
+        },
+    }
+
+
 def _bash_command_setup(cmd: str) -> Callable[[Isolation], dict]:
     """A setup factory for writ-bash-write-gate.sh cases that are JUST a command
     string: no cache, no fixture files, no live server. The irreversible-destruction
@@ -673,6 +696,33 @@ REFUSALS: list[Refusal] = [
         shape="gate_decision",
         gate_name="worktree-safety",
         setup=_setup_worktree_safety,
+    ),
+    Refusal(
+        id="worktree-safety-unresolvable-tilde-ask",
+        script="writ-worktree-safety.sh",
+        event="PreToolUse",
+        mechanism="permissionDecisionReason",
+        permission_decision="ask",
+        shape="gate_decision",
+        gate_name="worktree-safety",
+        setup=_setup_worktree_safety_unresolvable_tilde_ask,
+        generic=False,
+        notes=(
+            "Worktree-tilde-expansion cycle (plan.md "
+            "2412ba38-51e1-4b73-895b-7b240a3c21d3): the hook's new ask arm "
+            "for a directory-stack tilde form (~+, ~- or ~N) or an "
+            "unresolved simple-name parameter in the worktree target's FIRST "
+            "path segment, declared here so this census's script-level "
+            "completeness check does not read the new decision path as an "
+            "undeclared gap. refusing_scripts() does not move -- "
+            "writ-worktree-safety.sh is already declared for its sibling "
+            "deny entry above. NOT run through the generic loop -- "
+            "tests/firedrill/test_bash_refusals.py's own `assert "
+            "len(generic_refusals()) == 26` count pin is out of this cycle's "
+            "scope -- exercised as a real subprocess refusal in "
+            "tests/test_bash_expansion_boundary_gate.py, which is also the "
+            "oracle for the population of forms that must trigger it."
+        ),
     ),
     *[
         Refusal(

@@ -541,6 +541,39 @@ def _mutate(src: str, old: str, new: str) -> str:
     return src.replace(old, new)
 
 
+def _without_the_package_rebind(src: str) -> str:
+    """SRC with the `expand_word` package rebind forced to FAIL, so the hook's OWN
+    inline copy is the text that actually runs.
+
+    THE HAZARD THE CLASS BELOW PREDICTED IN THE ABSTRACT FIRED FOR REAL IN CYCLE W.
+    `expand_word` used to be hook-local, so mutating `strip_unbalanced_close(raw)`
+    reached the code that ran. Cycle W promoted it to SHARED package text
+    (`writ/session/bash_expand.py`, `# EXPAND BEGIN/END expand_word`) and gave each hook
+    a rebind after its inline copy. `writ` is installed EDITABLE in `.venv`, so the
+    rebind inside a mutated source imports the real, UNMUTATED module and overwrites the
+    mutated inline definition. MEASURED: both normalization mutations below went inert
+    and their cells stopped reddening, with no change whatsoever to production behaviour.
+
+    Raising inside the hook's own `try:` (whose `except Exception: pass` catches it) does
+    not MODEL anything -- it drives the real degradation path the inline copy EXISTS for,
+    which is a property nothing else in this suite asserts: the fallback text must be
+    load-bearing. Each caller proves this neutralization is itself conditional by running
+    the unmutated source through it first.
+
+    DO NOT "SIMPLIFY" THIS AWAY. Deleting it makes both mutations inert again and the two
+    proofs below pass on a tree where the normalization has been removed.
+    """
+    needle = "    from writ.session.bash_expand import expand_word   # noqa: F811"
+    assert src.count(needle) == 1, (
+        "the expand_word package rebind is not where this proof expects it, so a "
+        "mutation of that shared text would be silently INERT: %r" % needle
+    )
+    return src.replace(
+        needle,
+        '    raise ImportError("mutation proof: the INLINE expand_word is under test")',
+    )
+
+
 def _mutated_extract(mutated_src: str, cmd: str, cwd: str = CWD) -> set:
     # Same command-file transport as the unmutated harness (`run_extractor`, which also
     # strips the completion sentinel): a mutation proof that fed the retired
@@ -558,7 +591,30 @@ class TestTheFixIsConditional:
     """Three mutations at the hooks' OWN call sites (not the shared mirror data, which
     a package import would rebind around an inert mutation). Each asserts the
     replacement actually changed the source before checking that the expectation goes
-    RED, so a target string that no longer exists cannot silently pass."""
+    RED, so a target string that no longer exists cannot silently pass.
+
+    THAT PARENTHESIS STOPPED BEING HYPOTHETICAL IN CYCLE W, and this is the record of
+    it, because a future reader will otherwise read the neutralization below as noise.
+    `expand_word` was hook-local when this class was written, so
+    `strip_unbalanced_close(raw)` -- which occurs TWICE in the extractor, once inside
+    `expand_word` and once at the head of the classification loop -- was a mutation
+    target that reached the running code. Cycle W promoted `expand_word` to shared
+    package text with a rebind after each hook's inline copy, and the two normalization
+    proofs below went silently INERT: the unmutated package copy still stripped the
+    unbalanced closer, so the classification loop's own mutated call had nothing left to
+    do and the cells stopped reddening. Production behaviour did not change by one byte;
+    only the mutation's REACH did.
+
+    THE REPAIR STRENGTHENS THE PROOF RATHER THAN RETARGETING IT. Retargeting to the
+    classification-loop site alone would have been honest and strictly less coverage: a
+    recorded gap where a passing proof used to be. Instead the two affected tests
+    neutralize the rebind (`_without_the_package_rebind`) so the HOOK'S OWN inline text
+    is what runs, which is both the code these mutations were always meant to measure
+    and a property nothing else in this suite asserts -- that the inline fallback each
+    hook carries for a failed package import is load-bearing. Each of the two proves the
+    neutralization is itself conditional by first running the UNMUTATED source through it
+    and requiring the clean row, so one vacuous proof has not been traded for another.
+    The first test is untouched: its mutation is at a genuine hook-local call site."""
 
     def test_neutering_the_verb_position_step_reddens_the_mechanism_one_cells(self):
         src = _extractor_src()
@@ -569,22 +625,46 @@ class TestTheFixIsConditional:
         assert EXPECTED_TARGET not in got, got
 
     def test_removing_the_target_normalization_reddens_the_redirect_in_group_cells(self):
-        src = _extractor_src()
+        src = _without_the_package_rebind(_extractor_src())
+        cmd = "(echo x > %s)" % TARGET
+
+        # THE NEUTRALIZATION IS ITSELF CONDITIONAL: with the package rebind forced to
+        # fail and NO mutation applied, the hook's inline expand_word must still produce
+        # the clean row. Without this the repair could have swapped one vacuous proof
+        # for another -- a source that emitted nothing at all would satisfy every
+        # `not in` assertion below.
+        baseline = _mutated_extract(src, cmd)
+        assert EXPECTED_TARGET in baseline, (
+            "the rebind neutralization alone changed the verdict; the inline "
+            "expand_word fallback is broken, not the mutation", cmd, baseline)
+
         mutated = _mutate(src, "strip_unbalanced_close(raw)", "raw")
         assert mutated != src
-        got = _mutated_extract(mutated, "(echo x > %s)" % TARGET)
+        got = _mutated_extract(mutated, cmd)
         assert EXPECTED_TARGET not in got, got
         assert any(p == CWD + "/" + TARGET + ")" for _k, p in got), got
 
     def test_a_naive_rstrip_reddens_the_balanced_filename_and_backtick_cells(self):
-        src = _extractor_src()
+        src = _without_the_package_rebind(_extractor_src())
+        note_cmd = "(cp %s %s)" % (SRC, NOTE_TARGET)
+        backtick_cmd = "`cp %s %s`" % (SRC, TARGET)
+
+        # Same conditionality proof as above, for BOTH cells: unmutated, the inline
+        # expand_word must still produce each clean row.
+        note_baseline = _mutated_extract(src, note_cmd)
+        assert EXPECTED_NOTE in note_baseline, (
+            "the rebind neutralization alone changed the verdict", note_cmd,
+            note_baseline)
+        backtick_baseline = _mutated_extract(src, backtick_cmd)
+        assert EXPECTED_TARGET in backtick_baseline, (
+            "the rebind neutralization alone changed the verdict", backtick_cmd,
+            backtick_baseline)
+
         mutated = _mutate(src, "strip_unbalanced_close(raw)", 'raw.rstrip(")")')
         assert mutated != src
 
-        note_cmd = "(cp %s %s)" % (SRC, NOTE_TARGET)
         got_note = _mutated_extract(mutated, note_cmd)
         assert EXPECTED_NOTE not in got_note, (note_cmd, got_note)
 
-        backtick_cmd = "`cp %s %s`" % (SRC, TARGET)
         got_backtick = _mutated_extract(mutated, backtick_cmd)
         assert EXPECTED_TARGET not in got_backtick, (backtick_cmd, got_backtick)

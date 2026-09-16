@@ -1997,3 +1997,157 @@ makes and which reddens if either the rejoin or the corrected dequote is dropped
 
 NOT MEASURED, stated plainly: a write LANDING ON DISK through the full Claude Code path,
 the same boundary every earlier cycle in this family recorded.
+
+## Amendment (cycle W): the worktree hook's own tilde, and the promotion cycle T deferred
+
+Ninth instance of the seam, and the FIRST one this family fixed by REUSE rather than by
+authoring. Cycle T recorded two defects as "RECORDED, not fixed"; this cycle closes the
+first of them, and closes it with cycle T's own text.
+
+### The defect, and why it is worse than the one cycle T fixed
+
+`hooks/scripts/writ-worktree-safety.sh` classified with `abs_target =
+os.path.abspath(target)`. `abspath` normalizes and joins against the cwd; it does not
+expand `~`. MEASURED against the real extractor, `git worktree add ~/evil evil-branch`
+produced:
+
+    deny   ~/evil   ENF-PROC-WORKTREE-001: project-local worktree target '~/evil' is not
+    matched by any .gitignore entry. Add '~/' to .gitignore before creating the worktree.
+
+The bash oracle for the same word, `bash -c 'printf "%s\n" ~/evil'`, answers
+`$HOME/evil`, OUTSIDE the repo. So the verdict is a false refusal AND its remedy is
+impossible: gitignoring `~/` cannot affect a directory that was never inside the project.
+Cycle T's defect was a false ALLOW; this one is a false REFUSE whose advice cannot work,
+and a governance tool that hands out nonsense advice teaches the agent to route around
+guards. That habit outlives the bug.
+
+### The promotion, and why `expand_word` needed its own home and its own markers
+
+Cycle T wrote: "Adding it when the second caller exists is one edit; adding it now is churn
+plus a speculative abstraction." This cycle is that second caller, and the edit was not
+quite one, for two reasons verified rather than assumed:
+
+1. `expand_word` existed in exactly ONE place, inline python text inside the quoted heredoc
+   of `writ-bash-write-gate.sh`. It was in no importable module, so the worktree hook could
+   not import it.
+2. It may NOT join the MIRROR block. `tests/test_bash_expansion_boundary_gate.py`'s
+   `TestExpandWordDoesNotLiveInTheMirrorBlock` fails if any part of it sits between the
+   MIRROR markers, and `tests/test_bash_control_operator_split.py` execs that block in an
+   EMPTY namespace and rejects any import statement inside it. `expand_word` needs `os`,
+   `re` and `pwd`, so it cannot satisfy that contract.
+
+So the canonical text moved to a NEW module, `writ/session/bash_expand.py`, under a NEW
+marker family, `# EXPAND BEGIN expand_word` / `# EXPAND END expand_word`, with three
+byte-identical copies (the module plus an inline copy in each gate) and a package rebind
+after each inline copy. NOT into `writ/session/bash_tokens.py`: that module's docstring
+states a zero-import contract that `tests/_inventory.py` cites when it explains why the
+mirror span is not excluded from its shlex guard, and an `os`/`re`/`pwd` importing function
+there would falsify a contract other guards lean on. The new module imports
+`strip_unbalanced_close` from `bash_tokens`, one direction only.
+
+The population is DERIVED, not a three-file tuple:
+`tests/_inventory.py::expand_word_copy_sites()` scans `writ/`, `hooks/`, `bin/` and
+`scripts/` for the BEGIN marker, so a fourth pasted copy fails BY NAME.
+
+ONE comment inside the shared function changed, and it is the only behavior-bearing edit to
+the write gate: the line reading "disclosed residue in the header's UNEXPANDED FORMS block"
+was true of the write gate alone and is now "disclosed residue in each caller's own
+unexpanded-forms header block". The file-specific prose ABOVE the regexes stays outside the
+markers in each file, which is what lets three copies be byte-identical while each caller
+explains itself in its own voice.
+
+### The seam, again: `positionals()` had to stop dequoting
+
+`positionals()` returned `dequote(args[i])`. By the time the target was chosen, `"~/x"` and
+`~/x` were the SAME FOUR BYTES with OPPOSITE correct answers, so expansion placed after it
+is wrong in one direction BY CONSTRUCTION. This is cycle T's "quoting does not survive to
+the classification point" finding, in a second file. The function now returns RAW tokens;
+flag detection keeps the dequoted view (it asks what a token SAYS); the caller dequotes the
+two subcommand words and EXPANDS the path.
+
+### The three directory-stack tildes: ASK here, and why that is not a divergence from cycle T
+
+Cycle T argued `~+` is `$PWD`, which IS that hook's own cwd, "so expanding it or not gives
+the same classification and there is nothing to close". For the worktree hook the
+CLASSIFICATION is indeed the same (project-local either way) but the REMEDY is not: literal
+`~+/evil` yields "add `~+/` to .gitignore" for a directory bash creates at `$PWD/evil`.
+That is the same impossible-remedy defect in miniature. Widening `expand_word` to resolve
+`~+` would change a SHARED text and therefore the write gate's behavior, which this cycle
+has no oracle for, so the answer is an ASK, not a unilateral widening. Cycle T's own
+precedent decides it: "the safe answer to 'cannot be trusted' is the prompt, not silence."
+`~+`, `~-`, `~N` and an unresolved simple-name parameter in the FIRST path segment all ask,
+naming the form and the way out. The test is on the first segment ONLY, because `top` is
+the only thing the gitignore question is asked about: `scratch/$NOPE/x` still DENIES naming
+`scratch/`. `unresolved` is computed INSIDE `expand_word`, where quoting still exists, so
+the legitimately literal `'$NOPE/x'` never raises it. The hook's header carries an
+`UNRESOLVED FORMS BEGIN/END` block, a marker name deliberately distinct from the write
+gate's `UNEXPANDED FORMS`, so the two ratchets cannot be conflated, and a test derives the
+expected names from the ask population itself.
+
+### The test that was replaced, disclosed because a deleted assertion is easy to hide
+
+`TestWorktreeHookBlindnessIsRecordedNotFixed` pinned TODAY's broken verdict and its
+docstring instructed the next cycle to update it when the real fix landed. It was REPLACED,
+not deleted, by `TestWorktreeHookAgreesWithTheShellOnTilde` in the same file: for every
+spelling, the real hook and a real `bash` oracle are asked the same question under the SAME
+cwd and env, and the hook must deny only when the oracle's answer lands inside the repo
+root. No spelling carries a hardcoded verdict. The non-vacuity proof that this is not a
+blanket loosening is the repo-root-IS-HOME case: with `HOME` set to the project, the SAME
+`git worktree add ~/evil evil-branch` resolves INSIDE the repo and DENIES naming `evil/`, a
+remedy that works. Expansion moves the verdict in BOTH directions and both now agree with
+the shell.
+
+### Measured versus inferred
+
+MEASURED: the false refusal and its exact reason string through the real extractor; the
+bash oracle for every spelling in the population, computed at run time under the hook's own
+cwd and env; the post-fix verdicts through the real hook
+(`tests/test_bash_expansion_boundary_gate.py` 95 -> 132 passed, 37 -> 0 failed, with the
+pre-fix redness of the replacement measured BEFORE the fix landed); the three EXPAND copies
+byte-identical and computing identical `(value, unresolved)` pairs over a shared spelling
+table; the `ask` arm exercised as a real subprocess refusal with its audit row read back as
+`ask` and never as `allow`; and `tests/firedrill` held at 103 passed.
+
+NOT MEASURED, stated plainly: a worktree actually CREATED through the full Claude Code
+path, the same boundary every earlier cycle in this family recorded. The `~N` oracle is
+asked without a real directory stack, so the ask arm is proved on the FORM, not on a stack
+this hook could never see anyway.
+
+### Still recorded, not fixed
+
+Cycle T's SECOND defect (a quote-then-unquoted word arriving as two tokens) was closed by
+cycle V in the write gate's tokenizer. What remains open from this family is unchanged by
+this cycle: telemetry for out-of-project worktree targets (that branch has NEVER emitted a
+row; `git worktree add /tmp/x` is silent today and `~/evil` now joins that silent class),
+and resolving the repo root through git rather than through the hook's cwd.
+
+### One thing the promotion broke that was not behaviour, and is worth the paragraph
+
+Promoting `expand_word` disarmed a mutation proof in a file this cycle's plan never named.
+`tests/test_bash_group_construct_gate.py::TestTheFixIsConditional` mutates
+`strip_unbalanced_close(raw)`, which occurs TWICE in the write gate's extractor: at the head
+of the classification loop, and inside `expand_word`. Once the rebind existed, the mutated
+inline `expand_word` was overwritten by the UNMUTATED package copy (`writ` is installed
+editable in `.venv`, so the import resolves from any cwd), that copy still normalized the
+unbalanced closer, and the classification loop's own mutated call had nothing left to do.
+Two cells stopped reddening. MEASURED both ways before anything was repaired: with the
+rebind neutralized, the same mutation reddens exactly as it always did.
+
+Production behaviour did not change by one byte. What changed was the mutation's REACH, and
+that is the trap worth naming: this was a green-to-red that is NOT a regression, and by the
+same mechanism it could have been a red-to-green that is NOT a fix. The class docstring had
+PREDICTED this hazard in the abstract ("a package import would rebind around an inert
+mutation") back when `expand_word` was hook-local; this cycle made it real.
+
+The repair strengthens the proof rather than retargeting it. The two affected tests
+neutralize the rebind so the hook's OWN inline copy runs, which is both the text those
+mutations were always meant to measure and a property nothing else in the suite asserted:
+the inline fallback each hook carries for a failed package import must be load-bearing.
+Each test proves that neutralization is itself conditional by running the UNMUTATED source
+through it first and requiring the clean row, so one vacuous proof was not traded for
+another. Retargeting the mutation to the classification-loop site alone was considered and
+rejected: honest, but strictly less coverage than before the promotion.
+
+THE GENERAL RULE, for the next cycle that promotes hook-local text to shared text: grep the
+mutation targets of every conditionality proof in the suite for strings the promotion just
+moved inside a rebound block.

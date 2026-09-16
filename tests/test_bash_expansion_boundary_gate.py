@@ -59,6 +59,8 @@ from __future__ import annotations
 
 import getpass
 import os
+import pwd
+import re
 import shlex
 import subprocess
 from dataclasses import dataclass, field
@@ -69,6 +71,7 @@ import pytest
 
 # autouse: pins cwd to a sandbox, this suite's standing convention (tests/test_bash_write_gate.py).
 from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
+from tests._inventory import EXPAND_MARK_BEGIN, EXPAND_MARK_END, expand_word_copy_sites
 from tests.test_bash_write_gate import (
     HOOK_SH,
     SKILL_ROOT,
@@ -77,12 +80,14 @@ from tests.test_bash_write_gate import (
     run_extractor,
 )
 from tests.test_project_boundary import _post_approval_cache
+from tests.test_worktree_safety_extractor import _env as _worktree_env
 from tests.test_worktree_safety_extractor import _run as _run_worktree_hook
 from tests.test_worktree_safety_extractor import cache_root, project  # noqa: F401
 
 SENTINEL_UNSET_VAR = "NOPE_UNSET"
 SECOND_VAR_NAME = "WRIT_EXPANSION_TEST_VAR2"
 LOGIN = getpass.getuser()
+WT_HOOK = os.path.join(SKILL_ROOT, "hooks", "scripts", "writ-worktree-safety.sh")
 
 
 def _gates():
@@ -697,43 +702,592 @@ class TestUnexpandedFormsHeaderRatchet:
 
 
 # --------------------------------------------------------------------------- #
-# capability 15: the mirror block is untouched.
+# capability 15 (2412ba38 cycle): the mirror block is untouched, in EITHER
+# file that now carries an inline expand_word copy.
 # --------------------------------------------------------------------------- #
 class TestExpandWordDoesNotLiveInTheMirrorBlock:
-    def test_expand_word_is_not_defined_inside_the_mirror_block(self):
+    """Once writ-worktree-safety.sh gains its own inline expand_word copy
+    (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3 ## Files), THAT file's own
+    MIRROR BEGIN/END span -- shared with writ-bash-write-gate.sh and
+    writ/session/bash_tokens.py for split_control_operators and its siblings
+    -- must stay exactly as free of expand_word as the write gate's always
+    was. Parametrized over both hook files rather than two copies of the
+    write-gate-only test, so a fourth EXPAND site that lands inside either
+    hook's MIRROR span is caught by the same assertion."""
+
+    @pytest.mark.parametrize(
+        "hook_path", [HOOK_SH, WT_HOOK],
+        ids=["writ-bash-write-gate.sh", "writ-worktree-safety.sh"],
+    )
+    def test_expand_word_is_not_defined_inside_the_mirror_block(self, hook_path):
         """Reddens if any part of expand_word is placed between MIRROR BEGIN and
-        MIRROR END, the block writ-worktree-safety.sh and
-        writ/session/bash_tokens.py mirror byte-for-byte."""
-        src = Path(HOOK_SH).read_text()
+        MIRROR END, the block writ-worktree-safety.sh, writ-bash-write-gate.sh
+        and writ/session/bash_tokens.py mirror byte-for-byte."""
+        src = Path(hook_path).read_text()
         if "def expand_word(" not in src:
             pytest.fail(
-                "skeleton: hooks/scripts/writ-bash-write-gate.sh has no "
-                "expand_word function yet (plan.md ## Files)"
+                "skeleton: %s has no expand_word function yet (plan.md "
+                "2412ba38-51e1-4b73-895b-7b240a3c21d3 ## Files)" % hook_path
             )
         mirror_start = src.index("# MIRROR BEGIN split_control_operators")
         mirror_end = src.index("# MIRROR END split_control_operators")
         def_pos = src.index("def expand_word(")
         assert not (mirror_start <= def_pos <= mirror_end), (
-            "expand_word must not live inside the MIRROR BEGIN/END block shared "
-            "with writ-worktree-safety.sh and writ/session/bash_tokens.py"
+            "%s: expand_word must not live inside the MIRROR BEGIN/END block "
+            "shared with writ-worktree-safety.sh, writ-bash-write-gate.sh and "
+            "writ/session/bash_tokens.py" % hook_path
+        )
+
+
+########################################################################
+# The worktree hook resolves a tilde the way the shell does
+# (plan.md / capabilities.md, session 2412ba38-51e1-4b73-895b-7b240a3c21d3).
+#
+# THE PIN THIS SECTION REPLACES pinned TODAY's broken verdict
+# (TestWorktreeHookBlindnessIsRecordedNotFixed: `git worktree add ~/evil x`
+# denies with a gitignore remedy that cannot work, because os.path.abspath
+# never expands a tilde). It is gone, not merely renamed: every class below
+# asserts the CORRECT verdict, judged against a real bash oracle, and this
+# whole section reddens against the pre-fix hook for the real reason -- the
+# hook still denies naming a directory the shell will never create there.
+#
+# THE ORACLE DISCIPLINE is the one this file already established for the
+# write gate's own expansion boundary: `_oracle_word` and `_expected_abspath`
+# (defined above, unchanged) are reused as-is rather than re-implemented,
+# because a second hand-rolled "what should this resolve to" helper is
+# exactly the parity-guard mistake this repo has already shipped once (one
+# side of a comparison that quietly stopped being real).
+########################################################################
+
+
+def _worktree_oracle_outside(cwd: Path, env: dict, spelling: str) -> bool:
+    """True when a real bash, asked what SPELLING resolves to under CWD and
+    ENV, lands outside CWD's own tree -- the same is-under-repo-root test the
+    hook's own classification performs, computed independently through the
+    oracle rather than read off the hook's verdict."""
+    word = _oracle_word(spelling, cwd, env)
+    abspath = _expected_abspath(cwd, word)
+    repo_root = str(cwd)
+    return not (abspath == repo_root or abspath.startswith(repo_root + os.sep))
+
+
+def _worktree_oracle_rel(cwd: Path, env: dict, spelling: str) -> str:
+    """The oracle's answer for SPELLING, expressed relative to CWD -- the same
+    os.path.relpath the hook's own classification computes once a target is
+    known to be inside the repo. Callers only use this once
+    `_worktree_oracle_outside` has already confirmed the word resolves
+    inside."""
+    word = _oracle_word(spelling, cwd, env)
+    abspath = _expected_abspath(cwd, word)
+    return os.path.relpath(abspath, str(cwd))
+
+
+@dataclass(frozen=True)
+class WorktreeVerdictCase:
+    id: str
+    spelling: str
+
+
+# The verdict-table population (plan.md ## Analysis, DECISION 2's table): every
+# entry the oracle-driven property test below must classify correctly, with NO
+# hardcoded "this one denies" label anywhere in this module -- only the spelling.
+WORKTREE_VERDICT_POPULATION: list[WorktreeVerdictCase] = [
+    # -- resolve OUTSIDE the repo under the real environment: must be SILENT --
+    WorktreeVerdictCase("bare_tilde_slash", "~/evil"),
+    WorktreeVerdictCase("dollar_home", "$HOME/evil"),
+    WorktreeVerdictCase("dollar_brace_home", "${HOME}/evil"),
+    WorktreeVerdictCase("tilde_root", "~root/evil"),
+    # -- a real shell keeps these literal, so they resolve INSIDE the repo and
+    #    must still DENY, each reason naming the directory bash really creates --
+    WorktreeVerdictCase("double_quoted_tilde_stays_inside", '"~/evil"'),
+    WorktreeVerdictCase("single_quoted_tilde_stays_inside", "'~/evil'"),
+    WorktreeVerdictCase("single_quoted_dollar_home_stays_inside", "'$HOME/evil'"),
+    WorktreeVerdictCase("escaped_tilde", "\\~/evil"),
+    WorktreeVerdictCase("tilde_unknown_login", "~nosuchuser123456xyz/evil"),
+]
+
+
+# --------------------------------------------------------------------------- #
+# capability: the whole population is non-vacuous, and it genuinely contains
+# both an outside-the-repo case and an inside-the-repo case under the real
+# environment -- otherwise the property test below could pass by every case
+# quietly landing on the same side.
+# --------------------------------------------------------------------------- #
+class TestWorktreeVerdictPopulationIsNonVacuous:
+    def test_population_is_non_empty(self):
+        assert WORKTREE_VERDICT_POPULATION
+
+    def test_both_inside_and_outside_cases_exist_for_the_real_environment(
+        self, cache_root, project
+    ):
+        env = _worktree_env(cache_root)
+        outsides = [
+            c for c in WORKTREE_VERDICT_POPULATION
+            if _worktree_oracle_outside(project, env, c.spelling)
+        ]
+        insides = [
+            c for c in WORKTREE_VERDICT_POPULATION
+            if not _worktree_oracle_outside(project, env, c.spelling)
+        ]
+        assert outsides, "no case in the population resolves outside the repo root"
+        assert insides, "no case in the population resolves inside the repo root"
+
+
+# --------------------------------------------------------------------------- #
+# THE REPLACEMENT: TestWorktreeHookAgreesWithTheShellOnTilde (plan.md ## Files
+# / "The test that must redden, and what replaces it"). Covers capabilities
+# 1 ("no permission decision" + oracle confirms outside), 4 ($HOME and
+# ${HOME} agree with the bare tilde), 5 (the literal-kept spellings still
+# deny, naming the real created directory) and 6 (an unknown login name still
+# denies as project-local).
+# --------------------------------------------------------------------------- #
+class TestWorktreeHookAgreesWithTheShellOnTilde:
+    """Replaces TestWorktreeHookBlindnessIsRecordedNotFixed, which pinned
+    TODAY's false refusal. For every spelling in WORKTREE_VERDICT_POPULATION,
+    the real hook and a real bash oracle are asked the same question under
+    the SAME cwd and env, and the hook must deny a project-local target ONLY
+    when the oracle says the word resolves inside the repo root -- never a
+    hardcoded "this spelling denies" table.
+
+    Reddens today (pre-fix) for every OUTSIDE case: os.path.abspath never
+    expands a tilde or a parameter, so the pre-fix hook classifies '~/evil'
+    (and its $HOME/${HOME} siblings and '~root/evil') as project-local under
+    the repo root and denies with a gitignore remedy the oracle proves cannot
+    work, because the real target is the fixture's own real $HOME (or
+    root's), outside the repo.
+    """
+
+    @pytest.mark.parametrize(
+        "case", WORKTREE_VERDICT_POPULATION,
+        ids=[c.id for c in WORKTREE_VERDICT_POPULATION],
+    )
+    def test_hook_denies_iff_the_oracle_resolves_inside_the_repo_root(
+        self, cache_root, project, case
+    ):
+        env = _worktree_env(cache_root)
+        cmd = "git worktree add %s evil-branch" % case.spelling
+        decision, reason = _run_worktree_hook(cmd, cache_root, project)
+        if _worktree_oracle_outside(project, env, case.spelling):
+            assert decision is None, (case.id, decision, reason)
+        else:
+            assert decision == "deny", (case.id, decision, reason)
+            rel = _worktree_oracle_rel(project, env, case.spelling)
+            top = rel.split(os.sep)[0]
+            assert top in reason, (case.id, top, reason)
+
+
+# --------------------------------------------------------------------------- #
+# capability: with the repo root set to the invoking user's own home, the
+# SAME 'git worktree add ~/evil evil-branch' now resolves INSIDE the repo and
+# must DENY naming the real created directory, never '~' or '~/'. This is the
+# non-vacuity proof the fix is not a blanket loosening: expansion can move a
+# verdict in EITHER direction and both directions now agree with the shell.
+# The implementer's own seam: tests/test_worktree_safety_extractor.py's `_env`
+# copies os.environ AT CALL TIME, so monkeypatch.setenv reaches the hook
+# subprocess with no new parameter needed.
+# --------------------------------------------------------------------------- #
+class TestRepoRootAsHomeIsTheNonVacuityProof:
+    def test_same_command_denies_naming_evil_when_repo_root_is_home(
+        self, cache_root, project, monkeypatch
+    ):
+        monkeypatch.setenv("HOME", str(project))
+        env = _worktree_env(cache_root)
+        assert not _worktree_oracle_outside(project, env, "~/evil"), (
+            "fixture invariant broken: with HOME=project, ~/evil must resolve "
+            "INSIDE the repo for this to be the non-vacuity proof"
+        )
+        decision, reason = _run_worktree_hook(
+            "git worktree add ~/evil evil-branch", cache_root, project
+        )
+        assert decision == "deny", (decision, reason)
+        assert "evil/" in reason, reason
+        assert "~" not in reason, reason
+
+
+# --------------------------------------------------------------------------- #
+# capability: no reason the hook can emit names a .gitignore remedy for a
+# target that a real bash resolves outside the repo root -- the property that
+# matters most, asserted over a population rather than for one command.
+# --------------------------------------------------------------------------- #
+OUTSIDE_SPELLINGS: tuple[str, ...] = ("~/evil", "$HOME/evil", "${HOME}/evil", "~root/evil")
+
+
+class TestNoReasonNamesAGitignoreRemedyForAPathTheShellPutsOutsideTheRepo:
+    """The rule is that a refusal must never hand the user advice that cannot
+    work. Every spelling here is asserted OUTSIDE by a real bash oracle
+    before the property is judged, so a fixture that stopped meaning what it
+    says reddens loudly instead of silently making the property vacuous."""
+
+    def test_outside_spellings_population_is_non_empty(self):
+        assert OUTSIDE_SPELLINGS
+
+    @pytest.mark.parametrize("spelling", OUTSIDE_SPELLINGS, ids=lambda s: s)
+    def test_no_gitignore_remedy_when_the_oracle_confirms_outside(
+        self, cache_root, project, spelling
+    ):
+        env = _worktree_env(cache_root)
+        assert _worktree_oracle_outside(project, env, spelling), (
+            "fixture invariant broken: %r must resolve outside the sandboxed "
+            "repo root for this property to mean anything" % spelling
+        )
+        decision, reason = _run_worktree_hook(
+            "git worktree add %s evil-branch" % spelling, cache_root, project
+        )
+        assert not (decision == "deny" and "gitignore" in (reason or "").lower()), (
+            spelling, decision, reason
         )
 
 
 # --------------------------------------------------------------------------- #
-# capability 16: the worktree hook's same-shaped blindness is RECORDED, not
-# fixed. This is a pin on TODAY's verdict, so it is green now and reddens only
-# if that verdict changes without a deliberate update to this test.
+# capability: a target whose FIRST segment carries an unresolved simple-name
+# parameter still denies naming the top segment when THAT segment is
+# knowable (scratch/$NOPE/x denies naming scratch/); the ask population below
+# covers the case where the first segment itself is unresolvable.
 # --------------------------------------------------------------------------- #
-class TestWorktreeHookBlindnessIsRecordedNotFixed:
-    def test_git_worktree_add_tilde_evil_is_denied_with_the_gitignore_message_today(
-        self, cache_root, project
+class TestUnresolvedParameterOutsideTheFirstSegmentStillDeniesNamingTheTop:
+    def test_unresolved_variable_in_a_later_segment_still_denies_naming_the_top(
+        self, cache_root, project, monkeypatch
     ):
-        """Reddens if writ-worktree-safety.sh's verdict for this exact command
-        changes without a deliberate update to this pin. If that change is a
-        real fix for the worktree hook's own blind spot (plan.md ## Analysis
-        section 4: it should `sys.exit(0)` because the shell actually creates
-        the worktree OUTSIDE the project), update this test to match -- it is
-        recorded as a KNOWN DEFECT this cycle, not fixed."""
-        decision, reason = _run_worktree_hook("git worktree add ~/evil x", cache_root, project)
+        monkeypatch.delenv(SENTINEL_UNSET_VAR, raising=False)
+        cmd = "git worktree add scratch/$%s/x evil-branch" % SENTINEL_UNSET_VAR
+        decision, reason = _run_worktree_hook(cmd, cache_root, project)
         assert decision == "deny", (decision, reason)
-        assert "gitignore" in reason.lower(), reason
+        assert "scratch/" in reason, reason
+
+
+@dataclass(frozen=True)
+class WorktreeAskCase:
+    id: str
+    spelling: str
+    form: str    # the UNRESOLVED FORMS header name this case corresponds to
+    names: str   # the substring the reason must literally name
+
+
+# The ask population (plan.md ## Analysis, DECISION 2 + "Header disclosure"):
+# every form the worktree hook cannot resolve, and therefore asks about
+# rather than guessing a gitignore remedy for. TestWorktreeUnresolvedFormsHeaderRatchet
+# below DERIVES the header's expected names from this same population, so the
+# header and the population cannot silently drift apart.
+WORKTREE_ASK_POPULATION: list[WorktreeAskCase] = [
+    WorktreeAskCase("tilde_pwd", "~+/evil", "tilde-pwd", "~+"),
+    WorktreeAskCase("tilde_oldpwd", "~-/evil", "tilde-oldpwd", "~-"),
+    WorktreeAskCase("tilde_dirstack", "~1/evil", "tilde-dirstack", "~1"),
+    WorktreeAskCase(
+        "unresolved_parameter", "$%s/evil" % SENTINEL_UNSET_VAR,
+        "unresolved-parameter", SENTINEL_UNSET_VAR,
+    ),
+]
+
+
+class TestWorktreeAskPopulationIsNonVacuous:
+    def test_population_is_non_empty(self):
+        assert WORKTREE_ASK_POPULATION
+
+    def test_every_case_carries_a_form_name(self):
+        assert all(c.form for c in WORKTREE_ASK_POPULATION), WORKTREE_ASK_POPULATION
+
+
+# --------------------------------------------------------------------------- #
+# capability: ~+/x, ~-/x and ~1/x, and an unresolved simple-name parameter in
+# the FIRST path segment ($NOPE/x), each produce permissionDecision `ask`
+# whose reason names the form and the way out, and none of them emits a
+# gitignore remedy. Also the sentinel-print proof for the NEW ask path: if
+# the implementation forgot to print the completion sentinel as the ask
+# branch's last line, the bash consumer would read the truncated block as a
+# fault and substitute writ_decider_fault's own reason, which this test
+# distinguishes from a real, working ask.
+# --------------------------------------------------------------------------- #
+class TestUnresolvableFormsAskInsteadOfGuessingAGitignoreRemedy:
+    @pytest.mark.parametrize(
+        "case", WORKTREE_ASK_POPULATION, ids=[c.id for c in WORKTREE_ASK_POPULATION],
+    )
+    def test_each_unresolvable_form_asks_naming_the_form_with_no_gitignore_remedy(
+        self, cache_root, project, monkeypatch, case
+    ):
+        monkeypatch.delenv(SENTINEL_UNSET_VAR, raising=False)
+        cmd = "git worktree add %s evil-branch" % case.spelling
+        decision, reason = _run_worktree_hook(cmd, cache_root, project)
+        assert decision == "ask", (case.id, decision, reason)
+        assert "ENF-DECIDER-INCOMPLETE" not in reason, (
+            "the ask branch did not print the completion sentinel as its "
+            "last line, so the consumer read it as a decider fault instead "
+            "of the real ask: %s, %r" % (case.id, reason)
+        )
+        assert case.names in reason, (case.id, reason)
+        assert "gitignore" not in reason.lower(), (case.id, reason)
+        assert "spell the path literally" in reason.lower(), (case.id, reason)
+
+
+# --------------------------------------------------------------------------- #
+# capability: the worktree hook's header carries an UNRESOLVED FORMS block
+# (a marker family distinct from the write gate's own UNEXPANDED FORMS, so
+# the two ratchets cannot be conflated) naming exactly the forms the ask
+# population above covers.
+# --------------------------------------------------------------------------- #
+def _unresolved_forms_from_worktree_header(source: str) -> set[str]:
+    """Names-only block writ-worktree-safety.sh's header must carry, parsed
+    the same shape this file's own `_unexpanded_forms_from_header` parses the
+    write gate's sibling block."""
+    try:
+        start = source.index("# UNRESOLVED FORMS BEGIN")
+    except ValueError:
+        pytest.fail(
+            "skeleton: hooks/scripts/writ-worktree-safety.sh has no "
+            "'# UNRESOLVED FORMS BEGIN' block yet (plan.md ## Files)"
+        )
+    start = source.index("\n", start) + 1
+    end = source.index("# UNRESOLVED FORMS END", start)
+    body = " ".join(line.lstrip("#").strip() for line in source[start:end].splitlines())
+    return {n.strip() for n in body.split(",") if n.strip()}
+
+
+class TestWorktreeUnresolvedFormsHeaderRatchet:
+    def test_header_names_exactly_the_ask_populations_forms(self):
+        """Reddens if a form gains resolution in the code without leaving the
+        header block, or if an ask case is added with no matching header
+        name."""
+        src = Path(WT_HOOK).read_text()
+        declared = _unresolved_forms_from_worktree_header(src)
+        population_forms = {c.form for c in WORKTREE_ASK_POPULATION}
+        assert declared == population_forms, (declared, population_forms)
+
+
+# --------------------------------------------------------------------------- #
+# capability: every ask and every deny is recorded through log_gate_decision
+# with the judged path in the target column, and an ask row never falls
+# through to the allow record.
+# --------------------------------------------------------------------------- #
+class TestWorktreeAskIsDeclaredInTheFiredrillCensusAndNeverFallsThroughToAllow:
+    """Ties tests/firedrill/_census.py's new ask-arm declaration to real
+    coverage, the same way TestUnknownAskIsDeclaredInTheFiredrillCensus above
+    ties the write gate's own unresolved-variable ask to one: reddens if the
+    census entry stops matching a real ask, or if the audit row it produces
+    is recorded as anything other than 'ask' -- in particular, never
+    silently as 'allow'."""
+
+    def test_declared_ask_arm_is_a_real_working_refusal_recorded_as_ask(self, tmp_path):
+        from tests.firedrill._census import by_id, matches_action_marker
+        from tests.firedrill._harness import make_isolation, run_hook
+
+        entry = by_id("worktree-safety-unresolvable-tilde-ask")
+        iso = make_isolation(tmp_path, session_id="expand-worktree-census-ask")
+        setup = entry.setup(iso)
+        result = run_hook(entry.script, setup["envelope"], iso,
+                          extra_env=setup.get("extra_env"))
+        assert result.permission_decision() == "ask", result.stdout
+        assert matches_action_marker(result.permission_reason()), result.permission_reason()
+        audit = result.audit()
+        assert audit, "audit stream is empty; the hook recorded nothing"
+        rows = [r for r in audit
+                if r.get("event") == "gate_decision" and r.get("gate") == entry.gate_name]
+        assert rows, audit
+        assert rows[-1].get("decision") == "ask", rows
+        assert not any(r.get("decision") == "allow" for r in rows), (
+            "an ask row fell through to an allow record", rows
+        )
+
+
+class TestDenyAuditRowCarriesTheExpandedPathNotTheRawToken:
+    """The deny half of the same capability, and plan.md ## Analysis's "THE
+    AUDIT ROW" consumer: once the hook expands the target before classifying
+    it, the column log_gate_decision records must carry the directory bash
+    will really create, not the raw tilde token nobody could act on."""
+
+    def test_the_target_column_is_the_expanded_relative_path(self, tmp_path):
+        from tests.firedrill._harness import make_isolation, run_hook, write_cache
+
+        iso = make_isolation(tmp_path, session_id="expand-worktree-audit-deny")
+        write_cache(iso, {"mode": "work"})
+        envelope = {
+            "session_id": iso.session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "git worktree add ~/evil evil-branch"},
+        }
+        result = run_hook("writ-worktree-safety.sh", envelope, iso,
+                          extra_env={"HOME": str(iso.project_root)})
+        assert result.permission_decision() == "deny", result.stdout
+        rows = [r for r in result.audit()
+                if r.get("event") == "gate_decision" and r.get("gate") == "worktree-safety"]
+        assert rows, result.audit()
+        assert rows[-1].get("target") == "evil", rows
+        assert "~" not in (rows[-1].get("target") or ""), rows
+
+
+# --------------------------------------------------------------------------- #
+# The EXPAND marker family: writ/session/bash_expand.py plus an inline,
+# byte-identical copy in each of the two Bash hooks (plan.md ## Files /
+# ## Analysis "FINDING: the sibling helper cannot be reached..."). The
+# population is DERIVED (tests/_inventory.py::expand_word_copy_sites), never
+# a hardcoded three-file tuple, so a fourth pasted copy fails by name.
+# --------------------------------------------------------------------------- #
+EXPAND_NAMESPACE_NAMES = frozenset({"os", "re", "pwd", "strip_unbalanced_close"})
+
+# A representative spelling table, not an exhaustive one: enough forms to
+# tell apart the tilde branch, the parameter branch, quoting, escaping and an
+# unresolved name, without re-deriving the write gate's own 20-entry
+# population (that file's job, not this one's).
+EXPAND_SPELLING_TABLE: tuple[str, ...] = (
+    "~/probe", "~", "~root", "~nosuchuser123456xyz/probe",
+    "$HOME/probe", "${HOME}/probe", "'$HOME/probe'", '"~/probe"',
+    "\\~/probe", "~+/probe", "~-/probe", "~1/probe",
+    "$%s/probe" % SENTINEL_UNSET_VAR,
+)
+
+
+def _expand_copy_namespace(block: str, path: str) -> dict:
+    """One EXPAND-block copy, exec'd in a namespace holding ONLY os, re, pwd
+    and strip_unbalanced_close (capability: "the EXPAND block contains no
+    import statement and execs in a namespace holding only ..."). `exec` here
+    runs REPO SOURCE TEXT this test just read off disk, never
+    attacker-influenced input -- the same precedented pattern
+    tests/test_bash_control_operator_split.py's `_mirror_ns` already uses for
+    the sibling MIRROR block, one marker family over."""
+    from writ.session.bash_tokens import strip_unbalanced_close
+
+    ns = {"os": os, "re": re, "pwd": pwd, "strip_unbalanced_close": strip_unbalanced_close}
+    exec(compile(block, "<expand:%s>" % path, "exec"), ns)  # noqa: S102
+    return ns
+
+
+def _real_expand_sites_or_skeleton_fail() -> dict[str, str]:
+    sites = expand_word_copy_sites()
+    if not sites:
+        pytest.fail(
+            "skeleton: no file under writ/, hooks/, bin/ or scripts/ carries "
+            "the '# EXPAND BEGIN expand_word' marker yet (plan.md ## Files)"
+        )
+    return sites
+
+
+class TestExpandWordCopySitesIsDerivedNotHardcoded:
+    """The population must come from scanning the tree, never from a fixed
+    three-file tuple, so a fourth pasted copy is caught BY NAME and a
+    detector that quietly returns {} cannot pass silently. Pinned against
+    SYNTHETIC files under tmp_path, the way
+    tests/test_daemon_leak_guard.py::TestDaemonStartingHooksIsDerivedNotHardcoded
+    pins `daemon_starting_hooks`."""
+
+    def test_the_real_tree_yields_a_non_empty_map(self):
+        sites = expand_word_copy_sites()
+        assert isinstance(sites, dict)
+        assert sites, (
+            "expand_word_copy_sites() found no '# EXPAND BEGIN expand_word' "
+            "marker anywhere under writ/, hooks/, bin/ or scripts/ (plan.md "
+            "## Files)"
+        )
+
+    def test_the_real_population_names_at_least_the_three_files_the_plan_expects(self):
+        sites = _real_expand_sites_or_skeleton_fail()
+        names = {Path(p).name for p in sites}
+        assert names >= {
+            "writ-bash-write-gate.sh", "writ-worktree-safety.sh", "bash_expand.py",
+        }, names
+
+    def test_a_synthetic_file_with_the_markers_is_found(self, tmp_path):
+        f = tmp_path / "made-up.py"
+        f.write_text(
+            "%s\nX = 1\n%s\n" % (EXPAND_MARK_BEGIN, EXPAND_MARK_END)
+        )
+        sites = expand_word_copy_sites(roots=(tmp_path,))
+        assert str(f) in sites, sites
+        assert sites[str(f)].strip() == "X = 1", sites[str(f)]
+
+    def test_a_file_with_no_markers_is_absent(self, tmp_path):
+        f = tmp_path / "unrelated.py"
+        f.write_text("X = 1\n")
+        sites = expand_word_copy_sites(roots=(tmp_path,))
+        assert str(f) not in sites, sites
+
+    def test_a_drifted_copy_still_registers_but_reads_as_a_mismatch(self, tmp_path):
+        """A fourth pasted copy that has DRIFTED from the other three must
+        still be FOUND by name (present in the map) so the identity test
+        below can report it as a mismatch, rather than the derivation
+        silently excluding anything that does not match today's exact
+        text."""
+        a = tmp_path / "a.py"
+        b = tmp_path / "b.py"
+        a.write_text("%s\nX = 1\n%s\n" % (EXPAND_MARK_BEGIN, EXPAND_MARK_END))
+        b.write_text("%s\nX = 2\n%s\n" % (EXPAND_MARK_BEGIN, EXPAND_MARK_END))
+        sites = expand_word_copy_sites(roots=(tmp_path,))
+        assert str(a) in sites and str(b) in sites
+        assert sites[str(a)] != sites[str(b)], (
+            "a deliberately drifted pair of synthetic copies read as "
+            "identical; the derivation is not reading the block text at all"
+        )
+
+
+class TestEveryRealExpandCopyIsByteIdenticalAndImportless:
+    """Capability: every file carrying the EXPAND markers holds a
+    byte-identical block, and none of them may import anything -- the same
+    contract the MIRROR block already holds split_control_operators to,
+    one marker family over."""
+
+    def test_every_copy_in_the_real_tree_is_byte_identical(self):
+        sites = _real_expand_sites_or_skeleton_fail()
+        assert len(set(sites.values())) == 1, sorted(sites)
+
+    def test_none_of_the_real_copies_contain_an_import_statement(self):
+        sites = _real_expand_sites_or_skeleton_fail()
+        for path, block in sites.items():
+            offenders = [
+                ln for ln in block.splitlines()
+                if ln.strip().startswith(("import ", "from "))
+            ]
+            assert not offenders, (path, offenders)
+
+
+class TestEachExpandCopyExecsInTheDeclaredNamespaceAndAgrees:
+    """Capability: each copy computes identical (value, unresolved) pairs
+    over a shared spelling table, execing bare in a namespace holding ONLY
+    os, re, pwd and strip_unbalanced_close. ORACLE DISCIPLINE note: this is a
+    copy-vs-copy identity check, not a copy-vs-shell one -- expand_word's own
+    agreement with a real bash is TestWorktreeHookAgreesWithTheShellOnTilde's
+    job, exercised through the real hook, not through this exec'd copy."""
+
+    def test_each_copy_execs_bare_and_defines_expand_word(self):
+        sites = _real_expand_sites_or_skeleton_fail()
+        for path, block in sites.items():
+            ns = _expand_copy_namespace(block, path)
+            assert "expand_word" in ns, (path, sorted(ns))
+
+    @pytest.mark.parametrize("spelling", EXPAND_SPELLING_TABLE, ids=lambda s: s)
+    def test_every_copy_agrees_with_every_other_on_the_spelling_table(
+        self, spelling, monkeypatch
+    ):
+        monkeypatch.delenv(SENTINEL_UNSET_VAR, raising=False)
+        sites = _real_expand_sites_or_skeleton_fail()
+        results = {}
+        for path, block in sites.items():
+            ns = _expand_copy_namespace(block, path)
+            results[path] = ns["expand_word"](spelling)
+        assert len(set(results.values())) == 1, (spelling, results)
+
+
+class TestBothHooksRebindExpandWordFromThePackageAfterTheInlineCopy:
+    """Capability: both hooks prepare sys.path and rebind expand_word from
+    writ.session.bash_expand AFTER the inline copy -- the same pattern and
+    the same reason as the MIRROR block's own package rebind
+    (test_bash_control_operator_split.py::TestThePackageCopyIsTheOneThatRuns).
+    The sys.path insert is ALREADY present in both hooks (it is what makes
+    the MIRROR import resolve too), so only the NEW import needs to exist,
+    and it must come AFTER this file's own EXPAND END marker: a rebind
+    before the inline copy would shadow nothing."""
+
+    @pytest.mark.parametrize(
+        "hook", [HOOK_SH, WT_HOOK], ids=["write-gate", "worktree-hook"],
+    )
+    def test_the_hook_rebinds_expand_word_from_the_package_after_the_inline_copy(
+        self, hook
+    ):
+        src = Path(hook).read_text()
+        if EXPAND_MARK_END not in src:
+            pytest.fail(
+                "skeleton: %s has no '# EXPAND END expand_word' marker yet "
+                "(plan.md ## Files)" % hook
+            )
+        rebind_needle = "from writ.session.bash_expand import expand_word"
+        assert rebind_needle in src, hook
+        assert src.index(rebind_needle) > src.index(EXPAND_MARK_END), (
+            "%s rebinds expand_word before its own inline EXPAND END marker" % hook
+        )

@@ -1432,6 +1432,72 @@ def python_shlex_split_callers(*, package_dir: Path = REPO / "writ") -> dict[str
     return out
 
 
+# ── EXPAND marker sites (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3) ──────────
+#
+# `expand_word` moves into THREE places this cycle: the canonical module
+# `writ/session/bash_expand.py`, and an inline byte-identical copy in each of the
+# two Bash hooks that need it (writ-bash-write-gate.sh already carries the authored
+# text; writ-worktree-safety.sh gains its own copy). Each copy is wrapped in
+# `# EXPAND BEGIN expand_word` / `# EXPAND END expand_word` markers -- the same
+# marker-delimited-block convention `bash_token_split_sites` above already uses for
+# the MIRROR family, one marker name over so the two ratchets cannot be conflated.
+#
+# DERIVED, not the three-file tuple this paragraph just named: a fourth copy pasted
+# somewhere this population does not scan would otherwise need a human to notice
+# and update a literal list, which is the exact duplication this module exists to
+# delete (see the module docstring). `tests/` is EXCLUDED on purpose -- this
+# module's own source, and tests/test_bash_expansion_boundary_gate.py's docstrings
+# and synthetic fixtures, may quote or discuss the marker text without becoming a
+# "copy" the identity check then compares against production sources.
+EXPAND_MARK_BEGIN = "# EXPAND BEGIN expand_word"
+EXPAND_MARK_END = "# EXPAND END expand_word"
+_EXPAND_SCAN_ROOTS = (REPO / "writ", REPO / "hooks", REPO / "bin", REPO / "scripts")
+
+
+def _expand_block(text: str) -> str | None:
+    """The text between the EXPAND markers in TEXT, or None when TEXT carries no
+    BEGIN marker at all. Mirrors tests/test_bash_control_operator_split.py's own
+    `_mirror_block`, one marker family over: `.strip("\\n")` so a leading/trailing
+    blank line from the marker's own line break never counts as a byte difference
+    between an otherwise identical pair of copies."""
+    try:
+        start = text.index(EXPAND_MARK_BEGIN) + len(EXPAND_MARK_BEGIN)
+    except ValueError:
+        return None
+    end = text.index(EXPAND_MARK_END, start)
+    return text[start:end].strip("\n")
+
+
+def expand_word_copy_sites(*, roots: tuple[Path, ...] = _EXPAND_SCAN_ROOTS) -> dict[str, str]:
+    """Every `.py`/`.sh` file under `roots` carrying an EXPAND BEGIN marker, mapped
+    to the block text between it and the matching END marker.
+
+    `roots` is a keyword for the same reason `daemon_starting_hooks(*,
+    scripts_dir=)` gives: tests/test_bash_expansion_boundary_gate.py pins this
+    derivation's precision against SYNTHETIC files under `tmp_path`, never against
+    the real tree's current wording alone, and also asserts the real-tree map
+    non-empty and its file names a superset of the three this cycle's plan names --
+    a derivation that silently returned `{}` would make every dependent identity
+    assertion pass on any tree.
+    """
+    out: dict[str, str] = {}
+    for root in roots:
+        if not root.is_dir():
+            continue
+        paths = list(root.rglob("*.py")) + list(root.rglob("*.sh"))
+        for path in sorted(paths):
+            if not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="strict")
+            except (UnicodeDecodeError, OSError):
+                continue
+            block = _expand_block(text)
+            if block is not None:
+                out[str(path)] = block
+    return out
+
+
 # ── Daemon-reachability skip sites (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3) ──
 #
 # THE CONVENTION THIS EXISTS TO STOP REGROWING: a test class that skips because "the Writ
