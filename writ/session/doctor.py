@@ -1494,37 +1494,16 @@ def _metrics_rows(event: str) -> list[dict] | None:
     return rows
 
 
-def _subagent_governance_census() -> dict | None:
-    """Bucket every sub-agent Writ has seen by how it came to be governed.
+def _subagent_governance_evidence() -> tuple[dict[str, set[str]], set[str]] | None:
+    """The census's buckets AND, separately, the universe they are supposed to partition.
 
-    Returns None when no stream is readable, which is NOT the same as "nothing is governed".
-
-    Five buckets, because averaging them hides the thing worth knowing:
-      governed:    a `subagent_start` row and no unrepaired seed failure, so the event
-                   fired and the cache was made at spawn
-      lazy:        a `subagent_seeded` row that does NOT name the spawn path, so a hook
-                   inside the agent made the cache
-      seed_failed: a `subagent_seed_failed` row with no later seed of any kind, so the
-                   hook ran and the seeding inside it did not
-      reachable:   none of those, but Writ hooks ran inside it (a daemon or hook row under
-                   its own agent id), so a future hook could seed it
-      unreachable: only stop-side rows, so Writ never ran anything inside it
-
-    A SEED FAILURE IS A POSITIVE RECORD, NEVER AN INFERENCE FROM A MISSING ROW. A
-    `subagent_start` row is written at the END of the hook whether or not the seed block ran,
-    so that row alone stopped proving governance; what subtracts an agent from `governed` is
-    its own `subagent_seed_failed` row and nothing else. The archives hold no such row, so
-    every dispatch recorded before this event existed keeps exactly the classification it
-    had, and nothing is retroactively relabelled.
-
-    A SPAWN-MARKED SEED IS NOT A LAZY ONE. `seed_subagent_cache` logs `subagent_seeded` on
-    both paths, so counting every such row as lazy would count each governed dispatch twice
-    once spawn seeding works again. A row with no `cache_source` at all keeps its earlier
-    lazy meaning: it is not evidence that the spawn hook seeded.
-
-    READS THE ARCHIVES. The wrong diagnosis that produced this cycle came from a grep that
-    silently skipped 226 gzipped files holding 1,421 `subagent_start` rows, so a census that
-    reads only the live file would repeat the mistake it exists to correct.
+    THE UNIVERSE IS RETURNED, NOT RECOVERED FROM THE BUCKETS, and that is the whole reason
+    this function is not just `_subagent_governance_members`. `total` used to be the SUM of
+    the bucket lengths, which made "the buckets partition the universe" true for every
+    census this code could produce: the live partition assertion was identically zero, so
+    neither a member that fell into NO bucket (the pre-cycle leak, one real agent) nor a
+    member counted TWICE could redden it. `total` is `len(known)` now, computed from the
+    universe set, so the sum is checked against something that does not depend on it.
     """
     import gzip
 
@@ -1543,6 +1522,7 @@ def _subagent_governance_census() -> dict | None:
 
     started: set[str] = set()
     seeded: set[str] = set()
+    spawn_seeded: set[str] = set()
     lazily_seeded: set[str] = set()
     seed_failed: set[str] = set()
     completed: set[str] = set()
@@ -1561,15 +1541,21 @@ def _subagent_governance_census() -> dict | None:
                         continue
                     event = row.get("event")
                     agent = str(row.get("agent_id") or "")
+                    # The lazy path's failure row files the agent under `session` and
+                    # carries no `agent_id` at all, because the process that writes it has
+                    # only the one id to give.
+                    who = agent or str(row.get("session") or "")
                     if event == "subagent_start":
-                        started.add(agent or str(row.get("session") or ""))
+                        started.add(who)
                     elif event == "subagent_seeded":
-                        who = agent or str(row.get("session") or "")
                         seeded.add(who)
-                        if str(row.get("cache_source") or "") != "subagent_start":
+                        source = str(row.get("cache_source") or "")
+                        if source == "subagent_start":
+                            spawn_seeded.add(who)
+                        elif source == "lazy_seed":
                             lazily_seeded.add(who)
                     elif event == "subagent_seed_failed":
-                        seed_failed.add(agent or str(row.get("session") or ""))
+                        seed_failed.add(who)
                     elif event == "subagent_complete":
                         completed.add(agent)
                     else:
@@ -1587,15 +1573,131 @@ def _subagent_governance_census() -> dict | None:
     # A later seed of any kind REPAIRS a failure, so only agents that were never seeded
     # afterwards are held against the governed count.
     unrepaired = seed_failed - seeded
-    ungoverned = completed - started - seeded - unrepaired
-    return {
-        "governed": len((completed & started) - unrepaired),
-        "lazy": len(completed & lazily_seeded),
-        "seed_failed": len(completed & unrepaired),
-        "reachable": len(ungoverned & active),
-        "unreachable": len(ungoverned - active),
-        "total": len(completed),
+    known = started | seeded | seed_failed | completed
+    known.discard("")
+
+    members: dict[str, set[str]] = {
+        "governed": set(),
+        "lazy": set(),
+        "seed_failed": set(),
+        "reachable": set(),
+        "unreachable": set(),
     }
+    for who in known:
+        if who in unrepaired:
+            bucket = "seed_failed"
+        elif who in spawn_seeded:
+            bucket = "governed"
+        elif who in lazily_seeded:
+            bucket = "lazy"
+        elif who in started:
+            bucket = "governed"
+        elif who in seeded:
+            bucket = "lazy"
+        elif who in active:
+            bucket = "reachable"
+        else:
+            bucket = "unreachable"
+        members[bucket].add(who)
+    return members, known
+
+
+def _subagent_governance_members() -> dict[str, set[str]] | None:
+    """The census's buckets, each naming the agents in it, or None when nothing is readable.
+
+    THE PUBLISHED COUNTS ARE MADE OF THIS, not of a second reading of the same stream:
+    `_subagent_governance_census` counts exactly this return value, so a by-name
+    corroboration (the lazy bucket held against the `lazy_seed` caches on disk) can never
+    drift from the number the doctor prints. The universe, the precedence ladder and why
+    `active` adds no member are all recorded on that function.
+    """
+    evidence = _subagent_governance_evidence()
+    return None if evidence is None else evidence[0]
+
+
+def _subagent_governance_census() -> dict | None:
+    """Bucket every sub-agent Writ has seen by how it came to be governed.
+
+    Returns None when no stream is readable, which is NOT the same as "nothing is governed".
+
+    Five buckets, because averaging them hides the thing worth knowing:
+      governed:    the spawn path made the cache (a `subagent_seeded` row naming
+                   `subagent_start`, or failing that a `subagent_start` row), and no
+                   unrepaired seed failure contradicts it
+      lazy:        a `subagent_seeded` row that does NOT name the spawn path, so a hook
+                   inside the agent made the cache
+      seed_failed: a `subagent_seed_failed` row with no later seed of any kind, so the
+                   hook ran and the seeding inside it did not
+      reachable:   none of those, but Writ hooks ran inside it (a daemon or hook row under
+                   its own agent id), so a future hook could seed it
+      unreachable: only stop-side rows, so Writ never ran anything inside it
+
+    THE UNIVERSE IS EVERY AGENT NAMED BY A LIFECYCLE ROW, NOT EVERY AGENT THAT FINISHED.
+    Every bucket used to be intersected with `completed`, and `total` was `len(completed)`.
+    A lazily seeded agent exists BECAUSE its harness never delivered `SubagentStart`, and
+    the same gap means no `subagent_complete` row arrives either, so the one population
+    this check exists to find was absent from all five buckets AND from the denominator:
+    the census reported `lazy: 0` against 9 `lazy_seed` rows in the archives and 10
+    `lazy_seed` caches on disk. The universe is now
+    `started | seeded | seed_failed | completed`.
+
+    WHAT `total` MEANS TO A READER NOW. Not "dispatches that finished" but "sub-agents Writ
+    has any lifecycle record of". That is the honest denominator for the question this
+    check asks, because an agent that inherited nothing and then vanished is precisely the
+    case being counted, and requiring it to complete makes the measurement conditional on
+    the harness gap that causes the condition.
+
+    THE REJECTED ALTERNATIVE was widening `total` alone and leaving the other four buckets
+    keyed on `completed`. That yields parts which do not sum to their own total, a worse
+    artifact than the defect it fixes, and it would have left `governed`, `reachable` and
+    `unreachable` measuring a population chosen by the harness rather than by Writ.
+
+    `active` IS A QUALIFIER AND NEVER ADDS A MEMBER. It collects `row["session"]` for every
+    row whose event is none of the four lifecycle events, and a main session's rows carry a
+    session with no `agent_id`, so every main session Writ has ever logged is in it.
+    Measured 2026-09-16: `active` holds 10,110 sessions of which 3,593 have no sub-agent
+    lifecycle row at all, so a member-adding `active` would take `total` from about 6,550 to
+    about 10,140 and report the machine's whole session history as ungoverned sub-agents.
+    The old intersection with `completed` filtered them out by accident; the exclusion is
+    explicit now because the accident is gone. Those figures are approximate and dated on
+    purpose: the stream grows while the machine is used, so a number written to the digit
+    here would be wrong by the next hour and stay wrong.
+
+    ONE PRECEDENCE LADDER, NOT SET ALGEBRA, so `sum(buckets) == total` is a CHECKABLE
+    claim rather than an identity. `total` is `len(known)`, taken from the universe set and
+    not from the bucket lengths, so the sum can come out below it (a member classified into
+    no bucket) or above it (a member classified twice); summing the buckets into `total`
+    would make both unobservable. The old expressions leaked: `ungoverned`
+    subtracted `seeded` while `governed` only added `completed & started`, so an agent with
+    a seed row and no start row fell into no bucket at all and the live run summed to one
+    less than its own total. Each member is classified exactly once now, and a
+    `lazy_seed`-marked seed row outranks a bare `subagent_start` row ON PURPOSE: the gate
+    reads the cache's source and a `lazy_seed` cache confers no authority, so calling such
+    an agent governed would overstate what happened.
+
+    A SEED FAILURE IS A POSITIVE RECORD, NEVER AN INFERENCE FROM A MISSING ROW. A
+    `subagent_start` row is written at the END of the hook whether or not the seed block ran,
+    so that row alone stopped proving governance; what subtracts an agent from `governed` is
+    its own `subagent_seed_failed` row and nothing else. The archives hold no such row, so
+    every dispatch recorded before this event existed keeps exactly the classification it
+    had, and nothing is retroactively relabelled.
+
+    A SPAWN-MARKED SEED IS NOT A LAZY ONE. `seed_subagent_cache` logs `subagent_seeded` on
+    both paths, so counting every such row as lazy would count each governed dispatch twice
+    once spawn seeding works again. A row with no `cache_source` at all keeps its earlier
+    lazy meaning: it is not evidence that the spawn hook seeded.
+
+    READS THE ARCHIVES. The wrong diagnosis that produced this cycle came from a grep that
+    silently skipped 226 gzipped files holding 1,421 `subagent_start` rows, so a census that
+    reads only the live file would repeat the mistake it exists to correct.
+    """
+    evidence = _subagent_governance_evidence()
+    if evidence is None:
+        return None
+    members, known = evidence
+    census = {bucket: len(ids) for bucket, ids in members.items()}
+    census["total"] = len(known)
+    return census
 
 
 def check_subagent_role_scope_coverage(opts: DoctorOptions) -> CheckResult:
@@ -1675,14 +1777,24 @@ def check_subagent_governance_census(opts: DoctorOptions) -> CheckResult:
     if not census["total"]:
         return _ok(name=name, detail="No sub-agent dispatches recorded yet.")
 
+    # THE DENOMINATOR IS NOT "DISPATCHES" ANY MORE, and saying so is the point of the
+    # rewording: it counts every sub-agent Writ holds a lifecycle row for, including the
+    # lazily seeded ones that never produce a completion row at all. Calling those
+    # "dispatches" is what let a whole population sit outside a number that looked total.
     detail = (
         f"{census['governed']} governed at spawn, {census['lazy']} lazily seeded, "
-        f"{census['seed_failed']} whose seeding failed at spawn, "
+        f"{census['seed_failed']} whose seeding failed, "
         f"{census['reachable']} ungoverned but reachable, "
-        f"{census['unreachable']} unreachable, of {census['total']} dispatches. "
-        "The seeding-failure count comes only from subagent_seed_failed rows, which no "
-        "archived dispatch carries, so a zero there means unrecorded rather than proven "
-        "clean."
+        f"{census['unreachable']} unreachable, of {census['total']} sub-agent(s) Writ has "
+        "a lifecycle record of. "
+        "The seeding-failure count comes only from subagent_seed_failed rows. Both the "
+        "spawn path and the lazy path write one now, but only for faults the seeder "
+        "could see and report: an unreadable parent cache is already turned into an "
+        "empty one a layer down, so the seeder finds no mode to inherit and declines "
+        "instead of failing, and the row bash writes when the seeder never ran needs its "
+        "own friction-append to survive. A zero here means no REPORTED failure, not a "
+        "proven clean seed, and it still means unrecorded for the archived dispatches "
+        "that predate the row."
     )
     covered = census["governed"] + census["lazy"]
     # Warn only when the MAJORITY is ungoverned. A handful of unreachable agents is the

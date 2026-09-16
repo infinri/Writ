@@ -431,28 +431,65 @@ load_hook_env() {
 # COST. For a main session this is one test on an empty variable, no process. For a
 # sub-agent it is one more test on a filename, and a single python start on the FIRST hook
 # only; every later hook in that agent sees the file and returns.
+#
+# THE STATUS WORD IS CAPTURED, NEVER PRINTED. The inline python prints exactly one word on
+# every outcome it can reach (seeded, skipped, failed) and the command substitution keeps it
+# out of the hook's stdout, which is a model channel on some events. A NON-EMPTY word means
+# the seeder spoke for itself, so bash stays silent and there is exactly one row per
+# failure; an EMPTY word means the python never ran at all (an exec killed by an oversized
+# envelope value, a broken interpreter, a killed process), and only then does bash write the
+# row. Nothing is inferred from a missing telemetry row, and the substitution adds no
+# process: its body is a single external command, which bash execs inside the fork the
+# substitution already pays for.
+#
+# THE BASH ROW CARRIES NOTHING FROM THE ENVELOPE. The agent id rides as the friction session
+# argv, where friction-append.py owns the quoting, and the two JSON fields are literals. A
+# row built from the value that killed the seed would die exactly where the seed died, which
+# is the lesson the oversized-agent_type cycle already paid for, and literals leave no
+# question about interpolating an untrusted value into hand-built JSON.
+#
+# STILL EXIT 0, STILL NOTHING ON STDOUT, STILL NO writ_critical. A sub-agent that cannot
+# inherit governance is a gap to report, never a hook failure. `local` is declared before the
+# assignment so `set -e` never sees the substitution's status, `2>/dev/null` stays on the
+# python so an unbounded traceback cannot land in the operator's transcript, and unlike the
+# spawn path there is no critical line: the agent is already running, a lazily seeded cache
+# confers nothing, and the message would repeat on every hook inside that agent.
 _writ_seed_subagent_cache() {
     [ -n "${HOOK_AGENT_ID:-}" ] || return 0
     [ "${HOOK_AGENT_ID:-}" != "${HOOK_SESSION_ID_RAW:-}" ] || return 0
     [ -n "${HOOK_SESSION_ID_RAW:-}" ] || return 0
-    local _cache_file
+    local _cache_file _seed_status
     _cache_file="$(writ_session_cache_dir)/writ-session-${HOOK_AGENT_ID}.json"
     [ -f "$_cache_file" ] && return 0
-    WRIT_SEED_AGENT_ID="$HOOK_AGENT_ID" \
+    _seed_status=$(WRIT_SEED_AGENT_ID="$HOOK_AGENT_ID" \
     WRIT_SEED_PARENT="$HOOK_SESSION_ID_RAW" \
     WRIT_SEED_AGENT_TYPE="${HOOK_AGENT_TYPE:-}" \
     python3 -c '
 import os, sys
 sys.path.insert(0, sys.argv[1])
+agent = os.environ.get("WRIT_SEED_AGENT_ID", "")
 try:
     from writ.session.subagent_seed import seed_subagent_cache
-    seed_subagent_cache(os.environ.get("WRIT_SEED_AGENT_ID", ""),
-                        os.environ.get("WRIT_SEED_PARENT", ""),
-                        envelope_agent_type=os.environ.get("WRIT_SEED_AGENT_TYPE", ""))
-except Exception:
+    print("seeded" if seed_subagent_cache(
+        agent, os.environ.get("WRIT_SEED_PARENT", ""),
+        envelope_agent_type=os.environ.get("WRIT_SEED_AGENT_TYPE", "")) else "skipped")
+except Exception as exc:
     # A sub-agent that cannot inherit governance is a gap to report, never a hook failure.
-    pass
-' "$_WRIT_SKILL_DIR" 2>/dev/null || true
+    # Anything that escapes seed_subagent_cache (a failed import, a raise out of
+    # resolve_role) is recorded here by the process already running; a fault INSIDE it
+    # recorded itself at the site where the fault and a decline are still distinguishable,
+    # and returned False, so this arm cannot double-report one failure.
+    try:
+        from writ.session.subagent_seed import CACHE_SOURCE_LAZY, log_seed_failure
+        log_seed_failure(agent, CACHE_SOURCE_LAZY, exc)
+        print("failed")
+    except Exception:
+        pass
+' "$_WRIT_SKILL_DIR" 2>/dev/null) || _seed_status=""
+    if [ -z "$_seed_status" ]; then
+        log_friction_event "$HOOK_AGENT_ID" "" "subagent_seed_failed" \
+            '{"hook":"seed-subagent-cache","cache_source":"lazy_seed"}'
+    fi
     return 0
 }
 

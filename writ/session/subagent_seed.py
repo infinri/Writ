@@ -42,6 +42,13 @@ CACHE_SOURCE_START = "subagent_start"
 CACHE_SOURCE_LAZY = "lazy_seed"
 
 SEED_EVENT = "subagent_seeded"
+SEED_FAILED_EVENT = "subagent_seed_failed"
+
+# How much of a fault's description reaches the row. A gap report names the agent, the path
+# it failed on and enough of the cause to act on; it is not a place to reproduce the fault.
+# An unbounded traceback in an operator's log is the same defect as an unbounded value in an
+# exec envelope, and the census reads these rows one line at a time.
+REASON_MAX_CHARS = 160
 
 # Recorded in the child cache next to the scope itself: "graph" when the role node
 # answered, "" when nothing was stamped. Without it, a role that declares no scope and a
@@ -125,7 +132,8 @@ def seed_subagent_cache(agent_id: object, parent_session_id: object, *,
 
     try:
         parent_cache = _read_cache(parent)
-    except Exception:  # noqa: BLE001 - an unreadable parent is not a hook failure
+    except Exception as exc:  # noqa: BLE001 - an unreadable parent is not a hook failure
+        log_seed_failure(agent, cache_source, exc)
         return False
     if not isinstance(parent_cache, dict):
         return False
@@ -170,7 +178,8 @@ def seed_subagent_cache(agent_id: object, parent_session_id: object, *,
             cache["role_scope_source"] = scope_source
             cache.update({k: (v.copy() if hasattr(v, "copy") else v)
                           for k, v in _CLEAN_OPERATIONAL_STATE.items()})
-    except Exception:  # noqa: BLE001 - a cache write fault must not fail the hook
+    except Exception as exc:  # noqa: BLE001 - a cache write fault must not fail the hook
+        log_seed_failure(agent, cache_source, exc)
         return False
 
     # RECORDED, because the governance census counts lazily seeded agents from this row.
@@ -183,6 +192,43 @@ def seed_subagent_cache(agent_id: object, parent_session_id: object, *,
     except Exception:  # noqa: BLE001 - telemetry never fails the caller
         pass
     return True
+
+
+def log_seed_failure(agent_id: object, cache_source: str, reason: object) -> None:
+    """Record that a sub-agent could not inherit governance: a gap to report, not a failure.
+
+    WRITTEN BY THE PROCESS THAT IS ALREADY RUNNING. The lazy seed costs one python start on
+    the first hook inside a sub-agent, so a fault that python can see is reported without a
+    second spawn. Bash speaks only when this never ran at all (`_writ_seed_subagent_cache`
+    in bin/lib/common.sh), which is the one case where there would otherwise be no row.
+
+    A DECLINE NEVER REACHES HERE. No parent mode, unusable ids and a cache that already
+    exists are answers, not faults: 688 of 714 sub-agent sessions with hook activity never
+    resolved a mode, so reporting those as failures would bury the real gap under a
+    population thirty times its size.
+
+    THE SAME ROW ON BOTH PATHS, told apart by `cache_source`. A `mutate_cache` fault on the
+    spawn path returned False, the start hook printed `skipped`, and nothing was recorded
+    there either; one call site closes both, and the start hook adds no second row because
+    its status word is non-empty.
+
+    Never raises: telemetry never fails the caller.
+    """
+    agent = str(agent_id or "").strip()
+    if not agent:
+        return
+    if isinstance(reason, BaseException):
+        text = f"{type(reason).__name__}: {reason}"
+    else:
+        text = str(reason or "")
+    # Whitespace-collapsed before it is cut, so a multi-line cause cannot forge a second
+    # log line and a cut cannot leave a dangling newline behind.
+    text = " ".join(text.split())[:REASON_MAX_CHARS]
+    try:
+        _log_friction_event(agent, "", SEED_FAILED_EVENT,
+                            cache_source=cache_source, reason=text)
+    except Exception:  # noqa: BLE001 - telemetry never fails the caller
+        pass
 
 
 def _declared_scope(cache_source: str, role: str,

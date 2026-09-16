@@ -92,14 +92,19 @@ CENSUS: dict[str, tuple[str, str]] = {
         "question from 'the decider could not run', needing its own tests "
         "against the jq/python parity pins in test_pre_write_parse_parity.py",
     ),
-    "common.sh:1923": (
+    "common.sh:1960": (
         BOUNDED,
         "the daemon-down can-write fallback body: over the cap the swap does not "
         "happen and the body falls back WITHOUT skill_dir, which loses the "
         "skill-dir exemption and therefore fails CLOSED, not open. Line number "
-        "updated from 1811 when this cycle's own common.sh additions "
-        "(writ_decider_fault, the stdin transports) moved it down; the crossing "
-        "itself is untouched, and the update is the decay detection working",
+        "updated from 1811 to 1923 when that cycle's common.sh additions "
+        "(writ_decider_fault, the stdin transports) moved it down, and from 1923 "
+        "to 1960 when the lazy-seed failure row added lines above it. The crossing "
+        "itself is untouched both times, verified byte-identical against the "
+        "previous revision, and the update is the decay detection working. TWICE "
+        "NOW, WHICH IS THE POINT: this key is a LINE NUMBER, so any edit above the "
+        "site decays it. Deriving the site from its code rather than its line is "
+        "recorded in RESUME.md as the durable fix",
     ),
     # -- Recorded bounded (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3) ---------
     "writ-memory-policy-guard.sh:127": (
