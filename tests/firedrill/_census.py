@@ -73,14 +73,39 @@ from tests.firedrill._harness import Isolation, write_cache
 # of these phrases are not literals in the script that emits them (three are emitted by a
 # python module the hook delegates to, and `before creating the worktree` is assembled
 # across two f-string lines and exists in no source file at all).
+#
+# THE PHRASES ARE WHAT TIGHTENED, NOT THE PREDICATE (plan.md
+# 2412ba38-51e1-4b73-895b-7b240a3c21d3, defect 2). `matches_action_marker` below is a plain
+# lowercased substring test and stays one: a word-boundary match was MEASURED and rejected
+# because it fixes `prefix` and BREAKS `templates/`, and a false negative here reds a
+# refusal that genuinely names a way out, which is the dangerous direction for a predicate
+# whose whole job is checking that a refusal names one. Four single-token markers became
+# the phrases their owners really emit, each read off the emitting source: `template` ->
+# `name non-secret templates`, `bypass` -> `bypass: set session.mode`, `re-send` ->
+# `re-send the same content`, and `fix` SPLIT into `fix these` and `fix them`. The split is
+# forced by the data rather than chosen: this map's contract is that EVERY declared owner
+# emits its phrase, and the two owners of `fix` emit different sentences, so one tightened
+# marker cannot serve both.
+#
+# `re-issue` IS DELIBERATELY LEFT LOOSE, and that is a measured decision rather than an
+# omission. Its owner's hook picks between a size arm ("Re-issue with offset+limit to
+# proceed.") and a junk arm ("re-issue the Read after stating why") on a `git check-ignore`
+# that runs whenever the fixture's directory sits inside a work tree. The harness's `.git`
+# MARKER does not prevent that: an empty `.git` directory is not a repository, so git's
+# discovery walks PAST it to any real ancestor work tree. Under a work tree whose
+# .gitignore carries `*.log` the same fixture flips to the junk arm, so either phrase would
+# red a correct refusal on somebody else's machine. The accepted cost is that `re-issued`
+# keeps matching, which is why no decoy for it is declared in
+# tests/firedrill/test_refusal_inventory.py.
 ACTION_MARKERS: dict[str, tuple[str, ...]] = {
-    "fix": ("enforce-violations", "verify-before-claim"),
+    "fix these": ("enforce-violations",),
+    "fix them": ("verify-before-claim",),
     "read the log": ("run-pending-tests",),
-    "re-send": ("comms-output-gate",),
-    "template": ("bash-write-credential",),
+    "re-send the same content": ("comms-output-gate",),
+    "name non-secret templates": ("bash-write-credential",),
     "ask the user": ("bash-write-state", "state-write-gate"),
     "re-issue": ("read-junk-enforce",),
-    "bypass": ("validate-test-file",),
+    "bypass: set session.mode": ("validate-test-file",),
     "must name": ("validate-design-doc",),
     "delete it": ("pre-validate-commented-out",),
     "write it by filling in": ("validate-exit-plan",),

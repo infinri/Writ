@@ -645,18 +645,25 @@ class TestEveryDeclaredActionMarkerIsStillEmitted:
         and conditional is all this pair proves.
 
         WHAT IT DOES NOT ADDRESS, stated because an earlier wording here claimed it did:
-        `matches_action_marker` is a plain substring test, so the one-word marker `fix`
-        would match inside `prefix` or `fixture` as happily as on its own. Nothing here
-        tests that. This drives `_first_declared_pair()`, which is
-        ("add missing keys", "validate-handoff"), and the absent half is a multi-word
-        sentinel, so neither half can tell a whole-word match from a substring one. The
-        hole is latent rather than live: measured, both declared `fix` owners emit it as
-        a standalone word today (enforce-violations "fix these before completing.",
-        verify-before-claim "fix them (re-review and re-post"). Where it would bite is a
-        future refusal whose reason carries `prefix` or `fixture` and names no action at
-        all: it would read as marker-carrying here and in the generic loop alike.
-        Closing it means a word-boundary match in `matches_action_marker`, a decision
-        about the runtime predicate rather than about this test.
+        `matches_action_marker` is a plain substring test, so this pair cannot tell a
+        whole-word match from a substring one. It drives `_first_declared_pair()`, which
+        is ("add missing keys", "validate-handoff"), and the absent half is a multi-word
+        sentinel, so neither half turns on word boundaries at all. Nothing here tests it.
+
+        THE ONE-TOKEN HOLE THIS PARAGRAPH USED TO RECORD AS OPEN IS CLOSED, and it was
+        closed in the DATA rather than in the predicate. The old wording said the fix was
+        a word-boundary match in `matches_action_marker`; that was measured and rejected,
+        because a boundary match fixes `prefix` and BREAKS `templates/`, and the credential
+        gate's real reason says "Name non-secret templates", so the predicate change would
+        have thrown away a correct refusal. A false negative is the dangerous direction for
+        a predicate whose whole job is checking that a refusal names a way out. So the
+        predicate is untouched and four markers became the phrases their owners really
+        emit (`fix these`, `fix them`, `name non-secret templates`,
+        `bypass: set session.mode`, `re-send the same content`); `re-issue` stays loose for
+        a branch-coupling reason recorded in `tests/firedrill/_census.py`. The decoys that
+        exploited the old tokens are pinned in
+        tests/firedrill/test_refusal_inventory.py::TestEachTightenedMarkerNoLongerMatchesItsMeasuredDecoy,
+        which is where the closure is proved rather than here.
         """
         marker, refusal_id = _first_declared_pair()
         entry = by_id(refusal_id)

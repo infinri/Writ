@@ -965,7 +965,14 @@ def _exb_heredoc_skip(lines: list[str], body_start: int, delim: str) -> int:
 
 def exec_boundary_payload_sites(*, scripts_dir: Path = HOOK_SCRIPTS_DIR) -> dict[str, dict[str, object]]:
     """Every `python3` invocation in `scripts_dir` whose ARGV or ENV carries a
-    payload-derived value, as `"<script>:<line>"` -> `{"script", "line"}`.
+    payload-derived value, as `"<script>:<line>"` -> `{"script", "line", "text"}`.
+
+    `text` is the exact span this scan DECIDED on: the composed `before + after`
+    the watched-variable search ran against, with `before` already trimmed at the
+    last pipe. A caller anchoring on a crossing's own code checks its anchor
+    against that, never against a fresh read of the file, so a mention of the
+    retired transport in a COMMENT cannot satisfy an anchor: comment lines never
+    reach this composition at all.
 
     `scripts_dir` is a keyword for the reason `envelope_emitting_scripts(*,
     scripts_dir=)` gives: the detector's precision is pinned against synthetic
@@ -1029,7 +1036,11 @@ def exec_boundary_payload_sites(*, scripts_dir: Path = HOOK_SCRIPTS_DIR) -> dict
                     before = _exb_trim_before_pipe(text[:py_match.start()])
                     after = text[py_match.start():heredoc.start()]
                     if watched_re.search(before + after):
-                        sites[f"{path.name}:{i + 1}"] = {"script": path.name, "line": i + 1}
+                        sites[f"{path.name}:{i + 1}"] = {
+                            "script": path.name,
+                            "line": i + 1,
+                            "text": before + after,
+                        }
                 i = _exb_heredoc_skip(lines, end + 1, heredoc.group("delim"))
                 continue
             if py_match:
@@ -1039,7 +1050,11 @@ def exec_boundary_payload_sites(*, scripts_dir: Path = HOOK_SCRIPTS_DIR) -> dict
                 if span_end != end:
                     after += "\n" + "\n".join(lines[end + 1:span_end + 1])
                 if watched_re.search(before + after):
-                    sites[f"{path.name}:{i + 1}"] = {"script": path.name, "line": i + 1}
+                    sites[f"{path.name}:{i + 1}"] = {
+                        "script": path.name,
+                        "line": i + 1,
+                        "text": before + after,
+                    }
                 i = span_end + 1
                 continue
             i = end + 1
@@ -1078,8 +1093,13 @@ _NPS_INTERPOLATION = re.compile(r"\$\{|\$\(|`|\$[A-Za-z_][A-Za-z0-9_]*")
 
 def nested_program_splice_sites(*, scripts_dir: Path = HOOK_SCRIPTS_DIR) -> dict[str, dict[str, object]]:
     """Every unquoted interpreter heredoc whose body interpolates, as `"<script>:<line>"`
-    -> `{"script", "line"}`, the line being the heredoc's OPENING line (where `python3`
-    and `<<DELIM` both appear on the same logical line), not a line inside the body.
+    -> `{"script", "line", "text"}`, the line being the heredoc's OPENING line (where
+    `python3` and `<<DELIM` both appear on the same logical line), not a line inside the
+    body.
+
+    `text` is the opening line plus the whole body, because the INTERPOLATION lives in
+    the body: a record carrying only the opening line could never let a caller anchor on
+    the splice its own prose is about.
 
     `scripts_dir` is a keyword for the reason `exec_boundary_payload_sites(*,
     scripts_dir=)` gives: the detector's precision is pinned against synthetic fixtures
@@ -1118,7 +1138,11 @@ def nested_program_splice_sites(*, scripts_dir: Path = HOOK_SCRIPTS_DIR) -> dict
                     j += 1
                 body = "\n".join(lines[body_start:j])
                 if not quoted and _NPS_INTERPOLATION.search(body):
-                    sites[f"{path.name}:{i + 1}"] = {"script": path.name, "line": i + 1}
+                    sites[f"{path.name}:{i + 1}"] = {
+                        "script": path.name,
+                        "line": i + 1,
+                        "text": line + "\n" + body,
+                    }
                 i = j + 1
                 continue
             i += 1

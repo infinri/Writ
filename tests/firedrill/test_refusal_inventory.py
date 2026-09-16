@@ -274,3 +274,116 @@ class TestMatchesActionMarkerKeepsItsContractOverTheMap:
             "a reason naming no declared action matched anyway, so the predicate cannot "
             f"tell a refusal that names a way out from one that does not: {sorted(markers)}"
         )
+
+
+# ── The decoy guard (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3, defect 2) ────
+#
+# `matches_action_marker` is a plain lowercased substring test and stays one: word
+# boundaries were measured and rejected, because they fix `prefix` and BREAK
+# `templates/`, and a false negative here reds a refusal that genuinely names a way
+# out. The DATA is what tightens.
+#
+# Each decoy below is written out IN FULL, never generated as `marker + "d"`, for
+# the same reason an anchor is never sliced out of the population it is checked
+# against: a decoy composed from the marker is the marker again, and the two sides
+# of the assertion would be one side.
+#
+# MEASURED BEFORE THE CHANGE, so the guard is known to have been capable of
+# failing: every decoy below returns True against today's map, via the loose token
+# named as its value ('prefix handling changed' -> 'fix', 'bypassed' -> 'bypass',
+# 'templates/' -> 'template', 're-sends' -> 're-send').
+_TIGHTENED_MARKER_DECOYS: dict[str, str] = {
+    "prefix handling changed": "fix",
+    "bypassed": "bypass",
+    "templates/": "template",
+    "re-sends": "re-send",
+}
+
+# The reason the credential arm of writ-bash-write-gate.sh really emits
+# (writ-bash-write-gate.sh:3260), carrying the action in its PLURAL form. This is
+# the case that kills the word-boundary alternative: the phrase fix keeps the
+# refusal, the boundary fix would have lost it.
+_PLURAL_FORM_REASON = "Name non-secret templates .env.example / .env.sample / *.pub."
+_PLURAL_FORM_MARKER = "name non-secret templates"
+
+
+def _decoys() -> list:
+    """Never an empty argvalues list: an empty parametrization SKIPS, and a skip in
+    the run output reads like coverage."""
+    return sorted(_TIGHTENED_MARKER_DECOYS) or [
+        pytest.param("<no decoy declared>", id="decoys-empty")
+    ]
+
+
+class TestEachTightenedMarkerNoLongerMatchesItsMeasuredDecoy:
+    """Capabilities 13 and 14, and the half that makes the tightening real rather
+    than cosmetic.
+
+    The two sides are independently produced: the decoy is a literal string typed
+    here, and the other side is the real predicate run over the live marker map. A
+    tightening that only reworded a comment would leave the decoy matching.
+    """
+
+    @pytest.mark.parametrize("decoy", _decoys())
+    def test_the_decoy_satisfies_no_action_marker(self, decoy) -> None:
+        markers = _marker_map()
+        assert not matches_action_marker(decoy), (
+            f"{decoy!r} still satisfies an action marker, so a refusal reason that "
+            "names no way out at all would read as marker-carrying here and in the "
+            "generic loop alike. It matched: "
+            f"{[m for m in markers if m in decoy.lower()]}"
+        )
+
+    @pytest.mark.parametrize("decoy", _decoys())
+    def test_the_loose_token_the_decoy_exploited_is_no_longer_declared(self, decoy) -> None:
+        markers = _marker_map()
+        loose = _TIGHTENED_MARKER_DECOYS[decoy]
+        assert loose not in markers, (
+            f"{loose!r} is still a declared marker as a bare token, which is what lets "
+            f"{decoy!r} satisfy it. The plan tightens it to a phrase copied from its "
+            "owner's real emitted reason, and the liveness test in "
+            "tests/firedrill/test_bash_refusals.py drives every owner through the real "
+            "subprocess to confirm the phrase is still emitted"
+        )
+
+    def test_a_reason_naming_its_action_in_the_plural_still_matches(self) -> None:
+        """Capability 15. `matches_action_marker` stays a substring test, so the
+        credential gate's real reason keeps its match through the plural, and the
+        phrase it matches is the tightened one rather than the bare token."""
+        markers = _marker_map()
+        matched = sorted(m for m in markers if m in _PLURAL_FORM_REASON.lower())
+        assert matched == [_PLURAL_FORM_MARKER], (
+            "the credential gate's real reason must match the tightened phrase and "
+            f"nothing looser: {matched}"
+        )
+
+    def test_the_branch_coupled_re_issue_marker_is_deliberately_left_loose(self) -> None:
+        """Capability 16, and the one marker this cycle does NOT tighten.
+
+        MEASURED, not reasoned. Driving the census refusal `read-junk-enforce`
+        through the real `run_hook` subprocess three times reaches
+        writ-read-junk-gate.sh's SIZE arm every time, emitting "Re-issue with
+        offset+limit to proceed." But the arm is chosen by a `git check-ignore`
+        that runs whenever the fixture's directory is inside a work tree, and the
+        harness's `.git` MARKER does not prevent that: an empty `.git` directory is
+        not a repository, and git's discovery walks PAST it to a real parent work
+        tree (measured: `rev-parse --is-inside-work-tree` returns true). Placing the
+        same fixture under a work tree whose .gitignore carries `*.log` flips it to
+        the junk arm, which emits "re-issue the Read after stating why" instead.
+
+        So the branch is environment-coupled, and per the plan's own rule a phrase
+        that would red a correct refusal on someone else's machine is not shipped:
+        `re-issue` keeps its loose spelling, and `re-issued` keeps matching it. That
+        is recorded here as a decision rather than left as an accident, which is why
+        `re-issued` is absent from the decoy map above.
+        """
+        markers = _marker_map()
+        assert "re-issue" in markers, (
+            "re-issue must stay declared as the loose token until the junk-gate arm "
+            "the census fixture reaches is stable across environments"
+        )
+        assert matches_action_marker("re-issued"), (
+            "re-issued is the known, accepted false positive of leaving re-issue "
+            "loose; if it stopped matching, the marker was tightened without the "
+            "branch measurement being redone"
+        )

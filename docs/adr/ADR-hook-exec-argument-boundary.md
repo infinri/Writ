@@ -328,6 +328,21 @@ decision.
   `open` and `bounded` (with the enforcer named). The detector is proved conditional
   against five adversarial fixtures rather than assumed to work.
 
+  AN ENTRY IS NO LONGER KEYED BY SITE. The sentence above said the map went from site to
+  (status, reason), and a `script:LINE` key names a coordinate rather than a crossing: it
+  changed whenever anything above the site changed (`common.sh`'s daemon-down body moved
+  1811, then 1923, then 1960, byte identical every time) and it did NOT change when a site
+  was rewritten in place, which is how three `fixed` entries came to be green against
+  ordinary COMMENT lines. An entry is now NAMED by an authored slug, LOCATED by a literal
+  code anchor resolved against the derivation's own matched text, and a line number is
+  OUTPUT that failure messages carry rather than input anyone writes down. The three
+  failure shapes follow from that: an anchor matching zero sites is a VANISH (deleted, or
+  rewritten in place, so its recorded reason was verified against text that no longer
+  exists), an anchor matching more than one is AMBIGUOUS (it stopped naming a single
+  crossing), and a `fixed` entry anchored on its RETIRED spelling matching anything at all
+  is a reintroduction, wherever in the script it landed. A crossing that merely MOVED
+  reddens nothing.
+
   Its one stated limit: a value that crosses only inside an UNQUOTED heredoc's own nested
   command substitution is not traced, because heredoc bodies are skipped uniformly. That
   was exactly the shape of the site the list below used to name next, and it is why the
