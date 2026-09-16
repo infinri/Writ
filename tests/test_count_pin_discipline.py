@@ -138,7 +138,8 @@ class TestTheInventoryDerivesFromTheSource:
                                       "doctor_check_names", "route_tuples",
                                       "envelope_emitting_scripts", "style_swept_docs",
                                       "can_write_surface_modules", "write_gate_hook_modules",
-                                      "write_gate_regression_modules", "corpus_floor"])
+                                      "write_gate_regression_modules", "corpus_floor",
+                                      "prompt_parse_field_order", "rag_inject_field_slices"])
     def test_each_derivation_is_non_empty(self, name) -> None:
         """ANTI-VACUITY, and it is the whole risk of this design: a derivation that
         silently returned nothing would make every dependent assertion pass on any tree,

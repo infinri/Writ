@@ -85,11 +85,17 @@ fi
 # output are stripped so the RAG query contains only the user's intent.
 PARSED=$(echo "$STDIN_JSON" | python3 "$WRIT_DIR/bin/lib/writ-prompt-parse.py" 2>/dev/null) || true
 
+# THE PROMPT IS THE LAST FIELD AND IS READ AS THE REMAINDER. It is the only field that may
+# legitimately contain the record's delimiter, so every scalar is sliced ahead of it and the
+# tail read (5,$p) hands the prompt over whole. Read positionally before this change, a
+# prompt with N newlines was truncated to its first line and pushed AGENT_ID, MODE_HINT and
+# EFFORT N lines late, which silently disabled the mode auto-route and once wrote a fragment
+# of prompt text into a metrics `effort` field. Same spend as before: 1 head, 4 sed, 2 tr.
 SESSION_ID=$(echo "$PARSED" | head -1)
-PROMPT=$(echo "$PARSED" | sed -n '2p')
-AGENT_ID=$(echo "$PARSED" | sed -n '3p')
-MODE_HINT=$(echo "$PARSED" | sed -n '4p' | tr -d '[:space:]')
-EFFORT=$(echo "$PARSED" | sed -n '5p' | tr -d '[:space:]')
+AGENT_ID=$(echo "$PARSED" | sed -n '2p')
+MODE_HINT=$(echo "$PARSED" | sed -n '3p' | tr -d '[:space:]')
+EFFORT=$(echo "$PARSED" | sed -n '4p' | tr -d '[:space:]')
+PROMPT=$(echo "$PARSED" | sed -n '5,$p')
 
 # This project's root, computed ONCE for the whole hook and used by two consumers:
 # the retrieval requests below send it so the daemon can scope them to this project

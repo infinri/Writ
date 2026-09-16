@@ -2537,3 +2537,114 @@ def corpus_floor(*, dump: Path | None = None) -> dict[str, int]:
             f"line(s) it could not classify:\n" + "\n".join(unclassified)
         )
     return counts
+
+
+# ── The prompt-parse field frame (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3) ──
+#
+# TWO ARTIFACTS, TWO DERIVATIONS, and they exist so the parity check in
+# `tests/test_prompt_parse_field_frame.py` compares two REAL sources instead of one source
+# and a model of the other. The keystone this repo already paid for: a cross-path parity
+# guard that hand-rolled one of the two paths it compared proved only that the code matched
+# a model of the route, and the real route had been wrong for months.
+#
+# The producer is `bin/lib/writ-prompt-parse.py`, whose ONE f-string print defines the
+# positional record. The consumer is `hooks/scripts/writ-rag-inject.sh`, whose assignment
+# lines over `$PARSED` define how that record is read back. Neither derivation knows the
+# other's field names; the shell-name to parser-name mapping is the human-authored contract
+# and it lives in the TEST module, not here, so a careless edit in this file cannot move the
+# anchor to agree with a broken derivation.
+#
+# NO COUNT IS PINNED. Both populations are five members today and neither number appears
+# here; the test derives its field count from its own contract.
+PROMPT_PARSE_PY = REPO / "bin" / "lib" / "writ-prompt-parse.py"
+RAG_INJECT_SH = HOOK_SCRIPTS_DIR / "writ-rag-inject.sh"
+
+# `NAME=$(...)` at the start of a line, which is the only shape the hook uses to read a
+# field out of the parse output. Anchored on the whole line so a mention of `$PARSED` in a
+# comment or inside a larger expression is not read as a field assignment.
+_PARSED_ASSIGNMENT = re.compile(
+    r"^(?P<name>[A-Z_][A-Z0-9_]*)=\$\((?P<body>.*)\)$"
+)
+_PARSED_REF = "$PARSED"
+
+
+def prompt_parse_field_order(*, path: Path | None = None) -> list[str]:
+    """The parser's printed field order, as the variable names in its record f-string.
+
+    Read from the AST rather than by regex, so the order returned is the order the
+    interpreter will print and not the order some line of source happens to mention. The
+    exception arm's `print('\\n\\n\\n\\n')` is a plain constant, not an f-string, so it is
+    not a record and is skipped; that arm is order-invariant by construction and the test
+    module asserts exactly that.
+
+    LOUD, NEVER SILENTLY EMPTY. Anything that is not one f-string print of newline-joined
+    plain names raises, because a derivation that returned `[]` here would make the parity
+    assertion pass against any tree at all, which is the vacuity this module exists to
+    prevent.
+
+    `path` is a keyword for the reason `envelope_emitting_scripts(*, scripts_dir=)` gives:
+    the detector's own conditionality is proven against mutated COPIES under `tmp_path`,
+    never by editing the real file.
+    """
+    source = Path(path or PROMPT_PARSE_PY)
+    records: list[list[str]] = []
+    for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+            continue
+        if node.func.id != "print" or len(node.args) != 1:
+            continue
+        arg = node.args[0]
+        if not isinstance(arg, ast.JoinedStr):
+            continue
+        names: list[str] = []
+        separators: list[str] = []
+        for part in arg.values:
+            if isinstance(part, ast.FormattedValue):
+                if not isinstance(part.value, ast.Name):
+                    raise ValueError(
+                        f"cannot derive the field order from {source}: the record f-string "
+                        f"holds an expression this scan cannot name "
+                        f"({ast.dump(part.value)}). Every field must be a plain variable, "
+                        f"or the consumer's positional read has nothing to agree with."
+                    )
+                names.append(part.value.id)
+            elif isinstance(part, ast.Constant):
+                separators.append(part.value)
+        if separators != ["\n"] * (len(names) - 1):
+            raise ValueError(
+                f"cannot derive the field order from {source}: the record f-string joins "
+                f"its {len(names)} field(s) with {separators!r} rather than one newline "
+                f"between each. The consumer slices by line, so any other separator means "
+                f"the frame this derivation reports is not the frame that is printed."
+            )
+        records.append(names)
+    if len(records) != 1:
+        raise ValueError(
+            f"cannot derive the field order from {source}: expected exactly one f-string "
+            f"print (the positional record), found {len(records)}: {records!r}"
+        )
+    return records[0]
+
+
+def rag_inject_field_slices(*, path: Path | None = None) -> dict[str, str]:
+    """`{shell variable name: the command substitution body that fills it}` for every field
+    the hook reads out of the parser's output, in the order the hook reads them.
+
+    A MAP, NOT A LIST, per the house rule that a population held by name fails loudly when
+    it DECAYS: a renamed variable or a deleted assignment changes the key set, and the test
+    module asserts that key set against its contract, so a shrunken population cannot pass
+    as a smaller correct one.
+
+    The body is returned verbatim (`echo "$PARSED" | sed -n '2p'`), which is what makes the
+    test able to EXECUTE the hook's own slicing over the real parser's real output instead
+    of reimplementing it, and what makes the spawn budget assertable as a membership
+    predicate over the commands that body actually spends.
+    """
+    source = Path(path or RAG_INJECT_SH)
+    slices: dict[str, str] = {}
+    for line in source.read_text(encoding="utf-8").splitlines():
+        match = _PARSED_ASSIGNMENT.match(line.strip())
+        if match is None or _PARSED_REF not in match.group("body"):
+            continue
+        slices[match.group("name")] = match.group("body")
+    return slices

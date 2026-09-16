@@ -23,6 +23,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tests.test_prompt_parse_field_frame import FIELD_CONTRACT
+
 REPO = Path(__file__).resolve().parent.parent
 HOOK = REPO / "hooks" / "scripts" / "writ-rag-inject.sh"
 LIB = REPO / "bin" / "lib"
@@ -32,6 +34,15 @@ BACKWARD_PY = LIB / "writ_render_backward_context.py"
 PARSE_PY = LIB / "writ-prompt-parse.py"
 
 EXTRACTED = [FAILHIST_PY, FEEDBACK_PY, BACKWARD_PY, PARSE_PY]
+
+# Where each field sits in the parser's record, DERIVED from the canonical contract in
+# tests/test_prompt_parse_field_frame.py rather than re-pinned as literals here. The payload
+# moved to the end of the record so a multi-line prompt could no longer truncate itself and
+# shift every field after it; a second hand-written copy of a position is free to drift from
+# the first, which is how these two indexes came to need updating at all.
+_FIELD_ORDER = list(FIELD_CONTRACT.values())
+PROMPT_LINE = _FIELD_ORDER.index("prompt")
+HINT_LINE = _FIELD_ORDER.index("hint")
 
 # body-internal signatures that must LEAVE the hook (they live inside the moved python bodies)
 MOVED_SIGNATURES = [
@@ -161,25 +172,32 @@ class TestPromptParseMatches:
     def test_five_line_shape_and_passthrough(self) -> None:
         out, lines = self._parse({"session_id": "sid-123", "prompt": "hello there world"})
         assert out.returncode == 0
-        # 5 fields: sid, prompt, agent_id, hint, effort (print adds a trailing newline)
+        # 5 fields: sid, agent_id, hint, effort, prompt (print adds a trailing newline)
         assert lines[0] == "sid-123"
-        assert lines[1] == "hello there world"  # short prompt passes through unchanged
+        # short prompt passes through unchanged, and it is the LAST field
+        assert lines[PROMPT_LINE] == "hello there world"
 
     def test_build_prompt_classifies_work(self) -> None:
         _, lines = self._parse(
             {"session_id": "s", "prompt": "implement the export endpoint from the approved plan"}
         )
-        assert lines[3] == "work", f"build prompt must classify work; got {lines[3]!r}"
+        assert lines[HINT_LINE] == "work", (
+            f"build prompt must classify work; got {lines[HINT_LINE]!r}"
+        )
 
     def test_audit_prompt_classifies_investigate(self) -> None:
         _, lines = self._parse(
             {"session_id": "s", "prompt": "audit the codebase for security issues"}
         )
-        assert lines[3] == "investigate", f"audit prompt must classify investigate; got {lines[3]!r}"
+        assert lines[HINT_LINE] == "investigate", (
+            f"audit prompt must classify investigate; got {lines[HINT_LINE]!r}"
+        )
 
     def test_chat_prompt_no_hint(self) -> None:
         _, lines = self._parse({"session_id": "s", "prompt": "how do I center a div in CSS"})
-        assert lines[3] == "", f"chat prompt must yield empty hint; got {lines[3]!r}"
+        assert lines[HINT_LINE] == "", (
+            f"chat prompt must yield empty hint; got {lines[HINT_LINE]!r}"
+        )
 
     def test_malformed_stdin_five_empty_lines_exit_zero(self) -> None:
         out = _run_py_stdin(PARSE_PY, "{not valid json")
