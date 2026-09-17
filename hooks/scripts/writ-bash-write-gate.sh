@@ -725,8 +725,32 @@ esac
 # it with a leading exclamation mark in the prompt. No new grant type, and deliberately NOT
 # the manual-testing grant, which means "manual testing" rather than "destroy this".
 #
-# rm -rf, DROP TABLE and TRUNCATE are OUT OF SCOPE on purpose: no incident, Claude Code
-# already prompts, and each one widens the false-positive surface on scratch work.
+# SCOPE, AMENDED, with the measurement behind each half rather than the intuition
+# (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3, finding 4 of the containment audit).
+# The earlier ruling put rm -rf, DROP TABLE and TRUNCATE together in one out-of-scope
+# bucket. Measured against 6,017 real Bash envelopes they are not one class, and the two
+# halves now part company.
+#
+# rm and find -delete on USER DATA stay OUT OF SCOPE, and the reason is a count rather
+# than a preference: all 16 distinct rm invocations in the capture corpus were scratch
+# cleanup (/tmp probe dirs, pytest basetemp, scratchpad files, one build cleanup), none
+# touched a log or repo source, and find -delete appeared zero times in either direction.
+# Claude Code's own layer already denies the `rm -rf <abspath>` spelling, so a blanket
+# rule here would only fire where the harness already fires and every NEW refusal it
+# produced would be a false positive. Nothing here reaches the EXTRACTOR either: no rm arm
+# is added to its cmd0 verb list, so deletion stays out of scope at the extractor.
+#
+# EVIDENCE DESTRUCTION IS IN SCOPE as of arm 4 below: a destroying verb naming a Writ log
+# artifact in the SAME command segment. Measured false positives across the same corpus:
+# zero. Measured legitimate uses of those verbs against a Writ log: zero. The gate-state
+# guard above protects var/session and nothing protected the log tree, so truncating an
+# audit trail was an allow, and a governance runtime whose record of what the agent did
+# can be erased by the agent is publishing a claim rather than a log.
+#
+# SQL DDL THROUGH A DATABASE CLIENT IS IN SCOPE as of arm 1b below, as an extension of
+# arm 1 rather than a new mechanism: a client verb carrying DROP TABLE is the same shape
+# as cypher-shell carrying DETACH DELETE, in a different dialect. Measured traffic in the
+# corpus: zero in both directions, disclosed here rather than dressed up as an incident.
 #
 # CONSEQUENCE, same as the gate-state guard above: a Bash command that merely NAMES one of
 # these patterns is refused unless it is plain read-only inspection, so this file and any
@@ -734,6 +758,16 @@ esac
 # bit immediately: the command adding an example refusal message to this very block was
 # refused by the block itself.
 _IRREV_CYPHER_RE='detach[[:space:]]+delete|match[[:space:]]*\([[:alnum:]_]*\)[[:space:]]*delete|drop[[:space:]]+constraint|drop[[:space:]]+index'
+
+# The SQL dialect of the statement arm 1 already refuses. FOUR INDEPENDENT ALTERNATIVES of
+# one alternation, which is what lets a test narrow it to its first branch and require the
+# other three to go silent while the kept one still denies.
+#
+# A LITERAL SPACE rather than a whitespace class, unlike the Cypher regex above, and the
+# difference is not an oversight: this arm reads the NORMALIZED copy, where a tab, a
+# newline and a doubled space have already collapsed to one space, so a class would buy
+# nothing and would hide each branch from the narrowing proof.
+_IRREV_DDL_RE='drop table|truncate table|drop database|drop schema'
 
 # The project-local .py a python interpreter would RUN, or nothing.
 #
@@ -790,7 +824,7 @@ _irrev_script_target() {
 # assembled from a variable (`V=--hard; git reset $V`). The first two are pinned as
 # strict xfails in tests/test_bash_pattern_spelling_gate.py.
 _irreversible_reason() {
-    local cmd="$1" norm="$2" lower
+    local cmd="$1" norm="$2" lower _IRREV_EVIDENCE_REASON=""
     _readonly_inspection "$cmd" && return 0
     lower="${norm,,}"
 
@@ -801,6 +835,25 @@ _irreversible_reason() {
         *"docker exec"*|*"docker compose exec"*|*"docker-compose exec"*|*"cypher-shell"*)
             if [[ "$lower" =~ $_IRREV_CYPHER_RE ]]; then
                 printf '%s' "[ENF-IRREVERSIBLE] Refusing this Bash command: it reaches Neo4j with a destructive statement (DETACH DELETE, MATCH ... DELETE, DROP CONSTRAINT or DROP INDEX). That is how the graph was wiped on 2026-08-08, and it is not recoverable from here. If it is genuinely intended, ask the user to run it themselves by prefixing it with ! in the prompt, so a human owns the destruction. Reading the graph is fine: a RETURN query, or the /explore page."
+                return 0
+            fi
+            ;;
+    esac
+
+    # 1b. The same mechanism in SQL. BOTH a database-client verb AND a DDL statement are
+    #     required, exactly as arm 1 requires both, so prose that merely carries the
+    #     statement is not caught and an ordinary SELECT through the same client is not
+    #     either. The regex runs ONLY when a client verb is present, so an ordinary Bash
+    #     call pays one extra glob test and nothing else.
+    #
+    #     THE REAL FALSE-POSITIVE SURFACE IS IN ANOTHER REPO, not this one: truncating
+    #     Magento index tables is routine work, and the same capture shows Magento
+    #     sessions. That is why the refusal names the way out; the cost of a wrong refusal
+    #     there is one ! prefix, not a deadlock.
+    case "$lower" in
+        *"psql"*|*"mysql"*|*"mariadb"*|*"sqlite3"*)
+            if [[ "$lower" =~ $_IRREV_DDL_RE ]]; then
+                printf '%s' "[ENF-IRREVERSIBLE] Refusing this Bash command: it reaches a database client with ${BASH_REMATCH[0]}, which drops or empties the object outright and cannot be undone from here. If it is genuinely intended, ask the user to run it themselves by prefixing it with ! in the prompt. Reading is free and stays allowed: a SELECT, a SHOW, or a schema listing. To write PROSE that merely names one of these statements, put the text in a file with the Write tool and pass the file: git commit -F <file> rather than git commit -m."
                 return 0
             fi
             ;;
@@ -843,6 +896,73 @@ _irreversible_reason() {
     esac
     if [ -n "$git_match" ]; then
         printf '%s' "[ENF-IRREVERSIBLE] Refusing this Bash command: ${git_match} destroys git history or refs, and this branch carries unpushed work that exists nowhere else. If it is genuinely intended, ask the user to run it themselves by prefixing it with ! in the prompt. The reversible forms are allowed: --soft, --force-with-lease, git clean -n, and git branch -d."
+        return 0
+    fi
+
+    # DESTROYING VERBS BEGIN
+    # The verbs that remove or empty a file outright. Declared between markers because
+    # tests/test_bash_irreversible_gate.py DERIVES the population from here and requires a
+    # probe per member, so a verb added with no probe reddens instead of sitting outside a
+    # stale list. Kept to three: find -delete is deliberately absent, see the scope ruling.
+    local -a _IRREV_DESTROYING_VERBS=("rm" "truncate" "shred")
+    # DESTROYING VERBS END
+
+    # EVIDENCE DESTRUCTION BEGIN
+    # 4. The record of what the agent did. See the amended scope ruling above for why this
+    #    tier is refused while user-data deletion is left alone.
+    #
+    #    PER SEGMENT, NOT PER COMMAND, and that is measured rather than chosen. The one
+    #    real captured command carrying both a destroying verb and a protected artifact
+    #    removes the capture SENTINEL in segment 1 while merely LISTING the corpus in
+    #    segment 3, so a whole-command AND refuses legitimate work. Segments come from the
+    #    same IFS read the read-only inspector uses, after folding the other separators
+    #    onto it with parameter expansion. Builtins throughout: no fork, no execve. The
+    #    split runs ONLY when an artifact token is present anywhere in the command, so an
+    #    ordinary Bash call pays the artifact globs and nothing else.
+    #
+    #    ACCEPTED COST, ruled on rather than left to be discovered: normalization has
+    #    already flattened newlines to spaces by the time the split sees the command, so a
+    #    two-line command is ONE segment and a first-line rm paired with a second-line log
+    #    READ is refused. Measured cost in the corpus: zero. The direction is fail-closed.
+    #
+    #    THE ARTIFACT TOKEN IS THE EXACT FILENAME, never the bare prefix: writ-blackbox
+    #    alone appears in 14 real command lines, all of them routine capture on and off, so
+    #    a prefix rule reds every one. var/logs is LAST so that a path naming both the tree
+    #    and a file inside it reports the file the operator actually aimed at.
+    local -a _IRREV_LOG_ARTIFACTS=("audit.jsonl" "friction.jsonl" "metrics.jsonl" "errors.jsonl" "workflow-friction.log" "writ-blackbox.jsonl" "var/logs")
+    local _irrev_art="" _irrev_verb="" _irrev_flat="" _irrev_seg _irrev_a _irrev_v
+    for _irrev_a in "${_IRREV_LOG_ARTIFACTS[@]}"; do
+        case "$lower" in *"$_irrev_a"*) _irrev_art="$_irrev_a"; break ;; esac
+    done
+    if [ -n "$_irrev_art" ]; then
+        _irrev_flat="${lower//;/|}"
+        _irrev_flat="${_irrev_flat//&/|}"
+        local -a _irrev_segs
+        IFS='|' read -ra _irrev_segs <<< "$_irrev_flat"
+        for _irrev_seg in "${_irrev_segs[@]}"; do
+            _irrev_art=""
+            for _irrev_a in "${_IRREV_LOG_ARTIFACTS[@]}"; do
+                case "$_irrev_seg" in *"$_irrev_a"*) _irrev_art="$_irrev_a"; break ;; esac
+            done
+            if [ -z "$_irrev_art" ]; then continue; fi
+            # The glob PAIR rather than a first-word comparison, so a wrapper prefix
+            # (sudo rm -rf var/logs) is still seen while the trailing rm of Confirm is
+            # not. Its cost is the one every pattern in this file carries: a quoted
+            # mention inside the same segment reads like a use.
+            for _irrev_v in "${_IRREV_DESTROYING_VERBS[@]}"; do
+                case "$_irrev_seg" in
+                    "$_irrev_v "*|*" $_irrev_v "*) _irrev_verb="$_irrev_v"; break ;;
+                esac
+            done
+            if [ -n "$_irrev_verb" ]; then break; fi
+        done
+    fi
+    if [ -n "$_irrev_verb" ]; then
+        _IRREV_EVIDENCE_REASON="[ENF-IRREVERSIBLE] Refusing this Bash command: ${_irrev_verb} names the Writ log artifact ${_irrev_art} in the same command segment, and that trail is the record of what the agent did. A record the agent can erase is a claim rather than a log, so it is refused in any mode. Reading it is free and stays allowed: grep, cat, tail and wc pipelines over the same file. If it is genuinely intended, ask the user to run it themselves by prefixing it with ! in the prompt. To write PROSE that merely names one of these files, put the text in a file with the Write tool and pass the file: git commit -F <file> rather than git commit -m."
+    fi
+    # EVIDENCE DESTRUCTION END
+    if [ -n "$_IRREV_EVIDENCE_REASON" ]; then
+        printf '%s' "$_IRREV_EVIDENCE_REASON"
         return 0
     fi
     return 0

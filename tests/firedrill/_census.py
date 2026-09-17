@@ -20,7 +20,10 @@ completeness check in test_refusal_inventory.py has one canonical list to read.
 
 COVERAGE NOTE (stated here rather than hidden): this census does not yet declare
 every bash-side refusal the plan's Analysis counts (33 across 14 scripts). It covers
-29 refusals across 15 scripts with a real, working trigger each, including the whole
+15 scripts with a real, working trigger each (the refusal count is not restated here:
+the one canonical literal is `len(generic_refusals())` in
+tests/firedrill/test_bash_refusals.py, and a copy of it in this docstring is exactly the
+duplicated pin this repo has already paid for), including the whole
 irreversible-destruction vector in writ-bash-write-gate.sh (the Neo4j-via-container
 statements and the five git-history patterns match on plain command text, so each is
 a one-line payload with no fixture, no live server and no classification step -- the
@@ -28,7 +31,8 @@ cheapest family in the file) and the bash-expansion-boundary cycle's new `unknow
 row's `ask` arm (plan.md dfacff61-23d5-474e-846c-2e2f0f0ea482): declared with
 `generic=False` (like the two validate-rules.sh sites below) because
 tests/test_bash_refusals.py's own generic-loop count pin
-(`assert len(generic_refusals()) == 26`) is out of that cycle's scope; the real,
+(`assert len(generic_refusals()) == ...`, whose numeral lives THERE and nowhere else)
+is out of that cycle's scope; the real,
 working trigger for it is exercised in tests/test_bash_expansion_boundary_gate.py,
 which is also the oracle for the unresolved-variable's own exact reason text. Not
 yet declared: writ-dispatch-discipline.sh's
@@ -521,6 +525,33 @@ _IRREVERSIBLE_GIT_COMMANDS = {
     "push-force": "git push origin main --force",
 }
 
+# The EVIDENCE-DESTRUCTION vector (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3,
+# finding 4 of the containment audit): a destroying verb and a Writ log artifact in the
+# SAME command segment. One entry per verb, since each is an independent member of the
+# hook's own DESTROYING VERBS block and a regression that dropped one would otherwise be
+# averaged away by its siblings.
+#
+# EVERY COMMAND NAMES THE SAME ARTIFACT on purpose: the artifact axis is proved
+# per-member in tests/test_bash_irreversible_gate.py, which owns this vector; what the
+# drill adds is the proof that each refusal is AUDITABLE and ACTIONABLE, which is a
+# property of the verb arm, not of the artifact list.
+_IRREVERSIBLE_EVIDENCE_COMMANDS = {
+    "rm": "rm -f var/logs/writ/audit.jsonl",
+    "truncate": "truncate -s 0 var/logs/writ/audit.jsonl",
+    "shred": "shred -u var/logs/writ/audit.jsonl",
+}
+
+# The DATABASE-CLIENT vector, an extension of the container arm above rather than a new
+# one: a client verb carrying a destructive statement is the same mechanism as
+# `cypher-shell` carrying one, in a different dialect. One entry per SQL DDL branch,
+# since each is an independent alternative of one regex alternation.
+_IRREVERSIBLE_DDL_COMMANDS = {
+    "drop-table": 'psql -c "DROP TABLE users;"',
+    "truncate-table": 'mysql -e "TRUNCATE TABLE orders;"',
+    "drop-database": 'mariadb -e "DROP DATABASE staging;"',
+    "drop-schema": 'psql -c "DROP SCHEMA reporting;"',
+}
+
 
 def _setup_validate_rules_site_a(iso: Isolation) -> dict:
     sys_tmp = iso.tmp_path / "sysTmp"
@@ -767,7 +798,7 @@ REFUSALS: list[Refusal] = [
             "the `unknown` row kind's own ask arm, declared here so this census's "
             "script-level completeness check does not read the new decision path as an "
             "undeclared gap. NOT run through the generic loop -- "
-            "tests/test_bash_refusals.py's `assert len(generic_refusals()) == 26` count "
+            "tests/firedrill/test_bash_refusals.py's `len(generic_refusals())` count "
             "pin is out of that cycle's scope -- exercised as a real subprocess refusal "
             "in tests/test_bash_expansion_boundary_gate.py, which is also the oracle for "
             "the unresolved-variable's exact reason text. check_action_marker=False: "
@@ -806,8 +837,8 @@ REFUSALS: list[Refusal] = [
             "undeclared gap. refusing_scripts() does not move -- "
             "writ-worktree-safety.sh is already declared for its sibling "
             "deny entry above. NOT run through the generic loop -- "
-            "tests/firedrill/test_bash_refusals.py's own `assert "
-            "len(generic_refusals()) == 26` count pin is out of this cycle's "
+            "tests/firedrill/test_bash_refusals.py's own "
+            "`len(generic_refusals())` count pin is out of this cycle's "
             "scope -- exercised as a real subprocess refusal in "
             "tests/test_bash_expansion_boundary_gate.py, which is also the "
             "oracle for the population of forms that must trigger it."
@@ -848,6 +879,48 @@ REFUSALS: list[Refusal] = [
             ),
         )
         for name, command in _IRREVERSIBLE_GIT_COMMANDS.items()
+    ],
+    *[
+        Refusal(
+            id=f"bash-write-irreversible-evidence-{name}",
+            script="writ-bash-write-gate.sh",
+            event="PreToolUse",
+            mechanism="permissionDecisionReason",
+            permission_decision="deny",
+            shape="gate_decision",
+            gate_name="irreversible",
+            setup=_bash_command_setup(command),
+            notes=(
+                "Irreversible-destruction vector, evidence-destruction sub-pattern "
+                f"{name!r} (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3, finding 4): "
+                "plain command text, no fixture needed. MEASURED AS AN ALLOW before "
+                "this cycle, so a red here before the hook lands is the expected "
+                "skeleton state, not a broken trigger."
+            ),
+        )
+        for name, command in _IRREVERSIBLE_EVIDENCE_COMMANDS.items()
+    ],
+    *[
+        Refusal(
+            id=f"bash-write-irreversible-ddl-{name}",
+            script="writ-bash-write-gate.sh",
+            event="PreToolUse",
+            mechanism="permissionDecisionReason",
+            permission_decision="deny",
+            shape="gate_decision",
+            gate_name="irreversible",
+            setup=_bash_command_setup(command),
+            notes=(
+                "Irreversible-destruction vector, SQL DDL sub-pattern "
+                f"{name!r} (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3, finding 4): "
+                "plain command text, no fixture needed. MEASURED AS AN ALLOW before "
+                "this cycle. Measured true-positive cost in the capture corpus is ZERO "
+                "and that is disclosed rather than hidden: this arm earns its place on "
+                "mechanism identity with the container arm above, not on incident "
+                "history."
+            ),
+        )
+        for name, command in _IRREVERSIBLE_DDL_COMMANDS.items()
     ],
     Refusal(
         id="validate-rules-site-a",

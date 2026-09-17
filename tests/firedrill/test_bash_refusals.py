@@ -15,6 +15,7 @@ live `/analyze` stub) so they get dedicated tests rather than the generic loop.
 from __future__ import annotations
 
 import json
+import re
 import socket
 from pathlib import Path
 
@@ -38,7 +39,14 @@ from tests.firedrill._harness import (
 
 # A shrinking matrix should fail loudly, not silently reduce coverage (repo
 # convention: tests/test_role_write_scope.py pins its own cross-product size).
-assert len(generic_refusals()) == 26
+#
+# THE ONE CANONICAL LITERAL for this population, and the only place the numeral may
+# appear. It moved from 26 to 33 when the irreversibility class gained the three
+# evidence-destruction verbs and the four SQL DDL branches (plan.md
+# 2412ba38-51e1-4b73-895b-7b240a3c21d3, finding 4); the three copies that used to quote
+# it inside tests/firedrill/_census.py refer to the pin by NAME now, and
+# TestTheCountPinHasExactlyOneHome below is what keeps it that way.
+assert len(generic_refusals()) == 33
 
 # THE MARKER COUNT PIN IS GONE, with no count replacing it (plan.md
 # 2412ba38-51e1-4b73-895b-7b240a3c21d3, defect 2). `assert len(ACTION_MARKERS) == 14`
@@ -426,8 +434,12 @@ class TestValidateRulesBothSites:
 _IRREVERSIBLE_NEGATIVE_CASES = [
     pytest.param("git push origin main --force-with-lease", id="force-with-lease"),
     pytest.param("git branch -d feature-branch", id="branch-lowercase-d"),
+    pytest.param('psql -c "SELECT 1"', id="ordinary-psql"),
+    pytest.param('mysql -e "SHOW TABLES"', id="ordinary-mysql"),
+    pytest.param("rm -rf build/", id="rm-outside-the-log-tree"),
+    pytest.param("find . -name '*.py' -delete", id="find-delete-outside-the-log-tree"),
 ]
-assert len(_IRREVERSIBLE_NEGATIVE_CASES) == 2
+assert len(_IRREVERSIBLE_NEGATIVE_CASES) == 6
 
 
 class TestIrreversibleGitNegativeControls:
@@ -436,7 +448,17 @@ class TestIrreversibleGitNegativeControls:
     reason` deliberately allows the reversible forms: `--soft`, `--force-with-
     lease`, `git clean -n`, and `git branch -d` (lowercase). This pins the two
     that share a command-text prefix with a denied pattern above, so a regex
-    that widens to catch the flag it should exclude is caught here, not missed."""
+    that widens to catch the flag it should exclude is caught here, not missed.
+
+    FOUR MORE JOINED with finding 4 (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3),
+    and each is the negative control of one of that cycle's two new arms. The two
+    ordinary database-client invocations are the arm's real false-positive surface
+    (truncating Magento index tables is routine work in another repo the same capture
+    shows). The `rm` and `find -delete` outside the log tree are the tier the cycle
+    deliberately LEFT ALONE after measuring 16 distinct `rm` invocations in 6,017 real
+    envelopes, every one of them scratch cleanup: they are negative controls here so a
+    later cycle that quietly widens the rule into user data reds in the drill.
+    """
 
     @pytest.mark.parametrize("cmd", _IRREVERSIBLE_NEGATIVE_CASES)
     def test_the_reversible_form_is_not_refused(self, tmp_path, cmd) -> None:
@@ -450,6 +472,49 @@ class TestIrreversibleGitNegativeControls:
         result = run_hook("writ-bash-write-gate.sh", envelope, iso)
         assert result.permission_decision() is None, (
             f"the reversible form {cmd!r} must not be refused: stdout={result.stdout!r}"
+        )
+
+
+_COUNT_PIN_RE = re.compile(r"len\(\s*generic_refusals\(\)\s*\)\s*==\s*\d+")
+
+
+class TestTheCountPinHasExactlyOneHome:
+    """A broken count pin in this repo is usually a DUPLICATE, not a pin: 44 was
+    asserted in 4 files and 12 in 7 before the de-duplication cycle, and this
+    population had grown three copies of its own numeral inside
+    `tests/firedrill/_census.py` (a module docstring and two `notes=` strings). A copy
+    is not harmless: whoever moves the pin fixes the assertion, reads the copies as
+    already-current, and ships a file that contradicts itself.
+
+    SCOPED TO THIS PACKAGE, because `generic_refusals()` names exactly one population
+    and nothing outside tests/firedrill/ has any business quoting its size. That is the
+    distinction tests/test_count_pin_discipline.py could not make for bare integers and
+    is why it asserts per FILE instead.
+    """
+
+    def test_the_numeral_appears_in_exactly_one_place(self) -> None:
+        sites = {
+            "%s:%d" % (path.name, number): line.strip()
+            for path in sorted(Path(__file__).resolve().parent.glob("*.py"))
+            for number, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), start=1)
+            if _COUNT_PIN_RE.search(line)
+        }
+        assert len(sites) == 1, (
+            "the generic-refusal count is written down in more than one place, so the "
+            "next cycle that adds a refusal has to find all of them: %r" % sites
+        )
+        assert list(sites)[0].startswith("test_bash_refusals.py:"), sites
+
+    def test_the_one_site_is_a_live_assertion(self) -> None:
+        """Anti-vacuity: a scan that found its one site inside a COMMENT would report a
+        healthy population while nothing pinned anything."""
+        source = Path(__file__).read_text(encoding="utf-8")
+        live = [line.strip() for line in source.splitlines()
+                if _COUNT_PIN_RE.search(line) and line.strip().startswith("assert ")]
+        assert live, (
+            "the only remaining generic-refusal count literal is not an assertion, so "
+            "the population is no longer pinned at all"
         )
 
 

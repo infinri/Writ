@@ -257,10 +257,15 @@ class TestMustStaySilent:
         assert _extract("find . -name x -print") == set()
 
     def test_exec_rm_stays_silent(self):
-        # Deletion is OUT OF SCOPE by recorded ruling (the hook's own ruling, quoted so the reference cannot go stale: "rm -rf,
-        # DROP TABLE and TRUNCATE are OUT OF SCOPE on purpose"). `rm` matches no cmd0
-        # arm, so this stays silent after the fix. Pinned so the closure is not read as
-        # smuggling deletion into scope.
+        # Deletion is OUT OF SCOPE AT THE EXTRACTOR by recorded ruling (the hook's own
+        # ruling, quoted so the reference cannot go stale: "no rm arm is added to its cmd0
+        # verb list, so deletion stays out of scope at the extractor"). That ruling was
+        # AMENDED by plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3, and the sentence above
+        # is the amended text: `rm -rf` on user data is still left alone, with the measured
+        # count behind it, while a destroying verb naming a Writ LOG ARTIFACT and SQL DDL
+        # through a database client are now refused at the PHRASE layer, about 160 lines
+        # ahead of this extractor. `rm` still matches no cmd0 arm, so this stays silent.
+        # Pinned so the closure is not read as smuggling deletion into scope.
         assert _extract(r"find . -name x -exec rm {} \;") == set()
 
     def test_delete_stays_silent(self):

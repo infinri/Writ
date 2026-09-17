@@ -673,11 +673,15 @@ class TestUnchangedSudoAndEnvControls:
 # --------------------------------------------------------------------------- #
 class TestMustStaySilentAfterTheFix:
     def test_find_pipe_xargs_rm_stays_silent(self):
-        # Deletion is OUT OF SCOPE for this gate by recorded ruling (the hook's own
-        # ruling, quoted rather than located by line: "rm -rf, DROP TABLE and TRUNCATE
-        # are OUT OF SCOPE on purpose". CITED BY TEXT ON PURPOSE: this citation has gone
-        # stale twice, once per cycle, because each cycle inserts header lines ABOVE the
-        # ruling it points at, so a line number is wrong by construction here.
+        # Deletion is OUT OF SCOPE FOR THIS GATE by recorded ruling (the hook's own
+        # ruling, quoted rather than located by line: "no rm arm is added to its cmd0
+        # verb list, so deletion stays out of scope at the extractor". CITED BY TEXT ON
+        # PURPOSE: this citation has gone stale twice, once per cycle, because each cycle
+        # inserts header lines ABOVE the ruling it points at, so a line number is wrong by
+        # construction here. The ruling was AMENDED by plan.md
+        # 2412ba38-51e1-4b73-895b-7b240a3c21d3, and the sentence above is the amended
+        # text: user-data deletion is still left alone, while evidence destruction and SQL
+        # DDL are refused at the PHRASE layer, which this extractor never reaches.
         # `rm` matches no write arm, so this stays silent after the fix exactly as
         # it was measured before it.
         assert _extract("find . | xargs rm") == set()
@@ -717,8 +721,9 @@ class TestMustStaySilentAfterTheFix:
 
     def test_flock_rm_rf_stays_silent(self):
         """Deletion is out of scope for this gate by the same recorded ruling as the
-        `timeout`/`xargs` cases above. Reddens if an `rm` arm is added to the cmd0 write
-        arms."""
+        `timeout`/`xargs` cases above, amended by plan.md
+        2412ba38-51e1-4b73-895b-7b240a3c21d3 and re-quoted there. Reddens if an `rm` arm is
+        added to the cmd0 write arms."""
         assert _extract("flock /tmp/l.lock rm -rf src") == set()
 
 
