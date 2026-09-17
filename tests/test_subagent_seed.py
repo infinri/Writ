@@ -1170,6 +1170,72 @@ def _expected_counts(population) -> Counter:
     return Counter(bucket for _, bucket, _ in population)
 
 
+# The buckets `check_subagent_governance_census` sums into `covered`, written as a literal
+# and never imported from doctor.py: an expectation read out of the code under test cannot
+# disagree with it.
+COVERED_BUCKETS = ("governed", "lazy")
+
+
+def _boundary_population() -> dict:
+    """The population that sits ON the threshold, keyed by agent name, each value the
+    bucket that agent is owed and the builders that produce its rows.
+
+    Two governed, one lazy, one seed_failed, one reachable, one unreachable, reusing the
+    row shapes `_population()` already establishes. Covered is the governed plus the lazy
+    and total is the map's length, so `covered * 2 == total` falls out of the map's own
+    contents and neither number is typed: an agent added here joins both.
+    """
+    return {
+        "b-governed-start-and-completion": ("governed", [_start_row, _complete_row]),
+        "b-governed-start-and-spawn-seed": (
+            "governed",
+            [_start_row, lambda a: _seeded_row(a, SPAWN_SEED), _complete_row]),
+        "b-lazy-seed-only": ("lazy", [lambda a: _seeded_row(a, LAZY_SEED)]),
+        "b-unrepaired-failure": ("seed_failed", [_seed_failed_row]),
+        "b-completion-and-hook-rows": ("reachable", [_complete_row, _hook_row]),
+        "b-completion-only": ("unreachable", [_complete_row]),
+    }
+
+
+def _boundary_rows(population: dict) -> list:
+    return [make(agent) for agent, (_bucket, makers) in population.items()
+            for make in makers]
+
+
+def _owed_counts(population: dict) -> Counter:
+    return Counter(bucket for bucket, _makers in population.values())
+
+
+def _covered_in(population: dict) -> int:
+    return sum(1 for bucket, _makers in population.values() if bucket in COVERED_BUCKETS)
+
+
+def _census_of_population(monkeypatch, stream: Path, population: dict) -> dict:
+    """The census the REAL reader returns over the population's rows, proven first to BE
+    the population the map describes.
+
+    THE TWO SIDES ARE PRODUCED BY DIFFERENT MECHANISMS. The left side is
+    `_subagent_governance_census` classifying JSONL rows it read back off disk; the right
+    side is the map, which no census code produced. This is what stops an ok verdict coming
+    from a population that never reached the boundary: an agent classified into a bucket the
+    map did not assign it fails here, before any verdict is read.
+    """
+    census = _census_over(monkeypatch, stream)
+    assert population, "the boundary population is empty, so every count below is zero"
+    owed = _owed_counts(population)
+    assert census["total"] == len(population), (
+        f"the reader counted {census['total']} agent(s) against the {len(population)} the "
+        f"map names: {sorted(population)}"
+    )
+    for bucket in _bucket_names(census):
+        assert census[bucket] == owed[bucket], (
+            f"{bucket}: the census counted {census[bucket]} against the {owed[bucket]} "
+            f"agent(s) the map assigns it "
+            f"({sorted(a for a, (b, _m) in population.items() if b == bucket)})"
+        )
+    return census
+
+
 def _live_cache_ids(cache_source: str) -> set:
     """Agent ids whose on-disk session cache declares `cache_source`.
 
@@ -1500,6 +1566,55 @@ class TestCensusCheckStillJudges:
         assert result.status == "ok", (
             f"4 covered of 7 is a majority, and the check reported {result.status}: "
             f"{result.detail}"
+        )
+
+    def test_it_reports_ok_at_the_boundary_where_the_covered_are_exactly_half(
+            self, tmp_path, monkeypatch) -> None:
+        """Three covered of six, the point the two shipped verdict tests sit either side of.
+
+        The threshold's stated contract is "warn only when the MAJORITY is ungoverned", and
+        at `covered * 2 == total` the ungoverned are half and not a majority, so ok is what
+        equality is owed. Nothing observed this point before, so a strict-to-non-strict flip
+        moved behaviour at exactly one input and no test moved with it.
+        """
+        population = _boundary_population()
+        stream = _metrics_stream(tmp_path, _boundary_rows(population))
+        census = _census_of_population(monkeypatch, stream, population)
+        covered = _covered_in(population)
+        assert covered * 2 == census["total"], (
+            f"the fixture never reached the boundary: {covered} covered of "
+            f"{census['total']}"
+        )
+
+        result = _check_over(monkeypatch, stream)
+        assert result.status == "ok", (
+            f"{covered} covered of {census['total']} is exactly half, so the ungoverned are "
+            f"not a majority, and the check reported {result.status}: {result.detail}"
+        )
+
+    def test_it_warns_one_agent_below_the_boundary(self, tmp_path, monkeypatch) -> None:
+        """The same map extended by one uncovered agent: three covered of seven.
+
+        One test proves half a comparison. This is the other half: the pair brackets the
+        threshold from both sides, so a mutation that moves the verdict reddens one of them
+        whichever direction it moves.
+        """
+        base = _boundary_population()
+        population = dict(base)
+        population["b-completion-only-one-below"] = ("unreachable", [_complete_row])
+        stream = _metrics_stream(tmp_path, _boundary_rows(population))
+        census = _census_of_population(monkeypatch, stream, population)
+        covered = _covered_in(population)
+        below_by = len(population) - len(base)
+        assert covered * 2 == census["total"] - below_by, (
+            f"the fixture does not sit {below_by} agent(s) below the boundary: {covered} "
+            f"covered of {census['total']}"
+        )
+
+        result = _check_over(monkeypatch, stream)
+        assert result.status == "warn", (
+            f"{covered} covered of {census['total']} leaves the ungoverned a majority, and "
+            f"the check reported {result.status}: {result.detail}"
         )
 
 

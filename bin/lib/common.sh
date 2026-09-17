@@ -449,11 +449,17 @@ load_hook_env() {
 # question about interpolating an untrusted value into hand-built JSON.
 #
 # STILL EXIT 0, STILL NOTHING ON STDOUT, STILL NO writ_critical. A sub-agent that cannot
-# inherit governance is a gap to report, never a hook failure. `local` is declared before the
-# assignment so `set -e` never sees the substitution's status, `2>/dev/null` stays on the
-# python so an unbounded traceback cannot land in the operator's transcript, and unlike the
-# spawn path there is no critical line: the agent is already running, a lazily seeded cache
-# confers nothing, and the message would repeat on every hook inside that agent.
+# inherit governance is a gap to report, never a hook failure. `|| _seed_status=""` IS WHAT
+# ABSORBS ERREXIT, and every hook sources this file under `set -euo pipefail`, so DO NOT
+# DELETE IT AS REDUNDANT. Measured all three ways: `local v; v=$(false)` ABORTS the function,
+# `local v=$(false)` survives (there `local` is the command and carries its own status), and
+# `local v; v=$(false) || v=""` survives. Declaring `local` separately is what makes errexit
+# SEE the assignment's status, not what hides it; an earlier version of this comment said the
+# opposite and would have read as permission to remove the one guard holding the hook up.
+# `2>/dev/null` stays on the python so an unbounded traceback cannot land in the operator's
+# transcript, and unlike the spawn path there is no critical line: the agent is already
+# running, a lazily seeded cache confers nothing, and the message would repeat on every hook
+# inside that agent.
 _writ_seed_subagent_cache() {
     [ -n "${HOOK_AGENT_ID:-}" ] || return 0
     [ "${HOOK_AGENT_ID:-}" != "${HOOK_SESSION_ID_RAW:-}" ] || return 0
