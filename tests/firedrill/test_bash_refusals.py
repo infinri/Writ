@@ -165,7 +165,10 @@ class TestRealCaptureLogNeverTouched:
         entry = by_id("state-write-gate")
         iso = make_isolation(tmp_path, session_id="capture-log-guard")
         setup = entry.setup(iso)
-        run_hook(entry.script, setup["envelope"], iso, extra_env=setup.get("extra_env"))
+        run_hook(
+            entry.script, setup["envelope"], iso,
+            extra_env=setup.get("extra_env"), cwd=setup.get("cwd"),
+        )
         after = real_blackbox_snapshot()
         assert after == before, (
             "a drill hook run appended to the developer's REAL blackbox capture log "
@@ -183,7 +186,10 @@ class TestEachDeclaredBashRefusal:
     def test_triggered_shape_and_record(self, tmp_path, entry) -> None:
         iso = make_isolation(tmp_path, session_id=f"firedrill-{entry.id}")
         setup = entry.setup(iso)
-        result = run_hook(entry.script, setup["envelope"], iso, extra_env=setup.get("extra_env"))
+        result = run_hook(
+            entry.script, setup["envelope"], iso,
+            extra_env=setup.get("extra_env"), cwd=setup.get("cwd"),
+        )
 
         reason = _refusal_reason(result, entry)
 
@@ -236,7 +242,7 @@ class TestEnforceViolationsCarriesRuleIds:
         entry = by_id("enforce-violations")
         iso = make_isolation(tmp_path, session_id="enforce-violations-rule-ids")
         setup = entry.setup(iso)
-        result = run_hook(entry.script, setup["envelope"], iso)
+        result = run_hook(entry.script, setup["envelope"], iso, cwd=setup.get("cwd"))
 
         assert result.returncode == 2, result.stderr
         assert "ENF-TEST-999" in result.stderr, (
@@ -264,7 +270,7 @@ class TestBashWriteCredentialGateDecisionNamesThePath:
         entry = by_id("bash-write-credential")
         iso = make_isolation(tmp_path, session_id="bash-write-credential-names-path")
         setup = entry.setup(iso)
-        result = run_hook(entry.script, setup["envelope"], iso)
+        result = run_hook(entry.script, setup["envelope"], iso, cwd=setup.get("cwd"))
 
         assert result.permission_decision() == "deny", (
             f"expected emit_deny's own deny; stdout={result.stdout!r}"
@@ -296,7 +302,10 @@ class TestPinnedExitCodesForAdvisoryStopHooks:
         entry = by_id(refusal_id)
         iso = make_isolation(tmp_path, session_id=f"pin-{refusal_id}")
         setup = entry.setup(iso)
-        result = run_hook(entry.script, setup["envelope"], iso, extra_env=setup.get("extra_env"))
+        result = run_hook(
+            entry.script, setup["envelope"], iso,
+            extra_env=setup.get("extra_env"), cwd=setup.get("cwd"),
+        )
         assert result.returncode == 1, (
             f"{refusal_id}: exit code drifted off its pinned value of 1 "
             f"(got {result.returncode}); if this is deliberate it needs the user's "
@@ -330,7 +339,8 @@ class TestValidateRulesBothSites:
         iso = make_isolation(tmp_path, session_id="validate-rules-site-a")
         setup = entry.setup(iso)
         result = run_hook(
-            entry.script, setup["envelope"], iso, extra_env=setup.get("extra_env")
+            entry.script, setup["envelope"], iso,
+            extra_env=setup.get("extra_env"), cwd=setup.get("cwd"),
         )
         assert result.returncode == 2, (
             f"expected the top-of-file sentinel to exit 2; got {result.returncode}, "
@@ -479,7 +489,8 @@ class TestColoredRunnerOutputDoesNotDisableThePendingTestsRefusal:
         iso = make_isolation(tmp_path, session_id="color-force-color-pinned")
         setup = entry.setup(iso)
         result = run_hook(
-            entry.script, setup["envelope"], iso, extra_env={"FORCE_COLOR": "3"}
+            entry.script, setup["envelope"], iso,
+            extra_env={"FORCE_COLOR": "3"}, cwd=setup.get("cwd"),
         )
         assert result.returncode == 1, (
             "expected the refusal to survive with FORCE_COLOR=3 pinned in the child "
@@ -614,7 +625,8 @@ class TestEveryDeclaredActionMarkerIsStillEmitted:
             )
             setup = entry.setup(iso)
             result = run_hook(
-                entry.script, setup["envelope"], iso, extra_env=setup.get("extra_env")
+                entry.script, setup["envelope"], iso,
+                extra_env=setup.get("extra_env"), cwd=setup.get("cwd"),
             )
             reason = _refusal_reason(result, entry)
             if marker not in reason.lower():
@@ -669,7 +681,8 @@ class TestEveryDeclaredActionMarkerIsStillEmitted:
         iso = make_isolation(tmp_path, session_id=f"marker-mutation-{refusal_id}")
         setup = entry.setup(iso)
         result = run_hook(
-            entry.script, setup["envelope"], iso, extra_env=setup.get("extra_env")
+            entry.script, setup["envelope"], iso,
+            extra_env=setup.get("extra_env"), cwd=setup.get("cwd"),
         )
         reason = _refusal_reason(result, entry).lower()
 

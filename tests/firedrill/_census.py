@@ -6,8 +6,13 @@ shape, and declared stream -- plus the action-marker set a refusal reason must m
 whose message names no action is a deadlock, not a control).
 
 Each entry's `setup(iso)` is real fixture-building code (files, a session cache, extra
-env), not a mock: it returns the envelope to feed the hook on stdin plus any per-case
-env overrides. `generic=False` entries (validate-rules.sh's two sentinel sites) are
+env), not a mock: it returns the envelope to feed the hook on stdin, any per-case env
+overrides, and optionally a `"cwd"` the hook runs in. The cwd key exists because one
+refusal is only reachable from inside the isolated cache dir: writ-bash-write-gate.sh
+guards the command TEXT before it classifies any resolved target, so the write-target
+state arm can only be triggered by a relative path the command text does not spell.
+Callers pass `cwd=setup.get("cwd")` to `run_hook`, which defaults to the project root
+exactly as before for every entry that omits it. `generic=False` entries (validate-rules.sh's two sentinel sites) are
 exercised by dedicated tests in test_bash_refusals.py rather than the generic
 parametrized loop, because their trigger paths are not uniform with the rest (one
 needs a live `/analyze` stub server); they are still declared here so the script-level
@@ -103,7 +108,7 @@ ACTION_MARKERS: dict[str, tuple[str, ...]] = {
     "read the log": ("run-pending-tests",),
     "re-send the same content": ("comms-output-gate",),
     "name non-secret templates": ("bash-write-credential",),
-    "ask the user": ("bash-write-state", "state-write-gate"),
+    "ask the user": ("bash-write-state", "bash-write-state-target", "state-write-gate"),
     "re-issue": ("read-junk-enforce",),
     "bypass: set session.mode": ("validate-test-file",),
     "must name": ("validate-design-doc",),
@@ -217,6 +222,25 @@ def _setup_bash_write_state(iso: Isolation) -> dict:
             "tool_name": "Bash",
             "tool_input": {"command": cmd},
         },
+    }
+
+
+def _setup_bash_write_state_target(iso: Isolation) -> dict:
+    # THE WRITE-TARGET ARM, which needs a trigger the command-text guard cannot claim
+    # first. That guard runs ahead of every target classification and matches on the
+    # command TEXT against ten patterns, the first of which is the cache dir itself, so
+    # any command that SPELLS a gate-state path is refused by the arm above this one and
+    # the write-target arm is never reached. A bare relative filename plus the hook's cwd
+    # resolves into the cache dir while naming none of the ten, which is why this entry
+    # carries the census's optional "cwd" key.
+    return {
+        "envelope": {
+            "session_id": iso.session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "echo '{}' > plain.json"},
+        },
+        "cwd": iso.cache_dir,
     }
 
 
@@ -591,6 +615,25 @@ REFUSALS: list[Refusal] = [
         gate_name="bash-write",
         setup=_setup_bash_write_state,
         notes="Sibling of the credential deny; already calls log_gate_decision today.",
+    ),
+    Refusal(
+        id="bash-write-state-target",
+        script="writ-bash-write-gate.sh",
+        event="PreToolUse",
+        mechanism="permissionDecisionReason",
+        permission_decision="deny",
+        shape="gate_decision",
+        gate_name="bash-write",
+        setup=_setup_bash_write_state_target,
+        generic=False,
+        notes=(
+            "The write-TARGET state arm, a different refusal from bash-write-state above: "
+            "that one matches the command TEXT, this one classifies a RESOLVED path. "
+            "generic=False for the reason the two validate-rules.sh sites carry it, so the "
+            "generic loop's own count pin in test_bash_refusals.py does not move; the "
+            "trigger is exercised by tests/firedrill/test_grant_phrase_refusals.py and by "
+            "the `ask the user` marker-liveness loop, which drive it with the census cwd."
+        ),
     ),
     Refusal(
         id="state-write-gate",

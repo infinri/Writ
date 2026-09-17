@@ -43,6 +43,7 @@ EXPECTED_VALID_MODES = {"conversation", "debug", "review", "work", "investigate"
 PLAN_CONTENT = """\
 ## Files
 - service.py
+- `tests/test_service.py` (create) -- the skeleton the test-skeletons gate judges
 
 ## Analysis
 Implement the thing with care and verify behavior.

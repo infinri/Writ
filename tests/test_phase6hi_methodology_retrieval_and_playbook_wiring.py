@@ -172,7 +172,8 @@ def _advance_with_token(client: TestClient, sid: str, source: str = "tool"):
     root = tempfile.mkdtemp(prefix=f"writ-6i-{sid}-")
     (Path(root) / "plan.md").write_text(
         "# Plan\n\n"
-        "## Files\n\n- `src/foo.py` (modify) -- wire the thing\n\n"
+        "## Files\n\n- `src/foo.py` (modify) -- wire the thing\n"
+        "- `tests/test_seed.py` (create) -- the skeleton the test-skeletons gate judges\n\n"
         "## Analysis\n\nSeed plan for the advance-phase wiring test.\n\n"
         "## Rules Applied\n\nNo matching rules\n\n"
         "## Capabilities\n\n- [ ] the advance emits its events\n"

@@ -92,10 +92,19 @@ def _planning_project(tmp_path, plan_body: str = PLAN_OK) -> str:
 
 
 def _testing_project(tmp_path, with_skeleton: bool = True) -> str:
+    # The test-skeletons gate judges the APPROVED PLAN's own ## Files test entries, so a
+    # project that SATISFIES it needs the bullet naming the file as well as the file on
+    # disk. with_skeleton=False keeps naming nothing and writing nothing, which is the
+    # state the two refusal tests below are about.
     root = tmp_path / "proj2"
     (root / "tests").mkdir(parents=True, exist_ok=True)
     if with_skeleton:
         (root / "tests" / "test_thing.py").write_text("def test_thing():\n    assert True\n")
+        (root / "plan.md").write_text(
+            "# Plan: a fixture\n\n"
+            "## Files\n\n"
+            "- `tests/test_thing.py` (create) -- the skeleton the test-skeletons gate judges\n"
+        )
     return str(root)
 
 
@@ -120,7 +129,14 @@ class TestTestSkeletonsGateEnforced:
         )
         assert res.get("advanced") is False
         assert res.get("gate") == "test-skeletons"
-        assert "test files" in (res.get("error") or "").lower()
+        # The refusal must be ABOUT the test file this gate judges. Every arm of
+        # _validate_test_skeletons names one ("nothing names the test file this gate
+        # checks", "names no test file", "names test files that are not on disk"); no
+        # other validator this route dispatches says "test file" at all, so a phase-a or
+        # binding refusal arriving here still fails this assertion. Triage rule if the
+        # wording moves again: re-point it at the noun the refusal names, never at a
+        # substring (a non-empty `error`) that every refusal would satisfy.
+        assert "test file" in (res.get("error") or "").lower(), res
 
     @pytest.mark.asyncio
     async def test_present_skeletons_advance(self, tmp_path):

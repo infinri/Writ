@@ -159,7 +159,8 @@ def _sid(label: str) -> str:
 _PLAN_BODY = (
     "# Plan: a fixture\n\n"
     "## Files\n\n"
-    "- `src/thing.py` (modify) -- the fixture's only file\n\n"
+    "- `src/thing.py` (modify) -- the fixture's production file\n"
+    "- `tests/test_fixture.py` (create) -- the skeleton the test-skeletons gate judges\n\n"
     "## Analysis\n\n"
     "Fixture plan.\n\n"
     "## Rules Applied\n\n"

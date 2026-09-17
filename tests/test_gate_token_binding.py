@@ -1165,3 +1165,145 @@ class TestSpendBehaviorUnchangedByTheBindingChange:
                 "an unresolvable project root must NOT spend the token -- the user can "
                 "retry from the project directory without re-approving"
             )
+
+
+# ---------------------------------------------------------------------------
+# Finding 3 (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3): the token's field count,
+# derived from the mint's own signature.
+#
+# HANDBOOK.md section 7 says the token is four lines; the mint writes five, because the
+# rule id was added after that sentence was written. The sentence is corrected by reading
+# the doc, NEVER by a test: this repo forbids tests that assert on documentation prose and
+# a standing user ruling records it, so nothing below reads a markdown file. The structural
+# guard goes on the ARTIFACT instead, where a future line added without a binding field (or
+# a binding field added without a line) fails on its own.
+#
+# NO COUNT LITERAL. The expected number comes from `inspect.signature(mint_gate_token)`,
+# which is the single source that actually decides what a token can bind.
+# ---------------------------------------------------------------------------
+
+
+def _binding_parameters() -> list[str]:
+    """Every parameter of `mint_gate_token` that names a LINE of the token file.
+
+    `session_id` is excluded by name and for a stated reason: it names the FILE
+    (`gate_token_path`), not a field inside it. Triage rule, per the plan: if a future
+    parameter is deliberately not a line, exclude it here by name with the reason. Do not
+    replace this derivation with a number, which is the drift the derivation exists to
+    catch.
+    """
+    import inspect
+
+    from writ.session.gate_token import mint_gate_token
+
+    names = [
+        name for name in inspect.signature(mint_gate_token).parameters
+        if name != "session_id"
+    ]
+    assert names, (
+        "mint_gate_token declares no binding parameter at all, so the expected field "
+        "count derived here is zero and every assertion below would pass on any token"
+    )
+    return names
+
+
+def _token_fields(text: str) -> list[str]:
+    """The token file's fields. `splitlines` keeps an EMPTY trailing field, which matters:
+    an unbound candidate or rule is written as an empty line and still occupies one."""
+    return text.splitlines()
+
+
+class TestTokenFieldCountMatchesTheMintSignature:
+    """Capabilities 13 to 15. One line per binding field, both writers agreeing, and the
+    guard proved conditional against a token with a field missing.
+
+    TRIAGE RULE FOR A RED HERE, stated where whoever meets it will read it: either a
+    binding field was added without a line, or a line was added without a field. Both are
+    real defects in the approval binding. Fixing it by writing the observed number into
+    this file removes the only thing that would notice next time.
+    """
+
+    def test_a_minted_token_carries_one_line_per_binding_parameter(self):
+        from writ.session.gate_token import gate_token_path, mint_gate_token
+
+        expected = _binding_parameters()
+        sid = _sid("fieldcount")
+        with _mint_cleanup(sid):
+            mint_gate_token(
+                sid, gate="phase-a", plan_hash="abc123def456",
+                candidate_id="CAND-1", rule_id="ENF-TEST-003",
+            )
+            fields = _token_fields(Path(gate_token_path(sid)).read_text())
+
+        assert len(fields) == len(expected), (
+            f"mint_gate_token accepts the binding fields {expected} but wrote "
+            f"{len(fields)} line(s): {fields!r}"
+        )
+
+    def test_an_unbound_mint_still_carries_one_line_per_binding_parameter(self):
+        """The common case: a phase advance binds no candidate and no rule, and those
+        fields are written as EMPTY lines rather than omitted. A count taken from a
+        stripped read would see fewer lines here and call the token short."""
+        from writ.session.gate_token import gate_token_path, mint_gate_token
+
+        expected = _binding_parameters()
+        sid = _sid("fieldcount-empty")
+        with _mint_cleanup(sid):
+            mint_gate_token(sid, gate="phase-a", plan_hash="abc123def456")
+            fields = _token_fields(Path(gate_token_path(sid)).read_text())
+
+        assert len(fields) == len(expected), (
+            f"an ordinary phase approval wrote {len(fields)} line(s) where "
+            f"mint_gate_token accepts {len(expected)} binding fields: {fields!r}"
+        )
+
+    def test_the_bash_writer_produces_the_same_field_count(self, tmp_path, monkeypatch):
+        """Capability 14. The hook mints from bash so a broken writ package cannot cost the
+        user their approval, which means two writers own one format. Both are driven with
+        the SAME inputs and counted the same way, so neither can gain or lose a field
+        without this failing."""
+        import writ.session.gate_token as gt
+
+        expected = _binding_parameters()
+        sid = _sid("fieldcount-parity")
+        fixed_token = uuid.uuid4().hex
+        py_path = tmp_path / "py-token"
+        bash_path = tmp_path / "bash-token"
+
+        monkeypatch.setattr(gt, "gate_token_path", lambda session_id: str(py_path))
+        gt.mint_gate_token(
+            sid, gate="phase-a", plan_hash="0123456789ab",
+            candidate_id="CAND-1", rule_id="ENF-TEST-003", token=fixed_token,
+        )
+
+        script = (
+            f'set -euo pipefail\nsource "{COMMON_SH}"\n'
+            f'write_gate_token_file "{bash_path}" "{fixed_token}" "phase-a" '
+            f'"0123456789ab" "CAND-1" "ENF-TEST-003"\n'
+        )
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=20)
+        assert r.returncode == 0, f"write_gate_token_file failed: {r.stderr}"
+
+        python_fields = _token_fields(py_path.read_text())
+        bash_fields = _token_fields(bash_path.read_text())
+
+        assert len(bash_fields) == len(python_fields), (
+            f"the bash writer wrote {len(bash_fields)} field(s) and the python mint wrote "
+            f"{len(python_fields)}: {bash_fields!r} vs {python_fields!r}"
+        )
+        assert len(bash_fields) == len(expected), (
+            f"both writers agree on {len(bash_fields)} field(s), and mint_gate_token "
+            f"accepts the binding fields {expected}"
+        )
+
+    def test_the_guard_reports_a_token_that_is_one_field_short(self):
+        """Capability 15. A count that answered 'right' for any token would pass every case
+        above on any tree. The synthetic token drops the LAST field, which is the shape the
+        rule-id line was added into."""
+        expected = _binding_parameters()
+        short = "\n".join(f"field{index}" for index in range(len(expected) - 1)) + "\n"
+
+        assert len(_token_fields(short)) != len(expected), (
+            "a token one field short counted as complete, so this guard cannot tell a "
+            f"drifted writer from a correct one: {short!r}"
+        )

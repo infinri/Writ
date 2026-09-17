@@ -700,7 +700,7 @@ case "$STATE_MATCH" in
         if _readonly_inspection "$CMD"; then
             log_gate_decision "bash-write" "allow" "read-only inspection naming gate state" ""
         else
-            GUARD_REASON="[ENF-GATE-STATE] Refusing this Bash command: it names Writ gate state ('$STATE_MATCH'). Mode, approvals, the manual-testing grant and recorded review verdicts live there, and a gate the agent can edit is not a gate, so a command that could execute, expand, or write is refused in any mode. Plain read-only inspection (grep/cat/ls pipelines with no redirects, substitution, or control operators) is allowed, and the Read tool covers the rest. To write PROSE that merely names gate state (a commit message, a doc, a plan), put the text in a file with the Write tool and pass the file: 'git commit -F <file>' rather than 'git commit -m'. The match is on the command TEXT, so a mention inside an argument reads exactly like a use, and this is the seam that separates them. A manual-testing bypass is minted only from the user's own words: ask the user to reply \"manual testing approved\". A CRITICAL review verdict is cleared only by fixing the findings and re-running writ-reviewer, never by writing the record directly."
+            GUARD_REASON="[ENF-GATE-STATE] Refusing this Bash command: it names Writ gate state ('$STATE_MATCH'). Mode, approvals, the manual-testing grant and recorded review verdicts live there, and a gate the agent can edit is not a gate, so a command that could execute, expand, or write is refused in any mode. Plain read-only inspection (grep/cat/ls pipelines with no redirects, substitution, or control operators) is allowed, and the Read tool covers the rest. To write PROSE that merely names gate state (a commit message, a doc, a plan), put the text in a file with the Write tool and pass the file: 'git commit -F <file>' rather than 'git commit -m'. The match is on the command TEXT, so a mention inside an argument reads exactly like a use, and this is the seam that separates them. A manual-testing bypass is minted only from the user's own words: ask the user to reply \"manual test approved\". A CRITICAL review verdict is cleared only by fixing the findings and re-running writ-reviewer, never by writing the record directly."
             log_gate_decision "bash-write" "deny" "$GUARD_REASON" "$STATE_MATCH"
             emit_deny "$GUARD_REASON"
             exit 0
@@ -3266,7 +3266,7 @@ fi
 # 1b. Writ gate state: deny in any mode. A gate the agent can edit is not a gate.
 STATE_HIT=$(printf '%s\n' "$TARGETS" | awk -F'\t' '$1=="state"{print $2; exit}')
 if [ -n "$STATE_HIT" ]; then
-    STATE_REASON="[ENF-GATE-STATE] Refusing this Bash command: it writes to Writ gate state ('$STATE_HIT'). Mode, approvals and the manual-testing grant live there. A manual-testing bypass is minted only from the user's own words, so ask the user to reply \"manual testing approved\"."
+    STATE_REASON="[ENF-GATE-STATE] Refusing this Bash command: it writes to Writ gate state ('$STATE_HIT'). Mode, approvals and the manual-testing grant live there. A manual-testing bypass is minted only from the user's own words, so ask the user to reply \"manual test approved\"."
     log_gate_decision "bash-write" "deny" "$STATE_REASON" "$STATE_HIT"
     emit_deny "$STATE_REASON"
     exit 0

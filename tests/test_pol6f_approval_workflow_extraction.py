@@ -35,6 +35,7 @@ GATE_TOKEN_SESSION_PREFIX = "aw-"
 PLAN = """# Plan
 ## Files
 - foo.py
+- `tests/test_x.py` (create) -- the skeleton the test-skeletons gate judges
 ## Analysis
 What and why, contracts, integration points.
 ## Rules Applied

@@ -65,7 +65,7 @@ PY
 ) || true
 
 if [ -n "$VERDICT" ]; then
-    REASON="[ENF-GATE-STATE] Refusing this write: '$FILE' is Writ gate state. Approvals, mode and the manual-testing grant are recorded there, so the agent does not get to edit them. A manual-testing bypass is minted only from the user's own words -- ask the user to reply \"manual testing approved\"."
+    REASON="[ENF-GATE-STATE] Refusing this write: '$FILE' is Writ gate state. Approvals, mode and the manual-testing grant are recorded there, so the agent does not get to edit them. A manual-testing bypass is minted only from the user's own words, so ask the user to reply \"manual test approved\"."
     log_gate_decision "state-write" "deny" "$REASON" "$FILE"
     emit_deny "$REASON"
 fi

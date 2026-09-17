@@ -486,6 +486,8 @@ class TestModeAdvancePhase:
 |------|--------|
 | src/service.py | Create |
 
+- `tests/test_service.py` (create) -- the skeleton the test-skeletons gate judges
+
 ## Analysis
 
 This feature adds a new service endpoint.
@@ -558,6 +560,7 @@ This feature adds a new service endpoint.
         writ_session._write_cache(session_id, cache)
 
         # Create a test file with a method signature
+        self._write_plan(project_root)
         test_dir = project_root / "tests"
         test_dir.mkdir()
         (test_dir / "test_service.py").write_text("def test_service_works():\n    pass\n")
@@ -574,6 +577,7 @@ This feature adds a new service endpoint.
         cache["current_phase"] = "testing"
         writ_session._write_cache(session_id, cache)
 
+        self._write_plan(project_root)
         test_dir = project_root / "tests"
         test_dir.mkdir()
         (test_dir / "test_service.py").write_text("def test_service_works():\n    pass\n")

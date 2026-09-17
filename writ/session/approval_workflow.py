@@ -199,44 +199,108 @@ def _validate_phase_a(project_root: str, session_id: str = "") -> str | None:
     return None
 
 
-def _validate_test_skeletons(project_root: str, session_id: str = "") -> str | None:
-    """Validate that at least one test file with a method signature was written this session.
+# The test-path shape this gate judges, at module scope because the session-scoped arms
+# and the project-wide tier both read it: two copies is how they would come to disagree
+# about what a test file IS.
+_TEST_PATH_PATTERNS = [
+    r'/Test/', r'/tests/', r'/test/', r'/__tests__/',
+    r'Test\.php$', r'test_.*\.py$', r'_test\.go$', r'_test\.rs$',
+    r'\.test\.[jt]sx?$', r'\.spec\.[jt]sx?$',
+]
 
-    Checks files_written in the session cache first. If session tracking is available,
-    only files written this session count. Falls back to scanning the project if no
-    session is provided.
+_TEST_METHOD_PATTERNS = [
+    r'function\s+test\w+', r'def\s+test_\w+', r'func\s+Test\w+',
+    r'fn\s+test_\w+', r'it\s*\(', r'test\s*\(', r'describe\s*\(',
+    r'@Test',
+]
+
+
+def _carries_test_method(path: str) -> bool:
+    """True when `path` is a readable file holding a test method signature.
+
+    An empty file at the right path is not a skeleton, so the path check alone would
+    approve a touch.
     """
-    import re
+    try:
+        with open(path) as handle:
+            content = handle.read()
+    except OSError:
+        return False
+    return any(re.search(pattern, content) for pattern in _TEST_METHOD_PATTERNS)
 
-    method_patterns = [
-        r'function\s+test\w+', r'def\s+test_\w+', r'func\s+Test\w+',
-        r'fn\s+test_\w+', r'it\s*\(', r'test\s*\(', r'describe\s*\(',
-        r'@Test',
-    ]
 
-    test_path_patterns = [
-        r'/Test/', r'/tests/', r'/test/', r'/__tests__/',
-        r'Test\.php$', r'test_.*\.py$', r'_test\.go$', r'_test\.rs$',
-        r'\.test\.[jt]sx?$', r'\.spec\.[jt]sx?$',
-    ]
+def _validate_test_skeletons(project_root: str, session_id: str = "") -> str | None:
+    """Validate that this session's test skeleton is on disk before the gate advances.
 
+    Four arms when a session id is supplied, in order. A live manual-testing grant passes
+    and leaves a row saying so: it is minted only from the user's own typed words and
+    already admits arbitrary production files at the test-first gate, which is strictly
+    wider authority than advancing this one gate, and without it a cycle with no runnable
+    tests has no way out at all. Then files_written from the session cache, which was
+    already session-scoped. Then the APPROVED PLAN's own ## Files test entries, resolved
+    with the call phase-a uses so both gates judge the same plan.
+
+    With no session id the project-wide scan answers, unchanged: that tier has no session
+    to scope to, so its breadth is not a defect there.
+    """
     # Check session-tracked files first
     if session_id:
+        import manual_test_grant
+
         cache = _read_cache(session_id)
-        files_written = cache.get("files_written", [])
-        for filepath in files_written:
-            if not any(re.search(p, filepath) for p in test_path_patterns):
+        if manual_test_grant.active(session_id) is not None:
+            _log_friction_event(
+                session_id, cache.get("mode"),
+                "gate_passed_by_manual_test_grant",
+                gate="test-skeletons",
+            )
+            return None
+
+        for filepath in cache.get("files_written", []):
+            if not any(re.search(p, filepath) for p in _TEST_PATH_PATTERNS):
                 continue
-            if not os.path.isfile(filepath):
-                continue
-            try:
-                with open(filepath) as f:
-                    content = f.read()
-                for mp in method_patterns:
-                    if re.search(mp, content):
-                        return None  # found a valid session test
-            except OSError:
-                continue
+            if _carries_test_method(filepath):
+                return None  # found a valid session test
+
+        # plan_harvest imports the ## Files regexes FROM this module, so the import is
+        # deferred into the body to keep the module graph acyclic. It is the canonical
+        # parser: a third copy of those regexes is a bill this repo has already paid twice.
+        from writ.session.plan_harvest import _extract_files
+
+        plan_path = _find_plan_md(project_root, session_id or None)
+        if not plan_path:
+            return (
+                "No plan.md resolves for this session, so nothing names the test file "
+                "this gate checks. Write the plan first, by filling in "
+                f"{_PLAN_TEMPLATE_REF} in the Writ skill directory."
+            )
+        try:
+            with open(plan_path) as handle:
+                plan_text = handle.read()
+        except OSError:
+            return (
+                f"{plan_path} could not be read, so this gate cannot see the test files "
+                "the approved plan names."
+            )
+        planned = [
+            entry["path"] for entry in _extract_files(plan_text)
+            if any(re.search(p, entry["path"]) for p in _TEST_PATH_PATTERNS)
+        ]
+        if not planned:
+            return (
+                f"{plan_path} names no test file, so reply `replan approved` to re-open "
+                "planning and add the test skeleton to ## Files. To verify this cycle by "
+                "hand instead, ask the user to reply `manual test approved`."
+            )
+        for path in planned:
+            candidate = path if os.path.isabs(path) else os.path.join(project_root, path)
+            if _carries_test_method(candidate):
+                return None
+        return (
+            f"{plan_path} names test files that are not on disk with a test method "
+            f"signature: {', '.join(planned)}. Write the skeleton before requesting "
+            "approval."
+        )
 
     # Fallback: scan project for test files (excludes vendor/node_modules)
     import glob
@@ -250,14 +314,8 @@ def _validate_test_skeletons(project_root: str, session_id: str = "") -> str | N
         matches = glob.glob(full, recursive=True)
         matches = [m for m in matches if '/vendor/' not in m and '/node_modules/' not in m]
         for match in matches:
-            try:
-                with open(match) as f:
-                    content = f.read()
-                for mp in method_patterns:
-                    if re.search(mp, content):
-                        return None  # found a valid test
-            except OSError:
-                continue
+            if _carries_test_method(match):
+                return None  # found a valid test
     return "No test files found with test method signatures. Write test skeleton files to disk before requesting approval."
 
 

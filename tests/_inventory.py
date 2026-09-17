@@ -2753,3 +2753,131 @@ def session_facade_imports(*, path: Path | None = None) -> dict[str, str]:
             for alias in node.names:
                 table[alias.asname or alias.name.split(".")[0]] = alias.name
     return table
+
+
+# ── Refusal sites that tell the user to type a phrase (plan.md
+# 2412ba38-51e1-4b73-895b-7b240a3c21d3, finding 1) ───────────────────────────────────
+#
+# A refusal that names a phrase the mint no longer accepts is a deadlock rather than a
+# control: the user who follows the instruction is not refused twice, they are refused
+# forever, because nothing they were told to do can change the state. Three live refusals
+# were measured in that condition, which is why this is a POPULATION and not three
+# assertions.
+#
+# THE ROOTS ARE CODE, NEVER MARKDOWN. This repo forbids tests that assert on documentation
+# prose (a standing user ruling), and a derivation that reached into README.md or
+# HANDBOOK.md would be exactly that test wearing a different hat.
+_PHRASE_SCAN_SPEC: tuple[tuple[Path, str], ...] = (
+    (REPO / "hooks" / "scripts", "*.sh"),
+    (REPO / "writ", "**/*.py"),
+    (REPO / "bin" / "lib", "*.py"),
+)
+
+# A directive ADDRESSED AT THE USER, which is a different thing from an instruction to the
+# agent about what to tell the user. `reply <Q>X<Q>` (optionally `reply exactly <Q>X<Q>`)
+# names what the user types; so do `user to say <Q>X<Q>` and `user says <Q>X<Q>`. `<Q>` is a
+# plain double quote, a backslash-escaped double quote (the bash refusal strings), or a
+# backtick (the python ones).
+#
+# THE `say:` FORMS ARE EXCLUDED STRUCTURALLY, not by an allowlist. `writ/session/gates.py`
+# and `hooks/scripts/validate-exit-plan.sh` both carry `Say "Say approved to proceed"`,
+# which instructs the AGENT; neither carries a `reply` verb, and `user and say:` is not
+# `user to say`, so the anchor set and the required whitespace-then-quote sequence keep both
+# out. An allowlist entry would have had to name each site, and would have gone stale the
+# moment one moved.
+#
+# ONE PARSER, TWO CALLERS. `user_directed_phrase_sites` reads source lines and
+# `tests/firedrill/test_grant_phrase_refusals.py` reads the reason a hook actually emitted;
+# a second copy of this regex is how the two would come to disagree about what a directive
+# IS, and this repo has already paid twice for a duplicated parser.
+_USER_DIRECTED_PHRASE_RE = re.compile(
+    r"""
+    (?: \breply\b | \buser\s+to\s+say\b | \buser\s+says\b )
+    [ \t]+ (?: exactly [ \t]+ )?
+    (?: \\" | " | ` )
+    ( [^"`\\\n]+ )
+    (?: \\" | " | ` )
+    """,
+    re.VERBOSE,
+)
+
+
+def user_directed_phrases(text: str) -> list[str]:
+    """Every phrase `text` tells the user to type, in the order they appear.
+
+    Pure and line-agnostic, so the same grammar judges a source line and a
+    `permissionDecisionReason` a hook emitted at runtime.
+    """
+    return [match.group(1).strip() for match in _USER_DIRECTED_PHRASE_RE.finditer(text)]
+
+
+def user_directed_phrase_sites(
+    *, spec: tuple[tuple[Path, str], ...] | None = None, base: Path | None = None
+) -> dict[str, str]:
+    """`{"<relpath>:<line>": the phrase quoted there}` for every user-directed directive.
+
+    DERIVED, so a fourth refusal added next month is judged without anyone remembering to
+    register it, and it fails by NAME rather than by arithmetic. No count literal exists
+    anywhere in this population.
+
+    FIRST MATCH PER LINE. Every directive in this repo occupies a line of its own today; a
+    line carrying two would report only the first, and the declared-site check below is what
+    catches a derivation that went blind for any reason.
+
+    `spec` and `base` are keywords for the reason `rag_inject_field_slices(*, path=)` gives:
+    the detector's own conditionality is proven against synthetic sources under `tmp_path`,
+    never by editing the real tree.
+    """
+    root_base = Path(base or REPO)
+    sites: dict[str, str] = {}
+    for root, pattern in spec or _PHRASE_SCAN_SPEC:
+        if not root.is_dir():
+            continue
+        for path in sorted(root.glob(pattern)):
+            if not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            try:
+                rel = path.relative_to(root_base).as_posix()
+            except ValueError:
+                rel = path.as_posix()
+            for number, line in enumerate(text.splitlines(), start=1):
+                phrases = user_directed_phrases(line)
+                if phrases:
+                    sites[f"{rel}:{number}"] = phrases[0]
+    return sites
+
+
+# The sites this cycle MEASURED, each anchored on a stable clause of the refusal that owns
+# it. A derivation that matched nothing would pass vacuously, which is this repo's own
+# recorded failure (a hardcoded population is blind, and so is an empty derived one), so
+# every id here must resolve to a derived site in the named file whose line carries the
+# anchor.
+#
+# TRIAGE RULE FOR A RED HERE, stated where whoever meets it will read it, the way
+# `tests/firedrill/_census.py` states its own: a red means the derivation went blind or the
+# refusal was reworded. Re-point the anchor at the sentence the refusal now emits. Deleting
+# the entry, or widening the grammar until it goes green, is the loosening this map exists
+# to stop.
+#
+# NEW SITES ARE NOT REQUIRED TO BE DECLARED. They are derived automatically and judged by
+# the live minting predicates; this map only proves the derivation can still see the four
+# sites that are known to exist.
+DECLARED_PHRASE_SITES: dict[str, tuple[str, str]] = {
+    "state-write-gate": (
+        "hooks/scripts/writ-state-write-gate.sh",
+        "is Writ gate state. Approvals, mode",
+    ),
+    "bash-write-state-text": (
+        "hooks/scripts/writ-bash-write-gate.sh",
+        "it names Writ gate state",
+    ),
+    "bash-write-state-target": (
+        "hooks/scripts/writ-bash-write-gate.sh",
+        "it writes to Writ gate state",
+    ),
+    "test-skeletons-no-test": (
+        "writ/session/approval_workflow.py",
+        "names no test file",
+    ),
+}

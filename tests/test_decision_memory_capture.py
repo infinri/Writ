@@ -36,7 +36,8 @@ Capability map (25 items from capabilities.md):
   [server-2]    Token is CONSUMED on rejection; same token re-post is refused; fresh token advances
   [server-3]    Empty project_root is HARD-REJECTED loudly; advance blocked; token consumed
   [server-4]    Valid plan advances AND captures a Decision (Neo4j-gated)
-  [server-5]    Non-phase-a advance (testing->implementation) is unaffected by new validation
+  [server-5]    Non-phase-a advance (testing->implementation) is not gated by phase-a's own
+                validation: it advances against a plan phase-a would reject
   [server-6]    FAIL-OPEN: capture raise -> advance still succeeds + decision_capture_failed logged
   [server-7]    FAIL-OPEN: _db is None -> advance succeeds; capture skipped without error
 
@@ -1330,8 +1331,8 @@ class TestServerRouteGateAndCapture:
     def test_non_phase_a_advance_unaffected(
         self, client: TestClient, isolated_cache: Path
     ) -> None:
-        # [server-5]: a testing->implementation advance must NOT be gated on phase-a
-        # validation (no plan.md check) and must advance exactly as before.
+        # [server-5]: a testing->implementation advance must NOT be gated on phase-a's own
+        # validation, and must advance exactly as before.
         # RED if the new server-side validation is too broad and gates non-planning advances.
         cache_dir = isolated_cache / "writ-cache"
         sid = f"{_TEST_SCOPE}-srv5-{uuid.uuid4().hex[:6]}"
@@ -1339,20 +1340,28 @@ class TestServerRouteGateAndCapture:
 
         token = uuid.uuid4().hex
         _write_gate_token(sid, token)
-        # A root holding a test skeleton but NO plan.md: the route now runs the TARGET
-        # gate's validator (test-skeletons here), which it previously skipped entirely on
-        # this path, and this test's point stands -- a non-planning advance must never
-        # look for a plan.md.
+        # A root holding a test skeleton and a plan that NAMES it, because the route runs
+        # the TARGET gate's validator (test-skeletons here) and that gate now judges the
+        # approved plan's own ## Files entries rather than any test file in the repo.
+        #
+        # The plan is deliberately one _validate_phase_a REJECTS: it has no ## Analysis,
+        # no ## Rules Applied and no ## Capabilities. That is what keeps this test's point
+        # pinned. A route that ran phase-a's validation on a non-planning advance would
+        # refuse this plan, so the advance succeeding is positive evidence that it does not.
         skel_root = isolated_cache / "srv5-proj"
         (skel_root / "tests").mkdir(parents=True)
         (skel_root / "tests" / "test_x.py").write_text("def test_x():\n    assert True\n")
-        assert not (skel_root / "plan.md").exists()
+        (skel_root / "plan.md").write_text(
+            "# Plan: a plan phase-a would reject\n\n"
+            "## Files\n\n"
+            "- `tests/test_x.py` (create) -- the skeleton the test-skeletons gate judges\n"
+        )
         result = _advance_post(client, sid, token, project_root=str(skel_root))
 
         # The advance must succeed: testing -> implementation.
         assert result.get("phase") == "implementation", (
-            "a testing->implementation advance must succeed without a plan.md check; "
-            "got: " + repr(result)
+            "a testing->implementation advance must succeed without phase-a's validation "
+            "being applied; got: " + repr(result)
         )
 
     def test_fail_open_capture_raise_advance_succeeds_friction_logged(
