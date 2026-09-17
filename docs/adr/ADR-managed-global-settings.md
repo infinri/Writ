@@ -312,3 +312,41 @@ without writing to the real settings file, which nothing in this cycle is permit
 It is recorded here instead as the way a future reader confirms the shipped default took
 effect on a fresh install: patch a machine where the key is absent, run one turn, and read
 `effort` off that turn's `rag_query` friction-log entry.
+
+### Correction, 2026-09-16: that recipe never worked, and the hop it rested on is gone
+
+The subsection above is WRONG, and it was wrong on the day it was written. The recipe it
+gives produces nothing, because the `rag_query` rows a turn writes have never carried an
+`effort` key.
+
+Two independent measurements, neither of them a reading of the code:
+
+1. The captured Claude Code envelopes in `~/.claude/writ-blackbox.jsonl`. `effort` is
+   populated in bulk on `PreToolUse` (3,638 envelopes), `PostToolUse` (2,367),
+   `SubagentStop` (564) and `Stop` (81). It appears on ZERO of the 444 `UserPromptSubmit`
+   envelopes. `UserPromptSubmit` is the only event that reaches
+   `bin/lib/writ-prompt-parse.py`, so the parser's `effort.level` read has never seen a key.
+   The blackbox stores each envelope as an escaped JSON string, so this count comes from
+   parsing the payloads; a plain grep for the quoted key returns zero on a file holding
+   thousands and is how the claim survived.
+2. The friction log itself. 3,122 of 3,124 `rag_query` rows carry no `effort` key, and the
+   two that do carry a fragment of prompt text rather than a level, from the positional
+   frame shift fixed in commit `89fd4df`.
+
+So the parser field was always empty, the hook's `EFFORT` was always the empty string, the
+`/prompt-bundle` request field was always `""`, and the row builder's `if effort:` branch
+never fired. The whole chain has been deleted rather than left as a claim the artifacts do
+not support: the parser field, the hook's slice, both request builders, both row builders,
+`friction-rows.jq`'s `$effort` parameter, `PromptBundleRequest.effort` and the route
+binding that read it.
+
+WHAT SURVIVES, and it is the only part of the paragraph above that was ever true:
+`log_rag_query_event` in `bin/lib/common.sh` still takes an effort positional, and its three
+call sites sit on `PreToolUse` and `PostToolUse`, the events whose envelopes DO carry
+`effort.level`. All three pass the empty string today, so the parameter is unwired rather
+than unusable. A future cycle that wants effort telemetry should fill it from a tool event.
+Until one does, there is no positive signal for the effective effort level of a turn, and
+this key stands on the same footing as `outputStyle`.
+
+The decision itself is unchanged: `effortLevel: "high"` still ships, still never clobbers,
+and is still not a capability. Only the claim about observability is withdrawn.

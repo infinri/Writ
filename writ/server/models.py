@@ -74,7 +74,6 @@ class PromptBundleRequest(BaseModel):
     session_id: str
     mode: str = ""
     prompt: str = ""          # keyword-extracted prompt: query text + companion prompt + always-on context
-    effort: str = ""
     always_on_filter: bool = True
     # Channel 1 (the ranked /query pool) only. An orchestrator master turns it off so
     # the shared path still delivers the always-on floor and the methodology companion,

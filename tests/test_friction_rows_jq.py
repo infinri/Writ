@@ -12,6 +12,13 @@ is not the contract and block harmless filter edits.
 The python arm is not a paraphrase: it is copied from writ-rag-inject.sh, which still runs
 it whenever jq is absent. If that block changes, this copy must change with it, which is
 why the test names the source explicitly.
+
+THAT COUPLING IS NOW EXECUTABLE rather than a promise in a docstring:
+tests/test_effort_hop_removed.py::TestTheCopiedPythonBuilderIsTheBlockTheHookRuns asserts
+PY_BUILDER is byte-equal to the block the hook really runs, derived from the hook source by
+tests/_inventory.py::rag_inject_python_blocks as a map keyed by the shell variable each
+inline block fills. A drifted copy would otherwise leave the parity oracle below comparing
+the filter against a fiction.
 """
 
 from __future__ import annotations
@@ -41,13 +48,10 @@ except Exception:
     sys.exit(0)
 sid = os.environ.get('WRIT_SID', '')
 mode = os.environ.get('WRIT_MODE', '') or None
-effort = os.environ.get('WRIT_EFFORT', '')
 def rag(src, meta):
     e = {'session': sid, 'mode': mode, 'event': 'rag_query', 'query_source': src,
          'tokens_injected': int(meta.get('cost', 0)),
          'rules_returned_count': len(meta.get('rule_ids', [])), 'rule_ids': meta.get('rule_ids', [])}
-    if effort:
-        e['effort'] = effort
     e['event_name'] = 'UserPromptSubmit'; e['mechanism'] = 'stdout'
     return e
 lines = []
@@ -112,9 +116,9 @@ BUNDLES = [
 SUPPRESSED_BUNDLE = BUNDLES[-1]
 
 ENVS = [
-    {"WRIT_SID": "s1", "WRIT_MODE": "work", "WRIT_EFFORT": "high"},
-    {"WRIT_SID": "s2", "WRIT_MODE": "", "WRIT_EFFORT": ""},
-    {"WRIT_SID": "", "WRIT_MODE": "review", "WRIT_EFFORT": ""},
+    {"WRIT_SID": "s1", "WRIT_MODE": "work"},
+    {"WRIT_SID": "s2", "WRIT_MODE": ""},
+    {"WRIT_SID": "", "WRIT_MODE": "review"},
 ]
 
 
@@ -129,7 +133,6 @@ def _jq_rows(body: str, env: dict[str, str]) -> list[dict]:
         ["jq", "-R", "-s", "-r",
          "--arg", "sid", env["WRIT_SID"],
          "--arg", "mode", env["WRIT_MODE"],
-         "--arg", "effort", env["WRIT_EFFORT"],
          "-f", str(JQ_FILTER)],
         input=body, capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, f"jq failed: {proc.stderr[:200]}"
@@ -155,17 +158,6 @@ class TestRowParity:
         JSON null. Emitting "" instead would change what lands in the audit stream."""
         rows = _jq_rows(BUNDLES[0], ENVS[1])
         assert rows and all(r["mode"] is None for r in rows)
-
-    def test_effort_is_omitted_when_empty(self) -> None:
-        """`if effort:` means the key is absent, not empty. A row carrying effort="" would
-        differ from every historical row for the same event."""
-        rows = _jq_rows(BUNDLES[0], ENVS[1])
-        rag = [r for r in rows if r["event"] == "rag_query"]
-        assert rag and all("effort" not in r for r in rag)
-
-    def test_effort_is_present_when_set(self) -> None:
-        rag = [r for r in _jq_rows(BUNDLES[0], ENVS[0]) if r["event"] == "rag_query"]
-        assert rag and all(r["effort"] == "high" for r in rag)
 
     def test_a_zero_token_always_on_inject_is_dropped(self) -> None:
         """The python builder's `> 0` test. Recording a zero-token inject would add rows

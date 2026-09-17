@@ -2554,7 +2554,7 @@ def corpus_floor(*, dump: Path | None = None) -> dict[str, int]:
 # and it lives in the TEST module, not here, so a careless edit in this file cannot move the
 # anchor to agree with a broken derivation.
 #
-# NO COUNT IS PINNED. Both populations are five members today and neither number appears
+# NO COUNT IS PINNED. Both populations are four members today and neither number appears
 # here; the test derives its field count from its own contract.
 PROMPT_PARSE_PY = REPO / "bin" / "lib" / "writ-prompt-parse.py"
 RAG_INJECT_SH = HOOK_SCRIPTS_DIR / "writ-rag-inject.sh"
@@ -2573,7 +2573,7 @@ def prompt_parse_field_order(*, path: Path | None = None) -> list[str]:
 
     Read from the AST rather than by regex, so the order returned is the order the
     interpreter will print and not the order some line of source happens to mention. The
-    exception arm's `print('\\n\\n\\n\\n')` is a plain constant, not an f-string, so it is
+    exception arm's `print('\\n\\n\\n')` is a plain constant, not an f-string, so it is
     not a record and is skipped; that arm is order-invariant by construction and the test
     module asserts exactly that.
 
@@ -2648,3 +2648,108 @@ def rag_inject_field_slices(*, path: Path | None = None) -> dict[str, str]:
             continue
         slices[match.group("name")] = match.group("body")
     return slices
+
+
+# ── The hook's inline `python3 -c` blocks (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3) ──
+#
+# `tests/test_friction_rows_jq.py::PY_BUILDER` is a hand-maintained COPY of the hook's
+# python row builder, and that module's parity oracle compares the jq filter against the
+# copy. If the copy drifts, the oracle validates a fiction, which is this repository's "a
+# test that models a path is blind to it" failure. This derivation returns the hook's own
+# blocks so the copy can be compared against the text the hook really runs.
+#
+# A MAP KEYED BY THE SHELL VARIABLE EACH BLOCK FILLS, never a list: a renamed variable or a
+# deleted block then fails BY NAME rather than shrinking the population every parity
+# assertion rests on.
+#
+# THE TERMINATORS ARE NOT UNIFORM, which is why the closing quote is found by scanning for
+# the next unescaped `"` rather than by a column heuristic: the row builder's block closes
+# with a quote at column 0, and the request builder's closes mid-line at `}))" 2>/dev/null)`.
+# The opening line is indented for three of the four, so the assignment cannot be anchored at
+# column 0 either.
+_INLINE_PY_OPEN = re.compile(
+    r"^[ \t]*(?:local[ \t]+|export[ \t]+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)="
+    r"\$\((?P<prefix>[^\n]*?)python3[ \t]+-c[ \t]+\"",
+    re.MULTILINE,
+)
+
+
+def _closing_quote(text: str, start: int) -> int:
+    """The index of the `"` that closes the double-quoted argument opened before `start`."""
+    index = start
+    while index < len(text):
+        if text[index] == "\\":
+            index += 2
+            continue
+        if text[index] == '"':
+            return index
+        index += 1
+    return -1
+
+
+def rag_inject_python_blocks(*, path: Path | None = None) -> dict[str, str]:
+    """`{shell variable name: the program text bash hands to `python3 -c`}` for every inline
+    python block in the hook.
+
+    THE VALUE IS THE EXACT STRING THE INTERPRETER RECEIVES, leading newline included, so a
+    caller can compare it byte for byte against a copy and run it unchanged. Anything less
+    exact would make the comparison a statement about a normalised form rather than about
+    the program that runs on the prompt path.
+
+    LOUD, NEVER SILENTLY SHORT: a block whose quoted argument never closes raises, because a
+    derivation that skipped it would quietly drop a member and let a drifted copy pass.
+
+    `path` is a keyword for the reason `rag_inject_field_slices(*, path=)` gives: the
+    detector's own conditionality is proven against mutated COPIES under `tmp_path`, never by
+    editing the real hook.
+    """
+    source = Path(path or RAG_INJECT_SH)
+    text = source.read_text(encoding="utf-8")
+    blocks: dict[str, str] = {}
+    for match in _INLINE_PY_OPEN.finditer(text):
+        closing = _closing_quote(text, match.end())
+        if closing < 0:
+            raise ValueError(
+                f"cannot derive the inline python blocks from {source}: the `python3 -c` "
+                f"argument opened at character {match.end()} for {match.group('name')} has "
+                f"no closing quote, so the program bash passes to the interpreter cannot be "
+                f"read back."
+            )
+        blocks[match.group("name")] = text[match.end():closing]
+    return blocks
+
+
+# ── The session facade's import table (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3) ──
+#
+# `bin/lib/writ-session.py` is a deliberate re-export facade for the POL-6 split packages and
+# it said so only in prose. `__all__` says it in a form a reader and pyflakes both understand,
+# and `tests/test_session_facade_exports.py` judges that declaration against this table.
+SESSION_FACADE_PY = REPO / "bin" / "lib" / "writ-session.py"
+
+
+def session_facade_imports(*, path: Path | None = None) -> dict[str, str]:
+    """`{bound name: the module it comes from}` for every MODULE-LEVEL import in the facade.
+
+    MODULE-LEVEL ONLY, and the distinction is measured rather than stylistic: the facade's
+    `main()` does `from writ.session.cli_dispatch import dispatch` at call time, so a whole
+    -tree `ast.walk` returns one more name than the file re-exports, and `__all__` would then
+    declare a name the module never binds at module level.
+
+    Plain imports are in the table too (`import os` yields `{"os": "os"}`), because the
+    consumer has to tell a re-export of the session package apart from a leftover the file's
+    own body never references, and it cannot do that from a table that holds only one kind.
+
+    `path` is a keyword for the reason `rag_inject_field_slices(*, path=)` gives: the
+    detector's conditionality is proven against mutated COPIES under `tmp_path`.
+    """
+    source = Path(path or SESSION_FACADE_PY)
+    table: dict[str, str] = {}
+    for node in ast.parse(source.read_text(encoding="utf-8")).body:
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            for alias in node.names:
+                table[alias.asname or alias.name] = module
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                table[alias.asname or alias.name.split(".")[0]] = alias.name
+    return table

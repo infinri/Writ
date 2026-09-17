@@ -6,6 +6,79 @@ All notable changes to Writ are documented in this file. The format follows [Kee
 
 ### Fixed
 
+- **The `effort` hop is deleted end to end: it was seven hops of plumbing for a value
+  Claude Code has never sent on the one event that feeds it.** The thread was a single
+  `F841` at `writ/server/routes/query.py:226` (`effort = request.effort or ""`, never read
+  again). Pulling it found the whole chain dead. TWO INDEPENDENT MEASUREMENTS, neither of
+  them a reading of the code. First, the captured envelopes in
+  `~/.claude/writ-blackbox.jsonl`: `effort` is populated in bulk on `PreToolUse` (3,638
+  envelopes), `PostToolUse` (2,367), `SubagentStop` (564) and `Stop` (81), and appears on
+  ZERO of the 444 `UserPromptSubmit` envelopes. `UserPromptSubmit` is the only event that
+  reaches `bin/lib/writ-prompt-parse.py`. Second, the friction log: 3,122 of 3,124
+  `rag_query` rows carry no `effort` key, and the two that do carry a fragment of prompt
+  text rather than a level, from the positional frame shift fixed in `89fd4df`. THE TRAP,
+  named because it cost the first pass: the blackbox stores each envelope as an escaped
+  JSON string, so a plain grep for the quoted key returns zero on a file holding thousands,
+  and the counts above come from parsing the payloads. So BOTH branches of every fork were
+  dead, not just the one nearest the lint finding: the parser field, the hook's `EFFORT`
+  slice, both `/prompt-bundle` request builders (jq and the `WRIT_NO_JQ` python fallback),
+  both friction row builders, `bin/lib/friction-rows.jq`'s `$effort` parameter,
+  `PromptBundleRequest.effort` and the route binding. The record frame goes from five fields
+  to four, and no count literal moved with it: `tests/test_prompt_parse_field_frame.py`
+  holds `FIELD_CONTRACT` as the one hand-authored statement of the frame, two derivations in
+  `tests/_inventory.py` read the real parser's AST and the real hook's own assignment bodies
+  to judge it, and every dependent value (the field count, the `4,$p` tail selector, the
+  malformed arm's empty-field output) is computed from `len(FIELD_CONTRACT)`. One stale
+  literal was found and fixed while doing it: `tests/test_rag_inject_split.py` asserted
+  `out.stdout == "\n\n\n\n\n"` on the malformed arm, which is order-invariant but NOT
+  count-invariant. A hook and a daemon updated out of order still work, and that is pinned
+  rather than assumed: `PromptBundleRequest` is a plain pydantic model with no
+  `extra="forbid"`, so a not-yet-restarted hook that still posts `effort` gets a 200 and the
+  key is ignored, while a body missing `session_id` is still a 422. WHAT IS DELIBERATELY NOT
+  TOUCHED: `log_rag_query_event`'s effort positional in `bin/lib/common.sh`. Its three call
+  sites are on `PreToolUse` and `PostToolUse`, the events whose envelopes DO carry
+  `effort.level`, so it is unwired rather than unusable, and removing a middle positional
+  across three hooks writing a 365-day retention stream is the frame-shift class `89fd4df`
+  just fixed. `docs/adr/ADR-managed-global-settings.md` told a future reader to confirm a
+  fresh install by reading `effort` off a turn's `rag_query` row; that recipe always
+  produced nothing, and the ADR now carries a dated correction rather than a rewrite.
+
+- **The session facade's 100 unused imports say what they are, and the 8 nothing reaches
+  are gone.** `bin/lib/writ-session.py` is a deliberate re-export facade for the POL-6 split
+  packages, and it said so in nine comment blocks and nowhere a reader or a linter could
+  check: 100 `F401` in that file plus one vestigial `closed_port` import in
+  `tests/firedrill/test_bash_refusals.py` is 101. The population was DERIVED, never
+  enumerated, and the two kinds of import are judged differently because one method is
+  worthless for the other. The 95 `from writ.session.* import` bindings are judged by
+  DEMAND: a scan of every other `.py` and `.sh` in the tree for attribute access (`.name`)
+  and quoted strings (`"name"`), since `monkeypatch.setattr(mod, "_read_cache", ...)` and
+  `_require(writ_session, "cmd_reopen_planning")` are both real demand and both are in the
+  tree. That scan over-approximates on purpose: it can only KEEP a name and never delete a
+  live one, so a verdict of zero demand is trustworthy. It returned eight:
+  `_migrate_command_log`, `_BUDGET_JSON`, `_budget_data`, `_CITATION_EXCERPT_MAX`,
+  `_glob_match`, `_matches_any`, `_has_real_content` and `cmd_can_read_code`. Two of those
+  look alive and are not: `cmd_can_read_code` is dispatched by
+  `writ/session/cli_dispatch.py`, which imports it straight from `writ.session.gates`, so
+  the `can-read-code` subcommand keeps working; `_glob_match` and `_has_real_content` are
+  called inside `writ/session/gates.py` as bare names, which is demand on the package module
+  and not on the facade. The 5 plain imports (`hashlib`, `json`, `tempfile`, `datetime`,
+  `timezone`) are judged by the facade's OWN BODY instead, because `.json` and `.datetime`
+  appear all over a tree that has nothing to do with this file; the body is `main()` plus
+  the `sys.path` bootstrap, which reference `os` and `sys` and nothing else. The remaining
+  87 go into `__all__`. THE ALTERNATIVES WERE REJECTED ON MECHANISM, not taste: `# noqa:
+  F401` on 100 lines or a per-file ignore in `pyproject.toml` silences the reader as well as
+  the linter, and the redundant-alias form (`import x as x`) is honored by ruff as an
+  explicit re-export only in `__init__.py` and stub files, so it would clear nothing in
+  `bin/lib`. NO RUFF GATE AND NO RUFF CONFIG WAS ADDED. Nothing in this repository runs ruff
+  today, so no gate moved and none was invented to make one: `ruff check --select F401,F841`
+  over the three files goes from 102 findings to zero, verified by hand. What keeps the
+  cleanup is not a linter but two assertions with an independent producer on each side: every
+  re-export must have a demand site outside the facade, and `__all__` must equal the import
+  table derived from the file's AST. There is deliberately NO test that the facade exports
+  what the facade exports; that shape's right-hand side is computed from its left-hand side,
+  it cannot fail, and this repository has shipped it twice. The deletions are proven by the
+  consumers that already load the file by path, and by the full suite.
+
 - **A rule-weakening memory write was refused at 131,000 bytes and allowed silently at
   200,000, because the guard built its scan program out of another program.** The fourth
   write door, `hooks/scripts/writ-memory-policy-guard.sh`, is the one that refuses a

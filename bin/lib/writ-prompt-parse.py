@@ -1,8 +1,8 @@
 """Prompt parser + mode-hint classifier for writ-rag-inject.sh (UserPromptSubmit).
 
 Extracted VERBATIM from the hook's inline `python3 -c` block (was lines 86-206).
-Reads the Claude Code envelope JSON on stdin; prints 5 newline-separated fields:
-  session_id\nagent_id\nmode_hint\neffort\nprompt  (or 5 empty lines on any error).
+Reads the Claude Code envelope JSON on stdin; prints 4 newline-separated fields:
+  session_id\nagent_id\nmode_hint\nprompt  (or 4 empty lines on any error).
 The PROMPT IS LAST because it is the only field that may legitimately contain the
 delimiter; the consumer reads it as the remainder of the record, so a multi-line prompt
 arrives whole instead of truncating and shifting every field after it.
@@ -71,7 +71,7 @@ def extract_keywords(raw: str) -> str:
     return ' '.join(keywords[:MAX_KEYWORDS])
 
 def _one_line(v, _flat=str.maketrans('\r\n', '  ')):
-    # Delimiter-freedom for the four scalars, enforced at the PRODUCER rather than assumed
+    # Delimiter-freedom for the three scalars, enforced at the PRODUCER rather than assumed
     # at the consumer: a pathological value is mangled inside its OWN field and can never
     # move another. Mangled, not truncated, because a truncated session id could collide
     # with a real session while a mangled one simply matches nothing. str() keeps a
@@ -132,12 +132,9 @@ try:
     # an investigate classification (audit-while-planning stays the gate-light investigate).
     if data.get('permission_mode', '') == 'plan' and hint != 'investigate':
         hint = 'work'
-    eff = data.get('effort')
-    effort = eff.get('level', '') if isinstance(eff, dict) else (eff or '')
     sid = _one_line(sid)
     agent_id = _one_line(agent_id)
     hint = _one_line(hint)
-    effort = _one_line(effort)
-    print(f'{sid}\n{agent_id}\n{hint}\n{effort}\n{prompt}')
+    print(f'{sid}\n{agent_id}\n{hint}\n{prompt}')
 except Exception as e:
-    print('\n\n\n\n')
+    print('\n\n\n')

@@ -1,12 +1,12 @@
 """The prompt-parse record's field frame: the only field that may contain the delimiter
 must be last, and the hook must read it as the remainder.
 
-THE DEFECT, restated as field math. `bin/lib/writ-prompt-parse.py` prints five
+THE DEFECT, restated as field math. `bin/lib/writ-prompt-parse.py` printed its
 newline-separated fields with the PROMPT second, and its only consumer,
 `hooks/scripts/writ-rag-inject.sh`, takes field k from line k. A prompt containing N
 newlines therefore lands every later field N lines late: AGENT_ID becomes prompt line 2,
-MODE_HINT becomes prompt line 3 with its whitespace stripped, EFFORT becomes prompt line 4,
-and the PROMPT itself is truncated to its first line.
+MODE_HINT becomes prompt line 3 with its whitespace stripped, and the PROMPT itself is
+truncated to its first line.
 
 THE PRECONDITION THAT BOUNDS IT, measured rather than assumed, and every fixture in this
 module respects it: `writ-prompt-parse.py:75` flattens any prompt over 300 characters
@@ -60,7 +60,6 @@ FIELD_CONTRACT: dict[str, str] = {
     "SESSION_ID": "sid",
     "AGENT_ID": "agent_id",
     "MODE_HINT": "hint",
-    "EFFORT": "effort",
     "PROMPT": "prompt",
 }
 PAYLOAD_FIELD = "PROMPT"
@@ -77,8 +76,6 @@ SHELL_BUILTINS = {"echo"}
 # `argvalues` list makes pytest report a SKIP, which reads exactly like coverage that ran;
 # one sentinel param reads as the RED it is.
 _MISSING = "<rag_inject_field_slices() is unavailable>"
-
-EFFORT_LEVEL = "xhigh"
 
 SINGLE_LINE_PROMPT = "hello there world"
 SHORT_MULTILINE_PROMPT = (
@@ -287,14 +284,12 @@ def _assert_scalars_are_contained(parser: Path) -> None:
     """Capability 6's detector, callable against a mutated copy."""
     session_id = "sid-alpha\nsid-beta"
     agent_id = "agent-one\nagent-two"
-    effort = f"{EFFORT_LEVEL}\nEXTRA"
     prompt = "first line\nsecond line"
     out = _parse(
         {
             "session_id": session_id,
             "agent_id": agent_id,
             "prompt": prompt,
-            "effort": {"level": effort},
         },
         parser=parser,
     )
@@ -310,9 +305,6 @@ def _assert_scalars_are_contained(parser: Path) -> None:
     # fields hold the same sanitized value here.
     assert fields["AGENT_ID"] == "agent-one agent-two"
     assert fields["SESSION_ID"] == "agent-one agent-two"
-    # MODE_HINT and EFFORT are read through the hook's own `tr -d '[:space:]'`, so the
-    # space the sanitizer leaves behind is stripped again by the consumer.
-    assert fields["EFFORT"] == f"{EFFORT_LEVEL}EXTRA"
     assert fields["PROMPT"] == prompt
 
 
@@ -364,12 +356,10 @@ class TestTheRecordTheParserPrints:
         """The frame, for every prompt shape at or under the 300-character bound.
 
         RED today for the multi-line and field-shaped cases: the prompt is second, so the
-        record holds the prompt's lines where AGENT_ID, MODE_HINT and EFFORT should be.
+        record holds the prompt's lines where AGENT_ID and MODE_HINT should be.
         """
         sid = "sid-frame"
-        out = _parse(
-            {"session_id": sid, "prompt": prompt, "effort": {"level": EFFORT_LEVEL}}
-        )
+        out = _parse({"session_id": sid, "prompt": prompt})
         assert out.returncode == 0, out.stderr
         expected_lines = (len(FIELD_CONTRACT) - 1) + len(prompt.split("\n"))
         assert len(out.stdout.split("\n")) - 1 == expected_lines, (
@@ -383,9 +373,7 @@ class TestTheRecordTheParserPrints:
 
         RED today for the multi-line and field-shaped cases: `sed -n '2p'` takes line one.
         """
-        fields = _fields(
-            {"session_id": "sid-frame", "prompt": prompt, "effort": {"level": EFFORT_LEVEL}}
-        )
+        fields = _fields({"session_id": "sid-frame", "prompt": prompt})
         assert fields[PAYLOAD_FIELD] == prompt
 
     @pytest.mark.parametrize("prompt", ROUND_TRIP_PROMPTS)
@@ -397,20 +385,17 @@ class TestTheRecordTheParserPrints:
         auto-route, the recall briefing and the session publish.
         """
         sid = "sid-frame"
-        fields = _fields(
-            {"session_id": sid, "prompt": prompt, "effort": {"level": EFFORT_LEVEL}}
-        )
+        fields = _fields({"session_id": sid, "prompt": prompt})
         assert fields["SESSION_ID"] == sid
         assert fields["AGENT_ID"] == ""
-        assert fields["EFFORT"] == EFFORT_LEVEL
 
     def test_a_long_multiline_prompt_keeps_its_frame(self) -> None:
         """The regression case, and the risk any reorder carries.
 
         GREEN TODAY and it must stay green: over 300 characters the parser flattens the
-        prompt through `extract_keywords` before printing, so the record is already five
-        lines and every scalar already lands correctly. Nothing about this cycle may change
-        that, and nothing about it should be read as coverage of the defect.
+        prompt through `extract_keywords` before printing, so the record is already one
+        line per field and every scalar already lands correctly. Nothing about this cycle
+        may change that, and nothing about it should be read as coverage of the defect.
         """
         assert len(LONG_MULTILINE_PROMPT) > 300, (
             "this fixture only exercises the flattening path while it is over 300 "
@@ -419,20 +404,13 @@ class TestTheRecordTheParserPrints:
         )
         assert "\n" in LONG_MULTILINE_PROMPT
         sid = "sid-long"
-        out = _parse(
-            {
-                "session_id": sid,
-                "prompt": LONG_MULTILINE_PROMPT,
-                "effort": {"level": EFFORT_LEVEL},
-            }
-        )
+        out = _parse({"session_id": sid, "prompt": LONG_MULTILINE_PROMPT})
         assert out.returncode == 0, out.stderr
         assert len(out.stdout.split("\n")) - 1 == len(FIELD_CONTRACT)
         fields = _slice_through_the_hook(out.stdout)
         assert fields["SESSION_ID"] == sid
         assert fields["AGENT_ID"] == ""
         assert fields["MODE_HINT"] == "work"
-        assert fields["EFFORT"] == EFFORT_LEVEL
         assert fields[PAYLOAD_FIELD] != ""
         assert "\n" not in fields[PAYLOAD_FIELD]
 
@@ -448,7 +426,7 @@ class TestAScalarCannotMoveAFieldBoundary:
         """A non-string `agent_id` must still produce a record.
 
         Sanitizing with `str(v)` is what keeps this true; a bare `.translate` on an int
-        would raise inside the try block and send the whole parse to the five-empty-fields
+        would raise inside the try block and send the whole parse to the empty-fields
         arm, turning a harmless envelope quirk into a session with no id.
         """
         fields = _fields({"session_id": "sid-1", "agent_id": 123, "prompt": "hi"})
@@ -457,7 +435,7 @@ class TestAScalarCannotMoveAFieldBoundary:
 
 
 class TestTheMalformedEnvelopeArm:
-    """Capability 7. Five empty fields are order-invariant, so this arm needs no edit; the
+    """Capability 7. The empty fields are order-invariant, so this arm needs no reorder; the
     test exists because reading the payload as a TAIL makes the field COUNT a hard contract
     and this is where an off-by-one in that count would surface first."""
 

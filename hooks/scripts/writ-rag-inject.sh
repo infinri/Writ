@@ -87,15 +87,13 @@ PARSED=$(echo "$STDIN_JSON" | python3 "$WRIT_DIR/bin/lib/writ-prompt-parse.py" 2
 
 # THE PROMPT IS THE LAST FIELD AND IS READ AS THE REMAINDER. It is the only field that may
 # legitimately contain the record's delimiter, so every scalar is sliced ahead of it and the
-# tail read (5,$p) hands the prompt over whole. Read positionally before this change, a
-# prompt with N newlines was truncated to its first line and pushed AGENT_ID, MODE_HINT and
-# EFFORT N lines late, which silently disabled the mode auto-route and once wrote a fragment
-# of prompt text into a metrics `effort` field. Same spend as before: 1 head, 4 sed, 2 tr.
+# tail read (4,$p) hands the prompt over whole. Read positionally before this change, a
+# prompt with N newlines was truncated to its first line and pushed AGENT_ID and MODE_HINT
+# N lines late, which silently disabled the mode auto-route.
 SESSION_ID=$(echo "$PARSED" | head -1)
 AGENT_ID=$(echo "$PARSED" | sed -n '2p')
 MODE_HINT=$(echo "$PARSED" | sed -n '3p' | tr -d '[:space:]')
-EFFORT=$(echo "$PARSED" | sed -n '4p' | tr -d '[:space:]')
-PROMPT=$(echo "$PARSED" | sed -n '5,$p')
+PROMPT=$(echo "$PARSED" | sed -n '4,$p')
 
 # This project's root, computed ONCE for the whole hook and used by two consumers:
 # the retrieval requests below send it so the daemon can scope them to this project
@@ -532,7 +530,7 @@ case "${WRIT_ALWAYS_ON_FILTER:-1}" in 1|on|true|yes) _AO_FILTER_BOOL=true ;; *) 
 # one flag, so no new session state exists to disagree with it. Like _AO_FILTER_BOOL this
 # must stay a bare true/false: it goes on the wire as a JSON boolean.
 if [ "$IS_ORCHESTRATOR" = "true" ]; then _INCLUDE_RANKED_BOOL=false; else _INCLUDE_RANKED_BOOL=true; fi
-# jq builds this request when present: five strings and a boolean assembled from
+# jq builds this request when present: four strings and a boolean assembled from
 # variables already in the shell cost a 9.5ms interpreter start plus 4.9 for `import
 # json`, against 2.3 for jq. --arg is used for every value so a prompt containing quotes,
 # newlines or backslashes is encoded by jq rather than by string concatenation here.
@@ -544,21 +542,19 @@ if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1; then
         --arg session_id "$SESSION_ID" \
         --arg mode "${CURRENT_MODE:-}" \
         --arg prompt "$PROMPT" \
-        --arg effort "$EFFORT" \
         --arg project_root "${_PROJECT_ROOT:-}" \
         --argjson always_on_filter "$_AO_FILTER_BOOL" \
         --argjson include_ranked "$_INCLUDE_RANKED_BOOL" \
-        '{session_id: $session_id, mode: $mode, prompt: $prompt, effort: $effort, project_root: $project_root, always_on_filter: $always_on_filter, include_ranked: $include_ranked}' \
+        '{session_id: $session_id, mode: $mode, prompt: $prompt, project_root: $project_root, always_on_filter: $always_on_filter, include_ranked: $include_ranked}' \
         2>/dev/null) || BUNDLE_REQUEST=""
 fi
 if [ -z "$BUNDLE_REQUEST" ]; then
-    BUNDLE_REQUEST=$(WRIT_SID="$SESSION_ID" WRIT_MODE="${CURRENT_MODE:-}" WRIT_PROMPT="$PROMPT" WRIT_EFFORT="$EFFORT" WRIT_AOF="$_AO_FILTER_BOOL" WRIT_IRK="$_INCLUDE_RANKED_BOOL" WRIT_PROOT="${_PROJECT_ROOT:-}" python3 -c "
+    BUNDLE_REQUEST=$(WRIT_SID="$SESSION_ID" WRIT_MODE="${CURRENT_MODE:-}" WRIT_PROMPT="$PROMPT" WRIT_AOF="$_AO_FILTER_BOOL" WRIT_IRK="$_INCLUDE_RANKED_BOOL" WRIT_PROOT="${_PROJECT_ROOT:-}" python3 -c "
 import os, json
 print(json.dumps({
     'session_id': os.environ['WRIT_SID'],
     'mode': os.environ.get('WRIT_MODE', ''),
     'prompt': os.environ.get('WRIT_PROMPT', ''),
-    'effort': os.environ.get('WRIT_EFFORT', ''),
     'project_root': os.environ.get('WRIT_PROOT', ''),
     'always_on_filter': os.environ.get('WRIT_AOF', 'true') == 'true',
     'include_ranked': os.environ.get('WRIT_IRK', 'true') == 'true',
@@ -649,7 +645,7 @@ _FRICTION_ROWS_OK=""
 if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1 \
         && [ -r "$WRIT_DIR/bin/lib/friction-rows.jq" ]; then
     if FRICTION_ROWS=$(printf '%s' "$BUNDLE" | jq -R -s -r \
-            --arg sid "$SESSION_ID" --arg mode "${CURRENT_MODE:-}" --arg effort "$EFFORT" \
+            --arg sid "$SESSION_ID" --arg mode "${CURRENT_MODE:-}" \
             -f "$WRIT_DIR/bin/lib/friction-rows.jq" 2>>"$WRIT_HOOK_LOG_SINK"); then
         _FRICTION_ROWS_OK=1
     else
@@ -657,7 +653,7 @@ if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1 \
     fi
 fi
 if [ -z "$_FRICTION_ROWS_OK" ]; then
-FRICTION_ROWS=$(printf '%s' "$BUNDLE" | WRIT_SID="$SESSION_ID" WRIT_MODE="${CURRENT_MODE:-}" WRIT_EFFORT="$EFFORT" python3 -c "
+FRICTION_ROWS=$(printf '%s' "$BUNDLE" | WRIT_SID="$SESSION_ID" WRIT_MODE="${CURRENT_MODE:-}" python3 -c "
 import json, os, sys
 try:
     b = json.load(sys.stdin)
@@ -665,13 +661,10 @@ except Exception:
     sys.exit(0)
 sid = os.environ.get('WRIT_SID', '')
 mode = os.environ.get('WRIT_MODE', '') or None
-effort = os.environ.get('WRIT_EFFORT', '')
 def rag(src, meta):
     e = {'session': sid, 'mode': mode, 'event': 'rag_query', 'query_source': src,
          'tokens_injected': int(meta.get('cost', 0)),
          'rules_returned_count': len(meta.get('rule_ids', [])), 'rule_ids': meta.get('rule_ids', [])}
-    if effort:
-        e['effort'] = effort
     e['event_name'] = 'UserPromptSubmit'; e['mechanism'] = 'stdout'
     return e
 lines = []

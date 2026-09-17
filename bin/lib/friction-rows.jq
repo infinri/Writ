@@ -5,7 +5,7 @@
 # equality of the PARSED objects, which tests/test_friction_rows_jq.py asserts against the
 # original python across every bundle shape the endpoint produces.
 #
-# INVOCATION: jq -R -s -r --arg sid ... --arg mode ... --arg effort ... -f friction-rows.jq
+# INVOCATION: jq -R -s -r --arg sid ... --arg mode ... -f friction-rows.jq
 # The raw-slurp flags are part of the contract, same as parse-hook-stdin.jq: without them
 # a malformed body makes jq emit nothing AND fail, where the python arm exits 0 silently.
 # Parsing inside the filter puts that case in a `try` so both arms agree.
@@ -23,7 +23,7 @@ def root: (if type == "string" then (try fromjson catch {}) else . end) | as_obj
 def n0: if . == null then 0 else (. | floor) end;
 def arr: if . == null then [] else . end;
 
-def rag($src; $meta; $sid; $modev; $effort):
+def rag($src; $meta; $sid; $modev):
   {
     session: $sid,
     mode: $modev,
@@ -33,8 +33,6 @@ def rag($src; $meta; $sid; $modev; $effort):
     rules_returned_count: (($meta.rule_ids | arr) | length),
     rule_ids: ($meta.rule_ids | arr)
   }
-  # `effort` is present only when non-empty, matching `if effort: e['effort'] = effort`.
-  + (if $effort == "" then {} else {effort: $effort} end)
   + {event_name: "UserPromptSubmit", mechanism: "stdout"};
 
 root
@@ -57,7 +55,7 @@ root
          event_name: "UserPromptSubmit",
          mechanism: "stdout"
        }
-     else rag("broad"; $b.broad_meta; $sid; $modev; $effort)
+     else rag("broad"; $b.broad_meta; $sid; $modev)
      end),
 
     # The tokens > 0 test is the python builder's, kept because a zero-token always-on
@@ -76,7 +74,7 @@ root
      else empty end),
 
     (if $b.method_meta != null
-     then rag(($b.method_meta.query_source // ""); $b.method_meta; $sid; $modev; $effort)
+     then rag(($b.method_meta.query_source // ""); $b.method_meta; $sid; $modev)
      else empty end)
   ][]
 | tojson

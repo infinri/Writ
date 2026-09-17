@@ -223,7 +223,6 @@ async def prompt_bundle(request: PromptBundleRequest) -> dict[str, Any]:
     sid = request.session_id
     mode = request.mode or ""
     prompt = request.prompt or ""
-    effort = request.effort or ""
 
     cache = await asyncio.to_thread(server.writ_session._read_cache, sid)
     by_phase = cache.get("loaded_rule_ids_by_phase", {})

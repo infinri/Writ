@@ -169,10 +169,10 @@ class TestPromptParseMatches:
         lines = out.stdout.split("\n")
         return out, lines
 
-    def test_five_line_shape_and_passthrough(self) -> None:
+    def test_record_shape_and_passthrough(self) -> None:
         out, lines = self._parse({"session_id": "sid-123", "prompt": "hello there world"})
         assert out.returncode == 0
-        # 5 fields: sid, agent_id, hint, effort, prompt (print adds a trailing newline)
+        # one line per FIELD_CONTRACT field (print adds a trailing newline)
         assert lines[0] == "sid-123"
         # short prompt passes through unchanged, and it is the LAST field
         assert lines[PROMPT_LINE] == "hello there world"
@@ -199,11 +199,13 @@ class TestPromptParseMatches:
             f"chat prompt must yield empty hint; got {lines[HINT_LINE]!r}"
         )
 
-    def test_malformed_stdin_five_empty_lines_exit_zero(self) -> None:
+    def test_malformed_stdin_empty_lines_exit_zero(self) -> None:
         out = _run_py_stdin(PARSE_PY, "{not valid json")
         assert out.returncode == 0
-        # the except branch prints exactly '\n\n\n\n' (5 empty fields)
-        assert out.stdout == "\n\n\n\n\n"
+        # the except branch prints one empty field per contract, and this count is DERIVED
+        # from FIELD_CONTRACT: it is order-invariant but NOT count-invariant, so a literal
+        # here goes stale the next time the record gains or loses a field.
+        assert out.stdout == "\n" * len(FIELD_CONTRACT)
 
 
 class TestSendEscalationFeedbackFailOpen:

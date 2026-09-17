@@ -576,7 +576,7 @@ class TestPromptBundleEndpointLive:
         body = {
             "session_id": sid, "mode": "work",
             "prompt": "refactor the SQL query builder to use parameterized queries",
-            "effort": "", "always_on_filter": True,
+            "always_on_filter": True,
         }
         async with AsyncClient(
             transport=ASGITransport(app=server.app), base_url="http://test"

@@ -28,7 +28,6 @@ from tests.firedrill._census import (
 )
 from tests.firedrill._harness import (
     build_env,
-    closed_port,
     make_isolation,
     read_cache,
     real_blackbox_snapshot,

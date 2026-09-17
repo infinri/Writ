@@ -265,7 +265,7 @@ class TestEndToEnd:
         body = {
             "session_id": session, "mode": "work",
             "prompt": "add a parameterized query builder",
-            "effort": "", "always_on_filter": True,
+            "always_on_filter": True,
         }
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
