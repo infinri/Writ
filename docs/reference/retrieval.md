@@ -65,7 +65,29 @@ One predicate pair in `writ/graph/predicates.py` is the single source both for s
 
 ## 6. Quality gates
 
-Regression floors (`tests/fixtures/regression_floors.py`; floors are the fail line, deliberately below measurement, never targets): MRR@5 >= 0.45 on the 47 ambiguous queries, hit rate >= 0.75 on all 193, domain-hit-rate@5 >= 0.90, nDCG@10 >= 0.65. The floors are current; the numbers behind them are a dated reading, not a live one. Measured 2026-08-01 against the 287-rule corpus of that date: MRR@5 0.5681 and hit rate 0.7824 (domain-hit 0.9323, nDCG@10 0.7071). Those four values have not been re-measured since, and the corpus has grown to 288 rules. What was re-checked on 2026-08-14 is the gate itself: `make bench` ran all 17 benchmark targets, the four quality floors included, against today's corpus and passed 17 of 17. That result says the floors still hold; it does not restate the four values above. The floor history records each downward walk as corpus-growth dilution with the measurements that justified it. Negative-query ground truth (20 off-domain and near-domain queries) pins the false-injection diagnostic behind the abstention gate. The methodology corpus has its own signed-off 40-query set (blocker floors 0.78 MRR, 0.90 hit rate).
+Regression floors (`tests/fixtures/regression_floors.py`; floors are the fail line, deliberately below measurement, never targets): MRR@5 >= 0.45 on the 47 ambiguous queries, hit rate >= 0.75 on all 193, domain-hit-rate@5 >= 0.90, nDCG@10 >= 0.65. The floors are current; the numbers behind them are a dated reading, not a live one. Measured 2026-08-01 against the 287-rule corpus of that date: MRR@5 0.5681 and hit rate 0.7824 (domain-hit 0.9323, nDCG@10 0.7071). Three of those four were re-measured on 2026-09-18 against the 288-rule corpus, at the then-shipped `w_graph=0.01`: MRR@5 0.6124, hit rate 0.8083, nDCG@10 0.7327 (domain-hit not re-run). READ THAT AS A DIFFERENT READING, NOT A CORRECTION OF THE OLD ONE: the corpus grew by one rule, the hash-order determinism fix landed 2026-08-06 and before it a rerun could differ by three queries on hit@5, and the graph weight has since moved to 0.05. Neither reading invalidates the other; they are measurements of different trees. What was re-checked on 2026-08-14 is the gate itself: `make bench` ran all 17 benchmark targets, the four quality floors included, against today's corpus and passed 17 of 17. That result says the floors still hold; it does not restate the four values above. The floor history records each downward walk as corpus-growth dilution with the measurements that justified it. **What the gold set measures, and what it cannot.** `tests/fixtures/ground_truth_queries.json`
+holds 193 queries in three tiers, counted from the file: `keyword` 132, `ambiguous` 47 (the MRR@5
+subset), `symptom` 14. Two properties of its construction bound every number above.
+
+Each query carries exactly ONE `expected_rule_id`. So hit-rate@5 asks "is the one rule we had in
+mind in the top five", and a retrieval that surfaces a BETTER rule for the query is scored as a
+miss. This is measured, not hypothetical: of the 42 misses behind hit-rate@5 = 0.7824, 31 were
+classified `ranking`, meaning the expected rule's text matched the query and a different rule
+outscored it (`benchmarks/MISS-TRIAGE-2026-08-05.md`).
+
+The set is self-authored. The same project wrote the rules and then wrote queries for them, so
+the `ambiguous` tier measures how far a paraphrase can drift from its rule's wording and still be
+retrieved. That is a real and useful property. It is not evidence about queries written by
+someone who did not already know the answer. Read a high score on a self-authored set as a
+statement about the SET'S DIFFICULTY first: the 1.00 hit rate cited at
+`writ/retrieval/ranking.py:47` is literal-mode methodology retrieval over `ground_truth_proc.json`,
+a set authored alongside the corpus it queries, and a 1.00 there says the queries sit close to
+their targets, not that methodology retrieval is solved.
+
+Cross-benchmarking against a retriever this project did not write is the measurement that would
+separate the two, and it is open (roadmap item 6) because it needs a third party's corpus.
+
+Negative-query ground truth (20 off-domain and near-domain queries) pins the false-injection diagnostic behind the abstention gate. The methodology corpus has its own signed-off 40-query set (blocker floors 0.78 MRR, 0.90 hit rate).
 
 One more distinction worth keeping straight: `writ/retrieval/session.py` (`SessionTracker`) is a *client-side* accumulator for sequential queries; the server-side session cache under `writ/session/` is an unrelated mechanism that happens to share the word. One non-obvious `SessionTracker` behavior: when an Abstraction is returned, every member rule id joins the exclude set, not just the abstraction's own id.
 
