@@ -17,10 +17,27 @@ import pytest
 from _corpus_safety import assert_safe_to_wipe, restore_full_corpus, snapshot_graph
 from writ.config import get_neo4j_password, get_neo4j_uri, get_neo4j_user
 from writ.graph.db import Neo4jConnection
+from writ.graph.db._safety import full_wipe_allowed, how_to_run_safely
 
 NEO4J_URI = get_neo4j_uri()
 NEO4J_USER = get_neo4j_user()
 NEO4J_PASSWORD = get_neo4j_password()
+
+# THE INVOCATION IS WHAT WAS UNGUARDED, and a bare `pytest` from the repo root is the
+# cheapest way to reach it: pyproject.toml sets no `testpaths`, so plain collection picks
+# this module up and every test in it empties the live graph. `assert_safe_to_wipe` runs
+# inside each test and is the runtime authority; this refuses one step earlier, at import,
+# so an accidental collection never opens a session at all.
+#
+# NO SECOND CONSENT MECHANISM. The condition is `full_wipe_allowed` and the message is
+# `how_to_run_safely`, the same pair `assert_safe_to_wipe` uses, so a developer cannot be
+# told two different things about the same requirement and a reworded instruction cannot
+# drift out of reach of the runtime check.
+#
+# MODULE LEVEL, because a guard inside a function only runs when something calls that
+# function, and the 2026-08-05 incident was an invocation nobody intended to make.
+if not full_wipe_allowed(NEO4J_URI):
+    pytest.skip(how_to_run_safely(), allow_module_level=True)
 
 EDGES_PER_NODE = 4
 BENCHMARK_ITERATIONS = 100

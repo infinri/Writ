@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 from tests.firedrill._harness import Isolation, write_cache
@@ -478,8 +479,10 @@ def _setup_worktree_safety_unresolvable_tilde_ask(iso: Isolation) -> dict:
 
 def _bash_command_setup(cmd: str) -> Callable[[Isolation], dict]:
     """A setup factory for writ-bash-write-gate.sh cases that are JUST a command
-    string: no cache, no fixture files, no live server. The irreversible-destruction
-    vector matches on plain command text, so this is the whole trigger."""
+    string: no cache, no fixture files, no live server. Most of the
+    irreversible-destruction vector matches on plain command text, so this is the whole
+    trigger; the benchmark-entrypoint family is the exception and carries its own
+    factory (`_benchmark_command_setup`), because its arm reads the invoked file."""
 
     def _setup(iso: Isolation) -> dict:
         return {
@@ -550,6 +553,116 @@ _IRREVERSIBLE_DDL_COMMANDS = {
     "truncate-table": 'mysql -e "TRUNCATE TABLE orders;"',
     "drop-database": 'mariadb -e "DROP DATABASE staging;"',
     "drop-schema": 'psql -c "DROP SCHEMA reporting;"',
+}
+
+# ── The benchmark stand-ins, and why the drill has to put a FILE on disk ────────────
+#
+# The hook's benchmark arms READ THE INVOKED FILE. That read is not an implementation
+# detail this fixture works around, it is the mechanism: it is what keeps `make bench`
+# allowed (same directory, same verb, a different body) and what produces the deliberate
+# `_corpus_safety.py` over-refusal that no path list could produce. The drill runs every
+# hook with `cwd=iso.project_root`, a tmp tree holding no `benchmarks/` directory at all,
+# so a plain command payload names a file that is not there and the arm correctly says
+# nothing. The fixture is therefore the FILE, built the way `_setup_validate_rules_site_a`
+# builds its sentinel.
+#
+# THE REJECTED ALTERNATIVE, recorded so the next reader does not reach for it: resolving
+# the invoked path against $WRIT_DIR instead of the cwd. In a FOREIGN project that would
+# judge `python3 benchmarks/anything.py` against Writ's own file, which is worse than the
+# gap it closes.
+#
+# A STAND-IN, NEVER A COPY. What each arm's predicate reads is the wipe MECHANISM, so the
+# mechanism is the whole body. Copying the real benchmarks would couple the drill to two
+# modules it does not own and would say nothing extra about the predicate.
+#
+# KEYED BY PATH, WITH BOTH SIDES DECLARED, because the pair is the point: the wiping body
+# is what makes the two deny entries below reachable, and the scoped body is what proves
+# the `make bench` negative control in test_bash_refusals.py is allowed because its
+# CONTENT is clean rather than because its file is absent. Measured through the harness,
+# same command, same path, only the body differing: the scoped body is allowed and the
+# wiping body is denied.
+_WIPING_BENCHMARK_BODY = (
+    '"""Stand-in for a benchmark that empties the WHOLE graph. Mechanism only."""\n'
+    "\n\n"
+    "async def run(db):\n"
+    "    await db.clear_all()\n"
+)
+
+_SCOPED_BENCHMARK_BODY = (
+    '"""Stand-in for the benchmark `make bench` runs: a delete scoped to its own\n'
+    'synthetic node, and no whole-graph wipe call anywhere."""\n'
+    "\n\n"
+    "async def run(db):\n"
+    '    await db.query("MATCH (n:WritFiredrillProbe {id: 1}) DETACH DELETE n")\n'
+)
+
+BENCHMARK_STAND_INS: dict[str, str] = {
+    "benchmarks/run_benchmarks.py": _WIPING_BENCHMARK_BODY,
+    "benchmarks/bench_targets.py": _SCOPED_BENCHMARK_BODY,
+}
+
+
+def materialize_benchmarks(iso: Isolation, cmd: str) -> list[Path]:
+    """Write every `benchmarks/*.py` path `cmd` names into the drill's project root.
+
+    THE PATHS ARE READ OUT OF THE COMMAND rather than restated beside it, so a fixture
+    can never go on building a file the command it serves no longer invokes. An
+    unknown benchmark path raises a KeyError naming itself, which is the loud direction:
+    a silent skip would hand the caller an allow that came from absence.
+    """
+    written: list[Path] = []
+    for token in cmd.split():
+        if not (token.startswith("benchmarks/") and token.endswith(".py")):
+            continue
+        target = iso.project_root / token
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(BENCHMARK_STAND_INS[token])
+        written.append(target)
+    return written
+
+
+def _benchmark_command_setup(cmd: str) -> Callable[[Isolation], dict]:
+    """`_bash_command_setup` plus the file the command invokes, on disk.
+
+    The assertion is the anti-vacuity half: a command naming no benchmark would build
+    nothing, and the entry would then fail with "not refused" rather than with the real
+    cause, which is a fixture that never fired.
+    """
+
+    def _setup(iso: Isolation) -> dict:
+        written = materialize_benchmarks(iso, cmd)
+        assert written, (
+            f"the benchmark fixture built nothing for {cmd!r}, so the hook's arm would "
+            "read no file and this entry would report a missing refusal instead of a "
+            "missing fixture"
+        )
+        return {
+            "envelope": {
+                "session_id": iso.session_id,
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+                "tool_input": {"command": cmd},
+            },
+        }
+
+    return _setup
+
+
+# The BENCHMARK-ENTRYPOINT vector (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3, finding
+# 6): invoking a benchmark that wipes the WHOLE graph, which is the 2026-08-05 incident.
+# Two entries, one per independent sub-pattern rather than one per file, because the two
+# spellings are matched by different code: the interpreter walk (`_irrev_script_target`,
+# widened from the Cypher regex to a whole-graph wipe predicate) and a second arm for the
+# pytest spelling that walk deliberately skips, since `-m` disqualifies the whole command
+# so the suite can run.
+#
+# MEASURED AS AN ALLOW before this cycle, both of them: `run_benchmarks.py` wipes through
+# a python call and carries no Cypher at all, so the body predicate in place never matched
+# it. A red here before the hook lands is the expected skeleton state, not a broken
+# trigger.
+_IRREVERSIBLE_BENCHMARK_COMMANDS = {
+    "interpreter": "python3 benchmarks/run_benchmarks.py",
+    "pytest": ".venv/bin/python -m pytest benchmarks/run_benchmarks.py",
 }
 
 
@@ -921,6 +1034,32 @@ REFUSALS: list[Refusal] = [
             ),
         )
         for name, command in _IRREVERSIBLE_DDL_COMMANDS.items()
+    ],
+    *[
+        Refusal(
+            id=f"bash-write-irreversible-benchmark-{name}",
+            script="writ-bash-write-gate.sh",
+            event="PreToolUse",
+            mechanism="permissionDecisionReason",
+            permission_decision="deny",
+            shape="gate_decision",
+            gate_name="irreversible",
+            setup=_benchmark_command_setup(command),
+            notes=(
+                "Irreversible-destruction vector, benchmark-entrypoint sub-pattern "
+                f"{name!r} (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3, finding 6): "
+                "THE ONE FAMILY IN THIS VECTOR THAT IS NOT PLAIN COMMAND TEXT. Its arm "
+                "reads the invoked file, and the drill's cwd holds no benchmarks/ "
+                "directory, so the fixture materializes the stand-in the command names "
+                "(see materialize_benchmarks above for why that read is load-bearing "
+                "rather than worked around). MEASURED AS AN ALLOW before this cycle. The "
+                "two entries are the two SPELLINGS, matched by different code (the "
+                "widened interpreter walk, and the second arm for the pytest form that "
+                "walk skips), so one of them regressing cannot be averaged away by the "
+                "other."
+            ),
+        )
+        for name, command in _IRREVERSIBLE_BENCHMARK_COMMANDS.items()
     ],
     Refusal(
         id="validate-rules-site-a",

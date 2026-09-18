@@ -2881,3 +2881,76 @@ DECLARED_PHRASE_SITES: dict[str, tuple[str, str]] = {
         "names no test file",
     ),
 }
+
+
+# ── Wiping benchmark entrypoints (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3) ──
+#
+# The 2026-08-05 incident class, held as a POPULATION rather than as two path literals:
+# a benchmark module that calls `clear_all()` empties the whole graph, and nothing in the
+# command text that invokes it says so. Two consumers read this one derivation, the gate's
+# deny matrix in `tests/test_bash_irreversible_gate.py` and the structural pins in
+# `tests/test_benchmark_invocation_guard.py`, so "which benchmarks wipe" has one answer
+# instead of two lists that can drift apart.
+#
+# AST, NOT TEXT, and the difference is a real file in this tree. `benchmarks/
+# _corpus_safety.py` names `clear_all()` four times, every one of them inside a docstring,
+# and it is the module that REFUSES an unsafe wipe: a text scan files the safety module
+# with the destroyers. The hook's own predicate IS text and does match that docstring; that
+# over-refusal is deliberate and is pinned in the gate's owner module rather than
+# discovered later, because nobody invokes the safety module and fail-closed is the right
+# direction at a gate.
+#
+# NO COUNT IS PINNED HERE AND NONE MAY BE. Every consumer keys its assertions by path, so a
+# third wiping benchmark joins the matrix by existing. Non-emptiness is asserted by
+# `tests/test_benchmark_invocation_guard.py` rather than by
+# `test_count_pin_discipline.py::test_each_derivation_is_non_empty`, whose floor is three
+# members and whose subject is the populations that module already owns.
+_WIPE_CALL = "clear_all"
+
+
+def _wipe_call_lines(tree: ast.Module) -> list[int]:
+    """1-based lines of every REAL call to `clear_all`, in source order.
+
+    A call, not a mention: `ast.Call` whose callee is `clear_all` or `<obj>.clear_all`.
+    A docstring, a comment and a bare attribute reference are all invisible to this,
+    which is the whole reason the derivation parses instead of greps.
+    """
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = getattr(func, "attr", None) or getattr(func, "id", None)
+        if name == _WIPE_CALL:
+            lines.add(node.lineno)
+    return sorted(lines)
+
+
+def wiping_benchmark_entrypoints(
+    *, benchmarks_dir: Path = REPO / "benchmarks"
+) -> dict[str, list[int]]:
+    """`{"<repo-relative path>": [line, ...]}` for every benchmark module that wipes
+    the whole graph.
+
+    Keyed by PATH so a member that loses its guard, or a new member that never had one,
+    fails BY NAME rather than by a count that moved.
+
+    `benchmarks_dir` is a keyword for the reason `envelope_emitting_scripts(*,
+    scripts_dir=)` gives: the derivation's precision is pinned against synthetic modules
+    under `tmp_path`, never against a real benchmark's current wording.
+    """
+    root = Path(benchmarks_dir)
+    out: dict[str, list[int]] = {}
+    for path in sorted(root.glob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        except SyntaxError:
+            continue
+        lines = _wipe_call_lines(tree)
+        if lines:
+            try:
+                rel = path.relative_to(REPO).as_posix()
+            except ValueError:
+                rel = path.as_posix()
+            out[rel] = lines
+    return out

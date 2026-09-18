@@ -168,9 +168,9 @@ print(json.dumps({
 }))
 " "${REASON:-Pre-write validation failed}") || DENY_REPLY=""
   emit_hook_reply "$DENY_REPLY"
-  log_gate_decision "pre-write-validation" "deny" "${REASON:-Pre-write validation failed}" "${FILE_PATH:-}"
+  log_gate_decision "pre-write-validation" "deny" "${REASON:-Pre-write validation failed}" "$FILE"
   exit 0
 fi
 
-log_gate_decision "pre-write-validation" "allow" "pre-write validation passed" "${FILE_PATH:-}"
+log_gate_decision "pre-write-validation" "allow" "pre-write validation passed" "$FILE"
 exit 0

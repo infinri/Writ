@@ -23,9 +23,11 @@ import pytest
 
 from tests.firedrill._census import (
     ACTION_MARKERS,
+    BENCHMARK_STAND_INS,
     by_id,
     generic_refusals,
     matches_action_marker,
+    materialize_benchmarks,
 )
 from tests.firedrill._harness import (
     build_env,
@@ -43,10 +45,11 @@ from tests.firedrill._harness import (
 # THE ONE CANONICAL LITERAL for this population, and the only place the numeral may
 # appear. It moved from 26 to 33 when the irreversibility class gained the three
 # evidence-destruction verbs and the four SQL DDL branches (plan.md
-# 2412ba38-51e1-4b73-895b-7b240a3c21d3, finding 4); the three copies that used to quote
-# it inside tests/firedrill/_census.py refer to the pin by NAME now, and
-# TestTheCountPinHasExactlyOneHome below is what keeps it that way.
-assert len(generic_refusals()) == 33
+# 2412ba38-51e1-4b73-895b-7b240a3c21d3, finding 4), and from 33 to 35 when the same class
+# gained the benchmark-entrypoint vector's two spellings (the same plan, finding 6); the
+# three copies that used to quote it inside tests/firedrill/_census.py refer to the pin by
+# NAME now, and TestTheCountPinHasExactlyOneHome below is what keeps it that way.
+assert len(generic_refusals()) == 35
 
 # THE MARKER COUNT PIN IS GONE, with no count replacing it (plan.md
 # 2412ba38-51e1-4b73-895b-7b240a3c21d3, defect 2). `assert len(ACTION_MARKERS) == 14`
@@ -438,8 +441,33 @@ _IRREVERSIBLE_NEGATIVE_CASES = [
     pytest.param('mysql -e "SHOW TABLES"', id="ordinary-mysql"),
     pytest.param("rm -rf build/", id="rm-outside-the-log-tree"),
     pytest.param("find . -name '*.py' -delete", id="find-delete-outside-the-log-tree"),
+    # Finding 6's allow side, which is as important as its deny side. A path-only
+    # benchmark arm was REJECTED on exactly these three: the first is `make bench`'s own
+    # command (bench_targets.py carries a scoped DETACH DELETE and calls no whole-graph
+    # wipe), the second is routine suite work (64 python files call the wipe, most of
+    # them under tests/), and the third is the staging this very cycle needs.
+    pytest.param(".venv/bin/python3 -m pytest benchmarks/bench_targets.py -x -q",
+                 id="make-bench"),
+    pytest.param("pytest tests/test_retrieval.py", id="pytest-a-wiping-test-module"),
+    pytest.param("git add benchmarks/run_benchmarks.py", id="staging-a-benchmark-file"),
 ]
-assert len(_IRREVERSIBLE_NEGATIVE_CASES) == 6
+assert len(_IRREVERSIBLE_NEGATIVE_CASES) == 9
+
+
+def _negative_case(case_id: str) -> str:
+    """One negative-control command, READ OUT OF the list above by its own id.
+
+    Restating the command beside a second test is how the two come to disagree about
+    which spelling is being controlled; a missing id raises rather than silently
+    testing nothing.
+    """
+    for param in _IRREVERSIBLE_NEGATIVE_CASES:
+        if param.id == case_id:
+            return param.values[0]
+    raise KeyError(
+        f"no negative control with id {case_id!r}: "
+        f"{[p.id for p in _IRREVERSIBLE_NEGATIVE_CASES]}"
+    )
 
 
 class TestIrreversibleGitNegativeControls:
@@ -449,6 +477,15 @@ class TestIrreversibleGitNegativeControls:
     lease`, `git clean -n`, and `git branch -d` (lowercase). This pins the two
     that share a command-text prefix with a denied pattern above, so a regex
     that widens to catch the flag it should exclude is caught here, not missed.
+
+    THE BENCHMARK CONTROLS PUT THEIR FILE ON DISK FIRST, and that is the difference
+    between a control and a coincidence. The hook's benchmark arms read the invoked
+    file, and the drill's cwd holds no `benchmarks/` directory, so without the fixture
+    every one of these three would be allowed because the file is ABSENT rather than
+    because its content is clean, which is the one thing the pair exists to show.
+    MEASURED through this harness, same command and same path with only the body
+    differing: `benchmarks/bench_targets.py` carrying the scoped stand-in is allowed and
+    the same path carrying the wiping stand-in is denied.
 
     FOUR MORE JOINED with finding 4 (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3),
     and each is the negative control of one of that cycle's two new arms. The two
@@ -463,6 +500,7 @@ class TestIrreversibleGitNegativeControls:
     @pytest.mark.parametrize("cmd", _IRREVERSIBLE_NEGATIVE_CASES)
     def test_the_reversible_form_is_not_refused(self, tmp_path, cmd) -> None:
         iso = make_isolation(tmp_path, session_id=f"irrev-negative-{hash(cmd) & 0xffff}")
+        materialize_benchmarks(iso, cmd)
         envelope = {
             "session_id": iso.session_id,
             "hook_event_name": "PreToolUse",
@@ -472,6 +510,46 @@ class TestIrreversibleGitNegativeControls:
         result = run_hook("writ-bash-write-gate.sh", envelope, iso)
         assert result.permission_decision() is None, (
             f"the reversible form {cmd!r} must not be refused: stdout={result.stdout!r}"
+        )
+
+    def test_the_benchmark_control_is_allowed_for_its_content_not_its_absence(
+        self, tmp_path
+    ) -> None:
+        """The conditional half of the case above, and the reason the fixture writes a
+        file at all rather than leaving the tmp tree bare.
+
+        `make bench`'s own command runs twice against the SAME path under the drill's
+        project root, with only the body differing: the scoped stand-in the census
+        declares for it, then the wiping one. An allow that survived both would mean the
+        arm never read the file, and the negative control would be green for a reason
+        that has nothing to do with what `bench_targets.py` contains -- which is exactly
+        what it was, before the fixture existed, on a tmp tree holding no `benchmarks/`
+        directory at all.
+        """
+        cmd = _negative_case("make-bench")
+        iso = make_isolation(tmp_path, session_id="irrev-negative-content")
+        written = materialize_benchmarks(iso, cmd)
+        assert written, f"the fixture put no file on disk for {cmd!r}"
+        target = written[0]
+
+        envelope = {
+            "session_id": iso.session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": cmd},
+        }
+        clean = run_hook("writ-bash-write-gate.sh", envelope, iso)
+        assert clean.permission_decision() is None, (
+            f"the scoped stand-in at {target} was refused, so `make bench` can no "
+            f"longer be run: stdout={clean.stdout!r}"
+        )
+
+        target.write_text(BENCHMARK_STAND_INS["benchmarks/run_benchmarks.py"])
+        wiping = run_hook("writ-bash-write-gate.sh", envelope, iso)
+        assert wiping.permission_decision() == "deny", (
+            "the same command against the same path was allowed with a whole-graph "
+            "wipe in the file, so the arm is not reading the body and the allow above "
+            f"proves nothing: stdout={wiping.stdout!r}"
         )
 
 

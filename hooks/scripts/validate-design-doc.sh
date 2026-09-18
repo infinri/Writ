@@ -70,9 +70,9 @@ PY
 )
 
 if [ -n "$DENY" ]; then
-    log_gate_decision "design-doc" "deny" "$DENY" "${FILE_PATH:-}"
+    log_gate_decision "design-doc" "deny" "$DENY" "$FILE"
     emit_deny "$DENY"
 else
-    log_gate_decision "design-doc" "allow" "required sections present" "${FILE_PATH:-}"
+    log_gate_decision "design-doc" "allow" "required sections present" "$FILE"
 fi
 exit 0

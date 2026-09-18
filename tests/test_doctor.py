@@ -1347,6 +1347,28 @@ class TestRunAllChecks:
         # census means "no roles to judge", which the check reports as ok.
         monkeypatch.setattr(
             "writ.session.doctor._subagent_role_scope_census", lambda: [])
+        # gate-refusal-liveness otherwise reads this machine's audit stream AND its whole
+        # hook tree, so the outcome would depend on both (TEST-ISOLATE-001). A gate that
+        # can refuse and has is the clean case, and it is built from two INDEPENDENT
+        # seams here for the same reason the check keeps them apart: a patch that fed one
+        # side from the other would make these registry tests agree with anything.
+        #
+        # PATCHED WITH raising=True (the default) ON PURPOSE. A tolerant patch would
+        # silently no-op if either seam were renamed, and these tests would go back to
+        # reading the developer's real logs while still passing, which is the failure
+        # mode this block exists to prevent. The tests are pinned to the seam NAMES; the
+        # plan's ## Files line owns them.
+        monkeypatch.setattr(
+            "writ.session.doctor._gate_deny_capability",
+            lambda **_kwargs: {
+                "probe-gate": {"decisions": ["deny", "allow"], "scripts": ["probe.sh"]}
+            },
+        )
+        monkeypatch.setattr(
+            "writ.session.doctor._audit_rows",
+            lambda event: [{"event": event, "gate": "probe-gate", "decision": "deny",
+                            "reason": "probe", "target": "", "ts": "2026-01-01T00:00:00Z"}],
+        )
 
     def test_it_returns_one_result_per_registered_check(self, default_opts, monkeypatch) -> None:
         self._patch_all_ok(monkeypatch)
@@ -1393,6 +1415,10 @@ class TestRunAllChecks:
             "subagent-governance-census",
             "role-symlinks",
             "mode-gate-sanity",
+            # Containment audit finding 5: which gates can refuse, and which of those
+            # ever have. Nothing read gate_decision before it, so a gate that stopped
+            # refusing, or never started, alarmed nowhere.
+            "gate-refusal-liveness",
         }
         actual_names = {r.name for r in results}
         assert actual_names == expected_names, (

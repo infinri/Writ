@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -1448,28 +1449,32 @@ def stream_path(project: str, kind: str) -> Path:
     return Path(_stream_path(project, kind))
 
 
-def _metrics_rows(event: str) -> list[dict] | None:
-    """Rows of one event kind from the metrics stream, or None when nothing is readable.
+def _stream_rows(stream: str, event: str) -> list[dict] | None:
+    """Rows of one event kind from one per-project stream, or None when none is readable.
 
-    None and [] are DIFFERENT and both callers depend on it: None means the stream could
-    not be read at all (fresh install, redirected log, pruned directory), while [] means it
-    was read and held no such row. Cycle I's first version conflated them and accused all
-    40 hooks of never running on a machine whose log simply was not there.
+    The WHOLE corpus: the live file, every archive generation, and the gzipped ones. A
+    refusal that survives only in an archive must not read as a refusal that never
+    happened, which is what a live-file-only reader would report.
+
+    None and [] are DIFFERENT and every caller depends on it: None means no file could be
+    read at all (fresh install, redirected log, pruned directory), while [] means the
+    stream was read and held no such row. Cycle I's first version conflated them and
+    accused all 40 hooks of never running on a machine whose log simply was not there.
     """
     import gzip
 
     try:
         from writ.shared.logging import resolve_project
 
-        metrics = stream_path(resolve_project(), "metrics")
+        live = stream_path(resolve_project(), stream)
     except Exception:  # noqa: BLE001 - a log-path fault must not fail a check
         return None
 
-    project_dir = Path(metrics).parent
-    candidates = [Path(metrics)]
-    if Path(metrics).name != "metrics.jsonl":
-        candidates.append(project_dir / "metrics.jsonl")
-    candidates += sorted((project_dir / "archive").glob("metrics-*.jsonl*"))
+    project_dir = Path(live).parent
+    candidates = [Path(live)]
+    if Path(live).name != f"{stream}.jsonl":
+        candidates.append(project_dir / f"{stream}.jsonl")
+    candidates += sorted((project_dir / "archive").glob(f"{stream}-*.jsonl*"))
 
     rows: list[dict] = []
     read_any = False
@@ -1492,6 +1497,197 @@ def _metrics_rows(event: str) -> list[dict] | None:
     if not read_any:
         return None
     return rows
+
+
+def _metrics_rows(event: str) -> list[dict] | None:
+    """Rows of one event kind from the metrics stream, or None when nothing is readable.
+
+    ONE ARGUMENT, and it stays that way: `tests/test_doctor.py::_patch_all_ok`
+    monkeypatches this name as `lambda event: []`, so the shared body lives in
+    `_stream_rows(stream, event)` and this is the metrics-stream binding of it.
+    """
+    return _stream_rows("metrics", event)
+
+
+def _audit_rows(event: str) -> list[dict] | None:
+    """Rows of one event kind from the audit stream, or None when nothing is readable.
+
+    The audit-stream sibling of `_metrics_rows`. `gate_decision` lives here, which is why
+    nothing reading `metrics` could ever tell whether a gate had refused.
+    """
+    return _stream_rows("audit", event)
+
+
+# --------------------------------------------------------------------------- #
+# Gate refusal liveness: two independent artifacts, kept apart on purpose
+# --------------------------------------------------------------------------- #
+#
+# CAPABILITY comes from the hook SOURCES and BEHAVIOUR comes from the AUDIT STREAM, and
+# neither is computed from the other. A check whose expected side is derived from the
+# side under test cannot fail, and this repo has shipped that shape twice.
+#
+# A REFUSAL IS `deny` OR `ask`, never "anything that is not allow". Three live gates
+# prove both halves: `irreversible` records denies and no allows at all because its arm
+# only logs on refusal, `bash-egress` and `review-blocking` record only asks because
+# asking IS how they refuse, and `manual-test-grant` spells `grant`, `error` and
+# `inherit`, none of which is a refusal. A naive rule misreads all three.
+
+REFUSING_DECISIONS = frozenset({"deny", "ask"})
+
+# Everything a call site spells that does NOT stop the action. Declared rather than
+# inferred, so a new verb added to a hook reddens in
+# `tests/test_gate_refusal_liveness.py` instead of being silently counted as a
+# non-refusal.
+NON_REFUSING_DECISIONS = frozenset({"allow", "grant", "error", "inherit", "unknown"})
+
+# A call site whose decision is a runtime VARIABLE. It counts as capable of refusing,
+# which is the fail-loud direction and the one that matters: the source cannot prove such
+# an arm unreachable, and reading uncertainty as "cannot refuse" would excuse the gate
+# most likely to have a live deny path.
+RUNTIME_DECIDED = "<runtime>"
+
+_CLASS_REFUSING = "refusing"
+_CLASS_NEVER_REFUSED = "never-refused"
+_CLASS_UNEXERCISED = "unexercised"
+_CLASS_CANNOT_REFUSE = "cannot-refuse"
+_CLASS_ORPHANED = "orphaned"
+
+_HOOK_SCRIPTS_DIR = _PACKAGE_ROOT / "hooks" / "scripts"
+
+# A real call, not a mention: anchored at the start of a line, optionally behind an `&&`,
+# and never inside a comment. `writ-debug-code-gate.sh` describes its own deny arm in
+# prose, so a scan that read comments would credit a gate with a call site it does not
+# have.
+_GATE_CALL_RE = re.compile(
+    r"^[ \t]*(?:[^#\n]*&&[ \t]*)?log_gate_decision[ \t]+(?P<args>\S.*)$", re.MULTILINE
+)
+_GATE_ARG_RE = re.compile(r'"([^"\n]*)"')
+# `${NAME:-default}`, `${NAME-default}` and the `:=` spellings. The variable is what makes
+# the gate capable; the default is a token the vocabulary still has to bucket.
+_DEFAULTED_ARG_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=]([^}$]*)\}$")
+
+
+def _gate_deny_capability(
+    *, scripts_dir: Path = _HOOK_SCRIPTS_DIR
+) -> dict[str, dict[str, list[str]]] | None:
+    """Which gate can refuse, derived from the hook sources, keyed by gate name.
+
+    `{"<gate>": {"decisions": [...], "scripts": [...]}}`. None when no source tree was
+    readable, `{}` when the tree was read and holds no call site. Those two are different
+    and the check reports them differently: conflating them would tell a machine with no
+    hook tree that every one of its gates had lost its deny arm.
+
+    A gate logged by two scripts names both, because the class is about the GATE: one
+    script losing its deny arm while a sibling keeps one is not a defect.
+    """
+    root = Path(scripts_dir)
+    if not root.is_dir():
+        return None
+    capability: dict[str, dict[str, list[str]]] = {}
+    try:
+        paths = sorted(root.glob("*.sh"))
+    except OSError:
+        return None
+    for path in paths:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for match in _GATE_CALL_RE.finditer(text):
+            args = _GATE_ARG_RE.findall(match.group("args"))
+            if len(args) < 2:
+                continue
+            gate, decision = args[0], args[1]
+            if not gate or "$" in gate:
+                continue
+            entry = capability.setdefault(gate, {"decisions": [], "scripts": []})
+            for token in _decision_tokens(decision):
+                if token not in entry["decisions"]:
+                    entry["decisions"].append(token)
+            if path.name not in entry["scripts"]:
+                entry["scripts"].append(path.name)
+    for entry in capability.values():
+        entry["decisions"].sort()
+        entry["scripts"].sort()
+    return capability
+
+
+def _decision_tokens(argument: str) -> list[str]:
+    """The decision tokens one call site's second argument can emit."""
+    if "$" not in argument:
+        return [argument] if argument else []
+    tokens = [RUNTIME_DECIDED]
+    defaulted = _DEFAULTED_ARG_RE.match(argument)
+    if defaulted and defaulted.group(1):
+        tokens.append(defaulted.group(1))
+    return tokens
+
+
+def _gate_refusal_classes(
+    capability: dict[str, dict[str, list[str]]] | None, rows: list[dict] | None
+) -> dict[str, str]:
+    """One class per gate, from the two artifacts. Pure: no log and no source is read.
+
+    Five outcomes, because three do not cover two states the corpus holds. `unexercised`
+    exists because gates with call sites and zero rows are gates nothing has ever asked,
+    not gates that stopped answering. `orphaned` exists because a renamed gate leaves its
+    old rows in a 365-day stream forever and an alarm on history is noise.
+
+    BEHAVIOUR CANNOT VOUCH FOR CAPABILITY. Refusal rows for a gate whose sources spell no
+    refusing token leave it `cannot-refuse`, and a gate with no call site at all is
+    `orphaned` however many rows it carries.
+    """
+    decided: dict[str, int] = {}
+    refused: dict[str, int] = {}
+    for row in rows or []:
+        gate = row.get("gate")
+        if not gate:
+            continue
+        gate = str(gate)
+        decided[gate] = decided.get(gate, 0) + 1
+        if str(row.get("decision") or "") in REFUSING_DECISIONS:
+            refused[gate] = refused.get(gate, 0) + 1
+
+    classes: dict[str, str] = {}
+    for gate, entry in (capability or {}).items():
+        tokens = set(entry.get("decisions") or ())
+        if not (tokens & REFUSING_DECISIONS) and RUNTIME_DECIDED not in tokens:
+            classes[gate] = _CLASS_CANNOT_REFUSE
+        elif not decided.get(gate):
+            classes[gate] = _CLASS_UNEXERCISED
+        elif refused.get(gate):
+            classes[gate] = _CLASS_REFUSING
+        else:
+            classes[gate] = _CLASS_NEVER_REFUSED
+    for gate in decided:
+        classes.setdefault(gate, _CLASS_ORPHANED)
+    return classes
+
+
+def _decision_date(row: dict) -> str | None:
+    """The day a decision was made, as an ISO date, or None when the row carries neither.
+
+    `decided_at` WINS WHERE IT EXISTS, and it is EPOCH SECONDS IN A STRING rather than
+    ISO: `ts` on a buffered row is the FLUSH time, so where both are present the decision
+    time is the honest one. `ts` is the fallback and not the other way round, because
+    `_gd_emit_now` is the synchronous branch every deny and every ask takes (a denial must
+    not wait for a drain) and it writes no decision stamp at all. Measured over the live
+    corpus: none of the 952 refusals carries `decided_at`, so a reader that required it
+    would report every refusal on this machine as dateless.
+    """
+    from datetime import datetime, timezone
+
+    decided = row.get("decided_at")
+    if decided:
+        try:
+            return datetime.fromtimestamp(
+                int(str(decided).strip()), tz=timezone.utc).date().isoformat()
+        except (ValueError, OSError, OverflowError):
+            pass
+    stamp = row.get("ts")
+    if isinstance(stamp, str) and len(stamp) >= 10:
+        return stamp[:10]
+    return None
 
 
 def _subagent_governance_evidence() -> tuple[dict[str, set[str]], set[str]] | None:
@@ -2071,6 +2267,106 @@ def check_mode_gate_sanity(opts: DoctorOptions) -> CheckResult:
     )
 
 
+# The positive control the log cannot be, named in every detail this check emits. A quiet
+# gate and a dead gate produce identical rows, so the absence of refusals has a ready
+# innocent explanation, which is exactly when a metric needs a positive signal instead.
+# The fire drill triggers each refusal for real.
+_FIRE_DRILL = "tests/firedrill/"
+
+
+def check_gate_refusal_liveness(opts: DoctorOptions) -> CheckResult:
+    """Which gates can refuse, and which of those ever have.
+
+    Nothing in this file read a `gate_decision` row before it, so a gate that stopped
+    refusing, or never started, alarmed nowhere.
+
+    THE WHOLE CORPUS IS READ AND THE ALARM IS "HAS NEVER REFUSED", not "has not refused
+    lately". No window constant is introduced, and the corpus is why: several observed
+    gates have fewer than ten decisions in total, so any window short enough to notice
+    inertness reports them as inert every time nothing dangerous was attempted. For a
+    refusal gate, "no refusals this month" is the expected healthy state. Each refusing
+    gate's last refusal date is printed instead, so a long-inert gate is VISIBLE and the
+    reader rules.
+    """
+    name = "gate-refusal-liveness"
+    capability = _gate_deny_capability()
+    if capability is None:
+        return _warn(
+            name=name,
+            detail=(
+                f"Hook sources could not be read at {_HOOK_SCRIPTS_DIR}, so which gates "
+                "can refuse is unknown: refusal capability is underived and no gate can "
+                "be classified. Nothing here says a gate is healthy or broken."
+            ),
+        )
+    if not capability:
+        return _warn(
+            name=name,
+            detail=(
+                f"No gate call site was derived from {_HOOK_SCRIPTS_DIR}, so refusal "
+                "capability is unknown. 'No gate is in the alarm class' is true of an "
+                "empty derivation and says nothing about this tree."
+            ),
+        )
+
+    rows = _audit_rows("gate_decision")
+    classes = _gate_refusal_classes(capability, rows or [])
+    last_refusal: dict[str, str] = {}
+    for row in rows or []:
+        gate = str(row.get("gate") or "")
+        if not gate or str(row.get("decision") or "") not in REFUSING_DECISIONS:
+            continue
+        date = _decision_date(row)
+        if date and date > last_refusal.get(gate, ""):
+            last_refusal[gate] = date
+
+    def _named(gate: str) -> str:
+        scripts = (capability.get(gate) or {}).get("scripts") or []
+        suffix = f" [{', '.join(scripts)}]" if scripts else ""
+        if gate in last_refusal:
+            return f"{gate} (last refusal {last_refusal[gate]}){suffix}"
+        return f"{gate}{suffix}"
+
+    def _members(wanted: str) -> list[str]:
+        return [_named(gate) for gate in sorted(classes) if classes[gate] == wanted]
+
+    alarming = _members(_CLASS_NEVER_REFUSED)
+    sections = [
+        (_CLASS_NEVER_REFUSED, "can refuse and never has", alarming),
+        (_CLASS_REFUSING, "can refuse and has", _members(_CLASS_REFUSING)),
+        (_CLASS_UNEXERCISED, "can refuse, no decision recorded",
+         _members(_CLASS_UNEXERCISED)),
+        (_CLASS_CANNOT_REFUSE, "no refusing token at any call site",
+         _members(_CLASS_CANNOT_REFUSE)),
+        (_CLASS_ORPHANED, "rows recorded, no call site anywhere",
+         _members(_CLASS_ORPHANED)),
+    ]
+    body = "; ".join(
+        f"{label} ({gloss}): {', '.join(members)}"
+        for label, gloss, members in sections if members
+    )
+    if rows is None:
+        preface = (
+            "No audit stream was readable, so gate behaviour is UNMEASURED and every "
+            "gate below is classified from its sources alone. "
+        )
+    elif not rows:
+        preface = (
+            "The audit stream was read and holds no gate_decision row yet, so none is "
+            "recorded for any gate. "
+        )
+    else:
+        preface = ""
+    closing = (
+        f" The log cannot tell a quiet gate from a dead one; {_FIRE_DRILL} is the "
+        "positive control, triggering each refusal for real."
+    )
+    detail = preface + body + "." + closing
+    if alarming:
+        return _warn(name=name, detail=detail)
+    return _ok(name=name, detail=detail)
+
+
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
@@ -2118,6 +2414,7 @@ _CHECKS: list[tuple[str, Callable[[DoctorOptions], CheckResult]]] = [
     ("subagent-governance-census", check_subagent_governance_census),
     ("role-symlinks", check_role_symlinks),
     ("mode-gate-sanity", check_mode_gate_sanity),
+    ("gate-refusal-liveness", check_gate_refusal_liveness),
 ]
 
 

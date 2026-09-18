@@ -1295,3 +1295,453 @@ class TestTheDeliberateOverRefusalIsPinned:
         payload, _rows = _run("rm -rf /tmp/probe-dir ; tail -5 var/logs/writ/audit.jsonl",
                               tmp_path)
         assert not _denied(payload), payload
+
+
+# =========================================================================== #
+# FINDING 6: invoking a whole-graph-wiping benchmark, under either spelling.
+#
+# The 2026-08-05 incident class, and the two spellings the arm in place today
+# misses. Arm 2 reads the invoked file's body for `_IRREV_CYPHER_RE` alone, and
+# `benchmarks/run_benchmarks.py` carries no Cypher at all: it wipes through
+# `await db.clear_all()`. So the predicate widens from the Cypher regex to a
+# WHOLE-GRAPH WIPE regex, and a second arm sees the pytest spelling that
+# `_irrev_script_target` deliberately skips (`-m` disqualifies the whole command
+# so the suite can run).
+#
+# THE PREDICATE IS THE WIPE MECHANISM, NOT A PATH LIST, and that distinction is
+# what keeps this cycle's allow side green. A path-only arm would also refuse
+# `git add benchmarks/run_benchmarks.py`, which this very cycle needs, and a
+# pytest arm that ignored the file's mechanism would refuse
+# `pytest tests/test_retrieval.py`: 64 python files call the wipe, most of them
+# under tests/, and a scoped delete in a test is normal work.
+# =========================================================================== #
+
+_BENCH_MARK = "BENCHMARK ENTRYPOINT"
+
+# The whole-graph wipe predicate and the path glob that gates it. Named rather
+# than derived, for the reason `_DDL_RE_NAME` gives: both are `[[ ]]` match
+# strings, not arrays, so there is no member syntax to parse. Their
+# conditionality is proved by MUTATION below instead.
+_WIPE_RE_NAME = "_IRREV_WIPE_RE"
+_BENCH_GLOB_NAME = "_IRREV_BENCH_GLOB"
+
+# The alternative this cycle ADDS to the body predicate, named so the narrowing
+# mutation can drop it by name rather than by position: dropping "the first
+# branch" would prove nothing if the implementer happened to write it first.
+_WIPE_MECHANISM = "clear_all"
+
+_NO_SUCH_MECHANISM = "__writ_no_such_wipe_mechanism__"
+_NO_SUCH_BENCH_DIR = "no-such-benchmark-dir/"
+
+# `benchmarks/_corpus_safety.py` names the wipe only inside docstrings and is the
+# module that REFUSES an unsafe one. The hook's predicate is text and matches that
+# prose, so invoking it is refused. Pinned as a DELIBERATE over-refusal rather than
+# discovered later: nobody invokes the safety module, and fail-closed is the right
+# direction at a gate. `tests/_inventory.py::wiping_benchmark_entrypoints()` parses
+# instead, so the structural pins are not confused by the same prose.
+SAFETY_MODULE = "benchmarks/_corpus_safety.py"
+
+
+def wiping_benchmarks() -> list[str]:
+    """The ast-derived wiping-benchmark population, or [] when it is underivable.
+
+    Import must not raise, for the reason `_derived` above gives: an assertion at
+    module scope becomes a COLLECTION error rather than a red module.
+    """
+    try:
+        from tests._inventory import wiping_benchmark_entrypoints
+
+        return sorted(wiping_benchmark_entrypoints())
+    except Exception:  # noqa: BLE001
+        return []
+
+
+WIPING_BENCHMARKS = wiping_benchmarks()
+
+
+def _bench_params() -> list:
+    if not WIPING_BENCHMARKS:
+        return [pytest.param(_UNDERIVED, id="wiping-benchmarks-underived")]
+    return [pytest.param(rel, id=rel.replace("/", "-")) for rel in WIPING_BENCHMARKS]
+
+
+def _make_bench_command() -> str:
+    """`make bench`'s exact command, READ FROM THE MAKEFILE rather than restated.
+
+    The one command in this repo that runs a benchmark on purpose. A copy typed into
+    this file would go stale the day the recipe changes, and the regression it exists
+    to catch is precisely a gate that starts refusing the recipe.
+    """
+    text = (REPO / "Makefile").read_text()
+    python = re.search(r"^PYTHON\s*\?=\s*(.+)$", text, re.M)
+    recipe = re.search(r"^bench:.*\n\t(.+)$", text, re.M)
+    assert python and recipe, "cannot read the bench recipe out of the Makefile"
+    return recipe.group(1).strip().replace("$(PYTHON)", python.group(1).strip())
+
+
+def _repoint(source: str, name: str, value: str) -> str:
+    """`name='...'` or `name="..."` rewritten to carry `value`. Returns the source."""
+    anchor = "%s=" % name
+    assert anchor in source, (
+        "%s is not declared in the hook source, so the benchmark arm cannot be proved "
+        "conditional on it" % name
+    )
+    start = source.index(anchor) + len(anchor)
+    quote = source[start]
+    assert quote in ("'", '"'), (
+        "%s is not assigned a quoted literal (%r), so this mutation cannot rewrite it"
+        % (name, source[start:start + 20])
+    )
+    end = source.index(quote, start + 1)
+    return source[:start + 1] + value + source[end:]
+
+
+def _declared_value(source: str, name: str) -> str:
+    anchor = "%s=" % name
+    assert anchor in source, "%s is not declared in the hook source" % name
+    start = source.index(anchor) + len(anchor)
+    quote = source[start]
+    return source[start + 1:source.index(quote, start + 1)]
+
+
+def _drop_branch(source: str, name: str, needle: str) -> str:
+    """Delete every alternative of `name`'s alternation that contains `needle`.
+
+    THE DECAY MUTATION. Repointing the whole regex proves the deny is keyed on it;
+    this proves the deny is keyed on the alternative this cycle ADDS, rather than on
+    the pre-existing Cypher one that already catches `bench_targets.py`.
+    """
+    value = _declared_value(source, name)
+    branches = value.split("|")
+    kept = [b for b in branches if needle not in b]
+    assert len(kept) < len(branches), (
+        "%s carries no alternative naming %r, so the wipe mechanism this cycle adds is "
+        "not in the predicate at all: %r" % (name, needle, value)
+    )
+    assert kept, (
+        "%s consists of nothing but the %r alternative, so dropping it leaves an empty "
+        "regex, which matches everything and would prove the opposite: %r"
+        % (name, needle, value)
+    )
+    return _repoint(source, name, "|".join(kept))
+
+
+# --------------------------------------------------------------------------- #
+# Capability 14, 15: both spellings of invoking a wiping benchmark are refused
+# --------------------------------------------------------------------------- #
+
+class TestInvokingAWipingBenchmarkIsRefused:
+    """MEASURED ALLOW TODAY for `python3 benchmarks/run_benchmarks.py`: the file's
+    wipe is a python call, and the arm in place reads the body for Cypher only.
+    """
+
+    @pytest.mark.parametrize("rel", _bench_params())
+    def test_the_interpreter_spelling_is_refused(self, tmp_path, rel) -> None:
+        assert rel != _UNDERIVED, (
+            "the wiping-benchmark population is underived, so this matrix ran against "
+            "no member at all"
+        )
+        payload, _rows = _run("python3 %s" % rel, tmp_path)
+        assert _denied(payload), "not refused: python3 %s -> %r" % (rel, payload)
+        assert "ENF-IRREVERSIBLE" in _reason(payload), _reason(payload)
+
+    @pytest.mark.parametrize("rel", _bench_params())
+    def test_the_pytest_spelling_is_refused(self, tmp_path, rel) -> None:
+        """THE SPELLING THE INTERPRETER WALK SKIPS, and the one `run_benchmarks.py`'s
+        own docstring recommends: "Run with: pytest benchmarks/run_benchmarks.py -v".
+        `_irrev_script_target` disqualifies any command carrying `-m`, so this needs a
+        second arm rather than a wider walk."""
+        assert rel != _UNDERIVED, "population underived"
+        payload, _rows = _run(".venv/bin/python -m pytest %s" % rel, tmp_path)
+        assert _denied(payload), "not refused: pytest %s -> %r" % (rel, payload)
+
+    @pytest.mark.parametrize("cmd", [
+        "python3 benchmarks/scale_benchmark.py --run",
+        "pytest benchmarks/run_benchmarks.py",
+        "pytest benchmarks/run_benchmarks.py -v",
+    ])
+    def test_the_spellings_named_in_the_plan_are_refused(self, tmp_path, cmd) -> None:
+        """The bare `pytest` spelling as well as the venv one: the arm keys on an
+        executing verb, not on the interpreter path that happens to precede it."""
+        payload, _rows = _run(cmd, tmp_path)
+        assert _denied(payload), "not refused: %r -> %r" % (cmd, payload)
+
+    def test_the_refusal_names_the_file_and_the_mechanism(self, tmp_path) -> None:
+        payload, _rows = _run("python3 benchmarks/run_benchmarks.py", tmp_path)
+        reason = _reason(payload)
+        assert "run_benchmarks.py" in reason, reason
+        assert "graph" in reason.lower(), reason
+
+
+# --------------------------------------------------------------------------- #
+# Capability 16, 17: the allow side, which is as important as the deny side
+# --------------------------------------------------------------------------- #
+
+class TestTheBenchmarkArmsAllowSideMustNotRegress:
+    """A path-only arm was REJECTED on exactly these cases. Each one is routine work
+    that a wider rule would stop, and the last two are the reason the predicate is the
+    wipe MECHANISM: 64 python files call it, most of them under tests/.
+    """
+
+    def test_the_make_bench_command_stays_allowed(self, tmp_path) -> None:
+        cmd = _make_bench_command()
+        payload, _rows = _run(cmd, tmp_path)
+        assert not _denied(payload), (
+            "`make bench`'s own command was refused, so the one benchmark this repo "
+            "runs on purpose can no longer be run: %r -> %r" % (cmd, payload)
+        )
+
+    @pytest.mark.parametrize("cmd", [
+        "pytest tests/test_retrieval.py",
+        ".venv/bin/python -m pytest tests/test_retrieval.py",
+    ])
+    def test_a_test_module_that_wipes_stays_allowed(self, tmp_path, cmd) -> None:
+        """`tests/test_retrieval.py` really does call the wipe and restores through
+        migrate.py. Refusing it would stop the suite, which is why the arm's target walk
+        is confined to `benchmarks/` by a glob tested before any file is read."""
+        payload, _rows = _run(cmd, tmp_path)
+        assert not _denied(payload), "wrongly refused: %r -> %r" % (cmd, payload)
+
+    @pytest.mark.parametrize("cmd", [
+        "python3 writ/graph/migrate.py",
+        "cat benchmarks/run_benchmarks.py",
+        "grep -n assert_safe_to_wipe benchmarks/run_benchmarks.py",
+        "head -20 benchmarks/scale_benchmark.py",
+    ])
+    def test_reading_or_running_a_non_wiping_file_stays_allowed(self, tmp_path, cmd) -> None:
+        payload, _rows = _run(cmd, tmp_path)
+        assert not _denied(payload), "wrongly refused: %r -> %r" % (cmd, payload)
+
+    @pytest.mark.parametrize("cmd", [
+        "git add benchmarks/run_benchmarks.py",
+        "git diff benchmarks/scale_benchmark.py",
+        "ls -la benchmarks/",
+    ])
+    def test_naming_a_benchmark_with_no_executing_verb_stays_allowed(
+        self, tmp_path, cmd
+    ) -> None:
+        """THE CASE THAT REJECTED THE PATH-ONLY ARM, and this cycle needs it: the
+        commit that adds the guard has to stage the file it guards."""
+        payload, _rows = _run(cmd, tmp_path)
+        assert not _denied(payload), (
+            "a command naming a benchmark path with no executing verb was refused, "
+            "which is the path-only arm this cycle rejected: %r -> %r" % (cmd, payload)
+        )
+
+
+class TestTheDeliberateBenchmarkOverRefusalIsPinned:
+    """RULED ON, not a defect to fix. The hook's predicate is text and matches the wipe
+    named inside `_corpus_safety.py`'s docstrings, so invoking the safety module is
+    refused. Measured cost: nobody invokes it. Pinned here rather than discovered later,
+    and the ast derivation keeps the structural pins free of the same confusion.
+    """
+
+    def test_invoking_the_safety_module_is_refused(self, tmp_path) -> None:
+        payload, _rows = _run("python3 %s" % SAFETY_MODULE, tmp_path)
+        assert _denied(payload), (
+            "the text-matched over-refusal of %s is no longer happening; that is a "
+            "CHANGE to the ruled-on cost, not an improvement to be absorbed silently: "
+            "%r" % (SAFETY_MODULE, payload)
+        )
+
+    def test_the_safety_module_is_not_in_the_derived_population(self) -> None:
+        """The other half of the disclosure: the population the structural pins read is
+        ast-derived, so the over-refusal stays confined to the hook's own text match."""
+        assert SAFETY_MODULE not in WIPING_BENCHMARKS, WIPING_BENCHMARKS
+
+
+# --------------------------------------------------------------------------- #
+# Capability 21: the new refusal is recorded once, names the way out, mints nothing
+# --------------------------------------------------------------------------- #
+
+BENCHMARK_REFUSAL_TRIGGERS = {
+    "benchmark-interpreter": "python3 benchmarks/run_benchmarks.py",
+    "benchmark-pytest": ".venv/bin/python -m pytest benchmarks/run_benchmarks.py",
+}
+
+
+class TestTheBenchmarkRefusalIsAuditableAndActionable:
+    """Kept apart from `NEW_REFUSAL_TRIGGERS` above rather than folded into it, and the
+    reason is one assertion: that population requires the "git commit -F" route, because
+    those two arms refuse a MENTION inside an argument. This arm does not: it needs an
+    executing verb, so `git commit -m "fix benchmarks/run_benchmarks.py"` is allowed and
+    a prose route would be an instruction nobody needs.
+    """
+
+    @pytest.mark.parametrize("arm", sorted(BENCHMARK_REFUSAL_TRIGGERS))
+    def test_it_reuses_the_existing_clearance_sentence(self, tmp_path, arm) -> None:
+        sentence = _clearance_sentence(tmp_path)
+        reason = _reason(_run(BENCHMARK_REFUSAL_TRIGGERS[arm], tmp_path / arm)[0])
+        assert sentence in reason, (
+            "the %s refusal does not carry the clearance sentence the existing "
+            "irreversibility refusals emit (%r): %r" % (arm, sentence, reason)
+        )
+
+    @pytest.mark.parametrize("arm", sorted(BENCHMARK_REFUSAL_TRIGGERS))
+    def test_it_introduces_no_user_directed_phrase(self, tmp_path, arm) -> None:
+        payload, _rows = _run(BENCHMARK_REFUSAL_TRIGGERS[arm], tmp_path / arm)
+        assert _denied(payload), payload
+        assert user_directed_phrases(_reason(payload)) == [], _reason(payload)
+
+    @pytest.mark.parametrize("arm", sorted(BENCHMARK_REFUSAL_TRIGGERS))
+    def test_it_offers_no_grant(self, tmp_path, arm) -> None:
+        payload, _rows = _run(BENCHMARK_REFUSAL_TRIGGERS[arm], tmp_path / arm)
+        assert _denied(payload), payload
+        assert "manual testing approved" not in _reason(payload).lower(), _reason(payload)
+
+    @pytest.mark.parametrize("arm", sorted(BENCHMARK_REFUSAL_TRIGGERS))
+    def test_one_deny_row_under_the_irreversible_gate(self, tmp_path, arm) -> None:
+        payload, rows = _run(BENCHMARK_REFUSAL_TRIGGERS[arm], tmp_path / arm)
+        assert _denied(payload), payload
+        denies = [r for r in rows
+                  if r.get("event") == "gate_decision" and r.get("decision") == "deny"]
+        assert len(denies) == 1, (
+            "two records for one command make the audit trail lie about how often the "
+            "gate fired: %r" % rows
+        )
+        assert denies[0].get("gate") == "irreversible", denies[0]
+
+    def test_it_names_the_safe_way_to_run_the_benchmark(self, tmp_path) -> None:
+        """The refusal has to say what a legitimate benchmark run looks like, or the
+        next person works around it. The consent surface already exists:
+        `WRIT_TEST_GRAPH` against a separate instance, which `how_to_run_safely()`
+        spells out."""
+        reason = _reason(_run(BENCHMARK_REFUSAL_TRIGGERS["benchmark-pytest"], tmp_path)[0])
+        assert "WRIT_TEST_GRAPH" in reason or "disposable" in reason.lower(), reason
+
+
+# --------------------------------------------------------------------------- #
+# Capability 20, 22: the benchmark arm is conditional, and costs no new process
+# --------------------------------------------------------------------------- #
+
+class TestTheBenchmarkArmIsConditionalByMutation:
+    """Every mutation runs against a COPY under tmp_path; the real tree is never edited.
+    The control comes first, because a copy that could not refuse would "prove" any
+    mutation works.
+    """
+
+    PROBE = "python3 benchmarks/run_benchmarks.py"
+    # The pre-existing Cypher deny, used as the control that the mutations below are
+    # specific rather than global: `bench_targets.py` carries a scoped DETACH DELETE and
+    # no wipe call, so dropping the wipe alternative must leave it refused.
+    CYPHER_PROBE = "python3 benchmarks/bench_targets.py"
+
+    def test_the_unmutated_copy_still_refuses(self, tmp_path) -> None:
+        hook = _mutant_hook(tmp_path / "tree", _hook_source())
+        existing, _rows = _run(_EXISTING_IRREVERSIBLE_TRIGGER, tmp_path / "existing",
+                               hook=hook)
+        assert _denied(existing), (
+            "a copy of the gate could not produce a refusal that already exists on this "
+            "tree, so the tmp-tree runner is broken and every mutation below would pass "
+            "for the wrong reason: %r" % existing
+        )
+        payload, _rows = _run(self.PROBE, tmp_path / "run", hook=hook)
+        assert _denied(payload), (
+            "an unmodified copy of the gate did not refuse the benchmark probe: %r"
+            % payload
+        )
+
+    def test_repointing_the_wipe_regex_turns_the_deny_into_an_allow(
+        self, tmp_path
+    ) -> None:
+        """REPOINTED, not emptied, and the difference is not cosmetic: `[[ $x =~ '' ]]`
+        matches every string, so an emptied regex would refuse MORE rather than less and
+        would prove the opposite of what this case claims."""
+        mutated = _repoint(_hook_source(), _WIPE_RE_NAME, _NO_SUCH_MECHANISM)
+        hook = _mutant_hook(tmp_path / "tree", mutated)
+        payload, _rows = _run(self.PROBE, tmp_path / "run", hook=hook)
+        assert not _denied(payload), (
+            "the refusal survived a wipe regex that matches nothing, so it is not keyed "
+            "on the file's mechanism at all: %r" % payload
+        )
+
+    def test_dropping_the_wipe_alternative_leaves_the_cypher_deny_standing(
+        self, tmp_path
+    ) -> None:
+        """NARROWED TO ITS OTHER BRANCHES, by name rather than by position. This is the
+        case that proves the widening is what catches the benchmarks: with the wipe
+        alternative gone, `run_benchmarks.py` (no Cypher anywhere) goes allowed while
+        `bench_targets.py` (a scoped DETACH DELETE) stays refused by the pre-existing
+        predicate."""
+        mutated = _drop_branch(_hook_source(), _WIPE_RE_NAME, _WIPE_MECHANISM)
+        hook = _mutant_hook(tmp_path / "tree", mutated)
+        widened, _rows = _run(self.PROBE, tmp_path / "wipe", hook=hook)
+        assert not _denied(widened), (
+            "%r survived the removal of the %r alternative, so the deny comes from "
+            "something other than the mechanism this cycle adds: %r"
+            % (self.PROBE, _WIPE_MECHANISM, widened)
+        )
+        cypher, _rows = _run(self.CYPHER_PROBE, tmp_path / "cypher", hook=hook)
+        assert _denied(cypher), (
+            "the mutant allows the pre-existing Cypher deny too, so it is a hook that "
+            "refuses nothing rather than one with a narrowed predicate: %r" % cypher
+        )
+
+    def test_repointing_the_benchmark_glob_turns_the_deny_into_an_allow(
+        self, tmp_path
+    ) -> None:
+        """The glob is a precondition AND the token selector: no `benchmarks/` token, no
+        file read. Repointing it at a directory this tree does not have is what removes
+        the arm; blanking it would make it match every path and refuse the suite."""
+        mutated = _repoint(_hook_source(), _BENCH_GLOB_NAME, _NO_SUCH_BENCH_DIR)
+        hook = _mutant_hook(tmp_path / "tree", mutated)
+        payload, _rows = _run(".venv/bin/python -m pytest benchmarks/run_benchmarks.py",
+                              tmp_path / "run", hook=hook)
+        assert not _denied(payload), (
+            "the pytest-spelling refusal survived a glob that matches no path in this "
+            "tree, so the arm is not confined to benchmarks/ and the cost measured for "
+            "`pytest tests/...` does not apply: %r" % payload
+        )
+
+
+class TestTheBenchmarkBlockCostsNoNewProcess:
+    """PERF-QBUDGET-001, the budget written before the code: one builtin glob test for a
+    `benchmarks/` token, and only when it matches, a token walk plus one `$(<file)`
+    builtin read. Zero new execve, which
+    `TestThePerCallProcessCostDoesNotMove::test_the_execve_count_for_git_status_matches
+    _the_baseline_revision` measures for the hook as a whole.
+    """
+
+    def test_the_block_exists_and_is_not_empty(self) -> None:
+        assert marker_block(_hook_source(), _BENCH_MARK).strip()
+
+    def test_the_block_holds_its_own_refusal(self) -> None:
+        """Without this the marker block could shrink to the two declarations and the
+        pins below would be measuring nothing."""
+        assert "[ENF-IRREVERSIBLE]" in marker_block(_hook_source(), _BENCH_MARK)
+
+    def test_the_only_command_substitution_is_the_builtin_file_read(self) -> None:
+        """`$(<file)` is a bash builtin read and forks nothing, which is why it is the
+        one form budgeted here. Any other `$(` or a backtick is a process."""
+        code = _code_only(marker_block(_hook_source(), _BENCH_MARK))
+        assert "`" not in code, code
+        offenders = [m for m in re.finditer(r"\$\(", code)
+                     if code[m.end():m.end() + 1] != "<"]
+        assert not offenders, (
+            "the benchmark block opens a command substitution that is not the builtin "
+            "file read: %r" % [code[m.start():m.start() + 40] for m in offenders]
+        )
+
+    def test_the_block_pipes_into_no_external_filter(self) -> None:
+        code = _code_only(marker_block(_hook_source(), _BENCH_MARK))
+        offender = re.search(r"\|\s*(?:\S*/)?(%s)\b" % "|".join(_EXTERNAL_FILTERS), code)
+        assert offender is None, offender.group(1) if offender else None
+
+    def test_the_block_starts_no_line_with_an_external_filter(self) -> None:
+        code = _code_only(marker_block(_hook_source(), _BENCH_MARK))
+        offenders = [line.strip() for line in code.splitlines()
+                     if line.strip().split(" ")[0].lstrip("(").split("/")[-1]
+                     in _EXTERNAL_FILTERS]
+        assert not offenders, offenders
+
+    def test_the_glob_is_tested_before_the_file_is_read(self) -> None:
+        """The budget's own ordering: an ordinary Bash call must pay one glob test and
+        nothing else, so the `benchmarks/` test has to precede the read in the source."""
+        block = marker_block(_hook_source(), _BENCH_MARK)
+        assert _BENCH_GLOB_NAME in block, block
+        glob_at = block.index(_BENCH_GLOB_NAME)
+        read_at = block.find('$(<')
+        assert read_at == -1 or glob_at < read_at, (
+            "the file read appears before the benchmarks/ glob, so every Bash command "
+            "pays it"
+        )

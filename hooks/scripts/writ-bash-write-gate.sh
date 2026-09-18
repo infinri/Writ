@@ -759,6 +759,20 @@ esac
 # refused by the block itself.
 _IRREV_CYPHER_RE='detach[[:space:]]+delete|match[[:space:]]*\([[:alnum:]_]*\)[[:space:]]*delete|drop[[:space:]]+constraint|drop[[:space:]]+index'
 
+# What a PROJECT FILE has to contain for invoking it to be refused (arm 2 below), widened
+# from the Cypher alternation alone (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3, finding
+# 6). `benchmarks/run_benchmarks.py` wipes the whole graph through `await db.clear_all()`
+# and carries no Cypher at all, so the predicate in place never matched the file the
+# 2026-08-05 incident actually ran.
+#
+# THE MECHANISM IS SPELLED HERE RATHER THAN COMPOSED, and the alternation is what the
+# mutation proof reads: a test splits this value on | and drops the alternative naming the
+# wipe call, then requires `run_benchmarks.py` to go allowed while `bench_targets.py` (a
+# scoped DETACH DELETE, no wipe call) stays refused by the alternatives that remain. A
+# composed spelling would hide the mechanism behind a variable name and that proof could
+# not be written.
+_IRREV_WIPE_RE="${_IRREV_CYPHER_RE}|clear_all[[:space:]]*\("
+
 # The SQL dialect of the statement arm 1 already refuses. FOUR INDEPENDENT ALTERNATIVES of
 # one alternation, which is what lets a test narrow it to its first branch and require the
 # other three to go silent while the kept one still denies.
@@ -865,10 +879,62 @@ _irreversible_reason() {
     local script; script="$(_irrev_script_target "$norm")"
     if [ -n "$script" ] && [ -f "$script" ]; then
         local body; body="$(<"$script")"
-        if [[ "${body,,}" =~ $_IRREV_CYPHER_RE ]]; then
-            printf '%s' "[ENF-IRREVERSIBLE] Refusing this Bash command: it invokes ${script}, which contains a destructive Neo4j statement (DETACH DELETE, DROP CONSTRAINT or DROP INDEX). Invoking a script like this blind is how the graph was wiped on 2026-08-05, and nothing in the command text says it would. If it is genuinely intended, ask the user to run it themselves by prefixing it with ! in the prompt. Running the same file under pytest is not gated."
+        if [[ "${body,,}" =~ $_IRREV_WIPE_RE ]]; then
+            printf '%s' "[ENF-IRREVERSIBLE] Refusing this Bash command: it invokes ${script}, which destroys the whole graph (a destructive Neo4j statement, or a whole-graph clear_all call). Invoking a file like this blind is how the graph was wiped on 2026-08-05, and nothing in the command text says it would. If it is genuinely intended, ask the user to run it themselves by prefixing it with ! in the prompt. A benchmark that really needs to run wants a disposable instance and WRIT_TEST_GRAPH=1, which is the same consent assert_safe_to_wipe enforces at runtime."
             return 0
         fi
+    fi
+
+    # BENCHMARK ENTRYPOINT BEGIN
+    # 2b. The PYTEST spelling of arm 2, which the interpreter walk above skips on purpose:
+    #     -m disqualifies the whole command so the suite can run, and the destructive
+    #     benchmark is itself a pytest module whose own docstring recommends exactly that
+    #     form. So the 2026-08-05 vector has a spelling arm 2 structurally cannot see.
+    #
+    #     THREE CONDITIONS IN COST ORDER, which is the budget rather than a preference.
+    #     An ordinary Bash call pays one builtin glob test for a benchmarks/ token and
+    #     nothing else. Only when that matches is the command walked for a pytest verb and
+    #     a benchmarks/ python argument, and only then is that file read with the builtin
+    #     file-read form. No fork and no execve on any path through this block.
+    #
+    #     THE PREDICATE IS THE WIPE MECHANISM, NOT A PATH LIST AND NOT THE CYPHER REGEX,
+    #     and both halves of that are load-bearing. A path rule would also refuse staging
+    #     the same file, which is ordinary work and which the commit adding this block
+    #     needs. The Cypher regex would refuse the one benchmark this repo runs on
+    #     purpose: bench_targets.py carries a scoped DETACH DELETE of its own synthetic
+    #     node and calls no whole-graph wipe. The same distinction is why the walk never
+    #     leaves benchmarks/, since 64 python files call the wipe, most of them under
+    #     tests/, and running those by file is routine work.
+    local _IRREV_BENCH_GLOB='benchmarks/'
+    local _IRREV_BENCH_WIPE_RE='clear_all[[:space:]]*\('
+    local _IRREV_BENCH_REASON="" _IRREV_BENCH_FILE="" _IRREV_BENCH_PYTEST=""
+    local _IRREV_BENCH_TOK _IRREV_BENCH_BODY
+    case "$norm" in
+        *"$_IRREV_BENCH_GLOB"*)
+            local -a _IRREV_BENCH_TOKS
+            read -ra _IRREV_BENCH_TOKS <<< "$norm"
+            for _IRREV_BENCH_TOK in "${_IRREV_BENCH_TOKS[@]}"; do
+                case "${_IRREV_BENCH_TOK##*/}" in
+                    pytest) _IRREV_BENCH_PYTEST="yes" ;;
+                esac
+                case "$_IRREV_BENCH_TOK" in
+                    "$_IRREV_BENCH_GLOB"*.py)
+                        if [ -z "$_IRREV_BENCH_FILE" ]; then _IRREV_BENCH_FILE="$_IRREV_BENCH_TOK"; fi
+                        ;;
+                esac
+            done
+            ;;
+    esac
+    if [ -n "$_IRREV_BENCH_PYTEST" ] && [ -n "$_IRREV_BENCH_FILE" ] && [ -f "$_IRREV_BENCH_FILE" ]; then
+        _IRREV_BENCH_BODY="$(<"$_IRREV_BENCH_FILE")"
+        if [[ "${_IRREV_BENCH_BODY,,}" =~ $_IRREV_BENCH_WIPE_RE ]]; then
+            _IRREV_BENCH_REASON="[ENF-IRREVERSIBLE] Refusing this Bash command: pytest would run ${_IRREV_BENCH_FILE}, which empties the WHOLE Neo4j graph through a clear_all call, and nothing in the command text says so. Invoking a benchmark blind is how the graph was wiped on 2026-08-05, and runtime records have no file source to rebuild from. If it is genuinely intended, ask the user to run it themselves by prefixing it with ! in the prompt. A real benchmark run wants a disposable instance on its own bolt port with WRIT_TEST_GRAPH=1, which is the same consent assert_safe_to_wipe enforces at runtime. Reading the file is free and stays allowed."
+        fi
+    fi
+    # BENCHMARK ENTRYPOINT END
+    if [ -n "$_IRREV_BENCH_REASON" ]; then
+        printf '%s' "$_IRREV_BENCH_REASON"
+        return 0
     fi
 
     # 3. Git history destruction. No incident, but this branch carries dozens of unpushed
