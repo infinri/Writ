@@ -479,6 +479,17 @@ fi
 # and the directive fires on the first prompt that does get through. Nothing blocks on it.
 if parsed_bool "$CACHE" "post_compact_pending"; then
     emit_post_compact_directive "$CURRENT_MODE" "$(parsed_field "$CACHE" "current_phase")"
+    # Name the handoff writ-precompact.sh wrote. This is the ONLY channel that reaches
+    # the model at a compaction boundary (PreCompact stdout is not injected and CC
+    # rejects a PostCompact hookSpecificOutput reply), so without this line the file
+    # exists and nothing is ever told it does. Announced only when it is really there.
+    HANDOFF_FILE="${WRIT_ROOT:-$WRIT_DIR}/.claude/handoffs/session-${SESSION_ID}.md"
+    if [ -f "$HANDOFF_FILE" ]; then
+        echo "[Writ: session handoff written before compaction] $HANDOFF_FILE"
+        echo "It carries mode, phase, approved gates, the plan's declared files, what this"
+        echo "session wrote, and the still-unchecked capabilities. Derived from session state,"
+        echo "not summarized, so it is first-hand evidence where the recalled context is not."
+    fi
     python3 "$SESSION_HELPER" update "$SESSION_ID" --clear-post-compact-pending 2>>"$WRIT_HOOK_LOG_SINK" || true
     debug "emitted post-compact directive (one-shot)"
 fi

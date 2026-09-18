@@ -1102,6 +1102,31 @@ def compress() -> None:
     asyncio.run(_run())
 
 
+@app.command()
+def handoff(
+    session: str = typer.Option(..., "--session", help="Session id to hand off."),
+    out: str = typer.Option(None, "--out", help="Write here instead of .claude/handoffs/."),
+) -> None:
+    """Write a session handoff: where the session stands, what it wrote, what is open.
+
+    Every line is derived from the session cache and the approved plan. Nothing is
+    summarized, so the document cannot drift from the state it describes. Fires
+    automatically at the compaction boundary (hooks/scripts/writ-precompact.sh).
+    """
+    import os
+
+    from writ.session.handoff import build_handoff, write_handoff
+
+    root = os.environ.get("WRIT_ROOT") or os.getcwd()
+    if out:
+        path = Path(out)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(build_handoff(session, root))
+    else:
+        path = write_handoff(session, root)
+    typer.echo(str(path))
+
+
 @app.command(name="role-prompt")
 def role_prompt(
     role: str = typer.Argument(..., help="Subagent role name (writ-explorer, writ-planner, etc.) or ROL-* id."),

@@ -48,6 +48,7 @@ workflow-friction.log
 .claude/gates/
 .claude/plans/
 .claude/debug/
+.claude/handoffs/
 .friction-snapshot
 cache/
 bible/.export_timestamp

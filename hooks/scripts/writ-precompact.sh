@@ -48,6 +48,19 @@ fi
 _writ_session clear-rules-for-compaction "$SESSION_ID" \
     >> "/tmp/writ-precompact-${SESSION_ID}.log" 2>/dev/null || true
 
+# Write the session handoff. THIS is the moment to do it: the context that holds the
+# session's state is about to be summarized away, and this hook already runs here and
+# already knows the session id. Best effort by design, because a handoff that fails must
+# never block a compaction the user asked for; the path is delivered on the next
+# UserPromptSubmit by writ-rag-inject.sh, since nothing emitted at this boundary reaches
+# the model (see the header of this file).
+python3 -c "
+import sys
+sys.path.insert(0, '$WRIT_DIR')
+from writ.session.handoff import write_handoff
+print(write_handoff('$SESSION_ID', '${WRIT_ROOT:-$WRIT_DIR}'))
+" >> "/tmp/writ-precompact-${SESSION_ID}.log" 2>&1 || true
+
 # Mode for hook_execution telemetry (audit #5).
 MODE=$(_writ_session "mode get" "$SESSION_ID" 2>/dev/null || echo "")
 MODE=$(echo "$MODE" | tr -d '[:space:]')

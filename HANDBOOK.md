@@ -378,6 +378,23 @@ The hook-facing session CLI is separate: `bin/lib/writ-session.py <subcommand>` 
 
 ---
 
+**`writ handoff --session <id>`** writes a session handoff to
+`.claude/handoffs/session-<id>.md`: mode, phase, approved gates, the files the approved plan
+declared, the files the session actually wrote, the still-unchecked capability boxes, and the
+rule ids loaded. Every line is DERIVED from the session cache and plan.md, so nothing is
+summarized and the document cannot drift from the state it describes.
+
+It also fires automatically at the compaction boundary (`hooks/scripts/writ-precompact.sh`),
+which is the moment the context holding that state is about to be summarized away. Nothing
+emitted at that boundary reaches the model, so the path is delivered on the next prompt by
+`writ-rag-inject.sh` alongside the post-compaction directive. Best effort by design: a handoff
+that cannot be written never blocks a compaction.
+
+It is NOT the `.claude/handoffs/slice-*.json` artifact that `hooks/scripts/validate-handoff.sh`
+validates. That one is a slice handoff with six required keys, it has no producer in this
+repository, and it has zero rows in the audit stream. The session handoff is deliberately named
+so it cannot match that validator's glob.
+
 ## 18. Logging and observability
 
 **Typed streams** (`writ/shared/logging.py`), one directory per project under `<install>/var/logs/`:

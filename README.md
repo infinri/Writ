@@ -13,6 +13,8 @@ Writ is a governance runtime for Claude Code. It moves important engineering con
 
 Most coding-agent systems ask the model to remember the process. Writ puts selected parts of the process around the model instead.
 
+Those are mechanism claims, and you do not have to take them on faith. [`docs/pressure-runs/`](docs/pressure-runs/) holds adversarial runs against real Claude Code sessions, each with the prompt used, the full transcript, every enforcement decision as raw log lines, and a graded analysis of which rules held and which were bypassed, with the failures written up as failures. [`docs/monthly-reviews/`](docs/monthly-reviews/) holds operational reviews built from the system's own audit log. Both are in the repository, dated, and readable before you install anything.
+
 Every number in this file is either measured and dated, or derived from the current source tree. Where this file and the code disagree, the code wins.
 
 ## See it refuse, in about a minute
