@@ -395,6 +395,26 @@ validates. That one is a slice handoff with six required keys, it has no produce
 repository, and it has zero rows in the audit stream. The session handoff is deliberately named
 so it cannot match that validator's glob.
 
+**`writ trust-ledger [--accept]`** lists every extension Writ can see (skills under
+`~/.claude/skills/`, subagent definitions in the plugin's `agents/` and `~/.claude/agents/`, and
+locally declared `mcpServers`), content-hashes each one, and marks it `unchanged`, `NEW`,
+`CHANGED` or `REMOVED` against a recorded baseline at `var/trust-ledger.json` (gitignored:
+machine-specific). `--accept` records the current state as trusted. The `extension-trust-ledger`
+doctor check alarms on drift and names that command.
+
+CHANGED is the interesting one: an edit under a name you already trusted. Agent entries are keyed
+by SOURCE (`writ:writ-reviewer` and `.claude:writ-reviewer`) because agents resolve from two
+directories; keying on the bare name would let one silently shadow the other.
+
+TWO LIMITS, BOTH DELIBERATE. It records and alarms; it does not block a tool call or judge an
+extension malicious. And MCP coverage is LOCAL CONFIG ONLY: servers attached through the claude.ai
+connector layer appear in no file on disk, so an empty MCP section does not mean none are
+connected. Measured 2026-09-18: twelve were connected on this machine while `mcpServers` was empty
+for all 37 projects in `~/.claude.json`.
+
+Accepting drift is NOT reachable from `writ doctor --fix`, on purpose: a blanket fix flag that
+blessed whatever appeared since the last run would turn the ledger into a rubber stamp.
+
 ## 18. Logging and observability
 
 **Typed streams** (`writ/shared/logging.py`), one directory per project under `<install>/var/logs/`:

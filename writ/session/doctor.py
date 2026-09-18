@@ -2391,7 +2391,98 @@ def _parse_bolt_uri(uri: str) -> tuple[str, int]:
 # Orchestrator
 # --------------------------------------------------------------------------- #
 
+def _skill_root() -> Path:
+    """This install's root: writ/session/doctor.py -> writ/session -> writ -> root."""
+    return Path(__file__).resolve().parent.parent.parent
+
+
+def _trust_ledger_roots():
+    """Seam: the registry tests patch this so they never read the real home dir."""
+    from writ.session.trust_ledger import default_roots
+    return default_roots(Path(_skill_root()))
+
+
+def check_extension_trust_ledger(opts: DoctorOptions) -> CheckResult:
+    """What can act on this machine, and what changed since the operator last looked.
+
+    RECORDS AND ALARMS ONLY. Nothing here blocks a tool call or decides an extension
+    is malicious; that is a much larger decision about failure posture.
+
+    ACCEPTING DRIFT IS NOT A FIX, so this check is deliberately NOT fixable. Wiring
+    acceptance into `--fix` would let one command bless whatever appeared since the
+    last run, which turns the ledger into a rubber stamp. The alarm names the command
+    instead, because a check with no stated action is one operators learn to skip.
+
+    THE MCP SECTION IS STRUCTURALLY PARTIAL and says so: connector-attached servers
+    live nowhere on disk, so an empty section is not evidence that none are connected.
+    """
+    name = "extension-trust-ledger"
+    from writ.session.trust_ledger import (
+        BASELINE_REL_PATH, classify, collect_inventory, load_baseline,
+    )
+
+    try:
+        skills, agents, claude_json = _trust_ledger_roots()
+        inv = collect_inventory(skills, agents, claude_json)
+    except OSError as exc:
+        return _warn(name=name, detail=f"Extension inventory could not be read: {exc}")
+
+    baseline_path = Path(_skill_root()) / BASELINE_REL_PATH
+    baseline = load_baseline(baseline_path)
+    counts = len(inv["skill"]) + len(inv["agent"]) + len(inv["mcp"])
+
+    if counts == 0:
+        # Nothing visible is not drift and not a finding: there is nothing to record.
+        # Stated with the blind spot attached, so an `ok` here is never read as
+        # "no MCP servers are connected", which this check cannot establish.
+        return _ok(
+            name=name,
+            detail=(
+                "No skills, agent definitions or locally declared MCP servers are "
+                "visible, so there is nothing to baseline. MCP coverage is local "
+                "config only; connector-attached servers are invisible from disk, so "
+                "this does NOT mean none are connected."
+            ),
+        )
+
+    if baseline is None:
+        return _warn(
+            name=name,
+            detail=(
+                f"{counts} extensions visible (skills, agent definitions, locally "
+                f"declared MCP servers) and NO baseline has ever been recorded, so "
+                f"nothing can be called changed. This is a first run, not drift. "
+                f"Record it with `writ trust-ledger --accept`. MCP coverage is local "
+                f"config only; connector-attached servers are invisible from disk."
+            ),
+        )
+
+    status = classify(inv, baseline)
+    drift = {k: v for k, v in status.items() if v in ("new", "changed", "removed")}
+    if not drift:
+        return _ok(
+            name=name,
+            detail=(
+                f"{counts} extensions, all matching the recorded baseline. MCP coverage "
+                f"is local config only; connector-attached servers are outside this view."
+            ),
+        )
+
+    shown = ", ".join(f"{kind}/{n} {s.upper()}" for (kind, n), s in sorted(drift.items())[:6])
+    more = "" if len(drift) <= 6 else f" (+{len(drift) - 6} more)"
+    return _warn(
+        name=name,
+        detail=(
+            f"{len(drift)} extension(s) differ from the recorded baseline: {shown}{more}. "
+            f"A CHANGED entry is an edit under a name already trusted. Review them, then "
+            f"run `writ trust-ledger --accept` to record the new state. Not auto-fixable "
+            f"on purpose: accepting drift is a human decision."
+        ),
+    )
+
+
 _CHECKS: list[tuple[str, Callable[[DoctorOptions], CheckResult]]] = [
+
     ("daemon-liveness", check_daemon_liveness),
     ("stale-orphan-port-conflict", check_stale_orphan_port_conflict),
     ("neo4j-connectivity", check_neo4j_connectivity),
@@ -2415,6 +2506,7 @@ _CHECKS: list[tuple[str, Callable[[DoctorOptions], CheckResult]]] = [
     ("role-symlinks", check_role_symlinks),
     ("mode-gate-sanity", check_mode_gate_sanity),
     ("gate-refusal-liveness", check_gate_refusal_liveness),
+    ("extension-trust-ledger", check_extension_trust_ledger),
 ]
 
 

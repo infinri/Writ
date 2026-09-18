@@ -1347,6 +1347,15 @@ class TestRunAllChecks:
         # census means "no roles to judge", which the check reports as ok.
         monkeypatch.setattr(
             "writ.session.doctor._subagent_role_scope_census", lambda: [])
+        # extension-trust-ledger otherwise reads THIS DEVELOPER'S home directory (their
+        # skills, their agents, their ~/.claude.json), so the outcome would depend on the
+        # machine (TEST-ISOLATE-001). Pointed at an empty tmp tree, the inventory is empty
+        # and the check reports the no-baseline warn, so the registry tests never touch
+        # real extensions. raising=True by default: a renamed seam must fail here rather
+        # than silently fall back to reading the real home directory while still passing.
+        monkeypatch.setattr(
+            "writ.session.doctor._trust_ledger_roots",
+            lambda: (None, [], None))
         # gate-refusal-liveness otherwise reads this machine's audit stream AND its whole
         # hook tree, so the outcome would depend on both (TEST-ISOLATE-001). A gate that
         # can refuse and has is the clean case, and it is built from two INDEPENDENT
@@ -1419,6 +1428,10 @@ class TestRunAllChecks:
             # ever have. Nothing read gate_decision before it, so a gate that stopped
             # refusing, or never started, alarmed nowhere.
             "gate-refusal-liveness",
+            # Roadmap 18e: what can act on this machine, and what changed since the
+            # operator last looked. Deliberately NOT fixable: accepting drift is a
+            # human decision, not something --fix should do on its own.
+            "extension-trust-ledger",
         }
         actual_names = {r.name for r in results}
         assert actual_names == expected_names, (

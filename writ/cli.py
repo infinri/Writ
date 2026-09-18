@@ -1127,6 +1127,42 @@ def handoff(
     typer.echo(str(path))
 
 
+@app.command(name="trust-ledger")
+def trust_ledger(
+    accept: bool = typer.Option(
+        False, "--accept", help="Record the current state as the trusted baseline."
+    ),
+) -> None:
+    """List the skills, agents and MCP servers Writ can see, and what changed.
+
+    Deliberately NOT reachable from `writ doctor --fix`: accepting drift means
+    blessing whatever appeared since the last run, so it stays a separate action a
+    human takes. MCP coverage is local config only; connector-attached servers are
+    invisible from disk and the output says so.
+    """
+    import os
+
+    from writ.session.trust_ledger import (
+        BASELINE_REL_PATH,
+        collect_inventory,
+        default_roots,
+        load_baseline,
+        render_ledger,
+        save_baseline,
+    )
+
+    root = Path(os.environ.get("WRIT_ROOT") or os.getcwd())
+    skills, agents, claude_json = default_roots(root)
+    inv = collect_inventory(skills, agents, claude_json)
+    baseline_path = root / BASELINE_REL_PATH
+
+    if accept:
+        save_baseline(baseline_path, inv)
+        typer.echo(f"Baseline recorded: {baseline_path}")
+        return
+    typer.echo(render_ledger(inv, load_baseline(baseline_path)))
+
+
 @app.command(name="role-prompt")
 def role_prompt(
     role: str = typer.Argument(..., help="Subagent role name (writ-explorer, writ-planner, etc.) or ROL-* id."),
