@@ -315,7 +315,7 @@ Everything else is advisory or observational: the RAG injectors (`writ-rag-injec
 - **`[logs]`**: `backup_dest` for `writ logs backup`.
 - **`[egress]`**: `allow_hosts`, the hosts the Bash egress guard may send local data to without prompting (`get_egress_allow_hosts`, `writ/config.py`). Absent means every outbound host is questioned.
 
-Everything else people expect to find in config is deliberately code: ranking weights (`writ/retrieval/ranking.py`: bm25 0.198, vector 0.594, severity 0.099, confidence 0.099, graph 0.01), the abstention threshold (0.30, `writ/retrieval/pipeline.py`), gate thresholds (redundancy 0.95, novelty band 0.85, `writ/gate.py` and `writ/graph/schema.py`), graduation thresholds (50 observations, 0.75 ratio, `writ/frequency.py`), and context-budget bands (summary under 2,000 tokens, standard to 8,000, full above; `writ/retrieval/ranking.py`).
+Everything else people expect to find in config is deliberately code: ranking weights (`writ/retrieval/ranking.py`: bm25 0.19, vector 0.57, severity 0.095, confidence 0.095, graph 0.05; the literal preset is 0.396/0.396/0.099/0.099/0.01), the abstention threshold (0.30, `writ/retrieval/pipeline.py`), gate thresholds (redundancy 0.95, novelty band 0.85, `writ/gate.py` and `writ/graph/schema.py`), graduation thresholds (50 observations, 0.75 ratio, `writ/frequency.py`), and context-budget bands (summary under 2,000 tokens, standard to 8,000, full above; `writ/retrieval/ranking.py`).
 
 **`writ/shared/budget.json`**: `default_budget=8000`, per-rule render costs full 200 / standard 120 / summary 40, `subagent_budget=null` (unlimited), `always_on_cap=5000`.
 

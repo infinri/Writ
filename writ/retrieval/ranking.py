@@ -6,7 +6,7 @@ Rank Fusion (which uses 1/(k+rank) with a constant k~60). See normalize_ranks.
 score = (w1 * bm25_norm) + (w2 * vector_norm) + (w3 * severity_weight) + (w4 * confidence_weight) + (w5 * graph_proximity)
 
 Weights are configurable via writ.toml. Constraint: w1 + w2 + w3 + w4 + w5 = 1.0.
-Tuned values: 0.198 / 0.594 / 0.099 / 0.099 / 0.01. Phase 5 ratios (2:6:1:1) scaled by 0.99, graph proximity added in Phase 6.
+Tuned values: 0.19 / 0.57 / 0.095 / 0.095 / 0.05. Phase 5 ratios (2:6:1:1) rebalanced to leave room for w_graph; graph proximity added in Phase 6, and its weight raised from 0.01 to the measured optimum on 2026-09-18 (benchmarks/NEO4J-ABLATION-2026-09-18.md).
 
 Context budget modes (Phase 5 degraded -- abstractions are Phase 8):
 - Summary (< 2K tokens): statement + trigger only
@@ -19,14 +19,26 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # Per ARCH-CONST-001: named constants for defaults.
-# Phase 5 ratios (2:6:1:1) scaled by 0.99 to make room for w_graph.
-# Graph proximity uses discrete values (0.0/0.5/1.0), so even w_graph=0.01
-# creates meaningful rank shifts (12/83 queries affected) without MRR@5 regression.
-DEFAULT_W_BM25 = 0.198
-DEFAULT_W_VECTOR = 0.594
-DEFAULT_W_SEVERITY = 0.099
-DEFAULT_W_CONFIDENCE = 0.099
-DEFAULT_W_GRAPH = 0.01
+# Phase 5 ratios (2:6:1:1), rebalanced to leave room for w_graph: the four are
+# scaled by (1 - w_graph) / 0.99 so all five sum to 1.0, which is the same
+# rebalance scripts/sweep_ranking.py applies at every sweep point. Change w_graph
+# and these four move with it, or the shipped vector is a point nobody measured;
+# tests/test_graph_contribution_invariants.py derives that and fails by name.
+#
+# w_graph = 0.05 is the do-no-harm winner of the 2026-09-18 ablation over the
+# 193-query gold set: the only arm that improves MRR@5 (0.6124 -> 0.6273),
+# hit-rate@5 (0.8083 -> 0.8135) and nDCG@10 (0.7327 -> 0.7367) together while
+# losing zero queries (4 wins, 0 losses, paired sign test p = 0.1250). The prior
+# 0.01 was never a measured optimum; its comment justified it with 12/83 queries,
+# a gold set two sizes ago. Ablating the term outright costs one query of 193 and
+# nothing on MRR@5, so this weight buys little either way: what the measurement
+# retired is the claim that the graph had been SHOWN not to contribute.
+# Full method, arms table and caveats: benchmarks/NEO4J-ABLATION-2026-09-18.md.
+DEFAULT_W_BM25 = 0.19
+DEFAULT_W_VECTOR = 0.57
+DEFAULT_W_SEVERITY = 0.095
+DEFAULT_W_CONFIDENCE = 0.095
+DEFAULT_W_GRAPH = 0.05
 
 # Phase 1 addition: literal retrieval mode for exact-phrase / rationalization
 # queries where BM25 carries the distinguishing signal. Used when caller passes
