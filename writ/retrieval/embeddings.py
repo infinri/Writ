@@ -443,7 +443,7 @@ class HnswlibStore:
         # Third gate (cycle 7). The two above check IDENTITY: the sidecar names this
         # corpus, and the .bin is the one the sidecar recorded. Neither reads a
         # vector, so an index whose rows are all zero passes both and serves pure
-        # noise through the heaviest ranking signal (w_vector 0.594). That is not
+        # noise through the heaviest ranking signal (w_vector 0.57). That is not
         # hypothetical: 313 zero-norm vectors did exactly that for six days, and
         # knn_query never raised, it just returned distance 1.0 for everything.
         # Reject only when NOTHING sampled is non-zero: a single zero row is a
