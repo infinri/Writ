@@ -1,4 +1,4 @@
-"""The two properties benchmarks/NEO4J-ABLATION-2026-09-18.md asserts, pinned.
+"""The properties benchmarks/NEO4J-ABLATION-2026-09-18.md asserts, pinned.
 
 Both are derived from code constants rather than written as literals, so a change
 to either source constant fails HERE by name instead of quietly agreeing with a
@@ -8,6 +8,10 @@ they need no graph, no session cache and no machine-specific log (TEST-ISOLATE-0
 """
 
 from __future__ import annotations
+
+import json
+import subprocess
+import sys
 
 from writ.retrieval.ranking import (
     DEFAULT_W_BM25,
@@ -86,10 +90,12 @@ class TestFullRenderModeReachabilityAtTheDefaultBudget:
         )
         assert mode == "standard", (
             f"DEFAULT_SESSION_BUDGET={DEFAULT_SESSION_BUDGET} now selects {mode!r}. "
-            f"If that is intended, the RELATED: line starts reaching the model on "
-            f"every turn for the first time; update the ablation write-up."
+            f"Full mode is 10 rules plus rationale, charged 2000 tokens a turn against "
+            f"600, so this would cut the injected turn count; update the ablation "
+            f"write-up before changing it."
         )
-        assert "relationships" not in out[0]
+        # rationale is the full-only field now that relationships ship in standard.
+        assert "rationale" not in out[0]
 
     def test_one_more_token_than_the_default_budget_does_reach_full(self):
         out, mode = apply_context_budget(
@@ -107,18 +113,86 @@ class TestFullRenderModeReachabilityAtTheDefaultBudget:
         assert "relationships" in out[0]
 
 
-class TestStandardModeDropsEnrichmentOutput:
-    def test_relationships_survive_only_in_full_mode(self):
+class TestStandardModeCarriesEnrichmentOutput:
+    """Stage 4 fills every top-5 slot; before 2026-09-18 the projection dropped it
+    at the only render mode the default budget can select, so the RELATED: line
+    never reached the model. Standard now carries it; summary still does not."""
+
+    def test_relationships_survive_standard_and_full_but_not_summary(self):
         for budget, expected in (
-            (1000, False), (DEFAULT_SESSION_BUDGET, False),
+            (1000, False), (DEFAULT_SESSION_BUDGET, True),
             (DEFAULT_SESSION_BUDGET + 1, True),
         ):
             out, _ = apply_context_budget([_rule_with_relationships()], budget)
-            assert ("relationships" in out[0]) is expected
+            assert ("relationships" in out[0]) is expected, f"at budget {budget}"
 
-    def test_a_rule_with_no_enrichment_reaches_full_mode_with_an_empty_list(self):
+    def test_the_default_budget_now_carries_the_neighbour_list(self):
+        out, mode = apply_context_budget(
+            [_rule_with_relationships()], DEFAULT_SESSION_BUDGET
+        )
+        assert mode == "standard"
+        assert out[0]["relationships"] == [{"rule_id": "N1"}, {"rule_id": "N2"}]
+
+    def test_a_rule_with_no_enrichment_carries_an_empty_list(self):
         bare = _rule_with_relationships()
         del bare["relationships"]
-        out, mode = apply_context_budget([bare], DEFAULT_SESSION_BUDGET + 1)
-        assert mode == "full"
+        out, _ = apply_context_budget([bare], DEFAULT_SESSION_BUDGET)
         assert out[0]["relationships"] == []
+
+
+class TestTheRelatedLineReachesTheRenderedBlock:
+    """The projection and the renderer gate on mode independently, so carrying the
+    key is only half the property. These drive the REAL renderer and read its
+    stdout, rather than asserting on the dict the renderer is given."""
+
+    @staticmethod
+    def _render(rules: list[dict], mode: str) -> str:
+        out = subprocess.run(
+            [sys.executable, "bin/lib/writ-session.py", "format"],
+            input=json.dumps({"rules": rules, "mode": mode}),
+            capture_output=True, text=True,
+        )
+        return out.stdout
+
+    def test_standard_mode_prints_the_related_line(self):
+        rules, mode = apply_context_budget(
+            [_rule_with_relationships()], DEFAULT_SESSION_BUDGET
+        )
+        assert mode == "standard"
+        block = self._render(rules, mode)
+        assert "RELATED: N1, N2" in block, block
+
+    def test_full_mode_still_prints_it(self):
+        rules, mode = apply_context_budget(
+            [_rule_with_relationships()], DEFAULT_SESSION_BUDGET + 1
+        )
+        assert mode == "full"
+        assert "RELATED: N1, N2" in self._render(rules, mode)
+
+    def test_a_reciprocal_edge_prints_one_id_not_two(self):
+        """The adjacency cache holds one entry per direction, so a reciprocal edge
+        arrives as two entries with the same rule_id. Found by rendering a real
+        query, not by a fixture: API-ERROR-001 printed six ids for four rules."""
+        rule = _rule_with_relationships()
+        rule["relationships"] = [
+            {"rule_id": "N1", "direction": "outgoing"},
+            {"rule_id": "N2", "direction": "outgoing"},
+            {"rule_id": "N1", "direction": "incoming"},
+        ]
+        rules, mode = apply_context_budget([rule], DEFAULT_SESSION_BUDGET)
+        block = self._render(rules, mode)
+        assert "RELATED: N1, N2" in block, block
+
+    def test_dedup_preserves_first_seen_order(self):
+        rule = _rule_with_relationships()
+        rule["relationships"] = [
+            {"rule_id": "Z9"}, {"rule_id": "A1"}, {"rule_id": "Z9"}, {"rule_id": "M5"},
+        ]
+        rules, mode = apply_context_budget([rule], DEFAULT_SESSION_BUDGET)
+        assert "RELATED: Z9, A1, M5" in self._render(rules, mode)
+
+    def test_a_rule_with_no_neighbours_prints_no_related_line(self):
+        bare = _rule_with_relationships()
+        del bare["relationships"]
+        rules, mode = apply_context_budget([bare], DEFAULT_SESSION_BUDGET)
+        assert "RELATED:" not in self._render(rules, mode)

@@ -263,8 +263,8 @@ def _project_rules(
     """Project the top-`limit` rules to a budget mode's field set. Base fields
     (rule_id/node_type/score) come first, then the header fields
     (severity/authority, copied only when the source declares them), then
-    `str_fields` (default ''), then relationships (default []) only in full
-    mode. Single source for the per-mode projection shared by
+    `str_fields` (default ''), then relationships (default []) in standard and
+    full mode. Single source for the per-mode projection shared by
     summary/standard/full. Key order is a stability convention, not a wire
     contract: every consumer reads by key."""
     out: list[dict] = []
@@ -308,8 +308,15 @@ def apply_context_budget(
 
     elif budget_tokens <= STANDARD_THRESHOLD:
         mode = "standard"
+        # Stage-4 enrichment fills every top-5 slot, and standard is the only mode
+        # the default session budget can select (DEFAULT_SESSION_BUDGET equals
+        # STANDARD_THRESHOLD and only decreases). Gating relationships on full alone
+        # meant the RELATED: line never reached the model: zero of the 200 captured
+        # WRIT RULES blocks carried one. Measured 61 tokens a turn, against 1,743 to
+        # reach full mode instead. See benchmarks/NEO4J-ABLATION-2026-09-18.md.
         trimmed = _project_rules(
-            rules, STANDARD_LIMIT, ["statement", "trigger", "violation", "pass_example"]
+            rules, STANDARD_LIMIT, ["statement", "trigger", "violation", "pass_example"],
+            include_relationships=True,
         )
         return trimmed, mode
 

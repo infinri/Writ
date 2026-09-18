@@ -12,7 +12,7 @@ import json
 import sys
 from datetime import datetime, timezone
 
-from writ.session.cache import _read_cache, _write_cache, mutate_cache
+from writ.session.cache import _read_cache, mutate_cache
 from writ.session.config import (
     DEFAULT_SESSION_BUDGET,
     DEFAULT_ALWAYS_ON_CAP,
@@ -434,9 +434,24 @@ def cmd_format() -> None:
             rationale = rule.get("rationale", "")
             if rationale:
                 lines.append(f"RATIONALE: {rationale}")
+
+        # Standard as well as full: the projection carries relationships in both, and
+        # standard is the mode the default budget actually selects. Keeping this inside
+        # the full branch was the second half of the same defect, because widening the
+        # projection alone would ship the field to the JSON consumer and print nothing.
+        if mode in ("standard", "full"):
             relationships = rule.get("relationships", [])
             if relationships:
-                rel_ids = [r.get("rule_id", "?") for r in relationships if isinstance(r, dict)]
+                # Deduplicated, first-seen order preserved. The adjacency cache holds one
+                # entry per DIRECTION, so a reciprocal edge yields two entries with the
+                # same rule_id and a different `direction`. This line renders the id
+                # alone, so the second copy carries no information and only costs tokens:
+                # API-ERROR-001's real neighbour list printed six ids for four rules.
+                # `relationships` itself is left intact, so a JSON consumer still sees
+                # direction; only the rendered line collapses.
+                rel_ids = list(dict.fromkeys(
+                    r.get("rule_id", "?") for r in relationships if isinstance(r, dict)
+                ))
                 if rel_ids:
                     lines.append(f"RELATED: {', '.join(rel_ids)}")
 

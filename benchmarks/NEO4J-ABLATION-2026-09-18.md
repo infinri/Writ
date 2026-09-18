@@ -132,6 +132,63 @@ Pinned by `tests/test_graph_contribution_invariants.py`, which derives the reach
 from the two constants rather than hardcoding 8000, so moving either one fails by name
 instead of quietly turning a documented feature back on.
 
+### Closed the same day: the line now ships, but not by making full reachable
+
+The user ruled that the neighbour list should reach the model. Pricing the three ways to do
+that changed which one is correct, so the rejected options are recorded here rather than left
+implicit. Rendered through the real renderer over all 193 gold queries:
+
+| mode | mean block | vs standard |
+|---|---|---|
+| standard (what shipped before) | 4,179 chars, about 1,045 tokens | - |
+| full | 11,154 chars, about 2,788 tokens | 2.67x |
+| standard plus the RELATED line | 4,425 chars, about 1,106 tokens | 1.06x |
+
+Full mode is not the RELATED line. It is ten rules instead of five plus `rationale` on each,
+and the line itself is 61 tokens of that 1,743-token difference. That 61 is the SHIPPED
+figure, measured after the dedup below; the pre-dedup projection was 86.
+
+The budget is what settles it. `cost_for` charges 2,000 tokens per full turn against 600 per
+standard turn, and a session budget only decreases. Simulated from `DEFAULT_SESSION_BUDGET`:
+
+| option | turns injected | of those, full |
+|---|---|---|
+| before this fix | 15 | 0 |
+| flip the comparison so 8,000 selects full | 13 | 1 |
+| raise the budget to 20,000 | 21 | 6 |
+| raise the budget to 40,000 | 25 | 16 |
+| render relationships in standard (taken) | 15 | n/a, ships on all 15 |
+
+Flipping the comparison buys full mode on turn one, drops the budget to 6,000, and every turn
+after is standard again: it pays for one full turn and loses two turns of injection. Genuine
+full mode is a budget raise, a separate decision about what reaches the model on every turn.
+
+WHAT SHIPPED: `apply_context_budget`'s standard branch carries relationships, and the renderer
+emits `RELATED:` in standard as well as full. Two files, because the projection and the renderer
+gate on mode independently, and widening the projection alone would have shipped the field to
+the JSON consumer while still printing nothing.
+
+A DEFECT THE RENDER SURFACED, which no fixture would have caught. The first real query printed
+`RELATED: API-ERROR-002, API-STATUS-001, API-ERROR-002, API-STATUS-001, ...`: six ids for four
+rules. The adjacency cache holds one entry per DIRECTION, so a reciprocal edge arrives as two
+entries with the same `rule_id` and a different `direction`. The rendered line shows the id
+alone, so the second copy carried no information and only cost tokens. It had been invisible for
+as long as the line had never rendered. The rendered line is now deduplicated with first-seen
+order preserved, and `relationships` is left intact so a JSON consumer still sees direction.
+Verified over the whole gold set: 965 RELATED lines rendered, matching the 965 enriched slots
+exactly, and ZERO carrying a duplicate id.
+
+WHAT DID NOT: no threshold, limit or budget constant moved. Full mode is still unreachable at
+the default budget, `rationale` and the second five rules still never ship, and the pin that
+asserts it is unchanged.
+
+ONE HONEST CAVEAT ABOUT THE COST. The turn count is unchanged at 15 because `cost_for` is a flat
+per-rule rate per mode, not a measurement of the rendered block: standard is charged 120 tokens
+per rule while the block measures about 209. The charge was already an underestimate and this
+adds about 17 more per rule to the real side only, so the 86 tokens a turn are real context the
+budget does not see. Pre-existing, neither fixed nor worsened here, and recorded rather than
+folded into a "no cost" claim.
+
 ## What this measurement does NOT license
 
 It does not justify dropping Neo4j, and saying that it does would be the overclaim this
