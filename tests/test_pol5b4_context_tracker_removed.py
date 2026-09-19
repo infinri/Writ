@@ -24,13 +24,23 @@ NAME = "writ-context-tracker"
 
 
 def _registration_count(hooks_data: dict) -> int:
-    """Flatten every matcher-block entry across all events (mirrors the routing
-    test's _collect_all_registrations)."""
+    """Count COMMAND LEAVES, the same unit the shared derivation uses.
+
+    This counted matcher BLOCKS until 2026-09-18. It agreed with
+    hook_registrations() at 44 only because every block happened to hold exactly one
+    command: a property of the data, not of the code. Adding a second command to an
+    existing block made blocks 44 and commands 45, and the two readers disagreed for
+    the first time. hook_registrations()'s docstring says the two "cannot disagree
+    about what a registration is", so the block count was the wrong unit all along.
+    """
     section = hooks_data.get("hooks", hooks_data)
     n = 0
     for entries in section.values():
         if isinstance(entries, list):
-            n += len(entries)
+            for entry in entries:
+                for hook in (entry.get("hooks") or []):
+                    if hook.get("command"):
+                        n += 1
     return n
 
 

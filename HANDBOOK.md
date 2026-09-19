@@ -415,6 +415,20 @@ for all 37 projects in `~/.claude.json`.
 Accepting drift is NOT reachable from `writ doctor --fix`, on purpose: a blanket fix flag that
 blessed whatever appeared since the last run would turn the ledger into a rubber stamp.
 
+**Output compression** (`hooks/scripts/writ-output-compress.sh`, PostToolUse on `Write|Edit`)
+replaces the value of `originalFile` in an Edit or Write tool response with a marker naming the
+field and the real dropped size. The measured reason: across 2,367 PostToolUse envelopes, Edit and
+Write are 95% of all tool-response bytes, and within an Edit response `originalFile` is 96% of it
+(the entire pre-edit file, echoed back) while `structuredPatch` carries the change in about 348
+characters. Bash, the tool usually assumed to be the offender, has a 742-character median and is
+deliberately not a target.
+
+The key is REPLACED, never removed, and `structuredPatch`, `oldString`, `newString` and `filePath`
+pass through untouched: the hook contract requires the replacement to match the tool's expected
+response shape, so the failure that would break an edit is a missing key. Responses at or below
+4,000 characters are left alone. The hook fails open on every error path, because a compression
+hook that can break an edit is strictly worse than no compression.
+
 ## 18. Logging and observability
 
 **Typed streams** (`writ/shared/logging.py`), one directory per project under `<install>/var/logs/`:
