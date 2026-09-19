@@ -2,6 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+[![Buy Me a Coffee](https://img.shields.io/badge/buy%20me%20a%20coffee-support-ffdd00.svg)](https://buymeacoffee.com/infinri)
 
 **Claude Code can forget your rules. Writ can refuse the action.**
 
@@ -183,6 +184,15 @@ A second thing was unproven and is no longer. The graph traversal stage was the 
 Until those experiments exist, treat the enforcement claim as a designed mechanism with an honestly documented failure posture, not a demonstrated outcome. What **is** independently checkable today lives in the repository rather than in assertions. [`docs/pressure-runs/`](docs/pressure-runs/) contains adversarial test runs against real Claude Code sessions: the exact prompt used, the full transcript, every enforcement decision as raw log lines, and a graded analysis scoring each targeted rule as held or bypassed, including the failures, documented as failures. [`docs/monthly-reviews/`](docs/monthly-reviews/) contains operational reviews built from the system's own audit log.
 
 The rest of the evidence: [`SCALE_BENCHMARK_RESULTS.md`](SCALE_BENCHMARK_RESULTS.md) holds the full dated measurements, the methodology behind each one, the corrections, and the historical runs. [`docs/reference/efficacy-ab.md`](docs/reference/efficacy-ab.md) holds the A/B harness and what it has not shown. [`SECURITY.md`](SECURITY.md) holds the trust model, including the inventory of shell-write gaps that remain.
+
+## Support
+
+Writ is MIT-licensed and free, and it is built in unpaid time. If it saves you some of yours,
+[buying me a coffee](https://buymeacoffee.com/infinri) is welcome and entirely optional.
+
+It buys nothing in particular: no support commitment, no priority on issues, no say in the
+roadmap. Everything the project does is in the repository either way. Reporting a bug you hit,
+or a pressure run where a rule you relied on was bypassed, is worth more than money.
 
 ## Architecture and deeper reading
 
