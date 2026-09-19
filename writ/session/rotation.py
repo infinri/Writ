@@ -20,6 +20,49 @@ import sys
 from writ.session import cache, mode_engine
 
 
+def _sessions_claiming_project(cwd: str, exclude: tuple = ()) -> list:
+    """Session ids whose cache records `cwd` as their project root.
+
+    Reuses the enumeration cache.py already performs for the sub-agent queried-rules union
+    rather than adding a second way to list sessions. Fail-open per file: a corrupt or
+    mid-write cache is skipped, because a listing that raises would turn a rotation into a
+    crash.
+
+    The rotating session excludes itself. Its own cache exists by the time this runs, and
+    counting it would make every rotation look contested.
+    """
+    import glob
+    import json
+    import os
+    import re
+
+    found = []
+    pattern = os.path.join(cache._cache_dir(), "writ-session-*.json")
+    for path in glob.glob(pattern):
+        match = re.fullmatch(r"writ-session-(.+)\.json", os.path.basename(path))
+        if not match or match.group(1) in exclude:
+            continue
+        try:
+            with open(path) as handle:
+                data = json.load(handle) or {}
+        except Exception:
+            continue
+        # A SUB-AGENT IS NOT A SESSION WORKING THE PROJECT. It is a worker inside one, it
+        # never rotates, and it cannot be a rotating session's predecessor. Counting one
+        # would make the sole-claimant guard below see a contested project and refuse a
+        # legitimate carry, costing the user their mode for a reason they cannot see.
+        #
+        # This was latent rather than live: sub-agent caches carried project_root "" until a
+        # draft of writ/session/subagent_seed.py inherited it, which is how the failure was
+        # found. That draft was changed to leave the field empty, so the guard here is what
+        # makes the invariant hold no matter what any future writer stamps.
+        if data.get("is_subagent"):
+            continue
+        if data.get("project_root") == cwd:
+            found.append(match.group(1))
+    return found
+
+
 def carry_forward_mode(
     session_id: str, cwd: str, prev_session_id: str, source: str
 ) -> None:
@@ -55,6 +98,27 @@ def carry_forward_mode(
         print(
             "[Writ] session rotated; NOT carrying mode forward "
             "(pre-rotation session was a different project); run `mode set` to set it.",
+            file=sys.stderr,
+        )
+        return
+
+    # 6. SOLE-CLAIMANT GUARD. The candidate id comes from the machine-global pointer, which
+    # names whichever session took a turn most recently -- not, necessarily, this session's
+    # predecessor. With one session on a project those are the same thing. With siblings
+    # they are not, and step 5 cannot tell them apart because the project matches for all
+    # of them, so a peer's mode was handed to a rotating session.
+    #
+    # A predecessor cannot be identified: rotation issues a new id and nothing records the
+    # link, so "my previous id" is not a knowable fact. Establishing lineage would mean
+    # inventing a record only the harness could write honestly. So this refuses instead,
+    # which costs one `mode set` in the ambiguous case and leaves the single-session path
+    # (the overwhelming majority) untouched.
+    claimants = _sessions_claiming_project(cwd, exclude=(session_id,))
+    if len(claimants) > 1:
+        print(
+            "[Writ] session rotated; NOT carrying mode forward "
+            f"({len(claimants)} sessions are working this project, so the pre-rotation "
+            "session cannot be identified); run `mode set` to set it.",
             file=sys.stderr,
         )
         return

@@ -6,7 +6,7 @@ Rank Fusion (which uses 1/(k+rank) with a constant k~60). See normalize_ranks.
 score = (w1 * bm25_norm) + (w2 * vector_norm) + (w3 * severity_weight) + (w4 * confidence_weight) + (w5 * graph_proximity)
 
 Weights are configurable via writ.toml. Constraint: w1 + w2 + w3 + w4 + w5 = 1.0.
-Tuned values: 0.198 / 0.594 / 0.099 / 0.099 / 0.01. Phase 5 ratios (2:6:1:1) scaled by 0.99, graph proximity added in Phase 6.
+Tuned values: 0.19 / 0.57 / 0.095 / 0.095 / 0.05. Phase 5 ratios (2:6:1:1) rebalanced to leave room for w_graph; graph proximity added in Phase 6, and its weight raised from 0.01 to the measured optimum on 2026-09-18 (benchmarks/NEO4J-ABLATION-2026-09-18.md).
 
 Context budget modes (Phase 5 degraded -- abstractions are Phase 8):
 - Summary (< 2K tokens): statement + trigger only
@@ -19,14 +19,26 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # Per ARCH-CONST-001: named constants for defaults.
-# Phase 5 ratios (2:6:1:1) scaled by 0.99 to make room for w_graph.
-# Graph proximity uses discrete values (0.0/0.5/1.0), so even w_graph=0.01
-# creates meaningful rank shifts (12/83 queries affected) without MRR@5 regression.
-DEFAULT_W_BM25 = 0.198
-DEFAULT_W_VECTOR = 0.594
-DEFAULT_W_SEVERITY = 0.099
-DEFAULT_W_CONFIDENCE = 0.099
-DEFAULT_W_GRAPH = 0.01
+# Phase 5 ratios (2:6:1:1), rebalanced to leave room for w_graph: the four are
+# scaled by (1 - w_graph) / 0.99 so all five sum to 1.0, which is the same
+# rebalance scripts/sweep_ranking.py applies at every sweep point. Change w_graph
+# and these four move with it, or the shipped vector is a point nobody measured;
+# tests/test_graph_contribution_invariants.py derives that and fails by name.
+#
+# w_graph = 0.05 is the do-no-harm winner of the 2026-09-18 ablation over the
+# 193-query gold set: the only arm that improves MRR@5 (0.6124 -> 0.6273),
+# hit-rate@5 (0.8083 -> 0.8135) and nDCG@10 (0.7327 -> 0.7367) together while
+# losing zero queries (4 wins, 0 losses, paired sign test p = 0.1250). The prior
+# 0.01 was never a measured optimum; its comment justified it with 12/83 queries,
+# a gold set two sizes ago. Ablating the term outright costs one query of 193 and
+# nothing on MRR@5, so this weight buys little either way: what the measurement
+# retired is the claim that the graph had been SHOWN not to contribute.
+# Full method, arms table and caveats: benchmarks/NEO4J-ABLATION-2026-09-18.md.
+DEFAULT_W_BM25 = 0.19
+DEFAULT_W_VECTOR = 0.57
+DEFAULT_W_SEVERITY = 0.095
+DEFAULT_W_CONFIDENCE = 0.095
+DEFAULT_W_GRAPH = 0.05
 
 # Phase 1 addition: literal retrieval mode for exact-phrase / rationalization
 # queries where BM25 carries the distinguishing signal. Used when caller passes
@@ -231,14 +243,30 @@ def filter_proximity_seeds(
     return seeds
 
 
+# The fields the injected header renders (writ/session/budget_tracking.py:cmd_format).
+# Every projection in this module carries them, so the header shows real values.
+_HEADER_FIELDS = ("severity", "authority")
+
+
+def _carry_header_fields(entry: dict, rule: dict) -> None:
+    """Copy the header fields onto a projected entry, only when the source declares
+    them. Never defaulted here: the formatter owns how absence looks, and a second
+    default in this module is what let these fields go missing."""
+    for f in _HEADER_FIELDS:
+        if f in rule:
+            entry[f] = rule[f]
+
+
 def _project_rules(
     rules: list[dict], limit: int, str_fields: list[str], include_relationships: bool = False
 ) -> list[dict]:
     """Project the top-`limit` rules to a budget mode's field set. Base fields
-    (rule_id/node_type/score) always come first, then `str_fields` (default ''),
-    then relationships (default []) only in full mode. Single source for the
-    per-mode projection shared by summary/standard/full. Key order is preserved
-    because it is the serialized output contract."""
+    (rule_id/node_type/score) come first, then the header fields
+    (severity/authority, copied only when the source declares them), then
+    `str_fields` (default ''), then relationships (default []) in standard and
+    full mode. Single source for the per-mode projection shared by
+    summary/standard/full. Key order is a stability convention, not a wire
+    contract: every consumer reads by key."""
     out: list[dict] = []
     for rule in rules[:limit]:
         d = {
@@ -246,6 +274,7 @@ def _project_rules(
             "node_type": rule.get("node_type", "Rule"),
             "score": rule.get("score", 0.0),
         }
+        _carry_header_fields(d, rule)
         for f in str_fields:
             d[f] = rule.get(f, "")
         if include_relationships:
@@ -279,8 +308,15 @@ def apply_context_budget(
 
     elif budget_tokens <= STANDARD_THRESHOLD:
         mode = "standard"
+        # Stage-4 enrichment fills every top-5 slot, and standard is the only mode
+        # the default session budget can select (DEFAULT_SESSION_BUDGET equals
+        # STANDARD_THRESHOLD and only decreases). Gating relationships on full alone
+        # meant the RELATED: line never reached the model: zero of the 200 captured
+        # WRIT RULES blocks carried one. Measured 61 tokens a turn, against 1,743 to
+        # reach full mode instead. See benchmarks/NEO4J-ABLATION-2026-09-18.md.
         trimmed = _project_rules(
-            rules, STANDARD_LIMIT, ["statement", "trigger", "violation", "pass_example"]
+            rules, STANDARD_LIMIT, ["statement", "trigger", "violation", "pass_example"],
+            include_relationships=True,
         )
         return trimmed, mode
 
@@ -328,11 +364,13 @@ def _summary_with_abstractions(
             })
         elif not abst:
             # Ungrouped rule: fall back to statement+trigger.
-            result.append({
+            entry = {
                 "rule_id": rid,
                 "score": rule.get("score", 0.0),
-                "statement": rule.get("statement", ""),
-                "trigger": rule.get("trigger", ""),
-            })
+            }
+            _carry_header_fields(entry, rule)
+            entry["statement"] = rule.get("statement", "")
+            entry["trigger"] = rule.get("trigger", "")
+            result.append(entry)
 
     return result

@@ -582,40 +582,466 @@ class TestConfigSeam:
 # --- 8. The gate cannot be dropped silently ------------------------------------
 
 
+# --- The two recognized gating mechanisms ---------------------------------------
+#
+# The ratchet below asks one question of every module that performs an
+# everything-wipe: is this wipe PROVABLY gated, and does tripping the gate
+# produce a clean operator-facing error rather than a confusing one? For most of
+# the suite the answer is the `disposable_graph` fixture. It is not the only
+# possible answer, and treating it as the only one demands the impossible of a
+# `pytest_sessionstart` hook, which runs before fixtures exist.
+#
+# So there are TWO recognized mechanisms, and each is DETECTED rather than
+# granted. Nothing here is a name allowlist: a module named in EXPECTED_GATING
+# whose mechanism decays is a failure, not an exemption, and a module gated by
+# neither mechanism fails whatever it is called.
+GATE_FIXTURE = "disposable_graph fixture"
+GATE_MODULE_SAFETY = "module-scoped autouse target guard"
+GATE_PREFLIGHT = "session-start preflight"
+
+WIPE_CALL = "preserve_labels=frozenset()"
+PREFLIGHT_FUNC = "_preflight_isolated_graph"
+CONFTEST = REPO_ROOT / "tests" / "conftest.py"
+
+
+def _top_level_functions(source: str):
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    return [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+
+
+def _fixture_gated(path: Path, source: str | None = None) -> bool:
+    """True when some function in the module takes `disposable_graph` as a PARAMETER.
+
+    A parameter, not a substring. Mentioning the name in a comment is not
+    wiring, which is the distinction test_the_db_fixtures_take_disposable_graph
+    _as_a_parameter already draws for the `db` fixtures specifically; this
+    applies it to the recognition itself so a module cannot be recognized as
+    gated by talking about the gate.
+    """
+    text = path.read_text(encoding="utf-8") if source is None else source
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        args = node.args
+        params = {a.arg for a in (*args.posonlyargs, *args.args, *args.kwonlyargs)}
+        if "disposable_graph" in params:
+            return True
+    return False
+
+
+def _is_autouse_fixture(node) -> bool:
+    """True when this function is decorated as a pytest fixture with autouse=True."""
+    for decorator in node.decorator_list:
+        if not isinstance(decorator, ast.Call):
+            continue
+        func = decorator.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if name != "fixture":
+            continue
+        for keyword in decorator.keywords:
+            if (
+                keyword.arg == "autouse"
+                and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value is True
+            ):
+                return True
+    return False
+
+
+def _autouse_target_guard(path: Path, source: str | None = None) -> bool:
+    """True when the module refuses a non-disposable target before any of its tests run.
+
+    THREE facts, all read off the source:
+
+      1. the guard is a pytest fixture with `autouse=True`, so it covers every
+         test in scope rather than only the ones that remember to request it,
+      2. it consults `targets_production`, the same (host, port) comparison
+         `clear_all` uses, rather than a bespoke check that could disagree,
+      3. it REFUSES with `pytest.fail`. A guard that skips on a production
+         target is not a gate: a mass skip is cheap to produce and
+         indistinguishable from a green run, which is the lesson this repo has
+         already paid for twice. Skipping on an UNREACHABLE instance is fine and
+         is not what this looks at.
+
+    Drop the autouse, the comparison or the failure and this returns False, so
+    the mechanism has to keep working to keep being recognized.
+    """
+    text = path.read_text(encoding="utf-8") if source is None else source
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not _is_autouse_fixture(node):
+            continue
+        segment = ast.get_source_segment(text, node) or ""
+        if "targets_production(" in segment and "pytest.fail(" in segment:
+            return True
+    return False
+
+
+def _routing_wipers(path: Path, source: str | None = None) -> set[str]:
+    """Top-level functions in `path` whose wipe is ISSUED THROUGH `clear_all`.
+
+    Routing is the first half of the preflight mechanism. A function that wrote
+    its own `MATCH (n) DETACH DELETE n` would bypass `assert_full_wipe_allowed`
+    entirely, so it is not recognized here no matter who calls it.
+    """
+    text = path.read_text(encoding="utf-8") if source is None else source
+    names: set[str] = set()
+    for node in _top_level_functions(text):
+        segment = ast.get_source_segment(text, node) or ""
+        if WIPE_CALL in segment and "clear_all(" in segment:
+            names.add(node.name)
+    return names
+
+
+def _dotted_module_name(path: Path) -> str | None:
+    """`tests/_graph.py` -> `tests._graph`, or None for anything outside the repo."""
+    try:
+        relative = path.resolve().relative_to(REPO_ROOT)
+    except ValueError:
+        return None
+    return ".".join(relative.with_suffix("").parts)
+
+
+def _preflight_body(conftest_source: str) -> str:
+    for node in _top_level_functions(conftest_source):
+        if node.name == PREFLIGHT_FUNC:
+            return ast.get_source_segment(conftest_source, node) or ""
+    return ""
+
+
+def _preflight_gated(path: Path, conftest_source: str | None = None) -> bool:
+    """True when this module's wipe is gated by the session-start preflight.
+
+    FOUR facts, all read off the source, none assumed:
+
+      1. the module issues its everything-wipe through `clear_all`, so
+         `assert_full_wipe_allowed` still runs before any session opens,
+      2. `_preflight_isolated_graph` imports that exact function FROM this
+         module and calls it,
+      3. `classify_isolation` runs BEFORE that call, so the target has already
+         been proven reachable and not production when the delete is issued,
+      4. the preflight converts `FullWipeRefused` into a `pytest.UsageError`,
+         which is the clean operator-facing error the fixture otherwise
+         provides. Without it a tripped gate is an INTERNALERROR traceback with
+         no remedy on it, which is the confusing failure this ratchet's
+         docstring names.
+
+    Any one of the four going missing returns False and the module reads as
+    ungated, which is the point: this recognizes a MECHANISM, and a mechanism
+    that stopped working is not a mechanism.
+    """
+    wipers = _routing_wipers(path)
+    dotted = _dotted_module_name(path)
+    if not wipers or dotted is None:
+        return False
+    text = CONFTEST.read_text(encoding="utf-8") if conftest_source is None else conftest_source
+    body = _preflight_body(text)
+    if not body:
+        return False
+    try:
+        tree = ast.parse(body)
+    except SyntaxError:
+        return False
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == dotted:
+            imported.update(alias.name for alias in node.names)
+    called = imported & wipers
+    if not called:
+        return False
+    classify_at = body.find("classify_isolation(")
+    if classify_at == -1:
+        return False
+    for name in sorted(called):
+        call_at = body.find(f"{name}(")
+        if call_at == -1 or call_at < classify_at:
+            return False
+    return "FullWipeRefused" in body and "UsageError" in body
+
+
+def _gating_mechanism(path: Path) -> str | None:
+    """Which recognized mechanism gates this module's wipe, or None."""
+    if _fixture_gated(path):
+        return GATE_FIXTURE
+    if _autouse_target_guard(path):
+        return GATE_MODULE_SAFETY
+    if _preflight_gated(path):
+        return GATE_PREFLIGHT
+    return None
+
+
 class TestEveryWholeGraphWipeIsGated:
-    """A ratchet: a new everything-wipe in the suite must route through the gate.
+    """A ratchet: a new everything-wipe in the suite must route through a gate.
 
     The guard in clear_all is the real protection, but a test that trips it gets
-    an error rather than a skip, which reads as a broken suite. This keeps the
-    two destructive modules (and any future one) wired to `disposable_graph`.
+    an error rather than a skip, which reads as a broken suite. So every module
+    that performs an everything-wipe has to be gated by a mechanism that both
+    proves the target is disposable AND turns a refusal into a clean message.
+
+    THREE MECHANISMS ARE RECOGNIZED, and the difference matters to whoever adds
+    the next one:
+
+      * GATE_FIXTURE, `disposable_graph`, taken as a real function PARAMETER.
+        The normal answer for a test module. It skips with the exact commands to
+        stand an instance up.
+      * GATE_MODULE_SAFETY, the module's own `autouse` fixture that consults
+        `targets_production` and FAILS on a production target. For a module
+        where every test wipes, so requesting the gate per test would be
+        ceremony; stricter than the fixture, because it fails rather than skips.
+      * GATE_PREFLIGHT, the session-start wipe in
+        `tests/conftest.py::_preflight_isolated_graph`. A `pytest_sessionstart`
+        hook cannot request a fixture, so the fixture answer is not available to
+        it; it earns the same two properties another way, and `_preflight_gated`
+        above checks all four of the facts that make that true rather than
+        taking the module's word for it.
+
+    NONE OF THE THREE IS A NAME. Each is a detector that reads the mechanism off
+    the source and returns False the moment the mechanism decays, which is what
+    the mutation controls below demonstrate. If you are adding a FOURTH, add it
+    here with its own detector and its own controls. Adding a module name to
+    EXPECTED_GATING without a detector would turn this ratchet into an
+    allowlist, and an allowlist is how a guard stops guarding.
     """
 
-    _WIPE_CALL = "preserve_labels=frozenset()"
+    _WIPE_CALL = WIPE_CALL
 
-    def _modules_with_everything_wipes(self) -> list[Path]:
+    # Module name -> the mechanism that gates it. This pins BOTH halves: a new
+    # wiping module changes the key set, and an existing one whose gate decays
+    # changes its value. A bare set of names would have caught only the first.
+    EXPECTED_GATING = {
+        "test_db_category.py": GATE_FIXTURE,
+        "test_graph_dump.py": GATE_FIXTURE,
+        "test_suite_start_idempotence.py": GATE_MODULE_SAFETY,
+        "_graph.py": GATE_PREFLIGHT,
+    }
+
+    def _modules_with_everything_wipes(self, root: Path | None = None) -> list[Path]:
+        base = (REPO_ROOT / "tests") if root is None else root
         return [
             path
-            for path in sorted((REPO_ROOT / "tests").rglob("*.py"))
+            for path in sorted(base.rglob("*.py"))
             if path.name != Path(__file__).name
             and self._WIPE_CALL in path.read_text(encoding="utf-8")
         ]
 
-    def test_the_known_two_modules_are_still_the_only_ones(self) -> None:
-        found = {p.name for p in self._modules_with_everything_wipes()}
-        assert found == {"test_db_category.py", "test_graph_dump.py"}, (
-            "a new everything-wipe appeared in the suite; gate it with the "
-            f"disposable_graph fixture and update this list. Found: {sorted(found)}"
+    def test_the_known_wiping_modules_and_their_gates_are_unchanged(self) -> None:
+        found = {p.name: _gating_mechanism(p) for p in self._modules_with_everything_wipes()}
+        assert found == self.EXPECTED_GATING, (
+            "the population of everything-wipes in the suite, or the mechanism "
+            "gating one of them, changed. A new wipe must be gated by the "
+            "disposable_graph fixture (test modules) or by the session-start "
+            "preflight, and this map updated. A None value means a module wipes "
+            f"the whole graph with no recognized gate at all. Found: {found}"
         )
 
-    def test_every_wiping_module_requests_the_disposable_graph_fixture(self) -> None:
+    def test_every_wiping_module_is_gated_by_a_recognized_mechanism(self) -> None:
         ungated = [
             path.relative_to(REPO_ROOT).as_posix()
             for path in self._modules_with_everything_wipes()
-            if "disposable_graph" not in path.read_text(encoding="utf-8")
+            if _gating_mechanism(path) is None
         ]
         assert not ungated, (
-            "these modules perform a whole-graph wipe without requesting the "
-            f"disposable_graph fixture: {ungated}"
+            "these modules perform a whole-graph wipe without a recognized gate "
+            "(neither a disposable_graph parameter nor the session-start "
+            f"preflight): {ungated}"
+        )
+
+    # --- Positive controls: prove the ratchet still bites -----------------------
+    # A guard that recognizes more shapes is a guard closer to recognizing
+    # everything, so the recognition is exercised against synthetic modules in a
+    # tmp directory rather than against the live tree alone.
+
+    def test_a_synthetic_ungated_wipe_is_still_caught(self, tmp_path: Path) -> None:
+        """The control that matters: routing through clear_all is NOT gating.
+
+        This planted module does everything `tests/_graph.py` does except be
+        reached from the preflight, and it must still read as ungated. If it
+        did not, the preflight arm would be recognizing "calls clear_all",
+        which every wiping module already does, and the ratchet would be dead.
+        """
+        planted = tmp_path / "test_synthetic_ungated_wipe.py"
+        planted.write_text(
+            "async def wipe(conn):\n"
+            f"    await conn.clear_all({WIPE_CALL})\n",
+            encoding="utf-8",
+        )
+
+        found = self._modules_with_everything_wipes(root=tmp_path)
+
+        assert [p.name for p in found] == ["test_synthetic_ungated_wipe.py"], (
+            f"the scan did not find the planted everything-wipe at {planted}"
+        )
+        assert _gating_mechanism(planted) is None, (
+            "a module that wipes the whole graph, gated by neither the "
+            "disposable_graph fixture nor the session-start preflight, must be "
+            "reported as ungated"
+        )
+
+    def test_a_synthetic_fixture_gated_wipe_is_recognized(self, tmp_path: Path) -> None:
+        """The other direction: a correctly gated new module must NOT be a
+        false positive, or the next author's fix would not clear the ratchet."""
+        gated = tmp_path / "test_synthetic_gated_wipe.py"
+        gated.write_text(
+            "async def db(disposable_graph, conn):\n"
+            f"    await conn.clear_all({WIPE_CALL})\n",
+            encoding="utf-8",
+        )
+
+        assert _gating_mechanism(gated) == GATE_FIXTURE
+
+    def test_naming_the_fixture_without_taking_it_is_not_recognized(
+        self, tmp_path: Path
+    ) -> None:
+        """Mentioning the gate is not passing through it."""
+        talker = tmp_path / "test_synthetic_mentions_the_fixture.py"
+        talker.write_text(
+            "# this one really ought to use disposable_graph one day\n"
+            "async def wipe(conn):\n"
+            f"    await conn.clear_all({WIPE_CALL})\n",
+            encoding="utf-8",
+        )
+
+        assert _gating_mechanism(talker) is None
+
+    def test_a_raw_wipe_that_bypasses_clear_all_is_not_recognized(
+        self, tmp_path: Path
+    ) -> None:
+        """First of the four preflight facts, checked on its own: the mechanism
+        is `clear_all` doing the refusing, so a hand-rolled delete carrying the
+        same keyword is not a routing wiper no matter who calls it."""
+        raw = tmp_path / "test_synthetic_raw_wipe.py"
+        raw.write_text(
+            f"# {WIPE_CALL}\n"
+            "async def wipe(session):\n"
+            '    await session.run("MATCH (n) DETACH DELETE n")\n',
+            encoding="utf-8",
+        )
+
+        assert _routing_wipers(raw) == set()
+        assert _gating_mechanism(raw) is None
+
+    _AUTOUSE_GUARD = (
+        "@pytest.fixture(scope=\"module\", autouse=True)\n"
+        "def _require_disposable(){body}\n"
+        "async def wipe(conn):\n"
+        f"    await conn.clear_all({WIPE_CALL})\n"
+    )
+    _REFUSING_BODY = (
+        ":\n"
+        "    if targets_production():\n"
+        '        pytest.fail("refusing to wipe production")\n'
+    )
+
+    def test_an_autouse_target_guard_that_fails_is_recognized(
+        self, tmp_path: Path
+    ) -> None:
+        guarded = tmp_path / "test_synthetic_autouse_guard.py"
+        guarded.write_text(
+            self._AUTOUSE_GUARD.format(body=self._REFUSING_BODY), encoding="utf-8"
+        )
+
+        assert _gating_mechanism(guarded) == GATE_MODULE_SAFETY
+
+    def test_the_same_guard_is_not_recognized_when_it_is_not_autouse(
+        self, tmp_path: Path
+    ) -> None:
+        """The autouse flag is the whole difference between a guard that covers
+        every test and a guard that covers the ones that remembered to ask."""
+        optional = tmp_path / "test_synthetic_optional_guard.py"
+        optional.write_text(
+            self._AUTOUSE_GUARD.format(body=self._REFUSING_BODY).replace(
+                ", autouse=True", ""
+            ),
+            encoding="utf-8",
+        )
+
+        assert _gating_mechanism(optional) is None
+
+    def test_a_guard_that_only_skips_on_production_is_not_recognized(
+        self, tmp_path: Path
+    ) -> None:
+        """A mass skip is cheap to produce and indistinguishable from a green
+        run. Refusing to wipe production has to FAIL to count as a gate."""
+        skipper = tmp_path / "test_synthetic_skipping_guard.py"
+        skipper.write_text(
+            self._AUTOUSE_GUARD.format(
+                body=self._REFUSING_BODY.replace("pytest.fail(", "pytest.skip(")
+            ),
+            encoding="utf-8",
+        )
+
+        assert _gating_mechanism(skipper) is None
+
+    def test_the_preflight_gate_is_conditional_on_classifying_first(self) -> None:
+        """Third of the four facts, proved by mutation rather than by reading.
+
+        The recognition must go RED if the preflight ever stops classifying the
+        target before issuing the delete. Mutating the real conftest source in
+        memory is what shows the detector observes that, instead of returning
+        True for `tests/_graph.py` because of its name.
+        """
+        graph_module = REPO_ROOT / "tests" / "_graph.py"
+        real = CONFTEST.read_text(encoding="utf-8")
+
+        assert _preflight_gated(graph_module, conftest_source=real), (
+            "the live preflight must be recognized as gating tests/_graph.py, "
+            "or the mutation below proves nothing"
+        )
+        mutated = real.replace("classify_isolation(", "no_longer_classifying(")
+        assert not _preflight_gated(graph_module, conftest_source=mutated), (
+            "a preflight that wipes without classifying the target first must "
+            "not count as a gate"
+        )
+
+        # The ORDER half of the same fact, mutated separately: classifying
+        # somewhere in the function is not the property, classifying BEFORE the
+        # delete is. This hoists the wipe above the classifier and leaves both
+        # calls present, so only the ordering changes.
+        hoisted = real.replace(
+            "    uri = resolved_uri()", "    wipe_everything()\n    uri = resolved_uri()", 1
+        )
+        assert not _preflight_gated(graph_module, conftest_source=hoisted), (
+            "a preflight that issues the delete before the classifier has "
+            "decided must not count as a gate, even though it classifies later"
+        )
+
+    def test_the_preflight_gate_is_conditional_on_actually_calling_the_wiper(self) -> None:
+        """Second fact: the preflight has to import the wiping function FROM
+        this module and call it. A preflight that no longer does is not gating
+        anything, and `tests/_graph.py` would then be an ungated everything-wipe
+        sitting in the tree with nobody watching it."""
+        graph_module = REPO_ROOT / "tests" / "_graph.py"
+        real = CONFTEST.read_text(encoding="utf-8")
+        mutated = real.replace("        wipe_everything,\n", "")
+
+        assert not _preflight_gated(graph_module, conftest_source=mutated), (
+            "a module whose wiper the preflight does not import is not gated "
+            "by the preflight"
+        )
+
+    def test_the_preflight_gate_is_conditional_on_the_clean_refusal(self) -> None:
+        """Fourth fact: a refusal that reaches the operator as an INTERNALERROR
+        traceback is the confusing failure this ratchet's docstring names, so it
+        does not satisfy the gate either."""
+        graph_module = REPO_ROOT / "tests" / "_graph.py"
+        real = CONFTEST.read_text(encoding="utf-8")
+        mutated = real.replace("FullWipeRefused", "SomeOtherError")
+
+        assert not _preflight_gated(graph_module, conftest_source=mutated), (
+            "a preflight that does not convert FullWipeRefused into a "
+            "pytest.UsageError leaves a tripped gate looking like a crash"
         )
 
     def test_the_db_fixtures_take_disposable_graph_as_a_parameter(self) -> None:

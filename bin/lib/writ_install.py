@@ -48,14 +48,18 @@ Exit codes (unchanged from patch-global-config.sh):
 
 import argparse
 import difflib
+import http.client
 import json
 import os
 import re
 import shutil
+import socket
+import stat
 import subprocess
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
@@ -113,6 +117,18 @@ DENY = (
     "Bash(*>.claude/gates/*)",
     "Bash(*/.claude/gates/*approve*)",
 )
+
+# Plain top-level settings keys Writ ships a default for. Both the writer (cmd_settings)
+# and the read-back checker (cmd_check_settings) iterate this and neither names a key, so
+# the two cannot drift apart about which keys exist. Adding a key is one entry here.
+MANAGED_SETTINGS = (
+    ("outputStyle", "Concise"),
+    ("effortLevel", "high"),
+)
+
+# Absent key, distinct from a key present with a falsy value: an explicit null is the
+# user's value, so `key in doc` and not `doc.get(key)` decides.
+_UNSET = object()
 
 # `Edit(/abs/dir/**)` / `Bash(/abs/dir/*)` style entries, from which the pruner reads the
 # directory. Mirrors the sed expression the bash pruner used.
@@ -230,7 +246,7 @@ def _load_settings(target):
 
 
 # --------------------------------------------------------------------------- #
-# settings.json: permissions + statusLine
+# settings.json: permissions + statusLine + managed settings keys
 # --------------------------------------------------------------------------- #
 
 
@@ -258,6 +274,18 @@ def _stale_entries(allow, skill_dir):
     return drop
 
 
+def _managed_settings_state(doc):
+    """[(key, shipped, current)] for every MANAGED_SETTINGS entry; current is _UNSET
+    when the key is absent.
+
+    The only place in this module that inspects a managed key, so the writer and the
+    checker can never disagree about which STATE a settings file is in. They deliberately
+    disagree about what to DO about a state.
+    """
+    return [(key, shipped, doc[key] if key in doc else _UNSET)
+            for key, shipped in MANAGED_SETTINGS]
+
+
 def _append_new(existing, incoming):
     """Append only entries not already present, preserving existing order (jq append_new)."""
     out = list(existing)
@@ -265,6 +293,129 @@ def _append_new(existing, incoming):
         if item not in out:
             out.append(item)
     return out
+
+
+class UnixSocketHTTPConnection(http.client.HTTPConnection):
+    """HTTP over an AF_UNIX socket, stdlib only.
+
+    This module runs under BARE system python3 (see the header), so requests,
+    httpx and requests_unixsocket are all unavailable. http.client already speaks
+    HTTP/1.1 over any socket; only `connect` has to change.
+
+    The Host header stays "localhost" because the daemon does not route on it and
+    a socket path is not a valid header value.
+    """
+
+    def __init__(self, socket_path, timeout=None):
+        super().__init__("localhost", timeout=timeout)
+        self._socket_path = socket_path
+
+    def connect(self):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        if self.timeout is not None:
+            sock.settimeout(self.timeout)
+        sock.connect(self._socket_path)
+        self.sock = sock
+
+
+def _daemon_socket_path():
+    """The daemon socket if it exists and is a socket, else None (use TCP)."""
+    path = os.environ.get("WRIT_SOCKET") or os.path.join(
+        os.path.expanduser("~"), ".cache", "writ", "run", "writ.sock"
+    )
+    try:
+        return path if stat.S_ISSOCK(os.stat(path).st_mode) else None
+    except OSError:
+        return None
+
+
+def _request_over_socket(sock_path, method, url, body=None, timeout=None):
+    """Issue one request over the socket. Returns (status, text) or None to fall back."""
+    parsed = urllib.parse.urlsplit(url)
+    target = parsed.path or "/"
+    if parsed.query:
+        target += "?" + parsed.query
+    conn = UnixSocketHTTPConnection(sock_path, timeout=timeout)
+    try:
+        headers = {"Host": "localhost"}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        conn.request(method, target, body=body, headers=headers)
+        response = conn.getresponse()
+        return response.status, response.read().decode("utf-8", "replace")
+    finally:
+        conn.close()
+
+
+def cmd_check_settings(args):
+    """Report which shipped permission entries and managed settings keys
+    (MANAGED_SETTINGS) are ABSENT from a settings file.
+
+    Read-only: writes nothing, ever. Exists so `writ doctor` can diagnose a
+    half-applied install without holding its own copy of the entry list. A second
+    copy would drift from BASE_ALLOW/DENY, and a drifted copy makes the check
+    silently always-fail, which is worse than no check.
+
+    The two DERIVED entries cmd_settings adds (Edit(<skill-dir>/**) and
+    Bash(<skill-dir>/*)) are deliberately NOT checked: they encode the install
+    location, so a legitimately moved install would report them missing forever.
+    What this answers is "did the patch run at all", and BASE_ALLOW + DENY answer
+    that.
+
+    A managed key set to something other than the shipped value is NOT a finding: the
+    writer's policy is to keep it, so reporting it missing would leave the doctor
+    permanently red on a machine where the user chose otherwise and would offer a fix
+    that by policy cannot fix it. It prints on a `[check-settings]`-prefixed line, which
+    is the marker the doctor's parser reads as "not a finding".
+
+    Exit 0 when nothing is missing, EXIT_PRECONDITION when something is, and
+    EXIT_WRITE_FAILURE for a file that cannot be parsed.
+    """
+    target = os.path.abspath(args.target)
+    if not os.path.isfile(target):
+        print("[check-settings] ERROR: %s not found, so the install patch has never "
+              "run against it." % target, file=sys.stderr)
+        return EXIT_PRECONDITION
+
+    doc, _existed, error = _load_settings(target)
+    if error is not None:
+        return error
+
+    permissions = doc.get("permissions")
+    if not isinstance(permissions, dict):
+        permissions = {}
+    current_allow = permissions.get("allow")
+    current_allow = current_allow if isinstance(current_allow, list) else []
+    current_deny = permissions.get("deny")
+    current_deny = current_deny if isinstance(current_deny, list) else []
+
+    expected = len(BASE_ALLOW) + len(DENY) + len(MANAGED_SETTINGS)
+    missing = [entry for entry in BASE_ALLOW if entry not in current_allow]
+    missing += [entry for entry in DENY if entry not in current_deny]
+
+    for key, shipped, current in _managed_settings_state(doc):
+        if current is _UNSET:
+            missing.append("%s: %s" % (key, json.dumps(shipped)))
+        elif current != shipped:
+            print("[check-settings] %s is set to %s, not Writ's %s; that is your choice "
+                  "to keep, so it is not a finding."
+                  % (key, json.dumps(current), json.dumps(shipped)))
+
+    if not missing:
+        # "nothing missing" rather than "all present": absence is the only thing this
+        # branch establishes. A managed key the user set to another value is counted
+        # here, and "present" could be read as "matches Writ's default", which is the
+        # claim the divergence line above exists to NOT make.
+        print("[check-settings] nothing missing from %s: %d shipped entries and keys "
+              "checked." % (target, expected))
+        return EXIT_OK
+
+    for entry in missing:
+        print(entry)
+    print("[check-settings] %d of %d entries and keys missing from %s; re-run "
+          "scripts/patch-global-config.sh." % (len(missing), expected, target),
+          file=sys.stderr)
+    return EXIT_PRECONDITION
 
 
 def cmd_settings(args):
@@ -313,6 +464,21 @@ def cmd_settings(args):
         print("[settings] To use the Writ context meter, set statusLine.command to: %s"
               % statusline_cmd)
 
+    # Never clobber a managed key the user already set. This runs on every bootstrap and
+    # on every `writ doctor --fix`, so overwriting would silently revert a deliberate
+    # /config choice again and again. Unlike statusLine, these keys carry no ownership
+    # marker, so "refresh ours" is not definable: the only options are clobber or leave.
+    written = []
+    for key, shipped, current in _managed_settings_state(doc):
+        if current is _UNSET:
+            doc[key] = shipped
+            written.append((key, shipped))
+        elif current != shipped:
+            print("[settings] %s is set to %s; leaving your choice untouched."
+                  % (key, json.dumps(current)))
+            print("[settings] Writ ships %s for this key; change it with /config if you "
+                  "want Writ's default." % json.dumps(shipped))
+
     new_text = _dump(doc)
     current = _read_text(target) if existed else ""
     if current is None:
@@ -320,7 +486,7 @@ def cmd_settings(args):
 
     if existed and current == new_text:
         print("[settings] No changes needed: %s already contains the Writ permission "
-              "+ statusLine entries." % target)
+              "entries, statusLine and managed settings keys." % target)
         return EXIT_OK
 
     if args.dry_run:
@@ -331,6 +497,11 @@ def cmd_settings(args):
     if rc != EXIT_OK:
         return rc
     print("[settings] %s %s" % ("Patched" if existed else "Created", target))
+    # After the write, never before the --dry-run branch above: a preview that writes
+    # nothing must not claim the key was set.
+    for key, shipped in written:
+        print("[settings] Set %s to %s (Writ's default; change it any time with /config)."
+              % (key, json.dumps(shipped)))
     return EXIT_OK
 
 
@@ -649,10 +820,18 @@ def build_parser():
         sub.add_argument("--dry-run", action="store_true",
                          help="print what would change; write nothing")
 
-    settings = subparsers.add_parser("settings", help="merge permissions + statusLine")
+    settings = subparsers.add_parser(
+        "settings", help="merge permissions + statusLine + managed settings keys")
     settings.add_argument("--target", required=True)
     add_common(settings)
     settings.set_defaults(func=cmd_settings)
+
+    check_settings = subparsers.add_parser(
+        "check-settings",
+        help="report shipped permission entries and managed settings keys absent from a "
+             "settings file")
+    check_settings.add_argument("--target", required=True)
+    check_settings.set_defaults(func=cmd_check_settings)
 
     claude_md = subparsers.add_parser("claude-md", help="render templates/CLAUDE.md")
     claude_md.add_argument("--target", required=True)

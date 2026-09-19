@@ -227,14 +227,16 @@ if [ -n "$RULES_TEXT" ]; then
     # the CC debug log (verified delivery rule); additionalContext reaches the
     # model and is purely additive -- no permissionDecision, so it does NOT touch
     # the Read gate other hooks (writ-debug-code-gate) may set.
-    WRIT_AC="[Writ: file-context rules for $(basename "$FILE_PATH")]
-$RULES_TEXT" python3 <<'PY' 2>>"$WRIT_HOOK_LOG_SINK" || true
+    AC_REPLY=$(WRIT_AC="[Writ: file-context rules for $(basename "$FILE_PATH")]
+$RULES_TEXT" python3 <<'PY' 2>>"$WRIT_HOOK_LOG_SINK"
 import json, os
 print(json.dumps({"hookSpecificOutput": {
     "hookEventName": "PreToolUse",
     "additionalContext": os.environ.get("WRIT_AC", ""),
 }}))
 PY
+) || AC_REPLY=""
+    emit_hook_reply "$AC_REPLY" "" "$SESSION_ID"
 fi
 
 # Update session cache
@@ -252,7 +254,7 @@ if [ -n "$META_LINE" ]; then
         --add-rules "$NEW_RULE_IDS" \
         --cost "$COST" \
         --inc-queries \
-        --add-rule-objects "$RULE_OBJECTS" 2>/dev/null || true
+        --add-rule-objects "$RULE_OBJECTS" 2>>"$WRIT_HOOK_LOG_SINK" || true
 
     # Log rag_query event via the shared helper (reuse $MODE from the gate check
     # above; mode is fixed within a single hook invocation). Centralizes the parse

@@ -77,23 +77,59 @@ fi
 # cache file -- the same file CURRENT_MODE below already reads.
 SESSION_ID="$AGENT_ID"
 
-# Fallback: some Claude Code versions / nested sub-agents omit agent_type.
-# Default to "general-purpose" and log the fallback so we can track frequency.
-if [ -z "$AGENT_TYPE" ]; then
-    AGENT_TYPE="general-purpose"
+# THE ROLE IS RESOLVED HERE, AND THIS IS THE EARLIEST POINT IT CAN BE.
+#
+# `agent_type` is in this event's schema and arrives EMPTY on this build. The old code
+# rewrote the empty string to the literal `general-purpose`, which is how a role nobody
+# observed became a fact in the child's cache and in every record downstream of it.
+#
+# RESOLVED EARLY AND STORED, because the sidecar Claude Code writes beside the agent's
+# transcript is EPHEMERAL: it is deleted after the agent finishes (measured 2026-08-27, 0
+# of 57 completed agents still had one). A later hook cannot re-derive what is gone, so the
+# answer is captured while the file exists and replayed from the cache afterwards.
+ROLE_RESOLUTION=$(AGENT_ID="$AGENT_ID" AGENT_TYPE="$AGENT_TYPE" python3 -c '
+import os, sys
+sys.path.insert(0, sys.argv[1])
+role, source = "", "unresolved"
+try:
+    from writ.session.subagent_role import resolve_role
+    role, source = resolve_role(os.environ.get("AGENT_ID", ""),
+                                os.environ.get("AGENT_TYPE", ""))
+except Exception:
+    # Resolution failure must not fail the hook, and must not invent a role.
+    pass
+print(role)
+print(source)
+' "$WRIT_DIR" 2>/dev/null || true)
+
+if [ -n "$ROLE_RESOLUTION" ]; then
+    AGENT_TYPE=$(printf '%s' "$ROLE_RESOLUTION" | head -1)
+    ROLE_SOURCE=$(printf '%s' "$ROLE_RESOLUTION" | sed -n 2p)
+fi
+[ -z "$AGENT_TYPE" ] && AGENT_TYPE="unknown"
+[ -z "${ROLE_SOURCE:-}" ] && ROLE_SOURCE="unresolved"
+
+if [ "$ROLE_SOURCE" = "unresolved" ]; then
     log_friction_event "$AGENT_ID" "" "subagent_type_fallback" \
-        "{\"hook\":\"writ-subagent-start\",\"parent_session\":\"$PARENT_SESSION\"}"
+        "{\"hook\":\"writ-subagent-start\",\"parent_session\":\"$PARENT_SESSION\",\"role_source\":\"unresolved\"}"
 fi
 
-# Read parent's current state from the AUTHORITATIVE file cache (where
-# `writ-session.py mode set` writes), NOT via _writ_session (daemon-first). The
-# daemon's in-memory / cache-dir view can diverge from the file cache and return a
-# stale mode=None, which the sub-agent would then inherit -- running gate-less.
-# `writ-session.py read` is file-direct (cmd_read -> _read_cache), so it is correct
-# even when the daemon is up with a divergent view (Phase 3 Fix C).
-if [ -n "$PARENT_SESSION" ]; then
-    PARENT_STATE=$(python3 "$SESSION_HELPER" read "$PARENT_SESSION" 2>/dev/null || echo '{}')
-else
+# THE PARENT'S CACHE NO LONGER CROSSES AN EXEC BOUNDARY, and that is the whole of this
+# hook's oldest silent failure. Its entire JSON used to be captured here and handed to
+# three python blocks as argv[1]. Linux caps a SINGLE argv or env string at MAX_ARG_STRLEN
+# (32 pages, 131072 bytes here); the live parent measured 181529, so execve died with
+# E2BIG before python started, `2>/dev/null || true` swallowed it, and every sub-agent
+# dispatched from a long session ran with no mode and no gates. Only the bounded session id
+# crosses now, and each block re-reads the cache in process. The standing rule that came out
+# of it is docs/adr/ADR-hook-exec-argument-boundary.md.
+#
+# STILL FILE-DIRECT, which is the property the old comment here existed to protect. The
+# blocks read `writ.session.cache._read_cache`, never _writ_session (daemon-first): the
+# daemon's in-memory or cache-dir view can diverge from the file cache and answer with a
+# stale mode=None, and the sub-agent would inherit that and run gate-less. This is exactly
+# what `writ-session.py read` printed before, because cmd_read is
+# `json.dump(_read_cache(session_id))`.
+if [ -z "$PARENT_SESSION" ]; then
     # NO POINTER FALLBACK. /tmp/writ-current-session names whichever Claude Code session on
     # this machine took a turn most recently, which for a sub-agent means inheriting mode
     # and gate state from an unrelated parent. That is worse than inheriting nothing: the
@@ -107,47 +143,78 @@ else
     writ_critical writ-subagent-start \
         "no parent session in payload; sub-agent starts with no inherited gate state" \
         "$AGENT_ID"
-    PARENT_STATE='{}'
 fi
 
-# Create isolated session for the sub-agent with parent's gate state but fresh budget
-python3 -c "
-import sys, json, os
-sys.path.insert(0, '$WRIT_DIR/bin/lib')
-from importlib import util
-spec = util.spec_from_file_location('writ_session', '$SESSION_HELPER')
-mod = util.module_from_spec(spec)
-spec.loader.exec_module(mod)
+# Create isolated session for the sub-agent with parent's gate state but fresh budget.
+# The importlib dance that used to load bin/lib/writ-session.py here is gone with the
+# inline mutate_cache block it served: the seeder is a package module, so a plain import
+# off the skill root reaches it.
+#
+# NAMED ENV VARIABLES, NOT POSITIONAL ARGUMENTS. Deleting the unread argv[1] would have
+# shifted every later index by one, and a wrong shift swaps the role with the parent session
+# and produces a quieter version of the same silent failure. The four values are bounded (an
+# agent id, a role name, a source label, a session id), which is the only reason env is safe
+# here: MAX_ARG_STRLEN applies to env strings too, so this is not a way to move an unbounded
+# value across.
+#
+# A QUOTED HEREDOC. The old block was a double-quoted string whose comments carry markdown
+# backticks around `cache_source` and `envelope`, and bash ran them as command substitutions
+# ("cache_source: command not found" on every dispatch). `<<'PY'` suppresses every expansion,
+# which also means WRIT_DIR has to ride the env channel instead of being interpolated.
+#
+# STDOUT IS THE STATUS, and an EMPTY status is the signal. `seeded` and `skipped` both mean
+# the block ran to completion; nothing at all means the exec died, python raised before
+# printing, or the process was killed. Nothing is inferred from a missing telemetry row.
+SEED_STATUS=$(WRIT_DIR="$WRIT_DIR" \
+    WRIT_SA_AGENT_ID="$AGENT_ID" \
+    WRIT_SA_ROLE="$AGENT_TYPE" \
+    WRIT_SA_ROLE_SOURCE="$ROLE_SOURCE" \
+    WRIT_SA_PARENT="$PARENT_SESSION" \
+    python3 - <<'PY'
+import os, sys
+sys.path.insert(0, os.environ.get('WRIT_DIR', ''))
 
-parent = json.loads(sys.argv[1])
-agent_id = sys.argv[2]
+agent_id = os.environ.get('WRIT_SA_AGENT_ID', '')
+parent_session = os.environ.get('WRIT_SA_PARENT', '')
+resolved_role = os.environ.get('WRIT_SA_ROLE', '')
+role_source = os.environ.get('WRIT_SA_ROLE_SOURCE', '') or 'unresolved'
 
-# Create fresh cache with parent's structural state but clean operational state
-# Locked read-modify-write via mutate_cache (creates the default if not exists),
-# so a duplicate SubagentStart or a concurrent writer for the same agent_id cannot
-# lose this initialization -- consistent with the layer-2 serialized-writer discipline.
-with mod.mutate_cache(agent_id) as cache:
-    # Null-safe (audit P1): parent.get('mode', 'work') returns None when the key EXISTS
-    # with a null value (a mode-unset parent), so the child would inherit None and run
-    # mode-less. The 'or' coalesces both the missing-key and null-value cases to the default.
-    cache['mode'] = parent.get('mode') or 'work'
-    cache['current_phase'] = parent.get('current_phase') or 'planning'
-    cache['gates_approved'] = parent.get('gates_approved') or []
-    cache['remaining_budget'] = mod.DEFAULT_SESSION_BUDGET  # telemetry only; see cmd_should_skip
-    cache['is_subagent'] = True  # bypass budget-based skips; sub-agents get unlimited injection
-    cache['loaded_rule_ids'] = []
-    cache['loaded_rule_ids_by_phase'] = {}
-    cache['loaded_rules'] = []
-    cache['denial_counts'] = {}
-    cache['queries'] = 0
-    cache['context_percent'] = 0
-    cache['files_written'] = []
-    cache['analysis_results'] = {}
-    cache['pending_violations'] = []
-    cache['feedback_sent'] = []
-    cache['pretool_queried_files'] = []
-    cache['token_snapshots'] = []
-" "$PARENT_STATE" "$AGENT_ID" 2>/dev/null || true
+# ONE COPY OF THE INHERITANCE RULES, in writ/session/subagent_seed.py. This block used to
+# hold its own, which meant the lazily seeded path (for the 64% of sub-agents that never get
+# a SubagentStart) would have been a second copy free to drift. `cache_source` records that
+# THIS path created the cache, which is what the write gate keys the sub-agent bypass on: a
+# dispatch that fired SubagentStart is an authorization event, a hook-seeded cache is not.
+#
+# `default_mode='work'` preserves this path's long-standing null-safety (audit P1): a
+# mode-unset parent would otherwise hand the child a None and let it run mode-less. The lazy
+# path passes no default, so it seeds nothing rather than inventing a mode.
+#
+# The role is resolved ONCE, above, and handed over with its source, so a sidecar-derived
+# role is not relabelled `envelope` on the way in.
+from writ.session.subagent_seed import CACHE_SOURCE_START, seed_subagent_cache
+
+seeded = seed_subagent_cache(agent_id, parent_session,
+                             cache_source=CACHE_SOURCE_START,
+                             default_mode='work',
+                             role=resolved_role,
+                             role_source=role_source)
+print('seeded' if seeded else 'skipped')
+PY
+) || SEED_STATUS=""
+
+# THE SUPPRESSION IS GONE, AND THE EXIT CODE STILL CANNOT PROPAGATE. A dispatch must never
+# fail because governance could not be inherited, so this hook keeps exiting 0; what changes
+# is that the outcome stops being invisible. Two readers, two surfaces: a person watching
+# stderr gets the critical line at the moment it happens, and the governance census gets one
+# countable row. The row's fields are deliberately minimal and bounded, because a row built
+# from an oversized value would die on the same limit that caused the condition it reports.
+if [ -z "$SEED_STATUS" ]; then
+    writ_critical writ-subagent-start \
+        "governance seeding did not run; this sub-agent starts with no mode and no gates. The operator who dispatched it may re-dispatch this worker, and writ doctor reports the failures under subagent-governance-census." \
+        "$AGENT_ID"
+    log_friction_event "$AGENT_ID" "" "subagent_seed_failed" \
+        "{\"hook\":\"writ-subagent-start\",\"parent_session\":\"$PARENT_SESSION\"}"
+fi
 
 # The sub-agent's mode, read once here rather than at the bottom of the hook. It used
 # to be resolved just before the subagent_start friction row (the last thing this hook
@@ -195,14 +262,28 @@ fi
 # file and was modified inside the window, which is exactly the case that arm was
 # written for (writ/session/cache.py:409). So a nested worker's rules are merged by
 # content instead of by linkage -- one arm narrower, and never wrong.
+#
+# THE CALL IS GUARDED, AND NOT WITH `|| true`. It runs under `set -euo pipefail` and reaches
+# `python3 "$helper" update "$@"` in common.sh, which returns that child's exit code. A role
+# name longer than MAX_ARG_STRLEN made execve fail here with 126 and killed the whole hook:
+# no rules injected, no telemetry, nothing. Suppression would put back the silence this
+# change exists to remove, so the outcome is captured and reported on the surface a reader
+# of this hook is already trained on, and only the exit code is dropped.
 PARENT="$PARENT_SESSION"
 if [ -n "$PARENT" ] && [ "$PARENT" != "$AGENT_ID" ]; then
-    _writ_session update "$AGENT_ID" --parent-session-id "$PARENT" --agent-type "$AGENT_TYPE"
+    LINK_STATUS="linked"
+    _writ_session update "$AGENT_ID" --parent-session-id "$PARENT" \
+        --agent-type "$AGENT_TYPE" || LINK_STATUS=""
+    if [ -z "$LINK_STATUS" ]; then
+        writ_critical writ-subagent-start \
+            "the parent link was not written, so this worker's queried rules reach the parent's commit only by the path and recency arm. The operator who dispatched it may re-dispatch this worker to restore the link." \
+            "$AGENT_ID"
+    fi
 fi
 
 # Query Writ for rules if server is available
 ADDITIONAL_CONTEXT=""
-HEALTH=$(curl -sf --connect-timeout 0.5 --max-time 1 "http://${WRIT_HOST}:${WRIT_PORT}/health" 2>/dev/null || echo "")
+HEALTH=$(curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.5 --max-time 1 "http://${WRIT_HOST}:${WRIT_PORT}/health" 2>/dev/null || echo "")
 if [ -n "$HEALTH" ]; then
     # Build the retrieval query. Newer Claude Code sends the delegated task in a
     # `task` field; use it when present. CC 2.1.181's SubagentStart payload carries
@@ -250,7 +331,7 @@ print(json.dumps({
     'project_root': sys.argv[2],
 }))
 " "$AGENT_PROMPT" "$_PROJECT_ROOT" 2>/dev/null | \
-            curl -s --connect-timeout 0.5 --max-time 2 \
+            curl ${WRIT_CURL_TRANSPORT} -s --connect-timeout 0.5 --max-time 2 \
                 -X POST "http://${WRIT_HOST}:${WRIT_PORT}/query" \
                 -H "Content-Type: application/json" \
                 -d @- 2>/dev/null) || true
@@ -283,15 +364,62 @@ print(json.dumps({
     fi
 fi
 
-# Get the parent's phase state for context injection
-PHASE_INFO=$(python3 -c "
-import sys, json
-parent = json.loads(sys.argv[1])
+# Get the parent's phase state for context injection.
+#
+# AN EMPTY PARENT SESSION READS NO CACHE AT ALL, and the distinction is load-bearing: `{}`
+# renders the documented defaults (mode=work, phase=planning, gates=none), while a cache
+# read for the empty id would answer with the default cache and render mode=None. That is
+# the fallback branch the critical above already recorded.
+PHASE_INFO=$(WRIT_DIR="$WRIT_DIR" WRIT_SA_PARENT="$PARENT_SESSION" python3 - <<'PY' 2>/dev/null || echo "[Writ sub-agent: isolated session]"
+import os, sys
+sys.path.insert(0, os.environ.get('WRIT_DIR', ''))
+
+parent_session = os.environ.get('WRIT_SA_PARENT', '')
+if parent_session:
+    from writ.session.cache import _read_cache
+    parent = _read_cache(parent_session)
+else:
+    parent = {}
 mode = parent.get('mode', 'work')
 phase = parent.get('current_phase', 'planning')
 gates = parent.get('gates_approved', [])
-print(f'[Writ sub-agent: mode={mode}, phase={phase}, gates={\",\".join(gates) if gates else \"none\"}]')
-" "$PARENT_STATE" 2>/dev/null || echo "[Writ sub-agent: isolated session]")
+joined = ','.join(gates) if gates else 'none'
+print('[Writ sub-agent: mode={}, phase={}, gates={}]'.format(mode, phase, joined))
+PY
+)
+
+# The plan artifacts are scoped to the PARENT's session, not this worker's agent id: the
+# parent is the session whose gates get approved, so a plan written under the worker's own
+# id is a plan its orchestrator cannot find. The path is computed from the same resolver the
+# gate reads with, and injected because agents/writ-planner.md is static text that cannot
+# interpolate a session id of its own.
+#
+# WRIT_DIR IS PASSED ON THE COMMAND, and that is a fix rather than a restatement. It is a
+# plain, unexported bash variable at the top of this file, so the child's
+# `os.environ.get('WRIT_DIR', '')` read the EMPTY STRING on every real dispatch,
+# `sys.path.insert(0, '')` inserted the current directory, and the import only resolved when
+# the dispatching project happened to be the skill directory itself. Every other project lost
+# this line silently.
+PLAN_DIR_INFO=$(WRIT_DIR="$WRIT_DIR" WRIT_SA_PARENT="$PARENT_SESSION" python3 - <<'PY' 2>/dev/null || echo ""
+import os, sys
+sys.path.insert(0, os.environ.get('WRIT_DIR', ''))
+
+parent_session = os.environ.get('WRIT_SA_PARENT', '')
+try:
+    from writ.session.cache import _read_cache
+    from writ.session.locators import plan_dir
+    root = (_read_cache(parent_session).get('project_root') or '') if parent_session else ''
+    d = plan_dir(root, parent_session)
+    print('[Writ plan artifacts: write plan.md and capabilities.md to {}/]'.format(d)
+          if d else '')
+except Exception:
+    print('')
+PY
+)
+if [ -n "$PLAN_DIR_INFO" ]; then
+    PHASE_INFO="$PHASE_INFO
+$PLAN_DIR_INFO"
+fi
 
 # Inject via additionalContext
 if [ -n "$ADDITIONAL_CONTEXT" ] || [ -n "$PHASE_INFO" ]; then
@@ -307,17 +435,30 @@ print(json.dumps({
     }
 }))
 " "$ADDITIONAL_CONTEXT" "$PHASE_INFO" 2>/dev/null)
-    if [ -n "$SA_OUTPUT" ]; then
-        printf '%s\n' "$SA_OUTPUT"
-        printf '%s' "$SA_OUTPUT" | blackbox_log out writ-subagent-start "$AGENT_ID"
-    fi
+    emit_hook_reply "$SA_OUTPUT" "" "$AGENT_ID"
 fi
 
 # Log sub-agent start to friction log (common.sh already sourced at top).
 # CURRENT_MODE was resolved right after the sub-agent's cache was created, so the
 # manual-test-grant gate row above carries it too. Nothing between there and here
 # changes this agent's mode.
+# BOUNDED FOR THE ROW, because this is an exec boundary like every other one this cycle
+# closed. $AGENT_TYPE is attacker-or-caller-supplied and arrives unbounded, and it is
+# interpolated into a JSON string passed as an ARGUMENT, so a large role name blows this
+# exec with E2BIG exactly as the parent cache blew the seed exec. log_friction_event's
+# internal `|| true` would then swallow it and the dispatch would lose its subagent_start
+# row silently.
+#
+# THE NARROW CASE IS THE DANGEROUS ONE, and it is why truncating matters rather than being
+# tidy: the JSON wrapper adds around 50 to 90 bytes, so a role name just under the kernel
+# cap PASSES the seed exec (seeding succeeds, so no subagent_seed_failed row is written)
+# and still overflows here. Neither row fires, and _subagent_governance_census then counts
+# a genuinely governed dispatch as unreachable. That is a miscount in the very census this
+# cycle exists to make honest.
+#
+# Truncating the LOGGED value only. The role itself is untouched: it has already been
+# resolved, stamped into the cache and used for injection above.
 log_friction_event "$AGENT_ID" "$CURRENT_MODE" "subagent_start" \
-    "{\"agent_type\":\"$AGENT_TYPE\",\"parent_session\":\"$PARENT_SESSION\"}"
+    "{\"agent_type\":\"${AGENT_TYPE:0:128}\",\"parent_session\":\"${PARENT_SESSION:0:128}\"}"
 
 exit 0

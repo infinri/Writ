@@ -45,70 +45,85 @@ if [ -z "$CONTENT" ]; then
     exit 0
 fi
 
-# Detect override marker. If present, allow through with no check.
-# Two accepted forms:
-#   YAML: explicit_rule_override: true
-#   Body: override authorized by: <name>
-OVERRIDE_MATCHED=$(python3 <<PY
-import sys, re
-content = $(python3 -c "import sys,json; print(json.dumps(sys.argv[1]))" "$CONTENT" 2>/dev/null)
-if re.search(r'explicit_rule_override\s*:\s*true', content, re.IGNORECASE):
-    print('yes')
-elif re.search(r'override\s+authorized\s+by\s*:', content, re.IGNORECASE):
-    print('yes')
-else:
-    print('no')
-PY
-) || OVERRIDE_MATCHED="no"
+# THE DECISION IS ONE PROGRAM IN A FILE, NOT TWO PROGRAMS BUILT OUT OF PROGRAMS.
+#
+# What stood here were two `python3 <<PY` blocks, the override pre-filter and the pattern
+# scan, and each built its own first statement out of a NESTED command substitution
+# (`content = $(python3 -c '...json.dumps(sys.argv[1])' "$CONTENT")`) inside an UNQUOTED
+# heredoc, so bash pasted that output into the outer program's TEXT before python ever
+# started. The content therefore crossed on the INNER call's argv, Linux caps a single
+# argv string at MAX_ARG_STRLEN (32 pages, 131,072 bytes here), `2>/dev/null` hid the
+# failed exec, the substitution yielded nothing, the outer program's line became
+# `content = ` (a SyntaxError), and `|| MATCHED=""` plus `[ -z "$MATCHED" ] && exit 0`
+# read that as "nothing to gate". MEASURED 2026-09-08 with the same rule-weakening phrase
+# in every payload: 200 bytes DENY, 131,000 DENY, 200,000 SILENT ALLOW, rc 0 each time.
+# A memory write is the most durable thing this agent can persist, a cross-session policy
+# change, so an unseen allow here is the worst available outcome in the tree.
+#
+# THE PAYLOAD GOES ON THE PIPE AND THE PROGRAM GOES TO A FILE, which is the OPPOSITE
+# transport from writ-bash-write-gate.sh's and worth saying so, because a reader who
+# knows that cycle will expect a temp file: there stdin was ALREADY OCCUPIED by the
+# quoted heredoc carrying that hook's ~1,900-line program, so the command had to take a
+# mktemp file, and the ADR recorded moving the program to a file as the right end state.
+# Here the constraint runs the other way. The program is small and fixed and no test
+# slices it out of this file, so the program moves and stdin is free for the content.
+# `printf` is a bash BUILTIN: the content reaches no argv and no environment at all,
+# because bash writes it into the pipe itself, which is stronger than the ADR's "a
+# payload that must cross goes on STDIN" rather than merely compliant with it.
+#
+# The NINE patterns and the override pre-filter move BYTE-IDENTICALLY, and that is why
+# the program is a FILE and not a `python3 -c` argument: two of the nine carry a single
+# quote in their own Python source. bin/lib/memory-policy-scan.py's docstring carries
+# that argument in full, along with the ordering guarantee this hook depends on.
+SCAN="$WRIT_DIR/bin/lib/memory-policy-scan.py"
 
-if [ "$OVERRIDE_MATCHED" = "yes" ]; then
+# Above the scan rather than below it: writ_decider_fault's audit row is attributed from
+# SESSION_ID, and the fault arm is exactly the path on which this must already have run.
+SESSION_ID="${HOOK_SESSION_ID:-unknown}"
+
+VERDICT=$(printf '%s' "$CONTENT" | python3 "$SCAN" 2>/dev/null) || true
+
+# THREE OUTCOMES, AND THE ALLOW NEEDS A POSITIVE WORD. `[ -z "$MATCHED" ] && exit 0` was
+# the consumer half of the defect above: "the scan ran and found nothing" and "the scan
+# did not run" both arrived as an empty string, and both were answered with a silent
+# allow. The scan now names its verdict and prints `status<TAB>complete` as its LAST
+# line, so the outcome is OBSERVED rather than inferred. Only `clean` or `override`
+# allows; a MISSING or an UNRECOGNIZED verdict is a FAULT and asks. `2>/dev/null || true`
+# is kept, and it is safe for the reason writ-bash-write-gate.sh:3134 gives: the status is
+# not read from `$?`, it is read from whether the block PRINTED that it finished.
+#
+# CONTENT CANNOT INVENT A LINE OR A FIELD on this channel: the only content-derived bytes
+# sit inside a `json.dumps` string, which cannot hold a raw newline or a raw tab, and the
+# verdict is read from the FIRST line while the sentinel is read from the LAST.
+_VERDICT_LAST="${VERDICT##*$'\n'}"
+if [ "$_VERDICT_LAST" != "$WRIT_EXTRACTOR_SENTINEL" ]; then
+    writ_decider_fault "writ-memory-policy-guard" "memory-policy-scan" \
+        "the memory rule-weakening scan did not run to completion, so this write to auto-memory was not checked for a persisted rule bypass"
     exit 0
 fi
 
-# Pattern match rule-weakening phrases. Checks the content (case-insensitive).
-# If ANY pattern matches, deny. Patterns are tuned to PSR-003 phrasing plus
-# reasonable variants; false-positives can be escaped via the override marker.
-MATCHED=$(python3 <<PY
-import sys, re
-content = $(python3 -c "import sys,json; print(json.dumps(sys.argv[1]))" "$CONTENT" 2>/dev/null)
-patterns = [
-    # Skip / no verification variants
-    r'\bskip\s+(?:the\s+)?(?:verification|verify|test\s+run|tests?|check|checks|validation|validate)\b',
-    r'\bno\s+(?:verification|verify|re-?run|re-?runs?|fresh\s+verification)\b',
-    r'\bnever\s+(?:re-?run|verify|test)\b',
-    r'\bdon\'?t\s+(?:re-?run|verify|re-?verify)\b',
-    # Face-value / trust-as-bypass
-    r'take\s+(?:the\s+)?[\w\s\-]{0,40}?(?:report|claim|output|result|answer)\s+at\s+face\s+value',
-    r'\btrust\s+[\w\s\-]{0,20}?(?:source|sub-?agent|implementer|worker|report)\s*=\s*(?:no|skip|never|face)',
-    # Rule-override / bypass language outside an authorized marker
-    r'\b(?:override|bypass|weaken|suspend|disable)\s+[\w\s\-]{0,20}?(?:ENF-|rule|verify|discipline|verification)',
-    # PSR-003 exact phrasing
-    r'["\']?i\s+trust\s+you["\']?[^\n]{0,120}(?:skip|no|never|face\s+value|move\s+on)',
-    r'take\s+[\w\s\-]{0,40}?\s+at\s+face\s+value\s+and\s+move\s+on',
-]
-matched = []
-for p in patterns:
-    m = re.search(p, content, re.IGNORECASE)
-    if m:
-        matched.append(m.group(0)[:80])
-if matched:
-    import json as _j
-    print(_j.dumps(matched))
-else:
-    print('')
-PY
-) || MATCHED=""
-
-if [ -z "$MATCHED" ]; then
-    exit 0
-fi
+# The override marker (YAML `explicit_rule_override: true`, or a body line `override
+# authorized by: <name>`) is this guard's own documented escape hatch, and the scan
+# short-circuits on it BEFORE it scans a single pattern, so an authorized override can
+# never be reported as a match and never writes a memory_policy_deny row.
+VERDICT_LINE="${VERDICT%%$'\n'*}"
+MATCHED=""
+case "$VERDICT_LINE" in
+    $'verdict\toverride') exit 0 ;;
+    $'verdict\tclean')    exit 0 ;;
+    $'verdict\tmatch\t'*) MATCHED="${VERDICT_LINE#$'verdict\tmatch\t'}" ;;
+    *)
+        writ_decider_fault "writ-memory-policy-guard" "memory-policy-scan" \
+            "the memory rule-weakening scan finished but named no verdict this hook recognizes, so this write to auto-memory was not judged"
+        exit 0
+        ;;
+esac
 
 # Friction log: memory_policy_deny event. Hardening (PSR-003c follow-up):
 # - Pipe matched-JSON through stdin instead of heredoc interpolation
 #   (single quotes, triple quotes, backslashes in regex matches no longer
 #   break Python parsing).
 # - Path resolution (env var / project root) is owned by friction-append.py.
-SESSION_ID="${HOOK_SESSION_ID:-unknown}"
 SESSION_ID="$SESSION_ID" \
     FILE_PATH="$FILE_PATH" \
     MATCHED_RAW="$MATCHED" \
@@ -133,7 +148,7 @@ PY
 # Emit deny directive. The assistant should either (a) revise the memory
 # to not encode a rule bypass, or (b) add an explicit override marker
 # with authorization.
-python3 <<'PY'
+DENY_REPLY=$(python3 <<'PY'
 import json
 reason = (
     "[Writ: memory rule-weakening blocked] This memory write would persist "
@@ -160,4 +175,6 @@ print(json.dumps({
     }
 }))
 PY
+) || DENY_REPLY=""
+emit_hook_reply "$DENY_REPLY"
 exit 0

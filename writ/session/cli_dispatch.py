@@ -15,7 +15,11 @@ import sys
 
 from writ.session.mode_engine import cmd_mode
 from writ.session.gates import cmd_can_write, cmd_can_read_code
-from writ.session.approval_workflow import cmd_advance_phase, cmd_current_phase
+from writ.session.approval_workflow import (
+    cmd_advance_phase,
+    cmd_current_phase,
+    cmd_reopen_planning,
+)
 from writ.session.budget_tracking import cmd_update, cmd_should_skip, cmd_format
 from writ.session.investigations import (
     _AUDIT_BUDGET_LOC,
@@ -191,6 +195,19 @@ def _cli_advance_phase(argv: list[str]) -> None:
     cmd_advance_phase(argv[2], _opt_value("--project-root", "", argv), _opt_value("--token", "", argv))
 
 
+def _cli_reopen_planning(argv: list[str]) -> None:
+    """The user's `replan approved`, spent by the approval hook in its own process.
+
+    Not a _SIMPLE_COMMANDS entry: the --token is what makes the human the approver, and a
+    single-arg handler would call the reset with an empty one. Invoked LOCALLY by
+    auto-approve-gate.sh and by nothing else -- there is deliberately no HTTP route, because
+    "the daemon is down" is one of the two states this escape has to work in.
+    """
+    if len(argv) < 3:
+        _usage_exit("Usage: writ-session.py reopen-planning <session_id> --token TOKEN")
+    cmd_reopen_planning(argv[2], _opt_value("--token", "", argv))
+
+
 def _cli_metrics(argv: list[str]) -> None:
     cmd_metrics(_opt_value("--log", "", argv))
 
@@ -228,6 +245,7 @@ _COMPLEX_COMMANDS = {
     "can-write": _cli_can_write,
     "can-read-code": _cli_can_read_code,
     "advance-phase": _cli_advance_phase,
+    "reopen-planning": _cli_reopen_planning,
     "metrics": _cli_metrics,
 }
 
@@ -237,7 +255,7 @@ def dispatch(argv: list[str]) -> None:
     through _SIMPLE_COMMANDS; the rest through _COMPLEX_COMMANDS; anything else is unknown."""
     if len(argv) < 2:
         print("Usage: writ-session.py <command> [args]", file=sys.stderr)
-        _usage_exit("Commands: read, update, format, should-skip, mode, coverage, coverage-map, record-analysis, synthesis-gate, scope-estimate, partition-scope, coverage-rollup, aggregate-findings, triangulation-gate, staleness-check, lens, auto-feedback, can-write, can-read-code, advance-phase, current-phase, metrics")
+        _usage_exit("Commands: read, update, format, should-skip, mode, coverage, coverage-map, record-analysis, synthesis-gate, scope-estimate, partition-scope, coverage-rollup, aggregate-findings, triangulation-gate, staleness-check, lens, auto-feedback, can-write, can-read-code, advance-phase, reopen-planning, current-phase, metrics")
 
     cmd = argv[1]
 

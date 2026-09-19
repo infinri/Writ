@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from writ.graph.db._safety import full_wipe_allowed, how_to_run_safely
 from writ.graph.dump import import_cypher_dump, render_cypher_dump
 
 SNAPSHOT_PATH = Path(__file__).resolve().parent.parent / "var" / "benchmark-graph-snapshot.cypher"
@@ -31,8 +32,29 @@ _GRAPH_FIRST = ("proposed", "graduation_pending")
 
 
 async def assert_safe_to_wipe(db) -> None:
-    """Raise if the live graph holds graph-first nodes that clear_all() would destroy
-    permanently. Call ONCE before the first destructive clear_all()."""
+    """Raise unless this wipe is safe: a disposable instance, holding no graph-first
+    nodes. Call ONCE before the first destructive clear_all().
+
+    THE INSTANCE CHECK COMES FIRST, and it is new. `clear_all` enforces
+    `assert_full_wipe_allowed` only when the preserve set is EMPTY
+    (`maintenance_store.py:37-47`), and a bare `clear_all()` preserves
+    `RECORD_LABELS`, which is not, so nothing stopped a destructive benchmark from
+    wiping the corpus on whichever instance happened to be configured, the live one
+    included. The snapshot below is real protection but it is RECOVERY; requiring
+    isolation is prevention, and the two are not interchangeable after a crash
+    between wipe and restore.
+
+    The refusal reuses `how_to_run_safely` rather than writing its own instructions,
+    so a developer who hits this and the pytest skip is not told two different
+    things about the same requirement (DRY-DUP-001).
+    """
+    uri = getattr(db, "_uri", None)
+    if not full_wipe_allowed(uri):
+        raise RuntimeError(
+            "Refusing to run a destructive benchmark: the connected graph is not "
+            f"marked disposable (uri={uri!r}), and this benchmark wipes the corpus.\n"
+            + how_to_run_safely()
+        )
     async with db._driver.session(database=db._database) as session:
         result = await session.run(
             "MATCH (n) WHERE n.provenance IN $states RETURN count(n) AS c",

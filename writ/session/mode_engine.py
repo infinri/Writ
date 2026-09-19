@@ -10,6 +10,7 @@ investigation callers resolve the names unchanged.
 import glob
 import os
 import sys
+import tempfile
 
 from writ.session.cache import _read_cache, _write_cache, mutate_cache, record_transition
 from writ.session.friction import _log_friction_event
@@ -117,26 +118,50 @@ def _gate_strictness_for_mode(mode: str | None) -> str:
     return MODE_CONFIG.get(mode or "", {}).get("gate_strictness", "advisory")
 
 
-def _next_pending_gate(cache: dict) -> str | None:
-    """Return the first gate in the mode's sequence not yet approved."""
-    mode = cache.get("mode")
-    if mode != "work":
-        return None
-    # An approval counts only for the plan it was granted against. A bare gate
-    # name cannot say which plan that was, so rewriting plan.md used to leave
-    # every prior approval standing: a finished cycle's gates carried into the
-    # next one and the user's approval of the NEW plan advanced nothing.
-    #
-    # A gate with NO recorded hash re-arms. On a governance gate the safe default
-    # when we cannot prove what an approval covered is to ask again, and that
-    # costs one re-approval for a session whose state predates this binding.
-    # Honoring unfingerprinted entries instead would leave the hole open forever.
-    current_plan = plan_md_hash(cache.get("project_root"))
+def approved_gates_for_plan(cache: dict, session_id: str | None = None) -> set[str]:
+    """The approved gates whose approval still covers the CURRENT plan.
+
+    ONE definition, read by both the approval path (`_next_pending_gate`, below) and the
+    enforcement path (`gates._check_work_gate`). They used to differ: this one paired each
+    gate with the plan it was granted against while the write gate read `gates_approved`
+    alone, so after a plan edit an advance was refused for drift while source writes kept
+    being permitted against a plan that no longer existed. Two derivations of one fact is
+    the defect; a shared function is the fix, so a future change lands on both paths at
+    once or on neither.
+
+    An approval counts only for the plan it was granted against. A bare gate name cannot
+    say which plan that was, so rewriting plan.md used to leave every prior approval
+    standing: a finished cycle's gates carried into the next one and the user's approval of
+    the NEW plan advanced nothing.
+
+    A gate with NO recorded hash re-arms. On a governance gate the safe default when we
+    cannot prove what an approval covered is to ask again, and that costs one re-approval
+    for a session whose state predates this binding. Honoring unfingerprinted entries
+    instead would leave the hole open forever.
+
+    Tick state is NOT drift: `plan_md_hash` normalizes `- [x]` to `- [ ]` before hashing,
+    so checking off a capability the documented way does not re-arm the gates.
+    """
+    current_plan = plan_md_hash(cache.get("project_root"), session_id)
     bound = cache.get("gates_approved_plan", {})
-    approved = {
+    return {
         gate for gate in cache.get("gates_approved", [])
         if bound.get(gate) == current_plan
     }
+
+
+def _next_pending_gate(cache: dict, session_id: str | None = None) -> str | None:
+    """Return the first gate in the mode's sequence not yet approved.
+
+    session_id selects the session-scoped plan to fingerprint. It defaults to None so an
+    un-threaded caller keeps the shared-root behaviour; both this function and the advance
+    path must be given the SAME id, or the approval path and the enforcement path hold two
+    derivations of one fact again, which is the defect the two were unified to close.
+    """
+    mode = cache.get("mode")
+    if mode != "work":
+        return None
+    approved = approved_gates_for_plan(cache, session_id)
     for gate in _gate_sequence_for_mode(mode):
         if gate not in approved:
             return gate
@@ -186,14 +211,14 @@ def _promote_root_cause_to_plan(session_id: str, mode: str) -> None:
                 break
             path = os.path.dirname(path)
 
-        debug_md = _find_debug_md(os.path.join(project_root, "_"))
+        debug_md = _find_debug_md(os.path.join(project_root, "_"), session_id)
         root_cause = _extract_root_cause(debug_md) if debug_md else None
 
         if not root_cause:
             _log_friction_event(session_id, mode, "debug_to_work_handoff", evidence_present=False)
             return
 
-        plan_path = _find_plan_md(project_root) or os.path.join(project_root, "plan.md")
+        plan_path = _find_plan_md(project_root, session_id) or os.path.join(project_root, "plan.md")
         existing = ""
         if os.path.isfile(plan_path):
             with open(plan_path) as f:
@@ -294,7 +319,8 @@ def _clear_gate_artifacts(project_root: str | None, session_id: str | None) -> N
 
 
 def _apply_mode_set(
-    cache: dict, mode: str, is_orchestrator: bool = False, *, mode_source: str | None
+    cache: dict, mode: str, is_orchestrator: bool = False, *,
+    mode_source: str | None, trigger: str = "mode-set",
 ) -> tuple:
     """Mutate `cache` in place for a fresh mode-set; return (old_mode, new_phase).
 
@@ -309,6 +335,13 @@ def _apply_mode_set(
     It is keyword-only and has NO DEFAULT on purpose: every path that sets a mode passes
     through here, so a new caller must state who chose the mode rather than inherit a
     default that would quietly label a guess as a human's word.
+
+    `trigger` names WHAT caused this reset on the phase-transition record, and it DOES
+    default, to the value every existing caller already produced ("mode-set"), so no
+    current row changes. It exists because reopen_planning reuses this function rather than
+    reimplementing gate clearing: a human re-opening planning mid-cycle would otherwise be
+    recorded as a new task's "mode-set", which is the one thing an auditor reading
+    phase_transitions needs to be able to tell apart.
     """
     old_mode = cache.get("mode")
     old_phase = cache.get("current_phase")
@@ -324,6 +357,14 @@ def _apply_mode_set(
     # mode-bearing cache records its project so the rotation carry's same-project
     # guard has a positive per-cache identity check (safe under parallel jobs).
     cache["project_root"] = os.getcwd()
+    # Stamp the OS scratch zone the SAME WAY, and for the same reason one layer down: the
+    # write gate runs in two processes and `tempfile.gettempdir()` is a per-process answer,
+    # so a zone resolved at write time lets the daemon and the CLI fallback allow and deny
+    # the same path. Resolving it HERE fixes it for the session, and the process that
+    # declares the mode is the one whose answer wins, because it is already the authority
+    # for `project_root` above -- a caller that can move the whole boundary by choosing a
+    # cwd is not constrained by also choosing a zone.
+    cache["scratch_zone"] = os.path.realpath(tempfile.gettempdir())
 
     # Fresh workflow state
     new_phase = _initial_phase_for_mode(mode)
@@ -336,12 +377,14 @@ def _apply_mode_set(
     # Audit trail -- skip no-op transitions (e.g. repeated mode set work)
     if old_phase != new_phase:
         record_transition(
-            cache, from_phase=old_phase, to_phase=new_phase, trigger="mode-set", mode=mode
+            cache, from_phase=old_phase, to_phase=new_phase, trigger=trigger, mode=mode
         )
     return old_mode, new_phase
 
 
-def _mode_set(session_id: str, mode: str, is_orchestrator: bool = False) -> None:
+def _mode_set(
+    session_id: str, mode: str, is_orchestrator: bool = False, *, trigger: str = "mode-set"
+) -> None:
     """Set mode with fresh state. Internal -- called by cmd_mode.
 
     This is the EXPLICIT new-task command: it always resets current_phase to the
@@ -351,10 +394,15 @@ def _mode_set(session_id: str, mode: str, is_orchestrator: bool = False) -> None
 
     Being the explicit command is exactly what it stamps: MODE_SOURCE_EXPLICIT, which is
     what later tells the mid-session re-route to leave this session's mode alone.
+
+    `trigger` is passed through to the phase-transition record (see _apply_mode_set) and
+    defaults to what every existing caller produced, so only a caller that states a
+    different cause gets a different row.
     """
     with mutate_cache(session_id) as cache:
         old_mode, new_phase = _apply_mode_set(
-            cache, mode, is_orchestrator=is_orchestrator, mode_source=MODE_SOURCE_EXPLICIT
+            cache, mode, is_orchestrator=is_orchestrator,
+            mode_source=MODE_SOURCE_EXPLICIT, trigger=trigger,
         )
         project_root = cache.get("project_root")
 
@@ -381,6 +429,45 @@ def _mode_set(session_id: str, mode: str, is_orchestrator: bool = False) -> None
     # populated debug.md root cause into plan.md. Best-effort (never raises).
     if old_mode == "debug" and mode == "work":
         _promote_root_cause_to_plan(session_id, mode)
+
+
+def reopen_planning(session_id: str, *, trigger: str = "user-replan") -> None:
+    """Return a work session to planning at the USER's explicit request.
+
+    This is the exit from the plan-frozen state: mode=work, current_phase=implementation,
+    both gates approved, and plan.md refused by the write gate. Before it existed there was
+    no reply the user could type that acted on that refusal, so a session that needed to
+    amend its plan had nowhere to go.
+
+    IT REUSES _mode_set RATHER THAN CLEARING ANYTHING ITSELF, and that is the whole design.
+    `_apply_mode_set` already resets current_phase to the mode's initial phase, empties
+    gates_approved and gates_approved_plan, clears paused_work_state and denial_counts, and
+    _mode_set then deletes this session's `*.approved` artifacts through
+    _clear_gate_artifacts. Re-implementing any of that here would be a second definition of
+    "a gate is cleared", and the last time this codebase held two of those they drifted. The
+    only thing added is the `trigger`, so phase_transitions says a human re-planned instead
+    of mis-reporting it as a new task.
+
+    CALLED, NOT WRAPPED: _mode_set's cleanup runs AFTER its own durable write and documents
+    that it assumes its mutate_cache block is the OUTERMOST one for this session id. Putting
+    this call inside another mutate_cache block would defer the write to the outer exit while
+    the artifact deletion had already happened, so a crash in between would leave the files
+    gone and the cache still claiming the gates approved.
+
+    TWO PROPERTIES OF _apply_mode_set ARE RELIED ON HERE. `is_orchestrator` is only ever
+    SET, never cleared, so an orchestrator session stays suppressed across a re-open; and
+    `denial_counts = {}` resets the deny-to-ask escalation back to plain deny, which is
+    stricter, not looser.
+
+    Guarded on mode, because there is nothing to re-open outside work: every other mode has
+    an empty gate_sequence and a None initial phase, so running this against one would
+    record a transition and delete artifacts to achieve nothing. The AUTHORITATIVE state
+    guards (phase, pending gate, the token) live in approval_workflow.cmd_reopen_planning,
+    which is the only caller and the only place a human's approval is checked.
+    """
+    if _read_cache(session_id).get("mode") != "work":
+        return
+    _mode_set(session_id, "work", trigger=trigger)
 
 
 def _mode_init(
@@ -479,7 +566,7 @@ def _mode_switch(session_id: str, mode: str) -> None:
                 # Fingerprint the plan these approvals were granted against. The key is
                 # ALWAYS written (None when there is no plan) so the return path can tell
                 # "no plan at pause" from "this state predates the fingerprint".
-                "plan_hash": plan_md_hash(project_root),
+                "plan_hash": plan_md_hash(project_root, session_id),
             }
 
         # Restore Work state when returning to Work
@@ -496,7 +583,7 @@ def _mode_switch(session_id: str, mode: str) -> None:
             # re-approval; restoring on an unchecked file hands back approvals that may no
             # longer cover the plan. Absent at both ends still restores: that is genuinely
             # equal, because no plan means nothing pivoted.
-            current_hash = plan_md_hash(project_root)
+            current_hash = plan_md_hash(project_root, session_id)
             if current_hash == paused.get("plan_hash") and current_hash != PLAN_HASH_UNREADABLE:
                 cache["current_phase"] = paused["phase"]
                 cache["gates_approved"] = paused["gates_approved"]

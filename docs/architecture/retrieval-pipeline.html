@@ -174,12 +174,11 @@ flowchart TD
 <table>
   <thead><tr><th>Signal</th><th>Semantic (default)</th><th>Literal mode</th><th>Detail</th></tr></thead>
   <tbody>
-    <tr><td>Vector similarity</td><td class="num">0.594</td><td class="num">0.396</td><td>Dense cosine, rank-normalized. Semantic mode is vector-dominant for paraphrase matching.</td></tr>
-    <tr><td>BM25 keyword</td><td class="num">0.198</td><td class="num">0.396</td><td>Literal mode equal-weights the two for exact-phrase and rationalization queries.</td></tr>
-    <tr><td>Severity</td><td class="num">0.099</td><td class="num">0.099</td><td>critical 1.0, high 0.75, medium 0.5, low 0.25 (<code>ranking.py:53</code>).</td></tr>
-    <tr><td>Confidence</td><td class="num">0.099</td><td class="num">0.099</td><td>Static tier map (<code>ranking.py:60</code>), replaced by the rule's empirical positive ratio once graduated (50+ observations, ratio 0.75+).</td></tr>
-    <tr><td>Graph proximity</td><td class="num">0.010</td><td class="num">0.010</td><td>Discrete 0 / 0.5 / 1.0 relative to the top-3 seeds.</td></tr>
-    <tr><td>Bundle cohesion</td><td class="num">0.000</td><td class="num">0.000</td><td>Implemented but zero-weighted; the computation is skipped entirely when the weight is 0 (<code>pipeline.py:454-474</code>).</td></tr>
+    <tr><td>Vector similarity</td><td class="num">0.570</td><td class="num">0.396</td><td>Dense cosine, rank-normalized. Semantic mode is vector-dominant for paraphrase matching.</td></tr>
+    <tr><td>BM25 keyword</td><td class="num">0.190</td><td class="num">0.396</td><td>Literal mode equal-weights the two for exact-phrase and rationalization queries.</td></tr>
+    <tr><td>Severity</td><td class="num">0.095</td><td class="num">0.099</td><td>critical 1.0, high 0.75, medium 0.5, low 0.25 (<code>ranking.py:53</code>).</td></tr>
+    <tr><td>Confidence</td><td class="num">0.095</td><td class="num">0.099</td><td>Static tier map (<code>ranking.py:60</code>), replaced by the rule's empirical positive ratio once graduated (50+ observations, ratio 0.75+).</td></tr>
+    <tr><td>Graph proximity</td><td class="num">0.050</td><td class="num">0.010</td><td>Discrete 0 / 0.5 / 1.0 relative to the top-3 seeds. Semantic weight raised from 0.010 on 2026-09-18: the only arm of the ablation sweep improving MRR@5, hit-rate@5 and nDCG@10 together while losing zero queries (<code>benchmarks/NEO4J-ABLATION-2026-09-18.md</code>). The four non-graph weights were rebalanced to keep the sum at 1.0. The literal preset was not covered by that sweep and is unchanged.</td></tr>
   </tbody>
 </table>
 </div>

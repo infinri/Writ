@@ -37,6 +37,7 @@ from pathlib import Path
 import pytest
 
 # autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
+from tests._strace import trace_execve
 from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
 
 REPO = Path(__file__).resolve().parent.parent
@@ -252,15 +253,9 @@ class TestResolutionIsLazyAndMemoized:
             f"{body}\n"
             "exit 0\n"
         )
-        trace = tmp_path / "trace.txt"
-        subprocess.run(
-            ["strace", "-f", "-qq", "-e", "trace=execve", "-o", str(trace),
-             "bash", str(script)],
-            capture_output=True, text=True, timeout=180, env=_env(tmp_path),
-        )
-        if not trace.exists():
-            pytest.skip("strace produced no trace")
-        return trace.read_text(errors="replace").splitlines()
+        return trace_execve(
+            ["bash", str(script)], timeout=180, env=_env(tmp_path),
+        ).splitlines()
 
     def _lookups(self, lines: list[str]) -> list[str]:
         """execve of the readers writ_session_mode_direct can use (jq or python3)."""

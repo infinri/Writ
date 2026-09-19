@@ -11,10 +11,7 @@ dump. The clause is dead (gated behind times_seen==0). FIX-3 drops it.
 from __future__ import annotations
 
 import asyncio
-import json
 import re
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 import pytest
@@ -35,14 +32,26 @@ def _integrity_source() -> str:
     return (SKILL / "writ" / "graph" / "integrity.py").read_text()
 
 
-def _health():
-    try:
-        from tests._daemon import _health_url
+@pytest.fixture(scope="module")
+def owned_daemon(tmp_path_factory):
+    """OWNED DAEMON over HTTP (Decision 4, plan.md
+    2412ba38-51e1-4b73-895b-7b240a3c21d3): this module's /health assertion
+    turns on `rule_count` (a live DB count) and `index_state` (the pipeline the
+    LIFESPAN builds), so an ASGI transport cannot reach it -- only a real
+    daemon PROCESS can. The Rule population precondition runs BEFORE the
+    start, in this module's OWN fixture, because the daemon indexes once at
+    startup and a repair afterwards is invisible to it.
+    """
+    from tests._corpus import require_population
+    from tests._hook_runner import instrumented_daemon
 
-        with urllib.request.urlopen(_health_url(), timeout=2) as r:
-            return json.loads(r.read())
-    except (urllib.error.URLError, OSError, ValueError):
-        return None
+    require_population(
+        "MATCH (r:Rule) RETURN count(r)",
+        "the Rule population /health's rule_count and status conjunction depend on",
+    )
+    tmp_dir = tmp_path_factory.mktemp("fix3")
+    with instrumented_daemon(tmp_dir) as daemon:
+        yield daemon
 
 
 class TestHealthStatusHelper:
@@ -61,13 +70,29 @@ class TestHealthStatusHelper:
 
 
 class TestHealthLive:
-    def test_loaded_daemon_reports_healthy_not_degraded(self) -> None:
-        h = _health()
-        if h is None:
-            pytest.skip("test-port daemon unreachable")
-        if h.get("rule_count", 0) == 0:
-            pytest.skip("daemon reports 0 rules -> degraded by design; not the loaded case")
-        assert h.get("status") == "healthy", f"loaded daemon must be healthy; got {h.get('status')}"
+    """OWNED DAEMON over HTTP (Decision 4/5, plan.md
+    2412ba38-51e1-4b73-895b-7b240a3c21d3, module 5). Converts the module's
+    two-skip-site test: a reachable daemon serving an empty graph used to
+    read as a skip ("degraded by design; not the loaded case"), the exact
+    FIX-5 masking class this test was written to detect. The corpus
+    precondition (non-empty Rule count) now runs BEFORE the start and FAILS
+    loud instead.
+    """
+
+    def test_loaded_warm_daemon_reports_the_healthy_conjunction(self, owned_daemon) -> None:
+        h = owned_daemon["health"]
+        assert (
+            h.get("status") == "healthy"
+            and h.get("index_state") == "warm"
+            and h.get("rule_count", 0) >= 1
+        ), (
+            f"a loaded, warm daemon must report the conjunction status=healthy "
+            f"AND index_state=warm AND rule_count>=1, attributable to the two "
+            f"inputs _health_status actually takes; got {h}"
+        )
+    # MUTATION: inverting _health_status's condition (writ/server/routes/
+    # query.py:490-495) so a warm, loaded daemon reports 'degraded' reddens
+    # this conjunction. The old form could not be reddened at all: it never ran.
 
     def test_server_health_has_degraded_path(self) -> None:
         # Feature marker: /health must implement the degraded status (warm + 0 rules).

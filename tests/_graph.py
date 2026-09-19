@@ -154,7 +154,7 @@ def classify_isolation(*, opted_out: bool, is_production: bool, reachable: bool)
     return STATE_ISOLATED
 
 
-def isolation_refusal_message(resolved_uri: str, counts=None) -> str:
+def isolation_refusal_message(resolved_uri: str, counts=None, *, shortfall=None) -> str:
     """The one refusal text, shared by all three session-start refusals.
 
     One helper rather than three messages at three raise sites: the reasons
@@ -163,6 +163,18 @@ def isolation_refusal_message(resolved_uri: str, counts=None) -> str:
     how two of them go stale. `counts` is supplied only for the incomplete
     case, and only then does the message report a census -- the other two
     refusals never read one, so they must not print one they do not have.
+
+    `shortfall` is `{label: (live, required)}` from
+    `tests/_corpus.py::corpus_shortfall`, and it exists because the corpus floor
+    is now derived from the tracked dump rather than hand-written. That tightening
+    turns one previously silent state into a refusal: a tree whose `bible/` holds
+    FEWER nodes of some label than `writ-corpus.cypher` does, which is a real
+    divergence but not one the developer can act on from a census alone, because
+    the floor they fell below is not printed anywhere. So the block names, per
+    short label, what the graph HAS and what the floor REQUIRES, then the two ways
+    out. It is emitted ONLY when a shortfall is supplied, for the same reason the
+    census is: the production-target and unreachable refusals measured no corpus,
+    so they must not print a remedy for a shortfall nobody observed.
     """
     lines = [
         "Refusing to start: this run has no isolated Neo4j instance.",
@@ -181,6 +193,21 @@ def isolation_refusal_message(resolved_uri: str, counts=None) -> str:
             "",
             "It answered, but the corpus replay left it incomplete. Live counts by label:",
             *[f"        {label} = {n}" for label, n in sorted(counts.items())],
+        ]
+    if shortfall is not None:
+        lines += [
+            "",
+            "Below the corpus floor derived from the tracked "
+            f"{DUMP_FILENAME} (label: live of required):",
+            *[
+                f"        {label}: {live} of {required}"
+                for label, (live, required) in sorted(shortfall.items())
+            ],
+            "",
+            "That gap is one direction only: a corpus holding MORE than the tracked dump",
+            "is fine, so this is a tree whose bible/ shrank below what the dump ships.",
+            "    writ export-cypher          refresh the tracked dump if the corpus"
+            " legitimately changed",
         ]
     lines += [
         "",
@@ -286,6 +313,74 @@ def wipe_corpus() -> None:
             await db.close()
 
     asyncio.run(_q())
+
+
+def wipe_everything() -> None:
+    """Delete EVERY node, records included. Routes through clear_all(frozenset()).
+
+    The one caller is `tests/conftest.py::_preflight_isolated_graph`, which runs
+    only on an isolated run and only after `classify_isolation` has already
+    returned STATE_ISOLATED. That is what makes this operation correct here and
+    wrong everywhere else: the preservation rule exists because a `Decision`
+    record has no file to rebuild from, which is a statement about a graph
+    somebody cares about, and the disposable instance holds nothing anybody
+    would miss.
+
+    Permission is NOT re-derived here. `clear_all` resolves an empty preserve
+    set to `assert_full_wipe_allowed` (writ/graph/db/maintenance_store.py),
+    which refuses with `FullWipeRefused` before a session is opened, so a
+    missing `WRIT_TEST_GRAPH` marker or a production (host, port) deletes
+    nothing. A second copy of that check in this module would be a second
+    answer to a question that already has one, and the copies are what drift.
+    An UNREACHABLE instance is not this function's refusal to make: the
+    preflight classifies reachability and refuses before calling here, so the
+    wipe is never issued against a target that was not approved.
+
+    No Cypher text lives in this function, deliberately. The whole-graph delete
+    is issued by `clear_all`, which is the routing
+    `tests/test_graph_dump.py::TestNoRawWholeGraphDeletes` exists to require.
+    """
+
+    async def _q() -> None:
+        db = connection()
+        try:
+            await db.clear_all(preserve_labels=frozenset())
+        finally:
+            await db.close()
+
+    asyncio.run(_q())
+
+
+def label_census() -> dict[str, int]:
+    """Node counts for EVERY label present, unfiltered. One round trip.
+
+    The unfiltered form of the scan `tests/_corpus.py::methodology_counts`
+    already runs. That one projects onto a fixed methodology label list, so it
+    reports zero for `Memory`, `Decision`, `FileChange`, `Commit` and `Project`
+    no matter how many exist, which makes it useless as the "what was deleted"
+    half of the wipe report: the residue this cycle removes is exactly the
+    labels it cannot see.
+
+    A node carrying two labels is counted under both, so the values sum to more
+    than the node count. Callers that need a node total ask for one (`count`)
+    rather than adding these up.
+    """
+
+    async def _q() -> dict[str, int]:
+        db = connection()
+        out: dict[str, int] = {}
+        try:
+            async with db._driver.session(database=db._database) as s:
+                res = await s.run(
+                    "MATCH (n) UNWIND labels(n) AS lbl RETURN lbl AS label, count(*) AS c"
+                )
+                async for rec in res:
+                    out[rec["label"]] = rec["c"]
+            return out
+        finally:
+            await db.close()
+
+    return asyncio.run(_q())
 
 
 def replay_dump(root: Path | None = None) -> bool:

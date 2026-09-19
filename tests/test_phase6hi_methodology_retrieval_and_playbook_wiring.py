@@ -30,6 +30,16 @@ from writ.server import app
 
 WRIT_ROOT = Path(__file__).resolve().parent.parent
 
+# The namespace every session id in this module is minted under, which is what lets
+# tests/_gate_token_leak.py::_sweep_gate_tokens remove this module's own /tmp files after
+# each test and nobody else's. The ids are `test-6i-1` through `test-6i-4`.
+#
+# THIS MODULE IS THE LATENT CASE, and the declaration is why it stays latent. Its mints are
+# consumed by a SUCCESSFUL POST /advance-phase, so nothing shows in a /tmp diff today; the
+# instant any of those advances refuses (a seed change, a route change, a failed gate) the
+# file survives, and no line in this file removes it.
+GATE_TOKEN_SESSION_PREFIX = "test-6i-"
+
 
 # ============================================================================
 # 6h -- Stage 4 traversal verification (live graph)
@@ -162,7 +172,8 @@ def _advance_with_token(client: TestClient, sid: str, source: str = "tool"):
     root = tempfile.mkdtemp(prefix=f"writ-6i-{sid}-")
     (Path(root) / "plan.md").write_text(
         "# Plan\n\n"
-        "## Files\n\n- `src/foo.py` (modify) -- wire the thing\n\n"
+        "## Files\n\n- `src/foo.py` (modify) -- wire the thing\n"
+        "- `tests/test_seed.py` (create) -- the skeleton the test-skeletons gate judges\n\n"
         "## Analysis\n\nSeed plan for the advance-phase wiring test.\n\n"
         "## Rules Applied\n\nNo matching rules\n\n"
         "## Capabilities\n\n- [ ] the advance emits its events\n"

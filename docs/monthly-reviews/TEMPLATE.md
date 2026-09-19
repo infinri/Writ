@@ -1,4 +1,4 @@
-# Writ monthly review -- YYYY-MM
+# Writ monthly review: YYYY-MM
 
 Reviewer: <name>
 Period: YYYY-MM-01 through YYYY-MM-DD

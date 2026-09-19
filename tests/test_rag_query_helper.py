@@ -418,13 +418,38 @@ class TestUntouchedTailInvariants:
     change) and keep passing after the rag_query adoption -- these are NOT
     the RED target of this cycle."""
 
+    @staticmethod
+    def _expected_sinks(hook_path) -> int:
+        """DERIVED, not restated. tests/test_debug_gating.py owns
+        HOOK_LOG_SINK_HOOKS; that module's declared job is reviewing those
+        numbers, and this one only needs to know the count did not move while it
+        was changing something else nearby.
+
+        These were two literals here and two more in that table, so adding one
+        legitimate gated sink to writ-read-rag.sh on 2026-09-01 broke two files
+        for one change, which is the duplication tests/_inventory.py exists to
+        delete.
+        """
+        from tests.test_debug_gating import HOOK_LOG_SINK_HOOKS
+
+        by_name = {path.name: count for path, count in HOOK_LOG_SINK_HOOKS}
+        assert hook_path.name in by_name, (
+            f"{hook_path.name} is not in HOOK_LOG_SINK_HOOKS; the canonical "
+            "table and this derivation disagree about which hooks are gated"
+        )
+        return by_name[hook_path.name]
+
     def test_read_rag_hook_log_sink_redirect_count(self):
         content = READ_RAG_HOOK.read_text()
-        assert content.count('2>>"$WRIT_HOOK_LOG_SINK"') == 1
+        assert content.count('2>>"$WRIT_HOOK_LOG_SINK"') == self._expected_sinks(
+            READ_RAG_HOOK
+        )
 
     def test_posttool_rag_hook_log_sink_redirect_count(self):
         content = POSTTOOL_RAG_HOOK.read_text()
-        assert content.count('2>>"$WRIT_HOOK_LOG_SINK"') == 2
+        assert content.count('2>>"$WRIT_HOOK_LOG_SINK"') == self._expected_sinks(
+            POSTTOOL_RAG_HOOK
+        )
 
     def test_read_rag_retains_injected_context_strings(self):
         content = READ_RAG_HOOK.read_text()
@@ -438,11 +463,21 @@ class TestUntouchedTailInvariants:
         assert "PostToolUse" in content
         assert "file-write-post" in content
 
-    def test_posttool_rag_keeps_hook_timer_end_read_rag_does_not(self):
-        posttool_content = POSTTOOL_RAG_HOOK.read_text()
-        read_content = READ_RAG_HOOK.read_text()
-        assert "hook_timer_end" in posttool_content
-        assert "hook_timer_end" not in read_content
+    def test_neither_rag_hook_emits_its_own_execution_row(self):
+        """This asserted the opposite for posttool-rag until the telemetry trap became
+        universal: common.sh now writes one row for every script under hooks/scripts/, so
+        an explicit `hook_timer_end` in either hook would be a SECOND row and a python
+        spawn to write it. The asymmetry the original test protected (read-rag stays out of
+        the timer path) survives as symmetry: neither hook emits for itself.
+        """
+        for hook in (POSTTOOL_RAG_HOOK, READ_RAG_HOOK):
+            code = "\n".join(
+                line for line in hook.read_text().splitlines()
+                if not line.lstrip().startswith("#")
+            )
+            assert "hook_timer_end" not in code, (
+                f"{hook.name} emits its own hook_execution row on top of the trap's"
+            )
 
 
 # -- 6. Part 3: project-root scoping ------------------------------------------

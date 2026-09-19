@@ -26,6 +26,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._strace import trace_execve
+
 REPO = Path(__file__).resolve().parent.parent
 HOOKS = REPO / "hooks" / "scripts"
 
@@ -119,7 +121,6 @@ pytestmark = pytest.mark.skipif(
 
 
 def _python_starts(hook: str, cache_dir: Path) -> int:
-    trace = Path("/tmp") / f"writ-prompt-budget-{hook}.trace"
     # ISOLATED CACHE, and this is load-bearing rather than tidiness. Without it the hooks
     # read and write the real session cache, so the count depends on state left by earlier
     # runs (a session that has already tripped should-skip takes a shorter path and starts
@@ -127,15 +128,10 @@ def _python_starts(hook: str, cache_dir: Path) -> int:
     # different number than a standalone probe, which is what exposed it.
     env = {**os.environ, "WRIT_CACHE_DIR": str(cache_dir),
            "WRIT_LOG_ROOT": str(cache_dir / "logs")}
-    subprocess.run(
-        ["strace", "-f", "-qq", "-e", "trace=execve", "-o", str(trace),
-         "bash", str(HOOKS / hook)],
-        input=ENVELOPE, capture_output=True, text=True, timeout=180, env=env,
+    text = trace_execve(
+        ["bash", str(HOOKS / hook)],
+        input=ENVELOPE, timeout=180, env=env,
     )
-    if not trace.exists():
-        pytest.skip(f"strace produced no trace for {hook}")
-    text = trace.read_text(errors="replace")
-    trace.unlink(missing_ok=True)
     return sum(1 for ln in text.splitlines() if 'python3"' in ln)
 
 

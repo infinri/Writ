@@ -15,8 +15,35 @@ import sys
 
 from writ.session.cache import _read_cache, mutate_cache
 from writ.session.friction import _log_friction_event
-from writ.session.locators import _find_debug_md
-from writ.session.mode_engine import _effective_source_type
+from writ.session.locators import _find_debug_md, debug_path
+from writ.session.mode_engine import _effective_source_type, approved_gates_for_plan
+# The project-write boundary, as pure functions for the same reason role_scope's matcher is
+# pure: the write gate runs in the daemon AND in a CLI subprocess, so a predicate that
+# needed anything only one of them could reach would allow in one and deny in the other.
+from writ.session.project_boundary import (
+    KIND_APPROVED,
+    KIND_DISPATCH,
+    KIND_PRE_APPROVAL,
+    boundary_refusal,
+    boundary_root,
+    declared_absolute_paths,
+    in_project_memory_dir,
+    in_scratch_zone,
+    is_contained,
+    resolve_target,
+    scratch_zone,
+)
+# The pure matcher only. The dispatch-time FETCHER in that module is never called from
+# here: the write path reads the scope the dispatch already stamped into the session cache,
+# so a write costs no graph query and no HTTP call, and the daemon route and the CLI
+# fallback cannot reach different verdicts.
+from writ.session.role_scope import path_in_scope
+# Where a resolved role's name and provenance literals live, so the gate names the
+# unobserved cases with the same constants the resolver stamps.
+from writ.session.subagent_role import SOURCE_UNRESOLVED, UNKNOWN_ROLE
+# One source for what "lazily seeded" means. Duplicating the literal here would be the
+# same defect cycle K removed: a constant restated in a second file goes stale silently.
+from writ.session.subagent_seed import CACHE_SOURCE_START, is_lazily_seeded
 
 # Fallback gate-categories.json path: <skill_root>/bin/lib/gate-categories.json. Used only
 # when a caller passes no skill_dir (hooks pass it); resolved from the skill root because this
@@ -266,13 +293,250 @@ def _validate_evidence_narrowing(debug_md_path: str) -> str | None:
     return None
 
 
+def _role_node_id(role: str) -> str:
+    """The SubagentRole node id a role name resolves to (writ-test-writer ->
+    ROL-TEST-WRITER-001), mirroring the derived convention in
+    `node_store.get_subagent_role`'s resolution clause.
+
+    DISPLAY ONLY. It is named in the refusal so the human who has to change a boundary can
+    find the file that declares it; nothing keys a decision on this string.
+    """
+    return "ROL-" + role.replace("writ-", "").upper() + "-001"
+
+
+def _role_scope_refusal(role: str, patterns: list, file_path: str) -> str:
+    """The refusal text for an out-of-scope write by a role that declares a scope.
+
+    IT NAMES NO ESCAPE, because there is none. Advertising one that does nothing is a
+    defect this codebase has already paid for once (an earlier plan.md refusal pointed at
+    `invalidate-gate`, which cannot clear an approval), and a role boundary is genuinely
+    not approvable: no gate, no phase change and no mode opens it. The only lever is a
+    human editing the role node, so that is the only lever named.
+
+    The RESOLVED path is disclosed when it differs from the requested one, because that is
+    the whole explanation for a symlink or `..` refusal: the raw string looks in scope and
+    the target is not.
+    """
+    resolved = os.path.realpath(file_path)
+    where = f"'{file_path}'"
+    if resolved != file_path:
+        where += f" (which resolves to '{resolved}')"
+    if patterns:
+        boundary = ("may write only these paths: " + ", ".join(str(p) for p in patterns)
+                    + f", and {where} matches none of them")
+    else:
+        boundary = f"declares no writable paths at all, and {where} is outside it"
+    return (
+        f"[ENF-ROLE-SCOPE] Write refused: your role ({role}) {boundary}. This is your "
+        "role's boundary, not a gate: no approval, no phase change and no other path "
+        "opens it. Do the work your role is for and report the rest to the orchestrator. "
+        f"The scope is declared on {_role_node_id(role)} in the graph, and only a human "
+        "editing that node changes it."
+    )
+
+
+def _check_role_scope_write(session_id: str, mode, file_path: str, cache: dict) -> dict | None:
+    """The role's own write boundary, or None when this role has no boundary to apply.
+
+    THE SCOPE IS COMPUTED FROM THE ROLE ALONE. This function reads exactly four cache
+    fields -- `agent_type` (the resolved role), `role_source` (where that role came from),
+    `cache_source` (how the cache came to exist) and `role_write_scope` (the scope stamped
+    from the role's graph node at dispatch) -- plus `is_subagent`. It never reads `mode`,
+    `current_phase`, `gates_approved`, `parent_session_id` or `project_root`. `mode` is a
+    parameter only because every friction row in this module carries it as a column.
+
+    The parent's approval is a PRECONDITION for the dispatch existing at all: SubagentStart
+    fired because a human approved the work that spawned this worker. It is never an INPUT
+    to the scope. "The parent's gates, narrowed by the role" is the same words with the
+    opposite property -- under it a parent who approves more widens the child -- so
+    authority would still inherit, which is the shape this arm exists to remove.
+
+    IT ABSTAINS UNLESS ALL FOUR CONDITIONS HOLD, and every abstention falls through to the
+    blanket sub-agent allow below, i.e. to exactly today's decision. ABSENCE IS NOT A
+    POLICY: a legacy cache, a lazily seeded one, an unresolved role, a role with no node at
+    all (general-purpose and any third-party agent), a role whose node declares nothing,
+    and a dispatch whose fetch failed are all MISSING RECORDS, and a missing record must
+    never harden into a refusal the user never asked for. The gap is made visible instead,
+    by `writ doctor`'s subagent-role-scope-coverage check.
+
+    The role resolution is re-checked HERE rather than inferred from the presence of a
+    stamped scope: two independent guards for one property, the same way `_authority_mode`
+    and the bypass narrowing are two guards for cycle K's.
+    """
+    # 1. A sub-agent, and a cache a real dispatch created. `subagent_start` excludes the
+    #    lazily seeded cache by construction (that value is `lazy_seed`), and it also
+    #    excludes a cache written before `cache_source` existed, which cycle K established
+    #    keeps today's authority rather than being retroactively narrowed.
+    if not cache.get("is_subagent"):
+        return None
+    if str(cache.get("cache_source") or "") != CACHE_SOURCE_START:
+        return None
+
+    # 2. The role was OBSERVED. An empty or `unknown` agent_type names no role, and an
+    #    `unresolved` role_source says the resolver ran and found nothing, so there is
+    #    nothing whose boundary this could be.
+    role = str(cache.get("agent_type") or "").strip()
+    if not role or role == UNKNOWN_ROLE:
+        return None
+    if str(cache.get("role_source") or "") == SOURCE_UNRESOLVED:
+        return None
+
+    # 3. A DECLARED scope, which an empty list is and None is not.
+    patterns = cache.get("role_write_scope")
+    if not isinstance(patterns, list):
+        return None
+
+    if path_in_scope(file_path, patterns):
+        _log_friction_event(session_id, mode, "write_attempt",
+                            file_path=file_path, result="allow",
+                            gate_status="role_scope_allow", agent_type=role)
+        return {"can_write": True, "reason": None}
+
+    # DELIBERATELY NOT _log_gate_denial. That helper increments `denial_counts`, which
+    # feeds the escalation machinery that tells the user which gate to approve, and a role
+    # boundary is not approvable. Counting it there would manufacture a remedy that does
+    # not exist. One write_attempt row, so the refusal is still countable.
+    _log_friction_event(session_id, mode, "write_attempt",
+                        file_path=file_path, result="deny",
+                        gate_status="role_scope_deny", agent_type=role)
+    return {"can_write": False, "reason": _role_scope_refusal(role, patterns, file_path)}
+
+
+def _check_project_boundary(session_id: str, mode, file_path: str, recorded_root,
+                            recorded_zone, kind: str) -> dict | None:
+    """The project-write boundary, or None when the write is in bounds or unjudgeable.
+
+    IT CAN ONLY CONVERT AN ALLOW INTO A DENY. Every call site guards an arm that was about
+    to allow, so no existing refusal changes its tag and the pre-approval baseline is
+    unchanged envelope for envelope: a non-excluded path before approval still reaches
+    `[ENF-GATE-PLAN]` because this is never consulted first.
+
+    THE ORDER OF THE FIVE CHECKS IS THE FILE-READ BUDGET. Containment answers the dominant
+    case (an in-project write) with one marker walk, two `realpath` calls and one prefix
+    comparison, and returns before the scratch zone is resolved or the plan is opened. The
+    memory-directory exemption is a pure derivation from the root plus one `realpath`, so it
+    too returns before any plan read. The plan is read only for an out-of-project write on
+    the approved arm, where `approved_gates_for_plan` has already opened it once this
+    request.
+
+    Returns None rather than an allow, so the caller's own allow (and its own friction row,
+    `all_approved` or `excluded`) still happens. The deny emits ONE `write_attempt` row and
+    deliberately NOT a `_log_gate_denial`: that helper increments `denial_counts`, which
+    feeds the escalation that tells the user which pending gate to approve, and the remedy
+    here is an edited plan plus a FRESH approval, not the advance of a pending gate. Same
+    reasoning, same shape as the role-scope deny above.
+
+    `recorded_zone` TRAVELS WITH `recorded_root`, both out of the same cache, because the
+    scratch zone is now a stamped session value rather than something either write-gate
+    process resolves for itself. It is resolved AFTER the empty-root abstain so a cache with
+    no project pays nothing for it; the cost is one `isabs` plus one `realpath` and no file
+    read. An absent zone removes the EXEMPTION only, so containment, the memory dir and the
+    declared `## Files` all still judge the write.
+    """
+    root = boundary_root(recorded_root)
+    if not root:
+        return None
+    zone = scratch_zone(recorded_zone)
+    target = resolve_target(file_path, root)
+    if is_contained(target, root):
+        return None
+    if in_scratch_zone(target, root, zone):
+        return None
+    # THIS PROJECT'S OWN MEMORY DIRECTORY, on all three kinds. `~/.claude/projects/<encoded
+    # root>/memory` is the project's sidecar, derived from the root it belongs to, and an
+    # agent writes it every session: while planning, after approval, and inside a dispatch
+    # alike, which is why this is not restricted to the approved arm. It sits ahead of the
+    # declared set because it costs one string derivation and opens no plan.
+    if in_project_memory_dir(target, root):
+        return None
+    if kind == KIND_APPROVED and target in declared_absolute_paths(root, session_id):
+        return None
+    _log_friction_event(session_id, mode, "write_attempt",
+                        file_path=file_path, result="deny",
+                        gate_status="project_boundary_deny", boundary_kind=kind)
+    return {"can_write": False,
+            "reason": boundary_refusal(kind, file_path, target, root, zone)}
+
+
+def _check_subagent_boundary(session_id: str, mode, file_path: str, cache: dict) -> dict | None:
+    """The dispatched sub-agent's half of the boundary, or None to keep today's decision.
+
+    The blanket sub-agent allow below justifies itself by the orchestrator having already
+    cleared a human approval gate. That approval was granted FOR A PLAN, IN A PROJECT, so
+    the bypass's own justification names the boundary, and granting the child a wider
+    surface than the approval it stands on inverts it.
+
+    IT DEFERS TO A DECLARED ROLE SCOPE BY ARM ORDER, NOT BY RE-READING THE SCOPE. A declared
+    list, empty included, is decided by `_check_role_scope_write` ABOVE, which returns
+    non-None and never reaches here, so `path_in_scope` stays the sole judge and the `None`
+    versus `[]` distinction is honored without this function reading that field at all.
+
+    An explicit `isinstance(role_write_scope, list) -> return None` guard was written here
+    first and REMOVED, because in the one state where it was not simply redundant it was
+    wrong. STATE THE HARNESS WITH THE RESULT: that state was reached with
+    `role_scope.fetch_declared_scope` PATCHED to return a list, and it is NOT reachable
+    through the shipped corpus. Unpatched, the real seeder stamps `None` for every spelling
+    tried (`'unknown '`, `' unknown'`, `'   '`, `'unknown'`), measured, so the reachable
+    count is zero. Two independent reasons: the fetcher strips the role itself before the
+    request, so `'   '` returns None without a round trip and the padded spellings collapse
+    to `'unknown'`, and no `SubagentRole` node is named `unknown` (the corpus declares five,
+    all `writ-*`), so that request answers with no `write_scope`.
+
+    What the patched measurement DID establish, and why the guard is gone: on that
+    constructed cache the guard deferred to a judge that had already abstained, because
+    `subagent_seed._declared_scope` compares the RAW role to `unknown` while the arm above
+    compares the STRIPPED role. So NOTHING judged the path and the verdict went from DENY
+    (confined to the parent's project) to ALLOW (unbounded), both directions measured. A
+    guard whose only non-redundant effect is to remove the last judge is worse than no
+    guard, independently of how the input arrived.
+
+    What would make the state reachable: a role node named `unknown`, or the two guards
+    otherwise disagreeing about which roles are judgeable. They already disagree up to
+    whitespace, which is a latent trap for a future DIRECT caller of `seed_subagent_cache`
+    (both real callers pre-strip) and a defect in that comparison, not something a second
+    read of the field here can fix. Field-independence is pinned instead, by
+    TestBoundaryArmIgnoresRoleWriteScope.
+
+    `cache_source == "subagent_start"` is required, the same first two conditions the
+    role-scope arm uses, so a `lazy_seed` cache abstains and cycle K's property holds: a
+    lazily seeded cache decides exactly as no cache at all, reason string included.
+
+    The root comes from the PARENT's cache, because a sub-agent cache deliberately does not
+    stamp `project_root` (stamping the parent's would make every mode rotation look
+    contested). No parent, or a parent with no project recorded, abstains: absence is not a
+    policy, and this arm does NOT honor the plan's `## Files` either, because a sub-agent
+    may write `plan.md` itself, so honoring the declaration here would be self-grantable.
+    """
+    if not cache.get("is_subagent"):
+        return None
+    if str(cache.get("cache_source") or "") != CACHE_SOURCE_START:
+        return None
+    parent_session_id = str(cache.get("parent_session_id") or "")
+    if not parent_session_id:
+        return None
+    parent_cache = _read_cache(parent_session_id)
+    parent_root = parent_cache.get("project_root") or ""
+    if not parent_root:
+        return None
+    # The zone comes out of the SAME parent-cache read as the root, so the two can never
+    # describe different parent caches. The child's own cache stamps neither, for the same
+    # reason: a sub-agent cache is not a session working the project, and inheriting either
+    # would make `rotation._sessions_claiming_project` count it as one.
+    parent_zone = parent_cache.get("scratch_zone") or ""
+    return _check_project_boundary(session_id, mode, file_path, parent_root, parent_zone,
+                                   KIND_DISPATCH)
+
+
 def _check_exempt_write(session_id: str, mode, file_path: str, cache: dict, skill_dir: str) -> dict | None:
     """Categorical write exemptions checked before any mode/gate logic.
 
     Returns an allow result (and logs it) for skill-infra, global-settings, and
     sub-agent writes; None when none apply so the caller continues. Order matters:
-    skill_dir, then settings, then sub-agent -- a sub-agent editing the skill dir
-    logs skill_exempt, exactly as the original linear sequence did.
+    skill_dir, then settings, then the role scope, then sub-agent -- a sub-agent editing
+    the skill dir logs skill_exempt, exactly as the original linear sequence did, and a
+    role-scoped sub-agent is judged by its role before the blanket allow can grant it
+    everything. The role-scope arm is the only one of the four that can DENY; the other
+    three either allow or fall through.
     """
     # Skill infrastructure + global settings are NOT gated (you cannot require gate
     # approval to edit the gate itself), but the allow IS logged so Writ-on-Writ
@@ -306,18 +570,68 @@ def _check_exempt_write(session_id: str, mode, file_path: str, cache: dict, skil
                                 file_path=file_path, result="allow", gate_status="settings_exempt")
             return {"can_write": True, "reason": None}
 
+    # THE ROLE'S OWN BOUNDARY, ahead of the blanket allow so a role that declares one is
+    # judged by it, and returning None whenever it has no opinion so the blanket allow
+    # stays the fallthrough for every other case. It sits AFTER the two exemptions above
+    # on purpose: you cannot require a gate's permission to edit the gate, so on the Writ
+    # repo itself the skill-dir exemption still wins and the role scope is inert. That
+    # ordering must not change; the enforcement is real when a governed sub-agent writes
+    # into an ordinary project.
+    role_scoped = _check_role_scope_write(session_id, mode, file_path, cache)
+    if role_scoped is not None:
+        return role_scoped
+
+    # THE PROJECT THE DISPATCH STANDS ON, between the role's own boundary and the blanket
+    # allow. It runs AFTER the role scope so a declared scope stays the sole judge, and
+    # BEFORE the blanket allow so an undeclared role is confined instead of unbounded. It
+    # returns None for every case it cannot judge, so the blanket allow is still the
+    # fallthrough for everything else.
+    dispatched = _check_subagent_boundary(session_id, mode, file_path, cache)
+    if dispatched is not None:
+        return dispatched
+
     # Sub-agents bypass mode/gate checks. They are workers dispatched by an
     # orchestrator that already passed the human-approval gate; their scope
     # is narrowed by the agent definition + spawn prompt. Gates exist to stop
     # the master from writing code before plan approval, not to re-police
     # workers the orchestrator has already sanctioned. See rules/writ-orchestrator.md.
-    if cache.get("is_subagent"):
+    # NOT for a lazily seeded cache. That cache was created by a hook because
+    # SubagentStart never fired, so nothing here establishes that an orchestrator passed a
+    # human gate on this agent's behalf, which is the entire justification for the bypass.
+    # This is the second of two independent guards; _authority_mode is the first, and both
+    # would have to fail for a seeded cache to gain a write.
+    if cache.get("is_subagent") and not is_lazily_seeded(cache):
         _log_friction_event(session_id, mode, "write_attempt",
                             file_path=file_path, result="allow",
                             gate_status="subagent_bypass")
         return {"can_write": True, "reason": None}
 
     return None
+
+
+def _authority_mode(cache: dict):
+    """The mode the WRITE DECISION may use, which is not always the mode in the cache.
+
+    A cache created by a hook running inside a sub-agent (`cache_source: lazy_seed`) exists
+    so the agent can be seen and can receive rules. It is not evidence that anyone
+    authorized the agent to write, and reading its inherited mode here would turn a missing
+    file into a grant. Measured on one envelope before this function existed:
+
+        no cache at all                  -> False  [ENF-GATE-MODE] No mode declared...
+        seeded, parent's mode and gates  -> True
+        seeded, is_subagent removed      -> True
+
+    The third line is why this is not solved by narrowing the sub-agent bypass alone: the
+    work gate allows on its own once a mode and its approved gates are present. Resolving
+    the mode as ABSENT reproduces the previous decision on EVERY path rather than on the
+    paths someone remembered to enumerate, including the exemptions that run ahead of the
+    mode check and therefore still allow.
+
+    Retrieval is unaffected: it reads `cache["mode"]` directly, and rules are not authority.
+    """
+    if is_lazily_seeded(cache):
+        return None
+    return cache.get("mode")
 
 
 def _check_special_files(basename: str, mode, current_phase) -> dict | None:
@@ -341,8 +655,21 @@ def _check_special_files(basename: str, mode, current_phase) -> dict | None:
         if current_phase == "implementation":
             return {
                 "can_write": False,
-                "reason": "[ENF-GATE-PLAN] plan.md cannot be modified during implementation phase. "
-                          "Invalidate the current gate to return to planning if the plan needs changes.",
+                # THE MESSAGE NAMES THE ESCAPE, because for a while none existed. Two
+                # earlier wordings both sent the reader nowhere: one advertised
+                # invalidate-gate, which records a violation and escalates but
+                # deliberately does NOT clear an approval; the other said "ask the user",
+                # and no reply the user could type acted on the refusal (a live session
+                # typed `approved` twice and was told no gate action was needed). The
+                # phrase below is the reply that works, so the refusal and the fix are one
+                # message. The [ENF-GATE-PLAN] tag stays for log parsing.
+                "reason": "[ENF-GATE-PLAN] plan.md cannot be modified during the implementation "
+                          "phase. Only the user can re-open planning: tell them what you want to "
+                          "change and why, then ask them to reply exactly `replan approved` in "
+                          "their own turn. That returns this session to planning, CLEARS both "
+                          "approved gates, and keeps every source write blocked until phase-a "
+                          "and test-skeletons are approved again against the new plan. Nothing "
+                          "you can run does this.",
             }
         return {"can_write": True, "reason": None}
 
@@ -368,19 +695,24 @@ def _check_debug_gate(session_id: str, mode, file_path: str, basename: str, cach
         _log_friction_event(session_id, mode, "write_attempt",
                             file_path=file_path, result="allow", gate_status="debug_exempt")
         return {"can_write": True, "reason": None}
-    debug_md = _find_debug_md(file_path)
+    debug_md = _find_debug_md(file_path, session_id)
     if debug_md and _validate_root_cause(debug_md) is None:
         _log_friction_event(session_id, mode, "debug_gate_root_cause_populated",
                             file_path=file_path, result="allow", gate_status="debug_root_cause_ok",
                             evidence_backed=evidence_backed)
         return {"can_write": True, "reason": None}
+    # The path names THIS session's scoped file. Naming the project root instead would
+    # steer two sessions debugging one project into the same file, which is the bleed the
+    # scoped tier exists to stop: recording a root cause there would unblock the other
+    # session's source edits too.
+    scoped_debug = debug_path(cache.get("project_root") or "", session_id)
     reason = (
         "[DEBUG-GATE-ROOT-CAUSE] Source edits are blocked in debug mode until a root "
-        "cause is established. Create debug.md at the project root with a populated "
-        "'## Root cause' section, then edit source. debug.md and test files are writable "
-        "now so you can record evidence -- a real command you run is auto-recorded. "
-        "Evidence / Falsification / Triangulation are advisory but recommended "
-        "(scaffold: templates/debug.md)."
+        f"cause is established. Create {scoped_debug or 'debug.md at the project root'} "
+        "with a populated '## Root cause' section, then edit source. debug.md and test "
+        "files are writable now so you can record evidence -- a real command you run is "
+        "auto-recorded. Evidence / Falsification / Triangulation are advisory but "
+        "recommended (scaffold: templates/debug.md)."
     )
     _log_friction_event(session_id, mode, "debug_gate_source_edit_denied",
                         file_path=file_path, result="deny", gate_status="debug_root_cause_missing",
@@ -400,16 +732,95 @@ def _check_work_gate(session_id: str, mode, file_path: str, current_phase, cache
     the deny. (Telemetry note: an excluded path written once both gates are approved
     now logs gate_status="all_approved" instead of "excluded" -- same allow
     decision; the only behavioral change from the reorder.)
+
+    THE ARM ORDER ON THE NOT-BOTH-APPROVED PATH, in the order the code checks it:
+    exclusions allow (bounded by the pre-approval project boundary), then drift denies
+    with [ENF-GATE-DRIFT], then the OS SCRATCH ZONE allows with
+    gate_status="scratch_zone", then [ENF-GATE-PLAN], then [ENF-GATE-TEST]. The scratch
+    arm sits after drift on purpose -- drift is the one refusal here that says "ALL writes
+    blocked" and stays strictly stronger than every other arm -- and ahead of both gate
+    denials, because the defect it fixes is the whole pre-approval window and not just the
+    plan gate. Placing it beside the exclusions arm would have matched how exclusions
+    already behave and was rejected for widening the drift state.
     """
-    approved_gates = set(cache.get("gates_approved", []))
+    # The approved set is the PLAN-PAIRED one, computed by the same function the advance
+    # path uses (mode_engine.approved_gates_for_plan). Reading `gates_approved` alone here
+    # is what let source writes continue against a plan that had changed since the approval,
+    # while an advance was refused for exactly that drift. `granted` keeps the raw set only
+    # to tell the two denials apart: never approved reads differently from approved for a
+    # plan that no longer exists, and a refusal the user cannot act on is a deadlock.
+    granted = set(cache.get("gates_approved", []))
+    approved_gates = approved_gates_for_plan(cache, session_id)
 
     if "phase-a" not in approved_gates or "test-skeletons" not in approved_gates:
         categories_path = _resolve_categories_path(skill_dir)
         config = _load_categories(categories_path)
 
         if _matches_any(file_path, config.get('exclusions', [])):
+            # The exclusion allow is BOUNDED because `_matches_any` lets `*` span `/` and
+            # matches the raw path, so `*/tests/*` is satisfied by
+            # `/any/other/project/tests/x.py`. Left unguarded it would be a one-line bypass
+            # of the whole boundary, reachable before any approval.
+            bounded = _check_project_boundary(session_id, mode, file_path,
+                                              cache.get("project_root"),
+                                              cache.get("scratch_zone"), KIND_PRE_APPROVAL)
+            if bounded is not None:
+                return bounded
             _log_friction_event(session_id, mode, "write_attempt",
                                 file_path=file_path, result="allow", gate_status="excluded")
+            return {"can_write": True, "reason": None}
+
+        drifted = [gate for gate in ("phase-a", "test-skeletons")
+                   if gate in granted and gate not in approved_gates]
+        if drifted:
+            reason = (
+                "[ENF-GATE-DRIFT] ALL writes blocked -- plan.md changed after it was "
+                f"approved, so the approval for {', '.join(drifted)} no longer covers it. "
+                "DO NOT attempt more writes.\n"
+                "Tell the user what changed and say: \"Say approved to proceed.\"\n"
+                "One fresh approval re-binds the gates to the current plan. Ticking a "
+                "capability box is not a change and never causes this."
+            )
+            _log_gate_denial(session_id, cache, drifted[0], file_path, reason)
+            return {"can_write": False, "reason": reason}
+
+        # THE SCRATCH ZONE, IN THE PRE-APPROVAL WINDOW. `in_scratch_zone` has always
+        # SUPPRESSED the project-boundary refusal for the OS temporary directory, and its
+        # docstring states why (the harness instructs every agent to work in a scratchpad
+        # there). Suppressing a refusal is not an allow, so before this arm the write fell
+        # through to [ENF-GATE-PLAN] below, whose named action, approve the plan, does not
+        # unblock writing a scratch file. Measured live in a work-mode session with no
+        # gates approved: /tmp/writ-scratch-xyz and /tmp/scratch.py both denied, on both
+        # write doors. Recorded as an accepted cost in
+        # docs/adr/ADR-project-write-boundary.md and now closed.
+        #
+        # AFTER THE DRIFT CHECK, ON PURPOSE. Drift is a deliberately loud stop signal
+        # ("DO NOT attempt more writes") and stays strictly stronger than every other arm
+        # in this function; the measured defect lives entirely in the pre-approval window,
+        # so this is the smallest placement that fixes it. Placing it beside the exclusions
+        # arm above would have matched how exclusions already behave and was rejected for
+        # widening the drift state.
+        #
+        # THE ROOT IS RESOLVED EXACTLY AS THE BOUNDARY RESOLVES IT: boundary_root, then
+        # resolve_target, including _check_project_boundary's own empty-root abstain. A
+        # target resolved differently from the boundary's own resolution would let the two
+        # disagree about one path, and a relative envelope path with no root would resolve
+        # against the process cwd, which is Writ's install dir in the daemon and the
+        # project in the CLI fallback, so the two doors would answer differently for one
+        # write. No recorded project, no exemption: absence is not a policy and today's
+        # decision stands.
+        #
+        # THE ZONE IS RESOLVED THE SAME WAY THE BOUNDARY RESOLVES IT TOO, out of the cache
+        # via `scratch_zone`, and it inherits the same abstain. No stamped zone means no
+        # exemption and NEVER a live `tempfile.gettempdir()`: resolving one here is exactly
+        # what let the daemon and the CLI fallback answer differently for one path.
+        scratch_root = boundary_root(cache.get("project_root"))
+        zone = scratch_zone(cache.get("scratch_zone"))
+        if scratch_root and zone and in_scratch_zone(
+                resolve_target(file_path, scratch_root), scratch_root, zone):
+            _log_friction_event(session_id, mode, "write_attempt",
+                                file_path=file_path, result="allow",
+                                gate_status="scratch_zone", phase=current_phase)
             return {"can_write": True, "reason": None}
 
         if "phase-a" not in approved_gates:
@@ -432,7 +843,17 @@ def _check_work_gate(session_id: str, mode, file_path: str, current_phase, cache
         _log_gate_denial(session_id, cache, "test-skeletons", file_path, reason)
         return {"can_write": False, "reason": reason}
 
-    # Both gates approved
+    # Both gates approved. The approval was granted for a plan, and a plan is for a
+    # project, so it authorizes writes to THAT project plus whatever its `## Files` section
+    # declares by absolute path. Before this arm was bounded, an approved plan for one repo
+    # authorized a write to any absolute path on the filesystem (measured: post-approval,
+    # `/etc/passwd-probe.txt` allowed). Checked BEFORE the allow row is emitted, so a
+    # refusal leaves exactly one `write_attempt` and not an allow followed by a deny.
+    bounded = _check_project_boundary(session_id, mode, file_path,
+                                      cache.get("project_root"),
+                                      cache.get("scratch_zone"), KIND_APPROVED)
+    if bounded is not None:
+        return bounded
     _log_friction_event(session_id, mode, "write_attempt",
                         file_path=file_path, result="allow", gate_status="all_approved",
                         phase=current_phase)
@@ -462,7 +883,7 @@ def _can_write_check(session_id: str, envelope: dict, skill_dir: str = "", cache
 
     if cache is None:
         cache = _read_cache(session_id)
-    mode = cache.get("mode")
+    mode = _authority_mode(cache)
 
     # Credential-path guard (#6): deny writes to secret/credential files in EVERY
     # mode, ahead of every exemption and gate -- even a skill-dir or sub-agent write
@@ -485,8 +906,18 @@ def _can_write_check(session_id: str, envelope: dict, skill_dir: str = "", cache
     basename = os.path.basename(file_path)
     current_phase = cache.get("current_phase")
 
+    # The plan.md implementation freeze denied and recorded NOTHING, so the one refusal a
+    # reader is most likely to ask about after the fact left no row. The record is emitted
+    # HERE, at the call site, rather than inside _check_special_files: that helper is pure
+    # (no IO, no telemetry) and every other deny in this module logs from the router, so
+    # keeping the emit here means one place to look and one function fewer with a side
+    # effect. Only the deny is recorded; the two allows it returns are not refusals.
     special = _check_special_files(basename, mode, current_phase)
     if special is not None:
+        if not special["can_write"]:
+            _log_friction_event(session_id, mode, "write_attempt",
+                                file_path=file_path, result="deny",
+                                gate_status="plan_frozen", phase=current_phase)
         return special
 
     # No mode: deny everything (plan.md handled above). Log the deny -- this is the
@@ -574,7 +1005,7 @@ def _can_read_code_check(session_id: str, envelope: dict, skill_dir: str = "") -
 
         # Locate debug.md from the search target so it works for Read and Grep alike.
         search_dir = _resolve_read_search_dir(tool, ti)
-        debug_md = _find_debug_md(os.path.join(search_dir, "_"))
+        debug_md = _find_debug_md(os.path.join(search_dir, "_"), session_id)
 
         # Lens open once runtime evidence is recorded.
         if debug_md and _validate_evidence_narrowing(debug_md) is None:
@@ -589,19 +1020,41 @@ def _can_read_code_check(session_id: str, envelope: dict, skill_dir: str = "") -
         )
 
         if tool == "Grep":
-            return {"can_read": False, "reason": reason}
-
-        if tool == "Read":
-            return _classify_runtime_read(ti.get("file_path") or "", skill_dir, reason)
-
+            decision = {"can_read": False, "reason": reason}
+            target = ti.get("path") or ""
+        elif tool == "Read":
+            target = ti.get("file_path") or ""
+            decision = _classify_runtime_read(target, skill_dir, reason)
         # #5: Glob is file enumeration -- classify by its pattern's extension so a
         # source hunt (**/*.py) is blocked premature, but a log/doc/navigation glob
         # (**/*.log, src/**) is allowed. splitext on the pattern yields the extension;
         # no-extension or non-code patterns fall through to allow (fail-open).
-        if tool == "Glob":
-            return _classify_runtime_read(ti.get("pattern") or "", skill_dir, reason)
+        elif tool == "Glob":
+            target = ti.get("pattern") or ""
+            decision = _classify_runtime_read(target, skill_dir, reason)
+        else:
+            decision = {"can_read": True, "reason": None}
+            target = ""
 
-        return {"can_read": True, "reason": None}
+        # All three denies emitted NOTHING, so the runtime lens was the one gate whose
+        # refusals could not be counted. Recorded from the router rather than from each arm,
+        # so _classify_runtime_read stays pure and one call covers Read, Grep and Glob alike.
+        # read_denied, NOT read_blocked: the latter is summed into a published token floor by
+        # writ/analysis/token_audit.py::attribute_prevented, and a lens deny carries no byte
+        # estimate, so reusing that name would inflate the count with zero-token rows.
+        # The record must never be able to change the verdict. This call sits inside the
+        # function's fail-open handler, which turns ANY exception into can_read: True, so
+        # an unlucky raise in the logging path would convert a real deny into an allow:
+        # the gate would open because writing down that it closed failed. Its own handler
+        # keeps that impossible, and losing a row is strictly better than losing a refusal.
+        if not decision["can_read"]:
+            try:
+                _log_friction_event(session_id, cache.get("mode"), "read_denied",
+                                    tool_name=tool, file_path=target,
+                                    gate_status="runtime_lens_evidence_missing")
+            except Exception:  # noqa: BLE001 - a lost record must not become an allow
+                pass
+        return decision
     except Exception as exc:
         # Fail-open is deliberate (a gate bug must never wedge the agent), but an
         # allow-from-crash is otherwise indistinguishable from a legitimate allow.

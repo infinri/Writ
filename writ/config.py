@@ -23,6 +23,21 @@ DEFAULT_NEO4J_URI = "bolt://localhost:7687"
 DEFAULT_NEO4J_USER = "neo4j"
 DEFAULT_NEO4J_PASSWORD = "writdevpass"
 DEFAULT_HNSW_CACHE_DIR = str(Path.home() / ".cache" / "writ" / "hnsw")
+
+# The daemon's private transport. A unix socket inside a 0700 directory is what
+# gives per-user isolation; the socket's OWN mode does not, because uvicorn sets it
+# to 0o666 (uvicorn.config.Config.bind_socket: `uds_perms = 0o666` then
+# `os.chmod(self.uds, uds_perms)`, confirmed on disk). So the directory is the
+# control and it is created private BEFORE the bind, leaving no window in which a
+# world-writable socket is reachable.
+DEFAULT_DAEMON_SOCKET = str(Path.home() / ".cache" / "writ" / "run" / "writ.sock")
+
+# Linux caps an AF_UNIX path at 108 bytes INCLUDING the NUL terminator, so 107 are
+# usable. This is not a style limit: binding a longer path fails outright with
+# "AF_UNIX path too long", which was measured while designing this. The path must
+# therefore be short and checked, never derived blindly from an install root that
+# a plugin data directory or a deep checkout could make long.
+MAX_SOCKET_PATH = 107
 # Hosts the Bash egress guard (hooks/scripts/writ-bash-write-gate.sh) never prompts
 # about. Loopback in every spelling a command line can carry, including the bracketed
 # IPv6 form that appears inside a URL (`http://[::1]:9/x`) and the bare form a raw
@@ -229,6 +244,72 @@ def get_hnsw_cache_dir(path: str | None = None) -> str:
     cfg = load_config(path)
     raw = cfg.get("hnsw", {}).get("cache_dir", DEFAULT_HNSW_CACHE_DIR)
     return os.path.expanduser(raw)
+
+
+def get_daemon_socket_path(path: str | None = None) -> str:
+    """The daemon's unix-socket path: `WRIT_SOCKET`, then `[daemon] socket`, then default.
+
+    Expanded to an absolute path for the same reason get_hnsw_cache_dir does it: a
+    literal "~" would otherwise become a directory wherever the process runs.
+    """
+    override = os.environ.get("WRIT_SOCKET")
+    if override:
+        return os.path.expanduser(override)
+    cfg = load_config(path)
+    raw = cfg.get("daemon", {}).get("socket", DEFAULT_DAEMON_SOCKET)
+    return os.path.expanduser(raw)
+
+
+def socket_path_usable(sock_path: str) -> bool:
+    """False when this path cannot be bound, so the caller can fall back to TCP.
+
+    Length is measured in BYTES, not characters: the kernel limit is on the byte
+    string, and a non-ASCII path is longer than it looks.
+    """
+    if not sock_path:
+        return False
+    return len(os.fsencode(sock_path)) <= MAX_SOCKET_PATH
+
+
+def socket_is_live(sock_path: str) -> bool:
+    """True when something is listening on this socket right now.
+
+    Used before unlinking. A socket FILE outliving its listener is the ordinary
+    aftermath of a crash and must be replaced; a socket with a live listener belongs
+    to a daemon that is still serving, and unlinking it silently disconnects every
+    client of that daemon. Measured on this machine: a second `writ serve` did
+    exactly that, leaving the first daemon answering TCP with a dead socket file and
+    errno 111 for anything that tried it.
+    """
+    import socket as _socket
+
+    if not sock_path or not os.path.exists(sock_path):
+        return False
+    probe = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    probe.settimeout(0.5)
+    try:
+        probe.connect(sock_path)
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
+def prepare_socket_dir(sock_path: str) -> str:
+    """Create the socket's parent directory 0700 and return it. Idempotent.
+
+    The chmod runs whether or not the directory already existed: one left behind by
+    an older, laxer version would otherwise stay traversable, and a 0666 socket
+    inside a 0755 directory is a private-looking door that is not private.
+
+    Called BEFORE the bind. Doing it after would leave a window, however short, in
+    which uvicorn's world-writable socket is reachable.
+    """
+    parent = os.path.dirname(os.path.abspath(sock_path))
+    os.makedirs(parent, mode=0o700, exist_ok=True)
+    os.chmod(parent, 0o700)
+    return parent
 
 
 def get_egress_allow_hosts(path: str | None = None) -> list[str]:

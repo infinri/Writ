@@ -29,6 +29,12 @@ _spec = importlib.util.spec_from_file_location("writ_session_engine", HELPER_PAT
 writ_session = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(writ_session)
 
+# The namespace every session id in this module is minted under, which is what lets
+# tests/_gate_token_leak.py::_sweep_gate_tokens remove this module's own /tmp files after
+# each test and nobody else's. The `session_id` fixture below hardcodes exactly this id and
+# `_advance` mints on it, so without the declaration the file survived every run.
+GATE_TOKEN_SESSION_PREFIX = "test-mode-engine"
+
 # Captured pre-refactor literals -- the parity baseline.
 EXPECTED_WORK_GATE_SEQUENCE = ["phase-a", "test-skeletons"]
 EXPECTED_WORK_PHASE_AFTER = {"phase-a": "testing", "test-skeletons": "implementation"}
@@ -37,6 +43,7 @@ EXPECTED_VALID_MODES = {"conversation", "debug", "review", "work", "investigate"
 PLAN_CONTENT = """\
 ## Files
 - service.py
+- `tests/test_service.py` (create) -- the skeleton the test-skeletons gate judges
 
 ## Analysis
 Implement the thing with care and verify behavior.

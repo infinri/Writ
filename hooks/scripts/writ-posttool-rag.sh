@@ -22,7 +22,6 @@ WRIT_HOST="${WRIT_HOST:-localhost}"
 WRIT_PORT="${WRIT_PORT:-8765}"
 WRIT_URL="http://${WRIT_HOST}:${WRIT_PORT}/query"
 
-HOOK_START_NS=$(hook_timer_start)
 
 # Read stdin once
 STDIN_DATA=$(cat)
@@ -44,15 +43,18 @@ if [ -z "$SESSION_ID" ]; then
     exit 0
 fi
 
-# A4: ONE session-cache read for the whole hook (was two -- this orchestrator
-# check, then a second read for budget/exclusion/mode at the query step). The
-# cache is not mutated before the update at the end, so $CACHE is reused. The
-# orchestrator early-exit derives from it via the jq-first parsed_bool helper (no
-# python spawn); a server-down read yields '{}' -> not orchestrator.
+# A4: ONE session-cache read for the whole hook. The cache is not mutated before
+# the update at the end, so $CACHE is reused for budget/exclusion/mode below.
+#
+# There used to be an is_orchestrator early exit here, justified by the comment
+# "orchestrator writes are metadata-only: no RAG". The write gate makes no such
+# claim (`grep -c is_orchestrator writ/session/gates.py` returns 0; the
+# metadata-only restriction in gates.py belongs to the no-mode state, a different
+# condition), so a master in work mode past both gates writes source like anyone
+# else and needs the same post-write rules. What a write is, not who wrote it, is
+# already decided by the extension map below, which stops any extension it does
+# not know (.md included, so plan.md and capabilities.md never reach a query).
 CACHE=$(_writ_session read "$SESSION_ID" 2>/dev/null || echo '{}')
-if parsed_bool "$CACHE" "is_orchestrator"; then
-    exit 0  # orchestrator writes are metadata-only: no RAG
-fi
 
 # Skip if budget exhausted or context pressure high
 if _writ_session should-skip "$SESSION_ID" 2>/dev/null; then
@@ -260,18 +262,21 @@ $RULES_TEXT"
         # No breadcrumb sink on this arm: the python fallback below keeps one, and a
         # second redirect made this hook carry three where the debug-gating contract
         # counts two. jq -n with --arg cannot fail on input it is not given.
-        jq -n -c --arg ac "$WRIT_AC" \
+        AC_REPLY=$(jq -n -c --arg ac "$WRIT_AC" \
             '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:$ac}}' \
-            2>/dev/null || true
+            2>/dev/null) || AC_REPLY=""
     else
-        WRIT_AC="$WRIT_AC" python3 <<'PY' 2>>"$WRIT_HOOK_LOG_SINK" || true
+        AC_REPLY=$(WRIT_AC="$WRIT_AC" python3 <<'PY' 2>>"$WRIT_HOOK_LOG_SINK"
 import json, os
 print(json.dumps({"hookSpecificOutput": {
     "hookEventName": "PostToolUse",
     "additionalContext": os.environ.get("WRIT_AC", ""),
 }}))
 PY
+) || AC_REPLY=""
     fi
+    # Both arms build the same envelope, so both reach stdout through the one funnel.
+    emit_hook_reply "$AC_REPLY" "" "$SESSION_ID"
 fi
 
 # Update session cache
@@ -298,5 +303,4 @@ if [ -n "$META_LINE" ]; then
     log_rag_query_event "$SESSION_ID" "${CURRENT_MODE:-}" "file-write-post" "$COST" "$NEW_RULE_IDS" "" "PostToolUse" "additionalContext"
 fi
 
-hook_timer_end "$HOOK_START_NS" "writ-posttool-rag" "$SESSION_ID" "${CURRENT_MODE:-}"
 exit 0

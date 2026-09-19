@@ -15,12 +15,10 @@ Contract pinned here:
 """
 from __future__ import annotations
 
-import json
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from writ.graph.ingest import (
     parse_edges_from_file,
@@ -28,9 +26,8 @@ from writ.graph.ingest import (
     validate_parsed_node,
 )
 
-from tests._daemon import _port
-
 from tests._bible_guard import requires_bible
+from tests.fixtures.server_routes import route_pipeline  # noqa: F401
 
 pytestmark = requires_bible
 
@@ -38,7 +35,6 @@ pytestmark = requires_bible
 SKILL_DIR = Path(__file__).resolve().parent.parent
 METHODOLOGY = SKILL_DIR / "bible" / "methodology"
 SPINE = METHODOLOGY / "PBK-PROC-DEBUG-001.md"
-SERVER = f"http://localhost:{_port()}"
 
 # node_id -> (filename, representative symptom query)
 DIAGNOSE = {
@@ -63,12 +59,25 @@ def _path(node_id: str) -> Path:
     return METHODOLOGY / DIAGNOSE[node_id][0]
 
 
-def _server_up() -> bool:
-    try:
-        with urllib.request.urlopen(f"{SERVER}/health", timeout=2):
-            return True
-    except (urllib.error.URLError, OSError):
-        return False
+@pytest.fixture(scope="module")
+def _diagnose_nodes_present() -> int:
+    """The corpus PRECONDITION for TestDiagnoseRetrieval, DERIVED FROM THE
+    PROPERTY rather than a generic corpus-completeness check: the three
+    PBK-PROC-DIAGNOSE-* ids this module's own DIAGNOSE dict names must be
+    present in the graph. Runs BEFORE route_pipeline/live_pipeline is built
+    (requested first in the test's fixture list), because the pipeline indexes
+    the graph ONCE at build time and a repair afterwards is invisible to it.
+    FAILS, quoting the count it saw, rather than skipping: a route that
+    answers against an empty precondition is a corpus problem, never a
+    reason to weaken the retrieval assertion below.
+    """
+    from tests._corpus import require_population
+
+    ids_literal = ", ".join(f'"{node_id}"' for node_id in DIAGNOSE)
+    return require_population(
+        f"MATCH (r:Playbook) WHERE r.playbook_id IN [{ids_literal}] RETURN count(r)",
+        "the three PBK-PROC-DIAGNOSE-* nodes the diagnose-* symptom tests select",
+    )
 
 
 class TestDiagnoseNodesParse:
@@ -144,28 +153,36 @@ class TestSpineDispatchesDiagnose:
 
 
 class TestDiagnoseRetrieval:
-    """Integration: each symptom surfaces its diagnose-* node via /query."""
+    """ROUTE (Decision 4, plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3): each
+    symptom surfaces its diagnose-* node via /query, driven over the route
+    against route_pipeline (conftest.py's session-scoped live_pipeline
+    installed at writ.server._pipeline). No daemon, no socket.
+    """
 
     @pytest.mark.parametrize("node_id", list(DIAGNOSE))
-    def test_symptom_surfaces_node(self, node_id: str) -> None:
-        if not _server_up():
-            pytest.skip("Writ server unreachable")
+    def test_symptom_surfaces_node(
+        self, node_id: str, _diagnose_nodes_present, route_pipeline
+    ) -> None:
+        from writ.server import app as server_app
+
         symptom = DIAGNOSE[node_id][1]
-        req = urllib.request.Request(
-            f"{SERVER}/query",
-            data=json.dumps({
-                "query": symptom,
-                "node_types": ["Playbook", "Technique"],
-                "domain": "process",
-                "budget_tokens": 2000,
-                "top_k": 6,
-            }).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
+        client = TestClient(server_app)
+        resp = client.post("/query", json={
+            "query": symptom,
+            "node_types": ["Playbook", "Technique"],
+            "domain": "process",
+            "budget_tokens": 2000,
+            "top_k": 6,
+        })
+        assert resp.status_code == 200, (
+            f"POST /query for {node_id!r} returned {resp.status_code}, not 200: "
+            f"{resp.text}"
         )
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            body = json.loads(resp.read())
+        body = resp.json()
         ids = [r.get("rule_id") for r in body.get("rules", [])]
         assert node_id in ids, (
-            f"symptom {symptom!r} must surface {node_id}; got {ids}"
+            f"symptom {symptom!r} must surface {node_id} (present in the graph "
+            f"per the _diagnose_nodes_present precondition above); got {ids}. "
+            f"RANKING is not under this module's control, which is why the "
+            f"assertion is membership in the top k rather than exact order."
         )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -297,6 +298,92 @@ def corpus_footprint(
         raise typer.Exit(1)
 
 
+@app.command(name="injection-footprint")
+def injection_footprint(
+    mode: str = typer.Option("work", "--mode", help="Session mode to measure (work, debug, review, ...)."),
+    prompt: str = typer.Option(..., "--prompt", help="The probe prompt to retrieve against."),
+    base_url: str = typer.Option(f"http://{DEFAULT_HOST}:{DEFAULT_PORT}", "--base-url",
+                                 help="Writ daemon base URL."),
+    budget: int = typer.Option(None, "--budget", help="Budget tokens (default: the fresh-session budget)."),
+    at: str = typer.Option("prompt", "--at", help="Always-on injection point to filter by."),
+    as_json: bool = typer.Option(False, "--json", help="Emit the report as JSON."),
+) -> None:
+    """Measure ONE probe turn's rendered injection: bytes per channel, per rule, per field.
+
+    Read-only diagnostic. /always-on is a GET and /query is posted without a session_id, so
+    a measurement run mutates no session cache and leaves no retrieval telemetry row. Fails
+    loud (exit 2) when the daemon is unreachable rather than reporting zero bytes, because a
+    zero-byte report from a stopped daemon reads as a win."""
+    from writ.analysis import injection_footprint as ifp
+    kwargs = {"base_url": base_url, "mode": mode, "probe_prompt": prompt, "at": at}
+    if budget is not None:
+        kwargs["budget_tokens"] = budget
+    try:
+        report = ifp.build_report(**kwargs)
+    except ifp.InjectionFootprintError as e:
+        typer.echo(f"INJECTION FOOTPRINT CANARY FAILED: {e}", err=True)
+        raise typer.Exit(2)
+    typer.echo(ifp.render_json(report) if as_json else ifp.render_text(report))
+
+
+@app.command(name="blackbox-census")
+def blackbox_census(
+    log: str = typer.Option(None, "--log", help="Capture log to read (default: ~/.claude/writ-blackbox.jsonl)."),
+    out: str = typer.Option(None, "--out", help="Artifact to write (default: docs/reference/blackbox-census.json)."),
+    cc_version: str = typer.Option("unknown", "--cc-version", help="The Claude Code build this capture window came from."),
+    as_json: bool = typer.Option(False, "--json", help="Print the census to stdout instead of writing the artifact."),
+) -> None:
+    """Regenerate the payload census from a blackbox capture log.
+
+    Reads only; capture coverage is not changed here. The artifact substantiates the
+    `delivery_provenance` tags in writ/shared/delivery.py: an entry backed by no captured
+    record stays `unproven` rather than being asserted, which is what keeps the fire drill
+    from asserting a documentation claim. An absent or empty log is NOT an error; it yields
+    a well-formed artifact with zero records and every registered event listed under
+    events_never_observed, which is the correct state right after capture is switched on."""
+    from writ.analysis.blackbox import build_census, read_capture_records
+    from writ.shared.delivery import CENSUS_PATH
+
+    def _home_relative(path: Path) -> str:
+        home = Path(os.path.expanduser("~"))
+        try:
+            return "~/" + str(path.relative_to(home))
+        except ValueError:
+            return str(path)
+
+    log_path = Path(log) if log else Path(os.path.expanduser("~/.claude/writ-blackbox.jsonl"))
+    records = read_capture_records(log_path)
+    census = build_census(records, claude_code_version=cc_version)
+    # HOME-RELATIVE, never absolute. This artifact is COMMITTED, and the public mirror
+    # would otherwise carry the generating machine's home path (and so its username)
+    # forever. The provenance that matters is WHICH log this came from, which `~/...`
+    # states just as well while staying true on anyone else's machine.
+    census["source_log"] = _home_relative(log_path)
+    payload = json.dumps(census, indent=2, sort_keys=True) + "\n"
+    if as_json:
+        typer.echo(payload)
+        return
+    out_path = Path(out) if out else Path(CENSUS_PATH)
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(payload, encoding="utf-8")
+    except OSError as e:
+        typer.echo(f"blackbox-census: cannot write {out_path}: {e}", err=True)
+        raise typer.Exit(1)
+    # The origin split rides on the SUMMARY LINE, not only inside the artifact. Roughly a
+    # third of the capture is hand-built probe payloads, so a bare record_count reads as a
+    # count of real Claude Code traffic and overstates the evidence by the contaminated share.
+    origins = census["origin_counts"]
+    typer.echo(
+        f"blackbox-census: {census['record_count']} records "
+        f"(harness {origins['harness']}, "
+        f"undetermined {origins['undetermined']}, "
+        f"synthetic {origins['synthetic']}), "
+        f"{len(census['records'])} record classes, "
+        f"{len(census['events_never_observed'])} events never observed -> {out_path}"
+    )
+
+
 @app.command(name="efficacy-ab")
 def efficacy_ab(
     suite_dir: str = typer.Argument(..., help="Task-suite dir (e.g. tests/efficacy_suite)."),
@@ -347,14 +434,70 @@ def serve(
     port: int = typer.Option(DEFAULT_PORT, help="Port to bind the service to."),
     host: str = typer.Option(DEFAULT_HOST, help="Host to bind the service to."),
 ) -> None:
-    """Start Writ service. Pre-warms indexes into memory."""
+    """Start Writ service on a private unix socket AND the TCP port. Pre-warms indexes.
+
+    TWO LISTENERS, ONE PROCESS. `Server.serve(sockets=[...])` takes a socket list, so
+    both transports are served by the same app and the same warmed index. The socket
+    is the private door for hooks; TCP stays because `/dashboard` and `/explore` are
+    HTML for a browser and a browser cannot open a unix socket.
+
+    The socket's PARENT DIRECTORY is created 0700 before the bind, and that is the
+    isolation: uvicorn chmods the socket itself to 0o666. An unusable path (over the
+    AF_UNIX byte cap) or a failed bind logs the reason and serves TCP alone, because a
+    transport upgrade must never stop the daemon from starting.
+    """
     import uvicorn
 
+    from writ.config import (
+        MAX_SOCKET_PATH,
+        get_daemon_socket_path,
+        prepare_socket_dir,
+        socket_is_live,
+        socket_path_usable,
+    )
     from writ.server import app as fastapi_app
+
+    # TCP IS BOUND FIRST, and the order is the fix, not a preference. Binding the
+    # socket first meant a second `writ serve` unlinked the RUNNING daemon's socket,
+    # bound its own, then died on the already-taken port, leaving a socket file with
+    # nothing behind it. Measured here: the daemon logged "Listening on unix socket"
+    # at 15:01, the file's mtime was 15:39, and a connect returned errno 111 while
+    # that same daemon still answered on TCP. Binding the port first makes a
+    # duplicate start fail before it can touch the socket.
+    tcp_config = uvicorn.Config(fastapi_app, host=host, port=port, log_level="info")
+    sockets = [tcp_config.bind_socket()]
+
+    sock_path = get_daemon_socket_path()
+    if not socket_path_usable(sock_path):
+        typer.echo(
+            f"Socket path unusable (over the {MAX_SOCKET_PATH}-byte AF_UNIX cap): "
+            f"{sock_path}; serving TCP only.",
+            err=True,
+        )
+        sock_path = ""
+    if sock_path and socket_is_live(sock_path):
+        # Belt and braces behind the bind order: another daemon on a different port
+        # can hold this socket, and stealing it would disconnect its clients.
+        typer.echo(
+            f"{sock_path} is already being served by another process; serving TCP only.",
+            err=True,
+        )
+        sock_path = ""
+    if sock_path:
+        try:
+            prepare_socket_dir(sock_path)
+            if os.path.exists(sock_path):
+                os.unlink(sock_path)
+            uds_config = uvicorn.Config(fastapi_app, uds=sock_path, log_level="info")
+            sockets.append(uds_config.bind_socket())
+            typer.echo(f"Listening on unix socket {sock_path}")
+        except OSError as exc:
+            typer.echo(f"Could not bind {sock_path} ({exc}); serving TCP only.", err=True)
 
     typer.echo(f"Starting Writ service on {host}:{port}")
     typer.echo("Pre-warming indexes...")
-    uvicorn.run(fastapi_app, host=host, port=port, log_level="info")
+    server = uvicorn.Server(tcp_config)
+    asyncio.run(server.serve(sockets=sockets))
 
 
 @app.command(name="import-markdown")
@@ -538,7 +681,7 @@ def reconcile(
                 # The library reconcile refuses to run against an empty oracle
                 # (would wipe the corpus). Surface it as a clean exit, not a
                 # traceback -- mirrors add/edit/propose error handling.
-                typer.echo(f"ERROR: reconcile aborted -- {exc}", err=True)
+                typer.echo(f"ERROR: reconcile aborted: {exc}", err=True)
                 raise typer.Exit(code=1) from exc
             deleted_nodes = result["deleted_nodes"]
             deleted_edges = result["deleted_edges"]
@@ -959,6 +1102,67 @@ def compress() -> None:
     asyncio.run(_run())
 
 
+@app.command()
+def handoff(
+    session: str = typer.Option(..., "--session", help="Session id to hand off."),
+    out: str = typer.Option(None, "--out", help="Write here instead of .claude/handoffs/."),
+) -> None:
+    """Write a session handoff: where the session stands, what it wrote, what is open.
+
+    Every line is derived from the session cache and the approved plan. Nothing is
+    summarized, so the document cannot drift from the state it describes. Fires
+    automatically at the compaction boundary (hooks/scripts/writ-precompact.sh).
+    """
+    import os
+
+    from writ.session.handoff import build_handoff, write_handoff
+
+    root = os.environ.get("WRIT_ROOT") or os.getcwd()
+    if out:
+        path = Path(out)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(build_handoff(session, root))
+    else:
+        path = write_handoff(session, root)
+    typer.echo(str(path))
+
+
+@app.command(name="trust-ledger")
+def trust_ledger(
+    accept: bool = typer.Option(
+        False, "--accept", help="Record the current state as the trusted baseline."
+    ),
+) -> None:
+    """List the skills, agents and MCP servers Writ can see, and what changed.
+
+    Deliberately NOT reachable from `writ doctor --fix`: accepting drift means
+    blessing whatever appeared since the last run, so it stays a separate action a
+    human takes. MCP coverage is local config only; connector-attached servers are
+    invisible from disk and the output says so.
+    """
+    import os
+
+    from writ.session.trust_ledger import (
+        BASELINE_REL_PATH,
+        collect_inventory,
+        default_roots,
+        load_baseline,
+        render_ledger,
+        save_baseline,
+    )
+
+    root = Path(os.environ.get("WRIT_ROOT") or os.getcwd())
+    skills, agents, claude_json = default_roots(root)
+    inv = collect_inventory(skills, agents, claude_json)
+    baseline_path = root / BASELINE_REL_PATH
+
+    if accept:
+        save_baseline(baseline_path, inv)
+        typer.echo(f"Baseline recorded: {baseline_path}")
+        return
+    typer.echo(render_ledger(inv, load_baseline(baseline_path)))
+
+
 @app.command(name="role-prompt")
 def role_prompt(
     role: str = typer.Argument(..., help="Subagent role name (writ-explorer, writ-planner, etc.) or ROL-* id."),
@@ -1149,6 +1353,249 @@ def propose(
     asyncio.run(_run())
 
 
+def _resolve_review_session() -> str | None:
+    """The session this process belongs to, or None. Never guesses.
+
+    resolve_current_session_id answers from $CLAUDE_SESSION_ID or
+    basename($CLAUDE_JOB_DIR) and returns None otherwise: it no longer reads the shared
+    /tmp pointer or the newest cache by mtime, both of which answered "which session am
+    I" with "whichever one moved last".
+    """
+    from writ.session.cache import resolve_current_session_id
+
+    return resolve_current_session_id()
+
+
+def _record_pending_review_rule(
+    session_id: str | None, rule_id: str, existing: dict
+) -> None:
+    """Record `rule_id` as the rule surfaced in this session, and clear any candidate.
+
+    ONE SURFACED OBJECT AT A TIME, and that exclusivity is forced by the new field
+    rather than merely tidy. If the cache could hold a pending candidate AND a pending
+    rule at once, a single "approved" would mint a token carrying two promotion
+    credentials; the claim would still spend it once, so "one approval, one action"
+    holds, but the human's approval could be spent on whichever of the two objects the
+    agent chose to act on first. So each surfacing clears the other: this clears
+    pending_candidate_id, and /session/{id}/promotion-review clears
+    pending_review_rule_id.
+
+    Only an ai-provisional rule is recorded. A rule that could not legally be promoted
+    must leave no binding behind for a later approval to pick up, which mirrors the
+    promotion-review route refusing to record a candidate that is not graduation_pending.
+    """
+    if not session_id:
+        return
+    if existing.get("authority") != "ai-provisional":
+        return
+    from writ.session.cache import mutate_cache
+
+    with mutate_cache(session_id) as cache:
+        cache["pending_review_rule_id"] = rule_id
+        cache["pending_candidate_id"] = ""
+
+
+def _refuse_promotion(
+    session_id: str, rule_id: str, event: str, message: str, **fields
+) -> typer.Exit:
+    """Write one audit row naming the refusal CLASS, print the way out, exit non-zero.
+
+    Returns the Exit for the caller to `raise`, rather than raising here, so every
+    refusal is visible AS a refusal at its own call site instead of hiding the control
+    flow one frame down.
+
+    A refusal with no audit row is invisible, and a fail-closed gate that shares one
+    event name with an absent one is indistinguishable from it in the log, so each class
+    is named separately at the point of refusal. Nothing is consumed on any of these
+    paths: the token file is left exactly as found, because it may legitimately authorize
+    a DIFFERENT action and spending it here would destroy that authorization.
+    """
+    from writ.analysis.friction import log_friction_event
+
+    log_friction_event(
+        session_id=session_id, mode=None, event=event, rule_id=rule_id, **fields
+    )
+    typer.echo(message, err=True)
+    return typer.Exit(code=1)
+
+
+def _authorize_rule_promotion(
+    rule_id: str, existing: dict, session_id: str | None, token: str | None
+) -> str:
+    """Decide whether this caller may promote `rule_id`; return the session id.
+
+    ACCESS BOUNDARY. WHO CAN CALL IT: any local process, since this is a CLI command on
+    the operator's machine. WHO CAN SUCCEED is narrower: only a caller holding the gate
+    token minted for this session, for NO phase gate, and for THIS exact rule id. That is
+    the human who typed "approved" after the rule was surfaced to them, or an agent
+    acting immediately on that approval. HOW THE CALLER IS AUTHENTICATED: by possession of
+    the single-use secret on line 1 of /tmp/writ-gate-token-<session_id>, a file only the
+    approval hook writes and only on a genuine user approval prompt, whose writes both
+    write gates refuse; plus the binding on lines 2 to 5, which is what makes possession
+    authorize one action rather than any action. WHAT OWNERSHIP APPLIES: the session id
+    scopes the credential, the rule must be ai-provisional, and it must be the rule
+    recorded as surfaced. WHAT HAPPENS WHEN UNAUTHORIZED: no graph write, a non-zero exit,
+    one audit row naming the refusal class, and a message naming the next action and who
+    may take it.
+
+    THE CHECK LIVES HERE, IN THE CLI, RATHER THAN BEHIND A DAEMON ROUTE. The credential is
+    a FILE, not a daemon object; `writ review` opens its own Neo4j connection and never
+    speaks to the daemon, so surfacing, approving and promoting stay authorizable end to
+    end with the daemon stopped, which is exactly the state a maintainer is most likely to
+    be repairing things in; and a route would gain nothing in security, because the
+    refusal decision reads a file and a cache that are equally readable from either
+    process. A route-layer-only check would also leave this command as an unguarded
+    internal path to the same authority write.
+
+    typer.confirm is GONE from this path rather than kept alongside the token. Keeping it
+    would require an interactive TTY on the very flow being built (the agent runs this
+    command after the human types "approved"), so it would deadlock the fix; and a confirm
+    that `echo y` satisfies adds no safety, which is measured rather than assumed.
+
+    GUARD ORDER, which is not arbitrary and mirrors cmd_reopen_planning.
+    """
+    from writ import authoring
+    from writ.session.gate_token import (
+        BINDING_RULE_MISMATCH,
+        claim_gate_token,
+        gate_token_valid,
+        read_gate_binding,
+        read_gate_rule,
+        read_gate_token,
+    )
+
+    # 1. WHO IS ASKING. Unresolvable refuses with exit 2 naming the flag, the existing
+    #    CLI convention: nothing is guessed and no cache is scanned by mtime. NO audit row
+    #    here on purpose: a row keyed to no session lands in the "unknown" bucket, which
+    #    was measured on 2026-08-11 as a defect worth 372 misfiled rows, and this refusal
+    #    is already visible to the operator on stderr with a non-zero exit.
+    sid = session_id or _resolve_review_session()
+    if not sid:
+        typer.echo(
+            f"Cannot promote {rule_id}: which session's approval authorizes this is "
+            "unknown, and Writ does not guess one.\n"
+            f"  Supply it explicitly:  writ review {rule_id} --promote --session-id "
+            "<session_id> --token <token>\n"
+            "  or export an identity:  CLAUDE_SESSION_ID=<session_id>\n"
+            "                          CLAUDE_JOB_DIR=<dir whose basename is the "
+            "session_id>\n"
+            "Nothing was promoted and nothing was consumed.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    # 2. LEGALITY BEFORE CREDENTIALS, so an illegal transition never reaches a token
+    #    check and never consumes anything. assert_ai_provisional is the single-source
+    #    legality check (DRY-DUP-002); the exact 'human'-fallback message is preserved.
+    try:
+        authoring.assert_ai_provisional(existing, rule_id, "promote")
+    except authoring.IllegalAuthorityTransitionError:
+        typer.echo(
+            f"Cannot promote: {rule_id} has authority "
+            f"'{existing.get('authority', 'human')}'"
+        )
+        raise typer.Exit(code=1)
+
+    # 3. THE SECRET. Failing here means the caller is not holding an approval at all, so
+    #    nothing is consumed and nothing is written.
+    expected = read_gate_token(sid)
+    if not gate_token_valid(token or "", expected):
+        raise _refuse_promotion(
+            sid, rule_id, "agent_self_approval_blocked",
+            f"Refusing to promote {rule_id}: promoting a rule to ai-promoted requires "
+            "the approval token the hook writes on a genuine user approval, and the "
+            "agent cannot approve its own proposal. Authority is unchanged.\n"
+            f"  1. Surface the rule:  writ review {rule_id} --session-id {sid}\n"
+            "  2. THE USER replies exactly \"approved\" on their own turn.\n"
+            f"  3. Re-run:  writ review {rule_id} --promote --session-id {sid} --token "
+            "<token from /tmp/writ-gate-token-" + sid + ">",
+            event_target="review_promote", had_token=bool(token),
+            had_expected=bool(expected),
+        )
+
+    # 4. THE BINDING, read NON-DESTRUCTIVELY, so naming the reason never spends an
+    #    approval that legitimately authorizes something else.
+    binding = read_gate_binding(sid)
+    if binding is None:
+        raise _refuse_promotion(
+            sid, rule_id, "gate_token_unbound",
+            f"Refusing to promote {rule_id}: this session's gate token records nothing "
+            "about what it authorizes (it is the pre-binding format), so it cannot be "
+            "checked against a rule promotion. The token was left on disk and authority "
+            f"is unchanged. Surface the rule with `writ review {rule_id} --session-id "
+            f"{sid}`, have THE USER reply \"approved\" to mint a bound token, then re-run "
+            "with --token.",
+            event_target="review_promote",
+        )
+    if binding[0]:
+        raise _refuse_promotion(
+            sid, rule_id, "rule_promotion_gate_bound",
+            f"Refusing to promote {rule_id}: that approval is bound to the {binding[0]} "
+            "gate, so it cannot change a rule's authority. The token was left on disk, "
+            "because it is the user's genuine phase approval and spending it here would "
+            f"destroy it. Advance the {binding[0]} gate first, then surface the rule with "
+            f"`writ review {rule_id} --session-id {sid}` and have THE USER approve the "
+            "promotion on its own turn, with no phase gate pending.",
+            event_target="review_promote", bound_gate=binding[0],
+        )
+
+    # 5. THE RULE. "" and a different id are both refused, but they are NOT the same
+    #    thing: an unbound line 5 means this approval authorizes promoting no rule at all
+    #    (a phase approval, or a token minted before line 5 existed), while a different id
+    #    means it authorizes promoting some OTHER rule. The message names which.
+    bound_rule = read_gate_rule(sid)
+    if bound_rule != rule_id:
+        from writ.session.approval_workflow import _BINDING_REFUSAL_REASONS
+
+        raise _refuse_promotion(
+            sid, rule_id, BINDING_RULE_MISMATCH,
+            f"Refusing to promote {rule_id}: "
+            + _BINDING_REFUSAL_REASONS[BINDING_RULE_MISMATCH].format(
+                bound=bound_rule or "no rule", target=rule_id,
+            )
+            + " The token was left on disk and authority is unchanged.",
+            event_target="review_promote", bound_rule=bound_rule,
+        )
+
+    # 6. THE ATOMIC CLAIM. Claiming IS consuming, so two concurrent promotions holding one
+    #    token produce exactly ONE authority change. plan_hash is passed as the token's
+    #    OWN line-3 value, exactly as the promote-candidate route does, so _binding_refusal
+    #    compares that field against itself and plan drift cannot refuse a promotion that
+    #    has nothing to do with plan.md.
+    if not claim_gate_token(
+        sid, token or "", gate="", plan_hash=binding[1], candidate_id="",
+        rule_id=rule_id,
+    ):
+        raise _refuse_promotion(
+            sid, rule_id, "rule_promotion_claim_lost",
+            f"Refusing to promote {rule_id}: that approval was already spent (a "
+            "concurrent request claimed it). One approval authorizes exactly one action, "
+            "so authority is unchanged here. If the promotion did not happen, have THE "
+            f"USER approve again after `writ review {rule_id} --session-id {sid}`.",
+        )
+    return sid
+
+
+def _record_rule_promoted(session_id: str, rule_id: str, existing: dict) -> None:
+    """Record the authority change and clear the surfacing it was bound to.
+
+    Runs only after authoring.promote succeeded. A Neo4j failure after the claim above
+    spends the approval and the user must approve again: that matches the advance route's
+    stated contract ("the rejection spent the prior approval") and is preferred to holding
+    a live canon-adjacent credential open across a failed write.
+    """
+    from writ.analysis.friction import log_friction_event
+    from writ.session.cache import mutate_cache
+
+    log_friction_event(
+        session_id=session_id, mode=None, event="rule_promoted", rule_id=rule_id,
+        from_authority=existing.get("authority", ""), to_authority="ai-promoted",
+        confirmation_source="gate_token",
+    )
+    with mutate_cache(session_id) as cache:
+        cache["pending_review_rule_id"] = ""
+
+
 @app.command()
 def review(
     rule_id: str = typer.Argument(None, help="Rule ID to inspect. Omit to list all unreviewed."),
@@ -1156,6 +1603,26 @@ def review(
     reject: bool = typer.Option(False, "--reject", help="Delete AI-provisional rule from graph."),
     downweight: bool = typer.Option(False, "--downweight", help="Set confidence floor (speculative)."),
     stats: bool = typer.Option(False, "--stats", help="Show review queue statistics."),
+    session_id: str | None = typer.Option(
+        None,
+        "--session-id",
+        help=(
+            "The session whose approval authorizes this command. Inspecting a rule with "
+            "it RECORDS the rule as surfaced, so the next approval binds to that one "
+            "rule; --promote requires it. Without it the current session is resolved "
+            "from $CLAUDE_SESSION_ID, then basename($CLAUDE_JOB_DIR); nothing is guessed."
+        ),
+    ),
+    token: str | None = typer.Option(
+        None,
+        "--token",
+        help=(
+            "The single-use gate token the approval hook wrote when the user replied "
+            "\"approved\" after this rule was surfaced. Required by --promote: an "
+            "authority change that feeds retrieval ranking may not rest on a "
+            "confirmation prompt that `echo y` satisfies."
+        ),
+    ),
 ) -> None:
     """Review AI-proposed rules. List, inspect, promote, reject, or downweight."""
     from writ import authoring
@@ -1192,20 +1659,12 @@ def review(
                 raise typer.Exit(code=1)
 
             if promote:
-                # Guard before the confirm prompt so a non-provisional rule
-                # errors + exits(1) WITHOUT prompting. assert_ai_provisional is
-                # the single-source legality check (DRY-DUP-002); we keep the
-                # exact 'human'-fallback message + prompt ordering here.
-                try:
-                    authoring.assert_ai_provisional(existing, rule_id, "promote")
-                except authoring.IllegalAuthorityTransitionError:
-                    typer.echo(f"Cannot promote: {rule_id} has authority '{existing.get('authority', 'human')}'")
-                    raise typer.Exit(code=1)
-                confirm = typer.confirm(f"Promote {rule_id} to ai-promoted?")
-                if not confirm:
-                    typer.echo("Cancelled.")
-                    return
+                # EVERY GUARD, AND THE ATOMIC CLAIM, BEFORE THE GRAPH WRITE. The claim IS
+                # the consumption, so reaching the line below means this process holds the
+                # user's approval and no concurrent one does.
+                sid = _authorize_rule_promotion(rule_id, existing, session_id, token)
                 await authoring.promote(db, rule_id, existing)
+                _record_rule_promoted(sid, rule_id, existing)
                 typer.echo(f"Promoted: {rule_id} (authority: ai-promoted, confidence: peer-reviewed)")
                 return
 
@@ -1240,6 +1699,14 @@ def review(
             typer.echo(f"  confidence: {existing.get('confidence', '')}")
             typer.echo(f"  trigger: {existing.get('trigger', '')}")
             typer.echo(f"  statement: {existing.get('statement', '')}")
+
+            # THIS IS THE SURFACING, and it is what makes the next approval bindable: a
+            # rule that was never shown to the human must never become one an approval can
+            # authorize. Recorded ONLY when the rule is ai-provisional, so a surfacing
+            # that could not legally be promoted leaves no binding behind.
+            _record_pending_review_rule(
+                session_id or _resolve_review_session(), rule_id, existing,
+            )
 
             # Show origin context if available.
             try:

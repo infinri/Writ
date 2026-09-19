@@ -104,7 +104,10 @@ WRIT_PORT="8765"
 # ${CLAUDE_PLUGIN_DATA}/server.log -- the same path this line used to hardcode.
 # shellcheck source=scripts/lib/writ-server-lib.sh
 source "${WRIT_DIR}/scripts/lib/writ-server-lib.sh"
-writ_ensure_server
+# WRIT_NO_AUTOSTART (set by tests / CI) suppresses the auto-start, the same check
+# writ-rag-inject.sh makes, so running this hook against a throwaway WRIT_PORT does not
+# spawn (and leak) a real daemon on that port. Unset in production, so the call stands.
+[ -z "${WRIT_NO_AUTOSTART:-}" ] && writ_ensure_server
 
 # 5. Session-id rotation carry-forward. If the harness rotated the session id, the fresh
 #    cache has mode=None and every write is denied [ENF-GATE-MODE]. Parse the payload

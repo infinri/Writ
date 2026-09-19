@@ -53,7 +53,7 @@ Rubric (plan Section 15.4):
   Overall score = the LOWEST scoring section. Score ≥ 3 is required.
 
 Post the judgment:
-  curl -sX POST http://localhost:8765/session/$SESSION_ID/quality-judgment \\
+  curl -s --unix-socket "\${WRIT_SOCKET:-\$HOME/.cache/writ/run/writ.sock}" -X POST http://localhost/session/$SESSION_ID/quality-judgment \\
     -H 'Content-Type: application/json' \\
     -d '{"artifact_path": "$FILE", "score": <0-5>, "failing_section": "<name or null>", "rationale": "<one sentence>"}'
 
@@ -78,7 +78,7 @@ Rubric (plan Section 15.5):
 Overall score = the lowest across the three areas. Score ≥ 3 required.
 
 Post the judgment:
-  curl -sX POST http://localhost:8765/session/$SESSION_ID/quality-judgment \\
+  curl -s --unix-socket "\${WRIT_SOCKET:-\$HOME/.cache/writ/run/writ.sock}" -X POST http://localhost/session/$SESSION_ID/quality-judgment \\
     -H 'Content-Type: application/json' \\
     -d '{"artifact_path": "$FILE", "score": <0-5>, "failing_section": "<name or null>", "rationale": "<one sentence>"}'
 EOF
@@ -97,7 +97,7 @@ Rubric (plan Section 15.6):
 Score ≥ 3 required.
 
 Post the judgment:
-  curl -sX POST http://localhost:8765/session/$SESSION_ID/quality-judgment \\
+  curl -s --unix-socket "\${WRIT_SOCKET:-\$HOME/.cache/writ/run/writ.sock}" -X POST http://localhost/session/$SESSION_ID/quality-judgment \\
     -H 'Content-Type: application/json' \\
     -d '{"artifact_path": "$FILE", "score": <0-5>, "failing_section": "<which anti-pattern or null>", "rationale": "<one sentence>"}'
 EOF
@@ -109,10 +109,12 @@ esac
 # reaches only the CC debug log (verified delivery rule); the model never saw
 # this self-review directive before. Additive, no decision.
 if [ -n "$AC_TEXT" ]; then
-    WRIT_AC="$AC_TEXT" python3 <<'PY' 2>>"$WRIT_HOOK_LOG_SINK" || true
+    AC_REPLY=$(WRIT_AC="$AC_TEXT" python3 <<'PY' 2>>"$WRIT_HOOK_LOG_SINK"
 import json, os
 print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": os.environ.get("WRIT_AC", "")}}))
 PY
+) || AC_REPLY=""
+    emit_hook_reply "$AC_REPLY"
 fi
 
 exit 0

@@ -28,9 +28,12 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+
+from tests._inventory import hook_events
 
 SKILL = Path(__file__).resolve().parent.parent
 HOOKS_JSON = SKILL / "hooks" / "hooks.json"
@@ -44,6 +47,24 @@ INSTALL_VAR = "${WRIT_DIR}"
 
 def _load(path: Path) -> dict:
     return json.loads(path.read_text())
+
+
+def _writ_install_module():
+    """Import bin/lib/writ_install.py in-process to read MANAGED_SETTINGS.
+
+    Mirrors the same six-line helper used twice already
+    (tests/test_managed_global_settings.py, tests/test_hygiene_cycle_d.py). A
+    third copy is a deliberate trade named in plan.md: a shared home in
+    tests/_inventory.py is the right destination if a fourth consumer ever
+    appears, but is not worth adding for one.
+    """
+    sys.path.insert(0, str(SKILL / "bin" / "lib"))
+    try:
+        import writ_install
+
+        return writ_install
+    finally:
+        sys.path.pop(0)
 
 
 def _commands(doc: dict) -> dict[str, list[str]]:
@@ -67,10 +88,39 @@ class TestTemplateExists:
         assert (_load(TEMPLATE).get("hooks") or {}), "template registers no hooks"
 
     def test_it_owns_only_hooks(self):
-        """permissions and statusLine stay owned by patch-global-config.sh's own merge,
-        so this file has exactly one job and cannot fight that step."""
+        """permissions, statusLine and every MANAGED_SETTINGS key stay owned by
+        patch-global-config.sh's own merge (bin/lib/writ_install.py's
+        MANAGED_SETTINGS declaration owns each of those keys specifically), so
+        this file has exactly one job and cannot fight that step.
+
+        Capability 14 (prior cycle) / capabilities.md item 6 (this cycle):
+        'templates/settings.json carries none of the keys MANAGED_SETTINGS
+        declares, with the key list derived from the declaration.'
+
+        DERIVED, not hand-named (HARD CONSTRAINT: never pin a hardcoded key list
+        the module's own declaration can grow past): the two STRUCTURAL keys
+        (permissions, statusLine) are owned by the patcher's own merge rather
+        than by the declaration, so they stay named; the managed part of the
+        list is read from MANAGED_SETTINGS, so a third managed key is covered
+        with no edit to this test.
+
+        This assertion is already true today for every currently-declared key,
+        so it does not go red on its own from the cycle's implementation. It is
+        a regression guard: mutation -- add `effortLevel` to
+        templates/settings.json (capabilities.md item 6's named mutation) --
+        makes it red, and it still reds under the pre-existing mutation this
+        test already caught (adding `outputStyle`), because outputStyle is
+        itself one of the derived keys.
+        """
+        module = _writ_install_module()
+        assert hasattr(module, "MANAGED_SETTINGS"), (
+            "skeleton: writ_install has no MANAGED_SETTINGS yet"
+        )
         doc = _load(TEMPLATE)
-        for key in ("permissions", "statusLine"):
+        owned_elsewhere = ("permissions", "statusLine") + tuple(
+            key for key, _shipped in module.MANAGED_SETTINGS
+        )
+        for key in owned_elsewhere:
             assert key not in doc, (
                 f"template must not carry '{key}'; patch-global-config.sh owns it"
             )
@@ -80,8 +130,11 @@ class TestTemplateMatchesItsSource:
     def test_it_registers_the_same_events(self):
         assert set(_commands(_load(TEMPLATE))) == set(_commands(_load(HOOKS_JSON)))
 
-    def test_it_registers_all_twelve_events(self):
-        assert len(_commands(_load(TEMPLATE))) == 12
+    def test_it_registers_every_event_the_manifest_does(self):
+        # DERIVED. This asserted 12, one of five sites in this file and ten across the
+        # suite. The template's job is to mirror hooks.json, so agreement with the source
+        # is the claim; the canonical literal lives in test_phase51_doc_counts.py.
+        assert len(_commands(_load(TEMPLATE))) == len(hook_events())
 
     def test_every_command_matches_modulo_the_path_variable(self):
         """Structural comparison, not text: reformatting either file must yield neither
@@ -190,8 +243,9 @@ def _seeded(target: Path) -> dict:
     """
     doc = _load(target)
     events = doc.get("hooks") or {}
-    assert len(events) == 12, (
-        f"expected 12 seeded hook events, got {len(events)}: the --hooks step did nothing"
+    assert len(events) == len(hook_events()), (
+        f"expected {len(hook_events())} seeded hook events, got {len(events)}: the --hooks "
+        "step did nothing"
     )
     return doc
 
@@ -209,7 +263,7 @@ class TestSeedingIsOptIn:
     def test_the_flag_merges_every_event(self, target):
         r = _patch(target, "--hooks")
         assert r.returncode == 0, f"{r.stdout}\n{r.stderr}"
-        assert len(_seeded(target)["hooks"]) == 12
+        assert len(_seeded(target)["hooks"]) == len(hook_events())
 
     def test_the_install_path_is_expanded_not_left_as_a_variable(self, target):
         _patch(target, "--hooks")
@@ -280,7 +334,7 @@ class TestSeedingRefusesUnderAPluginInstall:
 
         without = fresh("no-plugin.json")
         _patch(without, "--hooks", plugin_list="[]")
-        assert len(_load(without).get("hooks") or {}) == 12, (
+        assert len(_load(without).get("hooks") or {}) == len(hook_events()), (
             "control case did not seed, so this test cannot attribute anything"
         )
 
@@ -301,7 +355,7 @@ class TestSeedingRefusesUnderAPluginInstall:
         }])
         r = _patch(target, "--hooks", plugin_list=other)
         assert r.returncode == 0, f"{r.stdout}\n{r.stderr}"
-        assert len(_load(target).get("hooks") or {}) == 12
+        assert len(_load(target).get("hooks") or {}) == len(hook_events())
 
 
 class TestDoctorDetectsDoubleRegistration:

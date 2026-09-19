@@ -9,10 +9,11 @@ make test            # starts the disposable Neo4j, then pytest tests/ --maxfail
 make test-graph-up   # create or start that instance and warm it (idempotent)
 make test-graph-down # stop it, keeping its data
 make bench           # benchmarks/bench_targets.py (contractual perf floors)
+make firedrill       # the negative-controls fire drill, alone (pytest -m firedrill)
 make check           # test + bench + writ validate
 ```
 
-Over 400 test modules, roughly 7,900 collected tests (2026-08-14). Always use the venv interpreter (`.venv/bin/python`): the system interpreter lacks `onnxruntime` and fails the embedding tests. The suite runs on its own daemon port (8799) and against its own Neo4j instance on 7688 (see below). Markers: `perf` (latency-floor tests), `integration` (needs a live `claude` CLI, gated behind `WRIT_INTEGRATION_TESTS=1`), `no_friction_isolation` (opts out of the log redirect).
+Over 400 test modules, roughly 7,900 collected tests (2026-08-14). Always use the venv interpreter (`.venv/bin/python`): the system interpreter lacks `onnxruntime` and fails the embedding tests. The suite runs on its own daemon port (8799) and against its own Neo4j instance on 7688 (see below). Markers: `perf` (latency-floor tests), `integration` (needs a live `claude` CLI, gated behind `WRIT_INTEGRATION_TESTS=1`), `no_friction_isolation` (opts out of the log redirect), `firedrill` (the negative-controls fire drill, below).
 
 `--maxfail=10`, not `-x`: on a suite this size `-x` reports exactly one failure per run, so reaching green costs one run per failure at minutes each. Ten gives the whole picture and still refuses to grind through a broken suite.
 
@@ -38,12 +39,21 @@ Over 400 test modules, roughly 7,900 collected tests (2026-08-14). Always use th
 - **`WRIT_PORT=8799`**: the suite never touches the interactive daemon on 8765 (the singleton tests use 8791). `tests/_daemon.py` owns the test daemon's lifecycle and realigns it if its cache dir diverges from the suite's.
 - **`WRIT_CACHE_DIR`** defaults to a fresh `mkdtemp`: without it, subprocess tests would pollute the real `var/session` (the production default moved off `/tmp`, which made the install dir the fallback).
 - **`WRIT_NO_AUTOSTART=1`**: a test hitting a dead port must not auto-start a real daemon that outlives the run answering `mode=""` forever (an order-dependent failure class).
+- **Daemon leak guard** (autouse, module-scoped): one `ps` snapshot per module boundary, chained, so a Writ daemon that appears during a module and survives its end fails THAT module with the pid, the port, the command line and that daemon's own `/health` destinations. It reports and never signals: stopping a process the suite did not start is an operator action. A process that is merely exiting is not a leak, so a report is re-checked for two seconds first (measured: a correctly stopped daemon lingers in the table 0.05 to 0.10 seconds after its `/health` goes silent). The operator's 8765 daemon needs no exclusion (it is in the baseline before the first boundary) and the suite's own daemon is excluded by `WRIT_PORT`, so a survivor on the test port is out of the guard's reach by design and `curl localhost:8799/health` answers that one by hand. A `ps` that cannot be read FAILS rather than reading clean. Design and rejected alternatives: [docs/adr/ADR-daemon-leak-guard.md](../adr/ADR-daemon-leak-guard.md).
 - **`WRIT_NEO4J_URI` / `WRIT_NEO4J_USER` / `WRIT_NEO4J_PASSWORD` plus `WRIT_TEST_GRAPH=1`**: the suite talks to its own Neo4j instance on port 7688, never the one the interactive daemon serves. See [the section below](#the-suite-runs-against-its-own-neo4j-instance).
 - **Friction/log redirect** (autouse): `WRIT_FRICTION_LOG` and `WRIT_LOG_ROOT` point into the test's tmp dir so no test event lands in real streams.
 
 ## The anti-masking contracts
 
-Roughly half the suite needs a reachable Neo4j. The rule, encoded in `tests/_corpus.py::classify_corpus_state`: **unreachable is the only legitimate skip; a reachable-but-empty graph must FAIL.** An empty graph previously masked a real regression as a skip. What the classifier actually gates on is narrower than the file's census constant suggests: `classify_corpus_state` returns `ready` only when the rule count reaches `MIN_RULES` (280) **and** the SubagentRole count reaches `EXPECTED["SubagentRole"]` (5). The `EXPECTED` mapping records a wider census (5 SubagentRole, 15 Playbook, 13 Skill, 20 Phase), but the SubagentRole entry is the only one the classifier reads; the other three document the shipped corpus rather than gate a run. On an isolated run (the default, below) the session-start preflight warms a cold instance from the tracked `writ-corpus.cypher` and `pytest_sessionfinish` skips the restore, because a throwaway instance has nothing to repair. Under `WRIT_TEST_NO_ISOLATION=1` the old behaviour stands unchanged: the probe self-heals from `bible/`, and `pytest_sessionfinish` restores the shipped corpus from `writ-corpus.cypher` on every run (the earlier count-gated restore left methodology nodes missing after a run).
+There are two, and they are the same idea applied to two different resources.
+
+**Contract one, the graph.** Roughly half the suite needs a reachable Neo4j. The rule, encoded in `tests/_corpus.py::classify_corpus_state`: **unreachable is the only legitimate skip; a reachable-but-empty graph must FAIL.** An empty graph previously masked a real regression as a skip. What the classifier actually gates on is narrower than the file's census constant suggests: `classify_corpus_state` returns `ready` only when the rule count reaches `MIN_RULES` (280) **and** the SubagentRole count reaches `EXPECTED["SubagentRole"]` (5). The `EXPECTED` mapping records a wider census (5 SubagentRole, 15 Playbook, 13 Skill, 20 Phase), but the SubagentRole entry is the only one the classifier reads; the other three document the shipped corpus rather than gate a run. On an isolated run (the default, below) the session-start preflight warms a cold instance from the tracked `writ-corpus.cypher` and `pytest_sessionfinish` skips the restore, because a throwaway instance has nothing to repair. Under `WRIT_TEST_NO_ISOLATION=1` the old behaviour stands unchanged: the probe self-heals from `bible/`, and `pytest_sessionfinish` restores the shipped corpus from `writ-corpus.cypher` on every run (the earlier count-gated restore left methodology nodes missing after a run). The bench isolation fixture in `tests/test_bench_isolation.py` is the shape to copy when a fixture finds an empty corpus: heal through `ensure_corpus`, re-count, and FAIL with the per-label census if it is still empty. Only the unreachable branch skips.
+
+**Contract two, a measurement that cannot run must FAIL, never skip.** The strace-based tests hold ratchets: the write-path process budget, the prompt-path python budget, the "a non-approval prompt never reads the transcript" guard. Nine sites used to end with `if not trace.exists(): pytest.skip(...)`, which fails the contract twice over. A skip in a 8,780-test run is invisible, and it appears exactly when the machine is loaded enough to regress. Worse, `Path.exists()` is true for a zero-byte file, so an EMPTY trace counted as a successful measurement and `assert "approval_evidence" not in text` passed vacuously against an empty string: a green result from a measurement that never happened.
+
+Route every traced run through `tests/_strace.py::trace_execve`, which returns the trace text and raises `UnmeasurableTrace` (a `RuntimeError` subclass, so no pytest skip machinery is reachable) when the trace is **missing, empty, or holds no `execve(` line**. The failure message names the exit status, the tail of strace's stderr and the attempt count, so the first real failure diagnoses itself. It makes exactly two attempts, the second on a fresh trace path and a fresh subprocess, and every call writes to its own temp directory, so a leftover file from a crashed earlier run can never be read as this run's measurement. `trace_execve_result` is the same thing for the two sites that also assert on the traced program's own exit status.
+
+The one skip that stays is `shutil.which("strace") is None`: a missing tool is a fact about the machine, not a failed measurement. `tests/_strace.py::unmeasurable_skip_sites` scans `tests/` for the old shape and is pinned EMPTY, so the three lines cannot come back the next time somebody sees a flake. It is AST-based rather than a grep, which is why the docstrings that quote the old shape verbatim are not findings.
 
 ## The suite runs against its own Neo4j instance
 
@@ -57,6 +67,22 @@ make test-graph-up            # create when absent, start when stopped, wait for
 make test-graph-down          # stop it; the data stays, so the next `up` starts warm
 bash scripts/test-graph.sh status
 ```
+
+### The start state is wiped, not inherited
+
+**An isolated run begins from a graph holding nothing but the freshly warmed corpus.** Before the first test is collected, `_preflight_isolated_graph` censuses every label, deletes every node through `tests/_graph.py::wipe_everything` (which routes to `clear_all(preserve_labels=frozenset())` and contains no Cypher of its own), then rebuilds and times the corpus. The wipe is issued only after the isolation classifier has already returned the isolated state, so a production or unreachable target receives zero delete statements; if `clear_all` refuses anyway, the `FullWipeRefused` is converted to a `pytest.UsageError` carrying the isolation remedy rather than escaping as an INTERNALERROR with no way out on it.
+
+Why this is needed at all: `clear_all` preserves `Memory`, `Decision`, `FileChange`, `Commit` and `Project` by default, `ensure_corpus` checks floor counts and never restores records, and an isolated run skips the end-of-suite restore. So residue accumulated across runs and never left. Measured before the fix: 651 record nodes out of 1,119, 57 percent of the graph, growing every run. Two consecutive runs against that graph were two different experiments.
+
+The preflight prints exactly one line per run:
+
+```text
+graph isolation: wiped 468 nodes (Rule 288, Abstraction 62, Category 22, ...), corpus rebuilt in 2.1s
+```
+
+Read it as three facts, not decoration. The count is proof the wipe had work to do (a preflight that silently did nothing against an already-clean graph produces the same "the two runs matched" evidence as one that worked). The census names WHICH residue existed, records included, and is printed whole rather than truncated to a top N, because after the first wipe the record counts are single digits against a corpus in the hundreds. The seconds are the cost this adds, printed every run so it cannot drift unnoticed; the documented trigger for reconsidering the corpus source is a rebuild past 30 seconds.
+
+Under `WRIT_TEST_NO_ISOLATION=1` none of this runs: no census, no wipe, no report line, and the pre-existing `bible/` warm path is reached unchanged.
 
 `make test` depends on `test-graph-up`, so the documented entry point never fails for a missing container. **Bare `pytest` starts nothing and refuses instead**, at session start, before the first test, in three cases: the resolved URI is the production `(host, port)`; the disposable instance does not answer; the instance answers but the corpus replay left it below the census. A refusal costs one command to clear. The rejected alternative, skipping, is cheap to produce and indistinguishable from a green run, which this repo has already paid for twice.
 
@@ -77,6 +103,34 @@ The costs, stated rather than discovered:
 - Runtime records are only as safe as the guard inside `clear_all`. That guard is real, but it is the last line rather than the design.
 
 The reasoning behind the default, the alternatives it rejected, and the connection-level tripwire it replaced are recorded in [ADR-test-graph-isolation](../adr/ADR-test-graph-isolation.md).
+
+## The negative-controls fire drill (`tests/firedrill/`)
+
+A negative control is a test that proves the refusing machinery still refuses. The drill triggers each declared refusing surface for real and asserts three things per refusal, plus a conditional fourth: TRIGGERED (a real subprocess, or a real call into `writ/session/gates.py`), SHAPE (the declared exit code or a stdout `hookSpecificOutput.permissionDecision`, with a non-empty reason matching at least one action marker), RECORD (a durable row in the stream that row belongs to, read through `read_streams`), and DELIVERY only where the classification has captured provenance.
+
+```bash
+make firedrill                                  # the convenience wrapper
+.venv/bin/python -m pytest -m firedrill -q      # by marker, wherever the files live
+.venv/bin/python -m pytest tests/firedrill -q   # by path
+```
+
+It is **not** deselected by default, so `make test` and CI both run it. Notes for anyone adding a case:
+
+- **The marker comes from `tests/firedrill/conftest.py`**, applied to every item collected under that directory, not from a `pytestmark` in each module. Coverage that comes from WHERE a file lives cannot go stale; a list of modules that each remembered to mark themselves goes stale the moment a fifth one does not.
+- **The drill opts out of the friction-log redirect** (`no_friction_isolation`, same conftest). `WRIT_FRICTION_LOG` collapses every typed stream into one file, and the drill's whole claim is about WHICH stream carries each record, so under the redirect every stream-routing assertion would be vacuous.
+- **`tests/firedrill/_census.py`** declares the inventory: per refusal, its script, event, trigger setup, declared mechanism, declared record shape, declared stream, and the action-marker set a reason must match. `tests/_inventory.py::derive_refusing_scripts` derives the same population from hook source, so a script that gains a refusal path and is not declared makes the drill red. That red is the point: do not narrow the derivation to match the census.
+- **`tests/firedrill/_harness.py`** is the only hook runner. It pins `WRIT_CACHE_DIR`, `WRIT_LOG_ROOT`, `WRIT_LOG_PROJECT`, `HOME` (blackbox capture writes under `$HOME`, so an unpinned HOME would append drill traffic to the developer's real capture log), `WRIT_NO_AUTOSTART=1` and a closed `WRIT_PORT`, and removes `WRIT_FRICTION_LOG`. The closed port is deliberate: every gate that consults the daemon then takes its local-fallback arm, which is the outage case and the arm most likely to lose a record.
+
+### The payload census artifact
+
+`docs/reference/blackbox-census.json` is what makes the drill's delivery layer a measurement rather than a doc claim. `writ/shared/delivery.py::delivery_provenance` returns `observed` only for an (event, mechanism) pair the artifact holds a record class for, and `unproven` otherwise; the drill asserts delivery only for `observed` entries and reports the rest by name. Regenerate it per Claude Code version:
+
+```bash
+.venv/bin/python -m writ.cli blackbox-census --cc-version "$(claude --version | awk '{print $1}')" \
+  --out docs/reference/blackbox-census.json
+```
+
+`writ/analysis/blackbox.py` is the pure reader behind it (records in, census out; it writes nothing and captures nothing) and `tests/test_blackbox_census.py` covers it in the normal suite. The artifact is keyed `<event>|<hook>|<direction>` and carries structure only: observed key names with counts, `tool_input` key sets per `tool_name`, `hookSpecificOutput` keys and mechanisms for OUT records, and a first/last timestamp. **Absence is stated, never inferred**: `events_never_observed` is derived from `hooks/hooks.json`, so "no data for this event" is a row in the file rather than a missing key. An absent or empty capture log is not an error; it yields a well-formed zero-record artifact, which is the correct state right after capture is switched on.
 
 ## Traps when writing tests
 

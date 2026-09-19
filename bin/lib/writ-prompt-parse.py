@@ -1,8 +1,11 @@
 """Prompt parser + mode-hint classifier for writ-rag-inject.sh (UserPromptSubmit).
 
 Extracted VERBATIM from the hook's inline `python3 -c` block (was lines 86-206).
-Reads the Claude Code envelope JSON on stdin; prints 5 lines:
-  session_id\nprompt\nagent_id\nmode_hint\neffort  (or 5 empty lines on any error).
+Reads the Claude Code envelope JSON on stdin; prints 4 newline-separated fields:
+  session_id\nagent_id\nmode_hint\nprompt  (or 4 empty lines on any error).
+The PROMPT IS LAST because it is the only field that may legitimately contain the
+delimiter; the consumer reads it as the remainder of the record, so a multi-line prompt
+arrives whole instead of truncating and shifting every field after it.
 Lives in bin/lib next to writ_mode_hint.py, so its own dir resolves the classifier
 import with no $WRIT_DIR interpolation. stdlib-only; fail-open."""
 import os, sys, json, re
@@ -67,6 +70,16 @@ def extract_keywords(raw: str) -> str:
     # Cap and join
     return ' '.join(keywords[:MAX_KEYWORDS])
 
+def _one_line(v, _flat=str.maketrans('\r\n', '  ')):
+    # Delimiter-freedom for the three scalars, enforced at the PRODUCER rather than assumed
+    # at the consumer: a pathological value is mangled inside its OWN field and can never
+    # move another. Mangled, not truncated, because a truncated session id could collide
+    # with a real session while a mangled one simply matches nothing. str() keeps a
+    # non-string envelope value (an int agent_id) out of the exception arm. The table is a
+    # default arg so a call site is the only place this name is followed by an argument,
+    # which is what makes "delete the sanitizer" a runnable mutation in the suite.
+    return str(v).translate(_flat)
+
 try:
     data = json.load(sys.stdin)
     sid = data.get('agent_id', '') or data.get('session_id', '')
@@ -119,8 +132,9 @@ try:
     # an investigate classification (audit-while-planning stays the gate-light investigate).
     if data.get('permission_mode', '') == 'plan' and hint != 'investigate':
         hint = 'work'
-    eff = data.get('effort')
-    effort = eff.get('level', '') if isinstance(eff, dict) else (eff or '')
-    print(f'{sid}\n{prompt}\n{agent_id}\n{hint}\n{effort}')
+    sid = _one_line(sid)
+    agent_id = _one_line(agent_id)
+    hint = _one_line(hint)
+    print(f'{sid}\n{agent_id}\n{hint}\n{prompt}')
 except Exception as e:
-    print('\n\n\n\n')
+    print('\n\n\n')

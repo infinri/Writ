@@ -1,6 +1,11 @@
 # ADR: The test suite gets its own Neo4j instance, and the tripwire is deleted
 
-Status: accepted (test graph isolation cycle, 2026-08-13).
+Status: accepted (test graph isolation cycle, 2026-08-13). Amended 2026-08-31 by the suite
+start state cycle: Decision 6 adds the session start wipe, and Decision 3 gains a recorded
+divergence between what it says the isolated instance is warmed FROM and what the code
+actually does. Amended 2026-09-16 by the corpus floor cycle: Decision 6's completeness
+verdict stops being a hand written list of expectations and is derived from the tracked
+corpus dump, which adds one new session start refusal (see the amendment below).
 
 ## Context
 
@@ -139,6 +144,26 @@ than discovered later: if a future dump loses one Playbook, the preflight refuse
 whole run instead of letting a partial corpus scatter odd failures. That is the correct
 direction and the one the contract was written for.
 
+**DIVERGENCE, found 2026-08-31 and recorded rather than fixed.** The paragraph above states
+the intent; the code does something else on any machine that has a `bible/` tree. The
+preflight warms through `tests/_corpus.ensure_corpus`, and that function tries `bible/`
+FIRST and only falls back to `writ-corpus.cypher` when `bible/` is absent. On a clean
+checkout and in CI the two agree, because there is no `bible/` and the fallback is the only
+branch available. On a developer machine that has one (about 140 markdown files on the
+machine where this was found) the isolated instance is warmed from `bible/`, so the ADR and
+the code have disagreed since the fallback was added in this same cycle, and the
+disagreement predates the 2026-08-31 amendment below.
+
+It is recorded and not repaired here on purpose. Switching the preflight to `replay_dump`
+would honour this paragraph and would make the start state identical across machines, but
+it also changes what the corpus IS on a machine with `bible/`, which can move
+content-sensitive assertions. The property the start state cycle owed was per-machine run to
+run determinism, and warming from `bible/` delivers that just as well. Changing the corpus
+SOURCE is a separate decision with its own blast radius, and doing it silently inside a
+cycle about determinism is how a second variable enters an experiment. Anyone taking that
+decision should read Decision 6 first: the fallback trigger recorded there (a rebuild past
+30 seconds) is the measurement that would justify the switch.
+
 ### 4. The tripwire is DELETED, not extended, and the single-path design replaces it
 
 Both the fixture and the comment block explaining it are gone. Not kept as defence in
@@ -196,6 +221,126 @@ The bench job stays on 7687 on purpose. It never requests `disposable_graph`, it
 are a historical series that should not gain a new variable, and keeping one job on the
 default preserves a live proof that the non-isolated path still works end to end.
 
+### 6. The isolated run starts from a wiped graph, not an inherited one (amendment, 2026-08-31)
+
+Decision 3 gave the run a complete CORPUS at session start. It did not give it a known
+GRAPH, and the difference is the whole of this amendment.
+
+`clear_all` preserves `RECORD_LABELS` (`Memory`, `Decision`, `FileChange`, `Commit`,
+`Project`) by default, every corpus-level restore preserves them, and `ensure_corpus` checks
+floor counts only and deliberately never restores records. So the only thing that removes a
+record is an explicit `clear_all(preserve_labels=frozenset())`, which under isolation runs
+for real in exactly two early modules. Whatever a later module leaves behind is never
+cleared for the rest of that run, and it survives into the next run, because Decision 3 also
+dropped the end-of-suite restore on an isolated instance. Measured: 651 record nodes out of
+1,119, so 57 percent of the isolated graph was residue from previous runs, and it grew every
+run. Two consecutive runs against that graph are two different experiments, which is exactly
+the property the isolation cycle set out to buy and did not finish buying.
+
+So `_preflight_isolated_graph` now takes three steps between the isolation verdict and the
+corpus warm: census every label, delete every node through
+`tests/_graph.py::wipe_everything` (which routes to `clear_all(preserve_labels=frozenset())`
+and holds no Cypher text of its own), then warm and time the rebuild. The order is asserted
+by source inspection in `tests/test_cycle8_graph_isolation.py`, because each pair of it is
+load bearing: census before delete or the report can only say zero, delete after the
+classification or a target nobody approved receives a delete statement, delete before the
+warm or the warm is what gets undone.
+
+Why the wipe is correct HERE and wrong everywhere else. The preservation rule exists because
+a `Decision` record has no file to rebuild from, which is a statement about a graph somebody
+cares about. The disposable instance holds only test residue, and the incident the rule was
+written for was records destroyed on the PRODUCTION instance. The wipe is therefore scoped
+to the one place where the rule has no subject, and it is unreachable from anywhere else:
+one caller, inside a function that runs only under isolation, against a target that same
+function has already classified as not production. The guard inside `clear_all` remains the
+second line, and its `FullWipeRefused` is converted to a `pytest.UsageError` carrying the
+isolation remedy, because anything escaping `pytest_sessionstart` that is not a `UsageError`
+becomes an INTERNALERROR with no remedy attached, and a refusal that names no way out is a
+deadlock.
+
+The preflight prints exactly one line, on every run:
+
+```text
+graph isolation: wiped 468 nodes (Rule 288, Abstraction 62, Category 22, ...), corpus rebuilt in 2.1s
+```
+
+That line is the positive signal, and without it this decision could not be verified at all.
+"The two runs matched" is produced identically by a preflight that worked and by a preflight
+that silently did nothing against a graph that happened to be clean, so agreement alone
+would be agreement between two things that may both have done nothing. The line also prints
+the cost this decision adds, every run, forever: a printed cost cannot drift unnoticed. The
+budget set before the code was written was one census read, one whole-graph delete and one
+corpus rebuild per RUN, zero extra queries per test, with a stated trigger at 30 seconds of
+rebuild for reconsidering the corpus source. First measurement on the machine where it was
+built: 2.1 seconds, so the trigger is a long way off and `ensure_corpus` stays.
+
+Verification is an operator procedure, not shipped machinery, for the same reason the census
+probe in Decision 4's replacement is: the property spans two pytest sessions and a test that
+runs the suite from inside the suite is not a test. Run the suite twice against the same
+never-reset instance and compare three things, in the order they discriminate: both report
+lines name a non-zero wiped count, the summary counts and the SETS of skipped test ids match
+(sets, because two runs can report the same skip COUNT for different reasons, which is why
+the runs use `-rs`), and the per-label censuses taken after each run match label for label.
+Counts only, never node ids: records carry per-run session ids and timestamps, so the ids
+legitimately differ and asserting on them would fail on a correct system. The per-run half
+is shipped as `tests/test_suite_start_idempotence.py`, which proves in seconds what the
+two-run procedure costs 22 minutes to prove.
+
+## Amendment (2026-09-16): the completeness floor is derived from `writ-corpus.cypher`
+
+CONTEXT. Decision 6's third refusal asks `tests/_corpus.py::is_complete` whether the warm
+left the isolated instance holding the whole corpus, and that predicate was hand written.
+It floored `Rule` plus four labels, while the label list beside it declared eleven and
+named neither `Abstraction` nor `Category`. So it returned True on a graph holding ZERO
+`AntiPattern`, `Technique`, `ForbiddenResponse`, `PressureScenario`, `Rationalization` or
+`WorkedExample`, the preflight accepted that graph, and `ensure_corpus` then no-opped on
+it. A floor written by hand is blind to every label nobody remembered to write down, which
+is a different failure from being merely stale.
+
+DECISION. `tests/_inventory.py::corpus_floor()` derives the population, label to count,
+from the tracked `writ-corpus.cypher`, and `tests/_corpus.py` reads `EXPECTED`, `MIN_RULES`
+and `_LABELS` from it. The label LIST comes from the corpus too, so `Abstraction` and
+`Category` entered the floor without anyone naming them, and a label type added to the
+corpus later enters it the same way.
+
+THE SOURCE IS THE DUMP, NOT `bible/`, and that follows from what this ADR already records
+about the two. Neo4j is canonical, `writ-corpus.cypher` is the tracked shipped form, and
+`bible/` is a local, gitignored, derived export refreshed with `writ export-cypher`. A
+floor derived from `bible/` would be underivable exactly where it matters most: on CI and
+on a clean checkout, neither of which has one. The dump is present in every checkout, is
+what CI replays, and is already what `tests/_graph.py::replay_dump` uses.
+
+REJECTED: keep the floors hand written and add a drift test that compares them against the
+corpus. That test has to read the corpus to know what the floor should be, which is this
+derivation with a second copy to keep in step, and it still cannot floor a label nobody put
+on the list. `Abstraction` and `Category` are that failure, measured. Also rejected: a
+presence only floor of one node per declared label, which fixes the blindness but loosens
+`Rule` from its real floor down to one, waving through the half replayed corpus this repo
+has already been bitten by.
+
+THE NEW REFUSAL, stated because a developer will meet it. Deriving moves `Rule` and `Skill`
+up to what the dump actually ships and gives nine labels a floor they never had. On CI, on
+a clean checkout and on the disposable instance the graph is replayed FROM this dump, so
+the floor is met by construction. On a developer machine the preflight warms from `bible/`
+first, the divergence Decision 3 already records, so exactly one tree can newly refuse: one
+whose `bible/` holds FEWER nodes of some label than the tracked dump. The comparison is
+`>=`, so the opposite direction is safe, and adding nodes to `bible/` before running
+`writ export-cypher` is the common case.
+
+Because that refusal is new, it names the way out rather than only the problem, which is
+the standing rule here: a guard that names no action is a deadlock, not a control.
+`tests/_corpus.py::corpus_shortfall` returns the verdict as `{label: (live, required)}`
+instead of a bool, the preflight passes it to `isolation_refusal_message`, and the message
+prints, per short label, what the graph has, what the floor requires, and two remedies:
+`writ export-cypher` when the corpus legitimately changed, or the existing
+`WRIT_TEST_NO_ISOLATION=1`. The block is emitted only when a shortfall is supplied, so the
+production target and unreachable refusals, which measure no corpus, still print no census
+and no remedy for one.
+
+Query budget is unchanged. The derivation is one file read of a tracked file and zero graph
+queries, `methodology_counts` keeps its single round trip, and `corpus_shortfall` is pure
+over a census the preflight already holds.
+
 ## Alternatives considered
 
 - Make `_neo4j_container()` return the test container when isolated. Rejected in Decision
@@ -223,6 +368,37 @@ default preserves a live proof that the non-isolated path still works end to end
 - Disable isolation globally if some test proves impossible to run isolated. Rejected in
   advance: the answer is to mark that test. A test that requires production data to pass
   is a finding of its own.
+
+Added by the 2026-08-31 amendment (Decision 6):
+
+- Warm the wiped instance by replaying the tracked `writ-corpus.cypher` instead of calling
+  `ensure_corpus`. Rejected for this cycle, and the reason is recorded as a divergence in
+  Decision 3 rather than buried here: it would honour what Decision 3 says and would make
+  the start state identical across machines, but on a machine with `bible/` it also changes
+  what the corpus IS, which can move content-sensitive assertions. The property owed was per
+  machine run to run determinism. Revisit it when the printed rebuild time crosses 30
+  seconds, which is a measurement rather than a preference.
+- Force `scripts/test-graph.sh up` to replay on every invocation instead of only when it had
+  to create or start the container. Rejected: with the suite warming itself at session start
+  that is a second answer to a question that now has one, and it would still do nothing for
+  a bare `pytest`, which is how the suite is usually run.
+- Audit the 54 fixtures that call `clear_all()` with no reimport. Rejected on the same ground
+  the original audit alternative was rejected on: "which state does a run start from" is ONE
+  fact, and a call-site audit is stale the next time somebody adds a fixture. The wipe makes
+  those fixtures' end state irrelevant to the NEXT run, which is the half that mattered.
+- Drop `--maxfail=10` from the Makefile so a red run always reaches the same end state.
+  Rejected: the wipe already makes run N+1 independent of run N's end state, so maxfail buys
+  nothing on that axis and is inert on a green run. Removing it would cost the CI ergonomics
+  the Makefile comment defends.
+- Address the test daemon on port 8799 in the same cycle. Rejected: it is the other plausible
+  cross-run carrier, but `pytest_sessionfinish` already stops it and no measurement
+  implicates it. Fixing an unimplicated component in the same change as a measured one makes
+  the measurement unattributable.
+- Parallelise the suite with xdist to recover the runtime the rebuild costs. Rejected as
+  backwards: one shared Neo4j instance, one test daemon on a fixed port, one cache dir per
+  run and fixed `/tmp` trace paths are all shared globals, and adding a mechanism whose
+  correctness depends on tests not sharing state, in the cycle whose purpose is to admit that
+  they do, is the wrong order.
 
 ## Consequences
 
@@ -257,6 +433,31 @@ default preserves a live proof that the non-isolated path still works end to end
 - No file under `writ/` is touched, so there is no daemon restart, no runtime behaviour
   change, and a plain `git revert` of the cycle restores the previous behaviour exactly.
   The container can be left running afterwards with no effect.
+- (2026-08-31) `tests/test_graph_wipe_guard.py::TestEveryWholeGraphWipeIsGated` had to learn
+  that `disposable_graph` is one way to gate a whole-graph wipe rather than the definition of
+  gating: a `pytest_sessionstart` hook cannot request a fixture, so demanding one there
+  demands the impossible. It now recognizes three mechanisms, each with its own DETECTOR that
+  reads the mechanism off the source (the fixture as a real parameter; a module-scoped autouse
+  guard that consults `targets_production` and FAILS on it; the preflight, checked on four
+  facts including that the classifier runs before the delete and that `FullWipeRefused`
+  becomes a `pytest.UsageError`). Nothing was added to a name allowlist. Each detector returns
+  False the moment its mechanism decays, proved by mutating the real source in memory, and a
+  planted ungated wipe in a third module still fails both tests, proved against a synthetic
+  module in a tmp directory and once against the live tree.
+- (2026-08-31) An isolated run begins from a graph holding nothing but the freshly warmed
+  corpus. Any test that silently depended on residue left by an earlier module, or by an
+  earlier RUN, now fails. That dependency was never visible before, because the residue only
+  ever grew, so surfacing it is the point rather than a side effect.
+- (2026-08-31) Query budget, restated for the amendment: two reads and one whole-graph
+  delete at session start, plus a corpus rebuild that used to be a no-op on a warm instance.
+  Zero additional queries in any test. Measured at 2.1 seconds of rebuild on the machine
+  where it was built, against roughly 614 seconds for the first half of a full run. The
+  number is printed on every run, so the next person does not have to re-measure it to know
+  whether it moved.
+- (2026-08-31) CI is unaffected. `.github/workflows/pr.yml` sets `WRIT_TEST_NO_ISOLATION=1`,
+  so the preflight never runs there, and each CI job gets a fresh service container anyway.
+  This is a local-developer fix and CI structurally cannot verify it, which is why the
+  verification in Decision 6 is an operator procedure.
 - Verification is an operator probe, not shipped machinery: record the production census
   through `get_production_neo4j_uri()`, run the suite, record it again, and identical counts
   are the proof. A permanent before-and-after sentinel would be a second tripwire, which is

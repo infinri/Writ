@@ -354,6 +354,10 @@
           {
             "type": "command",
             "command": "bash ${WRIT_DIR}/hooks/scripts/validate-file.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash ${WRIT_DIR}/hooks/scripts/writ-output-compress.sh"
           }
         ]
       },

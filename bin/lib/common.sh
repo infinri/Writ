@@ -61,6 +61,86 @@ except Exception:
 " "$p" 2>/dev/null | tr -d '[:space:]'
 }
 
+# The runtime-lens read gate's skip predicate.
+# writ_runtime_lens_check_required <session_id>
+#   exit 0  the expensive `writ-session.py can-read-code` check is REQUIRED
+#   exit 1  the runtime lens provably cannot deny for this session; skipping is safe
+#
+# THE PROPERTY. gates._can_read_code_check returns allow immediately unless
+# mode_engine._effective_source_type(cache) == "runtime", and that helper returns the
+# cache's own source_type when truthy, else MODE_CONFIG[mode]["source_type"], where
+# "debug" is the only mode carrying a static "runtime". So the check is required when
+# source_type == "runtime", or when source_type is falsy and mode == "debug".
+# tests/test_debug_lens_predicate.py evaluates that against the REAL gate over the
+# derived cross product of modes, source types and matcher tools.
+#
+# THE FAIL DIRECTION IS THE SAFETY ARGUMENT. Anything that does not resolve to a parsed
+# JSON OBJECT returns "check required": an absent file, an unreadable one, bytes that
+# are not JSON, a non-object top level, a session id that names no reachable path, or a
+# line this function cannot split unambiguously. Skipping on uncertainty would be a
+# silent gate bypass, so uncertainty always pays the full cost and never grants a read.
+#
+# ONE PROCESS FOR BOTH FIELDS, and the same WRIT_NO_JQ seam parsed_field uses. Each arm
+# emits a sentinel-prefixed, unit-separated line ONLY when the document parses and is an
+# object, and each field is emitted as "s:<value>" when it is a JSON string and "x"
+# otherwise. The arms never decide anything: the comparison against the literals "debug"
+# and "runtime" happens here, once, in bash. That is deliberate. jq's `//` falls through
+# on null and false while python's `or` also falls through on an empty string, and jq
+# calls 0 truthy where python calls it falsy; transporting the JSON TYPE rather than a
+# truthiness verdict means the two arms cannot disagree. A value that is not a string
+# can never be the string "runtime", so treating every non-string as "no usable
+# source_type" and deferring to the mode is safe in the required direction.
+#
+# The jq call is wrapped so absence is a normal input: jq exits 2 on a missing file and
+# 4/5 on a corrupt one, and every hook runs under `set -euo pipefail`, exactly as
+# writ_session_mode_direct documents.
+writ_runtime_lens_check_required() {
+    local _wrlc_path _wrlc_line _wrlc_tag _wrlc_mode _wrlc_source _wrlc_extra
+    _wrlc_path="$(writ_session_cache_dir)/writ-session-$1.json"
+    _wrlc_line=""
+    if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1; then
+        _wrlc_line="$({ jq -r --arg us $'\x1f' 'if type == "object" then
+    "WRLC" + $us
+    + (if (.mode | type) == "string" then "s:" + .mode else "x" end)
+    + $us
+    + (if (.source_type | type) == "string" then "s:" + .source_type else "x" end)
+else empty end' "$_wrlc_path" 2>/dev/null || true; })"
+    else
+        _wrlc_line="$(python3 -c '
+import json, sys
+US = chr(31)
+try:
+    with open(sys.argv[1]) as fh:
+        d = json.load(fh)
+except Exception:
+    sys.exit(0)
+if not isinstance(d, dict):
+    sys.exit(0)
+def tok(v):
+    return "s:" + v if isinstance(v, str) else "x"
+sys.stdout.write("WRLC" + US + tok(d.get("mode")) + US + tok(d.get("source_type")) + "\n")
+' "$_wrlc_path" 2>/dev/null || true)"
+    fi
+
+    # A value carrying a newline or a unit separator would shift the field boundaries,
+    # so a line this function cannot split unambiguously pays the check.
+    case "$_wrlc_line" in
+        *$'\n'*) return 0 ;;
+    esac
+    _wrlc_tag=""; _wrlc_mode=""; _wrlc_source=""; _wrlc_extra=""
+    IFS=$'\x1f' read -r _wrlc_tag _wrlc_mode _wrlc_source _wrlc_extra <<<"$_wrlc_line" || true
+    [ "$_wrlc_tag" = "WRLC" ] || return 0
+    [ -z "$_wrlc_extra" ] || return 0
+
+    [ "$_wrlc_source" = "s:runtime" ] && return 0
+    case "$_wrlc_source" in
+        "s:"|x)
+            [ "$_wrlc_mode" = "s:debug" ] && return 0
+            ;;
+    esac
+    return 1
+}
+
 # ── The session mode a telemetry / audit row is stamped with ─────────────────
 # Resolves that mode into the global _WRIT_ROW_MODE.
 #
@@ -136,6 +216,47 @@ _writ_row_mode_cached() {
 # Usage: RESP=$(WRIT_HTTP_TIMEOUT=3 writ_http_post "$URL" "$BODY" 2>/dev/null) || true
 _WRIT_INSTALL_PY="$_WRIT_LIB_DIR/writ_install.py"
 
+# Which transport a given URL should use. Only DAEMON urls go through the private
+# socket.
+#
+# WHY THIS IS PER-URL. writ_http_get / writ_http_post are GENERIC helpers: hooks call
+# them for the daemon and for other hosts alike. An earlier version of this change put
+# the socket flag on them unconditionally, which made curl ignore the URL's host and
+# fail to connect (exit 7) for every non-daemon call: 15 tests across 5 modules caught
+# it. The daemon-only call sites further down can use $WRIT_CURL_TRANSPORT directly.
+_writ_transport_for() {
+    case "$1" in
+        http://localhost:"${WRIT_SESSION_PORT}"/*|http://127.0.0.1:"${WRIT_SESSION_PORT}"/*|http://localhost:"${WRIT_SESSION_PORT}"|http://127.0.0.1:"${WRIT_SESSION_PORT}")
+            printf '%s' "${WRIT_CURL_TRANSPORT:-}"
+            ;;
+        *)
+            printf ''
+            ;;
+    esac
+}
+
+# One curl attempt, then ONE retry over TCP when the socket refused the connection.
+#
+# Exit 7 is "couldn't connect". A socket FILE outliving its listener is the ordinary
+# aftermath of a crashed or replaced daemon, and it satisfies `[ -S ]`, so before this
+# retry every daemon call over a stale socket failed and fell through to the local
+# python subprocess: correct, because that fallback is the design, but the daemon went
+# unused with nothing announcing it. Retrying only on 7 costs nothing when the socket
+# is healthy, which is why this is a per-call retry rather than a probe at source time
+# (a probe would add a round trip or a python start to EVERY hook).
+_writ_curl_with_fallback() {
+    local url="$1"
+    shift
+    local transport rc=0
+    transport=$(_writ_transport_for "$url")
+    curl $transport "$@" || rc=$?
+    if [ "$rc" -eq 7 ] && [ -n "$transport" ]; then
+        rc=0
+        curl "$@" || rc=$?
+    fi
+    return $rc
+}
+
 writ_http_get() {
     local url="$1"
     local fail="" arg
@@ -145,9 +266,9 @@ writ_http_get() {
     local ct="${WRIT_HTTP_CONNECT_TIMEOUT:-0.5}" mt="${WRIT_HTTP_TIMEOUT:-10}" rc=0
     if [ -z "${WRIT_NO_CURL:-}" ] && command -v curl >/dev/null 2>&1; then
         if [ -n "$fail" ]; then
-            curl -sf --connect-timeout "$ct" --max-time "$mt" "$url" || rc=$?
+            _writ_curl_with_fallback "$url" -sf --connect-timeout "$ct" --max-time "$mt" "$url" || rc=$?
         else
-            curl -s --connect-timeout "$ct" --max-time "$mt" "$url" || rc=$?
+            _writ_curl_with_fallback "$url" -s --connect-timeout "$ct" --max-time "$mt" "$url" || rc=$?
         fi
         return $rc
     fi
@@ -164,10 +285,10 @@ writ_http_post() {
     local ct="${WRIT_HTTP_CONNECT_TIMEOUT:-0.5}" mt="${WRIT_HTTP_TIMEOUT:-10}" rc=0
     if [ -z "${WRIT_NO_CURL:-}" ] && command -v curl >/dev/null 2>&1; then
         if [ -n "$fail" ]; then
-            curl -sf --connect-timeout "$ct" --max-time "$mt" -X POST "$url" \
+            _writ_curl_with_fallback "$url" -sf --connect-timeout "$ct" --max-time "$mt" -X POST "$url" \
                 -H "Content-Type: application/json" -d "$body" || rc=$?
         else
-            curl -s --connect-timeout "$ct" --max-time "$mt" -X POST "$url" \
+            _writ_curl_with_fallback "$url" -s --connect-timeout "$ct" --max-time "$mt" -X POST "$url" \
                 -H "Content-Type: application/json" -d "$body" || rc=$?
         fi
         return $rc
@@ -270,7 +391,7 @@ load_hook_env() {
     # and log the RAW envelope -- the true CC payload, not Writ's normalized form. When OFF,
     # the parser reads stdin directly exactly as before: zero added cost on the hot path.
     local _bb_raw=""
-    if [ "${WRIT_BLACKBOX:-}" = "1" ] || [ -f "${HOME:-}/.claude/writ-blackbox.on" ]; then
+    if blackbox_enabled; then
         _bb_raw=$(cat)
         eval "$(printf '%s' "$_bb_raw" | _writ_parse_hook_stdin)"
     else
@@ -282,20 +403,135 @@ load_hook_env() {
     # HOOK_SESSION_ID stays whatever the envelope carried, including "".
     # Log the raw envelope (the calling hook's basename labels it). Never affects the caller.
     if [ -n "${_bb_raw:-}" ]; then
-        printf '%s' "$_bb_raw" | blackbox_log in "$(basename "${BASH_SOURCE[1]:-$0}" .sh)" "${HOOK_SESSION_ID:-}" || true
+        printf '%s' "$_bb_raw" | blackbox_log in "$(basename "${BASH_SOURCE[1]:-$0}" .sh)" "${HOOK_SESSION_ID:-}" "${HOOK_EVENT:-}" || true
     fi
+    _writ_seed_subagent_cache
+}
+
+# GOVERN A SUB-AGENT ON THE HOOK THAT RUNS, NOT THE EVENT THAT MIGHT NOT FIRE.
+#
+# `SubagentStart` creates a sub-agent's cache, and it does not arrive for every sub-agent.
+# Measured 2026-08-27 across all 239 log files (including the 226 gzipped archives an
+# earlier grep of mine silently skipped): 1,381 distinct agents have a `subagent_start` row,
+# 2,219 hit the stop-side fallback instead, and the two sets do NOT intersect. So 64% of
+# sub-agents never inherit a mode, never inherit the approved gates, and never get a rule
+# injected. 1,425 of them DO have daemon rows under their own agent id, which means Writ
+# hooks ran inside them: that is the seam this uses.
+#
+# HERE, NOT IN THREE HOOKS. Every hook calls load_hook_env, and the envelope it parses
+# carries both halves needed: HOOK_AGENT_ID (the child) and HOOK_SESSION_ID_RAW (the parent,
+# kept separate precisely because HOOK_SESSION_ID prefers the agent id). A call added to the
+# PreToolUse hooks that matter today is a list that goes stale the moment a fourth one does,
+# which the telemetry cycle measured four times over before making coverage structural.
+#
+# IT GRANTS NOTHING. The seeded cache is marked `lazy_seed`, and the write gate resolves a
+# lazy_seed cache's mode as ABSENT, so the write decision is identical to the no-cache
+# decision on every path. See writ/session/gates.py::_authority_mode.
+#
+# COST. For a main session this is one test on an empty variable, no process. For a
+# sub-agent it is one more test on a filename, and a single python start on the FIRST hook
+# only; every later hook in that agent sees the file and returns.
+#
+# THE STATUS WORD IS CAPTURED, NEVER PRINTED. The inline python prints exactly one word on
+# every outcome it can reach (seeded, skipped, failed) and the command substitution keeps it
+# out of the hook's stdout, which is a model channel on some events. A NON-EMPTY word means
+# the seeder spoke for itself, so bash stays silent and there is exactly one row per
+# failure; an EMPTY word means the python never ran at all (an exec killed by an oversized
+# envelope value, a broken interpreter, a killed process), and only then does bash write the
+# row. Nothing is inferred from a missing telemetry row, and the substitution adds no
+# process: its body is a single external command, which bash execs inside the fork the
+# substitution already pays for.
+#
+# THE BASH ROW CARRIES NOTHING FROM THE ENVELOPE. The agent id rides as the friction session
+# argv, where friction-append.py owns the quoting, and the two JSON fields are literals. A
+# row built from the value that killed the seed would die exactly where the seed died, which
+# is the lesson the oversized-agent_type cycle already paid for, and literals leave no
+# question about interpolating an untrusted value into hand-built JSON.
+#
+# STILL EXIT 0, STILL NOTHING ON STDOUT, STILL NO writ_critical. A sub-agent that cannot
+# inherit governance is a gap to report, never a hook failure. `|| _seed_status=""` IS WHAT
+# ABSORBS ERREXIT, and every hook sources this file under `set -euo pipefail`, so DO NOT
+# DELETE IT AS REDUNDANT. Measured all three ways: `local v; v=$(false)` ABORTS the function,
+# `local v=$(false)` survives (there `local` is the command and carries its own status), and
+# `local v; v=$(false) || v=""` survives. Declaring `local` separately is what makes errexit
+# SEE the assignment's status, not what hides it; an earlier version of this comment said the
+# opposite and would have read as permission to remove the one guard holding the hook up.
+# `2>/dev/null` stays on the python so an unbounded traceback cannot land in the operator's
+# transcript, and unlike the spawn path there is no critical line: the agent is already
+# running, a lazily seeded cache confers nothing, and the message would repeat on every hook
+# inside that agent.
+_writ_seed_subagent_cache() {
+    [ -n "${HOOK_AGENT_ID:-}" ] || return 0
+    [ "${HOOK_AGENT_ID:-}" != "${HOOK_SESSION_ID_RAW:-}" ] || return 0
+    [ -n "${HOOK_SESSION_ID_RAW:-}" ] || return 0
+    local _cache_file _seed_status
+    _cache_file="$(writ_session_cache_dir)/writ-session-${HOOK_AGENT_ID}.json"
+    [ -f "$_cache_file" ] && return 0
+    _seed_status=$(WRIT_SEED_AGENT_ID="$HOOK_AGENT_ID" \
+    WRIT_SEED_PARENT="$HOOK_SESSION_ID_RAW" \
+    WRIT_SEED_AGENT_TYPE="${HOOK_AGENT_TYPE:-}" \
+    python3 -c '
+import os, sys
+sys.path.insert(0, sys.argv[1])
+agent = os.environ.get("WRIT_SEED_AGENT_ID", "")
+try:
+    from writ.session.subagent_seed import seed_subagent_cache
+    print("seeded" if seed_subagent_cache(
+        agent, os.environ.get("WRIT_SEED_PARENT", ""),
+        envelope_agent_type=os.environ.get("WRIT_SEED_AGENT_TYPE", "")) else "skipped")
+except Exception as exc:
+    # A sub-agent that cannot inherit governance is a gap to report, never a hook failure.
+    # Anything that escapes seed_subagent_cache (a failed import, a raise out of
+    # resolve_role) is recorded here by the process already running; a fault INSIDE it
+    # recorded itself at the site where the fault and a decline are still distinguishable,
+    # and returned False, so this arm cannot double-report one failure.
+    try:
+        from writ.session.subagent_seed import CACHE_SOURCE_LAZY, log_seed_failure
+        log_seed_failure(agent, CACHE_SOURCE_LAZY, exc)
+        print("failed")
+    except Exception:
+        pass
+' "$_WRIT_SKILL_DIR" 2>/dev/null) || _seed_status=""
+    if [ -z "$_seed_status" ]; then
+        log_friction_event "$HOOK_AGENT_ID" "" "subagent_seed_failed" \
+            '{"hook":"seed-subagent-cache","cache_source":"lazy_seed"}'
+    fi
+    return 0
 }
 
 # Black-box capture: append the RAW Claude-Code <-> hook payloads to a JSONL so the
 # actual contract can be inspected empirically (what CC sends a hook, and what the
 # hook returns to Claude) instead of inferred. Reads the payload from stdin.
-#   direction: "in"  = the envelope CC passed the hook (prompt, tool_input, agent_type, ...)
-#              "out" = what the hook emits back to Claude (stdout / additionalContext)
+#   direction: "in"   = the envelope CC passed the hook (prompt, tool_input, agent_type, ...)
+#              "out"  = what the hook emits back to Claude (stdout / additionalContext)
+#              "exit" = the hook's own non-zero exit status, written by the shared exit trap
 # Opt-in via WRIT_BLACKBOX=1 -> when unset this is a no-op that still drains stdin, so
 # wiring it into a pipe is zero-overhead and behavior-neutral in production. Never fails
 # the caller. Log path: $WRIT_BLACKBOX_LOG (default ~/.claude/writ-blackbox.jsonl).
-# Usage:  printf '%s' "$STDIN_JSON" | blackbox_log in  "$(basename "$0")" "$SESSION_ID"
-#         printf '%s' "$OUTPUT"     | blackbox_log out "$(basename "$0")" "$SESSION_ID"
+# Usage:  printf '%s' "$STDIN_JSON" | blackbox_log in "$(basename "$0")" "$SESSION_ID" \
+#                                                     "$HOOK_EVENT"
+#         blackbox_log exit "$hook" "$session" "$HOOK_EVENT" "$rc" </dev/null
+#
+# EVENT IS ALWAYS WRITTEN, as a string when the caller observed one and as JSON null when
+# it did not. `${x:-}` collapsing to "" would make "this row predates the schema" (key
+# ABSENT) indistinguishable from "this process observed no event" (key PRESENT, null), and
+# both are falsy under .get(), so the reader could not tell them apart either.
+#
+# EXIT_CODE IS WRITTEN ONLY ON AN exit ROW, and a non-numeric value DROPS THE ROW rather
+# than being coerced, so an exit row without a code cannot exist.
+#
+# PID IS THE HOOK SHELL'S OWN `$$`, passed in through the environment. It used to be the
+# encoder's os.getpid(), which is a DIFFERENT ephemeral python per call, so the
+# (hook, pid, session) join in writ/analysis/blackbox.py never matched a real IN row to a
+# real OUT row: all four real OUT classes in the committed census read
+# origins {harness: 0, undetermined: N}. `$$` stays the hook shell's pid inside both the
+# pipeline and the command substitution below, which is exactly the value the join needs.
+#
+# The "out" direction is NOT called from a hook script. emit_hook_reply below is the one
+# writer, so an out row can only ever hold the bytes that were actually sent; a hook that
+# cannot reach the logger cannot record a reconstruction of its reply instead of the reply.
+# The "exit" direction is likewise never called from a hook script: _writ_hook_exit_trap
+# owns it (tests/_inventory.py::direct_blackbox_exit_calls stays empty).
 # Default cap on the capture log, 256 MiB. Named rather than inline so an operator
 # who finds capture stopped can grep for what bounded it. Override:
 # WRIT_BLACKBOX_MAX_BYTES.
@@ -306,10 +542,16 @@ WRIT_BLACKBOX_MAX_BYTES_DEFAULT=268435456
 # `hook_execution` row: ~96ms per write for logging nobody reads synchronously
 # (measured 2026-08-07). The row is now appended by bash and drained once per turn.
 #
-# COVERAGE IS UNIVERSAL, and enforced. A hook registers its own exit work with
+# COVERAGE IS UNIVERSAL BECAUSE OF WHERE A HOOK LIVES, not because each one remembers to
+# ask: the block at the end of this file installs the trap when a script under
+# hooks/scripts/ sources common.sh. An earlier version of this comment claimed coverage
+# was universal and enforced while it was opt-in, and 8 registered hooks emitted nothing
+# behind that sentence. Two rules keep it true: a hook registers exit work with
 # `writ_on_exit`, never with `trap ... EXIT`, because bash allows one EXIT trap and a
-# second one silently replaces this trap and its telemetry. tests/test_exit_trap_
-# ownership.py fails on any hook that takes the trap directly.
+# second silently replaces this one (tests/test_exit_trap_ownership.py fails on any hook
+# that takes the trap directly), and a hook does NOT emit its own hook_execution row,
+# because the trap already does (tests/test_hook_telemetry_coverage.py fails on any that
+# still calls hook_timer_end).
 #
 # An earlier version of this comment claimed the opposite and called the gap acceptable,
 # on the grounds that running the telemetry after another handler would report that
@@ -364,8 +606,39 @@ writ_event_buffer_append() {
     fi
     local buf
     buf="$(writ_event_buffer_path "$session")"
-    mkdir -p "${buf%/*}" 2>/dev/null || true
-    printf '%s' "$row" >> "$buf" 2>/dev/null || true
+    _writ_buffer_append "$buf" "$row"
+    return 0
+}
+
+# Append a buffer row, paying a `mkdir` process only when one is actually needed.
+#
+# WHY THIS IS NOT A BARE `[ -d ] || mkdir -p`. The event-buffer append above runs once
+# at exit on every instrumented hook, so an unconditional `mkdir -p` is 10 processes on
+# a single file write and the largest per-write item left in this library. But the
+# unconditional call WAS doing real work in one case: if the cache directory is removed
+# mid-session it silently recreates it and the row lands. A bare directory test would
+# skip the create, the append would fail, and the `|| true` beside it would swallow the
+# loss in silence -- trading a telemetry or audit row for a process, which is the wrong
+# trade for a record that proves a gate ran.
+#
+# So: test the directory, skip the create while it exists, and if the append fails
+# ANYWAY, create the directory and retry ONCE. The mkdir stays reachable exactly when it
+# is needed and never otherwise, and that is provable by deleting the directory between
+# two calls rather than by reading this comment.
+#
+# Never fails the caller: telemetry failure must not become enforcement failure. A
+# caller that needs to KNOW whether the row landed (the gate-decision path, which falls
+# through to a synchronous emit) tests the append itself instead of calling this.
+_writ_buffer_append() {
+    local _buf="${1:-}" _row="${2:-}" _dir
+    [ -n "$_buf" ] || return 0
+    _dir="${_buf%/*}"
+    [ -d "$_dir" ] || mkdir -p "$_dir" 2>/dev/null || true
+    if printf '%s' "$_row" >> "$_buf" 2>/dev/null; then
+        return 0
+    fi
+    mkdir -p "$_dir" 2>/dev/null || true
+    printf '%s' "$_row" >> "$_buf" 2>/dev/null || true
     return 0
 }
 
@@ -394,8 +667,10 @@ writ_friction_buffer_append() {
     [ "${#row}" -le "$WRIT_EVENT_ROW_MAX" ] || return 1
     local buf
     buf="$(writ_event_buffer_path "$session")"
-    mkdir -p "${buf%/*}" 2>/dev/null || true
-    printf '%s' "$row" >> "$buf" 2>/dev/null || true
+    # Same guarded append as the hook_execution rows above: no `mkdir` process while the
+    # buffer directory exists, and a create-and-retry so a directory removed mid-session
+    # costs a process rather than the row.
+    _writ_buffer_append "$buf" "$row"
     return 0
 }
 
@@ -410,15 +685,33 @@ writ_event_buffer_flush() {
     return 0
 }
 
+# Is capture on? WRIT_BLACKBOX=1 OR the sentinel file ~/.claude/writ-blackbox.on (the
+# sentinel works for already-running CC sessions that can't get a new env var; remove the
+# file to disable). ONE copy of the test, shared by load_hook_env, blackbox_log and
+# emit_hook_reply. A predicate: exit status only, never output.
+blackbox_enabled() {
+    [ "${WRIT_BLACKBOX:-}" = "1" ] || [ -f "${HOME:-}/.claude/writ-blackbox.on" ]
+}
+
 blackbox_log() {
-    # Enabled by WRIT_BLACKBOX=1 OR the sentinel file ~/.claude/writ-blackbox.on (the
-    # sentinel works for already-running CC sessions that can't get a new env var; remove
-    # the file to disable). Off => no-op that still drains stdin.
-    if [ "${WRIT_BLACKBOX:-}" != "1" ] && [ ! -f "${HOME:-}/.claude/writ-blackbox.on" ]; then
+    # Tested here as well as at every call site, so a future caller that forgets to test
+    # still no-ops. Off => no-op that still drains stdin.
+    if ! blackbox_enabled; then
         cat >/dev/null 2>&1; return 0
     fi
-    local direction="${1:-?}" hook="${2:-?}" session="${3:-}"
+    local direction="${1:-?}" hook="${2:-?}" session="${3:-}" event="${4:-}" exit_code="${5:-}"
     local log="${WRIT_BLACKBOX_LOG:-$HOME/.claude/writ-blackbox.jsonl}"
+
+    # An exit row's whole content is its code, so a code that is not a number makes the row
+    # a claim with nothing behind it. Dropped rather than coerced or written as null: with
+    # no third state there is nothing for a reader to interpret. Same validation idiom as
+    # the size cap below, and it runs FIRST so an invalid row costs no `wc -c` either.
+    if [ "$direction" = "exit" ]; then
+        case "$exit_code" in
+            ''|*[!0-9]*)
+                cat >/dev/null 2>&1; return 0 ;;
+        esac
+    fi
 
     # SIZE CAP. Capture is a debug switch with no expiry: measured 2026-08-06, the
     # sentinel on this developer's machine was dated 19 June and the log had reached
@@ -474,19 +767,57 @@ blackbox_log() {
     # python encodes one JSON record to stdout (handles payload escaping); bash appends
     # it. Encoding-only keeps the file write out of python (no direct file open here).
     local rec
-    rec=$(WRIT_BB_DIR="$direction" WRIT_BB_HOOK="$hook" WRIT_BB_SID="$session" python3 -c '
+    rec=$(WRIT_BB_DIR="$direction" WRIT_BB_HOOK="$hook" WRIT_BB_SID="$session" \
+          WRIT_BB_EVENT="$event" WRIT_BB_EXIT="$exit_code" WRIT_BB_PID="$$" python3 -c '
 import os, sys, json, datetime
 try:
-    print(json.dumps({"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                      "hook": os.environ.get("WRIT_BB_HOOK", "?"),
-                      "direction": os.environ.get("WRIT_BB_DIR", "?"),
-                      "session": os.environ.get("WRIT_BB_SID", ""),
-                      "pid": os.getpid(),
-                      "payload": sys.stdin.read()}))
+    _dir = os.environ.get("WRIT_BB_DIR", "?")
+    _pid = os.environ.get("WRIT_BB_PID", "")
+    rec = {"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+           "hook": os.environ.get("WRIT_BB_HOOK", "?"),
+           "direction": _dir,
+           "session": os.environ.get("WRIT_BB_SID", ""),
+           "pid": int(_pid) if _pid.isdigit() else os.getpid(),
+           "event": os.environ.get("WRIT_BB_EVENT") or None,
+           "payload": sys.stdin.read()}
+    if _dir == "exit":
+        rec["exit_code"] = int(os.environ.get("WRIT_BB_EXIT", ""))
+    print(json.dumps(rec))
 except Exception:
     pass
 ' 2>/dev/null) || true
     [ -n "$rec" ] && printf '%s\n' "$rec" >> "$log" 2>/dev/null || true
+}
+
+# THE ONE PLACE A HOOK REPLY REACHES STDOUT. Prints the hookSpecificOutput envelope, then
+# records those same bytes. EMIT BEFORE LOG: capture must never sit between a hook and its
+# answer, so a capture failure can cost a row but never the reply.
+#
+# Empty payload => nothing at all, no stdout and no row. Several emitting python arms exit
+# without printing (writ-debug-code-gate's non-deny arm, the venv swap that rewrote
+# nothing), and an empty stdout is the allow they mean.
+#
+# CAPTURE OFF costs one variable test, one [ -f ] and one printf builtin: no fork. The
+# sentinel is tested HERE rather than left to blackbox_log, because `printf | blackbox_log`
+# forks a subshell before the logger gets to decide it has nothing to do.
+#
+# The hook label resolves the OUTERMOST BASH_SOURCE frame, not BASH_SOURCE[1]: inside
+# emit_deny the frame above this one is common.sh itself, so 20 refusals would file under
+# the hook name "common". Basename by parameter expansion, and only when capture is on,
+# because the basename binary is a 1.3ms fork against 0.018ms.
+# Usage: emit_hook_reply "$ENVELOPE" [hook] [session]
+emit_hook_reply() {
+    local _payload="${1:-}"
+    [ -n "$_payload" ] || return 0
+    printf '%s\n' "$_payload"
+    blackbox_enabled || return 0
+    local _hook="${2:-}" _session="${3:-${HOOK_SESSION_ID:-}}"
+    if [ -z "$_hook" ]; then
+        local _src="${BASH_SOURCE[${#BASH_SOURCE[@]}-1]:-$0}"
+        _hook="${_src##*/}"
+        _hook="${_hook%.sh}"
+    fi
+    printf '%s\n' "$_payload" | blackbox_log out "$_hook" "$_session" "${HOOK_EVENT:-}"
 }
 
 # Convenience: extract a single SCALAR field (string/number) from parsed JSON.
@@ -853,37 +1184,132 @@ print(json.dumps(items, indent=2, ensure_ascii=False))
 # Emit a PreToolUse "deny" decision (Claude Code hookSpecificOutput contract)
 # carrying the given reason. Single source for the deny envelope shared by the
 # validate-design-doc / validate-test-file / worktree-safety PreToolUse gates.
+#
+# THE REASON RIDES STDIN, NOT AN ENVIRONMENT STRING, and that is a size decision rather
+# than a style one (docs/adr/ADR-hook-exec-argument-boundary.md, property 2). MAX_ARG_STRLEN
+# caps each ENV string exactly as it caps each argument, and the Bash gate's reasons embed
+# extractor row values (a credential path, an unresolved spelling, an egress host), which
+# `flat()` collapses but does NOT truncate, so a reason is as long as the command token it
+# quotes. Those reasons were unreachable at size only while the extractor died first; the
+# command-file transport in writ-bash-write-gate.sh makes them reachable, and an oversized
+# env string here would move the silence one layer down: execve fails, `_reply` falls back to
+# "", and emit_hook_reply returns 0 on an empty payload, so the DENY disappears exactly as
+# the extractor's verdict used to. Stdin has no per-string cap. The process count is
+# unchanged (one python either way) and no call site changes.
+#
+# THE PROGRAM MOVES OFF THE HEREDOC FOR THE SAME REASON: a quoted heredoc IS stdin, so a
+# payload cannot use it. It is a SINGLE-quoted `-c` program instead, which needs the JSON
+# keys spelled with double quotes and must contain no apostrophe, so nothing in it can be
+# interpolated by bash (no `$`, no backtick, no quote to close). The two Bash-side gates
+# cannot take this route (their programs are ~1,900 and ~600 lines), which is why they
+# pass a FILE PATH and this one passes the value.
+#
+# surrogateescape on the way in mirrors how os.environ already decoded this value, so a
+# reason quoting a command token that is not valid UTF-8 renders the same as before rather
+# than raising. json.dumps then escapes it (ensure_ascii), so stdout stays pure ASCII.
 # Usage: [ -n "$DENY" ] && emit_deny "$DENY"
 emit_deny() {
-  WRIT_DENY_REASON="$1" python3 <<'PY'
-import json, os
+  local _reply
+  _reply=$(printf '%s' "$1" | python3 -c 'import json, sys
 print(json.dumps({
-    'hookSpecificOutput': {
-        'hookEventName': 'PreToolUse',
-        'permissionDecision': 'deny',
-        'permissionDecisionReason': os.environ.get('WRIT_DENY_REASON', '')
+    "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": sys.stdin.buffer.read().decode("utf-8", "surrogateescape")
     }
-}))
-PY
+}))') || _reply=""
+  emit_hook_reply "$_reply"
 }
 
 # Emit a PreToolUse "ask" decision (Claude Code hookSpecificOutput contract): the
 # tool is neither allowed nor denied, the USER confirms it. Single source for the ask
-# envelope, the twin of emit_deny above. The reason rides an env var into python, which
-# does the JSON encoding, so newlines and quotes inside a reason (the egress guard lists
-# one destination per line) cannot corrupt or forge the envelope (SEC-INJ-LOG-001).
+# envelope, the twin of emit_deny above. The reason rides STDIN into python, which does
+# the JSON encoding, so newlines and quotes inside a reason (the egress guard lists one
+# destination per line) cannot corrupt or forge the envelope (SEC-INJ-LOG-001), and no
+# per-string exec cap can silently empty it. See emit_deny above for the whole argument;
+# it applies here unchanged, and one step harder: this is the envelope a DECIDER FAULT
+# reports itself with (writ_decider_fault below), so an ask that goes silent at size
+# would hide the very failure it exists to announce.
 # Usage: [ -n "$ASK" ] && emit_ask "$ASK"
 emit_ask() {
-  WRIT_ASK_REASON="$1" python3 <<'PY'
-import json, os
+  local _reply
+  _reply=$(printf '%s' "$1" | python3 -c 'import json, sys
 print(json.dumps({
-    'hookSpecificOutput': {
-        'hookEventName': 'PreToolUse',
-        'permissionDecision': 'ask',
-        'permissionDecisionReason': os.environ.get('WRIT_ASK_REASON', '')
+    "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "ask",
+        "permissionDecisionReason": sys.stdin.buffer.read().decode("utf-8", "surrogateescape")
     }
-}))
-PY
+}))') || _reply=""
+  emit_hook_reply "$_reply"
+}
+
+# THE COMPLETION SENTINEL the two Bash-side decision blocks print as their LAST line, and
+# the text their consumers compare against. Held here because both gates
+# (writ-bash-write-gate.sh, writ-worktree-safety.sh) read it and neither should own it.
+#
+# It exists because "the decision block ran and found nothing" and "the decision block did
+# not run" both used to arrive as an empty string, and the consumer answered both with a
+# silent allow. This row makes the first state say so out loud, which leaves the second one
+# nameable (ADR property 3: the outcome is observed, never inferred).
+#
+# THE PYTHON SIDE SPELLS THE SAME TEXT AS A LITERAL (`STATUS_COMPLETE`) rather than reading
+# it from here, and the reason is structural: both blocks are QUOTED heredocs, so nothing
+# bash-side interpolates into them, and one of the two is additionally run STANDALONE by
+# seven test harnesses. Adding a third environment channel to carry a five-word constant
+# would cost more than the second literal does, because the drift is deliberately NOT
+# silent: a mismatch makes every command look like a fault, so the whole Bash surface
+# starts asking on the first run rather than quietly loosening.
+WRIT_EXTRACTOR_SENTINEL=$'status\tcomplete'
+
+# A DECIDER THAT DID NOT RUN TO COMPLETION. The one shared answer for all three write
+# doors (writ-bash-write-gate.sh, writ-worktree-safety.sh, writ-pre-write-dispatch.sh):
+# their decision block crossed an exec boundary, that exec failed, and the empty value
+# it left behind used to read as "nothing to gate".
+#
+# Usage: writ_decider_fault <hook> <stage> <what could not be decided>
+#   <hook> and <stage> are SOURCE LITERALS at every call site, never payload-derived.
+#   The third argument reaches the USER, never the log row.
+#
+# THE POSTURE, and it is two postures because the two states are not the same claim:
+#
+#   python3 PRESENT, block incomplete -> ASK. This is a fault and it should be loud. The
+#     Bash gate already asks in exactly this epistemic state (an unresolvable target, an
+#     unnameable destination): "this cannot be trusted" is answered by the prompt, not by
+#     silence. An ask costs one confirmation and cannot be self-approved by the agent.
+#   python3 ABSENT -> ALLOW, exit 0, and say so once on stderr. Asking here would be
+#     worse than dishonest: on such a machine EVERY Writ decision path is inert
+#     (writ_critical's row, log_friction_event, log_gate_decision, emit_deny and emit_ask
+#     are all interpreter-bound), so an ask would imply a protection that does not exist
+#     while making every write-shaped command unusable. Stderr is the only surface that
+#     survives, and it is used. Without this probe the ask path itself goes silent:
+#     emit_ask cannot build its envelope and emit_hook_reply returns 0 on an empty
+#     payload, which is the same defect one layer down.
+#
+# `command -v` is a BUILTIN: the probe forks nothing, and it runs only on the fault path,
+# so the hot path pays for none of this.
+#
+# NON-BLOCKING IS NOT SILENT (user directive 2026-08-01, docs/reference/session-and-gates.md
+# section 8): the compensating control is visibility. Every fault writes TWO records. One
+# `[WRIT CRITICAL]` line on stderr, which Claude Code surfaces in the session and which
+# needs no interpreter, and one `gate_decider_incomplete` row on the audit stream carrying
+# `hook` and `stage` ONLY, both source literals, because a row built from the value that
+# killed the block would die exactly where the block died.
+writ_decider_fault() {
+  local _hook="${1:-unknown}" _stage="${2:-unknown}" _what="${3:-}"
+  if ! command -v python3 >/dev/null 2>&1; then
+    # No interpreter: no row can be written and no envelope can be built. One line, and
+    # it names the scope honestly: not this hook, the whole enforcement surface.
+    printf '[WRIT CRITICAL] %s: no python3 on PATH, so NO Writ Bash or write decision can be made on this machine. This command was allowed unchecked (%s).\n' \
+      "$_hook" "$_stage" >&2
+    return 0
+  fi
+  writ_critical "$_hook" \
+    "the $_stage decision block did not run to completion, so this tool call was not judged; asking the user instead of allowing it unseen" \
+    "${SESSION_ID:-${HOOK_SESSION_ID:-unknown}}"
+  log_friction_event "${SESSION_ID:-${HOOK_SESSION_ID:-}}" "${MODE:-}" "gate_decider_incomplete" \
+    "{\"hook\": \"$_hook\", \"stage\": \"$_stage\"}"
+  emit_ask "[ENF-DECIDER-INCOMPLETE] Writ could not judge this tool call: ${_what:-the decision block did not run to completion}. That is an infrastructure fault in Writ, not a finding about this command, so nothing is claimed about it either way. Confirm only if you already know it is safe. Writ's own record of the fault is the gate_decider_incomplete row on the audit stream ($_hook / $_stage)."
 }
 
 # Extract the rule objects (the fields used for violation pattern matching) from
@@ -1040,7 +1466,7 @@ log_friction_event() {
 }
 
 # ── Gate token writer ───────────────────────────────────────────────────────
-# Writes the three-line gate-token file: the secret, the gate the approval
+# Writes the five-line gate-token file: the secret, the gate the approval
 # authorizes, and the plan fingerprint it was given for. Lives here beside
 # log_friction_event and writ_http_post because it is the third primitive
 # auto-approve-gate.sh shares with the rest of the surface.
@@ -1055,10 +1481,19 @@ log_friction_event() {
 # An empty gate and an empty fingerprint are legitimate values, not missing ones: they
 # are what an approval typed with no phase gate pending is bound to, and the claim
 # enforces them as "must be exactly empty".
-# Usage: write_gate_token_file <path> <token> <gate> <plan_hash>
+# LINE 4 is the candidate a promotion is bound to, empty for every other approval. It
+# exists because the promotion route used to take the candidate from the request body, so
+# one approval authorized promoting whichever candidate the caller named.
+# LINE 5 is the RULE a promotion approval authorizes, empty for every other approval, and
+# it is a separate line rather than a namespaced reuse of line 4 because a graduation
+# candidate id and a Rule id are different objects: one field holding either would leave
+# the next reader unable to tell WHICH object a token authorizes. An omitted fifth
+# argument writes an empty line 5, which is what a phase advance compares against and what
+# a rule promotion is refused for.
+# Usage: write_gate_token_file <path> <token> <gate> <plan_hash> [candidate_id] [rule_id]
 write_gate_token_file() {
-  local path="$1" secret="$2" gate="${3:-}" plan_hash="${4:-}"
-  printf '%s\n%s\n%s\n' "$secret" "$gate" "$plan_hash" > "$path"
+  local path="$1" secret="$2" gate="${3:-}" plan_hash="${4:-}" candidate="${5:-}" rule="${6:-}"
+  printf '%s\n%s\n%s\n%s\n%s\n' "$secret" "$gate" "$plan_hash" "$candidate" "$rule" > "$path"
   # The file holds a secret in a world-readable directory; the python writer chmods too.
   chmod 600 "$path" 2>/dev/null || true
 }
@@ -1180,16 +1615,18 @@ _writ_hook_exit_trap() {
   # the telemetry, while the exit status still looked correct.
   set +e
 
-  # The hook's own exit handlers, in registration order, each seeing the hook's REAL
-  # exit status in $?. `( exit "$rc" )` is a subshell whose only job is to set $? for
-  # the command that follows.
-  local _h
-  for _h in "${_WRIT_EXIT_HANDLERS[@]:-}"; do
-    [ -n "$_h" ] || continue
-    ( exit "$rc" )
-    "$_h"
-  done
-
+  # THE ROW GOES IN BEFORE THE HANDLERS RUN, and the order is the whole point. Three
+  # hooks drain the buffer as their exit work (friction-logger, writ-subagent-stop,
+  # writ-session-end). With the append last, each drained the buffer and then re-created
+  # it with its own row: measured by seeding one row and running friction-logger, which
+  # left a file holding `hook_execution|friction-logger|73|0||0` behind. Every turn
+  # stranded a one-row orphan, and a session's final row waited on a turn that might never
+  # come. Appending first means a drain handler flushes the drainer too.
+  #
+  # THE COST, so nobody has to rediscover it: dur_ms now covers the hook's own body and
+  # NOT its registered exit work. For the 37 hooks that register nothing this is identical;
+  # for the three drainers the row under-reports by the flush. The alternative is a row
+  # that measures the flush and cannot be inside it.
   local start_ns="${_WRIT_HOOK_START_NS:-0}" now_ns dur_ms
   now_ns=$(_writ_now_ns 2>/dev/null || echo 0)
   if [ "${start_ns:-0}" -gt 0 ] 2>/dev/null && [ "$now_ns" -gt 0 ] 2>/dev/null; then
@@ -1214,6 +1651,48 @@ _writ_hook_exit_trap() {
   # gate_decision via log_gate_decision) are appended to the session buffer and emitted
   # by one drain per turn. The python block that used to live here ran on every write
   # that recorded a decision, and with its git children it measured 203ms per write.
+
+  # The hook's own exit handlers, in registration order, each seeing the hook's REAL
+  # exit status in $?. `( exit "$rc" )` is a subshell whose only job is to set $? for
+  # the command that follows. These run AFTER the row above so a handler that drains the
+  # buffer includes it.
+  local _h
+  for _h in "${_WRIT_EXIT_HANDLERS[@]:-}"; do
+    [ -n "$_h" ] || continue
+    ( exit "$rc" )
+    "$_h"
+  done
+
+  # THE REFUSAL EXIT CODE, captured structurally. This trap is already the owner of every
+  # instrumented hook's exit path, so the eleventh non-zero exit site needs no registration:
+  # the alternative, an enumerated list, is measured in tests/firedrill/_census.py, which
+  # declares 7 of the 10 real sites.
+  #
+  # LAST, after the hook_execution append and after the registered handlers. Capture is a
+  # debug switch, and nothing with retention may be delayed or skipped by it. `exit "$rc"`
+  # below uses the saved status, so a failure here cannot change the hook's outcome.
+  #
+  # NON-ZERO ONLY. An unconditional row would add a python spawn to all 40 instrumented
+  # hooks whenever capture is on, and nothing is lost: the denominator (every hook's exit
+  # code, including 0) is the hook_execution row appended above.
+  #
+  # `[ "$rc" -ne 0 ]` FIRST because it is a builtin and the cheapest discriminator, then
+  # blackbox_enabled, which is one variable test and one `[ -f ]`. Neither forks, so capture
+  # off adds no process.
+  #
+  # `</dev/null`, NOT `printf '' |`: blackbox_log reads stdin, and a pipe forks a subshell
+  # before the logger can decide it has nothing to do. The redirect costs no process and
+  # gives the encoder the empty payload an exit row should carry.
+  #
+  # THE SESSION EXPRESSION IS REVERSED from the telemetry row's above, deliberately. The
+  # other side of the join is the IN row, which load_hook_env writes with
+  # ${HOOK_SESSION_ID:-}; preferring SESSION_ID here would key differently in every hook
+  # where the two differ and the join this row exists to feed could not fire.
+  if [ "$rc" -ne 0 ] && blackbox_enabled; then
+    blackbox_log exit "${_WRIT_HOOK_NAME:-unknown}" \
+      "${HOOK_SESSION_ID:-${SESSION_ID:-}}" "${HOOK_EVENT:-}" "$rc" </dev/null || true
+  fi
+
   exit "$rc"
 }
 
@@ -1280,9 +1759,16 @@ log_gate_decision() {
   # the text a human needs, and silently shortening it is worse than paying for a spawn
   # on the rare long denial.
   if [ "${#_gd_row}" -le "${WRIT_EVENT_ROW_MAX:-3072}" ]; then
-    local _gd_buf
+    local _gd_buf _gd_dir
     _gd_buf="$(writ_event_buffer_path "${SESSION_ID:-${HOOK_SESSION_ID:-}}")"
-    mkdir -p "${_gd_buf%/*}" 2>/dev/null || true
+    # GUARDED, BUT NOT RETRIED, and the difference is deliberate. The guard is the same
+    # as _writ_buffer_append's: no `mkdir` process while the directory exists. The retry
+    # is NOT needed here because this path already has a durability fallback -- a failed
+    # buffered append falls through to _gd_emit_now below, which writes the audit record
+    # synchronously. Retrying the buffer instead would take the row off the durable path
+    # to save a spawn on the one branch where the spawn is warranted.
+    _gd_dir="${_gd_buf%/*}"
+    [ -d "$_gd_dir" ] || mkdir -p "$_gd_dir" 2>/dev/null || true
     if printf '%s' "$_gd_row" >> "$_gd_buf" 2>/dev/null; then
       return 0
     fi
@@ -1293,14 +1779,37 @@ log_gate_decision() {
   _gd_emit_now "${1:-}" "${2:-}" "${3:-}" "${4:-}"
 }
 
+# The bound on the two UNBOUNDED fields of an audit row, and the enforcer the
+# exec-argument ADR asks to be NAMED: a `${var:0:N}` substring expansion, applied below.
+# 4,000 CHARACTERS, which is at most 16 KB in the worst multibyte case, against the
+# 131,072-byte MAX_ARG_STRLEN cap on a single env string.
+#
+# WHY TRUNCATION HERE AND TRANSPORT IN emit_deny, which are opposite answers to the same
+# limit: emit_deny's value is what the USER reads, so shortening it would shorten the
+# explanation of a refusal, and stdin costs nothing. This row is EVIDENCE, and it crosses
+# as two env strings with `|| true` behind it, so an oversized reason would silently drop
+# the AUDIT ROW for a denial while the denial itself still reached the model: the record
+# and the refusal would disagree. A reason long enough to hit this bound is already
+# quoting a command token nobody will read in full; losing the row entirely is the only
+# outcome that cannot be recovered later.
+WRIT_GD_FIELD_MAX=4000
+
 _gd_emit_now() {
   # Same resolution as the buffered path above, and it matters more here: this is the
   # branch every DENIAL takes, the record that proves a gate blocked something.
   _writ_row_mode
+  # reason/target are the only two fields carrying tool input (a denial's text, a file
+  # path), so they are the only two that can reach the cap; gate, decision, session and
+  # mode are all short by construction. Truncated, not dropped: see WRIT_GD_FIELD_MAX.
+  #
+  # BOUND THROUGH A LOCAL, not `${3:0:N}` directly: substring expansion has no `:-`
+  # default, so under `set -u` (which every hook sets) it ABORTS on a caller that passed
+  # fewer than four arguments, where the old `${3:-}` degraded to the empty string.
+  local _gd_now_reason="${3:-}" _gd_now_target="${4:-}"
   WRIT_GD_GATE="${1:-}" \
   WRIT_GD_DECISION="${2:-}" \
-  WRIT_GD_REASON="${3:-}" \
-  WRIT_GD_TARGET="${4:-}" \
+  WRIT_GD_REASON="${_gd_now_reason:0:${WRIT_GD_FIELD_MAX}}" \
+  WRIT_GD_TARGET="${_gd_now_target:0:${WRIT_GD_FIELD_MAX}}" \
   WRIT_GD_SESSION="${SESSION_ID:-${HOOK_SESSION_ID:-}}" \
   WRIT_GD_MODE="$_WRIT_ROW_MODE" \
   python3 -c '
@@ -1333,6 +1842,36 @@ WRIT_SESSION_PORT="${WRIT_PORT:-8765}"
 WRIT_SESSION_HOST="${WRIT_HOST:-localhost}"
 WRIT_SESSION_BASE="http://${WRIT_SESSION_HOST}:${WRIT_SESSION_PORT}"
 
+# Transport for every daemon call in this file. When the daemon's unix socket exists we
+# go through it; otherwise this is empty and the call takes the TCP port exactly as
+# before. curl ignores the URL's host when --unix-socket is given, so the URLs above are
+# unchanged and each call site needs only this one variable.
+#
+# DELIBERATELY UNQUOTED at the call sites. Empty expands to nothing, and non-empty must
+# split into the two words `--unix-socket` and the path; quoting it would pass one
+# argument containing a space and curl would reject it. It is set here unconditionally so
+# `set -u` cannot trip on it.
+WRIT_SESSION_SOCKET="${WRIT_SOCKET:-$HOME/.cache/writ/run/writ.sock}"
+# AN EXPLICIT HOST OR PORT OVERRIDE WINS, and that is not a nicety. Callers that set
+# WRIT_HOST or WRIT_PORT are naming the endpoint they want -- a fake daemon in a test,
+# a second instance, a probe. curl ignores the URL's host when --unix-socket is given,
+# so leaving the socket on would silently redirect those calls to the real daemon.
+# Measured: 6 tests across 3 modules did exactly that before this guard existed.
+if [ -n "${WRIT_SOCKET:-}" ] && [ -S "$WRIT_SESSION_SOCKET" ]; then
+    # BOTH set means "use this socket, with that port as the fallback". Without this
+    # arm the suite could not reach the socket at all: tests/conftest.py sets
+    # WRIT_PORT globally, on purpose, to keep the suite off the interactive daemon,
+    # and the arm below then read that as "the caller named an endpoint". A test
+    # meant to exercise the socket passed without touching one.
+    WRIT_CURL_TRANSPORT="--unix-socket $WRIT_SESSION_SOCKET"
+elif [ -n "${WRIT_HOST:-}" ] || [ -n "${WRIT_PORT:-}" ]; then
+    WRIT_CURL_TRANSPORT=""
+elif [ -S "$WRIT_SESSION_SOCKET" ]; then
+    WRIT_CURL_TRANSPORT="--unix-socket $WRIT_SESSION_SOCKET"
+else
+    WRIT_CURL_TRANSPORT=""
+fi
+
 _writ_session() {
     local subcmd="$1"
     shift
@@ -1350,7 +1889,7 @@ _writ_session() {
         "should-skip")
             # Special: exit code matters (0=skip, 1=don't skip)
             local skip_result=""
-            skip_result=$(curl -sf --connect-timeout 0.1 --max-time 0.5 \
+            skip_result=$(curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.1 --max-time 0.5 \
                 "${WRIT_SESSION_BASE}/session/${session_id}/should-skip" 2>/dev/null) || true
             if [ -n "$skip_result" ]; then
                 # Desync guard (mirrors the mode-get guard below): known=false means
@@ -1375,7 +1914,7 @@ _writ_session() {
         "mode get")
             # Special: hooks expect plain mode string, not JSON
             local mode_result=""
-            mode_result=$(curl -sf --connect-timeout 0.1 --max-time 0.5 \
+            mode_result=$(curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.1 --max-time 0.5 \
                 "${WRIT_SESSION_BASE}/session/${session_id}/mode" 2>/dev/null) || true
             if [ -n "$mode_result" ]; then
                 # jq-first parse (B2: ~1-2ms vs ~10ms python cold-start per call).
@@ -1435,10 +1974,19 @@ if not isinstance(d, dict):
 d.setdefault('skill_dir', os.environ.get('WRIT_SD', ''))
 print(json.dumps(d))
 " "$cw_body" 2>/dev/null) || cw_post_body="$cw_body"
+            # THE BODY GOES ON CURL'S STDIN (`--data-binary @-`), not on its argv.
+            # `-d "$cw_post_body"` put the whole tool envelope in ONE argument, and this
+            # envelope carries a write's CONTENT: measured on this machine, `curl -d` with
+            # a 132,000-byte value fails to exec at all ("Argument list too long", rc 126)
+            # while 130,000 succeeds, so a large write could never reach the daemon and
+            # every such call silently took the local-fallback branch below. `--data-binary`
+            # rather than `-d` because `-d` strips newlines from a file/stdin body, and
+            # `printf` is a builtin, so this adds no process. The Content-Type header stays
+            # explicit, which is the only thing `-d` was giving us here.
             local cw_result=""
-            cw_result=$(curl -sf --connect-timeout 0.1 --max-time 0.5 \
+            cw_result=$(printf '%s' "$cw_post_body" | curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.1 --max-time 0.5 \
                 -X POST "${WRIT_SESSION_BASE}/session/${session_id}/can-write" \
-                -H "Content-Type: application/json" -d "$cw_post_body" 2>/dev/null) || true
+                -H "Content-Type: application/json" --data-binary @- 2>/dev/null) || true
             if [ -n "$cw_result" ]; then
                 # Normalize the server's {"can_write":bool,"reason":...} into the
                 # {"decision":"allow|deny","reason":...} shape the fallback consumer
@@ -1491,7 +2039,7 @@ except (ValueError, json.JSONDecodeError):
 print(json.dumps({'query_response': data}))
 " "$stdin_data" 2>/dev/null)
             if [ -n "$fmt_body" ]; then
-                fmt_result=$(curl -sf --connect-timeout 0.1 --max-time 0.5 \
+                fmt_result=$(curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.1 --max-time 0.5 \
                     -X POST "${WRIT_SESSION_BASE}/session/format" \
                     -H "Content-Type: application/json" \
                     -d "$fmt_body" 2>/dev/null) || true
@@ -1560,11 +2108,19 @@ sys.stdout.write('WRIT_META:' + json.dumps({
             # producing malformed JSON that the server rejects -- see the same
             # gotcha documented on log_friction_event above.
             local check_body="${2:-"{}"}"
+            # THE BODY GOES ON CURL'S STDIN, for the reason spelled out on the can-write
+            # arm above: this body embeds the write's full `content`, `-d` puts it in one
+            # argv string, and MAX_ARG_STRLEN refuses the exec above ~131,000 bytes. The
+            # consequence was not a wrong decision but a MISSING one at the daemon: curl
+            # never ran, `pwc_result` came back empty, and every write over the cap fell
+            # through to the local evaluator below, losing the server's write_attempt row
+            # and its RAG rules. Fixing the argv on the hook side (writ-pre-write-dispatch.sh)
+            # without fixing this line would leave the door shut one layer further in.
             local pwc_result=""
-            pwc_result=$(curl -sf --connect-timeout 0.2 --max-time 1 \
+            pwc_result=$(printf '%s' "$check_body" | curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.2 --max-time 1 \
                 -X POST "${WRIT_SESSION_BASE}/pre-write-check" \
                 -H "Content-Type: application/json" \
-                -d "$check_body" 2>/dev/null) || true
+                --data-binary @- 2>/dev/null) || true
             if [ -n "$pwc_result" ]; then
                 echo "$pwc_result"
                 return 0
@@ -1585,8 +2141,21 @@ body = json.load(sys.stdin)
 # Build stdin envelope for can-write
 envelope = json.dumps({'tool_input': body.get('tool_input', {})})
 print(envelope)
-" 2>/dev/null | _writ_session can-write "$fallback_result" --skill-dir "${SKILL_DIR:-}" 2>/dev/null || echo '{"decision":"allow"}')
-                echo "$cw_result"
+" 2>/dev/null | _writ_session can-write "$fallback_result" --skill-dir "${SKILL_DIR:-}" 2>/dev/null) || cw_result=""
+                if [ -n "$cw_result" ]; then
+                    echo "$cw_result"
+                    return 0
+                fi
+                # The local evaluator itself could not run (a partial install, a broken
+                # venv: the helper exits non-zero with empty stdout). This arm used to be
+                # an inline `|| echo allow`, which ran BEFORE the strict check below and
+                # so handed an allow to an operator who had opted into failing closed.
+                # Same policy as the no-session arm, applied where the crash lands.
+                if [ "${WRIT_STRICT:-}" = "1" ]; then
+                    echo '{"decision":"deny","reason":"[ENF-STRICT-001] Writ strict mode (WRIT_STRICT=1): the local write-gate evaluator could not be run (daemon unreachable and the session helper failed), so this write fails closed. Check the Writ install (writ doctor) or unset WRIT_STRICT.","rag_rules":"","rag_meta":{"rule_ids":[],"tokens":0}}'
+                    return 0
+                fi
+                echo '{"decision":"allow","reason":null,"rag_rules":"","rag_meta":{"rule_ids":[],"tokens":0}}'
                 return 0
             fi
             # No answer obtainable at all (daemon down AND the body yielded no
@@ -1620,12 +2189,12 @@ print(envelope)
     # Try curl first (fast path)
     local result=""
     if [ "$method" = "POST" ]; then
-        result=$(curl -sf --connect-timeout 0.1 --max-time 0.5 \
+        result=$(curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.1 --max-time 0.5 \
             -X POST "$url" \
             -H "Content-Type: application/json" \
             -d "$body" 2>/dev/null) || true
     else
-        result=$(curl -sf --connect-timeout 0.1 --max-time 0.5 "$url" 2>/dev/null) || true
+        result=$(curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.1 --max-time 0.5 "$url" 2>/dev/null) || true
     fi
 
     if [ -n "$result" ]; then
@@ -1898,3 +2467,64 @@ Saying "yes" / "passing" / "all good" without fresh evidence is a forbidden resp
 in this state. Recalled output is not fresh evidence.
 PC_DIRECTIVE
 }
+
+# ── Telemetry coverage follows LOCATION, not memory ──────────────────────────
+# hook_instrument is opt-in, and 8 of the 40 hooks registered in hooks/hooks.json called
+# neither it nor any other emitter, so nothing could say whether they had ever run. The
+# reason that sat unnoticed is instructive: three successive lexical scans for "does this
+# file instrument itself" returned 21, then 12, then 10 uninstrumented hooks before
+# landing on 8, because there are four spellings that produce a row. A check that must
+# enumerate spellings is the defect it is meant to catch, so coverage is now structural.
+#
+# THE GUARD IS THE SOURCING SCRIPT'S PATH. ${BASH_SOURCE[1]} is the file that sourced
+# this one. All 40 registered hooks live under hooks/scripts/ and source common.sh; the
+# five CLI tools under bin/ that also source it are NOT hooks, must not carry an exit
+# trap, and must not appear in hook metrics.
+#
+# SAFE BECAUSE NOTHING COMPETES FOR THE TRAP: no script under hooks/scripts/ or bin/
+# installs its own EXIT/TERM/INT/HUP handler, and tests/test_exit_trap_ownership.py keeps
+# it that way. A hook that calls hook_instrument itself afterwards re-installs the same
+# single trap under its chosen name, which is why the existing explicit calls keep
+# working and keep their names.
+#
+# THE NAME IS DERIVED WITHOUT A PROCESS. hook_instrument's own default would resolve
+# BASH_SOURCE[1] to common.sh from here, so the name is passed explicitly, via parameter
+# expansion rather than basename: this runs on every hook of every turn.
+#
+# BOTH PATTERNS ARE REQUIRED. `*/hooks/scripts/*` needs a slash BEFORE `hooks`, so it
+# misses a RELATIVE invocation (`bash hooks/scripts/x.sh`), which is how the scripts are
+# run by hand and from some tests. Claude Code always passes an absolute path, so this gap
+# would never have shown up in production and would have silently dropped telemetry
+# everywhere else. Found by probing a real hook, not by the unit tests, which happened to
+# use absolute tmp_path scripts.
+#
+# LOCATION IS NOT QUITE THE PREDICATE: one script under hooks/scripts/ is NOT a hook.
+# writ-statusline.sh is wired through the settings `statusLine` channel, not hooks.json, and
+# it renders constantly. Instrumenting it cost a trap on every render and wrote 673 rows in
+# one day under the session id `unknown` (it never sets SESSION_ID), which did more damage
+# than the waste: writ-flush-events.py sweeps a buffer once it goes ABANDONED_SESSION_SECONDS
+# without a write, so the statusline's constant appends kept `writ-events-unknown.buf`
+# perpetually young and stranded 22 writ-subagent-stop rows that would otherwise have been
+# collected. One non-hook held the whole bucket open.
+#
+# WHY A HARD-CODED NAME AND NOT A PREDICATE. Reading hooks/hooks.json here to test
+# membership costs a subshell on every hook of every turn, on the path where the cycle
+# before this one removed 15 execve per file write. An env-var opt-out (WRIT_NOT_A_HOOK=1)
+# is one line but hands the agent a switch that silences all hook telemetry, and a control
+# the agent can disable is not a control. Moving the script under bin/ is structurally
+# cleanest and breaks every installed statusLine setting, because writ_install.py pins the
+# path (STATUSLINE_REL).
+#
+# THE ENUMERATION IS KEPT HONEST BY A TEST, not by vigilance:
+# test_subagent_role_census.py derives the unregistered-script set from hooks.json and fails
+# if any member is missing from this line, so the next non-hook added here cannot be
+# instrumented silently.
+case "${BASH_SOURCE[1]:-}" in
+    hooks/scripts/writ-statusline.sh|*/hooks/scripts/writ-statusline.sh)
+        ;;
+    hooks/scripts/*|*/hooks/scripts/*)
+        _writ_auto_hook="${BASH_SOURCE[1]##*/}"
+        hook_instrument "${_writ_auto_hook%.sh}"
+        unset _writ_auto_hook
+        ;;
+esac

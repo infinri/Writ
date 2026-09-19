@@ -22,8 +22,36 @@ import pytest
 from pathlib import Path
 
 SKILL_DIR = str(Path(__file__).resolve().parent.parent)
+HOOKS_DIR = Path(SKILL_DIR) / "hooks" / "scripts"
 INJECT_HOOK = f"{SKILL_DIR}/hooks/scripts/writ-rag-inject.sh"
 POSTTOOL_HOOK = f"{SKILL_DIR}/hooks/scripts/writ-posttool-rag.sh"
+
+# A mutating `_writ_session update`: one that banks rules, cost or always-on
+# tokens onto the session cache. Line continuations are joined first so a call
+# spread over five lines matches as one logical command.
+_MUTATING_UPDATE_RE = re.compile(
+    r"_writ_session update[^\n]*?--add-(?:rules|rule-objects|always-on-tokens)[^\n]*"
+)
+
+
+def _mutating_updates(body: str) -> list[str]:
+    return _MUTATING_UPDATE_RE.findall(re.sub(r"\\\n\s*", " ", body))
+
+
+# THE POPULATION IS DERIVED, NEVER LISTED.
+#
+# This used to be two named hooks, writ-rag-inject.sh and writ-posttool-rag.sh,
+# the pair whose swallowed stderr hid the legacy-cache KeyError for a whole
+# session. That list broke in both directions. It went RED when plan dfacff61
+# moved writ-rag-inject.sh's cache update server-side, so the hook legitimately
+# has no mutating update left and "expected at least one" became false for it.
+# And it was blind to every other hook that does one: deriving the population on
+# 2026-09-01 turned up writ-read-rag.sh and writ-pre-write-dispatch.sh, BOTH
+# still redirecting to /dev/null, the very thing this module exists to forbid.
+# Both are fixed; the derivation is what found them.
+HOOKS_WITH_MUTATING_UPDATE = sorted(
+    path.name for path in HOOKS_DIR.glob("*.sh") if _mutating_updates(path.read_text())
+)
 
 
 class TestHookStderrLogging:
@@ -63,34 +91,40 @@ class TestHookStderrLogging:
             joined,
         )
 
-    def test_inject_hook_mutating_update_uses_writ_hook_log(self) -> None:
-        body = self._read(INJECT_HOOK)
-        blocks = self._mutating_update_blocks(body)
-        assert blocks, "expected at least one mutating update call in inject hook"
+    def test_the_mutating_update_population_is_not_empty(self) -> None:
+        """Anti-vacuity. A derived population that matched nothing would make
+        the parametrized test below vanish and this module read green while
+        asserting nothing about any hook."""
+        assert HOOKS_WITH_MUTATING_UPDATE, (
+            "no hook performs a mutating _writ_session update; either every "
+            "cache write moved server-side (delete this test) or the detector "
+            "regex has drifted"
+        )
+
+    @pytest.mark.parametrize("hook_name", HOOKS_WITH_MUTATING_UPDATE)
+    def test_mutating_update_uses_writ_hook_log(self, hook_name: str) -> None:
+        """Every hook that banks rules onto the session cache must send that
+        call's stderr to the hook log.
+
+        MUTATION: changing any of these back to `2>/dev/null` turns that hook's
+        parameter red. A hook that legitimately has NO mutating update is simply
+        not in the population, and a hook that GAINS one is covered with no edit
+        here.
+        """
+        blocks = self._mutating_update_blocks(self._read(str(HOOKS_DIR / hook_name)))
+        assert blocks, (
+            f"{hook_name} is in the derived population but no mutating update "
+            "was extracted; the derivation and the extractor disagree"
+        )
         bad = [b for b in blocks if "WRIT_HOOK_LOG" not in b and "writ-hooks.log" not in b]
         assert not bad, (
-            f"mutating update(s) missing WRIT_HOOK_LOG redirect:\n"
+            f"{hook_name}: mutating update(s) missing WRIT_HOOK_LOG redirect:\n"
             + "\n".join(b[:240] for b in bad)
         )
         # Defense-in-depth: assert NO mutating update still ends in 2>/dev/null
         legacy = [b for b in blocks if "2>/dev/null" in b]
         assert not legacy, (
-            f"mutating update still uses 2>/dev/null:\n"
-            + "\n".join(b[:240] for b in legacy)
-        )
-
-    def test_posttool_hook_mutating_update_uses_writ_hook_log(self) -> None:
-        body = self._read(POSTTOOL_HOOK)
-        blocks = self._mutating_update_blocks(body)
-        assert blocks, "expected at least one mutating update call in posttool hook"
-        bad = [b for b in blocks if "WRIT_HOOK_LOG" not in b and "writ-hooks.log" not in b]
-        assert not bad, (
-            f"mutating update(s) missing WRIT_HOOK_LOG redirect:\n"
-            + "\n".join(b[:240] for b in bad)
-        )
-        legacy = [b for b in blocks if "2>/dev/null" in b]
-        assert not legacy, (
-            f"mutating update still uses 2>/dev/null:\n"
+            f"{hook_name}: mutating update still uses 2>/dev/null:\n"
             + "\n".join(b[:240] for b in legacy)
         )
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -15,6 +16,12 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 FRICTION_APPEND = REPO / "bin" / "lib" / "friction-append.py"
 COMMON_SH = REPO / "bin" / "lib" / "common.sh"
+
+FRICTION_LOG = "workflow-friction.log"
+WRITER_SEARCH_DIRS = [REPO / "hooks" / "scripts", REPO / "bin" / "lib"]
+WRITER_ALLOW = {"friction-append.py"}
+_LOG = re.escape(FRICTION_LOG)
+_BINDS_LOG_PATH = re.compile(r"(\w+)\s*=\s*[^=\n]*" + _LOG)
 
 
 def _read_log(path: Path) -> list[dict]:
@@ -150,20 +157,72 @@ def test_session_friction_module_honors_env(tmp_path, monkeypatch) -> None:
     assert events[0]["to_phase"] == "testing"
 
 
-def test_no_inline_marker_walk_writers_remain() -> None:
-    """Option B: no hook/module may still open workflow-friction.log directly via
-    the copy-pasted marker-walk idiom. All writes route through friction-append.py
-    (or, in-package, resolve_log_path). Guards against regression of the sprawl."""
+def _opens_friction_log(text: str) -> bool:
+    """The offence is OPENING the log, not NAMING it. Two linked shapes, never
+    file-wide co-occurrence: the open call and the path in one statement, or a name
+    bound to the path and then opened (the marker-walk idiom's actual shape)."""
+    for line in text.splitlines():
+        if FRICTION_LOG in line and "open(" in line:
+            return True
+    return any(
+        re.search(r"open\(\s*" + re.escape(name) + r"\b", text)
+        or re.search(re.escape(name) + r"\s*\.open\(", text)
+        for name in _BINDS_LOG_PATH.findall(text)
+    )
+
+
+def _inline_friction_writers(search_dirs: list[Path], allow: set[str]) -> list[str]:
     offenders: list[str] = []
-    search_dirs = [REPO / "hooks" / "scripts", REPO / "bin" / "lib"]
-    allow = {"friction-append.py"}
     for base in search_dirs:
-        for path in base.rglob("*"):
+        for path in sorted(base.rglob("*")):
             if not path.is_file() or path.suffix not in {".sh", ".py"}:
                 continue
             if path.name in allow:
                 continue
-            text = path.read_text(errors="ignore")
-            if "workflow-friction.log" in text and "open(" in text:
-                offenders.append(str(path.relative_to(REPO)))
+            if _opens_friction_log(path.read_text(errors="ignore")):
+                offenders.append(str(path.relative_to(REPO)) if REPO in path.parents else str(path))
+    return offenders
+
+
+def test_no_inline_marker_walk_writers_remain() -> None:
+    """Option B: no hook/module may still open workflow-friction.log directly via
+    the copy-pasted marker-walk idiom. All writes route through friction-append.py
+    (or, in-package, resolve_log_path). Guards against regression of the sprawl.
+
+    Keyed on OPENING the log. The predecessor keyed on the path and `open(`
+    co-occurring anywhere in one file, which fired on writ-bash-write-gate.sh once it
+    started naming the log in order to PROTECT it from deletion: that file opens a
+    command file, never this log."""
+    offenders = _inline_friction_writers(WRITER_SEARCH_DIRS, WRITER_ALLOW)
     assert not offenders, f"inline marker-walk friction writers remain: {offenders}"
+
+
+def test_marker_walk_writer_is_still_reported_while_a_protector_is_not(tmp_path) -> None:
+    """Anti-vacuity for the guard above, both directions through the same predicate.
+    POSITIVE: the historical marker-walk writer (bin/lib/writ-session.py at e36fe99)
+    builds the path on one line and opens it on the next, so a predicate keyed on one
+    expression alone would go blind to the very thing this guard exists to catch.
+    NEGATIVE: a file that names the log without opening it is not an offender."""
+    offender = tmp_path / "scripts" / "inline-writer.py"
+    offender.parent.mkdir()
+    offender.write_text(
+        "import os\n"
+        "def _log_friction_event(entry):\n"
+        "    markers = ['composer.json', 'package.json', '.git']\n"
+        "    path = os.getcwd()\n"
+        "    project_root = ''\n"
+        "    while path != '/':\n"
+        "        if any(os.path.exists(os.path.join(path, m)) for m in markers):\n"
+        "            project_root = path\n"
+        "            break\n"
+        "        path = os.path.dirname(path)\n"
+        "    log_path = os.path.join(project_root, 'workflow-friction.log')\n"
+        "    with open(log_path, 'a') as f:\n"
+        "        f.write(entry)\n"
+    )
+    assert _inline_friction_writers([tmp_path], WRITER_ALLOW) == [str(offender)]
+
+    gate = REPO / "hooks" / "scripts" / "writ-bash-write-gate.sh"
+    gate_text = gate.read_text()
+    assert FRICTION_LOG in gate_text, "the gate must still name the log it protects"
+    assert not _opens_friction_log(gate_text)

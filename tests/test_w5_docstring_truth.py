@@ -118,9 +118,9 @@ def test_phase51_hooks_count_reworded() -> None:
         "test_phase51_doc_counts.py's docstring must not claim the hooks.json "
         '\'command\" leaves\' count is 35 -- that count is long stale'
     )
-    assert 'command" leaves == 44' in src, (
+    assert 'command" leaves == 45' in src, (
         "test_phase51_doc_counts.py's docstring must state the current hooks.json "
-        '\'command\" leaves\' count of 44, matching test_hooks_json_entry_count'
+        '\'command\" leaves\' count of 45, matching test_hooks_json_entry_count'
     )
 
 

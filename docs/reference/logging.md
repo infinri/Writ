@@ -11,7 +11,7 @@ One directory per project under `<install>/var/logs/` (`WRIT_LOG_ROOT` overrides
 | `audit.jsonl` | The oversight record: `write_attempt`, `gate_decision` (allow AND deny), `gate_denial`, `mode_change`, `phase_advance`, `agent_self_approval_blocked`, `candidate_promoted`, `quality_judgment`, `memory_policy_deny`, `verification_evidence`, `citation_recorded`, `committed_file_not_in_plan`, `read_blocked`, exit-plan events, `session_end` | 365 days |
 | `friction.jsonl` | Worth fixing: `repeated_denial`, `hallucinated_rule_ids`, approval pattern hits/misses, `subagent_type_fallback`, `*_failed` fallbacks, compaction boundaries | 365 days |
 | `metrics.jsonl` | Volume telemetry: `hook_execution`, `daemon_request`, `retrieval_result`, `hnsw_cache`, `config_resolved`, `rag_query`, `always_on_inject`, sub-agent lifecycle, playbook steps | 90 days |
-| `errors.jsonl` | `exception` rows from `emit_exception` (bounded tracebacks, 2,000 chars), and `critical_error` rows (`severity: critical`) from `writ_critical` in `bin/lib/common.sh`, written when a hook hits a condition it must not paper over -- chiefly a payload carrying no session id | 365 days |
+| `errors.jsonl` | `exception` rows from `emit_exception` (bounded tracebacks, 2,000 chars), and `critical_error` rows (`severity: critical`) from `writ_critical` in `bin/lib/common.sh`, written when a hook hits a condition it must not paper over: chiefly a payload carrying no session id | 365 days |
 
 A `debug` retention entry exists but the stream is deliberately unbuilt: debug output stays in `WRIT_DEBUG`-gated `/tmp` sinks (a recorded decision, not an omission).
 
@@ -28,6 +28,8 @@ Analyzers read archives plus live files (`read_streams` unions every generation,
 ## Read surfaces
 
 `writ logs tail --stream <s> -n N` (bounded backward read), `writ logs stats` (live line/byte counts, archive counts, timestamp range), `writ logs list` (projects and streams), `GET /dashboard` (HTML render of the same analyzer lenses; delegates, never recomputes). Daemon stdout under systemd lives in journald: `journalctl --user -u writ-server`.
+
+`GET /health` reports `audit_log` and `friction_log`: the file a row of each stream would actually land in for that daemon right now, both from `writ.shared.logging.emit_destination`, the same function the router uses to choose a file. `audit_log` is where every gate decision goes. With `WRIT_FRICTION_LOG` set both name that one collapsed file, which is also the value `tests/_daemon.py` and `scripts/lib/writ-server-lib.sh` compare against to detect a daemon pinned elsewhere.
 
 ## Caveats
 

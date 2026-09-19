@@ -26,8 +26,19 @@ source "$WRIT_DIR/bin/lib/common.sh"
 
 STATUSLINE_STDIN="$(cat || true)"
 
+# WRIT_DIR joins this env chain EXPLICITLY. It is a shell variable (line 24), not an
+# exported one, so the python block below read it as unset and fell back to ".", the
+# PROJECT directory for every project but this repo. Importing the shared daemon
+# client by path would then fail and the bare `except` would swallow it, silently
+# dropping the context signal cmd_should_skip's pressure gate reads.
+#
+# THE COMMENT SITS ABOVE THE CHAIN, not inside it. Placing it between two
+# continuation lines detached the assignments from python3, so STATUSLINE_STDIN never
+# arrived and the bar rendered "Writ ctx --" with no POST at all. `bash -n` accepts
+# that happily: it is valid syntax and the wrong program.
 STATUSLINE_STDIN="$STATUSLINE_STDIN" \
 WRIT_SESSION_BASE="$WRIT_SESSION_BASE" \
+WRIT_DIR="$WRIT_DIR" \
 python3 - <<'PYEOF' || true
 import os
 import sys
@@ -42,7 +53,6 @@ def _render(text):
 
 try:
     import json
-    import urllib.request
 
     try:
         data = json.loads(raw) if raw.strip() else {}
@@ -75,16 +85,17 @@ try:
     # 2. Best-effort re-source context_percent for should-skip. Render already
     #    happened; a slow/down server never blocks the bar.
     if sid and pct is not None:
-        base = os.environ.get("WRIT_SESSION_BASE", "http://localhost:8765")
-        body = json.dumps({"context_percent": pct}).encode()
-        req = urllib.request.Request(
-            f"{base}/session/{sid}/context-percent",
-            data=body,
-            method="POST",
-            headers={"Content-Type": "application/json"},
-        )
+        # Through the shared client (bin/lib/writ_daemon_client.py), which prefers the
+        # daemon's unix socket. This block was the transport census's dominant source:
+        # 65 of the first 71 state-touching TCP writes, invisible to E2a's curl-side
+        # transport because it is python inside a shell script.
         try:
-            urllib.request.urlopen(req, timeout=0.5).read()
+            sys.path.insert(0, os.path.join(os.environ.get("WRIT_DIR", "."), "bin", "lib"))
+            import writ_daemon_client
+
+            writ_daemon_client.post_json(
+                f"/session/{sid}/context-percent", {"context_percent": pct}
+            )
         except Exception:
             pass
 except Exception:

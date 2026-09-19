@@ -19,7 +19,7 @@ esac
 PUSH=$(writ_action_push "$HOOK_SESSION_ID" "bible-authoring" || true)
 [ -z "$PUSH" ] && exit 0
 
-WRIT_BIBLE_PUSH="$PUSH" python3 <<'PY' 2>/dev/null || true
+PUSH_REPLY=$(WRIT_BIBLE_PUSH="$PUSH" python3 <<'PY' 2>/dev/null
 import json, os
 print(json.dumps({
     "hookSpecificOutput": {
@@ -28,4 +28,6 @@ print(json.dumps({
     }
 }))
 PY
+) || PUSH_REPLY=""
+emit_hook_reply "$PUSH_REPLY"
 exit 0

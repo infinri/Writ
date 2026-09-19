@@ -54,7 +54,13 @@ if data.get('content'):
 elif ti.get('old_string') and os.path.exists(fp):
     with open(fp) as f:
         content = f.read()
-    content = content.replace(ti['old_string'], ti.get('new_string', ''), 1)
+    # Honour replace_all, or the pre-write gate validates content that never lands: an
+    # Edit with replace_all set replaces EVERY occurrence, and a hardcoded count of 1
+    # reconstructed only the first. str.replace reads -1 as replace-all, so this stays one
+    # expression. 'is True' on purpose: an absent field and an explicit false both keep the
+    # single replacement, which is the whole measured population today.
+    ra = ti.get('replace_all')
+    content = content.replace(ti['old_string'], ti.get('new_string', ''), -1 if ra is True else 1)
 else:
     sys.exit(0)
 
@@ -151,7 +157,7 @@ try:
 except Exception:
     print('[ENF-POST-007] Pre-write validation failed for $FILE')
 " 2>/dev/null)
-  python3 -c "
+  DENY_REPLY=$(python3 -c "
 import json, sys
 print(json.dumps({
     'hookSpecificOutput': {
@@ -160,10 +166,11 @@ print(json.dumps({
         'permissionDecisionReason': sys.argv[1]
     }
 }))
-" "${REASON:-Pre-write validation failed}"
-  log_gate_decision "pre-write-validation" "deny" "${REASON:-Pre-write validation failed}" "${FILE_PATH:-}"
+" "${REASON:-Pre-write validation failed}") || DENY_REPLY=""
+  emit_hook_reply "$DENY_REPLY"
+  log_gate_decision "pre-write-validation" "deny" "${REASON:-Pre-write validation failed}" "$FILE"
   exit 0
 fi
 
-log_gate_decision "pre-write-validation" "allow" "pre-write validation passed" "${FILE_PATH:-}"
+log_gate_decision "pre-write-validation" "allow" "pre-write validation passed" "$FILE"
 exit 0

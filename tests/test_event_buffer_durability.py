@@ -794,14 +794,23 @@ class TestTheSpawnIsActuallyGone:
 
     @pytest.mark.skipif(shutil.which("strace") is None, reason="strace unavailable")
     def test_a_hook_run_spawns_no_python_for_telemetry(self, tmp_path) -> None:
-        """Measured, not inferred: run one instrumented hook and count python starts."""
+        """Measured, not inferred: run one instrumented hook and count python starts.
+
+        HOME is redirected because `blackbox_log` enables itself from the sentinel file
+        `$HOME/.claude/writ-blackbox.on` and then spawns one python per hook. Inheriting
+        the ambient HOME makes this assertion fail whenever a developer has capture
+        switched on, which is a property of their debug switch and not of the telemetry
+        path this test exists to measure.
+        """
         trace = tmp_path / "t.trace"
+        env = os.environ.copy()
+        env["HOME"] = str(tmp_path / "home")
         subprocess.run(
             ["strace", "-f", "-qq", "-e", "trace=execve", "-o", str(trace),
              "bash", str(REPO / "hooks" / "scripts" / "validate-handoff.sh")],
             input=json.dumps({"session_id": "s-11", "tool_name": "Write",
                               "tool_input": {"file_path": "/tmp/x.py", "content": "x"}}),
-            capture_output=True, text=True, timeout=180,
+            capture_output=True, text=True, timeout=180, env=env,
         )
         text = trace.read_text(errors="replace")
         assert sum(1 for ln in text.splitlines() if 'python3"' in ln) == 0, (

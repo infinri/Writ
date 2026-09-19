@@ -15,6 +15,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+from tests._daemon_leak import _serve_pattern, live_snapshot
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -168,3 +170,441 @@ def stop_test_daemon() -> None:
         )
     except (subprocess.SubprocessError, OSError):
         return
+
+
+# --- Isolated per-module daemon (production audit-stream isolation) ---------
+#
+# start_test_daemon above owns the SUITE's daemon on the shared test port. The
+# pair below is for a module that must own its OWN daemon for its own duration:
+# a free port nothing else can be holding, and -- the reason this exists -- a log
+# root, socket and cache dir handed EXPLICITLY to the subprocess env, so every
+# row that daemon writes lands under a throwaway root instead of the operator's
+# real `<skill>/var/logs/<project>/audit.jsonl`.
+
+
+def _isolated_health(port: int, timeout: float = 2.0) -> dict | None:
+    """The /health JSON of the daemon on `port`, or None when nothing answers.
+
+    Separate from _daemon_health(), which resolves the port from WRIT_PORT: an
+    isolated daemon's port is OS-assigned and no env var names it.
+    """
+    url = f"http://localhost:{port}/health"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return json.load(r)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _kill_writ_serve_on_port(port: int, force: bool = False) -> None:
+    """pkill the `writ serve` process whose command line names exactly `port`.
+
+    Matched by PORT, so it can only ever reach the daemon the caller started;
+    the interactive singleton on another port is structurally out of reach. It
+    is deliberately not stop-server.sh: that script locates the process with
+    lsof (not always installed) and, on the default port, stops the operator's
+    systemd unit instead of a process.
+
+    IT STAYS PRIVATE, and the caller count is the weaker half of the reason.
+    plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3 retired the four hand-rolled
+    stops that would have reached past the underscore (three modules now stop
+    through `tests/_hook_runner.py::instrumented_daemon` and one through
+    `stop_isolated_daemon` directly), so today there are ZERO external callers
+    and the name is no longer a lie. The stronger half holds even if a fifth
+    appears: this function SENDS A SIGNAL AND RETURNS NOTHING, while
+    `stop_isolated_daemon` sends it, waits for the health route to go quiet AND
+    the process table to reap, escalates to SIGKILL, unlinks the socket and
+    returns a verdict a caller can assert. Publishing the unverified half would
+    advertise it as the sanctioned way to stop a daemon, which is the defect
+    this program removed one layer up when `stop_isolated_daemon` stopped
+    discarding its second `_wait_for_isolated_down` result. `_serve_pattern`
+    and `_pids_serving_port` stay private for the same reason.
+
+    THE PATTERN IS `_serve_pattern`, ONE SPELLING-INDEPENDENT SUBSTRING, and it
+    is shared with the pid lookup below so a stop and its verification can
+    never disagree about what a daemon is. The former literal
+    `writ serve --port {port}` matched exactly ONE of the three launch
+    spellings `scripts/lib/writ-server-lib.sh:93-99` can produce: the
+    `<venv>/bin/writ` console script. It could not match
+    `<python> -m writ.cli serve --port N`, which is what bare `writ` resolves
+    to through a PATH shim, because the words "writ serve" never appear
+    together in it. That is defect D2: a stop that missed reported success.
+    """
+    args = ["pkill", *(["-9"] if force else []), "-f", _serve_pattern(port)]
+    try:
+        subprocess.run(args, capture_output=True, check=False, timeout=10)
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+
+def _pids_serving_port(port: int) -> tuple[bool, list[int]]:
+    """(measured, pids) for the processes whose command line names `port`.
+
+    `writ_ensure_server` backgrounds the daemon under `nohup` inside a flock
+    subshell (`scripts/lib/writ-server-lib.sh:104-105`) and does not hand the
+    pid back, so the process table is the only place a caller can learn it
+    without changing that launcher. This helper never raises, because all three
+    of its callers are start or teardown paths that must complete.
+
+    IT RETURNS A PAIR RATHER THAN A LIST, and that is the whole point of the
+    signature. `live_snapshot` performs the truncation self-check, and an
+    earlier revision of this function then ignored the result and searched
+    whatever came back, so an uncertifiable table answered "no pid for that
+    port": the read-green-because-it-could-not-look failure mode reappearing one
+    level BELOW the guard written to prevent it. An empty list and "I could not
+    see" are different facts and now have different values, so each caller has
+    to say which one it is acting on:
+
+      * `start_isolated_daemon` records `pids_measured` beside the pids, so a
+        payload cannot claim an identity it never read.
+      * `stop_isolated_daemon` carries the same flag into its verdict, so
+        `survivors: []` cannot be mistaken for "nothing survived".
+      * `_wait_for_isolated_down` requires `measured` before it will call a
+        process absent, because an unmeasured table would otherwise let a LIVE
+        daemon be certified `stopped: True`.
+    """
+    pattern = _serve_pattern(port)
+    snapshot = live_snapshot()
+    return bool(snapshot["measured"]), sorted(
+        pid for pid, cmdline in snapshot["processes"].items() if pattern in cmdline
+    )
+
+
+def _wait_for_isolated_health(port: int, attempts: int = 40) -> dict | None:
+    """Poll /health on `port` until it answers. None when it never does.
+
+    ensure-server.sh already waits ~5s for its own health probe; this second
+    poll covers a slower cold start (index pre-warm) without turning a failed
+    start into a hang.
+    """
+    for _ in range(attempts):
+        health = _isolated_health(port)
+        if health is not None:
+            return health
+        time.sleep(0.25)
+    return None
+
+
+def _wait_for_socket_file(socket_path: str, attempts: int = 20) -> bool:
+    """True once `socket_path` exists. `writ serve` binds TCP first and falls
+    back to TCP-only on an unusable or already-served socket, so a daemon that
+    answers /health is NOT evidence that its socket came up -- and with
+    WRIT_TCP_READONLY set, a missing socket surfaces as a confusing 403 on the
+    first state-changing POST rather than as a failed start."""
+    for _ in range(attempts):
+        if Path(socket_path).exists():
+            return True
+        time.sleep(0.25)
+    return False
+
+
+def _wait_for_isolated_down(port: int, attempts: int = 20) -> bool:
+    """True once nothing answers the health route on `port` AND no process naming
+    that port is left in the table, so "stopped" can be a VERIFIED state rather
+    than a signal that was sent.
+
+    BOTH CONDITIONS, and the second was added on measurement rather than for
+    symmetry. After the term, the daemon stops answering /health at about 0.10
+    to 0.16s while its process leaves the process table 0.05 to 0.10s LATER
+    (three runs, idle machine). /health silence alone therefore returns while a
+    dying process is still listed, and the module-boundary leak guard reads the
+    table: during a 2056-test run it reported exactly that process as a
+    survivor on a teardown that was working correctly. Waiting for the reap
+    makes this verdict agree with what the guard can see, and costs at most one
+    extra 0.25s poll on the normal path.
+
+    AN UNMEASURED TABLE IS NOT AN ABSENT PROCESS. `measured` is required before
+    an empty pid list counts as "gone", so a `ps` that cannot be certified
+    leaves this returning False, the caller escalates to SIGKILL and then
+    reports `stopped: False`. Reading blindness as absence here would certify a
+    LIVE daemon as stopped, which is the one answer this function exists to
+    refuse to give.
+    """
+    for _ in range(attempts):
+        # Health first, so the process table is only read once the daemon has
+        # already gone quiet rather than on every poll of a daemon still up.
+        if _isolated_health(port, timeout=0.5) is None:
+            measured, pids = _pids_serving_port(port)
+            if measured and not pids:
+                return True
+        time.sleep(0.25)
+    return False
+
+
+def start_isolated_daemon(
+    log_root: str,
+    socket_path: str,
+    cache_dir: str,
+    tcp_readonly: bool = False,
+    port: int | None = None,
+    timeout: float = 40.0,
+) -> dict:
+    """Start a daemon this caller OWNS, fully isolated, on an OS-assigned free port.
+
+    RETURNS A STARTED VERDICT, never raises and never hangs. On success, today's
+    keys plus `"started": True`: {"started", "port", "base_url", "socket_path",
+    "cache_dir", "log_root", "health", "pids", "pids_measured"}, where "health"
+    is that daemon's OWN /health payload (the caller verifies the log
+    destination the SERVER process resolved rather than assuming the env
+    plumbing took effect) and "pids" is the process-table identity of the daemon
+    on that port, read after the health and socket checks pass, so the teardown
+    can verify what it signalled instead of trusting that a signal arrived.
+
+    On failure, {"started": False, "reason": "<what happened>", "port": None},
+    with a DISTINCT reason per cause. It used to return a bare `None` for all
+    four, which left every caller's skip message a guess -- the same asymmetry
+    cycle 18 removed from `stop_isolated_daemon`, one function earlier. The
+    fourth `if` collapsed two causes (health never answered, socket file never
+    appeared) and they are now two sentences, because the orchestrator's first
+    probe of this helper hit the byte cap with a 118-byte path, created no
+    directories, and said nothing at all.
+
+    `"port": None` on every failure path is deliberate rather than lossy:
+    `stop_isolated_daemon` already short-circuits to its no-daemon verdict on a
+    payload with no port, and by the time a failure is returned
+    `_kill_writ_serve_on_port` has already run, so there is genuinely nothing
+    left to tear down. The port travels in the reason string instead, where a
+    skip message can show it.
+
+    THE ENV DICT IS BUILT EXPLICITLY, and each part of it closes a measured trap:
+
+    - `WRIT_LOG_ROOT` is set here rather than inherited. conftest's
+      `_isolate_friction_log` is FUNCTION-scoped and autouse, and a
+      module-scoped daemon fixture is set up BEFORE any function-scoped
+      fixture, so at start time the variable may be absent and the daemon
+      would resolve the real `<skill>/var/logs`.
+    - `WRIT_FRICTION_LOG` is POPPED, not merely left unset in the parent. It is
+      `emit_destination`'s collapse branch: if it survives into the child,
+      EVERY stream lands in that one file and the stream classification (a
+      refusal row in a per-project `audit.jsonl`) disappears, which is both
+      less than production's shape and a file a later test may delete.
+    - `WRIT_SOCKET` is pinned because `writ serve` unlinks and TAKES OVER the
+      default socket when that socket is stale-but-present (writ/cli.py only
+      declines a LIVE one), which would be a real change to the operator's
+      install. It is also the load-bearing half of the isolation: the returned
+      `socket_path` must be passed to writ_daemon_client's post_json/get_json,
+      which prefer an EXISTING socket over `base_url` and otherwise fall back
+      to `~/.cache/writ/run/writ.sock` -- the interactive daemon's -- no matter
+      what port `base_url` names.
+    - `WRIT_CACHE_DIR` survives `writ_ensure_server`'s own
+      `export WRIT_CACHE_DIR="$(writ_session_cache_dir)"`, because that
+      resolver reads WRIT_CACHE_DIR first (bin/lib/common.sh). Same mechanism
+      tests/test_phase3b_approval_rewrap.py relies on.
+    - `WRIT_LOG` is popped so `writ_default_server_log`'s resolution order
+      falls to `$WRIT_LOG_ROOT/server.log`; an inherited WRIT_LOG outranks the
+      log root and would append the daemon's stdout to whatever file it names.
+    - `ANTHROPIC_API_KEY` is popped, and this one is about MONEY rather than
+      isolation. Startup builds a live `LlmAnalyzer` (`writ/server/__init__.py:212`)
+      whose lazy client passes `api_key=None` straight to
+      `anthropic.AsyncAnthropic` (`writ/analysis/llm.py:188-196`), which then
+      reads this variable out of the environment; and an isolated daemon always
+      starts in CALIBRATION mode, because a fresh log root has no
+      `calibration.jsonl`, where `should_escalate` returns True unconditionally
+      (`writ/analysis/instrumentation.py:59-60`). So any `/analyze` request that
+      retrieves at least one rule would place a REAL paid API call, once per run,
+      from a test. MEASURED here on 2026-09-10: the variable is not set on this
+      machine (so nothing has been billing) and `POST /analyze` with `x = 1`
+      retrieves no rules and answers `pass` without reaching the client at all.
+      The pop is the defence for the machines and the CI where the key IS set,
+      and it costs nothing where it is not.
+    - `WRIT_TCP_READONLY` matches the deployed daemon's posture (state-changing
+      routes over the socket only) when the caller asks for it.
+    """
+    from writ.config import MAX_SOCKET_PATH, socket_path_usable
+
+    ensure = _REPO_ROOT / "scripts" / "ensure-server.sh"
+    if not ensure.exists():
+        return {
+            "started": False,
+            "reason": (
+                f"cannot start an isolated daemon: the launcher "
+                f"scripts/ensure-server.sh is missing (looked for {ensure})"
+            ),
+            "port": None,
+        }
+    if not socket_path_usable(socket_path):
+        # The byte count and the cap both travel in the message: the cap is a
+        # kernel limit on the BYTE string (writ/config.py:40), so a caller whose
+        # TMPDIR or user name pushed it over needs the two numbers to see by how
+        # much. This branch returns before any mkdir and before any subprocess,
+        # so nothing has been started here and nothing needs tearing down.
+        return {
+            "started": False,
+            "reason": (
+                f"cannot start an isolated daemon: the socket path is "
+                f"{len(os.fsencode(socket_path))} bytes, over the "
+                f"{MAX_SOCKET_PATH}-byte usable AF_UNIX cap ({socket_path})"
+            ),
+            "port": None,
+        }
+    if port is None:
+        from tests.fixtures.net import free_port
+
+        port = free_port()
+
+    for directory in (log_root, cache_dir, str(Path(socket_path).parent)):
+        Path(directory).mkdir(parents=True, exist_ok=True)
+
+    env = dict(os.environ)
+    env.pop("WRIT_FRICTION_LOG", None)
+    env.pop("WRIT_LOG", None)
+    env.pop("ANTHROPIC_API_KEY", None)
+    env.update(
+        {
+            "WRIT_HOST": "localhost",
+            "WRIT_PORT": str(port),
+            "WRIT_LOG_ROOT": log_root,
+            "WRIT_SOCKET": socket_path,
+            "WRIT_CACHE_DIR": cache_dir,
+        }
+    )
+    if tcp_readonly:
+        env["WRIT_TCP_READONLY"] = "1"
+    else:
+        env.pop("WRIT_TCP_READONLY", None)
+
+    try:
+        subprocess.run(
+            ["bash", str(ensure)],
+            cwd=str(_REPO_ROOT), env=env,
+            capture_output=True, timeout=timeout, check=False,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        _kill_writ_serve_on_port(port)
+        return {
+            "started": False,
+            "reason": (
+                f"cannot start an isolated daemon: scripts/ensure-server.sh "
+                f"raised {type(exc).__name__} for port {port} within the "
+                f"{timeout}s ceiling ({exc})"
+            ),
+            "port": None,
+        }
+
+    health = _wait_for_isolated_health(port)
+    if health is None:
+        _kill_writ_serve_on_port(port)
+        return {
+            "started": False,
+            "reason": (
+                f"cannot start an isolated daemon: nothing answered /health on "
+                f"port {port} after the start returned"
+            ),
+            "port": None,
+        }
+    if not _wait_for_socket_file(socket_path):
+        # SPLIT from the health case above, which the single `if` used to
+        # collapse. `writ serve` binds TCP first and falls back to TCP-only on an
+        # unusable or already-served socket, so a daemon that answers /health is
+        # NOT evidence its socket came up: these are two different failures and a
+        # caller's skip message has to be able to say which one it saw.
+        _kill_writ_serve_on_port(port)
+        return {
+            "started": False,
+            "reason": (
+                f"cannot start an isolated daemon: the daemon on port {port} "
+                f"answered /health but its socket file never appeared at "
+                f"{socket_path}"
+            ),
+            "port": None,
+        }
+
+    pids_measured, pids = _pids_serving_port(port)
+    return {
+        "started": True,
+        "port": port,
+        "base_url": f"http://localhost:{port}",
+        "socket_path": socket_path,
+        "cache_dir": cache_dir,
+        "log_root": log_root,
+        "health": health,
+        # Read from the process table AFTER the health and socket checks pass,
+        # so a pid is only reported for a daemon that actually came up, and the
+        # teardown has an identity to verify against rather than a signal it
+        # sent into the dark. `pids_measured` travels with it because an empty
+        # list from an uncertifiable table would otherwise read as "this daemon
+        # has no process".
+        "pids": pids,
+        "pids_measured": pids_measured,
+    }
+
+
+def stop_isolated_daemon(daemon: dict | None) -> dict:
+    """Stop the daemon start_isolated_daemon returned, by its exact port, and
+    return the VERDICT: {"port", "pids", "stopped", "survivors", "health",
+    "pids_measured"}.
+
+    Escalates to SIGKILL only if the daemon still answers /health after the
+    term, so "stopped" is a verified state and not a signal that was sent.
+    Removes the throwaway socket file too: a socket outliving its listener is
+    exactly the stale-but-present file `writ serve` unlinks and takes over.
+    A no-daemon verdict on None (the caller skipped) or on a payload with no
+    port: `stopped: True` because nothing is running to stop, and `port: None`,
+    which is the field that tells a verified teardown apart from a call that
+    had nothing to tear down.
+
+    IT RETURNS A VERDICT AND NEVER RAISES, and the reason is the socket unlink
+    two paragraphs up. Raising mid-teardown would skip that unlink and convert
+    one defect (a daemon that would not stop) into two (a daemon that would not
+    stop, plus a stale socket the next `writ serve` takes over). So the
+    teardown completes on every path, including `stopped: False`, and the
+    owning fixture asserts the verdict afterwards, which every live caller does
+    (`tests/_hook_runner.py::instrumented_daemon`,
+    `tests/test_advance_phase_token_gate.py::own_daemon` and
+    `tests/test_fix2_cache_alignment.py::alt_daemon`). Before this cycle the
+    second `_wait_for_isolated_down` result was DISCARDED, so a stop that missed
+    reported nothing at all.
+
+    THERE ARE TWO SUPPORTED CALLER SHAPES, not one, and the second is why this
+    reads its payload entirely through `.get`. The first is the dict
+    `start_isolated_daemon` returned. The second is a HAND-BUILT
+    `{"port": p, "socket_path": s}` from a module that owns its own START and
+    only wants the verified stop: `tests/test_fix2_cache_alignment.py::alt_daemon`
+    builds exactly that, because `TestEnsureServerSelfHeal` drives
+    ensure-server.sh twice on one port with different envs and
+    `start_isolated_daemon` runs that launcher exactly once. A missing `pids`
+    falls back to a fresh process-table read here, so the verdict is derived
+    rather than trusted from the payload, and the fixture that built the payload
+    is the one that asserts `stopped`. No behaviour differs between the two
+    shapes.
+
+    `pids_measured: False` says the process table could not be certified while
+    this teardown ran, which is what keeps `survivors: []` from reading as
+    "nothing survived". It travels WITH the verdict rather than being raised,
+    for the same reason nothing else here raises, and it cannot accompany
+    `stopped: True`: an uncertifiable table never satisfies
+    `_wait_for_isolated_down`.
+    """
+    verdict: dict = {
+        "port": None, "pids": [], "stopped": True, "survivors": [], "health": None,
+        "pids_measured": True,
+    }
+    if not daemon:
+        return verdict
+    port = daemon.get("port")
+    if port is None:
+        return verdict
+    verdict["port"] = port
+    # `pids_measured` describes THIS teardown's reads, not the payload's: it is the AND
+    # over every table read below, so one blind read makes the whole verdict say so.
+    measured, pids = _pids_serving_port(port)
+    verdict["pids_measured"] = measured
+    verdict["pids"] = list(daemon.get("pids") or pids)
+    _kill_writ_serve_on_port(port)
+    stopped = _wait_for_isolated_down(port)
+    if not stopped:
+        _kill_writ_serve_on_port(port, force=True)
+        stopped = _wait_for_isolated_down(port)
+    verdict["stopped"] = stopped
+    if not stopped:
+        verdict["health"] = _isolated_health(port, timeout=0.5)
+        survivors_measured, survivors = _pids_serving_port(port)
+        verdict["pids_measured"] = verdict["pids_measured"] and survivors_measured
+        verdict["survivors"] = survivors
+    socket_path = daemon.get("socket_path")
+    if socket_path:
+        try:
+            os.unlink(socket_path)
+        except OSError:
+            pass
+    return verdict

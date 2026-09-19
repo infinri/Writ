@@ -45,7 +45,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import uuid
 from pathlib import Path
 
@@ -57,6 +56,9 @@ from tests.test_bash_write_gate import (
     _extract,
     _extractor_src,
     _seed,
+    nested_cmd_flags,
+    run_extractor,
+    wrapper_names,
 )
 from tests.test_strict_mode import DEAD_PORT
 
@@ -74,14 +76,17 @@ def _sid() -> str:
 def _extract_egress(cmd: str, cwd: str = "/proj", extra_env: dict | None = None) -> set[tuple[str, str]]:
     """Run the extractor on a command; return the set of (host, detail) pairs
     from its `egress\\t<host>\\t<detail>` output lines (new contract; the
-    existing `cred`/`state`/`local` lines are covered by `_extract`)."""
-    env = dict(os.environ, WRIT_BASH_CMD=cmd, WRIT_CWD=cwd)
+    existing `cred`/`state`/`local` lines are covered by `_extract`).
+
+    Through `run_extractor`: the command crosses on a FILE, the same way the hook
+    hands it over, and the completion sentinel is stripped before these rows are
+    read."""
+    env = dict(os.environ)
     if extra_env:
         env.update(extra_env)
-    p = subprocess.run([sys.executable, "-c", _extractor_src()], env=env,
-                       capture_output=True, text=True)
+    _p, lines = run_extractor(cmd, cwd, env=env)
     out = set()
-    for line in p.stdout.splitlines():
+    for line in lines:
         parts = line.split("\t", 2)
         if len(parts) == 3 and parts[0] == "egress":
             out.add((parts[1], parts[2]))
@@ -102,6 +107,18 @@ def _run_hook(cmd: str, sid: str, cwd: str, extra_env: dict | None = None) -> di
     if not out:
         return None
     return json.loads(out).get("hookSpecificOutput", {})
+
+
+def uncovered_prefix_names(source: str) -> set[str]:
+    """Names-only block the hook header carries beside the corrected egress residue
+    passage (cycle P), parsed rather than read: the reasons stay in the prose above
+    the block, so this needs no prose handling and no covered name can appear
+    incidentally through a reason sentence mentioning it."""
+    start = source.index("# UNCOVERED PREFIXES BEGIN")
+    start = source.index("\n", start) + 1
+    end = source.index("# UNCOVERED PREFIXES END", start)
+    body = " ".join(line.lstrip("#").strip() for line in source[start:end].splitlines())
+    return {n.strip() for n in body.split(",") if n.strip()}
 
 
 # --------------------------------------------------------------------------- #
@@ -593,12 +610,25 @@ class TestHonestCoverageLimits:
         assert "coverage limit" in src
 
     def test_header_names_the_prefixes_that_remain_uncovered(self):
-        # After the verb-prefix fixes, the residue is the wrappers that take non-flag
-        # positionals of their own (a naive skip would mis-read the verb). Naming a
-        # closed hole as open, or an open one as closed, are both dishonest.
-        src = Path(HOOK_SH).read_text().lower()
-        for prefix in ("timeout", "stdbuf", "xargs", "setsid"):
-            assert prefix in src, prefix
+        # After cycle P the six wrapper prefixes are COVERED, so asserting their names
+        # appear in the header passes for the wrong reason. After cycle Q the same is
+        # true of find's four command-running flags, so the membership pin moves to
+        # names that are still genuinely open and the DISJOINTNESS check grows a
+        # second covered population: naming a covered prefix as uncovered, closing a
+        # prefix without updating the block, and closing a nested-command FLAG
+        # without updating the block all redden here.
+        src = Path(HOOK_SH).read_text()
+        names = uncovered_prefix_names(src)
+        assert names, "the uncovered-prefix block is empty"
+        assert {"sh -c", "bash -c", "eval"} <= names, names
+        covered = wrapper_names(_extractor_src())
+        assert covered
+        nested = nested_cmd_flags(_extractor_src())
+        assert nested
+        overlap = {n for n in names
+                   if n.split()[0] in covered
+                   or any(word in nested for word in n.split()[1:])}
+        assert not overlap, f"named uncovered but covered by the hook: {sorted(overlap)}"
 
     def test_header_names_the_destination_overrides_that_remain_uncovered(self):
         # A leading proxy assignment IS covered now; an inherited proxy environment,

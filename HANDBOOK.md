@@ -137,13 +137,13 @@ The validators are presence checks by design: they confirm the artifact exists i
 
 This is the keystone. Writ could otherwise let the agent approve its own writes. It cannot.
 
-- **The token.** A 32-hex-character secret at `/tmp/writ-gate-token-<session_id>` (chmod 600).
-- **Who writes it.** `auto-approve-gate.sh`, and *only* when the user's typed prompt matches an approval pattern (exact phrases, small-edit fuzzy match, bounded regexes; single source `bin/lib/approval_match.py`). The agent cannot forge your keystroke.
-- **Who consumes it.** `/advance-phase` (§6) and `/promote-candidate` (§12), the only two routes that advance workflow or write canon. Claiming the token is an atomic filesystem rename, so two concurrent requests with the same token produce exactly one advance. Claiming *is* consuming: one approval, one advance.
+- **The token.** A 32-hex-character secret at `/tmp/writ-gate-token-<session_id>` (chmod 600), and the binding it carries: five lines holding the secret, the gate it authorizes, the plan fingerprint it was granted against, the promotion candidate it names, and the rule id it authorizes for promotion. The last two are empty for a phase advance. Both write gates refuse that path, so the agent can read the credential but not rewrite what it authorizes.
+- **Who writes it.** `auto-approve-gate.sh`, and *only* when the user's whole typed prompt IS one of the phrases (single source `bin/lib/approval_match.py`). Exactly one word advances a gate: `approved`, matched by equality against the whole prompt once trailing `.`, `!` and `,` are stripped. Two further whole-prompt phrases authorize different acts through their own tiers: `approved anyway` advances the pending gate with the requested-approval evidence check waived, and `replan approved` re-opens planning. A fourth, `manual test approved`, mints no gate token at all: it is the manual-testing grant (`bin/lib/manual_test_grant.py`), a separate time-boxed file. The seventeen-phrase set, the small-edit fuzzy pass and the seven regex shapes were all deleted on 2026-08-23, after a message merely discussing the phrases fired both the approval predicate and the grant. The agent cannot forge your keystroke.
+- **Who consumes it.** `/advance-phase` (§6) and `/promote-candidate` (§12), the only two routes that advance workflow or write canon. Both **claim** it, and the claim is an atomic filesystem rename, so two concurrent requests carrying the same token produce exactly one advance or one promotion. Claiming *is* consuming, and it happens before the work it protects: a judged-and-failed artifact spends the approval too, because the approval was for the artifact that failed.
 - **What spends it.** A successful advance, or a failed validation (the artifact changed; re-approve). A request that cannot even resolve the project root does not spend it.
 - **What happens without it.** The attempt is refused and logged as `agent_self_approval_blocked` on the audit stream.
 
-In one sentence: the agent can draft, propose, and lobby, but the *write of canon* requires a token only your keystroke produces.
+In one sentence: the agent can draft, propose, and lobby, but the *write of canon* requires a credential your keystroke alone mints, which names the one candidate it authorizes, and which the agent cannot write to because both write gates refuse that path.
 
 ---
 
@@ -164,7 +164,7 @@ Writ ships **five named roles**, each both a `SubagentRole` graph node and a Cla
 **Four behaviors that matter:**
 
 - **`is_subagent` bypasses the write gates.** Workers are dispatched by an orchestrator that already passed the human gate; re-policing them would produce false denials. The trust boundary is the role definition (the explorer and reviewer physically lack Write) plus the spawn prompt. Workers also get unlimited RAG budget (`subagent_budget: null`).
-- **`is_orchestrator` suppresses broad RAG.** Set with `mode set work --orchestrator`; the dispatching session skips the ~1,400-token broad injection (workers need the rules, the coordinator doesn't) and still receives the methodology companion. The flag is manual; forget it and the orchestrator pays full injection every turn.
+- **`is_orchestrator` suppresses one retrieval channel.** Set with `mode set work --orchestrator`; the dispatching session sends `include_ranked=false` to `/prompt-bundle`, which skips the ranked channel (workers need those rules, the coordinator doesn't) and keeps both the always-on rule floor and the methodology companion. The floor stays because `RANKED_INCLUDE_WHERE` excludes every mandatory rule from the ranked pool, so it is the only delivery path a mandatory rule has. Measured 2026-09-01 via `POST /prompt-bundle` on a work-mode session: ranked 600 tokens across 5 rules, always-on 1,221 tokens across 12 rules, companion 400 tokens across 10 nodes. The flag is manual; forget it and the orchestrator pays the ranked channel too, every turn.
 - **Mode is inherited file-direct.** A worker reads its parent's mode from the session cache *file*, never daemon-first: a daemon whose in-memory view diverged once served `mode=None` to every worker. Worker caches are keyed by `agent_id` for isolation.
 - **Worker rule usage flows back.** At commit time, the rules each worker queried per file are merged into the decision-memory record, so `queried_rule_ids` on a FileChange reflects the whole fan-out, not just the parent session.
 
@@ -221,7 +221,7 @@ The floor is also *scoped* so it doesn't spam: non-mandatory process rules only 
 - Severity: **critical** = a violation creates an exploitable vulnerability, data loss, or system failure in production, no exceptions; **high** = bugs, maintenance debt, or security weakness that compounds over time, exceptions require documented justification; **medium** = degrades code quality or developer experience, exceptions acceptable with team agreement; **low** = style or hygiene, advisory only.
 - A rule is **mandatory** (always-on, never ranked) only when ALL four hold: severity is critical; a violation is exploitable or causes data loss in production; the rule is universal across languages and frameworks; and an AI agent can mechanically detect violations from code inspection.
 
-**The measurement consequence (established 2026-08-05).** Because mandatory rules never enter the ranked index, a /query-style benchmark scores every query targeting one as a guaranteed miss -- it is measuring the wrong delivery channel, and the "miss" is the invariant working. Two corollaries follow. First, when a mandatory rule has a non-mandatory sibling (SEC-AUTH-TOKEN-001 mandatory, -002 ranked), the sibling is the only family member in the index, so the sibling winning is structural, not a ranking defect. Second, the same channel logic applies to category-routed content: a rule whose Category routes it to the methodology-companion channel (the PROC-* process rules) can rank first on both raw retrievers and still be correctly absent from /query results. Retrieval quality must therefore be scored per delivery channel: rank metrics for index-eligible targets, presence-in-bundle verification for the always-on floor, and channel-membership verification for routed content. The benchmark implements exactly this split (section 19).
+**The measurement consequence (established 2026-08-05).** Because mandatory rules never enter the ranked index, a /query-style benchmark scores every query targeting one as a guaranteed miss; it is measuring the wrong delivery channel, and the "miss" is the invariant working. Two corollaries follow. First, when a mandatory rule has a non-mandatory sibling (SEC-AUTH-TOKEN-001 mandatory, -002 ranked), the sibling is the only family member in the index, so the sibling winning is structural, not a ranking defect. Second, the same channel logic applies to category-routed content: a rule whose Category routes it to the methodology-companion channel (the PROC-* process rules) can rank first on both raw retrievers and still be correctly absent from /query results. Retrieval quality must therefore be scored per delivery channel: rank metrics for index-eligible targets, presence-in-bundle verification for the always-on floor, and channel-membership verification for routed content. The benchmark implements exactly this split (section 19).
 
 ---
 
@@ -315,15 +315,37 @@ Everything else is advisory or observational: the RAG injectors (`writ-rag-injec
 - **`[logs]`**: `backup_dest` for `writ logs backup`.
 - **`[egress]`**: `allow_hosts`, the hosts the Bash egress guard may send local data to without prompting (`get_egress_allow_hosts`, `writ/config.py`). Absent means every outbound host is questioned.
 
-Everything else people expect to find in config is deliberately code: ranking weights (`writ/retrieval/ranking.py`: bm25 0.198, vector 0.594, severity 0.099, confidence 0.099, graph 0.01), the abstention threshold (0.30, `writ/retrieval/pipeline.py`), gate thresholds (redundancy 0.95, novelty band 0.85, `writ/gate.py` and `writ/graph/schema.py`), graduation thresholds (50 observations, 0.75 ratio, `writ/frequency.py`), and context-budget bands (summary under 2,000 tokens, standard to 8,000, full above; `writ/retrieval/ranking.py`).
+Everything else people expect to find in config is deliberately code: ranking weights (`writ/retrieval/ranking.py`: bm25 0.19, vector 0.57, severity 0.095, confidence 0.095, graph 0.05; the literal preset is 0.396/0.396/0.099/0.099/0.01), the abstention threshold (0.30, `writ/retrieval/pipeline.py`), gate thresholds (redundancy 0.95, novelty band 0.85, `writ/gate.py` and `writ/graph/schema.py`), graduation thresholds (50 observations, 0.75 ratio, `writ/frequency.py`), and context-budget bands (summary under 2,000 tokens, standard to 8,000, full above; `writ/retrieval/ranking.py`).
 
 **`writ/shared/budget.json`**: `default_budget=8000`, per-rule render costs full 200 / standard 120 / summary 40, `subagent_budget=null` (unlimited), `always_on_cap=5000`.
 
 One rule this project applies to its own writing: Writ ships a forbidden-response rule that blocks the AI's own output when it contains an em dash, an en dash used as punctuation, or a double hyphen standing in for one. A Stop hook enforces it at the end of every turn, and the README and this handbook are both written to it. It is the smallest demonstration of the general mechanism: a constraint that lives at the tool boundary rather than in a style guide nobody re-reads.
 
-**Env vars:** `WRIT_HOST`/`WRIT_PORT` (daemon target, default `localhost:8765`), `WRIT_CACHE_DIR` (session caches, default `<install>/var/session`; deliberately not `/tmp`, which systemd empties at boot), `WRIT_LOG_ROOT` (log streams, default `<install>/var/logs`), `WRIT_LOG_PROJECT`, `WRIT_FRICTION_LOG` (collapse all streams into one file), `WRIT_DEBUG` (debug sinks, default off), `WRIT_HOOK_LOG`, `WRIT_NO_AUTOSTART`, `WRIT_ALLOW_EMBEDDING_FALLBACK=1` (permit the sentence-transformers path when the ONNX model is absent), `WRIT_CONTEXT_WINDOW_TOKENS` (validated 1,000-10,000,000 at daemon startup), `WRIT_BLACKBOX=1` (raw payload capture). Neo4j credentials resolve from `WRIT_NEO4J_URI` / `WRIT_NEO4J_USER` / `WRIT_NEO4J_PASSWORD`, then `writ.toml`, then a dev-only built-in default. `WRIT_TEST_GRAPH=1` plus a non-production URI is what the destructive-wipe guard requires (`writ/graph/db/_safety.py`).
+**Env vars:** `WRIT_HOST`/`WRIT_PORT` (daemon target, default `localhost:8765`), `WRIT_CACHE_DIR` (session caches, default `<install>/var/session`; deliberately not `/tmp`, which systemd empties at boot), `WRIT_LOG_ROOT` (log streams, default `<install>/var/logs`), `WRIT_LOG_PROJECT`, `WRIT_FRICTION_LOG` (collapse all streams into one file), `WRIT_DEBUG` (debug sinks, default off), `WRIT_HOOK_LOG`, `WRIT_NO_AUTOSTART`, `WRIT_ALLOW_EMBEDDING_FALLBACK=1` (permit the sentence-transformers path when the ONNX model is absent), `WRIT_CONTEXT_WINDOW_TOKENS` (validated 1,000-10,000,000 at daemon startup), `WRIT_BLACKBOX=1` (raw payload capture), `WRIT_STRICT=1` (fail the write gates CLOSED instead of open when they cannot be evaluated; see below). Neo4j credentials resolve from `WRIT_NEO4J_URI` / `WRIT_NEO4J_USER` / `WRIT_NEO4J_PASSWORD`, then `writ.toml`, then a dev-only built-in default. `WRIT_TEST_GRAPH=1` plus a non-production URI is what the destructive-wipe guard requires (`writ/graph/db/_safety.py`).
 
 ---
+
+**`WRIT_STRICT=1`, and exactly what it covers.** By default, when a write gate cannot be
+evaluated (the daemon is unreachable and the local fallback also fails), the hook ALLOWS the
+write. That is the published specification: an infrastructure outage must not lock you out of
+your own repository. Setting `WRIT_STRICT=1` inverts that one decision, so an unevaluable gate
+denies with `[ENF-STRICT-001]` and a reason naming both ways out (start the daemon, or unset the
+variable).
+
+Three sites honour it, and they are the whole of its scope:
+
+| site | condition |
+|---|---|
+| `bin/lib/common.sh:2154` | the local write-gate evaluator could not be run |
+| `bin/lib/common.sh:2165` | daemon unreachable and no local fallback |
+| `hooks/scripts/writ-bash-write-gate.sh:3495` | the same, for Bash-mediated writes |
+
+IT COVERS THE WRITE PATH ONLY. The read-junk gate, dispatch discipline and the approval gates do
+not consult it, so with the daemon down and `WRIT_STRICT=1` set, those still behave exactly as
+they do without it. Set it expecting stricter WRITES, not a globally stricter system.
+
+The default stays fail-open. Whether it should is an open policy question carried over from the
+hook audit, and it is the operator's call rather than a defect.
 
 ## 16. Operations: daemon lifecycle
 
@@ -355,6 +377,57 @@ One rule this project applies to its own writing: Writ ships a forbidden-respons
 The hook-facing session CLI is separate: `bin/lib/writ-session.py <subcommand>` drives mode, gates, coverage, citations, and cache state; hooks call it when the daemon is unreachable.
 
 ---
+
+**`writ handoff --session <id>`** writes a session handoff to
+`.claude/handoffs/session-<id>.md`: mode, phase, approved gates, the files the approved plan
+declared, the files the session actually wrote, the still-unchecked capability boxes, and the
+rule ids loaded. Every line is DERIVED from the session cache and plan.md, so nothing is
+summarized and the document cannot drift from the state it describes.
+
+It also fires automatically at the compaction boundary (`hooks/scripts/writ-precompact.sh`),
+which is the moment the context holding that state is about to be summarized away. Nothing
+emitted at that boundary reaches the model, so the path is delivered on the next prompt by
+`writ-rag-inject.sh` alongside the post-compaction directive. Best effort by design: a handoff
+that cannot be written never blocks a compaction.
+
+It is NOT the `.claude/handoffs/slice-*.json` artifact that `hooks/scripts/validate-handoff.sh`
+validates. That one is a slice handoff with six required keys, it has no producer in this
+repository, and it has zero rows in the audit stream. The session handoff is deliberately named
+so it cannot match that validator's glob.
+
+**`writ trust-ledger [--accept]`** lists every extension Writ can see (skills under
+`~/.claude/skills/`, subagent definitions in the plugin's `agents/` and `~/.claude/agents/`, and
+locally declared `mcpServers`), content-hashes each one, and marks it `unchanged`, `NEW`,
+`CHANGED` or `REMOVED` against a recorded baseline at `var/trust-ledger.json` (gitignored:
+machine-specific). `--accept` records the current state as trusted. The `extension-trust-ledger`
+doctor check alarms on drift and names that command.
+
+CHANGED is the interesting one: an edit under a name you already trusted. Agent entries are keyed
+by SOURCE (`writ:writ-reviewer` and `.claude:writ-reviewer`) because agents resolve from two
+directories; keying on the bare name would let one silently shadow the other.
+
+TWO LIMITS, BOTH DELIBERATE. It records and alarms; it does not block a tool call or judge an
+extension malicious. And MCP coverage is LOCAL CONFIG ONLY: servers attached through the claude.ai
+connector layer appear in no file on disk, so an empty MCP section does not mean none are
+connected. Measured 2026-09-18: twelve were connected on this machine while `mcpServers` was empty
+for all 37 projects in `~/.claude.json`.
+
+Accepting drift is NOT reachable from `writ doctor --fix`, on purpose: a blanket fix flag that
+blessed whatever appeared since the last run would turn the ledger into a rubber stamp.
+
+**Output compression** (`hooks/scripts/writ-output-compress.sh`, PostToolUse on `Write|Edit`)
+replaces the value of `originalFile` in an Edit or Write tool response with a marker naming the
+field and the real dropped size. The measured reason: across 2,367 PostToolUse envelopes, Edit and
+Write are 95% of all tool-response bytes, and within an Edit response `originalFile` is 96% of it
+(the entire pre-edit file, echoed back) while `structuredPatch` carries the change in about 348
+characters. Bash, the tool usually assumed to be the offender, has a 742-character median and is
+deliberately not a target.
+
+The key is REPLACED, never removed, and `structuredPatch`, `oldString`, `newString` and `filePath`
+pass through untouched: the hook contract requires the replacement to match the tool's expected
+response shape, so the failure that would break an edit is a missing key. Responses at or below
+4,000 characters are left alone. The hook fails open on every error path, because a compression
+hook that can break an edit is strictly worse than no compression.
 
 ## 18. Logging and observability
 

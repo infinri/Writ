@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -163,9 +164,25 @@ class TestPrecompactUsesEnvelopeSessionId:
     not PPID. The hook_execution telemetry carries the computed SESSION_ID."""
 
     def test_precompact_telemetry_tags_envelope_session(self, tmp_path: Path) -> None:
+        """The row is BUFFERED now, not written synchronously: common.sh's exit trap
+        appends it to `writ-events-<session>.buf` and a drain releases it, which is what
+        replaced a python spawn per hook. So the test drains before reading.
+
+        Draining by the ENVELOPE session id is what proves the attribution, more directly
+        than the old assertion did: the buffer is named after whatever SESSION_ID the hook
+        computed, so if precompact had fallen back to PPID there would be nothing under
+        this name to flush and `execs` would be empty.
+        """
         sid = "p2-precompact-env-7b4a"
         envelope = {"session_id": sid, "hook_event_name": "PreCompact"}
         friction = _run_hook_with_friction("writ-precompact.sh", envelope, tmp_path)
+        env = os.environ.copy()
+        env["WRIT_CACHE_DIR"] = str(tmp_path)
+        env["WRIT_FRICTION_LOG"] = str(friction)
+        subprocess.run(
+            [sys.executable, str(WRIT_ROOT / "bin" / "lib" / "writ-flush-events.py"), sid],
+            capture_output=True, text=True, env=env, cwd=str(WRIT_ROOT),
+        )
         entries = _read_friction(friction)
         execs = [
             e for e in entries

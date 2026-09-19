@@ -25,10 +25,13 @@ and bin writers import DOWN into it (ARCH-LAYER-001).
 
 from __future__ import annotations
 
+import contextvars
+import fcntl
 import json
 import os
 import re
 import sys
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -62,6 +65,16 @@ STREAM_MAP: dict[str, str] = {
     "candidate_promoted": "audit",
     "quality_judgment": "audit",
     "memory_policy_deny": "audit",
+    # Partial vector-cache degeneracy. On audit rather than metrics for the same
+    # reason as the evidence rows below: this IS the oversight record. It lived
+    # only in a _logger.warning, invisible at default level, which is how 313
+    # zero-norm vectors served noise through the heaviest ranking signal for six
+    # days and still read as a healthy start.
+    "index_degeneracy": "audit",
+    # Transport census (E2a). One row per state-touching request that arrived over
+    # the PUBLIC transport, which is the list the socket migration has to cover.
+    # Audit rather than metrics: it is evidence about who can write to the daemon.
+    "daemon_tcp_write": "audit",
     # Evidence, on audit rather than metrics: these ARE the oversight record. Both lived
     # only in the session cache, and citation_log is additionally trimmed to a cap, so the
     # proof behind a completion claim was the most perishable data Writ held.
@@ -69,14 +82,80 @@ STREAM_MAP: dict[str, str] = {
     "citation_recorded": "audit",
     "committed_file_not_in_plan": "audit",
     "read_blocked": "audit",
+    # The runtime-lens read/search refusal (writ/session/gates.py::_can_read_code_check).
+    # A SEPARATE event from read_blocked, deliberately: writ/analysis/token_audit.py::
+    # attribute_prevented sums prevented_tokens_floor and counts blocked_count over
+    # read_blocked rows, and a lens deny carries no byte estimate, so reusing that name
+    # would inflate a published number with zero-token rows. Registered here EXPLICITLY
+    # because an unregistered event falls to _DEFAULT_STREAM (friction), which would file
+    # a governance refusal where nobody audits.
+    "read_denied": "audit",
     # Every gate's allow/deny, emitted on BOTH branches by log_gate_decision.
     "gate_decision": "audit",
+    # A write/Bash decider that did NOT run to completion, so the gate reached no
+    # verdict at all. Beside gate_decision for the same reason exitplanmode_skipped
+    # sits beside its two siblings below: this is the THIRD outcome of a governance
+    # decision, and filing it on friction (where an unregistered event falls) would
+    # leave the reader of a gate's record unable to tell "allowed" from "never ran".
+    # The 365-day audit retention is the point: a silent-allow window has to stay
+    # reconstructible after the fact, which is how long it took to find the last one.
+    # The row carries only source literals (hook, stage): a row built from the value
+    # that killed the decider would die exactly where the decider did.
+    "gate_decider_incomplete": "audit",
     "exitplanmode_allow": "audit",
     "exitplanmode_denial": "audit",
+    # The THIRD outcome of that same decision: the hook ran but judged nothing,
+    # because no project root resolved. Registered EXPLICITLY, beside its two
+    # siblings, for the reason stated above read_denied: an unregistered event falls
+    # to _DEFAULT_STREAM (friction), and filing one outcome of a gate decision where
+    # nobody audits is exactly how the silent skip this event exists to announce
+    # survived unnoticed. All three outcomes of one decision belong on one stream, or
+    # a reader of the gate's record cannot tell "allowed" from "never ran".
+    "exitplanmode_skipped": "audit",
     "debug_gate_root_cause_populated": "audit",
     "debug_gate_source_edit_denied": "audit",
     "tier_escalated": "audit",
     "session_end": "audit",
+    # A human re-opening planning, and the refusals of that request. Audit, not friction:
+    # the row IS the oversight record for a destructive governance act (two approved gates
+    # cleared on the strength of one typed phrase), and it is the only durable proof that
+    # the user asked for it rather than the agent. Registered here EXPLICITLY because an
+    # unregistered event falls to _DEFAULT_STREAM (friction), which would file the
+    # governance record where nobody audits.
+    "plan_reopened": "audit",
+    "plan_reopen_refused": "audit",
+    # ── The approval-credential family: one family, ONE stream ──────────────
+    # Every refusal that decides whether a human approved an action, plus the two
+    # authority changes those refusals guard. Registered here EXPLICITLY because an
+    # unregistered event falls to _DEFAULT_STREAM (friction), which would file a
+    # governance decision where nobody audits.
+    #
+    # An exact `approved` with no approval request in the preceding assistant turn: no
+    # mint, no advance, one question. THIS ROW IS THE RECORD OF THE TURN, and it is the
+    # only one: the existing approval_pattern_match friction row is deliberately not
+    # written alongside it, because that row's `outcome` vocabulary describes what an
+    # advance attempt did and no advance was attempted.
+    "approval_evidence_missing": "audit",
+    # The `approved anyway` waiver. Recorded so a systemic transcript failure that forces
+    # every user onto the override phrase is MEASURABLE rather than invisible.
+    "approval_evidence_override": "audit",
+    # The rule-promotion path in the CLI (`writ review <rule_id> --promote`), one event
+    # per refusal class so a fail-closed gate can never read like an absent one, plus the
+    # successful authority change.
+    "rule_promotion_gate_bound": "audit",
+    "rule_promotion_claim_lost": "audit",
+    "rule_promoted": "audit",
+    # THE FOUR PRE-EXISTING BINDING REFUSALS, registered with their new sibling rather
+    # than left on the friction default. Leaving them there while the newest member of the
+    # same family is audited would mean a reader has to know which of the family is
+    # compliance-grade and which is signal. gate_token_rule_mismatch is the new one; the
+    # other four have been emitted by the two gate routes and the CLI since cycle 1.
+    "gate_token_unbound": "audit",
+    "gate_token_gate_mismatch": "audit",
+    "gate_token_plan_drift": "audit",
+    "gate_token_candidate_mismatch": "audit",
+    "gate_token_rule_mismatch": "audit",
+    "candidate_promotion_gate_bound": "audit",
     # friction
     "repeated_denial": "friction",
     "hallucinated_rule_ids": "friction",
@@ -132,9 +211,24 @@ STREAM_MAP: dict[str, str] = {
     # Key NAMES only: that file holds neo4j.password and bitbucket.token.
     "config_resolved": "metrics",
     "rag_query": "metrics",
+    # One per-prompt injection channel was turned off by request (today: the ranked
+    # channel, for an orchestrator master sending include_ranked=false). Beside rag_query
+    # because the census that counts retrievals by source reads that one stream and has to
+    # separate "the channel ran and found nothing" (a zero-rule rag_query, the abstention
+    # signal) from "the channel was never asked".
+    "rag_channel_suppressed": "metrics",
     "always_on_inject": "metrics",
     "subagent_start": "metrics",
     "subagent_complete": "metrics",
+    # Emitted when a hook running inside a sub-agent seeds a cache SubagentStart never
+    # created. Metrics, beside its lifecycle siblings, because the governance census
+    # counts lazily seeded agents from it and reads that stream.
+    "subagent_seeded": "metrics",
+    # The POSITIVE record that SubagentStart ran and its seed block did not. Metrics,
+    # beside subagent_start and subagent_seeded, because the governance census reads that
+    # one stream and has to separate "the hook never fired" from "it fired and the seed
+    # failed" without inferring either from a missing row.
+    "subagent_seed_failed": "metrics",
     "playbook_step_complete": "metrics",
     "phase_token_summary": "metrics",
     "phase_transition_time": "metrics",
@@ -334,6 +428,96 @@ def resolve_project(cwd: str | None = None) -> str:
     return _sanitize_segment(name)
 
 
+# The project root the CURRENT request is about, or None when the caller's own cwd is the
+# right answer. Read by `emit` and set only by `request_project_scope` below.
+#
+# WHY A CONTEXT VARIABLE AND NOT A PARAMETER ON emit(). `resolve_project()` derives the log
+# scope from `os.getcwd()`, which is correct for every hook-side writer -- a hook is a
+# subprocess launched in the user's project -- and wrong for the daemon, whose cwd is pinned
+# to the skill directory by `WorkingDirectory` in its unit file. So a daemon route serving a
+# write for project X filed X's rows under Writ's own log space. Measured before this was
+# added: 33 of 51 `write_attempt` rows in Writ's audit stream carried paths belonging to
+# another repo, while that repo's own audit stream showed no write-gate activity at all, so
+# reading it to ask "is the gate running here" answered a confident no. That is the same
+# harm `resolve_project`'s own docstring describes one layer down, and for the same reason:
+# a row findable under the wrong scope is worse than one that is merely hard to find.
+#
+# The correct scope is a property of the CALLER, not of the emitting function, and the
+# emitting functions (gates.py, mode_engine.py, approval_workflow.py) are reached from BOTH
+# the daemon and the CLI helper. Threading a keyword through them would therefore have to be
+# repeated at all 34 call sites and would fail in the wrong direction: a future site that
+# omits it misfiles silently, which is precisely the defect being closed, and a misfiled row
+# still reads as a valid row in someone else's log. Setting it once at the request boundary
+# makes correct attribution the default for everything downstream.
+_REQUEST_PROJECT_ROOT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "writ_request_project_root", default=None,
+)
+
+
+@contextmanager
+def request_project_scope(project_root: str | None):
+    """Attribute every event emitted in this block to the project at `project_root`.
+
+    For daemon request handlers: the route knows which project it is serving (the session
+    cache's `project_root`), and nothing beneath it does. A blank or None value is "no
+    scope", leaving the existing cwd resolution in place, so an un-threaded caller and a
+    request with no resolvable root behave exactly as they did before.
+
+    `contextvars` rather than a plain attribute because the value must survive the thread
+    hop: `/pre-write-check` evaluates the whole gate inside `asyncio.to_thread`, which
+    copies the caller's context into the worker thread, so the `write_attempt` emitted deep
+    inside `_can_write_check` inherits this scope with nothing threaded through. That
+    propagation is load-bearing, so it is pinned by
+    tests/test_log_project_scope_daemon.py::TestScopeCrossesTheThreadBoundary rather than
+    assumed.
+
+    Always restores the previous value, including when the body raises: a scope stranded by
+    an exception would misattribute every later request in the process, which is a worse
+    version of the bug this closes.
+    """
+    token = _REQUEST_PROJECT_ROOT.set(_clean_scope(project_root))
+    try:
+        yield
+    finally:
+        _REQUEST_PROJECT_ROOT.reset(token)
+
+
+def _clean_scope(project_root: str | None) -> str | None:
+    """Normalize a caller-supplied scope: blank and non-string both mean "no scope"."""
+    if not isinstance(project_root, str):
+        return None
+    return project_root.strip() or None
+
+
+def set_request_project_scope(project_root: str | None) -> None:
+    """Set the request scope for the REST of the current context, with no restore.
+
+    Safe ONLY where the caller already runs inside its own context copy, which covers both
+    daemon shapes:
+
+      * a synchronous worker under `asyncio.to_thread`, which runs its target via
+        `contextvars.copy_context().run(...)`;
+      * an async request handler, which runs as an `asyncio.Task`, and a Task copies the
+        context at creation.
+
+    In both cases the copy IS the isolation: a value set inside cannot reach the event
+    loop's own context or any other request, so the missing restore costs nothing. That is
+    also exactly why this must not be called from module scope or from a plain synchronous
+    helper on the shared context -- there the value would persist and misattribute
+    everything after it.
+
+    Prefer `request_project_scope` anywhere a `with` block is practical. This exists because
+    both daemon routes learn their project root deep inside long bodies with several early
+    returns -- `/pre-write-check` a hundred lines into the worker it would have to wrap --
+    and paying a second thread hop, a second cache read on the hottest gate path, or a
+    hundred-line reindent to hoist that out is a worse trade than one documented setter.
+    That the isolation actually holds is pinned by
+    tests/test_log_project_scope_daemon.py::TestRouteScopeDoesNotEscape for both shapes,
+    rather than left as an argument in a comment.
+    """
+    _REQUEST_PROJECT_ROOT.set(_clean_scope(project_root))
+
+
 def _sanitize_value(value):
     """Strip raw CR/LF from string field values (SEC-INJ-LOG-001).
 
@@ -390,9 +574,12 @@ def _unique_archive_dest(arc_dir: Path, stream: str, day: date) -> Path:
     first.
 
     Shared, single-source collision logic (DRY-CONFIG-001): the router's
-    source-side roll (via `_unique_archive_path`) and the scheduled sweep
-    (`writ.session.log_rotation._dest_for`) both import DOWN into this helper so
-    the same-day suffixing can never drift between them.
+    source-side roll and the scheduled sweep
+    (`writ.session.log_rotation._rotate_live`) both reach this through
+    `locked_archive_rename`, so the same-day suffixing can never drift between
+    them. Call it through that function rather than directly: the name it returns
+    is only free until someone renames, so picking here and renaming in the
+    caller is the race this helper cannot fix on its own.
     """
     base = arc_dir / f"{stream}-{day}.jsonl"
     if not _archive_taken(base):
@@ -405,10 +592,57 @@ def _unique_archive_dest(arc_dir: Path, stream: str, day: date) -> Path:
         i += 1
 
 
-def _unique_archive_path(project: str, stream: str, day: date) -> Path:
-    """A collision-safe archive path for a same-day roll under a project's
-    `archive/` dir (delegates to the shared `_unique_archive_dest`)."""
-    return _unique_archive_dest(archive_dir(project), stream, day)
+@contextmanager
+def archive_lock(arc_dir: Path):
+    """Exclusive advisory lock over one archive dir, for the duration of a move.
+
+    `fcntl.flock` on a `.rotate.lock` file, the same mechanism
+    writ/session/cache.py uses to serialize session-cache writers. Fail-open on
+    an unlockable directory (ERR-GRACEFUL-001): rotation must never block a hook,
+    so a lock that cannot be taken degrades to the old unsynchronized behavior
+    rather than dropping the roll.
+    """
+    lock_fd = None
+    try:
+        arc_dir.mkdir(parents=True, exist_ok=True)
+        lock_fd = os.open(str(arc_dir / ".rotate.lock"), os.O_CREAT | os.O_RDWR, 0o644)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    except OSError:
+        if lock_fd is not None:
+            os.close(lock_fd)
+            lock_fd = None
+    try:
+        yield
+    finally:
+        if lock_fd is not None:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
+
+
+def locked_archive_rename(src: Path, arc_dir: Path, stream: str, day: date) -> Path:
+    """Move `src` into `arc_dir` under a free `<stream>-<day>` name, atomically.
+
+    PICK AND RENAME ARE ONE STEP, and that is the whole point. Splitting them is
+    what loses data: `_unique_archive_dest` returns a name that is free at the
+    moment it looks, and the caller renames afterwards, so two rotators both
+    resolve `<stream>-<day>.jsonl`, the first moves the old data there, the
+    router recreates the live file, and the second moves THAT over the first's
+    archive. A whole generation is gone, and `os.rename` reports nothing.
+
+    Note that racing the same source is NOT the dangerous case: one rename wins
+    and the loser's source is already gone, so it fails with ENOENT and the
+    append proceeds. The loss needs the live file recreated in between, which is
+    exactly what a busy logger does. Measured with two processes rolling one
+    stream 15 times each before this existed: 15 of 30 generations lost.
+
+    A lock around the pick alone would not have helped, since two sequential
+    picks still return the same free name. Returns the destination the file now
+    occupies.
+    """
+    with archive_lock(arc_dir):
+        dest = _unique_archive_dest(arc_dir, stream, day)
+        os.rename(src, dest)
+        return dest
 
 
 def _roll_if_oversize(project: str, stream: str, target: Path) -> None:
@@ -429,11 +663,38 @@ def _roll_if_oversize(project: str, stream: str, target: Path) -> None:
         return
     try:
         today = datetime.now(timezone.utc).date()
-        dest = _unique_archive_path(project, stream, today)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        os.rename(target, dest)
+        locked_archive_rename(target, archive_dir(project), stream, today)
     except OSError:
         return  # roll failed: leave the live file in place, append proceeds
+
+
+def emit_destination(stream: str, project: str | None = None) -> Path:
+    """The file `emit` would append a `stream` row to RIGHT NOW.
+
+    THE SINGLE SOURCE for the destination decision, and a function rather than a
+    comment because a comment is what failed. `writ.analysis.friction.resolve_log_path`
+    answers a DIFFERENT question (the CLI's `--log` default and the dashboard's env
+    read), and with `WRIT_FRICTION_LOG` unset its answer is the bare cwd-relative
+    `workflow-friction.log`, which nothing writes to. `writ/session/doctor.py::
+    _observed_hook_names` already rejected it by name for that reason and used
+    `stream_path`; `/health` did not, and published a path last written to in July while
+    every gate row went to `audit.jsonl`.
+
+    Both branches of the decision live here, so a reporter cannot answer one way while
+    the writer goes another: with `WRIT_FRICTION_LOG` set every stream collapses into
+    that one file (test isolation and single-log operators), else the row lands in the
+    per-project stream file.
+
+    `project` defaults to the resolution `emit` uses (the request's scope when a daemon
+    route declared one, else this process's cwd). `emit` passes its own already-resolved
+    value in so the git identity is derived once per event and not twice.
+    """
+    override = os.environ.get("WRIT_FRICTION_LOG")
+    if override:
+        return Path(override)
+    if project is None:
+        project = resolve_project(_REQUEST_PROJECT_ROOT.get())
+    return stream_path(project, stream)
 
 
 def emit(
@@ -457,17 +718,27 @@ def emit(
     # "never raises" is the contract every hook and converted except-handler relies on.
     line = json.dumps(entry, default=str) + "\n"
 
-    friction_log = os.environ.get("WRIT_FRICTION_LOG")
-    if friction_log:
+    resolved_stream = stream if stream is not None else stream_for(event)
+
+    # The collapse is READ here and DECIDED in emit_destination, which owns both
+    # branches, so /health cannot report one file while this function appends to
+    # another (cycle S). A collapsed file is never rolled: it is a path the caller
+    # chose, and archiving it into a per-project archive dir would be wrong.
+    if os.environ.get("WRIT_FRICTION_LOG"):
         try:
-            _append_line(Path(friction_log), line)
+            _append_line(emit_destination(resolved_stream), line)
         except OSError:
             _fallback(line, event)
         return
 
-    resolved_stream = stream if stream is not None else stream_for(event)
-    project = resolve_project()
-    target = stream_path(project, resolved_stream)
+    # The request's project when a daemon route declared one, else this process's cwd.
+    # See _REQUEST_PROJECT_ROOT on why the scope has to come from the caller. Passed
+    # through resolve_project rather than used as a path segment directly, so the
+    # sanitizing and the NotInRepoError fallback stay in one place (SEC-INJ-PATH-001).
+    # Resolved once here and handed DOWN, so adding the seam costs no second identity
+    # derivation per event.
+    project = resolve_project(_REQUEST_PROJECT_ROOT.get())
+    target = emit_destination(resolved_stream, project)
 
     _roll_if_oversize(project, resolved_stream, target)
 

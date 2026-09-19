@@ -243,6 +243,65 @@ class TestGatesNeverInherited:
         assert new_cache["current_phase"] == "planning"
 
 
+class TestSubAgentsAreNotClaimants:
+    """A sub-agent is a worker inside a session, not a session working the project.
+
+    The sole-claimant guard refuses to carry a mode forward when more than one session
+    claims the project, because a rotating session's predecessor cannot be identified. A
+    sub-agent cache that stamped its parent's project would make every rotation look
+    contested and silently cost the user their mode. Latent until a draft of
+    writ/session/subagent_seed.py inherited project_root, which is how it was found.
+    """
+
+    def test_a_subagent_cache_is_not_counted_as_a_claimant(self, tmp_path):
+        from writ.session import rotation
+
+        project = str(tmp_path / "myproject")
+        _seed_cache("prev-sid-sa1", mode="work", project_root=project)
+        worker = cache._read_cache("agent-sa1")
+        worker["mode"] = "work"
+        worker["project_root"] = project
+        worker["is_subagent"] = True
+        cache._write_cache("agent-sa1", worker)
+
+        claimants = rotation._sessions_claiming_project(project, exclude=("new-sid-sa1",))
+        assert claimants == ["prev-sid-sa1"], (
+            f"a sub-agent was counted as a session working the project: {claimants}"
+        )
+
+    def test_the_carry_still_happens_with_a_subagent_present(self, tmp_path, capsys):
+        """The consequence the guard above prevents: without it this carry is refused."""
+        from writ.session import rotation
+
+        project = str(tmp_path / "myproject")
+        _seed_cache("prev-sid-sa2", mode="debug", project_root=project)
+        worker = cache._read_cache("agent-sa2")
+        worker["mode"] = "debug"
+        worker["project_root"] = project
+        worker["is_subagent"] = True
+        cache._write_cache("agent-sa2", worker)
+
+        rotation.carry_forward_mode(
+            "new-sid-sa2", cwd=project, prev_session_id="prev-sid-sa2", source="resume"
+        )
+        assert cache._read_cache("new-sid-sa2").get("mode") == "debug"
+        assert "NOT carrying" not in capsys.readouterr().err
+
+    def test_a_real_peer_session_still_blocks_the_carry(self, tmp_path, capsys):
+        """The guard must keep doing its job: excluding sub-agents must not excuse peers."""
+        from writ.session import rotation
+
+        project = str(tmp_path / "myproject")
+        _seed_cache("prev-sid-sa3", mode="work", project_root=project)
+        _seed_cache("peer-sid-sa3", mode="work", project_root=project)
+
+        rotation.carry_forward_mode(
+            "new-sid-sa3", cwd=project, prev_session_id="prev-sid-sa3", source="resume"
+        )
+        assert cache._read_cache("new-sid-sa3").get("mode") is None
+        assert "NOT carrying" in capsys.readouterr().err
+
+
 class TestLoudNotice:
     def test_successful_carry_emits_notice_naming_the_mode(self, tmp_path, capsys):
         from writ.session import rotation

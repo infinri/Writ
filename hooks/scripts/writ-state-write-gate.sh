@@ -25,13 +25,22 @@ FILE="$HOOK_FILE_PATH"
 
 PROTECTED_DIR="${WRIT_CACHE_DIR:-$WRIT_DIR/var/session}"
 POINTER_FILE="/tmp/writ-current-session"
+# The APPROVAL CREDENTIAL. Its binding is three lines of text and no component records
+# elsewhere what was minted, so an agent able to write this file can blank line 2 and turn
+# a genuine phase approval into the empty-gate credential the promotion route accepts,
+# keeping the authentic secret on line 1. That is a three-byte edit, not a forgery. The
+# session id is not known here (the target is whatever the tool named), so the match is on
+# the mint's fixed prefix rather than one session's path.
+TOKEN_PREFIX="/tmp/writ-gate-token-"
 
-VERDICT=$(WRIT_TGT="$FILE" WRIT_DIR_PROT="$PROTECTED_DIR" WRIT_PTR="$POINTER_FILE" python3 <<'PY'
+VERDICT=$(WRIT_TGT="$FILE" WRIT_DIR_PROT="$PROTECTED_DIR" WRIT_PTR="$POINTER_FILE" \
+    WRIT_TOK_PREFIX="$TOKEN_PREFIX" python3 <<'PY'
 import os
 
 target = os.environ.get('WRIT_TGT', '')
 protected_dir = os.environ.get('WRIT_DIR_PROT', '')
 pointer = os.environ.get('WRIT_PTR', '')
+token_prefix = os.environ.get('WRIT_TOK_PREFIX', '')
 
 # realpath both sides so a symlink or a ../ walk cannot slip past the prefix test.
 def canon(path):
@@ -47,11 +56,16 @@ if t == canon(pointer):
     print('pointer')
 elif d and (t == d or t.startswith(d + os.sep)):
     print('state')
+elif token_prefix and os.path.basename(t).startswith(os.path.basename(token_prefix)):
+    # Compared on the BASENAME because canon() resolves /tmp through any symlink the
+    # platform uses (macOS makes it /private/tmp), which a prefix test on the full path
+    # would then miss. The basename carries the whole discriminator.
+    print('token')
 PY
 ) || true
 
 if [ -n "$VERDICT" ]; then
-    REASON="[ENF-GATE-STATE] Refusing this write: '$FILE' is Writ gate state. Approvals, mode and the manual-testing grant are recorded there, so the agent does not get to edit them. A manual-testing bypass is minted only from the user's own words -- ask the user to reply \"manual testing approved\"."
+    REASON="[ENF-GATE-STATE] Refusing this write: '$FILE' is Writ gate state. Approvals, mode and the manual-testing grant are recorded there, so the agent does not get to edit them. A manual-testing bypass is minted only from the user's own words, so ask the user to reply \"manual test approved\"."
     log_gate_decision "state-write" "deny" "$REASON" "$FILE"
     emit_deny "$REASON"
 fi

@@ -227,7 +227,7 @@ async def capture_commit(
         )
         from writ.session.locators import _find_plan_md
         commit_ts = _commit_ts(cwd, commit_hash, runner)
-        plan_path = _find_plan_md(os.path.abspath(cwd))
+        plan_path = _find_plan_md(os.path.abspath(cwd), session_id)
         if plan_path:
             with open(plan_path) as fh:
                 plan_text = fh.read()

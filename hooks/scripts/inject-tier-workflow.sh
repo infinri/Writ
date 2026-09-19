@@ -31,10 +31,13 @@ load_hook_env
 AC_TEXT=""
 _emit_ac() {
     [ -z "$AC_TEXT" ] && return 0
-    WRIT_AC="$AC_TEXT" python3 <<'PY' 2>>"$WRIT_HOOK_LOG_SINK" || true
+    local reply
+    reply=$(WRIT_AC="$AC_TEXT" python3 <<'PY' 2>>"$WRIT_HOOK_LOG_SINK"
 import json, os
 print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": os.environ.get("WRIT_AC", "")}}))
 PY
+) || reply=""
+    emit_hook_reply "$reply"
 }
 # writ_on_exit, NOT `trap _emit_ac EXIT`. bash allows one EXIT trap, so installing one
 # here replaced hook_instrument's trap and this hook silently stopped recording its
@@ -109,7 +112,7 @@ case "$MODE" in
         AC_TEXT="[Writ: Conversation mode. Rules injected for context. No code generation expected.]"
         ;;
     debug)
-        AC_TEXT="[Writ: Debug mode. Investigate the problem. No code generation -- switch to Work mode when fix is identified.]"
+        AC_TEXT="[Writ: Debug mode. Investigate the problem. No code generation: switch to Work mode when fix is identified.]"
         ;;
     review)
         AC_TEXT="[Writ: Review mode. Evaluate code against Writ rules. Produce structured findings per file.]"

@@ -148,7 +148,7 @@ Search quality against a 193 question test set (47 of them deliberately ambiguou
 
 | Metric | Floor | 2026-08-01 | 2026-08-05 | 2026-08-06 |
 |---|---|---:|---:|---:|
-| Hit rate at 5 (index-eligible, n=169) | at least 0.90 | -- | 0.9290 | **0.9231** |
+| Hit rate at 5 (index-eligible, n=169) | at least 0.90 | not measured | 0.9290 | **0.9231** |
 | Mean reciprocal rank at 5 (ambiguous, n=47) | at least 0.45 | 0.5681 | 0.6167 | 0.6082 |
 | Hit rate at 5 (all 193) | at least 0.75 | 0.7824 | 0.8187 | 0.8083 |
 | Domain hit rate at 5 | at least 0.90 | 0.9323 | 0.9534 | 0.9585 |
@@ -169,3 +169,19 @@ One rule has been added since 2026-08-06, so the shipped rulebook is 288 rather 
 ## What a turn actually costs (maintainer's own logs, no shippable artifact)
 
 Across 67 real sessions and 891 turns of logged injections: mean 537 tokens per turn, median 600, 95th percentile 1,360, maximum 5,440. The 5,000 and 8,000 token budgets are ceilings, not spend. Unlike every other number in this file, **this one has no artifact you can check**: it comes from `writ token-audit` over the maintainer's own session logs, which contain real prompts and file contents and cannot ship. The command is in the repository and runs against your logs, so the method is reproducible even though this run is not.
+
+---
+
+## Published headline figures (2026-08-01 through 2026-08-14)
+
+`README.md` publishes four bullets drawn from this file, and this section is where those figures have one page stating what each one is and which section here backs it. Every one is a dated measurement rather than a live readout, taken on one developer machine with an uncapped database container, so your numbers will differ.
+
+| Published figure | Date | Backed by |
+|---|---|---|
+| 0.923 hit rate at 5 across the 169 index-eligible questions of the gold set, and 0.608 mean reciprocal rank at 5 across the 47 deliberately ambiguous ones | 2026-08-06 | "Search quality against the gold set", the 2026-08-06 column |
+| A warm 95th percentile of 0.827 ms in the published synthetic run against 10,000 rules | 2026-08-01 | "Summary", the 10,000-rule E2E p95 row |
+| About 2,000 tokens of rule text per turn against the live 287-rule corpus | 2026-08-05 | "Live-corpus addendum", context tokens (retrieved) |
+| About 1,590 tokens of rule text per turn against the 10,000-rule synthetic corpus | 2026-08-01 | "Summary", context tokens (retrieved) |
+| Seventeen benchmark targets run in continuous integration on every push and every pull request, and passed 17 of 17 | 2026-08-14 | "Corpus growth since those runs, and the floors re-run against it" |
+
+The 287-rule figure keeps its 2026-08-05 date wherever it is quoted, on the README or here. It is a correct historical measurement: one rule arrived with the corpus commit dated 2026-08-14, which is why the present-tense count is 288, and `ERRATA.md` records that correction. Stripping the date is what would turn a correct dated reading into a wrong present-tense claim.

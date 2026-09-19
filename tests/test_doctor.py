@@ -113,6 +113,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytest
+
+from tests._inventory import doctor_check_names
 from typer.testing import CliRunner
 
 from writ.cli import app
@@ -490,6 +492,31 @@ class TestEmbeddingStack:
     def test_import_ok_and_both_model_files_present_returns_ok(
         self, default_opts, monkeypatch
     ) -> None:
+        # duplicate-records and index-degeneracy otherwise reach the live graph and
+        # the developer's real ~/.cache/writ index, so the outcome would depend on
+        # the machine (TEST-ISOLATE-001). Clean graph, no index to sample.
+        monkeypatch.setattr("writ.session.doctor._count_duplicate_records", lambda: {})
+        monkeypatch.setattr(
+            "writ.session.doctor._index_degeneracy",
+            lambda: {"zero_count": 0, "sample_size": 0},
+        )
+        # hook-telemetry-coverage otherwise reads the developer's real metrics stream,
+        # so the observational arm would depend on the machine (TEST-ISOLATE-001). The
+        # structural arm still runs against the real hooks.json, which is the point.
+        monkeypatch.setattr(
+            "writ.session.doctor._observed_hook_names",
+            lambda: set(__import__("writ.session.doctor", fromlist=["x"])._registered_hook_scripts()),
+        )
+        # permissions-allowlist otherwise shells to the installer against the
+        # developer's real ~/.claude/settings.json (TEST-ISOLATE-001).
+        monkeypatch.setattr("writ.session.doctor._missing_allow_entries", lambda: [])
+        # daemon-socket otherwise stats the developer's real runtime directory and
+        # dials the live daemon (TEST-ISOLATE-001).
+        monkeypatch.setattr(
+            "writ.session.doctor._socket_state",
+            lambda: {"path": "/run/w.sock", "exists": True, "dir_mode": 0o700,
+                     "answers": True},
+        )
         monkeypatch.setattr("writ.session.doctor._venv_import_ok", lambda: True)
         monkeypatch.setattr(
             "writ.session.doctor._onnx_model_files_present", lambda: (True, True)
@@ -509,6 +536,24 @@ class TestEmbeddingStack:
         assert r.status == STATUS_FAIL
 
     def test_model_onnx_missing_returns_fail(self, default_opts, monkeypatch) -> None:
+        # duplicate-records and index-degeneracy otherwise reach the live graph and
+        # the developer's real ~/.cache/writ index, so the outcome would depend on
+        # the machine (TEST-ISOLATE-001). Clean graph, no index to sample.
+        monkeypatch.setattr("writ.session.doctor._count_duplicate_records", lambda: {})
+        monkeypatch.setattr(
+            "writ.session.doctor._index_degeneracy",
+            lambda: {"zero_count": 0, "sample_size": 0},
+        )
+        # permissions-allowlist otherwise shells to the installer against the
+        # developer's real ~/.claude/settings.json (TEST-ISOLATE-001).
+        monkeypatch.setattr("writ.session.doctor._missing_allow_entries", lambda: [])
+        # daemon-socket otherwise stats the developer's real runtime directory and
+        # dials the live daemon (TEST-ISOLATE-001).
+        monkeypatch.setattr(
+            "writ.session.doctor._socket_state",
+            lambda: {"path": "/run/w.sock", "exists": True, "dir_mode": 0o700,
+                     "answers": True},
+        )
         monkeypatch.setattr("writ.session.doctor._venv_import_ok", lambda: True)
         monkeypatch.setattr(
             "writ.session.doctor._onnx_model_files_present", lambda: (False, True)
@@ -518,6 +563,24 @@ class TestEmbeddingStack:
         assert r.status == STATUS_FAIL
 
     def test_tokenizer_json_missing_returns_fail(self, default_opts, monkeypatch) -> None:
+        # duplicate-records and index-degeneracy otherwise reach the live graph and
+        # the developer's real ~/.cache/writ index, so the outcome would depend on
+        # the machine (TEST-ISOLATE-001). Clean graph, no index to sample.
+        monkeypatch.setattr("writ.session.doctor._count_duplicate_records", lambda: {})
+        monkeypatch.setattr(
+            "writ.session.doctor._index_degeneracy",
+            lambda: {"zero_count": 0, "sample_size": 0},
+        )
+        # permissions-allowlist otherwise shells to the installer against the
+        # developer's real ~/.claude/settings.json (TEST-ISOLATE-001).
+        monkeypatch.setattr("writ.session.doctor._missing_allow_entries", lambda: [])
+        # daemon-socket otherwise stats the developer's real runtime directory and
+        # dials the live daemon (TEST-ISOLATE-001).
+        monkeypatch.setattr(
+            "writ.session.doctor._socket_state",
+            lambda: {"path": "/run/w.sock", "exists": True, "dir_mode": 0o700,
+                     "answers": True},
+        )
         monkeypatch.setattr("writ.session.doctor._venv_import_ok", lambda: True)
         monkeypatch.setattr(
             "writ.session.doctor._onnx_model_files_present", lambda: (True, False)
@@ -1206,7 +1269,7 @@ class TestRunAllChecks:
     """run_all_checks: exception isolation, ordering, result count."""
 
     def _patch_all_ok(self, monkeypatch) -> None:
-        """Patch every seam so all 13 checks return ok with no side effects."""
+        """Patch every seam so every registered check returns ok with no side effects."""
         monkeypatch.setattr(
             "writ.session.doctor._http_get_health",
             lambda: {"status": "healthy", "index_state": "warm", "rule_count": 5},
@@ -1219,6 +1282,24 @@ class TestRunAllChecks:
         monkeypatch.setattr(
             "writ.session.doctor._list_neo4j_constraint_names",
             lambda: [f"c{i}" for i in range(17)],
+        )
+        # duplicate-records and index-degeneracy otherwise reach the live graph and
+        # the developer's real ~/.cache/writ index, so the outcome would depend on
+        # the machine (TEST-ISOLATE-001). Clean graph, no index to sample.
+        monkeypatch.setattr("writ.session.doctor._count_duplicate_records", lambda: {})
+        monkeypatch.setattr(
+            "writ.session.doctor._index_degeneracy",
+            lambda: {"zero_count": 0, "sample_size": 0},
+        )
+        # permissions-allowlist otherwise shells to the installer against the
+        # developer's real ~/.claude/settings.json (TEST-ISOLATE-001).
+        monkeypatch.setattr("writ.session.doctor._missing_allow_entries", lambda: [])
+        # daemon-socket otherwise stats the developer's real runtime directory and
+        # dials the live daemon (TEST-ISOLATE-001).
+        monkeypatch.setattr(
+            "writ.session.doctor._socket_state",
+            lambda: {"path": "/run/w.sock", "exists": True, "dir_mode": 0o700,
+                     "answers": True},
         )
         monkeypatch.setattr("writ.session.doctor._venv_import_ok", lambda: True)
         monkeypatch.setattr(
@@ -1246,13 +1327,69 @@ class TestRunAllChecks:
             "writ.session.doctor._latest_session_cache",
             lambda session_id: {"mode": "work"},
         )
+        # stranded-telemetry-buffer otherwise stats the real var/session directory, and
+        # subagent-role-coverage otherwise reads the real metrics stream, so both outcomes
+        # would depend on the machine (TEST-ISOLATE-001). Caught by the full suite: this
+        # test passed alone and failed in a run where an unattributable buffer briefly
+        # existed on disk. Clean state for both: no orphan buffer, no dispatch rows.
+        monkeypatch.setattr(
+            "writ.session.doctor._unknown_buffer",
+            lambda: Path("/nonexistent-writ-unknown-buffer.buf"),
+        )
+        monkeypatch.setattr("writ.session.doctor._metrics_rows", lambda event: [])
+        # subagent-governance-census otherwise scans the real metrics stream and its
+        # archives, so the outcome would depend on the machine (TEST-ISOLATE-001). None
+        # means "no readable stream", which the check reports as ok.
+        monkeypatch.setattr(
+            "writ.session.doctor._subagent_governance_census", lambda: None)
+        # subagent-role-scope-coverage otherwise opens a bolt connection to the real
+        # graph, so the outcome would depend on the machine (TEST-ISOLATE-001). An empty
+        # census means "no roles to judge", which the check reports as ok.
+        monkeypatch.setattr(
+            "writ.session.doctor._subagent_role_scope_census", lambda: [])
+        # extension-trust-ledger otherwise reads THIS DEVELOPER'S home directory (their
+        # skills, their agents, their ~/.claude.json), so the outcome would depend on the
+        # machine (TEST-ISOLATE-001). Pointed at an empty tmp tree, the inventory is empty
+        # and the check reports the no-baseline warn, so the registry tests never touch
+        # real extensions. raising=True by default: a renamed seam must fail here rather
+        # than silently fall back to reading the real home directory while still passing.
+        monkeypatch.setattr(
+            "writ.session.doctor._trust_ledger_roots",
+            lambda: (None, [], None))
+        # gate-refusal-liveness otherwise reads this machine's audit stream AND its whole
+        # hook tree, so the outcome would depend on both (TEST-ISOLATE-001). A gate that
+        # can refuse and has is the clean case, and it is built from two INDEPENDENT
+        # seams here for the same reason the check keeps them apart: a patch that fed one
+        # side from the other would make these registry tests agree with anything.
+        #
+        # PATCHED WITH raising=True (the default) ON PURPOSE. A tolerant patch would
+        # silently no-op if either seam were renamed, and these tests would go back to
+        # reading the developer's real logs while still passing, which is the failure
+        # mode this block exists to prevent. The tests are pinned to the seam NAMES; the
+        # plan's ## Files line owns them.
+        monkeypatch.setattr(
+            "writ.session.doctor._gate_deny_capability",
+            lambda **_kwargs: {
+                "probe-gate": {"decisions": ["deny", "allow"], "scripts": ["probe.sh"]}
+            },
+        )
+        monkeypatch.setattr(
+            "writ.session.doctor._audit_rows",
+            lambda event: [{"event": event, "gate": "probe-gate", "decision": "deny",
+                            "reason": "probe", "target": "", "ts": "2026-01-01T00:00:00Z"}],
+        )
 
-    def test_returns_exactly_thirteen_results(self, default_opts, monkeypatch) -> None:
+    def test_it_returns_one_result_per_registered_check(self, default_opts, monkeypatch) -> None:
         self._patch_all_ok(monkeypatch)
         from writ.session.doctor import run_all_checks
         results = run_all_checks(default_opts)
-        assert len(results) == 13, (
-            f"run_all_checks must return exactly 13 CheckResults; got {len(results)}"
+        # DERIVED, not restated. This said 18, and before cycle I it said 17: adding one
+        # check meant editing this number, a second one below, the name set, and this
+        # test's own name. The registry is the single source.
+        expected = len(doctor_check_names())
+        assert len(results) == expected, (
+            f"run_all_checks must return one result per registered check ({expected}); "
+            f"got {len(results)}"
         )
 
     def test_result_names_match_contract(self, default_opts, monkeypatch) -> None:
@@ -1264,6 +1401,10 @@ class TestRunAllChecks:
             "stale-orphan-port-conflict",
             "neo4j-connectivity",
             "uniqueness-constraints",
+            "duplicate-records",
+            "index-degeneracy",
+            "permissions-allowlist",
+            "daemon-socket",
             "embedding-stack",
             "corpus-drift",
             "bitbucket-creds",
@@ -1271,8 +1412,26 @@ class TestRunAllChecks:
             "writ-path-symlink",
             "cc-hook-registration",
             "duplicate-hook-registration",
+            "hook-telemetry-coverage",
+            # Cycle L: rows filed under the session id `unknown`, and how often a
+            # dispatched sub-agent's role is actually observed rather than defaulted.
+            "stranded-telemetry-buffer",
+            "subagent-role-coverage",
+            # Cycle M: how many sub-agent ROLES declare a write scope, so the roles whose
+            # writes are still unbounded are a number rather than a surprise.
+            "subagent-role-scope-coverage",
+            # Cycle M-pre: how many sub-agents inherited a mode at all.
+            "subagent-governance-census",
             "role-symlinks",
             "mode-gate-sanity",
+            # Containment audit finding 5: which gates can refuse, and which of those
+            # ever have. Nothing read gate_decision before it, so a gate that stopped
+            # refusing, or never started, alarmed nowhere.
+            "gate-refusal-liveness",
+            # Roadmap 18e: what can act on this machine, and what changed since the
+            # operator last looked. Deliberately NOT fixable: accepting drift is a
+            # human decision, not something --fix should do on its own.
+            "extension-trust-ledger",
         }
         actual_names = {r.name for r in results}
         assert actual_names == expected_names, (
@@ -1291,7 +1450,9 @@ class TestRunAllChecks:
         )
         from writ.session.doctor import STATUS_FAIL, run_all_checks
         results = run_all_checks(default_opts)
-        assert len(results) == 13, "all 13 results must be returned despite one exception"
+        assert len(results) == len(doctor_check_names()), (
+            "every registered check must still return a result despite one exception"
+        )
         daemon_result = next(r for r in results if r.name == "daemon-liveness")
         assert daemon_result.status == STATUS_FAIL
         assert "daemon exploded" in daemon_result.detail, (
@@ -1511,6 +1672,24 @@ class TestDoctorCommandNet:
         monkeypatch.setattr("writ.session.doctor._ps_writ_serve_orphans", lambda: [])
         monkeypatch.setattr("writ.session.doctor._tcp_can_connect", lambda h, p: True)
         monkeypatch.setattr("writ.session.doctor._count_neo4j_rules", lambda: 5)
+        # duplicate-records and index-degeneracy otherwise reach the live graph and
+        # the developer's real ~/.cache/writ index, so the outcome would depend on
+        # the machine (TEST-ISOLATE-001). Clean graph, no index to sample.
+        monkeypatch.setattr("writ.session.doctor._count_duplicate_records", lambda: {})
+        monkeypatch.setattr(
+            "writ.session.doctor._index_degeneracy",
+            lambda: {"zero_count": 0, "sample_size": 0},
+        )
+        # permissions-allowlist otherwise shells to the installer against the
+        # developer's real ~/.claude/settings.json (TEST-ISOLATE-001).
+        monkeypatch.setattr("writ.session.doctor._missing_allow_entries", lambda: [])
+        # daemon-socket otherwise stats the developer's real runtime directory and
+        # dials the live daemon (TEST-ISOLATE-001).
+        monkeypatch.setattr(
+            "writ.session.doctor._socket_state",
+            lambda: {"path": "/run/w.sock", "exists": True, "dir_mode": 0o700,
+                     "answers": True},
+        )
         monkeypatch.setattr("writ.session.doctor._venv_import_ok", lambda: True)
         monkeypatch.setattr(
             "writ.session.doctor._onnx_model_files_present", lambda: (True, True)

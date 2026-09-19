@@ -246,9 +246,43 @@ def _default_cache() -> dict:
         "queried_rules_by_file": {},
         "parent_session_id": "",
         "agent_type": "",
+        # How this cache came to exist: `subagent_start` (the event fired), `lazy_seed`
+        # (a hook running inside the sub-agent seeded it), or "" for a main session. The
+        # write gate reads it: a lazily seeded cache confers no write authority, because
+        # creating one where none existed would otherwise loosen the gate.
+        "cache_source": "",
+        # Where agent_type came from: envelope, sidecar, cache, or unresolved. Declared
+        # here so a sub-agent cache written by writ-subagent-start.sh keeps the same keyset
+        # as a fresh one (test_cache_schema_single_source). An empty string means no
+        # resolution has been attempted, which is NOT the same as `unresolved`.
+        "role_source": "",
+        # The paths this sub-agent's ROLE declares it may write, stamped once at dispatch
+        # from the role's graph node (writ/session/subagent_seed.py) and read by the write
+        # gate. None IS NOT [], and the difference is the whole feature: None means no
+        # declared scope, so the sub-agent keeps the write authority it has always had,
+        # while [] means the role says it writes nothing and every path is refused.
+        # Defaulting this to [] would deny every write by every sub-agent whose cache
+        # predates the field, because _read_cache fills missing keys from here.
+        "role_write_scope": None,
+        # Where that scope came from ("graph" when the role node answered, "" when
+        # nothing was stamped: the lazy path, an unresolved role, or a daemon that did not
+        # answer at dispatch time). "" plus a None scope is the unenforced case, and it is
+        # recorded rather than inferred so the gap is countable instead of invisible.
+        "role_scope_source": "",
         # Project where the mode was declared (stamped at mode-set). Enables the
         # rotation carry's same-project guard; "" means "unknown project".
         "project_root": "",
+        # The OS scratch zone the write gate judges against, stamped at mode-set beside
+        # project_root by mode_engine._apply_mode_set as
+        # os.path.realpath(tempfile.gettempdir()). It lives HERE rather than being resolved
+        # at write time because the write gate runs in TWO processes (the daemon and the CLI
+        # fallback) and tempfile.gettempdir() is a per-process answer, so a zone resolved at
+        # call time let the two doors allow and deny the same path (measured). "" means NO
+        # EXEMPTION, never "resolve it yourself": _read_cache's backfill gives a cache
+        # written before this field existed that same "", and project_boundary.scratch_zone
+        # turns it into a fail-closed abstain instead of a live fallback that would
+        # reinstate the divergence in the one state nobody inspects.
+        "scratch_zone": "",
     }
 
 

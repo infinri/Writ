@@ -1,9 +1,16 @@
 """Writ HTTP API -- Pydantic request models (PY-PYDANTIC-001).
 
-All 23 request-body models for the FastAPI service live here, moved verbatim
+The request-body models for the FastAPI service live here, moved verbatim
 from the pre-split writ/server.py. This module imports NOTHING from writ.server,
 so it cannot participate in an import cycle; writ/server/__init__.py re-exports
 these names so `from writ.server import QueryRequest` keeps working.
+
+NO MODEL HERE MAY DECLARE EXACTLY A STRING `key` AND A STRING `value`. That is the
+arbitrary-key setter shape, and the one that existed (SessionUpdateRequest, for a
+route with no callers) let any local process write any string-valued key of the
+session cache, including the gate inputs `mode` and `current_phase`. A permitted
+operation is a named route with a typed body; see tests/test_daemon_authorization.py,
+which fails on the shape rather than on the name.
 """
 
 # writ-auth-scan: internal-service
@@ -67,8 +74,12 @@ class PromptBundleRequest(BaseModel):
     session_id: str
     mode: str = ""
     prompt: str = ""          # keyword-extracted prompt: query text + companion prompt + always-on context
-    effort: str = ""
     always_on_filter: bool = True
+    # Channel 1 (the ranked /query pool) only. An orchestrator master turns it off so
+    # the shared path still delivers the always-on floor and the methodology companion,
+    # which is why this is a per-channel field on the existing request rather than a
+    # second endpoint or a second render path.
+    include_ranked: bool = True
     # The per-prompt hot path. Forwarded to the internal channel-1 QueryRequest,
     # which dropped the project entirely before this cycle: a fix that stopped at
     # /query would have tested green and left the route that runs on every prompt
@@ -163,15 +174,6 @@ class MemoryRecordRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class SessionUpdateRequest(BaseModel):
-    """Request body for POST /session/{session_id}/update."""
-
-    model_config = {"strict": True}
-
-    key: str
-    value: str
-
-
 class SessionModeSetRequest(BaseModel):
     """Request body for POST /session/{session_id}/mode."""
 
@@ -261,6 +263,17 @@ class SessionAdvancePhaseRequest(BaseModel):
     cwd: str = ""
 
 
+class SessionPromotionReviewRequest(BaseModel):
+    """Request body for POST /session/{session_id}/promotion-review.
+
+    Surfacing a candidate is what makes the human its approver rather than a veto switch
+    reacting to an id, and it is also what records the candidate the next approval binds
+    to. One field: the route derives everything else from the graph.
+    """
+
+    candidate_id: str | None = None
+
+
 class SessionPromoteCandidateRequest(BaseModel):
     """Request body for POST /session/{session_id}/promote-candidate."""
 
@@ -344,7 +357,6 @@ __all__ = [
     "CommitCaptureRequest",
     "GitHooksAutoInstallRequest",
     "RecallRequest",
-    "SessionUpdateRequest",
     "SessionModeSetRequest",
     "SessionCanWriteRequest",
     "SessionFormatRequest",

@@ -40,7 +40,7 @@ async def capture_decision_at_approve(
     or an explicit cwd that genuinely exists but is in no git repo). Callers are
     responsible for the fail-open guard.
     """
-    plan_path = _find_plan_md(project_root)
+    plan_path = _find_plan_md(project_root, session_id)
     if not plan_path:
         return None
     with open(plan_path) as f:

@@ -46,6 +46,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.test_bash_write_gate import run_extractor
+
 SKILL_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 HOOK_SH = os.path.join(SKILL_ROOT, "hooks", "scripts", "writ-bash-write-gate.sh")
 
@@ -71,11 +73,14 @@ def _extractor_src() -> str:
 
 
 def _extract(cmd: str, cwd: str, src: str | None = None) -> set[tuple[str, ...]]:
-    """Run the extractor (optionally a mutated copy) and return the rows it emits."""
-    env = dict(os.environ, WRIT_BASH_CMD=cmd, WRIT_CWD=cwd, WRIT_DIR=SKILL_ROOT)
-    p = subprocess.run([sys.executable, "-c", src if src is not None else _extractor_src()],
-                       env=env, capture_output=True, text=True, timeout=60)
-    return {tuple(line.split("\t")) for line in p.stdout.splitlines() if line}
+    """Run the extractor (optionally a mutated copy) and return the rows it emits.
+
+    REUSED, NOT DUPLICATED: `run_extractor` from tests/test_bash_write_gate.py hands the
+    command over on a FILE (`WRIT_BASH_CMD_FILE`), which is the transport the hook itself
+    uses, and strips the completion sentinel from the rows."""
+    env = dict(os.environ, WRIT_DIR=SKILL_ROOT)
+    _p, lines = run_extractor(cmd, cwd, env=env, src=src, timeout=60)
+    return {tuple(line.split("\t")) for line in lines if line}
 
 
 @pytest.fixture()
@@ -202,9 +207,12 @@ class TestReportedBypassIsClosed:
 
 
 # --------------------------------------------------------------------------- #
-# 2. the shell vector is untouched
+# 2. the shell vector, in the repo unchanged and out of it now decided
+#    The IN-REPO redirect is untouched by this file's fix and by cycle L. The
+#    OUT-OF-REPO redirect changed in cycle L: it used to be silent and is now
+#    decided by the same gate the Write door uses. See the second pin.
 # --------------------------------------------------------------------------- #
-class TestShellRedirectUnchanged:
+class TestShellRedirectVector:
     def test_redirect_still_denies_with_its_audit_row(self, gate):
         out = _run_hook(gate, REDIRECT_CMD)
         assert out is not None and out["permissionDecision"] == "deny"
@@ -212,8 +220,29 @@ class TestShellRedirectUnchanged:
         rows = [r for r in _audit_rows(gate) if r.get("decision") == "deny"]
         assert rows and rows[0]["target"] == str(gate.proj / "src" / "sneaky.py")
 
-    def test_redirect_outside_the_repo_is_still_not_work_gated(self, gate):
-        assert _run_hook(gate, "echo x > /tmp/writ-scratch-xyz") is None
+    def test_redirect_outside_the_repo_reaches_the_gate(self, gate):
+        # MEASURED after cycle L, in this PRE-APPROVAL session: `echo x > <target>`
+        # denies with [ENF-GATE-PLAN] ("Say approved to proceed") where it used to be
+        # silent, because the out-of-repo target now emits an `outside` row and takes
+        # the same can-write round trip an in-repo target takes. That pre-approval
+        # refusal is consequence C1 in the approved plan, the accepted cost of two-door
+        # parity. Its named remedy, a scratch-zone allow arm in
+        # gates._check_work_gate, has since SHIPPED, and this still denies because the
+        # fixture records no project_root: the arm routes through boundary_root, which
+        # abstains on an empty root. Real pre-approval scratch behavior is pinned in
+        # tests/test_write_door_parity.py and tests/test_scratch_zone_write_arm.py.
+        target = "/tmp/writ-scratch-xyz"
+        out = _run_hook(gate, f"echo x > {target}")
+        assert out is not None, "the out-of-repo redirect was silent; it reached no gate"
+        assert out["permissionDecision"] == "deny", out
+        assert "ENF-GATE-PLAN" in out["permissionDecisionReason"], out
+        # The refusal is not the property; the AGREEMENT is. The same target in the same
+        # session gets the same verdict from the Write door, which is the function both
+        # transports call.
+        gates = _imp("writ.session.gates")
+        write_door = gates._can_write_check(
+            gate.sid, {"tool_input": {"file_path": target}}, SKILL_ROOT)
+        assert write_door["can_write"] is False, write_door
 
 
 # --------------------------------------------------------------------------- #
@@ -231,8 +260,29 @@ class TestExemptionsAreReused:
         rows = _extract("""python3 -c "open('tests/test_x.py','w')" """, str(gate.proj))
         assert ("local", str(gate.proj / "tests" / "test_x.py")) in rows
 
-    def test_outside_the_repo_is_not_work_gated_through_an_interpreter(self, gate):
-        assert _run_hook(gate, """python3 -c "open('/tmp/scratch.py','w')" """) is None
+    def test_outside_the_repo_reaches_the_gate_through_an_interpreter(self, gate):
+        # The sibling vector, and the reason cycle L did not carve interpreter hits out:
+        # suppressing them would have re-opened the interpreter write door outside the
+        # repo while the redirect pin above stayed green.
+        # MEASURED after cycle L, in this PRE-APPROVAL session: this denies with
+        # [ENF-GATE-PLAN] ("Say approved to proceed") where it used to be silent. That
+        # refusal is consequence C1 in the approved plan, the accepted cost of two-door
+        # parity. Its named remedy, a scratch-zone allow arm in
+        # gates._check_work_gate, has since SHIPPED, and this still denies because the
+        # fixture records no project_root: the arm routes through boundary_root, which
+        # abstains on an empty root. Real pre-approval scratch behavior is pinned in
+        # tests/test_write_door_parity.py and tests/test_scratch_zone_write_arm.py.
+        target = "/tmp/scratch.py"
+        out = _run_hook(gate, f"""python3 -c "open('{target}','w')" """)
+        assert out is not None, (
+            "the out-of-repo interpreter write was silent; it reached no gate"
+        )
+        assert out["permissionDecision"] == "deny", out
+        assert "ENF-GATE-PLAN" in out["permissionDecisionReason"], out
+        gates = _imp("writ.session.gates")
+        write_door = gates._can_write_check(
+            gate.sid, {"tool_input": {"file_path": target}}, SKILL_ROOT)
+        assert write_door["can_write"] is False, write_door
 
 
 # --------------------------------------------------------------------------- #

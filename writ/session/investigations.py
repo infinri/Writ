@@ -245,9 +245,9 @@ def cmd_synthesis_gate(session_id: str) -> None:
     over_budget = span_budget is not None and len(examined) > span_budget
 
     if not frozen:
-        ready, reason = False, "no frozen scope -- freeze an investigation scope before synthesizing"
+        ready, reason = False, "no frozen scope: freeze an investigation scope before synthesizing"
     elif examined_in_scope == 0:
-        ready, reason = False, "no in-scope files examined yet -- gather evidence before synthesizing"
+        ready, reason = False, "no in-scope files examined yet: gather evidence before synthesizing"
     else:
         ready, reason = True, "coverage evidence present (presence floor); judge sufficiency via coverage_pct"
 
@@ -555,7 +555,7 @@ def cmd_triangulation_gate(session_id: str) -> None:
     domains = sorted({d for d in (_independent_domain(r["ref"]) for r in urls) if d})
     triangulated = len(domains) >= _TRIANGULATION_MIN_DOMAINS
     if not urls:
-        reason = "fail-closed: no url citations captured -- a web synthesis needs captured sources"
+        reason = "fail-closed, no url citations captured: a web synthesis needs captured sources"
     elif not triangulated:
         reason = (f"only {len(domains)} independent domain(s); "
                   f">= {_TRIANGULATION_MIN_DOMAINS} required to corroborate")

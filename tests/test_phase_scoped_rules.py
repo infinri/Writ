@@ -242,74 +242,131 @@ class TestDifferentialVsHeadInline:
 
 # -- 4. Source guard: hooks adopt the helper, inline body is gone -----------
 
+# THE ADOPTER POPULATIONS ARE DERIVED, NEVER LISTED.
+#
+# `bin/lib/writ_phase_scoped_rules.py` is still live and still needs its adopters
+# pinned; what changed is WHICH hooks adopt it. Plan dfacff61 moved the rag-inject
+# integration server-side, so a per-hook test naming writ-rag-inject.sh went red
+# for a correct deletion while proving nothing about the helper.
+#
+# Two populations, because there are two adoption idioms and they carry different
+# obligations. A hook that runs the helper as a SCRIPT gets a string back through
+# a command substitution and must degrade to '[]' when it fails. A hook that
+# IMPORTS phase_scoped_ids calls it in-process, where there is no substitution to
+# degrade, and writ-posttool-rag.sh is deliberately unguarded there.
+def _hooks_matching(needle: str) -> list[str]:
+    return sorted(
+        path.name for path in HOOKS_DIR.glob("*.sh") if needle in path.read_text()
+    )
+
+
+# Runs the helper as a script: `python3 .../writ_phase_scoped_rules.py`.
+HELPER_SCRIPT_ADOPTERS = _hooks_matching("writ_phase_scoped_rules.py")
+# Imports the function: `from writ_phase_scoped_rules import phase_scoped_ids`.
+HELPER_IMPORT_ADOPTERS = _hooks_matching("from writ_phase_scoped_rules import phase_scoped_ids")
+# Either idiom. Used for the "nobody inlines the selection any more" sweep.
+HELPER_ADOPTERS = sorted(set(HELPER_SCRIPT_ADOPTERS) | set(HELPER_IMPORT_ADOPTERS))
+
+
 class TestHooksAdoptHelper:
-    """Reads hook source text directly (no subprocess, no import). This
-    class does not depend on writ_phase_scoped_rules.py existing, so it
-    reports its own independent RED reason: the hooks have not yet been
-    repointed at the helper module."""
+    """Reads hook source text directly (no subprocess, no import). This class
+    does not depend on writ_phase_scoped_rules.py existing, so it reports its own
+    independent RED reason: the hooks have not been repointed at the helper.
 
-    def test_read_rag_hook_invokes_helper_script(self):
-        content = READ_RAG_HOOK.read_text()
+    RE-KEYED from three hardcoded hook names to two derived populations. The
+    hardcoded version had writ-rag-inject.sh in it and went red when that hook
+    stopped using the helper, which is a correct change; worse, it could never
+    have noticed a NEW adopter that inlined the selection anyway.
+
+    MUTATION: putting the literal `by_phase.get(current_phase, [])` back into
+    writ-read-rag.sh or writ-posttool-rag.sh turns the matching parameter of
+    test_adopter_no_longer_inlines_phase_bucket_selection red. Dropping
+    `|| echo '[]'` from writ-read-rag.sh turns its guard parameter red. Adding a
+    THIRD adopter covers it automatically, with nothing to remember here.
+
+    DELETED with this re-key, and recorded rather than silently dropped:
+    test_rag_inject_hook_preserves_orch_loaded_rule_ids_var_name, which pinned the
+    shell variable name ORCH_LOADED_RULE_IDS. That variable existed only inside
+    the hand-rolled orchestrator companion block, which no longer exists, so the
+    property is gone rather than moved. It was a name pin in the first place: it
+    could not have detected the variable being computed wrongly, only renamed.
+    """
+
+    def test_the_adopter_populations_are_not_empty(self) -> None:
+        """Anti-vacuity for every parametrized test below: an empty population
+        makes them all vanish and the class read green while asserting nothing.
+        Both idioms must still have at least one adopter, or the helper is dead
+        code and this class should go with it."""
+        assert HELPER_SCRIPT_ADOPTERS, (
+            "no hook runs writ_phase_scoped_rules.py as a script; the helper may "
+            "be dead code, or the detector needle has drifted"
+        )
+        assert HELPER_IMPORT_ADOPTERS, (
+            "no hook imports phase_scoped_ids from writ_phase_scoped_rules"
+        )
+
+    @pytest.mark.parametrize("hook_name", HELPER_SCRIPT_ADOPTERS)
+    def test_script_adopter_invokes_the_helper(self, hook_name: str) -> None:
+        content = (HOOKS_DIR / hook_name).read_text()
         assert "writ_phase_scoped_rules.py" in content, (
-            "writ-read-rag.sh does not invoke writ_phase_scoped_rules.py; "
+            f"{hook_name} does not invoke writ_phase_scoped_rules.py; "
             "it may still be running the inline python3 -c selection body."
         )
 
-    def test_rag_inject_hook_invokes_helper_script(self):
-        content = RAG_INJECT_HOOK.read_text()
-        assert "writ_phase_scoped_rules.py" in content, (
-            "writ-rag-inject.sh does not invoke writ_phase_scoped_rules.py; "
-            "it may still be running the inline python3 -c selection body."
-        )
-
-    def test_posttool_rag_hook_imports_phase_scoped_ids_function(self):
-        content = POSTTOOL_RAG_HOOK.read_text()
+    @pytest.mark.parametrize("hook_name", HELPER_IMPORT_ADOPTERS)
+    def test_import_adopter_imports_phase_scoped_ids_function(self, hook_name: str) -> None:
+        content = (HOOKS_DIR / hook_name).read_text()
         assert "from writ_phase_scoped_rules import phase_scoped_ids" in content, (
-            "writ-posttool-rag.sh does not import phase_scoped_ids from "
+            f"{hook_name} does not import phase_scoped_ids from "
             "writ_phase_scoped_rules; it may still be running its own fused "
             "inline python3 -c body."
         )
 
-    def test_read_rag_hook_no_longer_inlines_phase_bucket_selection(self):
-        content = READ_RAG_HOOK.read_text()
+    @pytest.mark.parametrize("hook_name", HELPER_ADOPTERS)
+    def test_adopter_no_longer_inlines_phase_bucket_selection(self, hook_name: str) -> None:
+        content = (HOOKS_DIR / hook_name).read_text()
         assert content.count("by_phase.get(current_phase, [])") == 0, (
-            "writ-read-rag.sh still contains the inline phase-bucket "
-            "selection line; the logic must live only in the helper module."
+            f"{hook_name} still contains the inline phase-bucket selection line; "
+            "the logic must live only in the helper module."
         )
 
-    def test_rag_inject_hook_no_longer_inlines_phase_bucket_selection(self):
-        content = RAG_INJECT_HOOK.read_text()
-        assert content.count("by_phase.get(current_phase, [])") == 0, (
-            "writ-rag-inject.sh still contains the inline phase-bucket "
-            "selection line; the logic must live only in the helper module."
+    def test_no_hook_outside_the_adopters_inlines_the_selection(self) -> None:
+        """The sweep the per-hook list could not do: a hook that never adopted
+        the helper and still carries its own copy of the selection line is the
+        duplication this refactor existed to remove, and it would be invisible to
+        a population derived from adopters alone."""
+        offenders = sorted(
+            path.name for path in HOOKS_DIR.glob("*.sh")
+            if "by_phase.get(current_phase, [])" in path.read_text()
+        )
+        assert offenders == [], (
+            f"hook(s) still inline the phase-bucket selection: {offenders}"
         )
 
-    def test_posttool_rag_hook_no_longer_inlines_phase_bucket_selection(self):
-        content = POSTTOOL_RAG_HOOK.read_text()
-        assert content.count("by_phase.get(current_phase, [])") == 0, (
-            "writ-posttool-rag.sh still contains the inline phase-bucket "
-            "selection line; the logic must live only in the helper module."
+    @pytest.mark.parametrize("hook_name", HELPER_SCRIPT_ADOPTERS)
+    def test_script_adopter_preserves_guard_fallback_to_empty_list(
+        self, hook_name: str
+    ) -> None:
+        """Guard asymmetry: a hook that runs the helper as a SCRIPT reads its
+        answer through a command substitution, so it must keep degrading to '[]'
+        when the helper fails. The import adopters are excluded on purpose:
+        writ-posttool-rag.sh calls the function in-process and is intentionally
+        unguarded there."""
+        content = (HOOKS_DIR / hook_name).read_text()
+        assert "|| echo '[]'" in content, (
+            f"{hook_name} runs the helper as a script but no longer degrades to "
+            "'[]' when it fails"
         )
-
-    def test_read_rag_hook_preserves_guard_fallback_to_empty_list(self):
-        """Guard asymmetry: read-rag.sh must keep degrading to '[]' on
-        failure (unlike posttool-rag.sh, which is intentionally unguarded)."""
-        content = READ_RAG_HOOK.read_text()
-        assert "|| echo '[]'" in content
-
-    def test_rag_inject_hook_preserves_guard_fallback_to_empty_list(self):
-        content = RAG_INJECT_HOOK.read_text()
-        assert "|| echo '[]'" in content
 
     def test_posttool_rag_hook_preserves_three_line_sed_consumption(self):
         """posttool-rag.sh's fused shape (rule_ids/budget/mode on 3 stdout
-        lines) must remain intact after adoption -- only the selection body
-        moves into the module, not the fused 3-line print/consume contract."""
+        lines) must remain intact after adoption: only the selection body moves
+        into the module, not the fused 3-line print/consume contract.
+
+        Named rather than derived, because this pins ONE hook's own stdout
+        contract with its own inline block, not a property of adopting the
+        helper."""
         content = POSTTOOL_RAG_HOOK.read_text()
         assert "sed -n '1p'" in content
         assert "sed -n '2p'" in content
         assert "sed -n '3p'" in content
-
-    def test_rag_inject_hook_preserves_orch_loaded_rule_ids_var_name(self):
-        content = RAG_INJECT_HOOK.read_text()
-        assert "ORCH_LOADED_RULE_IDS" in content

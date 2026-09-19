@@ -2,11 +2,29 @@
 # Auto-approve gate: approval detection for the human phase gate.
 # UserPromptSubmit: fires at the start of every user turn.
 #
-# TWO TIERS, ONE AUTHORITY (cycle 1). bin/lib/approval_match.py classifies the prompt as
-# exact, embedded or none, and only ONE of them can advance a gate:
+# FOUR TIERS, ONE AUTHORITY (cycle 1; the replan tier added later, the override tier with
+# the evidence requirement). bin/lib/approval_match.py classifies the prompt as exact,
+# replan, override, embedded or none, and each tier authorizes exactly one act:
 #
-#   exact     the prompt IS an approval. The hook mints a bound single-use token and
-#             advances the pending gate, exactly as it did before the tier split.
+#   exact     the prompt IS an approval AND the preceding assistant turn asked for one.
+#             The hook mints a bound single-use token and advances the pending gate,
+#             exactly as it did before the tier split. WITHOUT that evidence it mints
+#             nothing, advances nothing, and asks (see the noevidence arm): the question
+#             nothing else in Writ answered is "was an approval requested at all", which
+#             is the gap a live near miss went through when the user answered a scope
+#             question with an approval word while a gate was pending.
+#   override  the whole prompt is `approved anyway`. The exact arm with the evidence step
+#             waived, because a refusal whose message names no way out is a deadlock: if
+#             transcript_path were ever absent for a whole session, every approval would
+#             ask forever and no gate could ever advance. The turn is recorded as
+#             approval_evidence_override, so a systemic transcript failure that forces
+#             users onto this phrase is measurable rather than invisible.
+#   replan    the whole prompt is `replan approved`. The hook mints a token bound to the
+#             "replan" gate and spends it in this same process on the local reset command,
+#             which returns a work session to planning and CLEARS both approved gates. It
+#             is a separate tier, not a wider `approved`, because during implementation a
+#             user may type `approved` about anything, and clearing two approved gates
+#             destroys work they never offered up.
 #   embedded  a strong approval word inside a longer sentence ("ok remember we want to
 #             fix all our findings, approved", which cost a turn on 2026-08-10). The hook
 #             ASKS: it names the pending gate and advances nothing. If the user confirms,
@@ -49,14 +67,21 @@ try:
     sid = data.get('agent_id', '') or data.get('session_id', '')
     agent_id = data.get('agent_id', '')
     prompt = data.get('prompt', data.get('message', data.get('content', '')))
-    print(f'{sid}\n{prompt}\n{agent_id}')
+    print(f'{sid}\n{prompt}\n{agent_id}\n{data.get(\"transcript_path\", \"\")}')
 except Exception:
-    print('\n\n')
+    print('\n\n\n')
 " 2>/dev/null) || true
 
 SESSION_ID=$(echo "$PARSED" | head -1)
 PROMPT=$(echo "$PARSED" | sed -n '2p')
 AGENT_ID=$(echo "$PARSED" | sed -n '3p')
+# FIELD 4 INHERITS THE MULTI-LINE-PROMPT QUIRK the three fields above already carry: the
+# prompt is read with `sed -n '2p'`, so a prompt containing a newline shifts everything
+# after it. With a multi-line prompt line 4 is not a path, the evidence read below finds
+# no file, and the turn takes the ask path. Garbled reads as unreadable, which is the
+# fail-closed direction. Reordering the parse to put the prompt last would change which
+# prompts classify as exact, which is a separate decision with its own justification.
+TRANSCRIPT_PATH=$(echo "$PARSED" | sed -n '4p')
 
 # Fallback session ID
 # NO SYNTHESIZED SESSION ID. This used to fall back to the parent PID and then to
@@ -99,11 +124,24 @@ PROMPT_LOWER=$(echo "$PROMPT" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]
 # detector to drift). SEC-INJ-CMD-001: PROMPT_LOWER is passed as an argv element,
 # never interpolated into the python string. ONE interpreter start decides the tier,
 # where there used to be two (is_approval plus the substring scan).
-TIER=$(python3 -c "import sys; sys.path.insert(0, '$WRIT_DIR/bin/lib'); from approval_match import classify; print(classify(sys.argv[1]))" "$PROMPT_LOWER" 2>/dev/null || echo "none")
+# TWO LINES OUT OF ONE INTERPRETER: the tier, and the override phrase the ask directive
+# below has to advertise. The phrase is read from the module that DEFINES it rather than
+# spelled again here, because the user is told to type it verbatim and a one-character
+# drift would tell them to type something that does not fire. It rides this call because
+# this call already runs on every turn, so single-sourcing the phrase costs no process.
+TIER_OUT=$(python3 -c "import sys; sys.path.insert(0, '$WRIT_DIR/bin/lib'); import approval_match as m; print(m.classify(sys.argv[1])); print(m.OVERRIDE_PHRASE)" "$PROMPT_LOWER" 2>/dev/null || echo "none")
+TIER=${TIER_OUT%%$'\n'*}
+# Parameter expansion, so the split adds no process to the path every prompt takes. A
+# one-line answer is the failure fallback above, which classifies as "none" and never
+# reaches the arm that reads the phrase.
+case "$TIER_OUT" in
+    *$'\n'*) OVERRIDE_ADVERT=${TIER_OUT#*$'\n'} ;;
+    *) OVERRIDE_ADVERT="" ;;
+esac
 # Fail closed on anything unexpected (a broken module, an empty print): an unrecognized
 # tier must behave like "none", never like an approval.
 case "$TIER" in
-    exact|embedded) ;;
+    exact|embedded|replan|override) ;;
     *) TIER="none" ;;
 esac
 
@@ -131,9 +169,18 @@ PHASE_JSON=$(python3 "$SESSION_HELPER" current-phase "$SESSION_ID" 2>/dev/null |
 # the running daemon are separate artifacts -- the daemon has to be restarted to pick up
 # a checkout). The advance guard below has to tell them apart to know whether it may
 # trust the empty answer or must fall back to the phase.
+# FIELD 6 is the candidate the review route surfaced, and it binds a promotion approval
+# the way plan_hash binds a phase approval. Both arms of json_transform are updated
+# together: they are two spellings of one projection and a drift between them would mint
+# tokens whose binding depends on whether jq happened to be installed.
+# FIELD 7 is the RULE `writ review <rule_id> --session-id <sid>` surfaced, and it binds a
+# rule promotion the way field 6 binds a candidate promotion. A responder too old to
+# report it renders as empty, which mints an empty line 5: no effect on a phase advance,
+# and a rule promotion refused, which is the correct direction for a credential minted
+# before the binding it is being asked to carry.
 PHASE_FIELDS=$(printf '%s' "$PHASE_JSON" | json_transform \
-    '[(.phase // ""), (.mode // ""), (.next_gate // ""), (.plan_hash // ""), (if has("next_gate") then "1" else "" end)] | join("\t")' \
-    '"\t".join([str(d.get(k) or "") for k in ("phase", "mode", "next_gate", "plan_hash")] + ["1" if "next_gate" in d else ""])' \
+    '[(.phase // ""), (.mode // ""), (.next_gate // ""), (.plan_hash // ""), (if has("next_gate") then "1" else "" end), (.candidate_id // ""), (.rule_id // "")] | join("\t")' \
+    '"\t".join([str(d.get(k) or "") for k in ("phase", "mode", "next_gate", "plan_hash")] + ["1" if "next_gate" in d else ""] + [str(d.get("candidate_id") or ""), str(d.get("rule_id") or "")])' \
     2>/dev/null || echo "")
 # `cut -s`: a line with no tab is a parse that failed, and every field must then read
 # empty rather than repeating the whole line into CURRENT_MODE (which would compare equal
@@ -143,8 +190,174 @@ CURRENT_MODE=$(printf '%s' "$PHASE_FIELDS" | cut -s -f2)
 NEXT_GATE=$(printf '%s' "$PHASE_FIELDS" | cut -s -f3)
 PLAN_HASH=$(printf '%s' "$PHASE_FIELDS" | cut -s -f4)
 NEXT_GATE_REPORTED=$(printf '%s' "$PHASE_FIELDS" | cut -s -f5)
+CANDIDATE_ID=$(printf '%s' "$PHASE_FIELDS" | cut -s -f6)
+RULE_ID=$(printf '%s' "$PHASE_FIELDS" | cut -s -f7)
+
+# PRECEDENCE: the server's next_gate WINS; the planning/testing phase inference is
+# a FALLBACK, used only when the responder did not report the field at all (an
+# older daemon -- writ/ and the running daemon are separate artifacts, and the
+# daemon must be restarted to pick up a checkout).
+#
+# The inference maps planning -> phase-a, testing -> test-skeletons and
+# implementation -> nothing, which is not the question _next_pending_gate answers.
+# A gate RE-ARMS whenever plan.md changes under an approval, and that can happen in
+# any phase; when it happened during implementation the inference said "no gate
+# here" while enforcement denied every write, and the user's "approved" could not
+# clear it. So a non-empty next_gate advances regardless of phase, and an empty one
+# the server actually REPORTED (field present, value null) means nothing is
+# pending -- an answer, not a gap, which the phase must not second-guess.
+#
+# HOISTED ABOVE THE DISPATCH because two arms read it now: the exact arm decides
+# whether to attempt an advance, and the replan arm refuses to reset a session that
+# still has a gate to advance. One computation, so the two can never disagree about
+# whether anything is pending.
+GATE_PENDING=""
+if [ -n "$NEXT_GATE" ]; then
+    GATE_PENDING=1
+elif [ -z "$NEXT_GATE_REPORTED" ] && { [ "$CURRENT_PHASE" = "planning" ] || [ "$CURRENT_PHASE" = "testing" ]; }; then
+    GATE_PENDING=1
+fi
+
+# ── The evidence requirement: an approval must have a referent ───────────────
+# WHAT THIS ANSWERS. Writ already answers "does this approval still cover the plan it was
+# given for" (line 3 of the token), "which gate does it authorize" (line 2) and "can it be
+# spent twice" (the claim-by-rename). It did not answer "was an approval REQUESTED at
+# all", and that is the gap the near miss went through: the user answered a scope question
+# with an approval word while the test-skeletons gate was pending and no skeletons had
+# been presented. Only a typo stopped the advance.
+#
+# GATED ON THE EXACT TIER, so the cost lands only where the authority does. The `none`
+# tier already exited above, so every turn but one starts exactly as many interpreters as
+# it did before this cycle; embedded never mints regardless of evidence; and replan keeps
+# its existing, stricter treatment and gains NOTHING here, because a whole-prompt
+# destructive phrase IS its own referent and cmd_reopen_planning re-reads mode, phase and
+# the pending gate authoritatively before it resets anything.
+#
+# SEC-INJ-CMD-001: TRANSCRIPT_PATH is payload-derived, so it is passed as an ARGV element
+# and never interpolated into the python program text. A path containing a quote would
+# otherwise execute.
+#
+# A MISSING TIER, NOT A FAILED ONE: the outcome is TIER=noevidence, which has its own arm
+# below rather than an early exit, so the turn still reaches the debug prompt log at the
+# tail exactly as every other tier does.
+if [ "$TIER" = "exact" ]; then
+    EVIDENCE_OUT=$(python3 -c "import sys; sys.path.insert(0, '$WRIT_DIR/bin/lib'); from approval_evidence import evidence_flags; asked, saw_text = evidence_flags(sys.argv[1]); print('1' if asked else ''); print('1' if saw_text else '')" "$TRANSCRIPT_PATH" 2>/dev/null || printf '\n\n')
+    EVIDENCE=${EVIDENCE_OUT%%$'\n'*}
+    case "$EVIDENCE_OUT" in
+        *$'\n'*) EVIDENCE_SAW_TEXT=${EVIDENCE_OUT#*$'\n'} ;;
+        *) EVIDENCE_SAW_TEXT="" ;;
+    esac
+    if [ -z "$EVIDENCE" ]; then
+        TIER="noevidence"
+    fi
+else
+    EVIDENCE_SAW_TEXT=""
+fi
+
+# The ONE place the re-open phrase is advertised, printed by the three branches that
+# report "no gate was advanced". Those branches used to end with "otherwise this approval
+# needs no gate action", which in the plan-frozen state was simply false: an action WAS
+# needed (re-opening planning) and no reply existed that took it. The hint fires only in
+# the state where the phrase would actually do something, so it is never noise.
+#
+# $1 is the gate still pending, "" when nothing is. It is an ARGUMENT rather than a read of
+# GATE_PENDING because the server's own answer outranks the local inference: the noop
+# branch below has been told authoritatively that nothing is pending, even where a
+# plan-drift re-arm made the local computation say otherwise.
+_replan_hint() {
+    if [ "$CURRENT_MODE" != "work" ]; then return 0; fi
+    if [ "$CURRENT_PHASE" != "implementation" ]; then return 0; fi
+    if [ -n "${1:-}" ]; then return 0; fi
+    cat <<'HINT'
+If what you actually need is a CHANGED PLAN: plan.md is frozen during implementation, and
+only you can re-open it. Reply exactly "replan approved" on your own turn. That returns
+this session to planning, clears the phase-a and test-skeletons approvals, and keeps every
+source write blocked until you approve both again against the revised plan.
+HINT
+}
 
 case "$TIER" in
+replan)
+    # THE USER'S WAY OUT OF THE PLAN-FROZEN STATE, and the only one: mode=work,
+    # phase=implementation, both gates approved. plan.md is refused by the write gate
+    # there, and the plan change is what re-arms the gates, so before this arm existed no
+    # reply the user could type acted on the refusal. A live session typed `approved`
+    # twice and was told the approval needed no gate action.
+    #
+    # FIRST IN THE DISPATCH, ahead of the exact arm, because it is the destructive one and
+    # the reader looking for "what can clear my approvals" should hit it first.
+    #
+    # FAIL CLOSED ON AN UNKNOWN STATE. The entire decision comes from the single
+    # current-phase call above, and an unparseable read, an unknown session, or a responder
+    # too old to report next_gate all render as EMPTY fields -- which is not evidence that
+    # this session qualifies. Field 5 is next_gate's PRESENCE flag, so requiring it is what
+    # separates "the server says nothing is pending" from "the server never said".
+    if [ -z "$CURRENT_MODE" ] || [ "$NEXT_GATE_REPORTED" != "1" ]; then
+        cat <<'DIRECTIVE'
+[Writ: nothing was changed]
+This session's mode and phase could not be read, so the phrase did nothing: an unknown
+state gets no reset. If this session should be under the Work workflow, declare it
+explicitly first with: writ-session.py mode set work <session_id>.
+DIRECTIVE
+    elif [ "$CURRENT_MODE" != "work" ]; then
+        echo "[Writ: nothing was changed] This session is in ${CURRENT_MODE} mode, which has no plan gates, so there is nothing to re-open and plan.md is not frozen."
+    elif [ "$CURRENT_PHASE" != "implementation" ]; then
+        # Answer with what IS pending rather than swallowing the phrase. Every extra state
+        # the phrase fired in would be one more state where a mistyped destructive phrase
+        # lands, and in none of these would it achieve anything.
+        if [ "$CURRENT_PHASE" = "complete" ]; then
+            echo "[Writ: nothing was changed] This session's phase is complete. The reset for a finished cycle is: writ-session.py mode set work <session_id>, which starts the next one in the planning phase."
+        else
+            echo "[Writ: nothing was changed] This session's phase is ${CURRENT_PHASE}, not implementation, so plan.md is already writable and the ${NEXT_GATE:-next} gate is what is pending. Reply \"approved\" when the plan is ready."
+        fi
+    elif [ -n "$GATE_PENDING" ]; then
+        echo "[Writ: nothing was changed] The ${NEXT_GATE:-plan} gate is already pending, so the plan is not frozen: reply \"approved\" to advance it. Re-opening would throw away an approval you can simply re-grant."
+    else
+        # MINT AND SPEND IN THIS ONE PROCESS, before the model's turn begins, so no
+        # replan-bound token is ever on disk while the agent is running. The read-only
+        # inspection allowance in writ-bash-write-gate.sh means the agent CAN cat a token
+        # file, so the window is the defense; the gate's refusal of any command naming the
+        # reset subcommand is the other half.
+        GATE_TOKEN_FILE="/tmp/writ-gate-token-${SESSION_ID}"
+        GATE_TOKEN=$(python3 -c "import secrets; print(secrets.token_hex(16))" 2>/dev/null || echo "")
+        if [ -z "$GATE_TOKEN" ]; then
+            echo "[Writ: nothing was changed] No approval token could be minted, so the phase was not reset. Try the phrase again."
+        else
+            # LINE 2 IS THE LITERAL "replan", and it must equal
+            # writ.session.gate_token.REPLAN_GATE byte for byte: the python claim compares
+            # them, so a drift here would refuse every genuine re-open. Line 3 is the plan
+            # fingerprint current-phase already reported, so the mint and the claim
+            # fingerprint the same plan.md by construction. Any token left from an earlier
+            # turn is overwritten, exactly as the exact arm overwrites: nothing is pending
+            # in this state, so a leftover is bound to a state that no longer exists.
+            write_gate_token_file "$GATE_TOKEN_FILE" "$GATE_TOKEN" "replan" "${PLAN_HASH:-}"
+            # LOCAL CLI, no HTTP route on purpose: "the daemon is unreachable" is one of
+            # the two causes the old message conflated, so an escape that needed the daemon
+            # would be inert in half the states it exists for.
+            REOPEN_JSON=$(python3 "$SESSION_HELPER" reopen-planning "$SESSION_ID" --token "$GATE_TOKEN" 2>/dev/null || echo "{}")
+            # REPORT ONLY WHAT THE COMMAND CONFIRMED. The command owns the authoritative
+            # guards (it re-reads mode, phase and the pending gate from the cache), so a
+            # crash, a refusal, or an unparseable answer must all read as "nothing changed"
+            # here rather than as a reset this hook cannot prove happened.
+            REOPENED=$(printf '%s' "$REOPEN_JSON" | json_transform \
+                '(if .reopened then "1" else "" end)' \
+                '"1" if d.get("reopened") else ""' 2>/dev/null || echo "")
+            if [ -n "$REOPENED" ]; then
+                cat <<'DIRECTIVE'
+[Writ: planning re-opened by the approval hook on your confirmation; no agent self-approval]
+The phase is back to planning and BOTH approved gates are cleared, so plan.md is writable
+again and every source write stays blocked. Revise plan.md (and capabilities.md) with the
+user, then get phase-a and test-skeletons approved again against the revised plan before
+touching any source file.
+DIRECTIVE
+            else
+                REOPEN_REASON=$(printf '%s' "$REOPEN_JSON" | json_transform \
+                    '(.reason // "")' 'str(d.get("reason") or "")' 2>/dev/null || echo "")
+                echo "[Writ: nothing was changed] ${REOPEN_REASON:-The reset command did not confirm a re-open.}"
+            fi
+        fi
+    fi
+    ;;
 embedded)
     # A genuine near miss, unlike the substring scan's "going". Logged so the tier's
     # precision can be measured from the friction log instead of guessed at.
@@ -167,9 +380,26 @@ DIRECTIVE
 No approval gate is pending in this phase/mode, so there is nothing to advance and no
 token was minted. Treat the prompt as an ordinary instruction, not as a gate approval.
 DIRECTIVE
+        _replan_hint "$GATE_PENDING"
     fi
     ;;
-exact)
+exact|override)
+    # THE OVERRIDE TIER IS THIS ARM WITH THE EVIDENCE STEP WAIVED, and the waiver is
+    # RECORDED. If transcript_path were ever absent for a whole session, an unrecorded
+    # waiver would mean nobody could tell a deliberate user override from a systemic
+    # transcript failure that had quietly forced every user onto the phrase. Audit rather
+    # than friction: this is the oversight record for an approval that advanced a gate
+    # with no request in front of it.
+    #
+    # Both interpolated values are hook-controlled, not tool input: OVERRIDE_ADVERT comes
+    # from approval_match.OVERRIDE_PHRASE and NEXT_GATE from a MODE_CONFIG gate sequence,
+    # so the JSON is assembled here rather than costing another interpreter start (the
+    # same reasoning common.sh's hook_timer_end records for hook_name).
+    if [ "$TIER" = "override" ]; then
+        log_friction_event "$SESSION_ID" "${CURRENT_MODE:-}" "approval_evidence_override" \
+            "{\"phrase\":\"${OVERRIDE_ADVERT}\",\"gate\":\"${NEXT_GATE:-}\"}"
+    fi
+
     # The project root: a cwd walk, resolved ONLY here, for the telemetry row below. The
     # gate decision itself uses the root the SERVER resolves (see the payload comment).
     PROJECT_ROOT=$(detect_project_root "$(pwd -P)")
@@ -191,7 +421,12 @@ exact)
         # earlier turn is bound to an earlier state: keeping it would make the user's
         # fresh approval be refused as a gate mismatch, with no way to clear it. The
         # newest approval is the authoritative one.
-        write_gate_token_file "$GATE_TOKEN_FILE" "$GATE_TOKEN" "${NEXT_GATE:-}" "${PLAN_HASH:-}"
+        #
+        # LINE 5 IS THE RULE a promotion approval authorizes, and it is a FIFTH line
+        # rather than a namespaced reuse of line 4: conflating a graduation candidate id
+        # with a Rule id in one field would leave the next reader unable to tell which
+        # object a token authorizes.
+        write_gate_token_file "$GATE_TOKEN_FILE" "$GATE_TOKEN" "${NEXT_GATE:-}" "${PLAN_HASH:-}" "${CANDIDATE_ID:-}" "${RULE_ID:-}"
     fi
 
     ADVANCED_TO=""
@@ -201,26 +436,13 @@ exact)
     GATE_ERROR=""
     VALIDATED=""
     TOKEN_SPENT=""
-    # PRECEDENCE: the server's next_gate WINS; the planning/testing phase inference is
-    # a FALLBACK, used only when the responder did not report the field at all (an
-    # older daemon -- writ/ and the running daemon are separate artifacts, and the
-    # daemon must be restarted to pick up a checkout).
-    #
-    # The inference maps planning -> phase-a, testing -> test-skeletons and
-    # implementation -> nothing, which is not the question _next_pending_gate answers.
-    # A gate RE-ARMS whenever plan.md changes under an approval, and that can happen in
-    # any phase; when it happened during implementation the inference said "no gate
-    # here" while enforcement denied every write, and the user's "approved" could not
-    # clear it. So a non-empty next_gate advances regardless of phase, and an empty one
-    # the server actually REPORTED (field present, value null) means nothing is
-    # pending -- an answer, not a gap, which the phase must not second-guess.
-    GATE_PENDING=""
-    if [ -n "$NEXT_GATE" ]; then
-        GATE_PENDING=1
-    elif [ -z "$NEXT_GATE_REPORTED" ] && { [ "$CURRENT_PHASE" = "planning" ] || [ "$CURRENT_PHASE" = "testing" ]; }; then
-        GATE_PENDING=1
-    fi
+    # Set INSIDE the advance block below, so the tail can tell "the daemon was asked and
+    # said nothing" from "nothing was ever asked". Those two used to share one message,
+    # which is how a plain no-gate-pending turn read as a possible server outage and an
+    # actual outage read as nothing needing done.
+    ADVANCE_ATTEMPTED=""
     if [ -n "$GATE_TOKEN" ] && [ "$CURRENT_MODE" = "work" ] && [ -n "$GATE_PENDING" ]; then
+        ADVANCE_ATTEMPTED=1
         # Send the cwd and let the SERVER resolve the project root
         # (locators.resolve_project_root: marker dir at or above cwd, else the cwd itself).
         # Two reasons not to send the bash marker walk as project_root instead:
@@ -309,12 +531,12 @@ print(json.dumps(entry))
         # project root resolved from a stray marker file above the work dir could stamp an
         # unrelated plan silently.
         echo "[Writ: ${CURRENT_PHASE} gate approved -> ${ADVANCED_TO}] (advanced by the approval hook on your confirmation; no agent self-approval)"
-        [ -n "$VALIDATED" ] && echo "[Writ: ${VALIDATED}] -- if that is not the plan you meant to approve, the project root is wrong: invalidate the gate before continuing."
+        [ -n "$VALIDATED" ] && echo "[Writ: ${VALIDATED}] (if that is not the plan you meant to approve, the project root is wrong: invalidate the gate before continuing)"
     elif [ -n "$GATE_ERROR" ]; then
         # The server REFUSED the advance. Surface the reason on STDOUT so the agent sees WHY
         # and fixes it -- stderr is not shown in the UserPromptSubmit context, which made
         # refusals look like "no gate pending".
-        echo "[Writ: ${CURRENT_PHASE} gate REJECTED -- not advanced] ${GATE_ERROR}"
+        echo "[Writ: ${CURRENT_PHASE} gate REJECTED, not advanced] ${GATE_ERROR}"
         # Two kinds of refusal, and telling the user the wrong one is a real cost: a spent
         # token means they MUST type the approval again, an unspent one means they must not.
         # token_spent=false comes back when the gate could not evaluate the artifact at all
@@ -326,22 +548,76 @@ print(json.dumps(entry))
         fi
     elif [ "$OUTCOME" = "noop" ]; then
         # Benign no-op: the server reported no pending gate to advance (not a rejection).
-        # Emit the SAME neutral steer as the none/else branch -- no REJECTED text, no
-        # "fix the issue", and the approval token is NOT spent.
+        # No REJECTED text, no "fix the issue", and the approval token is NOT spent.
         cat <<'DIRECTIVE'
-[Writ: approval pattern detected]
-No approval gate was advanced (no gate is pending in this phase/mode). If you intended
-to advance a Work-mode plan/test gate, ensure the server is up; otherwise this approval
-needs no gate action.
+[Writ: approval pattern detected, nothing was advanced]
+The Writ server answered that no gate is pending, so this approval had nothing to advance.
+DIRECTIVE
+        # "" and not "$GATE_PENDING": the server's own check is AUTHORITATIVE here, and it
+        # just said nothing is pending. The local computation can disagree (a plan-drift
+        # re-arm reports a gate the advance route then finds already covered), and in that
+        # disagreement the answer from the thing that would do the advancing wins.
+        _replan_hint ""
+    elif [ -n "$ADVANCE_ATTEMPTED" ]; then
+        # A gate WAS pending and the daemon was asked, but nothing recognizable came back.
+        # Its own branch, because the remedy is specific and belongs to nobody else: this
+        # used to be merged with the no-gate-pending case, so a genuine outage was reported
+        # as "or the Writ server is unreachable" alongside advice to do nothing.
+        cat <<DIRECTIVE
+[Writ: ${NEXT_GATE:-plan} gate NOT advanced -- the Writ daemon did not answer]
+Your approval was not consumed. Start the daemon and try again:
+  systemctl --user restart writ-server
+Then reply "approved" once more; a duplicate advance on an already-advanced gate is a
+no-op, so retrying is safe.
 DIRECTIVE
     else
-        # No pending gate, or server unreachable: fall back to the steer directive.
+        # No advance was ever attempted: no gate pending, not work mode, or no token could
+        # be minted. Neutral, and it says which of those it was by naming nothing that did
+        # not happen.
         cat <<'DIRECTIVE'
-[Writ: approval pattern detected]
-No approval gate was advanced (no gate is pending in this phase/mode, or the Writ
-server is unreachable). If you intended to advance a Work-mode plan/test gate, ensure the
-server is up; otherwise this approval needs no gate action.
+[Writ: approval pattern detected, nothing was advanced]
+No approval gate is pending in this phase/mode, so this approval had nothing to advance
+and no gate state changed.
 DIRECTIVE
+        _replan_hint "$GATE_PENDING"
+    fi
+    ;;
+noevidence)
+    # AN EXACT APPROVAL WITH NO REQUEST IN FRONT OF IT. Nothing is minted, nothing is
+    # advanced, and the turn produces ONE QUESTION instead of a silent advance. The user
+    # is never asked to avoid a normal English word: `approved` keeps its exact meaning
+    # and its exact power on any turn where the assistant actually asked.
+    #
+    # ONE AUDIT ROW, and no approval_pattern_match friction row alongside it: that row's
+    # `outcome` vocabulary describes what an advance ATTEMPT did, and no advance was
+    # attempted. This row is the record of the turn. Both flags are booleans this script
+    # computed and NEXT_GATE is a MODE_CONFIG gate name, so nothing here is tool input.
+    if [ -n "$TRANSCRIPT_PATH" ]; then HAD_TRANSCRIPT_PATH=true; else HAD_TRANSCRIPT_PATH=false; fi
+    if [ -n "$EVIDENCE_SAW_TEXT" ]; then HAD_ASSISTANT_TEXT=true; else HAD_ASSISTANT_TEXT=false; fi
+    log_friction_event "$SESSION_ID" "${CURRENT_MODE:-}" "approval_evidence_missing" \
+        "{\"gate\":\"${NEXT_GATE:-}\",\"had_transcript_path\":${HAD_TRANSCRIPT_PATH},\"had_assistant_text\":${HAD_ASSISTANT_TEXT}}"
+    if [ -n "$NEXT_GATE" ]; then
+        cat <<DIRECTIVE
+[Writ: approval detected with no request in front of it, nothing was advanced]
+The ${NEXT_GATE} gate is pending, but the assistant turn before this one did not ask for
+an approval, so no gate was advanced and NO approval token was minted.
+AGENT: present the artifact the ${NEXT_GATE} gate covers, then ask for the approval in the
+ritual words, for example "Test skeletons written: ClassName (N tests). Say approved to
+proceed." The user's next "approved" advances the ${NEXT_GATE} gate on that turn.
+USER: if you meant to approve with no request in front of it, reply exactly
+"${OVERRIDE_ADVERT}" on your own turn and the ${NEXT_GATE} gate advances then.
+DIRECTIVE
+    else
+        cat <<DIRECTIVE
+[Writ: approval detected with no request in front of it, nothing was advanced]
+No approval gate is pending in this phase/mode, and the assistant turn before this one did
+not ask for an approval either, so nothing was advanced and NO approval token was minted.
+AGENT: treat the prompt as an ordinary instruction. When you do need an approval, present
+the artifact first and ask in the ritual words ("... Say approved to proceed.").
+USER: if you meant to approve with no request in front of it, reply exactly
+"${OVERRIDE_ADVERT}" on your own turn.
+DIRECTIVE
+        _replan_hint "$GATE_PENDING"
     fi
     ;;
 esac

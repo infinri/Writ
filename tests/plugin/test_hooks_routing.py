@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._inventory import hook_registrations
+
 from tests.plugin.conftest import REPO_ROOT, _expand_plugin_root
 
 HOOKS_JSON_PATH = REPO_ROOT / "hooks" / "hooks.json"
@@ -37,12 +39,20 @@ EXPECTED_EVENT_SCRIPTS: dict[str, list[str]] = {
 
 
 def _collect_all_registrations(hooks_data: dict) -> list[dict]:
-    """Flatten all hook registration entries from the hooks dict."""
+    """Every registered hook COMMAND, the same unit the shared derivation uses.
+
+    This returned matcher-block ENTRIES until 2026-09-18, which agreed with
+    hook_registrations() only while every block held exactly one command. A block
+    with two commands is two registrations, not one.
+    """
     registrations = []
     hooks_section = hooks_data.get("hooks", hooks_data)
     for event_entries in hooks_section.values():
         if isinstance(event_entries, list):
-            registrations.extend(event_entries)
+            for entry in event_entries:
+                registrations.extend(
+                    h for h in (entry.get("hooks") or []) if h.get("command")
+                )
     return registrations
 
 
@@ -101,7 +111,7 @@ class TestHooksJsonStructure:
         )
 
     def test_hooks_json_registration_count(self, hooks_data: dict) -> None:
-        """Total matcher-group registrations. The count is derived from hooks.json;
+        """Total registered hook COMMANDS. The count is derived from hooks.json;
         bump it (and HANDBOOK's 'registers **N hook scripts**') when adding or
         removing a registration. #1 removed the dead PreToolUse TodoWrite gate and
         #3 removed the dead PostToolUseFailure track-failed-writes gate (40 -> 38);
@@ -111,10 +121,12 @@ class TestHooksJsonStructure:
         manual-testing grant added its UserPromptSubmit minter and the PreToolUse
         Write|Edit state-write gate (41 -> 43); the auto-memory mirror added the
         PostToolUse Write|Edit writ-memory-capture (43 -> 44)."""
+        # DERIVED. The narrative above is kept because it records HOW the count grew, but
+        # the literal is gone: this was the fourth place asserting 44.
         registrations = _collect_all_registrations(hooks_data)
-        assert len(registrations) == 44, (
-            f"hooks.json registration count drifted; found {len(registrations)}, "
-            f"expected 44. Update this and HANDBOOK if the change is intentional."
+        assert len(registrations) == len(hook_registrations()), (
+            f"this file's collector found {len(registrations)} registrations, the shared "
+            f"derivation found {len(hook_registrations())}; the two readers disagree"
         )
 
     def test_hooks_json_event_mapping(self, hooks_data: dict) -> None:

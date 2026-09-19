@@ -110,9 +110,9 @@ PY
 )
 
 if [ -n "$DENY" ]; then
-    log_gate_decision "test-first" "deny" "$DENY" "${FILE_PATH:-}"
+    log_gate_decision "test-first" "deny" "$DENY" "$FILE"
     emit_deny "$DENY"
 else
-    log_gate_decision "test-first" "allow" "test file with assertions found" "${FILE_PATH:-}"
+    log_gate_decision "test-first" "allow" "test file with assertions found" "$FILE"
 fi
 exit 0

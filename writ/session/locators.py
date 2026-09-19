@@ -10,6 +10,7 @@ import glob
 import hashlib
 import os
 import re
+from pathlib import Path
 
 # The files whose presence marks a project root. The root walk tests `any` of
 # these, so order is irrelevant -- this is the single source for the set that
@@ -63,6 +64,22 @@ def resolve_project_root(explicit: str = "", start: str = "") -> tuple[str, str]
             break
         path = parent
     return start, ROOT_FROM_CWD
+
+
+def _project_transcript_dir(repo_root: str, claude_home: Path) -> Path:
+    """The ~/.claude/projects/<encoded> dir for repo_root (each '/' and '.' -> '-').
+
+    MOVED HERE FROM harvester.py, byte-unchanged, because it is now read on the WRITE
+    PATH: project_boundary derives this project's own memory directory from the boundary
+    root with it, and that module is a pure predicate module imported by gates.py at
+    module scope. Importing the harvester there would put git subprocesses, plan_harvest
+    and graph registration on every write. locators is stdlib-only and already sits below
+    every caller, so ONE definition serves the harvester, commit_capture and the boundary.
+    harvester re-exports the name, so harvester._project_transcript_dir stays the seam its
+    own tests patch, and the encoding keeps exactly one pin
+    (tests/test_decision_memory_harvester.py::TestPureFunctions).
+    """
+    return claude_home / "projects" / re.sub(r"[/.]", "-", repo_root)
 
 
 # ── Session-scoped gate artifacts ───────────────────────────────────────────────
@@ -125,12 +142,72 @@ def gate_artifact_path(project_root: str, session_id: str, gate_name: str) -> st
     return os.path.join(directory, f"{gate_name}.approved")
 
 
-def _find_debug_md(file_path: str) -> str | None:
+def plan_dir(project_root: str, session_id: str) -> str:
+    """The plan directory for ONE session, or "" when there is no valid path.
+
+    Mirrors gate_dir deliberately, including the validation and the trailing-separator
+    strip, because it is the same problem one artifact later: a single file at the project
+    root is a single file for EVERY session working that root, so a plan written by one
+    session moved another session's approval fingerprint and cleared its approved gates.
+    Gate artifacts were scoped per session for exactly that reason; the plan they are
+    granted against was not.
+
+    "" means "no session-scoped plan". Callers must treat it as "fall through to the
+    shared tiers", never join to it.
+    """
+    if not project_root or not is_valid_session_component(session_id):
+        return ""
+    root = project_root.rstrip("/") or "/"
+    return os.path.join(root, ".claude", "plans", session_id)
+
+
+def plan_path(project_root: str, session_id: str) -> str:
+    """The `plan.md` path for ONE session, or "" when there is none."""
+    directory = plan_dir(project_root, session_id)
+    if not directory:
+        return ""
+    return os.path.join(directory, "plan.md")
+
+
+def debug_dir(project_root: str, session_id: str) -> str:
+    """The debug directory for ONE session, or "" when there is no valid path.
+
+    Mirrors plan_dir, which mirrors gate_dir, because this is the same problem a third
+    time. debug.md was one file at the project root, and two gates read it: the debug
+    write gate unblocks source edits once a root cause is populated, and the runtime read
+    lens opens reading code once evidence is narrowed. So one session recording its root
+    cause opened the OTHER session's gates, and one session overwriting the file closed
+    them.
+
+    `.claude/debug.md` was already the third resolution tier, so this sits beside an
+    existing location rather than inventing one.
+    """
+    if not project_root or not is_valid_session_component(session_id):
+        return ""
+    root = project_root.rstrip("/") or "/"
+    return os.path.join(root, ".claude", "debug", session_id)
+
+
+def debug_path(project_root: str, session_id: str) -> str:
+    """The `debug.md` path for ONE session, or "" when there is none."""
+    directory = debug_dir(project_root, session_id)
+    if not directory:
+        return ""
+    return os.path.join(directory, "debug.md")
+
+
+def _find_debug_md(file_path: str, session_id: str | None = None) -> str | None:
     """Find debug.md for the project containing file_path.
 
-    Walks up from the file's directory to a project marker, then checks
-    debug.md, docs/debug.md, .claude/debug.md at that root. Returns the path or
-    None. Distinct from _find_plan_md (different filename, not reused).
+    Walks up from the file's directory to a project marker, then checks the SESSION-SCOPED
+    file first when a session id is supplied, and otherwise debug.md, docs/debug.md,
+    .claude/debug.md at that root. Returns the path or None. Distinct from _find_plan_md
+    (different filename, not reused).
+
+    session_id defaults to None, which reproduces the pre-scoping resolution exactly, so a
+    caller with no session in hand and any project holding only a root debug.md behave as
+    they did before. That is what makes this change inert until something writes a scoped
+    file.
     """
     path = os.path.dirname(os.path.abspath(file_path))
     root = None
@@ -144,8 +221,17 @@ def _find_debug_md(file_path: str) -> str | None:
         path = parent
     if root is None:
         return None
-    for rel in ("debug.md", os.path.join("docs", "debug.md"), os.path.join(".claude", "debug.md")):
-        candidate = os.path.join(root, rel)
+    tiers = []
+    if session_id:
+        scoped = debug_path(root, session_id)
+        if scoped:
+            tiers.append(scoped)
+    tiers += [
+        os.path.join(root, "debug.md"),
+        os.path.join(root, "docs", "debug.md"),
+        os.path.join(root, ".claude", "debug.md"),
+    ]
+    for candidate in tiers:
         if os.path.isfile(candidate):
             return candidate
     return None
@@ -164,10 +250,16 @@ def _is_own_project(candidate_dir: str, project_root: str) -> bool:
     return any(os.path.exists(os.path.join(candidate_dir, m)) for m in PROJECT_ROOT_MARKERS)
 
 
-def _find_plan_md(project_root: str) -> str | None:
+def _find_plan_md(project_root: str, session_id: str | None = None) -> str | None:
     """Find the plan.md the approval gate should validate.
 
-    The root plan.md WINS when it exists. That is what the old docstring claimed, but a
+    A SESSION-SCOPED plan wins over everything below when session_id is supplied and that
+    file exists, so two sessions on one project no longer share one fingerprint. session_id
+    defaults to None, which reproduces the pre-scoping resolution exactly: a caller with no
+    session in hand keeps the behaviour it had, which is what makes this change inert until
+    something writes a scoped plan.
+
+    Below that tier, unchanged: the root plan.md WINS when it exists. That is what the old docstring claimed, but a
     single mtime sort across every candidate meant a more recently touched plan one level
     down beat it -- so the gate could approve a plan the user was not looking at.
 
@@ -177,6 +269,11 @@ def _find_plan_md(project_root: str) -> str | None:
     that filter, a root that resolved high (a $HOME with a .git, say) let `*/plan.md` reach
     into unrelated sibling projects and satisfy this project's gate with their plan.
     """
+    if session_id:
+        scoped = plan_path(project_root, session_id)
+        if scoped and os.path.isfile(scoped):
+            return scoped
+
     root_plan = os.path.join(project_root, 'plan.md')
     if os.path.isfile(root_plan):
         return root_plan
@@ -215,7 +312,7 @@ def _untick_checkboxes(raw: bytes) -> bytes:
     return _TICKED_CHECKBOX_RE.sub(rb"\1[ ]", raw)
 
 
-def plan_md_hash(project_root: str | None) -> str | None:
+def plan_md_hash(project_root: str | None, session_id: str | None = None) -> str | None:
     """Fingerprint the plan.md the approval gate would validate.
 
     Returns the digest, None when there is no plan.md at all, or PLAN_HASH_UNREADABLE when
@@ -251,7 +348,7 @@ def plan_md_hash(project_root: str | None) -> str | None:
     """
     if not project_root:
         return None
-    path = _find_plan_md(project_root)
+    path = _find_plan_md(project_root, session_id)
     if not path:
         return None
     try:

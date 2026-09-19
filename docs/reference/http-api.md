@@ -3,7 +3,7 @@
 
 # HTTP API reference
 
-All 49 endpoints on `http://localhost:8765`, generated from the FastAPI route table. JSON bodies; no auth (binds localhost only). Logical failures return HTTP 200 with an `error` key; 422 is request validation.
+All 49 endpoints, generated from the FastAPI route table. JSON bodies; no auth. The daemon listens on `http://localhost:8765` and on a unix socket (`$WRIT_SOCKET`, default `~/.cache/writ/run/writ.sock`); with `WRIT_TCP_READONLY=1` set, TCP serves reads plus `POST /query` and refuses every other state-changing request with 403, so those routes are reachable only over the socket, which is private to the user running the daemon. Logical failures return HTTP 200 with an `error` key; 422 is request validation.
 
 ## decision_memory
 
@@ -29,6 +29,7 @@ All 49 endpoints on `http://localhost:8765`, generated from the FastAPI route ta
 | POST | `/pre-write-check` | Combined gate check + final-gate check + RAG query for Write/Edit |
 | POST | `/session/{session_id}/advance-phase` | Advance to the next workflow phase |
 | POST | `/session/{session_id}/promote-candidate` | 6.3c: human-gated, edit-capable promotion of a graduation_pending candidate to canon |
+| POST | `/session/{session_id}/promotion-review` | Surface a graduation_pending candidate for human review, and record what was shown |
 
 ## git_hooks
 
@@ -45,12 +46,12 @@ All 49 endpoints on `http://localhost:8765`, generated from the FastAPI route ta
 | POST | `/conflicts` | CONFLICTS_WITH edges between provided rules |
 | POST | `/feedback` | Record positive or negative feedback for a rule |
 | GET | `/health` | Service status, rule count, index state, last ingestion timestamp |
-| POST | `/methodology-companion` | Methodology by workflow-state (floor u push u pull) -- CHANNEL 2 (1.5) |
+| POST | `/methodology-companion` | Methodology by workflow-state (floor u push u pull): CHANNEL 2 (1.5) |
 | POST | `/prompt-bundle` | #8: the three per-prompt injection channels in ONE warm call |
 | POST | `/propose` | Propose an AI-generated rule. Runs structural gate, ingests if accepted |
 | POST | `/query` | Ranked list of matching domain rules. Mandatory rules excluded |
 | GET | `/rule/{rule_id}` | Full rule node. Optionally includes 1-hop graph context |
-| GET | `/subagent-role/{name}` | Return a SubagentRole node's canonical prompt template from the graph |
+| GET | `/subagent-role/{name}` | Return a SubagentRole node's canonical prompt template and its declared `write_scope` from the graph (`write_scope` is null when the role declares none and `[]` when it declares it writes nothing; the two are not coalesced). Read once per dispatch by the sub-agent seeder |
 
 ## session_state
 
@@ -80,6 +81,5 @@ All 49 endpoints on `http://localhost:8765`, generated from the FastAPI route ta
 | GET | `/session/{session_id}/review-findings` | The latest recorded reviewer verdict and whether it blocks a commit |
 | POST | `/session/{session_id}/review-findings` | Record a reviewer verdict for the session. The latest one wins |
 | GET | `/session/{session_id}/should-skip` | Check whether RAG queries should be skipped for this session |
-| POST | `/session/{session_id}/update` | Update a single key in the session cache |
 | GET | `/session/{session_id}/verification-evidence` | Read verification evidence. Pass ?todo_id=X for a single entry, omit for all |
 | POST | `/session/{session_id}/verification-evidence` | Record verification evidence for a completion claim |

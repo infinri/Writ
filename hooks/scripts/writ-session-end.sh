@@ -18,8 +18,6 @@ SESSION_HELPER="$WRIT_DIR/bin/lib/writ-session.py"
 FA="$WRIT_DIR/bin/lib/friction-append.py"
 source "$WRIT_DIR/bin/lib/common.sh"
 
-HOOK_START_NS=$(hook_timer_start)
-
 # Session ID: from the stdin envelope (agent_id or session_id) and nowhere else.
 # load_hook_env no longer synthesizes one from PPID or md5(cwd:user); it leaves the
 # variable empty.
@@ -40,7 +38,11 @@ fi
 # that never reached Stop (crash, kill, disconnect): those rows are already on disk, and
 # without this they would sit there until the session id happened to come round again.
 # ERR-GRACEFUL-002: shutdown completes the in-progress work rather than dropping it.
-writ_event_buffer_flush "$SESSION_ID" || true
+# AT EXIT, not here. This is the last drain a session ever gets, so it is the one place a
+# stranded row is lost for good: common.sh appends this hook's own row before running the
+# handlers registered here, and draining at exit takes that row with it.
+_writ_drain_own_buffer() { writ_event_buffer_flush "$SESSION_ID" || true; }
+writ_on_exit _writ_drain_own_buffer
 
 # 1. Auto-feedback: correlate rules-in-context with analysis outcomes
 _writ_session auto-feedback "$SESSION_ID" \
@@ -115,7 +117,9 @@ entry = {
 print(json.dumps(entry))
 " "$CACHE" "$SESSION_ID" 2>/dev/null | python3 "$FA" --stdin-json 2>/dev/null || true
 
-# Mode for hook_execution telemetry (audit #5): reuse $CACHE, no extra round-trip.
+# Mode for hook_execution telemetry (audit #5): reuse $CACHE, no extra round-trip. The
+# row itself is written by common.sh's exit trap, which reads MODE, so setting it here is
+# all that is needed; the explicit hook_timer_end call it replaced spawned python to write
+# a row the trap now appends with bash.
 MODE=$(echo "$CACHE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('mode') or '')" 2>/dev/null || echo "")
-hook_timer_end "$HOOK_START_NS" "writ-session-end" "$SESSION_ID" "${MODE:-}"
 exit 0

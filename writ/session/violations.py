@@ -106,7 +106,14 @@ def _diagnose_escalation(records: list[dict]) -> str:
 
 
 def cmd_invalidate_gate(session_id: str, args: list[str]) -> None:
-    """Invalidate a gate: write record, delete .approved file, check escalation.
+    """Record a gate violation: write record, delete .approved file, check escalation.
+
+    IT DOES NOT CLEAR THE APPROVAL, deliberately. `gates_approved` is untouched here, so
+    the next write is still authorized: only the human's approval decides a gate, and a
+    lexical rule-validator stripping a grant a person gave would move that decision out of
+    their hands, where one false positive halts a cycle with nobody in the loop. Escalation
+    at MAX_CYCLES_BEFORE_ESCALATION is the relocate-oversight answer. The name says
+    invalidate for backward compatibility with its callers and its route.
 
     Exit 0: success. Exit 1: bad arguments. Exit 2: cache error.
     Caller should run check-escalation afterward to determine next steps.

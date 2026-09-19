@@ -111,8 +111,25 @@ def _run_jq(envelope: str) -> str:
 
 
 def _split(out: str) -> tuple[str, str, str]:
-    """Mirror the hook's own head -1 / sed -n 2p / tail -n +3 split."""
-    lines = out.split("\n")
+    """Mirror the hook's own split of the parse output into its three fields.
+
+    THE MIRROR HAS TO TRACK THE HOOK or this file's parity claim becomes a claim
+    about a splitter nothing runs. The hook used to split with
+    `head`/`sed`/`tail` external processes; the write-path spawn-reduction cycle
+    replaced that with `mapfile -t` plus `printf -v` over the array slice, and
+    the two spellings are held byte-identical over a shaped corpus by
+    tests/test_pre_write_dispatch_line_split.py. What this mirror reproduces:
+
+      * the hook captures the parse output with `$( )`, which strips ALL
+        trailing newlines, before the split ever sees it -- hence the rstrip
+        here, which the old mirror did not do and which is why its third field
+        carried a trailing newline the hook's CHECK_BODY never has;
+      * field 3 is elements 2 ONWARD joined by newlines (the old `tail -n +3`
+        semantics), not element 2 alone;
+      * a field the output does not have reads as the empty string, matching
+        the hook's explicit `${ARR[n]:-}` defaults.
+    """
+    lines = out.rstrip("\n").split("\n")
     return lines[0], (lines[1] if len(lines) > 1 else ""), "\n".join(lines[2:])
 
 

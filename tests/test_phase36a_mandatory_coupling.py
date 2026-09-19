@@ -13,30 +13,31 @@ no-op-gate on security-critical rules. The fix:
 - `writ validate` fails loud if any mandatory rule is stranded, if
   {excluded-from-ranked} != {mandatory}, or if the summary bundle exceeds the cap.
 
-Endpoint tests hit the LIVE daemon (skip if unreachable). Validator tests run the
-IntegrityChecker against the live corpus, read-only.
+Endpoint tests drive the real app in-process (httpx.AsyncClient over
+ASGITransport) against a REAL connection to the isolated test Neo4j instance
+(tests/fixtures/server_routes.py); no daemon process required. Validator tests
+run the IntegrityChecker against the live corpus, read-only.
 """
 
 from __future__ import annotations
 
-import json
-import urllib.error
-import urllib.request
-
 import pytest
 import pytest_asyncio
 
-from tests._daemon import _port
 from writ.config import get_neo4j_password, get_neo4j_uri, get_neo4j_user
 from writ.graph.db import Neo4jConnection
 from writ.graph.integrity import IntegrityChecker
 
 from tests._bible_guard import requires_bible
+from tests.fixtures.server_routes import always_on, mandatory_rule_ids, route_db
 
 pytestmark = requires_bible
 
-
-SERVER = f"http://localhost:{_port()}"
+# `route_db` is named by no test below. `always_on` and `mandatory_rule_ids`
+# (tests/fixtures/server_routes.py) depend on it, and a fixture dependency
+# resolves only when its name is present in the REQUESTING module's
+# namespace: these fixtures are imported explicitly, never registered in a
+# root conftest, so nothing else makes `route_db` visible here.
 
 # The pre-fix injection selection. The validator, fed this, must still report the
 # stranded set -- proving it is not a predicate-minus-itself tautology and can
@@ -48,15 +49,6 @@ OLD_PREDICATE = "r.always_on = true"
 KNOWN_STRANDED = {"SEC-AUTH-HASH-001", "SEC-AUTHZ-DEFAULT-001", "ENF-SEC-001"}
 
 
-def _get_always_on(mode: str | None = None) -> dict:
-    url = f"{SERVER}/always-on" + (f"?mode={mode}" if mode else "")
-    try:
-        with urllib.request.urlopen(url, timeout=2) as r:
-            return json.loads(r.read())
-    except (urllib.error.URLError, OSError) as e:
-        pytest.skip(f"Writ server unreachable: {e}")
-
-
 @pytest_asyncio.fixture()
 async def conn(corpus_ready):
     c = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
@@ -64,63 +56,74 @@ async def conn(corpus_ready):
     await c.close()
 
 
-@pytest_asyncio.fixture()
-async def mandatory_ids(conn: Neo4jConnection) -> set[str]:
-    async with conn._driver.session(database=conn._database) as s:
-        result = await s.run(
-            "MATCH (r:Rule) WHERE r.mandatory = true RETURN r.rule_id AS id"
-        )
-        return {rec["id"] async for rec in result}
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [None, "conversation"])
+async def test_all_mandatory_present(always_on, mandatory_rule_ids, mode) -> None:
+    """Every mandatory rule id reaches /always-on, in the universal bundle
+    (mode=None) and in conversation mode (mandatory is exempt from the
+    process-domain strip).
 
-
-class TestMandatoryInjectionEndpoint:
-    """Live-daemon: every mandatory rule reaches the agent via /always-on.
-
-    RED before the union fix (29 mandatory missing); GREEN after the endpoint is
-    wired to the union predicate and the daemon is restarted.
+    RED cause: reverting the injection predicate (writ/graph/predicates.py:16,
+    interpolated at query.py:705) to `r.always_on = true` only, dropping the
+    `r.mandatory = true OR` arm; or, for mode='conversation' specifically,
+    removing the mandatory exemption from the process-domain strip
+    (query.py:753-758).
     """
+    assert mandatory_rule_ids, "expected at least one mandatory rule id in the live graph"
+    data = await always_on(mode=mode)
+    ids = {r["rule_id"] for r in data["rules"]}
+    assert ids, f"expected a non-empty rules list for mode={mode!r}"
+    missing = mandatory_rule_ids - ids
+    assert not missing, (
+        f"mandatory rules stranded from /always-on at mode={mode!r}: {sorted(missing)}"
+    )
 
-    @pytest.mark.asyncio
-    async def test_all_mandatory_in_universal_bundle(self, mandatory_ids: set[str]) -> None:
-        data = _get_always_on()  # universal: no mode-strip applied
-        ids = {r["rule_id"] for r in data.get("rules", [])}
-        missing = mandatory_ids - ids
-        assert not missing, (
-            f"{len(missing)} mandatory rules stranded from /always-on: {sorted(missing)}"
+
+@pytest.mark.asyncio
+async def test_conversation_bundle_is_a_strict_subset_of_universal(always_on) -> None:
+    """The conversation bundle is a STRICT subset of the universal bundle.
+
+    Proves the process-domain strip is live without naming any rule id (a
+    control derived from the property rather than from
+    ENF-PROC-DEBUG-001, so it keeps working if that rule is renamed). The
+    strip (query.py:753-758) only ever removes, so a strict inequality
+    proves a removal happened, while equality would mean the strip is off.
+
+    RED cause: the process-domain strip stops removing anything in
+    conversation mode, so `conv_ids` grows to equal `universal_ids` instead
+    of shrinking under it.
+    """
+    universal = await always_on()
+    conversation = await always_on(mode="conversation")
+    universal_ids = {r["rule_id"] for r in universal["rules"]}
+    conv_ids = {r["rule_id"] for r in conversation["rules"]}
+    assert conv_ids < universal_ids, (
+        f"expected conversation ids to be a STRICT subset of universal ids; "
+        f"conversation={sorted(conv_ids)} universal={sorted(universal_ids)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_render_mode_summary_and_under_cap(always_on) -> None:
+    """3.6a2: render pinned to summary-form (trigger+statement); bundle under
+    cap. A full-prose refactor (~205% of cap) breaks total<cap loud.
+
+    RED cause: the render path (query.py:772-786) stops emitting
+    summary-form (trigger+statement only), est_tokens/total_tokens drifts
+    from the (len(trigger)+len(statement))//4 estimate, or the cap is
+    exceeded.
+    """
+    data = await always_on(mode="work")
+    assert data["render_mode"] == "summary"
+    cap = data["cap"]
+    total = data["total_tokens"]
+    assert 0 < total < cap, f"bundle blew the cap: {total} >= {cap}"
+    for r in data["rules"]:
+        trig = (r.get("trigger") or "").strip()
+        stmt = (r.get("statement") or "").strip()
+        assert r.get("est_tokens") == (len(trig) + len(stmt)) // 4, (
+            f"{r['rule_id']} render is not summary-form (trigger+statement only)"
         )
-
-    @pytest.mark.asyncio
-    async def test_all_mandatory_in_conversation_mode(self, mandatory_ids: set[str]) -> None:
-        # Mandatory is EXEMPT from the process-domain mode-strip: all mandatory
-        # rules inject even in conversation (no-code) mode.
-        data = _get_always_on("conversation")
-        ids = {r["rule_id"] for r in data.get("rules", [])}
-        missing = mandatory_ids - ids
-        assert not missing, f"mandatory stranded in conversation mode: {sorted(missing)}"
-
-    def test_advisory_process_rule_still_stripped_in_conversation(self) -> None:
-        # ENF-PROC-DEBUG-001 is always_on + process + NOT mandatory: the strip
-        # must still remove it outside work/debug (we exempt mandatory only).
-        data = _get_always_on("conversation")
-        ids = {r["rule_id"] for r in data.get("rules", [])}
-        assert "ENF-PROC-DEBUG-001" not in ids, (
-            "non-mandatory process advisory leaked into conversation mode"
-        )
-
-    def test_render_mode_summary_and_under_cap(self) -> None:
-        # 3.6a2: render pinned to summary-form (trigger+statement); bundle under
-        # cap. A full-prose refactor (~205% of cap) breaks total<cap loud.
-        data = _get_always_on("work")
-        assert data.get("render_mode") == "summary"
-        cap = data.get("cap", 5000)
-        total = data.get("total_tokens", 0)
-        assert 0 < total < cap, f"bundle blew the cap: {total} >= {cap}"
-        for r in data.get("rules", []):
-            trig = (r.get("trigger") or "").strip()
-            stmt = (r.get("statement") or "").strip()
-            assert r.get("est_tokens") == (len(trig) + len(stmt)) // 4, (
-                f"{r['rule_id']} render is not summary-form (trigger+statement only)"
-            )
 
 
 class TestMandatoryValidator:

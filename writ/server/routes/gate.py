@@ -24,15 +24,18 @@ from writ.server.models import (
     PreWriteCheckRequest,
     SessionAdvancePhaseRequest,
     SessionPromoteCandidateRequest,
+    SessionPromotionReviewRequest,
 )
 from writ.session.approval_workflow import (
     _BINDING_REFUSAL_REASONS,
     _GATE_VALIDATORS,
     apply_phase_advance,
+    write_gate_artifact,
 )
-from writ.session.gate_token import BINDING_UNBOUND
+from writ.session.gate_token import BINDING_CANDIDATE_MISMATCH, BINDING_UNBOUND
 from writ.session.locators import _find_plan_md, resolve_project_root
 from writ.session.mode_engine import MODE_CONFIG, _next_pending_gate
+from writ.shared.logging import request_project_scope, set_request_project_scope
 
 router = APIRouter()
 
@@ -97,6 +100,13 @@ async def session_advance_phase(
     # Ordered resolution (explicit > marker-at-or-above-cwd > cwd). req.cwd comes from
     # the approval hook's payload; the daemon's own cwd is never a candidate.
     project_root, root_tier = resolve_project_root(explicit=req.project_root, start=req.cwd)
+    # Attribute this advance's rows (phase_advance, the gate-rejection events, the
+    # promotion no-ops) to the approving project rather than the daemon's cwd. Set as soon
+    # as the root is known: the token-invalid return above fires BEFORE any root exists, so
+    # that one row stays cwd-scoped, which is honest -- there is no project to name yet.
+    # This handler is an asyncio.Task, so the set is confined to this request's context
+    # copy, and the to_thread emits below inherit it.
+    set_request_project_scope(project_root)
     # Read the session cache ONCE; the gate validation, the pending-gate decision,
     # and apply_phase_advance all derive from this single read.
     cache = await asyncio.to_thread(server.writ_session._read_cache, session_id)
@@ -118,7 +128,7 @@ async def session_advance_phase(
         }
 
     mode = cache.get("mode")
-    target_gate = _next_pending_gate(cache)
+    target_gate = _next_pending_gate(cache, session_id)
     if target_gate is None:
         # No pending gate / non-work mode: a no-op MUST NOT claim/consume the token
         # or run any side effect.
@@ -206,7 +216,9 @@ async def session_advance_phase(
     #
     # Both calls below read files (plan.md, the token file), so they go to a thread like
     # every other blocking call on this route.
-    plan_hash = await asyncio.to_thread(server.plan_md_hash, cache.get("project_root")) or ""
+    plan_hash = await asyncio.to_thread(
+        server.plan_md_hash, cache.get("project_root"), session_id
+    ) or ""
     refusal = await asyncio.to_thread(
         server.gate_binding_refusal, session_id, gate=target_gate, plan_hash=plan_hash
     )
@@ -263,7 +275,7 @@ async def session_advance_phase(
     # relative candidates against the DAEMON's cwd (Writ's own install dir, which has a
     # plan.md), so an unguarded call would name Writ's plan as the approved artifact.
     if target_gate == "phase-a" and project_root:
-        plan_path = _find_plan_md(project_root)
+        plan_path = _find_plan_md(project_root, session_id)
         if plan_path:
             validated_path = plan_path
             artifacts.append(os.path.relpath(plan_path, project_root))
@@ -274,7 +286,33 @@ async def session_advance_phase(
                 locked_cache, target_gate, old_phase, new_phase,
                 trigger="user-approved", mode=mode,
                 confirmation_source=source, artifacts_validated=artifacts,
+                session_id=session_id,
             )
+        # The audit artifact, through the SAME writer the CLI calls. This route committed
+        # advances for months without ever creating one, and the readers that treat a
+        # missing file as "invalidated, not yet re-approved" have been reading that
+        # absence as a refusal.
+        #
+        # Here rather than inside apply_phase_advance for two reasons. That function is
+        # the cache-mutation unit and sees only the cache's project_root, which is the
+        # wrong root (below); and putting os.makedirs plus a file write inside it would
+        # move both under mutate_cache's per-session flock, reversing the deliberate
+        # ordering cmd_advance_phase's C2 comment records (gate-file creation stays
+        # outside that lock). Inside _apply and after the `with` closes keeps the write
+        # out of the lock, in one thread hop, with nothing between the committed cache
+        # mutation and the stamp that could return early or raise.
+        #
+        # The root is the one THIS request resolved (resolve_project_root, above), the
+        # same root the validator judged and capture_decision_at_approve snapshots. NOT
+        # cache["project_root"], which is stamped once at mode-set time from whatever cwd
+        # set the mode and is never re-derived per advance. plan_md_hash reads the cache
+        # value for the opposite reason: the mint and the claim have to hash the same
+        # file, which is self-consistency between two cache-derived values. The artifact
+        # has to land where the READERS look, and every one of them derives the root
+        # itself by walking markers up from the user's cwd, so a root the validator never
+        # inspected would stamp "approved" into a directory nothing was judged in and be
+        # invisible to all of them.
+        write_gate_artifact(project_root, session_id, target_gate, mode=mode)
 
     await asyncio.to_thread(_apply)
     # project_root/root_tier/validated travel back so the approval hook can TELL the
@@ -351,6 +389,59 @@ async def session_advance_phase(
     return result
 
 
+@router.post("/session/{session_id}/promotion-review")
+async def session_promotion_review(
+    session_id: str, request: SessionPromotionReviewRequest | None = None
+) -> dict[str, Any]:
+    """Surface a graduation_pending candidate for human review, and record what was shown.
+
+    TWO JOBS, ON PURPOSE, because they are the same act. The artifact half is what
+    writ.promotion.build_promotion_review_artifact was written for: the candidate's
+    statement, trigger, examples and canon-fit, so the human is "the APPROVER of canon,
+    not a veto switch reacting to an id". That function had NO production caller, so the
+    flow its docstring describes did not exist.
+
+    The recording half is what makes the next approval bindable. `pending_candidate_id`
+    goes into the session cache, cmd_current_phase reports it, and the mint writes it as
+    the token's fourth line. Without a record of what was surfaced there is nothing for a
+    promotion approval to bind to, which is why the two halves belong in one call: a
+    candidate that was never shown must never become one an approval can authorize.
+
+    A candidate that is not graduation_pending is refused and NOT recorded, so a rejected
+    surfacing cannot leave a binding behind for a later approval to pick up.
+    """
+    if server._db is None or server._pipeline is None:
+        return {"error": "Database/pipeline not connected."}
+    req = request or SessionPromotionReviewRequest()
+    candidate_id = req.candidate_id
+    if not candidate_id:
+        return {"error": "candidate_id is required."}
+
+    try:
+        artifact = await server.build_promotion_review_artifact(
+            candidate_id, server._pipeline, server._db
+        )
+    except ValueError as exc:
+        # Not found, or not graduation_pending. Nothing is recorded.
+        return {"error": str(exc)}
+
+    def _record() -> None:
+        with server.writ_session.mutate_cache(session_id) as cache:
+            cache["pending_candidate_id"] = candidate_id
+            # ONE SURFACED OBJECT AT A TIME. `writ review <rule_id> --session-id <sid>`
+            # records a pending RULE the same way this records a pending candidate, and
+            # the mint writes them as lines 5 and 4 of one token. If both could be set at
+            # once, a single "approved" would mint a token carrying two promotion
+            # credentials: the claim would still spend it once, so "one approval, one
+            # action" holds, but the human's approval could be spent on whichever of the
+            # two objects the agent chose to act on first. So each surfacing clears the
+            # other; the CLI's half of this pair clears pending_candidate_id.
+            cache["pending_review_rule_id"] = ""
+
+    await asyncio.to_thread(_record)
+    return {"candidate_id": candidate_id, **artifact}
+
+
 @router.post("/session/{session_id}/promote-candidate")
 async def session_promote_candidate(
     session_id: str, request: SessionPromoteCandidateRequest | None = None
@@ -423,8 +514,16 @@ async def session_promote_candidate(
     # and would explain the refusal with a reason that is not about the promotion at all.
     # The security gain would be nil: plan.md is agent-writable, the token is not, and
     # one approval still authorizes exactly one promotion because success consumes it.
-    # The honest analogue would bind the candidate id into the token, which the mint
-    # cannot do: at approval time the hook knows the pending gate, not a candidate.
+    #
+    # THE CANDIDATE HALF IS NOW BOUND. This comment used to end by calling that analogue
+    # impossible, "which the mint cannot do: at approval time the hook knows the pending
+    # gate, not a candidate". That was true only because nothing told the hook. The review
+    # route below records the candidate it surfaces, cmd_current_phase reports it, and the
+    # mint writes it as line 4, so a promotion approval binds to one candidate exactly as a
+    # phase approval binds to one plan. The agent still chooses WHICH candidate it
+    # surfaced, which is the same residual plan.md carries and which the paragraph above
+    # already accepts: what the binding removes is an approval for candidate C being
+    # spendable on candidate D.
     binding = await asyncio.to_thread(server.read_gate_binding, session_id)
     if binding is None:
         await asyncio.to_thread(
@@ -459,6 +558,52 @@ async def session_promote_candidate(
                 f"That approval is bound to the {binding[0]} gate, so it cannot promote a "
                 "candidate to canon. Approve the promotion on its own turn, with no phase "
                 "gate pending."
+            ),
+        }
+
+    # The candidate this approval was minted for. "" covers a non-promotion approval and
+    # a token minted before line 4 existed; both mean "authorizes promoting nothing", so
+    # both are refused here rather than distinguished.
+    bound_candidate = await asyncio.to_thread(server.read_gate_candidate, session_id)
+    if bound_candidate != candidate_id:
+        await asyncio.to_thread(
+            server.log_friction_event,
+            session_id=session_id,
+            mode=None,
+            event=BINDING_CANDIDATE_MISMATCH,
+            event_target="promote_candidate",
+            candidate_id=candidate_id,
+            bound_candidate=bound_candidate,
+        )
+        return {
+            "promoted": False,
+            # Nothing is consumed: the approval may legitimately authorize the OTHER
+            # candidate, and spending it here would destroy that authorization.
+            "error": (
+                f"That approval authorizes promoting {bound_candidate or 'no candidate'}, "
+                f"not {candidate_id}. Surface {candidate_id} for review, then approve it."
+            ),
+        }
+
+    # ATOMIC CLAIM, matching /advance-phase. This route used to read the token here and
+    # consume it only after the write returned, so two concurrent posts with one token both
+    # reached promote_candidate and both wrote canon. claim_gate_token's claim-by-rename is
+    # the mutual exclusion; the loser gets False and does nothing.
+    #
+    # plan_hash is passed as the token's OWN line-3 value rather than a freshly computed
+    # fingerprint, so _binding_refusal compares that field against itself and cannot refuse
+    # on plan drift. That preserves the asymmetry argued for above: atomicity is gained
+    # without importing an enforcement this route deliberately does not want.
+    claimed = await asyncio.to_thread(
+        server.claim_gate_token, session_id, token,
+        gate="", plan_hash=binding[1], candidate_id=candidate_id,
+    )
+    if not claimed:
+        return {
+            "promoted": False,
+            "error": (
+                "That approval was already spent (a concurrent request claimed it). "
+                "One approval authorizes exactly one promotion."
             ),
         }
 
@@ -526,6 +671,19 @@ async def pre_write_check(request: PreWriteCheckRequest) -> dict[str, Any]:
         # count -- equivalent to the old re-read.
         cache = server.writ_session._read_cache(session_id)
         mode = cache.get("mode")
+
+        # File this request's rows under the project being WRITTEN, not the daemon's cwd.
+        # Every event below (write_attempt, gate_denial, pre_write_rag_failed) reaches the
+        # log router from inside this worker, and the router's default scope is
+        # os.getcwd(), which for the daemon is its own WorkingDirectory. Without this the
+        # gate decisions for every project on the machine landed in Writ's audit stream and
+        # the owning project's stream showed no gate activity at all.
+        #
+        # The no-restore setter is correct here specifically: asyncio.to_thread runs this
+        # function inside a copied context, so the value dies with the call. Set AFTER the
+        # cache read because the cache is the only thing that knows the project root, and
+        # BEFORE _can_write_check, which is the first emitter.
+        set_request_project_scope(cache.get("project_root"))
 
         # 1. Gate approval check
         gate_result = server.writ_session._can_write_check(session_id, envelope, skill_dir, cache=cache)

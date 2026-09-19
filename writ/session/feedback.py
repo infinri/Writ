@@ -125,21 +125,28 @@ def _send_feedback(feedback_queue: list[tuple[str, str]], already_sent: set[str]
     `already_sent` (mutated in place). Stops on the first connection error (server down).
     Returns the count actually sent."""
     import urllib.error
-    import urllib.request
+    # Through the shared client (bin/lib/writ_daemon_client.py), which prefers the
+    # daemon's unix socket and falls back to WRIT_FEEDBACK_URL's TCP endpoint. One of
+    # three python call sites the E2a transport census exposed; a grep over curl sites
+    # could not have found any of them.
+    import os
+    import sys
+
+    _lib = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "bin", "lib",
+    )
+    if _lib not in sys.path:
+        sys.path.insert(0, _lib)
+    import writ_daemon_client
 
     sent_count = 0
     for rid, signal in feedback_queue:
-        payload = json.dumps({"rule_id": rid, "signal": signal}).encode()
-        req = urllib.request.Request(
-            WRIT_FEEDBACK_URL,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
+        status, _body = writ_daemon_client.post_json(
+            "/feedback", {"rule_id": rid, "signal": signal}, timeout=0.2
         )
-        try:
-            urllib.request.urlopen(req, timeout=0.2)
-            already_sent.add(rid)
-            sent_count += 1
-        except (urllib.error.URLError, OSError):
-            break  # Server down, stop trying
+        if status == 0:
+            break  # Neither transport answered, stop trying
+        already_sent.add(rid)
+        sent_count += 1
     return sent_count

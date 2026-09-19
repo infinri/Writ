@@ -97,6 +97,25 @@ def _guarded_by_flag(body: str, call_marker: str, flag_name: str) -> bool:
     return any("if" in line and flag_name in line for line in lines[:call_idx])
 
 
+def _call_index(body: str, func_name: str, what: str) -> int:
+    """Text position of `func_name`'s CALL inside `body`, i.e. `f"{func_name}("`.
+
+    Deliberately searches for the opening paren rather than the bare name: every
+    function this file checks imports its helpers in one `from tests._graph
+    import (...)` tuple at the top of the body, so a bare-name search finds the
+    import listing (whatever position the names happen to be typed in) rather
+    than the call, and two names imported on the same line would compare as
+    "equal" order regardless of which one actually runs first. Fails loudly
+    (never returns a sentinel silently) when the call is absent, because absence
+    here means the seam has not been wired yet, not that this test found nothing
+    to check.
+    """
+    idx = body.find(f"{func_name}(")
+    if idx == -1:
+        pytest.fail(f"skeleton: _preflight_isolated_graph does not call {what}() yet")
+    return idx
+
+
 # ---------------------------------------------------------------------------
 # Capability 2: apply_isolation_env sets the three connection vars + forces
 # WRIT_TEST_GRAPH=1, leaving any caller-set value untouched.
@@ -391,6 +410,66 @@ class TestIsolationRefusalMessage:
         msg = isolation_refusal_message(PRODUCTION_URI)
         assert "Rule" not in msg
 
+    def test_the_shortfall_block_names_each_short_label_live_required_and_the_remedy(
+        self,
+    ) -> None:
+        """Capability 8 (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3): the tightened
+        floor can now refuse a tree whose `bible/` shrank below the tracked dump, and a
+        refusal that names no action is a deadlock this repo has already shipped once.
+        So the block names, per short label, what the graph HAS, what the floor
+        REQUIRES, and the two ways out.
+
+        The counts below are this test's own fixture, not a measurement of the corpus:
+        each is asserted on the LINE that names its label, so a number colliding with
+        some unrelated number elsewhere in the message cannot make this pass.
+        """
+        from tests._graph import isolation_refusal_message
+
+        shortfall = {"Rule": (3, 17), "Abstraction": (0, 5)}
+        msg = isolation_refusal_message(
+            "bolt://localhost:7688", shortfall=shortfall
+        )
+
+        for label, (live, required) in shortfall.items():
+            named = [line for line in msg.splitlines() if label in line]
+            assert named, f"the refusal never names the short label {label}: {msg!r}"
+            assert any(
+                str(live) in line and str(required) in line for line in named
+            ), (
+                f"no line names {label} with both its live count ({live}) and its "
+                f"required count ({required}): {named!r}"
+            )
+        assert "export-cypher" in msg, (
+            "the refusal must name the remedy that refreshes the tracked dump when the "
+            f"corpus legitimately changed: {msg!r}"
+        )
+        assert "WRIT_TEST_NO_ISOLATION" in msg, (
+            "the pre-existing opt-out must still be named on the shortfall refusal"
+        )
+
+    def test_the_shortfall_block_is_absent_when_no_shortfall_is_supplied(self) -> None:
+        """The conditionality proof for the block above, and the guard on the behaviour
+        `test_counts_are_absent_from_the_message_when_not_supplied` already pins: the
+        production-target and unreachable refusals read no census and no floor, so they
+        must not print a remedy for a shortfall they never measured.
+
+        Both arms in one test on purpose. A test that only asserted the absence would
+        pass on a message that never learned to emit the block at all.
+        """
+        from tests._graph import isolation_refusal_message
+
+        with_shortfall = isolation_refusal_message(
+            "bolt://localhost:7688", shortfall={"Rule": (3, 17)}
+        )
+        without = isolation_refusal_message(PRODUCTION_URI)
+
+        assert "export-cypher" in with_shortfall
+        assert "export-cypher" not in without, (
+            "the shortfall remedy is printed unconditionally; the production-target and "
+            f"unreachable refusals have no shortfall to remedy: {without!r}"
+        )
+        assert "Abstraction" not in without
+
 
 # ---------------------------------------------------------------------------
 # Capabilities 6, 7, 8 (wiring half): the session-start preflight in
@@ -446,6 +525,27 @@ class TestSessionStartPreflightWiring:
         assert "ensure_corpus" in body
         assert "is_complete" in body
 
+    def test_preflight_hands_the_shortfall_to_the_refusal_it_already_builds(
+        self, conftest_source: str
+    ) -> None:
+        """Capability 8, wiring half (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3).
+        The preflight holds the census that failed the floor, so it is the only place
+        that can say WHICH labels are short; without the shortfall the refusal can only
+        repeat the whole census and leave the reader to compare it against a floor they
+        cannot see.
+        """
+        body = _extract_function_source(conftest_source, "_preflight_isolated_graph")
+        if not body:
+            pytest.fail("skeleton: _preflight_isolated_graph is not defined")
+        assert "corpus_shortfall" in body, (
+            "_preflight_isolated_graph must compute the shortfall from the census it "
+            "already read (tests._corpus.corpus_shortfall)"
+        )
+        assert "shortfall=" in body, (
+            "the shortfall must reach tests._graph.isolation_refusal_message, or the "
+            "session-start refusal still says only that the corpus is incomplete"
+        )
+
     def test_pytest_sessionstart_calls_the_preflight(self, conftest_source: str) -> None:
         body = _extract_function_source(conftest_source, "pytest_sessionstart")
         assert "_preflight_isolated_graph" in body, (
@@ -461,6 +561,86 @@ class TestSessionStartPreflightWiring:
         transport that actually leaked."""
         assert "_refuse_production_graph_when_isolated" not in conftest_source
         assert "Neo4jConnection.__init__" not in conftest_source
+
+    # -----------------------------------------------------------------------
+    # cycle 9: ORDER assertions for the wipe the preflight now issues between
+    # the isolation verdict and the corpus warm. Text-position comparisons,
+    # matching this class's own idiom above (source inspection, no live
+    # graph): plan.md places the wipe strictly after `classify_isolation`
+    # has already decided STATE_ISOLATED and strictly before `ensure_corpus`
+    # rebuilds, "or the warm would be undone".
+    # -----------------------------------------------------------------------
+
+    def test_wipe_is_called_after_the_isolation_classifier_decides(
+        self, conftest_source: str
+    ) -> None:
+        body = _extract_function_source(conftest_source, "_preflight_isolated_graph")
+        if not body:
+            pytest.fail("skeleton: _preflight_isolated_graph is not defined")
+        classify_idx = _call_index(body, "classify_isolation", "classify_isolation")
+        wipe_idx = _call_index(body, "wipe_everything", "wipe_everything")
+        assert classify_idx < wipe_idx, (
+            "wipe_everything() must be called strictly after classify_isolation() "
+            "has already decided the state; issuing the wipe first could reach "
+            "a target that was never confirmed isolated (plan.md: 'never delete "
+            "from a target that was not approved')"
+        )
+
+    def test_wipe_is_called_before_ensure_corpus_warms_the_corpus(
+        self, conftest_source: str
+    ) -> None:
+        body = _extract_function_source(conftest_source, "_preflight_isolated_graph")
+        if not body:
+            pytest.fail("skeleton: _preflight_isolated_graph is not defined")
+        wipe_idx = _call_index(body, "wipe_everything", "wipe_everything")
+        ensure_idx = _call_index(body, "ensure_corpus", "ensure_corpus")
+        assert wipe_idx < ensure_idx, (
+            "wipe_everything() must be called before ensure_corpus(): calling "
+            "it after would undo the warm the wipe is supposed to precede "
+            "(plan.md: 'before ensure_corpus (or the warm would be undone)')"
+        )
+
+    def test_census_is_taken_before_the_wipe_so_it_has_something_to_report(
+        self, conftest_source: str
+    ) -> None:
+        """The census must run before the delete, not after: a census taken
+        post-wipe could only ever report zero, which would make the report
+        line's "what was deleted" half permanently vacuous (plan.md: "This is
+        what makes the wipe report a positive signal instead of an absence")."""
+        body = _extract_function_source(conftest_source, "_preflight_isolated_graph")
+        if not body:
+            pytest.fail("skeleton: _preflight_isolated_graph is not defined")
+        census_idx = _call_index(body, "label_census", "label_census")
+        wipe_idx = _call_index(body, "wipe_everything", "wipe_everything")
+        assert census_idx < wipe_idx, (
+            "label_census() must run before wipe_everything(), or the census "
+            "can only ever report zero deleted nodes"
+        )
+
+    def test_wipe_and_census_route_through_tests_graph(
+        self, conftest_source: str
+    ) -> None:
+        """plan.md Files: 'so the suite keeps exactly one module that opens a
+        graph'. Parses the function's own `from tests._graph import (...)`
+        tuple rather than grepping the body for the bare names, because both
+        names could otherwise be satisfied by an import from anywhere (or by
+        merely mentioning them in a comment)."""
+        body = _extract_function_source(conftest_source, "_preflight_isolated_graph")
+        if not body:
+            pytest.fail("skeleton: _preflight_isolated_graph is not defined")
+        tree = ast.parse(body)
+        imported_from_graph: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "tests._graph":
+                imported_from_graph.update(alias.name for alias in node.names)
+        missing = {"wipe_everything", "label_census"} - imported_from_graph
+        assert not missing, (
+            f"_preflight_isolated_graph must import {sorted(missing)} from "
+            "tests._graph, the suite's one module that opens a graph "
+            "connection, so the census and the wipe cannot become a second "
+            "place that decides where the graph is. Currently imported from "
+            f"tests._graph: {sorted(imported_from_graph)}"
+        )
 
 
 # ---------------------------------------------------------------------------

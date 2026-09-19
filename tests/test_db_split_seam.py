@@ -21,7 +21,7 @@ import pytest
 # live class). Every name must still resolve on the post-split class.
 EXPECTED_METHODS = [
     "__init__", "_create_record", "_parse_planned_files", "_record_endpoint_clause", "_run",
-    "_run_single", "apply_constraints",
+    "_run_single", "_write_single", "apply_constraints",
     "batch_create_edges", "batch_create_nodes", "clear_all", "clear_project", "close",
     "count_by_authority", "count_rules", "create_abstraction", "create_abstracts_edge",
     "create_commit", "create_decision", "create_edge",

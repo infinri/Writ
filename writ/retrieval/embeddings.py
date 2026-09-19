@@ -23,6 +23,8 @@ import hnswlib
 import numpy as np
 from pydantic import BaseModel, Field
 
+from writ.shared.logging import emit
+
 # Per ARCH-CONST-001: named constants for HNSW defaults.
 DEFAULT_EF_CONSTRUCTION = 200
 DEFAULT_M = 16
@@ -441,7 +443,7 @@ class HnswlibStore:
         # Third gate (cycle 7). The two above check IDENTITY: the sidecar names this
         # corpus, and the .bin is the one the sidecar recorded. Neither reads a
         # vector, so an index whose rows are all zero passes both and serves pure
-        # noise through the heaviest ranking signal (w_vector 0.594). That is not
+        # noise through the heaviest ranking signal (w_vector 0.57). That is not
         # hypothetical: 313 zero-norm vectors did exactly that for six days, and
         # knn_query never raised, it just returned distance 1.0 for everything.
         # Reject only when NOTHING sampled is non-zero: a single zero row is a
@@ -467,6 +469,21 @@ class HnswlibStore:
                     "HNSW index at %s has %d zero-norm vector(s) in a sample of %d "
                     "(corpus_hash=%s); loading it anyway, the index is usable",
                     bin_path, zero_count, len(sample_ids), corpus_hash,
+                )
+                # The warning above is invisible at default level, which is how
+                # the six-day incident stayed undiagnosed: partial corruption
+                # read as a healthy start, exactly as the all-zero case did
+                # before the gate above existed. The audit row is the durable
+                # copy, carrying the two numbers needed to judge severity.
+                # Deliberately NOT a rejection: see the comment above on why
+                # tightening the threshold rebuilds forever.
+                emit(
+                    None, "index_degeneracy", "", None,
+                    zero_count=zero_count,
+                    sample_size=len(sample_ids),
+                    corpus_hash=corpus_hash,
+                    rule_count=rule_count,
+                    index_path=str(bin_path),
                 )
 
         self._index = idx

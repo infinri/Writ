@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from tests._inventory import hook_registrations
+
 SKILL_DIR = Path(__file__).resolve().parent.parent
 HOOK = SKILL_DIR / "hooks" / "scripts" / "writ-context-tracker.sh"
 HOOKS_JSON = SKILL_DIR / "hooks" / "hooks.json"
@@ -22,13 +24,23 @@ NAME = "writ-context-tracker"
 
 
 def _registration_count(hooks_data: dict) -> int:
-    """Flatten every matcher-block entry across all events (mirrors the routing
-    test's _collect_all_registrations)."""
+    """Count COMMAND LEAVES, the same unit the shared derivation uses.
+
+    This counted matcher BLOCKS until 2026-09-18. It agreed with
+    hook_registrations() at 44 only because every block happened to hold exactly one
+    command: a property of the data, not of the code. Adding a second command to an
+    existing block made blocks 44 and commands 45, and the two readers disagreed for
+    the first time. hook_registrations()'s docstring says the two "cannot disagree
+    about what a registration is", so the block count was the wrong unit all along.
+    """
     section = hooks_data.get("hooks", hooks_data)
     n = 0
     for entries in section.values():
         if isinstance(entries, list):
-            n += len(entries)
+            for entry in entries:
+                for hook in (entry.get("hooks") or []):
+                    if hook.get("command"):
+                        n += 1
     return n
 
 
@@ -92,6 +104,13 @@ class TestStopEventIntact:
         # mirror (added PostToolUse Write|Edit writ-memory-capture). Bump when
         # adding/removing a registration; keep HANDBOOK 'registers **N hook scripts**'
         # in sync.
+        # DERIVED. This was the third of four places asserting 44, and adding a hook meant
+        # editing all of them plus a HANDBOOK sentence. The canonical tripwire lives in
+        # test_phase51_doc_counts.py, whose declared job is source-derived counts; this
+        # site only needs to agree with the manifest it reads.
         data = json.loads(HOOKS_JSON.read_text())
         n = _registration_count(data)
-        assert n == 44, f"hooks.json registration count drifted; found {n}, expected 44"
+        assert n == len(hook_registrations()), (
+            f"this file's own registration count ({n}) disagrees with the shared derivation "
+            f"({len(hook_registrations())}); one of the two readers is wrong"
+        )

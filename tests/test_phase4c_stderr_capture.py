@@ -18,6 +18,8 @@ log when WRIT_DEBUG=1 and stays silent when it is unset.
 from __future__ import annotations
 
 import json
+import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -165,4 +167,102 @@ class TestPreWriteDispatchStillCovered:
             "Phase 4b tee on writ-pre-write-dispatch.sh must remain, now gated: "
             "it must tee stderr to /tmp/writ-hook-debug.log only when WRIT_DEBUG=1 "
             "(_writ_debug_enabled + tee -a + the /tmp/writ-hook-debug.log fallback path)"
+        )
+
+
+# The fork itself, not the source grep. This cycle's plan (write-path spawn
+# reduction) changes line 27 from an UNCONDITIONAL `exec 2> >(tee -a "$(...)")`
+# -- which forks tee on every run and only gates its DESTINATION file between
+# the real log and /dev/null -- to one gated so the fork itself is skipped
+# when WRIT_DEBUG is unset. TestPreWriteDispatchStillCovered above greps for
+# three substrings that are identical in both spellings, so it passes either
+# way and is not a test of this change. This class runs the REAL hook under
+# strace and counts.
+_TEE_EXECVE = re.compile(r'execve\("[^"]*/tee"')
+
+
+class TestPreWriteDispatchForkBothStates:
+    """Both states of the fork, proven by running the real hook, not a
+    synthetic minimal script. `writ_critical` (bin/lib/common.sh:1233) prints
+    a deterministic `[WRIT CRITICAL] writ-pre-write-dispatch: ...` line
+    straight to stderr whenever the hook's own no-session-id branch fires
+    (hooks/scripts/writ-pre-write-dispatch.sh:119-122), so an envelope with no
+    session_id and no agent_id gives this test a REAL, controllable breadcrumb
+    to look for in the debug log, instead of inventing one.
+    """
+
+    ENVELOPE_NO_SESSION = json.dumps({
+        "tool_name": "Write",
+        "tool_input": {"file_path": "/tmp/writ-tee-fork-probe.py", "content": "x = 1\n"},
+    })
+    BREADCRUMB = "[WRIT CRITICAL] writ-pre-write-dispatch:"
+
+    def _run_traced(self, *, writ_debug: bool):
+        from tests._strace import trace_execve_result
+
+        # Same base-env shape as TestStderrTeeIdiomWorks above: WRIT_HOOK_LOG
+        # popped so the fallback path resolves to DEBUG_LOG.
+        env = {k: v for k, v in os.environ.items() if k != "WRIT_HOOK_LOG"}
+        if writ_debug:
+            env["WRIT_DEBUG"] = "1"
+        else:
+            env.pop("WRIT_DEBUG", None)
+        return trace_execve_result(
+            ["bash", str(HOOKS / "writ-pre-write-dispatch.sh")],
+            input=self.ENVELOPE_NO_SESSION, timeout=180, env=env,
+        )
+
+    def test_writ_debug_unset_spawns_no_tee_process(self) -> None:
+        if DEBUG_LOG.exists():
+            DEBUG_LOG.unlink()
+        proc, text = self._run_traced(writ_debug=False)
+        assert "execve(" in text, "the tracer recorded no execve at all; the counter is broken"
+        tee_lines = [ln for ln in text.splitlines() if _TEE_EXECVE.search(ln)]
+        assert tee_lines == [], (
+            "writ-pre-write-dispatch.sh spawned a tee process with WRIT_DEBUG "
+            f"unset: {tee_lines!r}. The stderr tee at line 27 must be gated so "
+            "the FORK itself is skipped when debug is off, not just its "
+            "destination file (today's unconditional `exec 2> >(tee -a "
+            "\"$(... || echo /dev/null)\")` forks tee either way)."
+        )
+        assert proc.returncode == 0, f"hook exited {proc.returncode}: {proc.stderr[:300]}"
+        debug_has_breadcrumb = DEBUG_LOG.exists() and self.BREADCRUMB in DEBUG_LOG.read_text()
+        assert not debug_has_breadcrumb, (
+            f"quiet-by-default: with WRIT_DEBUG unset the breadcrumb must not "
+            f"reach {DEBUG_LOG}"
+        )
+
+    def test_writ_debug_on_spawns_tee_and_writes_the_breadcrumb(self) -> None:
+        if DEBUG_LOG.exists():
+            DEBUG_LOG.unlink()
+        proc, text = self._run_traced(writ_debug=True)
+        assert "execve(" in text, "the tracer recorded no execve at all; the counter is broken"
+        tee_lines = [ln for ln in text.splitlines() if _TEE_EXECVE.search(ln)]
+        assert tee_lines != [], (
+            "writ-pre-write-dispatch.sh did not spawn tee with WRIT_DEBUG=1; "
+            "the debug capture is broken, not just quiet-by-default"
+        )
+        assert proc.returncode == 0, f"hook exited {proc.returncode}: {proc.stderr[:300]}"
+        assert DEBUG_LOG.exists(), f"{DEBUG_LOG} was not created with WRIT_DEBUG=1"
+        assert self.BREADCRUMB in DEBUG_LOG.read_text(), (
+            f"the writ_critical breadcrumb did not reach {DEBUG_LOG} with WRIT_DEBUG=1"
+        )
+
+    def test_the_fork_count_actually_differs_between_the_two_states(self) -> None:
+        """Anti-vacuity: proves the two tests above are not both passing by
+        accident (e.g. a strace invocation that never sees any tee, in which
+        case 'no tee lines found' would be true in both states for the wrong
+        reason).
+        """
+        if DEBUG_LOG.exists():
+            DEBUG_LOG.unlink()
+        _, off_text = self._run_traced(writ_debug=False)
+        if DEBUG_LOG.exists():
+            DEBUG_LOG.unlink()
+        _, on_text = self._run_traced(writ_debug=True)
+        off_execs = off_text.count("execve(")
+        on_execs = on_text.count("execve(")
+        assert on_execs > off_execs, (
+            f"expected WRIT_DEBUG=1 to spawn strictly more processes than "
+            f"WRIT_DEBUG unset (the tee fork); off={off_execs} on={on_execs}"
         )

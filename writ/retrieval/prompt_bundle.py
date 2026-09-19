@@ -69,6 +69,42 @@ def always_on_rule_ids(ao_json: dict) -> list[str]:
     return [r["rule_id"] for r in _renderable_always_on(ao_json)]
 
 
+def tag_overlap(rules: list[dict], always_on_ids) -> list[dict]:
+    """Mark the ranked rules this turn's always-on channel already delivered.
+
+    Five always-on rules also live in the ranked pool, so one rule can be rendered
+    twice in a single turn: the always-on channel renders its trigger plus statement,
+    and the ranked channel renders trigger, statement, violation and pass_example a few
+    hundred bytes lower in the same context window. The second render therefore pays
+    full price to deliver only the violation and pass_example.
+
+    This helper computes WHICH ranked hits are in that position; the renderer
+    (writ.session.budget_tracking.cmd_format) decides what to do about it.
+
+    ADDITIVE, NEVER A STRIP. The obvious shortcut, deleting `trigger` and `statement`
+    off the rule dict so the renderer emits nothing for them, would corrupt
+    extract_rule_objects(qresp): those objects are cached via --add-rule-objects and the
+    compliance-matching path reads the statement out of them. So a flag is set and every
+    other key is carried through untouched. The input dicts are copied rather than
+    mutated, because the caller (query.py's /prompt-bundle) still hands the ORIGINAL
+    response to extract_rule_objects.
+
+    `always_on_ids` must be the RENDERED ids (always_on_rule_ids), not the eligible
+    ones. _renderable_always_on drops a rule missing its trigger or statement, and
+    suppressing fields for a rule the agent was never shown would point the reader at a
+    block that does not contain it, with no visible symptom.
+    """
+    ids = set(always_on_ids or ())
+    tagged = []
+    for rule in rules or []:
+        copy = dict(rule)
+        rid = copy.get("rule_id")
+        if rid and rid in ids:
+            copy["already_injected"] = True
+        tagged.append(copy)
+    return tagged
+
+
 def compute_nudge(query_resp: dict, threshold: float = 0.3) -> str:
     """Low-relevance proposal nudge. Mirror of the PROPOSAL_NUDGE heredoc:
     'NO_RULES' when nothing matched, 'LOW_SCORES' when every match is below the

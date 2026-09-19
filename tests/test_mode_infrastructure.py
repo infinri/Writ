@@ -19,12 +19,23 @@ import pytest
 # as test-method parameters, which ruff misreads as redefinitions of this import.
 from tests.fixtures.session_state import (  # noqa: F401
     call_can_write,
+    module_session_id,
     project_root,
     # autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
     sandbox_cwd,
     session_id,
     write_bound_gate_token,
 )
+
+# The namespace this module mints into, opting its advance-phase mint into the teardown
+# sweeper in tests/_gate_token_leak.py. DERIVED from the same function the shared
+# `session_id` fixture uses for its default, so the declared namespace and the id actually
+# minted cannot drift apart: spelling the value twice is how a sweeper comes to sweep a
+# namespace nothing writes. Before this, this module and
+# tests/test_phase3_centralization.py both took the fixture's single literal default and
+# wrote the identical /tmp/writ-gate-token-test-session path, which no per-module sweeper
+# can own (docs/adr/ADR-gate-token-leak-guard.md, decision 5).
+GATE_TOKEN_SESSION_PREFIX = module_session_id(__name__)
 
 # ---------------------------------------------------------------------------
 # Import the session helper as a module (it's not in a package)
@@ -374,19 +385,49 @@ class TestModeCanWrite:
         assert result["decision"] == "deny"
 
     def test_work_allows_after_both_gates(self, session_id, project_root, monkeypatch, capsys):
-        """Work mode: source file allowed after both phase-a and test-skeletons."""
+        """Work mode: source file allowed after both phase-a and test-skeletons.
+
+        `project_root` is stamped alongside the gates because `cmd_mode` records
+        `os.getcwd()`, which the autouse `sandbox_cwd` fixture has pointed at
+        `<tmp_path>/cwd-sandbox`, while the `project_root` fixture hands back the SIBLING
+        `<tmp_path>/project`. Unstamped, this test recorded one project and then wrote into
+        a different one, and only passed because the write gate was path-blind. The second
+        assertion is why the first is not vacuous: with the root now recorded correctly, a
+        path outside it still denies, so the allow above is "inside the declared project"
+        and not "the boundary is off".
+        """
         writ_session.cmd_mode(session_id, "set", "work")
         cache = writ_session._read_cache(session_id)
         cache["gates_approved"] = ["phase-a", "test-skeletons"]
         cache["current_phase"] = "implementation"
+        cache["project_root"] = str(project_root)
         writ_session._write_cache(session_id, cache)
 
         result = self._call_can_write(session_id, str(project_root / "service.py"), monkeypatch, capsys)
         assert result["decision"] == "allow"
 
+        outside = project_root.parent / "other-project" / "service.py"
+        result = self._call_can_write(session_id, str(outside), monkeypatch, capsys)
+        assert result["decision"] == "deny", (
+            "an approved plan for this project must not authorize a write into another "
+            f"project's tree; got {result}"
+        )
+        assert "ENF-PROJECT-BOUNDARY" in result.get("reason", "")
+
     def test_work_allows_test_files_without_gates(self, session_id, project_root, monkeypatch, capsys):
-        """Work mode: test files bypass gate checks (in exclusions list)."""
+        """Work mode: test files bypass THE GATES (in exclusions list), inside this project.
+
+        The exemption's stated purpose is that a project's own test skeletons stay writable
+        BEFORE approval, so it is scoped to the project and not to any path shaped like a
+        test. `project_root` is stamped for the reason given on
+        test_work_allows_after_both_gates: `cmd_mode` records the sandboxed cwd, not this
+        fixture's directory.
+        """
         writ_session.cmd_mode(session_id, "set", "work")
+        cache = writ_session._read_cache(session_id)
+        cache["project_root"] = str(project_root)
+        writ_session._write_cache(session_id, cache)
+
         result = self._call_can_write(
             session_id, str(project_root / "tests" / "test_foo.py"), monkeypatch, capsys
         )
@@ -444,6 +485,8 @@ class TestModeAdvancePhase:
 | File | Action |
 |------|--------|
 | src/service.py | Create |
+
+- `tests/test_service.py` (create) -- the skeleton the test-skeletons gate judges
 
 ## Analysis
 
@@ -517,6 +560,7 @@ This feature adds a new service endpoint.
         writ_session._write_cache(session_id, cache)
 
         # Create a test file with a method signature
+        self._write_plan(project_root)
         test_dir = project_root / "tests"
         test_dir.mkdir()
         (test_dir / "test_service.py").write_text("def test_service_works():\n    pass\n")
@@ -533,6 +577,7 @@ This feature adds a new service endpoint.
         cache["current_phase"] = "testing"
         writ_session._write_cache(session_id, cache)
 
+        self._write_plan(project_root)
         test_dir = project_root / "tests"
         test_dir.mkdir()
         (test_dir / "test_service.py").write_text("def test_service_works():\n    pass\n")

@@ -62,21 +62,36 @@ def _seed_mode(cache: Path, sid: str, mode: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 1. phrase predicate (exact clauses, never fuzzy)
+# 1. phrase predicate (ONE clause, and it must be the whole prompt)
 # --------------------------------------------------------------------------- #
 class TestGrantPhrase:
     @pytest.mark.parametrize("prompt", [
-        "manual testing approved",
-        "Manual Testing Approved",           # case-insensitive
-        "ok, manual testing approved then",  # embedded in a sentence
-        "i'll test it manually",
-        "I will test this manually",
-        "manual\n  verification\napproved",  # line-wrapped whitespace collapses
+        "manual test approved",
+        "Manual Test Approved",              # case-insensitive
+        "  manual test approved  ",          # surrounding whitespace stripped
+        "manual\n  test\napproved",          # line-wrapped whitespace collapses
     ])
-    def test_grant_phrases_match(self, tmp_path: Path, prompt: str):
+    def test_grant_phrase_matches(self, tmp_path: Path, prompt: str):
         assert _lib(tmp_path, "is-phrase", prompt).returncode == 0, prompt
 
     @pytest.mark.parametrize("prompt", [
+        # Embedded forms. These USED to grant, via substring containment, and that is
+        # how a message asking to narrow this predicate minted a real grant.
+        "ok, manual test approved then",
+        "i should say manual test approved for the no-test case",
+        # The eleven clauses removed when the list collapsed to one.
+        "manual testing approved",
+        "manual tests approved",
+        "manual verification approved",
+        "approve manual testing",
+        "approved for manual testing",
+        "i will test manually",
+        "i'll test manually",
+        "i will test it manually",
+        "i'll test it manually",
+        "i will test this manually",
+        "i'll test this manually",
+        # Unchanged negatives.
         "", "ok", "approved", "proceed", "go ahead",
         "ok for testing then it should be manual",   # the real near-miss sentence
         "we should do manual testing at some point",  # names manual, no concession
@@ -97,7 +112,7 @@ class TestGrantLifecycle:
 
     def test_mint_creates_grant_and_active_reads_it_back(self, tmp_path: Path):
         sid = f"mtg-{uuid.uuid4().hex[:8]}"
-        assert _lib(tmp_path, "mint", sid, "manual testing approved").returncode == 0
+        assert _lib(tmp_path, "mint", sid, "manual test approved").returncode == 0
         gf = _grant_file(tmp_path, sid)
         assert gf.is_file()
         grant = json.loads(gf.read_text())
@@ -114,7 +129,7 @@ class TestGrantLifecycle:
 
     def test_admit_records_file_once_and_allows(self, tmp_path: Path):
         sid = f"mtg-{uuid.uuid4().hex[:8]}"
-        _lib(tmp_path, "mint", sid, "manual testing approved")
+        _lib(tmp_path, "mint", sid, "manual test approved")
         assert _lib(tmp_path, "admit", sid, "/proj/app/x.js").returncode == 0
         assert _lib(tmp_path, "admit", sid, "/proj/app/x.js").returncode == 0
         admitted = json.loads(_grant_file(tmp_path, sid).read_text())["admitted"]
@@ -126,7 +141,7 @@ class TestGrantLifecycle:
 
     def test_expired_grant_is_not_active(self, tmp_path: Path):
         sid = f"mtg-{uuid.uuid4().hex[:8]}"
-        _lib(tmp_path, "mint", sid, "manual testing approved")
+        _lib(tmp_path, "mint", sid, "manual test approved")
         gf = _grant_file(tmp_path, sid)
         grant = json.loads(gf.read_text())
         grant["expires_at"] = grant["granted_at"] - 1
@@ -136,7 +151,7 @@ class TestGrantLifecycle:
     def test_grant_copied_to_another_session_is_rejected(self, tmp_path: Path):
         sid_a = f"mtg-{uuid.uuid4().hex[:8]}"
         sid_b = f"mtg-{uuid.uuid4().hex[:8]}"
-        _lib(tmp_path, "mint", sid_a, "manual testing approved")
+        _lib(tmp_path, "mint", sid_a, "manual test approved")
         _grant_file(tmp_path, sid_b).write_text(_grant_file(tmp_path, sid_a).read_text())
         assert _lib(tmp_path, "active", sid_b).returncode == 1
 
@@ -147,7 +162,7 @@ class TestGrantLifecycle:
 class TestMinterHook:
     def test_grant_phrase_mints_and_emits_directive(self, tmp_path: Path):
         sid = f"mtg-{uuid.uuid4().hex[:8]}"
-        p = _run_minter(tmp_path, {"session_id": sid, "prompt": "manual testing approved"})
+        p = _run_minter(tmp_path, {"session_id": sid, "prompt": "manual test approved"})
         assert p.returncode == 0
         assert "manual-testing grant is live" in p.stdout
         assert _grant_file(tmp_path, sid).is_file()
@@ -166,7 +181,7 @@ class TestMinterHook:
         sid = f"mtg-{uuid.uuid4().hex[:8]}"
         aid = f"agent-{uuid.uuid4().hex[:8]}"
         _run_minter(tmp_path, {"session_id": sid, "agent_id": aid,
-                               "prompt": "manual testing approved"})
+                               "prompt": "manual test approved"})
         assert _grant_file(tmp_path, aid).is_file()
         assert not _grant_file(tmp_path, sid).exists()
 
@@ -199,7 +214,7 @@ class TestGateAdmitsGrant:
         repo = self._repo(tmp_path)
         sid = f"mtg-{uuid.uuid4().hex[:8]}"
         _seed_mode(cache, sid, "work")
-        _lib(cache, "mint", sid, "manual testing approved")
+        _lib(cache, "mint", sid, "manual test approved")
         target = repo / "app" / "code" / "V" / "M" / "view" / "web" / "js" / "widget.js"
         out = _run_gate(cache, repo, self._envelope(sid, target))
         assert out is None  # gate allowed: no deny JSON emitted
@@ -212,7 +227,7 @@ class TestGateAdmitsGrant:
         sid = f"mtg-{uuid.uuid4().hex[:8]}"
         other = f"mtg-{uuid.uuid4().hex[:8]}"
         _seed_mode(cache, sid, "work")
-        _lib(cache, "mint", other, "manual testing approved")
+        _lib(cache, "mint", other, "manual test approved")
         target = repo / "app" / "code" / "V" / "M" / "view" / "web" / "js" / "widget.js"
         out = _run_gate(cache, repo, self._envelope(sid, target))
         assert out is not None and out.get("permissionDecision") == "deny"
@@ -230,7 +245,7 @@ class TestGrantInheritance:
     def test_child_inherits_live_grant_with_parent_expiry(self, tmp_path: Path):
         parent = f"mtg-{uuid.uuid4().hex[:8]}"
         child = f"agent-{uuid.uuid4().hex[:8]}"
-        _lib(tmp_path, "mint", parent, "manual testing approved")
+        _lib(tmp_path, "mint", parent, "manual test approved")
         _lib(tmp_path, "admit", parent, "/proj/app/parent.js")
         assert _lib(tmp_path, "inherit", parent, child).returncode == 0
         pg = json.loads(_grant_file(tmp_path, parent).read_text())
@@ -250,7 +265,7 @@ class TestGrantInheritance:
 
     def test_inherit_to_same_session_is_a_refused_noop(self, tmp_path: Path):
         parent = f"mtg-{uuid.uuid4().hex[:8]}"
-        _lib(tmp_path, "mint", parent, "manual testing approved")
+        _lib(tmp_path, "mint", parent, "manual test approved")
         _lib(tmp_path, "admit", parent, "/proj/app/x.js")
         assert _lib(tmp_path, "inherit", parent, parent).returncode == 1
         # the live grant's admitted list must not be reset by a self-inherit
@@ -267,7 +282,7 @@ class TestGrantInheritance:
         aid = f"agent-{uuid.uuid4().hex[:8]}"
         cache.mkdir(parents=True)
         (cache / f"writ-session-{parent}.json").write_text(json.dumps({"mode": "work"}))
-        _lib(cache, "mint", parent, "manual testing approved")
+        _lib(cache, "mint", parent, "manual test approved")
         env = dict(os.environ, WRIT_CACHE_DIR=str(cache))
         envelope = json.dumps({"session_id": parent, "agent_id": aid,
                                "agent_type": "writ-implementer"})

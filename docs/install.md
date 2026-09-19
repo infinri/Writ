@@ -47,7 +47,7 @@ Both bootstraps are idempotent and safe to re-run. Each does the whole install:
 
 Each accepts `--preflight` to run only the prerequisite checks (tool presence and the Python version) and exit, which is a quick way to confirm a machine is ready before committing to a full install.
 
-The global-config part exists because a plugin manifest cannot ship a permission allowlist, a statusLine, or `~/.claude/CLAUDE.md`. It merges the Writ allow/deny entries into `~/.claude/settings.json` (preserving your ordering and your non-Writ entries), sets the Writ statusLine (a foreign statusLine is left untouched), and renders `templates/CLAUDE.md` into `~/.claude/CLAUDE.md`, backing up anything it replaces. A missing `settings.json` is created. By default it never touches the `hooks` block: the plugin loader owns hooks.
+The global-config part exists because a plugin manifest cannot ship a permission allowlist, a statusLine, a top-level settings value, or `~/.claude/CLAUDE.md`. It merges the Writ allow/deny entries into `~/.claude/settings.json` (preserving your ordering and your non-Writ entries), sets the Writ statusLine (a foreign statusLine is left untouched), writes the settings keys Writ ships a default for (`outputStyle: "Concise"` and `effortLevel: "high"` today, and a value you already set is left untouched, so a machine that already carries `effortLevel: "xhigh"` keeps `xhigh` and the shipped default reaches only a file where the key is absent), and renders `templates/CLAUDE.md` into `~/.claude/CLAUDE.md`, backing up anything it replaces. A missing `settings.json` is created. By default it never touches the `hooks` block: the plugin loader owns hooks.
 
 To run either piece on its own, or to preview it:
 
@@ -90,7 +90,7 @@ Installs `writ-server.service` (waits for Neo4j, `Restart=on-failure`) and the d
 ```bash
 "$WRIT_DIR"/bin/writ status                    # daemon health + rule count
 test -f ~/.claude/commands/writ-approve.md && echo "/writ-approve installed"
-"$WRIT_DIR"/bin/writ doctor                    # 13 checks; writ doctor --fix repairs 6 of them
+"$WRIT_DIR"/bin/writ doctor                    # 22 checks; writ doctor --fix repairs 7 of them
 ```
 
 For a raw `/health` read that does not depend on `curl`:
@@ -150,6 +150,7 @@ The standalone install keeps working; the plugin path is additive. To move over:
 ## Known limitations
 
 - `patch-global-config.sh` leaves a foreign statusLine as-is; Writ's statusLine is skipped in that case.
+- The same never-clobber rule applies to the settings keys Writ ships a default for: if you have already chosen an `outputStyle`, the patcher keeps your value, prints both values, and writes nothing. Writ will never restore its own default over your choice, so the way back to `Concise` is `/config` or editing `~/.claude/settings.json` yourself. `writ doctor` reports a differing value as information rather than as a problem, which is why it does not offer a fix for it.
 - The user-commands installer overwrites identically named files in `~/.claude/commands/`.
 - Config and command changes need a Claude Code restart to take effect in a running session.
 - A plugin install patches nothing globally until the bootstrap runs; hooks still fire, but Bash permission prompts appear and the workflow instructions in `~/.claude/CLAUDE.md` are absent.

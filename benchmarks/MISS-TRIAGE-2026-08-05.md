@@ -100,7 +100,7 @@ Stage-level decomposition of the remaining 35 misses changes what they mean:
   the methodology-companion channel, not semantic retrieval. PROC-INCIDENT-001 ranks #1 on
   BOTH raw retrievers (BM25 43.95, cosine 0.672) and is then excluded by Stage-1 routing:
   retrieval quality is not the problem; channel membership is.
-- **11 misses are genuine ranking/vocabulary work** -- the real remaining surface.
+- **11 misses are genuine ranking/vocabulary work**: the real remaining surface.
 
 **Decision required (metric definition, so not changed unilaterally):** split the
 benchmark by delivery channel. Retrieval hit-rate over index-eligible targets only
@@ -111,5 +111,5 @@ which must be disclosed as such, exactly like the fixture corrections above.
 
 Also fixed during this investigation: 30 nodes had lost their BELONGS_TO category edges
 (subset `--only` imports orphan cross-type edges; a full `writ import-markdown` rebuilds
-them -- 1,061 edges, 0 dangling), which had silently forced Stage-1 into its legacy
+them: 1,061 edges, 0 dangling), which had silently forced Stage-1 into its legacy
 fallback filter.

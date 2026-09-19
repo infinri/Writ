@@ -59,6 +59,7 @@ from writ.shared.tokens import estimate_tokens
 from writ.session.approval_workflow import _validate_phase_a, apply_phase_advance
 from writ.session.commit_capture import capture_commit
 from writ.session.decision_capture import capture_decision_at_approve
+from writ.promotion import build_promotion_review_artifact
 from writ.session.gate_token import (
     # _claim_token_mutex is deliberately NOT re-exported here. This import list is the
     # route layer's monkeypatch seam, and the advance route's unbound-token fallback (the
@@ -72,6 +73,7 @@ from writ.session.gate_token import (
     gate_binding_refusal,
     gate_token_valid,
     read_gate_binding,
+    read_gate_candidate,
     read_gate_token,
 )
 from writ.session.locators import _find_plan_md, plan_md_hash
@@ -215,11 +217,18 @@ async def lifespan(app: FastAPI):
         await _db.close()
 
 
+from writ.server.transport import TransportCensusMiddleware
+
 app = FastAPI(
     title="Writ",
     description="Hybrid RAG knowledge retrieval service for AI coding rule enforcement.",
     lifespan=lifespan,
 )
+
+# Transport census (E2a). Records which transport each request arrived on and counts
+# state-touching requests that came over TCP; enforces nothing yet. See
+# writ/server/transport.py for why counting comes before enforcing.
+app.add_middleware(TransportCensusMiddleware)
 
 
 # Routes whose volume would drown the stream without telling anyone anything. /health is
@@ -298,8 +307,8 @@ from writ.server.models import (  # noqa: E402
     SessionInvalidateGateRequest,
     SessionModeSetRequest,
     SessionPromoteCandidateRequest,
+    SessionPromotionReviewRequest,
     SessionQualityJudgmentRequest,
-    SessionUpdateRequest,
     SessionVerificationEvidenceRequest,
 )
 

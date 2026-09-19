@@ -17,7 +17,6 @@
 SKILL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 source "$SKILL_DIR/bin/lib/common.sh"
 
-HOOK_START_NS=$(hook_timer_start)
 
 SESSION_HELPER="$SKILL_DIR/bin/lib/writ-session.py"
 WRIT_HOST="${WRIT_HOST:-localhost}"
@@ -31,6 +30,12 @@ FILE="$HOOK_FILE_PATH"
 # Session ID (needed for sentinel-path lookup even before file checks)
 SESSION_ID="$HOOK_SESSION_ID"
 
+# The message BOTH exit-2 sites print. One string, because the two sites express the same
+# refusal at different moments (this turn's tail end, and the next turn's top of file) and
+# two wordings would drift. It names the gate that was cleared, the action, and who may take
+# it: only the user can re-approve, so a message that said "fix it" would be a deadlock.
+VALIDATE_RULES_BLOCK_MSG="[Writ: phase-a gate invalidated] A rule that was already loaded at planning time was violated, so the phase-a approval has been CLEARED and every source write stays blocked until it is approved again. Tell the user which rule was violated and what the plan has to change, then ask them to reply exactly \"approved\" in their own turn. Only the user can re-approve phase-a; nothing you can run does it."
+
 # Sentinel-driven gate-invalidation signal: a prior run (or the boundary-mode
 # block below) writes a per-session sentinel when it routes a finding to
 # invalidate-gate. Honor that signal as the only path to exit 2; remove the
@@ -43,6 +48,12 @@ if [ -n "$SESSION_ID" ]; then
     SENTINEL_PATH="${TMPDIR:-/tmp}/writ-validate-rules-invalidated-${SESSION_ID}"
     if [ -f "$SENTINEL_PATH" ]; then
         rm -f "$SENTINEL_PATH"
+        # THIS SITE WAS A BARE `exit 2` WITH NO ECHO AND NO STDERR AT ALL. The exit code
+        # blocks the turn, and the only text explaining why was printed by a different
+        # branch one full turn earlier, so the strongest PostToolUse refusal in the system
+        # arrived silent. A refusal that names no action is a deadlock, not a control.
+        # Additive: the exit code is unchanged, and only the message is new.
+        echo "$VALIDATE_RULES_BLOCK_MSG" >&2
         exit 2
     fi
 fi
@@ -108,7 +119,7 @@ request = {
 }
 print(json.dumps(request))
 " "$CODE" "$FILE" "$PHASE" "$CONTEXT" 2>/dev/null | \
-    curl -s --connect-timeout 0.5 --max-time 15 \
+    curl ${WRIT_CURL_TRANSPORT} -s --connect-timeout 0.5 --max-time 15 \
         -X POST "$ANALYZE_URL" \
         -H "Content-Type: application/json" \
         -d @- 2>/dev/null) || true
@@ -171,7 +182,6 @@ print('no')
         fi
     fi
 
-    hook_timer_end "$HOOK_START_NS" "validate-rules" "$SESSION_ID" "$MODE"
     exit 0
 fi
 
@@ -242,7 +252,6 @@ PLAN_FILE="$HELPER_PLAN_FILE"
 if [ -z "$PLAN_FILE" ]; then
     # No plan.md -> warning mode only (Tier 1 behavior). Silent (exit 0) when
     # there are no confirmed violations; advisory (exit 1) when there are.
-    hook_timer_end "$HOOK_START_NS" "validate-rules" "$SESSION_ID" "$MODE"
     exit "$WARN_EXIT"
 fi
 
@@ -268,7 +277,20 @@ session_id = sys.argv[1]
 helper = sys.argv[2]
 plan_file = sys.argv[3]
 project_root = sys.argv[4]
-cache = json.loads(sys.argv[5])
+try:
+    cache = json.loads(sys.argv[5])
+except (json.JSONDecodeError, ValueError) as _e:
+    # PSR-006 bug class, and this was the last unguarded argv callsite in the tree.
+    # Both this block's stdout and its stderr are pointed at the user's stderr by the
+    # invocation below (2>&1 >&2), so an unhandled JSONDecodeError here surfaces a raw
+    # traceback in the UI, which is the exact symptom PSR-006 reported. An unreadable
+    # cache means no loaded rules, so every finding routes as if nothing was cited,
+    # which is the conservative direction for a gate.
+    sys.stderr.write(
+        f'[writ-hook json.loads recovery] argv[5] (cache) in validate-rules.sh: {_e}\n'
+        f'  len={len(sys.argv[5])} sample={sys.argv[5][:200]!r}\n'
+    )
+    cache = {}
 sentinel_path = sys.argv[7]
 
 loaded_rule_ids = {r['rule_id'] for r in cache.get('loaded_rules', [])}
@@ -286,7 +308,7 @@ for f in findings:
 
     if rid not in loaded_rule_ids:
         # New finding -- rule wasn't available at planning time
-        print(f'[Writ: new finding] {rid} not in session rules -- warning only.', file=sys.stderr)
+        print(f'[Writ: new finding] {rid} not in session rules, warning only.', file=sys.stderr)
         continue
 
     # Rule was available at planning time -- gate invalidation
@@ -310,12 +332,21 @@ for f in findings:
 # Clear pending violations after phase-boundary scan
 _writ_session clear-pending-violations "$SESSION_ID" 2>/dev/null || true
 
-hook_timer_end "$HOOK_START_NS" "validate-rules" "$SESSION_ID" "$MODE"
 
 # Sentinel-driven final exit. Exit 2 only when the gate-invalidation block
 # wrote the sentinel; remove it after reading so the next run starts clean.
+# Same message as the top-of-file site, for the same reason: this exit 2 was bare too.
+# The findings report a few lines above already wrote to stderr on this path, which is
+# exactly why the drill isolates the fix at the OTHER site: a bare non-empty check here
+# would pass whether or not the echo exists.
+#
+# The echo and the exit stay TIGHT against the guard on purpose:
+# tests/test_exit_code_audit.py scans a fixed window of lines after
+# `if [ -f "$SENTINEL_PATH" ]` for a bare `exit 2`, so commentary inside the block pushes
+# the exit out of that window and reads as a missing blocking path.
 if [ -f "$SENTINEL_PATH" ]; then
     rm -f "$SENTINEL_PATH"
+    echo "$VALIDATE_RULES_BLOCK_MSG" >&2
     exit 2
 fi
 exit 0

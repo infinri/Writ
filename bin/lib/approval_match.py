@@ -9,88 +9,143 @@ The caller passes an already-lowercased, already-stripped prompt (the hook's
 PROMPT_LOWER and the test wrapper both lower+strip first). is_approval may
 .strip() defensively but does not change the matching semantics.
 
-TWO TIERS, AND ONLY ONE OF THEM CAN ADVANCE A GATE (cycle 1). is_approval stays the
-exact-tier predicate, unchanged: it decides what mints a token and advances. classify()
-adds a middle tier for the case that cost a turn on 2026-08-10, "ok remember we want to
-fix all our findings, approved", which is a genuine approval that hits none of the
-anchored patterns below. The embedded tier ASKS instead of advancing, so recall goes up
-while the set of things that can advance a gate does not widen.
+TWO TIERS, AND ONLY ONE OF THEM CAN ADVANCE A GATE. is_approval is the exact-tier
+predicate and accepts exactly one word, `approved`: it decides what mints a token and
+advances. classify() adds a middle tier for the case that cost a turn on 2026-08-10, "ok
+remember we want to fix all our findings, approved", which is a genuine approval that is
+not the bare word. The embedded tier ASKS instead of advancing, so recall stays high while
+the set of things that can advance a gate is one phrase wide.
+
+A FOURTH TIER, "override", is the whole prompt `approved anyway`. It authorizes the same
+act as the exact tier, with one requirement waived: the evidence that the preceding
+assistant turn actually asked for the approval. It exists because a fail-closed evidence
+check whose refusal names no way out would be a deadlock the moment the transcript became
+unreadable for a whole session. See OVERRIDE_PHRASE / is_override.
+
+A THIRD TIER, "replan", authorizes a DIFFERENT act, and it is separate for the same
+one-phrase-by-user-directive reason the exact tier was narrowed to one word. `replan
+approved` re-opens planning: it returns a work session to the planning phase and clears
+both approved gates. That is destructive, so it must never be reachable from the bare word
+`approved`, which a user may type during implementation about anything at all. See
+REPLAN_PHRASE / is_replan_request. is_approval is UNTOUCHED by that tier, so every existing
+mint and advance path behaves byte for byte as it did.
+
+The exact tier was narrowed from seventeen phrases plus fuzzy matching plus seven regex
+shapes to that single word, by user directive, after a message merely DISCUSSING approval
+phrases fired both this predicate and the manual-testing grant. See is_approval.
 """
 
 import re
 import sys
 
 
-def _levenshtein(s1: str, s2: str) -> int:
-    if len(s1) < len(s2):
-        return _levenshtein(s2, s1)
-    if len(s2) == 0:
-        return len(s1)
-    prev = range(len(s2) + 1)
-    for i, c1 in enumerate(s1):
-        curr = [i + 1]
-        for j, c2 in enumerate(s2):
-            curr.append(min(prev[j + 1] + 1, curr[j] + 1, prev[j] + (c1 != c2)))
-        prev = curr
-    return prev[-1]
-
-
 def is_approval(prompt: str) -> bool:
-    """Return True if the (lowercased) prompt is a human approval signal.
+    """Return True only for the exact word `approved`.
 
-    Pure function, no I/O, fail-closed: any internal error returns False so a
-    hook defect degrades to "no approval detected" (the safe default).
+    ONE PHRASE, BY USER DIRECTIVE. This predicate mints the gate token that advances a
+    phase, so its trigger surface is the set of words a user would deliberately choose and
+    nothing else. What was deleted, and why each had to go:
+
+      * a seventeen-member phrase set including `ok`, `okay`, `y`, `yes`, `go`, `do it` and
+        `continue`. Every one of those is ordinary conversational acknowledgement, and each
+        minted a token.
+      * a prefix-stripping retry (`ok approved`, `sure proceed`), which turned a sentence
+        that merely began with an approval word into an approval.
+      * a Levenshtein distance <= 2 pass over approve/proceed/accept for short prompts. It
+        accepted the typo `except`, which is a real word with an unrelated meaning.
+      * seven regex shapes, including `approved and <short instruction>` and a
+        `phase<a-d> approved` form that never matched the hyphenated spelling users type,
+        because the pattern's whitespace class cannot cross a hyphen.
+
+    Why the mint deserves this and the claim side did not: a token minted when no phase gate
+    is pending carries an EMPTY gate line, and the empty-gate token is exactly what the
+    promotion route accepts as a canon-write credential. So a casual `ok` left a durable
+    credential in /tmp. Narrowing the trigger removes that without touching the binding or
+    the atomic claim, which were already sound.
+
+    Trailing `.`/`!`/`,` are still stripped: a user typing a full stop has not changed their
+    mind. Case and surrounding whitespace are the caller's job (the hook passes an
+    already-lowered, already-stripped prompt) and are handled defensively here anyway.
+
+    Pure function, no I/O, fail-closed: any internal error returns False so a defect
+    degrades to "no approval detected", which is the safe direction.
     """
     try:
-        prompt = (prompt or "").strip()
-
-        exact = {
-            'approved', 'approve', 'lgtm', 'proceed', 'go ahead',
-            'looks good', 'ship it', 'yes', 'yep', 'y', 'ok', 'okay',
-            'go', 'do it', 'continue', 'accepted', 'accept',
-        }
-
-        clean = re.sub(r'[.!,]+$', '', prompt.strip())
-
-        if clean in exact:
-            return True
-
-        # Strip common prefix words and re-check exact match
-        prefixes = ('ok ', 'okay ', 'sure ', 'yeah ', 'yes ', 'yep ', 'alright ')
-        stripped = clean
-        for p in prefixes:
-            if clean.startswith(p):
-                stripped = re.sub(r'^' + re.escape(p) + r'[,]?\s*', '', clean)
-                break
-        if stripped != clean and stripped in exact:
-            return True
-
-        fuzzy_targets = ['approved', 'approve', 'proceed', 'accepted', 'accept']
-        if len(clean) <= 12:
-            for target in fuzzy_targets:
-                if _levenshtein(clean, target) <= 2:
-                    return True
-
-        if len(prompt) < 120:
-            approval_words = r'(?:approved?|proceed|go ahead|continue|accept(?:ed)?|lgtm|looks? good|ship it)'
-            prefix_words = r'(?:ok|okay|sure|yeah|yes|yep|alright)'
-            patterns = [
-                r'^(?:yes|yep|yeah),?\s*' + approval_words,
-                r'^' + approval_words + r'\s*[.!]*$',
-                r'^(?:phase\s*[a-d]|test.skeletons?)\s*(?:approved?|lgtm)\s*[.!]*$',
-                r'^(?:approve|create)\s+(?:phase|gate)',
-                # Prefix word + optional comma/space + approval word (+ optional trailing context)
-                r'^' + prefix_words + r'[,.]?\s+' + approval_words,
-                # Approval word + conjunction/comma + short trailing instruction.
-                # Precision signal: user approves AND issues an instruction (not
-                # a sentence merely beginning with an approval word).
-                r'^' + approval_words + r'\s*(?:,|\s+(?:and|then|plus|&))\s+[\w][\w ,]*[.!]*$',
-            ]
-            for p in patterns:
-                if re.match(p, prompt):
-                    return True
-
+        prompt = (prompt or "").strip().lower()
+        return re.sub(r"[.!,]+$", "", prompt).strip() == "approved"
+    except Exception:
         return False
+
+
+# The one phrase that re-opens planning, matched as the WHOLE prompt. SINGLE DEFINITION:
+# the hook advertises it, gates.py's implementation-phase refusal names it, and the audit
+# row records it, and all three have to be the same bytes or the user is told to type
+# something that does not fire.
+REPLAN_PHRASE = "replan approved"
+
+
+def is_replan_request(prompt: str) -> bool:
+    """Return True only when the WHOLE prompt is `replan approved`.
+
+    WHOLE-PROMPT EQUALITY IS THE GUARD, not a cleverer regex. This phrase clears two
+    approved gates, so the requirement is that it cannot be a prefix, a suffix, or a
+    substring of an ordinary sentence, and equality gives that structurally: `do not
+    replan`, `replan not approved`, `should we replan approved?` and `replan approved
+    because the schema changed` are all DIFFERENT STRINGS, so none of them can fire. The
+    last of those still reaches the embedded tier (it contains `approved`), which asks
+    instead of acting -- the right answer for a destructive operation stated loosely.
+
+    Normalization is byte-for-byte is_approval's: lowercase, strip surrounding whitespace,
+    strip trailing `.`/`!`/`,`. A user typing a full stop has not changed their mind, and
+    the two predicates must not disagree about what "the whole prompt" is.
+
+    Pure function, no I/O, fail-closed: any internal error returns False, so a defect
+    degrades to "no re-open requested", which is the safe direction for a reset.
+    """
+    try:
+        prompt = (prompt or "").strip().lower()
+        return re.sub(r"[.!,]+$", "", prompt).strip() == REPLAN_PHRASE
+    except Exception:
+        return False
+
+
+# The one phrase that WAIVES the evidence requirement, matched as the WHOLE prompt.
+# SINGLE DEFINITION, for the same reason REPLAN_PHRASE is: auto-approve-gate.sh reads this
+# constant and prints it in the ask directive, so the phrase the user is told to type and
+# the phrase that fires are the same bytes by construction. A one-character drift here
+# would tell the user to type something inert, which is exactly the deadlock this tier
+# exists to prevent.
+OVERRIDE_PHRASE = "approved anyway"
+
+
+def is_override(prompt: str) -> bool:
+    """Return True only when the WHOLE prompt is `approved anyway`.
+
+    WHY THIS TIER EXISTS AT ALL. The exact tier now requires evidence that the preceding
+    assistant turn asked for the approval, and it fails closed: no transcript_path, an
+    unreadable file, no assistant row and no marker all produce one question and no
+    advance. That direction is right, and it has a failure mode of its own. If
+    transcript_path were ever absent for a whole session, every approval would ask
+    forever and no gate could ever advance, and a refusal whose message names no way out
+    is a deadlock rather than a control. This phrase is the way out, and the hook's ask
+    directive names it verbatim so nobody has to remember it.
+
+    WHOLE-PROMPT EQUALITY IS THE GUARD, byte for byte as it is for REPLAN_PHRASE.
+    `approved anyway because the tests pass` is a DIFFERENT STRING, so it cannot fire; it
+    reaches the embedded tier, which asks, and that is the right answer for a waiver
+    stated loosely. An environment-variable escape was rejected in its place: it would be
+    invisible to the user in the moment they need it.
+
+    Normalization is byte-for-byte is_approval's: lowercase, strip surrounding whitespace,
+    strip trailing `.`/`!`/`,`. The three predicates must not disagree about what "the
+    whole prompt" is.
+
+    Pure function, no I/O, fail-closed: any internal error returns False, so a defect
+    degrades to "no override requested", which leaves the evidence requirement in force.
+    """
+    try:
+        prompt = (prompt or "").strip().lower()
+        return re.sub(r"[.!,]+$", "", prompt).strip() == OVERRIDE_PHRASE
     except Exception:
         return False
 
@@ -120,14 +175,24 @@ _EMBEDDED_MAX_CHARS = 200
 
 
 def classify(prompt: str) -> str:
-    """Return the approval tier: "exact", "embedded", or "none".
+    """Return the approval tier: "exact", "replan", "override", "embedded", or "none".
 
     "exact" is precisely what is_approval accepts, so today's mint-and-advance behavior
-    is preserved by construction. "embedded" is a strong approval word inside a longer
-    sentence: the hook ASKS the user to confirm and advances nothing, because the
-    expensive mistake is advancing a gate the user did not mean to approve. "none" is
-    everything else, and the hook does nothing at all for it (no directive, no telemetry
-    row, no project-root walk, no mode lookup).
+    is preserved by construction. "replan" is the whole-prompt re-open phrase, which
+    authorizes clearing the approved gates and nothing else. "embedded" is a strong
+    approval word inside a longer sentence: the hook ASKS the user to confirm and advances
+    nothing, because the expensive mistake is advancing a gate the user did not mean to
+    approve. "none" is everything else, and the hook does nothing at all for it (no
+    directive, no telemetry row, no project-root walk, no mode lookup).
+
+    "override" is the whole-prompt phrase `approved anyway`, which runs the exact tier's
+    mint-and-advance with the evidence step waived. See is_override for why a tier exists
+    for it rather than an environment variable.
+
+    THE REPLAN AND OVERRIDE CHECKS RUN AHEAD OF THE EMBEDDED CHECK, and that order is
+    load-bearing for both, for the same reason: each phrase CONTAINS the word `approved`,
+    so the embedded regex matches it, and either one would otherwise classify as
+    "embedded" and be answered with a question instead of the act the user asked for.
 
     Pure function, no I/O, fail-closed: any internal error returns "none".
     """
@@ -135,6 +200,10 @@ def classify(prompt: str) -> str:
         prompt = (prompt or "").strip()
         if is_approval(prompt):
             return "exact"
+        if is_replan_request(prompt):
+            return "replan"
+        if is_override(prompt):
+            return "override"
         if not prompt or len(prompt) >= _EMBEDDED_MAX_CHARS:
             return "none"
         if prompt.endswith("?"):

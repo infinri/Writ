@@ -120,10 +120,23 @@ def _project_with_test_skeleton(tmp_path) -> str:
     request with no resolvable root is refused before the claim is reached. Supplying a
     root that genuinely passes _validate_test_skeletons keeps these tests aimed at
     concurrency instead of accidentally re-testing validation.
+
+    The plan.md is part of that, not scenery: the gate judges the approved plan's own
+    ## Files test entries rather than any test file in the repo, so a root carrying the
+    skeleton and no plan is REFUSED before the claim is ever reached. A refused advance
+    would leave the concurrency assertions below green for the wrong reason (no request
+    advances, so no request double-advances), which retires the guard while looking
+    healthy. The plan is what keeps the advance SUCCEEDING, which is the only state in
+    which the claim is under test at all.
     """
     tests_dir = tmp_path / "proj" / "tests"
     tests_dir.mkdir(parents=True, exist_ok=True)
     (tests_dir / "test_skeleton.py").write_text("def test_placeholder():\n    assert True\n")
+    (tmp_path / "proj" / "plan.md").write_text(
+        "# Plan: a fixture\n\n"
+        "## Files\n\n"
+        "- `tests/test_skeleton.py` (create) -- the skeleton the test-skeletons gate judges\n"
+    )
     return str(tmp_path / "proj")
 
 

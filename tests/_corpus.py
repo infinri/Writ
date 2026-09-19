@@ -14,19 +14,23 @@ import concurrent.futures
 import subprocess
 from pathlib import Path
 
+from tests._inventory import corpus_floor
 from tests._writ_cmd import WRIT_CMD_PREFIX
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Complete-corpus expectations; kept in step with the bible/ corpus.
-EXPECTED = {"SubagentRole": 5, "Playbook": 15, "Skill": 13, "Phase": 20}
-MIN_RULES = 280
+# Complete-corpus expectations, DERIVED from the tracked writ-corpus.cypher rather than
+# written down here. Hand-written, this map floored four labels plus Rule while _LABELS
+# declared eleven and named neither Abstraction nor Category, so is_complete() returned
+# True on a graph holding ZERO AntiPattern, Technique, ForbiddenResponse,
+# PressureScenario, Rationalization or WorkedExample and ensure_corpus() then no-opped on
+# it. Deriving the label LIST from the same source is what pulls those labels in without
+# anyone remembering them, and what lets a label type added to the corpus later enter the
+# floor the same way.
+EXPECTED = corpus_floor()
+MIN_RULES = EXPECTED["Rule"]
 
-_LABELS = [
-    "Rule", "Skill", "Playbook", "AntiPattern", "Phase", "SubagentRole",
-    "Technique", "ForbiddenResponse", "PressureScenario", "Rationalization",
-    "WorkedExample",
-]
+_LABELS = sorted(EXPECTED)
 
 
 def classify_corpus_state(
@@ -156,10 +160,34 @@ def clear_label(label: str) -> int:
     return _run_coro(_q)
 
 
+def corpus_shortfall(counts: dict[str, int]) -> dict[str, tuple[int, int]]:
+    """`{label: (live, required)}` for every declared label below the floor.
+
+    THE VERDICT IS A MAP, NOT A BOOL, and that is the whole point: a census that fails
+    the floor can then be reported BY NAME with its live and required count, which is what
+    the session-start refusal prints. "The corpus is incomplete" names no label and
+    therefore no action.
+
+    A label absent from `counts` entirely counts as zero rather than as satisfied. That
+    is the measured shape of the defect this replaces: the census was projected onto a
+    hand-written label list, so Abstraction and Category carried no KEY at all, and a
+    floor that only compared the keys it was handed could not see them.
+
+    Labels the census carries but the corpus does not declare are not a shortfall. The
+    floor is a minimum, so a graph holding more labels or more nodes than the tracked
+    dump passes: adding to `bible/` before `writ export-cypher` runs is the common case.
+    """
+    return {
+        label: (counts.get(label, 0), required)
+        for label, required in EXPECTED.items()
+        if counts.get(label, 0) < required
+    }
+
+
 def is_complete(counts: dict[str, int] | None = None) -> bool:
-    """True if the live graph has the full corpus (all methodology types at expected counts)."""
+    """True if the live graph has the full corpus (every declared label at or above the floor)."""
     c = counts if counts is not None else methodology_counts()
-    return c.get("Rule", 0) >= MIN_RULES and all(c.get(k, 0) >= v for k, v in EXPECTED.items())
+    return not corpus_shortfall(c)
 
 
 def graph_is_warm() -> bool:
@@ -173,6 +201,55 @@ def graph_is_warm() -> bool:
         return neo4j_reachable() and is_complete()
     except Exception:  # noqa: BLE001
         return False
+
+
+def require_population(count_query: str, subject: str) -> int:
+    """The ONE synchronous "count, repair, fail loud with the number it saw"
+    precondition for a graph population a test selects from. Returns the count.
+
+    Callers are fixtures that START A DAEMON, and the ORDER is the reason this is
+    synchronous and separate from `ensure_corpus`: the daemon builds its indexes
+    AT STARTUP, so this has to run and finish BEFORE the start, and a repair
+    afterwards is invisible to the process that needed it. That also rules out
+    reusing `tests/fixtures/server_routes.py::require_injection_population`,
+    which asserts nearly the right thing but is async and does not repair.
+
+    THE REPAIR IS DELEGATED, NOT REIMPLEMENTED: `ensure_corpus` above is the one
+    owner of "refill a wiped graph" (conftest and a dozen modules call it), and
+    it re-imports `bible/` FIRST, the source of truth and MERGE-only, falling
+    back to the tracked dump only where `bible/` is absent, as it is on the
+    disposable test instance.
+
+    THE LOUD HALF IS HERE, because `ensure_corpus` returns SILENTLY when it
+    cannot heal and leaves the verdict to the caller. It FAILS rather than skips,
+    which is this module's stated contract (`classify_corpus_state`: a reachable
+    but empty graph is 'empty' and must fail; only unreachable may skip), and the
+    count and the total travel in the message so a future empty graph reports a
+    missing PRECONDITION rather than surfacing as an empty-list assertion three
+    layers down.
+    """
+    import pytest
+
+    from tests._graph import count
+
+    present = count(count_query)
+    if present:
+        return present
+    ensure_corpus()
+    present = count(count_query)
+    if not present:
+        pytest.fail(
+            f"corpus precondition unmet: the graph holds {present} node(s) in "
+            f"{subject}, even after tests/_corpus.py::ensure_corpus, and "
+            f"{count('MATCH (n) RETURN count(n)')} nodes in total. A daemon started "
+            f"now would index an empty corpus, so every retrieval assertion behind "
+            f"this precondition would fail as an empty RESULT instead of as a missing "
+            f"PRECONDITION. Restore with tests/_corpus.py::ensure_corpus() or any "
+            f"pytest session (its session-start preflight rebuilds). The query was: "
+            f"{count_query}",
+            pytrace=False,
+        )
+    return present
 
 
 def ensure_corpus() -> None:

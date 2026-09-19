@@ -138,9 +138,22 @@ class TestSubagentGateBypass:
 
 class TestSubagentUnlimitedBudget:
     def test_subagent_start_marks_is_subagent(self) -> None:
+        """The hook must establish a sub-agent cache. It no longer holds the assignment.
+
+        This grepped the hook for the literal `is_subagent` and broke when the inheritance
+        rules moved into writ/session/subagent_seed.py, so that the lazily seeded path
+        (for sub-agents that never get a SubagentStart) could not drift from this one. The
+        behaviour is unchanged and is proven by RUNNING the hook in
+        tests/test_subagent_seed.py::TestStartHookUsesTheSharedSeeder; what belongs here is
+        that the hook still delegates, and that it declares which path made the cache.
+        """
         content = SUBAGENT_START_HOOK.read_text()
-        assert "is_subagent" in content, (
-            "writ-subagent-start.sh must set is_subagent: true on the fresh cache"
+        assert "seed_subagent_cache" in content, (
+            "writ-subagent-start.sh must create the sub-agent cache via the shared seeder"
+        )
+        assert "CACHE_SOURCE_START" in content, (
+            "the cache it creates must be marked as a start-hook cache: the write gate keys "
+            "the sub-agent bypass on that, so an unmarked cache would lose its authority"
         )
 
     def test_should_skip_returns_false_for_subagent(self, tmp_path: Path, monkeypatch) -> None:

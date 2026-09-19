@@ -56,7 +56,9 @@ LOG="$LOG_DIR/last-test-run.log"
 declare -A RUNNER_CMD RUNNER_CFG RUNNER_FILES RUNNER_FMT
 while IFS= read -r tf; do
     [ -z "$tf" ] && continue
-    INFO=$(python3 "$TEST_PATHS_HELPER" runner-for "$tf" 2>/dev/null)
+    # --session is what makes the PHPUnit cache directory per-session; without it
+    # the substitution falls back to the shared root and two sessions collide.
+    INFO=$(python3 "$TEST_PATHS_HELPER" runner-for "$tf" --session "$SESSION_ID" 2>/dev/null)
     CMD=$(echo "$INFO" | sed -n '1p')
     CFG=$(echo "$INFO" | sed -n '2p')
     [ -z "$CMD" ] && continue
@@ -85,7 +87,25 @@ run_group() {
     local rc=0
     {
         echo "===== $fmt: $cmd ====="
-        timeout 60s bash -c "$cmd" 2>&1
+        # HYGIENE, NOT THE GUARD. The log below is handed to the agent to read
+        # (`Full log: <path>`), and a log full of escape bytes costs tokens and
+        # reads badly, so color is suppressed at the producer. The GUARD against
+        # colored output disabling this refusal lives in bin/lib/emit-summary.py,
+        # which strips SGR escapes before its line-anchored patterns run. It has
+        # to live there and not here: `runner_command` is project configuration
+        # (bin/lib/test_paths.py reads `<cwd>/.claude/writ.json`), so a project
+        # can configure `pytest --color=yes`, and `--color` outranks every
+        # variable below. Deleting this prefix must NOT re-disable the refusal.
+        #
+        # The two variables are the ones in pytest's own precedence chain, read
+        # off `_pytest/_io/terminalwriter.py` rather than swept speculatively:
+        # `PY_COLORS=1` wins, then `PY_COLORS=0`, then a truthy `NO_COLOR`, then
+        # a truthy `FORCE_COLOR`, then isatty. So `NO_COLOR=1` beats FORCE_COLOR
+        # but NOT `PY_COLORS=1`, which is the whole reason both are unset.
+        # `env` execs `timeout`, so the status `|| rc=$?` captures is still
+        # timeout's, 124 on a timeout included, and the child is the only process
+        # affected: nothing is exported into this hook.
+        env -u FORCE_COLOR -u PY_COLORS NO_COLOR=1 timeout 60s bash -c "$cmd" 2>&1
     } >> "$LOG" || rc=$?
     if [ $rc -ne 0 ]; then
         OVERALL_RC=$rc
@@ -144,5 +164,11 @@ SUMMARY=$(python3 "$WRIT_DIR/bin/lib/emit-summary.py" \
     --rule "ENF-TEST-001" \
     --label "test failure(s)" 2>&1)
 [ -z "$SUMMARY" ] && exit 0
+# The hook_execution rows above say the runner RAN; none of them says this hook REFUSED the
+# stop. Found while enumerating the refusing surfaces beside enforce-violations.sh: same
+# class of gap, so fixing only the other one would have been fixing the string instead of
+# the class. The exit code stays 1, because flipping it to 2 would start blocking real turns and
+# needs the user's explicit consent, so the drill pins it at 1 rather than changing it.
+log_gate_decision "pending-tests" "deny" "$SUMMARY" "$SESSION_ID"
 echo "$SUMMARY" >&2
 exit 1

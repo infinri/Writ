@@ -12,7 +12,7 @@ import json
 import sys
 from datetime import datetime, timezone
 
-from writ.session.cache import _read_cache, _write_cache, mutate_cache
+from writ.session.cache import _read_cache, mutate_cache
 from writ.session.config import (
     DEFAULT_SESSION_BUDGET,
     DEFAULT_ALWAYS_ON_CAP,
@@ -20,6 +20,14 @@ from writ.session.config import (
 from writ.session.citations import _append_citation
 from writ.session.mode_engine import _VALID_SOURCE_TYPES
 from writ.shared.tokens import cost_for
+
+# The one-line stand-in cmd_format renders in place of WHEN:/RULE: for a ranked hit the
+# always-on channel already delivered this turn. It names the rule so the pointer has a
+# referent, and it names the block by the banner render_always_on actually emits
+# ("=== ALWAYS-ACTIVE RULES ==="), so the reader can find the text rather than being
+# told, vaguely, that it exists somewhere. It must not contain the substrings "WHEN:"
+# or "RULE:", which are what suppression is measured by.
+_ALWAYS_ACTIVE_POINTER = "SEE: [{rule_id}] in the ALWAYS-ACTIVE RULES block above"
 
 
 def _upd_add_rules(cache: dict, args: list[str], i: int) -> int:
@@ -368,7 +376,7 @@ def cmd_format() -> None:
     for rule in rules:
         # Summary-mode abstraction entries (_summary_with_abstractions) carry an
         # abstraction_id + summary, not rule fields. Render them as the abstraction summary
-        # they are -- otherwise the rule formatter shows "[UNKNOWN] (?, ?, ?) score=0.000"
+        # they are -- otherwise the rule formatter shows "[UNKNOWN] (?, ?) score=0.000"
         # and drops the summary text entirely (the observed garbage-injection bug).
         if rule.get("abstraction_id"):
             covered = len(rule.get("rule_ids", []))
@@ -384,18 +392,35 @@ def cmd_format() -> None:
         rid = rule.get("rule_id", "UNKNOWN")
         severity = rule.get("severity", "?")
         authority = rule.get("authority", "?")
-        domain = rule.get("domain", "?")
         score = rule.get("score", 0)
 
-        lines.append(f"[{rid}] ({severity}, {authority}, {domain}) score={score:.3f}")
+        # severity always; authority only when it is not "human" (405 of 406 corpus
+        # nodes). Absence stays "?". See docs/adr/ADR-ranked-header-fields.md.
+        slot = severity if authority == "human" else f"{severity}, {authority}"
+        lines.append(f"[{rid}] ({slot}) score={score:.3f}")
 
-        trigger = rule.get("trigger", "")
-        if trigger:
-            lines.append(f"WHEN: {trigger}")
+        # Field-level dedup against this turn's always-on channel. `already_injected`
+        # is set by writ.retrieval.prompt_bundle.tag_overlap for a ranked hit whose
+        # trigger and statement are already sitting a few hundred bytes higher in the
+        # same context window, inside the ALWAYS-ACTIVE RULES block. Re-rendering them
+        # buys nothing, so the entry points at that block instead and keeps only the
+        # violation and pass_example, which the always-on channel never carries.
+        #
+        # STANDARD AND FULL ONLY. Summary mode renders trigger and statement and
+        # nothing else, so a suppressed entry there would carry zero content; dropping
+        # it instead would desynchronize the "N rules" header and the WRIT_META rule
+        # ids from what was actually shown. Summary mode is left exactly as it was.
+        # See docs/adr/ADR-alwayson-ranked-field-dedup.md.
+        if rule.get("already_injected") and mode in ("standard", "full"):
+            lines.append(_ALWAYS_ACTIVE_POINTER.format(rule_id=rid))
+        else:
+            trigger = rule.get("trigger", "")
+            if trigger:
+                lines.append(f"WHEN: {trigger}")
 
-        statement = rule.get("statement", "")
-        if statement:
-            lines.append(f"RULE: {statement}")
+            statement = rule.get("statement", "")
+            if statement:
+                lines.append(f"RULE: {statement}")
 
         if mode in ("standard", "full"):
             violation = rule.get("violation", "")
@@ -409,9 +434,24 @@ def cmd_format() -> None:
             rationale = rule.get("rationale", "")
             if rationale:
                 lines.append(f"RATIONALE: {rationale}")
+
+        # Standard as well as full: the projection carries relationships in both, and
+        # standard is the mode the default budget actually selects. Keeping this inside
+        # the full branch was the second half of the same defect, because widening the
+        # projection alone would ship the field to the JSON consumer and print nothing.
+        if mode in ("standard", "full"):
             relationships = rule.get("relationships", [])
             if relationships:
-                rel_ids = [r.get("rule_id", "?") for r in relationships if isinstance(r, dict)]
+                # Deduplicated, first-seen order preserved. The adjacency cache holds one
+                # entry per DIRECTION, so a reciprocal edge yields two entries with the
+                # same rule_id and a different `direction`. This line renders the id
+                # alone, so the second copy carries no information and only costs tokens:
+                # API-ERROR-001's real neighbour list printed six ids for four rules.
+                # `relationships` itself is left intact, so a JSON consumer still sees
+                # direction; only the rendered line collapses.
+                rel_ids = list(dict.fromkeys(
+                    r.get("rule_id", "?") for r in relationships if isinstance(r, dict)
+                ))
                 if rel_ids:
                     lines.append(f"RELATED: {', '.join(rel_ids)}")
 

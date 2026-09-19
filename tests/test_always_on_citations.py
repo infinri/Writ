@@ -27,20 +27,21 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
-import sys
 import uuid
 
 import pytest
 
-# autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
-# The `mode set work` call below sits behind a daemon-liveness skip, which is why the
-# sentinel probe that found the other 26 modules reported this one clean: with no daemon
-# listening the test skipped and never reached the deletion.
+# autouse: pins cwd to a sandbox so a stray `mode set`/cache write cannot touch
+# THIS repo's own gate artifacts.
 from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
 
+# ROUTE fixtures (Decision 4, plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3): no
+# daemon, no socket. Imported explicitly per this repo's convention
+# (tests/fixtures/server_routes.py's own module docstring) -- never registered
+# in a root conftest.
+from tests.fixtures.server_routes import isolated_cache, route_db, route_pipeline
+
 SKILL_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
-SESSION_HELPER = os.path.join(SKILL_ROOT, "bin", "lib", "writ-session.py")
 QUERY_ROUTE = os.path.join(SKILL_ROOT, "writ", "server", "routes", "query.py")
 
 # A real always-on rule and a real ranked rule, for the "widened not disabled" checks.
@@ -244,51 +245,67 @@ class TestEndToEnd:
 
     Driven through the actual recording path. A test that writes always_on_rule_ids
     itself would pass even with the wiring absent, which is the gap that let this ship.
+
+    ROUTE (Decision 4, plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3): /prompt-bundle
+    is driven in process over route_db, route_pipeline and isolated_cache -- the
+    route's server-side cache write and this test's own _read_cache resolve the
+    SAME dir, and nothing here depends on a daemon nothing in this suite starts.
     """
 
-    def _daemon_up(self) -> bool:
-        try:
-            from tests._daemon import _daemon_health
-            return _daemon_health() is not None
-        except Exception:
-            return False
-
-    def test_a_plan_citing_an_injected_rule_passes_the_gate(self, tmp_path):
-        if not self._daemon_up():
-            pytest.skip("test daemon not running on test port")
-        from tests._daemon import _port
+    @pytest.mark.asyncio
+    async def test_a_plan_citing_an_injected_rule_passes_and_an_uninjected_one_is_refused(
+        self, tmp_path, isolated_cache, route_db, route_pipeline
+    ):
+        from httpx import ASGITransport, AsyncClient
+        from writ.server import app
 
         session = f"aoe2e-{uuid.uuid4().hex[:8]}"
-        subprocess.run([sys.executable, SESSION_HELPER, "mode", "set", "work", session],
-                       capture_output=True)
-        try:
-            body = json.dumps({
-                "session_id": session, "mode": "work",
-                "prompt": "add a parameterized query builder",
-                "effort": "", "always_on_filter": True,
-            })
-            r = subprocess.run(
-                ["curl", "-s", "-X", "POST", f"http://localhost:{_port()}/prompt-bundle",
-                 "-H", "Content-Type: application/json", "-d", body],
-                capture_output=True, text=True,
-            )
-            data = json.loads(r.stdout)
-            assert data.get("error") is False, data
-            injected = (data.get("ao_meta") or {}).get("rule_ids") or []
-            assert injected, "the always-on channel returned no rule IDs"
+        _write_cache(session, mode="work")
 
-            from writ.session.cache import _read_cache
-            recorded = _read_cache(session).get("always_on_rule_ids") or []
-            assert set(injected) <= set(recorded), (
-                f"injected but not recorded: {sorted(set(injected) - set(recorded))}"
-            )
+        body = {
+            "session_id": session, "mode": "work",
+            "prompt": "add a parameterized query builder",
+            "always_on_filter": True,
+        }
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as ac:
+            resp = await ac.post("/prompt-bundle", json=body)
+        assert resp.status_code == 200, (
+            f"POST /prompt-bundle returned {resp.status_code}, not 200: {resp.text}"
+        )
+        data = resp.json()
+        assert data.get("error") is False, data
+        injected = (data.get("ao_meta") or {}).get("rule_ids") or []
+        assert injected, "the always-on channel returned no rule IDs"
 
-            root = tmp_path / "e2e"
-            root.mkdir()
-            (root / "pyproject.toml").write_text("[project]\nname='x'\n")
-            (root / "plan.md").write_text(_plan([injected[0]]))
-            from writ.session.approval_workflow import _validate_phase_a
-            assert _validate_phase_a(str(root), session) is None
-        finally:
-            subprocess.run([sys.executable, SESSION_HELPER, "clear", session],
-                           capture_output=True)
+        from writ.session.cache import _read_cache
+        recorded = _read_cache(session).get("always_on_rule_ids") or []
+        assert set(injected) <= set(recorded), (
+            f"injected but not recorded: {sorted(set(injected) - set(recorded))}"
+        )
+
+        root = tmp_path / "e2e"
+        root.mkdir()
+        (root / "pyproject.toml").write_text("[project]\nname='x'\n")
+        from writ.session.approval_workflow import _validate_phase_a
+
+        # POSITIVE: a plan citing an id the route actually injected this turn.
+        (root / "plan.md").write_text(_plan([injected[0]]))
+        assert _validate_phase_a(str(root), session) is None
+
+        # THE NEGATIVE CONTROL this acceptance has always needed (decision 5,
+        # module 3): `_validate_phase_a(...) is None` on the positive case alone
+        # passes just as well against a validator that ignores `## Rules
+        # Applied` entirely. A plan citing an id never injected/recorded this
+        # session must be REFUSED with the hallucinated-ids message.
+        (root / "plan.md").write_text(_plan([INVENTED]))
+        err = _validate_phase_a(str(root), session)
+        assert err is not None and "hallucinated" in err, (
+            f"a plan citing an id absent from the recorded set must be refused; got {err!r}"
+        )
+        assert INVENTED in err
+    # MUTATION: dropping the always_on_rule_ids update from the route reddens
+    # the subset assertion above; widening `loaded_ids` to accept anything
+    # reddens the refusal arm below. Either alone leaves the other green, which
+    # is what makes the pair a discrimination (decision 5, module 3).

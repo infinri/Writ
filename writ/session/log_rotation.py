@@ -36,7 +36,7 @@ from pathlib import Path
 
 from writ.shared.logging import (
     ROTATE_SIZE_BYTES,
-    _unique_archive_dest,
+    locked_archive_rename,
     log_root,
 )
 
@@ -89,14 +89,6 @@ _ARCHIVE_JSONL_RE = re.compile(
 _ARCHIVE_GZ_RE = re.compile(
     r"^(?P<stream>[A-Za-z]+)-(?P<date>\d{4}-\d{2}-\d{2})(?:-\d+)?\.jsonl\.gz$"
 )
-
-
-def _dest_for(project_dir: Path, stream: str, day: date) -> Path:
-    """A collision-safe archive destination `<project_dir>/archive/<stream>-<date>.jsonl`,
-    numeric-suffixed if that generation already exists. Delegates the same-day
-    collision logic to the router's shared `_unique_archive_dest` so the two
-    never drift (DRY-DUP-001)."""
-    return _unique_archive_dest(project_dir / "archive", stream, day)
 
 
 def _is_live_stream_file(fn: str) -> bool:
@@ -166,9 +158,9 @@ def _rotate_live(live: list[Path], now: datetime, summary: dict) -> list[Path]:
             over_age = mtime_date < today
             if not (over_size or over_age):
                 continue
-            dest = _dest_for(path.parent, path.stem, mtime_date)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            os.rename(path, dest)
+            dest = locked_archive_rename(
+                path, path.parent / "archive", path.stem, mtime_date
+            )
             summary["rotated"] += 1
             rotated.append(dest)
         except OSError:

@@ -1,0 +1,4 @@
+# GitHub reads this to render the Sponsor button on the repository page.
+# `buy_me_a_coffee` takes the BARE USERNAME, not a URL. An unrecognized key does
+# not error: GitHub simply renders no button, so a typo here fails silently.
+buy_me_a_coffee: infinri

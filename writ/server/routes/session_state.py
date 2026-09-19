@@ -33,12 +33,11 @@ from writ.server.models import (
     SessionModeSetRequest,
     SessionQualityJudgmentRequest,
     SessionReviewFindingsRequest,
-    SessionUpdateRequest,
     SessionVerificationEvidenceRequest,
 )
 from writ.session.locators import plan_md_hash
 from writ.session.mode_engine import VALID_MODES, _next_pending_gate
-from writ.shared.logging import emit
+from writ.shared.logging import emit, request_project_scope
 
 router = APIRouter()
 
@@ -51,16 +50,25 @@ async def session_read(session_id: str) -> dict[str, Any]:
     return data
 
 
-@router.post("/session/{session_id}/update")
-async def session_update(session_id: str, request: SessionUpdateRequest) -> dict[str, Any]:
-    """Update a single key in the session cache."""
-
-    def _do_update() -> None:
-        with server.writ_session.mutate_cache(session_id) as cache:
-            cache[request.key] = request.value
-
-    await asyncio.to_thread(_do_update)
-    return {"ok": True}
+# REMOVED: POST /session/{session_id}/update.
+#
+# It was `cache[key] = value` inside mutate_cache, with no authentication, no key
+# allowlist, and no Bash-gate arm naming it, so any local process could write any
+# string-valued key of the session cache. Two of those keys are gate INPUTS: eight
+# hooks call is_work_mode and exit 0 when it is not `work`, and current_phase decides
+# which gate comes next. Probed against the running daemon on a throwaway session id:
+# {"key":"current_phase","value":"implementation"} returned {"ok": true} and the
+# following GET showed the new phase.
+#
+# Deleted rather than allowlisted because a repo-wide search found ZERO production
+# callers: the route, its model, one docs row and its own tests. Anything a future
+# caller needs is a named route with a typed body and its own gate arm, which keeps
+# the permitted operations enumerable (ABS-SECURITY-024) instead of preserving a
+# general-purpose setter behind a list of forbidden keys.
+#
+# A unix socket would NOT have covered this. The agent shares the daemon's uid, so
+# socket permissions are invisible to it; the socket (Cycle E2) stops other local
+# users, this removal stops the agent.
 
 
 @router.get("/session/{session_id}/should-skip")
@@ -176,9 +184,16 @@ async def session_can_write(session_id: str, request: SessionCanWriteRequest | N
     """
     req = request or SessionCanWriteRequest()
     envelope = {"tool_input": req.tool_input}
-    result = await asyncio.to_thread(
-        server.writ_session._can_write_check, session_id, envelope, req.skill_dir
-    )
+    # The cache read is HOISTED out of _can_write_check (which accepts it) rather than
+    # added: the gate needs the project root to file its write_attempt / gate_denial rows
+    # under the caller's project instead of the daemon's cwd, and the cache is the only
+    # thing that knows it. One read either way; this way the handler can name the scope.
+    cache = await asyncio.to_thread(server.writ_session._read_cache, session_id)
+    with request_project_scope(cache.get("project_root")):
+        result = await asyncio.to_thread(
+            server.writ_session._can_write_check, session_id, envelope, req.skill_dir,
+            cache=cache,
+        )
     return {"can_write": result["can_write"], "reason": result.get("reason")}
 
 
@@ -225,8 +240,8 @@ async def session_current_phase(session_id: str) -> dict[str, Any]:
             # "" rather than null for an unset mode, matching this file's own
             # /session/{id}/mode route; the hook coalesces either to empty anyway.
             "mode": cache.get("mode", "") or "",
-            "next_gate": _next_pending_gate(cache),
-            "plan_hash": plan_md_hash(cache.get("project_root")),
+            "next_gate": _next_pending_gate(cache, session_id),
+            "plan_hash": plan_md_hash(cache.get("project_root"), session_id),
         }
 
     return await asyncio.to_thread(_get)

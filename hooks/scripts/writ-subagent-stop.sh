@@ -70,7 +70,11 @@ PARENT_TRANSCRIPT=$(parsed_field "$STDIN_JSON" "transcript_path")
 # releases its rows, and `|| true` because this hook must exit 0 on every path
 # (friction-logger.sh drains under the same guarantee).
 if [ -n "$AGENT_ID" ]; then
-    writ_event_buffer_flush "$AGENT_ID" || true
+    # AT EXIT, not here: common.sh appends this hook's own row before running exit
+    # handlers, so draining at exit flushes this hook too rather than stranding its row in
+    # a buffer it had already unlinked.
+    _writ_drain_agent_buffer() { writ_event_buffer_flush "$AGENT_ID" || true; }
+    writ_on_exit _writ_drain_agent_buffer
 else
     # Recorded rather than silent. Live SubagentStop payloads always carry agent_id
     # (verified against captured envelopes), so its absence is a broken invariant, and
@@ -85,12 +89,68 @@ if [ -z "$AGENT_ID" ]; then
     exit 0
 fi
 
-# Fallback: some Claude Code versions / nested sub-agents omit agent_type.
-# Default to "general-purpose" and log the fallback so we can track frequency.
-if [ -z "$AGENT_TYPE" ]; then
-    AGENT_TYPE="general-purpose"
+# THIS HOOK'S OWN TELEMETRY ROW IS KEYED HERE, and AGENT_ID is non-empty by the guard above.
+#
+# Measured 2026-08-27: `var/session/writ-events-unknown.buf` held 22 rows from this hook,
+# because the exit trap files under `${SESSION_ID:-${HOOK_SESSION_ID:-}}` and this hook set
+# neither. The rows were not merely late: writ-flush-events.py sweeps any buffer idle past
+# ABANDONED_SESSION_SECONDS and `unknown` is an eligible name, but writ-statusline.sh shared
+# that bucket and kept its mtime perpetually young, so the sweep never fired. One non-hook
+# held the whole bucket open.
+#
+# AGENT_ID AND NEVER PARENT_SESSION, the same agent-first rule as the drain above: a
+# sub-agent's rows belong to the sub-agent. It also lands the row in exactly the buffer
+# _writ_drain_agent_buffer flushes at exit, so the row reaches a log this turn.
+#
+# ATTRIBUTION ONLY, verified rather than assumed: nothing this hook reaches keys STATE off
+# SESSION_ID. Both python blocks below receive agent_id and parent_session explicitly on
+# argv, the tripwire rows pass their session explicitly for this very reason, the drain uses
+# AGENT_ID directly, and the name is not exported so no child can see it.
+SESSION_ID="$AGENT_ID"
+
+# THE ROLE IS RESOLVED, NOT DEFAULTED. `agent_type` is in the envelope schema and arrives
+# EMPTY for the sub-agents that never receive a SubagentStart: 10 of 10 captured envelopes
+# from that population (2026-08-27), 2,219 records corpus-wide. An ordinary Agent dispatch
+# carries it populated, probe-verified the same day, so an empty value is the signature of
+# an ungoverned spawn rather than this build's normal path. The old code rewrote the empty
+# string to the literal `general-purpose`, so those records named a role nobody observed,
+# indistinguishable from a real general-purpose dispatch.
+# The resolver reads the sidecar Claude Code writes beside the agent's transcript, falls back
+# to a role this session already stored, and reports `unknown` when nothing answered.
+# ROLE_SOURCE travels with it so a defaulted role can never be read as an observed one.
+ROLE_RESOLUTION=$(AGENT_ID="$AGENT_ID" AGENT_TYPE="$AGENT_TYPE" python3 -c '
+import os, sys
+sys.path.insert(0, sys.argv[1])
+role, source = "", "unresolved"
+try:
+    from writ.session.subagent_role import resolve_role
+    from writ.session.cache import _read_cache
+    agent_id = os.environ.get("AGENT_ID", "")
+    try:
+        cache = _read_cache(agent_id)
+    except Exception:
+        cache = None
+    role, source = resolve_role(agent_id, os.environ.get("AGENT_TYPE", ""), cache=cache)
+except Exception:
+    # An unreachable module or interpreter leaves role empty, which the caller turns into
+    # UNKNOWN. Resolution failure must not fail the hook, and must not invent a role.
+    pass
+print(role)
+print(source)
+' "$WRIT_DIR" 2>/dev/null || true)
+
+if [ -n "$ROLE_RESOLUTION" ]; then
+    AGENT_TYPE=$(printf '%s' "$ROLE_RESOLUTION" | head -1)
+    ROLE_SOURCE=$(printf '%s' "$ROLE_RESOLUTION" | sed -n 2p)
+fi
+# Belt and braces: an unreachable interpreter must still leave a record that says UNKNOWN,
+# never one that names a plausible role.
+[ -z "$AGENT_TYPE" ] && AGENT_TYPE="unknown"
+[ -z "${ROLE_SOURCE:-}" ] && ROLE_SOURCE="unresolved"
+
+if [ "$ROLE_SOURCE" = "unresolved" ]; then
     log_friction_event "$AGENT_ID" "" "subagent_type_fallback" \
-        "{\"hook\":\"writ-subagent-stop\",\"parent_session\":\"$PARENT_SESSION\"}"
+        "{\"hook\":\"writ-subagent-stop\",\"parent_session\":\"$PARENT_SESSION\",\"role_source\":\"unresolved\"}"
 fi
 
 # TRANSCRIPT TRIPWIRE: refuse to let a queued-input misdelivery be invisible.
@@ -226,6 +286,7 @@ cache = json.loads(sys.argv[1])
 agent_id = sys.argv[2]
 agent_type = sys.argv[3]
 parent_session = sys.argv[4]
+role_source = sys.argv[5] if len(sys.argv) > 5 else 'unresolved'
 
 entry = {
     'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
@@ -234,6 +295,10 @@ entry = {
     'event': 'subagent_complete',
     'agent_id': agent_id,
     'agent_type': agent_type,
+    # WHERE THE ROLE CAME FROM, beside the role itself. Without it an unresolved default
+    # and a real dispatch of the same name are the same row, which is what let 53 records
+    # claim `general-purpose` on 2026-08-27 with nothing observed.
+    'role_source': role_source,
     'parent_session': parent_session,
     'files_written': len(cache.get('files_written', [])),
     'rules_loaded': len(cache.get('loaded_rule_ids', [])),
@@ -243,6 +308,6 @@ entry = {
 }
 
 print(json.dumps(entry))
-" "$CACHE" "$AGENT_ID" "$AGENT_TYPE" "$PARENT_SESSION" 2>/dev/null | python3 "$FA" --stdin-json 2>/dev/null || true
+" "$CACHE" "$AGENT_ID" "$AGENT_TYPE" "$PARENT_SESSION" "$ROLE_SOURCE" 2>/dev/null | python3 "$FA" --stdin-json 2>/dev/null || true
 
 exit 0
