@@ -1064,9 +1064,25 @@ class TestGitHookScripts:
     _POST_HOOK = str(Path(__file__).resolve().parent.parent / "hooks/git/post-commit")
 
     def _hook_env(self, repo: Path) -> dict:
-        """Env for hook subprocess: unreachable daemon port, real git repo."""
+        """Env for hook subprocess: BOTH transports dead, real git repo.
+
+        THE PORT ALONE IS NOT ISOLATION, and for a long time this helper set only
+        the port. The hook resolves its transport at hooks/git/post-commit:104-106:
+        if `$WRIT_SOCKET` (default `$HOME/.cache/writ/run/writ.sock`) exists it
+        passes `--unix-socket`, and the hook's own comment at :100 records that curl
+        then IGNORES the url. So "unreachable daemon" reached the real daemon over
+        the socket and wrote to the PRODUCTION graph: 182 of 275 Commit records
+        (66%) carried a `/tmp/pytest-.../repo-postcmt` project when measured on
+        2026-09-21. WRIT_SOCKET now points at a path that is not a socket, so the
+        hook's `[ -S ]` test fails and curl has nothing to prefer.
+
+        Pinned by tests/test_post_commit_isolation.py, which counts records at the
+        DESTINATION rather than asserting on this dict: asserting the dict would
+        pass while the hook resolved a third way, which is how this survived.
+        """
         env = os.environ.copy()
         env["WRIT_PORT"] = "19999"  # unreachable
+        env["WRIT_SOCKET"] = str(repo / "definitely-not-a-socket")
         env["GIT_DIR"] = str(repo / ".git")
         env["WRIT_DIR"] = self._SKILL_DIR
         return env
