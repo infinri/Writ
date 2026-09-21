@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import pathlib
 
 from writ.session.registration import ensure_project_registered
 
@@ -274,4 +275,131 @@ async def capture_commit(
     for entry in files:
         await db.resolve_file_claims(name, entry["path"])
 
+    # THE APPROVAL IS SPENT WHEN ITS WORK IS DONE. This is the only place that
+    # learns a plan COMPLETED, so it is the only place that can retire the approval
+    # granted for it; gates otherwise clear only on `mode set`, a replan, or drift,
+    # which is how an approval outlived its plan by three days (see the function).
+    # The resolved set is every path this project has resolved, not just this
+    # commit's, so a plan finished across several commits completes on the last one.
+    try:
+        resolved = await _resolved_paths_for_project(db, name)
+        _expire_completed_approval(session_id or "", cwd or "", resolved)
+    except Exception:
+        pass
+
     return name
+
+
+def _plan_is_complete(plan_text: str, resolved_paths: set[str]) -> bool | None:
+    """Is every file this plan DECLARED now resolved? None when unjudgeable.
+
+    `None` means "nothing here establishes completion" (no plan text, or a plan
+    that declares no files) and is NOT the same as False, which means "declared
+    files remain unresolved". The caller must treat only True as completion:
+    absence is not a policy.
+
+    THE DECLARED LIST COMES FROM THE CANONICAL PARSER. `plan_harvest._extract_files`
+    owns the `## Files` regexes and its own comment records that a third copy of
+    them is a bill this repo has already paid twice. A path a plan only mentions in
+    `## Analysis` is therefore not a declaration, which is what keeps a prose
+    mention from completing a plan whose real entries are still open.
+    """
+    if not plan_text:
+        return None
+    from writ.session.plan_harvest import _extract_files
+
+    declared = {e.get("path") for e in _extract_files(plan_text) if e.get("path")}
+    if not declared:
+        return None
+    return declared.issubset(resolved_paths)
+
+
+def _expire_completed_approval(session_id: str, project_root: str,
+                               resolved_paths: set[str]) -> bool:
+    """Spend the approval whose work is finished. Returns True when it cleared.
+
+    WHY THIS EXISTS. Gates clear on `mode set`, on a replan, and on plan drift, and
+    on nothing else, so an approval outlives the work it was granted for. Measured
+    2026-09-21: session 2412ba38 still carried both gates bound to plan hash
+    fb84122192e7 from the 2026-09-18 cycle, three days and an unrelated task later,
+    and source writes would have been allowed under it.
+
+    ENF-SYS-002. The authoritative decision is the human typing the approval phrase,
+    recorded in `gates_approved`. This does not re-decide that and can never grant
+    anything: it observes that the work the approval was granted FOR is complete and
+    SPENDS it. The post-commit path is the only place that learns work finished.
+
+    THE CONDITION IS "EVERY DECLARED PATH", NOT "ANY", so a multi-commit cycle keeps
+    its approval until the last declared file lands. That bound is structural rather
+    than a judgement call, and it is what stops this being hostile.
+
+    ABSTAINS on every state where nothing establishes that THIS session's work is
+    done: no session id, no resolvable plan.md, a plan declaring no files, a session
+    not in work mode (no gates exist to spend), and a session with nothing approved.
+    Best effort throughout: a commit is never blocked by this.
+    """
+    if not session_id or not project_root:
+        return False
+    try:
+        from writ.session.cache import _read_cache, _write_cache
+        from writ.session.locators import _find_plan_md
+
+        cache = _read_cache(session_id)
+        if not cache or str(cache.get("mode") or "") != "work":
+            return False
+        if not (cache.get("gates_approved") or []):
+            return False
+
+        plan_path = _find_plan_md(os.path.abspath(project_root), session_id)
+        if not plan_path:
+            return False
+        try:
+            plan_text = pathlib.Path(plan_path).read_text(errors="replace")
+        except OSError:
+            return False
+
+        if _plan_is_complete(plan_text, set(resolved_paths)) is not True:
+            return False
+
+        cache["gates_approved"] = []
+        cache["gates_approved_plan"] = {}
+        cache["current_phase"] = "planning"
+        _write_cache(session_id, cache)
+        try:
+            from writ.session.friction import _log_friction_event
+            _log_friction_event(session_id, cache.get("mode"), "approval_expired",
+                                plan_path=str(plan_path))
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+async def _resolved_paths_for_project(db, project: str) -> set[str]:
+    """Every path this project has a RESOLVED claim for, across all its Decisions.
+
+    Read from the graph rather than from this commit's file list, because a plan is
+    routinely finished across several commits and only the union completes it. Any
+    failure returns an empty set, which makes `_plan_is_complete` answer False and
+    the approval survive: the fail-open direction here is to keep the approval, never
+    to spend one on missing data.
+    """
+    out: set[str] = set()
+    try:
+        rows = await db._run(
+            "MATCH (d:Decision) WHERE d.project = $p AND d.planned_files IS NOT NULL "
+            "RETURN d.planned_files AS pf", p=project)
+    except Exception:
+        return out
+    for row in rows or []:
+        pf = row.get("pf")
+        if isinstance(pf, str):
+            try:
+                pf = json.loads(pf)
+            except Exception:
+                continue
+        for entry in pf or []:
+            if isinstance(entry, dict) and entry.get("resolved") and entry.get("path"):
+                out.add(entry["path"])
+    return out
