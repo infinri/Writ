@@ -153,17 +153,25 @@ class TestPostCommitReachesNothingWhenIsolated:
 
 class TestThePinCanActuallySeeALeak:
     """SENSITIVITY CONTROL. Every assertion above expects zero, so a counter that
-    always returned zero would satisfy all of them. This proves the counter sees
-    real leaked records, using the ones the broken test already wrote rather than
-    creating a new leak to demonstrate the leak."""
+    always returned zero would satisfy all of them. This proves the counter can
+    return non-zero against the real destination.
 
-    def test_the_counter_reports_the_known_historical_leak(self):
-        leaked = _commit_count_for("repo-postcmt")
-        if leaked is None:
+    THE WITNESS CHANGED ON 2026-09-21. It used to count the 182 polluted
+    `repo-postcmt` records this leak had already written; those were deleted once
+    the leak was fixed, so the control now uses the project's OWN commits, which are
+    real data that will keep existing. A control whose witness is garbage disappears
+    the moment someone cleans the garbage up.
+    """
+
+    def test_the_counter_reports_real_commits_for_this_project(self):
+        seen = _commit_count_for("github.com/infinri/Writ")
+        if seen is None:
             pytest.fail("production graph unreachable; the pin above cannot be trusted")
-        assert leaked > 0, (
-            "expected the historical pollution from "
-            "test_post_commit_fails_open_when_daemon_down to still be visible "
-            f"(182 records measured 2026-09-21); got {leaked}. If this is now 0 the "
-            "records were cleaned up, and this control needs a different witness."
+        assert seen > 0, (
+            "the counter returned zero for a project that certainly has commits, so "
+            "it cannot distinguish 'no leak' from 'cannot see anything'."
         )
+
+    def test_the_counter_reports_zero_for_a_project_that_cannot_exist(self):
+        """The other half: it must not return non-zero indiscriminately."""
+        assert _commit_count_for("no-such-project-zzz-9f3a") == 0
