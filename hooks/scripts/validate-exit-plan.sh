@@ -27,6 +27,26 @@ WRIT_HOOK_LOG_SINK="$(hook_log_sink)"
 # Read stdin envelope
 STDIN_JSON=$(cat)
 
+# GOVERN THE AGENT BEFORE THE FIRST EARLY EXIT. ExitPlanMode fires only this hook, and this
+# hook cannot call load_hook_env because $STDIN_JSON has already consumed stdin, so a
+# sub-agent confined to this tool reached no seeder at all. `parsed_fields` takes the JSON as
+# an argument rather than from stdin, which is what makes the three fields readable here.
+#
+# ABOVE writ_require_session, and above the mode check below, so neither can skip the seed:
+# a child that never inherits its parent's mode is exactly the agent whose mode reads empty.
+# Both variables are initialized first because an unparseable envelope makes parsed_fields
+# print nothing and `set -u` would then abort the hook.
+#
+# The RAW session id is the parent argument, never the collapsed identity writ_require_session
+# resolves below: seeding needs both halves of the pair. Seeding grants nothing, because the
+# cache is marked lazy_seed and the write gate resolves that mode as absent.
+SEED_AGENT_ID=""
+SEED_SESSION_ID=""
+SEED_AGENT_TYPE=""
+eval "$(parsed_fields "$STDIN_JSON" SEED_AGENT_ID=agent_id SEED_SESSION_ID=session_id \
+    SEED_AGENT_TYPE=agent_type)"
+writ_seed_subagent_from_fields "$SEED_AGENT_ID" "$SEED_SESSION_ID" "$SEED_AGENT_TYPE"
+
 # Payload only, NO fallback. This had both of the failure shapes: /tmp/writ-current-session
 # names whichever Claude Code session on this machine took a turn most recently, and
 # md5(cwd:user)+date names a session that has never existed. This hook decides whether a

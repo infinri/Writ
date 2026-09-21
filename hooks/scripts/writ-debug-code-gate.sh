@@ -20,14 +20,55 @@ type hook_instrument >/dev/null 2>&1 && hook_instrument "writ-debug-code-gate"
 
 STDIN_DATA=$(cat)
 
-SID=$(printf '%s' "$STDIN_DATA" | python3 -c "
+# THREE LINES FROM THE PARSE THIS GATE ALREADY PAID FOR, and the widening is what lets the
+# seeder be reached at all from here: Grep and Glob fire only this hook, which cannot call
+# load_hook_env because $STDIN_DATA has already consumed stdin. Net process change: zero.
+#
+# EACH VALUE IS COERCED AND STRIPPED OF LINE BREAKS. A non-string becomes the empty string,
+# and a value carrying a newline or carriage return would otherwise forge a fourth line and
+# shift the positional split below, which is the same hazard writ_runtime_lens_check_required
+# documents for its unit-separated line.
+PAYLOAD_FIELDS=$(printf '%s' "$STDIN_DATA" | python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
 except Exception:
-    print(''); sys.exit(0)
-print((d.get('agent_id') or d.get('session_id') or '').strip())
+    d = {}
+if not isinstance(d, dict):
+    d = {}
+def one(key):
+    v = d.get(key)
+    if not isinstance(v, str):
+        return ''
+    return v.replace('\n', '').replace('\r', '').strip()
+print(one('agent_id'))
+print(one('session_id'))
+print(one('agent_type'))
 " 2>/dev/null || echo "")
+
+# mapfile is a builtin, so the split costs no process. The `:-` defaults are explicit
+# because an unparseable payload prints nothing at all and `set -u` would abort on an
+# unset array element.
+PARSED_LINES=()
+mapfile -t PARSED_LINES <<<"$PAYLOAD_FIELDS"
+AGENT_ID="${PARSED_LINES[0]:-}"
+RAW_SESSION_ID="${PARSED_LINES[1]:-}"
+AGENT_TYPE="${PARSED_LINES[2]:-}"
+
+# Byte for byte the identity rule this gate already used: agent first, session only when the
+# payload carried no agent, never synthesized.
+SID="${AGENT_ID:-$RAW_SESSION_ID}"
+
+# GOVERN THE AGENT BEFORE THE EARLY EXIT, not after. This sits above `[ -n "$SID" ] || exit 0`
+# so a future edit to that guard cannot silently drop seeding, and the `type` guard is the
+# same one the predicate call below uses: this file sources common.sh with `|| true`, and an
+# undefined function under `set -e` would abort the gate before it could refuse anything.
+# The RAW session id is passed as the parent, never $SID, because seeding needs both halves
+# of the pair. Seeding grants nothing: the cache is marked lazy_seed and the write gate
+# resolves that mode as absent.
+if type writ_seed_subagent_from_fields >/dev/null 2>&1; then
+    writ_seed_subagent_from_fields "$AGENT_ID" "$RAW_SESSION_ID" "$AGENT_TYPE"
+fi
 
 # THIS GATE'S OWN TELEMETRY IS KEYED HERE.
 #

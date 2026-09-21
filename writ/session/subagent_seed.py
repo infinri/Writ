@@ -93,6 +93,24 @@ def _usable(agent_id: object, parent_session_id: object) -> tuple[str, str] | No
     return agent, parent
 
 
+def already_seeded(cache: dict | None) -> bool:
+    """True when this cache DECLARES that a seeder already governed the agent.
+
+    THE ONE PYTHON SPELLING OF THE RULE, called at both the pre-lock check and the in-lock
+    re-check so the two cannot drift. A cache exists for reasons other than seeding: a gate
+    denial counts itself inside `mutate_cache`, whose context manager ends in an
+    unconditional `_write_cache`, so the first refusal an ungoverned sub-agent earns is what
+    creates its file. That file carries `cache_source` empty and `is_subagent` false, which
+    is what this reads, rather than the file's mere existence.
+
+    `is_subagent` with no `cache_source` is the LEGACY seeded shape, the only one a cache
+    written before `cache_source` existed can carry, so it counts as seeded here.
+    """
+    if not isinstance(cache, dict):
+        return False
+    return bool(cache.get("cache_source") or cache.get("is_subagent"))
+
+
 def seed_subagent_cache(agent_id: object, parent_session_id: object, *,
                         cache_source: str = CACHE_SOURCE_LAZY,
                         envelope_agent_type: object = "",
@@ -126,8 +144,11 @@ def seed_subagent_cache(agent_id: object, parent_session_id: object, *,
     agent, parent = ids
 
     # Cheap pre-check outside the lock: the common case by far is a cache that already
-    # exists, and mutate_cache would otherwise rewrite the file on every call.
-    if os.path.exists(_cache_path(agent)):
+    # exists, and mutate_cache would otherwise rewrite the file on every call. EXISTENCE IS
+    # NOT SEEDING, which is why this reads the document instead of stat-ing the path: a gate
+    # denial creates the file, so a bare `os.path.exists` made the refusal that proved an
+    # agent needed governance the thing that locked it out of governance permanently.
+    if os.path.exists(_cache_path(agent)) and already_seeded(_read_cache(agent)):
         return False
 
     try:
@@ -147,12 +168,22 @@ def seed_subagent_cache(agent_id: object, parent_session_id: object, *,
 
     scope, scope_source = _declared_scope(cache_source, role, role_source)
 
+    seeded_over_existing = False
     try:
         with mutate_cache(agent) as cache:
             # Re-checked INSIDE the lock: two hooks for one tool call can race here, and
             # the loser must not replace an inherited gate set mid-run.
-            if cache.get("cache_source") or cache.get("is_subagent"):
+            if already_seeded(cache):
                 return False
+            seeded_over_existing = os.path.exists(_cache_path(agent))
+            # THE CACHE BEING SEEDED OVER IS NOT A FRESH AGENT'S. It exists because
+            # something already wrote it, and the thing that writes it first is a gate
+            # denial. `denial_counts` is the one key in _CLEAN_OPERATIONAL_STATE with an
+            # enforcement consequence, because the write gate escalates deny to ask on a
+            # repeat count, so it is carried across the clean state rather than reset with
+            # it. No branch: a missing prior cache yields {}, which is what the clean state
+            # already carried.
+            prior_denials = dict(cache.get("denial_counts") or {})
             cache["mode"] = inherited_mode
             cache["current_phase"] = parent_cache.get("current_phase") or "planning"
             cache["gates_approved"] = list(parent_cache.get("gates_approved") or [])
@@ -178,17 +209,21 @@ def seed_subagent_cache(agent_id: object, parent_session_id: object, *,
             cache["role_scope_source"] = scope_source
             cache.update({k: (v.copy() if hasattr(v, "copy") else v)
                           for k, v in _CLEAN_OPERATIONAL_STATE.items()})
+            cache["denial_counts"] = prior_denials
     except Exception as exc:  # noqa: BLE001 - a cache write fault must not fail the hook
         log_seed_failure(agent, cache_source, exc)
         return False
 
     # RECORDED, because the governance census counts lazily seeded agents from this row.
     # A silent seed would be invisible in exactly the population being measured.
+    # `seeded_over_existing` is on the row so how often the seed lands on a cache a denial
+    # already created is MEASURED in the field rather than inferred.
     try:
         _log_friction_event(agent, inherited_mode, SEED_EVENT,
                             agent_id=agent, parent_session=parent,
                             cache_source=cache_source, agent_type=role,
-                            role_source=role_source)
+                            role_source=role_source,
+                            seeded_over_existing=seeded_over_existing)
     except Exception:  # noqa: BLE001 - telemetry never fails the caller
         pass
     return True

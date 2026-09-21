@@ -408,6 +408,57 @@ load_hook_env() {
     _writ_seed_subagent_cache
 }
 
+# The sub-agent seeder's skip predicate.
+# writ_cache_already_seeded <cache_file>
+#   exit 0  the file POSITIVELY DECLARES a seeded cache; skipping the seeder is safe
+#   exit 1  everything else, including every state this cannot resolve
+#
+# THIS IS A FAST PATH, NOT THE RULE. The rule lives in
+# writ/session/subagent_seed.py::already_seeded, and this exists only because the bash guard
+# SHADOWS it: the seeder returns here before the interpreter is ever spawned, so a
+# python-only fix would never run. A seeded cache declares a non-empty `cache_source`, or
+# `is_subagent: true` for a cache written before `cache_source` existed.
+#
+# WHAT THIS REPLACED, AND WHY IT WAS WRONG. The guard was `[ -f "$_cache_file" ]`, a test of
+# FILE EXISTENCE standing in for ALREADY SEEDED. A gate denial creates the file:
+# gates._log_gate_denial counts the denial inside `with mutate_cache(...)`, whose context
+# manager ends in an unconditional _write_cache, and _read_cache returns the defaults on a
+# miss without writing. So an ungoverned sub-agent's FIRST REFUSED WRITE wrote a cache
+# carrying only denial_counts, with no mode and no cache_source, and the seeder then returned
+# early forever. The refusal that proved the agent needed governance was what locked it out
+# of governance permanently.
+#
+# THE FAIL DIRECTION IS THE WHOLE SAFETY ARGUMENT, and it is writ_runtime_lens_check_required's
+# rule applied to the other side of the same seam: anything unresolved pays the full cost.
+# A missing file, an unparseable file, a non-object document, a document with neither field,
+# an absent jq and WRIT_NO_JQ all exit 1 and fall through to the python seeder, which is the
+# authority and which declines cheaply. Failing toward SEEDING is the safe direction here,
+# because a seeded cache is marked lazy_seed and gates._authority_mode resolves that mode as
+# ABSENT: a redundant seed grants nothing, where a wrongly skipped one leaves an agent
+# ungovernable.
+#
+# THERE IS DELIBERATELY NO PYTHON FALLBACK ARM. It would pay one python start to answer a
+# strictly smaller question than the seeder answers for the same price, so it would buy
+# nothing; a jq-less host simply pays the seeder's start instead.
+#
+# The jq call is wrapped so absence is a normal input: jq exits 2 on a missing file and 4/5
+# on a corrupt one, and every hook runs under `set -euo pipefail`, exactly as
+# writ_session_mode_direct documents. The arm emits a SENTINEL rather than a truthiness
+# verdict, so a multi-document stream or a value carrying a newline yields a string that is
+# not the sentinel and falls through, rather than forging a positive answer.
+writ_cache_already_seeded() {
+    local _wcas_file="${1:-}" _wcas_answer=""
+    [ -n "$_wcas_file" ] || return 1
+    [ -z "${WRIT_NO_JQ:-}" ] || return 1
+    command -v jq >/dev/null 2>&1 || return 1
+    _wcas_answer="$({ jq -r 'if type == "object"
+    and ((((.cache_source | type) == "string") and (.cache_source != ""))
+         or (.is_subagent == true))
+then "WCAS-SEEDED" else empty end' "$_wcas_file" 2>/dev/null || true; })"
+    [ "$_wcas_answer" = "WCAS-SEEDED" ] && return 0
+    return 1
+}
+
 # GOVERN A SUB-AGENT ON THE HOOK THAT RUNS, NOT THE EVENT THAT MIGHT NOT FIRE.
 #
 # `SubagentStart` creates a sub-agent's cache, and it does not arrive for every sub-agent.
@@ -424,13 +475,24 @@ load_hook_env() {
 # PreToolUse hooks that matter today is a list that goes stale the moment a fourth one does,
 # which the telemetry cycle measured four times over before making coverage structural.
 #
+# THE FIELDS ARE ARGUMENTS, NOT GLOBALS, so a hook that has already consumed stdin can still
+# reach this. load_hook_env is unusable in writ-debug-code-gate.sh (Grep, Glob) and
+# validate-exit-plan.sh (ExitPlanMode) because each reads stdin itself before sourcing this
+# library, and stdin cannot be re-read, so those three tools reached no seeder at all. They
+# call this entry point with the fields their own parse already holds.
+#
+# THE PARENT ARGUMENT IS THE RAW SESSION ID, never the agent-preferring collapsed one:
+# seeding needs BOTH halves of the pair, and a collapsed id would make the child its own
+# parent and decline.
+#
 # IT GRANTS NOTHING. The seeded cache is marked `lazy_seed`, and the write gate resolves a
 # lazy_seed cache's mode as ABSENT, so the write decision is identical to the no-cache
 # decision on every path. See writ/session/gates.py::_authority_mode.
 #
 # COST. For a main session this is one test on an empty variable, no process. For a
-# sub-agent it is one more test on a filename, and a single python start on the FIRST hook
-# only; every later hook in that agent sees the file and returns.
+# sub-agent it is one jq process per hook and a single python start on the FIRST hook only;
+# every later hook in that agent reads a declared seeded cache and returns. A jq-less host
+# skips the fast path entirely and pays the python start instead, which declines cheaply.
 #
 # THE STATUS WORD IS CAPTURED, NEVER PRINTED. The inline python prints exactly one word on
 # every outcome it can reach (seeded, skipped, failed) and the command substitution keeps it
@@ -460,16 +522,18 @@ load_hook_env() {
 # transcript, and unlike the spawn path there is no critical line: the agent is already
 # running, a lazily seeded cache confers nothing, and the message would repeat on every hook
 # inside that agent.
-_writ_seed_subagent_cache() {
-    [ -n "${HOOK_AGENT_ID:-}" ] || return 0
-    [ "${HOOK_AGENT_ID:-}" != "${HOOK_SESSION_ID_RAW:-}" ] || return 0
-    [ -n "${HOOK_SESSION_ID_RAW:-}" ] || return 0
+# Usage: writ_seed_subagent_from_fields <agent_id> <parent_session_id> <agent_type>
+writ_seed_subagent_from_fields() {
+    local _seed_agent="${1:-}" _seed_parent="${2:-}" _seed_type="${3:-}"
+    [ -n "$_seed_agent" ] || return 0
+    [ "$_seed_agent" != "$_seed_parent" ] || return 0
+    [ -n "$_seed_parent" ] || return 0
     local _cache_file _seed_status
-    _cache_file="$(writ_session_cache_dir)/writ-session-${HOOK_AGENT_ID}.json"
-    [ -f "$_cache_file" ] && return 0
-    _seed_status=$(WRIT_SEED_AGENT_ID="$HOOK_AGENT_ID" \
-    WRIT_SEED_PARENT="$HOOK_SESSION_ID_RAW" \
-    WRIT_SEED_AGENT_TYPE="${HOOK_AGENT_TYPE:-}" \
+    _cache_file="$(writ_session_cache_dir)/writ-session-${_seed_agent}.json"
+    writ_cache_already_seeded "$_cache_file" && return 0
+    _seed_status=$(WRIT_SEED_AGENT_ID="$_seed_agent" \
+    WRIT_SEED_PARENT="$_seed_parent" \
+    WRIT_SEED_AGENT_TYPE="$_seed_type" \
     python3 -c '
 import os, sys
 sys.path.insert(0, sys.argv[1])
@@ -493,10 +557,17 @@ except Exception as exc:
         pass
 ' "$_WRIT_SKILL_DIR" 2>/dev/null) || _seed_status=""
     if [ -z "$_seed_status" ]; then
-        log_friction_event "$HOOK_AGENT_ID" "" "subagent_seed_failed" \
+        log_friction_event "$_seed_agent" "" "subagent_seed_failed" \
             '{"hook":"seed-subagent-cache","cache_source":"lazy_seed"}'
     fi
     return 0
+}
+
+# The load_hook_env call site, unchanged for its 22 callers: the envelope's own fields,
+# handed to the one entry point above.
+_writ_seed_subagent_cache() {
+    writ_seed_subagent_from_fields "${HOOK_AGENT_ID:-}" "${HOOK_SESSION_ID_RAW:-}" \
+        "${HOOK_AGENT_TYPE:-}"
 }
 
 # Black-box capture: append the RAW Claude-Code <-> hook payloads to a JSONL so the

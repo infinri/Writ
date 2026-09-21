@@ -2954,3 +2954,72 @@ def wiping_benchmark_entrypoints(
                 rel = path.as_posix()
             out[rel] = lines
     return out
+
+
+# ── Sub-agent seeder reachability (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3) ──
+#
+# The property is PER TOOL, not per script: a sub-agent confined to one tool is governed only
+# if some script registered for that tool can reach the seeder. Held as two derivations so
+# no test hardcodes a hook or tool name, which is how the third gap (ExitPlanMode) was found
+# alongside Grep and Glob instead of being excused by an allowlist entry.
+_PRETOOLUSE_EVENT = "PreToolUse"
+
+# A matcher that names no tool matches every tool. Claude Code spells that three ways, and a
+# wildcard entry's script therefore covers every tool the manifest names elsewhere.
+_WILDCARD_MATCHERS = ("", "*", ".*")
+
+# The two ways a hook script can reach `seed_subagent_cache`. `load_hook_env` calls
+# `_writ_seed_subagent_cache` for its 22 callers; a hook that has already consumed stdin
+# cannot use it and calls the field-taking entry point instead.
+_SEEDER_REACHING_CALL = re.compile(r"\b(?:load_hook_env|writ_seed_subagent_from_fields)\b")
+
+
+def pretooluse_tool_scripts(*, manifest_path: Path = HOOKS_JSON) -> dict[str, list[str]]:
+    """`{tool: [script basename, ...]}` for every tool named by a PreToolUse matcher.
+
+    Each matcher is split on `|`, which is how Claude Code spells a multi-tool
+    registration. A WILDCARD matcher is treated as covering every named tool, so a
+    catch-all registration counts as coverage for all of them rather than creating a
+    phantom tool named `*`.
+
+    `manifest_path` is a keyword for the reason `envelope_emitting_scripts(*, scripts_dir=)`
+    gives: the derivation's own precision is proved against a synthetic manifest under
+    `tmp_path`, never against the repo's current registrations, which are the thing under
+    test rather than the oracle for it.
+    """
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    named: dict[str, set[str]] = {}
+    wildcard: set[str] = set()
+    for entry in (manifest.get("hooks") or {}).get(_PRETOOLUSE_EVENT) or []:
+        scripts = set()
+        for hook in (entry.get("hooks") or []):
+            for token in str(hook.get("command") or "").split():
+                if token.endswith(".sh"):
+                    scripts.add(token.rsplit("/", 1)[-1])
+        if not scripts:
+            continue
+        matcher = str(entry.get("matcher") or "")
+        if matcher in _WILDCARD_MATCHERS:
+            wildcard |= scripts
+            continue
+        for tool in matcher.split("|"):
+            if tool:
+                named.setdefault(tool, set()).update(scripts)
+    return {tool: sorted(scripts | wildcard) for tool, scripts in sorted(named.items())}
+
+
+def seeder_reaching_scripts(*, scripts_dir: Path = HOOK_SCRIPTS_DIR) -> list[str]:
+    """Hook script basenames whose NON-COMMENT source reaches the sub-agent seeder.
+
+    COMMENTS ARE BLANKED, and that is not a detail: before this cycle
+    `writ-debug-code-gate.sh` named `load_hook_env` only in a comment explaining why it
+    CANNOT call it, and `writ-pre-write-dispatch.sh` still mentions it twice in prose. A text
+    scan that read those would report the exact gap this population exists to expose as
+    covered, which is the same reason `_refusal_markers` classifies on code rather than
+    header prose.
+    """
+    return [
+        path.name
+        for path in sorted(Path(scripts_dir).glob("*.sh"))
+        if _SEEDER_REACHING_CALL.search(_blanked_source(path))
+    ]
