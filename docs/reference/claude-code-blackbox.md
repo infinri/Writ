@@ -5,10 +5,10 @@ It is designed as a quick reference for non-developers and junior developers.
 
 It is a version-pinned, empirical map of exactly what Claude Code hands a hook script and
 exactly what a script can hand back. Captured live on build 2.1.220 and compared against
-2.1.183. Every single field carries an evidence tag: observed in real data, documented but not
+2.1.183, then re-captured on 2.1.278. Every single field carries an evidence tag: observed in real data, documented but not
 seen, or unverified. The build pin covers the original capture, and this file has kept growing
-since: it also carries findings observed on 2026-08-11 and 2026-08-14, each stamped with its own
-date. Read the tag next to a claim rather than the version at the top.
+since: it also carries findings observed on 2026-08-11, 2026-08-14 and 2026-09-21, each stamped
+with its own date. Read the tag next to a claim rather than the version at the top.
 
 It records five events that moved from documented only to actually observed, payload fields the
 public changelog never announced, and the mechanism that lets a script rewrite a tool call
@@ -43,10 +43,11 @@ Most hook events include these top-level keys.
 
 | Key | Type | Meaning |
 |---|---|---|
-| `session_id` | string | Current Claude Code session ID. Use this as the main session key. |
+| `session_id` | string | Current Claude Code session ID. Use this as the main session key. Observed missing on `SubagentStart` (12 of 300 rows across four capture days), so read it defensively there. |
 | `prompt_id` | string | UUID for the current user turn. Optional before the first user prompt. |
-| `transcript_path` | string | Path to the main session transcript. The file may lag behind the current turn. |
-| `cwd` | string | Working directory when the hook fired. |
+| `transcript_path` | string | Path to the main session transcript. The file may lag behind the current turn. Absent from `SubagentStart` on 2.1.278 (0 of 40 rows); still present on `SubagentStop` (44 of 44) and `Stop` (60 of 60). |
+| `cwd` | string | Working directory when the hook fired. Absent from `SubagentStart` on 2.1.278 (0 of 40 rows); a sub-agent hook that needs the directory should resolve it itself. |
+| `scratchpad_dir` | string | Per-session scratch directory for temporary files. New in 2.1.278: 0 of 6,856 rows carried it across three capture days in August 2026. Present on ten events, unanimous on nine; see the 2026-09-21 findings below for the two exceptions. |
 | `permission_mode` | string | Current mode, such as `default`, `plan`, `acceptEdits`, `auto`, `dontAsk`, or `bypassPermissions`. Not present on every event. |
 | `effort` | object | Optional reasoning setting. Valid levels are `low`, `medium`, `high`, `xhigh`, and `max`. |
 | `hook_event_name` | string | Name of the event that fired. |
@@ -65,6 +66,77 @@ Minimal example:
   "hook_event_name": "PreToolUse"
 }
 ```
+
+## Observed on 2026-09-21 (build 2.1.278)
+
+Re-captured after the earlier builds, spanning three capture days in August 2026 and one on
+2026-09-21. The August days are the control: they come from the earlier builds, so a field present
+on one side and absent on the other is a build change rather than an optional key.
+
+Capture was still running while these counts were taken, so every number below is frozen at a
+cutoff of `2026-09-21T19:00:00Z` and a later re-run will show larger totals. The ratios are the
+finding; the totals are only the sample they came from.
+
+Two things will mislead you if you count this kind of log naively, and both bit the first pass:
+
+- **Test traffic looks like real traffic.** Rows written by a project's own test suite carry
+  synthetic session ids. Counting them put the new field below at 57% of tool events, which reads
+  like an optional key. Filtering to rows whose `session_id` is a real UUID makes it unanimous.
+- **One percentage can straddle a version boundary.** August and September rows sit in the same
+  file. A single ratio over the whole file hides a field that simply did not exist before.
+
+Counts are over real UUID sessions unless stated otherwise.
+
+### `scratchpad_dir` is new, and two events do not follow the rule
+
+August control, all three days, every event type: **0 of 6,856 rows** carry it.
+
+On 2026-09-21 it is present and unanimous on nine events:
+
+| Event | Rows carrying `scratchpad_dir` |
+|---|---|
+| `PostToolUse` | 503 of 503 |
+| `Stop` | 60 of 60 |
+| `UserPromptSubmit` | 57 of 57 |
+| `SubagentStop` | 44 of 44 |
+| `PostToolUseFailure` | 12 of 12 |
+| `SessionEnd` | 4 of 4 |
+| `SessionStart` | 3 of 3 |
+| `PreCompact` | 1 of 1 |
+| `PostCompact` | 1 of 1 |
+
+The two exceptions matter more than the nine that follow the rule:
+
+- **`SubagentStart` never carries it: 0 of 40 rows.** A hook that expects a scratch directory at
+  the moment a subagent is spawned will not get one.
+- **`PreToolUse` is the only partial event, and every gap is one tool.** 90 of its 91 `Read` rows
+  lack the field, while every other tool carries it, which held across re-runs as the sample grew.
+  Reporting this only as a percentage of `PreToolUse` would send a reader looking for a race
+  condition that is not there.
+
+### `SubagentStart` lost `cwd` and `transcript_path`, but they were never dependable
+
+| Capture day | Rows | With `cwd` and `transcript_path` |
+|---|---|---|
+| 2026-08-28 | 20 | 8 |
+| 2026-08-29 | 10 | 4 |
+| 2026-08-31 | 17 | 10 |
+| 2026-09-21 | 40 | 0 |
+
+Both halves matter. The fields are gone on 2.1.278, and they were already intermittent at roughly
+40% before it. A reader who saw only the last row might treat the August behavior as a reliable
+baseline that regressed; it never was one. If a hook needs the working directory inside a subagent,
+resolve it in the hook (for example with `pwd -P`) rather than reading it from this payload.
+
+The transcript is still available where most consumers actually need it. On 2026-09-21,
+`SubagentStop` carries both `transcript_path` and `agent_transcript_path` on 44 of 44 rows, and
+`Stop` carries `transcript_path` on 60 of 60.
+
+### `SubagentStart` sometimes omits `session_id`
+
+12 of 300 `SubagentStart` rows across all four capture days have no `session_id`. The common
+payload table calls this key the main session key, which is true everywhere else observed. Code
+that keys state by session should handle its absence on this one event rather than assume it.
 
 ## Event reference
 
@@ -85,7 +157,7 @@ The **input keys** column lists keys added to the common payload above.
 | `PostToolBatch` | After a parallel tool batch completes | none | `tool_calls[]` | `additionalContext`; may stop the loop |
 | `PermissionDenied` | Auto mode denies a tool call | `tool_name` | `tool_name`, `tool_input`, `tool_use_id`, `reason` | `retry` |
 | `Notification` | Claude Code sends a notification | `notification_type` | `message`, `title?`, `notification_type` | Side effects or `terminalSequence` only |
-| `SubagentStart` | A subagent is spawned | `agent_type` | `agent_id`, `agent_type` | `additionalContext` for the new subagent |
+| `SubagentStart` | A subagent is spawned | `agent_type` | `agent_id`, `agent_type`, `task?`, `prompt?` | `additionalContext` for the new subagent |
 | `SubagentStop` | A subagent finishes | `agent_type` | `stop_hook_active`, `agent_id`, `agent_type`, `agent_transcript_path`, `last_assistant_message`, `background_tasks[]`, `session_crons[]` | `decision`, `reason`, `additionalContext` |
 | `TaskCreated` | A task is being created | none | `task_id`, `task_subject`, `task_description?`, `teammate_name?`, `team_name?` | Block creation with exit `2` or `decision: "block"` |
 | `TaskCompleted` | A task is being marked complete | none | `task_id`, `task_subject`, `task_description?`, `teammate_name?`, `team_name?` | Block completion with exit `2` |
