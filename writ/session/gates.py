@@ -527,6 +527,79 @@ def _check_subagent_boundary(session_id: str, mode, file_path: str, cache: dict)
                                    KIND_DISPATCH)
 
 
+def _check_subagent_gate_inheritance(session_id: str, mode, file_path: str,
+                                     cache: dict, skill_dir: str) -> dict | None:
+    """A sub-agent may not write what its orchestrator was just refused.
+
+    The blanket allow in `_check_exempt_write` states its own justification: the
+    workers were "dispatched by an orchestrator that already passed the
+    human-approval gate". MEASURED 2026-09-21, that premise can be false while the
+    bypass still fires. Parent session f053345b sat in work mode at
+    `current_phase: testing` with `gates_approved: ['phase-a']`, was refused five
+    times by test-skeletons on legal/index.php, GoogleSheets.php and
+    contact/api.php, then dispatched sub-agents that wrote 24 files in that project
+    under 28 `write_attempt` rows tagged `subagent_bypass`. Three of the refused
+    files are in the written set. This turns the stated premise into a condition.
+
+    ENF-SYS-002, because this runs after the authoritative event. The approval is
+    decided when the human types the phrase and the hook records it in the parent's
+    `gates_approved`. This arm does NOT re-decide that. It asks the parent's own
+    checker what the parent may write RIGHT NOW and refuses the child where the
+    parent is refused, so it can never contradict a recorded approval: it only
+    refuses where none was recorded. Staleness cuts both ways and both are correct:
+    a parent that clears the gate after dispatch reads as cleared, and a parent
+    whose plan drifts after dispatch reads as blocked, which is exactly the state in
+    which the parent itself may no longer write.
+
+    THE PARENT'S OWN CHECKER IS THE JUDGE, not a second predicate for "which gate
+    does this path need". A second copy is how two readers of one policy drift
+    apart, which this repository has paid for twice: the duplicated count pins, and
+    the two registration collectors that agreed only because every matcher block
+    happened to hold exactly one command. No recursion, because the parent is not a
+    sub-agent and the sub-agent arms abstain on its evaluation.
+
+    ABSTAINS (returns None, keeping today's decision) wherever nothing establishes
+    what the parent was allowed: not a sub-agent, a cache that is not
+    `subagent_start`, no `parent_session_id`, an unreadable parent cache, or a
+    parent NOT IN WORK MODE. That last one is load-bearing rather than defensive.
+    Only work mode has gates, and a parent with no mode is refused by its own
+    checker with `[ENF-GATE-MODE]`, which would silently convert this arm from
+    "inherit the gates" into "deny every dispatched write". Pinned by
+    TestParentWithNoGatesIsUnchanged.
+    """
+    if not cache.get("is_subagent"):
+        return None
+    if str(cache.get("cache_source") or "") != CACHE_SOURCE_START:
+        return None
+    parent_session_id = str(cache.get("parent_session_id") or "")
+    if not parent_session_id:
+        return None
+    parent_cache = _read_cache(parent_session_id)
+    if not parent_cache:
+        return None
+    if str(parent_cache.get("mode") or "") != "work":
+        return None
+
+    parent_verdict = _can_write_check(
+        parent_session_id, {"tool_input": {"file_path": file_path}},
+        skill_dir, parent_cache,
+    )
+    if parent_verdict.get("can_write"):
+        return None
+
+    reason = (
+        "[ENF-GATE-SUBAGENT] Write refused: the orchestrator that dispatched this "
+        "sub-agent cannot write this path itself right now, so the sub-agent cannot "
+        "either. The blanket sub-agent allow exists because the orchestrator has "
+        "already cleared a human approval gate; here it has not.\n"
+        "The orchestrator's own refusal follows, and resolving THAT resolves this:\n"
+        + str(parent_verdict.get("reason") or "(the parent recorded no reason)")
+    )
+    _log_friction_event(session_id, mode, "write_attempt", file_path=file_path,
+                        result="deny", gate_status="subagent_gate_inheritance")
+    return {"can_write": False, "reason": reason}
+
+
 def _check_exempt_write(session_id: str, mode, file_path: str, cache: dict, skill_dir: str) -> dict | None:
     """Categorical write exemptions checked before any mode/gate logic.
 
@@ -589,6 +662,13 @@ def _check_exempt_write(session_id: str, mode, file_path: str, cache: dict, skil
     dispatched = _check_subagent_boundary(session_id, mode, file_path, cache)
     if dispatched is not None:
         return dispatched
+
+    # THE GATES THE DISPATCH STANDS ON, last of the confining arms and immediately
+    # before the blanket allow, so a declared role scope and the project boundary
+    # both stay the judges where they speak and this only ever narrows what is left.
+    inherited = _check_subagent_gate_inheritance(session_id, mode, file_path, cache, skill_dir)
+    if inherited is not None:
+        return inherited
 
     # Sub-agents bypass mode/gate checks. They are workers dispatched by an
     # orchestrator that already passed the human-approval gate; their scope
