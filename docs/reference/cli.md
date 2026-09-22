@@ -22,6 +22,7 @@ Every `writ` command, generated from the Typer app. Run `writ <command> --help` 
 | `writ git-hooks bootstrap` | Register the writ project bound to its remote_url before first auto-register |
 | `writ git-hooks install` | Install the Writ post-commit git hook into a repo (removes the retired prepare-commit-msg block) |
 | `writ git-hooks uninstall` | Remove the Writ git-hook block from a repo (preserving other content) |
+| `writ handoff` | Write a session handoff: where the session stands, what it wrote, what is open |
 | `writ harvest` | Harvest git commits + transcript plans into decision-memory records |
 | `writ import-cypher` | Rebuild the graph from a Cypher dump script produced by export-cypher |
 | `writ import-markdown` | Import bible content (Rules + methodology) into the graph. Validates schema. Triggers export |
@@ -47,6 +48,7 @@ Every `writ` command, generated from the Typer app. Run `writ <command> --help` 
 | `writ status` | Health check: rule count, index status, last ingestion, stale rules |
 | `writ token-audit` | FOOTPRINT observer (WRIT-TOKEN-BLUEPRINT P0): per-session token COST from a CC transcript |
 | `writ transcript audit` | Report user turns that mix a bare text element with a tool_result element |
+| `writ trust-ledger` | List the skills, agents and MCP servers Writ can see, and what changed |
 | `writ validate` | Run integrity checks: conflicts, orphans, staleness, redundancy |
 
 ## Session CLI (`bin/lib/writ-session.py`)

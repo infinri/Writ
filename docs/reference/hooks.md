@@ -3,7 +3,7 @@
 
 # Hook registration matrix
 
-44 registrations across 12 events wiring 40 scripts under `hooks/scripts/`, generated from `hooks/hooks.json` (the single source; `templates/settings.json` is rendered from the same file). `writ-statusline.sh` is wired through the settings `statusLine` channel, not a hook event. Behavior and blocking semantics: `HANDBOOK.md` section 14.
+45 registrations across 12 events wiring 41 scripts under `hooks/scripts/`, generated from `hooks/hooks.json` (the single source; `templates/settings.json` is rendered from the same file). `writ-statusline.sh` is wired through the settings `statusLine` channel, not a hook event. Behavior and blocking semantics: `HANDBOOK.md` section 14.
 
 ## SessionStart
 
@@ -101,6 +101,7 @@
 | `Bash` | `inject-tier-workflow.sh` |
 | `WebFetch|WebSearch` | `writ-web-capture.sh` |
 | `Write|Edit` | `validate-file.sh` |
+| `Write|Edit` | `writ-output-compress.sh` |
 | `Write|Edit` | `writ-bible-authoring-push.sh` |
 | `Write|Edit` | `validate-handoff.sh` |
 | `Write|Edit` | `validate-rules.sh` |

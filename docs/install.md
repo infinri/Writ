@@ -6,7 +6,7 @@ Writ runs the same way under three install paths; pick one:
 - **B. Skills-directory checkout**: a clone at `~/.claude/skills/writ/`, auto-discovered by Claude Code as the user-scope plugin `writ@skills-dir`.
 - **C. Anywhere else**: a clone at a path Claude Code does not discover; hooks must be seeded into `~/.claude/settings.json` (section 3).
 
-In every path, hook registrations come from one place, `hooks/hooks.json` (44 registrations across 12 events over 40 scripts). Editing that file is all a hook change needs.
+In every path, hook registrations come from one place, `hooks/hooks.json`. The current counts are generated from that file into [`reference/hooks.md`](reference/hooks.md). Editing that file is all a hook change needs.
 
 **Prerequisites (all paths):** Python 3.11+, Docker (Neo4j runs in a container), and `git` for the clone paths. That is the whole list. `jq` and `curl` are optional accelerators: every JSON read has a Python fallback and every HTTP call has a `urllib` fallback, so their absence changes speed, never behavior. Nothing needs `envsubst`/gettext.
 
@@ -90,7 +90,7 @@ Installs `writ-server.service` (waits for Neo4j, `Restart=on-failure`) and the d
 ```bash
 "$WRIT_DIR"/bin/writ status                    # daemon health + rule count
 test -f ~/.claude/commands/writ-approve.md && echo "/writ-approve installed"
-"$WRIT_DIR"/bin/writ doctor                    # 22 checks; writ doctor --fix repairs 7 of them
+"$WRIT_DIR"/bin/writ doctor                    # run it for the current check list; --fix repairs 7 of them
 ```
 
 For a raw `/health` read that does not depend on `curl`:
@@ -99,7 +99,7 @@ For a raw `/health` read that does not depend on `curl`:
 python3 "$WRIT_DIR"/bin/lib/writ_install.py http-get http://localhost:8765/health
 ```
 
-`writ doctor` covers daemon liveness, orphaned-port conflicts, Neo4j connectivity, uniqueness constraints, the embedding stack, corpus drift, Bitbucket credentials, the git post-commit hook, the `writ` PATH symlink, Claude Code hook registration, duplicate registration, role symlinks, and mode/gate sanity.
+`writ doctor` covers daemon liveness, orphaned-port conflicts, Neo4j connectivity, uniqueness constraints, duplicate records, index degeneracy, the daemon socket, the embedding stack, corpus drift, Bitbucket credential presence, the git post-commit hook, the `writ` PATH symlink, Claude Code hook registration and duplicate registration, hook telemetry coverage, stranded telemetry, sub-agent role coverage and declared write scope, the sub-agent governance census, role symlinks, mode and gate sanity, gate refusal liveness, and the extension trust ledger. Run the command for the authoritative list rather than relying on this sentence staying complete.
 
 Then open Claude Code in any project and type a prompt: you should see a `[Writ: ...]` status line and a `--- WRIT RULES ---` block.
 

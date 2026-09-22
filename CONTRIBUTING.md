@@ -65,7 +65,7 @@ Use `writ review` to triage AI proposed rules:
 
 - `writ review` (no argument) lists every rule with `authority = ai-provisional`.
 - `writ review <rule_id>` shows full detail plus the origin context (the task description and query that triggered the proposal).
-- `writ review <rule_id> --promote` moves the rule to `authority = ai-promoted` and `confidence = peer-reviewed`.
+- `writ review <rule_id> --promote` moves the rule to `authority = ai-promoted` and `confidence = peer-reviewed`. It requires `--session-id` and a `--token` minted from a human's typed approval, the same anti-self-approval gate described in `HANDBOOK.md` section 7: an agent cannot promote its own proposal, and an attempt is recorded as `agent_self_approval_blocked`.
 - `writ review <rule_id> --reject` deletes the rule from the graph.
 - `writ review <rule_id> --downweight` pins confidence to `speculative`.
 - `writ review --stats` prints counts grouped by authority.
