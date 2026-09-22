@@ -33,7 +33,7 @@ STDIN_JSON=$(cat)
 # compare its agent_id/agent_type against the SubagentStart capture and pinpoint why
 # built-in agents (Explore) fail to correlate to their start-created session. /tmp,
 # capped at 50, fire-and-forget -- never affects the hook outcome.
-_WRIT_STOP_CAP=/tmp/writ-subagent-stop-payloads.jsonl
+_WRIT_STOP_CAP="${WRIT_SUBAGENT_STOP_CAPTURE:-/tmp/writ-subagent-stop-payloads.jsonl}"
 if [ "$(wc -l < "$_WRIT_STOP_CAP" 2>/dev/null || echo 0)" -lt 50 ]; then
     printf '%s\n' "$STDIN_JSON" >> "$_WRIT_STOP_CAP" 2>/dev/null || true
 fi
@@ -325,7 +325,7 @@ entry = {
     'agent_type': agent_type,
     # WHERE THE ROLE CAME FROM, beside the role itself. Without it an unresolved default
     # and a real dispatch of the same name are the same row, which is what let 53 records
-    # claim `general-purpose` on 2026-08-27 with nothing observed.
+    # claim \`general-purpose\` on 2026-08-27 with nothing observed.
     'role_source': role_source,
     # WHETHER A CACHE EXISTED WHEN THIS AGENT STOPPED, measured above before anything here
     # read one. The two literals are 'present' and 'absent'; the empty string means this
