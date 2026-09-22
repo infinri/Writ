@@ -88,18 +88,35 @@ ENF-SYS-005 (durability is the load-bearing claim, so every test here drives the
 hook subprocess against a REAL local HTTP stand-in and reads the row back through the
 REAL router -- no mocked python function stands in for either).
 
-ONE MEASURED LIMIT ON CAPABILITY 6, recorded here because a reader of the security case
-is owed it. A refusal text carrying a raw LINE FEED cannot reach `GATE_ERROR` at all
-under the hook as it stands: `gate_advance_outcome.py` prints its classification as one
-tab-separated line with the error LAST, and the hook reads the verdict with
-`cut -f1` over that whole output, so a line feed inside the error makes `$OUTCOME`
-itself multi-line, the `[ "$OUTCOME" = "rejected" ]` comparison false, and the turn
-records `ask-prompt-emitted` with no reason. That is behavior this cycle deliberately
-does not change (plan.md: the stdout branch chain and the outcome vocabulary are
-untouched). So the flattening is driven here with a CARRIAGE RETURN, which does reach
-the field and is the other half of the same log-forging vector the router's
-`_sanitize_value` names (SEC-INJ-LOG-001); the LF is still asserted absent, and the raw
-one-line-per-row claim is asserted on the file either way.
+THE MEASURED LIMIT ON CAPABILITY 6 IS NOW DISCHARGED, by plan.md's follow-up cycle
+2412ba38-51e1-4b73-895b-7b240a3c21d3 ("a multi-line refusal must reach the rejection
+branch, not the outage branch"). The paragraph this replaces recorded, as a permanent
+limit, that a refusal text carrying a raw LINE FEED could never reach `GATE_ERROR` at
+all: `gate_advance_outcome.py` prints its classification as one tab-separated line with
+the error LAST, and the hook read the verdict with an unguarded `cut -f1` over that
+WHOLE multi-line output, so a line feed inside the error made `$OUTCOME` itself
+multi-line, the `[ "$OUTCOME" = "rejected" ]` comparison false, and the turn recorded
+`ask-prompt-emitted` with no reason at all. That was measured, not theoretical (see this
+docstring's opening paragraph). It is FALSE as of 2412ba38's fix: the four fixed
+classifier fields (outcome, phase, validated, token_spent) are now read from a
+first-line slice of the raw response, `OUTCOME_LINE=${OUTCOME_RAW%%$'\n'*}`, so a
+multi-line `OUTCOME_RAW` still classifies correctly from its first line and the
+rejection branch runs, while the trailing, deliberately unrestricted `cut -f5-` read
+still carries every line of the error into `GATE_ERROR` unchanged. `TestReasonFlatteningIsJSONSafe`
+below therefore now drives its PRIMARY fixture with a literal LINE FEED
+(`HOSTILE_REFUSAL_LF`); the original carriage-return fixture (`HOSTILE_REFUSAL`) stays
+in the same class as a SIBLING case, unedited, rather than being deleted, so the record
+of what this suite could and could not prove stays legible.
+`TestMultilineRefusalReachesTheRejectionBranch` and its mutation contrast, further down
+this file, are the runtime proof that the rejection branch -- not the outage branch --
+is the one that actually runs on a multi-line refusal (plan.md ## Capabilities items
+1-3), and `TestMultilineRefusalReapproveAdviceFollowsTokenSpent`,
+`TestMultilineRefusalTruncationBoundStillApplies` and
+`TestMultilineRefusalExitsZeroRegardlessOfTelemetry` extend capabilities 4, 5 and 12 of
+the ORIGINAL cycle's claims to the multi-line case this cycle adds. Capability 6 (plan.md:
+"the single-line paths do not move") is the existing 27 tests in this file, run
+unedited, and no assertion above this point in the file may move to accommodate this
+cycle's change.
 """
 
 from __future__ import annotations
@@ -156,6 +173,15 @@ LOG_PROJECT = "approval-reason-probe"
 
 # The stream STREAM_MAP routes approval_pattern_match and approval_pattern_miss to.
 FRICTION_STREAM = "friction"
+
+# Plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3's own fixture: a refusal whose text is
+# genuinely multi-line, with a distinct marker word on each line, so a test can assert
+# every line survived the flatten-and-record step rather than only the first.
+MULTILINE_REFUSAL = (
+    "plan.md validation failed: LINEONEMARKER missing ## Files.\n"
+    "LINETWOMARKER missing ## Capabilities.\n"
+    "LINETHREEMARKER fix ALL issues in one edit."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -457,6 +483,7 @@ def _drive_approval(
     prompt: str = EXACT_APPROVAL_PROMPT,
     gate: str = "phase-a",
     env_extra: dict | None = None,
+    hook_path: Path = HOOK_PATH,
 ) -> tuple[subprocess.CompletedProcess, type | None]:
     """One real approval turn: seed the pending gate, stand up the canned daemon when
     `response_body` is given, and run the real hook against it under `_isolated_env`.
@@ -464,6 +491,10 @@ def _drive_approval(
     Returns the completed process and the stand-in handler class (None when no daemon
     was stood up), so a caller can read `post_count` off the handler itself rather than
     off bookkeeping of its own.
+
+    `hook_path` defaults to the real hook and is overridden only by the mutation
+    contrast, for the reason `_run_hook(hook_path=)` gives: both sides of that
+    comparison must be the real subprocess driven by the same runner.
     """
     cache_dir = tmp_path / f"cache-{sid}"
     fake_home = tmp_path / f"home-{sid}"
@@ -475,10 +506,10 @@ def _drive_approval(
         payload["transcript_path"] = write_evidence_transcript(tmp_path)
     if response_body is None:
         env = _isolated_env(tmp_path, cache_dir, fake_home, LOG_PROJECT, None, env_extra)
-        return _run_hook(payload, cwd=project, env=env), None
+        return _run_hook(payload, cwd=project, env=env, hook_path=hook_path), None
     with _mock_advance_daemon(response_body) as (port, handler_cls):
         env = _isolated_env(tmp_path, cache_dir, fake_home, LOG_PROJECT, port, env_extra)
-        proc = _run_hook(payload, cwd=project, env=env)
+        proc = _run_hook(payload, cwd=project, env=env, hook_path=hook_path)
     return proc, handler_cls
 
 
@@ -708,15 +739,38 @@ class TestReasonFlatteningIsJSONSafe:
     that let a raw LF through would silently write two JSON lines, and a test that
     only ever parses `lines[0]` would never see the second one appear.
 
-    THE LINE BREAK DRIVEN HERE IS A CARRIAGE RETURN, for the measured reason this
-    module's docstring gives: a raw LF cannot reach `GATE_ERROR` at all under the
-    unchanged hook, so a fixture built on one would test the ask-prompt fallback rather
-    than the reason field. The CR is the other half of the same forging vector, and
-    the absence of a raw LF is asserted regardless.
+    BOTH LINE BREAKS ARE DRIVEN HERE, as of plan.md 2412ba38's follow-up cycle. A raw
+    LF now DOES reach `GATE_ERROR`, because the hook's four fixed classifier fields are
+    read from a first-line slice of the raw response and no longer smear a multi-line
+    error into the verdict comparison; `HOSTILE_REFUSAL_LF` below is the PRIMARY
+    fixture for that reason (plan.md ## Capabilities item 11). `HOSTILE_REFUSAL` (the
+    carriage-return fixture) stays as the SIBLING case this class already had, rather
+    than being deleted: it is the other half of the same log-forging vector the
+    router's `_sanitize_value` names (SEC-INJ-LOG-001), and the two tests built on it
+    below are unedited. The paragraph this replaces recorded the LF limit as
+    permanent; it was measured and correct under the hook as it stood then, and is
+    superseded, not erased, by this rewrite.
     """
 
     HOSTILE_REFUSAL = (
         'plan.md validation failed: ALPHAMARKER\rBETAMARKER "quoted" \\ back\tslash'
+    )
+
+    # The PRIMARY fixture for capability 11: a literal LINE FEED, not only a carriage
+    # return, carrying the same hostile shape (quotes, backslash, tab) as HOSTILE_REFUSAL.
+    #
+    # WHY THE TAB SITS BEFORE THE BREAK HERE, while HOSTILE_REFUSAL keeps it after.
+    # The two were first written to differ in exactly one character, and that is what
+    # exposed a limit this cycle does not own: a CR makes no record line, but an LF does,
+    # so a tab AFTER the LF lands on the record's SECOND line, where `cut -f5-` (applied
+    # per line) sees only two fields and drops BETAMARKER, the quotes and the backslash.
+    # Measured byte-exactly. That is the "known limit" plan.md states rather than works
+    # around: changing the trailing read is a separate cycle. Keeping the tab after the
+    # break would make this fixture assert the limit instead of the flattening it exists
+    # to prove, so the tab moves and the reason is written down rather than the
+    # assertion weakened.
+    HOSTILE_REFUSAL_LF = (
+        'plan.md validation failed: ALPHAMARKER back\tslash\nBETAMARKER "quoted" \\'
     )
 
     def test_a_multiline_quoted_backslashed_refusal_produces_exactly_one_raw_json_line(
@@ -757,6 +811,69 @@ class TestReasonFlatteningIsJSONSafe:
         assert {"ALPHAMARKER", "BETAMARKER"} <= set(stored.split()), (
             "every segment of the original message must survive as its own word: "
             f"{stored!r}"
+        )
+        assert '"quoted"' in stored and "\\" in stored, (
+            f"quotes and backslashes must survive the flattening intact: {stored!r}"
+        )
+
+    def test_a_multiline_lf_refusal_produces_exactly_one_raw_json_line(
+        self, tmp_path,
+    ) -> None:
+        """Capability 11's own fixture: a HOSTILE_REFUSAL_LF (literal LINE FEED, not
+        only carriage return) must not be able to forge a second row either, now that
+        it reaches GATE_ERROR at all -- the same one-line-per-row proof
+        `test_a_multiline_quoted_backslashed_refusal_produces_exactly_one_raw_json_line`
+        gives for the CR fixture above, run against the LF sibling."""
+        sid = _sid("forge-one-line-lf")
+        with _mint_cleanup(sid):
+            _drive_approval(
+                tmp_path, sid, json.dumps({"error": self.HOSTILE_REFUSAL_LF}).encode(),
+            )
+        lines = _raw_stream_lines(LOG_PROJECT, FRICTION_STREAM)
+        assert len(lines) == 1, (
+            "a refusal carrying a literal line feed must not be able to forge a second "
+            f"row in the stream file; the file holds {len(lines)} line(s): {lines!r}"
+        )
+        row = json.loads(lines[0])
+        assert row["event"] == "approval_pattern_match"
+        assert row["outcome"] == "rejected", (
+            "a literal line feed must still reach the rejection branch, not the outage "
+            f"branch: {row!r}"
+        )
+        assert row.get("reason"), f"the single row must still carry the reason: {row!r}"
+
+    def test_the_stored_lf_reason_carries_no_raw_cr_lf_or_tab_and_keeps_words_from_every_line(
+        self, tmp_path,
+    ) -> None:
+        """Capability 11: no raw CR, LF or tab in `reason`, and every marker
+        (ALPHAMARKER, BETAMARKER) survives as its own word -- the same proof
+        `test_the_stored_reason_carries_no_raw_cr_or_lf_and_keeps_words_from_every_line`
+        gives for the CR fixture, run against HOSTILE_REFUSAL_LF."""
+        sid = _sid("forge-flattened-lf")
+        with _mint_cleanup(sid):
+            _drive_approval(
+                tmp_path, sid, json.dumps({"error": self.HOSTILE_REFUSAL_LF}).encode(),
+            )
+        rows = _match_rows(LOG_PROJECT, sid)
+        assert len(rows) == 1, f"expected exactly one approval_pattern_match row: {rows!r}"
+        stored = rows[0]["reason"]
+        assert "\r" not in stored and "\n" not in stored and "\t" not in stored, (
+            f"the stored reason must carry no raw CR, LF or tab: {stored!r}"
+        )
+        # Split on whitespace, not a substring search, for the reason the CR sibling
+        # above gives: a router that merely DELETED the line feed would glue the two
+        # markers into one token and a substring check could not tell that apart.
+        assert {"ALPHAMARKER", "BETAMARKER"} <= set(stored.split()), (
+            "every segment of the original message must survive as its own word: "
+            f"{stored!r}. MEASURED CAUSE if this is red: HOSTILE_REFUSAL_LF puts its "
+            "tab AFTER the line feed, so the record's second line carries two fields "
+            "and the trailing `cut -f5-` (which applies to every line, and which this "
+            "cycle keeps byte-identical) yields nothing for it. That is the limit "
+            "plan.md names under 'A known limit, stated rather than worked around'; a "
+            "later line with NO tab survives whole (MULTILINE_REFUSAL proves that in "
+            "TestMultilineRefusalReachesTheRejectionBranch). Either the fixture's tab "
+            "moves onto line one or the trailing read changes, and the second is out "
+            "of scope for this cycle."
         )
         assert '"quoted"' in stored and "\\" in stored, (
             f"quotes and backslashes must survive the flattening intact: {stored!r}"
@@ -1166,3 +1283,393 @@ class TestOutcomeVocabularyPinnedUnchanged:
             "a turn where nothing was ever asked of the server must claim neither a "
             f"refusal nor a token state: {rows[0]!r}"
         )
+
+
+# =============================================================================
+# Plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3's follow-up cycle: "a multi-line
+# refusal must reach the rejection branch, not the outage branch". Everything below
+# this banner is new for that cycle (## Capabilities items 1-6, 11, 12). Capability 6
+# (the single-line regression fleet) is every test ABOVE this banner, run unedited; it
+# has no new test of its own here, per the plan's non-negotiable: "Do not edit an
+# existing assertion to accommodate the change; if one would have to move, that is a
+# finding, not an edit." Capabilities 7-10 (the derived cut-site detector) live in
+# tests/test_tab_record_cut_guard.py, not here.
+#
+# Every helper and test body below was `raise NotImplementedError` when this file was
+# approved (TEST-TDD-001 / SKL-PROC-WRIT-FAILURE-001 skeleton convention); the
+# implementation cycle filled them in against the hook change plan.md's ## Analysis names.
+# =============================================================================
+
+
+def _mutate_hook_restoring_prefix_read(tmp_path: Path) -> Path:
+    """Write a copy of the real (post-fix) hook into `tmp_path` with the fixed-field
+    reads reverted to the PRE-FIX shape: `OUTCOME` (and, for completeness, the other
+    three fixed fields) read directly off `$OUTCOME_RAW` rather than the first-line
+    slice `$OUTCOME_LINE`, so `cut -f1` again applies to every line of a multi-line
+    refusal instead of just the first; return the mutated copy's path.
+
+    The negative control for `TestMultilineRefusalReachesTheRejectionBranch`: this
+    mutant must reproduce the exact outage behavior that class proves the real, unmutated
+    hook no longer has, through the SAME runner (`_run_hook`) both sides of the contrast
+    use. Same symlinked `bin`/`writ` layout `_mutate_hook_removing_tier_field` already
+    uses and for the same reason: the hook derives `WRIT_DIR` from its own location and
+    sources `common.sh` from there, so a copy dropped anywhere else dies at the source
+    line and the mutant then fails for the wrong reason.
+
+    Must assert the mutation actually changed the hook's text (mirroring
+    `_mutate_hook_removing_tier_field`'s own assertion), or a hook already reverted to
+    the pre-fix shape (mid-implementation, or before the fix lands at all) would make
+    this helper's caller pass for having proven nothing.
+    """
+    root = tmp_path / "prefix-mutant-skill"
+    (root / "hooks" / "scripts").mkdir(parents=True, exist_ok=True)
+    for name in ("bin", "writ"):
+        link = root / name
+        if not link.exists():
+            link.symlink_to(SKILL_ROOT / name)
+    source = HOOK_PATH.read_text(encoding="utf-8")
+    mutated = source.replace('"$OUTCOME_LINE" | cut', '"$OUTCOME_RAW" | cut')
+    assert mutated != source, (
+        "the mutation changed nothing: the hook source no longer reads its fixed "
+        "fields from \"$OUTCOME_LINE\", so this mutant proves nothing about the "
+        "first-line slice"
+    )
+    target = root / "hooks" / "scripts" / HOOK_PATH.name
+    target.write_text(mutated, encoding="utf-8")
+    return target
+
+
+def _broken_log_root_env(tmp_path: Path) -> dict:
+    """A `WRIT_LOG_ROOT` override pointed at a path that is a regular FILE rather than a
+    directory, so the router's `path.parent.mkdir(...)` raises a genuine
+    `NotADirectoryError` -- the same real-failure shape
+    `TestTelemetryFailureCannotFailTheHook._broken_log_root` already builds for the
+    single-line case, reproduced here as a standalone module-level helper so this
+    file's new capability-12 class does not have to reach into a sibling class's
+    private method."""
+    broken = tmp_path / "broken-log-root"
+    broken.write_text("this is a file, not a directory", encoding="utf-8")
+    return {"WRIT_LOG_ROOT": str(broken)}
+
+
+class TestMultilineRefusalReachesTheRejectionBranch:
+    """THE DEFECT THIS CLASS PINS (plan.md 2412ba38 ## Analysis): a refusal carrying a
+    literal line feed made `$OUTCOME` -- read, before this fix, with an unguarded
+    `cut -f1` over the WHOLE multi-line classifier output -- itself multi-line, so
+    `[ "$OUTCOME" = "rejected" ]` was false, `GATE_ERROR` stayed empty, and the turn
+    fell through to the daemon-did-not-answer arm while the row recorded
+    `ask-prompt-emitted` with no reason at all. This class drives the real hook against
+    `MULTILINE_REFUSAL` and asserts the rejection branch is the one that actually runs
+    (plan.md ## Capabilities items 1-2).
+
+    PASSES VACUOUSLY IF: only stdout were checked and the row read-back skipped (or
+    vice versa) -- a hook that prints the rejection but still logs the outage row, or
+    logs the rejection but still prints the outage text, would satisfy half of this
+    class and fail nothing on the other half; both halves are asserted here.
+    """
+
+    RESPONSE = json.dumps({"error": MULTILINE_REFUSAL, "token_spent": True}).encode()
+
+    def test_stdout_prints_the_rejected_line_carrying_every_line_of_the_message(
+        self, tmp_path,
+    ) -> None:
+        sid = _sid("multiline-stdout")
+        with _mint_cleanup(sid):
+            proc, handler_cls = _drive_approval(tmp_path, sid, self.RESPONSE)
+        assert handler_cls.post_count == 1, (
+            "the approval must have reached THIS stand-in, or the text below says "
+            f"nothing about what a refusal does; got {handler_cls.post_count} POST(s)"
+        )
+        assert "gate REJECTED, not advanced" in proc.stdout, (
+            "a refusal carrying a literal line feed must reach the rejection branch: "
+            f"{proc.stdout!r}"
+        )
+        for line in MULTILINE_REFUSAL.split("\n"):
+            assert line in proc.stdout, (
+                f"the printed refusal is missing the line {line!r}: {proc.stdout!r}"
+            )
+        assert MULTILINE_REFUSAL in proc.stdout, (
+            f"stdout must carry the whole message, unbroken: {proc.stdout!r}"
+        )
+
+    def test_stdout_prints_none_of_the_daemon_did_not_answer_outage_text(
+        self, tmp_path,
+    ) -> None:
+        sid = _sid("multiline-no-outage")
+        with _mint_cleanup(sid):
+            proc, _ = _drive_approval(tmp_path, sid, self.RESPONSE)
+        assert "the Writ daemon did not answer" not in proc.stdout, (
+            "the daemon answered and refused; reporting an outage sends the user to "
+            f"restart a healthy daemon and hides the reason: {proc.stdout!r}"
+        )
+        assert "systemctl --user restart writ-server" not in proc.stdout, proc.stdout
+        assert "Your approval was not consumed." not in proc.stdout, (
+            "the outage arm's claim about the token must not be printed for a refusal "
+            f"the server answered: {proc.stdout!r}"
+        )
+
+    def test_exactly_one_row_is_written_with_outcome_rejected_and_a_non_empty_reason(
+        self, tmp_path,
+    ) -> None:
+        sid = _sid("multiline-row")
+        with _mint_cleanup(sid):
+            _drive_approval(tmp_path, sid, self.RESPONSE)
+        rows = _match_rows(LOG_PROJECT, sid)
+        assert len(rows) == 1, f"expected exactly one approval_pattern_match row: {rows!r}"
+        assert rows[0]["outcome"] == "rejected", (
+            "a multi-line refusal is a refusal, not an unanswered ask: "
+            f"{rows[0]['outcome']!r}"
+        )
+        assert rows[0].get("reason"), (
+            f"the row must record WHY the advance was refused: {rows[0]!r}"
+        )
+
+    def test_the_rows_reason_carries_a_word_from_every_line_of_the_message(
+        self, tmp_path,
+    ) -> None:
+        sid = _sid("multiline-reason-words")
+        with _mint_cleanup(sid):
+            _drive_approval(tmp_path, sid, self.RESPONSE)
+        rows = _match_rows(LOG_PROJECT, sid)
+        assert len(rows) == 1, f"expected exactly one approval_pattern_match row: {rows!r}"
+        stored = rows[0]["reason"]
+        # As words, not substrings: a reason that merely DELETED the line feeds would
+        # glue the last word of one line to the first of the next.
+        assert {"LINEONEMARKER", "LINETWOMARKER", "LINETHREEMARKER"} <= set(stored.split()), (
+            f"every line of the server's message must survive in the row: {stored!r}"
+        )
+        assert "\n" not in stored and "\r" not in stored and "\t" not in stored, stored
+
+
+class TestMultilineRefusalMutationContrastProvesTheOutageWasTheOldBehavior:
+    """Capability 3: the claim above is proved CONDITIONAL by mutation, in this same
+    class -- a copy of the hook with the pre-fix read restored (field 1 taken from the
+    WHOLE classifier output, not the first-line slice) answers the identical
+    `MULTILINE_REFUSAL` with the outage text and a row whose `outcome` is
+    `ask-prompt-emitted` and which has no `reason` key. Mirrors the house pattern
+    `TestMissTierDetectorConditionalByMutation` already carries for the miss-tier
+    detector: the positive proof lives in the sibling class above, and this class is
+    only the negative control.
+
+    PASSES VACUOUSLY IF: the mutant's own row were never checked for having WRITTEN
+    anything at all -- a mutant that crashed before logging would also show no
+    `rejected` row and no `reason` key, and would pass every assertion here while
+    proving nothing about the specific pre-fix READ this class exists to contrast
+    against.
+    """
+
+    RESPONSE = json.dumps({"error": MULTILINE_REFUSAL, "token_spent": True}).encode()
+
+    def test_the_mutation_actually_changed_the_hook_source(self, tmp_path) -> None:
+        mutant = _mutate_hook_restoring_prefix_read(tmp_path)
+        mutated = mutant.read_text(encoding="utf-8")
+        real = HOOK_PATH.read_text(encoding="utf-8")
+        assert mutated != real, "the mutant is a copy of the real hook and proves nothing"
+        assert 'OUTCOME=$(printf \'%s\' "$OUTCOME_RAW" | cut -f1)' in mutated, (
+            "the mutant must carry the PRE-FIX read, field 1 taken from the whole "
+            "classifier output"
+        )
+        assert '"$OUTCOME_LINE" | cut' not in mutated, (
+            "no fixed read may still go through the first-line slice, or the contrast "
+            "is against a half-mutated hook"
+        )
+        # The slice itself stays assigned, so the mutant differs from the real hook in
+        # WHICH VALUE the fixed reads take and in nothing else.
+        assert "OUTCOME_LINE=${OUTCOME_RAW%%$'\\n'*}" in mutated
+
+    def test_the_prefix_mutant_answers_the_multiline_refusal_with_the_outage_text(
+        self, tmp_path,
+    ) -> None:
+        mutant = _mutate_hook_restoring_prefix_read(tmp_path)
+        sid = _sid("mutant-multiline-stdout")
+        with _mint_cleanup(sid):
+            proc, handler_cls = _drive_approval(
+                tmp_path, sid, self.RESPONSE, hook_path=mutant,
+            )
+        assert handler_cls.post_count == 1, (
+            "the mutant must have ASKED the stand-in and been refused; without that it "
+            f"reports an outage for the right reason: {handler_cls.post_count} POST(s)"
+        )
+        assert "the Writ daemon did not answer" in proc.stdout, (
+            "the pre-fix read is what turned a refusal into an outage report; if this "
+            f"is absent the contrast proves nothing: {proc.stdout!r}"
+        )
+        assert "gate REJECTED, not advanced" not in proc.stdout, proc.stdout
+        assert "LINETWOMARKER" not in proc.stdout, (
+            f"the pre-fix hook dropped the refusal text entirely: {proc.stdout!r}"
+        )
+        assert proc.returncode == 0, proc.stderr
+
+    def test_the_prefix_mutant_writes_a_row_with_outcome_ask_prompt_emitted_and_no_reason_key(
+        self, tmp_path,
+    ) -> None:
+        mutant = _mutate_hook_restoring_prefix_read(tmp_path)
+        sid = _sid("mutant-multiline-row")
+        with _mint_cleanup(sid):
+            _drive_approval(tmp_path, sid, self.RESPONSE, hook_path=mutant)
+        rows = _match_rows(LOG_PROJECT, sid)
+        # FOR ITS REASON: the mutant still WROTE a row. A copy that died before logging
+        # would show no rejected row and no reason key too, and would pass this class
+        # while saying nothing about the read it was made to restore.
+        assert len(rows) == 1, (
+            "the mutant wrote no approval_pattern_match row at all, so this proves "
+            f"nothing about the pre-fix read; the damaged copy did not run: {rows!r}"
+        )
+        assert rows[0]["outcome"] == "ask-prompt-emitted", (
+            "the measured pre-fix behavior: a refusal misfiled as an unanswered ask; "
+            f"got {rows[0]['outcome']!r}"
+        )
+        assert "reason" not in rows[0], (
+            f"the pre-fix row recorded no reason at all: {rows[0]!r}"
+        )
+
+
+class TestMultilineRefusalReapproveAdviceFollowsTokenSpent:
+    """Capability 4: the re-approve advice is still decided by the server's
+    `token_spent` flag on a MULTI-LINE refusal, exactly as
+    `TestGateBehaviorIsUnchanged` already proves for the single-line case -- the spent
+    wording appears when the response reports `token_spent` true and the
+    not-consumed wording when it reports false.
+
+    PASSES VACUOUSLY IF: only one of the two `token_spent` states were driven --
+    a hook that always printed the "spent" wording regardless of the flag would pass a
+    lone `true` case and fail nothing.
+    """
+
+    @pytest.mark.parametrize(
+        "token_spent,expected_phrase,forbidden_phrase",
+        [
+            (
+                True,
+                "the rejection spent the prior approval, so the user must approve again",
+                "Your approval was NOT consumed",
+            ),
+            (
+                False,
+                "Your approval was NOT consumed",
+                "the rejection spent the prior approval, so the user must approve again",
+            ),
+        ],
+    )
+    def test_reapprove_advice_follows_the_servers_token_spent_flag_on_a_multiline_refusal(
+        self, tmp_path, token_spent, expected_phrase, forbidden_phrase,
+    ) -> None:
+        sid = _sid(f"multiline-spent-{str(token_spent).lower()}")
+        body = json.dumps({"error": MULTILINE_REFUSAL, "token_spent": token_spent}).encode()
+        with _mint_cleanup(sid):
+            proc, _ = _drive_approval(tmp_path, sid, body)
+        assert expected_phrase in proc.stdout, (
+            f"a multi-line refusal reporting token_spent={token_spent} must advise "
+            f"{expected_phrase!r}: {proc.stdout!r}"
+        )
+        assert forbidden_phrase not in proc.stdout, (
+            f"the opposite advice must not appear: {proc.stdout!r}"
+        )
+        rows = _match_rows(LOG_PROJECT, sid)
+        assert len(rows) == 1, f"expected exactly one approval_pattern_match row: {rows!r}"
+        assert rows[0].get("token_spent") is token_spent, (
+            "the row must record the same flag the advice was decided from: "
+            f"{rows[0].get('token_spent')!r}"
+        )
+
+
+class TestMultilineRefusalTruncationBoundStillApplies:
+    """Capability 5: for a multi-line refusal LONGER than the 300-character bound, the
+    hook still prints the full, untruncated text on stdout while the row's `reason` is
+    still its 300-character prefix -- the same "one variable stays one variable" claim
+    `TestGateBehaviorIsUnchanged` proves for a single-line refusal, now proved for a
+    refusal whose length crosses multiple lines.
+
+    PASSES VACUOUSLY IF: the fixture used were under the 300-character bound -- a
+    wrongly-truncated `GATE_ERROR` would still print something plausible-looking short
+    of that length; only a refusal LONGER than the bound can show stdout keeping the
+    full multi-line text while the row keeps the truncated one.
+    """
+
+    LONG_MULTILINE_REFUSAL = (
+        "plan.md validation failed: LINEONE ALPHAMARKER\n"
+        + ("missing section; " * 20)
+        + "\nLINETHREE OMEGAMARKER fix ALL issues in one edit."
+    )
+
+    def test_stdout_keeps_the_full_multiline_text_while_the_rows_reason_is_its_300_char_prefix(
+        self, tmp_path,
+    ) -> None:
+        assert len(self.LONG_MULTILINE_REFUSAL) > 300, (
+            "the fixture must exceed the bound to test the bound"
+        )
+        sid = _sid("multiline-bound")
+        with _mint_cleanup(sid):
+            proc, _ = _drive_approval(
+                tmp_path, sid,
+                json.dumps({"error": self.LONG_MULTILINE_REFUSAL}).encode(),
+            )
+        assert self.LONG_MULTILINE_REFUSAL in proc.stdout, (
+            "stdout must carry the FULL multi-line refusal; the 300-character bound "
+            f"belongs to the row builder alone: {proc.stdout!r}"
+        )
+        assert "OMEGAMARKER" in proc.stdout, (
+            f"the last line must survive on stdout: {proc.stdout!r}"
+        )
+        rows = _match_rows(LOG_PROJECT, sid)
+        assert len(rows) == 1, f"expected exactly one approval_pattern_match row: {rows!r}"
+        stored = rows[0]["reason"]
+        flattened = self.LONG_MULTILINE_REFUSAL.replace("\n", " ").strip()
+        assert stored == flattened[:300], (
+            "the row is the flattened, bounded copy of the same text stdout kept "
+            f"whole: {stored!r}"
+        )
+        assert len(stored) == 300
+        assert "ALPHAMARKER" in stored and "OMEGAMARKER" not in stored, (
+            f"the bound must cut the tail, not the head: {stored!r}"
+        )
+
+
+class TestMultilineRefusalExitsZeroRegardlessOfTelemetry:
+    """Capability 12: the hook exits 0 on a multi-line refusal whether or not the
+    friction writer can write, mirroring `TestTelemetryFailureCannotFailTheHook`'s
+    single-line proof of the same claim (plan.md ## Analysis, "Failure behavior.
+    Unchanged... the parameter expansion cannot fail under `set -u`").
+
+    PASSES VACUOUSLY IF: only the telemetry-healthy case were driven -- a hook that
+    exits 0 only when the friction writer succeeds would pass that case alone and hide
+    a regression in the `2>/dev/null ... || true` failure-swallowing chain this class's
+    second test exists to catch.
+    """
+
+    RESPONSE = json.dumps({"error": MULTILINE_REFUSAL, "token_spent": True}).encode()
+
+    def test_the_hook_exits_zero_on_the_multiline_refusal_with_telemetry_healthy(
+        self, tmp_path,
+    ) -> None:
+        sid = _sid("multiline-exit-healthy")
+        with _mint_cleanup(sid):
+            proc, _ = _drive_approval(tmp_path, sid, self.RESPONSE)
+        assert proc.returncode == 0, (
+            f"a UserPromptSubmit hook must never block the turn: {proc.returncode}, "
+            f"stderr={proc.stderr!r}"
+        )
+        assert _match_rows(LOG_PROJECT, sid), (
+            "telemetry was healthy in this run, so the row must be there: the exit code "
+            "above is then the exit code of a hook that did the work"
+        )
+
+    def test_the_hook_exits_zero_on_the_multiline_refusal_when_the_friction_writer_cannot_write(
+        self, tmp_path,
+    ) -> None:
+        sid = _sid("multiline-exit-broken")
+        with _mint_cleanup(sid):
+            proc, _ = _drive_approval(
+                tmp_path, sid, self.RESPONSE,
+                env_extra=_broken_log_root_env(tmp_path),
+            )
+        assert proc.returncode == 0, (
+            f"telemetry failure must never fail the hook: {proc.returncode}, "
+            f"stderr={proc.stderr!r}"
+        )
+        assert "gate REJECTED, not advanced" in proc.stdout, (
+            "the in-turn message is what the user acts on, and it must survive a dead "
+            f"log writer: {proc.stdout!r}"
+        )
+        for line in MULTILINE_REFUSAL.split("\n"):
+            assert line in proc.stdout, proc.stdout

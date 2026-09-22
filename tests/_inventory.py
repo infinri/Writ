@@ -3023,3 +3023,263 @@ def seeder_reaching_scripts(*, scripts_dir: Path = HOOK_SCRIPTS_DIR) -> list[str
         for path in sorted(Path(scripts_dir).glob("*.sh"))
         if _SEEDER_REACHING_CALL.search(_blanked_source(path))
     ]
+
+
+# ── Tab-record `cut -f` sites (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3) ──
+#
+# `bin/lib/gate_advance_outcome.py` prints ONE tab-separated record whose fixed fields come
+# first and whose last field is the unbounded, possibly multi-line error. `cut` applies its
+# field selection to EVERY line it reads, so a fixed field read off the whole record makes a
+# multi-line error smear into the verdict: `$OUTCOME` became `rejected` plus the rest of the
+# message, matched none of the outcome words, and the turn reported a daemon outage instead
+# of the refusal. The property is one sentence: the FIXED fields are read from the first line
+# only, and the trailing unbounded field is not.
+#
+# DERIVED, never a file list. A per-file assertion goes stale the moment a sixth site lands,
+# and this repo has already paid for a hardcoded population that was blind rather than merely
+# out of date. `tests/` is deliberately OUTSIDE the spec: a test may legitimately run a
+# modeled `cut` expression inside a `bash -c` string, and scanning it would judge a model.
+_CUT_SCAN_SPEC: tuple[tuple[Path, str], ...] = (
+    (REPO / "hooks" / "scripts", "*.sh"),
+    (REPO / "bin" / "lib", "*.sh"),
+)
+
+# `NAME=${PARENT%%$'\n'*}`: the no-process first-line slice this tree already uses at
+# auto-approve-gate.sh's TIER and EVIDENCE reads and at writ-memory-policy-guard.sh's verdict.
+_FIRST_LINE_SLICE = re.compile(
+    r"^\s*(?:local\s+|export\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)="
+    r"\$\{(?P<parent>[A-Za-z_][A-Za-z0-9_]*)%%\$'\\n'\*\}"
+)
+# The other first-line MECHANISM, and both must be recognized or the derivation reports a
+# guarded site as unguarded: a pipeline whose head is restricted with `head -1`/`head -n 1`.
+_HEAD_FIRST_LINE = re.compile(r"\bhead\s+(?:-1|-n\s+1)(?=\s|$|\|)")
+_CAPTURED_ASSIGNMENT = re.compile(
+    r"^\s*(?:local\s+|export\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)=(?:\$\(|`)"
+)
+# A `cut` carrying a `-f` selector, whatever other flags sit between the two (`cut -s -f1`).
+# Non-greedy and stopping at `|` or `)` so the scan cannot run past the end of the pipeline.
+_CUT_FIELD_SELECTOR = re.compile(r"\bcut\b[^|)\n]*?-f\s*(?P<selector>[0-9][0-9,\-]*)")
+# A variable EXPANSION, which is what a `cut` pipeline reads its record from. `$(` does not
+# match: the character after the dollar must open a name.
+_VAR_EXPANSION = re.compile(r"\$\{?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\}?")
+# An escaped line feed inside the text a record is BUILT from, which is the file saying in
+# its own source that this record can carry more than one line.
+_RECORD_LINE_BREAK = re.compile(r"\\n")
+
+
+def first_line_variables(source: str) -> dict[str, str]:
+    """`{name: parent}` for every variable `source` assigns as a first-line restriction.
+
+    Both MECHANISMS, because the rule is about the restriction and not about one spelling of
+    it: a `%%$'\\n'*` slice records the variable it sliced (the record's raw root), and an
+    assignment whose command substitution pipes through `head -1` records an empty parent,
+    since the pipeline and not another variable is what was restricted.
+    """
+    variables: dict[str, str] = {}
+    for line in _blanked_lines(source):
+        sliced = _FIRST_LINE_SLICE.match(line)
+        if sliced:
+            variables[sliced.group("name")] = sliced.group("parent")
+            continue
+        captured = _CAPTURED_ASSIGNMENT.match(line)
+        if captured and _HEAD_FIRST_LINE.search(line):
+            variables.setdefault(captured.group("name"), "")
+    return variables
+
+
+def _record_statement_shows_a_line_break(lines: list[str], name: str) -> bool:
+    """True when the file's own construction of `name` shows a line feed in the record.
+
+    Backslash continuations are followed, because `PHASE_FIELDS=` spans four lines here and a
+    statement read one line at a time would answer about a fragment of itself.
+    """
+    assignment = re.compile(rf"^\s*(?:local\s+|export\s+)?{re.escape(name)}=")
+    for index, line in enumerate(lines):
+        if not assignment.match(line):
+            continue
+        statement = line
+        cursor = index
+        while statement.rstrip().endswith("\\") and cursor + 1 < len(lines):
+            cursor += 1
+            statement += lines[cursor]
+        if _RECORD_LINE_BREAK.search(statement):
+            return True
+    return False
+
+
+def _cut_sites_in(lines: list[str], rel: str) -> dict[str, dict]:
+    """Every `cut -f` site in one already-blanked file, keyed `"<relpath>:<line>"`."""
+    variables = first_line_variables("\n".join(lines))
+    sites: dict[str, dict] = {}
+    for number, line in enumerate(lines, start=1):
+        # FIRST MATCH PER LINE. Every site in this tree owns a line of its own, and the
+        # declared-site check is what catches a derivation that went blind for any reason.
+        found = _CUT_FIELD_SELECTOR.search(line)
+        if not found:
+            continue
+        pipeline = line[: found.start()]
+        read = [match.group("name") for match in _VAR_EXPANSION.finditer(pipeline)]
+        source_variable = read[-1] if read else ""
+        selector = found.group("selector")
+        if _HEAD_FIRST_LINE.search(pipeline):
+            guard = "head"
+        elif source_variable in variables:
+            guard = "slice" if variables[source_variable] else "head"
+        else:
+            guard = ""
+        sites[f"{rel}:{number}"] = {
+            "path": rel,
+            "line": number,
+            "selector": selector,
+            # An open range IS the unbounded field; anything else names bounded fields only.
+            "kind": "trailing" if selector.endswith("-") else "fixed",
+            "source": source_variable,
+            # The RAW record a site reads, so a read of a first-line derivative and a read of
+            # the raw value are recognized as parsing the same record.
+            "record": variables.get(source_variable) or source_variable,
+            "guard": guard,
+            "text": line.strip(),
+        }
+    records = {site["record"] for site in sites.values()}
+    unbounded = {site["record"] for site in sites.values() if site["kind"] == "trailing"}
+    unbounded |= {
+        name for name in records if name and _record_statement_shows_a_line_break(lines, name)
+    }
+    for site in sites.values():
+        site["unbounded_record"] = site["record"] in unbounded
+    return sites
+
+
+def tab_record_cut_sites(
+    *, spec: tuple[tuple[Path, str], ...] | None = None, base: Path | None = None
+) -> dict[str, dict]:
+    """`{"<relpath>:<line>": {...}}` for every `cut` invocation carrying a `-f` selector.
+
+    Each site records the `selector` it reads, its `kind` (`fixed` when the selector names
+    only bounded fields, `trailing` when it ends in an open range), the `source` variable the
+    pipeline reads, the `record` that variable resolves to (a first-line derivative resolves
+    to its raw parent, so both reads of one record are one family), the `guard` that restricts
+    it to line one (`slice`, `head`, or empty), and whether that record has an
+    `unbounded_record` tail.
+
+    UNBOUNDED IS THE SCOPE, and it is measured two ways because the property only exists for
+    a record built the way `gate_advance_outcome.py` builds one, fixed fields first and one
+    unbounded possibly multi-line field last. A record is unbounded when some site reads an
+    open range from it, or when the file's own construction of it shows a line break. The
+    seven `cut -s -f<n>` reads of `PHASE_FIELDS` are a CLOSED record by both measures: every
+    field is bounded, nothing reads an open range, and no line feed is built into it.
+
+    `spec` and `base` are keywords for the reason `user_directed_phrase_sites(*, spec=)`
+    gives: the derivation's own conditionality is proven against synthetic sources under
+    `tmp_path`, never by editing the real tree.
+    """
+    root_base = Path(base or REPO)
+    sites: dict[str, dict] = {}
+    for root, pattern in spec or _CUT_SCAN_SPEC:
+        if not root.is_dir():
+            continue
+        for path in sorted(root.glob(pattern)):
+            if not path.is_file():
+                continue
+            try:
+                rel = path.relative_to(root_base).as_posix()
+            except ValueError:
+                rel = path.as_posix()
+            lines = _blanked_lines(path.read_text(encoding="utf-8", errors="replace"))
+            sites.update(_cut_sites_in(lines, rel))
+    return sites
+
+
+def unguarded_fixed_field_cuts(
+    *, spec: tuple[tuple[Path, str], ...] | None = None, base: Path | None = None
+) -> dict[str, dict]:
+    """The `fixed` sites of an unbounded record whose input is not restricted to line one.
+
+    This is the defect itself, and it must be empty: a fixed field read from the whole record
+    receives every later line of the error too, and no comparison against an outcome word can
+    then match.
+    """
+    return {
+        key: site
+        for key, site in tab_record_cut_sites(spec=spec, base=base).items()
+        if site["kind"] == "fixed" and site["unbounded_record"] and not site["guard"]
+    }
+
+
+def truncating_trailing_cuts(
+    *, spec: tuple[tuple[Path, str], ...] | None = None, base: Path | None = None
+) -> dict[str, dict]:
+    """The `trailing` reads that ARE line-restricted, within a record family that also has a
+    fixed-field read.
+
+    The opposite error, and it must be empty too: the trailing field is the unbounded error,
+    and guarding it the way the fixed fields are guarded would silently truncate every
+    multi-line refusal to its first line. SCOPED TO A RECORD FAMILY so the rule fires on the
+    shape this defect lives in and cannot false-red on an unrelated open-range `cut` that has
+    no fixed-field sibling and therefore is not this record shape at all.
+    """
+    sites = tab_record_cut_sites(spec=spec, base=base)
+    families = {
+        (site["path"], site["record"]) for site in sites.values() if site["kind"] == "fixed"
+    }
+    return {
+        key: site
+        for key, site in sites.items()
+        if site["kind"] == "trailing"
+        and site["guard"]
+        and (site["path"], site["record"]) in families
+    }
+
+
+# The sites this cycle MEASURED, each anchored on a stable clause of its own line, in the
+# shape `DECLARED_PHRASE_SITES` uses: the LINE is resolved from the derivation rather than
+# written down, because a line literal here would go stale on the next edit above it while
+# the anchor says what the site IS.
+#
+# TRIAGE RULE FOR A RED HERE: the derivation went blind, or the site was rewritten. Re-point
+# the anchor at the expression that site now carries. Deleting the entry, or widening the
+# grammar until it goes green, is the loosening this map exists to stop.
+#
+# NEW SITES ARE NOT REQUIRED TO BE DECLARED. They are derived automatically and judged by the
+# two finding predicates above; this map only proves the derivation can still see the sites
+# that are known to exist, INCLUDING one read of the closed `PHASE_FIELDS` record.
+#
+# WHICH NARROWING THIS MAP ACTUALLY CATCHES, measured rather than assumed. There are two ways
+# to narrow the derivation, and this map catches only one of them:
+#   DISCOVERY narrowing (the scan stops visiting the file, or the line) -- CAUGHT HERE. The
+#   `PHASE_FIELDS` entry stops resolving by path and line, and the declared-site test reds.
+#   CLASSIFICATION narrowing (the scan still finds every site, but `unbounded_record` is
+#   hardcoded to something like `record == "OUTCOME_RAW"`) -- NOT caught here. Every declared
+#   entry still resolves and both real-tree finding sets stay empty, because the real tree is
+#   clean either way. What catches that is the synthetic mutation tree in
+#   tests/test_tab_record_cut_guard.py, whose fixtures deliberately name their variable `RAW`
+#   rather than `OUTCOME_RAW`, so a derivation keyed to this file's variable names sees
+#   nothing there and its four mutation directions red.
+# Both were verified by mutation. Trusting this map alone for the second case is the mistake
+# this paragraph exists to prevent.
+DECLARED_CUT_SITES: dict[str, tuple[str, str]] = {
+    "advance-outcome-verdict": (
+        "hooks/scripts/auto-approve-gate.sh",
+        'OUTCOME=$(printf \'%s\' "$OUTCOME_LINE" | cut -f1)',
+    ),
+    "advance-outcome-validated": (
+        "hooks/scripts/auto-approve-gate.sh",
+        'VALIDATED=$(printf \'%s\' "$OUTCOME_LINE" | cut -f3)',
+    ),
+    "advance-outcome-token-spent": (
+        "hooks/scripts/auto-approve-gate.sh",
+        'TOKEN_SPENT=$(printf \'%s\' "$OUTCOME_LINE" | cut -f4)',
+    ),
+    "advance-outcome-phase": (
+        "hooks/scripts/auto-approve-gate.sh",
+        'ADVANCED_TO=$(printf \'%s\' "$OUTCOME_LINE" | cut -f2)',
+    ),
+    "advance-outcome-error": (
+        "hooks/scripts/auto-approve-gate.sh",
+        'GATE_ERROR=$(printf \'%s\' "$OUTCOME_RAW" | cut -f5-)',
+    ),
+    "phase-fields-next-gate": (
+        "hooks/scripts/auto-approve-gate.sh",
+        'NEXT_GATE=$(printf \'%s\' "$PHASE_FIELDS" | cut -s -f3)',
+    ),
+}

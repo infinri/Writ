@@ -488,14 +488,24 @@ exact|override)
         # inline parses this replaces had drifted). A rejection SPENDS the token, so
         # the user must fix the artifact and type "approved" again to mint a fresh one.
         OUTCOME_RAW=$(echo "$ADVANCE_RESP" | python3 "$WRIT_DIR/bin/lib/gate_advance_outcome.py" 2>/dev/null || printf 'none\t\t\t\t')
-        OUTCOME=$(printf '%s' "$OUTCOME_RAW" | cut -f1)
         # Fields: 1 outcome, 2 phase, 3 what the gate judged, 4 token_spent, 5- the error.
-        # The error is last because it is the only unbounded/multi-line field; `head -1`
-        # keeps a multi-line error from smearing the fixed fields across its later lines.
-        VALIDATED=$(printf '%s' "$OUTCOME_RAW" | head -1 | cut -f3)
-        TOKEN_SPENT=$(printf '%s' "$OUTCOME_RAW" | head -1 | cut -f4)
+        # The error is last because it is the only unbounded/multi-line field, and THE FOUR
+        # FIXED FIELDS ARE READ FROM OUTCOME_LINE, the first line of that record. `cut`
+        # applies its field selection to EVERY line, so a fixed field read off the raw
+        # value made a refusal containing a newline produce a multi-line $OUTCOME, which
+        # equalled none of advanced/rejected/noop: the rejection branch never ran and the
+        # turn told the user the daemon had not answered while the row recorded
+        # ask-prompt-emitted with no reason. The restriction lives in ONE place that every
+        # fixed read goes through, so a fifth fixed field is guarded by construction, and
+        # the slice is parameter expansion, so it costs no process.
+        # THE TRAILING READ KEEPS $OUTCOME_RAW: fields 5 onward ARE the error, and a
+        # first-line restriction there would truncate the text the user is meant to read.
+        OUTCOME_LINE=${OUTCOME_RAW%%$'\n'*}
+        OUTCOME=$(printf '%s' "$OUTCOME_LINE" | cut -f1)
+        VALIDATED=$(printf '%s' "$OUTCOME_LINE" | cut -f3)
+        TOKEN_SPENT=$(printf '%s' "$OUTCOME_LINE" | cut -f4)
         if [ "$OUTCOME" = "advanced" ]; then
-            ADVANCED_TO=$(printf '%s' "$OUTCOME_RAW" | cut -f2)
+            ADVANCED_TO=$(printf '%s' "$OUTCOME_LINE" | cut -f2)
         elif [ "$OUTCOME" = "rejected" ]; then
             GATE_ERROR=$(printf '%s' "$OUTCOME_RAW" | cut -f5-)
         fi

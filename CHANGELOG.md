@@ -6,6 +6,42 @@ All notable changes to Writ are documented in this file. The format follows [Kee
 
 ### Fixed
 
+- **A refusal carrying a line feed reached the outage branch instead of the rejection
+  branch, so the user was told the daemon had not answered while the daemon was answering
+  with a reason.** `bin/lib/gate_advance_outcome.py` prints ONE tab-separated record:
+  fields 1 to 4 are fixed (outcome, phase, what the gate judged, token_spent) and field 5
+  onward is the error, last because it is the only unbounded and possibly multi-line field.
+  `cut` applies its field selection to EVERY line it reads, and two of the hook's four fixed
+  reads restricted their input to line one while two did not. So a three-line refusal made
+  `$OUTCOME` three lines long, `[ "$OUTCOME" = "rejected" ]` was false, `GATE_ERROR` stayed
+  empty, and the turn fell through to the arm that prints "the Writ daemon did not answer"
+  and tells the user to restart a healthy daemon, while the row recorded
+  `ask-prompt-emitted` with no reason. MEASURED in a shell against the real parse, not
+  inferred from the code. THE FIX IS ONE ASSIGNMENT: `OUTCOME_LINE=${OUTCOME_RAW%%$'\n'*}`,
+  and all four fixed reads take it. The restriction lives in ONE place every fixed read goes
+  through, so a fifth fixed field added later is guarded by construction; it is parameter
+  expansion, so the block spawns four processes where it spawned six; and the file already
+  slices a helper's first line this way twice, at its tier and evidence reads. THE TRAILING
+  READ IS DELIBERATELY NOT GUARDED: fields 5 onward ARE the error, and a first-line
+  restriction there would truncate the text the previous entry started recording. ONE PASS
+  WITH `IFS=$'\t' read` WAS REJECTED AND THE REASON IS MEASURED: a tab is IFS whitespace, so
+  bash collapses the two empty fields a rejection carries and slides `token_spent` into the
+  phase variable, which decides the re-approve advice the human acts on. NOTHING ABOUT WHAT
+  THE GATE ALLOWS, REFUSES, MINTS OR SPENDS MOVES: the POST, the mint and the server's
+  decision all happen before this parse, the outcome vocabulary is untouched, and for a
+  single-line record the slice returns the whole string, so every existing approval path is
+  byte-identical. A NEW DERIVED DETECTOR, in `tests/_inventory.py`, holds the property
+  instead of a per-file assertion: `tab_record_cut_sites` globs `hooks/scripts/*.sh` and
+  `bin/lib/*.sh`, names no file, classifies each `cut -f` site as a bounded fixed read or a
+  trailing unbounded one, and two predicates over it must both stay empty, so a new
+  unguarded fixed read reddens and so does a first-line guard added to an error read. Pinned
+  by `tests/test_tab_record_cut_guard.py` (the derivation, proved conditional by mutation in
+  both directions on a synthetic tree with a control that must report nothing) and by
+  `tests/test_approval_rejection_reason_recorded.py`, where the real hook answers a canned
+  multi-line refusal with the rejection and its reason, and a COPY of the hook with the
+  pre-fix read restored answers the identical refusal with the outage text and an
+  `ask-prompt-emitted` row.
+
 - **A rejected approval now records WHY it was refused, and whether it spent the human's
   approval.** MEASURED on a real project (`upgrade.2ndswing.com`, 2026-09-21/22): three
   `approval_pattern_match` rows carry `"outcome": "rejected"` with no reason field, and a
@@ -37,14 +73,19 @@ All notable changes to Writ are documented in this file. The format follows [Kee
   emitted inside the `embedded)` arm and nowhere else, so each row was an embedded-tier
   near miss by construction and did not say so, leaving an analyst measuring that tier's
   precision to rely on an undocumented code position. A MEASURED LIMIT, recorded rather
-  than papered over: a refusal carrying a raw LINE FEED still cannot reach `reason` at all,
-  because the hook reads the classifier's verdict with `cut -f1` over output whose last
-  field is the unbounded error, so an embedded newline makes `$OUTCOME` itself multi-line,
-  the rejected branch is not taken, and the turn records `ask-prompt-emitted`. That is
-  pre-existing behaviour this change deliberately leaves alone; the flattening is therefore
-  proved against a carriage return, which does reach the field and is the other half of the
-  same log-forging vector, and the stream file is asserted to hold exactly one line either
-  way. Pinned by `tests/test_approval_rejection_reason_recorded.py`: 27 tests driving the
+  than papered over, AND SINCE CORRECTED: this entry recorded that a refusal carrying a raw
+  LINE FEED could not reach `reason` at all, because the hook read the classifier's verdict
+  with `cut -f1` over output whose last field is the unbounded error, so an embedded newline
+  made `$OUTCOME` itself multi-line, the rejected branch was not taken, and the turn
+  recorded `ask-prompt-emitted`. That was measured and true of the hook as it stood, and it
+  was wrong to call it pre-existing behaviour to leave alone: it is the defect the entry
+  above this one fixes, by reading the four fixed fields from a first-line slice of the
+  record. A line feed now reaches `reason` intact. What remains, and it is narrower, is that
+  `cut -f5-` applies to every line, so a SECOND OR LATER line of an error that itself
+  contains a tab loses that line; a later line with no tab survives whole. The flattening is
+  still proved against a carriage return, which is the other half of the same log-forging
+  vector, and the stream file is still asserted to hold exactly one line either way. Pinned
+  by `tests/test_approval_rejection_reason_recorded.py`: 27 tests driving the
   real hook as a subprocess against a real local HTTP stand-in for the advance route,
   reading every row back through the real router at the destination the router itself
   resolves, with the stand-in counting its own POSTs so "this never touched the operator's

@@ -160,19 +160,103 @@ def test_multiline_error_keeps_the_fixed_fields_on_line_one():
     assert "line two" in proc.stdout
 
 
-def test_hook_cut_positions_match_the_emitter():
-    """Parse with the exact cut expressions the hook uses, via a real shell."""
-    payload = json.dumps({"advanced": False, "error": "why it failed", "token_spent": False,
-                          "project_root": "/p"})
-    script = (
-        f'RAW=$({sys.executable} {_SCRIPT} {payload!r}); '
-        'echo "O=$(printf %s "$RAW" | cut -f1)"; '
-        'echo "V=$(printf %s "$RAW" | head -1 | cut -f3)"; '
-        'echo "S=$(printf %s "$RAW" | head -1 | cut -f4)"; '
-        'echo "E=$(printf %s "$RAW" | cut -f5-)"'
+# -- The hook's parse of that transport, re-anchored to its post plan.md 2412ba38 shape --
+#
+# `test_hook_cut_positions_match_the_emitter` used to hand-roll the hook's cut
+# expressions directly in a `bash -c` string. Plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3
+# ("a multi-line refusal must reach the rejection branch, not the outage branch") changes
+# what those expressions ARE: the four FIXED fields (outcome, phase/advanced_to,
+# validated, token_spent) move from two guarded (`head -1`) and two unguarded reads to
+# ALL FOUR reading a single first-line slice, `OUTCOME_LINE=${OUTCOME_RAW%%$'\n'*}`, while
+# the trailing, deliberately unbounded error field keeps reading the raw value. The old
+# hand-rolled model happened to still produce the right OUTPUT for every single-line
+# payload this file's fixtures use, so it would have stayed GREEN after the fix landed
+# while describing a parse the hook no longer has (plan.md: "closed while it is cheap").
+#
+# THE FIX: the model below is updated to the post-fix expressions, AND anchored -- each
+# expression it runs is asserted present, byte for byte, in
+# hooks/scripts/auto-approve-gate.sh, so a future drift in the hook's real parse reddens
+# this test instead of leaving it green over a dead model. The structural property itself
+# (every fixed site is first-line-restricted, the trailing site is not) belongs to the
+# derived detector in tests/test_tab_record_cut_guard.py; this test is only the anchor
+# for the specific expressions this file's `bash -c` model runs.
+
+_HOOK_PATH = os.path.join(os.path.dirname(__file__), "..", "hooks", "scripts", "auto-approve-gate.sh")
+
+# Each string here must appear verbatim as its own line (module-scope, so both tests
+# below read the same literal set) in hooks/scripts/auto-approve-gate.sh once plan.md
+# 2412ba38's fix lands. RED today: the hook has not yet been changed to read OUTCOME,
+# VALIDATED, TOKEN_SPENT and ADVANCED_TO from a first-line slice named OUTCOME_LINE.
+_HOOK_CUT_EXPRESSIONS = (
+    "OUTCOME_LINE=${OUTCOME_RAW%%$'\\n'*}",
+    'OUTCOME=$(printf \'%s\' "$OUTCOME_LINE" | cut -f1)',
+    'VALIDATED=$(printf \'%s\' "$OUTCOME_LINE" | cut -f3)',
+    'TOKEN_SPENT=$(printf \'%s\' "$OUTCOME_LINE" | cut -f4)',
+    'ADVANCED_TO=$(printf \'%s\' "$OUTCOME_LINE" | cut -f2)',
+    'GATE_ERROR=$(printf \'%s\' "$OUTCOME_RAW" | cut -f5-)',
+)
+
+
+def test_every_anchored_cut_expression_is_present_verbatim_in_the_hook():
+    """Every string in `_HOOK_CUT_EXPRESSIONS` must appear, byte for byte, in
+    hooks/scripts/auto-approve-gate.sh -- the anchor that keeps this file's `bash -c`
+    model from silently drifting away from the hook's real parse."""
+    with open(_HOOK_PATH, encoding="utf-8") as handle:
+        lines = [line.strip() for line in handle.read().split("\n")]
+    for expression in _HOOK_CUT_EXPRESSIONS:
+        assert lines.count(expression) == 1, (
+            f"the model below runs {expression!r}, which appears "
+            f"{lines.count(expression)} time(s) as its own line in the hook: the model "
+            "would describe a parse the hook does not have"
+        )
+
+
+def _parse_with_the_hooks_expressions(record: str) -> list[str]:
+    """Run the anchored expressions themselves, in a real shell, over `record`."""
+    program = "\n".join(
+        ["OUTCOME_RAW=$(cat)", *_HOOK_CUT_EXPRESSIONS]
+        # GATE_ERROR is printed LAST because it is the only field that may carry a
+        # newline; everything before it is one line each.
+        + ['printf \'%s\\n\' "$OUTCOME" "$ADVANCED_TO" "$VALIDATED" "$TOKEN_SPENT" "$GATE_ERROR"']
     )
-    out = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30).stdout
-    assert "O=rejected" in out
-    assert "S=false" in out
-    assert "E=why it failed" in out
-    assert "project root /p" in out
+    proc = subprocess.run(
+        ["bash", "-c", program], input=record, capture_output=True, text=True, timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.split("\n")
+
+
+def test_hook_cut_positions_match_the_emitter():
+    """Parse with the exact, anchored post-fix cut expressions the hook uses, via a
+    real shell: the four fixed fields come from OUTCOME_LINE (the first-line slice of
+    OUTCOME_RAW) and the error still comes from OUTCOME_RAW itself, unrestricted."""
+    advanced = subprocess.run(
+        [sys.executable, _SCRIPT, json.dumps({"phase": "testing", "project_root": "/p",
+                                              "root_tier": "cwd", "validated": "/p/plan.md"})],
+        capture_output=True, text=True, timeout=30,
+    ).stdout
+    outcome, advanced_to, validated, token_spent, _rest = _parse_with_the_hooks_expressions(
+        advanced
+    )[:5]
+    assert outcome == "advanced"
+    assert advanced_to == "testing"
+    assert "/p/plan.md" in validated
+    assert token_spent == ""
+
+    rejected = subprocess.run(
+        [sys.executable, _SCRIPT, json.dumps({"advanced": False, "token_spent": True,
+                                              "error": "line one\nline two\nline three"})],
+        capture_output=True, text=True, timeout=30,
+    ).stdout
+    fields = _parse_with_the_hooks_expressions(rejected)
+    assert fields[0] == "rejected", (
+        "the verdict is read from the FIRST LINE of the record, so a multi-line error "
+        f"cannot smear into it: {fields[0]!r}"
+    )
+    assert fields[1] == ""
+    assert fields[2] == ""
+    assert fields[3] == "true"
+    assert fields[4:7] == ["line one", "line two", "line three"], (
+        "the trailing read stays unrestricted, so every line of the error survives: "
+        f"{fields[4:]!r}"
+    )
