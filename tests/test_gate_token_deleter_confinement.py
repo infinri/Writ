@@ -115,6 +115,11 @@ DEFINING_MODULES = (
 # beside the derivation's own synthetic-module proofs instead of replacing them.
 REAL_TREE_DIRECTORY_DELETERS = {
     "test_approval_evidence.py": "confined",
+    # Added 2026-09-22 with the approval-rejection-reason cycle. It drives the real
+    # approval hook, which mints under the hardcoded /tmp token path, so it sweeps
+    # through `confined_leak_sweep` like its siblings rather than removing a directory
+    # of its own. Listed here because this pin exists to make an addition deliberate.
+    "test_approval_rejection_reason_recorded.py": "confined",
     "test_gate_token_binding.py": "confined",
     "test_gate_token_deleter_confinement.py": "confined",
     "test_phase_machine_reset.py": "inherits:test_gate_token_binding",

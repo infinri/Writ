@@ -362,7 +362,12 @@ embedded)
     # A genuine near miss, unlike the substring scan's "going". Logged so the tier's
     # precision can be measured from the friction log instead of guessed at.
     # json.dumps keeps the free-form prompt JSON-safe (quotes/backslashes/newlines).
-    MISS_EXTRA=$(python3 -c "import json,sys; print(json.dumps({'prompt': sys.argv[1][:120], 'next_gate': sys.argv[2]}))" "$PROMPT" "${NEXT_GATE:-}" 2>/dev/null || echo '{}')
+    # 'tier' is a CONSTANT here because this emit sits inside the embedded arm only, so
+    # every miss row is an embedded-tier near miss by construction. The row did not say
+    # so, which left an analyst measuring this tier's precision relying on an undocumented
+    # code position, and any future arm logging the same event would merge into the same
+    # population invisibly.
+    MISS_EXTRA=$(python3 -c "import json,sys; print(json.dumps({'prompt': sys.argv[1][:120], 'next_gate': sys.argv[2], 'tier': 'embedded'}))" "$PROMPT" "${NEXT_GATE:-}" 2>/dev/null || echo '{}')
     log_friction_event "$SESSION_ID" "${CURRENT_MODE:-}" "approval_pattern_miss" "$MISS_EXTRA"
     # ASK, do not advance, and do not mint: an embedded approval is a question about
     # intent. Naming the pending gate is what makes the question answerable in one turn.
@@ -500,6 +505,23 @@ exact|override)
     # fallback. Unconditional: this used to be gated on a non-empty PROJECT_ROOT, so an
     # approval typed in an unmarked directory -- the case where the gate refuses to advance
     # at all -- logged nothing, which is how the defect stayed invisible.
+    #
+    # `reason` PERSISTS WHAT THE REFUSAL SAID. GATE_ERROR was already passed in as argv[6]
+    # and used only as a truthiness test to pick the outcome string, so a rejection spent
+    # the human's approval, sent them back to retype it, and left `outcome: rejected` with
+    # nothing durable saying why. Flattened (tab/CR/LF -> space) exactly as
+    # gate_advance_outcome._describe_validated flattens, and bounded at 300 rather than the
+    # 120 used for the prompt above: approval_workflow's common refusal is a
+    # `'; '.join(missing)` list, and 120 would cut it after the first item and destroy the
+    # content the field exists to keep. The bound is applied HERE and never to GATE_ERROR
+    # itself, because the stdout line below must keep the full text: one variable, one
+    # truncation site.
+    #
+    # `token_spent` is TRI-STATE, so an absent key is a real answer. true/false are written
+    # as JSON booleans when the server said; when it did not say (an older daemon, or a
+    # path that never touches the token) the key is OMITTED, because a row claiming
+    # "not spent" would be a claim nobody made.
+
     python3 -c "
 import json, sys
 from datetime import datetime, timezone
@@ -521,9 +543,14 @@ entry = {
     'outcome': outcome,
     'project_root': sys.argv[5],
 }
+reason = rejected.replace('\t', ' ').replace('\r', ' ').replace('\n', ' ').strip()[:300]
+if reason:
+    entry['reason'] = reason
+if sys.argv[7] in ('true', 'false'):
+    entry['token_spent'] = sys.argv[7] == 'true'
 print(json.dumps(entry))
 " "$SESSION_ID" "${CURRENT_MODE:-}" "$PROMPT" "${ADVANCED_TO:-}" "${PROJECT_ROOT:-}" "${GATE_ERROR:-}" \
-        2>/dev/null | python3 "$FA" --stdin-json 2>/dev/null || true
+        "${TOKEN_SPENT:-}" 2>/dev/null | python3 "$FA" --stdin-json 2>/dev/null || true
 
     if [ -n "$ADVANCED_TO" ]; then
         # Confirm the advance to the assistant/user via next-turn context, NAMING the

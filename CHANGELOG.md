@@ -6,6 +6,50 @@ All notable changes to Writ are documented in this file. The format follows [Kee
 
 ### Fixed
 
+- **A rejected approval now records WHY it was refused, and whether it spent the human's
+  approval.** MEASURED on a real project (`upgrade.2ndswing.com`, 2026-09-21/22): three
+  `approval_pattern_match` rows carry `"outcome": "rejected"` with no reason field, and a
+  search of every live and archived log in that window for any validation-failure record
+  returns exactly one, from a DIFFERENT project. So a refusal consumed the approval, sent
+  the user back to retype it, and left nothing durable saying why. The text was already at
+  the logging site: `hooks/scripts/auto-approve-gate.sh` fills `GATE_ERROR` from
+  `bin/lib/gate_advance_outcome.py`'s classification, prints it to the user in that same
+  turn, and already passed it into the friction row builder as `sys.argv[6]`, where it was
+  used only as a truthiness test to pick the outcome string and then discarded.
+  TWO NEW FIELDS ON THE EXISTING ROW, both conditional. `reason`: the server's refusal
+  text with tabs, CR and LF flattened to single spaces, stripped, then truncated to 300
+  characters, written only when the result is non-empty. `token_spent`: a real JSON
+  boolean when the server reported one, with the KEY OMITTED when it did not, so "we do
+  not know" stays distinguishable from "not spent". A side effect worth naming for anyone
+  counting outcomes: a server no-op and a turn where no advance was ever attempted both
+  still write `ask-prompt-emitted`, but only the first now carries `token_spent`, so the
+  two separate without touching the vocabulary. OPERATORS READING A SCHEMA CHANGE: nothing
+  is renamed and nothing is removed. The outcome strings stay byte-identical
+  (`advanced-><phase>`, `rejected`, `ask-prompt-emitted`) because analyzers count them, and
+  `writ/analysis/friction.py` already declares `extra="allow"`, so no schema, no STREAM_MAP
+  entry and no analyzer moves. WHY 300 AND NOT THE 120 the prompt field uses:
+  `writ/session/approval_workflow.py:198` builds the common refusal as
+  `'; '.join(missing)`, and a 120-character bound cuts a multi-issue list after its first
+  item, destroying exactly the content the field exists to keep. The bound is applied
+  inside the row builder alone; the in-turn message the user acts on keeps the full,
+  untruncated text, so one value keeps one truncation site. A SECOND CONSTANT, on the
+  neighbouring row: `approval_pattern_miss` now carries `"tier": "embedded"`. Every miss is
+  emitted inside the `embedded)` arm and nowhere else, so each row was an embedded-tier
+  near miss by construction and did not say so, leaving an analyst measuring that tier's
+  precision to rely on an undocumented code position. A MEASURED LIMIT, recorded rather
+  than papered over: a refusal carrying a raw LINE FEED still cannot reach `reason` at all,
+  because the hook reads the classifier's verdict with `cut -f1` over output whose last
+  field is the unbounded error, so an embedded newline makes `$OUTCOME` itself multi-line,
+  the rejected branch is not taken, and the turn records `ask-prompt-emitted`. That is
+  pre-existing behaviour this change deliberately leaves alone; the flattening is therefore
+  proved against a carriage return, which does reach the field and is the other half of the
+  same log-forging vector, and the stream file is asserted to hold exactly one line either
+  way. Pinned by `tests/test_approval_rejection_reason_recorded.py`: 27 tests driving the
+  real hook as a subprocess against a real local HTTP stand-in for the advance route,
+  reading every row back through the real router at the destination the router itself
+  resolves, with the stand-in counting its own POSTs so "this never touched the operator's
+  daemon" is read off a number instead of inferred from silence.
+
 - **The `effort` hop is deleted end to end: it was seven hops of plumbing for a value
   Claude Code has never sent on the one event that feeds it.** The thread was a single
   `F841` at `writ/server/routes/query.py:226` (`effort = request.effort or ""`, never read
