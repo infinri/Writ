@@ -43,8 +43,8 @@
 
 <h2><span class="sec-num">2.1</span>Built once at startup</h2>
 <div class="prose">
-  <p><code>build_pipeline</code> (<code>pipeline.py:722</code>) runs once when the daemon starts. It loads every non-mandatory Rule plus the five ranked methodology types from Neo4j, builds both search indexes, and caches the graph's edges in memory. Mandatory rules never enter these indexes: they are excluded at build time (<code>keyword.py:69</code>) and delivered by the always-on channel instead (chapter 3).</p>
-  <p>Cold start is dominated by embedding the corpus (about 84% of the total, per the instrumentation cited at <code>pipeline.py:751-760</code>). So the vector index is persisted to disk keyed by a SHA-256 hash over every candidate's id and text (<code>pipeline.py:512-530</code>): if nothing changed, the daemon loads the index and skips encoding entirely; any text edit changes the hash and forces a rebuild.</p>
+  <p><code>build_pipeline</code> (<code>pipeline.py</code>) runs once when the daemon starts. It loads every non-mandatory Rule plus the five ranked methodology types from Neo4j, builds both search indexes, and caches the graph's edges in memory. Mandatory rules never enter these indexes: they are excluded at build time (<code>keyword.py</code>) and delivered by the always-on channel instead (chapter 3).</p>
+  <p>Cold start is dominated by embedding the corpus (about 84% of the total, per the instrumentation cited at <code>pipeline.py</code>). So the vector index is persisted to disk keyed by a SHA-256 hash over every candidate's id and text (<code>pipeline.py</code>): if nothing changed, the daemon loads the index and skips encoding entirely; any text edit changes the hash and forces a rebuild.</p>
 </div>
 
 <figure class="fig">
@@ -86,18 +86,18 @@ flowchart LR
 <table>
   <thead><tr><th>Component</th><th>Key parameters</th><th>Anchor</th></tr></thead>
   <tbody>
-    <tr><td>Embedding model</td><td>all-MiniLM-L6-v2 via ONNX Runtime, CPU only, 384 dimensions, 128-token truncation, mean pooling + L2 norm</td><td><code>embeddings.py:70-142</code></td></tr>
-    <tr><td>Vector index</td><td>hnswlib, cosine space, ef_construction 200, M 16, ef_search 50; sidecar JSON validated with Pydantic on load</td><td><code>embeddings.py:25-27, 197-368</code></td></tr>
-    <tr><td>Keyword index</td><td>Tantivy BM25 over trigger, statement, tags, body; trigger term frequency doubled; body every-other-token diluted</td><td><code>keyword.py:19, 60-90</code></td></tr>
-    <tr><td>Query-time encoder</td><td>LRU cache of 1,024 query embeddings; hits return defensive copies</td><td><code>embeddings.py:145-182</code></td></tr>
-    <tr><td>Fallback policy</td><td>If the ONNX model is missing, startup fails loud; a dev-only SentenceTransformer fallback requires an explicit env opt-in</td><td><code>pipeline.py:624-719</code></td></tr>
+    <tr><td>Embedding model</td><td>all-MiniLM-L6-v2 via ONNX Runtime, CPU only, 384 dimensions, 128-token truncation, mean pooling + L2 norm</td><td><code>embeddings.py</code></td></tr>
+    <tr><td>Vector index</td><td>hnswlib, cosine space, ef_construction 200, M 16, ef_search 50; sidecar JSON validated with Pydantic on load</td><td><code>embeddings.py, 197-368</code></td></tr>
+    <tr><td>Keyword index</td><td>Tantivy BM25 over trigger, statement, tags, body; trigger term frequency doubled; body every-other-token diluted</td><td><code>keyword.py, 60-90</code></td></tr>
+    <tr><td>Query-time encoder</td><td>LRU cache of 1,024 query embeddings; hits return defensive copies</td><td><code>embeddings.py</code></td></tr>
+    <tr><td>Fallback policy</td><td>If the ONNX model is missing, startup fails loud; a dev-only SentenceTransformer fallback requires an explicit env opt-in</td><td><code>pipeline.py</code></td></tr>
   </tbody>
 </table>
 </div>
 
 <h2><span class="sec-num">2.2</span>The query path, stages 1 to 4</h2>
 <div class="prose">
-  <p>Every call to <code>query()</code> (<code>pipeline.py:231</code>) is pure in-memory work. The two searches run first, each result set passes the same AND-chain of filters, and the union becomes the candidate pool with reciprocal-rank normalized scores.</p>
+  <p>Every call to <code>query()</code> (<code>pipeline.py</code>) is pure in-memory work. The two searches run first, each result set passes the same AND-chain of filters, and the union becomes the candidate pool with reciprocal-rank normalized scores.</p>
 </div>
 
 <figure class="fig">
@@ -129,12 +129,12 @@ flowchart TD
 </figure>
 
 <div class="prose">
-  <p>Candidate limits are named constants: BM25 takes 50, vector takes 10 (<code>pipeline.py:55-56</code>). The merged pool is therefore at most 60 candidates, typically fewer after filtering and overlap.</p>
+  <p>Candidate limits are named constants: BM25 takes 50, vector takes 10 (<code>pipeline.py</code>). The merged pool is therefore at most 60 candidates, typically fewer after filtering and overlap.</p>
 </div>
 
 <h2><span class="sec-num">2.3</span>Stage 5: the graph-aware second pass</h2>
 <div class="prose">
-  <p>Ranking runs twice on purpose. The first pass scores without any graph signal, and its top three results become seeds. The second pass then rewards candidates that sit close to those seeds in the graph. Seeding excludes AI-provisional rules (<code>ranking.py:230-245</code>), so unreviewed knowledge can never steer the graph signal.</p>
+  <p>Ranking runs twice on purpose. The first pass scores without any graph signal, and its top three results become seeds. The second pass then rewards candidates that sit close to those seeds in the graph. Seeding excludes AI-provisional rules (<code>ranking.py</code>), so unreviewed knowledge can never steer the graph signal.</p>
 </div>
 
 <figure class="fig">
@@ -176,8 +176,8 @@ flowchart TD
   <tbody>
     <tr><td>Vector similarity</td><td class="num">0.570</td><td class="num">0.396</td><td>Dense cosine, rank-normalized. Semantic mode is vector-dominant for paraphrase matching.</td></tr>
     <tr><td>BM25 keyword</td><td class="num">0.190</td><td class="num">0.396</td><td>Literal mode equal-weights the two for exact-phrase and rationalization queries.</td></tr>
-    <tr><td>Severity</td><td class="num">0.095</td><td class="num">0.099</td><td>critical 1.0, high 0.75, medium 0.5, low 0.25 (<code>ranking.py:53</code>).</td></tr>
-    <tr><td>Confidence</td><td class="num">0.095</td><td class="num">0.099</td><td>Static tier map (<code>ranking.py:60</code>), replaced by the rule's empirical positive ratio once graduated (50+ observations, ratio 0.75+).</td></tr>
+    <tr><td>Severity</td><td class="num">0.095</td><td class="num">0.099</td><td>critical 1.0, high 0.75, medium 0.5, low 0.25 (<code>ranking.py</code>).</td></tr>
+    <tr><td>Confidence</td><td class="num">0.095</td><td class="num">0.099</td><td>Static tier map (<code>ranking.py</code>), replaced by the rule's empirical positive ratio once graduated (50+ observations, ratio 0.75+).</td></tr>
     <tr><td>Graph proximity</td><td class="num">0.050</td><td class="num">0.010</td><td>Discrete 0 / 0.5 / 1.0 relative to the top-3 seeds. Semantic weight raised from 0.010 on 2026-09-18: the only arm of the ablation sweep improving MRR@5, hit-rate@5 and nDCG@10 together while losing zero queries (<code>benchmarks/NEO4J-ABLATION-2026-09-18.md</code>). The four non-graph weights were rebalanced to keep the sum at 1.0. The literal preset was not covered by that sweep and is unchanged.</td></tr>
   </tbody>
 </table>
@@ -195,13 +195,15 @@ flowchart TD
 </table>
 </div>
 <div class="prose">
-  <p>Thresholds and per-mode limits: <code>ranking.py:47-51</code>; the projection logic is one shared function so the three modes cannot drift in shape (<code>ranking.py:248-309</code>).</p>
+  <p>Thresholds and per-mode limits: <code>ranking.py</code>; the projection logic is one shared function so the three modes cannot drift in shape (<code>ranking.py</code>).</p>
 </div>
 
 <div class="callout">
   <div class="label">As-built findings worth knowing</div>
-  <p><strong>1. The graph signal cannot reorder results at current weights.</strong> Its maximum contribution is 0.01 x 1.0 = 0.01, but the sticky tiebreak treats adjacent scores within 0.02 as tied (<code>pipeline.py:107</code>). The proximity computation runs on every query and is effectively inert.</p>
-  <p><strong>2. The route-based Stage 1 filter is wired (updated 2026-07-31).</strong> <code>build_pipeline</code> now loads the Category route map (<code>get_category_routes_by_node</code>) and passes it into the pipeline (<code>pipeline.py:863-898</code>). The legacy fallback (Rule-only plus a three-domain exclusion) applies only when the route map is empty or incomplete, in which case the whole pipeline reverts wholesale rather than silently dropping uncategorized nodes.</p>
+  <p><p><strong>Before any of this, the query can end.</strong> A CRAG-style abstention gate compares the best raw cosine from the vector stage against <code>RULE_INJECTION_ABSTENTION_THRESHOLD</code> (0.30, in writ/retrieval/pipeline.py). Below it, the query returns an empty result marked <code>abstained</code> and the graph and ranking stages never run. Delivering nothing is treated as the better failure than delivering something irrelevant, so a reader tracing the stages below should know the path can stop here.</p>
+
+  <strong>1. The graph signal can now reorder results, where it previously could not.</strong> At the original weight of 0.010 its maximum contribution was 0.01, below the 0.02 window the sticky tiebreak treats as tied (<code>STICKY_TIEBREAK_THRESHOLD</code> in writ/retrieval/pipeline.py), so the proximity computation ran on every query and was effectively inert. The 2026-09-18 retune raised it to 0.050 (<code>DEFAULT_W_GRAPH</code> in writ/retrieval/ranking.py), which clears that window. The ablation that motivated the retune still found the stage's own contribution small: removing its ranking term cost one query out of 193, with no change to MRR@5.</p>
+  <p><strong>2. The route-based Stage 1 filter is wired (updated 2026-07-31).</strong> <code>build_pipeline</code> now loads the Category route map (<code>get_category_routes_by_node</code>) and passes it into the pipeline (<code>pipeline.py</code>). The legacy fallback (Rule-only plus a three-domain exclusion) applies only when the route map is empty or incomplete, in which case the whole pipeline reverts wholesale rather than silently dropping uncategorized nodes.</p>
   <p><strong>3. The authority preference pass is configurable but ships disabled (updated 2026-08-06).</strong> It only swaps when its threshold is above 0.0, which is now set by <code>[retrieval] authority_preference_threshold</code> in writ.toml and read at daemon startup. The default stays 0.0 because a sweep of the 193-query gold set measured no change from enabling it: the corpus holds one ai-provisional node and its category is not semantic-routed, so the default query path never ranks one. Enabling it is only meaningful for literal mode or an explicit <code>node_types</code> whitelist, which do admit it. The pass now runs after the sticky tiebreak; running it first inverted the preference outright, because the tiebreak could then promote a preferred ai-provisional rule above every human rule in its group. The protection that binds regardless is seed filtering: AI-provisional rules never seed the graph signal.</p>
 </div>
 

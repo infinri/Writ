@@ -27,7 +27,7 @@
 <section class="hero">
   <div class="eyebrow">Chapter 1 of 4</div>
   <h1>Graph data model</h1>
-  <p class="lede">What lives in the graph, how it is identified, and how a piece of knowledge earns its place. The schema is one Pydantic module (<code>writ/graph/schema.py</code>, 757 lines) plus the edge registry (<code>writ/graph/db/_common.py</code>).</p>
+  <p class="lede">What lives in the graph, how it is identified, and how a piece of knowledge earns its place. The schema is one Pydantic module (<code>writ/graph/schema.py</code>) plus the edge registry (<code>writ/graph/db/_common.py</code>).</p>
 </section>
 
 <div class="answers">
@@ -43,7 +43,7 @@
 
 <h2><span class="sec-num">1.1</span>Node types come in four tiers</h2>
 <div class="prose">
-  <p>Thirteen curated types are defined in one enum (<code>schema.py:112-129</code>). Only six enter the ranked candidate pool that <code>build_pipeline</code> loads (<code>pipeline.py:565-621</code>). Five more never rank: they surface only when graph traversal pulls them in next to a ranked result. Categories and Abstractions are structure. Decision-memory records are deliberately kept out of every retrieval and reconcile path (<code>schema.py:577-586</code>).</p>
+  <p>Thirteen curated types are defined in one enum (<code>schema.py</code>). Only six enter the ranked candidate pool that <code>build_pipeline</code> loads (<code>pipeline.py</code>). Five more never rank: they surface only when graph traversal pulls them in next to a ranked result. Categories and Abstractions are structure. Decision-memory records are deliberately kept out of every retrieval and reconcile path (<code>schema.py</code>).</p>
 </div>
 
 <figure class="fig">
@@ -87,7 +87,7 @@ flowchart TB
 </figure>
 
 <div class="prose">
-  <p>Every curated type has exactly one primary-key field, registered once so ingest, the database layer, and reconcile all derive from the same map (<code>NODE_ID_FIELDS</code>, <code>schema.py:701-715</code>). Ids share one grammar (<code>RULE_ID_PATTERN</code>, <code>schema.py:13</code>): examples are <code>SEC-INJ-SQL-001</code> (Rule), <code>SKL-PROC-MODE-001</code> (Skill), <code>CAT-CODE-SECURITY-001</code> (Category).</p>
+  <p>Every curated type has exactly one primary-key field, registered once so ingest, the database layer, and reconcile all derive from the same map (<code>NODE_ID_FIELDS</code>, <code>schema.py</code>). Ids share one grammar (<code>RULE_ID_PATTERN</code>, <code>schema.py</code>): examples are <code>SEC-INJ-SQL-001</code> (Rule), <code>SKL-PROC-MODE-001</code> (Skill), <code>CAT-CODE-SECURITY-001</code> (Category).</p>
 </div>
 
 <div class="tablewrap">
@@ -104,7 +104,7 @@ flowchart TB
 
 <h2><span class="sec-num">1.2</span>Edges: 24 types, three origins</h2>
 <div class="prose">
-  <p><code>ALLOWED_EDGE_TYPES</code> is the single source of truth (<code>_common.py:32-49</code>); the corpus subset is derived, never hand-copied (<code>CORPUS_EDGE_TYPES = ALLOWED - RECORD</code>, <code>_common.py:64</code>). The split that matters operationally is declared versus derived: declared edges are authored knowledge and survive the export round-trip; derived edges are recomputed on every ingest and are deliberately excluded from export (<code>writ/export.py:53-65</code>) so they never freeze into source.</p>
+  <p><code>ALLOWED_EDGE_TYPES</code> is the single source of truth (<code>_common.py</code>); the corpus subset is derived, never hand-copied (<code>CORPUS_EDGE_TYPES = ALLOWED - RECORD</code>, <code>_common.py</code>). The split that matters operationally is declared versus derived: declared edges are authored knowledge and survive the export round-trip; derived edges are recomputed on every ingest and are deliberately excluded from export (<code>writ/export.py</code>) so they never freeze into source.</p>
 </div>
 
 <div class="tablewrap">
@@ -114,17 +114,17 @@ flowchart TB
     <tr>
       <td><strong>Declared corpus (14)</strong></td>
       <td>DEPENDS_ON, PRECEDES, CONFLICTS_WITH, SUPPLEMENTS, SUPERSEDES, TEACHES, COUNTERS, DEMONSTRATES, DISPATCHES, GATES, PRESSURE_TESTS, CONTAINS, ATTACHED_TO, INVOKES</td>
-      <td>Hand-authored in front-matter <code>edges:</code> lists or RULE-START <code>### Edges</code> sections. Each type documents its complete valid source and target sets (<code>schema.py:637-679</code>).</td>
+      <td>Hand-authored in front-matter <code>edges:</code> lists or RULE-START <code>### Edges</code> sections. Each type documents its complete valid source and target sets (<code>schema.py</code>).</td>
     </tr>
     <tr>
       <td><strong>Derived (3)</strong></td>
       <td>RELATED_TO, BELONGS_TO, ABSTRACTS</td>
-      <td>RELATED_TO from rule-id mentions in prose (<code>ingest.py:41</code>); BELONGS_TO from every node's category field plus the category tree; ABSTRACTS from the compression run (chapter 4).</td>
+      <td>RELATED_TO from rule-id mentions in prose (<code>ingest.py</code>); BELONGS_TO from every node's category field plus the category tree; ABSTRACTS from the compression run (chapter 4). Two of the three, RELATED_TO and BELONGS_TO, are excluded from the markdown export (<code>DERIVED_EDGE_TYPES</code> in writ/export.py) and re-derived on import. ABSTRACTS is not handled there at all: it round-trips through the compression artifact instead.</td>
     </tr>
     <tr>
       <td><strong>Record (7)</strong></td>
       <td>HAS_DECISION, HAS_CHANGE, HAS_COMMIT, MOTIVATED_BY, GOVERNED_BY, INCLUDES, REALIZES</td>
-      <td>Written at runtime by decision-memory capture. Endpoint labels are validated against an allowlist before any label reaches a Cypher string (<code>_common.py:73</code>), closing the label-interpolation injection surface.</td>
+      <td>Written at runtime by decision-memory capture. Endpoint labels are validated against an allowlist before any label reaches a Cypher string (<code>_common.py</code>), closing the label-interpolation injection surface.</td>
     </tr>
   </tbody>
 </table>
@@ -132,14 +132,14 @@ flowchart TB
 
 <h2><span class="sec-num">1.3</span>Identity, multi-project isolation, and race safety</h2>
 <ul>
-  <li><strong>Uniqueness is composite.</strong> <code>(id, project)</code> constraints cover Rule, Abstraction, and all ten methodology labels (<code>writ/graph/db/schema_store.py:24-49</code>), so two projects can hold the same rule id without colliding.</li>
-  <li><strong>Constraints double as concurrency protection.</strong> A Cypher MERGE on a non-constrained key is not race-safe: concurrent creates fork duplicate nodes. The uniqueness constraint makes the losing writer match the winner's node instead (comment at <code>schema_store.py:28-33</code>).</li>
-  <li><strong>Retrieval honors the same boundary.</strong> A project-scoped query admits only that project plus the shared corpus: <code>allowed_projects = {project, "_shared"}</code> (<code>pipeline.py:270</code>). This is the anti-leak guarantee for multi-project use.</li>
+  <li><strong>Uniqueness is composite.</strong> <code>(id, project)</code> constraints cover Rule, Abstraction, and every methodology label (<code>writ/graph/db/schema_store.py</code>), so two projects can hold the same rule id without colliding.</li>
+  <li><strong>Constraints double as concurrency protection.</strong> A Cypher MERGE on a non-constrained key is not race-safe: concurrent creates fork duplicate nodes. The uniqueness constraint makes the losing writer match the winner's node instead (comment at <code>schema_store.py</code>).</li>
+  <li><strong>Retrieval honors the same boundary, and it keys on node type.</strong> The split lives in <code>writ/retrieval/node_scope.py</code>: doctrine types (rules and the retrievable methodology labels, listed in <code>DOCTRINE_NODE_TYPES</code>) reach every caller regardless of the project tag they carry, while record types are scoped to the calling project plus the shared corpus. That asymmetry is deliberate. Scoping by project tag alone would have hidden the entire doctrine corpus from every project but the one it was authored in, which is what the module's own docstring records as the reason for the redesign.</li>
 </ul>
 
 <h2><span class="sec-num">1.4</span>Provenance: how knowledge earns canon</h2>
 <div class="prose">
-  <p>Every node carries a provenance state (<code>VALID_PROVENANCE</code>, <code>schema.py:32</code>). The design principle: a rule can be born inside the graph, but it only becomes canonical markdown source through a human gate. Records are permanent history and are excluded from promotion by construction.</p>
+  <p>Every node carries a provenance state (<code>VALID_PROVENANCE</code>, <code>schema.py</code>). The design principle: a rule can be born inside the graph, but it only becomes canonical markdown source through a human gate. Records are permanent history and are excluded from promotion by construction.</p>
 </div>
 
 <figure class="fig">
@@ -167,10 +167,10 @@ stateDiagram-v2
 </figure>
 
 <ul>
-  <li><strong>Evidence is counted, not asserted.</strong> <code>times_seen_positive</code> and <code>times_seen_negative</code> are runtime-only properties that reconcile can never clear (<code>RUNTIME_EXEMPT_PROPS</code>, <code>schema.py:742</code>). The graduation flip lives in <code>evaluate_and_flip_graduation</code> (<code>rule_store.py:125</code>).</li>
-  <li><strong>Evidence also feeds ranking.</strong> With at least 50 observations and a positive ratio of at least 0.75, the empirical ratio replaces the static confidence tier in the retrieval score (<code>ranking.py:118-136</code>). A battle-tested rule earns its weight.</li>
-  <li><strong>Two orthogonal axes.</strong> Provenance records how a node earned canon; <code>graduated_via</code> records who wrote the final words (approved as-is versus human-edited, <code>schema.py:51</code>). A human-edited graduated rule stays graduated.</li>
-  <li><strong>Pruning is provenance-aware.</strong> <code>PARITY_EXEMPT_PROVENANCE</code> = the graph-first states plus <code>record</code> (<code>schema.py:44</code>), so reconcile (chapter 4) can never delete runtime history or a proposal that has not yet been judged.</li>
+  <li><strong>Evidence is counted, not asserted.</strong> <code>times_seen_positive</code> and <code>times_seen_negative</code> are runtime-only properties that reconcile can never clear (<code>RUNTIME_EXEMPT_PROPS</code>, <code>schema.py</code>). The graduation flip lives in <code>evaluate_and_flip_graduation</code> (<code>rule_store.py</code>).</li>
+  <li><strong>Evidence also feeds ranking.</strong> With at least 50 observations and a positive ratio of at least 0.75, the empirical ratio replaces the static confidence tier in the retrieval score (<code>ranking.py</code>). A battle-tested rule earns its weight.</li>
+  <li><strong>Two orthogonal axes.</strong> Provenance records how a node earned canon; <code>graduated_via</code> records who wrote the final words (approved as-is versus human-edited, <code>schema.py</code>). A human-edited graduated rule stays graduated.</li>
+  <li><strong>Pruning is provenance-aware.</strong> <code>PARITY_EXEMPT_PROVENANCE</code> = the graph-first states plus <code>record</code> (<code>schema.py</code>), so reconcile (chapter 4) can never delete runtime history or a proposal that has not yet been judged.</li>
 </ul>
 
 <div class="callout note">

@@ -43,7 +43,7 @@
 
 <h2><span class="sec-num">4.1</span>The round-trip cycle</h2>
 <div class="prose">
-  <p>Ingest (<code>ingest_path</code>, <code>writ/graph/methodology_ingest.py:168</code>) parses two source formats: RULE-START blocks for coding rules and YAML front-matter for methodology nodes. Everything validates through the per-type Pydantic models before any write, node writes are batched with uniqueness constraints applied fail-loud, and edges are derived by one pure function. Export (<code>writ/export.py</code>) renders the graph back to the same two formats; the section-header map both directions use is a single shared constant (<code>SECTION_HEADERS</code>, <code>schema.py:721</code>), so a header rename cannot silently break the cycle.</p>
+  <p>Ingest (<code>ingest_path</code>, <code>writ/graph/methodology_ingest.py</code>) parses two source formats: RULE-START blocks for coding rules and YAML front-matter for methodology nodes. Everything validates through the per-type Pydantic models before any write, node writes are batched with uniqueness constraints applied fail-loud, and edges are derived by one pure function. Export (<code>writ/export.py</code>) renders the graph back to the same two formats; the section-header map both directions use is a single shared constant (<code>SECTION_HEADERS</code>, <code>schema.py</code>), so a header rename cannot silently break the cycle.</p>
 </div>
 
 <figure class="fig">
@@ -85,7 +85,7 @@ flowchart LR
 
 <h2><span class="sec-num">4.2</span>Edge derivation: one function, four sources</h2>
 <div class="prose">
-  <p><code>derive_edges</code> (<code>methodology_ingest.py:651</code>) is a pure function that produces the exact edge set a clean ingest would create. The reconcile oracle and the writer both call it, by design: two independent derivations drifting apart was the silent-failure class this closed. Dangling references, unknown ids or cross-project ids, are counted and reported, never silently resolved (<code>methodology_ingest.py:720-767</code>).</p>
+  <p><code>derive_edges</code> (<code>methodology_ingest.py</code>) is a pure function that produces the exact edge set a clean ingest would create. The reconcile oracle and the writer both call it, by design: two independent derivations drifting apart was the silent-failure class this closed. Dangling references, unknown ids or cross-project ids, are counted and reported, never silently resolved (<code>methodology_ingest.py</code>).</p>
 </div>
 
 <figure class="fig">
@@ -120,15 +120,15 @@ flowchart LR
 
 <h3>The export asymmetry is intentional</h3>
 <ul>
-  <li>Only <strong>declared</strong> edges are written back to markdown; the two export-derived types (RELATED_TO, BELONGS_TO; <code>writ/export.py:62</code>, <code>DERIVED_EDGE_TYPES</code>) are excluded so a re-import re-derives them instead of freezing them into source. ABSTRACTS edges are outside this mechanism entirely: they belong to the compression pipeline and rebuild from <code>bible/abstractions.json</code> (section 4.3), not from the markdown export.</li>
-  <li>Plain ingest is upsert-only. <code>reconcile()</code> (<code>methodology_ingest.py:500</code>) is the separate pruning pass: it compares source against graph and deletes what source no longer contains.</li>
-  <li>Reconcile has hard limits: nodes whose provenance is <code>record</code> or graph-first (<code>proposed</code>, <code>graduation_pending</code>) are exempt from deletion, and runtime properties like the frequency counters can never be cleared (<code>RUNTIME_EXEMPT_PROPS</code>, <code>schema.py:742</code>).</li>
-  <li>A timestamp file supports staleness detection: export records when it ran, and a check compares that against the last graph write (<code>export.py:454-486</code>).</li>
+  <li>Only <strong>declared</strong> edges are written back to markdown; the two export-derived types (RELATED_TO, BELONGS_TO; <code>writ/export.py</code>, <code>DERIVED_EDGE_TYPES</code>) are excluded so a re-import re-derives them instead of freezing them into source. ABSTRACTS edges are outside this mechanism entirely: they belong to the compression pipeline and rebuild from <code>bible/abstractions.json</code> (section 4.3), not from the markdown export.</li>
+  <li>Plain ingest is upsert-only. <code>reconcile()</code> (<code>methodology_ingest.py</code>) is the separate pruning pass: it compares source against graph and deletes what source no longer contains.</li>
+  <li>Reconcile has hard limits: nodes whose provenance is <code>record</code> or graph-first (<code>proposed</code>, <code>graduation_pending</code>) are exempt from deletion, and runtime properties like the frequency counters can never be cleared (<code>RUNTIME_EXEMPT_PROPS</code>, <code>schema.py</code>).</li>
+  <li>A timestamp file supports staleness detection: export records when it ran, and a check compares that against the last graph write (<code>export.py</code>).</li>
 </ul>
 
 <h2><span class="sec-num">4.3</span>Compression: a disposable summary layer</h2>
 <div class="prose">
-  <p>When the retrieval budget is tight, Abstraction nodes stand in for whole clusters of rules (chapter 2, summary mode). The layer is generated fully deterministically, with no LLM: <code>run_compression</code> (<code>writ/compression/abstractions.py:31</code>) embeds every non-mandatory rule, clusters twice, keeps the better result, and each cluster's summary is simply the statement of the rule nearest the cluster centroid.</p>
+  <p>When the retrieval budget is tight, Abstraction nodes stand in for whole clusters of rules (chapter 2, summary mode). The layer is generated fully deterministically, with no LLM: <code>run_compression</code> (<code>writ/compression/abstractions.py</code>) embeds every non-mandatory rule, clusters twice, keeps the better result, and each cluster's summary is simply the statement of the rule nearest the cluster centroid.</p>
 </div>
 
 <figure class="fig">
@@ -166,10 +166,10 @@ flowchart LR
 </figure>
 
 <div class="prose">
-  <p>The JSON artifact matters operationally: the clustering dependencies (scikit-learn, sentence-transformers) are excluded from production installs, so a later ingest can rematerialize the abstraction layer from the artifact without re-clustering (<code>abstractions.py:26-56</code>).</p>
+  <p>The JSON artifact matters operationally: the clustering dependencies (scikit-learn, sentence-transformers) are excluded from production installs, so a later ingest can rematerialize the abstraction layer from the artifact without re-clustering (<code>abstractions.py</code>).</p>
 </div>
 
-<h2><span class="sec-num">4.4</span>Integrity: 32 checks in 7 clusters</h2>
+<h2><span class="sec-num">4.4</span>Integrity: 7 clusters of checks</h2>
 <div class="prose">
   <p><code>IntegrityChecker</code> (<code>writ/graph/integrity/__init__.py</code>) composes seven check mixins. <code>writ validate</code> renders findings through a pure reporter (<code>validate_report.py</code>) and exits non-zero on any finding, so it can gate automation.</p>
 </div>
@@ -195,7 +195,7 @@ flowchart LR
 </div>
 
 <footer class="site">
-  <p><strong>Scope and provenance.</strong> Everything on this site was read from source at commit 0c75b01 on 2026-07-15, and this page's claims were re-verified against source on 2026-08-01 (the round-trip caveat above was added then). The session, gate, approval, and hook subsystems are Claude-integration machinery and deliberately out of scope.</p>
+  <p><strong>Scope and provenance.</strong> Everything on this site was verified against source, and this page's claims were re-verified against source on 2026-08-01 (the round-trip caveat above was added then). The session, gate, approval, and hook subsystems are Claude-integration machinery and deliberately out of scope.</p>
 </footer>
 
 <div class="pagenav">
