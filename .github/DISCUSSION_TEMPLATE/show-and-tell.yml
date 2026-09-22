@@ -1,0 +1,44 @@
+title: "[Show and tell] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Show the community how you are using Writ. A small experiment, a failed attempt, or one useful guardrail is enough.
+
+        Please remove credentials, tokens, private repository content, and identifying file paths before posting output.
+
+  - type: textarea
+    id: use_case
+    attributes:
+      label: What are you using Writ for?
+      placeholder: I am using Work mode to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: setup
+    attributes:
+      label: What did you try?
+      description: Mention the mode, gate, rule, memory feature, or workflow involved.
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: What happened?
+      description: What worked, surprised you, failed, or changed in your workflow?
+    validations:
+      required: true
+
+  - type: textarea
+    id: friction
+    attributes:
+      label: What still feels rough?
+      description: Optional. Friction reports are as useful as success stories.
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted example
+      description: Optional. Share a refusal, audit record, recall result, screenshot link, or short transcript.
