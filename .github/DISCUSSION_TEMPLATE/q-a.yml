@@ -1,0 +1,55 @@
+title: "[Help] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying Writ. Tell us where you got stuck and include only the details you are comfortable sharing.
+
+        Please remove credentials, tokens, private repository content, and identifying file paths before posting logs or command output.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where are you stuck?
+      options:
+        - Installation or bootstrap
+        - Service health or startup
+        - Modes, gates, or approvals
+        - Rules or retrieval
+        - Memory, recall, or handoffs
+        - Sub-agents or review
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: What were you trying to do?
+      description: A sentence or two is enough.
+      placeholder: I was trying to install Writ and verify that the service started.
+    validations:
+      required: true
+
+  - type: textarea
+    id: result
+    attributes:
+      label: What happened?
+      description: Include the exact error or unexpected behavior when possible.
+      placeholder: I expected... Instead...
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Optional. Operating system, Claude Code version, and Writ commit or release.
+      placeholder: Ubuntu 24.04, Claude Code ..., Writ ...
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Redacted diagnostic output
+      description: Optional. Paste relevant output from writ doctor after removing secrets, tokens, private paths, and repository content.
+      render: shell
