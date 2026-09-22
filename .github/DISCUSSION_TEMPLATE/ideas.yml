@@ -1,0 +1,58 @@
+title: "[Idea] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem first. You do not need to arrive with a finished design or implementation.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: What part of Writ would this improve?
+      options:
+        - Guardrails or enforcement
+        - Human approval
+        - Modes or workflow
+        - Rules or retrieval
+        - Memory, recall, or handoffs
+        - Sub-agents or review
+        - Installation or operations
+        - Documentation
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you seeing?
+      description: Describe the risky action, missing context, repeated friction, or failure you want to address.
+      placeholder: Claude can currently...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: What should Writ do?
+      options:
+        - Allow the action
+        - Inform the agent
+        - Ask the human
+        - Refuse the action
+        - Record it for later
+        - I am not sure yet
+    validations:
+      required: true
+
+  - type: textarea
+    id: prompt_gap
+    attributes:
+      label: Why is an instruction alone not enough?
+      description: Optional. Explain what could be forgotten, misinterpreted, or bypassed.
+
+  - type: textarea
+    id: example
+    attributes:
+      label: Example
+      description: Optional. A redacted transcript, command, workflow, or concrete scenario is helpful.
