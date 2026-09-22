@@ -97,17 +97,17 @@ HAS_SESSION_IDENTITY = re.compile(
 # tests/test_session_identity_no_fallback.py's POINTER_READ_EXEMPT. An allowlist
 # nobody re-checks is a hole, so TestExemptionsStayJustified below holds this
 # set to exactly the reason each entry was granted for, and
-# test_only_the_named_hooks_are_exempt pins the set itself so a THIRD exemption
+# test_only_the_named_hooks_are_exempt pins the set itself so a new exemption
 # cannot be added without a conscious edit here.
-EXEMPT_HOOKS: dict[str, str] = {
-    "writ-blackbox-capture.sh": (
-        "hook_instrument is only reached past the WRIT_BLACKBOX opt-in gate "
-        "(line 9: exits before sourcing common.sh unless WRIT_BLACKBOX=1 or the "
-        "~/.claude/writ-blackbox.on sentinel exists); blackbox capture is opt-in "
-        "and was measured OFF in production, so this call contributes zero rows "
-        "to the measured writ-events-unknown.buf despite a naive grep flagging it."
-    ),
-}
+#
+# EMPTY as of plan 2412ba38-51e1-4b73-895b-7b240a3c21d3. The one entry this dict
+# ever held, writ-blackbox-capture.sh, is disproven by that plan: the hook now
+# resolves the envelope's identity (agent_id, falling back to session_id) and
+# assigns it to SESSION_ID before hook_instrument's exit trap files this hook's
+# own row, so it carries an identity like every other caller and needs no
+# exemption. See TestBlackboxCaptureAttributesItsOwnRow below for the
+# behavioral cases that replace the old exemption's justification.
+EXEMPT_HOOKS: dict[str, str] = {}
 
 
 def _all_hook_scripts() -> list[Path]:
@@ -253,12 +253,18 @@ class TestTheDetectionHasTeeth:
 # ---------------------------------------------------------------------------
 class TestExemptionsStayJustified:
     def test_only_the_named_hooks_are_exempt(self) -> None:
-        """Pins the set itself, so a third exemption cannot be added silently --
+        """Pins the set itself, so a new exemption cannot be added silently --
         adding one here is a conscious edit to this test, not a side effect of
-        editing the dict above."""
-        assert set(EXEMPT_HOOKS) == {
-            "writ-blackbox-capture.sh",
-        }, (
+        editing the dict above.
+
+        THE NON-VACUOUS ANCHOR. EXEMPT_HOOKS is empty as of plan
+        2412ba38-51e1-4b73-895b-7b240a3c21d3 (writ-blackbox-capture.sh no longer
+        needs it), and the three tests below this one all loop `for name in
+        EXEMPT_HOOKS` -- over an empty dict every one of them passes trivially. This
+        assertion is the one in the class that actually fails if the set is not
+        what it is supposed to be, so it must stay a real, direct comparison.
+        """
+        assert set(EXEMPT_HOOKS) == set(), (
             "the exemption set changed. That may be correct, but review the new "
             "entry's reason on its own merits -- this pin exists so growing the "
             "set is a deliberate edit, not a silent one."
@@ -289,13 +295,6 @@ class TestExemptionsStayJustified:
                 f"{name}'s exemption reason is too short to be checkable: "
                 f"{reason!r}"
             )
-
-    def test_blackbox_capture_reason_still_matches_its_opt_in_gate(self) -> None:
-        """Re-verifies the reason against the live file, not just the dict:
-        if writ-blackbox-capture.sh's opt-in gate is ever removed, this
-        exemption's justification disappears with it."""
-        src = (HOOKS_DIR / "writ-blackbox-capture.sh").read_text()
-        assert "WRIT_BLACKBOX" in src and "hook_instrument" in src
 
 
 # ---------------------------------------------------------------------------
@@ -572,4 +571,316 @@ class TestResolveProjectDoesNotFallBackToWrit:
         assert project_dirs == {UNRESOLVED_PROJECT}, (
             f"expected exactly the {UNRESOLVED_PROJECT!r} project directory under "
             f"{writ_root}; found {sorted(project_dirs)}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Plan 2412ba38-51e1-4b73-895b-7b240a3c21d3, capabilities 12-18: defect B.
+# writ-blackbox-capture.sh resolves the envelope's identity BEFORE its own
+# hook_execution row is filed, so the row lands under the agent/session that
+# produced it instead of under the literal "unknown". Driven as a real
+# subprocess (ENF-SYS-005): the claims are about ordering inside a bash
+# script and about a buffer FILE NAME, neither of which a mocked python read
+# can prove.
+#
+# ISOLATION IS THE HAZARD HERE. Every test below sets WRIT_CACHE_DIR,
+# WRIT_FRICTION_LOG and WRIT_LOG_ROOT under tmp_path, WRIT_NO_AUTOSTART=1,
+# redirects HOME to an empty tmp directory, and sets WRIT_BLACKBOX_LOG under
+# tmp_path. `blackbox_enabled` (bin/lib/common.sh:763-765) tests
+# `$HOME/.claude/writ-blackbox.on`, so an inherited HOME would make the
+# capture-off assertion flip the day an operator re-enables capture, and
+# would write the capture log into that operator's real home -- the pattern
+# `tests/test_debug_gating.py::test_blackbox_capture_off_by_default_
+# regardless_of_writ_debug` already established. No test below reads
+# var/logs, var/session or the graph.
+# ---------------------------------------------------------------------------
+
+CAPTURE_HOOK = HOOKS_DIR / "writ-blackbox-capture.sh"
+
+
+def _capture_env(tmp_path: Path, *, on: bool) -> dict:
+    """The isolated environment every test in this section runs the capture hook
+    under: WRIT_CACHE_DIR / WRIT_FRICTION_LOG / WRIT_LOG_ROOT under tmp_path,
+    WRIT_NO_AUTOSTART=1, HOME pointed at an empty tmp directory, and
+    WRIT_BLACKBOX_LOG under tmp_path. `on` toggles WRIT_BLACKBOX=1; the
+    capture-off arm must neither set it nor inherit it from the calling process.
+    """
+    home = tmp_path / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    env = {
+        **os.environ,
+        "WRIT_CACHE_DIR": str(tmp_path / "cache"),
+        "WRIT_FRICTION_LOG": str(tmp_path / "friction.jsonl"),
+        "WRIT_LOG_ROOT": str(tmp_path / "logs"),
+        "WRIT_NO_AUTOSTART": "1",
+        "HOME": str(home),
+        "WRIT_BLACKBOX_LOG": str(tmp_path / "blackbox.jsonl"),
+    }
+    # POPPED, NEVER JUST LEFT UNSET. An operator (or another test) exporting
+    # WRIT_BLACKBOX=1 would otherwise turn the capture-off arm into a second
+    # capture-on arm, and its "nothing was written" assertion would fail for a
+    # reason that has nothing to do with this hook.
+    env.pop("WRIT_BLACKBOX", None)
+    if on:
+        env["WRIT_BLACKBOX"] = "1"
+    assert not (home / ".claude" / "writ-blackbox.on").exists(), (
+        "the redirected HOME already carries the capture sentinel, so `on=False` "
+        "would not actually be off"
+    )
+    return env
+
+
+def _run_capture(tmp_path: Path, payload: dict | str, *, on: bool = True,
+                 extra_env: dict | None = None) -> tuple:
+    """Runs writ-blackbox-capture.sh as a real subprocess against `_capture_env`,
+    returning (CompletedProcess, cache_dir, blackbox_log_path).
+
+    A `str` payload is sent verbatim, which is how the malformed-envelope case
+    below reaches the hook as bytes that are not JSON at all.
+    """
+    env = {**_capture_env(tmp_path, on=on), **(extra_env or {})}
+    cache_dir = Path(env["WRIT_CACHE_DIR"])
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run(
+        ["bash", str(CAPTURE_HOOK)],
+        input=payload if isinstance(payload, str) else json.dumps(payload),
+        text=True,
+        capture_output=True,
+        timeout=60,
+        env=env,
+    )
+    return proc, cache_dir, Path(env["WRIT_BLACKBOX_LOG"])
+
+
+def _buffer_names(cache_dir: Path) -> list:
+    """The `writ-events-*.buf` file names under `cache_dir`, for asserting which
+    session (or the literal "unknown") a row landed under."""
+    return sorted(p.name for p in cache_dir.glob("writ-events-*.buf"))
+
+
+class TestBlackboxCaptureAttributesItsOwnRow:
+    """Capabilities 12-13, with the conditional pair the plan names: a payload
+    naming a session against the identical payload naming none."""
+
+    def test_an_agent_id_in_the_payload_attributes_the_row_to_it(
+        self, tmp_path
+    ) -> None:
+        """Capability 12, agent_id arm: `writ-events-<agent_id>.buf` holds the
+        hook's own hook_execution row, and no `writ-events-unknown.buf` exists."""
+        proc, cache_dir, _log = _run_capture(tmp_path, {
+            "session_id": "capture-parent-session",
+            "agent_id": "capture-agent-31",
+            "hook_event_name": "PreToolUse",
+        })
+        assert proc.returncode == 0, proc.stderr
+        assert _buffer_names(cache_dir) == ["writ-events-capture-agent-31.buf"], (
+            f"a sub-agent's rows belong to the sub-agent, and the parser already "
+            f"collapses agent_id // session_id; found "
+            f"{_buffer_names(cache_dir)}"
+        )
+        raw = (cache_dir / "writ-events-capture-agent-31.buf").read_text()
+        assert "hook_execution" in raw, f"no telemetry row in the buffer: {raw!r}"
+        assert "writ-blackbox-capture" in raw, (
+            f"the row does not name this hook, so the file may hold someone else's "
+            f"row under the right name: {raw!r}"
+        )
+
+    def test_a_session_id_alone_attributes_the_row_to_it(self, tmp_path) -> None:
+        """Capability 12, session_id arm: a payload with no agent_id but a
+        session_id files the row under `writ-events-<session_id>.buf`."""
+        proc, cache_dir, _log = _run_capture(tmp_path, {
+            "session_id": "capture-main-session-7",
+            "hook_event_name": "PostToolUse",
+        })
+        assert proc.returncode == 0, proc.stderr
+        assert _buffer_names(cache_dir) == ["writ-events-capture-main-session-7.buf"], (
+            f"found {_buffer_names(cache_dir)}"
+        )
+
+    def test_a_payload_naming_neither_id_still_files_under_the_literal_unknown(
+        self, tmp_path
+    ) -> None:
+        """Capability 13, and the positive control for the two tests above: the
+        identical run naming no id at all must land in writ-events-unknown.buf,
+        and no id may be invented from PID, cwd or anything else absent from the
+        payload."""
+        proc, cache_dir, _log = _run_capture(tmp_path, {
+            "hook_event_name": "PreToolUse",
+        })
+        assert proc.returncode == 0, proc.stderr
+        assert _buffer_names(cache_dir) == ["writ-events-unknown.buf"], (
+            f"expected exactly the literal 'unknown' sentinel when the payload names "
+            f"no session; found {_buffer_names(cache_dir)}. Any OTHER name would mean "
+            f"an id was invented from something the payload does not carry."
+        )
+
+
+class TestBlackboxCaptureHandlesAMalformedPayload:
+    def test_an_unparseable_payload_still_exits_zero_files_under_unknown_and_captures(
+        self, tmp_path
+    ) -> None:
+        """Capability 14: a payload that is not valid JSON must not fail the
+        hook. It resolves no identity (files under "unknown"), and the capture
+        log still records the row (the raw bytes, verbatim, are the entire
+        point of capture)."""
+        garbage = '{"session_id": "never-parsed", truncated'
+        proc, cache_dir, log = _run_capture(tmp_path, garbage)
+        assert proc.returncode == 0, (
+            f"a malformed envelope failed the hook: rc={proc.returncode} "
+            f"stderr={proc.stderr!r}"
+        )
+        assert _buffer_names(cache_dir) == ["writ-events-unknown.buf"], (
+            f"an unparseable payload resolved an identity anyway: "
+            f"{_buffer_names(cache_dir)}"
+        )
+        assert log.exists(), "capture stopped recording on a payload it could not parse"
+        record = json.loads(log.read_text().splitlines()[0])
+        assert record["payload"] == garbage, (
+            f"the bytes that actually arrived are the whole point of capture, and the "
+            f"record holds something else: {record['payload']!r}"
+        )
+        assert record["session"] == "", (
+            f"no session could be resolved from these bytes, so the record must say so "
+            f"rather than name one: {record}"
+        )
+
+
+class TestBlackboxCaptureNoJqParity:
+    def test_writ_no_jq_produces_the_same_attribution_as_the_jq_arm(
+        self, tmp_path
+    ) -> None:
+        """Capability 15: WRIT_NO_JQ=1 forces the python arm of
+        `_writ_parse_hook_stdin`; the resolved session and the buffer file name
+        must be identical to the jq arm's, for the same payload."""
+        payload = {
+            "session_id": "parity-parent",
+            "agent_id": "parity-agent-5",
+            "hook_event_name": "PreToolUse",
+        }
+        jq_proc, jq_cache, jq_log = _run_capture(tmp_path / "jq", payload)
+        py_proc, py_cache, py_log = _run_capture(tmp_path / "nojq", payload,
+                                                 extra_env={"WRIT_NO_JQ": "1"})
+        assert jq_proc.returncode == 0 and py_proc.returncode == 0, (
+            f"jq arm rc={jq_proc.returncode} {jq_proc.stderr!r}; "
+            f"python arm rc={py_proc.returncode} {py_proc.stderr!r}"
+        )
+        assert _buffer_names(jq_cache) == ["writ-events-parity-agent-5.buf"], (
+            f"the jq arm itself did not attribute the row, so the comparison below "
+            f"would agree on the wrong answer: {_buffer_names(jq_cache)}"
+        )
+        assert _buffer_names(py_cache) == _buffer_names(jq_cache), (
+            f"the two parser arms file under different names: "
+            f"{_buffer_names(py_cache)} against {_buffer_names(jq_cache)}"
+        )
+        jq_session = json.loads(jq_log.read_text().splitlines()[0])["session"]
+        py_session = json.loads(py_log.read_text().splitlines()[0])["session"]
+        assert py_session == jq_session == "parity-agent-5", (
+            f"the resolved session differs across the WRIT_NO_JQ seam: "
+            f"{py_session!r} against {jq_session!r}"
+        )
+
+
+class TestBlackboxCaptureOffWritesNothing:
+    def test_capture_off_writes_no_telemetry_buffer_no_capture_log_and_exits_zero(
+        self, tmp_path
+    ) -> None:
+        """Capability 16, and the control every capture-on test in this section
+        rests against: with capture off, no writ-events-*.buf file exists under
+        the isolated cache dir, no capture log exists at WRIT_BLACKBOX_LOG, and
+        the hook exits 0. This is the common path, and ENF-PROC-VERIFY-001 names
+        it as the one that must stay byte for byte free of the two processes
+        the capture-on arms pay."""
+        payload = {"session_id": "off-session", "hook_event_name": "PreToolUse"}
+        off_proc, off_cache, off_log = _run_capture(tmp_path / "off", payload, on=False)
+        assert off_proc.returncode == 0, off_proc.stderr
+        assert _buffer_names(off_cache) == [], (
+            f"the opt-in gate no longer precedes the identity resolution, so the "
+            f"common path pays for a debug switch that is off: {_buffer_names(off_cache)}"
+        )
+        assert not off_log.exists(), (
+            f"capture is off and a capture log was written to {off_log}"
+        )
+        assert off_proc.stdout == "", (
+            f"a behavior-neutral hook wrote to stdout: {off_proc.stdout!r}"
+        )
+        # THE POSITIVE CONTROL, in the same test: without it every assertion above
+        # would also pass on a hook that does nothing at all, or on an environment
+        # where the run never reached the script.
+        on_proc, on_cache, on_log = _run_capture(tmp_path / "on", payload, on=True)
+        assert on_proc.returncode == 0, on_proc.stderr
+        assert _buffer_names(on_cache) == ["writ-events-off-session.buf"], (
+            f"the capture-on arm wrote no buffer either, so the capture-off "
+            f"assertions above are vacuous: {_buffer_names(on_cache)}"
+        )
+        assert on_log.exists(), (
+            "the capture-on arm wrote no capture log either, so the capture-off "
+            "assertion above is vacuous"
+        )
+
+
+class TestBlackboxCaptureRecordsTheResolvedSession:
+    def test_the_captured_record_carries_the_payload_verbatim_and_the_resolved_session(
+        self, tmp_path
+    ) -> None:
+        """Capability 17: the row written to WRIT_BLACKBOX_LOG still carries the
+        raw payload bytes it always has, and now also names the session the
+        attribution resolved -- the same identity the telemetry buffer above was
+        filed under, not a second, independent resolution."""
+        payload = {
+            "session_id": "verbatim-session",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/x.py", "content": "a\tb \"quoted\""},
+        }
+        raw = json.dumps(payload)
+        proc, cache_dir, log = _run_capture(tmp_path, raw)
+        assert proc.returncode == 0, proc.stderr
+        record = json.loads(log.read_text().splitlines()[0])
+        assert record["payload"] == raw, (
+            f"the captured payload is not the bytes that arrived: "
+            f"{record['payload']!r} against {raw!r}"
+        )
+        assert record["direction"] == "in", record
+        assert record["hook"] == "writ-blackbox-capture", record
+        assert record["session"] == "verbatim-session", (
+            f"the capture record still names no session: {record}"
+        )
+        assert _buffer_names(cache_dir) == [
+            f"writ-events-{record['session']}.buf"
+        ], (
+            f"the telemetry row and the capture record resolved different identities, "
+            f"so one of them is a second, independent resolution: "
+            f"{_buffer_names(cache_dir)} against {record['session']!r}"
+        )
+
+
+class TestBlackboxCaptureDoesNotRewriteHistory:
+    def test_a_preseeded_unknown_buffer_is_byte_identical_after_a_capture_on_run(
+        self, tmp_path
+    ) -> None:
+        """Capability 18: seeds writ-events-unknown.buf with real bytes before
+        the run (a row from some other stranded hook), runs the capture hook ON
+        with a payload that DOES carry a real session id, and asserts the
+        pre-seeded file's bytes are byte for byte unchanged afterward --
+        "do not rewrite history" as a test, not an intention."""
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        stranded = cache_dir / "writ-events-unknown.buf"
+        before = b"hook_execution\x1fsome-other-hook\x1f5\x1f0\x1fwork\x1f0\x1e"
+        stranded.write_bytes(before)
+        proc, run_cache, _log = _run_capture(tmp_path, {
+            "session_id": "history-session",
+            "hook_event_name": "PreToolUse",
+        })
+        assert proc.returncode == 0, proc.stderr
+        assert run_cache == cache_dir, (
+            f"the run used a different cache dir than the one seeded: {run_cache}"
+        )
+        assert (cache_dir / "writ-events-history-session.buf").exists(), (
+            f"this run filed nothing anywhere, so the untouched buffer below proves "
+            f"nothing: {_buffer_names(cache_dir)}"
+        )
+        assert stranded.read_bytes() == before, (
+            f"the 71 stranded rows are history and must not be rewritten, drained or "
+            f"deleted by this fix: {stranded.read_bytes()!r} against {before!r}"
         )

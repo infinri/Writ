@@ -1656,9 +1656,13 @@ class TestLiveArchiveCensus:
     relationships between buckets.
     """
 
-    def test_the_five_buckets_partition_the_live_universe(self, live_census) -> None:
+    def test_the_six_buckets_partition_the_live_universe(self, live_census) -> None:
         """Today this sums to one less than its own total, and that gap is a real agent,
-        not a rounding artifact."""
+        not a rounding artifact.
+
+        Renamed for plan 2412ba38-51e1-4b73-895b-7b240a3c21d3, which adds a sixth bucket
+        (`uncached_at_stop`); the assertion below is derived from the census's own return
+        value rather than typed, so it stays correct across the rename untouched."""
         assert live_census["total"] > 0, f"the live corpus is empty: {live_census}"
         assert _partition_gap(live_census) == 0, (
             f"the live buckets leak {_partition_gap(live_census)} agent(s): {live_census}"
@@ -2041,4 +2045,338 @@ class TestLazySeedProcessBudget:
         assert _EXECVE_E2BIG.search(dead_trace), (
             "no execve failed with E2BIG in the dead-python arm, so that run never "
             "reproduced the condition and its count means nothing"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Plan 2412ba38-51e1-4b73-895b-7b240a3c21d3, capabilities 4-11: defect A's
+# reader side. A `subagent_complete` row now carries `cache_state`, and the
+# census gains a sixth bucket, `uncached_at_stop`, splitting the existing
+# `active` arm rather than sitting above or below it (see plan.md's placement
+# argument: above `active` would drain `unreachable`, above `seeded`/`started`
+# would relabel governed agents whose cache was later swept).
+#
+# A NEW population, not an extension of `_population()` above. That table
+# backs `TestCensusPartition.test_the_buckets_partition_the_universe`, which
+# this plan does not touch and which must keep passing against today's five
+# buckets exactly as it does now; merging the two tables would make that
+# already-passing test fail the moment this cycle's evidence shapes joined
+# it, for a bucket its own reader does not classify into yet. So this
+# cycle's evidence shapes get their own table, deliberately never merged into
+# `_population()`.
+# --------------------------------------------------------------------------- #
+
+UNCACHED_BUCKET = "uncached_at_stop"
+
+
+def _complete_row_with_cache_state(agent: str, cache_state: str | None = None) -> dict:
+    """A `subagent_complete` row for `agent`, carrying `cache_state` when given and
+    carrying no such field at all when `cache_state` is None -- the shape the
+    "a row written before the field existed" control (capability 5) needs.
+    """
+    row = {"event": "subagent_complete", "agent_id": agent}
+    if cache_state is not None:
+        row["cache_state"] = cache_state
+    return row
+
+
+def _absent_row(agent: str) -> dict:
+    return _complete_row_with_cache_state(agent, "absent")
+
+
+def _present_row(agent: str) -> dict:
+    return _complete_row_with_cache_state(agent, "present")
+
+
+def _cache_state_population() -> list:
+    """One agent per cache_state evidence shape capabilities 4-8 rule on, in the same
+    (agent, owed bucket, row makers) shape `_population()` uses above, so the same
+    style of partition assertion applies to it. Deliberately not merged into
+    `_population()` -- see the module comment above this block.
+
+    EVERY AGENT HERE CARRIES A `_hook_row` EXCEPT THE LAST ONE, on purpose. `_hook_row`
+    is what puts an agent in `active`, which is the arm the new rung splits; without it
+    the ladder never reaches that arm and an assertion about placement would pass
+    without testing placement.
+    """
+    table = [
+        ("c-absent-and-hook-rows", UNCACHED_BUCKET, [_absent_row, _hook_row]),
+        ("c-unrecorded-and-hook-rows", "reachable",
+         [_complete_row_with_cache_state, _hook_row]),
+        ("c-present-and-hook-rows", "reachable", [_present_row, _hook_row]),
+        ("c-started-and-absent", "governed", [_start_row, _absent_row, _hook_row]),
+        ("c-lazy-seeded-and-absent", "lazy",
+         [lambda a: _seeded_row(a, LAZY_SEED), _absent_row, _hook_row]),
+        ("c-absent-no-own-rows", "unreachable", [_absent_row]),
+    ]
+    return [(agent, bucket, [make(agent) for make in makers])
+            for agent, bucket, makers in table]
+
+
+class TestUncachedAtStopBucket:
+    """Capabilities 4-8: the sixth bucket, and the two conditional pairs the plan
+    names -- a completion row carrying `cache_state: "absent"` against the identical
+    row with no field at all, and that same absent row with and without an
+    accompanying own-id hook row."""
+
+    def _one_agent(self, tmp_path, monkeypatch, agent: str, rows: list) -> dict:
+        census = _census_over(monkeypatch, _metrics_stream(tmp_path, rows))
+        assert census["total"] == 1, (
+            f"{agent} is the only agent these rows name, so anything else means the "
+            f"universe was built from something other than the evidence: {census}"
+        )
+        assert _partition_gap(census) == 0, (
+            f"{agent} is in the denominator and in no bucket, or in two: {census}"
+        )
+        return census
+
+    def test_an_agent_with_its_own_rows_and_an_absent_cache_state_is_uncached_at_stop(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Capability 4. An agent with a non-lifecycle row under its own id (proving a
+        Writ hook ran inside it, the same evidence `_hook_row` supplies above) and a
+        completion row whose `cache_state` is the literal string "absent" must land in
+        the new `uncached_at_stop` bucket, not in `reachable`."""
+        agent = "c-absent"
+        census = self._one_agent(tmp_path, monkeypatch, agent,
+                                 [_hook_row(agent), _absent_row(agent)])
+        assert census[UNCACHED_BUCKET] == 1, (
+            f"the agent's own completion row says no cache existed when it stopped, and "
+            f"the census does not count it as such: {census}"
+        )
+        assert census["reachable"] == 0, (
+            f"'ran ungoverned while doing work' and 'Writ never saw a cache' are still "
+            f"summed into one number: {census}"
+        )
+
+    def test_the_identical_row_with_no_cache_state_field_stays_reachable(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Capability 5, and the positive control for the test above: the same agent
+        shape, the only difference being that the completion row carries no
+        `cache_state` field at all (the historical shape, exactly
+        `("r-completion-and-hook-rows", "reachable", ...)` in `_population()` above),
+        must stay in `reachable` -- unrecorded, never read as `absent`."""
+        agent = "c-unrecorded"
+        historical = _complete_row_with_cache_state(agent)
+        assert "cache_state" not in historical, (
+            "the control row carries the field, so it is not the historical shape and "
+            "this test proves nothing about the 6,736 archived rows"
+        )
+        census = self._one_agent(tmp_path, monkeypatch, agent,
+                                 [_hook_row(agent), historical])
+        assert census["reachable"] == 1, (
+            f"a row written before the field existed was relabelled: {census}"
+        )
+        assert census[UNCACHED_BUCKET] == 0, (
+            f"a MISSING field was read as an observed absence, which is exactly what a "
+            f"boolean would have done: {census}"
+        )
+
+    def test_an_agent_with_cache_state_present_stays_reachable(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Capability 6."""
+        agent = "c-present"
+        census = self._one_agent(tmp_path, monkeypatch, agent,
+                                 [_hook_row(agent), _present_row(agent)])
+        assert census["reachable"] == 1, census
+        assert census[UNCACHED_BUCKET] == 0, (
+            f"a cache existed when this agent stopped and it is counted as uncached: "
+            f"{census}"
+        )
+
+    def test_a_governed_agent_keeps_its_bucket_despite_an_absent_completion_cache_state(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Capability 7, the governed arm: a `subagent_start` row must keep an agent in
+        `governed` even when its completion row says `cache_state: "absent"`."""
+        agent = "c-governed-absent"
+        census = self._one_agent(
+            tmp_path, monkeypatch, agent,
+            [_start_row(agent), _hook_row(agent), _absent_row(agent)])
+        assert census["governed"] == 1, (
+            f"a positive seed record must outrank a later absence: the cache was made "
+            f"and then swept, which is not the same as never having one: {census}"
+        )
+        assert census[UNCACHED_BUCKET] == 0, (
+            f"the new rung sits above `started`, so it relabels governed agents: {census}"
+        )
+
+    def test_a_lazily_seeded_agent_keeps_its_bucket_despite_an_absent_completion_cache_state(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Capability 7, the lazy arm: the same, for a `subagent_seeded`
+        (cache_source=lazy_seed) row."""
+        agent = "c-lazy-absent"
+        census = self._one_agent(
+            tmp_path, monkeypatch, agent,
+            [_seeded_row(agent, LAZY_SEED), _hook_row(agent), _absent_row(agent)])
+        assert census["lazy"] == 1, census
+        assert census[UNCACHED_BUCKET] == 0, (
+            f"the new rung sits above `seeded`, so it relabels lazily seeded agents: "
+            f"{census}"
+        )
+
+    def test_an_absent_cache_state_with_no_row_under_its_own_id_stays_unreachable(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Capability 8: a completion row saying `cache_state: "absent"` is not, on its
+        own, evidence that a Writ hook ran inside the agent; with no other row under its
+        own id the agent stays `unreachable`, exactly as `("u-completion-only",
+        "unreachable", [_complete_row])` does in `_population()` above."""
+        agent = "c-absent-alone"
+        census = self._one_agent(tmp_path, monkeypatch, agent, [_absent_row(agent)])
+        assert census["unreachable"] == 1, (
+            f"nothing ran inside this agent, and that is a different fact from hooks "
+            f"having run and never made a cache: {census}"
+        )
+        assert census[UNCACHED_BUCKET] == 0, (
+            f"the new rung sits above `active`, so it drains `unreachable`: {census}"
+        )
+
+    @pytest.mark.parametrize("placement", ["live", "archive"])
+    def test_the_new_population_partitions_including_a_gzipped_archive(
+        self, tmp_path, monkeypatch, placement
+    ) -> None:
+        """Capability 9, scoped to this cycle's own population (see the module comment
+        above `_cache_state_population`). Mirrors `TestCensusPartition.test_the_
+        buckets_partition_the_universe`'s own `live`/`archive` parametrization, so the
+        sixth bucket is proven readable from a gzipped archive as well as the live
+        file, not only from whichever one a lazier test happened to seed."""
+        population = _cache_state_population()
+        rows = _population_rows(population)
+        stream = (_metrics_stream(tmp_path, rows) if placement == "live"
+                  else _metrics_stream(tmp_path, [_hook_row("main-1")], archived_rows=rows))
+        census = _census_over(monkeypatch, stream)
+        expected = _expected_counts(population)
+        assert expected[UNCACHED_BUCKET] > 0, (
+            "the population owes the new bucket nothing, so this run would partition "
+            "without ever exercising it"
+        )
+        assert census["total"] == len(population), (
+            f"every agent named by a lifecycle row is a member: {census}"
+        )
+        assert _partition_gap(census) == 0, (
+            f"the sixth bucket did not join the sum: {census['total']} members against "
+            f"{sum(census[b] for b in _bucket_names(census))} classified; "
+            f"expected {dict(expected)}"
+        )
+        for bucket in _bucket_names(census):
+            assert census[bucket] == expected[bucket], (
+                f"{bucket}: {census[bucket]} against {expected[bucket]} from "
+                f"{[a for a, b, _ in population if b == bucket]}"
+            )
+
+
+class TestDoctorReportsTheSixthBucket:
+    """Capability 10: the doctor's census line names the new count between
+    `reachable` and `unreachable`, and states what a missing field means."""
+
+    def _stream(self, tmp_path) -> Path:
+        """Counts chosen to DIFFER between the two buckets, so a detail that printed one
+        number twice could not pass both assertions below."""
+        rows = [_hook_row("d-uncached"), _absent_row("d-uncached")]
+        for i in range(3):
+            rows += [_hook_row(f"d-reachable-{i}"), _complete_row(f"d-reachable-{i}")]
+        return _metrics_stream(tmp_path, rows)
+
+    def test_the_detail_names_uncached_at_stop_separately_from_reachable(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Reads `check_subagent_governance_census(...).detail`, the same artifact
+        `TestDoctorGovernanceCensus` above already asserts against; not a
+        documentation-prose assertion, since `detail` is the check's own returned
+        value, not a doc file."""
+        stream = self._stream(tmp_path)
+        census = _census_over(monkeypatch, stream)
+        assert census[UNCACHED_BUCKET] != census["reachable"], (
+            f"the two counts are equal, so one number could satisfy both assertions "
+            f"below: {census}"
+        )
+        detail = _check_over(monkeypatch, stream).detail
+        assert re.search(rf"\b{census[UNCACHED_BUCKET]}\b[^,]*cache", detail), (
+            f"the detail does not report {census[UNCACHED_BUCKET]} agent(s) as having "
+            f"stopped with no cache: {detail}"
+        )
+        assert re.search(rf"\b{census['reachable']}\b[^,]*reachable", detail), (
+            f"the detail does not report {census['reachable']} agent(s) as ungoverned "
+            f"but reachable: {detail}"
+        )
+
+    def test_the_detail_states_that_rows_without_the_field_are_unrecorded(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The same `detail` string must say that an agent without `cache_state` at all
+        is unrecorded rather than counted as either `present` or `absent` -- the
+        6,736 historical rows this cycle does not move, per plan.md."""
+        detail = _check_over(monkeypatch, self._stream(tmp_path)).detail
+        assert "cache_state" in detail, (
+            f"the detail never names the field the split is made on, so a reader cannot "
+            f"tell which rows carry the observation: {detail}"
+        )
+        assert "unrecorded" in detail, (
+            f"the detail does not say that a row written before the field existed is "
+            f"unrecorded rather than counted as either: {detail}"
+        )
+
+
+class TestWarnThresholdUnchangedBySixthBucket:
+    """Capability 11: the coverage boundary (`governed + lazy` against `total`) is
+    unmoved by the new bucket, bracketed from both sides exactly as
+    `TestCensusCheckStillJudges` already brackets it for the five-bucket census."""
+
+    def _at_boundary(self) -> dict:
+        """`_boundary_population()` extended by one agent in the new bucket and one
+        covered agent to balance it, so the map still sits exactly on
+        `covered * 2 == total` while containing the bucket this cycle adds."""
+        population = dict(_boundary_population())
+        population["b-uncached-at-stop"] = (
+            UNCACHED_BUCKET, [_absent_row, _hook_row])
+        population["b-governed-balancing"] = ("governed", [_start_row, _complete_row])
+        return population
+
+    def test_a_population_one_agent_below_the_boundary_still_warns(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        base = self._at_boundary()
+        population = dict(base)
+        population["b-completion-only-one-below"] = ("unreachable", [_complete_row])
+        stream = _metrics_stream(tmp_path, _boundary_rows(population))
+        census = _census_of_population(monkeypatch, stream, population)
+        covered = _covered_in(population)
+        below_by = len(population) - len(base)
+        assert census[UNCACHED_BUCKET] > 0, (
+            f"the fixture holds no agent in the new bucket, so it says nothing about "
+            f"the threshold under the split: {census}"
+        )
+        assert covered * 2 == census["total"] - below_by, (
+            f"the fixture does not sit {below_by} agent(s) below the boundary: {covered} "
+            f"covered of {census['total']}"
+        )
+        result = _check_over(monkeypatch, stream)
+        assert result.status == "warn", (
+            f"{covered} covered of {census['total']} leaves the ungoverned a majority, "
+            f"and splitting `reachable` must not suppress that alarm; the check reported "
+            f"{result.status}: {result.detail}"
+        )
+
+    def test_a_population_exactly_at_the_boundary_does_not_warn(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        population = self._at_boundary()
+        stream = _metrics_stream(tmp_path, _boundary_rows(population))
+        census = _census_of_population(monkeypatch, stream, population)
+        covered = _covered_in(population)
+        assert census[UNCACHED_BUCKET] > 0, (
+            f"the fixture holds no agent in the new bucket: {census}"
+        )
+        assert covered * 2 == census["total"], (
+            f"the fixture never reached the boundary: {covered} covered of "
+            f"{census['total']}"
+        )
+        result = _check_over(monkeypatch, stream)
+        assert result.status == "ok", (
+            f"{covered} covered of {census['total']} is exactly half, so the ungoverned "
+            f"are not a majority, and the check reported {result.status}: {result.detail}"
         )

@@ -1722,6 +1722,8 @@ def _subagent_governance_evidence() -> tuple[dict[str, set[str]], set[str]] | No
     lazily_seeded: set[str] = set()
     seed_failed: set[str] = set()
     completed: set[str] = set()
+    cached: set[str] = set()
+    uncached: set[str] = set()
     active: set[str] = set()
     read_any = False
 
@@ -1754,6 +1756,15 @@ def _subagent_governance_evidence() -> tuple[dict[str, set[str]], set[str]] | No
                         seed_failed.add(who)
                     elif event == "subagent_complete":
                         completed.add(agent)
+                        # ONLY THE TWO LITERALS THE WRITER EMITS COUNT AS AN OBSERVATION.
+                        # A row that carries no `cache_state` at all is unrecorded, never
+                        # read as an absence, which is what keeps the archived rows where
+                        # they are.
+                        state = str(row.get("cache_state") or "")
+                        if state == "present":
+                            cached.add(agent)
+                        elif state == "absent":
+                            uncached.add(agent)
                     else:
                         # Any other row filed under an agent's own id proves a Writ hook
                         # ran inside that agent, which is what makes it seedable.
@@ -1769,6 +1780,10 @@ def _subagent_governance_evidence() -> tuple[dict[str, set[str]], set[str]] | No
     # A later seed of any kind REPAIRS a failure, so only agents that were never seeded
     # afterwards are held against the governed count.
     unrepaired = seed_failed - seeded
+    # A POSITIVE OBSERVATION OF A CACHE OUTRANKS AN ABSENCE, the same shape `unrepaired`
+    # uses above: an agent whose completion rows disagree across retries had a cache at
+    # least once, and the claim being made is "no cache ever existed inside this agent".
+    uncached = uncached - cached
     known = started | seeded | seed_failed | completed
     known.discard("")
 
@@ -1777,6 +1792,7 @@ def _subagent_governance_evidence() -> tuple[dict[str, set[str]], set[str]] | No
         "lazy": set(),
         "seed_failed": set(),
         "reachable": set(),
+        "uncached_at_stop": set(),
         "unreachable": set(),
     }
     for who in known:
@@ -1791,7 +1807,13 @@ def _subagent_governance_evidence() -> tuple[dict[str, set[str]], set[str]] | No
         elif who in seeded:
             bucket = "lazy"
         elif who in active:
-            bucket = "reachable"
+            # THE SPLIT SITS INSIDE THE `active` ARM ON PURPOSE. Above it, the new rung
+            # would drain `unreachable`, because an agent that ran no Writ hook at all also
+            # has no cache, and the two facts differ: `unreachable` means nothing ran inside
+            # it, `uncached_at_stop` means hooks ran inside it and none of them ever created
+            # a cache. Above `seeded`/`started` it would relabel governed agents whose cache
+            # was later swept, so a positive seed record still wins.
+            bucket = "uncached_at_stop" if who in uncached else "reachable"
         else:
             bucket = "unreachable"
         members[bucket].add(who)
@@ -1816,7 +1838,7 @@ def _subagent_governance_census() -> dict | None:
 
     Returns None when no stream is readable, which is NOT the same as "nothing is governed".
 
-    Five buckets, because averaging them hides the thing worth knowing:
+    Six buckets, because averaging them hides the thing worth knowing:
       governed:    the spawn path made the cache (a `subagent_seeded` row naming
                    `subagent_start`, or failing that a `subagent_start` row), and no
                    unrepaired seed failure contradicts it
@@ -1826,7 +1848,18 @@ def _subagent_governance_census() -> dict | None:
                    hook ran and the seeding inside it did not
       reachable:   none of those, but Writ hooks ran inside it (a daemon or hook row under
                    its own agent id), so a future hook could seed it
+      uncached_at_stop:
+                   reachable, AND its own completion row says `cache_state: "absent"`, so
+                   hooks ran inside it and none of them ever created a cache: nothing it
+                   did was recorded against a mode
       unreachable: only stop-side rows, so Writ never ran anything inside it
+
+    THE SIXTH BUCKET IS A POSITIVE RECORD AT THE WRITER, NEVER AN INFERENCE HERE. Only the
+    two literals `present` and `absent` count, both written by the stop hook from a file
+    test taken before it reads or writes any cache. A completion row carrying no
+    `cache_state` at all is UNRECORDED and stays in `reachable`, which is why the 6,736
+    archived agents do not move: their rows predate the field, and "Writ never saw a cache"
+    cannot be told apart from "ran ungoverned while working" for any of them.
 
     THE UNIVERSE IS EVERY AGENT NAMED BY A LIFECYCLE ROW, NOT EVERY AGENT THAT FINISHED.
     Every bucket used to be intersected with `completed`, and `total` was `len(completed)`.
@@ -1981,8 +2014,14 @@ def check_subagent_governance_census(opts: DoctorOptions) -> CheckResult:
         f"{census['governed']} governed at spawn, {census['lazy']} lazily seeded, "
         f"{census['seed_failed']} whose seeding failed, "
         f"{census['reachable']} ungoverned but reachable, "
+        f"{census['uncached_at_stop']} that stopped with no session cache at all, "
         f"{census['unreachable']} unreachable, of {census['total']} sub-agent(s) Writ has "
         "a lifecycle record of. "
+        "An agent is counted as stopping uncached ONLY when its own subagent_complete row "
+        "says cache_state: absent. A row written before that field existed carries no such "
+        "record, so it is unrecorded rather than counted as either, and it stays in the "
+        "reachable count: from there, an agent that ran ungoverned while doing work and one "
+        "Writ never saw a cache for cannot be told apart. "
         "The seeding-failure count comes only from subagent_seed_failed rows. Both the "
         "spawn path and the lazy path write one now, but only for faults the seeder "
         "could see and report: an unreadable parent cache is already turned into an "

@@ -412,6 +412,181 @@ class TestStartHookStoresTheResolvedRole:
 
 
 # --------------------------------------------------------------------------- #
+# Plan 2412ba38-51e1-4b73-895b-7b240a3c21d3, capabilities 1-3: the stop hook
+# records a positive `cache_state` on every `subagent_complete` row, taken
+# from a file-direct test of the agent's own session cache BEFORE anything
+# in this hook reads or writes one. Driven as a real subprocess (ENF-SYS-005):
+# the claim is about a file test ordered ahead of `_writ_session read` inside
+# a bash script, which a mocked python read cannot prove.
+# --------------------------------------------------------------------------- #
+
+class TestStopHookRecordsCacheState:
+    """The two runs in this class differ from each other by exactly one
+    thing: whether `writ-session-<agent_id>.json` exists under the isolated
+    `WRIT_CACHE_DIR` at the moment the hook runs. Same payload, same
+    environment, same everything else, so a difference in `cache_state` is
+    attributable to that file alone and not to an unrelated variable."""
+
+    def _payload(self, agent_id: str = "s1", parent: str = "parent-s") -> str:
+        return json.dumps({
+            "agent_id": agent_id, "agent_type": "", "session_id": parent,
+            "hook_event_name": "SubagentStop",
+        })
+
+    def _completion_rows(self, friction: Path) -> list[dict]:
+        """The rows this hook wrote whose event is `subagent_complete`.
+
+        Same derivation as `TestStopHookRecordsAResolvedRole._completion_rows`,
+        duplicated here rather than shared across classes: each test class in
+        this file already owns its own small helpers.
+        """
+        if not friction.exists():
+            return []
+        out = []
+        for line in friction.read_text(errors="replace").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("event") == "subagent_complete":
+                out.append(row)
+        return out
+
+    def _env(self, cache: Path, projects: Path) -> dict:
+        """WRIT_LOG_ROOT joins WRIT_CACHE_DIR / WRIT_FRICTION_LOG (set by `_run`)
+        under tmp_path, so nothing this hook writes can reach the repo's var/."""
+        return {"WRIT_PROJECTS_DIR": str(projects),
+                "WRIT_LOG_ROOT": str(cache.parent / "logs")}
+
+    def _seed_cache(self, cache: Path, agent_id: str = "s1") -> Path:
+        """The ONE difference between the two arms: the agent's own session cache
+        file, written before the hook runs and never by the hook itself."""
+        path = cache / f"writ-session-{agent_id}.json"
+        path.write_text(json.dumps({"mode": "work", "is_subagent": True}))
+        return path
+
+    def test_cache_state_is_absent_when_no_session_cache_file_exists(
+        self, sinks, projects
+    ) -> None:
+        """Capability 1, the absent arm. `writ-session-s1.json` never exists
+        under the isolated cache dir; the completion row's `cache_state` must
+        read the literal string "absent"."""
+        cache, friction = sinks
+        assert not (cache / "writ-session-s1.json").exists(), (
+            "the agent already has a cache file before the run, so this arm "
+            "measures the other condition"
+        )
+        result = _run(STOP_HOOK, cache=cache, friction=friction,
+                      stdin=self._payload(), extra_env=self._env(cache, projects))
+        assert result.returncode == 0, result.stderr
+        rows = self._completion_rows(friction)
+        assert rows, f"the stop hook wrote no completion row at all: {result.stderr}"
+        assert [r.get("cache_state") for r in rows] == ["absent"], (
+            f"no cache file existed for this agent and the row does not say so: {rows}"
+        )
+
+    def test_cache_state_is_present_when_a_session_cache_file_exists(
+        self, sinks, projects
+    ) -> None:
+        """Capability 1, the present arm, and the positive control for the
+        test above: the identical payload and cache dir, with exactly one
+        addition made before the hook runs -- `writ-session-s1.json` written
+        into the cache dir. The completion row's `cache_state` must read the
+        literal string "present"."""
+        cache, friction = sinks
+        seeded = self._seed_cache(cache)
+        assert seeded.exists()
+        result = _run(STOP_HOOK, cache=cache, friction=friction,
+                      stdin=self._payload(), extra_env=self._env(cache, projects))
+        assert result.returncode == 0, result.stderr
+        rows = self._completion_rows(friction)
+        assert rows, f"the stop hook wrote no completion row at all: {result.stderr}"
+        assert [r.get("cache_state") for r in rows] == ["present"], (
+            f"the agent's cache file existed and the row does not say so: {rows}"
+        )
+
+    def test_cache_state_is_never_a_boolean(self, sinks, projects) -> None:
+        """Capability 3. `type(row["cache_state"])` must be `str` on both the
+        present and the absent arm, never `bool`: a row written before the
+        field existed must read as empty (unrecorded) and must never collapse
+        to a falsy `cache_state: false` that a `.get()` reader could mistake
+        for "absent"."""
+        cache, friction = sinks
+        absent = _run(STOP_HOOK, cache=cache, friction=friction,
+                      stdin=self._payload(agent_id="s-bool-absent"),
+                      extra_env=self._env(cache, projects))
+        assert absent.returncode == 0, absent.stderr
+        self._seed_cache(cache, "s-bool-present")
+        present = _run(STOP_HOOK, cache=cache, friction=friction,
+                       stdin=self._payload(agent_id="s-bool-present"),
+                       extra_env=self._env(cache, projects))
+        assert present.returncode == 0, present.stderr
+        rows = self._completion_rows(friction)
+        assert len(rows) == 2, f"both arms must have recorded: {rows}"
+        for row in rows:
+            state = row["cache_state"]
+            assert type(state) is str, (
+                f"cache_state is {type(state).__name__} and not a string, so a row "
+                f"written before the field existed would read as the same falsy value "
+                f"an observed absence does: {row}"
+            )
+            assert state in ("present", "absent"), (
+                f"cache_state carries a third spelling, so a reader keyed on the two "
+                f"literals silently drops this row: {row}"
+            )
+        assert {r["cache_state"] for r in rows} == {"absent", "present"}, (
+            f"the two arms agree, so the field is not reporting the file test: {rows}"
+        )
+
+    def test_exactly_one_completion_row_is_written_when_the_cache_is_absent(
+        self, sinks, projects
+    ) -> None:
+        """Capability 2. The hook still exits 0 and writes exactly one
+        `subagent_complete` row when no cache file exists for the agent."""
+        cache, friction = sinks
+        result = _run(STOP_HOOK, cache=cache, friction=friction,
+                      stdin=self._payload(), extra_env=self._env(cache, projects))
+        assert result.returncode == 0, result.stderr
+        assert len(self._completion_rows(friction)) == 1, (
+            f"one completion, one row: {self._completion_rows(friction)}"
+        )
+
+    def test_exactly_one_completion_row_is_written_when_the_cache_is_present(
+        self, sinks, projects
+    ) -> None:
+        """Capability 2. The same, against a pre-existing cache file."""
+        cache, friction = sinks
+        self._seed_cache(cache)
+        result = _run(STOP_HOOK, cache=cache, friction=friction,
+                      stdin=self._payload(), extra_env=self._env(cache, projects))
+        assert result.returncode == 0, result.stderr
+        assert len(self._completion_rows(friction)) == 1, (
+            f"one completion, one row: {self._completion_rows(friction)}"
+        )
+
+    def test_an_empty_agent_id_writes_no_completion_row_and_no_cache_state(
+        self, sinks, projects
+    ) -> None:
+        """Capability 2's other half: the hook's existing empty-`agent_id`
+        guard (line 88) must still suppress the row entirely -- exits 0,
+        writes zero completion rows, and therefore records no `cache_state`
+        either."""
+        cache, friction = sinks
+        result = _run(STOP_HOOK, cache=cache, friction=friction,
+                      stdin=self._payload(agent_id=""),
+                      extra_env=self._env(cache, projects))
+        assert result.returncode == 0, result.stderr
+        assert self._completion_rows(friction) == [], (
+            "a payload with no agent_id names no agent, so there is nothing to record "
+            "a cache state against"
+        )
+        written = friction.read_text(errors="replace") if friction.exists() else ""
+        assert "cache_state" not in written, (
+            f"a suppressed completion still recorded a cache observation: {written}"
+        )
+
+
+# --------------------------------------------------------------------------- #
 # Capability 8: instrumentation covers hooks, and only hooks
 # --------------------------------------------------------------------------- #
 

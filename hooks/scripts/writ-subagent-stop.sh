@@ -108,6 +108,33 @@ fi
 # AGENT_ID directly, and the name is not exported so no child can see it.
 SESSION_ID="$AGENT_ID"
 
+# DID A SESSION CACHE EXIST FOR THIS AGENT AT ALL? Answered HERE, and the position is the
+# whole property.
+#
+# The row below is built from `_writ_session read`, which answers a miss with
+# `_default_cache()` rather than failing, so an agent Writ never touched produces a
+# completion row whose every field is a default. Measured 2026-09-21: 6,751 such rows, all
+# carrying files_written=0, queries=0, rules_loaded=0, agent_type="unknown". "Ran ungoverned
+# while writing files" and "no cache existed when it stopped" were the same row.
+#
+# BEFORE THE ROLE RESOLVER AND BEFORE `_writ_session read`, so nothing this hook does can
+# create the file it is measuring. Moving this line below either of them would make the
+# observation a report on this hook's own side effects.
+#
+# THE FILE, NEVER THE DAEMON. `_writ_session read` can be answered by a daemon started
+# against a different WRIT_CACHE_DIR; this test uses the same resolution of the cache
+# directory that writ_seed_subagent_from_fields writes to, so the observation and the thing
+# observed are resolved by the same code.
+#
+# A STRING, NEVER A BOOLEAN. Three states need three values: a row written before this field
+# existed carries no field at all and must read as unrecorded, which a falsy
+# `cache_present: false` could not be told apart from.
+if [ -f "$(writ_session_cache_dir)/writ-session-$AGENT_ID.json" ]; then
+    CACHE_STATE="present"
+else
+    CACHE_STATE="absent"
+fi
+
 # THE ROLE IS RESOLVED, NOT DEFAULTED. `agent_type` is in the envelope schema and arrives
 # EMPTY for the sub-agents that never receive a SubagentStart: 10 of 10 captured envelopes
 # from that population (2026-08-27), 2,219 records corpus-wide. An ordinary Agent dispatch
@@ -287,6 +314,7 @@ agent_id = sys.argv[2]
 agent_type = sys.argv[3]
 parent_session = sys.argv[4]
 role_source = sys.argv[5] if len(sys.argv) > 5 else 'unresolved'
+cache_state = sys.argv[6] if len(sys.argv) > 6 else ''
 
 entry = {
     'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
@@ -299,6 +327,10 @@ entry = {
     # and a real dispatch of the same name are the same row, which is what let 53 records
     # claim `general-purpose` on 2026-08-27 with nothing observed.
     'role_source': role_source,
+    # WHETHER A CACHE EXISTED WHEN THIS AGENT STOPPED, measured above before anything here
+    # read one. The two literals are 'present' and 'absent'; the empty string means this
+    # process had no observation, which is also what a row predating the field reads as.
+    'cache_state': cache_state,
     'parent_session': parent_session,
     'files_written': len(cache.get('files_written', [])),
     'rules_loaded': len(cache.get('loaded_rule_ids', [])),
@@ -308,6 +340,6 @@ entry = {
 }
 
 print(json.dumps(entry))
-" "$CACHE" "$AGENT_ID" "$AGENT_TYPE" "$PARENT_SESSION" "$ROLE_SOURCE" 2>/dev/null | python3 "$FA" --stdin-json 2>/dev/null || true
+" "$CACHE" "$AGENT_ID" "$AGENT_TYPE" "$PARENT_SESSION" "$ROLE_SOURCE" "$CACHE_STATE" 2>/dev/null | python3 "$FA" --stdin-json 2>/dev/null || true
 
 exit 0
