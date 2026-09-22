@@ -155,7 +155,7 @@ def _emit_retrieval_result(
 
 @router.post("/methodology-companion")
 async def methodology_companion(request: CompanionRequest) -> dict[str, Any]:
-    """Methodology by workflow-state (floor u push u pull) -- CHANNEL 2 (1.5).
+    """Methodology by workflow-state (floor u push u pull): CHANNEL 2 (1.5).
 
     DETERMINISTIC, not semantic: the trigger index matches mode floors, action
     pushes, and curated trigger_keywords (no embeddings). The response reuses
@@ -796,7 +796,7 @@ async def always_on_bundle(
 
 @router.get("/subagent-role/{name}")
 async def subagent_role_get(name: str) -> dict[str, Any]:
-    """Return a SubagentRole node's canonical prompt template from the graph.
+    """Return a SubagentRole node's canonical prompt template and its declared `write_scope` from the graph (`write_scope` is null when the role declares none and `[]` when it declares it writes nothing; the two are not coalesced). Read once per dispatch by the sub-agent seeder.
 
     Phase 3 Section 8 deliverable 2: graph is canonical for subagent prompts;
     .claude/agents/*.md files are exported from the graph. This endpoint

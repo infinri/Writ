@@ -603,12 +603,25 @@ class TestPromptBundleEndpointLive:
         )
 
         # THE IN-RUN POSITIVE: the SERVER's own `queries` counter
-        # (writ/server/routes/query.py:321, --inc-queries) must have moved,
+        # (writ/server/routes/query.py, --inc-queries) must have moved,
         # attributing this response to the request rather than to a cache
         # default.
+        #
+        # ONCE PER CHANNEL THAT QUERIED, not once per call. The route has two
+        # --inc-queries sites: the ranked channel, which runs whenever
+        # include_ranked is set (it defaults True), and the methodology
+        # companion, which increments only when it returns rules. A hardcoded
+        # delta of 1 held only while the companion found nothing, so this
+        # assertion tracked corpus state instead of the route, and it reddened
+        # under a suite order that left the companion something to return.
+        # The expectation is read from the RESPONSE; the observation is read
+        # from the cache a separate cmd_update writes, so the two sides are
+        # different artifacts and the check stays non-vacuous.
+        expected_delta = 1 + (1 if (data.get("method_meta") or {}).get("rule_ids") else 0)
         after = _read_cache(sid)
-        assert after.get("queries", 0) == before_queries + 1, (
-            f"the server-side queries counter must increment by exactly one per "
-            f"/prompt-bundle call; before={before_queries}, "
-            f"after={after.get('queries', 0)}"
+        assert after.get("queries", 0) == before_queries + expected_delta, (
+            f"the server-side queries counter must increment once per channel that "
+            f"queried; before={before_queries}, after={after.get('queries', 0)}, "
+            f"expected delta {expected_delta} "
+            f"(ranked always, companion when it returns rules)"
         )

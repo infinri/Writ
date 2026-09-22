@@ -23,12 +23,23 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-latest
-    # Timeout re-sized 2026-08-14: the suite is ~7,900 collected tests now and the
-    # whole job measures 13 to 15 minutes on shared runners (a 15-minute limit
-    # cancelled two green-tree runs at 15m04s and 15m15s that day). Twenty minutes
-    # gives the measured runtime real headroom without letting a stuck job hold a
-    # runner indefinitely.
-    timeout-minutes: 20
+    # Timeout re-sized 2026-09-22, from 20 to 40 minutes. Run 35638611036 hit the
+    # 20-minute limit with NO failing test and pytest progress still advancing at
+    # cancellation, so the suite outgrew the limit again; nothing hung. Three
+    # figures size the new value, each labeled for what it is:
+    #   LOCAL, measured 2026-09-22: the full suite runs in 1127.73 seconds, about
+    #   18 minutes 47 seconds, for 12,274 passed and 9 skipped. Different hardware,
+    #   so this is the sanity check and not the sizing input.
+    #   CI, observed on that run: about 4.4 minutes of setup before pytest starts.
+    #   CI, EXTRAPOLATION: pytest reported 64% at 953 seconds, so 953 / 0.64 gives
+    #   roughly 1,489 seconds, about 24.8 minutes, for the pytest step. pytest
+    #   progress is not linear in time, so this is a FLOOR, not a prediction.
+    # Setup plus that floor puts the whole job near 29.2 minutes, and 40 applies
+    # roughly the same 1.35x headroom the 2026-08-14 re-size applied when a
+    # measured 13 to 15 minutes was given a 20-minute limit.
+    # The authoritative figure is the duration of the first green run; if it
+    # differs materially from the extrapolation, correct this comment to it.
+    timeout-minutes: 40
     env:
       # The suite runs isolated: tests/conftest.py points every Neo4j resolution
       # at this instance and marks it disposable. The service is published on
