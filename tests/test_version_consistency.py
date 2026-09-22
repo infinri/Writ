@@ -1,8 +1,9 @@
 """Cross-cutting: version string consistency across every manifest that declares one.
 
-pyproject.toml, .claude-plugin/plugin.json and the .claude-plugin/marketplace.json entry
-must all declare the same version. This is the ONE place the expected version is written
-down; a release bumps `EXPECTED_VERSION` here and nowhere else in the test suite.
+pyproject.toml, .claude-plugin/plugin.json, the .claude-plugin/marketplace.json entry and
+writ/__init__.py's `__version__` must all declare the same version. This is the ONE place
+the expected version is written down; a release bumps `EXPECTED_VERSION` here and nowhere
+else in the test suite.
 
 marketplace.json came back in v1.5.1: it had been removed when the project moved to private
 distribution, and its absence meant `claude plugin marketplace add` failed, so nobody could
@@ -21,8 +22,10 @@ from pathlib import Path
 
 import pytest
 
+import writ
+
 SKILL_DIR = (Path(__file__).resolve().parent.parent)
-EXPECTED_VERSION = "1.7.0"
+EXPECTED_VERSION = "1.8.0"
 
 
 @pytest.fixture(scope="module")
@@ -70,6 +73,14 @@ class TestMarketplaceJsonVersion:
         )
 
 
+class TestPackageDunderVersion:
+    def test_writ_dunder_version_matches_expected(self) -> None:
+        assert writ.__version__ == EXPECTED_VERSION, (
+            f"writ/__init__.py __version__ must be '{EXPECTED_VERSION}'; "
+            f"got {writ.__version__!r}"
+        )
+
+
 class TestVersionConsistencyAcrossFiles:
     def test_every_manifest_agrees(
         self,
@@ -86,6 +97,7 @@ class TestVersionConsistencyAcrossFiles:
             "marketplace.json:metadata.version": (
                 marketplace_json.get("metadata", {}).get("version")
             ),
+            "writ/__init__.py:__version__": writ.__version__,
         }
         wrong = {k: v for k, v in versions.items() if v != EXPECTED_VERSION}
         assert not wrong, (
