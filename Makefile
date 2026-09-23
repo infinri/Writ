@@ -35,11 +35,20 @@ test-graph-down:
 # a test runner that silently creates containers on your machine is the kind of
 # helpfulness that later gets blamed for something unrelated. That refusal lives
 # in tests/conftest.py, so there is no guard here to drift from it.
+# The failure budget for `test`, overridable from the environment. The default is
+# unchanged, so `make test` with no arguments behaves exactly as HANDBOOK.md and
+# docs/reference/testing.md document it. PYTEST_ADDOPTS cannot do this job: pytest
+# PREPENDS its contents to the command line, so the recipe's own explicit
+# --maxfail below would win over anything set there. A knob the recipe itself
+# reads is the only way one run can report every failure without editing the
+# recipe. pytest reads 0 as "no limit".
+PYTEST_MAXFAIL ?= 10
+
 test: check-venv test-graph-up
 	# --maxfail=10, not -x. On a 7,000-test suite -x means one CI run reports exactly
 	# one failure, so reaching green costs N pushes at ~8 minutes each. Ten gives the
 	# whole picture in one run and still refuses to grind through a broken suite.
-	$(PYTHON) -m pytest tests/ --maxfail=10 -q
+	$(PYTHON) -m pytest tests/ --maxfail=$(PYTEST_MAXFAIL) -q
 
 # The timing gates, alone. `make test` deselects them (addopts in pyproject) because
 # p95 inside the loaded suite measures the machine, not the hook: ~30ms of drift on

@@ -61,6 +61,20 @@ jobs:
       # than collide with the port. The service IS the configured instance, which is
       # the pre-cycle-A CI semantics restored.
       WRIT_TEST_NO_ISOLATION: "1"
+      # TEMPORARY, both lines. They exist to produce ONE run that names every
+      # failing test instead of stopping at the tenth, because five of the
+      # failing modules were written after the last green run and none of them
+      # has ever executed on a runner, so ten failures is a floor and not a
+      # total. PYTEST_MAXFAIL feeds the Makefile knob (pytest reads 0 as "no
+      # limit"); PYTEST_ADDOPTS adds the short summary that lists failures and
+      # errors by name even under -q.
+      # REMOVED BY: the final commit of plan
+      # .claude/plans/2412ba38-51e1-4b73-895b-7b240a3c21d3, whose capability
+      # list requires `git grep -n "PYTEST_MAXFAIL\|PYTEST_ADDOPTS" .github/`
+      # to return nothing before the cycle closes. The Makefile knob itself
+      # stays; it has the old default and is not a diagnostic.
+      PYTEST_MAXFAIL: "0"
+      PYTEST_ADDOPTS: "-rfE"
     services:
       neo4j:
         image: neo4j:5
@@ -81,13 +95,149 @@ jobs:
           --health-timeout 5s
           --health-retries 30
           --health-start-period 30s
+      # A SECOND instance, on the PRODUCTION address. This makes the CI topology
+      # match a developer machine: production on 7687, disposable on 7688. The
+      # suite is pointed at 7688 by WRIT_NEO4J_URI above and nothing here changes
+      # that, so adding this service cannot move a single test onto it.
+      #
+      # What it is for: tests/test_post_commit_isolation.py counts `Commit`
+      # records at bolt://localhost:7687 deliberately, because the post-commit
+      # hook talks to the daemon and the daemon owns the production graph, so a
+      # leaked record lands there and not in the suite's instance. With nothing
+      # answering on 7687 its reader returns None, which that module converts
+      # into a pytest.fail rather than a skip, on purpose: a skip there is
+      # indistinguishable from isolation that works.
+      #
+      # Why 7687 is still safe from a wipe: the destructive-graph guard is
+      # `marker_present() and not is_production_instance(uri)`
+      # (writ/graph/db/_safety.py). There is no writ.toml in CI, so
+      # get_production_neo4j_uri() falls back to DEFAULT_NEO4J_URI, which IS
+      # bolt://localhost:7687 (writ/config.py), and the production address is
+      # precisely the one the guard refuses. The only code in the suite that
+      # names 7687 at all is that module's read-only counter.
+      #
+      # NEO4J_AUTH must stay neo4j/writdevpass. That counter runs in a
+      # subprocess with every NEO4J variable stripped, so it resolves
+      # get_neo4j_user()/get_neo4j_password() defaults; wrong credentials would
+      # read as "production unreachable", which is the pytest.fail above and not
+      # a skip.
+      #
+      # Only 7687 is published. The 7474 HTTP port is deliberately NOT mapped:
+      # the disposable service above already holds host 7474, and two services
+      # in one job cannot publish the same host port. The healthcheck runs
+      # inside the container against its own fixed 7687, so it needs no
+      # published port.
+      neo4j-production-address:
+        image: neo4j:5
+        env:
+          NEO4J_AUTH: neo4j/writdevpass
+        ports:
+          - 7687:7687
+        options: >-
+          --health-cmd "cypher-shell -u neo4j -p writdevpass 'RETURN 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 30
+          --health-start-period 30s
     steps:
+      # fetch-depth: 0, matching .github/workflows/publish.yml. A depth-1 clone
+      # has no history, and tests/test_bash_irreversible_gate.py reads the
+      # pre-cycle hook it compares the current per-call process cost against with
+      # `git show ad01ca5:hooks/scripts/writ-bash-write-gate.sh`, which fails with
+      # `fatal: invalid object name 'ad01ca5'` without it. The bench job's
+      # checkout is left shallow: benchmarks/bench_targets.py reads no history.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       # Resolves Neo4j through writ.config, so its migrate and verify steps read
       # the job env above and warm the same instance the tests then use.
       - uses: ./.github/actions/setup-writ
+      # With two instances up, WHICH ONE the suite resolves stops being obvious from
+      # reading the env block, so it is printed rather than reasoned about. This must
+      # read bolt://localhost:7688, the disposable instance; if it ever reads 7687 the
+      # suite is pointed at the production address and the wipe guard is the only thing
+      # left between a `make test` and an emptied graph.
+      - name: Print the instance the suite resolves
+        run: |
+          .venv/bin/python -c '
+          from writ.config import get_neo4j_uri, get_production_neo4j_uri
+          print("suite resolves:     ", get_neo4j_uri())
+          print("production resolves:", get_production_neo4j_uri())
+          '
+      # The sensitivity control in tests/test_post_commit_isolation.py
+      # (test_the_counter_reports_real_commits_for_this_project) asserts the
+      # counter returns non-zero for this project, because every other assertion
+      # in that file expects zero and a counter that always read zero would
+      # satisfy all of them. On a developer machine the witness is the project's
+      # real commit history; a fresh container has none, so CI seeds one.
+      #
+      # The test file is NOT changed to create its own witness. It is read-only
+      # against production by design, and a create-then-delete that died in
+      # between would write the exact stray record the file exists to catch.
+      #
+      # Label and property names come from that module's own _commit_count_for:
+      # `MATCH (c:Commit) WHERE c.project CONTAINS $s`. The URI and credentials
+      # are passed explicitly so this step reaches 7687 rather than the 7688 the
+      # job env resolves to.
+      - name: Seed the production-address witness commit
+        run: |
+          .venv/bin/python -c '
+          import asyncio
+          from writ.graph.db import Neo4jConnection
+          async def main():
+              db = Neo4jConnection("bolt://localhost:7687", "neo4j", "writdevpass")
+              try:
+                  await db._run(
+                      "MERGE (c:Commit {commit_hash: $h, project: $p}) "
+                      "ON CREATE SET c.subject = $s, c.author = $a, "
+                      "c.branch = $b, c.ts = $t",
+                      h="ci-witness-0000000", p="github.com/infinri/Writ",
+                      s="CI witness for the post-commit isolation pin",
+                      a="ci@github", b="ci", t="1970-01-01T00:00:00Z",
+                  )
+                  rows = await db._run(
+                      "MATCH (c:Commit) WHERE c.project CONTAINS $s RETURN count(c) AS n",
+                      s="github.com/infinri/Writ",
+                  )
+                  n = rows[0]["n"] if rows else 0
+                  print(f"witness commits at 7687: {n}")
+                  if n < 1:
+                      raise SystemExit("the witness did not land; the pin below cannot run")
+              finally:
+                  await db.close()
+          asyncio.run(main())
+          '
       - name: Run tests
         run: make test
+      # THE NO-WIPE PROOF, and the reason seeding a witness is worth doing rather
+      # than relaxing the assertion. A run that emptied the production-address
+      # instance is reported here instead of inferred from a green suite.
+      # if: always() so a failing suite still gets checked, because a wipe and a
+      # test failure are exactly the pair that must not be confused.
+      - name: Verify the witness survived the suite
+        if: always()
+        run: |
+          .venv/bin/python -c '
+          import asyncio
+          from writ.graph.db import Neo4jConnection
+          async def main():
+              db = Neo4jConnection("bolt://localhost:7687", "neo4j", "writdevpass")
+              try:
+                  rows = await db._run(
+                      "MATCH (c:Commit {commit_hash: $h}) RETURN count(c) AS n",
+                      h="ci-witness-0000000",
+                  )
+                  n = rows[0]["n"] if rows else 0
+                  print(f"witness commits at 7687 after the suite: {n}")
+                  if n < 1:
+                      raise SystemExit(
+                          "the seeded witness is GONE from bolt://localhost:7687: "
+                          "something in the suite wiped the production-address instance"
+                      )
+              finally:
+                  await db.close()
+          asyncio.run(main())
+          '
 
   bench:
     name: bench
