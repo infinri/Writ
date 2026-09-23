@@ -61,20 +61,6 @@ jobs:
       # than collide with the port. The service IS the configured instance, which is
       # the pre-cycle-A CI semantics restored.
       WRIT_TEST_NO_ISOLATION: "1"
-      # TEMPORARY, both lines. They exist to produce ONE run that names every
-      # failing test instead of stopping at the tenth, because five of the
-      # failing modules were written after the last green run and none of them
-      # has ever executed on a runner, so ten failures is a floor and not a
-      # total. PYTEST_MAXFAIL feeds the Makefile knob (pytest reads 0 as "no
-      # limit"); PYTEST_ADDOPTS adds the short summary that lists failures and
-      # errors by name even under -q.
-      # REMOVED BY: the final commit of plan
-      # .claude/plans/2412ba38-51e1-4b73-895b-7b240a3c21d3, whose capability
-      # list requires `git grep -n "PYTEST_MAXFAIL\|PYTEST_ADDOPTS" .github/`
-      # to return nothing before the cycle closes. The Makefile knob itself
-      # stays; it has the old default and is not a diagnostic.
-      PYTEST_MAXFAIL: "0"
-      PYTEST_ADDOPTS: "-rfE"
     services:
       neo4j:
         image: neo4j:5
