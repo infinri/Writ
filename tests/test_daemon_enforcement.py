@@ -93,6 +93,23 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def _tcp_accepts(port: int) -> bool:
+    """True when something accepts a TCP connection on 127.0.0.1:`port`.
+
+    The AF_INET twin of `_connect_errno` below, used to wait for a spawned probe
+    server to bind before a test dials it.
+    """
+    probe = socket.socket()
+    probe.settimeout(2)
+    try:
+        probe.connect(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
 def _connect_errno(path: str) -> int | None:
     """None when the socket accepts a connection, else the errno."""
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -345,7 +362,11 @@ import http.server, sys
 
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        body = b'{"ok": true}'
+        # "via" is a MARKER, the TCP twin of _ONE_SHOT_SOCKET_SERVER's
+        # {"via": "socket"}: a caller asserting on it is proving which transport
+        # answered, not merely that something did. "ok" stays for
+        # test_a_stale_socket_retries_over_tcp, which reads it through common.sh.
+        body = b'{"ok": true, "via": "tcp"}'
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -417,19 +438,61 @@ class TestPythonClientsUseTheSocket:
             server.kill()
             server.wait(timeout=10)
 
-    def test_the_client_falls_back_to_tcp_when_the_socket_is_absent(self) -> None:
+    def test_the_client_falls_back_to_tcp_when_the_socket_is_absent(self, sock_dir) -> None:
         """No socket at all is the ordinary state on a machine that has not
-        restarted the daemon yet, so it must not be an error."""
-        sys.path.insert(0, str(REPO / "bin" / "lib"))
+        restarted the daemon yet, so it must not be an error.
+
+        THE SERVER IS THIS TEST'S OWN, on an OS-assigned free port, which is the
+        shape `test_the_client_prefers_a_live_socket` two tests above already uses.
+        Until 2026-09-22 this handed the interactive daemon's production port to
+        the client as its base URL and asserted a 200, which is a statement about
+        whether the operator happens to have that daemon running rather than about
+        the fallback: it had never passed on a runner, and the suite pins its own
+        daemon to 8799 (tests/conftest.py) precisely so nothing here reaches the
+        interactive one. The literal is not spelled out even in this docstring,
+        because tests/test_w5_live_env.py scans source TEXT for it and cannot tell
+        prose from a call site, which is the correct trade: that guard exists
+        because the port was never merely unclean, it was the mechanism.
+
+        The `via` marker is what makes this prove the FALLBACK instead of proving
+        that something, somewhere, answered a GET.
+        """
+        port = _free_port()
+        server = subprocess.Popen(
+            [CHILD_PY, "-c", _ONE_SHOT_TCP_SERVER, str(port)],
+            cwd=str(REPO), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
         try:
-            client = _require_module("writ_daemon_client")
-            status, _body = client.get_json(
-                "/health", socket_path="/tmp/writ-t-e2b/absent.sock",
-                base_url="http://localhost:8765",
+            waited = 0.0
+            while waited < 20.0 and not _tcp_accepts(port):
+                time.sleep(0.25)
+                waited += 0.25
+            assert _tcp_accepts(port), "the probe TCP server never bound"
+
+            # The sock_dir fixture rmtree's this directory at setup and never
+            # creates it, so the path is absent rather than merely unlikely:
+            # `socket_available` has to take its OSError arm, which is the branch
+            # under test.
+            absent = sock_dir / "absent.sock"
+            assert not absent.exists(), f"the absent-socket path exists: {absent}"
+
+            sys.path.insert(0, str(REPO / "bin" / "lib"))
+            try:
+                client = _require_module("writ_daemon_client")
+                status, body = client.get_json(
+                    "/health", socket_path=str(absent),
+                    base_url=f"http://127.0.0.1:{port}",
+                )
+            finally:
+                sys.path.pop(0)
+            assert status == 200, (status, body)
+            assert '"via": "tcp"' in body, (
+                f"the 200 did not come from the server this test spawned, so the "
+                f"fallback is unproven: {body!r}"
             )
         finally:
-            sys.path.pop(0)
-        assert status == 200, "the client did not fall back to the live TCP daemon"
+            server.kill()
+            server.wait(timeout=10)
 
     def test_the_statusline_no_longer_builds_its_own_request(self) -> None:
         """The census's dominant source: 65 of the first 71 rows came from this

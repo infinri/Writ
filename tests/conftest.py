@@ -50,6 +50,21 @@ WRIT_SUITE_IS_ISOLATED = apply_isolation_env(_os.environ)
 # not share one dir.
 _os.environ.setdefault("WRIT_CACHE_DIR", _tempfile.mkdtemp(prefix="writ-test-cache-"))
 
+# Force WRIT_LOG_ROOT the same way and for the same reason, at import rather than
+# per test. `_isolate_friction_log` below sets it with monkeypatch.setenv, but that
+# fixture is function scoped, so it is not in effect during COLLECTION, and
+# collection is when the damage happens. Test modules resolve config at their own
+# import (see the seventeen modules named above), get_neo4j_uri() calls load_config,
+# and load_config emits a `config_resolved` row on the metrics stream the first time
+# it sees a path. With WRIT_LOG_ROOT unset, log_root() returns <skill>/var/logs and
+# resolve_project derives the project from the git remote, so that row lands in the
+# operator's REAL metrics stream. It also defeats a live-corpus guard downstream:
+# tests/test_subagent_seed.py used to skip on "metrics.jsonl does not exist", and a
+# collection-time row makes the file exist while holding no census population.
+# The per-test monkeypatch.setenv still overrides this and monkeypatch restores it
+# afterwards, so per-test isolation is unchanged.
+_os.environ.setdefault("WRIT_LOG_ROOT", _tempfile.mkdtemp(prefix="writ-test-logs-"))
+
 # Never let a hook auto-spawn a daemon during the suite. writ-rag-inject.sh
 # auto-starts the Writ server when its health check fails, guarded by
 # WRIT_NO_AUTOSTART. Tests that invoke that hook with a deliberately-unreachable

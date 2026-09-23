@@ -1254,6 +1254,80 @@ def _live_cache_ids(cache_source: str) -> set:
     return ids
 
 
+# The four events the census builds its universe from (`known` in
+# writ/session/doctor.py::_subagent_governance_evidence). The live-corpus guards below
+# count rows of exactly these kinds.
+_LIVE_LIFECYCLE_EVENTS = frozenset({
+    "subagent_start", "subagent_seeded", SEED_FAILED_EVENT, "subagent_complete",
+})
+
+
+def _live_lifecycle_rows() -> int:
+    """Rows of the kind the census counts, across the live stream AND its archives.
+
+    THE EVIDENCE, NOT A PATH. The guard this replaces was `LIVE_METRICS.exists()`,
+    keyed on a file being present, and a file is present the moment ANY row lands in
+    it. In CI one unrelated `config_resolved` row was written into this stream during
+    collection, so the path existed while the census population was empty and the
+    guard never fired: the class ran against nothing and failed. Keying on the event
+    kind is what a stray row of some other kind cannot satisfy.
+
+    Reads the RAW artifact, never `_subagent_governance_census`'s return value. A
+    guard derived from the value under test would absorb
+    `test_the_six_buckets_partition_the_live_universe`'s `total > 0` assertion: a
+    machine that HAS lifecycle rows whose census reports zero must still fail, and it
+    still does.
+    """
+    rows = 0
+    candidates = [LIVE_METRICS]
+    candidates += sorted((LIVE_METRICS.parent / "archive").glob("metrics-*.jsonl*"))
+    for path in candidates:
+        opener = gzip.open if path.suffix == ".gz" else open
+        try:
+            with opener(path, "rt", errors="replace") as handle:  # type: ignore[operator]
+                for line in handle:
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(row, dict) and row.get("event") in _LIVE_LIFECYCLE_EVENTS:
+                        rows += 1
+        except OSError:
+            continue
+    return rows
+
+
+def _require_live_lifecycle_rows() -> None:
+    """Abstain when this machine holds no accumulated sub-agent history to census."""
+    if _live_lifecycle_rows() == 0:
+        pytest.skip(
+            "no sub-agent lifecycle rows "
+            f"({', '.join(sorted(_LIVE_LIFECYCLE_EVENTS))}) in {LIVE_METRICS} or its "
+            "archives, so the operational corroboration has no corpus to run against "
+            "on this machine"
+        )
+
+
+def _require_live_caches(cache_source: str) -> set:
+    """The on-disk caches declaring `cache_source`, or abstain when there are none.
+
+    These files are the NON-LOG artifact the by-name tests corroborate the census
+    against, so with none of them on disk the comparison has no subject at all. That
+    is a machine without a corpus, not a finding. Nothing is absorbed: the judges
+    those tests keep are the set relationships (`caches & known`, `unseen`,
+    `contradicted`) and the derived floor, and a missing corpus cannot satisfy any of
+    them, it only stops them from being asked.
+    """
+    caches = _live_cache_ids(cache_source)
+    if not caches:
+        pytest.skip(
+            f"no cache under {LIVE_CACHE_DIR} carries cache_source={cache_source!r}, "
+            "so this machine has no accumulated agent history to corroborate the "
+            "census against"
+        )
+    return caches
+
+
 def _seed_probe_hook(root: Path) -> Path:
     """A hook that only sources common.sh and calls `load_hook_env`.
 
@@ -1626,9 +1700,7 @@ def live_census():
     test can hand another a mutated one.
     """
     from writ.session import doctor
-    if not LIVE_METRICS.exists():
-        pytest.skip(f"no live metrics stream at {LIVE_METRICS}; the operational "
-                    "corroboration has no corpus to run against on this machine")
+    _require_live_lifecycle_rows()
     with mock.patch.object(doctor, "stream_path", lambda *a, **k: str(LIVE_METRICS)):
         census = doctor._subagent_governance_census()
     assert census is not None, f"the census read nothing from {LIVE_METRICS}"
@@ -1638,8 +1710,7 @@ def live_census():
 @pytest.fixture(scope="module")
 def live_members():
     from writ.session import doctor
-    if not LIVE_METRICS.exists():
-        pytest.skip(f"no live metrics stream at {LIVE_METRICS}")
+    _require_live_lifecycle_rows()
     reader = getattr(doctor, "_subagent_governance_members", None)
     if reader is None:
         return None
@@ -1684,11 +1755,7 @@ class TestLiveArchiveCensus:
         )
         lazy = set(live_members["lazy"])
         known = set().union(*(set(ids) for ids in live_members.values()))
-        caches = _live_cache_ids(LAZY_SEED)
-        assert caches, (
-            f"no cache under {LIVE_CACHE_DIR} carries cache_source={LAZY_SEED!r}, so this "
-            "comparison has nothing to corroborate the log against"
-        )
+        caches = _require_live_caches(LAZY_SEED)
         assert caches & known, (
             f"no {LAZY_SEED} cache names an agent the census holds a lifecycle row for, "
             f"so every assertion below is vacuous: {sorted(caches)}"
@@ -1718,10 +1785,7 @@ class TestLiveArchiveCensus:
         )
         governed = set(live_members["governed"])
         known = set().union(*(set(ids) for ids in live_members.values()))
-        caches = _live_cache_ids(SPAWN_SEED)
-        assert caches, (
-            f"no cache under {LIVE_CACHE_DIR} carries cache_source={SPAWN_SEED!r}"
-        )
+        caches = _require_live_caches(SPAWN_SEED)
         assert caches & known, (
             f"no {SPAWN_SEED} cache names an agent the census holds a lifecycle row for, "
             f"so every assertion below is vacuous: {len(caches)} cache(s) on disk"

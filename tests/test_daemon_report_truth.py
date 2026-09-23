@@ -32,14 +32,22 @@ the rule below stops the next one being written.
 Per ENF-GATE-007: skeletons written and approved before implementation.
 Per ABS-TESTING-041: the health-payload tests drive the real ASGI app, and the
 instruction rule reads the hooks that actually print instructions.
-Per TEST-ISOLATE-003: `_socket_state` is exercised through a stubbed fetch, never
-against the developer's live daemon, so a test cannot depend on whether isolation
-happens to be enabled on this machine.
+Per TEST-ISOLATE-003: `_socket_state` is exercised through a stubbed fetch AND a
+stubbed socket path, never against the developer's live daemon, so a test cannot
+depend on whether isolation happens to be enabled on this machine.
+
+CORRECTED 2026-09-22 (plan 2412ba38-51e1-4b73-895b-7b240a3c21d3, cause 3): that last
+sentence used to be false for the path half, and the class below was failing because
+of it. `_socket_state` stats `get_daemon_socket_path()` and returns EARLY on OSError,
+before `_socket_health` is ever called, so stubbing only the fetch left the crossed
+cases reading None on any machine with no daemon socket on disk. The fix completes
+the seam rather than skipping the class: see `_own_the_socket_path` below.
 """
 from __future__ import annotations
 
 import os
 import re
+import socket
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -114,6 +122,39 @@ class TestTheReportFollowsTheDaemon:
     wrong process, because an env copy agrees with the daemon whenever the two happen
     to match. Only the crossed cases separate them.
     """
+
+    @pytest.fixture(autouse=True)
+    def _own_the_socket_path(self, tmp_path, monkeypatch):
+        """THE STUB SEAM, completed. Without this the class stubs only half of it.
+
+        `_socket_state` stats `get_daemon_socket_path()` and RETURNS EARLY on
+        OSError (writ/session/doctor.py), so on a machine with no daemon socket on
+        disk it never reaches the patched `_socket_health` at all: the mock never
+        runs, `state` never gains a `tcp_readonly` key, and all three cases below
+        read None. Two of them then fail, and the third passes for the wrong
+        reason. That is the exact failure mode this module's docstring says cannot
+        happen, so the fix belongs at the seam and not in a skip.
+
+        The test therefore owns the path as well as the fetch: a real AF_UNIX
+        socket bound under tmp_path, so `S_ISSOCK` is true and the directory mode
+        is under the test's control. `_socket_state` imports the getter inside its
+        own body, so `writ.config.get_daemon_socket_path` is the working patch
+        target. `_socket_answers` is stubbed too, because whether a probe socket
+        answers is not this class's subject and a bound-but-not-listening socket
+        would make it depend on timing.
+        """
+        from writ.session import doctor
+
+        # AF_UNIX paths cap near 107 bytes and pytest's tmp_path is already long,
+        # so the filename stays short.
+        sock_path = tmp_path / "d.sock"
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        probe.bind(str(sock_path))
+        monkeypatch.setattr("writ.config.get_daemon_socket_path",
+                            lambda: str(sock_path))
+        monkeypatch.setattr(doctor, "_socket_answers", lambda path: True)
+        yield sock_path
+        probe.close()
 
     @staticmethod
     def _state(doctor, health: dict | None) -> dict:

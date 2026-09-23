@@ -87,6 +87,38 @@ guard. What remains RED is runtime, not source text:
 `tests/_daemon.py` does not yet define `start_isolated_daemon` /
 `stop_isolated_daemon` (assigned to the implementation phase) -- see that
 module's own docstring.
+
+WIDENED 2026-09-22 (plan.md 2412ba38-51e1-4b73-895b-7b240a3c21d3, cause 2): the
+Group D guard above closed the module-level-constant SHAPE of this defect but
+missed the MECHANISM. `tests/test_daemon_enforcement.py:428` hands the exact
+same production port to the exact same client call, `client.get_json(...,
+base_url='http://localhost:8765')`, as an inline keyword argument rather than a
+named constant, and `_PORT_CONSTANT_RE`'s `^[A-Z_]+ = "..."` anchor never
+matches a keyword argument sitting mid-call. That module has carried the
+defect for roughly a month while this guard passed the whole time, which is
+the failure mode this rewrite closes: a guard keyed to how the literal was
+SPELLED rather than to what it DOES (get handed to `base_url=`, which
+`writ_daemon_client.py`'s `_request` dials with `http.client.HTTPConnection`
+whenever no live unix socket answers first). `test_no_module_binds_a_constant_to_the_production_daemon_port`
+keeps its original name (a sibling module's comment at
+`test_daemon_skip_ownership.py:165` names it by that string, and this cycle
+touches only this file) but its body and docstring below now scan for BOTH
+the constant form and the keyword-argument form, because both are the same
+defect wearing a different spelling.
+
+RED today (2026-09-22, pre-widening) against the tree above:
+`test_no_module_binds_a_constant_to_the_production_daemon_port` fails,
+naming `test_daemon_enforcement.py` and its offending line, once the second
+regex (`_PORT_KWARG_RE`) is added to the scan. Every OTHER `8765` occurrence
+under `tests/` was read and classified by hand before this regex was chosen
+(see the docstring on `_PORT_KWARG_RE` below for the full partition): curl
+command strings and refusal regexes used as egress/review-gate test DATA, an
+integer port constant compared for inequality, a dict/list value fed to a
+pure discriminator function, an UPPERCASE constant name compared with `==`,
+and one deferred out-of-scope live target
+(`tests/plugin/test_fresh_install_smoke.py:112`) that is a bare positional
+string with no `base_url=`/`url=` binding at all. None of those trip
+`_PORT_KWARG_RE`; only a literal bound to `base_url=` or `url=` does.
 """
 
 from __future__ import annotations
@@ -139,6 +171,34 @@ def _read(filename: str) -> str:
 # test_advance_phase_token_gate.py before this cycle.
 _PORT_CONSTANT_RE = re.compile(r'^[A-Z_][A-Z0-9_]*\s*=\s*"http://localhost:8765"', re.M)
 
+# Widened 2026-09-22: the constant-assignment shape above is one SPELLING of the
+# defect, not the defect itself. The mechanism is a literal naming the production
+# daemon port handed to the parameter that actually dials it. Every call this
+# guard cares about (`writ_daemon_client.py`'s `post_json`/`get_json`/`_request`,
+# and any future caller shaped like them) resolves its destination through a
+# keyword literally named `base_url` (see bin/lib/writ_daemon_client.py:76,116,131);
+# `url=` is included too since that is the conventional name for the same role on
+# stdlib-adjacent HTTP callers (`requests.get(url=...)`) and nothing under tests/
+# uses that spelling yet, but a guard keyed to today's one caller is exactly the
+# kind of narrow-by-name gap this rewrite exists to close.
+#
+# This is deliberately NOT "any string containing 8765 under tests/": that would
+# also flag curl command strings that are egress/review-gate test DATA (e.g.
+# test_bash_egress_gate.py, test_daemon_authorization.py, test_review_blocking.py),
+# refusal regexes that source-scan for those same curl strings
+# (test_daemon_report_truth.py:255-256), an inequality assertion on the bare port
+# number (test_daemon_test_port.py:17), a dict/list value fed to a pure
+# discriminator function with no network call in sight
+# (test_daemon_transport.py:287), and an UPPERCASE constant compared with `==`
+# rather than bound with `=` (test_pol6g3_remaining_clusters_extraction.py:182-183).
+# Anchoring on the keyword name plus a single `=` (not `==`) and requiring the
+# name be lowercase (`base_url`/`url`, never `BASE_URL`/`URL`) is what keeps all of
+# those out without an allowlist naming any of those files: an allowlist keyed on
+# filename over-grants the moment one of them gains a real defect of its own.
+_PORT_KWARG_RE = re.compile(
+    r'\b(?:base_url|url)\s*=\s*f?"http://(?:localhost|127\.0\.0\.1):8765(?:/[^"]*)?"'
+)
+
 
 def _all_test_modules() -> list[Path]:
     """Every .py file under tests/ -- the DERIVED population this guard scans.
@@ -163,31 +223,50 @@ def test_population_is_non_empty() -> None:
 
 
 def test_no_module_binds_a_constant_to_the_production_daemon_port() -> None:
-    """No module under tests/ may hardcode `SOMENAME = "http://localhost:8765"`.
+    """No module under tests/ may hand the production daemon port to something
+    that will DIAL it, whether as `SOMENAME = "http://localhost:8765"` (a
+    module-level constant) or as `base_url='http://localhost:8765'` /
+    `url='http://localhost:8765'` (an inline keyword argument at the call
+    site).
 
-    Reddened by adding such a constant to any test module, including a new
-    one this guard has never seen before: THE PORT WAS NEVER THE MECHANISM
-    that routed a request onto the operator's live daemon --
-    `bin/lib/writ_daemon_client.py`'s `post_json` prefers an EXISTING unix
-    socket over `base_url`, so a hardcoded `:8765` constant is not merely
-    unclean, it is the literal mechanism that let
+    Reddened by adding either shape to any test module, including a new one
+    this guard has never seen before: THE PORT WAS NEVER THE MECHANISM that
+    routed a request onto the operator's live daemon --
+    `bin/lib/writ_daemon_client.py`'s `post_json`/`get_json` prefer an
+    EXISTING unix socket over `base_url`, so naming `:8765` in either shape is
+    not merely unclean, it is the literal mechanism that let
     `test_advance_phase_token_gate.py` write a security-shaped
     `agent_self_approval_blocked` row into the operator's real
-    `audit.jsonl` on every run. This supersedes the retired
-    `test_advance_phase_token_gate_keeps_documented_8765`, which asserted
-    the opposite of this cycle's fix.
+    `audit.jsonl` on every run, and that let
+    `test_daemon_enforcement.py::test_the_client_falls_back_to_tcp_when_the_socket_is_absent`
+    assert `status == 200` against a port nothing in CI or an idle developer
+    machine answers on. The keyword-argument shape was invisible to the
+    original constant-only regex for a month: the guard passed the whole
+    time the second live call sat right next to a sibling that was already
+    fixed to use `_free_port()`.
+
+    This supersedes the retired
+    `test_advance_phase_token_gate_keeps_documented_8765`, which asserted the
+    opposite of this cycle's fix.
     """
     offenders = []
     for path in _all_test_modules():
         src = path.read_text()
-        if _PORT_CONSTANT_RE.search(src):
-            offenders.append(str(path.relative_to(TESTS_DIR)))
+        rel = str(path.relative_to(TESTS_DIR))
+        for pattern in (_PORT_CONSTANT_RE, _PORT_KWARG_RE):
+            match = pattern.search(src)
+            if match is not None:
+                line_no = src.count("\n", 0, match.start()) + 1
+                offenders.append(f"{rel}:{line_no}: {match.group(0).strip()}")
     assert offenders == [], (
-        "these test modules bind a module-level constant to the production "
-        f"daemon port (http://localhost:8765): {offenders}. Route through "
-        "tests._daemon._port() (Group A modules), or, for "
+        "these test modules hand the production daemon port "
+        f"(http://localhost:8765) to something that will dial it: {offenders}. "
+        "Route through tests._daemon._port() (Group A modules), or, for "
         "test_advance_phase_token_gate.py, an OS-assigned free port via "
-        "tests._daemon.start_isolated_daemon, instead of a literal."
+        "tests._daemon.start_isolated_daemon, instead of a literal -- for an "
+        "inline base_url=/url= keyword argument, the sibling fix is "
+        "tests._daemon._free_port() bound at the call site, the same pattern "
+        "test_the_client_prefers_a_live_socket already uses two tests above."
     )
 
 
