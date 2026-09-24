@@ -19,27 +19,31 @@ concurrency:
   group: pr-checks-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
+# The number of test shards. The test-shard matrix below lists 0 to TEST_SHARDS - 1
+# by hand; its first step fails if the two ever disagree, and the aggregating `test`
+# job checks the partition with this same count.
+env:
+  TEST_SHARDS: "4"
+
 jobs:
-  test:
-    name: test
+  # The suite, split by whole file into TEST_SHARDS parallel jobs. Each runner has its
+  # own two Neo4j services, so every shard carries the full topology and its own
+  # witness steps. scripts/ci_shard.py assigns files by the seconds recorded in
+  # scripts/ci_timings.json; a new or renamed file still lands in exactly one shard.
+  test-shard:
+    name: test shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
-    # Timeout re-sized 2026-09-22, from 20 to 40 minutes. Run 35638611036 hit the
-    # 20-minute limit with NO failing test and pytest progress still advancing at
-    # cancellation, so the suite outgrew the limit again; nothing hung. Three
-    # figures size the new value, each labeled for what it is:
-    #   LOCAL, measured 2026-09-22: the full suite runs in 1127.73 seconds, about
-    #   18 minutes 47 seconds, for 12,274 passed and 9 skipped. Different hardware,
-    #   so this is the sanity check and not the sizing input.
-    #   CI, observed on that run: about 4.4 minutes of setup before pytest starts.
-    #   CI, EXTRAPOLATION: pytest reported 64% at 953 seconds, so 953 / 0.64 gives
-    #   roughly 1,489 seconds, about 24.8 minutes, for the pytest step. pytest
-    #   progress is not linear in time, so this is a FLOOR, not a prediction.
-    # Setup plus that floor puts the whole job near 29.2 minutes, and 40 applies
-    # roughly the same 1.35x headroom the 2026-08-14 re-size applied when a
-    # measured 13 to 15 minutes was given a 20-minute limit.
-    # The authoritative figure is the duration of the first green run; if it
-    # differs materially from the extrapolation, correct this comment to it.
-    timeout-minutes: 40
+    strategy:
+      # One run names every failing shard, rather than cancelling the rest at the first.
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    # Sized 2026-09-24 for sharding. Run 35812359333 took about 26 minutes as one job:
+    # about 3.5 minutes of setup and 1355 s of pytest. Split four ways each shard pays
+    # the full setup plus about 6.5 minutes of pytest, so about 10 minutes is the
+    # target; 25 covers runner variance and a first run balanced from progress-line
+    # timings. Correct this comment to the first green sharded run's figure.
+    timeout-minutes: 25
     env:
       # The suite runs isolated: tests/conftest.py points every Neo4j resolution
       # at this instance and marks it disposable. The service is published on
@@ -135,6 +139,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Check the matrix lists every shard
+        run: |
+          if [ "${{ strategy.job-total }}" != "$TEST_SHARDS" ]; then
+            echo "the matrix runs ${{ strategy.job-total }} shards but TEST_SHARDS is $TEST_SHARDS" >&2
+            exit 1
+          fi
       # Resolves Neo4j through writ.config, so its migrate and verify steps read
       # the job env above and warm the same instance the tests then use.
       - uses: ./.github/actions/setup-writ
@@ -194,7 +204,7 @@ jobs:
           asyncio.run(main())
           '
       - name: Run tests
-        run: make test
+        run: make test SHARD=${{ matrix.shard }} SHARDS=$TEST_SHARDS JUNIT_XML=junit-shard-${{ matrix.shard }}.xml
       # THE NO-WIPE PROOF, and the reason seeding a witness is worth doing rather
       # than relaxing the assertion. A run that emptied the production-address
       # instance is reported here instead of inferred from a green suite.
@@ -224,6 +234,40 @@ jobs:
                   await db.close()
           asyncio.run(main())
           '
+      # Per-file test times for `scripts/ci_shard.py --rebuild-timings`; see
+      # docs/reference/testing.md for regenerating the timings from these.
+      - name: Upload the shard's junit XML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-shard-${{ matrix.shard }}
+          path: junit-shard-${{ matrix.shard }}.xml
+          retention-days: 14
+          if-no-files-found: warn
+
+  # The one check that means the whole suite passed: every shard succeeded and the
+  # shards together covered every test file exactly once. always() rather than
+  # !cancelled(), because a skipped job counts as passing and a cancelled or failed
+  # shard must not leave a passing `test` behind.
+  test:
+    name: test
+    needs: [test-shard]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # The runner's system python3, no venv: the script is stdlib only.
+      - name: Check every test file is in exactly one shard
+        run: python3 scripts/ci_shard.py --check --shards "$TEST_SHARDS"
+      - name: Require every shard to have passed
+        env:
+          SHARDS_RESULT: ${{ needs.test-shard.result }}
+        run: |
+          if [ "$SHARDS_RESULT" != "success" ]; then
+            echo "test-shard result is '$SHARDS_RESULT', not 'success'" >&2
+            exit 1
+          fi
 
   bench:
     name: bench

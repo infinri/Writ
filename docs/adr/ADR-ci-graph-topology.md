@@ -4,7 +4,7 @@ Status: accepted
 Date: 2026-09-22
 Plan: `.claude/plans/2412ba38-51e1-4b73-895b-7b240a3c21d3/plan.md`
 Touches: `.github/workflows/pr.yml`, `tests/test_post_commit_isolation.py` (read, not
-changed), `Makefile`, `tests/conftest.py`
+changed), `Makefile`, `tests/conftest.py`, `scripts/ci_shard.py` (amendment below)
 
 ## Context
 
@@ -138,6 +138,27 @@ at the tenth. Both lines are temporary and are deleted in this cycle's final com
 the capability list requires `git grep -n "PYTEST_MAXFAIL\|PYTEST_ADDOPTS" .github/`
 to return nothing before the cycle closes. The Makefile knob stays: it has the old
 default and is a knob, not a diagnostic.
+
+## Amendment 2026-09-24: the topology is instantiated once per shard
+
+Plan: `.claude/plans/6bd39d6d-6668-46eb-9a23-b2eb8edede83/plan.md`
+
+The single `test` job became a four-way matrix, `test-shard` (`test shard 0` to
+`test shard 3`), plus an aggregating job still named `test` that holds no services
+and passes only when every shard passed and `scripts/ci_shard.py --check` proves the
+shards covered every test file exactly once. Every decision above holds, applied per
+shard: each shard's runner starts both services (7688 disposable, 7687 production
+address), seeds its own witness, and re-counts it with `if: always()` after its own
+run; each keeps `fetch-depth: 0`, because which shard holds
+`tests/test_bash_irreversible_gate.py` is decided by the timings, not by hand.
+
+What changes is the reach of each proof. A shard's no-wipe check covers only the
+files that shard ran, since the instances are per runner and nothing crosses between
+them. The four checks together cover the whole suite, because the partition check
+guarantees every file ran in exactly one shard, and that is why the aggregator runs it
+rather than trusting the matrix. `tests/test_post_commit_isolation.py` runs in one
+shard; the other three still seed and verify a witness, which is cheap and keeps the
+proof on every runner that ran tests.
 
 ## Deferred: the `bible/` coverage gap
 

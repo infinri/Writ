@@ -6,6 +6,7 @@ How the suite is built, why it's shaped that way, and the traps to avoid when ad
 
 ```bash
 make test            # starts the disposable Neo4j, then pytest tests/ --maxfail=10 -q
+make test SHARD=0 SHARDS=4  # only shard 0 of 4, the files CI's `test shard 0` runs
 make test-graph-up   # create or start that instance and warm it (idempotent)
 make test-graph-down # stop it, keeping its data
 make bench           # benchmarks/bench_targets.py (contractual perf floors)
@@ -33,6 +34,30 @@ Over 400 test modules, roughly 7,900 collected tests (2026-08-14). Always use th
 ```
 
 **`-k` is not a narrower run.** A `-k` expression selects *after* collection, so it still collects all ~7,900 tests and pays the whole import cost before deselecting; only a path argument keeps tests out of the collection. Use paths, and `-k` only to pick within paths you already named.
+
+### Sharding: how CI splits the suite
+
+CI runs the suite as four parallel jobs, `test shard 0` to `test shard 3`, each on its own runner with its own two Neo4j services, then a final job named `test` that passes only when every shard passed and the shards together covered every test file exactly once. The split is by whole file and deterministic: `scripts/ci_shard.py` finds test files the way `pytest tests/` does (`test_*.py` and `*_test.py` at any depth, skipping pytest's default `norecursedirs`) and places them heaviest first on the least-loaded shard, by the per-file seconds in `scripts/ci_timings.json`. A file missing from the timings gets the median weight and a stale entry is ignored, so an out-of-date timings file only unbalances the shards; it never drops a file.
+
+```bash
+make test SHARD=1 SHARDS=4                      # run shard 1 of 4 locally
+make test SHARD=1 SHARDS=4 JUNIT_XML=j.xml      # also write xunit1 junit XML
+python3 scripts/ci_shard.py --shard 1 --shards 4  # print that shard's files, one per line
+python3 scripts/ci_shard.py --check --shards 4    # per-shard counts and seconds; exit 1 on a gap or duplicate
+```
+
+**Run local shards one after another, never at once.** Every isolated session start wipes and rebuilds the same disposable instance on 7688, and the suite daemon's port 8799 is per machine, so two concurrent shards would destroy each other's graph mid-run. In CI each shard has a runner to itself, which is the only reason they can overlap there.
+
+**Regenerating the timings.** Each shard uploads its junit XML as the artifact `junit-shard-<k>` (kept 14 days). After a green run:
+
+```bash
+gh run download <run-id> -p 'junit-shard-*' -D /tmp/junit
+python3 scripts/ci_shard.py --rebuild-timings /tmp/junit/*/*.xml
+```
+
+and commit the diff to `scripts/ci_timings.json`. Do it once after the first sharded run (the first timings were derived from a single-job run's progress lines, which over-weight the first file by its collection time) and again whenever the `shard k/4: ... estimated` lines at the top of each shard's log drift apart by more than a couple of minutes.
+
+`discover()` reimplements pytest's defaults rather than asking pytest, because `pytest --collect-only` runs session start, and under isolation that is a graph wipe. `tests/test_ci_shard.py` fails the day pyproject sets `testpaths`, `python_files`, `norecursedirs` or `collect_ignore`, naming the script that must learn it.
 
 ## Isolation, forced at import time (`tests/conftest.py`)
 
