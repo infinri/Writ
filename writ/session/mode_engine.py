@@ -535,7 +535,7 @@ def _mode_init(
     )
 
 
-def _mode_switch(session_id: str, mode: str) -> None:
+def _mode_switch(session_id: str, mode: str, is_orchestrator: bool = False) -> None:
     """Switch mode, preserving Work state if leaving/returning.
 
     It also preserves cache["mode_source"], by not touching it. A switch changes WHICH
@@ -545,6 +545,10 @@ def _mode_switch(session_id: str, mode: str) -> None:
     classifier-driven detour would come back looking hand-set, and could never be routed
     again; an explicitly-set session that a user switched by hand would look auto-set, and
     the classifier would then feel free to move it.
+
+    is_orchestrator is SET-ONLY, the contract _apply_mode_set documents:
+    true marks the session an orchestrator master, false leaves whatever the session already had. The
+    auto-route passes it when it switches a session into work.
     """
     with mutate_cache(session_id) as cache:
         old_mode = cache.get("mode")
@@ -609,6 +613,8 @@ def _mode_switch(session_id: str, mode: str) -> None:
             new_phase = None
 
         cache["mode"] = mode
+        if is_orchestrator:
+            cache["is_orchestrator"] = True
 
         # Audit trail -- collapse restore into single event, skip no-ops
         if restored:
@@ -670,7 +676,7 @@ def cmd_mode(session_id: str, subcmd: str, value: str | None = None, is_orchestr
         _mode_init(session_id, mode, is_orchestrator=is_orchestrator)
         sys.stdout.write(f"init: {mode}\n")
     else:
-        _mode_switch(session_id, mode)
+        _mode_switch(session_id, mode, is_orchestrator=is_orchestrator)
         sys.stdout.write(f"switch: {mode}\n")
 
 

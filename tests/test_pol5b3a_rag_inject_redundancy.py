@@ -325,6 +325,6 @@ def test_new_session_no_cache_file(isolated_hook_daemon, tmp_path) -> None:
         f"a brand-new session with no cache file must get the mode-classification "
         f"directive; stdout={r.stdout[:400]!r}"
     )
-    assert "Declare: python3" in r.stdout and "mode set" in r.stdout, (
+    assert "Declare: writ mode set" in r.stdout, (
         f"the directive's Declare line must be present; stdout={r.stdout[:400]!r}"
     )

@@ -13,20 +13,26 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WRIT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Resolve the venv `writ` console script (absolute path -- bare `writ` is unsafe
-# after cd-ing into WRIT_DIR, which contains a `writ/` package dir).
-VENV_WRIT=""
-for cand in "$WRIT_DIR/.venv/bin/writ" "${CLAUDE_PLUGIN_DATA:-$HOME/.cache/writ}/.venv/bin/writ"; do
-    if [ -x "$cand" ]; then VENV_WRIT="$cand"; break; fi
-done
-if [ -z "$VENV_WRIT" ]; then
-    echo "[install] ERROR: could not find an executable venv 'writ' (looked in $WRIT_DIR/.venv/bin and the plugin data venv)." >&2
+# Resolve the venv `writ` console script through the shared resolver (absolute path: bare `writ`
+# is unsafe after cd-ing into WRIT_DIR, which contains a `writ/` package dir).
+# shellcheck source=bin/lib/writ-venv.sh
+source "$WRIT_DIR/bin/lib/writ-venv.sh"
+if ! writ_resolve_venv "$WRIT_DIR" || [ ! -x "$VENV_DIR/bin/writ" ]; then
+    echo "[install] ERROR: no executable venv 'writ' at $VENV_DIR/bin/writ (resolution order: bin/lib/writ-venv.sh). Run the bootstrap first, or set WRIT_VENV." >&2
     exit 1
 fi
+VENV_WRIT="$VENV_DIR/bin/writ"
 
 WRIT_HOST="${WRIT_HOST:-localhost}"
 WRIT_PORT="${WRIT_PORT:-8765}"
 NEO4J_PORT="${NEO4J_PORT:-7687}"
+# The unit pins the state locations this shell resolves (bin/lib/common.sh), because a systemd
+# user manager's environment usually lacks the XDG_STATE_HOME a login shell exports, and a
+# daemon resolving a different root than the hooks serves every gate from the wrong caches.
+# shellcheck source=bin/lib/common.sh
+source "$WRIT_DIR/bin/lib/common.sh"
+STATE_CACHE_DIR="$(writ_session_cache_dir)"
+STATE_LOG_ROOT="${WRIT_LOG_ROOT:-$_WRIT_STATE_ROOT/logs}"
 UNIT_DIR="$HOME/.config/systemd/user"
 UNIT="$UNIT_DIR/writ-server.service"
 
@@ -47,11 +53,11 @@ Type=simple
 WorkingDirectory=$WRIT_DIR
 Environment=WRIT_HOST=$WRIT_HOST
 Environment=WRIT_PORT=$WRIT_PORT
-# No WRIT_CACHE_DIR pin. It used to be /tmp, which systemd EMPTIES at boot
-# (\`D /tmp\` in tmpfiles.d), so every reboot destroyed the session caches and a
-# resumed conversation silently lost its mode and gates. Unset, the daemon and the
-# hooks both fall back to the same durable default (<skill>/var/session), which is
-# what keeps them agreeing.
+Environment=WRIT_CACHE_DIR=$STATE_CACHE_DIR
+Environment=WRIT_LOG_ROOT=$STATE_LOG_ROOT
+# Pinned to the durable state root resolved at install time, never /tmp: systemd EMPTIES /tmp
+# at boot (\`D /tmp\` in tmpfiles.d), which once destroyed every session cache. Re-run this
+# installer after changing XDG_STATE_HOME.
 # Boot ordering: Neo4j runs in docker (docker.service enabled + restart:unless-stopped),
 # but may still be coming up. Wait up to ~60s for its bolt port; fail-open after (Restart retries).
 ExecStartPre=/bin/bash -c 'for i in \$(seq 1 120); do (echo >/dev/tcp/$WRIT_HOST/$NEO4J_PORT) 2>/dev/null && exit 0; sleep 0.5; done; exit 0'

@@ -7,12 +7,14 @@ set -euo pipefail
 # fall back to the dirname walk that standalone installs rely on.
 if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
   WRIT_DIR="${CLAUDE_PLUGIN_ROOT}"
-  VENV_DIR="${CLAUDE_PLUGIN_DATA:-$HOME/.cache/writ}/.venv"
 else
   HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
   WRIT_DIR="$(cd "$HOOK_DIR/../.." && pwd)"
-  VENV_DIR="$WRIT_DIR/.venv"
 fi
+# The shared resolver costs no fork, which is why this per-prompt hook can use it.
+# shellcheck source=bin/lib/writ-venv.sh
+source "$WRIT_DIR/bin/lib/writ-venv.sh"
+writ_resolve_venv "$WRIT_DIR" || true
 SESSION_HELPER="$WRIT_DIR/bin/lib/writ-session.py"
 FA="$WRIT_DIR/bin/lib/friction-append.py"
 source "$WRIT_DIR/bin/lib/common.sh"
@@ -249,11 +251,18 @@ if [ -z "$AGENT_ID" ] && [ -n "$MODE_HINT" ]; then
   # switch INTO work below (from investigate, or from any mode an auto-routed session was
   # sitting in). Initialized here because the hook runs under `set -u`.
   RESTORED_GATES=""
+  # Work is routed as an ORCHESTRATOR: --orchestrator stamps is_orchestrator, so this session
+  # dispatches writ-planner, writ-test-writer, writ-implementer and writ-reviewer instead of
+  # writing source itself (rules/writ-orchestrator.md). A hand-set orchestrator always got
+  # that; an auto-routed one never did, because nobody typed the flag. The flag only ever SETS
+  # the field. Investigate is not orchestrated: its worker is writ-explorer, which its own
+  # announcement names.
+  if [ "$MODE_HINT" = "work" ]; then ROUTE_ORCH_FLAG="--orchestrator"; else ROUTE_ORCH_FLAG=""; fi
   if [ -z "$PRIOR_MODE" ]; then
     # `mode init` (not `mode set`): authoritatively sets the mode ONLY if still
     # unset (checked inside the helper's own cache read), so a spurious re-fire on
     # a transient empty PRIOR_MODE read can never reset a live gate cycle.
-    python3 "$SESSION_HELPER" mode init "$MODE_HINT" "$SESSION_ID" >/dev/null 2>&1 || true
+    python3 "$SESSION_HELPER" mode init "$MODE_HINT" "$SESSION_ID" $ROUTE_ORCH_FLAG >/dev/null 2>&1 || true
     # Re-read and act on the mode that is ACTUALLY set. `mode init` declines when a mode
     # already exists (its own locked check is the authority, not ours) and prints
     # "init: <mode>" either way, so its output cannot distinguish the two. Trusting the
@@ -319,7 +328,7 @@ if [ -z "$AGENT_ID" ] && [ -n "$MODE_HINT" ]; then
         # promise, not less: more sessions are now reachable from a guess, so the property
         # that a misclassified prompt costs a detour instead of an approved plan and
         # approved test skeletons is the whole reason this arm is allowed to exist.
-        python3 "$SESSION_HELPER" mode switch "$MODE_HINT" "$SESSION_ID" >/dev/null 2>&1 || true
+        python3 "$SESSION_HELPER" mode switch "$MODE_HINT" "$SESSION_ID" $ROUTE_ORCH_FLAG >/dev/null 2>&1 || true
         # Re-read rather than trust the hint, for the same reason the unset path does:
         # announcing the mode we ASKED for is how the hook came to tell the user the mode
         # was 'work' while the cache said otherwise.
@@ -357,7 +366,7 @@ if [ -z "$AGENT_ID" ] && [ -n "$MODE_HINT" ]; then
 This reads as an audit / exploration / research task, so the mode is now 'investigate'
 (the evidence-grounded audit/explore/research engine). Dispatch writ-explorer (read-only)
 for the actual exploration; it inherits this mode and runs governed. To override:
-  python3 $SESSION_HELPER mode set <conversation|debug|review|work|investigate> $SESSION_ID
+  writ mode set <conversation|debug|review|work|investigate> $SESSION_ID
 AUTOROUTE
     elif [ -n "$RESTORED_GATES" ] && [ "$RESTORED_GATES" != "0" ]; then
       # The switch restored a paused work cycle: plan.md was unchanged, so the approvals
@@ -368,25 +377,32 @@ AUTOROUTE
 [Writ: implementation request -> paused work mode restored automatically]
 This reads as a build/implementation task, so the mode is back to 'work'. The plan did not
 change during the detour, so the paused phase and $RESTORED_GATES already-approved gate(s)
-were restored with it. Continue that cycle: do not rewrite plan.md and do not re-request an
-approval you already hold. If this is a trivial edit that needs no workflow, override with:
-  python3 $SESSION_HELPER mode set conversation $SESSION_ID
+were restored with it. Continue that cycle as its orchestrator: dispatch the worker the
+restored phase is waiting on (writ-test-writer while the test skeletons are unapproved,
+writ-implementer once they are approved), then writ-reviewer on the result. Do not rewrite
+plan.md and do not re-request an approval you already hold. If this is a trivial edit that
+needs no workflow, override with:
+  writ mode set conversation $SESSION_ID
 WORKRESTORE
     else
       cat << WORKROUTE
 
 [Writ: implementation request -> work mode set automatically]
 This reads as a build/implementation task, so the mode is now 'work' (the full gated
-workflow). BEFORE writing source: write your plan to
-.claude/plans/$SESSION_ID/ -- both plan.md and capabilities.md go there (session-scoped, so
-a second session working this same project cannot revoke your approvals by saving its own
-plan), each by filling in templates/plan-template.md and
-templates/capabilities-template.md from the Writ
-skill directory (they encode the gate's exact format, including the ## Files line grammar),
-present them for approval, then write test skeletons, then implement. Source writes are
-BLOCKED by the gate until the plan and test-skeleton gates are approved. If this is a trivial
-edit that needs no workflow, override with:
-  python3 $SESSION_HELPER mode set conversation $SESSION_ID
+workflow) and this session is its orchestrator: dispatch the workers below in order rather
+than writing source yourself, the way an audit dispatches writ-explorer.
+  1. writ-planner writes plan.md and capabilities.md to .claude/plans/$SESSION_ID/, each by
+     filling in templates/plan-template.md and templates/capabilities-template.md from the
+     Writ skill directory (they encode the gate's exact format, including the ## Files line
+     grammar). The directory is session-scoped, so a second session working this same project
+     cannot revoke your approvals by saving its own plan. Then present them for approval.
+  2. writ-test-writer writes the test skeletons once the plan is approved; present those for
+     approval too.
+  3. writ-implementer makes those tests pass once they are approved.
+  4. writ-reviewer reviews the result before you report the work done.
+Source writes are BLOCKED by the gate until the plan and test-skeleton gates are approved. If
+this is a trivial edit that needs no workflow, override with:
+  writ mode set conversation $SESSION_ID
 WORKROUTE
     fi
   fi

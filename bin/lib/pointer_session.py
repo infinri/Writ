@@ -32,15 +32,16 @@ import sys
 
 
 def _cache_dir() -> str:
-    explicit = os.environ.get("WRIT_CACHE_DIR")
-    if explicit:
-        return explicit
-    writ_dir = os.environ.get("WRIT_DIR") or ""
-    if writ_dir:
-        return os.path.join(writ_dir, "var", "session")
-    # Fall back to this file's own install location: bin/lib/ -> repo root.
+    """writ/shared/state_root.py::session_dir, the one resolution: WRIT_CACHE_DIR, else the XDG
+    state root. It imports nothing but os, so this module stays stdlib-only, and it is only ever
+    called inside session_matches_project's try, so a failed import is "no session", never a
+    failed commit. WRIT_DIR no longer matters: state stopped living under the install."""
     here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    return os.path.join(here, "var", "session")
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    from writ.shared.state_root import session_dir
+
+    return session_dir()
 
 
 def session_matches_project(session_id: str, project_root: str) -> str:

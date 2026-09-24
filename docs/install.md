@@ -1,12 +1,13 @@
 # Installing Writ
 
-Writ runs the same way under three install paths; pick one:
+Writ runs the same way under two install paths; pick one:
 
 - **A. Marketplace plugin** (recommended): `claude plugin install` from this repo's own marketplace.
-- **B. Skills-directory checkout**: a clone at `~/.claude/skills/writ/`, auto-discovered by Claude Code as the user-scope plugin `writ@skills-dir`.
-- **C. Anywhere else**: a clone at a path Claude Code does not discover; hooks must be seeded into `~/.claude/settings.json` (section 3).
+- **B. Clone anywhere**: a git clone at any path you like. If Claude Code discovers it as a plugin, its hooks load from `hooks/hooks.json`; if nothing discovers it, seed them into `~/.claude/settings.json` (section 3).
 
 In every path, hook registrations come from one place, `hooks/hooks.json`. The current counts are generated from that file into [`reference/hooks.md`](reference/hooks.md). Editing that file is all a hook change needs.
+
+**Where state lives (both paths):** session caches, approvals and the pending-test and lint scratch files under `$XDG_STATE_HOME/writ` (default `~/.local/state/writ`), typed logs under its `logs/`. None of it is inside the install, so an upgrade or a second copy of Writ sees the same sessions. The first session after upgrading from 1.8.0 or earlier copies each old `<install>/var/session/writ-session-*.json` across once, never overwriting.
 
 **Prerequisites (all paths):** Python 3.11+, Docker (Neo4j runs in a container), and `git` for the clone paths. That is the whole list. `jq` and `curl` are optional accelerators: every JSON read has a Python fallback and every HTTP call has a `urllib` fallback, so their absence changes speed, never behavior. Nothing needs `envsubst`/gettext.
 
@@ -25,11 +26,11 @@ bash /path/it/prints/scripts/bootstrap-plugin.sh
 
 Run that, restart Claude Code, and you are done: there is no install-path lookup step and no separate config patch. (If you would rather not open Claude Code first, `claude plugin list --json` carries the `installPath`; read it by eye. There is no `claude plugin path` subcommand.)
 
-**Paths B and C (clone):**
+**Path B (clone):**
 
 ```bash
-git clone <writ-repo> ~/.claude/skills/writ     # path B
-WRIT_DIR=~/.claude/skills/writ
+git clone <writ-repo> /any/path/you/like/writ
+WRIT_DIR=/any/path/you/like/writ
 bash "$WRIT_DIR/scripts/bootstrap.sh"
 ```
 
@@ -37,13 +38,15 @@ bash "$WRIT_DIR/scripts/bootstrap.sh"
 
 Both bootstraps are idempotent and safe to re-run. Each does the whole install:
 
-| Step | `bootstrap-plugin.sh` (path A) | `bootstrap.sh` (paths B/C) |
+| Step | `bootstrap-plugin.sh` (path A) | `bootstrap.sh` (path B) |
 | --- | --- | --- |
-| Python venv | `${CLAUDE_PLUGIN_DATA:-~/.cache/writ}/.venv` (outside the plugin root, so an upgrade that rewrites the install path does not orphan it) | `$WRIT_DIR/.venv` |
+| Python venv | `$CLAUDE_PLUGIN_DATA/.venv`, i.e. `~/.claude/plugins/data/<plugin>-<marketplace>/.venv` (outside the plugin root, so an upgrade that rewrites the install path does not orphan it; found from the install path when the variable is not exported). Each SessionStart points its editable `writ` at the running version | `$WRIT_DIR/.venv` |
 | Package, ONNX model, Neo4j, corpus, daemon | yes | yes |
 | `~/.claude/settings.json` + `~/.claude/CLAUDE.md` | yes | yes |
 | `~/.claude/commands/` slash commands | yes | yes |
 | `~/.local/bin/writ` and `~/.claude/{rules,agents}` symlinks | no (the plugin loader supplies the agents) | yes |
+
+Both honor `WRIT_VENV`. The full lookup order is in `bin/lib/writ-venv.sh`; see `reference/configuration.md`.
 
 Each accepts `--preflight` to run only the prerequisite checks (tool presence and the Python version) and exit, which is a quick way to confirm a machine is ready before committing to a full install.
 
@@ -56,9 +59,9 @@ bash "$WRIT_DIR/scripts/patch-global-config.sh"      # --dry-run to preview
 bash "$WRIT_DIR/scripts/install-user-commands.sh"    # USER_COMMANDS_DIR=/path to redirect
 ```
 
-## 3. Hook seeding (path C only)
+## 3. Hook seeding (path B, when nothing discovers the clone)
 
-If Writ lives at a path neither the plugin loader nor the skills directory discovers, `hooks/hooks.json` is never read and **no hooks load at all**: no gates, no rule injection, no enforcement. Confirm discovery first:
+If your clone lives at a path the plugin loader does not discover, `hooks/hooks.json` is never read and **no hooks load at all**: no gates, no rule injection, no enforcement. Confirm discovery first:
 
 ```bash
 claude plugin list --json      # look for an entry whose installPath is your install
@@ -109,10 +112,28 @@ After `git pull` (or a plugin update), hook changes in `hooks/hooks.json` apply 
 
 ```bash
 bash "$WRIT_DIR/scripts/bootstrap-plugin.sh"    # path A
-bash "$WRIT_DIR/scripts/bootstrap.sh"           # paths B/C
+bash "$WRIT_DIR/scripts/bootstrap.sh"           # path B
 ```
 
 Then restart Claude Code (config and command changes are read at session start).
+
+After a plugin update, the first session's SessionStart notices that the shared venv still imports the previous version and reinstalls the package from the new one; it prints one line saying so, and a daemon that was already running needs one restart (see "Restarting the daemon" below).
+
+### Upgrading from 1.8.0 or earlier: the Neo4j container
+
+Nothing is required. A container created by 1.8.0 carries the Compose project `180`, because Compose used to name the project after the install directory. Every start path now runs `docker start writ-neo4j` when that container exists, so it keeps working under any later version.
+
+Re-homing it under the project `writ` is optional; it only tidies `docker compose ls`. The graph lives in the named volume `writ-neo4j-data`, which removing the container does not touch. Nothing does this automatically. To do it by hand:
+
+```bash
+docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' writ-neo4j   # the old project, e.g. 180
+OLD=~/.claude/plugins/cache/writ/writ/1.8.0        # the install dir that created it
+docker compose -p 180 -f "$OLD/docker-compose.yml" stop neo4j
+docker compose -p 180 -f "$OLD/docker-compose.yml" rm -f neo4j
+docker compose -f ~/.claude/plugins/cache/writ/writ/1.9.0/docker-compose.yml up -d neo4j   # the NEW install dir
+```
+
+If the old install dir is already gone, `docker stop writ-neo4j && docker rm writ-neo4j` replaces the two middle commands. Compose may warn that the volume `writ-neo4j-data` already exists and was created for another project; that is expected, and it reuses the volume.
 
 ## Restarting the daemon
 
@@ -143,9 +164,13 @@ The standalone install keeps working; the plugin path is additive. To move over:
 - **`python3 version is 3.9; need >= 3.11`**: install a newer Python (`pyenv` works well).
 - **`port 7687 already in use`**: another Neo4j is running; stop it or change the `ports:` mapping in `docker-compose.yml`.
 - **`Neo4j did not become reachable within 60s`**: `docker compose logs neo4j`; the common cause is too little memory for Docker (Neo4j wants ~1 GB).
-- **Daemon not healthy**: check the daemon log; the location is install-dependent: `$WRIT_LOG` if set, else `<install>/var/logs/server.log` (standalone) or `${CLAUDE_PLUGIN_DATA:-~/.cache/writ}/server.log` (plugin), or `journalctl --user -u writ-server` under systemd. Usually an import error; re-run `pip install -e .` inside the venv.
+- **Daemon not healthy**: check the daemon log; the location is install-dependent: `$WRIT_LOG` if set, else `$XDG_STATE_HOME/writ/logs/server.log` (default `~/.local/state/writ/logs/server.log`, clone) or `${CLAUDE_PLUGIN_DATA:-~/.cache/writ}/server.log` (plugin), or `journalctl --user -u writ-server` under systemd. Usually an import error; re-run `pip install -e .` inside the venv.
 - **A GPU-discovery warning from onnxruntime at startup** on CPU-only machines is unsuppressible and harmless; CPU execution works normally.
 - **Default Neo4j credentials (`neo4j/writdevpass`)**: a development default, silently used whenever `writ.toml` is missing. For any non-local use, change `NEO4J_AUTH` in `docker-compose.yml` and the `[neo4j]` section of `writ.toml`.
+
+- **`writ: venv python not found at ...`**: run the bootstrap it names; the path it prints is where the venv belongs. Set `WRIT_VENV` to use a venv elsewhere.
+- **`[Writ] ... imports writ from ..., not this install; reinstalling it`** at session start: expected once after an upgrade, or when the venv was bootstrapped from another copy of Writ. Restart the daemon afterwards. If it reports it could not repoint, run the `bootstrap-plugin.sh` command it prints.
+- **`Conflict. The container name "/writ-neo4j" is already in use`**: an older Writ is starting Neo4j with `docker compose up`. Current versions run `docker start writ-neo4j` instead; start it by hand with that command.
 
 ## Known limitations
 

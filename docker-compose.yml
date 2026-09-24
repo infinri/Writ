@@ -1,3 +1,5 @@
+name: writ
+
 services:
   neo4j:
     image: neo4j:5

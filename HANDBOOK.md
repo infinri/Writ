@@ -47,7 +47,7 @@ You type a prompt. Claude Code fires `UserPromptSubmit`. In order:
    ```
 9. **Write gate** (`PreToolUse` on Write/Edit/NotebookEdit -> `writ-pre-write-dispatch.sh` -> `POST /pre-write-check`). One combined call: gate decision, denial escalation, and file-context RAG. Denials carry a `[RULE-ID]`-prefixed reason. Bash-mediated writes (`>`, `tee`, `cp`, `sed -i`, ...) go through the same `/can-write` check via `writ-bash-write-gate.sh`, and credential paths are denied in every mode.
 10. **Stop hooks.** When Claude finishes a turn: pending tests run (failures block only in implementation/complete phase), unresolved violations block, unverified quality scores block, and a deterministic punctuation gate rejects em-dash output. Blocking Stop hooks surface via stderr + non-zero exit, guarded by `stop_hook_active` so they cannot loop.
-11. **Telemetry.** Throughout, events land in the typed log streams under `<install>/var/logs/<project>/` (§18): audit for decisions, friction for things worth fixing, metrics for volume, errors for exceptions.
+11. **Telemetry.** Throughout, events land in the typed log streams under `<state_root>/logs/<project>/` (`$XDG_STATE_HOME/writ`, default `~/.local/state/writ`) (§18): audit for decisions, friction for things worth fixing, metrics for volume, errors for exceptions.
 
 That is one turn: relevant rules in, a hard gate on risky writes, and a durable trail out.
 
@@ -324,7 +324,7 @@ Everything else people expect to find in config is deliberately code: ranking we
 
 One rule this project applies to its own writing: Writ ships a forbidden-response rule that blocks the AI's own output when it contains an em dash, an en dash used as punctuation, or a double hyphen standing in for one. A Stop hook enforces it at the end of every turn, and the README and this handbook are both written to it. It is the smallest demonstration of the general mechanism: a constraint that lives at the tool boundary rather than in a style guide nobody re-reads.
 
-**Env vars:** `WRIT_HOST`/`WRIT_PORT` (daemon target, default `localhost:8765`), `WRIT_CACHE_DIR` (session caches, default `<install>/var/session`; deliberately not `/tmp`, which systemd empties at boot), `WRIT_LOG_ROOT` (log streams, default `<install>/var/logs`), `WRIT_LOG_PROJECT`, `WRIT_FRICTION_LOG` (collapse all streams into one file), `WRIT_DEBUG` (debug sinks, default off), `WRIT_HOOK_LOG`, `WRIT_NO_AUTOSTART`, `WRIT_ALLOW_EMBEDDING_FALLBACK=1` (permit the sentence-transformers path when the ONNX model is absent), `WRIT_CONTEXT_WINDOW_TOKENS` (validated 1,000-10,000,000 at daemon startup), `WRIT_BLACKBOX=1` (raw payload capture), `WRIT_STRICT=1` (fail the write gates CLOSED instead of open when they cannot be evaluated; see below). Neo4j credentials resolve from `WRIT_NEO4J_URI` / `WRIT_NEO4J_USER` / `WRIT_NEO4J_PASSWORD`, then `writ.toml`, then a dev-only built-in default. `WRIT_TEST_GRAPH=1` plus a non-production URI is what the destructive-wipe guard requires (`writ/graph/db/_safety.py`).
+**Env vars:** `WRIT_HOST`/`WRIT_PORT` (daemon target, default `localhost:8765`), `WRIT_CACHE_DIR` (session caches, default `$XDG_STATE_HOME/writ/session`, i.e. `~/.local/state/writ/session`; deliberately not `/tmp`, which systemd empties at boot), `WRIT_LOG_ROOT` (log streams, default `<state_root>/logs`), `WRIT_LOG_PROJECT`, `WRIT_FRICTION_LOG` (collapse all streams into one file), `WRIT_DEBUG` (debug sinks, default off), `WRIT_HOOK_LOG`, `WRIT_NO_AUTOSTART`, `WRIT_ALLOW_EMBEDDING_FALLBACK=1` (permit the sentence-transformers path when the ONNX model is absent), `WRIT_CONTEXT_WINDOW_TOKENS` (validated 1,000-10,000,000 at daemon startup), `WRIT_BLACKBOX=1` (raw payload capture), `WRIT_STRICT=1` (fail the write gates CLOSED instead of open when they cannot be evaluated; see below). Neo4j credentials resolve from `WRIT_NEO4J_URI` / `WRIT_NEO4J_USER` / `WRIT_NEO4J_PASSWORD`, then `writ.toml`, then a dev-only built-in default. `WRIT_TEST_GRAPH=1` plus a non-production URI is what the destructive-wipe guard requires (`writ/graph/db/_safety.py`).
 
 ---
 
@@ -434,7 +434,7 @@ hook that can break an edit is strictly worse than no compression.
 
 ## 18. Logging and observability
 
-**Typed streams** (`writ/shared/logging.py`), one directory per project under `<install>/var/logs/`:
+**Typed streams** (`writ/shared/logging.py`), one directory per project under `<state_root>/logs/` (`$XDG_STATE_HOME/writ`, default `~/.local/state/writ`):
 
 | Stream | Holds | Retention |
 |---|---|---|

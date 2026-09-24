@@ -82,6 +82,7 @@ STATUSLINE_REL = "hooks/scripts/writ-statusline.sh"
 # (${CLAUDE_PLUGIN_ROOT}/...) and a dev/repo run path with ONE entry each.
 BASE_ALLOW = (
     "Bash(python3 *writ-session.py *)",
+    "Bash(writ mode *)",
     "Bash(bash *writ/bin/check-gates.sh*)",
     "Bash(bash *writ/bin/verify-files.sh*)",
     "Bash(bash *writ/bin/scan-deps.sh*)",
@@ -559,11 +560,11 @@ def cmd_claude_md(args):
 # --------------------------------------------------------------------------- #
 # hooks: render templates/settings.json and merge it into the target
 #
-# ONLY for an install nothing auto-discovers. Hooks are already global for a normal
-# install: ~/.claude/skills/writ loads as the user-scope plugin writ@skills-dir, so its 12
-# hooks fire in every project with no settings.json entry at all. Writ at any other path,
-# without a marketplace install, is discovered by nothing -- hooks/hooks.json is never read
-# and NO hooks load, so there is no gate, no rule injection, no enforcement.
+# ONLY for an install nothing auto-discovers. Hooks are already global for an install the
+# plugin loader discovers (the marketplace plugin, or a clone Claude Code loads as a plugin):
+# its hooks fire in every project with no settings.json entry at all. Writ at a path nothing
+# discovers is read by nothing: hooks/hooks.json is never loaded and NO hooks run, so there
+# is no gate, no rule injection, no enforcement.
 #
 # REFUSES when a loaded plugin resolves to this install. Two registration surfaces would
 # very likely fire all 12 events twice: doubled rule injection, doubled gate evaluation,

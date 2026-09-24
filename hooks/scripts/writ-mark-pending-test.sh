@@ -31,7 +31,8 @@ MATCH=$(python3 "$TEST_PATHS_HELPER" match-src "$FILE" 2>/dev/null)
 # location, this wrote into the live checkout however the caller redirected Writ's cache, so
 # a test or an audit running against a throwaway directory still left cache/<sid>/ sitting in
 # the repository. writ-run-pending-tests.sh reads this exact path and moved with it.
-MARKER_DIR="${WRIT_CACHE_DIR:-$WRIT_DIR/cache}/$PARENT_SID"
+# The default is the XDG state root's cache/ (bin/lib/common.sh), so a marker survives an upgrade.
+MARKER_DIR="${WRIT_CACHE_DIR:-$_WRIT_STATE_ROOT/cache}/$PARENT_SID"
 mkdir -p "$MARKER_DIR"
 echo "$FILE" >> "$MARKER_DIR/pending-tests.txt"
 

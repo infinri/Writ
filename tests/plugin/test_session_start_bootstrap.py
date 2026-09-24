@@ -55,12 +55,12 @@ class TestSessionStartBootstrapContent:
         )
 
     def test_session_start_probes_venv(self, content: str) -> None:
-        """Script must check for ${CLAUDE_PLUGIN_DATA:-$HOME/.cache/writ}/.venv/bin/python3."""
-        assert "${CLAUDE_PLUGIN_DATA:-$HOME/.cache/writ}/.venv" in content, (
-            "session-start-bootstrap.sh must probe ${CLAUDE_PLUGIN_DATA:-$HOME/.cache/writ}/.venv"
+        """The venv comes from the shared resolver and its python3 is probed before use."""
+        assert 'writ_resolve_venv "${WRIT_DIR}"' in content, (
+            "session-start-bootstrap.sh must take VENV_DIR from writ_resolve_venv"
         )
-        assert "python3" in content, (
-            "session-start-bootstrap.sh venv probe must check for python3 binary"
+        assert '"${VENV_DIR}/bin/python3"' in content, (
+            "session-start-bootstrap.sh venv probe must check for the python3 binary"
         )
 
     def test_session_start_probes_neo4j(self, content: str) -> None:

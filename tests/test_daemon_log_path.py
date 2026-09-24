@@ -33,14 +33,20 @@ START_PATHS = [
 
 
 def _resolve(**env) -> str:
-    """Call the real bash resolver with a controlled environment."""
+    """Call the real bash resolver with a controlled environment.
+
+    The cleared keys are passed at SOURCE time (merged into the subprocess's own
+    environment), not only as a command-line prefix on the final call: writ-server-lib.sh
+    computes `_WRIT_STATE_ROOT` (via common.sh) at SOURCE time, before the
+    `writ_default_server_log` call the prefix would otherwise scope to.
+    """
     clean = {k: "" for k in ("WRIT_LOG", "WRIT_LOG_ROOT", "CLAUDE_PLUGIN_ROOT",
-                             "CLAUDE_PLUGIN_DATA", "WRIT_DIR")}
+                             "CLAUDE_PLUGIN_DATA", "WRIT_DIR", "XDG_STATE_HOME")}
     clean.update(env)
     assignments = " ".join(f'{k}="{v}"' for k, v in clean.items())
     script = f'source "{LIB}"; {assignments} writ_default_server_log'
     r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30,
-                       env={**os.environ, **{k: "" for k in clean}})
+                       env={**os.environ, **clean})
     assert r.returncode == 0, r.stderr
     return r.stdout.strip()
 
@@ -63,8 +69,14 @@ class TestResolutionOrder:
         got = _resolve(CLAUDE_PLUGIN_ROOT="/p")
         assert got == f"{os.path.expanduser('~')}/.cache/writ/server.log"
 
-    def test_standalone_derives_from_the_install_dir(self):
-        assert _resolve(WRIT_DIR="/opt/writ") == "/opt/writ/var/logs/server.log"
+    def test_standalone_uses_the_state_root(self):
+        """Not the install dir: a plugin install path carries the version."""
+        got = _resolve(WRIT_DIR="/opt/writ", XDG_STATE_HOME="/xdg")
+        assert got == "/xdg/writ/logs/server.log"
+
+    def test_standalone_without_xdg_uses_home_local_state(self):
+        got = _resolve(WRIT_DIR="/opt/writ")
+        assert got == f"{os.path.expanduser('~')}/.local/state/writ/logs/server.log"
 
     def test_explicit_beats_every_implicit_source(self):
         got = _resolve(WRIT_LOG="/win.log", WRIT_LOG_ROOT="/logs",

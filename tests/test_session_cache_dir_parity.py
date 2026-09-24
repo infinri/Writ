@@ -1,4 +1,4 @@
-"""The bash side looked for the session cache in /tmp; the package looks in var/session.
+"""The bash side looked for the session cache in /tmp; the package looks in the state root.
 
 Commit 152e722 moved session state off `/tmp` because this machine's tmpfiles.d declares
 `D /tmp`, which EMPTIES the directory at boot. The package moved. Three bash copies of the
@@ -66,8 +66,8 @@ def _bash(snippet: str, env: dict | None = None) -> str:
 
 
 def _package_default() -> str:
-    from writ.session.cache import _DEFAULT_CACHE_DIR
-    return _DEFAULT_CACHE_DIR
+    from writ.session.cache import _default_cache_dir
+    return _default_cache_dir()
 
 
 class TestResolutionMatchesThePackage:
@@ -153,7 +153,7 @@ class TestNoStaleTempDefaultSurvives:
         )
         assert "gettempdir" not in code, (
             f"{path.name} still derives a directory from gettempdir(); the session cache "
-            "must resolve to the durable var/session default"
+            "must resolve to the durable state-root default"
         )
 
     def test_both_pin_sites_use_the_shared_resolver(self):

@@ -308,6 +308,6 @@ class TestMinterWired:
     def test_minter_registered_on_user_prompt_submit(self):
         hooks_json = Path(SKILL_ROOT, "hooks", "hooks.json")
         data = json.loads(hooks_json.read_text())["hooks"]
-        scripts = [h["command"].rsplit("/", 1)[-1]
+        scripts = [h["command"].rstrip('"').rsplit("/", 1)[-1]
                    for g in data.get("UserPromptSubmit", []) for h in g.get("hooks", [])]
         assert "writ-manual-test-grant.sh" in scripts

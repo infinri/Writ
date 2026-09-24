@@ -582,7 +582,7 @@ class TestMatcherWired:
         scripts = []
         for g in data.get("PreToolUse", []):
             if "Bash" in g.get("matcher", "").split("|"):
-                scripts += [h["command"].rsplit("/", 1)[-1] for h in g.get("hooks", [])]
+                scripts += [h["command"].rstrip('"').rsplit("/", 1)[-1] for h in g.get("hooks", [])]
         assert "writ-bash-write-gate.sh" in scripts
 
 

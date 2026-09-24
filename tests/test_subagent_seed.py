@@ -1030,8 +1030,10 @@ class TestDoctorGovernanceCensus:
 # later joins the sum automatically.
 # --------------------------------------------------------------------------- #
 
-LIVE_METRICS = REPO / "var" / "logs" / "github.com" / "infinri" / "Writ" / "metrics.jsonl"
-LIVE_CACHE_DIR = REPO / "var" / "session"
+from writ.shared.state_root import default_log_root, state_root  # noqa: E402
+
+LIVE_METRICS = Path(default_log_root()) / "github.com" / "infinri" / "Writ" / "metrics.jsonl"
+LIVE_CACHE_DIR = Path(state_root()) / "session"
 CACHE_PREFIX = "writ-session-"
 
 SPAWN_SEED = "subagent_start"

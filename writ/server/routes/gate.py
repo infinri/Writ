@@ -118,9 +118,7 @@ async def session_advance_phase(
     if old_phase == "complete":
         return {
             "error": (
-                "Session phase is `complete`. Reset via "
-                "`writ-session.py mode set work <sid>` before advancing "
-                "into a new task."
+                f"Session phase is `complete`. Reset via `writ mode set work {session_id}` before advancing into a new task."
             ),
             "phase": "complete",
             "from": "complete",
@@ -660,7 +658,8 @@ async def pre_write_check(request: PreWriteCheckRequest) -> dict[str, Any]:
 
     def _check() -> dict[str, Any]:
         session_id = request.session_id
-        envelope = {"tool_input": request.tool_input}
+        envelope = {"tool_input": request.tool_input,
+                    "parent_session_id": request.parent_session_id}
         skill_dir = request.skill_dir
 
         # A10: read the session cache ONCE for the whole request and reuse it for

@@ -1002,14 +1002,36 @@ def _can_write_check(session_id: str, envelope: dict, skill_dir: str = "", cache
 
     # No mode: deny everything (plan.md handled above). Log the deny -- this is the
     # most security-relevant refusal (writing with no declared mode) and it emitted
-    # no telemetry before (audit #5).
+    # no telemetry before (audit #5). The reason hands back the exact command with THIS
+    # session's id (for a sub-agent that is its agent id, the session just refused), so the
+    # agent never has to discover the helper's path or guess an id.
     if mode is None:
         _log_friction_event(session_id, mode, "write_attempt",
                             file_path=file_path, result="deny", gate_status="no_mode")
+        # A sub-agent inherits its mode from the session that dispatched it (SubagentStart),
+        # so a mode-less sub-agent means the dispatcher had none. Handing the sub-agent a
+        # command for its own id would let it grant itself a mode, and the blanket
+        # sub-agent write allow with it, that its dispatcher never held. Send it back
+        # instead. The parent comes from the /pre-write-check body, or from a raw hook
+        # payload (agent_id + session_id) on the CLI path.
+        parent = envelope.get("parent_session_id") or (
+            envelope.get("session_id") if envelope.get("agent_id") else "")
+        if parent and isinstance(parent, str):
+            return {
+                "can_write": False,
+                "reason": "[ENF-GATE-MODE] No mode declared. A sub-agent inherits its mode "
+                          "from the main session when it is dispatched, and the main session "
+                          "had none. Do not set a mode yourself: stop and report this to the "
+                          "main session, which runs "
+                          f"writ mode set <mode> {parent} "
+                          "and then dispatches you again.",
+            }
         return {
             "can_write": False,
             "reason": "[ENF-GATE-MODE] No mode declared. Set a mode before writing code. "
-                      "Modes: conversation, debug, investigate, review, work.",
+                      "Modes: conversation, debug, investigate, review, work. "
+                      f"For building or modifying code run: writ mode set work {session_id} "
+                      "(or put conversation, debug, investigate or review in place of work).",
         }
 
     if mode == "debug":

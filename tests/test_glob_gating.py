@@ -82,5 +82,5 @@ class TestMatcherWired:
         scripts = []
         for g in data.get("PreToolUse", []):
             if "Glob" in g.get("matcher", "").split("|"):
-                scripts += [h["command"].rsplit("/", 1)[-1] for h in g.get("hooks", [])]
+                scripts += [h["command"].rstrip('"').rsplit("/", 1)[-1] for h in g.get("hooks", [])]
         assert "writ-debug-code-gate.sh" in scripts

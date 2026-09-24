@@ -4,7 +4,7 @@ The shipped logging system: typed streams, one router, two-tier rotation, durabl
 
 ## Streams
 
-One directory per project under `<install>/var/logs/` (`WRIT_LOG_ROOT` overrides; project scope from git identity, `WRIT_LOG_PROJECT` overrides, sanitized against traversal). `STREAM_MAP` classifies ~40 event names; an unmapped event defaults to `friction`, never dropped.
+One directory per project under `$XDG_STATE_HOME/writ/logs/` (default `~/.local/state/writ/logs/`) (`WRIT_LOG_ROOT` overrides; project scope from git identity, `WRIT_LOG_PROJECT` overrides, sanitized against traversal). `STREAM_MAP` classifies ~40 event names; an unmapped event defaults to `friction`, never dropped.
 
 | Stream | Holds | Retention |
 |---|---|---|

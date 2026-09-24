@@ -139,6 +139,11 @@ if not isinstance(data, dict):
 # Mirrored in pre-write-parse.jq; see the longer note there.
 sid = (data.get('agent_id') or data.get('session_id') or '')
 sid = sid.replace('\n', ' ').replace('\r', ' ').strip() if isinstance(sid, str) else ''
+# A sub-agent's dispatcher, so the gate can send a mode-less sub-agent back to it. Mirrored
+# in pre-write-parse.jq.
+aid, psid = data.get('agent_id'), data.get('session_id')
+parent = psid.replace('\n', ' ').replace('\r', ' ').strip() if (
+    aid and isinstance(aid, str) and isinstance(psid, str)) else ''
 ti = data.get('tool_input', {})
 if isinstance(ti, str):
     try:
@@ -155,6 +160,7 @@ body = json.dumps({
     'tool_input': ti if isinstance(ti, dict) else {},
     'skill_dir': skill_dir,
     'file_path': file_path,
+    'parent_session_id': parent,
 })
 # Write-context (file path + content) for the always-on applicability filter is
 # derived HERE rather than in a second python3 spawn further down: that spawn

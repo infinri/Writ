@@ -72,13 +72,13 @@ if [ $EXIT_CODE -ne 0 ]; then
   # sitting in the checkout, written from this line. Isolation that one writer ignores is
   # not isolation.
   #
-  # Deliberately NOT writ_session_cache_dir() from bin/lib/common.sh, whose fallback is
-  # <skill>/var/session: that directory holds gate state (mode, approvals, the
+  # Deliberately NOT writ_session_cache_dir() from bin/lib/common.sh, whose default is the
+  # state root's session/: that directory holds gate state (mode, approvals, the
   # manual-testing grant) and is what writ-state-write-gate.sh and the bash gate's
   # STATE_DIR_GUARD exist to protect. Lint output does not belong there, and emit-summary
-  # hands this path to the agent to read. So: honour the env var, keep cache/ as the
-  # default, which is also where the sibling pending-test hooks still write.
-  LOG_DIR="${WRIT_CACHE_DIR:-$SKILL_DIR/cache}/${SESSION_ID:-no-session}"
+  # hands this path to the agent to read. So: honour the env var, default to the state
+  # root's cache/, which is also where the sibling pending-test hooks write.
+  LOG_DIR="${WRIT_CACHE_DIR:-$_WRIT_STATE_ROOT/cache}/${SESSION_ID:-no-session}"
   mkdir -p "$LOG_DIR"
   LOG_FILE="$LOG_DIR/${SAFE_NAME}.lint.json"
   echo "$OUTPUT" > "$LOG_FILE"

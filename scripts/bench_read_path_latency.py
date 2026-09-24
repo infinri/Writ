@@ -101,7 +101,7 @@ def pretooluse_chain(tool: str) -> list[str]:
 
 def resolve_command(command: str) -> Path:
     """A hooks.json command string as an absolute path in THIS checkout."""
-    name = command.rstrip().rsplit("/", 1)[-1]
+    name = command.rstrip().rstrip('"').rsplit("/", 1)[-1]
     return REPO / "hooks" / "scripts" / name
 
 

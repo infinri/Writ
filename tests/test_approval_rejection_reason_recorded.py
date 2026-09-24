@@ -1187,11 +1187,13 @@ class TestDaemonIsolationIsAPositiveSignal:
                 tmp_path, sid,
                 b'{"error": "plan.md validation failed: missing X.", "token_spent": true}',
             )
+        from writ.shared.state_root import default_log_root
+
         resolved = stream_path(LOG_PROJECT, FRICTION_STREAM)
         assert tmp_path in resolved.parents, (
             f"the router must resolve this test's own log root: {resolved}"
         )
-        assert SKILL_ROOT / "var" / "logs" not in resolved.parents, (
+        assert Path(default_log_root()) not in resolved.parents, (
             f"no row in this suite may resolve to the install's real log root: {resolved}"
         )
         assert _match_rows(LOG_PROJECT, sid), (

@@ -16,16 +16,17 @@ four more. A count in a docstring is a claim that decays on its own, so the
 count belongs to `count_attributable()` at the moment it is called, and the
 tests assert a DELTA around a run rather than any absolute figure.
 
-THE PATH IS DELIBERATELY NOT `writ.shared.logging.emit_destination`, and
-does NOT read `WRIT_LOG_ROOT` or `WRIT_FRICTION_LOG`. Both are exactly the
-variables the test suite's own isolation sets (tests/conftest.py's autouse
-`_isolate_friction_log` sets `WRIT_LOG_ROOT` for every test); a guard that
-reads the same env var the isolation fixture sets can be redirected into
-passing by the very isolation it exists to verify -- see
+THE PATH DERIVES FROM `writ.shared.state_root.default_log_root()`, which
+reads only `XDG_STATE_HOME` and `HOME`, and does NOT read `WRIT_LOG_ROOT` or
+`WRIT_FRICTION_LOG`. Both are exactly the variables the test suite's own
+isolation sets (tests/conftest.py's autouse `_isolate_friction_log` sets
+`WRIT_LOG_ROOT` for every test); a guard that reads the same env var the
+isolation fixture sets can be redirected into passing by the very isolation
+it exists to verify -- see
 tests/test_production_audit_stream_isolation.py::TestProductionAuditPathIsEnvironmentIndependent.
 Mirrors the derivation tests/test_logging_router.py already pins for
-`log_root()`'s default (`Path(writ.shared.logging.__file__).resolve().parents[2]`),
-plus `resolve_project` scoped explicitly to the repo root rather than the
+`log_root()`'s default (`writ.shared.state_root.default_log_root()`), plus
+`resolve_project` scoped explicitly to the repo root rather than the
 process cwd, which pytest may run from anywhere.
 
 Every function here is READ-ONLY against the production file by
@@ -57,20 +58,20 @@ ATTRIBUTION_EVENT = "agent_self_approval_blocked"
 
 
 def production_audit_path() -> Path:
-    """The real `<skill>/var/logs/<project>/audit.jsonl`, environment independent.
+    """The real `<state_root>/logs/<project>/audit.jsonl`, environment independent.
 
-    `<skill>` is derived from `writ.shared.logging`'s own `__file__`
-    (`parents[2]`: [0]=writ/shared, [1]=writ, [2]=the skill install dir),
-    never from `WRIT_LOG_ROOT`. `<project>` is `resolve_project` scoped to
-    THIS repo's root explicitly (not `os.getcwd()`), so the answer does not
+    `<state_root>` is `writ.shared.state_root.default_log_root()`, which reads
+    only `XDG_STATE_HOME` and `HOME`, never `WRIT_LOG_ROOT` or
+    `WRIT_FRICTION_LOG`. `<project>` is `resolve_project` scoped to THIS
+    repo's root explicitly (not `os.getcwd()`), so the answer does not
     depend on where pytest happens to be invoked from.
     """
     # Imported inside the function so this module's top level stays stdlib-only.
     import writ.shared.logging as writ_logging
+    from writ.shared.state_root import default_log_root
 
-    skill_root = Path(writ_logging.__file__).resolve().parents[2]
     project = writ_logging.resolve_project(str(_REPO_ROOT))
-    return skill_root / "var" / "logs" / project / "audit.jsonl"
+    return Path(default_log_root()) / project / "audit.jsonl"
 
 
 def read_rows(path: Path) -> list[dict[str, Any]]:

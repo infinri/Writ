@@ -293,11 +293,11 @@ replan)
     # this session qualifies. Field 5 is next_gate's PRESENCE flag, so requiring it is what
     # separates "the server says nothing is pending" from "the server never said".
     if [ -z "$CURRENT_MODE" ] || [ "$NEXT_GATE_REPORTED" != "1" ]; then
-        cat <<'DIRECTIVE'
+        cat <<DIRECTIVE
 [Writ: nothing was changed]
 This session's mode and phase could not be read, so the phrase did nothing: an unknown
 state gets no reset. If this session should be under the Work workflow, declare it
-explicitly first with: writ-session.py mode set work <session_id>.
+explicitly first with: writ mode set work ${SESSION_ID}.
 DIRECTIVE
     elif [ "$CURRENT_MODE" != "work" ]; then
         echo "[Writ: nothing was changed] This session is in ${CURRENT_MODE} mode, which has no plan gates, so there is nothing to re-open and plan.md is not frozen."
@@ -306,7 +306,7 @@ DIRECTIVE
         # the phrase fired in would be one more state where a mistyped destructive phrase
         # lands, and in none of these would it achieve anything.
         if [ "$CURRENT_PHASE" = "complete" ]; then
-            echo "[Writ: nothing was changed] This session's phase is complete. The reset for a finished cycle is: writ-session.py mode set work <session_id>, which starts the next one in the planning phase."
+            echo "[Writ: nothing was changed] This session's phase is complete. The reset for a finished cycle is: writ mode set work ${SESSION_ID}, which starts the next one in the planning phase."
         else
             echo "[Writ: nothing was changed] This session's phase is ${CURRENT_PHASE}, not implementation, so plan.md is already writable and the ${NEXT_GATE:-next} gate is what is pending. Reply \"approved\" when the plan is ready."
         fi

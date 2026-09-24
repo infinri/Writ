@@ -39,17 +39,17 @@ Contributor-facing system design: the spine `README.md` and `HANDBOOK.md` refere
 
 **Telemetry.** A middleware emits one `daemon_request` metrics row per request (route template, not concrete path; `/health` excluded), in a `finally` so failures are recorded too. Every `/query` emits a `retrieval_result` row including the abstention signal, hit or miss, which is the data for retuning the 0.30 threshold.
 
-**State the daemon does not own:** session caches are files under `<install>/var/session` (hooks and CLI read them directly when the daemon is down); route modules read `server._pipeline` / `server._db` as live attributes (the monkeypatch seam; never `from`-import them).
+**State the daemon does not own:** session caches are files under `$XDG_STATE_HOME/writ/session` (default `~/.local/state/writ/session`) (hooks and CLI read them directly when the daemon is down); route modules read `server._pipeline` / `server._db` as live attributes (the monkeypatch seam; never `from`-import them).
 
 ## 4. Operations
 
-The daemon runs as a **systemd user service** in production (`scripts/install-server-service.sh`: waits for Neo4j, `Restart=on-failure`, plus the daily `writ-logs-rotate.timer`). Restart with `systemctl --user restart writ-server`, never `stop-server.sh` (it fights auto-restart). On-demand fallback: the SessionStart hook and `scripts/ensure-server.sh` share one flock-guarded singleton start routine (`scripts/lib/writ-server-lib.sh`); a healthy daemon is never restarted by them. The daemon log path has one owner, `writ_default_server_log()`: `$WRIT_LOG` > `$WRIT_LOG_ROOT/server.log` > `$CLAUDE_PLUGIN_DATA/server.log` > `<install>/var/logs/server.log`; never `/tmp` (systemd empties it at boot, the root cause of a past session-cache wipe).
+The daemon runs as a **systemd user service** in production (`scripts/install-server-service.sh`: waits for Neo4j, `Restart=on-failure`, plus the daily `writ-logs-rotate.timer`). Restart with `systemctl --user restart writ-server`, never `stop-server.sh` (it fights auto-restart). On-demand fallback: the SessionStart hook and `scripts/ensure-server.sh` share one flock-guarded singleton start routine (`scripts/lib/writ-server-lib.sh`); a healthy daemon is never restarted by them. The daemon log path has one owner, `writ_default_server_log()`: `$WRIT_LOG` > `$WRIT_LOG_ROOT/server.log` > `$CLAUDE_PLUGIN_DATA/server.log` > `<state_root>/logs/server.log`; never `/tmp` (systemd empties it at boot, the root cause of a past session-cache wipe).
 
 ## 5. Plugin packaging
 
 - **`.claude-plugin/plugin.json`**: name, version, description, `commands` pointer. It deliberately declares **no `hooks` key** (auto-discovery of `hooks/hooks.json` at the plugin root; declaring it collides as "Duplicate hooks file detected" and every hook fails to load) and **no `agents` key** (measured on Claude Code 2.1.220: a declared agents array loads zero agents; auto-discovery of the root `agents/` directory loads all five).
 - **`.claude-plugin/marketplace.json`**: the same-repo single-plugin marketplace so `claude plugin marketplace add infinri/Writ` resolves. Version must match `plugin.json` and `pyproject.toml` (a test pins all three).
-- **Install paths**: marketplace plugin (venv at `${CLAUDE_PLUGIN_DATA:-~/.cache/writ}/.venv`, survives upgrades), `~/.claude/skills/writ` auto-discovery, or an undiscovered path with `--hooks` seeding from the generated `templates/settings.json`. Full detail: `docs/install.md`.
+- **Install paths**: marketplace plugin (venv at `$CLAUDE_PLUGIN_DATA/.venv`, found by `bin/lib/writ-venv.sh` even where the plugin variables are not exported; it survives upgrades, and SessionStart repoints its editable `writ` at the running version), or a clone at any path, discovered as a plugin or given `--hooks` seeding from the generated `templates/settings.json`. State never lives in the install: see `docs/adr/ADR-state-root.md`. Full detail: `docs/install.md`. Neo4j runs as the Compose project `writ`, and every start path reuses an existing `writ-neo4j` container with `docker start`.
 
 ## 6. Known seams (2026-08-14)
 

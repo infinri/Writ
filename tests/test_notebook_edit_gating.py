@@ -109,7 +109,7 @@ class TestMatchersWired:
             for g in data.get(event, []):
                 matcher = g.get("matcher", "")
                 if tool in matcher.split("|"):
-                    out += [h["command"].rsplit("/", 1)[-1] for h in g.get("hooks", [])]
+                    out += [h["command"].rstrip('"').rsplit("/", 1)[-1] for h in g.get("hooks", [])]
             return out
         assert "writ-pre-write-dispatch.sh" in _scripts_for("PreToolUse", "NotebookEdit")
         assert "writ-posttool-rag.sh" in _scripts_for("PostToolUse", "NotebookEdit")

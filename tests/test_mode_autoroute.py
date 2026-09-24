@@ -72,16 +72,50 @@ WORK_PROMPTS = [
     "refactor the payment module to use composition",
     "create a migration for the orders table",
     "write unit tests for the parser",
+    "rename the OrderService class to OrderManager",
 ]
 
 # Discussion / questions that must route to NEITHER investigate nor work (no gating).
 NON_ROUTING_PROMPTS = [
     "how do I center a div in CSS",
     "let's discuss the overall architecture",
-    "rename the OrderService class to OrderManager",
     "what does the checkout function do",
     "add a comment explaining the regex",
     "",
+]
+
+# Recall cases taken from the shape of real past prompts: the closed object-noun list in
+# _WORK_SIGNALS matched 18 of 808, and each of these was a miss.
+WORK_RECALL_PROMPTS = [
+    "yes please update readme",
+    "data cleanup of orphaned option_ids in magento",
+    "remove the deprecated handler",
+    "rename the config key",
+    "please delete the unused fixtures",
+    "Ok, move the helper into bin/lib",
+    "can you replace the regex with a parser",
+    "bump the version to 1.9.0",
+]
+
+# Questions and conversation that must stay unrouted even though some carry a build verb.
+QUESTION_PROMPTS = [
+    "where is WEB-9059-cosmo-duplicates.csv",
+    "what file did you just modify and what exactly did we do?",
+    "why do our questions in langfuse not match our eval seed set v2?",
+    "approved",
+    "what is next?",
+    "update me on where the migration stands",
+    "let's move on to the next topic",
+    "is the rename done?",
+    "why did the cleanup of the cache fail?",
+    "git push the branch",
+    "commit and push",
+    # Tracker and pull-request housekeeping: a build verb, but no code changes.
+    "this is good please commit and push, update pr message only if needed",
+    "update jira ticket",
+    "update the ticket status",
+    "can you update the pr title",
+    "please update the pull request description",
 ]
 
 
@@ -107,6 +141,14 @@ class TestClassifyModeHint:
         assert classify_mode_hint("create an audit log table") == "work"
         assert classify_mode_hint("the audit trail should record changes") is None
         assert classify_mode_hint("audit the codebase for issues") == "investigate"
+
+    @pytest.mark.parametrize("prompt", WORK_RECALL_PROMPTS)
+    def test_imperative_build_requests_route_to_work(self, prompt):
+        assert classify_mode_hint(prompt) == "work", prompt
+
+    @pytest.mark.parametrize("prompt", QUESTION_PROMPTS)
+    def test_questions_and_conversation_do_not_route(self, prompt):
+        assert classify_mode_hint(prompt) is None, prompt
 
 
 class TestHookAutoRouteWiring:

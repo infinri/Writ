@@ -110,7 +110,7 @@ def _registered_script_names() -> set[str]:
     for entries in doc.get("hooks", {}).values():
         for entry in entries:
             for hook in entry.get("hooks", []) or []:
-                for token in str(hook.get("command", "")).split():
+                for token in str(hook.get("command", "")).replace('"', "").split():
                     if token.endswith(".sh"):
                         names.add(token.rsplit("/", 1)[-1][:-3])
     return names

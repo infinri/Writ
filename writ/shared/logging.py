@@ -5,7 +5,8 @@ classifies the event into exactly one typed stream (audit / friction / metrics) 
 `STREAM_MAP`, builds the base record from `writ.shared.friction.base_friction_entry`
 (single-source schema), sanitizes user-derived string values (SEC-INJ-LOG-001), and
 appends one JSON line to `<root>/<project>/<stream>.jsonl` under a central Writ-owned
-root (`WRIT_LOG_ROOT`, default `<skill>/var/logs`).
+root (`WRIT_LOG_ROOT`, default `<state_root>/logs`,
+see writ/shared/state_root.py).
 
 Project scope reuses the decision-memory identity (`derive_project_identity`) rather
 than re-deriving git identity inline (ARCH-BOUNDARY-002); it stays stdlib-only and
@@ -37,6 +38,7 @@ from pathlib import Path
 
 from writ.session.git_identity import NotInRepoError, derive_project_identity
 from writ.shared.friction import base_friction_entry
+from writ.shared.state_root import default_log_root
 
 # Single-source rotation threshold (~50 MB) shared by the router's source-side
 # roll and the scheduled sweep (writ.session.log_rotation imports it DOWN, so the
@@ -262,23 +264,18 @@ _DEFAULT_STREAM = "friction"
 # key itself is deliberately not renamed: `mode` is published on a live event.
 NON_GOVERNANCE_MODE_EVENTS: frozenset[str] = frozenset({"retrieval_result"})
 
-# Default log root: the Writ skill install's `var/logs`, so logs are co-located
-# with the install and follow it wherever it lives (standard `var/` runtime
-# convention). Derived from this module's own `__file__` -- not a fixed
-# `Path.home()` layout -- so it tracks the install location. `parents[2]` is the
-# skill dir that CONTAINS the `writ` package: parents[0]=writ/shared,
-# parents[1]=writ (the package), parents[2]=<skill> (e.g. ~/.claude/skills/writ),
-# resolving to <skill>/var/logs. Evaluated once at import; the `WRIT_LOG_ROOT`
-# env override still wins (checked first in `log_root`).
-_DEFAULT_LOG_ROOT = Path(__file__).resolve().parents[2] / "var" / "logs"
-
-
+# Default log root: the durable state root's `logs/` (writ/shared/state_root.py:
+# $XDG_STATE_HOME/writ/logs, else ~/.local/state/writ/logs), resolved at CALL time. It used to
+# be `<install>/var/logs`, derived from this module's __file__, and a plugin install path carries
+# the version, so each upgrade started a fresh, empty history while the previous version's audit
+# trail stayed in a directory nothing reads. History is NOT migrated (docs/adr/ADR-state-root.md);
+# the `WRIT_LOG_ROOT` env override still wins.
 def log_root() -> Path:
-    """The central Writ-owned log root: `WRIT_LOG_ROOT` env or `<skill>/var/logs`."""
+    """The central Writ-owned log root: `WRIT_LOG_ROOT` env or `<state_root>/logs`."""
     override = os.environ.get("WRIT_LOG_ROOT")
     if override:
         return Path(override)
-    return _DEFAULT_LOG_ROOT
+    return Path(default_log_root())
 
 
 def stream_path(project: str, stream: str) -> Path:

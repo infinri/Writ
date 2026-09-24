@@ -52,6 +52,12 @@ def pyor(a; b): if (a | pytruthy) then a else b end;
    | gsub("[\n\r]"; " ") | gsub("^\\s+"; "") | gsub("\\s+$"; "")) as $sid
 # NotebookEdit uses notebook_path, not file_path. Mapping it here is load-bearing:
 # the server gate sees an empty path otherwise and silently allows the write.
+# A sub-agent's payload carries its own agent_id AND its dispatcher's session_id; the gate
+# needs the dispatcher to send a mode-less sub-agent back to it. Strings only, as for $sid.
+| (if ($d.agent_id | pytruthy) and ($d.agent_id | type) == "string"
+      and ($d.session_id | type) == "string"
+   then ($d.session_id | gsub("[\n\r]"; " ") | gsub("^\\s+"; "") | gsub("\\s+$"; ""))
+   else "" end) as $parent
 | pyor($ti.file_path; pyor($ti.path; pyor($ti.notebook_path; ""))) as $fp
 | ([$fp,
     pyor($ti.content; pyor($ti.new_source; "")),
@@ -60,4 +66,5 @@ def pyor(a; b): if (a | pytruthy) then a else b end;
    | join(" ") | gsub("[\n\r]"; " ")) as $ctx
 | $sid,
   $ctx,
-  ({session_id: $sid, tool_input: $ti, skill_dir: $skill_dir, file_path: $fp} | tojson)
+  ({session_id: $sid, tool_input: $ti, skill_dir: $skill_dir, file_path: $fp,
+    parent_session_id: $parent} | tojson)

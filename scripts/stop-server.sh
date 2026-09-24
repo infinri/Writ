@@ -5,17 +5,18 @@
 
 set -euo pipefail
 
-# Resolve install paths for both install modes. WRIT_DIR/VENV_DIR are exported
-# for potential future hooks; stop-server.sh itself only needs WRIT_PORT to
-# locate the running daemon.
+# Resolve the install dir for both install modes; VENV_DIR comes from the shared resolver and is
+# exported with WRIT_DIR for potential future hooks. stop-server.sh itself only needs WRIT_PORT
+# to locate the running daemon.
 if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
     WRIT_DIR="${CLAUDE_PLUGIN_ROOT}"
-    VENV_DIR="${CLAUDE_PLUGIN_DATA:-$HOME/.cache/writ}/.venv"
 else
     SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
     WRIT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-    VENV_DIR="$WRIT_DIR/.venv"
 fi
+# shellcheck source=bin/lib/writ-venv.sh
+source "$WRIT_DIR/bin/lib/writ-venv.sh"
+writ_resolve_venv "$WRIT_DIR" || true
 export WRIT_DIR VENV_DIR
 
 WRIT_HOST="${WRIT_HOST:-localhost}"

@@ -23,34 +23,33 @@ from writ.session.config import (
     DEFAULT_SESSION_BUDGET,
     _CITATION_LOG_MAX,
 )
+from writ.shared.state_root import session_dir, state_root
 
 
-# Default session-state root: the skill install's `var/session`, derived from this
-# module's own __file__ so it follows the install rather than assuming a fixed home
-# layout. parents[2] is the skill dir containing the `writ` package
-# (parents[0]=writ/session, parents[1]=writ, parents[2]=<skill>). Identical
-# derivation to writ/shared/logging.py::_DEFAULT_LOG_ROOT.
+# Default session-state root: `<state_root>/session`, resolved by writ/shared/state_root.py
+# ($XDG_STATE_HOME/writ, else ~/.local/state/writ) at CALL time. It used to be this install's
+# own `var/session`, derived from this module's __file__, and a plugin install path carries the
+# version, so every upgrade started from an empty directory and orphaned every live session's
+# mode and approvals. bin/lib/writ_state_migrate.py carries those old caches over at
+# SessionStart. The bash mirror is writ_session_cache_dir in bin/lib/common.sh.
 #
 # NOT tempfile.gettempdir(). /usr/lib/tmpfiles.d/tmp.conf declares `D /tmp`, and the
-# capital D means systemd EMPTIES the directory at boot -- so every session cache was
+# capital D means systemd EMPTIES the directory at boot, so every session cache was
 # destroyed on reboot and a resumed conversation silently lost its mode, gates, and
 # loaded_rule_ids (the "mode=None" wipe). Measured 2026-07-23: 341 session caches
 # existed, every one postdating the boot, zero predating it. The loss was invisible
 # because a MISSING cache is not an error: _read_cache returns _default_cache()
 # before its try block, so nothing raised and nothing logged.
-# Built with os.path, not pathlib: this module is on the per-hook hot path and
-# importing pathlib here costs ~5.6ms per spawn (it pulls urllib.parse + ipaddress),
-# which would undo the import-cost fix made for exactly this reason. `os` is already
-# imported. The three dirnames walk writ/session/cache.py -> writ/session -> writ -> <skill>.
-_SKILL_ROOT = os.path.dirname(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-)
-_DEFAULT_CACHE_DIR = os.path.join(_SKILL_ROOT, "var", "session")
+
+
+def _default_cache_dir() -> str:
+    """The shipped default with WRIT_CACHE_DIR ignored: `<state_root>/session`."""
+    return os.path.join(state_root(), "session")
 
 
 def _cache_dir() -> str:
-    """Resolve the session-cache directory from WRIT_CACHE_DIR at call time."""
-    return os.environ.get("WRIT_CACHE_DIR", _DEFAULT_CACHE_DIR)
+    """Resolve the session-cache directory (WRIT_CACHE_DIR, else the default) at call time."""
+    return session_dir()
 
 
 def resolve_current_session_id() -> str | None:
@@ -118,8 +117,8 @@ def _ensure_cache_dir() -> str:
     """Return the cache dir, creating it if absent.
 
     /tmp always existed, so nothing on the write path ever had to create this. The
-    default now lives under the skill install, which does NOT exist on a fresh
-    checkout -- and a failed write would land right back in the silent-blank-session
+    default lives under the XDG state root, which does NOT exist on a fresh
+    machine, and a failed write would land right back in the silent-blank-session
     behavior this move exists to remove. Read paths deliberately do not call this: a
     missing dir there is just "no cache yet".
     """
@@ -328,7 +327,7 @@ def _write_cache(session_id: str, data: dict) -> None:
     enumeration glob.
     """
     path = _cache_path(session_id)
-    _ensure_cache_dir()  # fresh install: the default var/session tree may not exist yet
+    _ensure_cache_dir()  # fresh machine: the state-root tree may not exist yet
     dir_ = os.path.dirname(path) or "."
     fd, tmp_path = tempfile.mkstemp(
         dir=dir_, prefix=f"writ-session-{session_id}.json.", suffix=".tmp"

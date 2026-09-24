@@ -23,7 +23,11 @@ load_hook_env
 FILE="$HOOK_FILE_PATH"
 [ -z "$FILE" ] && exit 0
 
-PROTECTED_DIR="${WRIT_CACHE_DIR:-$WRIT_DIR/var/session}"
+PROTECTED_DIR="${WRIT_CACHE_DIR:-$_WRIT_STATE_ROOT/session}"
+# Every earlier release kept state in the install's own var/session, and
+# bin/lib/writ_state_migrate.py carries caches OUT of it at SessionStart, so a cache forged
+# there would be carried in. It stays protected for as long as the migration reads it.
+LEGACY_DIR="$WRIT_DIR/var/session"
 POINTER_FILE="/tmp/writ-current-session"
 # The APPROVAL CREDENTIAL. Its binding is three lines of text and no component records
 # elsewhere what was minted, so an agent able to write this file can blank line 2 and turn
@@ -33,14 +37,19 @@ POINTER_FILE="/tmp/writ-current-session"
 # the mint's fixed prefix rather than one session's path.
 TOKEN_PREFIX="/tmp/writ-gate-token-"
 
-VERDICT=$(WRIT_TGT="$FILE" WRIT_DIR_PROT="$PROTECTED_DIR" WRIT_PTR="$POINTER_FILE" \
+VERDICT=$(WRIT_TGT="$FILE" WRIT_DIR_PROT="$PROTECTED_DIR" WRIT_DIR_LEGACY="$LEGACY_DIR" WRIT_PTR="$POINTER_FILE" \
     WRIT_TOK_PREFIX="$TOKEN_PREFIX" python3 <<'PY'
 import os
 
 target = os.environ.get('WRIT_TGT', '')
-protected_dir = os.environ.get('WRIT_DIR_PROT', '')
+protected_dirs = [d for d in (os.environ.get('WRIT_DIR_PROT', ''),
+                              os.environ.get('WRIT_DIR_LEGACY', '')) if d]
 pointer = os.environ.get('WRIT_PTR', '')
 token_prefix = os.environ.get('WRIT_TOK_PREFIX', '')
+# A session cache or grant by NAME, in any directory. The migration also reads the var/session
+# of every sibling plugin version, and naming the files is simpler and tighter than listing
+# directories. bin/lib/writ-session.py does not match: its name continues with ".py", not "-".
+STATE_FILE_PREFIXES = ('writ-session-', 'writ-grant-')
 
 # realpath both sides so a symlink or a ../ walk cannot slip past the prefix test.
 def canon(path):
@@ -50,11 +59,12 @@ def canon(path):
         return os.path.abspath(path)
 
 t = canon(target)
-d = canon(protected_dir)
 
 if t == canon(pointer):
     print('pointer')
-elif d and (t == d or t.startswith(d + os.sep)):
+elif any(t == canon(d) or t.startswith(canon(d) + os.sep) for d in protected_dirs):
+    print('state')
+elif os.path.basename(t).startswith(STATE_FILE_PREFIXES):
     print('state')
 elif token_prefix and os.path.basename(t).startswith(os.path.basename(token_prefix)):
     # Compared on the BASENAME because canon() resolves /tmp through any symlink the

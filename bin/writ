@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Writ CLI shim: forward all args to `.venv/bin/python -m writ.cli`.
+# Writ CLI shim: forward all args to `<venv>/bin/python3 -m writ.cli`.
 #
-# Why: `python3 -m writ.cli` works only when invoked under the writ skill's
-# .venv (where the writ package is installed). Outside that venv the system
-# python errors with ModuleNotFoundError. This shim resolves the venv-python
-# from the skill directory regardless of caller cwd, fixing the PSR-008
-# Finding 3 footgun.
+# Why: `python3 -m writ.cli` works only under Writ's venv (where the writ package is installed).
+# Outside it the system python errors with ModuleNotFoundError. This shim finds the venv through
+# the resolver every Writ script shares (bin/lib/writ-venv.sh) regardless of caller cwd, fixing
+# the PSR-008 Finding 3 footgun.
 #
 # Usage (from any cwd, once on PATH or via symlink):
 #   writ analyze-friction --skill-usage --since 60
 #   writ analyze-friction --playbook-compliance --since 30
+#   writ mode set work <session_id>
 #   ...etc
 #
 # Install (optional): symlink into your PATH:
@@ -23,12 +23,25 @@ set -euo pipefail
 # any symlink the user might have created in PATH.
 SCRIPT_PATH="$(readlink -f "$0")"
 SKILL_DIR="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
-VENV_PY="$SKILL_DIR/.venv/bin/python3"
-
-if [ ! -x "$VENV_PY" ]; then
-    echo "writ: venv python not found at $VENV_PY" >&2
-    echo "writ: run scripts/bootstrap.sh from the writ skill directory first" >&2
+# `writ mode ...` forwards to the session helper under the SYSTEM python3, the same way every
+# hook calls it, and is handled BEFORE the venv lookup below on purpose: the helper needs only
+# the stdlib and this checkout. Claude Code puts the active plugin's bin/ on the Bash tool's
+# PATH, so `writ mode set work <session_id>` works from any cwd with no install path to find.
+if [ "${1:-}" = "mode" ]; then
+    exec python3 "$SKILL_DIR/bin/lib/writ-session.py" "$@"
+fi
+# The Bash tool exports neither CLAUDE_PLUGIN_ROOT nor CLAUDE_PLUGIN_DATA, so under the plugin it
+# is the resolver's install-path derivation that finds
+# ~/.claude/plugins/data/<plugin>-<marketplace>/.venv.
+# shellcheck source=bin/lib/writ-venv.sh
+source "$SKILL_DIR/bin/lib/writ-venv.sh"
+if ! writ_resolve_venv "$SKILL_DIR"; then
+    echo "writ: venv python not found at $VENV_DIR/bin/python3" >&2
+    case "$VENV_DIR" in
+        "$SKILL_DIR"/*) echo "writ: run bash $SKILL_DIR/scripts/bootstrap.sh first" >&2 ;;
+        *) echo "writ: run bash $SKILL_DIR/scripts/bootstrap-plugin.sh first, or set WRIT_VENV" >&2 ;;
+    esac
     exit 1
 fi
 
-exec "$VENV_PY" -m writ.cli "$@"
+exec "$VENV_DIR/bin/python3" -m writ.cli "$@"

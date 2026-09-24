@@ -247,3 +247,18 @@ class TestBothArmsAreReachable:
             assert proc.returncode in (0, 2), (
                 f"hook exited {proc.returncode} with {env_prefix}: {proc.stderr[:300]}"
             )
+
+
+def _body(out: str) -> dict:
+    return json.loads(out.splitlines()[-1])
+
+
+@pytest.mark.parametrize("run", [_run_python, _run_jq], ids=["python", "jq"])
+def test_the_body_carries_the_dispatching_session_for_a_subagent(run):
+    """A sub-agent's payload names its dispatcher in session_id; the gate needs it to send
+    the sub-agent back there instead of printing a command for the agent's own id."""
+    sub = run(json.dumps({"session_id": "main-1", "agent_id": "a-9",
+                          "tool_input": {"file_path": "/tmp/c.py"}}))
+    main = run(json.dumps({"session_id": "main-1", "tool_input": {"file_path": "/tmp/c.py"}}))
+    assert _body(sub)["parent_session_id"] == "main-1"
+    assert _body(main)["parent_session_id"] == ""

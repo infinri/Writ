@@ -418,8 +418,10 @@ class TestSeedingOverDenialConfersNoWriteAuthority:
                                             _write_envelope(DENIAL_FILE_PATH), str(REPO))
         assert seeded["can_write"] is False
         assert "[ENF-GATE-MODE]" in (seeded["reason"] or "")
-        assert (seeded["can_write"], seeded["reason"]) == (
-            ungoverned["can_write"], ungoverned["reason"]
+        # The reason names each session's own id in its `writ mode set` command, so the
+        # ids are swapped for a placeholder before the two refusals are compared.
+        assert (seeded["can_write"], seeded["reason"].replace(AGENT, "<sid>")) == (
+            ungoverned["can_write"], ungoverned["reason"].replace(UNGOVERNED_AGENT, "<sid>")
         ), "seeding over a denial changed the write decision, which it must never do"
 
     def test_a_subagent_start_cache_is_still_allowed(self, cache_dir) -> None:

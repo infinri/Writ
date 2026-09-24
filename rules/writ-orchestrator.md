@@ -2,6 +2,6 @@
 
 Content moved to Methodology node PBK-PROC-ORCHESTRATOR-001.
 The --orchestrator flag still applies: set mode with
-`python3 $SKILL_DIR/bin/lib/writ-session.py mode set work $SESSION_ID --orchestrator`
+`writ mode set work $SESSION_ID --orchestrator`
 to suppress the ranked retrieval channel only. The always-on rule floor and the
 methodology companion still reach the master every turn. Full playbook in the node.

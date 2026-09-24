@@ -12,10 +12,17 @@ _WRIT_SKILL_DIR="${_WRIT_LIB_DIR%/bin/lib}"
 _PARSE_HOOK_STDIN_PY="$_WRIT_LIB_DIR/parse-hook-stdin.py"
 _PARSE_HOOK_STDIN_JQ="$_WRIT_LIB_DIR/parse-hook-stdin.jq"
 
-# ── Session-cache location (THE bash-side definition) ────────────────────────
-# Mirrors writ/session/cache.py: WRIT_CACHE_DIR wins, else <skill>/var/session
-# derived from this file's own location (bin/lib/common.sh -> bin/lib -> bin ->
-# <skill>), the same three-step walk the package does from writ/session/cache.py.
+# ── Durable state root and session-cache location (THE bash-side definition) ──
+# Mirrors writ/shared/state_root.py: $XDG_STATE_HOME/writ when that variable is absolute (the
+# XDG spec says a relative value is to be ignored), else ~/.local/state/writ. Session caches,
+# the pending-test and lint scratch files and the typed logs all live under it, so they no
+# longer depend on where this copy of Writ is installed. The previous default was
+# <skill>/var/session, and a plugin install path carries the version, so every upgrade started
+# from an empty state tree and orphaned every live session's mode and approvals.
+#
+# Parameter expansion only, no subshell: this file is sourced by every hook and a fork here is
+# paid on every tool call. `${HOME:-}` because every hook runs under `set -u`. The trailing-slash
+# strip makes one trailing slash resolve exactly as os.path.join does.
 #
 # Do NOT reintroduce a tempdir fallback here. Commit 152e722 moved session state off
 # /tmp because tmpfiles.d declares `D /tmp`, which EMPTIES it at boot. Three bash
@@ -23,13 +30,24 @@ _PARSE_HOOK_STDIN_JQ="$_WRIT_LIB_DIR/parse-hook-stdin.jq"
 # then always answered "no mode set" (it was looking in a directory that holds no
 # session caches at all), and a hook-started daemon was born pointed at the same empty
 # directory, which is how a gate decision came to be logged with "mode": null.
-# tests/test_session_cache_dir_parity.py pins this against the package's value.
+# tests/test_state_root.py pins this against the package's value under the same environment.
+case "${XDG_STATE_HOME:-}" in
+    /*) _WRIT_STATE_ROOT="${XDG_STATE_HOME%/}/writ" ;;
+    # Tilde, not ${HOME}: with HOME unset bash then asks the password database, exactly as
+    # Python's os.path.expanduser does, so the two sides cannot split onto /.local/state.
+    *)  _WRIT_STATE_ROOT=~/.local/state/writ ;;
+esac
+# Where every earlier release kept session state: this install's own var/session. The state
+# gates keep protecting it, because bin/lib/writ_state_migrate.py copies caches OUT of it at
+# SessionStart and a cache forged there would otherwise be carried in.
+_WRIT_LEGACY_SESSION_DIR="$_WRIT_SKILL_DIR/var/session"
+
 writ_session_cache_dir() {
     if [ -n "${WRIT_CACHE_DIR:-}" ]; then
         printf '%s' "$WRIT_CACHE_DIR"
         return 0
     fi
-    printf '%s' "$_WRIT_SKILL_DIR/var/session"
+    printf '%s' "$_WRIT_STATE_ROOT/session"
 }
 
 # The session's mode read STRAIGHT from the cache file: stdlib only, no writ import and
@@ -1922,7 +1940,9 @@ WRIT_SESSION_BASE="http://${WRIT_SESSION_HOST}:${WRIT_SESSION_PORT}"
 # split into the two words `--unix-socket` and the path; quoting it would pass one
 # argument containing a space and curl would reject it. It is set here unconditionally so
 # `set -u` cannot trip on it.
-WRIT_SESSION_SOCKET="${WRIT_SOCKET:-$HOME/.cache/writ/run/writ.sock}"
+# Unquoted on purpose: an assignment never word-splits, and only an unquoted default gets
+# tilde expansion, which (unlike $HOME) still resolves when HOME is unset under set -u.
+WRIT_SESSION_SOCKET=${WRIT_SOCKET:-~/.cache/writ/run/writ.sock}
 # AN EXPLICIT HOST OR PORT OVERRIDE WINS, and that is not a nicety. Callers that set
 # WRIT_HOST or WRIT_PORT are naming the endpoint they want -- a fake daemon in a test,
 # a second instance, a probe. curl ignores the URL's host when --unix-socket is given,
@@ -2486,6 +2506,8 @@ print(json.dumps(entry))
 # Emit the "set mode before proceeding" directive (D-MODEDIR), byte-identical in the
 # orchestrator and normal branches of writ-rag-inject.sh. Leading blank line preserved.
 # Usage: emit_mode_directive "$SESSION_HELPER" "$SESSION_ID"
+# session_helper is kept in the signature for its two callers; the Declare
+# line names the path-free `writ mode` (bin/writ), which is on the Bash tool's PATH.
 emit_mode_directive() {
   local session_helper="$1" session_id="$2"
   cat << MODE_DIRECTIVE
@@ -2494,7 +2516,7 @@ emit_mode_directive() {
 Conversation: discussion, no code. Debug: investigating a problem, no code.
 Review: evaluating code against rules, no code. Work: building/modifying code (full workflow).
 Investigate: audit / explore / research a codebase or topic (evidence-grounded, read-heavy).
-Declare: python3 ${session_helper} mode set <conversation|debug|review|work|investigate> ${session_id}
+Declare: writ mode set <conversation|debug|review|work|investigate> ${session_id}
 Full definitions: see HANDBOOK.md "Mode system" section.
 MODE_DIRECTIVE
 }

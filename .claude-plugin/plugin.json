@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "writ",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "Guardrails for Claude Code: the rules that fit the task delivered per prompt, and no risky writes before you approve a plan and tests. Hybrid retrieval (BM25 + vector + graph traversal + weighted ranking, with an abstention gate) over a Neo4j knowledge graph, wired in through hook scripts and a session state machine.",
   "author": {
     "name": "Lucio Saldivar"

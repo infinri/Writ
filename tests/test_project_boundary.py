@@ -1100,8 +1100,10 @@ class TestLazySeedAbstainsLikeNoCache:
             "parent_session_id": parent_sid,
         }
         combo = gates._can_write_check("pb-21-lazy", _envelope(target), "", lazy_cache)
-        assert (combo["can_write"], combo["reason"]) == (
-            reference["can_write"], reference["reason"]
+        # The reason names each session's own id in its `writ mode set` command, so the
+        # ids are swapped for a placeholder before the two refusals are compared.
+        assert (combo["can_write"], (combo["reason"] or "").replace("pb-21-lazy", "<sid>")) == (
+            reference["can_write"], (reference["reason"] or "").replace("pb-21-ref", "<sid>")
         ), f"a lazy_seed cache diverged from the no-cache baseline: {combo} vs {reference}"
 
 

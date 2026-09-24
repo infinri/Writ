@@ -815,8 +815,7 @@ def cmd_reopen_planning(session_id: str, token: str = "") -> None:
             session_id, mode, "state_unknown",
             (
                 "This session has no declared mode, so there is no plan phase to re-open. "
-                "Declare one first: `writ-session.py mode set work <session_id>`, which "
-                "already starts in planning."
+                f"Declare one first: `writ mode set work {session_id}`, which already starts in planning."
             ),
             consume=True,
         )
@@ -837,9 +836,7 @@ def cmd_reopen_planning(session_id: str, token: str = "") -> None:
         # than a phrase that would not fire.
         if phase == "complete":
             detail = (
-                "This session's phase is `complete`. The reset for a finished cycle is "
-                "`writ-session.py mode set work <session_id>`, which starts a new one in "
-                "planning."
+                f"This session's phase is `complete`. The reset for a finished cycle is `writ mode set work {session_id}`, which starts a new one in planning."
             )
         else:
             detail = (

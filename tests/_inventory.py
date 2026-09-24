@@ -91,7 +91,7 @@ def hook_script_names() -> list[str]:
     """
     names: set[str] = set()
     for _event, command in hook_registrations():
-        for token in str(command).split():
+        for token in str(command).replace('"', "").split():
             if token.endswith(".sh"):
                 names.add(token.rsplit("/", 1)[-1][:-3])
     return sorted(names)
@@ -115,7 +115,7 @@ def matcher_tools_for_script(script_name: str) -> list[str]:
         for entry in entries or []:
             for hook in (entry.get("hooks") or []):
                 command = str(hook.get("command") or "")
-                if command.rstrip().endswith(f"/{script_name}"):
+                if command.rstrip().rstrip('"').endswith(f"/{script_name}"):
                     matcher = entry.get("matcher") or ""
                     return [t for t in matcher.split("|") if t]
     return []
@@ -2993,7 +2993,7 @@ def pretooluse_tool_scripts(*, manifest_path: Path = HOOKS_JSON) -> dict[str, li
     for entry in (manifest.get("hooks") or {}).get(_PRETOOLUSE_EVENT) or []:
         scripts = set()
         for hook in (entry.get("hooks") or []):
-            for token in str(hook.get("command") or "").split():
+            for token in str(hook.get("command") or "").replace('"', "").split():
                 if token.endswith(".sh"):
                     scripts.add(token.rsplit("/", 1)[-1])
         if not scripts:

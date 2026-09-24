@@ -25,6 +25,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -46,9 +47,20 @@ _SYSTEMD_SERVICE = "writ-server"
 
 # The package root is two levels above this file (.../writ/session/doctor.py).
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
-_VENV_PYTHON = _PACKAGE_ROOT / ".venv" / "bin" / "python"
 _ONNX_DIR = Path.home() / ".cache" / "writ" / "models" / "onnx"
 _BIBLE_DIR = _PACKAGE_ROOT / "bible"
+
+
+def _venv_python() -> Path:
+    """The interpreter whose imports the embedding check probes.
+
+    `writ doctor` runs under the venv bin/writ resolved (bin/lib/writ-venv.sh), so when this
+    process is a venv, that venv is the answer wherever it lives; a plugin keeps it outside the
+    install. Outside a venv, the clone layout's own .venv.
+    """
+    if sys.prefix != sys.base_prefix:
+        return Path(sys.prefix) / "bin" / "python3"
+    return _PACKAGE_ROOT / ".venv" / "bin" / "python3"
 
 
 @dataclass(frozen=True)
@@ -472,11 +484,11 @@ def _apply_neo4j_constraints() -> None:
 
 
 def _venv_import_ok() -> bool:
-    """True iff the .venv interpreter imports onnxruntime + tokenizers cleanly."""
+    """True iff the venv interpreter imports onnxruntime + tokenizers cleanly."""
     try:
         proc = subprocess.run(
             [
-                str(_VENV_PYTHON),
+                str(_venv_python()),
                 "-c",
                 "import onnxruntime; from tokenizers import Tokenizer",
             ],
@@ -708,7 +720,8 @@ def _collect_hook_scripts(hooks_doc: object) -> list[str]:
 def _resolve_hook_script(command: str) -> Path | None:
     """Extract the .sh path from a hook command string and resolve it under the package root."""
     token = None
-    for part in command.split():
+    # The manifest quotes the path so an install dir with a space cannot split it.
+    for part in command.replace('"', "").split():
         if ".sh" in part:
             token = part
             break
@@ -885,7 +898,7 @@ def check_neo4j_connectivity(opts: DoctorOptions) -> CheckResult:
             name=name,
             detail=(
                 f"No TCP connection to Neo4j at {host}:{port}; start it with "
-                "`docker compose up -d neo4j` and wait for bolt."
+                "`docker start writ-neo4j` (or `docker compose up -d neo4j` from the install dir when no such container exists) and wait for bolt."
             ),
         )
 
@@ -896,7 +909,7 @@ def check_neo4j_connectivity(opts: DoctorOptions) -> CheckResult:
             name=name,
             detail=(
                 f"Bolt port open but count_rules() failed ({exc}); check Neo4j is "
-                "up via `docker compose ps`."
+                "up via `docker ps --filter name=writ-neo4j`."
             ),
         )
 
@@ -1121,7 +1134,7 @@ def check_embedding_stack(opts: DoctorOptions) -> CheckResult:
 
     parts = []
     if not import_ok:
-        parts.append("onnxruntime/tokenizers import failed in .venv")
+        parts.append("onnxruntime/tokenizers import failed in the venv")
     if not model_ok:
         parts.append("model.onnx missing")
     if not tokenizer_ok:
@@ -1129,7 +1142,7 @@ def check_embedding_stack(opts: DoctorOptions) -> CheckResult:
     return _fail(
         name=name,
         detail=(
-            f"{'; '.join(parts)}. Run `.venv/bin/pip install -e .[dev]` and "
+            f"{'; '.join(parts)}. Re-run the bootstrap (scripts/bootstrap.sh or scripts/bootstrap-plugin.sh) and "
             "`python scripts/export_onnx.py` to rebuild the onnx model files."
         ),
     )
@@ -1385,10 +1398,10 @@ def _registered_hook_scripts() -> dict[str, Path]:
     for entries in (doc.get("hooks") or {}).values():
         for entry in entries or []:
             for hook in entry.get("hooks") or []:
-                for token in str(hook.get("command", "")).split():
+                for token in str(hook.get("command", "")).replace('"', "").split():
                     if not token.endswith(".sh"):
                         continue
-                    # Commands are `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/<name>.sh`;
+                    # Commands are `bash "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/<name>.sh"`;
                     # everything after the closing brace is the package-relative path.
                     relative = token.split("}", 1)[-1].lstrip("/")
                     found[token.rsplit("/", 1)[-1][:-3]] = _PACKAGE_ROOT / relative

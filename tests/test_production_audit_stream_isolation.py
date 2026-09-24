@@ -95,27 +95,27 @@ class TestProductionAuditPathIsEnvironmentIndependent:
             f"at a tmp dir, expected the unchanged {baseline}"
         )
 
-    def test_path_is_under_the_skill_install_var_logs(self) -> None:
-        """Reddened by deriving the root from anything other than this
-        skill install's own var/logs (e.g. a hardcoded /tmp path, or
+    def test_path_is_under_the_default_log_root(self) -> None:
+        """Reddened by deriving the root from anything other than the
+        durable XDG state root's logs/ (e.g. a hardcoded /tmp path, or
         Path.home()).
 
         CONTAINMENT, NOT DEPTH. This asserted `path.parent.parent.name ==
         "logs"` when it was written, which presumes the project scope is ONE
         path segment. It is not: `resolve_project` answers this checkout's
         clone-stable identity `github.com/infinri/Writ`, three segments, so
-        the real stream is `var/logs/github.com/infinri/Writ/audit.jsonl` and
+        the real stream is `logs/github.com/infinri/Writ/audit.jsonl` and
         the old assertion read `infinri`. The only implementations that could
         satisfy it would flatten the project into one segment, which names a
         path that does not exist, so `read_rows` would return [] and the
         module guard would pass VACUOUSLY forever: the blind guard this cycle
         exists to prevent. Depth is therefore not asserted at all, and
-        containment under the install's own var/logs is, which is the property
+        containment under the default log root is, which is the property
         the docstring above actually claims.
         """
-        import writ.shared.logging as _logging
+        from writ.shared.state_root import default_log_root
 
-        var_logs = Path(_logging.__file__).resolve().parents[2] / "var" / "logs"
+        var_logs = Path(default_log_root())
         path = production_audit_path()
         assert path.name == "audit.jsonl"
         assert var_logs in path.parents, (path, var_logs)

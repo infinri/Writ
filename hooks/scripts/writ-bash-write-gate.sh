@@ -610,7 +610,12 @@ _readonly_inspection() {
     return 0
 }
 
-STATE_DIR_GUARD="${WRIT_CACHE_DIR:-$WRIT_DIR/var/session}"
+# The state root's session/ (bin/lib/common.sh), and the install-relative var/session every
+# earlier release used, which bin/lib/writ_state_migrate.py reads from and so must stay
+# protected. The literal "state/writ/session" in the list below catches the ~ and $HOME
+# spellings of the default, which the absolute path text cannot.
+STATE_DIR_GUARD="${WRIT_CACHE_DIR:-$_WRIT_STATE_ROOT/session}"
+LEGACY_STATE_DIR_GUARD="$WRIT_DIR/var/session"
 
 # The minter's own TEST FILE is not the minter. The grant module's name is a
 # module name, so it matched the test file named after it as readily as the
@@ -686,7 +691,7 @@ STATE_MATCH=""
 # stays runnable. The cost is the one every pattern here carries: a Bash command that
 # merely mentions the symbol is refused unless it is plain read-only inspection, so prose
 # naming it goes through a file with `git commit -F <file>`.
-for _state_pat in "$STATE_DIR_GUARD" "/tmp/writ-current-session" "writ-session-" \
+for _state_pat in "$STATE_DIR_GUARD" "$LEGACY_STATE_DIR_GUARD" "state/writ/session" "/tmp/writ-current-session" "writ-session-" \
                   "writ-manual-test-grant" "manual_test_grant" "writ-grant-" \
                   "writ-gate-token" "reopen-planning" "auto-approve-gate" \
                   "mint_gate_token"; do
@@ -993,9 +998,10 @@ _irreversible_reason() {
     #
     #    THE ARTIFACT TOKEN IS THE EXACT FILENAME, never the bare prefix: writ-blackbox
     #    alone appears in 14 real command lines, all of them routine capture on and off, so
-    #    a prefix rule reds every one. var/logs is LAST so that a path naming both the tree
-    #    and a file inside it reports the file the operator actually aimed at.
-    local -a _IRREV_LOG_ARTIFACTS=("audit.jsonl" "friction.jsonl" "metrics.jsonl" "errors.jsonl" "workflow-friction.log" "writ-blackbox.jsonl" "var/logs")
+    #    a prefix rule reds every one. The two tree tokens (var/logs, the legacy log
+    #    tree, and state/writ, the state root that now holds the logs) are LAST so that a path naming both
+    #    a tree and a file inside it reports the file the operator actually aimed at.
+    local -a _IRREV_LOG_ARTIFACTS=("audit.jsonl" "friction.jsonl" "metrics.jsonl" "errors.jsonl" "workflow-friction.log" "writ-blackbox.jsonl" "var/logs" "state/writ")
     local _irrev_art="" _irrev_verb="" _irrev_flat="" _irrev_seg _irrev_a _irrev_v
     for _irrev_a in "${_IRREV_LOG_ARTIFACTS[@]}"; do
         case "$lower" in *"$_irrev_a"*) _irrev_art="$_irrev_a"; break ;; esac
@@ -1349,7 +1355,7 @@ fi
 # so the status is not read from `$?`; it is read from whether the block PRINTED that it
 # finished. That is ADR property 3: the outcome is observed, never inferred from an empty
 # value.
-TARGETS=$(WRIT_BASH_CMD_FILE="$CMD_FILE" WRIT_CWD="$(pwd)" WRIT_DIR="$WRIT_DIR" python3 <<'PY' 2>/dev/null || true
+TARGETS=$(WRIT_BASH_CMD_FILE="$CMD_FILE" WRIT_CWD="$(pwd)" WRIT_DIR="$WRIT_DIR" WRIT_STATE_DIR_GUARD="$STATE_DIR_GUARD" python3 <<'PY' 2>/dev/null || true
 import os, re, shlex, sys
 
 # `~name` resolves through the password database (see expand_word), so an unavailable
@@ -1417,11 +1423,15 @@ except Exception:
 # Writ gate state: mode, approved gates and the manual-testing grant. The agent
 # editing these would be approving its own gates, so they are denied in any mode.
 # Defined outside the try/except above so it exists on BOTH the package-import and
-# fallback paths. Mirrors writ-state-write-gate.sh, which covers Write/Edit.
+# fallback paths. Mirrors writ-state-write-gate.sh, which covers Write/Edit. Two
+# directories: the state root's session/ the bash side resolved (WRIT_STATE_DIR_GUARD,
+# falling back to WRIT_CACHE_DIR for a caller that does not pass it), and this install's
+# legacy var/session, which the SessionStart migration reads from.
 _WRIT_HOME = os.environ.get("WRIT_DIR", "")
-_STATE_DIR = os.environ.get("WRIT_CACHE_DIR") or (
-    os.path.join(_WRIT_HOME, "var", "session") if _WRIT_HOME else ""
-)
+_STATE_DIRS = tuple(d for d in (
+    os.environ.get("WRIT_STATE_DIR_GUARD") or os.environ.get("WRIT_CACHE_DIR") or "",
+    os.path.join(_WRIT_HOME, "var", "session") if _WRIT_HOME else "",
+) if d)
 _POINTER = "/tmp/writ-current-session"
 
 
@@ -1437,13 +1447,14 @@ def is_gate_state(path):
             return True
     except Exception:
         pass
-    if not _STATE_DIR:
-        return False
-    try:
-        sd = os.path.realpath(os.path.abspath(_STATE_DIR))
-    except Exception:
-        return False
-    return ap == sd or ap.startswith(sd + os.sep)
+    for state_dir in _STATE_DIRS:
+        try:
+            sd = os.path.realpath(os.path.abspath(state_dir))
+        except Exception:
+            continue
+        if ap == sd or ap.startswith(sd + os.sep):
+            return True
+    return False
 
 
 NONFILE = {"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/zero", "-", ""}

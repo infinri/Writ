@@ -36,12 +36,11 @@ class TestBootstrapPluginContent:
         return BOOTSTRAP_PLUGIN.read_text()
 
     def test_bootstrap_plugin_uses_plugin_data_for_venv(self, content: str) -> None:
-        """Venv path must use ${CLAUDE_PLUGIN_DATA:-$HOME/.cache/writ}/.venv."""
-        assert "${CLAUDE_PLUGIN_DATA:-$HOME/.cache/writ}" in content, (
-            "bootstrap-plugin.sh must use ${CLAUDE_PLUGIN_DATA:-$HOME/.cache/writ} for venv base"
-        )
-        assert "${CLAUDE_PLUGIN_DATA:-$HOME/.cache/writ}/.venv" in content, (
-            "bootstrap-plugin.sh venv path must be ${CLAUDE_PLUGIN_DATA:-$HOME/.cache/writ}/.venv"
+        """The venv location comes from the one resolver (bin/lib/writ-venv.sh), whose order puts
+        $CLAUDE_PLUGIN_DATA/.venv ahead of every install-relative guess."""
+        assert "bin/lib/writ-venv.sh" in content
+        assert 'writ_resolve_venv "${WRIT_DIR}"' in content, (
+            "bootstrap-plugin.sh must take VENV_DIR from writ_resolve_venv"
         )
 
     def test_bootstrap_plugin_uses_pip_install_editable(self, content: str) -> None:

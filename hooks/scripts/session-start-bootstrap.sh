@@ -13,6 +13,18 @@ set -u
 #    Guarded: an empty / unreadable payload leaves the fields blank and the carry no-ops.
 STDIN_JSON="$(cat 2>/dev/null || true)"
 
+# 0b. Carry session state out of the install-relative var/session earlier releases used, into
+#     the durable state root (bin/lib/writ_state_migrate.py says why and how). It runs BEFORE
+#     the CLAUDE_PLUGIN_ROOT exit below, because a clone whose hooks were seeded into
+#     settings.json has no CLAUDE_PLUGIN_ROOT and would otherwise never migrate, and before the
+#     venv probe, because it needs only the system python3. The path is this script's own
+#     location (hooks/scripts -> <skill>), the walk writ-rag-inject.sh uses outside the plugin
+#     loader. Best-effort and silent: a failed carry leaves the session exactly as it was.
+_SSB_SKILL_DIR="$(cd "$(dirname "$0")/../.." 2>/dev/null && pwd)" || _SSB_SKILL_DIR=""
+if [ -n "$_SSB_SKILL_DIR" ] && [ -f "$_SSB_SKILL_DIR/bin/lib/writ_state_migrate.py" ]; then
+  python3 "$_SSB_SKILL_DIR/bin/lib/writ_state_migrate.py" >/dev/null 2>&1 || true
+fi
+
 # 1. Resolve install root and persistent-data dir. The plugin loader sets
 #    CLAUDE_PLUGIN_ROOT; if unset, we're not running under the loader so
 #    there's nothing to bootstrap.
@@ -52,9 +64,16 @@ print((d.get('agent_id') or d.get('session_id') or '').strip())
 " 2>/dev/null || echo "")"
 
 WRIT_DATA="${CLAUDE_PLUGIN_DATA:-$HOME/.cache/writ}"
-# Venv lives at ${CLAUDE_PLUGIN_DATA:-$HOME/.cache/writ}/.venv so it
-# survives plugin upgrades that rewrite ${CLAUDE_PLUGIN_ROOT}.
-VENV_DIR="${CLAUDE_PLUGIN_DATA:-$HOME/.cache/writ}/.venv"
+# The venv comes from the shared resolver (bin/lib/writ-venv.sh). Under the loader that is
+# $CLAUDE_PLUGIN_DATA/.venv, outside ${CLAUDE_PLUGIN_ROOT}, so an upgrade does not orphan it.
+# The loader's ${WRIT_DIR} copy wins, per this file's header: a dirname walk can land in a staged
+# or stale tree. The walk (step 0b) is only the fallback for a plugin root that holds nothing yet,
+# so step 2's message still prints there instead of the hook dying on an unbound VENV_DIR.
+_SSB_VENV_LIB="${WRIT_DIR}/bin/lib/writ-venv.sh"
+[ -f "$_SSB_VENV_LIB" ] || _SSB_VENV_LIB="${_SSB_SKILL_DIR:-${WRIT_DIR}}/bin/lib/writ-venv.sh"
+# shellcheck source=bin/lib/writ-venv.sh
+source "$_SSB_VENV_LIB"
+writ_resolve_venv "${WRIT_DIR}"
 NEO4J_HOST="${WRIT_NEO4J_HOST:-localhost}"
 NEO4J_PORT="${WRIT_NEO4J_PORT:-7687}"
 
@@ -78,6 +97,13 @@ MSG
   exit 0
 fi
 
+# 2b. The venv must import writ from THIS install. After an upgrade the shared venv still imports
+#     the previous version dir, and a venv bootstrapped from a developer checkout imports the
+#     checkout; either way the daemon would serve code this install does not ship. Here and only
+#     here: the probe is a python start (~50ms), which the per-prompt path must not pay.
+#     Non-fatal: a failed repoint prints the bootstrap command and the session carries on.
+writ_venv_repoint "${VENV_DIR}" "${WRIT_DIR}" || true
+
 # 3. Probe Neo4j bolt port 7687. If unreachable, instruct user and exit 0.
 # timeout-wrapped: a bare /dev/tcp connect to a black-holed host blocks for the
 # kernel SYN timeout (minutes) and would stall every SessionStart with it.
@@ -85,6 +111,8 @@ if ! timeout 2 bash -c "exec 3<>/dev/tcp/${NEO4J_HOST}/${NEO4J_PORT}" 2>/dev/nul
   cat >&2 <<MSG
 [Writ] Neo4j not reachable at ${NEO4J_HOST}:${NEO4J_PORT}.
 [Writ] Start it with:
+[Writ]   docker start writ-neo4j
+[Writ] or, when no writ-neo4j container exists yet:
 [Writ]   docker compose -f ${WRIT_DIR}/docker-compose.yml up -d neo4j
 [Writ] Writ hooks will degrade gracefully until Neo4j is up.
 MSG

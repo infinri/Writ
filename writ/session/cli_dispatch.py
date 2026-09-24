@@ -11,9 +11,11 @@ B6-main: the commands that take a single <session_id> arg collapse to the _SIMPL
 exit-code translation) each get a _cli_* handler routed by _COMPLEX_COMMANDS.
 """
 
+import json
+import os
 import sys
 
-from writ.session.mode_engine import cmd_mode
+from writ.session.mode_engine import VALID_MODES, cmd_mode
 from writ.session.gates import cmd_can_write, cmd_can_read_code
 from writ.session.approval_workflow import (
     cmd_advance_phase,
@@ -50,7 +52,7 @@ from writ.session.session_lifecycle import (
 )
 from writ.session.feedback import cmd_auto_feedback
 from writ.session.metrics import cmd_metrics
-from writ.session.cache import resolve_current_session_id
+from writ.session.cache import _cache_path, resolve_current_session_id
 from writ.session.cli_io import _usage_exit
 
 
@@ -123,8 +125,8 @@ def _no_session_message(subcmd: str) -> str:
     return (
         "writ-session.py: cannot determine which session to apply "
         f"`mode {subcmd}` to, and Writ no longer guesses one.\n"
-        "  Supply it explicitly:  writ-session.py mode "
-        f"{subcmd} <conversation|debug|review|work> <session_id>\n"
+        f"  Supply it explicitly:  writ mode {subcmd} <conversation|debug|review|work> <session_id>\n"
+        f"                        (the same as writ-session.py mode {subcmd} ...)\n"
         "  or export an identity:  CLAUDE_SESSION_ID=<session_id>\n"
         "                          CLAUDE_JOB_DIR=<dir whose basename is the session_id>\n"
         "Claude Code exports NEITHER of those (measured 2026-08-11, 2.1.227), so inside a "
@@ -135,9 +137,53 @@ def _no_session_message(subcmd: str) -> str:
     )
 
 
+def _same_tree(a: str, b: str) -> bool:
+    ra, rb = os.path.realpath(a), os.path.realpath(b)
+    return ra == rb or ra.startswith(rb + os.sep) or rb.startswith(ra + os.sep)
+
+
+def _warn_on_unfamiliar_session(subcmd: str, sid: str) -> None:
+    """Say so on stderr when `mode set|switch` is about to write a session that looks wrong.
+
+    Measured: a session copied ids out of /tmp/writ-current-session, set its mode on two OTHER
+    sessions' ids, got `set: work` both times, and its own id stayed at mode null. Nothing in
+    the output could show it, because writing a mode onto any string succeeds. Two shapes are
+    cheap to detect: no cache exists for the id (a new session, or a mistyped or foreign id,
+    which the printed path makes checkable), and a cache recorded in a different project.
+
+    A WARNING, never a refusal, and exit 0 either way: the first `mode set` of a genuinely new
+    session also has no cache. `mode init` never reaches this, because the auto-route
+    classifier calls it on every first turn.
+    """
+    path = _cache_path(sid)
+    if not os.path.exists(path):
+        print(
+            f"writ-session.py: warning: `mode {subcmd}` is creating a NEW session cache for "
+            f"'{sid}' at {path}. If this is not a brand-new session, the id is wrong and this "
+            "mode lands on a session nobody is running. Use the session id from this session's "
+            "own [Writ: ...] messages, never /tmp/writ-current-session, which names whichever "
+            "session on this machine took a turn last.",
+            file=sys.stderr,
+        )
+        return
+    try:
+        with open(path) as handle:
+            recorded = (json.load(handle) or {}).get("project_root") or ""
+    except (OSError, ValueError, AttributeError):
+        return
+    cwd = os.getcwd()
+    if recorded and not _same_tree(recorded, cwd):
+        print(
+            f"writ-session.py: warning: session '{sid}' was last declared in {recorded}, and "
+            f"this command runs in {cwd}. If that is another project's session, the id is "
+            f"wrong. Cache: {path}",
+            file=sys.stderr,
+        )
+
+
 def _cli_mode(argv: list[str]) -> None:
     if len(argv) < 4:
-        _usage_exit("Usage: writ-session.py mode <get|set|switch> <session_id|value> [session_id]")
+        _usage_exit("Usage: writ-session.py mode <get|set|switch|init> <session_id|value> [session_id]")
     subcmd = argv[2]
     if subcmd == "get":
         cmd_mode(argv[3], "get")
@@ -152,6 +198,8 @@ def _cli_mode(argv: list[str]) -> None:
         if not sid:
             _usage_exit(_no_session_message(subcmd))
         orch = "--orchestrator" in argv
+        if subcmd in ("set", "switch") and argv[3].lower() in VALID_MODES:
+            _warn_on_unfamiliar_session(subcmd, sid)
         cmd_mode(sid, subcmd, argv[3], is_orchestrator=orch)
     else:
         _usage_exit(f"Unknown mode subcommand: {subcmd}")

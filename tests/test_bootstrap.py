@@ -135,8 +135,12 @@ class TestBootstrapSections:
         )
 
     def test_bootstrap_starts_neo4j_via_compose(self, content: str) -> None:
-        assert "docker compose up" in content or "docker-compose up" in content, (
-            "bootstrap.sh must start Neo4j via docker compose, not raw docker run"
+        """Through the shared helper, which starts an existing writ-neo4j and composes only when
+        there is none (so a container from another install version never conflicts)."""
+        assert "writ_neo4j_start" in content, "bootstrap.sh must start Neo4j via writ_neo4j_start"
+        lib = (SCRIPTS_DIR / "lib" / "writ-server-lib.sh").read_text()
+        assert 'docker compose -f "$1" up -d neo4j' in lib, (
+            "writ_neo4j_start must fall back to docker compose, not raw docker run"
         )
 
     def test_bootstrap_waits_for_neo4j(self, content: str) -> None:

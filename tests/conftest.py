@@ -38,10 +38,11 @@ from tests._graph import apply_isolation_env  # noqa: E402
 WRIT_SUITE_IS_ISOLATED = apply_isolation_env(_os.environ)
 
 # Force WRIT_CACHE_DIR to a session-owned temp dir, at import (before any test or
-# subprocess). The session-cache default moved off /tmp to <skill>/var/session so it
-# survives a reboot -- but that made the install dir the fallback, so any subprocess
-# test that does NOT set WRIT_CACHE_DIR (many build their own env from os.environ)
-# would now write real session caches into var/session, polluting live state. /tmp
+# subprocess). The session-cache default is the XDG state root (off /tmp, so it
+# survives a reboot), which made the operator's real state directory the fallback, so
+# any subprocess test that does NOT set WRIT_CACHE_DIR (many build their own env from
+# os.environ) would now write real session caches into that state directory,
+# polluting live state. /tmp
 # used to absorb those harmlessly. This restores that: a stable non-production dir
 # for the whole run (the daemon reads it once at start via expected_cache_dir(), so
 # it must not change per-test), off the install tree. Tests that set their own

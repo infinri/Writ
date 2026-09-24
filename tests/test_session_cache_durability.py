@@ -56,23 +56,15 @@ def test_default_cache_dir_is_not_inside_the_system_temp_dir(no_override):
     assert tmp not in resolved.parents and resolved != tmp
 
 
-def test_default_cache_dir_lives_under_the_skill_install(no_override):
-    """Same derivation as the log-root ADR: state follows the install."""
+def test_default_cache_dir_is_not_under_the_install(no_override):
+    """State must survive an upgrade: a plugin install path carries the version."""
     resolved = Path(cache_mod._cache_dir()).resolve()
-    assert SKILL_ROOT.resolve() in resolved.parents or resolved == SKILL_ROOT.resolve()
+    assert SKILL_ROOT.resolve() not in resolved.parents and resolved != SKILL_ROOT.resolve()
 
 
-def test_default_cache_dir_is_under_var(no_override):
-    resolved = Path(cache_mod._cache_dir()).resolve()
-    assert "var" in resolved.parts, f"expected a var/ runtime tree; got {resolved}"
-
-
-def test_default_cache_dir_derives_from_the_module_not_a_fixed_home(no_override):
-    """Derived from __file__ so a relocated install keeps its own state, rather
-    than assuming a fixed ~/.claude layout."""
-    resolved = Path(cache_mod._cache_dir()).resolve()
-    module_root = Path(cache_mod.__file__).resolve().parents[2]
-    assert module_root in resolved.parents or resolved == module_root
+def test_default_cache_dir_is_the_state_root_session_dir(no_override):
+    from writ.shared.state_root import state_root
+    assert cache_mod._cache_dir() == os.path.join(state_root(), "session")
 
 
 # --- the override must keep working -----------------------------------------

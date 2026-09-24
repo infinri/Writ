@@ -58,6 +58,52 @@ _WORK_SIGNALS = re.compile(
     re.IGNORECASE,
 )
 
+# Imperative build verbs, added after the classifier was measured against real prompts:
+# _WORK_SIGNALS matched 18 of 808 past user prompts, and "yes please update readme", "remove
+# the deprecated handler" and "rename the config key" all missed because each wants its object
+# from a closed noun list. PRECISION IS KEPT BY POSITION instead: the verb has to open a clause
+# (start of the prompt or a line, after sentence punctuation or a comma, or after a go-ahead
+# lead such as "please", "yes", "ok", "can you"), which is where an instruction puts it and
+# where a question does not. git push / commit / merge are deliberately absent: they publish
+# work rather than change code, and a plan gate in front of a push is pure friction. "port"
+# and "drop" are absent because "port 8765 is in use" and "drop it" are not requests.
+_IMPERATIVE_LEAD = (
+    r"(?:^|[.!;:,\n]\s*|\b(?:please|pls|yes|yeah|yep|ok|okay|sure|now|then|also|and|"
+    r"go\s+ahead\s+and|let'?s|can\s+you|could\s+you|would\s+you|will\s+you)\s+)"
+)
+_BUILD_VERB = (
+    r"(?:update|remove|delete|rename|move|replace|clean\s*-?\s*up|cleanup|bump|upgrade|"
+    r"convert|deprecate)"
+)
+# A verb followed by one of these is conversation, not a code change: "update me on",
+# "move on", "clean up after". Pull-request and tracker objects ("update pr message",
+# "update the ticket status") are housekeeping, not code, and would otherwise put a plan
+# gate in front of a commit-and-push.
+_NOT_AN_OBJECT = (
+    r"(?!(?:me|us|you|yourself|on|forward|ahead|along|after)\b)"
+    r"(?!(?:(?:the|a|an|this|that|my|our)\s+)?"
+    r"(?:prs?|pull\s+requests?|tickets?|jira|story|epic|confluence)\b)"
+)
+_WORK_IMPERATIVE = re.compile(
+    _IMPERATIVE_LEAD + _BUILD_VERB + r"\s+" + _NOT_AN_OBJECT + r"[\w./-]",
+    re.IGNORECASE | re.MULTILINE,
+)
+# "data cleanup of orphaned option_ids" names the task as a noun, so there is no verb to lead
+# with. Only the cleanup noun is accepted this way, and only with an object after it.
+_WORK_CLEANUP_NOUN = re.compile(
+    r"\b(?:clean\s*-?\s*up|cleanup)\s+(?:of|for)\s+\w"
+    r"|\b(?:data|code|db|database|repo|dead[\s-]+code)\s+clean\s*-?\s*up\b",
+    re.IGNORECASE,
+)
+# A prompt that OPENS as a question is a question, whatever verb appears later in it ("why did
+# the cleanup of X fail", "is the rename done"). Applied only to the two patterns above, so no
+# prompt _WORK_SIGNALS already matched changes its answer.
+_QUESTION_OPENING = re.compile(
+    r"^\s*(?:why|where|what|when|who|whom|whose|which|how|is|are|was|were|do|does|did|"
+    r"has|have|had|should|shall)\b",
+    re.IGNORECASE,
+)
+
 
 def classify_mode_hint(prompt: str | None) -> str | None:
     """Best-effort mode suggestion from a user prompt. Returns 'investigate' for an
@@ -68,6 +114,10 @@ def classify_mode_hint(prompt: str | None) -> str | None:
     if _INVESTIGATE_SIGNALS.search(prompt):
         return "investigate"
     if _WORK_SIGNALS.search(prompt):
+        return "work"
+    if not _QUESTION_OPENING.match(prompt) and (
+        _WORK_IMPERATIVE.search(prompt) or _WORK_CLEANUP_NOUN.search(prompt)
+    ):
         return "work"
     return None
 

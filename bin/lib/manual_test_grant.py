@@ -56,12 +56,16 @@ GRANT_PHRASES = (
 )
 
 _SKILL_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_DEFAULT_CACHE_DIR = os.path.join(_SKILL_ROOT, 'var', 'session')
+if _SKILL_ROOT not in sys.path:
+    sys.path.insert(0, _SKILL_ROOT)
+# Imports nothing but os, so this module stays stdlib-only.
+from writ.shared.state_root import session_dir  # noqa: E402
 
 
 def cache_dir():
-    """Resolved at call time so WRIT_CACHE_DIR overrides work in tests."""
-    return os.environ.get('WRIT_CACHE_DIR', _DEFAULT_CACHE_DIR)
+    """Resolved at call time so WRIT_CACHE_DIR overrides work in tests. The one definition is
+    writ/shared/state_root.py::session_dir (WRIT_CACHE_DIR, else the XDG state root)."""
+    return session_dir()
 
 
 def grant_path(session_id):

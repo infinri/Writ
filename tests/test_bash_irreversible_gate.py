@@ -383,6 +383,7 @@ ARTIFACT_PROBES: dict[str, str] = {
     "errors.jsonl": "rm -f /srv/archive/errors.jsonl",
     "workflow-friction.log": "rm -f /srv/archive/workflow-friction.log",
     "writ-blackbox.jsonl": "rm -f /srv/archive/writ-blackbox.jsonl",
+    "state/writ": "rm -rf ~/.local/state/writ/logs",
 }
 
 _UNDERIVED = "<population underived from the hook source>"

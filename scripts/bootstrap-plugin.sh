@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 # Writ plugin bootstrap -- end-to-end setup for a Claude Code plugin install.
 #
-# Plugin-aware variant of scripts/bootstrap.sh. Creates a Python venv at
-# ${CLAUDE_PLUGIN_DATA:-$HOME/.cache/writ}/.venv so the venv survives plugin
-# upgrades that rewrite ${CLAUDE_PLUGIN_ROOT}. Installs the package via
-# `pip install -e ${CLAUDE_PLUGIN_ROOT}` (editable) so subsequent upgrades
-# rebind imports to the new install path. Brings up Neo4j via docker
-# compose, ingests the rule corpus, and starts the Writ daemon.
-# Idempotent -- safe to re-run on every plugin upgrade.
+# Plugin-aware variant of scripts/bootstrap.sh. The venv lives where bin/lib/writ-venv.sh puts
+# it, which for a plugin install is ${CLAUDE_PLUGIN_DATA}/.venv (derived from the install path
+# when that variable is not exported), so it survives upgrades that rewrite ${CLAUDE_PLUGIN_ROOT}.
+# Installs the package via `pip install -e` from the install dir this script runs from, and the
+# SessionStart hook repoints it at each new version dir. Brings up Neo4j, ingests the rule
+# corpus, and starts the Writ daemon. Idempotent: safe to re-run on every plugin upgrade.
 #
 # This is THE one command a plugin install runs. Besides the runtime it also patches
 # ~/.claude (permissions + statusLine + CLAUDE.md) and installs the user-level slash
@@ -52,9 +51,6 @@ else
     WRIT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 fi
 
-# Persistent data dir survives plugin upgrades.
-WRIT_DATA="${CLAUDE_PLUGIN_DATA:-$HOME/.cache/writ}"
-VENV_DIR="${WRIT_DATA}/.venv"
 COMPOSE_FILE="${WRIT_DIR}/docker-compose.yml"
 
 # ── Colors (ANSI, degrade gracefully on dumb terminals) ─────────────────────
@@ -137,9 +133,16 @@ if ! docker info >/dev/null 2>&1; then
 fi
 ok "docker daemon reachable"
 
-# ── 3. Python venv at ${CLAUDE_PLUGIN_DATA}/.venv ───────────────────────────
+# ── 3. Python venv (location from bin/lib/writ-venv.sh) ─────────────────────
+# The venv comes from the shared resolver. Run by hand from the plugin cache with no
+# CLAUDE_PLUGIN_DATA exported, it still lands in the directory the loader would name,
+# ~/.claude/plugins/data/<plugin>-<marketplace>. Sourced here, after the preflight: under its
+# stripped PATH the dirname walk above cannot resolve WRIT_DIR.
+# shellcheck source=bin/lib/writ-venv.sh
+source "${WRIT_DIR}/bin/lib/writ-venv.sh"
+writ_resolve_venv "${WRIT_DIR}" || true
 step "Setting up Python virtualenv at $VENV_DIR"
-mkdir -p "$WRIT_DATA"
+mkdir -p "${VENV_DIR%/*}"
 if [ ! -d "$VENV_DIR" ]; then
     python3 -m venv "$VENV_DIR"
     ok "created $VENV_DIR"
@@ -157,6 +160,11 @@ pip install --quiet --upgrade pip
 # in the separate [fallback] group and is NOT installed by default --
 # production daemons running on ONNX never need it.
 pip install --quiet -e "${WRIT_DIR}[dev]"
+if ! writ_venv_serves "$VENV_DIR" "$WRIT_DIR"; then
+    err "the venv imports writ from ${_WRIT_VENV_WRIT_FROM:-nowhere}, not ${WRIT_DIR}/writ"
+    echo "   Another install is shadowing this one: $VENV_DIR/bin/pip uninstall -y claude-writ, then re-run." >&2
+    exit 1
+fi
 ok "writ package installed (editable from ${WRIT_DIR}, with dev extras)"
 
 # ── 4b. Export ONNX embedding model ─────────────────────────────────────────
@@ -169,23 +177,16 @@ else
     ok "ONNX model exported to $ONNX_MODEL_PATH"
 fi
 
-# ── 5. Start Neo4j via docker compose ──────────────────────────────────────
-step "Starting Neo4j via docker compose"
-# Idempotent across container provenance: a writ-neo4j container created
-# outside this compose project (manual docker run, an older checkout's
-# compose) makes `compose up` fail on the name conflict. If the container
-# exists, reuse it: start it if stopped, leave it if running.
-if docker inspect writ-neo4j >/dev/null 2>&1; then
-    if [ "$(docker inspect -f '{{.State.Running}}' writ-neo4j 2>/dev/null)" = "true" ]; then
-        ok "neo4j container already running (pre-existing, reused)"
-    else
-        docker start writ-neo4j >/dev/null
-        ok "neo4j container started (pre-existing, reused)"
-    fi
-else
-    docker compose -f "${COMPOSE_FILE}" up -d neo4j >/dev/null
-    ok "neo4j container started"
+# ── 5. Start Neo4j ─────────────────────────────────────────────────────────
+step "Starting Neo4j"
+# Sourced here, after the preflight: common.sh, which the lib pulls in, needs dirname on PATH.
+# shellcheck source=scripts/lib/writ-server-lib.sh
+source "${WRIT_DIR}/scripts/lib/writ-server-lib.sh"
+if ! writ_neo4j_start "${COMPOSE_FILE}"; then
+    err "could not start the writ-neo4j container (docker's error is above)"
+    exit 1
 fi
+ok "neo4j container running"
 
 printf "   waiting for bolt port 7687 "
 waited=0
@@ -202,7 +203,7 @@ done
 if [ $waited -ge $NEO4J_WAIT_SECONDS ]; then
     printf "\n"
     err "Neo4j did not become reachable within ${NEO4J_WAIT_SECONDS}s"
-    echo "   Check logs: docker compose -f $COMPOSE_FILE logs neo4j" >&2
+    echo "   Check logs: docker logs writ-neo4j" >&2
     exit 1
 fi
 
@@ -226,10 +227,6 @@ daemon_healthy() {
 if daemon_healthy; then
     ok "writ serve already running"
 else
-    # Resolved by the shared owner (writ_default_server_log), whose plugin branch yields
-    # ${CLAUDE_PLUGIN_DATA}/server.log -- the same path this line hardcoded. Sourcing it
-    # keeps this fifth start path from drifting from the other four.
-    source "${WRIT_DIR}/scripts/lib/writ-server-lib.sh"
     WRIT_LOG="$(writ_default_server_log)"
     mkdir -p "$(dirname "$WRIT_LOG")" 2>/dev/null || true
     (cd "${WRIT_DIR}" && nohup writ serve > "$WRIT_LOG" 2>&1 &)
@@ -287,7 +284,7 @@ printf "  Venv           : %s\n" "$VENV_DIR"
 printf "  Neo4j          : bolt://localhost:7687\n"
 printf "  Writ daemon    : http://localhost:8765\n"
 printf "  Rules loaded   : %s\n" "$RULE_COUNT"
-printf "  Daemon log     : %s/server.log\n" "$WRIT_DATA"
+printf "  Daemon log     : %s\n" "$(writ_default_server_log)"
 printf "  Global config  : ~/.claude/settings.json, ~/.claude/CLAUDE.md, ~/.claude/commands/\n"
 printf "\n"
 printf "  Verify         : python3 %s/bin/lib/writ_install.py http-get http://localhost:8765/health\n" "$WRIT_DIR"

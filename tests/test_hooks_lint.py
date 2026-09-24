@@ -343,3 +343,17 @@ class TestHookLintSummary:
         # echoing, so `if hl:` and `if _hook_lint_summary(hl):` never
         # disagree about when `integrity` should stay silent.
         assert self._summary([]) == ""
+
+
+def test_hooks_quote_the_plugin_root() -> None:
+    """An install path with a space in it must not split a hook command into several words.
+    `claude plugin validate --strict` enforces this too, but CI has no claude CLI, so this is
+    the check that runs there."""
+    import json
+
+    manifest = json.loads((Path(__file__).resolve().parent.parent / "hooks" / "hooks.json").read_text())
+    commands = [h["command"] for entries in manifest["hooks"].values()
+                for entry in entries for h in entry.get("hooks", [])]
+    assert commands
+    unquoted = [c for c in commands if "${CLAUDE_PLUGIN_ROOT}" in c and '"${CLAUDE_PLUGIN_ROOT}' not in c]
+    assert unquoted == [], unquoted

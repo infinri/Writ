@@ -26,7 +26,7 @@ is_work_mode "$SESSION_ID" || exit 0
 # writ-mark-pending-test.sh writes: this hook is the only reader of that marker, so the two
 # expressions moving apart would silently stop the end-of-turn test run with both hooks
 # still exiting 0. Hardcoded, both wrote into the live checkout under an isolated run.
-CACHE_ROOT="${WRIT_CACHE_DIR:-$WRIT_DIR/cache}"
+CACHE_ROOT="${WRIT_CACHE_DIR:-$_WRIT_STATE_ROOT/cache}"
 MARKER="$CACHE_ROOT/$SESSION_ID/pending-tests.txt"
 [ -f "$MARKER" ] || exit 0
 

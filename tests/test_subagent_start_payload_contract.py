@@ -122,7 +122,7 @@ def hooks_registered_for(event: str, hooks_json: Path = HOOKS_JSON) -> list[Path
     for entry in reg[event]:
         for hook in entry.get("hooks", []):
             command = hook.get("command", "")
-            for token in command.split():
+            for token in command.replace('"', "").split():
                 if token.endswith(".sh"):
                     found.append(Path(token.replace("${CLAUDE_PLUGIN_ROOT}", str(root))))
     return found

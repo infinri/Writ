@@ -7,7 +7,7 @@
 # corpus, and starts the Writ daemon. Idempotent -- safe to re-run.
 #
 # Usage:
-#   cd ~/.claude/skills/writ
+#   cd /path/to/your/writ/clone
 #   bash scripts/bootstrap.sh
 #   bash scripts/bootstrap.sh --preflight   # prerequisite checks only, no install
 
@@ -34,7 +34,6 @@ readonly MIN_PYTHON_MINOR=11
 # ── Paths ───────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WRIT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-VENV_DIR="$WRIT_DIR/.venv"
 COMPOSE_FILE="$WRIT_DIR/docker-compose.yml"
 
 # ── Colors (ANSI, degrade gracefully on dumb terminals) ─────────────────────
@@ -119,6 +118,12 @@ fi
 ok "docker daemon reachable"
 
 # ── 3. Python venv ──────────────────────────────────────────────────────────
+# The shared resolver: for a clone that is $WRIT_DIR/.venv unless WRIT_VENV says otherwise.
+# Sourced here, after the preflight: under its stripped PATH the dirname walk above cannot
+# resolve WRIT_DIR, so the resolver file would not be found.
+# shellcheck source=bin/lib/writ-venv.sh
+source "$WRIT_DIR/bin/lib/writ-venv.sh"
+writ_resolve_venv "$WRIT_DIR" || true
 step "Setting up Python virtualenv"
 if [ ! -d "$VENV_DIR" ]; then
     python3 -m venv "$VENV_DIR"
@@ -139,6 +144,11 @@ pip install --quiet --upgrade pip
 # to exercise the WRIT_ALLOW_EMBEDDING_FALLBACK=1 path can install it
 # explicitly with `pip install -e '.[fallback]'`.
 (cd "$WRIT_DIR" && pip install --quiet -e '.[dev]')
+if ! writ_venv_serves "$VENV_DIR" "$WRIT_DIR"; then
+    err "the venv imports writ from ${_WRIT_VENV_WRIT_FROM:-nowhere}, not $WRIT_DIR/writ"
+    echo "   Another install is shadowing this one: $VENV_DIR/bin/pip uninstall -y claude-writ, then re-run." >&2
+    exit 1
+fi
 ok "writ package installed (editable, with dev extras)"
 
 # ── 4b. Export ONNX embedding model ─────────────────────────────────────────
@@ -189,10 +199,16 @@ link_all "$WRIT_DIR/rules" "$HOME/.claude/rules"
 link_all "$WRIT_DIR/agents" "$HOME/.claude/agents"
 ok "rules and agents linked"
 
-# ── 7. Start Neo4j via docker compose ──────────────────────────────────────
-step "Starting Neo4j via docker compose"
-(cd "$WRIT_DIR" && docker compose up -d neo4j) >/dev/null
-ok "neo4j container started"
+# ── 7. Start Neo4j ─────────────────────────────────────────────────────────
+step "Starting Neo4j"
+# Sourced here, after the preflight: common.sh, which the lib pulls in, needs dirname on PATH.
+# shellcheck source=scripts/lib/writ-server-lib.sh
+source "$WRIT_DIR/scripts/lib/writ-server-lib.sh"
+if ! writ_neo4j_start "$COMPOSE_FILE"; then
+    err "could not start the writ-neo4j container (docker's error is above)"
+    exit 1
+fi
+ok "neo4j container running"
 
 printf "   waiting for bolt port 7687 "
 waited=0
@@ -209,7 +225,7 @@ done
 if [ $waited -ge $NEO4J_WAIT_SECONDS ]; then
     printf "\n"
     err "Neo4j did not become reachable within ${NEO4J_WAIT_SECONDS}s"
-    echo "   Check logs: docker compose -f $COMPOSE_FILE logs neo4j" >&2
+    echo "   Check logs: docker logs writ-neo4j" >&2
     exit 1
 fi
 
@@ -233,9 +249,6 @@ daemon_healthy() {
 if daemon_healthy; then
     ok "writ serve already running"
 else
-    # Same resolver the hooks and ensure-server use, so a bootstrap-started daemon
-    # writes where every other start path expects to find it.
-    source "$WRIT_DIR/scripts/lib/writ-server-lib.sh"
     WRIT_LOG="$(writ_default_server_log)"
     mkdir -p "$(dirname "$WRIT_LOG")" 2>/dev/null || true
     nohup writ serve > "$WRIT_LOG" 2>&1 &

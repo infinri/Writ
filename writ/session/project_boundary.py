@@ -288,7 +288,7 @@ _SCRATCH = "Paths under the OS temporary directory need no declaration."
 # command does, so nobody reads it as a flag they can flip mid-cycle.
 _NO_ZONE = (
     "This session recorded no scratch zone, so the temporary-directory exemption is OFF "
-    "for it (an older session cache predates the field). `writ-session.py mode set work "
+    "for it (an older session cache predates the field). `writ mode set work "
     "<session-id>` re-stamps it, and note what else that does: it starts a fresh planning "
     "phase and re-arms both work gates, so it is a restart of the cycle and not a flag."
 )

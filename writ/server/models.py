@@ -243,6 +243,8 @@ class PreWriteCheckRequest(BaseModel):
     skill_dir: str = ""
     file_path: str = ""
     prefer_rule_ids: list[str] | None = None
+    # The dispatching session when the writer is a sub-agent, else "".
+    parent_session_id: str = ""
 
 
 class SessionAdvancePhaseRequest(BaseModel):

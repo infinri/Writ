@@ -4,7 +4,7 @@ The enforcement layer's contract: where session state lives, how modes and phase
 
 ## 1. The session cache
 
-One JSON file per session: `<install>/var/session/writ-session-<sid>.json` (`WRIT_CACHE_DIR` overrides; the default is deliberately not `/tmp`, which systemd empties at boot; that wipe once destroyed every cache and presented as `mode=None`).
+One JSON file per session: `$XDG_STATE_HOME/writ/session/writ-session-<sid>.json`, default `~/.local/state/writ/session/` (`WRIT_CACHE_DIR` overrides; the default is deliberately not `/tmp`, which systemd empties at boot; that wipe once destroyed every cache and presented as `mode=None`). It is outside the install, so a plugin upgrade keeps every session's mode and approvals. Set a mode with `writ mode set <mode> <session_id>` (the plugin's `bin/` is on the Bash tool's PATH).
 
 **Schema** (single source `_default_cache()`, `writ/session/cache.py`; missing keys are backfilled on read, evolution is additive): mode, `current_phase`, `gates_approved`, `loaded_rule_ids` and `loaded_rule_ids_by_phase`, `always_on_rule_ids`, `remaining_budget`, `context_percent`, `files_written`, `analysis_results`, `pending_violations`, `invalidation_history`, `escalation`, `paused_work_state`, `is_subagent`, `is_orchestrator`, `parent_session_id`, `agent_type`, `citation_log`, `coverage_scope`, `source_type`, `verification_evidence`, `quality_judgment_state`, `queried_rules_by_file`, `phase_transitions`, `project_root`, and friends.
 

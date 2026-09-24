@@ -921,7 +921,9 @@ class TestDecisionOutputUnchangedByTheSpawnRemovals:
             "permissionDecision": "deny",
             "permissionDecisionReason": (
                 "[ENF-GATE-MODE] No mode declared. Set a mode before writing code. "
-                "Modes: conversation, debug, investigate, review, work."
+                "Modes: conversation, debug, investigate, review, work. "
+                "For building or modifying code run: writ mode set work process-budget-probe "
+                "(or put conversation, debug, investigate or review in place of work)."
             ),
             "additionalContext": (
                 "IMPORTANT: This write was denied by a Writ gate. Do NOT attempt more "

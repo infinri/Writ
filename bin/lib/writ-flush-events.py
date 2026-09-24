@@ -36,11 +36,16 @@ BUF_SUFFIX = ".buf"
 
 
 def _buffer_path(session_id: str) -> str:
-    cache_dir = os.environ.get("WRIT_CACHE_DIR")
-    if not cache_dir:
-        skill_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        cache_dir = os.path.join(skill_dir, "var", "session")
-    return os.path.join(cache_dir, f"{BUF_PREFIX}{session_id or 'unknown'}{BUF_SUFFIX}")
+    # The directory bin/lib/common.sh::writ_event_buffer_path appends to, from the one resolver
+    # both follow (writ/shared/state_root.py). This used to carry its own copy of the old
+    # <install>/var/session default, and two copies moving apart strand every buffered row
+    # with both sides still exiting 0.
+    skill_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    if skill_dir not in sys.path:
+        sys.path.insert(0, skill_dir)
+    from writ.shared.state_root import session_dir
+
+    return os.path.join(session_dir(), f"{BUF_PREFIX}{session_id or 'unknown'}{BUF_SUFFIX}")
 
 
 def _parse(raw: str) -> list[dict]:
