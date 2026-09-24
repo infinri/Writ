@@ -54,6 +54,7 @@ import importlib.util
 import itertools
 import json
 import re
+import os
 import subprocess
 import sys
 import tomllib
@@ -577,9 +578,15 @@ class TestTimingsFileShape:
 # ---------------------------------------------------------------------------
 class TestMakefileWiring:
     def _make_dash_n(self, *args: str):
+        # CI runs this file under `make test SHARD=.. SHARDS=..`, and make hands its
+        # command-line variables to child makes through MAKEFLAGS, so an inherited
+        # environment would make the bare recipe print the sharded one.
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES", "MAKELEVEL",
+                            "SHARD", "SHARDS", "JUNIT_XML")}
         return subprocess.run(
             ["make", "-n", "test", *args],
-            capture_output=True, text=True, cwd=str(REPO), timeout=30,
+            capture_output=True, text=True, cwd=str(REPO), timeout=30, env=env,
         )
 
     def test_bare_make_test_is_unchanged(self):
