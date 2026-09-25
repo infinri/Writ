@@ -106,8 +106,10 @@ writ_venv_repoint "${VENV_DIR}" "${WRIT_DIR}" || true
 
 # 3. Probe Neo4j bolt port 7687. If unreachable, instruct user and exit 0.
 # timeout-wrapped: a bare /dev/tcp connect to a black-holed host blocks for the
-# kernel SYN timeout (minutes) and would stall every SessionStart with it.
-if ! timeout 2 bash -c "exec 3<>/dev/tcp/${NEO4J_HOST}/${NEO4J_PORT}" 2>/dev/null; then
+# kernel SYN timeout (minutes) and would stall every SessionStart with it. Half a second:
+# a local or docker-published port accepts in well under a millisecond, so only a remote
+# or unroutable host that needs longer is reported down (the same outcome as a real down).
+if ! timeout 0.5 bash -c "exec 3<>/dev/tcp/${NEO4J_HOST}/${NEO4J_PORT}" 2>/dev/null; then
   cat >&2 <<MSG
 [Writ] Neo4j not reachable at ${NEO4J_HOST}:${NEO4J_PORT}.
 [Writ] Start it with:
@@ -118,8 +120,11 @@ if ! timeout 2 bash -c "exec 3<>/dev/tcp/${NEO4J_HOST}/${NEO4J_PORT}" 2>/dev/nul
 MSG
   exit 0
 fi
-exec 3<&- 2>/dev/null || true
-exec 3>&- 2>/dev/null || true
+# The group scopes the stderr redirect to the close. A bare `exec 3<&- 2>/dev/null` made
+# the redirect permanent too, and every later diagnostic (writ_ensure_server's included)
+# went to /dev/null for the rest of the script.
+{ exec 3<&-; } 2>/dev/null || true
+{ exec 3>&-; } 2>/dev/null || true
 
 # 4. Ensure the Writ server is up via the shared, flock-guarded singleton routine. This is the
 #    SAME routine scripts/ensure-server.sh uses, so the plugin SessionStart and the init path
@@ -167,7 +172,9 @@ except Exception:
   if [ -f /tmp/writ-current-session ]; then
     PREV="$(tr -d '[:space:]' < /tmp/writ-current-session 2>/dev/null || true)"
   fi
-  if [ -n "${SID}" ] && [ -n "${CWD}" ]; then
+  # A `startup` session is brand new, and carry_forward_mode returns before any write on
+  # that source, so the exec would be a python start that does nothing.
+  if [ -n "${SID}" ] && [ -n "${CWD}" ] && [ "${SOURCE}" != "startup" ]; then
     "${VENV_DIR}/bin/python3" "${SESSION_HELPER}" carry-forward-mode \
       "${SID}" "${CWD}" "${PREV}" "${SOURCE}" >/dev/null 2>&1 || true
   fi

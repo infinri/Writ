@@ -2165,9 +2165,30 @@ sys.stdout.write('WRIT_META:' + json.dumps({
             url="${WRIT_SESSION_BASE}/session/${session_id}/check-escalation"
             ;;
         "auto-feedback")
-            url="${WRIT_SESSION_BASE}/session/${session_id}/auto-feedback"
-            method="POST"
-            body="{\"feedback\":\"\"}"
+            # Own curl so the exit status survives. rc 28 is a timeout, either at
+            # connect or after the POST was accepted. After acceptance the daemon is
+            # still running auto-feedback in its own thread, and a local run would
+            # read feedback_sent before that thread writes it back and POST every
+            # rule a second time. Either way the local run's /feedback POSTs go to
+            # the same socket first, so a daemon too slow for curl is too slow for
+            # them. (Its TCP fallback is the default localhost:8765: WRIT_SESSION_BASE
+            # is not exported, so a custom WRIT_HOST/WRIT_PORT does not reach it.)
+            # Every other failure (7 no listener, 22 HTTP error, 127 no curl) falls back.
+            local afb_result="" afb_rc=0
+            afb_result=$(curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.1 --max-time 0.5 \
+                -X POST "${WRIT_SESSION_BASE}/session/${session_id}/auto-feedback" \
+                -H "Content-Type: application/json" \
+                -d '{"feedback":""}' 2>/dev/null) || afb_rc=$?
+            if [ -n "$afb_result" ]; then
+                echo "$afb_result"
+                return 0
+            fi
+            if [ "$afb_rc" -eq 28 ]; then
+                echo '{"auto_feedback":"daemon_timeout","local_fallback":"skipped"}'
+                return 0
+            fi
+            python3 "$helper" auto-feedback "$@"
+            return $?
             ;;
         "clear-pending-violations")
             url="${WRIT_SESSION_BASE}/session/${session_id}/clear-pending-violations"

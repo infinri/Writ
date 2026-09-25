@@ -169,7 +169,7 @@ fi
 # STDOUT IS THE STATUS, and an EMPTY status is the signal. `seeded` and `skipped` both mean
 # the block ran to completion; nothing at all means the exec died, python raised before
 # printing, or the process was killed. Nothing is inferred from a missing telemetry row.
-SEED_STATUS=$(WRIT_DIR="$WRIT_DIR" \
+SEED_OUT=$(WRIT_DIR="$WRIT_DIR" \
     WRIT_SA_AGENT_ID="$AGENT_ID" \
     WRIT_SA_ROLE="$AGENT_TYPE" \
     WRIT_SA_ROLE_SOURCE="$ROLE_SOURCE" \
@@ -203,8 +203,25 @@ seeded = seed_subagent_cache(agent_id, parent_session,
                              role=resolved_role,
                              role_source=role_source)
 print('seeded' if seeded else 'skipped')
+
+# The second line is the child's resulting mode, the exact expression the local
+# `mode get` prints. It reads the CHILD's cache, so a child seeded earlier with a mode
+# of its own (status `skipped`) reports that mode, not the parent's.
+try:
+    from writ.session.cache import _read_cache
+    print(_read_cache(agent_id).get('mode') or '')
+except Exception:
+    print('')
 PY
-) || SEED_STATUS=""
+) || SEED_OUT=""
+
+# Split without a process. $(...) strips the trailing newline, so an empty mode leaves
+# the status alone on one line.
+SEED_STATUS="${SEED_OUT%%$'\n'*}"
+SEED_MODE=""
+if [[ "$SEED_OUT" == *$'\n'* ]]; then
+    SEED_MODE="${SEED_OUT#*$'\n'}"
+fi
 
 # THE SUPPRESSION IS GONE, AND THE EXIT CODE STILL CANNOT PROPAGATE. A dispatch must never
 # fail because governance could not be inherited, so this hook keeps exiting 0; what changes
@@ -231,8 +248,17 @@ fi
 # is a consolation prize for hooks that never computed the mode, and this hook did. The
 # explicit value is the one the hook ACTED on, which is what the audit trail wants, and
 # it keeps the mode on the gate row independent of the fallback's memoization.
-CURRENT_MODE=$(_writ_session "mode get" "$AGENT_ID" 2>/dev/null || echo "")
-CURRENT_MODE=$(echo "$CURRENT_MODE" | tr -d '[:space:]')
+#
+# THE SEEDER ALREADY READ IT. When seeding printed a status, its second line is the child
+# cache's mode, file-direct like the parent read above, so the daemon round trip is not
+# repeated. Only when seeding printed nothing (the exec died) does `mode get` still run,
+# which keeps the failure path exactly as it was.
+if [ -n "$SEED_STATUS" ]; then
+    CURRENT_MODE="${SEED_MODE//[[:space:]]/}"
+else
+    CURRENT_MODE=$(_writ_session "mode get" "$AGENT_ID" 2>/dev/null || echo "")
+    CURRENT_MODE=$(echo "$CURRENT_MODE" | tr -d '[:space:]')
+fi
 
 # Manual-testing grant inherits exactly like gates_approved above: the user's
 # concession was given to the orchestrating session, and a dispatched worker acts
@@ -260,15 +286,13 @@ if [ -n "$HEALTH" ]; then
     # the sub-agent. Fall back to a role-descriptive phrase keyed on agent_type
     # (a bare agent_type like "writ-explorer" retrieves poorly; a descriptive
     # phrase returns role-relevant rules).
-    AGENT_PROMPT=$(echo "$STDIN_JSON" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    prompt = d.get('task') or d.get('prompt') or d.get('description') or d.get('message') or ''
-    print(prompt[:500])
-except Exception:
-    print('')
-" 2>/dev/null || echo "")
+    #
+    # Both arms apply python's `or` truthiness across the four fields and cut at 500 code
+    # points. A non-string winner (a list in `task`) yields '' on both, so the query falls
+    # back to the agent_type phrase below instead of searching on a python repr.
+    AGENT_PROMPT=$(printf '%s' "$STDIN_JSON" | json_transform \
+        '[.task, .prompt, .description, .message] | map(select(. != null and . != false and . != "" and . != 0 and . != [] and . != {})) | (.[0] // "") | if type == "string" then .[:500] else "" end' \
+        "(lambda p: p[:500] if str(p) == p else '')(d.get('task') or d.get('prompt') or d.get('description') or d.get('message') or '')") || AGENT_PROMPT=""
     QUERY_SOURCE="task"
 
     if [ -z "$AGENT_PROMPT" ] || [ ${#AGENT_PROMPT} -le 10 ]; then
@@ -320,7 +344,32 @@ print(json.dumps({
                 # (count + ids + whether the query came from the real task or the
                 # agent_type fallback). The ABSENCE of this event for an agent now
                 # means it got 0 rules -- the gap that was previously invisible.
-                RULES_INJECTED_EXTRA=$(echo "$RESPONSE" | AGENT_TYPE="$AGENT_TYPE" QSRC="$QUERY_SOURCE" python3 -c "
+                #
+                # jq builds the row when it can (the writ-posttool-rag.sh pattern), shape for
+                # shape with the python below: a body that is not a JSON object, or has no
+                # `rules`, counts 0; an empty `rules` of any kind counts 0; any shape python
+                # raised on gives `{}`, which is what its `|| echo '{}'` produced.
+                if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1; then
+                    RULES_INJECTED_EXTRA=$(printf '%s' "$RESPONSE" | jq -R -s -c \
+                        --arg at "$AGENT_TYPE" --arg qs "$QUERY_SOURCE" '
+(try fromjson catch null) as $resp
+| if ($resp == null) or (($resp | type) != "object") then
+    {agent_type: $at, query_source: $qs, rule_count: 0, rule_ids: []}
+  else
+    ((if ($resp | has("rules")) then $resp.rules else [] end)) as $r
+    | ($r | type) as $t
+    | if ($t == "string" or $t == "object") and ($r | length) == 0 then
+        {agent_type: $at, query_source: $qs, rule_count: 0, rule_ids: []}
+      elif $t == "array" and ($r | all(type == "object")) then
+        {agent_type: $at, query_source: $qs, rule_count: ($r | length),
+         rule_ids: [$r[] | (if has("rule_id") then .rule_id else "" end)]}
+      else {}
+      end
+  end' 2>/dev/null) || RULES_INJECTED_EXTRA='{}'
+                    RULES_INJECTED_EXTRA="${RULES_INJECTED_EXTRA:-{\}}"
+                else
+                    # No jq, or WRIT_NO_JQ: the original python, unchanged.
+                    RULES_INJECTED_EXTRA=$(echo "$RESPONSE" | AGENT_TYPE="$AGENT_TYPE" QSRC="$QUERY_SOURCE" python3 -c "
 import sys, json, os
 try:
     rs = json.load(sys.stdin).get('rules', [])
@@ -333,6 +382,7 @@ print(json.dumps({
     'rule_ids': [r.get('rule_id', '') for r in rs],
 }))
 " 2>/dev/null || echo '{}')
+                fi
                 log_friction_event "$AGENT_ID" "" "subagent_rules_injected" "$RULES_INJECTED_EXTRA"
             fi
         fi
@@ -382,30 +432,14 @@ if [ -n "$PARENT" ] && [ "$PARENT" != "$AGENT_ID" ]; then
     fi
 fi
 
-# Get the parent's phase state for context injection.
+# Get the parent's phase state and plan-artifacts line for context injection, in ONE
+# process: both read the same parent cache, so it is read once.
 #
 # AN EMPTY PARENT SESSION READS NO CACHE AT ALL, and the distinction is load-bearing: `{}`
 # renders the documented defaults (mode=work, phase=planning, gates=none), while a cache
 # read for the empty id would answer with the default cache and render mode=None. That is
 # the fallback branch the critical above already recorded.
-PHASE_INFO=$(WRIT_DIR="$WRIT_DIR" WRIT_SA_PARENT="$PARENT_SESSION" python3 - <<'PY' 2>/dev/null || echo "[Writ sub-agent: isolated session]"
-import os, sys
-sys.path.insert(0, os.environ.get('WRIT_DIR', ''))
-
-parent_session = os.environ.get('WRIT_SA_PARENT', '')
-if parent_session:
-    from writ.session.cache import _read_cache
-    parent = _read_cache(parent_session)
-else:
-    parent = {}
-mode = parent.get('mode', 'work')
-phase = parent.get('current_phase', 'planning')
-gates = parent.get('gates_approved', [])
-joined = ','.join(gates) if gates else 'none'
-print('[Writ sub-agent: mode={}, phase={}, gates={}]'.format(mode, phase, joined))
-PY
-)
-
+#
 # The plan artifacts are scoped to the PARENT's session, not this worker's agent id: the
 # parent is the session whose gates get approved, so a plan written under the worker's own
 # id is a plan its orchestrator cannot find. The path is computed from the same resolver the
@@ -418,30 +452,53 @@ PY
 # `sys.path.insert(0, '')` inserted the current directory, and the import only resolved when
 # the dispatching project happened to be the skill directory itself. Every other project lost
 # this line silently.
-PLAN_DIR_INFO=$(WRIT_DIR="$WRIT_DIR" WRIT_SA_PARENT="$PARENT_SESSION" python3 - <<'PY' 2>/dev/null || echo ""
+#
+# EACH LINE KEEPS ITS OWN FALLBACK, as when they were two processes: a phase line that
+# cannot render prints the isolated-session text and the plan line is still computed.
+PHASE_INFO=$(WRIT_DIR="$WRIT_DIR" WRIT_SA_PARENT="$PARENT_SESSION" python3 - <<'PY' 2>/dev/null || echo "[Writ sub-agent: isolated session]"
 import os, sys
 sys.path.insert(0, os.environ.get('WRIT_DIR', ''))
 
 parent_session = os.environ.get('WRIT_SA_PARENT', '')
 try:
-    from writ.session.cache import _read_cache
-    from writ.session.locators import plan_dir
-    root = (_read_cache(parent_session).get('project_root') or '') if parent_session else ''
-    d = plan_dir(root, parent_session)
-    print('[Writ plan artifacts: write plan.md and capabilities.md to {}/]'.format(d)
-          if d else '')
+    if parent_session:
+        from writ.session.cache import _read_cache
+        parent = _read_cache(parent_session)
+    else:
+        parent = {}
 except Exception:
-    print('')
+    parent = None
+
+try:
+    mode = parent.get('mode', 'work')
+    phase = parent.get('current_phase', 'planning')
+    gates = parent.get('gates_approved', [])
+    joined = ','.join(gates) if gates else 'none'
+    print('[Writ sub-agent: mode={}, phase={}, gates={}]'.format(mode, phase, joined))
+except Exception:
+    print('[Writ sub-agent: isolated session]')
+
+try:
+    from writ.session.locators import plan_dir
+    root = (parent.get('project_root') or '') if parent_session else ''
+    d = plan_dir(root, parent_session)
+    if d:
+        print('[Writ plan artifacts: write plan.md and capabilities.md to {}/]'.format(d))
+except Exception:
+    pass
 PY
 )
-if [ -n "$PLAN_DIR_INFO" ]; then
-    PHASE_INFO="$PHASE_INFO
-$PLAN_DIR_INFO"
-fi
 
 # Inject via additionalContext
 if [ -n "$ADDITIONAL_CONTEXT" ] || [ -n "$PHASE_INFO" ]; then
-    SA_OUTPUT=$(python3 -c "
+    # jq builds the envelope when it can; both values ride --arg, never the program text.
+    if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1; then
+        SA_OUTPUT=$(jq -n -c --arg ctx "$ADDITIONAL_CONTEXT" --arg pi "$PHASE_INFO" \
+            '{hookSpecificOutput:{hookEventName:"SubagentStart",additionalContext:(if $pi != "" then $pi + "\n" + $ctx else $ctx end)}}' \
+            2>/dev/null) || SA_OUTPUT=""
+    else
+        # No jq, or WRIT_NO_JQ: the original python, unchanged.
+        SA_OUTPUT=$(python3 -c "
 import json, sys
 ctx = sys.argv[1]
 if sys.argv[2]:
@@ -453,6 +510,7 @@ print(json.dumps({
     }
 }))
 " "$ADDITIONAL_CONTEXT" "$PHASE_INFO" 2>/dev/null)
+    fi
     emit_hook_reply "$SA_OUTPUT" "" "$AGENT_ID"
 fi
 

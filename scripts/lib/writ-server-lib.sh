@@ -29,13 +29,18 @@ fi
 # purpose: with curl absent this probe was ALWAYS false, which is not daemon-down
 # equivalent. It means "daemon down while actually up", so every SessionStart fired a
 # doomed second `writ serve` against an already-bound port.
+#
+# The body is kept in _WRIT_LAST_HEALTH (empty for an injected probe or a failed fetch) so
+# the already-running branch below reads cache_dir from it instead of fetching /health
+# again. The status is the assignment's, which is writ_http_get's.
 writ_server_health() {
     : "${WRIT_HOST:=localhost}" "${WRIT_PORT:=8765}"
+    _WRIT_LAST_HEALTH=""
     if [ -n "${WRIT_HEALTH_CMD:-}" ]; then
         ${WRIT_HEALTH_CMD} >/dev/null 2>&1
     else
-        WRIT_HTTP_CONNECT_TIMEOUT=0.1 WRIT_HTTP_TIMEOUT=1 \
-            writ_http_get "http://${WRIT_HOST}:${WRIT_PORT}/health" >/dev/null 2>&1
+        _WRIT_LAST_HEALTH=$(WRIT_HTTP_CONNECT_TIMEOUT=0.1 WRIT_HTTP_TIMEOUT=1 \
+            writ_http_get "http://${WRIT_HOST}:${WRIT_PORT}/health" 2>/dev/null)
     fi
 }
 
@@ -88,11 +93,10 @@ _writ_start_locked() {
             # Not restarting: systemd owns restarts (tests/test_fix2_cache_alignment.py pins
             # this off by default). But a daemon reading a different session directory serves
             # every gate from the wrong caches, which is exactly what a daemon started before an
-            # upgrade does, so say so once, with the command that fixes it.
-            local health_nr running_nr
-            health_nr=$(WRIT_HTTP_CONNECT_TIMEOUT=0.3 WRIT_HTTP_TIMEOUT=1 \
-                writ_http_get "http://${WRIT_HOST}:${WRIT_PORT}/health" 2>/dev/null || true)
-            running_nr=$(printf '%s' "$health_nr" | python3 -c "import sys,json; print(json.load(sys.stdin).get('cache_dir') or '')" 2>/dev/null || true)
+            # upgrade does, so say so once, with the command that fixes it. The body is the
+            # one writ_server_health just fetched, in this same subshell.
+            local running_nr
+            running_nr=$(printf '%s' "${_WRIT_LAST_HEALTH:-}" | json_transform '.cache_dir // ""' "d.get('cache_dir') or ''" || true)
             if [ -n "$running_nr" ] && [ -n "${WRIT_CACHE_DIR:-}" ] && [ "$running_nr" != "$WRIT_CACHE_DIR" ]; then
                 echo "[Writ] Warning: the daemon on port $WRIT_PORT reads session state from $running_nr, but this install uses $WRIT_CACHE_DIR. Restart it (systemctl --user restart writ-server, or scripts/stop-server.sh then scripts/ensure-server.sh) so gate decisions see this session's mode." >&2
             fi
