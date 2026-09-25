@@ -58,12 +58,14 @@ BOUNDED = "bounded"
 # looked up in ITS OWN derived population below rather than a merged one, so a
 # site moving between the two roots is still caught by the per-root lookup.
 # The ONE canonical count of exec-boundary payload crossings the detector finds across both
-# roots, 66 under hooks/scripts and 2 under bin/lib as of this cycle. Held here and nowhere
+# roots, 64 under hooks/scripts and 2 under bin/lib as of this cycle (68 until the per-Read
+# session-id/file_path parse in writ-read-rag.sh and the SubagentStart extractions moved
+# off two crossings). Held here and nowhere
 # else: a duplicated count pin is what this repo's "a broken count pin is usually a
 # DUPLICATE" lesson is about. Most of these carry values bounded by construction, which is
 # why the map below classifies only the ones that matter while this number forces a look at
 # anything new. Lower it when a crossing is removed; add a CENSUS entry when one appears.
-DERIVED_SITE_COUNT = 68
+DERIVED_SITE_COUNT = 66
 
 
 class CensusSite(NamedTuple):
