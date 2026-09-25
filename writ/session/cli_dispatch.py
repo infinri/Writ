@@ -15,7 +15,7 @@ import json
 import os
 import sys
 
-from writ.session.mode_engine import VALID_MODES, cmd_mode
+from writ.session.mode_engine import MODE_SOURCE_AUTO, MODE_SOURCE_EXPLICIT, VALID_MODES, cmd_mode
 from writ.session.gates import cmd_can_write, cmd_can_read_code
 from writ.session.approval_workflow import (
     cmd_advance_phase,
@@ -200,7 +200,12 @@ def _cli_mode(argv: list[str]) -> None:
         orch = "--orchestrator" in argv
         if subcmd in ("set", "switch") and argv[3].lower() in VALID_MODES:
             _warn_on_unfamiliar_session(subcmd, sid)
-        cmd_mode(sid, subcmd, argv[3], is_orchestrator=orch)
+        if subcmd == "switch":
+            # --auto: the hook's re-route fired this switch, so the row says "auto".
+            triggered_by = MODE_SOURCE_AUTO if "--auto" in argv else MODE_SOURCE_EXPLICIT
+            cmd_mode(sid, subcmd, argv[3], is_orchestrator=orch, triggered_by=triggered_by)
+        else:
+            cmd_mode(sid, subcmd, argv[3], is_orchestrator=orch)
     else:
         _usage_exit(f"Unknown mode subcommand: {subcmd}")
 

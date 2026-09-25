@@ -89,18 +89,24 @@ try:
     # Mode auto-routing: classify the RAW prompt (the keyword-extracted form scrambles the
     # phrases the classifier needs) for an audit/explore/research shape. Guarded so a
     # classifier failure never breaks prompt parsing -- emit empty hint on any error.
+    # A non-user turn (sub-agent hand-back, peer message, task notification) never
+    # auto-routes: no hint, no transcript fallback, no permission_mode upgrade. Unknown on an
+    # import failure, which already yields an empty hint.
     hint = ''
+    non_user = False
     try:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-        from writ_mode_hint import classify_mode_hint  # standalone, stdlib-only (load-robust)
-        hint = classify_mode_hint(raw) or ''
+        from writ_mode_hint import classify_mode_hint, is_non_user_turn  # standalone, stdlib-only (load-robust)
+        non_user = is_non_user_turn(raw)
+        if not non_user:
+            hint = classify_mode_hint(raw) or ''
     except Exception:
         hint = ''
     # Transcript classification (recall): when the single prompt does not classify, the recent
     # conversation often does (e.g. 'ok go ahead' / 'now build it' after a planning exchange).
     # Read only the TAIL of the transcript, take the last few USER text messages, re-classify.
     # Bounded (64KB tail) + fully guarded so the per-prompt hot path stays cheap and never breaks.
-    if not hint:
+    if not hint and not non_user:
         try:
             tp = data.get('transcript_path', '')
             if tp:
@@ -116,12 +122,22 @@ try:
                         continue
                     if ev.get('type') != 'user':
                         continue
+                    # Hand-backs and notifications are 'user' entries too. Skip them; an
+                    # entry with no origin field (older transcripts) is kept.
+                    if ev.get('isMeta'):
+                        continue
+                    kind = (ev.get('origin') or {}).get('kind')
+                    if kind and kind != 'human':
+                        continue
                     c = (ev.get('message') or {}).get('content')
                     if isinstance(c, str):
-                        users.append(c)
+                        texts = [c]
                     elif isinstance(c, list):
-                        users += [it.get('text', '') for it in c
-                                  if isinstance(it, dict) and it.get('type') == 'text']
+                        texts = [it.get('text', '') for it in c
+                                 if isinstance(it, dict) and it.get('type') == 'text']
+                    else:
+                        texts = []
+                    users += [t for t in texts if not is_non_user_turn(t)]
                 recent = ' '.join(u for u in users[-5:] if u)
                 if recent:
                     hint = classify_mode_hint(recent) or ''
@@ -130,7 +146,7 @@ try:
     # permission_mode is a high-precision native CC signal: 'plan' = the user is in CC plan
     # mode (about to implement) -> work. Upgrades an empty/weak keyword hint; never overrides
     # an investigate classification (audit-while-planning stays the gate-light investigate).
-    if data.get('permission_mode', '') == 'plan' and hint != 'investigate':
+    if data.get('permission_mode', '') == 'plan' and hint != 'investigate' and not non_user:
         hint = 'work'
     sid = _one_line(sid)
     agent_id = _one_line(agent_id)

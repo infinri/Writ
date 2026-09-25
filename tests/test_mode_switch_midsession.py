@@ -598,6 +598,162 @@ class TestModeSourcePreservedBySwitch:
 
 
 # ===========================================================================
+# Part 7: switch rows record WHO triggered the transition (`triggered_by`),
+# distinct from `mode_source` (who chose the mode the session is under).
+#
+# A `mode_change` switch row inherits `mode_source` from the cache unchanged (Part 6
+# above pins that), so it could not say whether THIS transition was a human's `mode
+# switch` or the classifier's automatic mid-session re-route -- an auto-triggered
+# switch on a hand-set session logged identically to a human typing the command
+# themselves. `triggered_by` answers that question without touching `mode_source`'s
+# existing meaning.
+# ===========================================================================
+
+class TestSwitchRowRecordsTrigger:
+
+    def _events(self, log_path):
+        with open(log_path) as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    def _last_switch_row(self, log_path):
+        rows = [
+            e for e in self._events(log_path)
+            if e["event"] == "mode_change" and e.get("change_type") == "switch"
+        ]
+        assert rows, "switch must emit a mode_change row"
+        return rows[-1]
+
+    def test_switch_without_triggered_by_defaults_to_explicit(
+        self, session_id, work_project, tmp_path, monkeypatch
+    ):
+        """A caller that states no opinion gets the safe default: a human typed
+        this switch until something proves otherwise."""
+        log = tmp_path / "friction.log"
+        monkeypatch.setenv("WRIT_FRICTION_LOG", str(log))
+        writ_session.cmd_mode(session_id, "set", "conversation")
+        writ_session.cmd_mode(session_id, "switch", "investigate")
+
+        assert self._last_switch_row(log)["triggered_by"] == "explicit"
+
+    def test_switch_with_triggered_by_auto_stamps_the_row_without_moving_mode_source(
+        self, session_id, work_project, tmp_path, monkeypatch
+    ):
+        """`triggered_by` records who fired THIS transition; `mode_source` (who
+        chose the mode the session is under) must not move -- that is the whole
+        reason the two are separate fields."""
+        log = tmp_path / "friction.log"
+        monkeypatch.setenv("WRIT_FRICTION_LOG", str(log))
+        writ_session.cmd_mode(session_id, "set", "work")
+        writ_session.cmd_mode(session_id, "switch", "investigate", triggered_by="auto")
+
+        row = self._last_switch_row(log)
+        assert row["triggered_by"] == "auto"
+        assert row["mode_source"] == "explicit", (
+            "triggered_by must not change the meaning of mode_source"
+        )
+        data = _read_raw_cache(tmp_path, session_id)
+        assert data["mode_source"] == "explicit", (
+            "the cache's mode_source must stay 'explicit'; only the switch row's "
+            "triggered_by records that this particular transition was automatic"
+        )
+
+    def test_cli_auto_flag_stamps_triggered_by_auto_and_targets_the_right_session(
+        self, session_id, work_project, tmp_path, monkeypatch
+    ):
+        """`--auto` on the CLI must reach the row, and must not be mistaken for the
+        session id positional (the sid scan already skips `--` flags)."""
+        log = tmp_path / "friction.log"
+        monkeypatch.setenv("WRIT_FRICTION_LOG", str(log))
+        writ_session.cmd_mode(session_id, "set", "work")
+
+        env = os.environ.copy()
+        env["WRIT_CACHE_DIR"] = str(tmp_path)
+        env["WRIT_FRICTION_LOG"] = str(log)
+        r = subprocess.run(
+            [sys.executable, HELPER, "mode", "switch", "investigate", session_id, "--auto"],
+            env=env, capture_output=True, text=True, cwd=str(work_project),
+        )
+        assert r.returncode == 0, r.stderr
+
+        data = _read_raw_cache(tmp_path, session_id)
+        assert data["mode"] == "investigate", (
+            "--auto must not be read as the session id; it must switch the named "
+            f"session {session_id!r}"
+        )
+        assert self._last_switch_row(log)["triggered_by"] == "auto"
+
+    def test_cli_without_auto_flag_stamps_triggered_by_explicit(
+        self, session_id, work_project, tmp_path, monkeypatch
+    ):
+        log = tmp_path / "friction.log"
+        monkeypatch.setenv("WRIT_FRICTION_LOG", str(log))
+        writ_session.cmd_mode(session_id, "set", "work")
+
+        env = os.environ.copy()
+        env["WRIT_CACHE_DIR"] = str(tmp_path)
+        env["WRIT_FRICTION_LOG"] = str(log)
+        r = subprocess.run(
+            [sys.executable, HELPER, "mode", "switch", "investigate", session_id],
+            env=env, capture_output=True, text=True, cwd=str(work_project),
+        )
+        assert r.returncode == 0, r.stderr
+        assert self._last_switch_row(log)["triggered_by"] == "explicit"
+
+
+class TestHookAutoRerouteStampsTriggeredBy:
+    """The hook's own mid-session re-route call must pass `--auto` through the real
+    subprocess path (`writ-session.py mode switch ... --auto`), not just when
+    mode_engine is called in-process -- the hook is a thin wrapper around it, not a
+    second contract."""
+
+    def _env(self, tmp_path):
+        env = os.environ.copy()
+        env["WRIT_CACHE_DIR"] = str(tmp_path)
+        env["WRIT_PORT"] = "59997"  # dead port -> file-direct fallback
+        env["WRIT_HOST"] = "localhost"
+        env["WRIT_FRICTION_LOG"] = str(tmp_path / "friction.log")
+        env["WRIT_NO_AUTOSTART"] = "1"
+        return env
+
+    def _sandbox(self, tmp_path):
+        sandbox = tmp_path / "sandbox"
+        (sandbox / ".claude" / "gates").mkdir(parents=True, exist_ok=True)
+        (sandbox / ".git").mkdir(exist_ok=True)
+        return sandbox
+
+    def _events(self, log_path):
+        with open(log_path) as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    def test_hook_midsession_reroute_stamps_triggered_by_auto(self, tmp_path):
+        env = self._env(tmp_path)
+        sandbox = self._sandbox(tmp_path)
+        sid = "hook-triggered-by-auto"
+        subprocess.run(
+            [sys.executable, HELPER, "mode", "set", "work", sid],
+            env=env, check=True, capture_output=True, text=True, cwd=str(sandbox),
+        )
+
+        r = subprocess.run(
+            ["bash", HOOK], input=json.dumps({"session_id": sid, "prompt": INVESTIGATE_PROMPT}),
+            capture_output=True, text=True, env=env, timeout=30, cwd=str(sandbox),
+        )
+        assert r.returncode == 0, r.stderr
+
+        rows = [
+            e for e in self._events(env["WRIT_FRICTION_LOG"])
+            if e["event"] == "mode_change" and e.get("change_type") == "switch"
+        ]
+        assert rows, "the hook's mid-session re-route must emit a mode_change switch row"
+        assert rows[-1]["triggered_by"] == "auto", (
+            "the hook's re-route call must pass --auto through to the switch row"
+        )
+        assert rows[-1]["mode_source"] == "explicit", (
+            "triggered_by must not overwrite the mode_source the row inherited"
+        )
+
+
+# ===========================================================================
 # Part 6: reroute eligibility has TWO arms, not one explicit/auto split.
 #
 # Arm 1: current mode is work or investigate -> the reroute fires exactly as

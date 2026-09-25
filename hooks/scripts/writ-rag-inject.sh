@@ -328,7 +328,7 @@ if [ -z "$AGENT_ID" ] && [ -n "$MODE_HINT" ]; then
         # promise, not less: more sessions are now reachable from a guess, so the property
         # that a misclassified prompt costs a detour instead of an approved plan and
         # approved test skeletons is the whole reason this arm is allowed to exist.
-        python3 "$SESSION_HELPER" mode switch "$MODE_HINT" "$SESSION_ID" $ROUTE_ORCH_FLAG >/dev/null 2>&1 || true
+        python3 "$SESSION_HELPER" mode switch "$MODE_HINT" "$SESSION_ID" --auto $ROUTE_ORCH_FLAG >/dev/null 2>&1 || true
         # Re-read rather than trust the hint, for the same reason the unset path does:
         # announcing the mode we ASKED for is how the hook came to tell the user the mode
         # was 'work' while the cache said otherwise.

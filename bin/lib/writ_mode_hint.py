@@ -105,6 +105,38 @@ _QUESTION_OPENING = re.compile(
 )
 
 
+# A feasibility or assessment framing marks the rest of its sentence as hypothetical: "id
+# like to see how hard it would be to set up a hook system" asks for an assessment, not the
+# hook. The span runs to the end of the framing's sentence (commas do not end it, since "how
+# hard would it be to X, Y and Z" is hypothetical throughout) and is stripped before the work
+# patterns run, so a build instruction outside it still routes. "feasibility" alone is not a
+# framing ("add a feasibility score field"); only "feasibility of" is.
+_HYPOTHETICAL_SPAN = re.compile(
+    r"(?:\bhow\s+(?:hard|easy|difficult|feasible|complex|much\s+(?:work|effort))\b"
+    r"|\bi(?:'?d|\s+would)\s+like\s+to\s+(?:see|know|understand|find\s+out)\s+(?:how|whether|if)\b"
+    r"|\bis\s+it\s+(?:possible|feasible|doable|viable)\s+to\b"
+    r"|\bwould\s+it\s+be\s+(?:possible|feasible|hard|easy|difficult)\s+to\b"
+    r"|\bwhat\s+would\s+it\s+take\s+to\b"
+    r"|\bfeasibility\s+of\b)"
+    r"[^.!?\n]*",
+    re.IGNORECASE,
+)
+
+# Claude Code delivers sub-agent hand-backs, peer-session messages and task notifications
+# through UserPromptSubmit as if the user typed them. Each opens with one of these envelope
+# markers. Anchored at the start so a user who quotes a marker mid-prompt is still classified.
+_NON_USER_TURN = re.compile(
+    r"\A\s*(?:\[SYSTEM NOTIFICATION\b|<task-notification>|"
+    r"Another Claude session sent a message:|<agent-message\b)"
+)
+
+
+def is_non_user_turn(prompt: str | None) -> bool:
+    """True when the prompt is a Claude Code envelope (hand-back, peer message, task
+    notification) rather than text the user typed. Pure."""
+    return bool(prompt) and _NON_USER_TURN.match(prompt) is not None
+
+
 def classify_mode_hint(prompt: str | None) -> str | None:
     """Best-effort mode suggestion from a user prompt. Returns 'investigate' for an
     audit/explore/research-shaped request, 'work' for a build/implementation request, else
@@ -113,10 +145,11 @@ def classify_mode_hint(prompt: str | None) -> str | None:
         return None
     if _INVESTIGATE_SIGNALS.search(prompt):
         return "investigate"
-    if _WORK_SIGNALS.search(prompt):
+    work_text = _HYPOTHETICAL_SPAN.sub(" ", prompt)
+    if _WORK_SIGNALS.search(work_text):
         return "work"
     if not _QUESTION_OPENING.match(prompt) and (
-        _WORK_IMPERATIVE.search(prompt) or _WORK_CLEANUP_NOUN.search(prompt)
+        _WORK_IMPERATIVE.search(work_text) or _WORK_CLEANUP_NOUN.search(work_text)
     ):
         return "work"
     return None

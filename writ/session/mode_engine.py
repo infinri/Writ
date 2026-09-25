@@ -535,7 +535,10 @@ def _mode_init(
     )
 
 
-def _mode_switch(session_id: str, mode: str, is_orchestrator: bool = False) -> None:
+def _mode_switch(
+    session_id: str, mode: str, is_orchestrator: bool = False, *,
+    triggered_by: str = MODE_SOURCE_EXPLICIT,
+) -> None:
     """Switch mode, preserving Work state if leaving/returning.
 
     It also preserves cache["mode_source"], by not touching it. A switch changes WHICH
@@ -549,6 +552,10 @@ def _mode_switch(session_id: str, mode: str, is_orchestrator: bool = False) -> N
     is_orchestrator is SET-ONLY, the contract _apply_mode_set documents:
     true marks the session an orchestrator master, false leaves whatever the session already had. The
     auto-route passes it when it switches a session into work.
+
+    triggered_by records who fired THIS transition (MODE_SOURCE_AUTO for the hook's
+    re-route, MODE_SOURCE_EXPLICIT otherwise). It goes on the switch row only; it is not
+    mode_source and never touches the cache.
     """
     with mutate_cache(session_id) as cache:
         old_mode = cache.get("mode")
@@ -637,7 +644,7 @@ def _mode_switch(session_id: str, mode: str, is_orchestrator: bool = False) -> N
     _log_friction_event(
         session_id, mode, "mode_change",
         change_type="switch", from_mode=old_mode, to_mode=mode,
-        mode_source=mode_source,
+        mode_source=mode_source, triggered_by=triggered_by,
     )
 
     # Debug -> Work handoff: only when landing in a fresh planning phase (not
@@ -646,7 +653,10 @@ def _mode_switch(session_id: str, mode: str, is_orchestrator: bool = False) -> N
         _promote_root_cause_to_plan(session_id, mode)
 
 
-def cmd_mode(session_id: str, subcmd: str, value: str | None = None, is_orchestrator: bool = False) -> None:
+def cmd_mode(
+    session_id: str, subcmd: str, value: str | None = None, is_orchestrator: bool = False, *,
+    triggered_by: str = MODE_SOURCE_EXPLICIT,
+) -> None:
     """Get, set, or switch the session mode."""
     if subcmd == "get":
         cache = _read_cache(session_id)
@@ -676,7 +686,7 @@ def cmd_mode(session_id: str, subcmd: str, value: str | None = None, is_orchestr
         _mode_init(session_id, mode, is_orchestrator=is_orchestrator)
         sys.stdout.write(f"init: {mode}\n")
     else:
-        _mode_switch(session_id, mode, is_orchestrator=is_orchestrator)
+        _mode_switch(session_id, mode, is_orchestrator=is_orchestrator, triggered_by=triggered_by)
         sys.stdout.write(f"switch: {mode}\n")
 
 
