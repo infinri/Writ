@@ -22,6 +22,11 @@ import pytest
 EXPECTED_METHODS = [
     "__init__", "_create_record", "_parse_planned_files", "_record_endpoint_clause", "_run",
     "_run_single", "_write_single", "apply_constraints",
+    # Plan f7fc2b37-9a53-4011-a69f-e6b97f5e45fe (3b): one batched write for SessionEnd
+    # rule feedback -- one session, one execute_write transaction, one UNWIND increment
+    # plus a guarded UNWIND flip, replacing N per-rule increment_positive/negative +
+    # evaluate_and_flip_graduation round trips.
+    "apply_feedback_batch",
     "batch_create_edges", "batch_create_nodes", "clear_all", "clear_project", "close",
     "count_by_authority", "count_rules", "create_abstraction", "create_abstracts_edge",
     "create_commit", "create_decision", "create_edge",

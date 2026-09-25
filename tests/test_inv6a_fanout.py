@@ -138,13 +138,27 @@ class TestPartitionScope:
 
 class TestCoverageRollup:
     def test_sums_and_reconciles(self, tmp_path, capsys, monkeypatch) -> None:
+        """Pins the 950/950 defect this plan (2c) closes: a claim with no recorded
+        evidence must NOT reconcile. The lead's own cache now carries the reads that
+        back the workers' claim (`pretool_queried_files`), so the SAME claimed numbers
+        are also the evidenced numbers -- `global_examined_in_scope` is evidence, not
+        the stdin sum, and `global_claimed_examined_in_scope` carries the claim."""
         _seed(monkeypatch, tmp_path)
+        with open(writ_session._cache_path(SID)) as f:
+            cache = json.load(f)
+        cache["pretool_queried_files"] = ["a", "b", "c", "d"]  # backs the 4-file claim below
+        with open(writ_session._cache_path(SID), "w") as f:
+            json.dump(cache, f)
         _freeze(["a", "b", "c", "d", "e"])  # lead scope total = 5
-        maps = [_coverage_map(3, 2), _coverage_map(2, 2)]  # 5 total, 4 examined
+        maps = [_coverage_map(3, 2), _coverage_map(2, 2)]  # 5 total, 4 claimed examined
         monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(maps)))
         report = _capture(capsys, writ_session.cmd_coverage_rollup, SID)
         assert report["global_scope_total"] == 5
-        assert report["global_examined_in_scope"] == 4
+        assert report["global_claimed_examined_in_scope"] == 4
+        assert report["global_examined_in_scope"] == 4, (
+            "evidenced, not merely claimed -- the 950/950 defect this pins"
+        )
+        assert report["unbacked_claims"] == 0
         assert report["global_coverage_pct"] == 80
         assert report["partitions_reported"] == 2
         assert report["reconciled"] is True

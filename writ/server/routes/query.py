@@ -1,9 +1,9 @@
 # writ-auth-scan: internal-service
 """Retrieval + rule-metadata routes for the Writ session daemon.
 
-11 routes: /query, /methodology-companion, /prompt-bundle, /analyze,
-/rule/{rule_id}, /propose, /feedback, /conflicts, /health, /always-on,
-/subagent-role/{name}. Plus the /health helpers (_health_status,
+13 routes: /query, /methodology-companion, /prompt-bundle, /analyze,
+/rule/{rule_id}, /propose, /feedback, /feedback/batch, /conflicts, /health,
+/always-on, /subagent-role/{name}, /subagent/start-context. Plus the /health helpers (_health_status,
 _count_categories, _route_distribution, _log_destinations) and the
 _ALWAYS_ON_PROCESS_MODES const.
 
@@ -29,11 +29,14 @@ from writ.graph.predicates import INJECTION_RULE_WHERE
 from writ.server.models import (
     CompanionRequest,
     ConflictsRequest,
+    FeedbackBatchRequest,
     FeedbackRequest,
     ProposeRequest,
     PromptBundleRequest,
     QueryRequest,
+    SubagentStartContextRequest,
 )
+from writ.server.routes.session_state import _format_query_response
 from writ.shared.logging import emit, emit_destination, emit_exception
 from writ.shared.tokens import cost_for, estimate_tokens
 
@@ -480,6 +483,23 @@ async def record_feedback(request: FeedbackRequest) -> dict[str, Any]:
     }
 
 
+@router.post("/feedback/batch")
+async def record_feedback_batch(request: FeedbackBatchRequest) -> dict[str, Any]:
+    """Record a batch of feedback signals in one db transaction (SessionEnd).
+
+    The batched form of /feedback: every signal is applied atomically, and graduation
+    is evaluated for the touched rules inside the same transaction. /feedback stays for
+    single-signal callers and old clients.
+    """
+    if not request.signals:
+        return {"recorded": [], "not_found": [], "graduation_pending": [], "applied": 0}
+    if server._db is None:
+        return {"error": "Database not connected."}
+    return await server._db.apply_feedback_batch(
+        [(item.rule_id, item.signal) for item in request.signals]
+    )
+
+
 @router.post("/conflicts")
 async def check_conflicts(request: ConflictsRequest) -> dict[str, Any]:
     """CONFLICTS_WITH edges between provided rules."""
@@ -831,3 +851,67 @@ async def subagent_role_get(name: str) -> dict[str, Any]:
         # role that may write nothing, i.e. deny every sub-agent write in the population.
         "write_scope": rec["write_scope"],
     }
+
+
+@router.post("/subagent/start-context")
+async def subagent_start_context(request: SubagentStartContextRequest) -> dict[str, Any]:
+    """Everything writ-subagent-start.sh needs from the daemon, in one request.
+
+    Replaces /health, /query, /session/format and GET /subagent-role/{role} on the
+    hook's healthy path: the retrieval (through the query_rules handler, so project
+    resolution and the retrieval_result row are identical), the formatted text and
+    injected ids (through the same formatter /session/format uses), the raw query's
+    rule ids for the rules-injected row, and the role's declared write scope, with
+    null and [] kept distinct as /subagent-role does.
+
+    The parent's mode, phase and gates are deliberately NOT returned: the hook reads
+    the parent cache file-direct because the daemon's view can diverge and answer
+    mode=None. Each part fails open on its own and every key is always present, so
+    the hook can tell "retrieval down" from "role lookup down".
+    """
+    body: dict[str, Any] = {
+        "retrieval": "unavailable", "text": "", "rule_ids": [], "query_rule_ids": [],
+        "rule_count": 0, "role_lookup": "skipped", "write_scope": None,
+    }
+    if server._pipeline is not None:
+        try:
+            result = await query_rules(QueryRequest(
+                query=request.query[:500], budget_tokens=request.budget_tokens,
+                exclude_rule_ids=[], project_root=request.project_root,
+            ))
+            if result.get("error"):
+                body["retrieval"] = "error"
+            else:
+                rules = result.get("rules")
+                rules = rules if isinstance(rules, list) else []
+                formatted = await asyncio.to_thread(_format_query_response, result)
+                body.update({
+                    "retrieval": "ok", "text": formatted["text"],
+                    "rule_ids": formatted["meta"]["rule_ids"],
+                    "query_rule_ids": [
+                        r.get("rule_id", "") if isinstance(r, dict) else "" for r in rules
+                    ],
+                    "rule_count": len(rules),
+                })
+        except Exception as exc:
+            emit_exception("server.subagent_start_context.retrieval", exc, "", None)
+            body["retrieval"] = "error"
+
+    if request.role:
+        if server._db is None:
+            body["role_lookup"] = "unavailable"
+        else:
+            try:
+                rec = await server._db.get_subagent_role(request.role)
+            except Exception as exc:
+                emit_exception("server.subagent_start_context.role", exc, "", None)
+                rec = None
+                body["role_lookup"] = "unavailable"
+            else:
+                if rec is None:
+                    body["role_lookup"] = "not_found"
+                else:
+                    body["role_lookup"] = "ok"
+                    scope = rec.get("write_scope")
+                    body["write_scope"] = list(scope) if isinstance(scope, list) else None
+    return body

@@ -68,6 +68,10 @@ def is_state_touching(method: str) -> bool:
 # panel on the day enforcement went on. Its handler runs the pipeline and emits log
 # rows: no graph write, no counter, nothing another local account could change.
 #
+# /subagent/start-context is the SubagentStart composite. Its handler runs query_rules,
+# the session formatter and get_subagent_role, and writes nothing; refusing it would
+# push writ-subagent-start.sh onto its multi-call fallback without saying so.
+#
 # THIS REPLACED A PATH-KEYED ALLOWLIST naming /health, /dashboard, /explore, /graph and
 # the /node/ prefix. Keyed on the path alone it exempted every verb on those paths (a
 # measured `POST /health` over TCP returned 405, not 403), while the exemption those
@@ -76,7 +80,7 @@ def is_state_touching(method: str) -> bool:
 # constant, so it is deleted rather than amended. The reason those paths mattered
 # survives as the read exemption below and in README.md:120, which tells every new user
 # to verify an install with `curl http://localhost:8765/health`.
-TCP_READONLY_POST_ALLOWLIST = ("/query",)
+TCP_READONLY_POST_ALLOWLIST = ("/query", "/subagent/start-context")
 _ENFORCE_ENV = "WRIT_TCP_READONLY"
 
 

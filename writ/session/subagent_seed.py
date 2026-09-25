@@ -56,6 +56,11 @@ REASON_MAX_CHARS = 160
 SCOPE_SOURCE_GRAPH = "graph"
 SCOPE_SOURCE_NONE = ""
 
+# The default for `declared_scope`: "not passed, fetch it yourself". A sentinel rather than
+# None, because None is a real passed-in answer (the role declares no scope, or the lookup
+# failed) and must be stamped as such without a second fetch.
+_FETCH = object()
+
 # Both ids are interpolated into a cache filename, and the agent id comes off an untrusted
 # envelope. An allowlist, not a blocklist (ABS-SECURITY-024): session ids are uuids and
 # agent ids are hex-ish, so anything carrying a separator or a dot is refused rather than
@@ -117,7 +122,8 @@ def seed_subagent_cache(agent_id: object, parent_session_id: object, *,
                         projects_dir: str | None = None,
                         default_mode: str | None = None,
                         role: str | None = None,
-                        role_source: str | None = None) -> bool:
+                        role_source: str | None = None,
+                        declared_scope: object = _FETCH) -> bool:
     """Create a sub-agent cache inheriting the parent's governance state.
 
     Returns True only when this call created it. False means it already existed, the ids
@@ -137,6 +143,11 @@ def seed_subagent_cache(agent_id: object, parent_session_id: object, *,
     `role` and `role_source` let a caller that already resolved the role pass it in, so
     provenance is not relabelled: the start hook resolves from the sidecar and must not have
     that recorded as `envelope` just because it handed the value over.
+
+    `declared_scope` lets a caller that already read the role's scope (the start hook's
+    one composite daemon call) pass it in, so the scope is still read once per dispatch
+    and not twice. Omitted means this function fetches it, today's behaviour. A passed
+    value goes through the same start-path and known-role guards as a fetched one.
     """
     ids = _usable(agent_id, parent_session_id)
     if ids is None:
@@ -166,7 +177,7 @@ def seed_subagent_cache(agent_id: object, parent_session_id: object, *,
         role, role_source = resolve_role(agent, envelope_agent_type,
                                          projects_dir=projects_dir)
 
-    scope, scope_source = _declared_scope(cache_source, role, role_source)
+    scope, scope_source = _declared_scope(cache_source, role, role_source, declared_scope)
 
     seeded_over_existing = False
     try:
@@ -266,8 +277,8 @@ def log_seed_failure(agent_id: object, cache_source: str, reason: object) -> Non
         pass
 
 
-def _declared_scope(cache_source: str, role: str,
-                    role_source: str) -> tuple[list[str] | None, str]:
+def _declared_scope(cache_source: str, role: str, role_source: str,
+                    declared_scope: object = _FETCH) -> tuple[list[str] | None, str]:
     """(the role's declared write scope, where it came from) for this dispatch.
 
     ONE FETCH PER DISPATCH, ON THE START PATH ONLY. A `subagent_start` cache exists because
@@ -282,11 +293,18 @@ def _declared_scope(cache_source: str, role: str,
 
     Never raises: a dispatch must not fail because a scope could not be read. The failure
     degrades to None, which is today's decision, because ABSENCE IS NOT A POLICY.
+
+    A `declared_scope` the caller already holds replaces the fetch, and only the fetch:
+    both guards above it still run first, so a lazy seed handed a scope stamps None.
     """
     if cache_source != CACHE_SOURCE_START:
         return None, SCOPE_SOURCE_NONE
     if not role or role == UNKNOWN_ROLE or role_source == SOURCE_UNRESOLVED:
         return None, SCOPE_SOURCE_NONE
+    if declared_scope is not _FETCH:
+        if not isinstance(declared_scope, list):
+            return None, SCOPE_SOURCE_NONE
+        return [str(pattern) for pattern in declared_scope], SCOPE_SOURCE_GRAPH
     # Imported and called through the MODULE, resolved fresh at call time, matching this
     # codebase's in-function import style -- and required by it: the scope fetcher is the
     # seam the tests patch, and a name bound at this module's import would ignore the patch.

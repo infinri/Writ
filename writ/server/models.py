@@ -17,7 +17,7 @@ which fails on the shape rather than on the name.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -112,6 +112,24 @@ class FeedbackRequest(BaseModel):
     signal: str
 
 
+class FeedbackSignal(BaseModel):
+    """One item of a POST /feedback/batch body."""
+
+    rule_id: str
+    signal: Literal["positive", "negative"]
+
+
+class FeedbackBatchRequest(BaseModel):
+    """Request body for POST /feedback/batch.
+
+    `signal` is a Literal, so one invalid item fails the whole request with 422 and
+    nothing is applied. The cap bounds one SessionEnd's queue, which is the loaded
+    rules of one session.
+    """
+
+    signals: list[FeedbackSignal] = Field(default_factory=list, max_length=1000)
+
+
 class ConflictsRequest(BaseModel):
     """Request body for /conflicts endpoint."""
 
@@ -194,6 +212,18 @@ class SessionFormatRequest(BaseModel):
     """Request body for POST /session/format."""
 
     query_response: dict[str, Any]
+
+
+class SubagentStartContextRequest(BaseModel):
+    """Request body for POST /subagent/start-context (writ-subagent-start.sh).
+
+    An empty `role` means the hook did not observe one, so no role lookup is spent.
+    """
+
+    query: str
+    budget_tokens: int = 2000
+    project_root: str = ""
+    role: str = ""
 
 
 class SessionAutoFeedbackRequest(BaseModel):
@@ -355,6 +385,8 @@ __all__ = [
     "PromptBundleRequest",
     "ProposeRequest",
     "FeedbackRequest",
+    "FeedbackSignal",
+    "FeedbackBatchRequest",
     "ConflictsRequest",
     "CommitCaptureRequest",
     "GitHooksAutoInstallRequest",
@@ -362,6 +394,7 @@ __all__ = [
     "SessionModeSetRequest",
     "SessionCanWriteRequest",
     "SessionFormatRequest",
+    "SubagentStartContextRequest",
     "SessionAutoFeedbackRequest",
     "SessionAddViolationRequest",
     "SessionInvalidateGateRequest",

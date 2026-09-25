@@ -22,6 +22,12 @@ a destination that already exists is never touched, and the final step is os.lin
 atomically if a hook of the same session created the file meanwhile. A set WRIT_CACHE_DIR
 disables the whole thing: an explicit override is the operator's decision, and it is what keeps
 the test suite from ever reading a real legacy directory. Never fails the caller.
+
+RUN ONCE PER INSTALLED VERSION. session-start-bootstrap.sh passes `--stamp-file` and
+`--stamp-key` ("<version> <skill_root>") and skips this script while the stamp's first line
+equals the key. The stamp is written here, atomically, only after a carry that raised nothing
+and failed no copy, so an unfinished migration is retried at the next SessionStart rather than
+hidden behind a stamp.
 """
 
 from __future__ import annotations
@@ -56,6 +62,12 @@ def legacy_session_dirs(skill_root: str, home: str) -> list[str]:
 
 def carry_legacy_sessions(skill_root: str, dest_dir: str, home: str) -> int:
     """Copy each legacy session cache absent from dest_dir into it. Returns how many landed."""
+    return carry_legacy_sessions_report(skill_root, dest_dir, home)[0]
+
+
+def carry_legacy_sessions_report(skill_root: str, dest_dir: str, home: str) -> tuple[int, int]:
+    """carry_legacy_sessions, reporting (carried, failed). A destination that already exists
+    is not a failure: that copy is already done."""
     dest_real = os.path.realpath(dest_dir)
     newest: dict[str, tuple[float, str]] = {}
     for directory in legacy_session_dirs(skill_root, home):
@@ -72,9 +84,9 @@ def carry_legacy_sessions(skill_root: str, dest_dir: str, home: str) -> int:
             if name not in newest or st.st_mtime > newest[name][0]:
                 newest[name] = (st.st_mtime, path)
     if not newest:
-        return 0
+        return 0, 0
     os.makedirs(dest_dir, exist_ok=True)
-    carried = 0
+    carried = failed = 0
     for name, (_mtime, src) in sorted(newest.items()):
         dest = os.path.join(dest_dir, name)
         if os.path.lexists(dest):
@@ -87,17 +99,44 @@ def carry_legacy_sessions(skill_root: str, dest_dir: str, home: str) -> int:
             os.link(tmp, dest)
             carried += 1
         except OSError:
-            pass
+            failed += 1
         finally:
             try:
                 os.unlink(tmp)
             except OSError:
                 pass
-    return carried
+    return carried, failed
 
 
-def main() -> int:
+def write_stamp(stamp_file: str, stamp_key: str) -> None:
+    """Replace the stamp atomically: a temp file in the same directory, then os.replace."""
+    directory = os.path.dirname(stamp_file) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".state-migrate.", suffix=".tmp")
     try:
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            out.write(stamp_key + "\n")
+        os.replace(tmp, stamp_file)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _stamp_args(argv: list[str]) -> tuple[str, str]:
+    """(--stamp-file, --stamp-key), each "" when absent. Both are needed to stamp."""
+    values = {"--stamp-file": "", "--stamp-key": ""}
+    for i, arg in enumerate(argv):
+        if arg in values and i + 1 < len(argv):
+            values[arg] = argv[i + 1]
+    return values["--stamp-file"], values["--stamp-key"]
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        stamp_file, stamp_key = _stamp_args(sys.argv[1:] if argv is None else argv)
         if os.environ.get("WRIT_CACHE_DIR"):
             return 0
         skill_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -106,9 +145,11 @@ def main() -> int:
         from writ.shared.state_root import state_root
 
         dest = os.path.join(state_root(), "session")
-        carried = carry_legacy_sessions(skill_root, dest, os.path.expanduser("~"))
+        carried, failed = carry_legacy_sessions_report(skill_root, dest, os.path.expanduser("~"))
         if carried:
             print(f"[Writ] carried {carried} session cache(s) into {dest}")
+        if stamp_file and stamp_key and not failed:
+            write_stamp(stamp_file, stamp_key)
     except Exception:
         pass
     return 0

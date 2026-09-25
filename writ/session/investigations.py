@@ -374,10 +374,14 @@ def cmd_partition_scope(session_id: str, max_loc: int = _AUDIT_BUDGET_LOC,
 def cmd_coverage_rollup(session_id: str) -> None:
     """INV-6a: aggregate worker coverage-maps (stdin JSON array) into global coverage.
 
-    Reconstructs whole-project coverage from isolated worker sessions: sums each partition's
-    scope_total / examined_in_scope, recomputes the global percentage, and reconciles against
-    the lead's frozen scope (sum of partition scope_totals == lead total -> the tiling held).
-    Sums PRESENCE signals -- breadth over a tiled denominator, never depth or correctness.
+    The stdin maps give the partition shape and each worker's CLAIM; examined is computed
+    from the lead's own recorded evidence (`_examined_files` over its cache, which holds
+    the worker reads SubagentStop rolled up), so rollup and synthesis-gate agree by
+    construction. A claim is reconciled only when every examination it asserts is backed:
+    the tiling held (partition scope_totals sum to the lead's frozen scope) and no claim,
+    global or per partition, exceeds its evidence. Under-claiming asserts nothing false.
+    A map carrying `files` is checked per partition; a file-less map cannot be.
+    Counts PRESENCE signals -- breadth over a tiled denominator, never depth or correctness.
     """
     raw = sys.stdin.read().strip()
     try:
@@ -389,27 +393,69 @@ def cmd_coverage_rollup(session_id: str) -> None:
     maps = [m for m in maps if isinstance(m, dict)]
 
     g_scope = sum(int(m.get("scope_total", 0) or 0) for m in maps)
-    g_examined = sum(int(m.get("examined_in_scope", 0) or 0) for m in maps)
+    g_claimed = sum(int(m.get("examined_in_scope", 0) or 0) for m in maps)
 
     cache = _read_cache(session_id)
     scope = cache.get("coverage_scope")
-    lead_total = len(scope.get("files", [])) if scope and scope.get("frozen_at") else None
-    worst = min(maps, key=lambda m: m.get("coverage_pct", 0), default=None)
+    frozen = bool(scope and scope.get("frozen_at"))
+    scope_files = set(scope.get("files", [])) if frozen else set()
+    lead_total = len(scope.get("files", [])) if frozen else None
+    evidenced_in_scope = scope_files & _examined_files(cache)
+    g_evidenced = len(evidenced_in_scope)
+
+    partitions = [_rollup_partition(i, m, scope_files, evidenced_in_scope)
+                  for i, m in enumerate(maps)]
+    unbacked_partitions = [
+        p["index"] for p in partitions
+        if p["evidenced_examined_in_scope"] is not None
+        and p["claimed_examined_in_scope"] > p["evidenced_examined_in_scope"]
+    ]
+    checked_pcts = [p["evidenced_pct"] for p in partitions if p["evidenced_pct"] is not None]
+    unbacked_claims = max(0, g_claimed - g_evidenced)
+    tiling_held = lead_total is not None and g_scope == lead_total
 
     report = {
         "status": "coverage_rollup",
         "partitions_reported": len(maps),
         "global_scope_total": g_scope,
-        "global_examined_in_scope": g_examined,
-        "global_coverage_pct": round(g_examined / g_scope * 100) if g_scope else 0,
+        "global_examined_in_scope": g_evidenced,
+        "global_claimed_examined_in_scope": g_claimed,
+        "global_coverage_pct": round(g_evidenced / lead_total * 100) if lead_total else 0,
         "lead_scope_total": lead_total,
-        "reconciled": lead_total is not None and g_scope == lead_total,
-        "worst_partition_pct": worst.get("coverage_pct") if worst else None,
-        "ready": g_scope > 0 and g_examined > 0,
-        "ceiling": "sums presence signals across partitions; not proof of depth or correctness",
+        "unbacked_claims": unbacked_claims,
+        "unbacked_partitions": unbacked_partitions,
+        "tiling_held": tiling_held,
+        "reconciled": tiling_held and unbacked_claims == 0 and not unbacked_partitions,
+        "worst_partition_pct": min(checked_pcts) if checked_pcts else None,
+        "partitions": partitions,
+        "ready": frozen and g_evidenced > 0,
+        "ceiling": "counts recorded presence (cited or opened) in the lead's evidence; "
+                   "not proof of depth or correctness",
     }
     json.dump(report, sys.stdout, indent=2)
     sys.stdout.write("\n")
+
+
+def _rollup_partition(index: int, cov_map: dict, scope_files: set[str],
+                      evidenced_in_scope: set[str]) -> dict:
+    """One coverage-rollup partition row: the worker's claim beside its evidence.
+
+    Evidence per partition needs the map's `files`; without them it is None.
+    """
+    scope_total = int(cov_map.get("scope_total", 0) or 0)
+    files = cov_map.get("files")
+    evidenced = pct = None
+    if isinstance(files, list):
+        evidenced = len(set(files) & scope_files & evidenced_in_scope)
+        denominator = scope_total or len(files)
+        pct = round(evidenced / denominator * 100) if denominator else 0
+    return {
+        "index": index,
+        "scope_total": scope_total,
+        "claimed_examined_in_scope": int(cov_map.get("examined_in_scope", 0) or 0),
+        "evidenced_examined_in_scope": evidenced,
+        "evidenced_pct": pct,
+    }
 
 
 def cmd_aggregate_findings(session_id: str) -> None:

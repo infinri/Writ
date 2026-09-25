@@ -166,6 +166,78 @@ class RuleStoreMixin:
                 return None
         return "graduation_pending"
 
+    async def apply_feedback_batch(
+        self,
+        signals: list[tuple[str, str]],
+        threshold: int = DEFAULT_GRADUATION_THRESHOLD,
+        ratio_min: float = DEFAULT_GRADUATION_RATIO_MIN,
+    ) -> dict:
+        """Apply a batch of (rule_id, "positive"|"negative") signals in ONE transaction.
+
+        The batched form of increment_positive / increment_negative plus
+        evaluate_and_flip_graduation: one session, one execute_write, one UNWIND
+        increment that returns the post-increment counts and provenance, then (only
+        when some proposed rule crossed) one guarded UNWIND flip in the same
+        transaction. A rule sent twice is counted twice, faithful to the input.
+
+        Batch-safe: the increment's SET write-locks every touched node until commit, so
+        the provenance it returns cannot change underneath this transaction, and a
+        concurrent batch on the same rule blocks, then reads graduation_pending and
+        flips nothing. execute_write retries a transient failure by re-running the
+        whole function; a rolled-back attempt applied nothing, so a retry cannot
+        double-count. Any other exception rolls back the whole batch.
+
+        North Star, as evaluate_and_flip_graduation: never promotes authority, never
+        writes bible/ source; frequency.evaluate_graduation decides the crossing.
+        """
+        if not signals:
+            return {"recorded": [], "not_found": [], "graduation_pending": [], "applied": 0}
+        counts: dict[str, list[int]] = {}
+        for rule_id, signal in signals:
+            row = counts.setdefault(rule_id, [0, 0])
+            row[0 if signal == "positive" else 1] += 1
+        rows = [{"rule_id": rid, "pos": p, "neg": n} for rid, (p, n) in counts.items()]
+
+        async def _work(tx) -> tuple[list[str], list[str]]:
+            result = await tx.run(
+                "UNWIND $rows AS row MATCH (r:Rule {rule_id: row.rule_id}) "
+                "SET r.times_seen_positive = coalesce(r.times_seen_positive, 0) + row.pos, "
+                "r.times_seen_negative = coalesce(r.times_seen_negative, 0) + row.neg, "
+                "r.last_seen = datetime() "
+                "RETURN r.rule_id AS rule_id, r.times_seen_positive AS pos, "
+                "r.times_seen_negative AS neg, r.provenance AS provenance",
+                rows=rows,
+            )
+            recorded: list[str] = []
+            crossed: list[str] = []
+            async for rec in result:
+                rid = rec["rule_id"]
+                if rid not in recorded:
+                    recorded.append(rid)
+                if rec["provenance"] != "proposed" or rid in crossed:
+                    continue
+                if evaluate_graduation(rec["pos"], rec["neg"], threshold, ratio_min).graduated:
+                    crossed.append(rid)
+            flipped: list[str] = []
+            if crossed:
+                flip = await tx.run(
+                    "UNWIND $ids AS id MATCH (r:Rule {rule_id: id}) "
+                    "WHERE r.provenance = 'proposed' "
+                    "SET r.provenance = 'graduation_pending' RETURN r.rule_id AS rule_id",
+                    ids=crossed,
+                )
+                flipped = [rec["rule_id"] async for rec in flip]
+            return recorded, flipped
+
+        async with self._driver.session(database=self._database) as session:
+            recorded, flipped = await session.execute_write(_work)
+        return {
+            "recorded": recorded,
+            "not_found": [rid for rid in counts if rid not in recorded],
+            "graduation_pending": flipped,
+            "applied": len(recorded),
+        }
+
     async def delete_rule(self, rule_id: str) -> bool:
         """Delete a Rule node and all its edges. Returns True if a node was deleted.
 

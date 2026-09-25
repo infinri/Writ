@@ -97,6 +97,7 @@ ROUTE_BASELINE: list[tuple[str, str]] = [
     ("POST", "/commit/capture"),
     ("POST", "/conflicts"),
     ("POST", "/feedback"),
+    ("POST", "/feedback/batch"),
     ("POST", "/git-hooks/auto-install"),
     ("POST", "/memory-record"),
     ("POST", "/methodology-companion"),
@@ -122,6 +123,7 @@ ROUTE_BASELINE: list[tuple[str, str]] = [
     ("POST", "/session/{session_id}/review-findings"),
     ("POST", "/session/{session_id}/reset-after-compaction"),
     ("POST", "/session/{session_id}/verification-evidence"),
+    ("POST", "/subagent/start-context"),
 ]
 
 
@@ -142,15 +144,17 @@ def _current_route_tuples() -> list[tuple[str, str]]:
 
 class TestServerIsPackage:
     def test_route_baseline_captured_count(self) -> None:
-        """Sanity check on the frozen constant itself: exactly 57 tuples are
+        """Sanity check on the frozen constant itself: exactly 59 tuples are
         declared (53 captured from HEAD, plus /memory-record, plus the GET and POST
         halves of the verdict route added 2026-08-06, plus GET
         /session/{sid}/prompt-state added 2026-08-08, MINUS the session-cache key
-        setter removed 2026-08-26). Guards against a copy/paste mistake in
-        ROUTE_BASELINE, independent of the split."""
+        setter removed 2026-08-26, plus POST /feedback/batch and POST
+        /subagent/start-context (plan f7fc2b37-9a53-4011-a69f-e6b97f5e45fe, batch 4:
+        57 -> 59)). Guards against a copy/paste mistake in ROUTE_BASELINE, independent
+        of the split."""
         # THE CANONICAL ROUTE LITERAL, kept here because the baseline list it guards lives
         # in this file: a deliberate route change is reviewed by editing both together.
-        assert len(ROUTE_BASELINE) == 57
+        assert len(ROUTE_BASELINE) == 59
         # This said `== 57` too, which restated the line above rather than adding a claim.
         # The claim is that no tuple appears twice.
         assert len(set(ROUTE_BASELINE)) == len(ROUTE_BASELINE), (

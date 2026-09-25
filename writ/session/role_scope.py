@@ -31,7 +31,10 @@ import re
 # (writ/server/transport.py: the VERB bounds what TCP may change, not the path), so this
 # GET needs no unix socket, and the same convention as writ/session/doctor.py's
 # _HEALTH_URL keeps one spelling of the daemon's address in the session package.
-_ROLE_URL = "http://localhost:8765/subagent-role/"
+# WRIT_SESSION_BASE, when set, wins: the start hook sets it to the endpoint its other
+# daemon calls use, so this fetch cannot go to a different daemon than they do.
+_DEFAULT_BASE = "http://localhost:8765"
+_ROLE_PATH = "/subagent-role/"
 
 # Long enough for a local GET that runs one `MATCH (r:SubagentRole) ... LIMIT 1` over a
 # five-node label, short enough that a hung daemon does not hold up a dispatch. Timing out
@@ -65,7 +68,8 @@ def fetch_declared_scope(role: str, timeout: float = _DEFAULT_TIMEOUT) -> list[s
     import urllib.parse
     import urllib.request
 
-    url = _ROLE_URL + urllib.parse.quote(name, safe="")
+    base = (os.environ.get("WRIT_SESSION_BASE") or _DEFAULT_BASE).rstrip("/")
+    url = base + _ROLE_PATH + urllib.parse.quote(name, safe="")
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode("utf-8"))

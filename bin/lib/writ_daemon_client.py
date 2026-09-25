@@ -138,3 +138,59 @@ def get_json(
         base_url if base_url is not None else os.environ.get("WRIT_SESSION_BASE", DEFAULT_BASE_URL),
         timeout,
     )
+
+
+def _attempt_outcome(
+    conn: http.client.HTTPConnection, path: str, body: bytes, headers: dict
+) -> tuple[int, str, bool]:
+    """Connect, then send. A connect failure is (0, "", False); any failure after the
+    connection opened is (0, "", True), because the bytes may have reached the peer."""
+    try:
+        conn.connect()
+    except OSError:
+        conn.close()
+        return 0, "", False
+    try:
+        conn.request("POST", path, body=body, headers=headers)
+        response = conn.getresponse()
+        return response.status, response.read().decode("utf-8", "replace"), True
+    except OSError:
+        return 0, "", True
+    finally:
+        conn.close()
+
+
+def post_json_outcome(
+    path: str,
+    payload: dict,
+    socket_path: str | None = None,
+    base_url: str | None = None,
+    timeout: float = 0.5,
+) -> tuple[int, str, bool]:
+    """POST `payload` as JSON and return (status, text, delivered).
+
+    Unlike post_json, this separates "could not connect" (delivered False: nothing
+    happened server-side, a retry is safe) from "request sent, no answer" (status 0,
+    delivered True: the server may have applied it). A connect failure on the socket
+    may still try TCP, the stale-socket case; a request that reached the socket is
+    never replayed over TCP, so a non-idempotent POST is not applied twice.
+    """
+    body = json.dumps(payload).encode()
+    headers = {"Host": "localhost", "Content-Type": "application/json"}
+    socket_path = socket_path if socket_path is not None else os.environ.get(
+        "WRIT_SOCKET", DEFAULT_SOCKET)
+    base_url = base_url if base_url is not None else os.environ.get(
+        "WRIT_SESSION_BASE", DEFAULT_BASE_URL)
+
+    if socket_available(socket_path):
+        outcome = _attempt_outcome(
+            UnixSocketHTTPConnection(socket_path, timeout=timeout), path, body, headers)
+        if outcome[2]:
+            return outcome
+
+    parsed = urllib.parse.urlsplit(base_url)
+    conn = http.client.HTTPConnection(
+        parsed.hostname or "localhost", parsed.port or 8765, timeout=timeout
+    )
+    return _attempt_outcome(
+        conn, path, body, {k: v for k, v in headers.items() if k != "Host"})

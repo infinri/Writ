@@ -1,9 +1,9 @@
 """Auto-feedback telemetry for the session helper.
 
 POL-6g-3 extracts cmd_auto_feedback (correlate loaded rules with analysis outcomes and POST
-per-rule feedback to the Writ server) out of bin/lib/writ-session.py. Imports only lower layers
-(cache, config.EXT_TO_DOMAIN) + stdlib; urllib is imported inside the command. Acyclic; the
-facade re-exports WRIT_FEEDBACK_URL + cmd_auto_feedback.
+the rule feedback to the Writ server in one batch) out of bin/lib/writ-session.py. Imports only
+lower layers (cache, config.EXT_TO_DOMAIN) + stdlib; the daemon client is imported inside the
+command. Acyclic; the facade re-exports WRIT_FEEDBACK_URL + cmd_auto_feedback.
 """
 
 import json
@@ -31,6 +31,9 @@ def cmd_auto_feedback(session_id: str) -> None:
     rules = cache.get("loaded_rule_ids", [])
     results = cache.get("analysis_results", {})
     already_sent = set(cache.get("feedback_sent", []))
+    # A batch that was delivered but never answered may have been applied; its rules
+    # are never resent (a resend could count them twice), only reported.
+    unconfirmed = set(cache.get("feedback_unconfirmed", []))
 
     if not rules or not results:
         return
@@ -38,23 +41,33 @@ def cmd_auto_feedback(session_id: str) -> None:
     pass_domains, fail_domains = _classify_file_domains(results)
     rule_domain_map = _map_rule_domains(rules)
     feedback_queue = _build_feedback_queue(
-        rules, already_sent, rule_domain_map, pass_domains, fail_domains,
+        rules, already_sent | unconfirmed, rule_domain_map, pass_domains, fail_domains,
     )
-    sent_count = _send_feedback(feedback_queue, already_sent)
+    previously_sent = set(already_sent)
+    outcome = _send_feedback(feedback_queue, already_sent)
+    newly_sent = already_sent - previously_sent
+    newly_unconfirmed = set(outcome["unconfirmed"])
 
     # Update cache with sent feedback. The correlation + network send above ran
     # unlocked (never hold the per-session lock across a POST); only the write-back
     # takes the lock, merging onto the FRESH cache so no other field is clobbered.
-    if sent_count > 0:
-        cache["feedback_sent"] = sorted(already_sent)  # keep local dict for the report below
+    if newly_sent or newly_unconfirmed:
         with mutate_cache(session_id) as fresh:
-            fresh["feedback_sent"] = sorted(set(fresh.get("feedback_sent", [])) | already_sent)
+            if newly_sent:
+                fresh["feedback_sent"] = sorted(set(fresh.get("feedback_sent", [])) | already_sent)
+            if newly_unconfirmed:
+                fresh["feedback_unconfirmed"] = sorted(
+                    set(fresh.get("feedback_unconfirmed", [])) | newly_unconfirmed)
 
+    signals = dict(_dedupe_queue(feedback_queue))
     report = {
-        "feedback_sent": sent_count,
-        "positive": sum(1 for _, s in feedback_queue[:sent_count] if s == "positive"),
-        "negative": sum(1 for _, s in feedback_queue[:sent_count] if s == "negative"),
-        "skipped_already_sent": len([r for r in rules if r in set(cache.get("feedback_sent", [])) - already_sent]),
+        "feedback_sent": len(newly_sent),
+        "positive": sum(1 for rid in newly_sent if signals.get(rid) == "positive"),
+        "negative": sum(1 for rid in newly_sent if signals.get(rid) == "negative"),
+        "skipped_already_sent": len(set(rules) & previously_sent),
+        "unconfirmed": len(newly_unconfirmed),
+        "not_found": len(outcome["not_found"]),
+        "transport": outcome["transport"],
     }
     json.dump(report, sys.stdout)
     sys.stdout.write("\n")
@@ -120,18 +133,19 @@ def _build_feedback_queue(
     return feedback_queue
 
 
-def _send_feedback(feedback_queue: list[tuple[str, str]], already_sent: set[str]) -> int:
-    """POST each (rule_id, signal) to the Writ feedback endpoint, marking sent rules in
-    `already_sent` (mutated in place). Stops on the first connection error (server down).
-    Returns the count actually sent."""
-    import urllib.error
+def _dedupe_queue(feedback_queue: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """One signal per rule id, the first one queued wins."""
+    seen: dict[str, str] = {}
+    for rid, signal in feedback_queue:
+        seen.setdefault(rid, signal)
+    return list(seen.items())
+
+
+def _daemon_client():
     # Through the shared client (bin/lib/writ_daemon_client.py), which prefers the
     # daemon's unix socket and falls back to WRIT_FEEDBACK_URL's TCP endpoint. One of
     # three python call sites the E2a transport census exposed; a grep over curl sites
     # could not have found any of them.
-    import os
-    import sys
-
     _lib = os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
         "bin", "lib",
@@ -140,13 +154,65 @@ def _send_feedback(feedback_queue: list[tuple[str, str]], already_sent: set[str]
         sys.path.insert(0, _lib)
     import writ_daemon_client
 
-    sent_count = 0
-    for rid, signal in feedback_queue:
-        status, _body = writ_daemon_client.post_json(
+    return writ_daemon_client
+
+
+def _send_feedback(feedback_queue: list[tuple[str, str]], already_sent: set[str]) -> dict:
+    """POST the de-duplicated queue as ONE /feedback/batch, marking confirmed rules in
+    `already_sent` (mutated in place).
+
+    Only an answer that lists what was recorded confirms anything: recorded plus
+    not_found are marked sent. An error body, 422 or 5xx marks nothing (the server
+    applied nothing, the next run resends). Not delivered marks nothing. Delivered with
+    no answer returns every queued id as unconfirmed, never sent: the batch may have
+    been applied, so resending could count it twice. 404/405 is a daemon that predates
+    the route, and gets the per-rule /feedback loop.
+
+    Returns {"unconfirmed": [ids], "not_found": [ids], "transport": batch|legacy|none}.
+    """
+    queue = _dedupe_queue(feedback_queue)
+    result: dict = {"unconfirmed": [], "not_found": [], "transport": "none"}
+    if not queue:
+        return result
+    client = _daemon_client()
+    status, text, delivered = client.post_json_outcome(
+        "/feedback/batch",
+        {"signals": [{"rule_id": rid, "signal": signal} for rid, signal in queue]},
+        timeout=1.0,
+    )
+    if status in (404, 405):
+        result["transport"] = "legacy"
+        _send_feedback_per_rule(client, queue, already_sent)
+        return result
+    if delivered:
+        result["transport"] = "batch"
+    if status == 0:
+        if delivered:
+            result["unconfirmed"] = [rid for rid, _ in queue]
+        return result
+    if status != 200:
+        return result
+    try:
+        body = json.loads(text)
+    except ValueError:
+        return result
+    if not isinstance(body, dict) or not isinstance(body.get("recorded"), list):
+        return result
+    queued = {rid for rid, _ in queue}
+    not_found = [rid for rid in body.get("not_found") or [] if rid in queued]
+    already_sent.update(rid for rid in body["recorded"] if rid in queued)
+    already_sent.update(not_found)
+    result["not_found"] = not_found
+    return result
+
+
+def _send_feedback_per_rule(client, queue: list[tuple[str, str]], already_sent: set[str]) -> None:
+    """The pre-batch path, for an old daemon: POST each (rule_id, signal) to /feedback,
+    marking every answered rule sent. Stops on the first connection error."""
+    for rid, signal in queue:
+        status, _body = client.post_json(
             "/feedback", {"rule_id": rid, "signal": signal}, timeout=0.2
         )
         if status == 0:
             break  # Neither transport answered, stop trying
         already_sent.add(rid)
-        sent_count += 1
-    return sent_count

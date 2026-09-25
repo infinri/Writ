@@ -247,6 +247,37 @@ async def session_current_phase(session_id: str) -> dict[str, Any]:
     return await asyncio.to_thread(_get)
 
 
+def _format_query_response(query_response: dict[str, Any]) -> dict[str, Any]:
+    """Format a /query answer as {"text", "meta": {"rule_ids", "tokens"}}.
+
+    The one formatter behind /session/format and /subagent/start-context, so the two
+    cannot format the same rules differently. Synchronous: callers run it in
+    asyncio.to_thread.
+    """
+    from writ.retrieval.prompt_bundle import split_format
+
+    # Two formatting backends, picked at runtime:
+    # 1. If writ_session.cmd_format accepts a query_response arg and
+    #    returns a string (test mock shape), use the return value.
+    # 2. Otherwise call the production cmd_format() via _run_cmd_format_locked
+    #    (the shared, lock-serialized stdin/stdout swap) and parse the
+    #    WRIT_META: tail line.
+    raw = None
+    try:
+        candidate = server.writ_session.cmd_format(query_response=query_response)  # type: ignore[call-arg]
+    except TypeError:
+        candidate = None
+    if isinstance(candidate, str):
+        raw = candidate
+    else:
+        raw = server._run_cmd_format_locked(query_response)
+
+    raw = raw or ""
+    text, _m = split_format(raw)
+    meta: dict[str, Any] = {"rule_ids": _m["rule_ids"], "tokens": _m["cost"]}
+    return {"text": text, "meta": meta}
+
+
 @router.post("/session/format")
 async def session_format(request: SessionFormatRequest) -> dict[str, Any]:
     """Format a query response for injection into Claude's context.
@@ -256,33 +287,7 @@ async def session_format(request: SessionFormatRequest) -> dict[str, Any]:
     routes "format" through this endpoint, keeping the subprocess as fallback
     only when the server is unreachable.
     """
-
-    def _format() -> dict[str, Any]:
-        from writ.retrieval.prompt_bundle import split_format
-
-        # Two formatting backends, picked at runtime:
-        # 1. If writ_session.cmd_format accepts a query_response arg and
-        #    returns a string (test mock shape), use the return value.
-        # 2. Otherwise call the production cmd_format() via _run_cmd_format_locked
-        #    (the shared, lock-serialized stdin/stdout swap) and parse the
-        #    WRIT_META: tail line.
-        raw = None
-        try:
-            candidate = server.writ_session.cmd_format(query_response=request.query_response)  # type: ignore[call-arg]
-        except TypeError:
-            candidate = None
-        if isinstance(candidate, str):
-            raw = candidate
-        else:
-            raw = server._run_cmd_format_locked(request.query_response)
-
-        raw = raw or ""
-        text, _m = split_format(raw)
-        meta: dict[str, Any] = {"rule_ids": _m["rule_ids"], "tokens": _m["cost"]}
-        return {"text": text, "meta": meta}
-
-    result = await asyncio.to_thread(_format)
-    return result
+    return await asyncio.to_thread(_format_query_response, request.query_response)
 
 
 @router.get("/session/{session_id}/coverage")

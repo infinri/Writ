@@ -20,9 +20,46 @@ STDIN_JSON="$(cat 2>/dev/null || true)"
 #     venv probe, because it needs only the system python3. The path is this script's own
 #     location (hooks/scripts -> <skill>), the walk writ-rag-inject.sh uses outside the plugin
 #     loader. Best-effort and silent: a failed carry leaves the session exactly as it was.
+#
+#     ONCE PER INSTALLED VERSION, not once per SessionStart. The key is "<version> <skill_root>"
+#     (the version from .claude-plugin/plugin.json, the manifest the plugin loader installs by;
+#     the root so a dev checkout beside the plugin cache gets its own run), compared with the
+#     first line of <state_root>/state-migrate.stamp. The python writes the stamp, only after a
+#     complete carry, so any doubt (no stamp, garbage, another version, a failed copy) runs the
+#     migration again. No version readable means no key and the old unconditional run. A set
+#     WRIT_CACHE_DIR skips it outright: the script returns at once under it anyway.
+#
+#     Bash builtins only, because common.sh is not sourced yet: the state root is the same
+#     three-line case common.sh uses (tests/test_state_migrate_stamp.py pins it to
+#     writ.shared.state_root), and the version is a read loop and a regex match, no exec.
 _SSB_SKILL_DIR="$(cd "$(dirname "$0")/../.." 2>/dev/null && pwd)" || _SSB_SKILL_DIR=""
-if [ -n "$_SSB_SKILL_DIR" ] && [ -f "$_SSB_SKILL_DIR/bin/lib/writ_state_migrate.py" ]; then
-  python3 "$_SSB_SKILL_DIR/bin/lib/writ_state_migrate.py" >/dev/null 2>&1 || true
+if [ -n "$_SSB_SKILL_DIR" ] && [ -f "$_SSB_SKILL_DIR/bin/lib/writ_state_migrate.py" ] \
+    && [ -z "${WRIT_CACHE_DIR:-}" ]; then
+  _SSB_VERSION=""
+  if [ -f "$_SSB_SKILL_DIR/.claude-plugin/plugin.json" ]; then
+    while IFS= read -r _ssb_line || [ -n "$_ssb_line" ]; do
+      if [[ "$_ssb_line" =~ \"version\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]]; then
+        _SSB_VERSION="${BASH_REMATCH[1]}"
+        break
+      fi
+    done 2>/dev/null < "$_SSB_SKILL_DIR/.claude-plugin/plugin.json"
+  fi
+  if [ -z "$_SSB_VERSION" ]; then
+    python3 "$_SSB_SKILL_DIR/bin/lib/writ_state_migrate.py" >/dev/null 2>&1 || true
+  else
+    case "${XDG_STATE_HOME:-}" in
+      /*) _SSB_STATE_ROOT="${XDG_STATE_HOME%/}/writ" ;;
+      *)  _SSB_STATE_ROOT=~/.local/state/writ ;;
+    esac
+    _SSB_STAMP_FILE="$_SSB_STATE_ROOT/state-migrate.stamp"
+    _SSB_STAMP_KEY="$_SSB_VERSION $_SSB_SKILL_DIR"
+    _ssb_stamp=""
+    { IFS= read -r _ssb_stamp < "$_SSB_STAMP_FILE"; } 2>/dev/null || true
+    if [ "$_ssb_stamp" != "$_SSB_STAMP_KEY" ]; then
+      python3 "$_SSB_SKILL_DIR/bin/lib/writ_state_migrate.py" \
+        --stamp-file "$_SSB_STAMP_FILE" --stamp-key "$_SSB_STAMP_KEY" >/dev/null 2>&1 || true
+    fi
+  fi
 fi
 
 # 1. Resolve install root and persistent-data dir. The plugin loader sets

@@ -546,6 +546,75 @@ class TestScopeStampedOnlyOnStartPath:
 
 
 # --------------------------------------------------------------------------------- #
+# Plan f7fc2b37-9a53-4011-a69f-e6b97f5e45fe, batch 4 (4c): a caller that already holds
+# the composite's answer (POST /subagent/start-context) may pass the declared scope in
+# directly, so the seeder does not spend a second fetch for the one the composite
+# already made. Sibling to test_a_start_seed_fetches_and_stamps_the_declared_scope
+# above, which keeps its EXACT call shape (no declared_scope kwarg) and now pins the
+# fallback contract instead. RED at HEAD: seed_subagent_cache has no `declared_scope`
+# parameter yet (TypeError: unexpected keyword argument).
+# --------------------------------------------------------------------------------- #
+
+
+class TestPrefetchedDeclaredScopeIsStampedWithoutFetching:
+    def test_a_prefetched_list_is_stamped_with_source_graph_and_the_fetcher_is_not_called(
+        self, cache_dir, monkeypatch
+    ) -> None:
+        scope_mod = _role_scope_module()
+        seed_mod = _seed_module()
+        _write_parent_cache(cache_dir)
+        calls = []
+        monkeypatch.setattr(
+            "writ.session.role_scope.fetch_declared_scope",
+            lambda *a, **k: calls.append((a, k)) or ["should-not-be-used"],
+        )
+        seed_mod.seed_subagent_cache(
+            AGENT, PARENT, cache_source=seed_mod.CACHE_SOURCE_START,
+            envelope_agent_type="writ-planner", declared_scope=["plan.md"])
+        assert calls == [], (
+            "a prefetched declared_scope must not trigger a second, redundant fetch"
+        )
+        child = _child_cache(cache_dir)
+        assert child is not None
+        assert child["role_write_scope"] == ["plan.md"]
+        assert child.get("role_scope_source") == "graph"
+
+    def test_a_prefetched_none_stamps_none_with_an_empty_source(
+        self, cache_dir, monkeypatch
+    ) -> None:
+        seed_mod = _seed_module()
+        _write_parent_cache(cache_dir)
+        monkeypatch.setattr(
+            "writ.session.role_scope.fetch_declared_scope",
+            lambda *a, **k: pytest.fail("the fetcher must not run when declared_scope is passed"),
+        )
+        seed_mod.seed_subagent_cache(
+            AGENT, PARENT, cache_source=seed_mod.CACHE_SOURCE_START,
+            envelope_agent_type="writ-implementer", declared_scope=None)
+        child = _child_cache(cache_dir)
+        assert child is not None
+        assert child["role_write_scope"] is None
+        assert child.get("role_scope_source") == ""
+
+    def test_a_lazy_seed_given_a_scope_still_stamps_none(self, cache_dir, monkeypatch) -> None:
+        """The lazy-path guard runs before a passed-in value is ever used: cycle K's
+        rule (a lazily seeded cache confers no write authority) must hold even when
+        a caller mistakenly hands the lazy path a scope."""
+        seed_mod = _seed_module()
+        _write_parent_cache(cache_dir)
+        monkeypatch.setattr(
+            "writ.session.role_scope.fetch_declared_scope",
+            lambda *a, **k: pytest.fail("the fetcher must not run on the lazy path either"),
+        )
+        seed_mod.seed_subagent_cache(
+            AGENT, PARENT, envelope_agent_type="writ-planner", declared_scope=["plan.md"])
+        child = _child_cache(cache_dir)
+        assert child is not None
+        assert child["role_write_scope"] is None
+        assert child.get("role_scope_source") == ""
+
+
+# --------------------------------------------------------------------------------- #
 # Capability 6: the cache schema tells "no declared scope" from "declares nothing".
 # --------------------------------------------------------------------------------- #
 

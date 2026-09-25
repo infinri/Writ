@@ -157,7 +157,10 @@ class TestDocCounts:
         # 49 = 50 - the session-cache key setter (2026-08-26): an arbitrary-key writer
         # with no callers, which could set the gate inputs `mode` and `current_phase`
         # over unauthenticated localhost HTTP. See tests/test_daemon_authorization.py.
+        # 51 = 49 + POST /feedback/batch + POST /subagent/start-context (plan
+        # f7fc2b37-9a53-4011-a69f-e6b97f5e45fe, batch 4: one batched SessionEnd
+        # feedback write, one composite daemon call for SubagentStart context).
         source_count = _count_server_endpoints()
-        assert source_count == 49, (
-            f"writ.server has {source_count} @app/@router route decorators; expected 49"
+        assert source_count == 51, (
+            f"writ.server has {source_count} @app/@router route decorators; expected 51"
         )

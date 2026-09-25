@@ -169,19 +169,86 @@ fi
 # STDOUT IS THE STATUS, and an EMPTY status is the signal. `seeded` and `skipped` both mean
 # the block ran to completion; nothing at all means the exec died, python raised before
 # printing, or the process was killed. Nothing is inferred from a missing telemetry row.
+#
+# THE SAME PROCESS MAKES THE ONE COMPOSITE DAEMON CALL (POST /subagent/start-context), which
+# answers what /health, /query, /session/format and GET /subagent-role used to answer in four
+# round trips, and seeds with the role scope it returned so the scope is still read once per
+# dispatch. Its answer comes back on stdout, one item per line after the status and mode:
+# `ctx=ok` or `ctx=fallback`, the injected ids, the rules-injected row, then the formatted
+# rules. `ctx=fallback` (an old daemon, a down one, a malformed answer) runs the multi-call
+# block below unchanged, and the seeder then fetches the scope itself, as it always did.
+#
+# THE ENVELOPE RIDES FD 3, NOT ENV OR ARGV. The query is cut from the envelope's task, which
+# arrives unbounded, so it crosses as a here-string on its own descriptor, where
+# MAX_ARG_STRLEN does not apply (docs/adr/ADR-hook-exec-argument-boundary.md). Everything on
+# the env channel below is bounded: ids, a role name, a fixed phrase, a path, a URL.
+#
+# The role-descriptive fallback phrase, for a payload with no usable task. Pure bash, and
+# the one copy: the multi-call block below reads the same variable.
+case "$AGENT_TYPE" in
+    *explor*)    _ROLE_QUERY="explore and understand codebase architecture, structure, conventions, and existing patterns" ;;
+    *planner*)   _ROLE_QUERY="design an implementation plan with architecture decisions and trade-offs" ;;
+    *implement*) _ROLE_QUERY="implement production code with correct error handling and project conventions" ;;
+    *test*)      _ROLE_QUERY="write tests: skeletons, assertions, fixtures, isolation, and coverage" ;;
+    *review*)    _ROLE_QUERY="review code for correctness, quality, security, and spec compliance" ;;
+    *)           _ROLE_QUERY="software engineering best practices: clean code, correctness, security, testing, error handling" ;;
+esac
+# The DISPATCHING project's root: this hook runs in the parent Claude Code process, so its
+# cwd is the project that spawned the sub-agent. Without it the sub-agent's one and only
+# rule injection is unscoped, so a dispatched worker could be governed by a different
+# project's records than its dispatcher. detect_project_root is pure bash (no spawn).
+_PROJECT_ROOT=$(detect_project_root "$(pwd -P)")
+# No lookup is spent on a role nobody observed, mirroring the seeder's own guard.
+_ROLE_LOOKUP="$AGENT_TYPE"
+if [ "$AGENT_TYPE" = "unknown" ] || [ "$ROLE_SOURCE" = "unresolved" ]; then
+    _ROLE_LOOKUP=""
+fi
+# The python client takes exactly the transport curl would: the socket only when
+# WRIT_CURL_TRANSPORT chose it, and otherwise an empty WRIT_SOCKET, which is TCP to
+# WRIT_HOST:WRIT_PORT and never the default socket an explicit host or port overrode.
+_SA_SOCKET=""
+[ -n "$WRIT_CURL_TRANSPORT" ] && _SA_SOCKET="$WRIT_SESSION_SOCKET"
 SEED_OUT=$(WRIT_DIR="$WRIT_DIR" \
     WRIT_SA_AGENT_ID="$AGENT_ID" \
     WRIT_SA_ROLE="$AGENT_TYPE" \
     WRIT_SA_ROLE_SOURCE="$ROLE_SOURCE" \
     WRIT_SA_PARENT="$PARENT_SESSION" \
-    python3 - <<'PY'
-import os, sys
+    WRIT_SA_ROLE_QUERY="$_ROLE_QUERY" \
+    WRIT_SA_ROLE_LOOKUP="$_ROLE_LOOKUP" \
+    WRIT_SA_PROJECT_ROOT="$_PROJECT_ROOT" \
+    WRIT_SESSION_BASE="http://${WRIT_HOST}:${WRIT_PORT}" \
+    WRIT_SOCKET="$_SA_SOCKET" \
+    python3 - 3<<<"$STDIN_JSON" <<'PY'
+import json, os, sys
 sys.path.insert(0, os.environ.get('WRIT_DIR', ''))
 
 agent_id = os.environ.get('WRIT_SA_AGENT_ID', '')
 parent_session = os.environ.get('WRIT_SA_PARENT', '')
 resolved_role = os.environ.get('WRIT_SA_ROLE', '')
 role_source = os.environ.get('WRIT_SA_ROLE_SOURCE', '') or 'unresolved'
+
+# The retrieval query, the same rule the multi-call block applies with json_transform: the
+# first truthy of task/prompt/description/message, cut at 500 code points, '' when it is
+# not a string; ten characters or fewer falls back to the role phrase.
+query, query_source = '', 'task'
+try:
+    with open(3, encoding='utf-8', errors='replace', closefd=False) as fd3:
+        envelope = json.loads(fd3.read())
+    p = (envelope.get('task') or envelope.get('prompt') or envelope.get('description')
+         or envelope.get('message') or '')
+    query = p[:500] if isinstance(p, str) else ''
+except Exception:
+    query = ''
+if len(query) <= 10:
+    query, query_source = os.environ.get('WRIT_SA_ROLE_QUERY', ''), 'agent_type'
+
+ctx = None
+try:
+    from writ.session.subagent_start_context import fetch_start_context
+    ctx = fetch_start_context(query, os.environ.get('WRIT_SA_PROJECT_ROOT', ''),
+                              os.environ.get('WRIT_SA_ROLE_LOOKUP', ''))
+except Exception:
+    ctx = None
 
 # ONE COPY OF THE INHERITANCE RULES, in writ/session/subagent_seed.py. This block used to
 # hold its own, which meant the lazily seeded path (for the 64% of sub-agents that never get
@@ -197,11 +264,18 @@ role_source = os.environ.get('WRIT_SA_ROLE_SOURCE', '') or 'unresolved'
 # role is not relabelled `envelope` on the way in.
 from writ.session.subagent_seed import CACHE_SOURCE_START, seed_subagent_cache
 
+# A lookup that ran (ok / not_found / unavailable) is the one read of the scope, so it is
+# passed in, None included: a failed lookup stamps None, which is what a failed fetch always
+# stamped. Otherwise the kwarg is omitted and the seeder fetches, once, as before.
+scope_kwargs = {}
+if ctx is not None and ctx.get('role_lookup') in ('ok', 'not_found', 'unavailable'):
+    scope_kwargs['declared_scope'] = ctx.get('write_scope')
 seeded = seed_subagent_cache(agent_id, parent_session,
                              cache_source=CACHE_SOURCE_START,
                              default_mode='work',
                              role=resolved_role,
-                             role_source=role_source)
+                             role_source=role_source,
+                             **scope_kwargs)
 print('seeded' if seeded else 'skipped')
 
 # The second line is the child's resulting mode, the exact expression the local
@@ -212,16 +286,45 @@ try:
     print(_read_cache(agent_id).get('mode') or '')
 except Exception:
     print('')
+
+# The composite's answer. The rules-injected row keeps the multi-call block's shape, and is
+# printed only when rules were formatted, because its absence means the worker got none.
+if ctx is None:
+    print('ctx=fallback')
+    print('[]')
+    print('')
+else:
+    text = ctx.get('text') or ''
+    rule_ids = [str(r) for r in ctx.get('rule_ids') or []]
+    query_rule_ids = ctx.get('query_rule_ids') or []
+    print('ctx=ok')
+    print(json.dumps(rule_ids))
+    if ctx.get('retrieval') == 'ok' and (text or rule_ids):
+        print(json.dumps({'agent_type': resolved_role, 'query_source': query_source,
+                          'rule_count': ctx.get('rule_count') or 0,
+                          'rule_ids': query_rule_ids}, separators=(',', ':')))
+    else:
+        print('')
+    print(text)
 PY
 ) || SEED_OUT=""
 
-# Split without a process. $(...) strips the trailing newline, so an empty mode leaves
-# the status alone on one line.
-SEED_STATUS="${SEED_OUT%%$'\n'*}"
-SEED_MODE=""
-if [[ "$SEED_OUT" == *$'\n'* ]]; then
-    SEED_MODE="${SEED_OUT#*$'\n'}"
-fi
+# Split without a process, one line at a time: status, mode, context status, injected ids,
+# rules-injected row, and the formatted rules as the rest. $(...) strips trailing newlines,
+# so a short output simply leaves the later fields empty.
+_SEED_REST="$SEED_OUT"
+_SEED_FIELDS=()
+for _ in 1 2 3 4 5; do
+    _SEED_FIELDS+=("${_SEED_REST%%$'\n'*}")
+    if [[ "$_SEED_REST" == *$'\n'* ]]; then
+        _SEED_REST="${_SEED_REST#*$'\n'}"
+    else
+        _SEED_REST=""
+    fi
+done
+SEED_STATUS="${_SEED_FIELDS[0]}"
+SEED_MODE="${_SEED_FIELDS[1]}"
+SEED_CTX="${_SEED_FIELDS[2]}"
 
 # THE SUPPRESSION IS GONE, AND THE EXIT CODE STILL CANNOT PROPAGATE. A dispatch must never
 # fail because governance could not be inherited, so this hook keeps exiting 0; what changes
@@ -277,7 +380,21 @@ fi
 # Query Writ for rules if server is available
 ADDITIONAL_CONTEXT=""
 INJECTED_IDS="[]"
-HEALTH=$(curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.5 --max-time 1 "http://${WRIT_HOST}:${WRIT_PORT}/health" 2>/dev/null || echo "")
+if [ "$SEED_CTX" = "ctx=ok" ]; then
+    # The composite already answered inside the seed process: no /health, /query, format,
+    # meta parse or row build here. Same variables, same friction row, same order.
+    ADDITIONAL_CONTEXT="$_SEED_REST"
+    INJECTED_IDS="${_SEED_FIELDS[3]:-[]}"
+    if [ -n "${_SEED_FIELDS[4]}" ]; then
+        log_friction_event "$AGENT_ID" "" "subagent_rules_injected" "${_SEED_FIELDS[4]}"
+    fi
+fi
+# THE MULTI-CALL PATH, UNCHANGED, AS THE FALLBACK: the composite could not answer (an old
+# daemon without the route, a down one) or seeding printed nothing at all.
+HEALTH=""
+if [ "$SEED_CTX" != "ctx=ok" ]; then
+    HEALTH=$(curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.5 --max-time 1 "http://${WRIT_HOST}:${WRIT_PORT}/health" 2>/dev/null || echo "")
+fi
 if [ -n "$HEALTH" ]; then
     # Build the retrieval query. Newer Claude Code sends the delegated task in a
     # `task` field; use it when present. CC 2.1.181's SubagentStart payload carries
@@ -297,23 +414,11 @@ if [ -n "$HEALTH" ]; then
 
     if [ -z "$AGENT_PROMPT" ] || [ ${#AGENT_PROMPT} -le 10 ]; then
         QUERY_SOURCE="agent_type"
-        case "$AGENT_TYPE" in
-            *explor*)    AGENT_PROMPT="explore and understand codebase architecture, structure, conventions, and existing patterns" ;;
-            *planner*)   AGENT_PROMPT="design an implementation plan with architecture decisions and trade-offs" ;;
-            *implement*) AGENT_PROMPT="implement production code with correct error handling and project conventions" ;;
-            *test*)      AGENT_PROMPT="write tests: skeletons, assertions, fixtures, isolation, and coverage" ;;
-            *review*)    AGENT_PROMPT="review code for correctness, quality, security, and spec compliance" ;;
-            *)           AGENT_PROMPT="software engineering best practices: clean code, correctness, security, testing, error handling" ;;
-        esac
+        AGENT_PROMPT="$_ROLE_QUERY"
     fi
 
     if [ -n "$AGENT_PROMPT" ] && [ ${#AGENT_PROMPT} -gt 10 ]; then
-        # The DISPATCHING project's root: this hook runs in the parent Claude Code
-        # process, so its cwd is the project that spawned the sub-agent. Without it the
-        # sub-agent's one and only rule injection is unscoped, so a dispatched worker
-        # could be governed by a different project's records than its dispatcher.
-        # detect_project_root is pure bash (no spawn).
-        _PROJECT_ROOT=$(detect_project_root "$(pwd -P)")
+        # _PROJECT_ROOT was computed above the seed block, for the composite call.
         RESPONSE=$(python3 -c "
 import json, sys
 print(json.dumps({
