@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Phase 3: dispatch discipline -- hot-swap generic sub-agent dispatches to the named Writ role.
 #
-# PreToolUse on Task. In work, investigate, and mode-unset sessions, if the dispatched
-# subagent_type is generic (general-purpose / Explore / claude / plan / empty) and the
-# prompt carries no escape marker ([general-purpose] / [writ:dispatch-ok]), REWRITE the
+# PreToolUse on Task|Agent (Agent is the current tool name, Task its legacy alias). In
+# work, investigate, and mode-unset sessions, if the dispatched subagent_type is generic
+# (general-purpose / Explore / claude / plan / empty) and the prompt carries no escape marker ([general-purpose] / [writ:dispatch-ok]), REWRITE the
 # dispatch in place via updatedInput to the Writ role keyword-mapped from the prompt,
 # disclosing the swap in additionalContext; a prompt that maps to no role confidently
 # is denied with the role menu instead ("workflow-subagent" is exempt: the Workflow
@@ -11,7 +11,7 @@
 # Generic agents are the exception, not the default (SKL-PROC-DISPATCH-001): they carry
 # no role prompt and run outside the Writ session (mode/gates/RAG).
 #
-# Hook type: PreToolUse (matcher: Task)
+# Hook type: PreToolUse (matcher: Task|Agent)
 # Exit: always 0 (denial is expressed via permissionDecision in stdout JSON, not exit code)
 set -euo pipefail
 
