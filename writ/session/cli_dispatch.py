@@ -52,6 +52,7 @@ from writ.session.session_lifecycle import (
 )
 from writ.session.feedback import cmd_auto_feedback
 from writ.session.metrics import cmd_metrics
+from writ.session.subagent_rollup import rollup_subagent_into_parent
 from writ.session.cache import _cache_path, resolve_current_session_id
 from writ.session.cli_io import _usage_exit
 
@@ -265,6 +266,12 @@ def _cli_metrics(argv: list[str]) -> None:
     cmd_metrics(_opt_value("--log", "", argv))
 
 
+def _cli_rollup_subagent(argv: list[str]) -> None:
+    if len(argv) < 4:
+        _usage_exit("Usage: writ-session.py rollup-subagent <agent_id> <parent_session_id>")
+    print(json.dumps(rollup_subagent_into_parent(argv[2], argv[3])))
+
+
 _SIMPLE_COMMANDS = {
     "read": (cmd_read, "Usage: writ-session.py read <session_id>"),
     "coverage": (cmd_coverage, "Usage: writ-session.py coverage <session_id>"),
@@ -300,6 +307,7 @@ _COMPLEX_COMMANDS = {
     "advance-phase": _cli_advance_phase,
     "reopen-planning": _cli_reopen_planning,
     "metrics": _cli_metrics,
+    "rollup-subagent": _cli_rollup_subagent,
 }
 
 
@@ -308,7 +316,7 @@ def dispatch(argv: list[str]) -> None:
     through _SIMPLE_COMMANDS; the rest through _COMPLEX_COMMANDS; anything else is unknown."""
     if len(argv) < 2:
         print("Usage: writ-session.py <command> [args]", file=sys.stderr)
-        _usage_exit("Commands: read, update, format, should-skip, mode, coverage, coverage-map, record-analysis, synthesis-gate, scope-estimate, partition-scope, coverage-rollup, aggregate-findings, triangulation-gate, staleness-check, lens, auto-feedback, can-write, can-read-code, advance-phase, reopen-planning, current-phase, metrics")
+        _usage_exit("Commands: read, update, format, should-skip, mode, coverage, coverage-map, record-analysis, synthesis-gate, scope-estimate, partition-scope, coverage-rollup, aggregate-findings, triangulation-gate, staleness-check, lens, auto-feedback, can-write, can-read-code, advance-phase, reopen-planning, current-phase, metrics, rollup-subagent")
 
     cmd = argv[1]
 

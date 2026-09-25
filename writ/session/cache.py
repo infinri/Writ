@@ -178,6 +178,12 @@ def _default_cache() -> dict:
         # cited rule IDs, which is what stops the gate calling its own injected rules
         # hallucinated.
         "always_on_rule_ids": [],
+        # Rule ids shown to this session's sub-agents, unioned in at each child's
+        # SubagentStop by subagent_rollup. Separate from loaded_rule_ids for the same
+        # reason as always_on_rule_ids: this session never retrieved them, so they must
+        # not land in its ranked-query exclude list. _validate_phase_a unions them too, so
+        # a plan written by a dispatched planner can cite the rules the planner was shown.
+        "subagent_rule_ids": [],
         "loaded_rules": [],
         "remaining_budget": DEFAULT_SESSION_BUDGET,
         "context_percent": 0,

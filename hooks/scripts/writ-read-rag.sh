@@ -27,8 +27,27 @@ WRIT_URL="http://${WRIT_HOST}:${WRIT_PORT}/query"
 # Read stdin once
 STDIN_DATA=$(cat)
 
-# Extract session ID
-SESSION_ID=$(echo "$STDIN_DATA" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('agent_id','') or d.get('session_id',''))" 2>/dev/null)
+# Extract session ID and file path in ONE interpreter: field 1 is the resolved id
+# (agent_id, else session_id), field 2 is tool_input.file_path (else top-level file_path).
+# These were two python3 starts on every governed Read; merging them paid for the
+# record-the-Read update below without growing the per-Read cost. Fields are
+# NUL-terminated (not newline-separated) so a file_path containing a newline survives
+# intact; a failed parse or missing field leaves the variable empty.
+SESSION_ID=""
+FILE_PATH=""
+{ IFS= read -r -d '' SESSION_ID || true; IFS= read -r -d '' FILE_PATH || true; } < <(
+    echo "$STDIN_DATA" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+ti = d.get('tool_input') or {}
+fp = ti.get('file_path', '') if isinstance(ti, dict) else ''
+sys.stdout.write(str(d.get('agent_id', '') or d.get('session_id', '')) + '\0')
+sys.stdout.write(str(fp or d.get('file_path', '')) + '\0')
+" 2>/dev/null || true
+)
 # NO SYNTHESIZED ID. This used to call `detect_session_id ""`, which invented one from
 # PPID or md5(cwd:user). Everything below is session-keyed (the mode filter that decides
 # whether this hook runs at all, the budget check, and the `update` that banks the rule
@@ -50,26 +69,25 @@ if [ "$MODE" != "review" ] && [ "$MODE" != "debug" ] && [ "$MODE" != "investigat
     exit 0
 fi
 
-# Skip if budget exhausted or context pressure high
-if _writ_session should-skip "$SESSION_ID" 2>/dev/null; then
+if [ -z "$FILE_PATH" ]; then
     exit 0
 fi
 
-# Extract file path from the envelope
-FILE_PATH=$(echo "$STDIN_DATA" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    ti = data.get('tool_input', {})
-    fp = ti.get('file_path', '')
-    if not fp:
-        fp = data.get('file_path', '')
-    print(fp)
-except Exception:
-    print('')
-" 2>/dev/null)
+# Record this Read as examined, on EVERY path from here on. The only update this hook
+# used to run sat inside the WRIT_META block, so a Read that missed /query, scored no
+# rule, hit an unknown-language file, or ran out of budget was never credited, and
+# synthesis-gate reported 0 examined files after a fan-out that read every one of them.
+# One exit handler runs ONE update carrying the file plus whatever the rag path adds
+# below (writ_on_exit, not `trap ... EXIT`: hook_instrument owns the one EXIT trap).
+READ_UPDATE_ARGS=(--add-pretool-file "$FILE_PATH")
+_writ_record_read() {
+    _writ_session update "$SESSION_ID" "${READ_UPDATE_ARGS[@]}" 2>>"$WRIT_HOOK_LOG_SINK" || true
+}
+writ_on_exit _writ_record_read
 
-if [ -z "$FILE_PATH" ]; then
+# Skip if budget exhausted or context pressure high. Below the record registration on
+# purpose: a budget-exhausted master Read is still a Read.
+if _writ_session should-skip "$SESSION_ID" 2>/dev/null; then
     exit 0
 fi
 
@@ -246,15 +264,16 @@ if [ -n "$META_LINE" ]; then
     NEW_RULE_IDS=$(echo "$META_FIELDS" | sed -n '1p'); NEW_RULE_IDS="${NEW_RULE_IDS:-[]}"
     COST=$(echo "$META_FIELDS" | sed -n '2p'); COST="${COST:-0}"
 
-    # A3: full rule objects (data prep), then ONE combined update -- was two
-    # _writ_session update spawns; an empty [] rule-objects payload is a no-op.
+    # A3: full rule objects (data prep), folded into the ONE combined update the
+    # record-the-Read exit handler runs; an empty [] rule-objects payload is a no-op.
     RULE_OBJECTS=$(echo "$RESPONSE" | extract_rule_objects)
 
-    _writ_session update "$SESSION_ID" \
-        --add-rules "$NEW_RULE_IDS" \
-        --cost "$COST" \
-        --inc-queries \
-        --add-rule-objects "$RULE_OBJECTS" 2>>"$WRIT_HOOK_LOG_SINK" || true
+    READ_UPDATE_ARGS+=(
+        --add-rules "$NEW_RULE_IDS"
+        --cost "$COST"
+        --inc-queries
+        --add-rule-objects "$RULE_OBJECTS"
+    )
 
     # Log rag_query event via the shared helper (reuse $MODE from the gate check
     # above; mode is fixed within a single hook invocation). Centralizes the parse

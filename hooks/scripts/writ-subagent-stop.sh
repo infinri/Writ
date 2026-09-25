@@ -17,6 +17,10 @@ HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 WRIT_DIR="$(cd "$HOOK_DIR/../.." && pwd)"
 source "$WRIT_DIR/bin/lib/common.sh"
 
+# WRIT_HOOK_LOG stderr breadcrumb sink, gated by WRIT_DEBUG: /dev/null when unset,
+# ${WRIT_HOOK_LOG:-/tmp/writ-hooks.log} when WRIT_DEBUG=1 (single source: common.sh).
+WRIT_HOOK_LOG_SINK="$(hook_log_sink)"
+
 # Phase 4c: capture stderr (Python tracebacks etc.) to debug log so
 # next-occurrence diagnostics are readable. tee preserves stderr
 # propagation so behavior is unchanged. Gated behind WRIT_DEBUG (default OFF):
@@ -298,6 +302,26 @@ if [ "$AGENT_TYPE" = "writ-reviewer" ] && [ -n "$PARENT_SESSION" ]; then
         # is otherwise indistinguishable from "no reviewer ran", which is exactly
         # the state that does not block.
         log_friction_event "$PARENT_SESSION" "" "review_verdict_record_failed" \
+            "{\"hook\":\"writ-subagent-stop\",\"agent_id\":\"$AGENT_ID\"}"
+    fi
+fi
+
+# ROLL THIS CHILD UP INTO ITS PARENT: the files it examined into the parent's
+# pretool_queried_files, and the rule ids it was shown into the parent's subagent_rule_ids.
+# Without it a fan-out lead's synthesis-gate saw none of its workers' reads, and the phase-a
+# gate called the rules a dispatched planner cited hallucinated.
+#
+# AFTER THE CACHE_STATE OBSERVATION, so that measurement still reports on the file as the
+# sub-agent left it; the rollup reads the child and never writes it. Gated on a present
+# cache and a real, distinct parent id, so a never-seeded agent or a missing session_id
+# writes nothing (rollup-subagent re-checks both, plus the parent link, on its own).
+#
+# stderr goes to WRIT_HOOK_LOG_SINK, which is the hook log only when WRIT_DEBUG=1 and
+# /dev/null otherwise. Never fatal, never silent: a failure leaves a friction row on the
+# parent, the same pattern as the reviewer-verdict block.
+if [ "$CACHE_STATE" = "present" ] && [ -n "$PARENT_SESSION" ] && [ "$PARENT_SESSION" != "$AGENT_ID" ]; then
+    if ! python3 "$SESSION_HELPER" rollup-subagent "$AGENT_ID" "$PARENT_SESSION" >/dev/null 2>>"$WRIT_HOOK_LOG_SINK"; then
+        log_friction_event "$PARENT_SESSION" "" "subagent_rollup_failed" \
             "{\"hook\":\"writ-subagent-stop\",\"agent_id\":\"$AGENT_ID\"}"
     fi
 fi

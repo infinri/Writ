@@ -24,6 +24,10 @@ SESSION_HELPER="$WRIT_DIR/bin/lib/writ-session.py"
 # cache, never injecting rules. Sourcing first is the keystone fix.
 source "$WRIT_DIR/bin/lib/common.sh"
 
+# WRIT_HOOK_LOG stderr breadcrumb sink, gated by WRIT_DEBUG: /dev/null when unset,
+# ${WRIT_HOOK_LOG:-/tmp/writ-hooks.log} when WRIT_DEBUG=1 (single source: common.sh).
+WRIT_HOOK_LOG_SINK="$(hook_log_sink)"
+
 # Phase 4c: capture stderr (Python tracebacks etc.) to debug log so
 # next-occurrence diagnostics are readable. tee preserves stderr
 # propagation so behavior is unchanged. Gated behind WRIT_DEBUG (default OFF):
@@ -244,45 +248,9 @@ if [ -f "$GRANT_LIB" ] && [ -n "$PARENT_SESSION" ] && [ "$PARENT_SESSION" != "$A
     fi
 fi
 
-# Link this sub-agent to its parent so commit_capture's enumeration
-# (_collect_subagent_queried_rules) can merge this child's queried rules at commit time.
-# The link is the PAYLOAD's session id and nothing else.
-#
-# THIS USED TO PREFER /tmp/writ-current-session, and that was the same defect as
-# everywhere else, with a worse blast radius: the pointer is ONE file rewritten by every
-# Claude Code session on the machine, so a sub-agent spawned while another session had
-# just taken a turn was stamped as a child of THAT session -- its queried rules merged
-# into a stranger's commit, and this session's commit lost them. Invisible from both ends.
-#
-# WHAT THE POINTER BOUGHT, AND WHY LOSING IT IS SURVIVABLE: it named the committing
-# session directly, so a deeply nested sub-agent linked straight to the root rather than
-# to its immediate parent. Without it, a grandchild's parent_session_id is its immediate
-# parent and the parent_match arm of _collect_subagent_queried_rules misses it. The
-# path + recency arm still catches it: that cache holds queried rules for a committed
-# file and was modified inside the window, which is exactly the case that arm was
-# written for (writ/session/cache.py:409). So a nested worker's rules are merged by
-# content instead of by linkage -- one arm narrower, and never wrong.
-#
-# THE CALL IS GUARDED, AND NOT WITH `|| true`. It runs under `set -euo pipefail` and reaches
-# `python3 "$helper" update "$@"` in common.sh, which returns that child's exit code. A role
-# name longer than MAX_ARG_STRLEN made execve fail here with 126 and killed the whole hook:
-# no rules injected, no telemetry, nothing. Suppression would put back the silence this
-# change exists to remove, so the outcome is captured and reported on the surface a reader
-# of this hook is already trained on, and only the exit code is dropped.
-PARENT="$PARENT_SESSION"
-if [ -n "$PARENT" ] && [ "$PARENT" != "$AGENT_ID" ]; then
-    LINK_STATUS="linked"
-    _writ_session update "$AGENT_ID" --parent-session-id "$PARENT" \
-        --agent-type "$AGENT_TYPE" || LINK_STATUS=""
-    if [ -z "$LINK_STATUS" ]; then
-        writ_critical writ-subagent-start \
-            "the parent link was not written, so this worker's queried rules reach the parent's commit only by the path and recency arm. The operator who dispatched it may re-dispatch this worker to restore the link." \
-            "$AGENT_ID"
-    fi
-fi
-
 # Query Writ for rules if server is available
 ADDITIONAL_CONTEXT=""
+INJECTED_IDS="[]"
 HEALTH=$(curl ${WRIT_CURL_TRANSPORT} -sf --connect-timeout 0.5 --max-time 1 "http://${WRIT_HOST}:${WRIT_PORT}/health" 2>/dev/null || echo "")
 if [ -n "$HEALTH" ]; then
     # Build the retrieval query. Newer Claude Code sends the delegated task in a
@@ -341,6 +309,13 @@ print(json.dumps({
             if [ -n "$RULES_TEXT" ]; then
                 RULES_ONLY=$(echo "$RULES_TEXT" | grep -v "^WRIT_META:" || true)
                 ADDITIONAL_CONTEXT="$RULES_ONLY"
+                # The injected ids, from the WRIT_META line format already emitted, for
+                # the parent-link update below to bank into this child's cache.
+                INJECTED_META=$(echo "$RULES_TEXT" | grep "^WRIT_META:" | head -1 || true)
+                if [ -n "$INJECTED_META" ]; then
+                    INJECTED_IDS=$(echo "${INJECTED_META#WRIT_META:}" | parse_writ_meta | sed -n '1p') || INJECTED_IDS="[]"
+                    INJECTED_IDS="${INJECTED_IDS:-[]}"
+                fi
                 # Observability: record that rules were injected into this sub-agent
                 # (count + ids + whether the query came from the real task or the
                 # agent_type fallback). The ABSENCE of this event for an agent now
@@ -361,6 +336,49 @@ print(json.dumps({
                 log_friction_event "$AGENT_ID" "" "subagent_rules_injected" "$RULES_INJECTED_EXTRA"
             fi
         fi
+    fi
+fi
+
+# Link this sub-agent to its parent so commit_capture's enumeration
+# (_collect_subagent_queried_rules) can merge this child's queried rules at commit time.
+# The link is the PAYLOAD's session id and nothing else.
+#
+# THIS USED TO PREFER /tmp/writ-current-session, and that was the same defect as
+# everywhere else, with a worse blast radius: the pointer is ONE file rewritten by every
+# Claude Code session on the machine, so a sub-agent spawned while another session had
+# just taken a turn was stamped as a child of THAT session -- its queried rules merged
+# into a stranger's commit, and this session's commit lost them. Invisible from both ends.
+#
+# WHAT THE POINTER BOUGHT, AND WHY LOSING IT IS SURVIVABLE: it named the committing
+# session directly, so a deeply nested sub-agent linked straight to the root rather than
+# to its immediate parent. Without it, a grandchild's parent_session_id is its immediate
+# parent and the parent_match arm of _collect_subagent_queried_rules misses it. The
+# path + recency arm still catches it: that cache holds queried rules for a committed
+# file and was modified inside the window, which is exactly the case that arm was
+# written for (writ/session/cache.py:409). So a nested worker's rules are merged by
+# content instead of by linkage -- one arm narrower, and never wrong.
+#
+# THE CALL IS GUARDED, AND NOT WITH `|| true`. It runs under `set -euo pipefail` and reaches
+# `python3 "$helper" update "$@"` in common.sh, which returns that child's exit code. A role
+# name longer than MAX_ARG_STRLEN made execve fail here with 126 and killed the whole hook:
+# no rules injected, no telemetry, nothing. Suppression would put back the silence this
+# change exists to remove, so the outcome is captured and reported on the surface a reader
+# of this hook is already trained on, and only the exit code is dropped.
+#
+# THE SAME CALL BANKS THE INJECTED RULE IDS, which is why it sits below the query block.
+# Those ids used to reach only the subagent_rules_injected friction row, so no cache held
+# the rules this worker was shown and the SubagentStop rollup could not make them citable
+# by the parent's phase-a gate. They land in the CHILD's loaded_rule_ids because the child
+# really has them; `[]` when nothing was injected is a no-op union.
+PARENT="$PARENT_SESSION"
+if [ -n "$PARENT" ] && [ "$PARENT" != "$AGENT_ID" ]; then
+    LINK_STATUS="linked"
+    _writ_session update "$AGENT_ID" --parent-session-id "$PARENT" \
+        --agent-type "$AGENT_TYPE" --add-rules "$INJECTED_IDS" 2>>"$WRIT_HOOK_LOG_SINK" || LINK_STATUS=""
+    if [ -z "$LINK_STATUS" ]; then
+        writ_critical writ-subagent-start \
+            "the parent link was not written, so this worker's queried rules reach the parent's commit only by the path and recency arm. The operator who dispatched it may re-dispatch this worker to restore the link." \
+            "$AGENT_ID"
     fi
 fi
 

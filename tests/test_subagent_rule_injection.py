@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -47,6 +48,9 @@ HOOK = os.path.abspath(
     os.path.join(
         os.path.dirname(__file__), os.pardir, "hooks", "scripts", "writ-subagent-start.sh"
     )
+)
+HELPER = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), os.pardir, "bin", "lib", "writ-session.py")
 )
 
 
@@ -191,6 +195,18 @@ def _friction_events(cache_dir, event):
 
 def _stdout_json_objects(stdout: str) -> list[dict]:
     return [json.loads(ln) for ln in stdout.splitlines() if ln.strip()]
+
+
+def _read_cache(cache_dir, session_id):
+    """Read a session's cache back through writ-session.py (real subprocess, real
+    cache file), used by TestSubagentStartBanksInjectedRulesIntoChildCache below."""
+    env = os.environ.copy()
+    env["WRIT_CACHE_DIR"] = str(cache_dir)
+    r = subprocess.run(
+        [sys.executable, HELPER, "read", session_id],
+        env=env, check=True, capture_output=True, text=True,
+    )
+    return json.loads(r.stdout)
 
 
 class TestSubagentRuleInjection:
@@ -350,3 +366,56 @@ class TestSubagentQueryCarriesProjectRoot:
         assert body.get("query"), "the query text field must still be present and non-empty"
         assert "budget_tokens" in body
         assert "exclude_rule_ids" in body
+
+
+class TestSubagentStartBanksInjectedRulesIntoChildCache:
+    """Coverage-crediting plan (.claude/plans/f7fc2b37-9a53-4011-a69f-e6b97f5e45fe),
+    capability 10 / item 3: the ids writ-subagent-start.sh injects into a sub-agent's
+    additionalContext today reach ONLY a `subagent_rules_injected` friction row --
+    they are never written to the child's own cache. So a rollup of that child alone
+    (writ-subagent-stop.sh) still cannot make those ids citable by the parent's
+    phase-a gate: the ids the planner was actually SHOWN are nowhere in any cache.
+
+    Fix (plan item 3): pull the injected rule ids from the WRIT_META line
+    `_writ_session format` already emits and pass them as `--add-rules` on the
+    existing parent-link `_writ_session update "$AGENT_ID" ...` call, so they land
+    in the CHILD's own loaded_rule_ids -- correct, because they really were shown to
+    that child, and excluding them from the child's later ranked queries is the
+    right behaviour for a rule it already has.
+
+    RED on HEAD: the parent-link update call never carries --add-rules, so
+    loaded_rule_ids stays [] even when rules were injected via additionalContext.
+    """
+
+    def test_injected_rule_ids_land_in_the_childs_loaded_rule_ids(self, tmp_path, rules_daemon):
+        _seed_parent(tmp_path, "p-bank-1")
+        r = _run_start_hook(
+            cache_dir=tmp_path, port=rules_daemon,
+            agent_id="a-bank-1", agent_type="writ-explorer", parent_id="p-bank-1",
+        )
+        assert r.returncode == 0, r.stderr
+        # Sanity: the rules really were injected into additionalContext (the
+        # existing regression this file already pins), so a failure below is about
+        # the BANKING gap, not about the daemon stub failing to answer.
+        objs = _stdout_json_objects(r.stdout)
+        hso = next((o["hookSpecificOutput"] for o in objs if "hookSpecificOutput" in o), None)
+        assert hso is not None and any(
+            rid in hso.get("additionalContext", "") for rid in _STUB_RULE_IDS
+        )
+
+        child_cache = _read_cache(tmp_path, "a-bank-1")
+        assert set(_STUB_RULE_IDS) <= set(child_cache["loaded_rule_ids"])
+
+    def test_no_injection_leaves_loaded_rule_ids_empty(self, tmp_path):
+        """No reachable daemon -> ADDITIONAL_CONTEXT stays empty -> nothing was
+        shown to this sub-agent, so nothing should be banked into loaded_rule_ids."""
+        _seed_parent(tmp_path, "p-bank-2")
+        unreachable_port = _free_port()  # bound then closed by the fixture helper
+        r = _run_start_hook(
+            cache_dir=tmp_path, port=unreachable_port,
+            agent_id="a-bank-2", agent_type="writ-explorer", parent_id="p-bank-2",
+        )
+        assert r.returncode == 0, r.stderr
+
+        child_cache = _read_cache(tmp_path, "a-bank-2")
+        assert child_cache["loaded_rule_ids"] == []

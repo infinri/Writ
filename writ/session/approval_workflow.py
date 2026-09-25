@@ -168,6 +168,10 @@ def _validate_phase_a(project_root: str, session_id: str = "") -> str | None:
             # widens the legitimate set; it never narrows it, so nothing that validates
             # today can start failing.
             loaded_ids.update(cache.get("always_on_rule_ids", []))
+            # Rules shown to this session's own sub-agents (rolled up at SubagentStop), so
+            # a plan.md written by writ-planner can cite what the planner was given. Only
+            # widens the set, and only with ids injected into a child of THIS session.
+            loaded_ids.update(cache.get("subagent_rule_ids", []))
             hallucinated = _validate_citations(cited_ids, loaded_ids)
             if hallucinated:
                 _log_friction_event(

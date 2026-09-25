@@ -93,6 +93,8 @@ EXPECTED_GATED_SINKS: dict[str, int] = {
     "writ-quality-judge.sh": 1,
     "writ-rag-inject.sh": 7,
     "writ-read-rag.sh": 2,
+    "writ-subagent-start.sh": 1,
+    "writ-subagent-stop.sh": 1,
     "writ-verify-before-claim.sh": 1,
 }
 
