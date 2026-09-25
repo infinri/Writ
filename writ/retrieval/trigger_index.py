@@ -110,6 +110,10 @@ class MethodologyTriggerIndex:
         pull_scored = self._score_pull(nodes, prompt)
         return self._assemble_bundle(floor, push, pull_scored, budget_tokens)
 
+    def floor_ids(self, mode: str | None) -> set[str]:
+        """Ids of every node floored in `mode`, ignoring any exclude list."""
+        return {n["id"] for n in self._select_floor(self._nodes, mode)}
+
     @staticmethod
     def _select_floor(nodes: list[dict], mode: str | None) -> list[dict]:
         """floor: nodes whose floor_modes contain the current mode (push-by-mode)."""

@@ -35,7 +35,7 @@ from writ.server.models import (
     QueryRequest,
 )
 from writ.shared.logging import emit, emit_destination, emit_exception
-from writ.shared.tokens import estimate_tokens
+from writ.shared.tokens import cost_for, estimate_tokens
 
 router = APIRouter()
 
@@ -350,9 +350,18 @@ async def prompt_bundle(request: PromptBundleRequest) -> dict[str, Any]:
         "investigate": "investigation-doctrine",
         "conversation": "methodology-conversation", "review": "methodology-review",
     }.get(mode, "")
-    if qsource and remaining_budget > 600:
+    # The mode's floor comes back EVERY turn. exclude_ids is session-wide, while the index
+    # reads its exclude list as "already injected this turn", so passing it unchanged
+    # delivered a floor once per session (once per phase in work). The floor is exempt
+    # from the rule budget the way the always-on channel is: charging it would drain the
+    # budget turn by turn until the 600-token gate below shut the floor off. Pull keeps
+    # both its session dedup and its budget.
+    if qsource:
+        floor_ids = server._trigger_index.floor_ids(mode) if server._trigger_index else set()
         cresp = await methodology_companion(CompanionRequest(
-            mode=mode, prompt=prompt, exclude_rule_ids=exclude_ids, budget_tokens=2000,
+            mode=mode, prompt=prompt,
+            exclude_rule_ids=[i for i in exclude_ids if i not in floor_ids],
+            budget_tokens=2000 if remaining_budget > 600 else 0,
             project_root=request.project_root,
         ))
         if "error" not in cresp:
@@ -360,7 +369,9 @@ async def prompt_bundle(request: PromptBundleRequest) -> dict[str, Any]:
             if ctext:
                 out["methodology_block"] = "[Writ: methodology companion]\n" + ctext
             crule_ids = cmeta.get("rule_ids", []) or []
-            ccost = cmeta.get("cost", 0) or 0
+            ccost = cost_for(
+                [r for r in cresp.get("rules") or [] if r.get("channel") != "floor"], "summary",
+            )
             if crule_ids:
                 await asyncio.to_thread(server.writ_session.cmd_update, sid, [
                     "--add-rules", _json.dumps(crule_ids),
