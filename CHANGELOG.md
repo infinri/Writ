@@ -4,6 +4,15 @@ All notable changes to Writ are documented in this file. The format follows [Kee
 
 ## [Unreleased]
 
+## [1.10.1] - 2026-09-25
+
+`writ doctor --fix` no longer crashes on an install without `bible/`, and one failing repair no longer skips the rest.
+
+### Fixed
+
+- **corpus-drift with no `bible/`.** `bible/` is untracked, so no install has it; the check counted every graph node as drift and offered reconcile, which refused the empty oracle and raised. It now warns that `bible/` was not found and offers no repair.
+- **A failing repair stops only itself.** `writ doctor --fix` reports `fix failed: <name>: <error>` on stderr and continues, so later repairs (post-commit hook, PATH symlink) still run.
+
 ## [1.10.0] - 2026-09-25
 
 Sub-agent reports no longer change the session's mode, work done by sub-agents is credited to the session that dispatched them, and the three slowest hooks stop repeating work. Only a prompt the user typed can pick investigate or work mode; a hand-back or task notification used to flip a session between them several times in one fan-out. Coverage now counts files that were actually read, including by workers, so the synthesis gate and the coverage rollup agree instead of reading 0 and 950 of 950.
