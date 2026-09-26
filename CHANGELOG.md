@@ -4,6 +4,34 @@ All notable changes to Writ are documented in this file. The format follows [Kee
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-09-25
+
+Sub-agent reports no longer change the session's mode, work done by sub-agents is credited to the session that dispatched them, and the three slowest hooks stop repeating work. Only a prompt the user typed can pick investigate or work mode; a hand-back or task notification used to flip a session between them several times in one fan-out. Coverage now counts files that were actually read, including by workers, so the synthesis gate and the coverage rollup agree instead of reading 0 and 950 of 950.
+
+### Changed
+
+- **Only prompts the user typed pick the mode.** Sub-agent hand-backs and task notifications fire UserPromptSubmit in the parent session and were classified like typed prompts; `is_non_user_turn` now recognizes their fixed openings and emits no mode hint, and the transcript fallback skips agent, system and local-command entries. Feasibility questions ("how hard would it be to...", "id like to see how...") no longer route to work. A switch's `mode_change` row records `triggered_by` (auto or explicit); `mode_source` keeps its meaning.
+- **A mode's methodology floor reaches the prompt every turn**, not once per session: the companion's exclude list no longer drops floor nodes, and the floor costs nothing from the rule budget.
+- **Coverage-rollup is backed by evidence.** Examined files come from the lead's recorded reads rather than the workers' own numbers; the output shows claimed and evidenced counts and lists unbacked claims, and reconciles only when no claim exceeds the evidence.
+- **SubagentStart asks the daemon once.** `POST /subagent/start-context` returns the formatted rules, the injected rule ids and the role's write scope; the previous calls are the fallback for an older or unreachable daemon. Daemon requests per dispatch go from 4 to 1. The route is read-only and is served over TCP under `WRIT_TCP_READONLY`.
+- **SessionEnd feedback is one transaction, applied once.** `POST /feedback/batch` applies every signal in one Neo4j transaction instead of 2 to 3 round trips per rule. Each batch carries an id; a replay returns the stored result, and a batch that was sent but not answered is resent with the same id, so `feedback_unconfirmed` now resolves. `FeedbackBatch` records expire after 30 days. When the daemon times out, the local fallback no longer runs the loop a second time.
+- **Faster hooks.** SubagentStart runs 11 python processes instead of 15 on a healthy daemon; SessionStart skips the carry-forward step on a normal start, waits 0.5 s instead of 2 s for Neo4j, asks for `/health` once, and runs the state migration only after an upgrade (a version stamp records the last one).
+- **The Bash write gate treats a read-mode `open()` as a read.** A bare `open(<path>)`, or one with mode `r`, `rt` or `rb`, in inline interpreter source is no longer refused as a write; any mode with `w`, `a`, `x` or `+`, method opens such as `shelve.open`, and every other path-shaped literal stay gated.
+- **The plan gate reads citations where the template puts them**: the leading id of each Rules Applied bullet, so an id-shaped word in prose (a phase id, say) is no longer reported as a hallucinated rule.
+- **The dispatch hook is registered on `Task|Agent`**, since Claude Code now names the sub-agent tool Agent.
+
+### Added
+
+- **Sub-agent work is credited to its parent.** Every Read in investigate, review and debug mode is recorded as examined, and SubagentStop merges a start-seeded worker's examined files and the rule ids it was shown into the parent, so the synthesis gate sees workers' reads and a plan written by writ-planner can cite rules the planner was shown. A worker that set its own parent link without being seeded by the start hook is not merged.
+- **`writ doctor` sub-agent census** has a `harness_internal` bucket for agents that never received SubagentStart and stopped with no cache.
+- **CI runs `make docs-check`** in a new `docs` job.
+
+### Fixed
+
+- **`writ_critical` no longer aborts its hook when jq is absent**: an unbound variable under `set -u` killed any of its 17 callers with `WRIT_NO_JQ=1` or no jq installed.
+- **SessionStart diagnostics are visible again**: closing the Neo4j probe descriptor sent stderr to /dev/null for the rest of the hook.
+- **A file path containing a newline is recorded whole** by the per-Read hook.
+
 ## [1.9.0] - 2026-09-24
 
 Writ now runs from wherever it is installed and survives its own upgrades. State (modes, approvals, gate records, logs) moves out of the install to `~/.local/state/writ` and is carried over from earlier installs at SessionStart; the venv, the package it imports, and the Neo4j container no longer depend on the install directory or its version. A stuck session is unblocked with `writ mode set work <id>`, which the refusal now prints for you, and build requests route to work mode, and to the orchestrated planner, test-writer, implementer and reviewer pipeline, far more often.
