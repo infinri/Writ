@@ -5,12 +5,14 @@ Called once per sub-agent completion by writ-subagent-stop.sh through
 lead's synthesis-gate saw none of its workers' reads, and a plan written by a dispatched
 planner could not cite the rules that planner was shown.
 
-Imports only writ.session.cache, so the package's layer graph stays acyclic.
+Imports writ.session.cache and writ.session.subagent_seed (for CACHE_SOURCE_START);
+neither imports this module, so the package's layer graph stays acyclic.
 """
 
 import os
 
 from writ.session.cache import _cache_path, _read_cache, mutate_cache
+from writ.session.subagent_seed import CACHE_SOURCE_START
 
 
 def _child_examined_files(child: dict) -> set:
@@ -43,7 +45,9 @@ def rollup_subagent_into_parent(agent_id: str, parent_session_id: str) -> dict:
 
     Skips without writing anything when the ids are missing or equal, the child cache
     file is absent (checked on disk, because _read_cache answers a miss with defaults),
-    the child is not linked to this parent, the parent cache file is absent (a rollup
+    the child is not linked to this parent, the child was not seeded by the start hook
+    (parent_session_id is settable through `update`, cache_source is not, so only a
+    start-seeded child's link was observed by Writ), the parent cache file is absent (a rollup
     must not create a session Writ never governed), or the child has nothing to merge.
     Idempotent: a second run adds nothing.
     """
@@ -54,6 +58,8 @@ def rollup_subagent_into_parent(agent_id: str, parent_session_id: str) -> dict:
     child = _read_cache(agent_id)
     if child.get("parent_session_id", "") != parent_session_id:
         return {"status": "skipped", "reason": "not_child_of_parent"}
+    if str(child.get("cache_source") or "") != CACHE_SOURCE_START:
+        return {"status": "skipped", "reason": "child_not_start_seeded"}
     if not os.path.exists(_cache_path(parent_session_id)):
         return {"status": "skipped", "reason": "parent_absent"}
 

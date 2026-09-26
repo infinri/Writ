@@ -1737,6 +1737,7 @@ def _subagent_governance_evidence() -> tuple[dict[str, set[str]], set[str]] | No
     completed: set[str] = set()
     cached: set[str] = set()
     uncached: set[str] = set()
+    unresolved_uncached: set[str] = set()
     active: set[str] = set()
     read_any = False
 
@@ -1778,6 +1779,10 @@ def _subagent_governance_evidence() -> tuple[dict[str, set[str]], set[str]] | No
                             cached.add(agent)
                         elif state == "absent":
                             uncached.add(agent)
+                            # Same rule for the role: only the writer's literal `unresolved`
+                            # (no agent_type, no sidecar, no cached role) counts.
+                            if str(row.get("role_source") or "") == "unresolved":
+                                unresolved_uncached.add(agent)
                     else:
                         # Any other row filed under an agent's own id proves a Writ hook
                         # ran inside that agent, which is what makes it seedable.
@@ -1797,6 +1802,7 @@ def _subagent_governance_evidence() -> tuple[dict[str, set[str]], set[str]] | No
     # uses above: an agent whose completion rows disagree across retries had a cache at
     # least once, and the claim being made is "no cache ever existed inside this agent".
     uncached = uncached - cached
+    unresolved_uncached = unresolved_uncached - cached
     known = started | seeded | seed_failed | completed
     known.discard("")
 
@@ -1807,6 +1813,7 @@ def _subagent_governance_evidence() -> tuple[dict[str, set[str]], set[str]] | No
         "reachable": set(),
         "uncached_at_stop": set(),
         "unreachable": set(),
+        "harness_internal": set(),
     }
     for who in known:
         if who in unrepaired:
@@ -1828,7 +1835,11 @@ def _subagent_governance_evidence() -> tuple[dict[str, set[str]], set[str]] | No
             # was later swept, so a positive seed record still wins.
             bucket = "uncached_at_stop" if who in uncached else "reachable"
         else:
-            bucket = "unreachable"
+            # Inside the last arm only, so no other bucket loses a member: nothing ran
+            # inside it AND its own completion row recorded neither a role nor a cache.
+            # These are the harness's background and SendMessage agents, which never get
+            # SubagentStart or a sidecar. Diagnostic only; the warn threshold ignores it.
+            bucket = "harness_internal" if who in unresolved_uncached else "unreachable"
         members[bucket].add(who)
     return members, known
 
@@ -1851,7 +1862,7 @@ def _subagent_governance_census() -> dict | None:
 
     Returns None when no stream is readable, which is NOT the same as "nothing is governed".
 
-    Six buckets, because averaging them hides the thing worth knowing:
+    Seven buckets, because averaging them hides the thing worth knowing:
       governed:    the spawn path made the cache (a `subagent_seeded` row naming
                    `subagent_start`, or failing that a `subagent_start` row), and no
                    unrepaired seed failure contradicts it
@@ -1866,6 +1877,12 @@ def _subagent_governance_census() -> dict | None:
                    hooks ran inside it and none of them ever created a cache: nothing it
                    did was recorded against a mode
       unreachable: only stop-side rows, so Writ never ran anything inside it
+      harness_internal:
+                   unreachable, AND a completion row records both `role_source:
+                   "unresolved"` and `cache_state: "absent"`: no SubagentStart, no
+                   sidecar, no role and no cache, the harness's own background agents.
+                   Both literals are positive records at the writer; a row missing either
+                   stays `unreachable`
 
     THE SIXTH BUCKET IS A POSITIVE RECORD AT THE WRITER, NEVER AN INFERENCE HERE. Only the
     two literals `present` and `absent` count, both written by the stop hook from a file
@@ -2028,7 +2045,9 @@ def check_subagent_governance_census(opts: DoctorOptions) -> CheckResult:
         f"{census['seed_failed']} whose seeding failed, "
         f"{census['reachable']} ungoverned but reachable, "
         f"{census['uncached_at_stop']} that stopped with no session cache at all, "
-        f"{census['unreachable']} unreachable, of {census['total']} sub-agent(s) Writ has "
+        f"{census['unreachable']} unreachable, "
+        f"{census['harness_internal']} harness-internal (no SubagentStart, no sidecar, "
+        f"no role, no cache), of {census['total']} sub-agent(s) Writ has "
         "a lifecycle record of. "
         "An agent is counted as stopping uncached ONLY when its own subagent_complete row "
         "says cache_state: absent. A row written before that field existed carries no such "

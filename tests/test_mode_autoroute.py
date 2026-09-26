@@ -160,6 +160,15 @@ def _is_non_user_turn(prompt):
     return fn(prompt)
 
 
+def _is_local_command_echo(text):
+    """Import `is_local_command_echo` LAZILY, for the same reason `_is_non_user_turn`
+    does above: it is planned for bin/lib/writ_mode_hint.py and does not exist yet on
+    today's code, so a module-level import would fail collection of this whole file."""
+    from writ_mode_hint import is_local_command_echo as fn
+
+    return fn(text)
+
+
 class TestClassifyModeHint:
     @pytest.mark.parametrize("prompt", INVESTIGATE_PROMPTS)
     def test_audit_explore_research_routes_to_investigate(self, prompt):
@@ -546,6 +555,53 @@ class TestNonUserTurnDetection:
         ) is False
 
 
+LOCAL_COMMAND_STDOUT_TEXT = (
+    "<local-command-stdout>implement the export endpoint from the approved plan"
+    "</local-command-stdout>"
+)
+BASH_STDOUT_TEXT = "<bash-stdout>implement the export endpoint from the approved plan</bash-stdout>"
+COMMAND_NAME_TEXT = "<command-name>/usage</command-name>\n<command-message>usage</command-message>"
+BASH_INPUT_TEXT = "<bash-input>make implement the export endpoint</bash-input>"
+
+
+class TestLocalCommandEchoDetection:
+    """Plan f7fc2b37-9a53-4011-a69f-e6b97f5e45fe, item 3: `is_local_command_echo`
+    (bin/lib/writ_mode_hint.py) is a pure, anchored-regex detector for the four
+    Claude Code local-command envelope tags. RED at HEAD: the function does not
+    exist yet."""
+
+    @pytest.mark.parametrize("text", [
+        COMMAND_NAME_TEXT, LOCAL_COMMAND_STDOUT_TEXT, BASH_INPUT_TEXT, BASH_STDOUT_TEXT,
+    ], ids=["command-name", "local-command-stdout", "bash-input", "bash-stdout"])
+    def test_each_tag_at_the_start_is_a_local_command_echo(self, text):
+        assert _is_local_command_echo(text) is True, text
+
+    @pytest.mark.parametrize("leading_ws", ["  ", "\n\n", "\t "], ids=["spaces", "newlines", "tab"])
+    def test_leading_whitespace_before_the_tag_is_still_detected(self, leading_ws):
+        assert _is_local_command_echo(leading_ws + LOCAL_COMMAND_STDOUT_TEXT) is True
+
+    def test_none_is_not_a_local_command_echo(self):
+        assert _is_local_command_echo(None) is False
+
+    def test_empty_string_is_not_a_local_command_echo(self):
+        assert _is_local_command_echo("") is False
+
+    def test_a_mid_text_tag_is_not_a_local_command_echo(self):
+        assert _is_local_command_echo(
+            "I saw a <bash-stdout> tag appear in the transcript, what generates that"
+        ) is False
+
+    def test_ordinary_text_is_not_a_local_command_echo(self):
+        assert _is_local_command_echo(
+            "implement the export endpoint from the approved plan"
+        ) is False
+
+    def test_is_non_user_turn_contract_is_unchanged_for_a_command_name_text(self):
+        """`is_non_user_turn`'s own contract (sub-agent hand-backs, peer messages,
+        task notifications) must not widen to cover this unrelated envelope shape."""
+        assert _is_non_user_turn(COMMAND_NAME_TEXT) is False
+
+
 class TestPromptParseSkipsNonUserTurns:
     """`bin/lib/writ-prompt-parse.py` must emit an empty mode-hint line for a non-user
     envelope, and must not let `permission_mode == 'plan'` or the transcript fallback
@@ -668,6 +724,45 @@ class TestTranscriptFallbackFiltersNonUserEntries:
         """Older transcripts (written before the origin field existed) behave
         exactly as before: absence of the field is not treated as non-human."""
         rows = [{"type": "user", "message": {"content": self.WORK_TEXT}}]
+        assert self._hint_for_transcript(tmp_path, rows) == "work"
+
+    # -----------------------------------------------------------------------
+    # Plan f7fc2b37-9a53-4011-a69f-e6b97f5e45fe, item 3: local-command entries
+    # (<command-name>, <local-command-stdout>, <bash-input>, <bash-stdout>) must
+    # not contribute to the fallback hint either, even when their own text is
+    # work-shaped. RED at HEAD: writ-prompt-parse.py's fallback filters only
+    # `is_non_user_turn`, so these entries' text still feeds the reclassification.
+    # -----------------------------------------------------------------------
+
+    @pytest.mark.parametrize("text", [
+        COMMAND_NAME_TEXT, LOCAL_COMMAND_STDOUT_TEXT, BASH_INPUT_TEXT, BASH_STDOUT_TEXT,
+    ], ids=["command-name", "local-command-stdout", "bash-input", "bash-stdout"])
+    def test_a_local_command_entry_does_not_feed_the_fallback(self, tmp_path, text):
+        rows = [{"type": "user", "message": {"content": text}}]
+        assert self._hint_for_transcript(tmp_path, rows) == "", (
+            f"a local-command envelope must not contribute to the transcript "
+            f"fallback hint: {text!r}"
+        )
+
+    def test_leading_whitespace_before_the_tag_still_does_not_feed_the_fallback(
+        self, tmp_path
+    ):
+        rows = [{"type": "user", "message": {"content": "  \n" + LOCAL_COMMAND_STDOUT_TEXT}}]
+        assert self._hint_for_transcript(tmp_path, rows) == ""
+
+    def test_a_slash_command_entry_still_classifies_as_work(self, tmp_path):
+        """A typed slash command is not a local-command echo -- it must keep
+        classifying normally through the fallback."""
+        rows = [{"type": "user", "message": {"content": "/writ-approve then implement the plan"}}]
+        assert self._hint_for_transcript(tmp_path, rows) == "work"
+
+    def test_a_local_command_entry_after_a_real_work_entry_does_not_erase_the_hint(
+        self, tmp_path
+    ):
+        rows = [
+            {"type": "user", "message": {"content": self.WORK_TEXT}},
+            {"type": "user", "message": {"content": LOCAL_COMMAND_STDOUT_TEXT}},
+        ]
         assert self._hint_for_transcript(tmp_path, rows) == "work"
 
 

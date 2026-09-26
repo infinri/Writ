@@ -175,6 +175,72 @@ class TestAdvancePhaseBehavior:
         assert "testing" in out
 
 
+class TestCitedRuleIds:
+    """Plan f7fc2b37-9a53-4011-a69f-e6b97f5e45fe, item 2: `_cited_rule_ids(section_text)
+    -> (set[str], bool)` reads a cited id only from the LEADING position of each
+    ## Rules Applied bullet line. RED at HEAD: `_cited_rule_ids` does not exist yet.
+    """
+
+    def _fn(self):
+        aw = _imp("writ.session.approval_workflow")
+        if not hasattr(aw, "_cited_rule_ids"):
+            pytest.fail("skeleton: writ.session.approval_workflow has no _cited_rule_ids yet")
+        return aw._cited_rule_ids
+
+    @pytest.mark.parametrize("line, expected", [
+        ("- **FOO-BAR-001** -- why it applies here.", "FOO-BAR-001"),
+        ("- [FOO-BAR-001] why it applies here.", "FOO-BAR-001"),
+        ("- FOO-BAR-001 -- why it applies here.", "FOO-BAR-001"),
+        ("- FOO-BAR-001: why it applies here.", "FOO-BAR-001"),
+        ("1. **FOO-BAR-001** -- why it applies here.", "FOO-BAR-001"),
+        ("2) FOO-BAR-001 why it applies here.", "FOO-BAR-001"),
+        ("* FOO-BAR-001 -- why it applies here.", "FOO-BAR-001"),
+    ], ids=[
+        "dash-bold", "dash-bracket", "dash-plain", "dash-colon",
+        "numbered-dot-bold", "numbered-paren", "asterisk-bullet",
+    ])
+    def test_extracts_the_leading_id_for_every_accepted_shape(self, line, expected):
+        ids, has_bullet_ids = self._fn()(line)
+        assert ids == {expected}, f"{line!r} -> {ids}"
+        assert has_bullet_ids is True
+
+    def test_only_the_first_id_on_a_line_counts_a_later_id_is_prose(self):
+        ids, has_bullet_ids = self._fn()(
+            "- **REAL-RULE-001** -- because of the work done in PHA-FANOUT-004\n"
+        )
+        assert ids == {"REAL-RULE-001"}
+        assert "PHA-FANOUT-004" not in ids
+        assert has_bullet_ids is True
+
+    def test_a_checkbox_line_yields_nothing(self):
+        ids, has_bullet_ids = self._fn()("- [ ] not a rule id, a checkbox\n")
+        assert ids == set()
+        # A checkbox-only section carries no bullet-leading id at all, so the
+        # section falls back to the whole-section scan (has_bullet_ids is False).
+        assert has_bullet_ids is False
+
+    def test_a_leading_abs_id_is_extracted(self):
+        ids, has_bullet_ids = self._fn()("- **ABS-TESTING-E2E** -- covers the pattern\n")
+        assert ids == {"ABS-TESTING-E2E"}
+        assert has_bullet_ids is True
+
+    def test_a_prose_only_section_reports_no_bullet_ids(self):
+        ids, has_bullet_ids = self._fn()(
+            "No rule ids were cited here, just a discussion of the approach.\n"
+        )
+        assert ids == set()
+        assert has_bullet_ids is False
+
+    def test_multiple_bullets_each_contribute_their_own_leading_id(self):
+        section = (
+            "- **FOO-BAR-001** -- first reason\n"
+            "- **BAZ-QUX-002** -- second reason\n"
+        )
+        ids, has_bullet_ids = self._fn()(section)
+        assert ids == {"FOO-BAR-001", "BAZ-QUX-002"}
+        assert has_bullet_ids is True
+
+
 class TestSourceShape:
     def test_facade_no_inline_defs(self):
         with open(FACADE_PATH) as f:

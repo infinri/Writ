@@ -15,6 +15,7 @@ localhost:8765, which is a live, real daemon on the machine this file was author
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import socket
@@ -269,14 +270,293 @@ class TestDeliveredButUnansweredMarksEveryRuleUnconfirmed:
             assert sorted(cache.get("feedback_unconfirmed", [])) == sorted(RULE_IDS)
             assert report.get("unconfirmed") == len(RULE_IDS)
 
-            # A second run against the same silent peer must not re-send: the
-            # unconfirmed ids are excluded from the next queue.
+            # A second run against the same silent peer must not re-send NEW work: the
+            # unconfirmed ids are excluded from the next queue. It DOES resend the
+            # pending batch itself (item B), which is still delivered-and-unanswered
+            # here, so the full set stays unconfirmed and the report must say so --
+            # not 0, which is what a version that silently dropped them would report.
             _RecordingBatchHandler.requests = []
             report2 = _run_auto_feedback(cache_dir, socket_path=_missing_socket(tmp_path),
                                          base_url=base_url)
             assert report2.get("feedback_sent", 0) == 0
+            assert report2.get("unconfirmed") == len(RULE_IDS), (
+                f"a second run after a lost response must still report the full "
+                f"unconfirmed set, not 0: {report2}"
+            )
         finally:
             silent.close()
+
+
+def _expected_batch_id(session_id: str, queue: list[tuple[str, str]]) -> str:
+    """Mirrors plan.md's own spec for `_batch_id`: sha256 of the session id and the
+    sorted `rule_id:signal` pairs, hex. Computed independently of production code so
+    comparing against it is a real property check, not production checking itself."""
+    parts = [session_id] + sorted(f"{rid}:{sig}" for rid, sig in queue)
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+
+
+def _seed_pending_batch(cache_dir: Path, *, batch_id: str, signals: list[tuple[str, str]],
+                        queued_at: float, feedback_sent: list[str] | None = None) -> None:
+    """A cache carrying ONE pending batch and nothing else queueable: `loaded_rule_ids`
+    is exactly the pending batch's own rule ids, all already in `feedback_unconfirmed`
+    (unless `feedback_sent`), so this run's only possible /feedback/batch POST is the
+    resend under test -- `analysis_results` stays non-empty so cmd_auto_feedback's
+    early return (`if not rules or not results: return`) does not suppress the report
+    entirely."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    rule_ids = [rid for rid, _ in signals]
+    sent = list(feedback_sent or [])
+    state = {
+        "session_id": SID,
+        "loaded_rule_ids": rule_ids,
+        "analysis_results": {"a.py": "pass"},
+        "feedback_sent": sent,
+        "feedback_unconfirmed": [rid for rid in rule_ids if rid not in sent],
+        "feedback_pending_batches": [
+            {"batch_id": batch_id, "signals": [list(pair) for pair in signals],
+             "queued_at": queued_at},
+        ],
+    }
+    (cache_dir / f"writ-session-{SID}.json").write_text(json.dumps(state))
+
+
+class TestBatchIdDeterminism:
+    """Plan f7fc2b37-9a53-4011-a69f-e6b97f5e45fe, item 4/B: `_batch_id` is a pure,
+    content-addressed function of (session_id, sorted rule_id:signal pairs). RED at
+    HEAD: `writ.session.feedback` has no `_batch_id` yet."""
+
+    def _fn(self):
+        from writ.session import feedback
+        if not hasattr(feedback, "_batch_id"):
+            pytest.fail("skeleton: writ.session.feedback has no _batch_id yet")
+        return feedback._batch_id
+
+    def test_matches_the_documented_sha256_formula(self) -> None:
+        queue = [("SEC-BATCH-1", "positive"), ("SEC-BATCH-2", "negative")]
+        got = self._fn()(SID, queue)
+        assert got == _expected_batch_id(SID, queue)
+        assert len(got) == 64
+        int(got, 16)  # must be hex
+
+    def test_a_permuted_queue_gives_the_same_id(self) -> None:
+        queue = [("A", "positive"), ("B", "negative")]
+        permuted = [("B", "negative"), ("A", "positive")]
+        fn = self._fn()
+        assert fn(SID, queue) == fn(SID, permuted)
+
+    def test_a_different_session_gives_a_different_id(self) -> None:
+        queue = [("A", "positive")]
+        fn = self._fn()
+        assert fn(SID, queue) != fn("a-completely-different-session", queue)
+
+    def test_a_different_signal_gives_a_different_id(self) -> None:
+        fn = self._fn()
+        assert fn(SID, [("A", "positive")]) != fn(SID, [("A", "negative")])
+
+
+class TestRequestCarriesTheComputedBatchId:
+    def test_the_batch_request_carries_the_documented_batch_id(self, tmp_path) -> None:
+        _RecordingBatchHandler.batch_status = 200
+        _RecordingBatchHandler.batch_body = {
+            "recorded": RULE_IDS, "not_found": [], "graduation_pending": [], "applied": 5,
+        }
+        server = _start(_RecordingBatchHandler)
+        try:
+            cache_dir = tmp_path / "cache"
+            _seed_queue(cache_dir, RULE_IDS)
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            _run_auto_feedback(cache_dir, socket_path=_missing_socket(tmp_path), base_url=base_url)
+            batch_reqs = [p for path, p in _RecordingBatchHandler.requests if path == "/feedback/batch"]
+            assert len(batch_reqs) == 1, _RecordingBatchHandler.requests
+            body = batch_reqs[0]
+            batch_id = body.get("batch_id")
+            assert isinstance(batch_id, str) and len(batch_id) == 64, body
+            int(batch_id, 16)
+            queue = [(s["rule_id"], s["signal"]) for s in body.get("signals", [])]
+            assert batch_id == _expected_batch_id(SID, queue)
+        finally:
+            server.shutdown()
+
+
+class TestLostBatchIsResentWithTheSameIdAndSignals:
+    """Plan item B: a batch delivered-but-unanswered is resent on the NEXT run as
+    exactly one POST carrying the same batch_id and signals; once answered, its ids
+    move to feedback_sent, feedback_unconfirmed and feedback_pending_batches empty
+    out, and the report shows resolved == 5. RED at HEAD: `_send_feedback` has no
+    pending-batch resend at all."""
+
+    def test_second_run_resends_exactly_one_post_matching_run_ones_batch(
+        self, tmp_path
+    ) -> None:
+        silent = _SilentServer()
+        cache_dir = tmp_path / "cache"
+        try:
+            _seed_queue(cache_dir, RULE_IDS)
+            base_url = f"http://127.0.0.1:{silent.port}"
+            _run_auto_feedback(cache_dir, socket_path=_missing_socket(tmp_path), base_url=base_url)
+            cache_after_1 = _read_cache(cache_dir)
+            assert sorted(cache_after_1.get("feedback_unconfirmed", [])) == sorted(RULE_IDS)
+            pending = cache_after_1.get("feedback_pending_batches", [])
+            assert len(pending) == 1, (
+                f"run 1's lost batch must be stored for a later resend: {cache_after_1}"
+            )
+            batch_id = pending[0]["batch_id"]
+            signals = pending[0]["signals"]
+        finally:
+            silent.close()
+
+        _RecordingBatchHandler.batch_status = 200
+        _RecordingBatchHandler.batch_body = {
+            "recorded": RULE_IDS, "not_found": [], "graduation_pending": [], "applied": 5,
+        }
+        server = _start(_RecordingBatchHandler)
+        try:
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            report2 = _run_auto_feedback(cache_dir, socket_path=_missing_socket(tmp_path),
+                                         base_url=base_url)
+            batch_reqs = [(path, body) for path, body in _RecordingBatchHandler.requests
+                         if path == "/feedback/batch"]
+            assert len(batch_reqs) == 1, _RecordingBatchHandler.requests
+            resent_body = batch_reqs[0][1]
+            assert resent_body.get("batch_id") == batch_id, (
+                "the resend must carry the SAME batch_id run 1 computed"
+            )
+            resent_signals = sorted(
+                (s["rule_id"], s["signal"]) for s in resent_body.get("signals", []))
+            assert resent_signals == sorted(tuple(pair) for pair in signals), (
+                "the resend must carry the SAME signals run 1 queued"
+            )
+
+            cache_after_2 = _read_cache(cache_dir)
+            assert cache_after_2.get("feedback_unconfirmed", []) == []
+            assert cache_after_2.get("feedback_pending_batches", []) == []
+            assert sorted(cache_after_2.get("feedback_sent", [])) == sorted(RULE_IDS)
+            assert report2.get("resolved") == len(RULE_IDS), report2
+        finally:
+            server.shutdown()
+
+
+class TestResendErrorKeepsPendingAndALaterSuccessResolves:
+    @pytest.mark.parametrize("status,body", [
+        (500, {}), (422, {"detail": "bad"}), (200, {"error": "Database not connected."}),
+    ])
+    def test_an_error_response_to_the_resend_keeps_it_pending(
+        self, tmp_path, status, body
+    ) -> None:
+        cache_dir = tmp_path / "cache"
+        batch_id = "a" * 64
+        signals = [(rid, "positive") for rid in RULE_IDS]
+        _seed_pending_batch(cache_dir, batch_id=batch_id, signals=signals,
+                            queued_at=time.time())
+
+        _RecordingBatchHandler.batch_status = status
+        _RecordingBatchHandler.batch_body = body
+        server = _start(_RecordingBatchHandler)
+        try:
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            _run_auto_feedback(cache_dir, socket_path=_missing_socket(tmp_path), base_url=base_url)
+            cache = _read_cache(cache_dir)
+            pending = cache.get("feedback_pending_batches", [])
+            assert len(pending) == 1 and pending[0].get("batch_id") == batch_id, (
+                f"an error response must keep the batch pending: {cache}"
+            )
+            assert sorted(cache.get("feedback_unconfirmed", [])) == sorted(RULE_IDS)
+        finally:
+            server.shutdown()
+
+        _RecordingBatchHandler.batch_status = 200
+        _RecordingBatchHandler.batch_body = {
+            "recorded": RULE_IDS, "not_found": [], "graduation_pending": [], "applied": 5,
+        }
+        server2 = _start(_RecordingBatchHandler)
+        try:
+            base_url = f"http://127.0.0.1:{server2.server_address[1]}"
+            _run_auto_feedback(cache_dir, socket_path=_missing_socket(tmp_path), base_url=base_url)
+            cache = _read_cache(cache_dir)
+            assert cache.get("feedback_pending_batches", []) == []
+            assert cache.get("feedback_unconfirmed", []) == []
+            assert sorted(cache.get("feedback_sent", [])) == sorted(RULE_IDS)
+        finally:
+            server2.shutdown()
+
+
+class TestStalePendingBatchIsNotResent:
+    """A pending batch whose queued_at is older than the client's resend age is
+    dropped from the pending list without sending -- its own server record may
+    already be pruned -- and its ids stay in feedback_unconfirmed rather than
+    silently vanishing."""
+
+    def test_a_batch_older_than_the_resend_age_sends_zero_requests(self, tmp_path) -> None:
+        cache_dir = tmp_path / "cache"
+        batch_id = "b" * 64
+        signals = [(rid, "positive") for rid in RULE_IDS]
+        eight_days_ago = time.time() - 8 * 86400
+        _seed_pending_batch(cache_dir, batch_id=batch_id, signals=signals,
+                            queued_at=eight_days_ago)
+
+        _RecordingBatchHandler.batch_status = 200
+        _RecordingBatchHandler.batch_body = {
+            "recorded": RULE_IDS, "not_found": [], "graduation_pending": [], "applied": 5,
+        }
+        server = _start(_RecordingBatchHandler)
+        try:
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            _run_auto_feedback(cache_dir, socket_path=_missing_socket(tmp_path), base_url=base_url)
+            batch_reqs = [p for path, p in _RecordingBatchHandler.requests if path == "/feedback/batch"]
+            assert len(batch_reqs) == 0, (
+                f"a stale pending batch must not be resent: {_RecordingBatchHandler.requests}"
+            )
+            cache = _read_cache(cache_dir)
+            assert sorted(cache.get("feedback_unconfirmed", [])) == sorted(RULE_IDS)
+        finally:
+            server.shutdown()
+
+
+class TestLegacyUnconfirmedIdsWithNoStoredBatchAreNeverResent:
+    """Ids that were unconfirmed BEFORE this change have no stored pending batch and
+    must never be resent -- only reported -- because their exact signal composition
+    cannot be recovered from a bare id list."""
+
+    def test_legacy_unconfirmed_ids_send_no_request_and_stay_counted(self, tmp_path) -> None:
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        state = {
+            "session_id": SID,
+            "loaded_rule_ids": RULE_IDS,
+            "analysis_results": {"a.py": "pass"},
+            "feedback_sent": [],
+            "feedback_unconfirmed": list(RULE_IDS),
+            # deliberately no feedback_pending_batches key at all (pre-upgrade cache)
+        }
+        (cache_dir / f"writ-session-{SID}.json").write_text(json.dumps(state))
+
+        _RecordingBatchHandler.batch_status = 200
+        _RecordingBatchHandler.batch_body = {
+            "recorded": [], "not_found": [], "graduation_pending": [], "applied": 0,
+        }
+        server = _start(_RecordingBatchHandler)
+        try:
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            report = _run_auto_feedback(cache_dir, socket_path=_missing_socket(tmp_path),
+                                        base_url=base_url)
+            assert _RecordingBatchHandler.requests == [], (
+                f"legacy unconfirmed ids with no stored batch must never be resent: "
+                f"{_RecordingBatchHandler.requests}"
+            )
+            assert report.get("unconfirmed") == len(RULE_IDS), report
+        finally:
+            server.shutdown()
+
+
+class TestClientResendMaxAgeIsBelowServerTtl:
+    def test_seven_days_is_below_thirty(self) -> None:
+        from writ.session import feedback
+        if not hasattr(feedback, "FEEDBACK_RESEND_MAX_AGE_DAYS"):
+            pytest.fail("skeleton: writ.session.feedback has no FEEDBACK_RESEND_MAX_AGE_DAYS yet")
+        from writ.graph.db import rule_store
+        if not hasattr(rule_store, "FEEDBACK_BATCH_TTL_DAYS"):
+            pytest.fail("skeleton: writ.graph.db.rule_store has no FEEDBACK_BATCH_TTL_DAYS yet")
+        assert feedback.FEEDBACK_RESEND_MAX_AGE_DAYS < rule_store.FEEDBACK_BATCH_TTL_DAYS
 
 
 class TestDuplicateIdsAndAlreadySentAreHandled:

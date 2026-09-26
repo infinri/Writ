@@ -704,30 +704,47 @@ class TestOversizedParentGovernanceSurvives:
 # phase-line default.
 # --------------------------------------------------------------------------- #
 
+# Plan f7fc2b37-9a53-4011-a69f-e6b97f5e45fe, item 1: WRIT_NO_JQ=1 is the faithful
+# stand-in for "jq absent on PATH" (the no-jq branch inside writ_critical is the one
+# `command -v jq` failing also takes), so every case below that reaches writ_critical
+# is parametrized over the ordinary environment and WRIT_NO_JQ=1. Before the common.sh
+# fix (bin/lib/common.sh:1490, `local extra` with no assignment) the WRIT_NO_JQ=1 row
+# aborts writ_critical under `set -u`, which is a DIFFERENT failure mode than the one
+# these classes exist to pin (a seed fault reported without crashing the hook), so it
+# is red at HEAD for a reason distinct from -- and in addition to -- the classes' own
+# subject.
+NO_JQ_ENVS = [{}, {"WRIT_NO_JQ": "1"}]
+NO_JQ_IDS = ["jq-available", "no-jq"]
+
+
 class TestNoParentSessionInPayload:
 
     def _envelope(self) -> str:
         return json.dumps({"agent_id": AGENT, "agent_type": "writ-explorer",
                            "hook_event_name": "SubagentStart"})
 
+    @pytest.mark.parametrize("no_jq_env", NO_JQ_ENVS, ids=NO_JQ_IDS)
     def test_it_still_records_the_existing_critical_and_creates_no_cache(
-        self, sinks, tmp_path
+        self, sinks, tmp_path, no_jq_env
     ) -> None:
         cache, friction = sinks
-        result = _run_hook(START_HOOK, cache=cache, friction=friction,
-                           stdin=self._envelope(),
-                           extra_env={"WRIT_PROJECTS_DIR": str(tmp_path / "no-projects")})
+        result = _run_hook(
+            START_HOOK, cache=cache, friction=friction, stdin=self._envelope(),
+            extra_env={"WRIT_PROJECTS_DIR": str(tmp_path / "no-projects"), **no_jq_env},
+        )
         assert result.returncode == 0, result.stderr
         assert "no parent session in payload" in result.stderr, result.stderr
         assert _child_cache(cache) is None
 
+    @pytest.mark.parametrize("no_jq_env", NO_JQ_ENVS, ids=NO_JQ_IDS)
     def test_the_phase_line_falls_back_to_the_documented_defaults(
-        self, sinks, tmp_path
+        self, sinks, tmp_path, no_jq_env
     ) -> None:
         cache, friction = sinks
-        result = _run_hook(START_HOOK, cache=cache, friction=friction,
-                           stdin=self._envelope(),
-                           extra_env={"WRIT_PROJECTS_DIR": str(tmp_path / "no-projects")})
+        result = _run_hook(
+            START_HOOK, cache=cache, friction=friction, stdin=self._envelope(),
+            extra_env={"WRIT_PROJECTS_DIR": str(tmp_path / "no-projects"), **no_jq_env},
+        )
         assert result.returncode == 0, result.stderr
         context = _injected_context(result)
         assert "mode=work, phase=planning, gates=none" in context, context
@@ -749,8 +766,9 @@ class TestSeedFailureIsVisible:
                            "agent_type": "x" * pad_bytes,
                            "hook_event_name": "SubagentStart"})
 
+    @pytest.mark.parametrize("no_jq_env", NO_JQ_ENVS, ids=NO_JQ_IDS)
     def test_the_hook_still_exits_zero_and_creates_no_cache(
-        self, sinks, tmp_path, require_platform_arg_limit
+        self, sinks, tmp_path, require_platform_arg_limit, no_jq_env
     ) -> None:
         """A dispatch must never fail because governance could not be inherited."""
         cache, friction = sinks
@@ -758,25 +776,27 @@ class TestSeedFailureIsVisible:
         result = _run_hook(
             START_HOOK, cache=cache, friction=friction,
             stdin=self._envelope_with_oversized_role(require_platform_arg_limit),
-            extra_env={"WRIT_PROJECTS_DIR": str(tmp_path / "no-projects")},
+            extra_env={"WRIT_PROJECTS_DIR": str(tmp_path / "no-projects"), **no_jq_env},
         )
         assert result.returncode == 0, result.stderr
         assert _child_cache(cache) is None
 
+    @pytest.mark.parametrize("no_jq_env", NO_JQ_ENVS, ids=NO_JQ_IDS)
     def test_it_prints_a_critical_line_naming_the_hook(
-        self, sinks, tmp_path, require_platform_arg_limit
+        self, sinks, tmp_path, require_platform_arg_limit, no_jq_env
     ) -> None:
         cache, friction = sinks
         _write_parent_cache(cache)
         result = _run_hook(
             START_HOOK, cache=cache, friction=friction,
             stdin=self._envelope_with_oversized_role(require_platform_arg_limit),
-            extra_env={"WRIT_PROJECTS_DIR": str(tmp_path / "no-projects")},
+            extra_env={"WRIT_PROJECTS_DIR": str(tmp_path / "no-projects"), **no_jq_env},
         )
         assert "[WRIT CRITICAL] writ-subagent-start" in result.stderr, result.stderr
 
+    @pytest.mark.parametrize("no_jq_env", NO_JQ_ENVS, ids=NO_JQ_IDS)
     def test_it_records_exactly_one_bounded_seed_failed_row(
-        self, sinks, tmp_path, require_platform_arg_limit
+        self, sinks, tmp_path, require_platform_arg_limit, no_jq_env
     ) -> None:
         """The row must carry the hook name and the parent session and NOTHING
         derived from the oversized value that killed the seed block, a row
@@ -786,7 +806,7 @@ class TestSeedFailureIsVisible:
         _run_hook(
             START_HOOK, cache=cache, friction=friction,
             stdin=self._envelope_with_oversized_role(require_platform_arg_limit),
-            extra_env={"WRIT_PROJECTS_DIR": str(tmp_path / "no-projects")},
+            extra_env={"WRIT_PROJECTS_DIR": str(tmp_path / "no-projects"), **no_jq_env},
         )
         rows = [json.loads(line) for line in friction.read_text().splitlines()
                 if line.strip()] if friction.exists() else []
@@ -2445,4 +2465,148 @@ class TestWarnThresholdUnchangedBySixthBucket:
         assert result.status == "ok", (
             f"{covered} covered of {census['total']} is exactly half, so the ungoverned "
             f"are not a majority, and the check reported {result.status}: {result.detail}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Plan f7fc2b37-9a53-4011-a69f-e6b97f5e45fe, item 6c: a seventh bucket,
+# `harness_internal`, carved out of the final (`unreachable`) arm for agents whose
+# own completion row positively records `role_source: "unresolved"` AND
+# `cache_state: "absent"` -- both literals, written by the stop hook, never
+# inferred. A row missing either literal, or naming a different role_source, must
+# stay `unreachable`; a row with an own-id hook row moves the agent into the
+# active arm (`uncached_at_stop`), exactly as an absent-cache-state agent with a
+# hook row does today. RED at HEAD: doctor.py's ladder has no such key yet, so
+# every agent below lands in `unreachable` and `census[HARNESS_INTERNAL_BUCKET]`
+# is a KeyError.
+# ---------------------------------------------------------------------------
+
+HARNESS_INTERNAL_BUCKET = "harness_internal"
+
+
+def _completion_row(agent: str, *, cache_state: str | None = None,
+                    role_source: str | None = None) -> dict:
+    row = {"event": "subagent_complete", "agent_id": agent}
+    if cache_state is not None:
+        row["cache_state"] = cache_state
+    if role_source is not None:
+        row["role_source"] = role_source
+    return row
+
+
+class TestHarnessInternalBucket:
+    def _one_agent(self, tmp_path, monkeypatch, agent: str, rows: list) -> dict:
+        census = _census_over(monkeypatch, _metrics_stream(tmp_path, rows))
+        assert census["total"] == 1, (
+            f"{agent} is the only agent these rows name: {census}"
+        )
+        assert _partition_gap(census) == 0, (
+            f"{agent} is in the denominator and in no bucket, or in two: {census}"
+        )
+        return census
+
+    def test_unresolved_role_source_and_absent_cache_state_lands_in_harness_internal(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        agent = "h-internal"
+        census = self._one_agent(
+            tmp_path, monkeypatch, agent,
+            [_completion_row(agent, cache_state="absent", role_source="unresolved")],
+        )
+        assert census.get(HARNESS_INTERNAL_BUCKET) == 1, (
+            f"a completion row carrying both literals must join harness_internal: {census}"
+        )
+        assert census["unreachable"] == 0, (
+            f"the harness-internal population must no longer sit in unreachable: {census}"
+        )
+
+    def test_missing_role_source_stays_unreachable(self, tmp_path, monkeypatch) -> None:
+        agent = "h-missing-role-source"
+        census = self._one_agent(
+            tmp_path, monkeypatch, agent, [_completion_row(agent, cache_state="absent")])
+        assert census["unreachable"] == 1, census
+        assert census.get(HARNESS_INTERNAL_BUCKET, 0) == 0, census
+
+    def test_missing_cache_state_stays_unreachable(self, tmp_path, monkeypatch) -> None:
+        agent = "h-missing-cache-state"
+        census = self._one_agent(
+            tmp_path, monkeypatch, agent, [_completion_row(agent, role_source="unresolved")])
+        assert census["unreachable"] == 1, census
+        assert census.get(HARNESS_INTERNAL_BUCKET, 0) == 0, census
+
+    def test_role_source_sidecar_stays_unreachable(self, tmp_path, monkeypatch) -> None:
+        agent = "h-sidecar"
+        census = self._one_agent(
+            tmp_path, monkeypatch, agent,
+            [_completion_row(agent, cache_state="absent", role_source="sidecar")],
+        )
+        assert census["unreachable"] == 1, (
+            f"role_source: sidecar is a real observation, not an unresolved one: {census}"
+        )
+        assert census.get(HARNESS_INTERNAL_BUCKET, 0) == 0, census
+
+    def test_an_own_id_hook_row_keeps_it_in_the_active_arm(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A Writ hook DID run inside this agent (an own-id row), so it is not
+        harness-internal: it stays `uncached_at_stop`, exactly as an
+        absent-cache-state agent with a hook row does today."""
+        agent = "h-active"
+        census = self._one_agent(
+            tmp_path, monkeypatch, agent,
+            [_hook_row(agent),
+             _completion_row(agent, cache_state="absent", role_source="unresolved")],
+        )
+        assert census["uncached_at_stop"] == 1, (
+            f"an own-id hook row must keep this agent in the active arm: {census}"
+        )
+        assert census.get(HARNESS_INTERNAL_BUCKET, 0) == 0, census
+        assert census["unreachable"] == 0, census
+
+    def test_the_partition_still_sums_to_total(self, tmp_path, monkeypatch) -> None:
+        population = dict(_boundary_population())
+        population["h-internal-balancing"] = (
+            HARNESS_INTERNAL_BUCKET,
+            [lambda a: _completion_row(a, cache_state="absent", role_source="unresolved")],
+        )
+        stream = _metrics_stream(tmp_path, _boundary_rows(population))
+        census = _census_of_population(monkeypatch, stream, population)
+        assert _partition_gap(census) == 0, (
+            f"harness_internal did not join the sum: {census}"
+        )
+
+    def test_the_detail_names_the_harness_internal_count(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        rows = [_completion_row(f"h-detail-{i}", cache_state="absent",
+                                role_source="unresolved") for i in range(3)]
+        stream = _metrics_stream(tmp_path, rows)
+        detail = _check_over(monkeypatch, stream).detail
+        assert re.search(r"\b3\b[^,]*harness.internal", detail, re.IGNORECASE), (
+            f"the detail does not name 3 harness-internal agent(s): {detail}"
+        )
+
+    def test_the_warn_verdict_for_the_boundary_population_is_unchanged(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The warn threshold (`covered * 2 < total`, diagnostic only) must not move
+        because members shifted out of `unreachable` and into the new bucket --
+        mirrors TestWarnThresholdUnchangedBySixthBucket for this bucket."""
+        population = dict(_boundary_population())
+        population["h-internal-balancing"] = (
+            HARNESS_INTERNAL_BUCKET,
+            [lambda a: _completion_row(a, cache_state="absent", role_source="unresolved")],
+        )
+        population["h-governed-balancing"] = ("governed", [_start_row, _complete_row])
+        stream = _metrics_stream(tmp_path, _boundary_rows(population))
+        census = _census_of_population(monkeypatch, stream, population)
+        covered = _covered_in(population)
+        result = _check_over(monkeypatch, stream)
+        assert covered * 2 == census["total"], (
+            f"the fixture must sit exactly at the boundary: {covered} covered of "
+            f"{census['total']}"
+        )
+        assert result.status == "ok", (
+            f"exactly half covered must not warn merely because the new bucket "
+            f"exists: {result.status}: {result.detail}"
         )

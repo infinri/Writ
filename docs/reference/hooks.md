@@ -87,7 +87,7 @@
 | `Write|Edit|NotebookEdit` | `writ-state-write-gate.sh` |
 | `Write|Edit|NotebookEdit` | `writ-pre-write-dispatch.sh` |
 | `Write|Edit` | `pre-validate-file.sh` |
-| `Task` | `writ-dispatch-discipline.sh` |
+| `Task|Agent` | `writ-dispatch-discipline.sh` |
 | `Bash` | `writ-worktree-safety.sh` |
 | `Bash` | `writ-bash-write-gate.sh` |
 | `Write` | `validate-test-file.sh` |

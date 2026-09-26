@@ -496,7 +496,8 @@ async def record_feedback_batch(request: FeedbackBatchRequest) -> dict[str, Any]
     if server._db is None:
         return {"error": "Database not connected."}
     return await server._db.apply_feedback_batch(
-        [(item.rule_id, item.signal) for item in request.signals]
+        [(item.rule_id, item.signal) for item in request.signals],
+        batch_id=request.batch_id,
     )
 
 

@@ -25,12 +25,11 @@ under tmp_path, a stub daemon on a free port -- never the operator's real daemon
 8765): healthy stub with rules python3=15 jq=4 curl=4; daemon down (closed port)
 python3=9 jq=3 curl=2.
 
-Per TEST-REGRESSION-001: the exec-budget and zero-mode-GET capabilities are RED at
-HEAD (today always pays the extra exec / the extra GET); the seed-failure fallback and
-the merged-heredoc rendering capabilities are regression guards, already GREEN at HEAD
-(today's two-heredoc rendering is byte-identical to the eventual merged one; the
-oversized-role fault already falls back to `mode get` because seeding never even
-starts) and must stay green once 4a lands.
+Per TEST-REGRESSION-001: the exec-budget and zero-mode-GET capabilities pin the
+counts batch 3 reached (the hook before it paid an extra exec and an extra GET); the
+seed-failure fallback and the merged-heredoc rendering capabilities are regression
+guards (the old two-heredoc rendering was byte-identical to the merged one; the
+oversized-role fault falls back to `mode get` because seeding never starts).
 """
 
 from __future__ import annotations
@@ -231,9 +230,9 @@ def _injected_context(result: subprocess.CompletedProcess) -> str:
 
 class TestNoModeGetRoundTripWhenSeedingReported:
     """Capability: writ-subagent-start.sh makes 0 GET /session/<agent_id>/mode requests
-    when seeding printed a status (1 at HEAD). RED at HEAD: `CURRENT_MODE` is always
-    resolved through `_writ_session "mode get"`, which hits the daemon whenever it is
-    reachable."""
+    when seeding printed a status. Pins 0 requests; the hook before batch 3 made 1,
+    because it always resolved `CURRENT_MODE` through `_writ_session "mode get"`, which
+    hits the daemon whenever it is reachable."""
 
     def test_zero_mode_get_requests_against_a_healthy_daemon(self, tmp_path, healthy_stub):
         cache_dir = tmp_path / "cache"
@@ -251,7 +250,8 @@ class TestFrictionRowModeMatchesTheChildCache:
     parent's (seeding prints `skipped`). The daemon in this scenario answers mode-get
     with a THIRD, wrong value, so a hook that still asks the daemon records the wrong
     mode; a hook that reads the child cache it just seeded (or found already seeded)
-    records the real one. RED at HEAD when a healthy-but-wrong daemon is reachable."""
+    records the real one. Pins the child cache's mode even when a healthy-but-wrong
+    daemon is reachable."""
 
     def test_freshly_seeded_child_records_the_inherited_mode(self, tmp_path, healthy_stub):
         cache_dir = tmp_path / "cache"
@@ -334,8 +334,8 @@ class TestInjectionPathExecBudget:
     exec count is the HEAD baseline minus 4, jq plus 2, curl minus 1.
 
     HEAD baseline (measured against this exact harness, 2026-09-25): python3=15, jq=4,
-    curl=4. RED at HEAD: these assert the AFTER counts, which today's unmodified hook
-    does not produce."""
+    curl=4. Pins the counts after the batch 3 reductions, which the hook before it did
+    not produce."""
 
     _BASELINE_PYTHON3 = 15
     _BASELINE_JQ = 4
@@ -374,7 +374,7 @@ class TestDaemonDownExecBudget:
     python3=9, jq=3, curl=2. SA_OUTPUT runs on this path too (it sits outside the
     daemon-health block and PHASE_INFO is never empty), so moving it to jq removes a
     third python3 and adds one jq on top of the mode-get fallback and the merged
-    heredoc. RED at HEAD on all three counts."""
+    heredoc. Pins all three reduced counts."""
 
     _BASELINE_PYTHON3 = 9
     _BASELINE_JQ = 3

@@ -137,6 +137,20 @@ def is_non_user_turn(prompt: str | None) -> bool:
     return bool(prompt) and _NON_USER_TURN.match(prompt) is not None
 
 
+# Transcript entries Claude Code writes for built-in local commands and ! shell input. They
+# are type 'user' with no isMeta and no origin, but never fire UserPromptSubmit, so only the
+# transcript fallback sees them. Anchored at the start, like _NON_USER_TURN.
+_LOCAL_COMMAND_ECHO = re.compile(
+    r"\A\s*<(?:command-name|local-command-stdout|bash-input|bash-stdout)>"
+)
+
+
+def is_local_command_echo(text: str | None) -> bool:
+    """True when a transcript text is a local-command or shell echo entry rather than
+    text the user typed. Pure."""
+    return bool(text) and _LOCAL_COMMAND_ECHO.match(text) is not None
+
+
 def classify_mode_hint(prompt: str | None) -> str | None:
     """Best-effort mode suggestion from a user prompt. Returns 'investigate' for an
     audit/explore/research-shaped request, 'work' for a build/implementation request, else

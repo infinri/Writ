@@ -44,7 +44,12 @@ METHODOLOGY_NODE_ID_FIELDS: dict[str, str] = {
 #                until the entries were re-registered by hand.
 #   exclude   -- Project nodes carry local filesystem paths in `repo_root`, so they
 #                must never ship in the public corpus dump.
-RECORD_LABELS: frozenset[str] = frozenset({"Memory", "Decision", "FileChange", "Commit", "Project"})
+#
+# `FeedbackBatch` is the replay record of an applied /feedback/batch (batch_id plus the
+# stored answer). Preserve: a corpus replay erasing it would let a resent batch apply
+# twice. Exclude: it is runtime telemetry, not corpus.
+RECORD_LABELS: frozenset[str] = frozenset(
+    {"Memory", "Decision", "FileChange", "Commit", "Project", "FeedbackBatch"})
 
 ALLOWED_EDGE_TYPES: frozenset[str] = frozenset({
     # Pre-existing (Change C: APPLIES_TO + JUSTIFIED_BY retired)

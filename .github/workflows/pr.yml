@@ -304,3 +304,24 @@ jobs:
         env:
           WRIT_BENCH_BUDGET_SCALE: "5"
         run: make bench
+
+  # The rendered reference pages (docs/reference/*.md) against the code they are rendered
+  # from. Its own job because it needs no graph: only the python half of the shared setup
+  # action, a venv with the package installed editable, so `writ` imports with no
+  # PYTHONPATH and the Makefile's default .venv/bin/python3 passes check-venv.
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the package into .venv
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e '.[dev]'
+      - name: Check the rendered docs are current
+        run: make docs-check

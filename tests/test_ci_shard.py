@@ -636,3 +636,45 @@ class TestWorkflowWiring:
         assert "test-shard" in body, "aggregator must declare needs: [test-shard]"
         assert "if: always()" in body
         assert "ci_shard.py --check" in body
+
+
+# ---------------------------------------------------------------------------
+# Plan f7fc2b37-9a53-4011-a69f-e6b97f5e45fe, item C: PR CI runs `make docs-check`
+# in its own job, with no Neo4j and no setup-writ action (that action imports the
+# corpus into a Neo4j service, which this job must not need). RED at HEAD: pr.yml
+# has no `docs:` job at all.
+# ---------------------------------------------------------------------------
+class TestDocsCheckJob:
+    def _job_body(self, text: str) -> str:
+        match = re.search(r"^  docs:\n(.*?)(?=^  \S+:\n|\Z)", text, re.MULTILINE | re.DOTALL)
+        assert match, "no `docs:` job found in .github/workflows/pr.yml"
+        return match.group(1)
+
+    def test_the_docs_job_exists(self):
+        text = WORKFLOW.read_text()
+        assert re.search(r"^\s*docs:", text, re.MULTILINE), (
+            "no docs job in .github/workflows/pr.yml"
+        )
+
+    def test_the_docs_job_installs_the_package_editable_and_runs_docs_check(self):
+        body = self._job_body(WORKFLOW.read_text())
+        assert "pip install -e" in body, (
+            f"the docs job must install the package editable so `writ` is importable "
+            f"with no PYTHONPATH: {body}"
+        )
+        assert "make docs-check" in body, (
+            f"the docs job must run `make docs-check`: {body}"
+        )
+
+    def test_the_docs_job_declares_no_services(self):
+        body = self._job_body(WORKFLOW.read_text())
+        assert "services:" not in body, (
+            f"the docs job must need no Neo4j (make docs-check has none): {body}"
+        )
+
+    def test_the_docs_job_does_not_use_setup_writ(self):
+        body = self._job_body(WORKFLOW.read_text())
+        assert "setup-writ" not in body, (
+            f"setup-writ imports the corpus into a Neo4j service, which this job "
+            f"must not need: {body}"
+        )

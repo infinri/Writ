@@ -271,8 +271,12 @@ class TestDefaultCallsAreNotGated:
         # by ingest, so a wipe that took it had nothing to restore it from (that
         # destroyed the registry twice), and it carries a local repo_root path
         # that must never ship in the public dump.
+        # Plan f7fc2b37-9a53-4011-a69f-e6b97f5e45fe, item B: FeedbackBatch joined
+        # RECORD_LABELS. It is runtime replay-protection state with no bible or
+        # dump home (get_all_nodes_for_dump excludes it), so a corpus replay must
+        # preserve it exactly as it preserves the other four record labels.
         assert params["preserve"] == [
-            "Commit", "Decision", "FileChange", "Memory", "Project",
+            "Commit", "Decision", "FeedbackBatch", "FileChange", "Memory", "Project",
         ]
 
     @pytest.mark.asyncio

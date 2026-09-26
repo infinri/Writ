@@ -2928,9 +2928,13 @@ def redir_target(tok, nxt):
 # (credential / gate state / project-local) and the existing work-gate call and audit
 # row apply unchanged. Nothing downstream of raw_targets knows this vector exists.
 #
-# FALSE POSITIVES ARE THE ACCEPTED COST. `python3 -c "print(open('src/x.py').read())"`
-# is read-only and will be gated. That is the same trade the gate-state guard makes,
-# and the alternative -- silence on a write -- is the defect being closed here.
+# ONE READ SHAPE IS RECOGNISED, AND ONLY BY ITS TEXT. A bare `open(<literal>)` or
+# `open(<literal>, 'r'|'rt'|'rb')` names a file it only reads, so its literal is not a
+# candidate (READ_OPEN_CALL / READ_OPEN_MODES, applied in token_literals). Every other
+# shape stays gated: any other mode (w, a, x, +), a keyword mode, extra arguments, a
+# non-literal argument, a method call (`shelve.open`, `File.open`), a printed literal or a
+# dict key. Those FALSE POSITIVES ARE THE ACCEPTED COST, the same trade the gate-state
+# guard makes, and the alternative -- silence on a write -- is the defect being closed here.
 #
 # COVERED: python / python3 / pythonX.Y `-c`, node / nodejs `-e` `--eval` `-p`
 # `--print`, perl `-e` `-E` (including the glued `-pi -e` in-place form), ruby `-e`,
@@ -3004,6 +3008,15 @@ PATH_CAND = re.compile(r"[A-Za-z0-9_@+~./-]+")
 # One string literal, single- or double-quoted. In every language covered here a path
 # in source code IS a string literal, which is the discriminator this scan rests on.
 QUOTED = re.compile(r"'([^']*)'|\"([^\"]*)\"")
+# A bare read-mode `open()` call: one literal file argument and an optional literal mode.
+# The lookbehind keeps method calls (`shelve.open`, whose default flag creates the file;
+# Ruby `File.open`) and `fopen`/`openSync` out. A mode outside READ_OPEN_MODES, or any
+# call this pattern does not match, keeps its literal a candidate.
+READ_OPEN_MODES = frozenset({"r", "rt", "rb"})
+READ_OPEN_CALL = re.compile(
+    r"""(?<![\w.$>:])open\(\s*(?:'([^']*)'|"([^"]*)")\s*"""
+    r"""(?:,\s*(?:'([^']*)'|"([^"]*)")\s*)?\)"""
+)
 # Characters that mean a token is CODE rather than a filename. A real path argument
 # does not contain them; `console.log(process.env)` does.
 CODE_PUNCT = "()[]{};,"
@@ -3064,6 +3077,11 @@ def looks_like_path(c):
     return False
 
 
+def _blank_read_open(m):
+    mode = m.group(3) if m.group(3) is not None else m.group(4)
+    return " " if mode is None or mode in READ_OPEN_MODES else m.group(0)
+
+
 def token_literals(tok):
     """The path-bearing text a token contributes: its STRING LITERALS, or the token
     itself when it is a bare command-line argument.
@@ -3080,12 +3098,18 @@ def token_literals(tok):
     scripts/build.py`) unless it carries code punctuation, in which case it is code
     that mentions no file.
 
+    Before the literals are collected, every read-mode `open()` call (READ_OPEN_CALL
+    with no mode or a mode in READ_OPEN_MODES) is blanked out of the code, so the file it
+    only reads is not a candidate. A shlex-split heredoc body can break such a call
+    across tokens (`open('x', 'r')`), and then it stays gated.
+
     KNOWN MISS, stated rather than discovered later: a literal nested one level deeper
     (`python3 -c "os.system('cat > src/a.py')"`) is read as the inner literal only, and
     a path assembled from pieces or held in a variable has no literal to find at all.
     """
     if len(tok) >= 2 and tok[0] == tok[-1] and tok[0] in ("'", '"'):
         tok = tok[1:-1]
+    tok = READ_OPEN_CALL.sub(_blank_read_open, tok)
     spans = [m.group(1) if m.group(1) is not None else m.group(2)
              for m in QUOTED.finditer(tok)]
     if spans:

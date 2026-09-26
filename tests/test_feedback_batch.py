@@ -335,6 +335,259 @@ class TestFailureInsideTransactionRollsBackEverything:
 
 
 # --------------------------------------------------------------------------------- #
+# Plan f7fc2b37-9a53-4011-a69f-e6b97f5e45fe, item B: a content-addressed batch_id,
+# recorded in the SAME transaction as its effects, makes a resent or concurrently
+# duplicated batch apply once. RED at HEAD: `apply_feedback_batch` has no `batch_id`
+# parameter at all, so every call below raises TypeError until it is added.
+# --------------------------------------------------------------------------------- #
+
+
+class TestBatchIdReplayAppliesOnce:
+    @pytest.mark.asyncio
+    async def test_same_batch_id_twice_moves_counts_once_and_the_second_answer_replays(
+        self, db
+    ) -> None:
+        _require(db, "apply_feedback_batch")
+        await _seed_rule(db, "FB-REPLAY-001", pos=0, neg=0)
+        batch_id = "1" * 64
+        first = await db.apply_feedback_batch(
+            [("FB-REPLAY-001", "positive")], batch_id=batch_id)
+        second = await db.apply_feedback_batch(
+            [("FB-REPLAY-001", "positive")], batch_id=batch_id)
+        row = await _rule_row(db, "FB-REPLAY-001")
+        assert row["pos"] == 1, "the second (replayed) call must not apply a second increment"
+        assert second.get("replayed") is True, second
+        expected = dict(first)
+        expected["replayed"] = True
+        assert second == expected, (second, first)
+
+
+class TestSameContentUnderADifferentBatchIdAppliesAgain:
+    @pytest.mark.asyncio
+    async def test_a_different_batch_id_applies_a_second_time(self, db) -> None:
+        _require(db, "apply_feedback_batch")
+        await _seed_rule(db, "FB-DIFFID-001", pos=0, neg=0)
+        await db.apply_feedback_batch([("FB-DIFFID-001", "positive")], batch_id="2" * 64)
+        await db.apply_feedback_batch([("FB-DIFFID-001", "positive")], batch_id="3" * 64)
+        row = await _rule_row(db, "FB-DIFFID-001")
+        assert row["pos"] == 2, "identical content under a different batch_id is not a replay"
+
+
+class TestConcurrentCallsWithOneBatchIdApplyOnce:
+    @pytest.mark.asyncio
+    async def test_two_concurrent_calls_move_counts_once_and_exactly_one_replays(
+        self, db
+    ) -> None:
+        _require(db, "apply_feedback_batch")
+        await _seed_rule(db, "FB-CONC-BID-001", pos=0, neg=0)
+        batch_id = "4" * 64
+        results = await asyncio.gather(
+            db.apply_feedback_batch([("FB-CONC-BID-001", "positive")], batch_id=batch_id),
+            db.apply_feedback_batch([("FB-CONC-BID-001", "positive")], batch_id=batch_id),
+        )
+        row = await _rule_row(db, "FB-CONC-BID-001")
+        assert row["pos"] == 1, "the increment must move exactly once across both calls"
+        replayed_flags = [r.get("replayed", False) for r in results]
+        assert replayed_flags.count(True) == 1, f"expected exactly one replay: {results}"
+
+
+class TestFailureInsideTheBatchTransactionLeavesNoFeedbackBatchRecord:
+    @pytest.mark.asyncio
+    async def test_a_raising_transaction_leaves_no_record_and_a_retry_applies(
+        self, db, monkeypatch
+    ) -> None:
+        _require(db, "apply_feedback_batch")
+        await _seed_rule(db, "FB-BATCHFAIL-001", pos=LOW_T - 1, neg=0)
+
+        import writ.frequency as frequency
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("evaluate_graduation exploded mid-transaction")
+
+        monkeypatch.setattr(frequency, "evaluate_graduation", _boom)
+        try:
+            import writ.graph.db.rule_store as rule_store
+            monkeypatch.setattr(rule_store, "evaluate_graduation", _boom)
+        except (ImportError, AttributeError):
+            pass
+
+        batch_id = "5" * 64
+        with pytest.raises(Exception):
+            await db.apply_feedback_batch(
+                [("FB-BATCHFAIL-001", "positive")], threshold=LOW_T, batch_id=batch_id)
+
+        row = await _rule_row(db, "FB-BATCHFAIL-001")
+        assert row["pos"] == LOW_T - 1, "the failed attempt must apply nothing"
+
+        async with db._driver.session(database=db._database) as s:
+            result = await s.run(
+                "MATCH (b:FeedbackBatch {batch_id: $id}) RETURN count(b) AS n", id=batch_id)
+            rec = await result.single()
+            assert rec["n"] == 0, (
+                "a rolled-back attempt must leave no FeedbackBatch record: 'record exists' "
+                "means 'applied' and vice versa"
+            )
+
+        monkeypatch.undo()  # restore the real evaluate_graduation for the retry
+        second = await db.apply_feedback_batch(
+            [("FB-BATCHFAIL-001", "positive")], threshold=LOW_T, batch_id=batch_id)
+        row = await _rule_row(db, "FB-BATCHFAIL-001")
+        assert row["pos"] == LOW_T, (
+            "a retry with the same id must apply, since the failed attempt left no record"
+        )
+        assert second.get("replayed") is not True
+
+
+class TestPruningIsBoundedAndAgeBased:
+    @pytest.mark.asyncio
+    async def test_applying_a_new_batch_prunes_expired_records_bounded_by_the_limit(
+        self, db
+    ) -> None:
+        _require(db, "apply_feedback_batch")
+        from writ.graph.db import rule_store
+        if not hasattr(rule_store, "FEEDBACK_BATCH_PRUNE_LIMIT"):
+            pytest.fail(
+                "skeleton: writ.graph.db.rule_store has no FEEDBACK_BATCH_PRUNE_LIMIT yet"
+            )
+        limit = rule_store.FEEDBACK_BATCH_PRUNE_LIMIT
+        await _seed_rule(db, "FB-PRUNE-TARGET", pos=0, neg=0)
+
+        expired_ids = [f"expired-{i:03d}" for i in range(6)]
+        async with db._driver.session(database=db._database) as s:
+            for eid in expired_ids:
+                await s.run(
+                    "MERGE (b:FeedbackBatch {batch_id: $id}) "
+                    "SET b.created_at = datetime() - duration({days: 31}), b.result = '{}'",
+                    id=eid,
+                )
+            await s.run(
+                "MERGE (b:FeedbackBatch {batch_id: 'young-record'}) "
+                "SET b.created_at = datetime() - duration({days: 1}), b.result = '{}'",
+            )
+
+        await db.apply_feedback_batch([("FB-PRUNE-TARGET", "positive")], batch_id="6" * 64)
+
+        async with db._driver.session(database=db._database) as s:
+            expired_left = await (await s.run(
+                "MATCH (b:FeedbackBatch) WHERE b.batch_id IN $ids RETURN count(b) AS n",
+                ids=expired_ids,
+            )).single()
+            young_left = await (await s.run(
+                "MATCH (b:FeedbackBatch {batch_id: 'young-record'}) RETURN count(b) AS n",
+            )).single()
+
+        assert young_left["n"] == 1, "a record younger than the TTL must not be pruned"
+        assert expired_left["n"] < len(expired_ids), (
+            "at least one expired record must have been pruned"
+        )
+        assert expired_left["n"] >= max(0, len(expired_ids) - limit), (
+            f"at most {limit} expired record(s) may be pruned per applied batch: "
+            f"{expired_left['n']} of {len(expired_ids)} remain"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_replay_prunes_nothing(self, db) -> None:
+        _require(db, "apply_feedback_batch")
+        await _seed_rule(db, "FB-PRUNE-REPLAY", pos=0, neg=0)
+        batch_id = "7" * 64
+        # The first call is a new batch, which prunes expired records by design, so the
+        # expired record is seeded only after it: what is under test is the replay alone.
+        await db.apply_feedback_batch([("FB-PRUNE-REPLAY", "positive")], batch_id=batch_id)
+        async with db._driver.session(database=db._database) as s:
+            await s.run(
+                "MERGE (b:FeedbackBatch {batch_id: 'stale-for-replay-test'}) "
+                "SET b.created_at = datetime() - duration({days: 31}), b.result = '{}'",
+            )
+        # A pure replay: must not run the prune step at all.
+        await db.apply_feedback_batch([("FB-PRUNE-REPLAY", "positive")], batch_id=batch_id)
+        async with db._driver.session(database=db._database) as s:
+            rec = await (await s.run(
+                "MATCH (b:FeedbackBatch {batch_id: 'stale-for-replay-test'}) "
+                "RETURN count(b) AS n",
+            )).single()
+            assert rec["n"] == 1, "a replay must not prune an expired record"
+
+
+class TestBatchIdQueryCounts:
+    @pytest.mark.asyncio
+    async def test_new_batch_with_id_none_crossing_is_four_queries(self, db) -> None:
+        _require(db, "apply_feedback_batch")
+        rule_ids = [f"FB-BID-CNT-{i}" for i in range(3)]
+        for rid in rule_ids:
+            await _seed_rule(db, rid, pos=0, neg=0)  # far below LOW_T
+        counters = _install_counters(db)
+        await db.apply_feedback_batch(
+            [(rid, "positive") for rid in rule_ids], threshold=LOW_T, batch_id="8" * 64,
+        )
+        assert counters.sessions_opened == 1
+        assert counters.execute_write_calls == 1
+        assert counters.tx_run == 4, (
+            "merge + increment + store + prune, no rule crossing: 4 queries"
+        )
+
+    @pytest.mark.asyncio
+    async def test_new_batch_with_id_and_a_crossing_rule_is_five_queries(self, db) -> None:
+        _require(db, "apply_feedback_batch")
+        await _seed_rule(db, "FB-BID-CROSS", pos=LOW_T - 1, neg=0)
+        counters = _install_counters(db)
+        await db.apply_feedback_batch(
+            [("FB-BID-CROSS", "positive")], threshold=LOW_T, batch_id="9" * 64,
+        )
+        assert counters.tx_run == 5, "merge + increment + flip + store + prune = 5 queries"
+
+    @pytest.mark.asyncio
+    async def test_a_replay_is_exactly_one_query(self, db) -> None:
+        _require(db, "apply_feedback_batch")
+        await _seed_rule(db, "FB-BID-REPLAY-CNT", pos=0, neg=0)
+        batch_id = "a1" * 32
+        await db.apply_feedback_batch([("FB-BID-REPLAY-CNT", "positive")], batch_id=batch_id)
+        counters = _install_counters(db)
+        await db.apply_feedback_batch([("FB-BID-REPLAY-CNT", "positive")], batch_id=batch_id)
+        assert counters.sessions_opened == 1
+        assert counters.execute_write_calls == 1
+        assert counters.tx_run == 1, "a replay must run only the merge lookup"
+
+    @pytest.mark.asyncio
+    async def test_without_a_batch_id_the_counts_are_todays(self, db) -> None:
+        _require(db, "apply_feedback_batch")
+        rule_ids = [f"FB-NOID-CNT-{i}" for i in range(3)]
+        for rid in rule_ids:
+            await _seed_rule(db, rid, pos=0, neg=0)
+        counters = _install_counters(db)
+        await db.apply_feedback_batch([(rid, "positive") for rid in rule_ids], threshold=LOW_T)
+        assert counters.tx_run == 1, "no batch_id: today's single-query path is unchanged"
+
+
+class TestFeedbackBatchSchemaAndDumpExclusion:
+    @pytest.mark.asyncio
+    async def test_apply_constraints_creates_the_uniqueness_constraint_and_the_index(
+        self, db
+    ) -> None:
+        await db.apply_constraints()
+        constraints = await db.list_constraints()
+        names = {c.get("name") for c in constraints}
+        assert "feedbackbatch_batch_id_unique" in names, names
+        indexes = await db.list_indexes()
+        index_names = {i.get("name") for i in indexes}
+        assert "feedbackbatch_created_at" in index_names, index_names
+
+    def test_feedbackbatch_is_in_record_labels(self) -> None:
+        from writ.graph.db._common import RECORD_LABELS
+        assert "FeedbackBatch" in RECORD_LABELS
+
+    @pytest.mark.asyncio
+    async def test_a_stored_feedbackbatch_record_is_absent_from_the_dump(self, db) -> None:
+        _require(db, "apply_feedback_batch")
+        await _seed_rule(db, "FB-DUMP-001", pos=0, neg=0)
+        await db.apply_feedback_batch([("FB-DUMP-001", "positive")], batch_id="b2" * 32)
+        dump_nodes = await db.get_all_nodes_for_dump()
+        labels_in_dump = {node.get("label") for node in dump_nodes}
+        assert "FeedbackBatch" not in labels_in_dump, (
+            "a FeedbackBatch record must never ship in the public corpus dump"
+        )
+
+
+# --------------------------------------------------------------------------------- #
 # Capability: the route contract, no graph needed.
 # --------------------------------------------------------------------------------- #
 
@@ -440,6 +693,52 @@ class TestFeedbackBatchRoute:
             server._db = orig
         assert resp.status_code == 200, resp.text
         assert "error" in resp.json()
+
+
+class TestFeedbackBatchRouteBatchIdValidation:
+    @pytest.mark.asyncio
+    async def test_a_malformed_batch_id_is_422_with_nothing_applied(self, route_client) -> None:
+        from unittest.mock import AsyncMock
+
+        ac, server = route_client
+        fake_db = AsyncMock()
+        orig = server._db
+        server._db = fake_db
+        try:
+            resp = await ac.post("/feedback/batch", json={
+                "signals": [{"rule_id": "R-1", "signal": "positive"}],
+                "batch_id": "not-64-hex-chars",
+            })
+        finally:
+            server._db = orig
+        assert resp.status_code == 422, resp.text
+        fake_db.apply_feedback_batch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_valid_batch_id_is_passed_through_as_batch_id(self, route_client) -> None:
+        from unittest.mock import AsyncMock
+
+        ac, server = route_client
+        fake_db = AsyncMock()
+        fake_db.apply_feedback_batch.return_value = {
+            "recorded": ["R-1"], "not_found": [], "graduation_pending": [], "applied": 1,
+        }
+        orig = server._db
+        server._db = fake_db
+        batch_id = "c" * 64
+        try:
+            resp = await ac.post("/feedback/batch", json={
+                "signals": [{"rule_id": "R-1", "signal": "positive"}],
+                "batch_id": batch_id,
+            })
+        finally:
+            server._db = orig
+        assert resp.status_code == 200, resp.text
+        _args, kwargs = fake_db.apply_feedback_batch.call_args
+        assert kwargs.get("batch_id") == batch_id, (
+            "record_feedback_batch must pass batch_id=request.batch_id through to "
+            f"apply_feedback_batch: got kwargs {kwargs}"
+        )
 
 
 class TestSingleFeedbackRouteUnchanged:

@@ -114,6 +114,7 @@ try:
                     f.seek(0, 2)
                     f.seek(max(0, f.tell() - 65536))
                     tail = f.read().decode('utf-8', 'ignore')
+                from writ_mode_hint import is_local_command_echo
                 users = []
                 for line in tail.splitlines():
                     try:
@@ -137,7 +138,9 @@ try:
                                  if isinstance(it, dict) and it.get('type') == 'text']
                     else:
                         texts = []
-                    users += [t for t in texts if not is_non_user_turn(t)]
+                    # Local-command and shell echoes carry command output, not user intent.
+                    users += [t for t in texts
+                              if not is_non_user_turn(t) and not is_local_command_echo(t)]
                 recent = ' '.join(u for u in users[-5:] if u)
                 if recent:
                     hint = classify_mode_hint(recent) or ''

@@ -128,6 +128,10 @@ class FeedbackBatchRequest(BaseModel):
     """
 
     signals: list[FeedbackSignal] = Field(default_factory=list, max_length=1000)
+    # Content-addressed id of this batch (the client's sha256 over session and signals).
+    # When given, the server records it in the same transaction as the increments, so a
+    # resend of a batch whose answer was lost is answered from the record, not applied.
+    batch_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class ConflictsRequest(BaseModel):

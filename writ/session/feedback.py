@@ -6,15 +6,22 @@ lower layers (cache, config.EXT_TO_DOMAIN) + stdlib; the daemon client is import
 command. Acyclic; the facade re-exports WRIT_FEEDBACK_URL + cmd_auto_feedback.
 """
 
+import hashlib
 import json
 import os
 import sys
+import time
 
 from writ.session.cache import _read_cache, mutate_cache
 from writ.session.config import EXT_TO_DOMAIN, PREFIX_TO_DOMAIN, UNIVERSAL_DOMAINS
 
 
 WRIT_FEEDBACK_URL = "http://localhost:8765/feedback"
+
+# A stored pending batch older than this is not resent: the server keeps its batch
+# record for FEEDBACK_BATCH_TTL_DAYS (30), so a resend inside this age is always
+# answered as a replay rather than applied again.
+FEEDBACK_RESEND_MAX_AGE_DAYS = 7
 
 
 def cmd_auto_feedback(session_id: str) -> None:
@@ -26,14 +33,18 @@ def cmd_auto_feedback(session_id: str) -> None:
     - If analysis failed: negative feedback for loaded rules whose domain matches
       the failed file domains (rules were present but didn't prevent the error).
     - Only send feedback once per rule per session (tracked via feedback_sent).
+    - A batch delivered but never answered is stored in feedback_pending_batches and
+      resent, with the same batch_id and signals, before any new queue.
     """
     cache = _read_cache(session_id)
     rules = cache.get("loaded_rule_ids", [])
     results = cache.get("analysis_results", {})
     already_sent = set(cache.get("feedback_sent", []))
     # A batch that was delivered but never answered may have been applied; its rules
-    # are never resent (a resend could count them twice), only reported.
+    # never join a new queue. They are resent only as the same stored batch (the server
+    # answers a replayed batch_id without applying it again), or only reported.
     unconfirmed = set(cache.get("feedback_unconfirmed", []))
+    pending = list(cache.get("feedback_pending_batches", []))
 
     if not rules or not results:
         return
@@ -44,20 +55,44 @@ def cmd_auto_feedback(session_id: str) -> None:
         rules, already_sent | unconfirmed, rule_domain_map, pass_domains, fail_domains,
     )
     previously_sent = set(already_sent)
-    outcome = _send_feedback(feedback_queue, already_sent)
+    client = None
+    resend = {"resolved": set(), "done": set(), "expired": set(), "stop": False,
+              "delivered": False}
+    if pending:
+        client = _daemon_client()
+        resend = _resend_pending(client, pending, time.time())
+    if resend["stop"]:
+        outcome = {"unconfirmed": [], "not_found": [], "transport": "none", "pending": None}
+    else:
+        outcome = _send_feedback(feedback_queue, already_sent, session_id, client)
+    if outcome["transport"] == "none" and resend["delivered"]:
+        outcome["transport"] = "batch"
     newly_sent = already_sent - previously_sent
     newly_unconfirmed = set(outcome["unconfirmed"])
+    resolved = set(resend["resolved"])
+    dropped = resend["done"] | resend["expired"]
+    new_pending = outcome["pending"]
 
     # Update cache with sent feedback. The correlation + network send above ran
     # unlocked (never hold the per-session lock across a POST); only the write-back
     # takes the lock, merging onto the FRESH cache so no other field is clobbered.
-    if newly_sent or newly_unconfirmed:
+    final_unconfirmed = (unconfirmed | newly_unconfirmed) - resolved
+    if newly_sent or newly_unconfirmed or resolved or dropped or new_pending:
         with mutate_cache(session_id) as fresh:
-            if newly_sent:
-                fresh["feedback_sent"] = sorted(set(fresh.get("feedback_sent", [])) | already_sent)
-            if newly_unconfirmed:
+            if newly_sent or resolved:
+                fresh["feedback_sent"] = sorted(
+                    set(fresh.get("feedback_sent", [])) | already_sent | resolved)
+            if newly_unconfirmed or resolved:
                 fresh["feedback_unconfirmed"] = sorted(
-                    set(fresh.get("feedback_unconfirmed", [])) | newly_unconfirmed)
+                    (set(fresh.get("feedback_unconfirmed", [])) | newly_unconfirmed) - resolved)
+            if dropped or new_pending:
+                kept = [b for b in fresh.get("feedback_pending_batches", [])
+                        if b.get("batch_id") not in dropped]
+                if new_pending and all(b.get("batch_id") != new_pending["batch_id"]
+                                       for b in kept):
+                    kept.append(new_pending)
+                fresh["feedback_pending_batches"] = kept
+            final_unconfirmed = set(fresh.get("feedback_unconfirmed", []))
 
     signals = dict(_dedupe_queue(feedback_queue))
     report = {
@@ -65,12 +100,21 @@ def cmd_auto_feedback(session_id: str) -> None:
         "positive": sum(1 for rid in newly_sent if signals.get(rid) == "positive"),
         "negative": sum(1 for rid in newly_sent if signals.get(rid) == "negative"),
         "skipped_already_sent": len(set(rules) & previously_sent),
-        "unconfirmed": len(newly_unconfirmed),
+        "unconfirmed": len(final_unconfirmed),
+        "resolved": len(resolved),
         "not_found": len(outcome["not_found"]),
         "transport": outcome["transport"],
     }
     json.dump(report, sys.stdout)
     sys.stdout.write("\n")
+
+
+def _batch_id(session_id: str, queue: list[tuple[str, str]]) -> str:
+    """Content-addressed id of one batch: sha256 over the session id and the sorted
+    rule_id:signal pairs, hex. The session id is hashed in so two sessions that send
+    identical feedback are not answered as each other's replay."""
+    parts = [session_id] + sorted(f"{rid}:{signal}" for rid, signal in queue)
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
 
 def _classify_file_domains(results: dict) -> tuple[set[str], set[str]]:
@@ -157,29 +201,91 @@ def _daemon_client():
     return writ_daemon_client
 
 
-def _send_feedback(feedback_queue: list[tuple[str, str]], already_sent: set[str]) -> dict:
+def _post_batch(client, batch_id: str, queue: list[tuple[str, str]]) -> tuple[int, str, bool]:
+    return client.post_json_outcome(
+        "/feedback/batch",
+        {"batch_id": batch_id,
+         "signals": [{"rule_id": rid, "signal": signal} for rid, signal in queue]},
+        timeout=1.0,
+    )
+
+
+def _recorded_ids(status: int, text: str, queued: set[str]) -> tuple[list, list] | None:
+    """(recorded, not_found) ids of `queued` from an answer that lists what was recorded,
+    or None for anything else (error body, 422, 5xx, no answer): nothing was applied."""
+    if status != 200:
+        return None
+    try:
+        body = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(body, dict) or not isinstance(body.get("recorded"), list):
+        return None
+    recorded = [rid for rid in body["recorded"] if rid in queued]
+    not_found = [rid for rid in body.get("not_found") or [] if rid in queued]
+    return recorded, not_found
+
+
+def _resend_pending(client, pending: list[dict], now: float) -> dict:
+    """Resend each stored batch, oldest first, as its own POST with its stored batch_id
+    and signals. An answer listing what was recorded resolves it; any other answer keeps
+    it pending, and so does 404/405 (per-rule sends have no idempotency). Not delivered
+    keeps it pending and stops this run's sending. A batch older than the resend age is
+    dropped unsent (its server record may be pruned) and its ids stay unconfirmed.
+
+    Returns {"resolved": ids, "done": batch_ids, "expired": batch_ids, "stop": bool,
+    "delivered": bool}.
+    """
+    out = {"resolved": set(), "done": set(), "expired": set(), "stop": False,
+           "delivered": False}
+    max_age = FEEDBACK_RESEND_MAX_AGE_DAYS * 86400
+    for batch in sorted(pending, key=lambda b: b.get("queued_at") or 0):
+        batch_id = batch.get("batch_id")
+        queue = [(rid, signal) for rid, signal in batch.get("signals") or []]
+        if not batch_id or not queue:
+            continue
+        if now - float(batch.get("queued_at") or 0) > max_age:
+            out["expired"].add(batch_id)
+            continue
+        status, text, delivered = _post_batch(client, batch_id, queue)
+        if not delivered:
+            out["stop"] = True
+            break
+        out["delivered"] = True
+        answered = _recorded_ids(status, text, {rid for rid, _ in queue})
+        if answered is None:
+            continue
+        recorded, not_found = answered
+        out["resolved"].update(recorded)
+        out["resolved"].update(not_found)
+        out["done"].add(batch_id)
+    return out
+
+
+def _send_feedback(feedback_queue: list[tuple[str, str]], already_sent: set[str],
+                   session_id: str = "", client=None) -> dict:
     """POST the de-duplicated queue as ONE /feedback/batch, marking confirmed rules in
     `already_sent` (mutated in place).
 
     Only an answer that lists what was recorded confirms anything: recorded plus
     not_found are marked sent. An error body, 422 or 5xx marks nothing (the server
     applied nothing, the next run resends). Not delivered marks nothing. Delivered with
-    no answer returns every queued id as unconfirmed, never sent: the batch may have
-    been applied, so resending could count it twice. 404/405 is a daemon that predates
-    the route, and gets the per-rule /feedback loop.
+    no answer returns every queued id as unconfirmed, never sent, plus the batch itself
+    as `pending`, so a later run resends it under the same batch_id and the server
+    answers the replay without applying it twice. 404/405 is a daemon that predates the
+    route, and gets the per-rule /feedback loop.
 
-    Returns {"unconfirmed": [ids], "not_found": [ids], "transport": batch|legacy|none}.
+    Returns {"unconfirmed": [ids], "not_found": [ids], "transport": batch|legacy|none,
+    "pending": {"batch_id", "signals", "queued_at"} | None}.
     """
     queue = _dedupe_queue(feedback_queue)
-    result: dict = {"unconfirmed": [], "not_found": [], "transport": "none"}
+    result: dict = {"unconfirmed": [], "not_found": [], "transport": "none", "pending": None}
     if not queue:
         return result
-    client = _daemon_client()
-    status, text, delivered = client.post_json_outcome(
-        "/feedback/batch",
-        {"signals": [{"rule_id": rid, "signal": signal} for rid, signal in queue]},
-        timeout=1.0,
-    )
+    if client is None:
+        client = _daemon_client()
+    batch_id = _batch_id(session_id, queue)
+    status, text, delivered = _post_batch(client, batch_id, queue)
     if status in (404, 405):
         result["transport"] = "legacy"
         _send_feedback_per_rule(client, queue, already_sent)
@@ -189,18 +295,15 @@ def _send_feedback(feedback_queue: list[tuple[str, str]], already_sent: set[str]
     if status == 0:
         if delivered:
             result["unconfirmed"] = [rid for rid, _ in queue]
+            result["pending"] = {"batch_id": batch_id,
+                                 "signals": [[rid, signal] for rid, signal in queue],
+                                 "queued_at": time.time()}
         return result
-    if status != 200:
+    answered = _recorded_ids(status, text, {rid for rid, _ in queue})
+    if answered is None:
         return result
-    try:
-        body = json.loads(text)
-    except ValueError:
-        return result
-    if not isinstance(body, dict) or not isinstance(body.get("recorded"), list):
-        return result
-    queued = {rid for rid, _ in queue}
-    not_found = [rid for rid in body.get("not_found") or [] if rid in queued]
-    already_sent.update(rid for rid in body["recorded"] if rid in queued)
+    recorded, not_found = answered
+    already_sent.update(recorded)
     already_sent.update(not_found)
     result["not_found"] = not_found
     return result

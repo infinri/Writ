@@ -320,22 +320,136 @@ class TestBenignOneLinersStaySilent:
 
 
 # --------------------------------------------------------------------------- #
-# 4b. the cost of the fix, stated instead of discovered
+# 4b. item A (plan f7fc2b37-9a53-4011-a69f-e6b97f5e45fe): `open(<literal>)` and
+# `open(<literal>, 'r'|'rt'|'rb')` in inline interpreter source is a READ, and is
+# no longer gated; any other mode, any keyword form, any non-literal argument, and
+# any method call spelled `X.open(...)` stays gated exactly as before. RED at HEAD:
+# READ_OPEN_MODES / READ_OPEN_CALL do not exist yet, so every one-liner below is
+# still gated like a write.
 # --------------------------------------------------------------------------- #
-class TestAcceptedFalsePositives:
-    """These commands only READ, and they are no longer silent. That is the deliberate
-    trade: telling a write from a read inside interpreter source is a parser arms race,
-    and the alternative to over-refusing is the silent write this fix exists to close.
-    Recorded as tests so the cost is visible to whoever changes this next, rather than
-    turning up as a surprise in someone's session."""
+class TestReadOnlyOpenIsNotAWrite:
+    """`open(<literal>)` and `open(<literal>, 'r'|'rt'|'rb')` are reads, and the
+    write gate must not treat them as writes: not blocked, AND the extractor must
+    yield no target for them (the allow is a genuine miss on the scan, not the
+    exemption logic reused from elsewhere)."""
 
     @pytest.mark.parametrize("cmd", [
         """python3 -c "print(open('src/x.py').read())" """,
         """python3 -c "import json; print(json.load(open('config.json')))" """,
+        """python3 -c "open('src/x.py','rb').read()" """,
+        """python3 -c 'print(open("src/x.py", "rt").read())'""",
+    ], ids=["bare-read", "load-open-config", "rb-mode", "rt-mode-mixed-quotes"])
+    def test_not_blocked(self, gate, cmd):
+        assert _run_hook(gate, cmd) is None, cmd
+
+    @pytest.mark.parametrize("cmd, path", [
+        ("""python3 -c "print(open('src/x.py').read())" """, "src/x.py"),
+        ("""python3 -c "import json; print(json.load(open('config.json')))" """, "config.json"),
+        ("""python3 -c "open('src/x.py','rb').read()" """, "src/x.py"),
+        ("""python3 -c 'print(open("src/x.py", "rt").read())'""", "src/x.py"),
+    ], ids=["bare-read", "load-open-config", "rb-mode", "rt-mode-mixed-quotes"])
+    def test_no_target_is_extracted_the_allow_is_a_genuine_miss(self, gate, cmd, path):
+        rows = _extract(cmd, str(gate.proj))
+        assert ("local", str(gate.proj / path)) not in rows, (
+            f"{cmd!r} still produced a target for {path!r}: {rows!r}"
+        )
+
+    def test_a_heredoc_body_reading_a_file_is_not_blocked(self, gate):
+        cmd = "python3 <<'PY'\nprint(open('src/x.py').read())\nPY"
+        assert _run_hook(gate, cmd) is None, cmd
+
+
+class TestStillGatedReads:
+    """Everything the read-only allow must NOT widen to: a bare pipe into stdin
+    (no `open()` call at all -- `src/x.py` is a bare literal fed to python as the
+    program, and the approved rule keeps bare literals gated), a printed literal, a
+    dict key, a keyword-form mode, a method call spelled `X.open(...)`, and the
+    WRITE half of a mixed read/write one-liner."""
+
+    @pytest.mark.parametrize("cmd", [
         """cat src/x.py | python3 -""",
-    ])
-    def test_read_only_one_liner_naming_a_project_file_is_gated(self, gate, cmd):
+        """python3 -c "print('src/x.py')" """,
+        """python3 -c "d={'src/x.py': 1}" """,
+        """python3 -c "open('src/x.py', mode='r')" """,
+        """python3 -c "shelve.open('src/x.db')" """,
+    ], ids=["cat-pipe-bare-literal", "printed-literal", "dict-key",
+            "keyword-mode-not-matched", "method-call-not-bare-open"])
+    def test_still_blocked(self, gate, cmd):
         assert _blocked(_run_hook(gate, cmd)), cmd
+
+    def test_mixed_read_and_write_one_liner_gates_only_the_write_half(self, gate):
+        cmd = """python3 -c "d=open('a.json').read(); open('src/x.py','w').write(d)" """
+        out = _run_hook(gate, cmd)
+        assert _blocked(out), f"the write half must still be gated: {out!r}"
+        assert os.path.basename("src/x.py") in out.get("permissionDecisionReason", "")
+        rows = _extract(cmd, str(gate.proj))
+        assert ("local", str(gate.proj / "a.json")) not in rows, (
+            f"the read half must not be a target: {rows!r}"
+        )
+        assert ("local", str(gate.proj / "src" / "x.py")) in rows, (
+            f"the write half must still be a target: {rows!r}"
+        )
+
+    @pytest.mark.parametrize("mode", ["w", "a", "x", "r+", "wb", "w+"])
+    def test_every_other_open_mode_stays_blocked(self, gate, mode):
+        cmd = f"""python3 -c "open('src/x.py', '{mode}')" """
+        assert _blocked(_run_hook(gate, cmd)), cmd
+
+
+class TestReadOpenMutationProofs:
+    """Same technique as TestAntiVacuity: replace one production constant in the
+    extractor's source text and prove the boundary moves for exactly the expected
+    reason. RED at HEAD: READ_OPEN_MODES / READ_OPEN_CALL do not exist yet, so the
+    signature checks below fail outright rather than merely being vacuous."""
+
+    MODES_SIGNATURE = 'READ_OPEN_MODES = frozenset({"r", "rt", "rb"})'
+    CALL_SIGNATURE = "READ_OPEN_CALL = re.compile("
+
+    def test_widening_read_open_modes_to_include_w_lets_a_write_escape(self, gate):
+        src = _extractor_src()
+        assert self.MODES_SIGNATURE in src, (
+            "READ_OPEN_MODES moved or is not spelled exactly this; this test is "
+            "now vacuous and must be re-pinned to the new spelling"
+        )
+        mutated = src.replace(
+            self.MODES_SIGNATURE,
+            'READ_OPEN_MODES = frozenset({"r", "rt", "rb", "w"})',
+        )
+        cmd = """python3 -c "open('src/x.py','w')" """
+        target = ("local", str(gate.proj / "src" / "x.py"))
+        assert target not in _extract(cmd, str(gate.proj), mutated), (
+            "widening READ_OPEN_MODES to include 'w' let a write mode escape the scan"
+        )
+        assert target in _extract(cmd, str(gate.proj)), (
+            "the real, unmutated source must still gate this write"
+        )
+
+    def test_a_read_open_call_that_never_matches_gates_the_read_only_one_liner_again(
+        self, gate
+    ):
+        src = _extractor_src()
+        assert self.CALL_SIGNATURE in src, (
+            "READ_OPEN_CALL moved or is not spelled exactly this; this test is "
+            "now vacuous and must be re-pinned to the new spelling"
+        )
+        start = src.index(self.CALL_SIGNATURE)
+        # The assignment's closing paren is the first line, after `start`, that is
+        # exactly `)` (module-level constants in this file have no continuation
+        # after the statement closes), which is robust to how the multi-line
+        # pattern literal itself is wrapped.
+        close = src.index("\n)", start)
+        end = close + len("\n)")
+        never_matches_source = 'READ_OPEN_CALL = re.compile(r"(?!)")'
+        mutated = src[:start] + never_matches_source + src[end:]
+        cmd = """python3 -c "print(open('src/x.py').read())" """
+        target = ("local", str(gate.proj / "src" / "x.py"))
+        assert target not in _extract(cmd, str(gate.proj)), (
+            "the real, unmutated source must not gate a read-only one-liner"
+        )
+        assert target in _extract(cmd, str(gate.proj), mutated), (
+            "a READ_OPEN_CALL that never matches must make the read-only one-liner "
+            "gated again -- proving the allow comes from the new strip and nothing else"
+        )
 
 
 # --------------------------------------------------------------------------- #

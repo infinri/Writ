@@ -58,4 +58,4 @@ The hook-facing dispatcher; hooks call it when the daemon is unreachable. Simple
 | Kind | Subcommands |
 |---|---|
 | simple | `aggregate-findings`, `auto-feedback`, `check-escalation`, `clear-pending-violations`, `clear-rules-for-compaction`, `coverage`, `coverage-map`, `coverage-rollup`, `current-phase`, `lens`, `pending-violations`, `read`, `reset-after-compaction`, `staleness-check`, `synthesis-gate`, `triangulation-gate` |
-| complex | `add-pending-violation`, `advance-phase`, `can-read-code`, `can-write`, `carry-forward-mode`, `format`, `invalidate-gate`, `metrics`, `mode`, `partition-scope`, `record-analysis`, `reopen-planning`, `scope-estimate`, `should-skip`, `update` |
+| complex | `add-pending-violation`, `advance-phase`, `can-read-code`, `can-write`, `carry-forward-mode`, `format`, `invalidate-gate`, `metrics`, `mode`, `partition-scope`, `record-analysis`, `reopen-planning`, `rollup-subagent`, `scope-estimate`, `should-skip`, `update` |

@@ -207,6 +207,79 @@ class TestHallucinationIsStillCaught:
         assert err is not None and REAL_ALWAYS_ON in err
 
 
+class TestHallucinationIsCaughtForEveryBulletShape:
+    """Plan f7fc2b37-9a53-4011-a69f-e6b97f5e45fe, item 2: `_cited_rule_ids` reads a
+    cited id only from the LEADING position of each ## Rules Applied bullet. The
+    available set is WIDENED (bullet-leading ids no longer fall back to a
+    whole-section scan when any exist); the invented-id-in-leading-position check
+    must still catch every one of these shapes. RED at HEAD is not the point of
+    this class (today's whole-section `_CITED_ID_RE.findall` already catches an
+    invented id anywhere in the section); it is a REGRESSION GUARD that must stay
+    green once bullet-leading extraction lands.
+    """
+
+    @pytest.mark.parametrize("bullet_fmt", [
+        "- **{id}** -- why it applies here.",
+        "- [{id}] why it applies here.",
+        "- {id} -- why it applies here.",
+        "- {id}: why it applies here.",
+        "1. **{id}** -- why it applies here.",
+        "2) {id} why it applies here.",
+    ], ids=[
+        "dash-bold", "dash-bracket", "dash-plain", "dash-colon",
+        "numbered-dot-bold", "numbered-paren",
+    ])
+    def test_invented_id_in_leading_position_is_rejected_and_named(
+        self, project, sid, bullet_fmt
+    ):
+        _write_cache(sid, mode="work", always_on_rule_ids=[REAL_ALWAYS_ON])
+        section = bullet_fmt.format(id=INVENTED)
+        plan = (
+            "# Plan: something\n\n"
+            "## Files\n\n"
+            "- `writ/example.py` (modify) -- because the thing needs doing.\n\n"
+            "## Analysis\n\n"
+            "The what and the why, with contracts and integration points.\n\n"
+            "## Rules Applied\n\n"
+            f"{section}\n\n"
+            "## Capabilities\n\n"
+            "- [ ] the behavior is testable\n"
+        )
+        (project / "plan.md").write_text(plan)
+        err = _validate(project, sid)
+        assert err is not None and "hallucinated" in err, (
+            f"{bullet_fmt!r} must still be rejected: got {err!r}"
+        )
+        assert INVENTED in err, f"{bullet_fmt!r}: the invented id must be named in {err!r}"
+
+
+class TestALeadingIdWithAPhaseIdInProseIsAccepted:
+    """The defect this item fixes: an id-shaped word in PROSE after a valid
+    bullet-leading citation (a Phase id explaining a decision, e.g. PHA-FANOUT-004)
+    must no longer be reported as a hallucinated rule. RED at HEAD: today's
+    whole-section `_CITED_ID_RE.findall` finds PHA-FANOUT-004 too and reports it as
+    hallucinated even though the bullet's own leading id was loaded."""
+
+    def test_a_loaded_leading_id_with_a_phase_id_in_prose_is_accepted(self, project, sid):
+        _write_cache(sid, mode="work", loaded_rule_ids=["RANKED-001"])
+        plan = (
+            "# Plan: something\n\n"
+            "## Files\n\n"
+            "- `writ/example.py` (modify) -- because the thing needs doing.\n\n"
+            "## Analysis\n\n"
+            "The what and the why, with contracts and integration points.\n\n"
+            "## Rules Applied\n\n"
+            "- **RANKED-001** -- applies because of the work done in PHA-FANOUT-004\n\n"
+            "## Capabilities\n\n"
+            "- [ ] the behavior is testable\n"
+        )
+        (project / "plan.md").write_text(plan)
+        assert _validate(project, sid) is None, (
+            "a Phase id (or any id-shaped word) sitting in PROSE after a valid "
+            "leading citation must not be reported as hallucinated"
+        )
+
+
 class TestRouteWiring:
     """A unit-passing recording command is worthless if channel 2 never calls it."""
 

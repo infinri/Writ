@@ -3,12 +3,20 @@
 Moved verbatim from the former writ/graph/db.py (Wave 2 mixin split); methods read self._driver / self._database set by Neo4jConnection.__init__."""
 from __future__ import annotations
 
+import json
+
 from writ.frequency import (
     DEFAULT_GRADUATION_RATIO_MIN,
     DEFAULT_GRADUATION_THRESHOLD,
     evaluate_graduation,
 )
 from writ.graph.db._common import _node_write_spec
+
+# FeedbackBatch replay records live this long; the client stops resending a pending batch
+# well inside it (writ.session.feedback.FEEDBACK_RESEND_MAX_AGE_DAYS), so a resend always
+# finds its record. Each applied batch prunes at most FEEDBACK_BATCH_PRUNE_LIMIT expired ones.
+FEEDBACK_BATCH_TTL_DAYS = 30
+FEEDBACK_BATCH_PRUNE_LIMIT = 100
 
 
 class RuleStoreMixin:
@@ -171,6 +179,7 @@ class RuleStoreMixin:
         signals: list[tuple[str, str]],
         threshold: int = DEFAULT_GRADUATION_THRESHOLD,
         ratio_min: float = DEFAULT_GRADUATION_RATIO_MIN,
+        batch_id: str | None = None,
     ) -> dict:
         """Apply a batch of (rule_id, "positive"|"negative") signals in ONE transaction.
 
@@ -189,6 +198,13 @@ class RuleStoreMixin:
 
         North Star, as evaluate_and_flip_graduation: never promotes authority, never
         writes bible/ source; frequency.evaluate_graduation decides the crossing.
+
+        With `batch_id`, the same transaction first MERGEs (:FeedbackBatch {batch_id}).
+        A stored result means an earlier transaction committed this batch: it is
+        returned with `replayed: true` and nothing else runs. Otherwise the batch is
+        applied, its result stored on the record, and up to FEEDBACK_BATCH_PRUNE_LIMIT
+        records older than FEEDBACK_BATCH_TTL_DAYS are deleted. The record and the
+        increments commit or roll back together, so "record exists" means "applied".
         """
         if not signals:
             return {"recorded": [], "not_found": [], "graduation_pending": [], "applied": 0}
@@ -198,7 +214,16 @@ class RuleStoreMixin:
             row[0 if signal == "positive" else 1] += 1
         rows = [{"rule_id": rid, "pos": p, "neg": n} for rid, (p, n) in counts.items()]
 
-        async def _work(tx) -> tuple[list[str], list[str]]:
+        async def _work(tx) -> dict:
+            if batch_id is not None:
+                merged = await tx.run(
+                    "MERGE (b:FeedbackBatch {batch_id: $batch_id}) "
+                    "ON CREATE SET b.created_at = datetime() RETURN b.result AS stored",
+                    batch_id=batch_id,
+                )
+                rec = await merged.single()
+                if rec is not None and rec["stored"] is not None:
+                    return {**json.loads(rec["stored"]), "replayed": True}
             result = await tx.run(
                 "UNWIND $rows AS row MATCH (r:Rule {rule_id: row.rule_id}) "
                 "SET r.times_seen_positive = coalesce(r.times_seen_positive, 0) + row.pos, "
@@ -227,16 +252,27 @@ class RuleStoreMixin:
                     ids=crossed,
                 )
                 flipped = [rec["rule_id"] async for rec in flip]
-            return recorded, flipped
+            answer = {
+                "recorded": recorded,
+                "not_found": [rid for rid in counts if rid not in recorded],
+                "graduation_pending": flipped,
+                "applied": len(recorded),
+            }
+            if batch_id is not None:
+                await tx.run(
+                    "MATCH (b:FeedbackBatch {batch_id: $batch_id}) SET b.result = $result",
+                    batch_id=batch_id, result=json.dumps(answer),
+                )
+                await tx.run(
+                    "MATCH (b:FeedbackBatch) "
+                    "WHERE b.created_at < datetime() - duration({days: $ttl}) "
+                    "WITH b LIMIT $limit DELETE b",
+                    ttl=FEEDBACK_BATCH_TTL_DAYS, limit=FEEDBACK_BATCH_PRUNE_LIMIT,
+                )
+            return answer
 
         async with self._driver.session(database=self._database) as session:
-            recorded, flipped = await session.execute_write(_work)
-        return {
-            "recorded": recorded,
-            "not_found": [rid for rid in counts if rid not in recorded],
-            "graduation_pending": flipped,
-            "applied": len(recorded),
-        }
+            return await session.execute_write(_work)
 
     async def delete_rule(self, rule_id: str) -> bool:
         """Delete a Rule node and all its edges. Returns True if a node was deleted.

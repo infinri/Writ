@@ -155,6 +155,15 @@ class SchemaStoreMixin:
             "FOR (n:Memory) REQUIRE (n.name, n.project) IS UNIQUE",
             "CREATE INDEX memory_project IF NOT EXISTS "
             "FOR (n:Memory) ON (n.project)",
+            # Feedback batch replay records: apply_feedback_batch MERGEs on batch_id
+            # inside the batch's own transaction. Same race as the records above: the
+            # constraint makes a concurrent send of one batch block on the index lock,
+            # then MATCH the committed record and replay instead of applying twice.
+            # created_at backs the bounded TTL prune.
+            "CREATE CONSTRAINT feedbackbatch_batch_id_unique IF NOT EXISTS "
+            "FOR (n:FeedbackBatch) REQUIRE n.batch_id IS UNIQUE",
+            "CREATE INDEX feedbackbatch_created_at IF NOT EXISTS "
+            "FOR (n:FeedbackBatch) ON (n.created_at)",
         ])
         blocked: list[str] = []
         async with self._driver.session(database=self._database) as session:

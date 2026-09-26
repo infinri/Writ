@@ -1487,7 +1487,7 @@ _FRICTION_APPEND="$_WRIT_LIB_DIR/friction-append.py"
 writ_critical() {
   local component="${1:-unknown}" message="${2:-}" session="${3:-unknown}"
   printf '[WRIT CRITICAL] %s: %s\n' "$component" "$message" >&2
-  local extra
+  local extra=""
   if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1; then
     extra=$(jq -n -c --arg component "$component" --arg message "$message" \
       '{component: $component, message: $message, severity: "critical"}' 2>/dev/null) || extra=""

@@ -81,6 +81,25 @@ _PLAN_TEMPLATE_REF = 'templates/plan-template.md'
 # widen what is citable -- the check below still admits only ids the session loaded.
 _CITED_ID_RE = re.compile(r'ABS(?:-[A-Z0-9]+)+|[A-Z][A-Z0-9]+(?:-[A-Z][A-Z0-9]+)*-\d{3}')
 
+# A citation is the id that LEADS a Rules Applied bullet ('- **ID** -- why', '- [ID] why',
+# '- ID: why', '1. **ID**', '2) ID'). An id-shaped word in the bullet's prose (a Phase id
+# explaining a decision) is not a citation; reading the whole section reported it as a
+# hallucinated rule and spent the user's approval. Same two id shapes as _CITED_ID_RE.
+_BULLET_CITED_ID_RE = re.compile(
+    r'^\s*(?:[-*+]|\d+[.)])\s+(?:\*\*|\[|`)?\s*'
+    r'(ABS(?:-[A-Z0-9]+)+|[A-Z][A-Z0-9]+(?:-[A-Z][A-Z0-9]+)*-\d{3})',
+    re.MULTILINE)
+
+
+def _cited_rule_ids(section_text: str) -> tuple[set, bool]:
+    """The bullet-leading ids of a Rules Applied section, and whether any were found.
+
+    Only the first id of each bullet line counts. A section with no bullet-leading id
+    (prose-only) returns (set(), False) so the caller keeps its whole-section scan.
+    """
+    ids = set(_BULLET_CITED_ID_RE.findall(section_text))
+    return ids, bool(ids)
+
 
 def _validate_citations(cited: set, available: set) -> set:
     """INV-2: the mode-agnostic citation-hallucination detector.
@@ -149,13 +168,16 @@ def _validate_phase_a(project_root: str, session_id: str = "") -> str | None:
         rest = content[section_start:]
         next_section = re.search(r'^## ', rest, re.MULTILINE)
         section_text = rest[:next_section.start()] if next_section else rest
-        has_rule_id = bool(_CITED_ID_RE.search(section_text))
+        bullet_ids, has_bullet_ids = _cited_rule_ids(section_text)
+        # Prose-only sections keep the whole-section scan, so no section that validates
+        # today starts failing; bullet-form sections read only the leading ids.
+        has_rule_id = has_bullet_ids or bool(_CITED_ID_RE.search(section_text))
         has_no_match = bool(re.search(r'[Nn]o matching rules', section_text))
         if not has_rule_id and not has_no_match:
             missing.append('rule ID or "No matching rules" in ## Rules Applied')
         # Validate cited rule IDs against session's loaded_rule_ids
         elif has_rule_id and session_id:
-            cited_ids = set(_CITED_ID_RE.findall(section_text))
+            cited_ids = bullet_ids if has_bullet_ids else set(_CITED_ID_RE.findall(section_text))
             cache = _read_cache(session_id)
             # Collect all rule IDs loaded across all phases
             loaded_ids = set(cache.get("loaded_rule_ids", []))

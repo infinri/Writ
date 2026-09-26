@@ -32,6 +32,7 @@ import pytest
 # repo's own gate artifacts.
 from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
 
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 HOOK = os.path.abspath(
     os.path.join(
         os.path.dirname(__file__), os.pardir, "hooks", "scripts", "writ-subagent-stop.sh"
@@ -97,6 +98,40 @@ def _rollup_cli(cache_dir, agent_id, parent_id):
         [sys.executable, HELPER, "rollup-subagent", agent_id, parent_id],
         env=_env(cache_dir), capture_output=True, text=True, timeout=20,
     )
+
+
+def _seed_child_with_cache_source(cache_dir, agent_id, parent_id, cache_source):
+    """A real python subprocess calling the real `seed_subagent_cache`, never a
+    hand-written cache file: `declared_scope=None` means no role-scope fetch, so
+    nothing reaches port 8765. Parameters passed through argv (never interpolated
+    into source text) so an id can never break the script it names."""
+    script = (
+        "import sys\n"
+        "sys.path.insert(0, sys.argv[4])\n"
+        "from writ.session.subagent_seed import seed_subagent_cache\n"
+        "ok = seed_subagent_cache(sys.argv[1], sys.argv[2], cache_source=sys.argv[3],\n"
+        "                        role='writ-planner', role_source='envelope',\n"
+        "                        declared_scope=None, default_mode='work')\n"
+        "assert ok is True, f'seed_subagent_cache returned {ok!r}'\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script, agent_id, parent_id, cache_source, REPO_ROOT],
+        env=_env(cache_dir), capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def _seed_child_as_start(cache_dir, agent_id, parent_id):
+    """Plan f7fc2b37-9a53-4011-a69f-e6b97f5e45fe, item 5: the ONLY way a child's
+    cache carries `cache_source: subagent_start` -- the real seeder, run for real,
+    never a hand-written cache file standing in for it."""
+    _seed_child_with_cache_source(cache_dir, agent_id, parent_id, "subagent_start")
+
+
+def _seed_child_as_lazy(cache_dir, agent_id, parent_id):
+    """The lazy-seed path: a hook noticed an agent nobody governed and seeded it
+    anyway. Its cache carries `cache_source: lazy_seed`, never `subagent_start`."""
+    _seed_child_with_cache_source(cache_dir, agent_id, parent_id, "lazy_seed")
 
 
 def _run_stop_hook(cache_dir, *, agent_id, parent_session_id=..., agent_type="writ-planner"):
@@ -168,10 +203,9 @@ class TestStopHookUnionsExaminedFilesIntoParent:
         _seed_mode(tmp_path, "parent-11", "investigate")
         _update(tmp_path, "parent-11", "--add-pretool-file", "/already/examined/by-parent.py")
 
-        _seed_mode(tmp_path, "child-11", "investigate")
+        _seed_child_as_start(tmp_path, "child-11", "parent-11")
         _update(
             tmp_path, "child-11",
-            "--parent-session-id", "parent-11", "--is-subagent", "true",
             "--add-pretool-file", "/child/opened.py",
             "--add-citation", json.dumps({"artifact_type": "file", "ref": "/child/cited.py"}),
         )
@@ -196,10 +230,9 @@ class TestStopHookUnionsRuleIdsIntoSubagentRuleIds:
         parent_loaded_before = _read(tmp_path, "parent-12")["loaded_rule_ids"]
         assert parent_loaded_before == ["PARENT-OWN-001"]
 
-        _seed_mode(tmp_path, "child-12", "investigate")
+        _seed_child_as_start(tmp_path, "child-12", "parent-12")
         _update(
             tmp_path, "child-12",
-            "--parent-session-id", "parent-12", "--is-subagent", "true",
             "--add-rules", json.dumps([REAL_RULE]),
             "--add-always-on-rules", json.dumps([REAL_ALWAYS_ON]),
         )
@@ -222,10 +255,9 @@ class TestStopHookRollupIsIdempotent:
 
     def test_second_run_changes_nothing(self, tmp_path):
         _seed_mode(tmp_path, "parent-13", "investigate")
-        _seed_mode(tmp_path, "child-13", "investigate")
+        _seed_child_as_start(tmp_path, "child-13", "parent-13")
         _update(
             tmp_path, "child-13",
-            "--parent-session-id", "parent-13", "--is-subagent", "true",
             "--add-pretool-file", "/child/idem.py",
             "--add-rules", json.dumps([REAL_RULE]),
         )
@@ -286,12 +318,8 @@ class TestChildOfADifferentParent:
     def test_given_parent_is_untouched_via_the_hook(self, tmp_path):
         _seed_mode(tmp_path, "real-parent-16", "investigate")
         _seed_mode(tmp_path, "actual-parent-16", "investigate")
-        _seed_mode(tmp_path, "child-16", "investigate")
-        _update(
-            tmp_path, "child-16",
-            "--parent-session-id", "real-parent-16", "--is-subagent", "true",
-            "--add-pretool-file", "/child/misattributed.py",
-        )
+        _seed_child_as_start(tmp_path, "child-16", "real-parent-16")
+        _update(tmp_path, "child-16", "--add-pretool-file", "/child/misattributed.py")
 
         r = _run_stop_hook(tmp_path, agent_id="child-16", parent_session_id="actual-parent-16")
         assert r.returncode == 0, r.stderr
@@ -303,8 +331,7 @@ class TestChildOfADifferentParent:
     def test_rollup_subagent_cli_reports_skipped_not_child_of_parent(self, tmp_path):
         _seed_mode(tmp_path, "real-parent-16b", "investigate")
         _seed_mode(tmp_path, "actual-parent-16b", "investigate")
-        _seed_mode(tmp_path, "child-16b", "investigate")
-        _update(tmp_path, "child-16b", "--parent-session-id", "real-parent-16b")
+        _seed_child_as_start(tmp_path, "child-16b", "real-parent-16b")
 
         r = _rollup_cli(tmp_path, "child-16b", "actual-parent-16b")
         assert r.returncode == 0, r.stderr
@@ -317,8 +344,12 @@ class TestParentAbsent:
     skipped/parent_absent and does not create it."""
 
     def test_rollup_subagent_cli_reports_skipped_parent_absent(self, tmp_path):
-        _seed_mode(tmp_path, "child-17", "investigate")
-        _update(tmp_path, "child-17", "--parent-session-id", "never-existed-parent-17")
+        # seed_subagent_cache's default_mode="work" lets this seed succeed even
+        # though "never-existed-parent-17" has no cache file at all (`_read_cache`
+        # of a missing file answers the empty default cache, with no mode to
+        # inherit): the child is genuinely start-seeded and genuinely linked to a
+        # parent id that never had a cache, which is exactly capability 17's case.
+        _seed_child_as_start(tmp_path, "child-17", "never-existed-parent-17")
 
         assert not _cache_exists(tmp_path, "never-existed-parent-17")
         r = _rollup_cli(tmp_path, "child-17", "never-existed-parent-17")
@@ -349,12 +380,8 @@ class TestPlanGateAcceptsRolledUpChildRuleIds:
         assert before is not None and "hallucinated" in before
         assert "CHILD-ONLY-001" in before
 
-        _seed_mode(tmp_path, "child-18", "investigate")
-        _update(
-            tmp_path, "child-18",
-            "--parent-session-id", "parent-18", "--is-subagent", "true",
-            "--add-rules", json.dumps(["CHILD-ONLY-001"]),
-        )
+        _seed_child_as_start(tmp_path, "child-18", "parent-18")
+        _update(tmp_path, "child-18", "--add-rules", json.dumps(["CHILD-ONLY-001"]))
         r = _run_stop_hook(tmp_path, agent_id="child-18", parent_session_id="parent-18")
         assert r.returncode == 0, r.stderr
 
@@ -373,12 +400,8 @@ class TestPlanGateStillRejectsForeignAndInventedIds:
         _seed_mode(tmp_path, "parent-19", "work")
         _update(tmp_path, "parent-19", "--add-rules", json.dumps(["PARENT-19-RANKED-001"]))
         _seed_mode(tmp_path, "other-parent-19", "work")
-        _seed_mode(tmp_path, "other-child-19", "investigate")
-        _update(
-            tmp_path, "other-child-19",
-            "--parent-session-id", "other-parent-19", "--is-subagent", "true",
-            "--add-rules", json.dumps(["OTHER-PARENTS-CHILD-001"]),
-        )
+        _seed_child_as_start(tmp_path, "other-child-19", "other-parent-19")
+        _update(tmp_path, "other-child-19", "--add-rules", json.dumps(["OTHER-PARENTS-CHILD-001"]))
         r = _run_stop_hook(
             tmp_path, agent_id="other-child-19", parent_session_id="other-parent-19",
         )
@@ -400,3 +423,80 @@ class TestPlanGateStillRejectsForeignAndInventedIds:
         err = _validate_phase_a(project, "parent-19b")
         assert err is not None and "hallucinated" in err
         assert INVENTED in err
+
+
+class TestForgedParentLinkAloneDoesNotGrantRollup:
+    """Plan f7fc2b37-9a53-4011-a69f-e6b97f5e45fe, item 5: `writ-session.py update
+    --parent-session-id` is the FORGED shape -- anyone can set it, and it is not
+    `cache_source`, which only `seed_subagent_cache` ever writes. A child linked to
+    a parent ONLY that way (never seeded by the start hook) must be refused with
+    skipped/child_not_start_seeded, and the parent's evidence must be unchanged,
+    both through the CLI and through the real stop hook. RED at HEAD: the rollup
+    checks only parent_session_id equality, so a forged link merges freely."""
+
+    def test_forged_link_is_skipped_via_the_cli_and_leaves_the_parent_unchanged(
+        self, tmp_path
+    ):
+        _seed_mode(tmp_path, "parent-forged-cli", "investigate")
+        _seed_mode(tmp_path, "child-forged-cli", "investigate")
+        _update(
+            tmp_path, "child-forged-cli",
+            "--parent-session-id", "parent-forged-cli", "--is-subagent", "true",
+            "--add-pretool-file", "/child/forged.py",
+            "--add-rules", json.dumps([REAL_RULE]),
+        )
+
+        r = _rollup_cli(tmp_path, "child-forged-cli", "parent-forged-cli")
+        assert r.returncode == 0, r.stderr
+        result = json.loads(r.stdout)
+        assert result == {"status": "skipped", "reason": "child_not_start_seeded"}
+
+        parent = _read(tmp_path, "parent-forged-cli")
+        assert parent["pretool_queried_files"] == []
+        assert parent.get("subagent_rule_ids", []) == []
+
+    def test_forged_link_is_skipped_via_the_real_stop_hook_and_leaves_the_parent_unchanged(
+        self, tmp_path
+    ):
+        _seed_mode(tmp_path, "parent-forged-hook", "investigate")
+        _seed_mode(tmp_path, "child-forged-hook", "investigate")
+        _update(
+            tmp_path, "child-forged-hook",
+            "--parent-session-id", "parent-forged-hook", "--is-subagent", "true",
+            "--add-pretool-file", "/child/forged-hook.py",
+            "--add-rules", json.dumps([REAL_RULE]),
+        )
+
+        r = _run_stop_hook(
+            tmp_path, agent_id="child-forged-hook", parent_session_id="parent-forged-hook",
+        )
+        assert r.returncode == 0, r.stderr
+
+        parent = _read(tmp_path, "parent-forged-hook")
+        assert parent["pretool_queried_files"] == []
+        assert parent.get("subagent_rule_ids", []) == []
+
+
+class TestLazilySeededChildIsAlsoRefused:
+    """A lazily seeded child (the start hook never ran for it, cache_source ==
+    lazy_seed) is also refused, with the SAME reason: the plan's accepted
+    consequence is that this population's rollup is exactly the population whose
+    link Writ did not observe."""
+
+    def test_lazy_seed_child_is_skipped_with_child_not_start_seeded(self, tmp_path):
+        _seed_mode(tmp_path, "parent-lazy", "investigate")
+        _seed_child_as_lazy(tmp_path, "child-lazy", "parent-lazy")
+        _update(
+            tmp_path, "child-lazy",
+            "--add-pretool-file", "/child/lazy.py",
+            "--add-rules", json.dumps([REAL_RULE]),
+        )
+
+        r = _rollup_cli(tmp_path, "child-lazy", "parent-lazy")
+        assert r.returncode == 0, r.stderr
+        result = json.loads(r.stdout)
+        assert result == {"status": "skipped", "reason": "child_not_start_seeded"}
+
+        parent = _read(tmp_path, "parent-lazy")
+        assert parent["pretool_queried_files"] == []
+        assert parent.get("subagent_rule_ids", []) == []

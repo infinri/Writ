@@ -345,6 +345,75 @@ class TestValidatePhaseAAcceptsInjectedAbstractionIds:
 
 
 # ---------------------------------------------------------------------------
+# Plan f7fc2b37-9a53-4011-a69f-e6b97f5e45fe, item 2: the template's own bullet
+# shape (`- **<RULE-ID>** -- ...`), filled with a loaded id plus a prose id that
+# was never injected, must validate -- the prose id is not a bullet-leading
+# citation, so it is never reported as hallucinated. And an ABS id in leading
+# position is extracted and checked the same way a RULE-DOMAIN-NNN id is.
+# ---------------------------------------------------------------------------
+
+class TestTemplateBulletShapeToleratesAProseId:
+    def test_a_loaded_leading_id_with_an_uninjected_id_in_prose_validates(
+        self, tmp_path: Path
+    ) -> None:
+        from writ.session.approval_workflow import _validate_phase_a
+
+        sid = "test-plan-tmpl-bullet-prose"
+        _seed(sid, loaded_rule_ids=["TEMPLATE-LOADED-001"], loaded_rule_ids_by_phase={})
+        plan = (
+            "# Plan: template bullet shape\n\n"
+            "## Files\n\n- `writ/session/x.py` (create) -- adds x\n\n"
+            "## Analysis\n\nRationale text here.\n\n"
+            "## Rules Applied\n\n"
+            "- **TEMPLATE-LOADED-001** -- because of NEVER-INJECTED-999\n\n"
+            "## Capabilities\n\n- [ ] does x\n"
+        )
+        (tmp_path / "plan.md").write_text(plan)
+        error = _validate_phase_a(str(tmp_path), session_id=sid)
+        assert error is None, (
+            f"a prose id after a valid leading citation must not be reported as "
+            f"hallucinated: {error!r}"
+        )
+
+    def test_an_abs_id_in_leading_position_is_extracted_and_checked(
+        self, tmp_path: Path
+    ) -> None:
+        from writ.session.approval_workflow import _validate_phase_a
+
+        sid = "test-plan-tmpl-bullet-abs-leading"
+        _seed(sid, loaded_rule_ids=["ABS-TEMPLATE-BULLET-001"], loaded_rule_ids_by_phase={})
+        plan = (
+            "# Plan: template bullet shape, ABS id\n\n"
+            "## Files\n\n- `writ/session/x.py` (create) -- adds x\n\n"
+            "## Analysis\n\nRationale text here.\n\n"
+            "## Rules Applied\n\n"
+            "- **ABS-TEMPLATE-BULLET-001** -- covers the relevant pattern\n\n"
+            "## Capabilities\n\n- [ ] does x\n"
+        )
+        (tmp_path / "plan.md").write_text(plan)
+        assert _validate_phase_a(str(tmp_path), session_id=sid) is None
+
+    def test_an_invented_abs_id_in_leading_position_is_still_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        from writ.session.approval_workflow import _validate_phase_a
+
+        sid = "test-plan-tmpl-bullet-abs-invented"
+        _seed(sid, loaded_rule_ids=["ABS-TEMPLATE-BULLET-002"], loaded_rule_ids_by_phase={})
+        plan = (
+            "# Plan: template bullet shape, invented ABS id\n\n"
+            "## Files\n\n- `writ/session/x.py` (create) -- adds x\n\n"
+            "## Analysis\n\nRationale text here.\n\n"
+            "## Rules Applied\n\n"
+            "- **ABS-TEMPLATE-BULLET-999** -- never actually injected\n\n"
+            "## Capabilities\n\n- [ ] does x\n"
+        )
+        (tmp_path / "plan.md").write_text(plan)
+        error = _validate_phase_a(str(tmp_path), session_id=sid)
+        assert error is not None and "ABS-TEMPLATE-BULLET-999" in error
+
+
+# ---------------------------------------------------------------------------
 # [abs-4] end-to-end: injected abstraction -> loaded_rule_ids -> citable
 # ---------------------------------------------------------------------------
 

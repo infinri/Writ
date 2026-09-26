@@ -194,6 +194,12 @@ class TestRealFanoutSubprocessAgreesWithSynthesisGate:
         }))
         (cache_dir / f"writ-session-{child}.json").write_text(json.dumps({
             "session_id": child, "parent_session_id": lead,
+            # Plan f7fc2b37-9a53-4011-a69f-e6b97f5e45fe, item 5: rollup-subagent
+            # now trusts only a start-seeded child (cache_source == "subagent_start",
+            # the field only the start hook's seeder writes); a hand-written cache
+            # with no such field would be refused as child_not_start_seeded, so
+            # this hand-written fixture must carry it for the real rollup to merge.
+            "cache_source": "subagent_start",
             "pretool_queried_files": ["a.py", "b.py"], "citation_log": [],
         }))
         self._run(cache_dir, "rollup-subagent", child, lead)
