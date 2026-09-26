@@ -2042,7 +2042,11 @@ def doctor(
     if fix:
         for r in results:
             if r.status != "ok" and r.fixable and r.fix is not None:
-                r.fix()
+                try:
+                    r.fix()
+                except Exception as exc:
+                    typer.echo(f"fix failed: {r.name}: {exc}", err=True)
+                    continue
                 if not json_output:
                     typer.echo(f"repaired: {r.name}")
         results = doctor_mod.run_all_checks(opts)

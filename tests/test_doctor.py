@@ -627,6 +627,27 @@ class TestEmbeddingStack:
 class TestCorpusDrift:
     """check_corpus_drift: ok / warn; fix handle wraps reconcile."""
 
+    @pytest.fixture(autouse=True)
+    def _bible_dir_present(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr("writ.session.doctor._BIBLE_DIR", tmp_path)
+
+    def test_missing_bible_dir_warns_without_reconcile(
+        self, default_opts, tmp_path, monkeypatch
+    ) -> None:
+        # Regression: bible/ is untracked, so an install without it counted every
+        # graph node as drift and offered reconcile, which then refused and crashed --fix.
+        monkeypatch.setattr("writ.session.doctor._BIBLE_DIR", tmp_path / "absent")
+        monkeypatch.setattr(
+            "writ.session.doctor._detect_parity_violations",
+            lambda: [{"type": "Rule", "id": "DRIFT-001"}],
+        )
+        from writ.session.doctor import STATUS_WARN, check_corpus_drift
+        r = check_corpus_drift(default_opts)
+        assert r.status == STATUS_WARN
+        assert r.fixable is False
+        assert r.fix is None
+        assert "bible/ not found" in r.detail
+
     def test_empty_violations_returns_ok(self, default_opts, monkeypatch) -> None:
         monkeypatch.setattr(
             "writ.session.doctor._detect_parity_violations", lambda: []
@@ -1306,6 +1327,7 @@ class TestRunAllChecks:
             "writ.session.doctor._onnx_model_files_present", lambda: (True, True)
         )
         monkeypatch.setattr("writ.session.doctor._detect_parity_violations", lambda: [])
+        monkeypatch.setattr("writ.session.doctor._BIBLE_DIR", Path(__file__).resolve().parent)
         monkeypatch.setattr(
             "writ.session.doctor._bitbucket_creds_present", lambda: (True, True)
         )
@@ -1657,6 +1679,33 @@ class TestDoctorCommandFix:
         )
 
 
+    def test_failing_fix_does_not_stop_later_fixes(self) -> None:
+        # Regression: one fix raising (reconcile's empty-oracle ValueError) aborted
+        # the loop, so every later repair was silently skipped.
+        calls = []
+
+        def boom() -> None:
+            raise ValueError("refusing to reconcile against an empty oracle")
+
+        from writ.session.doctor import STATUS_FAIL, STATUS_WARN
+        results = [
+            self._make_result("corpus-drift", STATUS_WARN, fixable=True, fix=boom),
+            self._make_result(
+                "git-post-commit-hook", STATUS_FAIL, fixable=True,
+                fix=lambda: calls.append("hook"),
+            ),
+        ]
+        with patch("writ.session.doctor.run_all_checks", return_value=results):
+            result = runner.invoke(app, ["doctor", "--fix"])
+        assert calls == ["hook"], f"later fix must still run; calls={calls}"
+        assert result.exception is None or isinstance(result.exception, SystemExit), (
+            f"a failing fix must not crash the command; got {result.exception!r}"
+        )
+        assert "fix failed: corpus-drift: refusing to reconcile" in result.stderr
+        assert "repaired: git-post-commit-hook" in result.stdout
+        assert "repaired: corpus-drift" not in result.stdout
+
+
 class TestDoctorCommandNet:
     """--net gates the bitbucket live ping."""
 
@@ -1695,6 +1744,7 @@ class TestDoctorCommandNet:
             "writ.session.doctor._onnx_model_files_present", lambda: (True, True)
         )
         monkeypatch.setattr("writ.session.doctor._detect_parity_violations", lambda: [])
+        monkeypatch.setattr("writ.session.doctor._BIBLE_DIR", Path(__file__).resolve().parent)
         monkeypatch.setattr(
             "writ.session.doctor._bitbucket_creds_present", lambda: (True, True)
         )

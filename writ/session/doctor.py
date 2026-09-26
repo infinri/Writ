@@ -1150,6 +1150,14 @@ def check_embedding_stack(opts: DoctorOptions) -> CheckResult:
 
 def check_corpus_drift(opts: DoctorOptions) -> CheckResult:
     name = "corpus-drift"
+    if not _BIBLE_DIR.is_dir():
+        return _warn(
+            name=name,
+            detail=(
+                f"bible/ not found at {_BIBLE_DIR}; corpus drift cannot be assessed "
+                "and reconcile is not offered (it would delete the graph)."
+            ),
+        )
     violations = _detect_parity_violations()
     if not violations:
         return _ok(
