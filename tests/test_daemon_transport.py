@@ -239,6 +239,16 @@ class TestBothTransportsAndTheDiscriminator:
         if not sock_path.exists():
             proc.kill()
             pytest.fail("the server never created its socket")
+        # The socket FILE appears at bind(), before uvicorn listens, so a request sent
+        # the moment it exists can be refused and read back empty (seen on CI runs
+        # 36208341582 and 36209026402). Ready means both doors accept a connection.
+        while deadline < 15.0 and not (cls._accepts(socket.AF_UNIX, str(sock_path))
+                                       and cls._accepts(socket.AF_INET, ("127.0.0.1", port))):
+            if proc.poll() is not None:
+                out, err = proc.communicate()
+                pytest.fail(f"dual-transport server died: {err or out}")
+            time.sleep(0.1)
+            deadline += 0.1
 
         @contextlib.contextmanager
         def _live():
@@ -250,6 +260,16 @@ class TestBothTransportsAndTheDiscriminator:
                 shutil.rmtree(short_dir, ignore_errors=True)
 
         return _live()
+
+    @staticmethod
+    def _accepts(family: int, address) -> bool:
+        with socket.socket(family, socket.SOCK_STREAM) as s:
+            s.settimeout(1.0)
+            try:
+                s.connect(address)
+            except OSError:
+                return False
+            return True
 
     @staticmethod
     def _curl(*args: str) -> str:
