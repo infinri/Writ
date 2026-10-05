@@ -42,6 +42,9 @@ Thumbs.db
 
 # Local config with secrets (Bitbucket token, Neo4j password). Template: writ.toml.example
 writ.toml
+# writ neo4j set-password's atomic-write temp file; only a hard kill can leave one, and it
+# would hold the password.
+.writ.toml.*
 
 # Writ enforcement runtime artifacts
 workflow-friction.log

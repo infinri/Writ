@@ -210,7 +210,7 @@ Per dispatch, the Agent tool can override a role's model (haiku, sonnet, opus, f
 | ForbiddenResponse | 2 | always-on bundle + ranked pipeline |
 
 ```bash
-docker exec writ-neo4j cypher-shell -u neo4j -p writdevpass \
+docker exec writ-neo4j cypher-shell -u neo4j -p "$(writ neo4j password)" \
   "MATCH (n) WHERE n.project='writ' RETURN labels(n)[0] AS t, count(*) AS c ORDER BY c DESC;"
 ```
 
@@ -329,7 +329,7 @@ Everything else is advisory or observational: the RAG injectors (`writ-rag-injec
 
 **`writ.toml`** (at the install root, gitignored; template `writ.toml.example`; readers in `writ/config.py`). It has five sections:
 
-- **`[neo4j]`**: `uri` (default `bolt://localhost:7687`), `user` (`neo4j`), `password` (**`writdevpass` is a dev-only default**, silently used when the file is absent; override for any real deployment).
+- **`[neo4j]`**: `uri` (default `bolt://localhost:7687`), `user` (`neo4j`), `password` (written by `writ neo4j set-password`, which generates it, changes it in Neo4j and saves this file with mode 0600; the built-in fallback `writdevpass` is published in this repository, so every connection refuses it unless `WRIT_ALLOW_DEV_PASSWORD=1`).
 - **`[hnsw]`**: `cache_dir` for the vector-index cache (default `~/.cache/writ/hnsw`).
 - **`[bitbucket]`**: `email`, `token` for PR sync (absent means PR sync is off; the token is never logged).
 - **`[logs]`**: `backup_dest` for `writ logs backup`.
@@ -341,7 +341,7 @@ Everything else people expect to find in config is deliberately code: ranking we
 
 One rule this project applies to its own writing: Writ ships a forbidden-response rule that blocks the AI's own output when it contains an em dash, an en dash used as punctuation, or a double hyphen standing in for one. A Stop hook enforces it at the end of every turn, and the README and this handbook are both written to it. It is the smallest demonstration of the general mechanism: a constraint that lives at the tool boundary rather than in a style guide nobody re-reads.
 
-**Env vars:** `WRIT_HOST`/`WRIT_PORT` (daemon target, default `localhost:8765`), `WRIT_CACHE_DIR` (session caches, default `$XDG_STATE_HOME/writ/session`, i.e. `~/.local/state/writ/session`; deliberately not `/tmp`, which systemd empties at boot), `WRIT_LOG_ROOT` (log streams, default `<state_root>/logs`), `WRIT_LOG_PROJECT`, `WRIT_FRICTION_LOG` (collapse all streams into one file), `WRIT_DEBUG` (debug sinks, default off), `WRIT_HOOK_LOG`, `WRIT_NO_AUTOSTART`, `WRIT_ALLOW_EMBEDDING_FALLBACK=1` (permit the sentence-transformers path when the ONNX model is absent), `WRIT_CONTEXT_WINDOW_TOKENS` (validated 1,000-10,000,000 at daemon startup), `WRIT_BLACKBOX=1` (raw payload capture), `WRIT_STRICT=1` (fail the write gates CLOSED instead of open when they cannot be evaluated; see below). Neo4j credentials resolve from `WRIT_NEO4J_URI` / `WRIT_NEO4J_USER` / `WRIT_NEO4J_PASSWORD`, then `writ.toml`, then a dev-only built-in default. `WRIT_TEST_GRAPH=1` plus a non-production URI is what the destructive-wipe guard requires (`writ/graph/db/_safety.py`).
+**Env vars:** `WRIT_HOST`/`WRIT_PORT` (daemon target, default `localhost:8765`), `WRIT_CACHE_DIR` (session caches, default `$XDG_STATE_HOME/writ/session`, i.e. `~/.local/state/writ/session`; deliberately not `/tmp`, which systemd empties at boot), `WRIT_LOG_ROOT` (log streams, default `<state_root>/logs`), `WRIT_LOG_PROJECT`, `WRIT_FRICTION_LOG` (collapse all streams into one file), `WRIT_DEBUG` (debug sinks, default off), `WRIT_HOOK_LOG`, `WRIT_NO_AUTOSTART`, `WRIT_ALLOW_EMBEDDING_FALLBACK=1` (permit the sentence-transformers path when the ONNX model is absent), `WRIT_CONTEXT_WINDOW_TOKENS` (validated 1,000-10,000,000 at daemon startup), `WRIT_BLACKBOX=1` (raw payload capture), `WRIT_STRICT=1` (fail the write gates CLOSED instead of open when they cannot be evaluated; see below), `WRIT_ALLOW_DEV_PASSWORD=1` (accept the published development Neo4j password; throwaway instances and CI only). Neo4j credentials resolve from `WRIT_NEO4J_URI` / `WRIT_NEO4J_USER` / `WRIT_NEO4J_PASSWORD`, then `writ.toml`, then a built-in default that every connection refuses unless `WRIT_ALLOW_DEV_PASSWORD=1`. `WRIT_TEST_GRAPH=1` plus a non-production URI is what the destructive-wipe guard requires (`writ/graph/db/_safety.py`).
 
 ---
 
@@ -468,7 +468,7 @@ Every writer (Python and bash) funnels through one router that never raises: a f
 
 **`/explore` (everyone).** With the daemon up, open `http://localhost:8765/explore`: a live, data-backed page with a query playground (`POST /query` with real results) and a graph explorer over `/graph` and `/node/{id}` (filter by type, domain, provenance, mandatory; click for statements and neighbors). Read-only by construction. The static companion site with the architecture diagrams is `docs/architecture/index.html`.
 
-**Neo4j Browser (developers).** `http://localhost:7474` (Bolt `bolt://localhost:7687`, dev creds `neo4j`/`writdevpass`) for raw Cypher:
+**Neo4j Browser (developers).** `http://localhost:7474` (loopback only; Bolt `bolt://localhost:7687`, user `neo4j`, password from `writ neo4j password`) for raw Cypher:
 
 ```cypher
 MATCH (n) WHERE n.project = 'writ' RETURN labels(n)[0] AS type, count(*) ORDER BY count(*) DESC;

@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import os
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -193,6 +194,67 @@ def get_neo4j_user(path: str | None = None) -> str:
 def get_neo4j_password(path: str | None = None) -> str:
     """Return the Neo4j password: WRIT_NEO4J_PASSWORD, then neo4j.password, then the default."""
     return _neo4j_setting("password", "WRIT_NEO4J_PASSWORD", DEFAULT_NEO4J_PASSWORD, path)
+
+
+# Program item 3 (security baseline). DEFAULT_NEO4J_PASSWORD is published in this repository,
+# so connecting with it means connecting with a password anyone can read. Every connection
+# refuses it (refuse_dev_password, called by Neo4jConnection.__init__) unless the operator opts
+# in for a throwaway instance with exactly "1", the spelling WRIT_TEST_GRAPH and
+# WRIT_TEST_NO_ISOLATION use, so no near-miss value ("true", "yes") reads as consent.
+DEV_OPT_IN_ENV_VAR = "WRIT_ALLOW_DEV_PASSWORD"
+DEV_OPT_IN_VALUE = "1"
+# EX_CONFIG (sysexits.h): a configuration error that retrying cannot fix. `writ serve`, the CLI
+# and `writ neo4j check` exit with it, and the systemd unit lists it in RestartPreventExitStatus.
+DEV_REFUSAL_EXIT_CODE = 78
+REMEDY_COMMAND = "writ neo4j set-password"
+
+
+class DevPasswordRefused(RuntimeError):
+    """A Neo4j connection was attempted with the published development password."""
+
+
+def dev_password_allowed(env: Mapping[str, str] | None = None) -> bool:
+    """True only when WRIT_ALLOW_DEV_PASSWORD is exactly "1" (surrounding space ignored)."""
+    source = os.environ if env is None else env
+    return source.get(DEV_OPT_IN_ENV_VAR, "").strip() == DEV_OPT_IN_VALUE
+
+
+def dev_password_refusal_message() -> str:
+    """The one refusal text: shared by the connection guard, the CLI, `writ serve` and check."""
+    return (
+        "Refusing to use Neo4j with the built-in development password: it is published in the "
+        "Writ repository, so anyone can read it.\n"
+        f"Run `{REMEDY_COMMAND}` once. It generates a private password, changes it in the "
+        "running database, saves it to writ.toml (mode 0600) and prints the remaining steps.\n"
+        f"For a throwaway local instance or CI only, set {DEV_OPT_IN_ENV_VAR}={DEV_OPT_IN_VALUE}."
+    )
+
+
+def refuse_dev_password(password: str) -> None:
+    """Raise DevPasswordRefused when `password` is the development default and not opted in."""
+    if password == DEFAULT_NEO4J_PASSWORD and not dev_password_allowed():
+        raise DevPasswordRefused(dev_password_refusal_message())
+
+
+def dev_password_in_use(path: str | None = None) -> bool:
+    """True when the password this process would connect with (env, file, default) is refused."""
+    return get_neo4j_password(path) == DEFAULT_NEO4J_PASSWORD and not dev_password_allowed()
+
+
+def get_stored_neo4j_password(path: str | None = None) -> str:
+    """writ.toml [neo4j] password, then the default, IGNORING WRIT_NEO4J_PASSWORD.
+
+    Env-blind for the same reason get_production_neo4j_uri is: `writ neo4j password` answers
+    "what does the database hold", and an exported value left over from before a change would
+    otherwise echo itself back into the compose environment.
+    """
+    cfg = load_config(path)
+    return cfg.get("neo4j", {}).get("password", DEFAULT_NEO4J_PASSWORD)
+
+
+def get_config_path() -> str:
+    """The install's writ.toml path. The file need not exist."""
+    return _DEFAULT_CONFIG_PATH
 
 
 def get_production_neo4j_uri(path: str | None = None) -> str:

@@ -1300,6 +1300,10 @@ class TestRunAllChecks:
         monkeypatch.setattr("writ.session.doctor._ps_writ_serve_orphans", lambda: [])
         monkeypatch.setattr("writ.session.doctor._tcp_can_connect", lambda host, port: True)
         monkeypatch.setattr("writ.session.doctor._count_neo4j_rules", lambda: 10)
+        # neo4j-password (program item 3) otherwise reads the resolved password and the opt-in
+        # from this machine's environment (TEST-ISOLATE-001). raising=True: a renamed seam must
+        # fail here rather than silently go back to the real environment.
+        monkeypatch.setattr("writ.session.doctor._neo4j_dev_password_state", lambda: "private")
         monkeypatch.setattr(
             "writ.session.doctor._list_neo4j_constraint_names",
             lambda: [f"c{i}" for i in range(17)],
@@ -1422,6 +1426,7 @@ class TestRunAllChecks:
             "daemon-liveness",
             "stale-orphan-port-conflict",
             "neo4j-connectivity",
+            "neo4j-password",
             "uniqueness-constraints",
             "duplicate-records",
             "index-degeneracy",

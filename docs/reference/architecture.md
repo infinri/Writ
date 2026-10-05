@@ -71,7 +71,7 @@ Closed seams worth knowing the history of: the Stage-1 route filter and the `/me
 Phase 0 introduced data-driven `Category` routing and parity. Phase 1 added the methodology node types and the trigger index. Phase 3 added authoring governance and the structural gate. Phase 5 added friction analytics. Phase 6 added the graduation loop and the five-state provenance model. Later programs: the POL waves (dedup, god-module splits, hook latency), decision memory, the logging overhaul (typed streams), the investigation engine, and the plugin/marketplace install. Historical phase documents are context, not current state; when in doubt, trust the code and the live graph.
 
 ```bash
-docker exec writ-neo4j cypher-shell -u neo4j -p writdevpass \
+docker exec writ-neo4j cypher-shell -u neo4j -p "$(writ neo4j password)" \
   "MATCH (n) WHERE n.project='writ' RETURN count(n);"
 make test   # over 400 test modules, roughly 7,900 collected tests (2026-08-14)
             # Bare `.venv/bin/python -m pytest` REFUSES: the suite requires its own

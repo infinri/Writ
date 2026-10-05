@@ -364,9 +364,11 @@ class TestSessionStartRepair:
 class TestBootstrapVerifiesPackage:
     @pytest.mark.parametrize("path", [BOOTSTRAP, BOOTSTRAP_PLUGIN], ids=lambda p: p.name)
     def test_the_bootstrap_verifies_the_package_it_installed(self, path):
+        # Searched from the install onward: bootstrap-plugin.sh also calls it BEFORE the install,
+        # to find the old root to carry writ.toml from, and that call verifies nothing.
         text = path.read_text()
-        assert 'writ_venv_serves "$VENV_DIR" "$WRIT_DIR"' in text
-        assert text.index("pip install --quiet") < text.index('writ_venv_serves "$VENV_DIR" "$WRIT_DIR"')
+        verify = text.find('writ_venv_serves "$VENV_DIR" "$WRIT_DIR"', text.index("pip install --quiet"))
+        assert verify != -1, f"{path.name} never verifies the package after installing it"
 
 
 def _docker_env(tmp_path: Path, **extra: str) -> tuple[dict, Path]:

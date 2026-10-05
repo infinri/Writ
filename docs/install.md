@@ -42,9 +42,12 @@ Both bootstraps are idempotent and safe to re-run. Each does the whole install:
 | --- | --- | --- |
 | Python venv | `$CLAUDE_PLUGIN_DATA/.venv`, i.e. `~/.claude/plugins/data/<plugin>-<marketplace>/.venv` (outside the plugin root, so an upgrade that rewrites the install path does not orphan it; found from the install path when the variable is not exported). Each SessionStart points its editable `writ` at the running version | `$WRIT_DIR/.venv` |
 | Package, ONNX model, Neo4j, corpus, daemon | yes | yes |
+| Private Neo4j password (`writ neo4j set-password`, once; an install that already has one keeps it) | yes | yes |
 | `~/.claude/settings.json` + `~/.claude/CLAUDE.md` | yes | yes |
 | `~/.claude/commands/` slash commands | yes | yes |
 | `~/.local/bin/writ` and `~/.claude/{rules,agents}` symlinks | no (the plugin loader supplies the agents) | yes |
+
+Neo4j's ports are published on 127.0.0.1 only. Before anything else connects, the bootstrap replaces the development password: it generates a random one, changes it in the running database, saves it to `writ.toml` with mode 0600, and re-creates the container so its healthcheck uses it. The password is never printed; `writ neo4j password` prints it when you ask.
 
 Both honor `WRIT_VENV`. The full lookup order is in `bin/lib/writ-venv.sh`; see `reference/configuration.md`.
 
@@ -102,7 +105,7 @@ For a raw `/health` read that does not depend on `curl`:
 python3 "$WRIT_DIR"/bin/lib/writ_install.py http-get http://localhost:8765/health
 ```
 
-`writ doctor` covers daemon liveness, orphaned-port conflicts, Neo4j connectivity, uniqueness constraints, duplicate records, index degeneracy, the daemon socket, the embedding stack, corpus drift, Bitbucket credential presence, the git post-commit hook, the `writ` PATH symlink, Claude Code hook registration and duplicate registration, hook telemetry coverage, stranded telemetry, sub-agent role coverage and declared write scope, the sub-agent governance census, role symlinks, mode and gate sanity, gate refusal liveness, and the extension trust ledger. Run the command for the authoritative list rather than relying on this sentence staying complete.
+`writ doctor` covers daemon liveness, orphaned-port conflicts, Neo4j connectivity, the Neo4j password, uniqueness constraints, duplicate records, index degeneracy, the daemon socket, the embedding stack, corpus drift, Bitbucket credential presence, the git post-commit hook, the `writ` PATH symlink, Claude Code hook registration and duplicate registration, hook telemetry coverage, stranded telemetry, sub-agent role coverage and declared write scope, the sub-agent governance census, role symlinks, mode and gate sanity, gate refusal liveness, and the extension trust ledger. Run the command for the authoritative list rather than relying on this sentence staying complete.
 
 Then open Claude Code in any project and type a prompt: you should see a `[Writ: ...]` status line and a `--- WRIT RULES ---` block.
 
@@ -135,6 +138,25 @@ docker compose -f ~/.claude/plugins/cache/writ/writ/1.9.0/docker-compose.yml up 
 
 If the old install dir is already gone, `docker stop writ-neo4j && docker rm writ-neo4j` replaces the two middle commands. Compose may warn that the volume `writ-neo4j-data` already exists and was created for another project; that is expected, and it reuses the volume.
 
+### Securing an existing install (Neo4j password and loopback ports)
+
+Writ refuses the published development password: `writ serve`, every command that opens the graph and `writ doctor` stop with a message naming `writ neo4j set-password`, and SessionStart prints that message instead of starting a daemon that would refuse. Re-running the bootstrap does the whole migration. By hand, once:
+
+```bash
+writ neo4j set-password                               # changes it in Neo4j, saves writ.toml (0600), prints nothing secret
+docker inspect -f '{{range .Mounts}}{{.Name}} {{end}}' writ-neo4j                     # must print writ-neo4j-data
+docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' writ-neo4j   # writ, or an older project
+WRIT_NEO4J_PASSWORD="$(writ neo4j password)" docker compose -f "$WRIT_DIR/docker-compose.yml" up -d neo4j   # re-creates it on 127.0.0.1 with the new healthcheck
+systemctl --user restart writ-server                  # or scripts/stop-server.sh, then scripts/ensure-server.sh
+writ doctor                                           # neo4j-password and neo4j-connectivity report ok
+```
+
+If the project is not `writ`, Compose refuses the container name. Remove the old container first (`docker stop writ-neo4j && docker rm writ-neo4j`), then run the compose line. The graph lives in the named volume `writ-neo4j-data`, which removing the container does not touch; the first `docker inspect` line is how you confirm that before removing anything. If you use the systemd service, re-run `scripts/install-server-service.sh` once so a refused start is not retried every few seconds.
+
+The variable is set inline, for that one command, on purpose: an `export` stays in the shell and, because `WRIT_NEO4J_PASSWORD` overrides `writ.toml`, would send a stale password after the next rotation.
+
+Re-running the bootstrap is safe at any point. It finishes a migration that stopped halfway: when the password is already private but `writ-neo4j` still publishes a port beyond 127.0.0.1, or its healthcheck reports unhealthy, it re-creates the container. Concurrent runs are safe too. `writ neo4j set-password` holds an exclusive lock on `.writ.toml.lock` beside `writ.toml` for the whole change and re-reads the file under it, so two sessions or bootstraps take turns instead of both authenticating with the same old password; a run that waits longer than `--lock-timeout` seconds (default 60) exits 1 and changes nothing. The bootstraps pass `--if-default`, which makes a run that finds a private password already in place change nothing, so two concurrent bootstraps rotate the password once.
+
 ## Restarting the daemon
 
 Required only when code under `writ/server/` or `writ/retrieval/` changes; the running process keeps serving the old module until restarted. Routine ingest, query, or hook edits do not need it.
@@ -166,7 +188,23 @@ The standalone install keeps working; the plugin path is additive. To move over:
 - **`Neo4j did not become reachable within 60s`**: `docker compose logs neo4j`; the common cause is too little memory for Docker (Neo4j wants ~1 GB).
 - **Daemon not healthy**: check the daemon log; the location is install-dependent: `$WRIT_LOG` if set, else `$XDG_STATE_HOME/writ/logs/server.log` (default `~/.local/state/writ/logs/server.log`, clone) or `${CLAUDE_PLUGIN_DATA:-~/.cache/writ}/server.log` (plugin), or `journalctl --user -u writ-server` under systemd. Usually an import error; re-run `pip install -e .` inside the venv.
 - **A GPU-discovery warning from onnxruntime at startup** on CPU-only machines is unsuppressible and harmless; CPU execution works normally.
-- **Default Neo4j credentials (`neo4j/writdevpass`)**: a development default, silently used whenever `writ.toml` is missing. For any non-local use, change `NEO4J_AUTH` in `docker-compose.yml` and the `[neo4j]` section of `writ.toml`.
+- **`Refusing to use Neo4j with the built-in development password`**: run `writ neo4j set-password` once, then the steps it prints (see "Securing an existing install"). `WRIT_ALLOW_DEV_PASSWORD=1` opts out, for a throwaway instance or CI only.
+- **`The configured Neo4j password does not authenticate`**: `writ.toml` and the database disagree. If you know the password the database uses, run `WRIT_NEO4J_PASSWORD='<that password>' writ neo4j set-password`. After a plugin upgrade, `writ.toml` is carried forward from the previous version directory automatically while that directory still exists; copy it by hand otherwise.
+- **A `.writ.toml.XXXX` file beside `writ.toml`**: a `set-password` run was killed after it changed the database and before it saved `writ.toml`. That file (mode 0600) holds the new password the database now uses; rename it over `writ.toml` to recover, or delete it if `writ neo4j check` already passes.
+- **The password is lost entirely**: reset it with Neo4j's own recovery mode (authentication off, no published ports), then store a fresh one:
+
+  ```bash
+  docker stop writ-neo4j
+  docker run -d --rm --name writ-neo4j-recover -e NEO4J_AUTH=none -v writ-neo4j-data:/data neo4j:5
+  sleep 30
+  TMP_PW="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+  docker exec writ-neo4j-recover cypher-shell -d system "ALTER USER neo4j SET PASSWORD '$TMP_PW' CHANGE NOT REQUIRED"
+  docker stop writ-neo4j-recover
+  docker start writ-neo4j
+  WRIT_NEO4J_PASSWORD="$TMP_PW" writ neo4j set-password
+  ```
+
+- **`writ-neo4j` reports `unhealthy` after a password change**: its healthcheck still carries the old password; re-create it with the inline `WRIT_NEO4J_PASSWORD=... docker compose` line above, or re-run the bootstrap.
 
 - **`writ: venv python not found at ...`**: run the bootstrap it names; the path it prints is where the venv belongs. Set `WRIT_VENV` to use a venv elsewhere.
 - **`[Writ] ... imports writ from ..., not this install; reinstalling it`** at session start: expected once after an upgrade, or when the venv was bootstrapped from another copy of Writ. Restart the daemon afterwards. If it reports it could not repoint, run the `bootstrap-plugin.sh` command it prints.

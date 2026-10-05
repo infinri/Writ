@@ -27,9 +27,15 @@ async def _writ_db():
     """Open a Neo4j connection from config and always close it. Single source for
     the per-command connection lifecycle (was duplicated across ~14 commands).
     Neo4jConnection import stays deferred so DB-free commands (e.g. serve) don't
-    pull the driver at CLI startup."""
+    pull the driver at CLI startup. A refused development password exits 78 with the
+    remedy instead of a traceback."""
+    from writ.config import DEV_REFUSAL_EXIT_CODE, DevPasswordRefused
     from writ.graph.db import Neo4jConnection
-    db = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
+    try:
+        db = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
+    except DevPasswordRefused as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=DEV_REFUSAL_EXIT_CODE) from None
     try:
         yield db
     finally:
@@ -419,6 +425,16 @@ def serve(
     AF_UNIX byte cap) or a failed bind logs the reason and serves TCP alone, because a
     transport upgrade must never stop the daemon from starting.
     """
+    from writ.config import DEV_REFUSAL_EXIT_CODE, DevPasswordRefused, refuse_dev_password
+
+    # Program item 3: refuse before binding anything. The lifespan would refuse too (it builds a
+    # Neo4jConnection), but only after the port and socket were taken, and as a traceback.
+    try:
+        refuse_dev_password(get_neo4j_password())
+    except DevPasswordRefused as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=DEV_REFUSAL_EXIT_CODE) from None
+
     import uvicorn
 
     from writ.config import (
@@ -2049,6 +2065,104 @@ def doctor(
 
     if any(r.status == "fail" for r in results):
         raise typer.Exit(code=1)
+
+
+# --- Program item 3: the Neo4j password -----------------------------------------------
+# set-password moves an install off the published development password (writ/neo4j_password.py
+# is the one connection path allowed to use it); password prints the stored value only when
+# asked, for the compose environment; check is the exit-status probe the shell libraries use.
+
+neo4j_app = typer.Typer(
+    name="neo4j",
+    help="Set, print or check the Neo4j password Writ connects with.",
+)
+app.add_typer(neo4j_app, name="neo4j")
+
+_CONFIG_OPTION_HELP = "The writ.toml to use. Default: the one at the install root."
+
+
+@neo4j_app.command(name="set-password")
+def neo4j_set_password(
+    config: Path | None = typer.Option(None, "--config", help=_CONFIG_OPTION_HELP),
+    wait: float = typer.Option(
+        0.0, "--wait", help="Seconds to wait for Neo4j to accept connections first."
+    ),
+    if_default: bool = typer.Option(
+        False, "--if-default",
+        help="Change nothing and exit 0 unless the development default is still configured.",
+    ),
+    lock_timeout: float = typer.Option(
+        60.0, "--lock-timeout",
+        help="Seconds to wait for another set-password run on this install to finish.",
+    ),
+) -> None:
+    """Generate a private Neo4j password, set it in the running database and save it to writ.toml.
+
+    Never prints the password (`writ neo4j password` does, when asked). Safe to re-run: each run
+    authenticates with the stored password and replaces it. Concurrent runs on one install take
+    turns on a lock beside writ.toml. A failure before the database changes leaves writ.toml
+    untouched; a failed save afterwards changes the database back.
+    """
+    from writ.config import get_config_path
+    from writ.neo4j_password import (
+        PasswordChangeError,
+        PasswordStoreFailed,
+        next_steps_text,
+        set_password,
+    )
+
+    try:
+        change = asyncio.run(set_password(
+            str(config) if config else None, wait_seconds=wait, if_default=if_default,
+            lock_timeout=lock_timeout,
+        ))
+    except PasswordStoreFailed as exc:
+        typer.echo(exc.report(), err=True)
+        raise typer.Exit(code=1) from None
+    except PasswordChangeError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    if not change.changed:
+        typer.echo(f"Neo4j password already set in {change.config_path}; nothing changed.")
+        return
+    typer.echo(next_steps_text(change, os.path.dirname(get_config_path())))
+
+
+@neo4j_app.command(name="password")
+def neo4j_password(
+    config: Path | None = typer.Option(None, "--config", help=_CONFIG_OPTION_HELP),
+) -> None:
+    """Print the Neo4j password stored in writ.toml, for docker compose and recovery.
+
+    Reads the file, not WRIT_NEO4J_PASSWORD, so a stale export cannot echo itself back. Prints
+    nothing and exits 78 when only the refused development default is configured.
+    """
+    from writ.config import (
+        DEFAULT_NEO4J_PASSWORD,
+        DEV_REFUSAL_EXIT_CODE,
+        dev_password_allowed,
+        dev_password_refusal_message,
+        get_stored_neo4j_password,
+    )
+
+    stored = get_stored_neo4j_password(str(config) if config else None)
+    if stored == DEFAULT_NEO4J_PASSWORD and not dev_password_allowed():
+        typer.echo(dev_password_refusal_message(), err=True)
+        raise typer.Exit(code=DEV_REFUSAL_EXIT_CODE)
+    typer.echo(stored)
+
+
+@neo4j_app.command(name="check")
+def neo4j_check(
+    config: Path | None = typer.Option(None, "--config", help=_CONFIG_OPTION_HELP),
+) -> None:
+    """Exit 0 when Writ may connect with the configured Neo4j password, 78 when it would refuse it."""
+    from writ.config import DEV_REFUSAL_EXIT_CODE, dev_password_in_use, dev_password_refusal_message
+
+    if dev_password_in_use(str(config) if config else None):
+        typer.echo(dev_password_refusal_message(), err=True)
+        raise typer.Exit(code=DEV_REFUSAL_EXIT_CODE)
+    typer.echo("ok: the configured Neo4j password is not the published development default")
 
 
 # --- P2 logging lifecycle: logs sub-app ----------------------------------------

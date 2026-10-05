@@ -64,6 +64,9 @@ ExecStartPre=/bin/bash -c 'for i in \$(seq 1 120); do (echo >/dev/tcp/$WRIT_HOST
 ExecStart=$VENV_WRIT serve --port $WRIT_PORT --host $WRIT_HOST
 Restart=on-failure
 RestartSec=3
+# 78 is writ serve's refusal of the published development Neo4j password (EX_CONFIG). A restart
+# cannot fix a configuration error, so systemd must not retry it every RestartSec.
+RestartPreventExitStatus=78
 
 [Install]
 WantedBy=default.target

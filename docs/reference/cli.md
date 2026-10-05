@@ -35,6 +35,9 @@ Every `writ` command, generated from the Typer app. Run `writ <command> --help` 
 | `writ memory backfill` | Upsert every existing memory file, then tombstone the ones whose file is gone |
 | `writ memory list` | List a project's mirrored memories, most-recently-updated first |
 | `writ migrate` | One-time migration of existing rules into graph |
+| `writ neo4j check` | Exit 0 when Writ may connect with the configured Neo4j password, 78 when it would refuse it |
+| `writ neo4j password` | Print the Neo4j password stored in writ.toml, for docker compose and recovery |
+| `writ neo4j set-password` | Generate a private Neo4j password, set it in the running database and save it to writ.toml |
 | `writ pr sync` | Post the captured per-file reasons as file-level comments on the PR review |
 | `writ propose` | Propose an AI-generated rule. Runs structural gate before ingestion |
 | `writ prune` | Detect graph nodes absent from the bible markdown (parity violations) |

@@ -119,6 +119,10 @@ Promotion records only `authority`/`provenance`/`graduated_via`, not who approve
 ## Not in scope
 
 - Multi-user and access control: revisit on a real shared deployment.
+- Several OS users on one machine: today they share one container name, port pair and data
+  volume. Isolating them means a per-user container, ports and volume, and anyone in the
+  docker group can still read any container's password. Item 3 covers only one user running
+  several sessions at once (a lock around password changes).
 
 ## Order
 

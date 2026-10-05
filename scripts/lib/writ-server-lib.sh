@@ -44,6 +44,20 @@ writ_server_health() {
     fi
 }
 
+# The password the compose file should interpolate for a container it is about to CREATE: the
+# caller's exported WRIT_NEO4J_PASSWORD when set, else the one stored in writ.toml through the
+# venv CLI. That CLI prints nothing when only the refused development default is configured, so
+# Compose then falls back to it, which is what a brand-new volume needs before set-password.
+_writ_compose_password() {
+    if [ -n "${WRIT_NEO4J_PASSWORD:-}" ]; then
+        printf '%s' "$WRIT_NEO4J_PASSWORD"
+        return 0
+    fi
+    if [ -n "${VENV_DIR:-}" ] && [ -x "$VENV_DIR/bin/writ" ]; then
+        "$VENV_DIR/bin/writ" neo4j password 2>/dev/null || true
+    fi
+}
+
 # Start the production Neo4j container, surfacing docker's error instead of swallowing it.
 #
 # Container first, compose second. container_name is fixed (writ-neo4j), and until
@@ -56,8 +70,86 @@ writ_neo4j_start() {
     if docker container inspect writ-neo4j >/dev/null 2>&1; then
         docker start writ-neo4j >/dev/null
     else
-        docker compose -f "$1" up -d neo4j >/dev/null
+        WRIT_NEO4J_PASSWORD="$(_writ_compose_password)" docker compose -f "$1" up -d neo4j >/dev/null
     fi
+}
+
+# Move an install off the published development password, once (program item 3).
+#   $1  docker-compose.yml     $2  the venv's writ executable
+# Returns 0 when the password was already private (or the operator opted into the default) and
+# the container needs nothing, 10 when the container was re-created and is healthy on the stored
+# password, 11 when the container belongs to an older Compose project and was left alone
+# (re-homing it is a documented manual step), and 1 when the password could not be replaced
+# (set-password then guarantees writ.toml is unchanged) or the re-created container never
+# reported healthy.
+#
+# Idempotent and resumable. A private password alone does not mean the job is done: a run that
+# changed it and then failed to re-create the container leaves one that still publishes its ports
+# on every interface or whose healthcheck holds the old password, and a re-run must finish that.
+# So a passing check is followed by a look at the container itself (_writ_neo4j_needs_recreate).
+# --if-default makes set-password re-check under its lock, so two bootstraps racing here rotate
+# the password once, not twice. The lock wait (180s) exceeds the winner's boot wait (90s) plus
+# the change, so the loser waits for the winner instead of timing out.
+writ_neo4j_secure() {
+    local compose_file="$1" writ_bin="$2"
+    if "$writ_bin" neo4j check >/dev/null 2>&1; then
+        _writ_neo4j_needs_recreate || return 0
+    else
+        # stdout dropped: its next steps are what this function does itself. Errors stay on stderr.
+        "$writ_bin" neo4j set-password --wait 90 --lock-timeout 180 --if-default >/dev/null || return 1
+    fi
+    local project
+    project="$(docker container inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' writ-neo4j 2>/dev/null || true)"
+    if [ "$project" != "writ" ]; then
+        echo "[Writ] writ-neo4j was created by an older Writ (Compose project '${project:-none}')." >&2
+        echo "[Writ] Its healthcheck password and loopback-only ports change only when it is" >&2
+        echo "[Writ] re-created: see docs/install.md, \"Securing an existing install\"." >&2
+        return 11
+    fi
+    WRIT_NEO4J_PASSWORD="$("$writ_bin" neo4j password)" docker compose -f "$compose_file" up -d neo4j >/dev/null || return 1
+    # Healthy, not merely listening: the healthcheck authenticates with the password Compose
+    # just interpolated, so this also proves the re-created container carries the new one.
+    local limit="${WRIT_NEO4J_HEALTHY_WAIT:-120}" waited=0 status=""
+    while [ "$waited" -lt "$limit" ]; do
+        status="$(docker container inspect -f '{{.State.Health.Status}}' writ-neo4j 2>/dev/null || true)"
+        [ "$status" = "healthy" ] && return 10
+        sleep 2
+        waited=$((waited + 2))
+    done
+    echo "[Writ] writ-neo4j did not report healthy within ${limit}s (last status: ${status:-unknown}); check: docker logs writ-neo4j" >&2
+    return 1
+}
+
+# True (0) when writ-neo4j exists but was not re-created after the password change: a published
+# port bound anywhere but 127.0.0.1 (the compose file before item 3), or a healthcheck reporting
+# unhealthy (it still authenticates with the password the container was created with). No
+# container, or no published ports, is nothing to finish.
+_writ_neo4j_needs_recreate() {
+    local ports
+    ports="$(docker port writ-neo4j 2>/dev/null)" || return 1
+    if [ -n "$ports" ] && printf '%s\n' "$ports" | grep -qv -- '-> 127\.0\.0\.1:'; then
+        return 0
+    fi
+    [ "$(docker container inspect -f '{{.State.Health.Status}}' writ-neo4j 2>/dev/null || true)" = "unhealthy" ]
+}
+
+# True (0) when the daemon must not be launched because Neo4j is configured with the published
+# development password, which `writ serve` refuses (exit 78); prints the one-time migration
+# notice. Fail-open: no venv CLI, or any outcome other than that exact refusal, returns 1 and
+# lets `writ serve` decide, because this saves a doomed start and its 5s wait; it is not the guard.
+writ_dev_password_blocks_start() {
+    [ -n "${VENV_DIR:-}" ] && [ -x "$VENV_DIR/bin/writ" ] || return 1
+    local rc=0
+    "$VENV_DIR/bin/writ" neo4j check >/dev/null 2>&1 || rc=$?
+    [ "$rc" -eq 78 ] || return 1
+    cat >&2 <<MSG
+[Writ] Not starting the daemon: Neo4j is configured with the published development password,
+[Writ] which Writ now refuses. One-time fix (changes it in Neo4j and saves it to writ.toml):
+[Writ]   $VENV_DIR/bin/writ neo4j set-password
+[Writ] then follow the steps it prints. A throwaway local instance can opt out instead:
+[Writ]   export WRIT_ALLOW_DEV_PASSWORD=1
+MSG
+    return 0
 }
 
 # Critical section, run only while holding the flock. Always returns 0 (graceful).
@@ -114,6 +206,12 @@ _writ_start_locked() {
     # Safe: this runs inside the flock subshell, so it never changes the caller's cwd.
     if [ -n "${WRIT_DIR:-}" ] && [ -d "$WRIT_DIR" ]; then
         cd "$WRIT_DIR" 2>/dev/null || true
+    fi
+
+    # Program item 3: an install still on the development password gets the migration notice
+    # instead of a daemon launch that would exit 78. Skipped for an injected serve command.
+    if [ -z "${WRIT_SERVE_CMD:-}" ] && writ_dev_password_blocks_start; then
+        return 0
     fi
 
     # Launch via the venv's ABSOLUTE console script. Bare `writ` is unsafe here: we

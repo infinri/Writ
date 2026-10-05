@@ -4,6 +4,13 @@ All notable changes to Writ are documented in this file. The format follows [Kee
 
 ## [Unreleased]
 
+### Security
+
+- **Neo4j is published on loopback only.** `docker-compose.yml` binds 7474 and 7687 to 127.0.0.1; both used to listen on every interface. An existing container keeps its old bindings until it is re-created (docs/install.md, "Securing an existing install").
+- **The published development password is refused.** Every Neo4j connection (daemon, CLI, `writ doctor`, scripts) goes through `Neo4jConnection`, which now refuses it unless `WRIT_ALLOW_DEV_PASSWORD=1`. `writ serve` exits 78 with the remedy, the systemd unit does not restart on 78, SessionStart prints the remedy instead of starting a daemon that would refuse, and `writ doctor` gains a `neo4j-password` check.
+- **`writ neo4j set-password`** generates a random password, changes it in the running database, saves it to `writ.toml` with mode 0600 and prints the next steps, never the password. A failure before the change leaves everything as it was; any failure after it, an interruption included, changes the database back. Concurrent runs take turns on a lock beside `writ.toml`, and the bootstraps pass `--if-default` so two of them rotate once. A bootstrap re-run finishes a migration that stopped before the container was re-created. `writ neo4j password` prints the stored value when asked and `writ neo4j check` is the exit-status probe. Both bootstraps run it on a new install and re-create the container on the new password. The compose file reads `WRIT_NEO4J_PASSWORD` for `NEO4J_AUTH` and its healthcheck.
+- **writ.toml follows a plugin upgrade.** The SessionStart venv repoint and `bootstrap-plugin.sh` copy it from the previous install directory when the new one has none, since it now holds the only copy of the password.
+
 ## [1.11.1] - 2026-09-30
 
 On a plugin install, Writ now dispatches the agent types Claude Code actually registers (`writ:writ-<role>`), and records reviewer verdicts again. Before this, every generic dispatch the hook rerouted failed with "Agent type 'writ-explorer' not found", and the review commit gate was silently off.

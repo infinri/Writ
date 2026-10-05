@@ -151,6 +151,11 @@ else
 fi
 # shellcheck disable=SC1091
 source "$VENV_DIR/bin/activate"
+# An upgrade lands in a new version dir with no writ.toml, and the Neo4j password lives there.
+# Carry it from the install the venv still imports, before the reinstall below repoints it.
+if ! writ_venv_serves "$VENV_DIR" "$WRIT_DIR"; then
+    writ_carry_config "${_WRIT_VENV_WRIT_FROM%/writ}" "$WRIT_DIR"
+fi
 
 # ── 4. Install Python deps (editable; rebinds on plugin upgrade) ────────────
 step "Installing Python dependencies"
@@ -207,6 +212,21 @@ if [ $waited -ge $NEO4J_WAIT_SECONDS ]; then
     exit 1
 fi
 
+# ── 5b. Private Neo4j password (program item 3) ─────────────────────────────
+# A fresh volume starts on the published development password, which the daemon and CLI refuse.
+# Replaced once here, before anything else connects; an install that is already private skips.
+step "Securing the Neo4j password"
+secure_rc=0
+writ_neo4j_secure "${COMPOSE_FILE}" "$VENV_DIR/bin/writ" || secure_rc=$?
+case "$secure_rc" in
+    0)  ok "Neo4j password is private" ;;
+    10) ok "Neo4j password is private, saved in writ.toml (0600); container re-created on loopback ports" ;;
+    11) warn "Neo4j password is private, saved in writ.toml (0600); re-home the container (see above)" ;;
+    *)  err "could not secure the Neo4j password (the reason is above)"
+        echo "   writ.toml and the database still agree; fix the cause and re-run this bootstrap." >&2
+        exit 1 ;;
+esac
+
 # ── 6. Ingest rules (cd into WRIT_DIR so writ-corpus.cypher resolves) ──────
 step "Ingesting rule corpus from writ-corpus.cypher"
 if (cd "${WRIT_DIR}" && writ import-cypher 2>&1 | tail -5); then
@@ -226,6 +246,9 @@ daemon_healthy() {
 }
 if daemon_healthy; then
     ok "writ serve already running"
+    if [ "$secure_rc" -ne 0 ]; then
+        warn "it was started before the password change; restart it: systemctl --user restart writ-server (or scripts/stop-server.sh then scripts/ensure-server.sh)"
+    fi
 else
     WRIT_LOG="$(writ_default_server_log)"
     mkdir -p "$(dirname "$WRIT_LOG")" 2>/dev/null || true

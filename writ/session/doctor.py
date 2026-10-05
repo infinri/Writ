@@ -886,6 +886,43 @@ def check_stale_orphan_port_conflict(opts: DoctorOptions) -> CheckResult:
     )
 
 
+def _neo4j_dev_password_state() -> str:
+    """'private', 'allowed' (the development default, opted into) or 'refused'.
+
+    Names a state, never a value: this module never returns, logs or prints a credential.
+    """
+    from writ.config import DEFAULT_NEO4J_PASSWORD, dev_password_allowed, get_neo4j_password
+
+    if get_neo4j_password() != DEFAULT_NEO4J_PASSWORD:
+        return "private"
+    return "allowed" if dev_password_allowed() else "refused"
+
+
+def check_neo4j_password(opts: DoctorOptions) -> CheckResult:
+    """Program item 3: every connection refuses the published development password, so an
+    install still configured with it has a daemon and CLI that will not start."""
+    name = "neo4j-password"
+    state = _neo4j_dev_password_state()
+    if state == "refused":
+        return _fail(
+            name=name,
+            detail=(
+                "Neo4j is configured with the published development password, which the daemon "
+                "and CLI refuse. Run `writ neo4j set-password` once (it changes the password in "
+                "Neo4j and saves it to writ.toml), then follow the steps it prints."
+            ),
+        )
+    if state == "allowed":
+        return _warn(
+            name=name,
+            detail=(
+                "Using the published development password because WRIT_ALLOW_DEV_PASSWORD=1. "
+                "Fine for a throwaway instance; run `writ neo4j set-password` for anything else."
+            ),
+        )
+    return _ok(name=name, detail="Neo4j password is private (not the published development default).")
+
+
 def check_neo4j_connectivity(opts: DoctorOptions) -> CheckResult:
     name = "neo4j-connectivity"
     from writ.config import get_neo4j_uri
@@ -2565,6 +2602,7 @@ _CHECKS: list[tuple[str, Callable[[DoctorOptions], CheckResult]]] = [
     ("daemon-liveness", check_daemon_liveness),
     ("stale-orphan-port-conflict", check_stale_orphan_port_conflict),
     ("neo4j-connectivity", check_neo4j_connectivity),
+    ("neo4j-password", check_neo4j_password),
     ("uniqueness-constraints", check_uniqueness_constraints),
     ("duplicate-records", check_duplicate_records),
     ("index-degeneracy", check_index_degeneracy),

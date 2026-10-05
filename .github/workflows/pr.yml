@@ -24,6 +24,10 @@ concurrency:
 # job checks the partition with this same count.
 env:
   TEST_SHARDS: "4"
+  # The CI Neo4j services are throwaway containers on the published development password, which
+  # Writ refuses by default (writ/config.py refuse_dev_password). This is the documented opt-in
+  # for exactly that case; docs/adr/ADR-neo4j-password-baseline.md.
+  WRIT_ALLOW_DEV_PASSWORD: "1"
 
 jobs:
   # The suite, split by whole file into TEST_SHARDS parallel jobs. Each runner has its

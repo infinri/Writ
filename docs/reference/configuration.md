@@ -8,7 +8,7 @@ At the install root, gitignored; `writ.toml.example` is the template. Readers in
 
 | Section | Keys | Default |
 |---|---|---|
-| `[neo4j]` | `uri`, `user`, `password` | `bolt://localhost:7687`, `neo4j`, `writdevpass` (**dev-only**; silently used whenever the file is absent, so override for any real deployment) |
+| `[neo4j]` | `uri`, `user`, `password` | `bolt://localhost:7687`, `neo4j`, no usable password: the built-in `writdevpass` is published, so every connection refuses it unless `WRIT_ALLOW_DEV_PASSWORD=1`; `writ neo4j set-password` writes a private one here (file mode 0600) |
 | `[hnsw]` | `cache_dir` | `~/.cache/writ/hnsw` |
 | `[bitbucket]` | `email`, `token` | none (PR sync off; the token is never logged) |
 | `[logs]` | `backup_dest` | none (`writ logs backup` requires `--dest`) |
@@ -24,7 +24,7 @@ At the install root, gitignored; `writ.toml.example` is the template. Readers in
 | `bin/lib/gate-categories.json` | Write-gate exclusion globs (tests, migrations, `__init__.py`, `.claude/` config + markdown) plus framework-detection markers. Glob caution: `*` spans `/` and matches the raw path; keep patterns extension-anchored or exact filenames. |
 | `bin/lib/test-paths-defaults.json` + `<project>/.claude/writ.json` | Source-to-test path mappings for the TDD gate and pending-test runner; a project file with `extends_defaults: true` overrides same-named patterns and appends the rest. |
 | `hooks/hooks.json` | Hook wiring, single source; `templates/settings.json` is generated from it (`scripts/render-settings-template.py --check` detects drift). |
-| `docker-compose.yml` | Neo4j only (`writ-neo4j`, ports 7474/7687, `NEO4J_AUTH` matching the config default). The daemon is never containerized. |
+| `docker-compose.yml` | Neo4j only (`writ-neo4j`, ports 7474/7687 published on 127.0.0.1 only). `NEO4J_AUTH` and the healthcheck read `$WRIT_NEO4J_PASSWORD` when the container is created (pass it inline: `WRIT_NEO4J_PASSWORD="$(writ neo4j password)" docker compose -f docker-compose.yml up -d neo4j`); unset, they fall back to the development default, which seeds a brand-new volume only. The daemon is never containerized. |
 
 ## Environment variables
 
@@ -47,6 +47,7 @@ At the install root, gitignored; `writ.toml.example` is the template. Readers in
 | `WRIT_READ_JUNK_GATE=enforce` | Turn the read-junk gate from observe-only into blocking; `WRIT_READ_SIZE_KB` sets the oversize bound | `observe` / 100 KB |
 | `WRIT_REALIGN_CACHE=1` | Let `ensure-server` restart a daemon whose cache dir diverged | off (systemd owns restarts) |
 | `WRIT_NEO4J_URI` / `WRIT_NEO4J_USER` / `WRIT_NEO4J_PASSWORD` | Point one process at a different Neo4j instance without editing the shared `writ.toml`; wins over the file | unset (falls through to `[neo4j]`, then the coded defaults) |
+| `WRIT_ALLOW_DEV_PASSWORD=1` | Accept the published development Neo4j password, which every connection otherwise refuses (`writ/config.py` `refuse_dev_password`). Exactly `1`. For throwaway instances and CI (`.github/workflows/pr.yml` sets it) | unset (refused) |
 | `WRIT_TEST_GRAPH=1` | Mark the connected instance disposable, permitting a whole-graph wipe. Required **together with** a `WRIT_NEO4J_URI` on a different `(host, port)`; neither alone is enough, because the marker records intent and cannot verify the target. **Set by `tests/conftest.py` at import for every suite run**, and by the CI test job at job level; an operator sets it by hand only when running against a scratch instance outside the suite | unset (wipes refused) |
 | `WRIT_TEST_NO_ISOLATION=1` | Opt the test suite out of graph isolation: conftest forces no connection variables, runs no preflight, keeps the end-of-suite corpus restore, and `scripts/test-graph.sh` becomes a no-op. The suite then runs against whatever `writ.toml` configures, which on a developer machine is the live graph, and every `disposable_graph`-gated test skips. Exists so a machine with no docker daemon can still run the half of the suite that never touches Neo4j | unset (the suite isolates) |
 | `CLAUDE_SESSION_ID` / `CLAUDE_JOB_DIR` | The only sources of session identity. There is no third tier: a hook that cannot read an id from the payload records a `critical_error` and declines to act rather than synthesizing one (`writ_require_session`, `bin/lib/common.sh`). | harness-provided |

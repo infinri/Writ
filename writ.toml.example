@@ -5,7 +5,10 @@
 [neo4j]
 uri = "bolt://localhost:7687"
 user = "neo4j"
-password = "writdevpass"  # local dev default; change for any networked instance
+# No password here on purpose. `writ neo4j set-password` generates a private one, changes it in
+# the running Neo4j and writes it into this section (the file becomes mode 0600). The built-in
+# fallback is published in the Writ repository, so the daemon and CLI refuse it unless
+# WRIT_ALLOW_DEV_PASSWORD=1 (throwaway instances and CI only).
 
 [hnsw]
 # cache_dir default is ~/.cache/writ/hnsw (see writ/config.py).

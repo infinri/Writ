@@ -437,8 +437,16 @@ class TestNoSecondGraphTransport:
 
     _FORBIDDEN_HEADS = ("docker", "docker-compose", "cypher-shell", "neo4j-admin")
 
+    # The one docker argv shape that is not a transport: `docker compose ... config` renders
+    # the compose file and `docker compose version` reports the plugin, both offline. The
+    # password-install tests use them to check the port bindings and the password variable.
+    # A rule on the argv, not a file exemption, so an exec beside them is still caught.
+    _OFFLINE_COMPOSE_VERBS = frozenset({"config", "version"})
+    _TRANSPORT_WORDS = frozenset({"exec", "run", "cypher-shell"})
+
     # Ships EMPTY, deliberately. After this cycle no test file has a list literal
-    # whose FIRST element is one of the heads above: the tool-prerequisite tests
+    # whose FIRST element is one of the heads above, apart from the offline compose
+    # renders _is_offline_compose admits by shape: the tool-prerequisite tests
     # pass ["bash", "docker", "git"] as a PATH allowlist, where "docker" is never
     # the head. Inventing an exemption the tree does not need would license exactly
     # the shape being forbidden. Same reasoning, same shape, as _ALLOWED above:
@@ -446,7 +454,8 @@ class TestNoSecondGraphTransport:
     _ALLOWED: dict[str, str] = {}
 
     def _forbidden_head_lists(self, path):
-        """Every list literal in a module whose FIRST element is a forbidden head.
+        """Every list literal in a module whose FIRST element is a forbidden head,
+        except an offline compose render (_is_offline_compose).
 
         Keys on the head -- index zero -- never on the substring appearing
         anywhere in the list, so a tool-name allowlist like
@@ -464,9 +473,26 @@ class TestNoSecondGraphTransport:
             if isinstance(node, ast.List) and node.elts:
                 head = node.elts[0]
                 if isinstance(head, ast.Constant) and isinstance(head.value, str) \
-                        and head.value in self._FORBIDDEN_HEADS:
+                        and head.value in self._FORBIDDEN_HEADS \
+                        and not self._is_offline_compose(node):
                     found.append((node.lineno, head.value))
         return found
+
+    def _is_offline_compose(self, node) -> bool:
+        """["docker", "compose", ..., "config" | "version"] with no exec/run/cypher-shell.
+
+        Only literal string elements count; a computed one (the compose file path) is
+        neither a verb nor a transport word.
+        """
+        import ast
+
+        words = [e.value for e in node.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+        return (
+            len(node.elts) > 1 and tuple(words[:2]) == ("docker", "compose")
+            and isinstance(node.elts[1], ast.Constant)
+            and bool(self._OFFLINE_COMPOSE_VERBS & set(words))
+            and not self._TRANSPORT_WORDS & set(words)
+        )
 
     def test_no_second_transport_argv_in_tests(self) -> None:
         from pathlib import Path
@@ -488,7 +514,8 @@ class TestNoSecondGraphTransport:
     def test_allowed_is_empty(self) -> None:
         assert self._ALLOWED == {}, (
             "after cycle 8 no test file has an argv list headed by a forbidden "
-            "transport; an exemption the tree does not need would license "
+            "transport (offline compose renders are admitted by shape, not by "
+            "file); an exemption the tree does not need would license "
             f"exactly the shape being forbidden: {self._ALLOWED}"
         )
 
@@ -534,6 +561,24 @@ class TestNoSecondGraphTransport:
             '    subprocess.run(["bash", "docker", "git"])\n'
         )
         assert not self._forbidden_head_lists(clean)
+
+    def test_only_an_offline_compose_render_escapes_the_docker_head(self, tmp_path) -> None:
+        # `docker compose ... config` and `docker compose version` render or report locally;
+        # they reach no container and no Neo4j. Every other docker argv stays forbidden,
+        # including a compose argv that also names a verb that does reach one.
+        planted = tmp_path / "planted.py"
+        planted.write_text(
+            'import subprocess\n'
+            'def f(path):\n'
+            '    subprocess.run(["docker", "compose", "-f", str(path), "config"])\n'
+            '    subprocess.run(["docker", "compose", "version"])\n'
+            '    subprocess.run(["docker", "compose", "exec", "neo4j", "config"])\n'
+            '    subprocess.run(["docker", "compose", "run", "neo4j", "version"])\n'
+            '    subprocess.run(["docker", "compose", "-f", str(path), "up"])\n'
+            '    subprocess.run(["docker", "version"])\n'
+            '    subprocess.run(["docker", "compose", "cypher-shell", "config"])\n'
+        )
+        assert [line for line, _ in self._forbidden_head_lists(planted)] == [5, 6, 7, 8, 9]
 
     def test_no_false_positive_on_real_tool_allowlists(self) -> None:
         """`["bash", "docker", "git"]` is a list of tool NAMES, not an invocation.

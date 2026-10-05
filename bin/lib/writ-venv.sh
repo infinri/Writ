@@ -82,6 +82,24 @@ writ_venv_serves() {
     [ -n "$_WRIT_VENV_WRIT_FROM" ] && [ "$_WRIT_VENV_WRIT_FROM" = "$want" ]
 }
 
+# writ.toml lives at the install root and is gitignored, so a plugin upgrade (a new version
+# directory) starts without it. It holds the Neo4j password (program item 3), so a missing copy
+# is not cosmetic: the new install would resolve the refused development default and the daemon
+# would not start. Copies <from>/writ.toml to <to>/writ.toml ONLY when <to> has none, keeping it
+# private (umask 077, then chmod 600). Always returns 0; says what it did on stderr.
+writ_carry_config() {
+    local from="$1" to="$2"
+    [ -n "$from" ] && [ -f "$from/writ.toml" ] && [ ! -e "$to/writ.toml" ] || return 0
+    [ "$(cd "$from" 2>/dev/null && pwd -P)" = "$(cd "$to" 2>/dev/null && pwd -P)" ] && return 0
+    if (umask 077 && cp "$from/writ.toml" "$to/writ.toml") 2>/dev/null \
+        && chmod 600 "$to/writ.toml" 2>/dev/null; then
+        echo "[Writ] Carried writ.toml (it holds the Neo4j password) forward from $from" >&2
+    else
+        echo "[Writ] Warning: could not copy $from/writ.toml to $to; copy it by hand (mode 600) or the daemon will refuse the development password." >&2
+    fi
+    return 0
+}
+
 # SessionStart only. The venv is shared across version dirs, so after an upgrade it still imports
 # the previous version (or nothing, once that dir is pruned), and a venv bootstrapped from a
 # developer checkout imports the checkout. Either way the daemon would run code this install does
@@ -95,6 +113,9 @@ writ_venv_repoint() {
         echo "[Writ] Warning: WRIT_VENV=$venv imports writ from ${_WRIT_VENV_WRIT_FROM:-nowhere}, not $root/writ. Repoint it yourself: $venv/bin/python3 -m pip install -e $root" >&2
         return 1
     fi
+    # Captured before the reinstall below overwrites _WRIT_VENV_WRIT_FROM: the install the venv
+    # still imports is where this one's writ.toml comes from.
+    local prev_root="${_WRIT_VENV_WRIT_FROM%/writ}"
     echo "[Writ] $venv imports writ from ${_WRIT_VENV_WRIT_FROM:-nowhere}, not this install; reinstalling it from $root" >&2
     # Serialized per venv: two windows opened together after an upgrade would otherwise both run
     # pip into the same site-packages. The loser waits, re-checks, and finds nothing to do. Each
@@ -108,6 +129,7 @@ writ_venv_repoint() {
             || timeout "$t" "$venv/bin/python3" -m pip install --quiet --no-deps -e "$root" >&2
     ) 9>"$venv/.writ-repoint.lock"; then
         if writ_venv_serves "$venv" "$root"; then
+            writ_carry_config "$prev_root" "$root"
             echo "[Writ] Repointed. A daemon that was already running still serves the old code: restart it (systemctl --user restart writ-server, or scripts/stop-server.sh then scripts/ensure-server.sh). If this release changed dependencies, run: bash $root/scripts/bootstrap-plugin.sh" >&2
             return 0
         fi

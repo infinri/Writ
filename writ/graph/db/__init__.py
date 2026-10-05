@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 
 from neo4j import AsyncGraphDatabase
 
+from writ.config import refuse_dev_password
+
 from writ.graph.db._common import (
     ALLOWED_EDGE_TYPES,
     CORPUS_EDGE_TYPES,
@@ -76,6 +78,11 @@ class Neo4jConnection(
     methods now live on the store mixins above (see each module)."""
 
     def __init__(self, uri: str, user: str, password: str, database: str = "neo4j") -> None:
+        # Program item 3. Every connection Writ makes (daemon, CLI, doctor, scripts, benchmarks)
+        # is constructed here, so the published development password is refused here and no
+        # caller can forget to check. writ/neo4j_password.py is the single exception: replacing
+        # that password means authenticating with it, so it opens a driver directly.
+        refuse_dev_password(password)
         self._driver: AsyncDriver = AsyncGraphDatabase.driver(uri, auth=(user, password))
         self._database = database
         # Retained so clear_all can tell WHICH instance it is about to delete from.
