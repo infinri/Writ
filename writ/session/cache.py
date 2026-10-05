@@ -227,7 +227,14 @@ def _default_cache() -> dict:
         "compaction_epoch": 0,
         "injection_shown": {},
         "last_injected_rule_ids": [],
-        "detected_domain": None,
+        # Program item 1c: the rules shown since the last compaction, which is the ranked and
+        # pre-write exclusion outside a work phase (injection_state.retrieval_exclude_ids).
+        # None means this session has never compacted, and then the flat loaded_rule_ids is
+        # the exclusion exactly as before the field existed. cmd_reset_after_compaction sets
+        # it to [] and --add-rules unions into it from then on. loaded_rule_ids itself is
+        # never cleared: citations, feedback, the handoff and coverage read it as everything
+        # this session was ever shown.
+        "rule_ids_since_compaction": None,
         # Phase 1 additions per plan Section 6.1 deliverable 5. Track playbook
         # execution state for SDD/brainstorm workflows, verification evidence
         # for Gate 5 Tier 1, review ordering for SDD two-stage review, and

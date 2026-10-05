@@ -24,7 +24,7 @@ implementation, review). Evidence paths are relative to the repo root.
 | 1c | After compaction outside work mode, shown rules never come back: reset clears `by_phase[None]`, the query side falls back to the flat `loaded_rule_ids`, which is never cleared | `writ/session/session_lifecycle.py:57-61`, `query.py:231-236`, `writ/session/mode_engine.py:619` | Also clear `loaded_rule_ids` on compaction |
 | 1d | No-good-match gate (0.30) reads the raw top-10 vector hits before filtering, and only 10 vector candidates survive to filtering | `pipeline.py:61`, `pipeline.py:376-386` | Filter before gating; raise `VECTOR_CANDIDATE_LIMIT` |
 | 1e | Two methodology label lists disagree: trigger index lacks ForbiddenResponse | `writ/retrieval/trigger_index.py:30` vs `pipeline.py:792` | Derive both from one source in `writ/graph/schema.py` |
-| 1f | Ranking misses: sibling-rule collisions and the Magento magnet (about 7 misses); 11 of 35 remaining misses are genuine ranking or vocabulary work | `benchmarks/MISS-TRIAGE-2026-08-05.md` | Investigate the Magento scoring artifact in the pipeline; then sibling disambiguation |
+| 1f | Ranking misses: sibling-rule collisions and the Magento magnet (about 7 misses); 11 of 35 remaining misses are genuine ranking or vocabulary work | `benchmarks/MISS-TRIAGE-2026-08-05.md` | Investigate the Magento scoring artifact in the pipeline; then sibling disambiguation; retune the 0.30 abstention threshold now that it reads filtered hits (`benchmarks/VECTOR-GATE-2026-10-05.md`) |
 
 ## 2. Make learning and edits live (hot reload)
 

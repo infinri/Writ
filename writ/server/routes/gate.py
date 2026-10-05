@@ -708,12 +708,8 @@ async def pre_write_check(request: PreWriteCheckRequest) -> dict[str, Any]:
         rag_meta: dict[str, Any] = {"rule_ids": [], "tokens": 0}
         if server._pipeline is not None and file_path:
             try:
-                by_phase = cache.get("loaded_rule_ids_by_phase", {})
-                current_phase = cache.get("current_phase", "")
-                if by_phase and current_phase:
-                    exclude_ids = by_phase.get(current_phase, [])
-                else:
-                    exclude_ids = cache.get("loaded_rule_ids", [])
+                from writ.session.injection_state import retrieval_exclude_ids
+                exclude_ids = retrieval_exclude_ids(cache)
                 remaining_budget = cache.get("remaining_budget", server.writ_session.DEFAULT_SESSION_BUDGET)
                 max_budget = min(remaining_budget, 1500)
                 if max_budget >= 200:

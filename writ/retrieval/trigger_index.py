@@ -23,11 +23,14 @@ from __future__ import annotations
 
 import re
 
+from writ.graph.schema import TRIGGER_INDEX_METHODOLOGY_LABELS
 from writ.shared.tokens import estimate_tokens
 
-# Retrievable methodology node types eligible for push/pull injection. Rules and
-# ForbiddenResponse stay in CHANNEL 1 (/always-on + /query), per D1.
-RETRIEVABLE_METHODOLOGY_LABELS = ("Skill", "Playbook", "Technique", "AntiPattern")
+# Retrievable methodology node types eligible for floor, push and pull injection. The list
+# and its one deliberate difference from the ranked pool (ForbiddenResponse stays in
+# CHANNEL 1, /always-on + /query, per D1) live in writ/graph/schema.py; this name is kept
+# for its readers (node_scope.py and routing_checks.py comments, build_from_db below).
+RETRIEVABLE_METHODOLOGY_LABELS = TRIGGER_INDEX_METHODOLOGY_LABELS
 
 # Summary-render token estimate (the shared /always-on heuristic).
 def _est_tokens(node: dict) -> int:

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Writ PostCompact hook -- fires after context window compaction
 #
-# Clears loaded_rule_ids_by_phase[current_phase] so rules will be
-# re-injected on the next UserPromptSubmit. Resets remaining_budget
+# Empties the rule exclusion so rules shown before compaction can be re-injected on the
+# next UserPromptSubmit, in every mode: the current phase's bucket in work mode, the flat
+# rule_ids_since_compaction outside it (program item 1c). Resets remaining_budget
 # to DEFAULT_SESSION_BUDGET (8000). This is the authoritative compaction
 # signal, and the only one: the writ-rag-inject.sh heuristic that once
 # guessed at compaction was removed (it read an env var CC does not set).
@@ -51,7 +52,7 @@ if [ -z "$SESSION_ID" ]; then
     exit 0
 fi
 
-# Reset phase exclusion list and budget so rules re-inject after the window is freed, and
+# Reset the rule exclusion and budget so rules re-inject after the window is freed, and
 # queue the post-compaction directive (cmd_reset_after_compaction sets post_compact_pending
 # in the same cache write, so queueing costs this hook no extra spawn). The statusLine
 # maintains context_percent independently. The result is logged, not printed: stdout on this

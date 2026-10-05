@@ -39,6 +39,7 @@ from writ.graph.schema import (
     NODE_ID_FIELDS,
     PARITY_EXEMPT_PROVENANCE,
     REDUNDANCY_SIMILARITY_THRESHOLD,
+    TRIGGER_INDEX_METHODOLOGY_LABELS,
     VALID_DOMAINS,
     WIRED_ROUTES,
 )
@@ -78,7 +79,9 @@ EXPECTED_FLOORS: dict[str, set[str]] = {
         "PBK-PROC-AUDIT-FANOUT-001", "TEC-PROC-SOURCE-EVAL-001",
     },
 }
-_FLOOR_NODE_LABELS = "['Skill','Playbook','Technique','AntiPattern']"
+# The labels the trigger index can load, as a Cypher list literal. Rendered from the schema
+# so the integrity checks cannot drift from MethodologyTriggerIndex (program item 1e).
+_FLOOR_NODE_LABELS = "[" + ",".join(f"'{label}'" for label in TRIGGER_INDEX_METHODOLOGY_LABELS) + "]"
 
 # 1.8: the action vocabulary the live push path can emit (the wired actions, D-B).
 # The action analog of EXPECTED_FLOORS' mode set: an `action_triggers` value

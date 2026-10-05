@@ -220,6 +220,37 @@ RETRIEVABLE_NODE_TYPES = frozenset({
 })
 
 
+# Program item 1e: the methodology labels each retrieval channel loads, from ONE place.
+# Channel 1's ranked candidate pool (pipeline._load_candidates) loads these next to Rule.
+# The ORDER is load-bearing: it is the BM25 and vector index build order, which can decide
+# ties among equal-scoring hits (tests/test_retrieval_determinism.py).
+RANKED_METHODOLOGY_LABELS: tuple[str, ...] = (
+    NodeType.SKILL.value,
+    NodeType.PLAYBOOK.value,
+    NodeType.TECHNIQUE.value,
+    NodeType.ANTIPATTERN.value,
+    NodeType.FORBIDDEN_RESPONSE.value,
+)
+# Delivered by Channel 1 only, DELIBERATELY. /always-on injects every ForbiddenResponse on
+# every turn and the ranked pool carries them too (decision D1 of the 1.7 cutover,
+# writ/server/routes/query.py; HANDBOOK.md node-type table), so the Channel 2 trigger index
+# leaves them out: indexing them there would deliver the same node a second time through
+# the methodology companion. tests/test_methodology_label_source.py pins this set.
+CHANNEL1_ONLY_METHODOLOGY_LABELS: frozenset[str] = frozenset({NodeType.FORBIDDEN_RESPONSE.value})
+# Channel 2's MethodologyTriggerIndex (floor, push, pull) loads these, in the same order.
+TRIGGER_INDEX_METHODOLOGY_LABELS: tuple[str, ...] = tuple(
+    label for label in RANKED_METHODOLOGY_LABELS
+    if label not in CHANNEL1_ONLY_METHODOLOGY_LABELS
+)
+# A typo in the exception set must not silently leave the two lists identical. A bare
+# assert would vanish under `python -O`, so this raises (the WIRED_ROUTES guard pattern).
+if not CHANNEL1_ONLY_METHODOLOGY_LABELS <= set(RANKED_METHODOLOGY_LABELS):
+    raise ValueError(
+        f"CHANNEL1_ONLY_METHODOLOGY_LABELS names label(s) the ranked pool does not load: "
+        f"{sorted(CHANNEL1_ONLY_METHODOLOGY_LABELS - set(RANKED_METHODOLOGY_LABELS))}"
+    )
+
+
 # --- Node Models ---
 
 

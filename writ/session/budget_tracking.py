@@ -46,6 +46,10 @@ def _upd_add_rules(cache: dict, args: list[str], i: int) -> int:
     phase_ids = set(by_phase.get(phase, []))
     phase_ids.update(new_ids)
     by_phase[phase] = sorted(phase_ids)
+    # Flat exclusion since the last compaction (program item 1c); None until the first one.
+    since = cache.get("rule_ids_since_compaction")
+    if isinstance(since, list):
+        cache["rule_ids_since_compaction"] = sorted(set(since) | set(new_ids))
     return i + 2
 
 
@@ -282,12 +286,6 @@ def _upd_set_escalation_feedback_sent(cache: dict, args: list[str], i: int) -> i
     return i + 1
 
 
-def _upd_set_detected_domain(cache: dict, args: list[str], i: int) -> int:
-    # Layer 3: the cwd-changed domain marker, formerly a hand-rolled hook write.
-    cache["detected_domain"] = args[i + 1]
-    return i + 2
-
-
 def _upd_mark_shown(cache: dict, args: list[str], i: int) -> int:
     # --mark-shown <section> <epoch> <json ids>: the collapse record (injection_state).
     try:
@@ -329,7 +327,6 @@ _UPDATE_HANDLERS: dict = {
     "--set-recall-briefed": (_upd_set_recall_briefed, 0),
     "--clear-post-compact-pending": (_upd_clear_post_compact_pending, 0),
     "--set-escalation-feedback-sent": (_upd_set_escalation_feedback_sent, 0),
-    "--set-detected-domain": (_upd_set_detected_domain, 1),
     "--mark-shown": (_upd_mark_shown, 3),
 }
 

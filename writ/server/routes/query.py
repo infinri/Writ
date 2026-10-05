@@ -229,7 +229,7 @@ async def prompt_bundle(request: PromptBundleRequest) -> dict[str, Any]:
     )
     from writ.retrieval.prompt_bundle import compute_nudge, extract_rule_objects, tag_overlap
     from writ.session.budget_tracking import should_skip_cache
-    from writ.session.injection_state import injection_epoch, shown_ids
+    from writ.session.injection_state import injection_epoch, retrieval_exclude_ids, shown_ids
     from writ.shared.tokens import PROMPT_SECTION_TOKENS
 
     if server._pipeline is None:
@@ -241,15 +241,10 @@ async def prompt_bundle(request: PromptBundleRequest) -> dict[str, Any]:
     prompt = request.prompt or ""
 
     cache = await asyncio.to_thread(server.writ_session._read_cache, sid)
-    by_phase = cache.get("loaded_rule_ids_by_phase", {})
-    current_phase = cache.get("current_phase", "")
-    if by_phase and current_phase:
-        exclude_ids = list(set(by_phase.get(current_phase, [])))
-    else:
-        exclude_ids = list(set(cache.get("loaded_rule_ids", [])))
+    # Shown since the last compaction, scoped to the phase in work mode (program item 1c).
+    exclude_ids = list(set(retrieval_exclude_ids(cache)))
     remaining_budget = cache.get("remaining_budget", 8000)
     prefer_ids = cache.get("last_injected_rule_ids", []) or []
-    detected_domain = cache.get("detected_domain", "") or ""
     epoch = injection_epoch(cache)
 
     out: dict[str, Any] = {
@@ -268,12 +263,15 @@ async def prompt_bundle(request: PromptBundleRequest) -> dict[str, Any]:
     run_ranked = "ranked" in sections and request.include_ranked
     qresp: dict[str, Any] = {}
     if run_ranked:
+        # No domain= here (program item 1b). The CwdChanged hook used to tag the session
+        # with a project LANGUAGE and this passed it as an exact domain filter, but no rule
+        # domain is a language (writ/graph/schema.py VALID_DOMAINS), so the filter dropped
+        # every ranked candidate. An explicit domain from another /query caller still filters.
         qresp = await query_rules(QueryRequest(
             query=prompt,
             budget_tokens=min(remaining_budget, PROMPT_SECTION_TOKENS["ranked"]),
             exclude_rule_ids=exclude_ids,
             prefer_rule_ids=(prefer_ids or None),
-            domain=(detected_domain if detected_domain and detected_domain != "universal" else None),
             session_id=sid,
             project_root=request.project_root,
         ))

@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Writ CwdChanged hook -- fires when working directory changes
+# Writ CwdChanged hook: fires when the working directory changes.
 #
-# Detects the project domain from marker files in the new cwd and stores
-# it in the session cache as detected_domain. The RAG injection hook reads
-# this field to pass a domain hint to the /query endpoint.
+# Detects the project language from marker files in the new cwd and records it on the
+# cwd_changed metrics row. It does NOT write it into the session cache: the cached field
+# had one reader, /prompt-bundle, which passed it to ranked retrieval as an exact domain
+# filter, and no rule domain is a language (writ/graph/schema.py VALID_DOMAINS), so every
+# ranked rule was dropped (program item 1b, docs/adr/ADR-silent-fixes-1b-1e.md).
 #
 # Domain detection is heuristic (file-existence checks, no parsing).
 #
@@ -14,7 +16,6 @@ set -euo pipefail
 
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 WRIT_DIR="$(cd "$HOOK_DIR/../.." && pwd)"
-SESSION_HELPER="$WRIT_DIR/bin/lib/writ-session.py"
 source "$WRIT_DIR/bin/lib/common.sh"
 
 
@@ -68,10 +69,6 @@ if [ -n "$NEW_CWD" ]; then
         DETECTED_DOMAIN="go"
     fi
 fi
-
-# Update session cache with detected domain (locked/atomic via the update CLI;
-# never hand-roll the write -- a torn write here can wipe the whole session cache)
-python3 "$SESSION_HELPER" update "$SESSION_ID" --set-detected-domain "$DETECTED_DOMAIN" 2>/dev/null || true
 
 # Log friction event
 log_friction_event "$SESSION_ID" "${CURRENT_MODE:-}" "cwd_changed" \

@@ -59,7 +59,11 @@ _ONNX_DIR = DEFAULT_ONNX_DIR
 
 # Per ARCH-CONST-001
 BM25_CANDIDATE_LIMIT = 50
-VECTOR_CANDIDATE_LIMIT = 10
+# Raised from 10 (program item 1d): the Stage 1 filter now runs on these hits BEFORE the
+# abstention gate, and 10 left too few survivors once exclusions and scope removed some.
+# Equal to DEFAULT_EF_SEARCH (writ/retrieval/embeddings.py), so the index's search beam is
+# unchanged; only more of it is returned.
+VECTOR_CANDIDATE_LIMIT = 50
 DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 FIRST_PASS_TOP_N = 3
 # S4 CRAG abstention operating point for the rule-injection path only. Measured
@@ -69,6 +73,8 @@ FIRST_PASS_TOP_N = 3
 # NOT baked into build_pipeline's default -- authoring (suggest_relationships)
 # and offline diagnostics use the same factory and were not part of that
 # measurement, so they must stay ungated (abstention_threshold=0.0).
+# Measured on the unfiltered top-1; since item 1d the gate reads filter survivors,
+# re-measured in benchmarks/VECTOR-GATE-2026-10-05.md.
 RULE_INJECTION_ABSTENTION_THRESHOLD = 0.30
 # Domains excluded by the semantic-mode legacy fallback (node_routes absent).
 _METHODOLOGY_EXCLUDE_DOMAINS = {"process", "communication", "meta-authoring"}
@@ -278,8 +284,8 @@ class RetrievalPipeline:
         self._metadata = rule_metadata
         self._weights = weights or RankingWeights()
         self._authority_preference_threshold = authority_preference_threshold
-        # S4 CRAG abstention: return no rules when the top raw vector cosine is
-        # below this (0.0 = off).
+        # S4 CRAG abstention: return no rules when the best raw vector cosine that survives
+        # the Stage 1 filter is below this (0.0 = off).
         self._abstention_threshold = abstention_threshold
         self._abstractions = abstractions or []
         # Phase 0 T0.4: maps a node's identity (node_type label or node_id) to
@@ -363,13 +369,18 @@ class RetrievalPipeline:
             methodology_domain_exclude, route_filter, caller_project,
         )
 
-        # Stage 3: ANN vector search.
+        # Stage 3: ANN vector search, then the SAME Stage 1 filter the BM25 hits get.
         query_vector = self._model.encode(query_text).tolist()
         vector_results: list[ScoredResult] = self._vector.search(query_vector, k=VECTOR_CANDIDATE_LIMIT)
-        # S4 CRAG abstention gate: the raw cosine of the single best semantic
-        # match. self._vector.search returns descending, so [0].score is top-1.
-        # When even the best match is weak (below the threshold), no rule is
-        # relevant -- return an empty set rather than injecting a false positive.
+        vector_results = self._filter_candidates(
+            vector_results, lambda r: r.rule_id, exclude, domain_lower, allowed_types,
+            methodology_domain_exclude, route_filter, caller_project,
+        )
+        # S4 CRAG abstention gate, read AFTER the filter (program item 1d): the raw cosine of
+        # the best vector candidate that can actually be injected. Read before the filter, a
+        # hit about to be dropped (already shown this session, outside the requested domain
+        # or route, another project's record) held the gate open for weak survivors. 0.0
+        # when nothing survives, which abstains whenever the gate is on.
         top_raw_cosine = max((r.score for r in vector_results), default=0.0)
         if self._abstention_threshold > 0.0 and top_raw_cosine < self._abstention_threshold:
             return {
@@ -379,10 +390,6 @@ class RetrievalPipeline:
                 "latency_ms": round((time.perf_counter() - start) * 1000, 3),
                 "abstain_signal": round(top_raw_cosine, 6),
             }
-        vector_results = self._filter_candidates(
-            vector_results, lambda r: r.rule_id, exclude, domain_lower, allowed_types,
-            methodology_domain_exclude, route_filter, caller_project,
-        )
 
         # Merge + reciprocal-rank normalize candidates from both stages.
         candidate_ids = self._merge_and_normalize(bm25_results, vector_results)
@@ -789,12 +796,13 @@ async def _load_candidates(db: Neo4jConnection) -> tuple[list[dict], dict]:
             rules.append(dict(record["r"]))
 
     # Load retrievable methodology nodes. Each becomes a candidate alongside Rules.
-    retrievable_methodology_labels = ("Skill", "Playbook", "Technique", "AntiPattern", "ForbiddenResponse")
-    # Reuse the canonical label->id-field registry rather than a local copy.
-    from writ.graph.schema import NODE_ID_FIELDS
-    retrievable_id_fields = {label: NODE_ID_FIELDS[label] for label in retrievable_methodology_labels}
+    # The label list (and why ForbiddenResponse is here but not in the trigger index) is
+    # writ/graph/schema.py's RANKED_METHODOLOGY_LABELS; the canonical id-field registry
+    # comes from the same module.
+    from writ.graph.schema import NODE_ID_FIELDS, RANKED_METHODOLOGY_LABELS
+    retrievable_id_fields = {label: NODE_ID_FIELDS[label] for label in RANKED_METHODOLOGY_LABELS}
     methodology_nodes: list[dict] = []
-    for label in retrievable_methodology_labels:
+    for label in RANKED_METHODOLOGY_LABELS:
         id_field = retrievable_id_fields[label]
         # Ordered for the same reason as the Rule query above: this feeds index
         # build order, which can decide ties among equal-scoring candidates.

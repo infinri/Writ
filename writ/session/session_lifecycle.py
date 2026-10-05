@@ -2,7 +2,7 @@
 
 POL-6g-3 extracts the cache dump (cmd_read) and the compaction-boundary commands
 (cmd_clear_rules_for_compaction for PreCompact, cmd_reset_after_compaction for PostCompact)
-out of bin/lib/writ-session.py. Imports only lower layers (cache, friction, config) + stdlib;
+out of bin/lib/writ-session.py. Imports only lower layers (cache, friction, config, injection_state) + stdlib;
 acyclic. The facade re-exports these; server.py's compaction routes resolve unchanged.
 """
 
@@ -12,6 +12,7 @@ import sys
 from writ.session.cache import _read_cache, mutate_cache
 from writ.session.friction import _log_friction_event
 from writ.session.config import DEFAULT_SESSION_BUDGET, APPROX_TOKENS_PER_RULE_FULL
+from writ.session.injection_state import retrieval_exclude_ids
 
 
 def cmd_read(session_id: str) -> None:
@@ -44,7 +45,14 @@ def cmd_clear_rules_for_compaction(session_id: str) -> None:
 
 
 def cmd_reset_after_compaction(session_id: str) -> None:
-    """Clear current phase's exclusion list and reset budget. For PostCompact hook.
+    """Make every shown rule eligible again and reset budget. For PostCompact hook.
+
+    The model lost the shown rules from context, so the exclusion empties in EVERY mode
+    (program item 1c): the current phase's bucket in work mode, rule_ids_since_compaction
+    outside a work phase. It used to clear only by_phase[current_phase], and outside work
+    mode current_phase is None, so the flat list the query side falls back to was never
+    cleared. loaded_rule_ids is NOT touched: it is the cumulative record citation
+    validation, auto-feedback, the handoff and coverage read.
 
     Also QUEUES the verify-discipline directive (post_compact_pending). The PostCompact hook
     cannot deliver it: CC's hook-output validator rejects a PostCompact hookSpecificOutput
@@ -55,10 +63,12 @@ def cmd_reset_after_compaction(session_id: str) -> None:
     """
     with mutate_cache(session_id) as cache:
         current_phase = cache.get("current_phase", "unknown")
-        by_phase = cache.get("loaded_rule_ids_by_phase", {})
-        cleared = list(by_phase.get(current_phase, []))
-        by_phase[current_phase] = []
-        cache["loaded_rule_ids_by_phase"] = by_phase
+        cleared = retrieval_exclude_ids(cache)
+        if current_phase:
+            by_phase = cache.get("loaded_rule_ids_by_phase", {})
+            by_phase[current_phase] = []
+            cache["loaded_rule_ids_by_phase"] = by_phase
+        cache["rule_ids_since_compaction"] = []
         cache["remaining_budget"] = DEFAULT_SESSION_BUDGET
         # Clear sticky rules preference (stale after compaction)
         cache["last_injected_rule_ids"] = []

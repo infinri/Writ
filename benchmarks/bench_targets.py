@@ -33,7 +33,7 @@ from writ.config import get_neo4j_password, get_neo4j_uri, get_neo4j_user
 from writ.graph.db import Neo4jConnection
 from writ.graph.ingest import validate_parsed_rule
 from writ.graph.integrity import IntegrityChecker
-from writ.retrieval.pipeline import build_pipeline
+from writ.retrieval.pipeline import VECTOR_CANDIDATE_LIMIT, build_pipeline
 from writ.retrieval.ranking import (
     RankingWeights,
     apply_context_budget,
@@ -601,7 +601,7 @@ class TestPerStageBenchmarks:
         )
 
     def test_stage3_vector_latency(self, pipeline) -> None:
-        """Stage 3: ANN vector search via hnswlib. Budget < 3ms."""
+        """Stage 3: ANN vector search at the pipeline's real k (VECTOR_CANDIDATE_LIMIT). Budget < 3ms."""
         queries = [
             "dependency injection", "SQL query", "async event loop",
             "test isolation", "plugin observer", "error handling",
@@ -613,7 +613,7 @@ class TestPerStageBenchmarks:
             for q in queries:
                 vec = pipeline._model.encode(q).tolist()
                 start = time.perf_counter()
-                pipeline._vector.search(vec, k=10)
+                pipeline._vector.search(vec, k=VECTOR_CANDIDATE_LIMIT)
                 elapsed_ms = (time.perf_counter() - start) * 1000
                 latencies.append(elapsed_ms)
 

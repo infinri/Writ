@@ -5,8 +5,8 @@ once per EPOCH and as one pointer line per rule after that. An epoch is the pair
 (compaction_epoch, current_phase): cmd_reset_after_compaction bumps the counter and every
 phase write changes the phase, so both boundaries reset the record without any of the nine
 phase writers having to know this module exists. Mode-independent by construction: outside
-work mode current_phase stays None and only the counter moves, which is exactly the case
-item 1c's by_phase reset gets wrong.
+work mode current_phase stays None and only the counter moves, the same boundary
+retrieval_exclude_ids below uses for the ranked exclusion (item 1c).
 """
 from __future__ import annotations
 
@@ -44,3 +44,23 @@ def apply_mark_shown(cache: dict, section: str, epoch: str, ids: list) -> None:
     merged.update(str(i) for i in ids if i)
     record[section] = sorted(merged)
     cache["injection_shown"] = record
+
+
+def retrieval_exclude_ids(cache: dict) -> list[str]:
+    """The rule ids ranked and pre-write retrieval must not re-inject.
+
+    In a work phase, that phase's bucket of loaded_rule_ids_by_phase. Outside one, the rules
+    shown since the last compaction; before a session's first compaction that field is None
+    and the flat loaded_rule_ids is the answer, as it always was. cmd_reset_after_compaction
+    empties whichever applies (program item 1c). bin/lib/writ_phase_scoped_rules.py mirrors
+    this for the hooks (stdlib-only, so it cannot import it), and
+    tests/test_compaction_clears_shown_exclusion.py holds the two equal.
+    """
+    by_phase = cache.get("loaded_rule_ids_by_phase", {})
+    current_phase = cache.get("current_phase", "")
+    if by_phase and current_phase:
+        return list(by_phase.get(current_phase, []))
+    since = cache.get("rule_ids_since_compaction")
+    if isinstance(since, list):
+        return list(since)
+    return list(cache.get("loaded_rule_ids", []))

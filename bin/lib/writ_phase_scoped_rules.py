@@ -4,8 +4,9 @@
 writ-read-rag.sh, writ-rag-inject.sh and writ-posttool-rag.sh each need the
 rule-id list scoped to the session's current phase: the current phase's bucket
 from ``loaded_rule_ids_by_phase`` when both it and ``current_phase`` are
-populated, otherwise the flat ``loaded_rule_ids``. This module is the single
-source of that selection.
+populated, otherwise ``rule_ids_since_compaction`` once the session has
+compacted, else the flat ``loaded_rule_ids``. This module is the single source
+of that selection.
 
 Two entry points:
   * ``phase_scoped_ids(cache)`` -- the pure selection, imported by
@@ -29,6 +30,13 @@ def phase_scoped_ids(cache: dict) -> list:
     current_phase = cache.get('current_phase', '')
     if by_phase and current_phase:
         return by_phase.get(current_phase, [])
+    # Program item 1c: outside a work phase, the rules shown since the last compaction;
+    # None until the session first compacts, and then the flat list as before. Mirrors
+    # writ.session.injection_state.retrieval_exclude_ids (parity test in
+    # tests/test_compaction_clears_shown_exclusion.py).
+    since = cache.get('rule_ids_since_compaction')
+    if isinstance(since, list):
+        return since
     return cache.get('loaded_rule_ids', [])
 
 

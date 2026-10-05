@@ -64,7 +64,7 @@ class TestMigratedWritersUseMutateCache:
 
 
 class TestNewUpdateHandlers:
-    """The three field-set flags set exactly their field and never disturb an
+    """The two field-set flags set exactly their field and never disturb an
     existing mode -- the property the hook writers rely on to stop wiping mode."""
 
     def _run(self, monkeypatch, tmp_path, args: list[str]):
@@ -85,11 +85,6 @@ class TestNewUpdateHandlers:
     def test_set_escalation_feedback_sent_sets_nested_flag_and_preserves_mode(self, tmp_path, monkeypatch) -> None:
         cache = self._run(monkeypatch, tmp_path, ["--set-escalation-feedback-sent"])
         assert cache.get("escalation", {}).get("feedback_sent") is True
-        assert cache.get("mode") == "work"
-
-    def test_set_detected_domain_sets_value_and_preserves_mode(self, tmp_path, monkeypatch) -> None:
-        cache = self._run(monkeypatch, tmp_path, ["--set-detected-domain", "backend"])
-        assert cache.get("detected_domain") == "backend"
         assert cache.get("mode") == "work"
 
 

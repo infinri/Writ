@@ -100,8 +100,10 @@ class TestHookWritersUseUpdateCli:
             "writ-rag-inject.sh must set escalation.feedback_sent via the update CLI"
         )
 
-    def test_cwd_changed_uses_set_detected_domain(self) -> None:
+    def test_cwd_changed_writes_nothing_to_the_session_cache(self) -> None:
+        # Program item 1b: the language marker's only cache reader filtered ranked
+        # retrieval down to nothing, so the hook stopped caching it. It must not regain a
+        # cache write.
         src = (HOOKS_DIR / "writ-cwd-changed.sh").read_text()
-        assert "--set-detected-domain" in src, (
-            "writ-cwd-changed.sh must set detected_domain via `writ-session.py update --set-detected-domain`"
-        )
+        assert "--set-detected-domain" not in src
+        assert '"$SESSION_HELPER" update' not in src

@@ -1,14 +1,10 @@
-"""Tests for the CwdChanged hook and detected_domain session cache field (Cycle C, Item 10).
+"""Tests for the CwdChanged hook (Cycle C, Item 10; program item 1b).
 
 Per TEST-TDD-001: skeletons approved before implementation.
-Covers: detected_domain default in _read_cache, domain detection from marker
-files, session cache update, friction event logging, exit 0 contract, and
-settings.json registration.
-
-W2 (server package split, branch refactor/w2-server-split): TestRagInjectDomainPassthrough
-reads via writ_server_source() (tests/conftest.py), which is layout-agnostic -- it scans
-every *.py under writ/server/ if that directory exists (post-split: this content is
-expected in routes/query.py), else the single writ/server.py file (pre-split).
+Covers: domain detection from marker files (read from the hook's cwd_changed metrics
+row), the hook leaving the session cache alone, the exit 0 contract, friction logging and
+settings.json registration. The cache field detected_domain was removed in program item 1b:
+its only reader passed it to ranked retrieval as a domain filter that matched no rule.
 """
 
 from __future__ import annotations
@@ -24,8 +20,6 @@ from unittest import mock
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-from tests.conftest import writ_server_source
 
 # ---------------------------------------------------------------------------
 # Constants / helpers
@@ -81,12 +75,17 @@ def _make_cwd_envelope(cwd: str) -> str:
     return json.dumps({"cwd": cwd, "session_id": SESSION_ID})
 
 
-def _run_hook(cwd_dir: str, cache_dir: str, session_id: str = SESSION_ID) -> subprocess.CompletedProcess:
-    """Run the CwdChanged hook with a simulated envelope."""
+def _run_hook(cwd_dir: str, cache_dir: str, session_id: str = SESSION_ID,
+              friction_log: str | None = None) -> subprocess.CompletedProcess:
+    """Run the CwdChanged hook with a simulated envelope. `friction_log`, when given,
+    collapses every log stream into that file (WRIT_FRICTION_LOG) so a test can read the
+    cwd_changed metrics row the hook writes."""
     envelope = json.dumps({"cwd": cwd_dir, "session_id": session_id})
     env = os.environ.copy()
     env["WRIT_CACHE_DIR"] = cache_dir
     env["WRIT_PORT"] = "19999"  # unreachable port to force subprocess fallback
+    if friction_log is not None:
+        env["WRIT_FRICTION_LOG"] = friction_log
     return subprocess.run(
         ["bash", HOOK_PATH],
         input=envelope,
@@ -97,13 +96,22 @@ def _run_hook(cwd_dir: str, cache_dir: str, session_id: str = SESSION_ID) -> sub
     )
 
 
+def _last_cwd_changed_row(log_path: str) -> dict[str, Any]:
+    """The newest cwd_changed row the hook wrote to `log_path`."""
+    with open(log_path) as f:
+        rows = [json.loads(line) for line in f if line.strip()]
+    matching = [r for r in rows if r.get("event") == "cwd_changed"]
+    assert matching, f"the hook wrote no cwd_changed row to {log_path}"
+    return matching[-1]
+
+
 # ---------------------------------------------------------------------------
-# TestDetectedDomainDefault -- session cache schema
+# TestLanguageMarkerNotInCacheSchema: session cache schema (program item 1b)
 # ---------------------------------------------------------------------------
 
 
-class TestDetectedDomainDefault:
-    """detected_domain must be present with a null default in _read_cache."""
+class TestLanguageMarkerNotInCacheSchema:
+    """The session cache no longer carries detected_domain."""
 
     def setup_method(self) -> None:
         self.mod = _load_writ_session()
@@ -116,24 +124,17 @@ class TestDetectedDomainDefault:
         import shutil
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-    def test_fresh_cache_has_detected_domain_key(self) -> None:
-        """_read_cache for a new session returns a dict that includes detected_domain."""
+    def test_fresh_cache_has_no_detected_domain_key(self) -> None:
         cache = self.mod._read_cache("fresh-session")
-        assert "detected_domain" in cache
+        assert "detected_domain" not in cache
 
-    def test_detected_domain_default_is_null(self) -> None:
-        """detected_domain defaults to None / null, not 'universal' or ''."""
-        cache = self.mod._read_cache("fresh-session")
-        assert cache["detected_domain"] is None
-
-    def test_existing_cache_without_field_gets_detected_domain_setdefault(self) -> None:
-        """_read_cache on a legacy cache file without detected_domain returns detected_domain: None."""
+    def test_legacy_cache_is_not_backfilled_with_it(self) -> None:
         legacy_cache = {"loaded_rule_ids": [], "remaining_budget": 8000}
         path = self.mod._cache_path("legacy-session")
         with open(path, "w") as f:
             json.dump(legacy_cache, f)
         cache = self.mod._read_cache("legacy-session")
-        assert cache["detected_domain"] is None
+        assert "detected_domain" not in cache
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +148,7 @@ class TestCwdChangedDomainDetection:
     def setup_method(self) -> None:
         self._tmpdir = tempfile.mkdtemp()
         self._cache_tmpdir = tempfile.mkdtemp()
+        self._friction_log = os.path.join(self._cache_tmpdir, "friction.jsonl")
         self.mod = _load_writ_session()
         self._env_patch = mock.patch.dict(os.environ, {"WRIT_CACHE_DIR": self._cache_tmpdir})
         self._env_patch.start()
@@ -169,14 +171,10 @@ class TestCwdChangedDomainDetection:
         return self._tmpdir
 
     def _run_and_get_domain(self, cwd_dir: str) -> str:
-        """Run the hook and read detected_domain from cache."""
-        result = _run_hook(cwd_dir, self._cache_tmpdir)
+        """Run the hook and read detected_domain from its cwd_changed metrics row."""
+        result = _run_hook(cwd_dir, self._cache_tmpdir, friction_log=self._friction_log)
         assert result.returncode == 0
-        # Read cache directly since we set WRIT_CACHE_DIR
-        path = os.path.join(self._cache_tmpdir, f"writ-session-{SESSION_ID}.json")
-        with open(path) as f:
-            cache = json.load(f)
-        return cache.get("detected_domain", "")
+        return _last_cwd_changed_row(self._friction_log).get("detected_domain", "")
 
     def test_composer_json_detected_as_php_domain(self) -> None:
         """Directory containing composer.json -> detected_domain = 'php'."""
@@ -228,16 +226,18 @@ class TestCwdChangedDomainDetection:
 
 
 # ---------------------------------------------------------------------------
-# TestCwdChangedSessionCacheUpdate -- hook writes detected_domain to cache
+# TestCwdChangedLeavesTheCacheAlone: the language goes to the metrics row only
 # ---------------------------------------------------------------------------
 
 
-class TestCwdChangedSessionCacheUpdate:
-    """writ-cwd-changed.sh updates detected_domain in the session cache."""
+class TestCwdChangedLeavesTheCacheAlone:
+    """writ-cwd-changed.sh records the language on its metrics row and never writes it
+    into the session cache (program item 1b)."""
 
     def setup_method(self) -> None:
         self._cwd_tmpdir = tempfile.mkdtemp()
         self._cache_tmpdir = tempfile.mkdtemp()
+        self._friction_log = os.path.join(self._cache_tmpdir, "friction.jsonl")
         self.mod = _load_writ_session()
         self._env_patch = mock.patch.dict(os.environ, {"WRIT_CACHE_DIR": self._cache_tmpdir})
         self._env_patch.start()
@@ -253,40 +253,35 @@ class TestCwdChangedSessionCacheUpdate:
         shutil.rmtree(self._cwd_tmpdir, ignore_errors=True)
         shutil.rmtree(self._cache_tmpdir, ignore_errors=True)
 
-    def _read_domain(self) -> Any:
+    def _cache(self) -> dict[str, Any]:
         path = os.path.join(self._cache_tmpdir, f"writ-session-{SESSION_ID}.json")
         with open(path) as f:
-            return json.load(f).get("detected_domain")
+            return json.load(f)
 
-    def test_hook_writes_detected_domain_to_session_cache(self) -> None:
-        """After the hook runs against a python project dir, cache detected_domain == 'python'."""
+    def test_hook_does_not_write_detected_domain_to_the_cache(self) -> None:
         Path(os.path.join(self._cwd_tmpdir, "pyproject.toml")).touch()
-        result = _run_hook(self._cwd_tmpdir, self._cache_tmpdir)
+        result = _run_hook(self._cwd_tmpdir, self._cache_tmpdir, friction_log=self._friction_log)
         assert result.returncode == 0
-        assert self._read_domain() == "python"
+        assert "detected_domain" not in self._cache()
 
-    def test_hook_overwrites_previous_detected_domain(self) -> None:
-        """Running the hook a second time with a different cwd replaces the stored domain."""
+    def test_each_change_is_recorded_on_its_own_row(self) -> None:
         Path(os.path.join(self._cwd_tmpdir, "pyproject.toml")).touch()
-        _run_hook(self._cwd_tmpdir, self._cache_tmpdir)
-        assert self._read_domain() == "python"
-
-        # Second run with a different dir
+        _run_hook(self._cwd_tmpdir, self._cache_tmpdir, friction_log=self._friction_log)
+        assert _last_cwd_changed_row(self._friction_log)["detected_domain"] == "python"
         second_dir = tempfile.mkdtemp()
         try:
             Path(os.path.join(second_dir, "Cargo.toml")).touch()
-            _run_hook(second_dir, self._cache_tmpdir)
-            assert self._read_domain() == "rust"
+            _run_hook(second_dir, self._cache_tmpdir, friction_log=self._friction_log)
+            assert _last_cwd_changed_row(self._friction_log)["detected_domain"] == "rust"
         finally:
             import shutil
             shutil.rmtree(second_dir, ignore_errors=True)
 
-    def test_hook_stores_universal_when_no_markers_present(self) -> None:
-        """Cache gets detected_domain='universal' when the new cwd has no marker files."""
+    def test_no_marker_is_recorded_as_universal(self) -> None:
         empty_dir = tempfile.mkdtemp()
         try:
-            _run_hook(empty_dir, self._cache_tmpdir)
-            assert self._read_domain() == "universal"
+            _run_hook(empty_dir, self._cache_tmpdir, friction_log=self._friction_log)
+            assert _last_cwd_changed_row(self._friction_log)["detected_domain"] == "universal"
         finally:
             import shutil
             shutil.rmtree(empty_dir, ignore_errors=True)
@@ -386,31 +381,6 @@ class TestCwdChangedSettingsJson:
         # NOTE: under plugin-canonical, hooks are dispatched by the plugin manifest and do NOT
         # need a Bash-allowlist entry in ~/.claude/settings.json. The standalone-era
         # "hook Bash permission present" assertion was removed with the standalone sunset (7a9f4ba).
-
-
-# ---------------------------------------------------------------------------
-# TestRagInjectDomainPassthrough -- writ-rag-inject.sh uses detected_domain
-# ---------------------------------------------------------------------------
-
-
-class TestRagInjectDomainPassthrough:
-    """writ-rag-inject.sh reads detected_domain from cache and passes it as domain."""
-
-    def test_rag_inject_includes_detected_domain_in_query_request(self) -> None:
-        """#8: the /prompt-bundle endpoint reads detected_domain from the cache and
-        passes it as 'domain' to /query when non-null and not 'universal'."""
-        source = writ_server_source()
-        assert "detected_domain" in source, (
-            "the /prompt-bundle endpoint must read detected_domain from the session cache"
-        )
-
-    def test_rag_inject_omits_domain_when_detected_domain_is_universal(self) -> None:
-        """#8: the endpoint does not pass domain=universal; 'universal' is treated as no hint."""
-        source = writ_server_source()
-        # Must skip adding domain when the value is 'universal' or null.
-        assert "universal" in source, (
-            "the /prompt-bundle endpoint must handle the 'universal' domain as a no-op"
-        )
 
 
 # ---------------------------------------------------------------------------
