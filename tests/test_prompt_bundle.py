@@ -262,11 +262,18 @@ class TestHookWiring:
         assert "$WRIT_URL" not in src  # the old /query URL var is unused/removed
 
     def test_friction_stays_client_side(self):
-        # rag_query/always_on_inject must still be emitted by the hook (cwd-relative
-        # log resolution), not the daemon -- the bundle returns *_meta for this.
+        # rag_query/always_on_inject must still be emitted by the hooks (cwd-relative
+        # log resolution), not the daemon -- the bundle returns *_meta for this. The
+        # builder is shared by all four injection hooks: writ_bundle_friction in
+        # bin/lib/writ-prompt-section.sh, whose python arm is bin/lib/writ_friction_rows.py.
+        lib_dir = os.path.join(SKILL_ROOT, "bin", "lib")
         src = open(HOOK_SH).read()
-        assert "always_on_inject" in src
-        assert "broad_meta" in src and "method_meta" in src
+        assert 'writ_bundle_friction "$BUNDLE"' in src
+        lib = open(os.path.join(lib_dir, "writ-prompt-section.sh")).read()
+        assert "writ_bundle_friction() {" in lib and "friction-rows.jq" in lib
+        builder = open(os.path.join(lib_dir, "writ_friction_rows.py")).read()
+        assert "always_on_inject" in builder
+        assert "broad_meta" in builder and "method_meta" in builder
 
 
 # --------------------------------------------------------------------------- #
@@ -330,7 +337,8 @@ class TestPromptBundleErrorPathSkipsAlwaysOn:
         assert result["error"] is True
         assert result == {
             "always_on_block": "", "rules_text": "", "methodology_block": "",
-            "nudge": "", "error": True,
+            "recall_block": "", "nudge": "", "nudge_text": "", "error": True,
+            "skipped": False,
             "broad_meta": None, "ao_meta": None, "method_meta": None,
         }
 

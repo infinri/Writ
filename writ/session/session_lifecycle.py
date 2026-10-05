@@ -63,6 +63,9 @@ def cmd_reset_after_compaction(session_id: str) -> None:
         # Clear sticky rules preference (stale after compaction)
         cache["last_injected_rule_ids"] = []
         cache["post_compact_pending"] = True
+        # A new collapse epoch (writ/session/injection_state.py), so the next turn renders
+        # the always-on and floor rules in full again, in every mode.
+        cache["compaction_epoch"] = int(cache.get("compaction_epoch") or 0) + 1
     _log_friction_event(
         session_id, cache.get("mode"), "post_compaction",
         rules_cleared=cleared, budget_reset=True, phase=current_phase,

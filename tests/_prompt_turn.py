@@ -21,10 +21,11 @@ hid the reds. `hook_env` below is the sharper half of the argument: two copies o
 that dict are two chances to drop `WRIT_SOCKET` or `WRIT_CACHE_DIR`, and either
 omission produces a green-looking run against the wrong daemon.
 
-A TURN IS TWO SUBPROCESSES. Production registers `writ-rag-inject.sh` on
-UserPromptSubmit (`hooks.json:47`) and `friction-logger.sh` on Stop
-(`hooks.json:89`), and the Stop hook is the ONLY drain on this path: the
-UserPromptSubmit hook appends the complete `rag_query` entry to a raw delimited
+A TURN IS THE INJECTION HOOKS, THEN THE STOP HOOK. Production registers four
+injection hooks on UserPromptSubmit (`writ-rag-inject.sh` plus the three
+`writ-inject-*.sh` section hooks, run concurrently as the host runs them) and
+`friction-logger.sh` on Stop, and the Stop hook is the ONLY drain on this path: each
+UserPromptSubmit hook appends its complete `rag_query` entry to a raw delimited
 buffer under `WRIT_CACHE_DIR` (`bin/lib/common.sh::writ_friction_buffer_append`)
 and does nothing else with it. Turning that buffer into JSON lines on the
 `metrics` stream happens only in `writ_event_buffer_flush`, whose three call
@@ -54,11 +55,20 @@ from tests._daemon import start_isolated_daemon, stop_isolated_daemon
 # Re-exported, not redefined: `hook_env` is used by `run_prompt_turn` below and
 # `seed_session_cache` only by this module's two consumers, which import it from
 # here. One definition, in tests/_hook_runner.py.
-from tests._hook_runner import hook_env, seed_session_cache  # noqa: F401
+from tests._hook_runner import (  # noqa: F401
+    PROMPT_INJECT_SCRIPTS,
+    hook_env,
+    run_prompt_submit_hooks,
+    seed_session_cache,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 HOOK_PROMPT = str(_REPO_ROOT / "hooks" / "scripts" / "writ-rag-inject.sh")
+# Every UserPromptSubmit injection hook, read from hooks.json: the per-prompt injection is
+# four hooks (docs/adr/ADR-prompt-injection-split.md), and the methodology and always-on text
+# this harness's consumers assert on come from two of the OTHER three.
+HOOKS_PROMPT = tuple(str(_REPO_ROOT / "hooks" / "scripts" / s) for s in PROMPT_INJECT_SCRIPTS)
 HOOK_STOP = str(_REPO_ROOT / "hooks" / "scripts" / "friction-logger.sh")
 
 # The prompt hook pays a real retrieval against a real graph and the Stop hook spawns
@@ -212,8 +222,9 @@ def _queries_count(cache_dir: str, sid: str) -> int:
 def run_prompt_turn(
     daemon: dict, tmp_path, sid: str, prompt: str,
 ) -> tuple[list[dict], str, int]:
-    """One production-shaped turn: the real UserPromptSubmit hook, then the real
-    Stop hook, then the drained `metrics` rows.
+    """One production-shaped turn: the real UserPromptSubmit injection hooks (all of
+    them, concurrently), then the real Stop hook, then the drained `metrics` rows.
+    `stdout` is the injection hooks' combined output.
 
     Returns `(events, stdout, queries_delta)`, the three facts a triager reads
     off one failure message instead of re-running: `events` empty with a ZERO
@@ -242,13 +253,10 @@ def run_prompt_turn(
     cache_dir = daemon["health"]["cache_dir"]
 
     before = _queries_count(cache_dir, sid)
-    prompt_run = subprocess.run(
-        ["bash", HOOK_PROMPT],
-        input=json.dumps({"session_id": sid, "prompt": prompt}),
-        capture_output=True,
-        text=True,
-        cwd=cwd,
+    prompt_run = run_prompt_submit_hooks(
+        json.dumps({"session_id": sid, "prompt": prompt}),
         env=env,
+        cwd=cwd,
         timeout=HOOK_TIMEOUT,
     )
     subprocess.run(

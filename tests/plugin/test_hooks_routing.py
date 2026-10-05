@@ -22,7 +22,14 @@ HOOKS_JSON_PATH = REPO_ROOT / "hooks" / "hooks.json"
 
 # Expected script names per event from the plan's Phase B Files section
 EXPECTED_EVENT_SCRIPTS: dict[str, list[str]] = {
-    "UserPromptSubmit": ["auto-approve-gate.sh", "writ-rag-inject.sh"],
+    "UserPromptSubmit": [
+        "auto-approve-gate.sh",
+        "writ-rag-inject.sh",
+        # The per-prompt injection split (docs/adr/ADR-prompt-injection-split.md).
+        "writ-inject-always-on.sh",
+        "writ-inject-methodology.sh",
+        "writ-inject-recall.sh",
+    ],
     "SubagentStart": ["writ-subagent-start.sh"],
     "SubagentStop": ["writ-subagent-stop.sh"],
     "Stop": [

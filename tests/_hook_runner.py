@@ -64,12 +64,41 @@ import json
 import os
 import subprocess
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 
 from tests._daemon import start_isolated_daemon, stop_isolated_daemon
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_HOOKS_DIR = _REPO_ROOT / "hooks" / "scripts"
+_HOOKS_JSON = _REPO_ROOT / "hooks" / "hooks.json"
+
+
+def _prompt_inject_scripts() -> tuple[str, ...]:
+    """The UserPromptSubmit injection hooks, in registration order, READ FROM hooks.json.
+
+    The per-prompt injection is four hooks (docs/adr/ADR-prompt-injection-split.md): the
+    ranked hook `writ-rag-inject.sh` plus one `writ-inject-*.sh` per section. Deriving the
+    list from the registration rather than spelling it here means a fifth section hook is
+    picked up by every consumer of `run_prompt_submit_hooks` the day it is registered,
+    and a hook that is renamed or dropped cannot keep running in tests after production
+    stopped running it.
+    """
+    data = json.loads(_HOOKS_JSON.read_text())
+    scripts: list[str] = []
+    for block in data["hooks"]["UserPromptSubmit"]:
+        for hook in block.get("hooks", []):
+            name = hook.get("command", "").rstrip('"').rsplit("/", 1)[-1]
+            if name == "writ-rag-inject.sh" or name.startswith("writ-inject-"):
+                scripts.append(name)
+    return tuple(scripts)
+
+
+PROMPT_INJECT_SCRIPTS: tuple[str, ...] = _prompt_inject_scripts()
 
 # The access-log signature of one served request, and the fixture's own POSITIVE
 # CONTROL. The start's health poll has already made this call by the time the
@@ -487,4 +516,60 @@ def run_hook(
         cwd=cwd,
         env=run_env,
         timeout=timeout,
+    )
+
+
+@dataclass
+class PromptSubmitRun:
+    """Every injection hook's run for one prompt: per script, and combined.
+
+    `stdout` is the scripts' outputs concatenated in registration order and `stderr`
+    likewise; `returncode` is the largest exit status any of them returned, so a caller
+    that asserted `returncode == 0` on the one hook keeps the same assertion for all four.
+    The combined text is what the model receives (the host concatenates the outputs of
+    the hooks on one event); its ORDER is not something production guarantees, so a
+    consumer may assert presence in `stdout` but must read `runs[script]` for anything
+    that depends on which hook printed it.
+    """
+
+    runs: dict[str, subprocess.CompletedProcess] = field(default_factory=dict)
+    stdout: str = ""
+    stderr: str = ""
+    returncode: int = 0
+
+
+def run_prompt_submit_hooks(
+    envelope: str,
+    *,
+    env: dict,
+    cwd: str,
+    timeout: int,
+    debug_log: str | None = None,
+    scripts: tuple[str, ...] = PROMPT_INJECT_SCRIPTS,
+) -> PromptSubmitRun:
+    """Run every UserPromptSubmit injection hook the way the host does: each as its own
+    `bash <hook>` subprocess with the same envelope on stdin, ALL AT ONCE.
+
+    CONCURRENTLY, not in a loop, because the host starts the hooks on one event in
+    parallel and the design depends on that being safe: no section hook may rely on a
+    session-cache write another hook makes in the same turn. A sequential runner would let
+    such a dependency pass here and fail in production.
+
+    `cwd`, `env` and `debug_log` mean what they mean for `run_hook`, which this calls once
+    per script.
+    """
+    paths = [_HOOKS_DIR / name for name in scripts]
+    with ThreadPoolExecutor(max_workers=max(1, len(paths))) as pool:
+        futures = {
+            path.name: pool.submit(
+                run_hook, path, envelope, env=env, cwd=cwd, timeout=timeout, debug_log=debug_log,
+            )
+            for path in paths
+        }
+        runs = {name: future.result() for name, future in futures.items()}
+    return PromptSubmitRun(
+        runs=runs,
+        stdout="".join(r.stdout for r in runs.values()),
+        stderr="".join(r.stderr for r in runs.values()),
+        returncode=max((r.returncode for r in runs.values()), default=0),
     )

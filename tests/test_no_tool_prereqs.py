@@ -34,6 +34,7 @@ import pytest
 # autouse: pins cwd to a sandbox so `mode set` cannot delete THIS repo's gate artifacts.
 from tests.fixtures.session_state import sandbox_cwd  # noqa: F401
 from tests.fixtures.session_state import write_evidence_transcript
+from tests._hook_runner import run_prompt_submit_hooks
 
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 COMMON_SH = SKILL_ROOT / "bin" / "lib" / "common.sh"
@@ -277,6 +278,9 @@ def _rag_inject_routes(session_id: str) -> dict:
             "always_on_block": "ALWAYS-ON BLOCK TEXT",
             "rules_text": "RULES BLOCK TEXT",
             "methodology_block": "METHODOLOGY BLOCK TEXT",
+            # The recall section's field: the recall hook asks /prompt-bundle for
+            # sections=["recall"] and the server owns the once-per-session flag.
+            "recall_block": "RECALL BRIEFING TEXT",
             "nudge": "",
             "broad_meta": {"cost": 0, "rule_ids": []},
             "ao_meta": {"tokens": 0, "count": 0, "rule_ids": []},
@@ -307,11 +311,37 @@ def _run_rag_inject(tmp_path: Path, base_url: str, *, session_id: str,
     )
 
 
+def _run_injection_hooks(tmp_path: Path, base_url: str, *, session_id: str,
+                         prompt: str = "please implement the widget handler correctly",
+                         env_overrides: dict | None = None,
+                         timeout: int = 20):
+    """Every UserPromptSubmit injection hook (docs/adr/ADR-prompt-injection-split.md),
+    run as the host runs them, outputs combined.
+
+    The jq-absence question is per hook (each one parses its own /prompt-bundle response),
+    so the combined stdout is what has to stay healthy.
+    """
+    host, port = _host_port(base_url)
+    stdin_payload = json.dumps({
+        "session_id": session_id, "prompt": prompt, "cwd": str(tmp_path),
+        "hook_event_name": "UserPromptSubmit",
+    })
+    env = {
+        **os.environ,
+        "WRIT_HOST": host, "WRIT_PORT": port,
+        "WRIT_NO_AUTOSTART": "1",
+        "WRIT_CACHE_DIR": str(tmp_path / "cache"),
+        "HOME": str(tmp_path),
+        **(env_overrides or {}),
+    }
+    return run_prompt_submit_hooks(stdin_payload, env=env, cwd=str(tmp_path), timeout=timeout)
+
+
 class TestPromptBundleSurvivesJqAbsence:
     def test_healthy_bundle_yields_all_blocks_with_jq_forced_absent(self, tmp_path):
         session_id = "rag-jq-forced"
         with stub_daemon(_rag_inject_routes(session_id)) as (base, _reqs):
-            r = _run_rag_inject(tmp_path, base, session_id=session_id, env_overrides={"WRIT_NO_JQ": "1"})
+            r = _run_injection_hooks(tmp_path, base, session_id=session_id, env_overrides={"WRIT_NO_JQ": "1"})
         assert r.returncode == 0
         assert "query failed" not in r.stdout.lower()
         assert "server unavailable" not in r.stdout.lower()
@@ -323,7 +353,7 @@ class TestPromptBundleSurvivesJqAbsence:
         fake_bin = _limited_path_bin(tmp_path, CORE_TOOLS + ["curl"])
         session_id = "rag-path-stripped"
         with stub_daemon(_rag_inject_routes(session_id)) as (base, _reqs):
-            r = _run_rag_inject(
+            r = _run_injection_hooks(
                 tmp_path, base, session_id=session_id,
                 env_overrides={"PATH": str(fake_bin)},
             )
@@ -334,10 +364,17 @@ class TestPromptBundleSurvivesJqAbsence:
     def test_recall_briefing_still_injected_with_jq_absent(self, tmp_path):
         session_id = "rag-recall"
         with stub_daemon(_rag_inject_routes(session_id)) as (base, reqs):
-            r = _run_rag_inject(tmp_path, base, session_id=session_id, env_overrides={"WRIT_NO_JQ": "1"})
+            r = _run_injection_hooks(tmp_path, base, session_id=session_id, env_overrides={"WRIT_NO_JQ": "1"})
         assert r.returncode == 0
         assert "RECALL BRIEFING TEXT" in r.stdout
-        assert any(req["path"].startswith("/recall") and req["method"] == "POST" for req in reqs)
+        recall_posts = [
+            req for req in reqs
+            if req["path"].startswith("/prompt-bundle") and req["method"] == "POST"
+            and json.loads(req["body"] or "{}").get("sections") == ["recall"]
+        ]
+        assert len(recall_posts) == 1, (
+            "the recall hook must ask /prompt-bundle for the recall section, jq or no jq"
+        )
 
     def test_genuine_bundle_error_true_still_reports_query_failed(self, tmp_path):
         # Review fix: the truthiness fix must keep its POSITIVE contract too -- a real

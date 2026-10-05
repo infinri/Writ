@@ -79,6 +79,107 @@ except Exception:
 " "$p" 2>/dev/null | tr -d '[:space:]'
 }
 
+# ── Per-prompt injection ceiling (docs/adr/ADR-prompt-injection-split.md) ───
+# The per-hook ceiling on injected text, in characters. Must equal prompt_char_ceiling in
+# writ/shared/budget.json (tests/test_prompt_injection_ceiling.py asserts the two agree).
+WRIT_PROMPT_CHAR_CEILING=9500
+WRIT_MIN_QUERY_LENGTH=10
+
+# Copy stdin to stdout, whole lines only, never more than $1 characters in total.
+# Over the limit the last printed line is the truncation marker. `${#line}` counts
+# characters in a UTF-8 locale and bytes in the C locale; bytes are never fewer than
+# characters, so the bound holds in both.
+writ_emit_capped() {
+    local limit="$1" marker line total=0 used=0 room
+    local -a lines=()
+    mapfile -t lines
+    [ "${#lines[@]}" -gt 0 ] || return 0
+    for line in "${lines[@]}"; do total=$(( total + ${#line} + 1 )); done
+    if [ "$total" -le "$limit" ]; then
+        printf '%s\n' "${lines[@]}"
+        return 0
+    fi
+    marker="[Writ: output truncated at ${limit} characters]"
+    room=$(( limit - ${#marker} - 1 ))
+    for line in "${lines[@]}"; do
+        [ $(( used + ${#line} + 1 )) -le "$room" ] || break
+        printf '%s\n' "$line"
+        used=$(( used + ${#line} + 1 ))
+    done
+    printf '%s\n' "$marker"
+}
+
+# "mode|mode_source" read file-direct from the session cache, or nothing when the file is
+# missing, corrupt or unparseable. ONE read, so the pair is one snapshot (moved verbatim
+# from writ-rag-inject.sh's auto-route block, which now calls this). Existence is tested
+# before the redirect: `< missing` fails the command before any 2>/dev/null applies.
+writ_session_mode_pair() {
+    local file pair=""
+    file="$(writ_session_cache_dir)/writ-session-$1.json"
+    if [ -f "$file" ]; then
+        pair=$(json_transform \
+            '((.mode // "") | tostring) + "|" + ((.mode_source // "") | tostring)' \
+            "(str(d.get('mode') or '') + '|' + str(d.get('mode_source') or ''))" \
+            < "$file" 2>/dev/null || true)
+    fi
+    pair="${pair//[[:space:]]/}"
+    case "$pair" in *"|"*) printf '%s' "$pair" ;; esac
+}
+
+# The auto-route decision as a pure function: init | switch | none. writ-rag-inject.sh acts
+# on it; the section hooks use it to predict the mode this turn runs under, because they run
+# in parallel with the hook that writes it.
+#
+# ELIGIBILITY IS A QUESTION ABOUT WHO CHOSE THE CURRENT MODE, not about which pair of modes
+# it is. Two ways in, and the OR is deliberate:
+#
+#   1. mode_source "auto" -> this mode came from the classifier reading an EARLIER prompt,
+#      not from a person. A later prompt is better evidence about the task than an earlier
+#      one, so re-route from WHATEVER mode it landed in. (Value written by
+#      mode_engine.MODE_SOURCE_AUTO; spelled literally here rather than asked for, because
+#      asking would cost a process on every prompt.)
+#
+#   2. work <-> investigate whatever the source: mid-work a discovery needs investigating,
+#      and coming back is the switch that restores the paused work state.
+#
+# An "explicit" (or unknown-provenance) debug / review / conversation mode is therefore left
+# alone -- neither arm reaches it. Flipping a hand-set debug session to work would fire the
+# debug-to-work root-cause handoff as a side effect of a guess. Unknown provenance counts as
+# explicit deliberately: there is no truth to recover for a pre-field cache.
+#
+# Unequal modes is a precondition of both arms: a work-shaped prompt during work is a no-op.
+# No hint means no routing, and no prior mode means `mode init`.
+#
+# NO LOOP IS POSSIBLE between the specialist modes: classify_mode_hint returns only work,
+# investigate or nothing (bin/lib/writ_mode_hint.py), so there is no hint that routes back
+# DOWN into conversation / debug / review for a switch to fight over.
+writ_route_decision() {
+    local prior="$1" source="$2" hint="$3"
+    if [ -z "$hint" ]; then printf 'none'; return 0; fi
+    if [ -z "$prior" ]; then printf 'init'; return 0; fi
+    if [ "$prior" = "$hint" ]; then printf 'none'; return 0; fi
+    if [ "$source" = "auto" ]; then printf 'switch'; return 0; fi
+    case "$prior:$hint" in
+        work:investigate|investigate:work) printf 'switch' ;;
+        *) printf 'none' ;;
+    esac
+}
+
+# The mode a section hook renders for. A sub-agent never routes, so it reads its own cache.
+writ_turn_mode() {
+    local sid="$1" agent="$2" hint="$3" pair prior="" source=""
+    if [ -n "$agent" ]; then
+        writ_session_mode_direct "$sid"
+        return 0
+    fi
+    pair=$(writ_session_mode_pair "$sid")
+    case "$pair" in *"|"*) prior="${pair%%|*}"; source="${pair#*|}" ;; esac
+    case "$(writ_route_decision "$prior" "$source" "$hint")" in
+        init|switch) printf '%s' "$hint" ;;
+        *) printf '%s' "$prior" ;;
+    esac
+}
+
 # The agent type Claude Code will actually dispatch for a Writ role. A plugin install
 # registers agents as "writ:<name>"; the bare "<name>" exists only when bootstrap.sh has
 # linked agents/*.md into ~/.claude/agents. -f follows symlinks, so a dangling link reads

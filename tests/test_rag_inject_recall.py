@@ -1,9 +1,13 @@
-"""Decision Memory Phase 2 RECALL: tests for the once-per-session briefing guard
-in hooks/scripts/writ-rag-inject.sh.
+"""Decision Memory Phase 2 RECALL: tests for the once-per-session briefing.
 
-Every test here is RED until the implementer adds the recall-briefing block to
-writ-rag-inject.sh. Tests fail on AssertionError when the expected behavior is
-absent from the script, or when the subprocess exits non-zero unexpectedly.
+The briefing is its own UserPromptSubmit hook, hooks/scripts/writ-inject-recall.sh
+(docs/adr/ADR-prompt-injection-split.md). It asks POST /prompt-bundle for
+sections=["recall"]; the SERVER owns the once-per-session recall_briefed flag (it reads
+and sets it on the request's own cache snapshot), so the hook neither reads nor writes
+the flag. The hook's body is the shared writ_prompt_section_main in
+bin/lib/writ-prompt-section.sh, which is where its sub-agent guard and its time bounds
+live. tests/test_prompt_injection_ceiling.py covers the server side of the flag
+(TestSectionIsolation) and tests/test_prompt_hooks_split.py the hook against a stub.
 
 CRITICAL isolation guarantee: NO test in this file touches the live Neo4j
 graph. Behavioral tests that invoke the script via subprocess use an unreachable
@@ -11,10 +15,9 @@ daemon port (19999) or patch the session-cache to simulate already-briefed state
 Live-daemon behavioral tests that require a running /recall route are skipped
 hermetically rather than depending on a live daemon.
 
-Test pattern: follows test_pol5b3a_rag_inject_redundancy.py (source-shape guards
-on SRC = HOOK.read_text()) and test_cwd_changed.py (subprocess invocation with
-a temp WRIT_CACHE_DIR and unreachable daemon port). The _run() helper mirrors
-the one in test_pol5b3a.
+Test pattern: source-shape guards on the hook, the shared section body and the
+server route, plus subprocess invocation with a temp WRIT_CACHE_DIR and an
+unreachable daemon port (test_cwd_changed.py).
 
 Run: .venv/bin/python -m pytest tests/test_rag_inject_recall.py
 
@@ -42,33 +45,33 @@ import pytest
 # ---------------------------------------------------------------------------
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
-HOOK = SKILL_DIR / "hooks" / "scripts" / "writ-rag-inject.sh"
+HOOK = SKILL_DIR / "hooks" / "scripts" / "writ-inject-recall.sh"
+SECTION_LIB = SKILL_DIR / "bin" / "lib" / "writ-prompt-section.sh"
+QUERY_ROUTE = SKILL_DIR / "writ" / "server" / "routes" / "query.py"
 WRIT_SESSION_PY = str(SKILL_DIR / "bin" / "lib" / "writ-session.py")
 
-# Read source once at module level so source-shape guards are fast.
-# If the hook does not exist yet, SRC is "" and source-shape tests fail
-# cleanly with an AssertionError (not a collection error).
-try:
-    SRC = HOOK.read_text()
-except FileNotFoundError:
-    SRC = ""
+# Read sources once at module level so source-shape guards are fast. A missing
+# file reads as "" and the guards fail with an AssertionError (not a collection error).
+def _read(path: Path) -> str:
+    try:
+        return path.read_text()
+    except FileNotFoundError:
+        return ""
 
-# Slice of SRC containing ONLY the recall block (comment marker -> the
-# orchestrator branch that follows it), so source-shape guards check the NEW
-# block rather than matching pre-existing AGENT_ID / connect-timeout tokens
-# elsewhere in the hook. Empty when the block is absent, so the guards below
-# fail if the recall block is removed.
-_RECALL_START = SRC.find("Decision-memory Phase 2")
-_RECALL_END = (
-    SRC.find('if [ "$IS_ORCHESTRATOR" = "true" ]', _RECALL_START)
-    if _RECALL_START != -1
-    else -1
-)
-RECALL_BLOCK = (
-    SRC[_RECALL_START:_RECALL_END]
-    if _RECALL_START != -1 and _RECALL_END != -1
-    else ""
-)
+
+SRC = _read(HOOK)
+SECTION_SRC = _read(SECTION_LIB)
+ROUTE_SRC = _read(QUERY_ROUTE)
+
+# The shared section body (writ_prompt_section_main), so the guards below check the
+# function the recall hook actually runs rather than matching AGENT_ID or timeout tokens
+# elsewhere in the lib.
+_MAIN_START = SECTION_SRC.find("writ_prompt_section_main() {")
+RECALL_BLOCK = SECTION_SRC[_MAIN_START:] if _MAIN_START != -1 else ""
+
+# The recall arm of the /prompt-bundle handler: where the once-per-session flag lives.
+_ROUTE_START = ROUTE_SRC.find('if "recall" in sections')
+ROUTE_RECALL_BLOCK = ROUTE_SRC[_ROUTE_START:ROUTE_SRC.find("return out", _ROUTE_START)] if _ROUTE_START != -1 else ""
 
 
 # ---------------------------------------------------------------------------
@@ -151,52 +154,56 @@ def session_cache(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 class TestRagInjectRecallSourceShape:
-    """Structural guards that the recall-briefing block is present in the hook
-    source. These tests fail if the block has not been added yet."""
+    """Structural guards that the recall briefing is its own hook, served by the recall
+    section of /prompt-bundle, with the once-per-session flag held server-side."""
 
     def test_hook_file_exists(self) -> None:
         # Sentinel: the hook must exist on disk before any other test can pass.
-        # RED: hook file not yet modified to include the recall block.
         assert HOOK.exists(), (
-            f"writ-rag-inject.sh must exist at {HOOK}"
+            f"writ-inject-recall.sh must exist at {HOOK}"
+        )
+
+    def test_the_hook_runs_the_shared_body_for_the_recall_section(self) -> None:
+        assert "writ_prompt_section_main recall writ-inject-recall" in SRC, (
+            "writ-inject-recall.sh must run the shared section body for the recall section"
         )
 
     def test_recall_briefed_flag_referenced_in_source(self) -> None:
-        # [hook-recall-1]: the once-per-session guard must check/set a
-        # 'recall_briefed' cache flag. If this string is absent, the guard
-        # was not implemented.
-        # RED: flag not yet in source.
-        assert "recall_briefed" in SRC, (
-            "writ-rag-inject.sh must reference 'recall_briefed' for the once-per-session guard; "
-            "the flag was not found in the source"
+        # [hook-recall-1]: the once-per-session guard reads and sets the
+        # 'recall_briefed' cache flag, server-side, in the recall section.
+        assert "recall_briefed" in ROUTE_RECALL_BLOCK, (
+            "the recall section of /prompt-bundle must read 'recall_briefed' for the "
+            "once-per-session guard"
+        )
+        assert "--set-recall-briefed" in ROUTE_RECALL_BLOCK, (
+            "the recall section of /prompt-bundle must set the flag it reads"
+        )
+        assert "recall_briefed" not in SRC and "recall_briefed" not in SECTION_SRC, (
+            "the hook must not own the flag: a client-side write would race the server's"
         )
 
     def test_recall_route_curled_in_source(self) -> None:
-        # [hook-recall-1]: the hook must curl /recall to fetch the briefing.
-        # RED: /recall curl not yet added.
-        assert "/recall" in SRC, (
-            "writ-rag-inject.sh must curl /recall to fetch the briefing; "
-            "'/recall' not found in source"
+        # [hook-recall-1]: the briefing comes from the recall route, compiled by the
+        # daemon inside the recall section; the hook only asks /prompt-bundle for it.
+        assert "decision_memory.recall(" in ROUTE_RECALL_BLOCK, (
+            "the recall section must compile the briefing through the /recall handler"
+        )
+        assert "/prompt-bundle" in RECALL_BLOCK, (
+            "the shared section body must ask /prompt-bundle for its section"
         )
 
     def test_agent_id_guard_present_in_recall_block(self) -> None:
-        # [hook-recall-3]: the recall block must be guarded by [ -z "$AGENT_ID" ]
-        # so it is skipped inside sub-agents (AGENT_ID is set for sub-agent
-        # sessions). Asserted within RECALL_BLOCK, not SRC, because AGENT_ID
-        # pre-exists elsewhere in the hook; matching SRC would pass vacuously.
-        assert 'AGENT_ID' in RECALL_BLOCK, (
-            "writ-rag-inject.sh must guard the recall block with an AGENT_ID check; "
-            "'AGENT_ID' not found inside the recall block"
+        # [hook-recall-3]: the recall section is skipped inside sub-agents. Asserted
+        # within the shared body, on the recall arm of its gate.
+        assert 'recall) [ -z "$agent" ] || return 0' in RECALL_BLOCK, (
+            "writ_prompt_section_main must skip the recall section inside a sub-agent"
         )
 
     def test_curl_has_connect_timeout_in_recall_block(self) -> None:
-        # [hook-recall-2]: the recall curl must use a short connect timeout so a
-        # slow or absent daemon never blocks the prompt (fail-open /
-        # time-bounded). Asserted within RECALL_BLOCK, not SRC, because these
-        # timeout flags pre-exist on other curls in the hook.
-        assert "connect-timeout" in RECALL_BLOCK or "max-time" in RECALL_BLOCK, (
-            "writ-rag-inject.sh recall curl must set --connect-timeout and/or --max-time; "
-            "neither found inside the recall block"
+        # [hook-recall-2]: the request must be time-bounded so a slow or absent
+        # daemon never blocks the prompt (fail-open / time-bounded).
+        assert "WRIT_HTTP_CONNECT_TIMEOUT=" in RECALL_BLOCK and "WRIT_HTTP_TIMEOUT=" in RECALL_BLOCK, (
+            "the section request must set a connect timeout and a total timeout"
         )
 
 
@@ -271,14 +278,9 @@ class TestRagInjectRecallOncePerSession:
 
     def test_recall_briefed_flag_prevents_second_injection(self, session_cache) -> None:
         # [hook-recall-1]: once 'recall_briefed' is set to True in the session
-        # cache, a second hook invocation must NOT attempt to curl /recall again.
-        # We verify this by setting the flag and then asserting the hook exits 0
-        # without any /recall-related content injection.
-        #
-        # With an unreachable daemon (port 19999), if the hook DID still try to
-        # curl /recall it would produce a curl error message. We check that
-        # behaviour is absent after the flag is set.
-        # RED: block not yet added.
+        # cache, the briefing is not repeated. The decision is the server's (its
+        # recall section returns an empty block), so here the hook is only required
+        # to stay silent and fail open against an unreachable daemon.
         sid, cache_dir, seed = session_cache
         seed(mode="work", recall_briefed=True)
 
@@ -288,8 +290,9 @@ class TestRagInjectRecallOncePerSession:
             f"hook must exit 0 when recall_briefed=True; "
             f"returncode={result.returncode}, stderr={result.stderr[:200]!r}"
         )
-        # The recall curl is guarded; with briefed=True it must not have fired
-        # (no curl error message in stderr when the guard works correctly).
+        assert result.stdout == "", (
+            f"nothing may be injected without a briefing; stdout={result.stdout[:200]!r}"
+        )
         assert "curl: (7)" not in result.stderr, (
             "hook must not attempt the recall curl after recall_briefed=True; "
             "curl 'Connection refused' error found in stderr suggests guard was bypassed"

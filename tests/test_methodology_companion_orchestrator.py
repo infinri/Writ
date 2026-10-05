@@ -43,6 +43,9 @@ pytestmark = pytest.mark.no_friction_isolation
 
 SKILL_DIR = str(Path(__file__).resolve().parent.parent)
 HOOK = f"{SKILL_DIR}/hooks/scripts/writ-rag-inject.sh"
+# The methodology companion is its own UserPromptSubmit hook
+# (docs/adr/ADR-prompt-injection-split.md); the end-to-end test runs it.
+METHODOLOGY_HOOK = f"{SKILL_DIR}/hooks/scripts/writ-inject-methodology.sh"
 
 
 class TestOrchestratorMethodologyCompanionStructural:
@@ -116,8 +119,8 @@ def own_daemon(tmp_path_factory):
 
 
 class TestOrchestratorMethodologyCompanionEndToEnd:
-    """End-to-end: run the hook with a seeded orchestrator cache and a
-    user prompt, verify the friction log gets a methodology rag_query."""
+    """End-to-end: run the methodology hook with a seeded orchestrator cache
+    and a user prompt, verify the friction log gets a methodology rag_query."""
 
     def _seed_orchestrator_cache(
         self, cache_dir: str, session_id: str
@@ -176,7 +179,7 @@ class TestOrchestratorMethodologyCompanionEndToEnd:
             })
 
             result = subprocess.run(
-                ["bash", HOOK],
+                ["bash", METHODOLOGY_HOOK],
                 input=envelope,
                 capture_output=True,
                 text=True,

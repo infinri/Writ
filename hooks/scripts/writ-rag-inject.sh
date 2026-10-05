@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Writ RAG Bridge -- UserPromptSubmit hook. Fires at the start of every
-# user turn; queries Writ for relevant rules and injects them via stdout.
+# Writ RAG Bridge -- UserPromptSubmit hook: the RANKED rules plus every control line, one of
+# four injection hooks (docs/adr/ADR-prompt-injection-split.md), capped at the ceiling.
 # Hook type: UserPromptSubmit. Exit: always 0 (never block user prompt).
 set -euo pipefail
 # Plugin-mode overrides: prefer ${CLAUDE_PLUGIN_ROOT} when set, else
@@ -18,16 +18,18 @@ writ_resolve_venv "$WRIT_DIR" || true
 SESSION_HELPER="$WRIT_DIR/bin/lib/writ-session.py"
 FA="$WRIT_DIR/bin/lib/friction-append.py"
 source "$WRIT_DIR/bin/lib/common.sh"
+# writ_bundle_friction, shared with the three section hooks.
+# shellcheck source=bin/lib/writ-prompt-section.sh
+source "$WRIT_DIR/bin/lib/writ-prompt-section.sh"
 
 WRIT_HOST="${WRIT_HOST:-localhost}"
 WRIT_PORT="${WRIT_PORT:-8765}"
-# #8: the broad /query + /always-on + /methodology-companion channels are fetched in ONE
-# warm call to /prompt-bundle (below), for an orchestrator master too, so this hook no
-# longer holds a second URL for the companion channel.
+# #8: the ranked channel is fetched in ONE warm call to /prompt-bundle (below), naming
+# only the ranked section; the other sections are separate hooks.
 WRIT_HEALTH_URL="http://${WRIT_HOST}:${WRIT_PORT}/health"
 WRIT_DEBUG_LOG="${WRIT_DEBUG_LOG:-/tmp/writ-rag-debug.log}"
 
-MIN_QUERY_LENGTH=10
+MIN_QUERY_LENGTH="$WRIT_MIN_QUERY_LENGTH"
 
 # Gated behind WRIT_DEBUG (default OFF) via the shared common.sh helper: no debug
 # file is written unless WRIT_DEBUG=1. WRIT_DEBUG_LOG is an env-overridable knob.
@@ -178,6 +180,26 @@ elif _writ_session should-skip "$SESSION_ID" 2>/dev/null; then
     exit 0
 fi
 
+# 1d. ONE OUTPUT CEILING FOR THIS HOOK. The host caps each hook command's injected text at
+# 10,000 characters and swaps anything longer for a short preview, so everything this hook
+# prints from here on is buffered and released at exit through writ_emit_capped: whole
+# lines, never past WRIT_PROMPT_CHAR_CEILING. The buffer is also how the ranked request
+# learns how much room the control text already took (reserve_chars). Only when the exit
+# trap is installed, since nothing else would release the buffer.
+_WRIT_OUT_FILE=""
+if [ -n "${_WRIT_HOOK_NAME:-}" ]; then
+    _WRIT_OUT_FILE=$(mktemp "${TMPDIR:-/tmp}/writ-rag-out.XXXXXX" 2>/dev/null) || _WRIT_OUT_FILE=""
+fi
+_writ_rag_release() {
+    exec 1>&3 3>&-
+    writ_emit_capped "$WRIT_PROMPT_CHAR_CEILING" < "$_WRIT_OUT_FILE"
+    rm -f "$_WRIT_OUT_FILE"
+}
+if [ -n "$_WRIT_OUT_FILE" ]; then
+    exec 3>&1 1>"$_WRIT_OUT_FILE"
+    writ_on_exit _writ_rag_release
+fi
+
 # 1a. Compaction recovery runs on the real PostCompact event via
 # writ-postcompact.sh. The previous heuristic here relied on a
 # non-existent env var and was removed.
@@ -220,17 +242,9 @@ if [ -z "$AGENT_ID" ] && [ -n "$MODE_HINT" ]; then
   # saturated, so provenance taken from it would go silently unavailable in the fallback
   # case, read as "unknown", and quietly disable the re-route below with nothing in the log
   # to show for it. The cache file is the authority both arms of this branch already trust.
-  PRIOR_CACHE_FILE="$(writ_session_cache_dir)/writ-session-$SESSION_ID.json"
-  PRIOR_PAIR=""
-  # Existence tested BEFORE the redirect (same trap as the RESTORED_GATES read below):
-  # `< missing` fails the command outright and the shell reports it before any 2>/dev/null
-  # on the line takes effect, and a session with no cache file yet is the normal first turn.
-  if [ -f "$PRIOR_CACHE_FILE" ]; then
-    PRIOR_PAIR=$(json_transform \
-      '((.mode // "") | tostring) + "|" + ((.mode_source // "") | tostring)' \
-      "(str(d.get('mode') or '') + '|' + str(d.get('mode_source') or ''))" \
-      < "$PRIOR_CACHE_FILE" 2>/dev/null || true)
-  fi
+  # writ_session_mode_pair (common.sh) owns that read, its existence test and its
+  # whitespace strip.
+  PRIOR_PAIR=$(writ_session_mode_pair "$SESSION_ID")
   PRIOR_MODE=""
   PRIOR_MODE_SOURCE=""
   # No delimiter means the read produced nothing usable (missing / corrupt / unparseable
@@ -242,10 +256,10 @@ if [ -z "$AGENT_ID" ] && [ -n "$MODE_HINT" ]; then
       PRIOR_MODE_SOURCE="${PRIOR_PAIR#*|}"
       ;;
   esac
-  # The whitespace strip writ_session_mode_direct did with `tr`, done with a builtin: both
-  # values are compared against literal names, and one stray space would miss every time.
-  PRIOR_MODE="${PRIOR_MODE//[[:space:]]/}"
-  PRIOR_MODE_SOURCE="${PRIOR_MODE_SOURCE//[[:space:]]/}"
+  # The decision is a pure function (writ_route_decision in common.sh, which documents the
+  # eligibility rules) so the section hooks, which run in parallel with this one, predict
+  # the same mode this turn sets.
+  ROUTE_DECISION=$(writ_route_decision "$PRIOR_MODE" "$PRIOR_MODE_SOURCE" "$MODE_HINT")
   AUTOROUTED="no"
   # Empty means "no restore happened", which is the truth on every path except a mid-session
   # switch INTO work below (from investigate, or from any mode an auto-routed session was
@@ -258,7 +272,7 @@ if [ -z "$AGENT_ID" ] && [ -n "$MODE_HINT" ]; then
   # the field. Investigate is not orchestrated: its worker is writ-explorer, which its own
   # announcement names.
   if [ "$MODE_HINT" = "work" ]; then ROUTE_ORCH_FLAG="--orchestrator"; else ROUTE_ORCH_FLAG=""; fi
-  if [ -z "$PRIOR_MODE" ]; then
+  if [ "$ROUTE_DECISION" = "init" ]; then
     # `mode init` (not `mode set`): authoritatively sets the mode ONLY if still
     # unset (checked inside the helper's own cache read), so a spurious re-fire on
     # a transient empty PRIOR_MODE read can never reset a live gate cycle.
@@ -274,7 +288,7 @@ if [ -z "$AGENT_ID" ] && [ -n "$MODE_HINT" ]; then
       [ "$CONFIRMED_MODE" = "$MODE_HINT" ] && AUTOROUTED="yes"
     fi
     debug "auto-route requested $MODE_HINT -> mode is now '${CONFIRMED_MODE:-unset}'"
-  else
+  elif [ "$ROUTE_DECISION" = "switch" ]; then
     # Mid-session re-route. The hint used to be computed every turn and then thrown away
     # once ANY mode existed, so five weeks of logs hold zero switch rows: mid-work, a
     # discovery that needed investigating could never start an investigation.
@@ -284,78 +298,40 @@ if [ -z "$AGENT_ID" ] && [ -n "$MODE_HINT" ]; then
     # would destroy an approved plan and approved tests. switch SAVES them, which makes a
     # false positive cost a detour instead of the approvals.
     #
-    # ELIGIBILITY IS A QUESTION ABOUT WHO CHOSE THE CURRENT MODE, not about which pair of
-    # modes it is. Two ways in, and the OR is deliberate:
-    #
-    #   1. mode_source "auto" -> this mode came from the classifier reading an EARLIER
-    #      prompt, not from a person. A later prompt is better evidence about the task than
-    #      an earlier one, so re-route from WHATEVER mode it landed in. This is the case
-    #      that was unreachable before Part 6: a session auto-routed once was pinned for its
-    #      whole life, because from_mode is null on both set paths and so nothing in the
-    #      record could tell a user's stated mode from the classifier's guess.
-    #      (Value written by mode_engine.MODE_SOURCE_AUTO; spelled literally here rather
-    #      than asked for, because asking would cost a process on every prompt.)
-    #
-    #   2. work <-> investigate whatever the source, which is the behaviour this file
-    #      already shipped and which widening must not withdraw: mid-work a discovery needs
-    #      investigating, and coming back is the switch that restores the paused work state.
-    #
-    # An "explicit" (or unknown-provenance) debug / review / conversation mode is therefore
-    # still left alone -- neither arm reaches it. That keeps the standing reason: flipping a
-    # hand-set debug session to work would fire the debug-to-work root-cause handoff as a
-    # side effect of a guess. Unknown provenance counts as explicit deliberately: there is
-    # no truth to recover for a pre-field cache, and guessing "auto" would hand the
-    # classifier a mode a human may well have typed.
-    #
-    # Unequal modes is a precondition of both arms: a work-shaped prompt during work is a
-    # no-op, not a re-switch.
-    #
-    # NO LOOP IS POSSIBLE between the specialist modes: classify_mode_hint returns only
-    # work, investigate or nothing (bin/lib/writ_mode_hint.py), so there is no hint that
-    # routes back DOWN into conversation / debug / review for a switch to fight over.
-    ROUTE_ELIGIBLE="no"
-    if [ "$PRIOR_MODE" != "$MODE_HINT" ]; then
-      if [ "$PRIOR_MODE_SOURCE" = "auto" ]; then
-        ROUTE_ELIGIBLE="yes"
-      else
-        case "$PRIOR_MODE:$MODE_HINT" in
-          work:investigate|investigate:work) ROUTE_ELIGIBLE="yes" ;;
-        esac
+    # Who may be re-routed (auto provenance from any mode; work <-> investigate whatever
+    # the provenance; equal modes never) is decided by writ_route_decision in common.sh,
+    # which carries the full reasoning.
+    # `mode switch`, NEVER `mode set` -- and the eligibility widening leans HARDER on that
+    # promise, not less: more sessions are now reachable from a guess, so the property
+    # that a misclassified prompt costs a detour instead of an approved plan and
+    # approved test skeletons is the whole reason this arm is allowed to exist.
+    python3 "$SESSION_HELPER" mode switch "$MODE_HINT" "$SESSION_ID" --auto $ROUTE_ORCH_FLAG >/dev/null 2>&1 || true
+    # Re-read rather than trust the hint, for the same reason the unset path does:
+    # announcing the mode we ASKED for is how the hook came to tell the user the mode
+    # was 'work' while the cache said otherwise.
+    CONFIRMED_MODE=$(writ_session_mode_direct "$SESSION_ID")
+    if [ -n "$CONFIRMED_MODE" ]; then
+      CURRENT_MODE="$CONFIRMED_MODE"
+      [ "$CONFIRMED_MODE" = "$MODE_HINT" ] && AUTOROUTED="yes"
+    fi
+    # A switch back into work either RESTORES the gates approved before the detour
+    # (plan.md unchanged) or re-arms to planning (plan.md pivoted), and the two need
+    # different messages: telling a user whose approvals were just restored to go write
+    # plan.md and present it for approval sends them to redo work the cache still holds.
+    # Read the count off the cache rather than guessing which branch ran, so the
+    # announcement can never claim an approval the session does not actually have.
+    if [ "$MODE_HINT" = "work" ]; then
+      SWITCH_CACHE_FILE="$(writ_session_cache_dir)/writ-session-$SESSION_ID.json"
+      # Tested before the redirect: `< missing` fails the command outright and the
+      # shell reports it before any 2>/dev/null on the same line can take effect, so a
+      # cacheless session would print a hook error for a state that is simply "nothing
+      # to restore".
+      if [ -f "$SWITCH_CACHE_FILE" ]; then
+        RESTORED_GATES=$(json_transform '.gates_approved | length' \
+          "len(d.get('gates_approved') or [])" < "$SWITCH_CACHE_FILE" 2>/dev/null || true)
       fi
     fi
-    if [ "$ROUTE_ELIGIBLE" = "yes" ]; then
-        # `mode switch`, NEVER `mode set` -- and the widening above leans HARDER on that
-        # promise, not less: more sessions are now reachable from a guess, so the property
-        # that a misclassified prompt costs a detour instead of an approved plan and
-        # approved test skeletons is the whole reason this arm is allowed to exist.
-        python3 "$SESSION_HELPER" mode switch "$MODE_HINT" "$SESSION_ID" --auto $ROUTE_ORCH_FLAG >/dev/null 2>&1 || true
-        # Re-read rather than trust the hint, for the same reason the unset path does:
-        # announcing the mode we ASKED for is how the hook came to tell the user the mode
-        # was 'work' while the cache said otherwise.
-        CONFIRMED_MODE=$(writ_session_mode_direct "$SESSION_ID")
-        if [ -n "$CONFIRMED_MODE" ]; then
-          CURRENT_MODE="$CONFIRMED_MODE"
-          [ "$CONFIRMED_MODE" = "$MODE_HINT" ] && AUTOROUTED="yes"
-        fi
-        # A switch back into work either RESTORES the gates approved before the detour
-        # (plan.md unchanged) or re-arms to planning (plan.md pivoted), and the two need
-        # different messages: telling a user whose approvals were just restored to go write
-        # plan.md and present it for approval sends them to redo work the cache still holds.
-        # Read the count off the cache rather than guessing which branch ran, so the
-        # announcement can never claim an approval the session does not actually have.
-        if [ "$MODE_HINT" = "work" ]; then
-          SWITCH_CACHE_FILE="$(writ_session_cache_dir)/writ-session-$SESSION_ID.json"
-          # Tested before the redirect: `< missing` fails the command outright and the
-          # shell reports it before any 2>/dev/null on the same line can take effect, so a
-          # cacheless session would print a hook error for a state that is simply "nothing
-          # to restore".
-          if [ -f "$SWITCH_CACHE_FILE" ]; then
-            RESTORED_GATES=$(json_transform '.gates_approved | length' \
-              "len(d.get('gates_approved') or [])" < "$SWITCH_CACHE_FILE" 2>/dev/null || true)
-          fi
-        fi
-        debug "mid-session re-route $PRIOR_MODE ($PRIOR_MODE_SOURCE) -> $MODE_HINT; mode is now '${CONFIRMED_MODE:-unset}'"
-    fi
+    debug "mid-session re-route $PRIOR_MODE ($PRIOR_MODE_SOURCE) -> $MODE_HINT; mode is now '${CONFIRMED_MODE:-unset}'"
   fi
   # Announce ONLY a change we actually made.
   if [ "$AUTOROUTED" = "yes" ]; then
@@ -442,46 +418,8 @@ fi
 debug "mode=$CURRENT_MODE"
 if parsed_bool "$CACHE" "is_orchestrator"; then IS_ORCHESTRATOR="true"; else IS_ORCHESTRATOR="false"; fi
 
-# 1c-2. Decision-memory Phase 2: once-per-session recall briefing. On the FIRST
-# UserPromptSubmit of a master session, surface the project's recent
-# rule-grounded decisions via additionalContext (the confirmed channel; see
-# docs/reference/claude-code-blackbox.md -- SessionStart's only confirmed surface is
-# initialUserMessage, which would seed a fake user turn). Guarded by the
-# recall_briefed cache flag so it fires exactly once; fail-open + time-bounded so
-# a recall failure or a slow daemon never blocks the prompt.
-if [ -z "$AGENT_ID" ]; then
-    RECALL_BRIEFED=$(parsed_bool "$CACHE" "recall_briefed" && echo "yes" || echo "no")
-    if [ "$RECALL_BRIEFED" != "yes" ]; then
-        # _PROJECT_ROOT, not $PWD: /recall feeds this value to resolve_project_for_cwd,
-        # a raw longest-prefix string compare against the REGISTERED repo_root. $PWD is
-        # bash's logical cwd, so a symlinked component makes that compare miss and the
-        # briefing comes back empty (plus a recall_project_unresolved friction row);
-        # and in a nested-repo tree a deep $PWD can prefix-match the registered OUTER
-        # project while the retrieval requests below carry the inner root, so one hook
-        # invocation would scope rules to one project and brief decisions from another.
-        # One project-root answer per hook invocation is the invariant.
-        RECALL_REQ=$(WRIT_ROOT="${_PROJECT_ROOT:-}" python3 -c "
-import os, json
-print(json.dumps({'project_root': os.environ.get('WRIT_ROOT', ''), 'budget': 20000}))
-" 2>/dev/null)
-        # Documented daemon-down-equivalent raw curl: with curl absent this degrades to
-        # exactly the "no briefing this session" branch a stopped daemon produces.
-        RECALL_RESP=$(curl ${WRIT_CURL_TRANSPORT} -s --connect-timeout 0.3 --max-time 1.5 -X POST "http://${WRIT_HOST}:${WRIT_PORT}/recall" \
-            -H "Content-Type: application/json" -d "$RECALL_REQ" 2>/dev/null) || true
-        # parsed_field (jq-first, python3 fallback) rather than raw jq: with jq absent the
-        # raw extraction returned empty and the briefing was silently dropped.
-        RECALL_BRIEFING=$(parsed_field "$RECALL_RESP" "briefing")
-        if [ -n "$RECALL_BRIEFING" ]; then
-            echo ""
-            echo "$RECALL_BRIEFING"
-            debug "injected recall briefing (once-per-session)"
-        fi
-        # Mark briefed regardless of whether decisions existed, so we attempt
-        # recall at most once per session (empty project -> empty briefing -> no
-        # re-attempt every turn).
-        python3 "$SESSION_HELPER" update "$SESSION_ID" --set-recall-briefed 2>>"$WRIT_HOOK_LOG_SINK" || true
-    fi
-fi
+# 1c-2. The once-per-session recall briefing is its own UserPromptSubmit hook now:
+# writ-inject-recall.sh, served by the recall section of /prompt-bundle (server-side flag).
 
 # 1c-3. Cycle G: post-compaction delivery, queued by writ-postcompact.sh. That hook cannot
 # deliver the state line or the PSR-004 verify-discipline directive itself (CC's validator
@@ -493,7 +431,7 @@ fi
 # path (every turn but one) is a string test with no python spawn and no HTTP call. The
 # single clearing update fires once per compaction, not once per turn.
 #
-# NO $AGENT_ID GUARD, unlike the recall block above: the flag lives on the compacted
+# NO $AGENT_ID GUARD, unlike the recall hook: the flag lives on the compacted
 # session's own cache and a sub-agent runs under its own session id, so a worker cannot
 # consume the parent's queued directive.
 #
@@ -540,10 +478,11 @@ except Exception:
     # methodology-companion call and return, which skipped the always-on channel
     # entirely: RANKED_INCLUDE_WHERE excludes every mandatory rule from the ranked pool
     # by construction, so the always-on block is a mandatory rule's ONLY delivery path
-    # and a master received none of them. The branch now falls through into the shared
-    # /prompt-bundle call below, which turns the ranked channel off per request
-    # (include_ranked=false) and keeps channels 2 and 3. Step 8b returns for a master
-    # once those are emitted, so nothing from step 9 onward changes for one.
+    # and a master received none of them. The always-on floor and the companion now come
+    # from their own hooks (writ-inject-always-on.sh, writ-inject-methodology.sh), and this
+    # branch falls through into the ranked /prompt-bundle call below, which turns the ranked
+    # channel off per request (include_ranked=false) so the suppression is still recorded.
+    # Steps 9 to 13 are skipped for a master and step 8b returns for one.
 fi
 
 # 2. Minimum query length gate
@@ -552,17 +491,222 @@ if [ ${#PROMPT} -lt $MIN_QUERY_LENGTH ]; then
     exit 0
 fi
 
-# 3-8 (#8): broad /query + always-on + methodology-companion are retrieved, parsed,
-# rendered, cache-updated, and friction-logged server-side in ONE warm call
-# (POST /prompt-bundle), dropping ~16 cold python3 spawns + 2 curls from the hot path
-# (measured ~646ms -> ~300ms). Retrieval already required the daemon, so daemon-down
-# degrades exactly as before. The endpoint returns the three rendered pieces SEPARATELY
-# so they keep their legacy emit order around the bash-side mode reminders (step 9b).
+# REMAINING_BUDGET (from the single $CACHE read at step 1c) gates the review-feedback
+# push below; the endpoint owns the channel budgets itself.
+REMAINING_BUDGET=$(parsed_field "$CACHE" "remaining_budget"); REMAINING_BUDGET="${REMAINING_BUDGET:-8000}"
+
+# Steps 9, 9b, 1.8b, 12 and 13 run BEFORE the ranked request: they are control text, and
+# the ranked section renders into what this hook's ceiling has left after them
+# (reserve_chars). A master skips them, as it did when it exited at 8b before them.
+_WRIT_ESCALATED=""
+if [ "$IS_ORCHESTRATOR" != "true" ]; then
+    # 9. Inject mode classification directive if no mode set yet
+    if [ -z "$CURRENT_MODE" ]; then
+        emit_mode_directive "$SESSION_HELPER" "$SESSION_ID"
+        debug "injected mode classification directive"
+    fi
+
+    # 9b. Inject mode-specific reminders
+    case "$CURRENT_MODE" in
+        conversation)
+            echo ""
+            echo "[Writ: Conversation mode. Rules injected as context. No code generation expected.]"
+            debug "injected conversation mode reminder"
+            ;;
+        debug)
+            echo ""
+            echo "[Writ: Debug mode. Rules injected for investigation. No code generation: recommend Work mode when fix is identified.]"
+            debug "injected debug mode reminder"
+            ;;
+        review)
+            echo ""
+            echo "[Writ: Review mode. Evaluate code against injected rules. Output structured findings per file.]"
+            debug "injected review mode reminder"
+            ;;
+        work)
+            # Work mode: inject workflow reminder based on gate state. _PROJECT_ROOT is
+            # computed once near the top of the hook (the retrieval requests need it too).
+            # THIS SESSION's own gate directory, never the project-wide one: a flat
+            # phase-a.approved from any session in the repo used to silence this reminder for a
+            # session that had approved nothing, and told it "test-skeletons gate pending",
+            # which reads as progress it never made. An empty answer (no project root, or a
+            # session id that cannot be a path component) means there is nowhere to read gate
+            # state from, so no reminder is printed -- the same silence a rootless project got
+            # before, and never a reminder derived from another session's files.
+            _GATE_DIR=$(writ_gate_dir "$_PROJECT_ROOT" "$SESSION_ID")
+
+            if [ -n "$_GATE_DIR" ]; then
+                _PHASE_A="$_GATE_DIR/phase-a.approved"
+                _TEST_SKEL="$_GATE_DIR/test-skeletons.approved"
+
+                if [ ! -f "$_PHASE_A" ]; then
+                    echo ""
+                    echo "[Writ: Work mode, plan gate pending. Enter /plan, write plan.md, exit, present, wait for approval.]"
+                    debug "injected work mode state (plan)"
+                elif [ ! -f "$_TEST_SKEL" ]; then
+                    echo ""
+                    echo "[Writ: Work mode, test-skeletons gate pending. Write test files to disk, present, wait for approval.]"
+                    debug "injected work mode state (test-skeletons)"
+                fi
+            fi
+            ;;
+    esac
+
+    # 1.8b push-by-action (review-feedback): when the incoming prompt signals review
+    # feedback / a correction, re-surface SKL-PROC-REVRECV-001 -- but only OUTSIDE
+    # review mode, where it is NOT floored (in review mode the methodology hook has
+    # already injected it). Conservative phrase match to avoid false fires.
+    if [ -n "${PROMPT:-}" ] && [ "${CURRENT_MODE:-}" != "review" ] && [ "${REMAINING_BUDGET:-0}" -gt 600 ]; then
+        if echo "$PROMPT" | grep -iqE 'review feedback|code review|reviewer|pr (comment|feedback)|requested change|addressing (the )?feedback|review comment'; then
+            REVIEW_PUSH=$(writ_action_push "$SESSION_ID" "review-feedback" || true)
+            if [ -n "$REVIEW_PUSH" ]; then
+                echo ""
+                echo "[Writ: methodology, review-feedback]"
+                echo "$REVIEW_PUSH"
+            fi
+        fi
+    fi
+
+    # 12. Escalation and backward-context checks reuse the main-path $CACHE. These
+    # read only invalidation_history, which is written by gate-validator hooks on
+    # other tool calls and never mutated within this UserPromptSubmit run, so the
+    # cache captured at step 3 is current (was a redundant second _writ_session read).
+
+    # Check for escalation and inject backward context
+    # ASK BEFORE SPAWNING, fourth instance of this pattern on this path. /prompt-state already
+    # answered "is escalation pending", from the SAME cache file /check-escalation reads, so
+    # when the answer is no this round trip only confirms it (measured 12.2ms).
+    #
+    # WHY THE EARLIER SNAPSHOT IS SAFE HERE, which is the part that needed checking rather than
+    # assuming. I previously kept this call fresh because reusing the snapshot risked missing an
+    # escalation that arrived mid-hook. The `escalation` field is written in exactly three
+    # places (writ/session/approval_workflow.py, violations.py, budget_tracking.py), and none of
+    # them run during a UserPromptSubmit hook: they fire on gate approvals and on write
+    # violations. So nothing can set it between the two reads in this hook's lifetime.
+    #
+    # The full object is still fetched when escalation IS pending, because gate, diagnosis,
+    # cycles and feedback_sent are read below and /prompt-state returns only the boolean.
+    #
+    # Presence first, again: a daemon without /prompt-state returns a body with no `escalation`
+    # key, which yields empty here and falls through to the real call rather than being read as
+    # "no escalation" and silently suppressing the warning.
+    PS_ESC=""
+    if [ -n "$PROMPT_STATE" ]; then
+        PS_ESC=$(printf '%s' "$PROMPT_STATE" | json_transform \
+            'if has("escalation") then (if .escalation == true then "yes" else "no" end) else empty end' \
+            "(('yes' if d.get('escalation') is True else 'no') if 'escalation' in d else None)" \
+            2>/dev/null || true)
+    fi
+    if [ "$PS_ESC" = "no" ]; then
+        ESCALATION='{"needed":false}'
+    else
+        ESCALATION=$(_writ_session check-escalation "$SESSION_ID" 2>/dev/null || echo '{"needed":false}')
+    fi
+    # jq when present, python when not: a python start is 9.5ms before it does anything, and
+    # `import json` adds 4.9 more, against 2.3ms for jq. Measured on this line: 13.7ms.
+    # The truthiness test is spelled out rather than left to jq's, because jq counts "" and 0
+    # and [] as true while python does not, and this decides whether escalation fires.
+    ESC_NEEDED=$(printf '%s' "$ESCALATION" | json_transform \
+        'if (.needed) != null and (.needed) != false and (.needed) != "" and (.needed) != 0 and (.needed) != [] and (.needed) != {} then "yes" else "no" end' \
+        "'yes' if d.get('needed') else 'no'" 2>/dev/null || true)
+    # Both arms print NOTHING on malformed input, where the old inline python exited non-zero
+    # and the `|| echo no` supplied the default. Restoring that default explicitly, because an
+    # empty ESC_NEEDED would compare unequal to "yes" by luck rather than by decision.
+    [ -n "$ESC_NEEDED" ] || ESC_NEEDED="no"
+
+    if [ "$ESC_NEEDED" = "yes" ]; then
+        ESC_GATE=$(echo "$ESCALATION" | json_transform 'if (.gate // null) == null then "?" else .gate end' "('?' if d.get('gate') is None else d.get('gate'))" 2>/dev/null)
+        ESC_DIAG=$(echo "$ESCALATION" | json_transform 'if (.diagnosis // null) == null then "?" else .diagnosis end' "('?' if d.get('diagnosis') is None else d.get('diagnosis'))" 2>/dev/null)
+        ESC_CYCLES=$(echo "$ESCALATION" | json_transform 'if (.cycles // null) == null then 0 else .cycles end' "(0 if d.get('cycles') is None else d.get('cycles'))" 2>/dev/null)
+
+        # Build failure history from invalidation records
+        FAILURE_HISTORY=$(python3 "$WRIT_DIR/bin/lib/writ_render_failure_history.py" "$CACHE" "$ESC_GATE" "$ESC_DIAG" 2>/dev/null)
+
+        cat << ESCALATION_MSG
+
+[Writ: ESCALATION -- ${ESC_GATE} invalidated ${ESC_CYCLES} times]
+
+Failure history:
+${FAILURE_HISTORY}
+
+User action needed: review the rule definitions or re-scope the task.
+Do NOT proceed with automated work until the user responds.
+ESCALATION_MSG
+        debug "injected escalation for $ESC_GATE ($ESC_DIAG, $ESC_CYCLES cycles)"
+
+        # C10: Post enriched negative feedback (once per escalation)
+        ESC_FB_SENT=$(echo "$ESCALATION" | json_transform 'if (.feedback_sent) != null and (.feedback_sent) != false and (.feedback_sent) != "" and (.feedback_sent) != 0 and (.feedback_sent) != [] and (.feedback_sent) != {} then "yes" else "no" end' "('yes' if d.get('feedback_sent') else 'no')" 2>/dev/null || echo "no")
+        if [ "$ESC_FB_SENT" != "yes" ]; then
+            python3 "$WRIT_DIR/bin/lib/writ_send_escalation_feedback.py" "$CACHE" "$ESC_GATE" 2>>"$WRIT_HOOK_LOG_SINK" || true
+
+            # Mark feedback as sent in escalation
+            python3 "$SESSION_HELPER" update "$SESSION_ID" --set-escalation-feedback-sent 2>>"$WRIT_HOOK_LOG_SINK" || true
+            debug "sent enriched negative feedback for escalation"
+        fi
+
+        # Not an exit: the ranked rules below still reach an escalation turn, exactly as they
+        # did when escalation ran after them. Only the backward-context check is skipped.
+        _WRIT_ESCALATED=yes
+    fi
+
+    # 13. Check for gate invalidation (backward context without escalation)
+    # Only relevant in Work mode
+    if [ "$CURRENT_MODE" = "work" ] && [ "$_WRIT_ESCALATED" != "yes" ]; then
+        # Reuses the session-scoped $_GATE_DIR section 9b already built (both blocks run only in
+        # work mode, so the build happens once per prompt). Recomputed only if 9b was skipped;
+        # an empty answer means no session-scoped directory to read, and the invalidation check
+        # is skipped rather than pointed at the project-wide path, where another session's
+        # missing artifact would read as THIS session's gate invalidation.
+        # ${_PROJECT_ROOT:-} because this arm is only reached when 9b was skipped, and an
+        # unset variable under `set -u` would abort the whole hook rather than skip a check.
+        _GATE_DIR="${_GATE_DIR:-$(writ_gate_dir "${_PROJECT_ROOT:-}" "$SESSION_ID")}"
+        if [ -n "$_GATE_DIR" ]; then
+
+            # Check if any gate was invalidated (records exist but .approved file missing)
+            #
+            # ASK BEFORE SPAWNING. The renderer prints nothing unless invalidation_history
+            # holds a non-empty entry, which for almost every session it does not (measured 0
+            # across live sessions). Discovering that cost a 19.5ms interpreter start on EVERY
+            # prompt. jq answers the same question in 2.3ms from $CACHE, already in memory.
+            #
+            # This is a NECESSARY-condition test, not the renderer's full logic: an empty
+            # history guarantees no output, while a non-empty one still has to check whether
+            # each gate's .approved file is missing. So the guard can only skip work the
+            # renderer would have skipped anyway.
+            #
+            # Fail-open: an unreadable cache leaves this empty and the default runs the
+            # renderer, because losing a gate-invalidation warning is worse than a spawn.
+            _HAS_INVALIDATION=$(printf '%s' "$CACHE" | json_transform \
+                'if ((.invalidation_history // {}) | to_entries | map(select((.value | length) > 0)) | length) > 0 then "yes" else "no" end' \
+                "('yes' if any((d.get('invalidation_history') or {}).values()) else 'no')" \
+                2>/dev/null || true)
+            BACKWARD_CTX=""
+            if [ "${_HAS_INVALIDATION:-yes}" != "no" ]; then
+                BACKWARD_CTX=$(python3 "$WRIT_DIR/bin/lib/writ_render_backward_context.py" "$CACHE" "$_GATE_DIR" 2>/dev/null)
+            fi
+
+            if [ -n "$BACKWARD_CTX" ]; then
+                echo ""
+                echo "$BACKWARD_CTX"
+                debug "injected backward context for invalidated gate"
+            fi
+        fi
+    fi
+fi
+
+# 3-8 (#8): the ranked channel is retrieved, rendered under this hook's character ceiling,
+# cache-updated and friction-logged server-side in ONE warm call (POST /prompt-bundle,
+# sections=["ranked"]). The always-on, methodology and recall sections are separate hooks
+# (docs/adr/ADR-prompt-injection-split.md), so this request names only its own section.
+# Retrieval already required the daemon, so daemon-down degrades exactly as before.
 case "${WRIT_ALWAYS_ON_FILTER:-1}" in 1|on|true|yes) _AO_FILTER_BOOL=true ;; *) _AO_FILTER_BOOL=false ;; esac
 # Channel 1 off for an orchestrator master, on for everyone else. Derived HERE, from the
 # one flag, so no new session state exists to disagree with it. Like _AO_FILTER_BOOL this
 # must stay a bare true/false: it goes on the wire as a JSON boolean.
 if [ "$IS_ORCHESTRATOR" = "true" ]; then _INCLUDE_RANKED_BOOL=false; else _INCLUDE_RANKED_BOOL=true; fi
+# The characters of control text already buffered (1d), so the server renders the ranked
+# rules into what is left of WRIT_PROMPT_CHAR_CEILING.
+_RESERVE_CHARS=0; if [ -n "$_WRIT_OUT_FILE" ]; then _RESERVE_CHARS=$(( $(wc -m < "$_WRIT_OUT_FILE" 2>/dev/null || echo 0) )); fi
 # jq builds this request when present: four strings and a boolean assembled from
 # variables already in the shell cost a 9.5ms interpreter start plus 4.9 for `import
 # json`, against 2.3 for jq. --arg is used for every value so a prompt containing quotes,
@@ -578,11 +722,12 @@ if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1; then
         --arg project_root "${_PROJECT_ROOT:-}" \
         --argjson always_on_filter "$_AO_FILTER_BOOL" \
         --argjson include_ranked "$_INCLUDE_RANKED_BOOL" \
-        '{session_id: $session_id, mode: $mode, prompt: $prompt, project_root: $project_root, always_on_filter: $always_on_filter, include_ranked: $include_ranked}' \
+        --argjson reserve_chars "$_RESERVE_CHARS" \
+        '{session_id: $session_id, mode: $mode, prompt: $prompt, project_root: $project_root, always_on_filter: $always_on_filter, include_ranked: $include_ranked, sections: ["ranked"], reserve_chars: $reserve_chars}' \
         2>/dev/null) || BUNDLE_REQUEST=""
 fi
 if [ -z "$BUNDLE_REQUEST" ]; then
-    BUNDLE_REQUEST=$(WRIT_SID="$SESSION_ID" WRIT_MODE="${CURRENT_MODE:-}" WRIT_PROMPT="$PROMPT" WRIT_AOF="$_AO_FILTER_BOOL" WRIT_IRK="$_INCLUDE_RANKED_BOOL" WRIT_PROOT="${_PROJECT_ROOT:-}" python3 -c "
+    BUNDLE_REQUEST=$(WRIT_SID="$SESSION_ID" WRIT_MODE="${CURRENT_MODE:-}" WRIT_PROMPT="$PROMPT" WRIT_AOF="$_AO_FILTER_BOOL" WRIT_IRK="$_INCLUDE_RANKED_BOOL" WRIT_PROOT="${_PROJECT_ROOT:-}" WRIT_RESERVE="$_RESERVE_CHARS" python3 -c "
 import os, json
 print(json.dumps({
     'session_id': os.environ['WRIT_SID'],
@@ -591,6 +736,8 @@ print(json.dumps({
     'project_root': os.environ.get('WRIT_PROOT', ''),
     'always_on_filter': os.environ.get('WRIT_AOF', 'true') == 'true',
     'include_ranked': os.environ.get('WRIT_IRK', 'true') == 'true',
+    'sections': ['ranked'],
+    'reserve_chars': int(os.environ.get('WRIT_RESERVE', '0') or 0),
 }))" 2>/dev/null)
 fi
 
@@ -610,26 +757,18 @@ fi
 # yielded an empty string that became "1": a perfectly healthy daemon response was
 # reported as "query failed" and rule injection was disabled for the WHOLE session,
 # with a message blaming the server. Empty now correctly means "no error".
-# ONE pass over the bundle for every field the rest of this hook needs.
-#
-# These were 5 separate parsed_field calls, each piping the WHOLE ~10KB response (it
-# carries the full always-on rule text) into a fresh jq: 50KB of piping and 5 interpreter
-# starts to read 5 strings. Measured ~38ms on the prompt path, second only to the HTTP
-# request that fetched the data. $BUNDLE is assigned once above and never reassigned, so
-# one parse here is valid for every consumer below.
+# ONE pass over the bundle for every field the rest of this hook needs. $BUNDLE is
+# assigned once above and never reassigned, so one parse here is valid for every
+# consumer below.
 eval "$(parsed_fields "$BUNDLE" \
     BUNDLE_ERR=error \
-    AO_BLOCK=always_on_block \
     RULES_TEXT=rules_text \
-    METHOD_BLOCK=methodology_block \
-    NUDGE=nudge)"
+    NUDGE_TEXT=nudge_text)"
 # parsed_fields emits nothing when the document is unparseable, leaving these unset under
 # `set -u`. Defaulting them keeps that case identical to parsed_field's empty default.
 BUNDLE_ERR="${BUNDLE_ERR-}"
-AO_BLOCK="${AO_BLOCK-}"
 RULES_TEXT="${RULES_TEXT-}"
-METHOD_BLOCK="${METHOD_BLOCK-}"
-NUDGE="${NUDGE-}"
+NUDGE_TEXT="${NUDGE_TEXT-}"
 # JSON truthiness, which is what the old `if .error then` tested: the endpoint sets
 # error=false on EVERY healthy response and only true (or a string) on a real failure,
 # so the falsy spellings of both extraction arms (jq "false"/"null", python
@@ -644,345 +783,30 @@ if [ -n "$BUNDLE_ERR" ]; then
     exit 0
 fi
 
-# Each rendered piece via parsed_field: still jq-first on the hot path (~1-2ms), with the
-# python3 fallback when jq is absent, and multi-line safe on both arms (these blocks are
-# multi-line). Missing/null yields the empty default, which every consumer below treats
-# as "nothing to inject".
-# AO_BLOCK / RULES_TEXT / METHOD_BLOCK / NUDGE were read in the single parsed_fields
-# pass above, alongside BUNDLE_ERR. Re-reading them here was 4 more jq starts over the
-# same 10KB document.
-# REMAINING_BUDGET (from the single $CACHE read at step 1c) still gates the
-# review-feedback push below; the endpoint owns the channel budgets itself.
-REMAINING_BUDGET=$(parsed_field "$CACHE" "remaining_budget"); REMAINING_BUDGET="${REMAINING_BUDGET:-8000}"
-
 # Friction logging stays CLIENT-SIDE so the per-project friction-log resolution
-# (cwd-relative) is preserved -- the daemon (fixed cwd) must not own it, or a real
-# project's rag_query/always_on_inject telemetry would land in the writ dir. ONE builder
-# spawn turns the bundle meta into JSON lines (same events/fields/delivery tags as the
-# prior per-channel log_rag_query_event / always_on_inject) and pipes them to the
-# canonical friction-append.py writer (single-source path resolution; no inline marker-walk).
-# jq builds these rows when present. The python arm below is unchanged and still runs when
-# jq is absent, which is the WRIT_NO_JQ seam every other conversion on this path uses:
-# absence changes speed, never behaviour. Measured 16.9ms for the interpreter start against
-# 2.3 for jq, to turn three metadata objects into up to three JSON lines.
-#
-# THE SENTINEL IS jq's EXIT STATUS, NOT ITS OUTPUT. A bundle with no metadata legitimately
-# produces ZERO rows, and treating empty output as failure would spawn python to rediscover
-# that there is nothing to emit: the exact pattern removed twice already this cycle (the
-# dead mktemp, and the renderer that printed nothing on every prompt).
-#
-# These rows are AUDIT records (rag_query, always_on_inject), so parity is asserted on the
-# PARSED objects across every bundle shape the endpoint produces, not on the text.
-FRICTION_ROWS=""
-_FRICTION_ROWS_OK=""
-if [ -z "${WRIT_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1 \
-        && [ -r "$WRIT_DIR/bin/lib/friction-rows.jq" ]; then
-    if FRICTION_ROWS=$(printf '%s' "$BUNDLE" | jq -R -s -r \
-            --arg sid "$SESSION_ID" --arg mode "${CURRENT_MODE:-}" \
-            -f "$WRIT_DIR/bin/lib/friction-rows.jq" 2>>"$WRIT_HOOK_LOG_SINK"); then
-        _FRICTION_ROWS_OK=1
-    else
-        FRICTION_ROWS=""
-    fi
-fi
-if [ -z "$_FRICTION_ROWS_OK" ]; then
-FRICTION_ROWS=$(printf '%s' "$BUNDLE" | WRIT_SID="$SESSION_ID" WRIT_MODE="${CURRENT_MODE:-}" python3 -c "
-import json, os, sys
-try:
-    b = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-sid = os.environ.get('WRIT_SID', '')
-mode = os.environ.get('WRIT_MODE', '') or None
-def rag(src, meta):
-    e = {'session': sid, 'mode': mode, 'event': 'rag_query', 'query_source': src,
-         'tokens_injected': int(meta.get('cost', 0)),
-         'rules_returned_count': len(meta.get('rule_ids', [])), 'rule_ids': meta.get('rule_ids', [])}
-    e['event_name'] = 'UserPromptSubmit'; e['mechanism'] = 'stdout'
-    return e
-lines = []
-bm = b.get('broad_meta')
-if bm is not None:
-    # A suppressed ranked channel (include_ranked=false) is NOT a zero-rule
-    # rag_query: a zero-rule rag_query is the abstention signal every census
-    # that counts retrievals by source relies on, so recording the
-    # suppression that way would be indistinguishable from a real retrieval
-    # that came back empty.
-    if bm.get('suppressed'):
-        lines.append({'session': sid, 'mode': mode, 'event': 'rag_channel_suppressed',
-                      'channel': 'broad', 'event_name': 'UserPromptSubmit', 'mechanism': 'stdout'})
-    else:
-        lines.append(rag('broad', bm))
-ao = b.get('ao_meta')
-if ao is not None and int(ao.get('tokens', 0)) > 0:
-    lines.append({'session': sid, 'mode': mode, 'event': 'always_on_inject',
-                  'tokens': int(ao.get('tokens', 0)), 'rule_count': int(ao.get('count', 0)),
-                  'rule_ids': ao.get('rule_ids') or [],
-                  'event_name': 'UserPromptSubmit', 'mechanism': 'stdout'})
-mm = b.get('method_meta')
-if mm is not None:
-    lines.append(rag(mm.get('query_source', ''), mm))
-for e in lines:
-    print(json.dumps(e))
-" 2>>"$WRIT_HOOK_LOG_SINK") || true
-fi
-# The builder's rows used to be piped straight into friction-append.py, a SECOND
-# interpreter start whose only job was appending them. Measured 35.3ms on the prompt path,
-# and almost none of it work: the interpreter floor is 9.5ms and `import
-# writ.shared.logging` adds 12.5 more (52 modules) to append a line. The rows go to the
-# session event buffer instead (a bash append, no process) and the once-per-turn drain
-# emits them through the SAME writ.shared.logging router, so classification, path
-# resolution and the durable fallback are unchanged.
-if [ -n "$FRICTION_ROWS" ]; then
-    FRICTION_OVERSIZED=""
-    while IFS= read -r _frow; do
-        [ -n "$_frow" ] || continue
-        # A row too large to append atomically returns 1 rather than being truncated:
-        # truncated JSON is unparseable, so the drain would drop it, turning a slow row
-        # into a lost one. Those take the original spawn, which is what this collects.
-        writ_friction_buffer_append "$SESSION_ID" "$_frow" \
-            || FRICTION_OVERSIZED="${FRICTION_OVERSIZED}${_frow}"$'\n'
-    done <<< "$FRICTION_ROWS"
-    if [ -n "$FRICTION_OVERSIZED" ]; then
-        printf '%s' "$FRICTION_OVERSIZED" \
-            | python3 "$FA" --stdin-jsonl 2>>"$WRIT_HOOK_LOG_SINK" || true
-    fi
-fi
+# (cwd-relative) is preserved. writ_bundle_friction (bin/lib/writ-prompt-section.sh) is
+# the one builder all four injection hooks use; this response carries only the ranked
+# section's meta, so it yields the broad rag_query row (or the suppression row).
+writ_bundle_friction "$BUNDLE" "$SESSION_ID" "${CURRENT_MODE:-}"
 
-# 8a. Always-on bundle (rendered + token-tracked server-side; friction logged above).
-if [ -n "$AO_BLOCK" ]; then
-    echo "$AO_BLOCK"
-    echo
-    debug "injected always-on bundle"
-fi
-
-# 8. Broad rules (rendered server-side; cache + friction already applied).
+# 8. Ranked rules (rendered server-side under the room left by the control text above;
+# cache + friction already applied), then the proposal nudge, whose text the server now
+# supplies so the ranked ceiling counts it.
 if [ -n "$RULES_TEXT" ]; then
     echo "$RULES_TEXT"
     debug "injected rules"
 fi
+if [ -n "$NUDGE_TEXT" ]; then echo ""; echo "$NUDGE_TEXT"; fi
 
-# 8b. The orchestrator master's single exit. Everything a master gets is now emitted:
-# the status line (printed by the branch near step 1d), the always-on floor above, and
-# the companion here, in the same two lines step 11c uses. Everything from step 9 down is
-# deliberately out of scope for a master: the work-mode reminder tells the reader to enter
-# /plan and write plan.md, which is the planner worker's job, and the mode directive was
-# already emitted by the branch, so delivering either again would be a misdirection.
+# 8b. The orchestrator master's single exit. A master gets the status line (printed by
+# the branch near step 1d) from this hook and the always-on floor and companion from
+# their own hooks. Steps 9 to 13 were skipped above for a master: the work-mode reminder
+# tells the reader to enter /plan and write plan.md, which is the planner worker's job,
+# and the mode directive was already emitted by the branch.
 if [ "$IS_ORCHESTRATOR" = "true" ]; then
-    if [ -n "$METHOD_BLOCK" ]; then
-        echo ""
-        echo "$METHOD_BLOCK"
-    fi
-    debug "orchestrator mode: emitted always-on floor + companion, skipping steps 9+"
+    debug "orchestrator mode: ranked channel suppressed, skipping steps 9+"
     exit 0
 fi
 
-# 9. Inject mode classification directive if no mode set yet
-if [ -z "$CURRENT_MODE" ]; then
-    emit_mode_directive "$SESSION_HELPER" "$SESSION_ID"
-    debug "injected mode classification directive"
-fi
-
-# 9b. Inject mode-specific reminders
-case "$CURRENT_MODE" in
-    conversation)
-        echo ""
-        echo "[Writ: Conversation mode. Rules injected as context. No code generation expected.]"
-        debug "injected conversation mode reminder"
-        ;;
-    debug)
-        echo ""
-        echo "[Writ: Debug mode. Rules injected for investigation. No code generation: recommend Work mode when fix is identified.]"
-        debug "injected debug mode reminder"
-        ;;
-    review)
-        echo ""
-        echo "[Writ: Review mode. Evaluate code against injected rules. Output structured findings per file.]"
-        debug "injected review mode reminder"
-        ;;
-    work)
-        # Work mode: inject workflow reminder based on gate state. _PROJECT_ROOT is
-        # computed once near the top of the hook (the retrieval requests need it too).
-        # THIS SESSION's own gate directory, never the project-wide one: a flat
-        # phase-a.approved from any session in the repo used to silence this reminder for a
-        # session that had approved nothing, and told it "test-skeletons gate pending",
-        # which reads as progress it never made. An empty answer (no project root, or a
-        # session id that cannot be a path component) means there is nowhere to read gate
-        # state from, so no reminder is printed -- the same silence a rootless project got
-        # before, and never a reminder derived from another session's files.
-        _GATE_DIR=$(writ_gate_dir "$_PROJECT_ROOT" "$SESSION_ID")
-
-        if [ -n "$_GATE_DIR" ]; then
-            _PHASE_A="$_GATE_DIR/phase-a.approved"
-            _TEST_SKEL="$_GATE_DIR/test-skeletons.approved"
-
-            if [ ! -f "$_PHASE_A" ]; then
-                echo ""
-                echo "[Writ: Work mode, plan gate pending. Enter /plan, write plan.md, exit, present, wait for approval.]"
-                debug "injected work mode state (plan)"
-            elif [ ! -f "$_TEST_SKEL" ]; then
-                echo ""
-                echo "[Writ: Work mode, test-skeletons gate pending. Write test files to disk, present, wait for approval.]"
-                debug "injected work mode state (test-skeletons)"
-            fi
-        fi
-        ;;
-esac
-
-# 10. Append proposal nudge if low relevance (only when tier is set -- don't mix directives)
-if [ "$NUDGE" = "NO_RULES" ]; then
-    echo ""
-    echo "[Writ: no matching rules found for this task. If you discover a pattern, constraint, or gotcha during this work that would help future tasks, propose it via POST /propose. See HANDBOOK.md for the format and trigger conditions.]"
-elif [ "$NUDGE" = "LOW_SCORES" ]; then
-    echo ""
-    echo "[Writ: retrieved rules have low relevance scores (< 0.3). The knowledge base may not cover this area well. If you discover a pattern worth codifying, propose it via POST /propose.]"
-fi
-
-# 11c (#8): the methodology companion block was retrieved, rendered, cache-updated,
-# and friction-logged server-side by /prompt-bundle; emit it here in its legacy
-# position (after the mode reminders + proposal nudge).
-if [ -n "$METHOD_BLOCK" ]; then
-    echo ""
-    echo "$METHOD_BLOCK"
-fi
-
-# 1.8b push-by-action (review-feedback): when the incoming prompt signals review
-# feedback / a correction, re-surface SKL-PROC-REVRECV-001 -- but only OUTSIDE
-# review mode, where it is NOT floored (in review mode the companion block above
-# already injected it). Conservative phrase match to avoid false fires.
-if [ -n "${PROMPT:-}" ] && [ "${CURRENT_MODE:-}" != "review" ] && [ "${REMAINING_BUDGET:-0}" -gt 600 ]; then
-    if echo "$PROMPT" | grep -iqE 'review feedback|code review|reviewer|pr (comment|feedback)|requested change|addressing (the )?feedback|review comment'; then
-        REVIEW_PUSH=$(writ_action_push "$SESSION_ID" "review-feedback" || true)
-        if [ -n "$REVIEW_PUSH" ]; then
-            echo ""
-            echo "[Writ: methodology, review-feedback]"
-            echo "$REVIEW_PUSH"
-        fi
-    fi
-fi
-
-# 12. Escalation and backward-context checks reuse the main-path $CACHE. These
-# read only invalidation_history, which is written by gate-validator hooks on
-# other tool calls and never mutated within this UserPromptSubmit run, so the
-# cache captured at step 3 is current (was a redundant second _writ_session read).
-
-# Check for escalation and inject backward context
-# ASK BEFORE SPAWNING, fourth instance of this pattern on this path. /prompt-state already
-# answered "is escalation pending", from the SAME cache file /check-escalation reads, so
-# when the answer is no this round trip only confirms it (measured 12.2ms).
-#
-# WHY THE EARLIER SNAPSHOT IS SAFE HERE, which is the part that needed checking rather than
-# assuming. I previously kept this call fresh because reusing the snapshot risked missing an
-# escalation that arrived mid-hook. The `escalation` field is written in exactly three
-# places (writ/session/approval_workflow.py, violations.py, budget_tracking.py), and none of
-# them run during a UserPromptSubmit hook: they fire on gate approvals and on write
-# violations. So nothing can set it between the two reads in this hook's lifetime.
-#
-# The full object is still fetched when escalation IS pending, because gate, diagnosis,
-# cycles and feedback_sent are read below and /prompt-state returns only the boolean.
-#
-# Presence first, again: a daemon without /prompt-state returns a body with no `escalation`
-# key, which yields empty here and falls through to the real call rather than being read as
-# "no escalation" and silently suppressing the warning.
-PS_ESC=""
-if [ -n "$PROMPT_STATE" ]; then
-    PS_ESC=$(printf '%s' "$PROMPT_STATE" | json_transform \
-        'if has("escalation") then (if .escalation == true then "yes" else "no" end) else empty end' \
-        "(('yes' if d.get('escalation') is True else 'no') if 'escalation' in d else None)" \
-        2>/dev/null || true)
-fi
-if [ "$PS_ESC" = "no" ]; then
-    ESCALATION='{"needed":false}'
-else
-    ESCALATION=$(_writ_session check-escalation "$SESSION_ID" 2>/dev/null || echo '{"needed":false}')
-fi
-# jq when present, python when not: a python start is 9.5ms before it does anything, and
-# `import json` adds 4.9 more, against 2.3ms for jq. Measured on this line: 13.7ms.
-# The truthiness test is spelled out rather than left to jq's, because jq counts "" and 0
-# and [] as true while python does not, and this decides whether escalation fires.
-ESC_NEEDED=$(printf '%s' "$ESCALATION" | json_transform \
-    'if (.needed) != null and (.needed) != false and (.needed) != "" and (.needed) != 0 and (.needed) != [] and (.needed) != {} then "yes" else "no" end' \
-    "'yes' if d.get('needed') else 'no'" 2>/dev/null || true)
-# Both arms print NOTHING on malformed input, where the old inline python exited non-zero
-# and the `|| echo no` supplied the default. Restoring that default explicitly, because an
-# empty ESC_NEEDED would compare unequal to "yes" by luck rather than by decision.
-[ -n "$ESC_NEEDED" ] || ESC_NEEDED="no"
-
-if [ "$ESC_NEEDED" = "yes" ]; then
-    ESC_GATE=$(echo "$ESCALATION" | json_transform 'if (.gate // null) == null then "?" else .gate end' "('?' if d.get('gate') is None else d.get('gate'))" 2>/dev/null)
-    ESC_DIAG=$(echo "$ESCALATION" | json_transform 'if (.diagnosis // null) == null then "?" else .diagnosis end' "('?' if d.get('diagnosis') is None else d.get('diagnosis'))" 2>/dev/null)
-    ESC_CYCLES=$(echo "$ESCALATION" | json_transform 'if (.cycles // null) == null then 0 else .cycles end' "(0 if d.get('cycles') is None else d.get('cycles'))" 2>/dev/null)
-
-    # Build failure history from invalidation records
-    FAILURE_HISTORY=$(python3 "$WRIT_DIR/bin/lib/writ_render_failure_history.py" "$CACHE" "$ESC_GATE" "$ESC_DIAG" 2>/dev/null)
-
-    cat << ESCALATION_MSG
-
-[Writ: ESCALATION -- ${ESC_GATE} invalidated ${ESC_CYCLES} times]
-
-Failure history:
-${FAILURE_HISTORY}
-
-User action needed: review the rule definitions or re-scope the task.
-Do NOT proceed with automated work until the user responds.
-ESCALATION_MSG
-    debug "injected escalation for $ESC_GATE ($ESC_DIAG, $ESC_CYCLES cycles)"
-
-    # C10: Post enriched negative feedback (once per escalation)
-    ESC_FB_SENT=$(echo "$ESCALATION" | json_transform 'if (.feedback_sent) != null and (.feedback_sent) != false and (.feedback_sent) != "" and (.feedback_sent) != 0 and (.feedback_sent) != [] and (.feedback_sent) != {} then "yes" else "no" end' "('yes' if d.get('feedback_sent') else 'no')" 2>/dev/null || echo "no")
-    if [ "$ESC_FB_SENT" != "yes" ]; then
-        python3 "$WRIT_DIR/bin/lib/writ_send_escalation_feedback.py" "$CACHE" "$ESC_GATE" 2>>"$WRIT_HOOK_LOG_SINK" || true
-
-        # Mark feedback as sent in escalation
-        python3 "$SESSION_HELPER" update "$SESSION_ID" --set-escalation-feedback-sent 2>>"$WRIT_HOOK_LOG_SINK" || true
-        debug "sent enriched negative feedback for escalation"
-    fi
-
-    exit 0
-fi
-
-# 13. Check for gate invalidation (backward context without escalation)
-# Only relevant in Work mode
-if [ "$CURRENT_MODE" = "work" ]; then
-    # Reuses the session-scoped $_GATE_DIR section 9b already built (both blocks run only in
-    # work mode, so the build happens once per prompt). Recomputed only if 9b was skipped;
-    # an empty answer means no session-scoped directory to read, and the invalidation check
-    # is skipped rather than pointed at the project-wide path, where another session's
-    # missing artifact would read as THIS session's gate invalidation.
-    # ${_PROJECT_ROOT:-} because this arm is only reached when 9b was skipped, and an
-    # unset variable under `set -u` would abort the whole hook rather than skip a check.
-    _GATE_DIR="${_GATE_DIR:-$(writ_gate_dir "${_PROJECT_ROOT:-}" "$SESSION_ID")}"
-    if [ -n "$_GATE_DIR" ]; then
-
-        # Check if any gate was invalidated (records exist but .approved file missing)
-        #
-        # ASK BEFORE SPAWNING. The renderer prints nothing unless invalidation_history
-        # holds a non-empty entry, which for almost every session it does not (measured 0
-        # across live sessions). Discovering that cost a 19.5ms interpreter start on EVERY
-        # prompt. jq answers the same question in 2.3ms from $CACHE, already in memory.
-        #
-        # This is a NECESSARY-condition test, not the renderer's full logic: an empty
-        # history guarantees no output, while a non-empty one still has to check whether
-        # each gate's .approved file is missing. So the guard can only skip work the
-        # renderer would have skipped anyway.
-        #
-        # Fail-open: an unreadable cache leaves this empty and the default runs the
-        # renderer, because losing a gate-invalidation warning is worse than a spawn.
-        _HAS_INVALIDATION=$(printf '%s' "$CACHE" | json_transform \
-            'if ((.invalidation_history // {}) | to_entries | map(select((.value | length) > 0)) | length) > 0 then "yes" else "no" end' \
-            "('yes' if any((d.get('invalidation_history') or {}).values()) else 'no')" \
-            2>/dev/null || true)
-        BACKWARD_CTX=""
-        if [ "${_HAS_INVALIDATION:-yes}" != "no" ]; then
-            BACKWARD_CTX=$(python3 "$WRIT_DIR/bin/lib/writ_render_backward_context.py" "$CACHE" "$_GATE_DIR" 2>/dev/null)
-        fi
-
-        if [ -n "$BACKWARD_CTX" ]; then
-            echo ""
-            echo "$BACKWARD_CTX"
-            debug "injected backward context for invalidated gate"
-        fi
-    fi
-fi
-
+# The exit handler (1d) releases the buffered output under the ceiling.
 exit 0

@@ -34,6 +34,7 @@ from writ.server.models import (
     ProposeRequest,
     PromptBundleRequest,
     QueryRequest,
+    RecallRequest,
     SubagentStartContextRequest,
 )
 from writ.server.routes.session_state import _format_query_response
@@ -201,28 +202,40 @@ async def methodology_companion(request: CompanionRequest) -> dict[str, Any]:
     }
 
 
+# The channels a request names when it omits `sections`: the three /prompt-bundle always
+# returned. Recall is opt-in, so a legacy caller never spends the once-per-session briefing.
+_LEGACY_PROMPT_SECTIONS = ("ranked", "always_on", "methodology")
+
+
 @router.post("/prompt-bundle")
 async def prompt_bundle(request: PromptBundleRequest) -> dict[str, Any]:
-    """#8: the three per-prompt injection channels in ONE warm call.
+    """The per-prompt injection sections, each rendered under its own character ceiling.
 
-    Awaits the existing /query, /always-on, /methodology-companion handlers
-    in-process, renders each via the shared prompt_bundle helpers, applies the
-    SAME cache updates + friction events the bash hook did, and returns the
-    rendered pieces SEPARATELY so the hook interleaves them with its bash-side mode
-    reminders (preserving byte-identical output order). Retrieval already required
-    the daemon, so this adds no new degraded-mode risk: daemon-down -> the hook
-    prints 'server unavailable', exactly as before. Moves ~16 cold python3 spawns
-    off the hot path (measured ~646ms -> target ~300ms per prompt).
+    `sections` names which of always_on / ranked / methodology / recall to build. Each
+    UserPromptSubmit hook asks for exactly one, so no hook prints another's text and none
+    crosses the host's per-hook cap (docs/adr/ADR-prompt-injection-split.md). Omitted, it
+    is the legacy trio in one call. Every section reads the ONE cache snapshot taken below,
+    which is what lets four parallel hooks agree: no section depends on a write another
+    section makes in the same turn.
+
+    Awaits the existing /query, /always-on, /methodology-companion handlers in-process and
+    applies the same cache updates the bash hook used to; friction rows stay client-side
+    (the per-section meta is returned for the hook to log under the project-local path).
     """
     import json as _json
-    from writ.retrieval.prompt_bundle import (
-        always_on_rule_ids, compute_nudge, extract_rule_objects, render_always_on,
-        split_format, tag_overlap,
+    from writ.retrieval.injection_ceiling import (
+        NUDGE_TEXT, clamp_lines, collapse_floor, fit_methodology, fit_ranked,
+        ranked_char_limit, render_always_on_section, section_char_limit,
     )
+    from writ.retrieval.prompt_bundle import compute_nudge, extract_rule_objects, tag_overlap
+    from writ.session.budget_tracking import should_skip_cache
+    from writ.session.injection_state import injection_epoch, shown_ids
+    from writ.shared.tokens import PROMPT_SECTION_TOKENS
 
     if server._pipeline is None:
         return {"error": "Pipeline not initialized. Run writ serve."}
 
+    sections = set(request.sections) if request.sections is not None else set(_LEGACY_PROMPT_SECTIONS)
     sid = request.session_id
     mode = request.mode or ""
     prompt = request.prompt or ""
@@ -237,150 +250,159 @@ async def prompt_bundle(request: PromptBundleRequest) -> dict[str, Any]:
     remaining_budget = cache.get("remaining_budget", 8000)
     prefer_ids = cache.get("last_injected_rule_ids", []) or []
     detected_domain = cache.get("detected_domain", "") or ""
+    epoch = injection_epoch(cache)
 
-    # Cache updates run server-side (the session cache is tempdir/session-id-keyed,
-    # so its location is cwd-independent). Friction logging stays CLIENT-SIDE in the
-    # hook: _resolve_log_path is cwd-relative when WRIT_FRICTION_LOG is unset, so
-    # logging here (daemon cwd) would relocate a real project's rag_query telemetry
-    # away from project/workflow-friction.log. The per-channel meta is returned for
-    # the hook to log with the project-local path + the same format as before.
     out: dict[str, Any] = {
-        "always_on_block": "", "rules_text": "", "methodology_block": "",
-        "nudge": "", "error": False,
+        "always_on_block": "", "rules_text": "", "methodology_block": "", "recall_block": "",
+        "nudge": "", "nudge_text": "", "error": False, "skipped": False,
         "broad_meta": None, "ao_meta": None, "method_meta": None,
     }
+    # Explicit sections only: a legacy caller keeps its old no-skip behavior.
+    if request.sections is not None and should_skip_cache(cache):
+        out["skipped"] = True
+        return out
 
-    # --- Channel 1: broad /query ---
-    # include_ranked=False skips the RETRIEVAL, not just the render: suppression is a
-    # request-time decision, so the Neo4j read is never paid for and the "error" early
-    # return below cannot abort channels 2 and 3 either. exclude_ids is still computed
-    # above because channel 3 uses it.
+    # --- Channel 1 retrieval (ranked). An error still aborts before any always-on read.
+    # include_ranked=False (an orchestrator master) skips the RETRIEVAL, not just the
+    # render, so the Neo4j read is never paid for.
+    run_ranked = "ranked" in sections and request.include_ranked
     qresp: dict[str, Any] = {}
-    if request.include_ranked:
+    if run_ranked:
         qresp = await query_rules(QueryRequest(
             query=prompt,
-            budget_tokens=remaining_budget,
+            budget_tokens=min(remaining_budget, PROMPT_SECTION_TOKENS["ranked"]),
             exclude_rule_ids=exclude_ids,
             prefer_rule_ids=(prefer_ids or None),
             domain=(detected_domain if detected_domain and detected_domain != "universal" else None),
-            # This is the hot per-prompt retrieval and the session is right here, so its
-            # retrieval_result row is session-correlated even though the four hooks that POST
-            # /query directly do not send one yet.
             session_id=sid,
-            # The project scope, which this internal request used to DROP: the field
-            # existed on QueryRequest and /query forwarded it, but the constructor here
-            # never set it, so the one route that runs on every prompt was unscoped no
-            # matter what the hook sent. Passed as a root, resolved once inside query_rules.
             project_root=request.project_root,
         ))
         if "error" in qresp:
-            # Match the legacy hook: a /query error aborted the whole injection (the
-            # always-on + methodology channels ran AFTER it), so return early. This return
-            # is why channel 2 is RESOLVED below rather than above: the ranked channel's
-            # RENDER needs the always-on ids, but its RETRIEVAL does not, so the always-on
-            # Neo4j reads stay skipped on the error path exactly as they were, and the
-            # response shape here is unchanged (no always_on_block, no always-on cache
-            # update, no ao_meta).
             out["error"] = True
             return out
 
-    # --- Channel 2 data, resolved early (the ranked channel's render needs it) ---
-    # Ordering, not new work. always_on_bundle depends on nothing from channel 1 (two
-    # read-only Neo4j queries plus pure filtering), and the ranked render needs to know
-    # which of its hits the always-on block already delivered this turn. Resolved here;
-    # EMITTED after channel 1, so the pieces of `out` are still filled in channel order.
-    aoresp = await always_on_bundle(
-        mode=(mode or "universal"),
-        at=("prompt" if request.always_on_filter else None),
-        context=prompt,
-    )
-    ao_json = aoresp if isinstance(aoresp, dict) else {}
-    block, ao_tokens, ao_count = render_always_on(ao_json)
-    # The RENDERED ids, never the eligible ones. _renderable_always_on drops a rule
-    # missing its trigger or statement, and both consumers below depend on that filter:
-    # the citation record must not name a rule the agent never saw, and the field dedup
-    # must not point the reader at a block that does not contain the rule.
-    ao_ids = always_on_rule_ids(ao_json)
-
-    # --- Channel 1 (render) ---
-    if request.include_ranked:
-        out["nudge"] = compute_nudge(qresp)
-        # Field-level dedup: a ranked hit already in this turn's always-on block renders a
-        # pointer instead of repeating its trigger and statement. tag_overlap COPIES, so
-        # `qresp` below still carries every field for the --add-rule-objects cache the
-        # compliance-matching path reads.
-        render_payload = dict(qresp)
-        render_payload["rules"] = tag_overlap(qresp.get("rules") or [], ao_ids)
-        text, meta = split_format(
-            await asyncio.to_thread(server._run_cmd_format_locked, render_payload)
+    # --- Channel 2 data: needed to emit always-on, and to tag the ranked overlap. The
+    # ranked request computes it itself (read-only) so it never depends on the always-on
+    # hook having run in the same turn.
+    ao_json: dict[str, Any] = {}
+    ao = None
+    if "always_on" in sections or run_ranked:
+        aoresp = await always_on_bundle(
+            mode=(mode or "universal"),
+            at=("prompt" if request.always_on_filter else None),
+            context=prompt,
         )
-        out["rules_text"] = text
-        rule_ids = meta.get("rule_ids", []) or []
-        cost = meta.get("cost", 0) or 0
-        await asyncio.to_thread(server.writ_session.cmd_update, sid, [
-            "--add-rules", _json.dumps(rule_ids),
-            "--cost", str(cost),
-            "--inc-queries",
-            "--set-last-injected-rule-ids", _json.dumps(rule_ids),
-            "--add-rule-objects", _json.dumps(extract_rule_objects(qresp)),
-        ])
-        out["broad_meta"] = {"rule_ids": rule_ids, "cost": cost}
-    else:
-        # A SENTINEL, never an empty result. A zero-rule broad_meta is the abstention
-        # signal (retrieval ran and found nothing), so recording a configuration choice
-        # that way would corrupt every census that counts retrievals by source. `nudge`
-        # stays "" for the same reason: compute_nudge on a skipped channel reads
-        # "NO_RULES", which would tell the caller to propose a rule for an absence it
-        # asked for.
-        out["broad_meta"] = {"suppressed": True}
+        ao_json = aoresp if isinstance(aoresp, dict) else {}
+        ao = render_always_on_section(
+            ao_json, shown_ids(cache, "always_on"), section_char_limit("always_on"),
+        )
 
-    # --- Channel 2: always-on (emit) ---
-    out["always_on_block"] = block
-    if block and ao_tokens > 0:
-        # Record the IDs, not just the token count. This channel injects rules into the
-        # prompt; recording only tokens left _validate_phase_a validating citations
-        # against a set with no always-on rule in it, so the gate reported the agent's
-        # correct citations as hallucinated and spent the user's approval token.
-        await asyncio.to_thread(server.writ_session.cmd_update, sid, [
-            "--add-always-on-tokens", str(ao_tokens),
-            "--add-always-on-rules", _json.dumps(ao_ids),
-        ])
-        out["ao_meta"] = {"tokens": ao_tokens, "count": ao_count, "rule_ids": ao_ids}
+    # --- Channel 1 render.
+    if "ranked" in sections:
+        if run_ranked:
+            out["nudge"] = compute_nudge(qresp)
+            out["nudge_text"] = NUDGE_TEXT.get(out["nudge"], "")
+            # tag_overlap COPIES, so `qresp` still carries every field for the
+            # --add-rule-objects cache the compliance-matching path reads.
+            render_payload = dict(qresp)
+            render_payload["rules"] = tag_overlap(qresp.get("rules") or [], ao.rule_ids if ao else [])
+            text, meta, _used = await asyncio.to_thread(
+                fit_ranked, render_payload, server._run_cmd_format_locked,
+                ranked_char_limit(request.reserve_chars, out["nudge_text"]),
+            )
+            out["rules_text"] = text
+            rule_ids = meta.get("rule_ids", []) or []
+            cost = meta.get("cost", 0) or 0
+            rendered = set(rule_ids)
+            await asyncio.to_thread(server.writ_session.cmd_update, sid, [
+                "--add-rules", _json.dumps(rule_ids),
+                "--cost", str(cost),
+                "--inc-queries",
+                "--set-last-injected-rule-ids", _json.dumps(rule_ids),
+                "--add-rule-objects", _json.dumps(
+                    [o for o in extract_rule_objects(qresp) if o["rule_id"] in rendered]
+                ),
+            ])
+            out["broad_meta"] = {"rule_ids": rule_ids, "cost": cost}
+        else:
+            # A SENTINEL, never an empty result: a zero-rule broad_meta is the abstention
+            # signal, so recording a configuration choice that way would corrupt every
+            # census that counts retrievals by source.
+            out["broad_meta"] = {"suppressed": True}
 
-    # --- Channel 3: methodology companion ---
+    # --- Channel 2: always-on (emit).
+    if "always_on" in sections and ao is not None:
+        out["always_on_block"] = ao.text
+        if ao.text and ao.tokens > 0:
+            # Citations record every id present in the block, full or pointer; the
+            # collapse record only the ones rendered in full.
+            updates = [
+                "--add-always-on-tokens", str(ao.tokens),
+                "--add-always-on-rules", _json.dumps(ao.rule_ids),
+            ]
+            if ao.full_ids:
+                updates += ["--mark-shown", "always_on", epoch, _json.dumps(ao.full_ids)]
+            await asyncio.to_thread(server.writ_session.cmd_update, sid, updates)
+            out["ao_meta"] = {
+                "tokens": ao.tokens, "count": len(ao.rule_ids),
+                "rule_ids": ao.rule_ids,
+            }
+
+    # --- Channel 3: methodology companion. The floor still bypasses the session exclude
+    # and the rule budget; what changes is that an already-shown floor rule renders as a
+    # pointer and the whole block fits its section limit.
     qsource = {
         "work": "methodology", "debug": "debug-playbook",
         "investigate": "investigation-doctrine",
         "conversation": "methodology-conversation", "review": "methodology-review",
     }.get(mode, "")
-    # The mode's floor comes back EVERY turn. exclude_ids is session-wide, while the index
-    # reads its exclude list as "already injected this turn", so passing it unchanged
-    # delivered a floor once per session (once per phase in work). The floor is exempt
-    # from the rule budget the way the always-on channel is: charging it would drain the
-    # budget turn by turn until the 600-token gate below shut the floor off. Pull keeps
-    # both its session dedup and its budget.
-    if qsource:
+    if "methodology" in sections and qsource:
         floor_ids = server._trigger_index.floor_ids(mode) if server._trigger_index else set()
         cresp = await methodology_companion(CompanionRequest(
             mode=mode, prompt=prompt,
             exclude_rule_ids=[i for i in exclude_ids if i not in floor_ids],
-            budget_tokens=2000 if remaining_budget > 600 else 0,
+            budget_tokens=PROMPT_SECTION_TOKENS["methodology"] if remaining_budget > 600 else 0,
             project_root=request.project_root,
         ))
         if "error" not in cresp:
-            ctext, cmeta = split_format(await asyncio.to_thread(server._run_cmd_format_locked, cresp))
-            if ctext:
-                out["methodology_block"] = "[Writ: methodology companion]\n" + ctext
-            crule_ids = cmeta.get("rule_ids", []) or []
-            ccost = cost_for(
-                [r for r in cresp.get("rules") or [] if r.get("channel") != "floor"], "summary",
+            payload = dict(cresp)
+            payload["rules"] = collapse_floor(cresp.get("rules") or [], shown_ids(cache, "floor"))
+            ctext, cmeta, used = await asyncio.to_thread(
+                fit_methodology, payload, server._run_cmd_format_locked,
+                section_char_limit("methodology"),
             )
+            out["methodology_block"] = ctext
+            crule_ids = cmeta.get("rule_ids", []) or []
+            used_rules = used.get("rules") or []
+            ccost = cost_for([r for r in used_rules if r.get("channel") != "floor"], "summary")
+            floor_full = [
+                r["rule_id"] for r in used_rules
+                if r.get("channel") == "floor" and not r.get("pointer_only") and r.get("rule_id")
+            ]
+            updates: list[str] = []
             if crule_ids:
-                await asyncio.to_thread(server.writ_session.cmd_update, sid, [
-                    "--add-rules", _json.dumps(crule_ids),
-                    "--cost", str(ccost), "--inc-queries",
-                ])
+                updates += ["--add-rules", _json.dumps(crule_ids), "--cost", str(ccost), "--inc-queries"]
+            if floor_full:
+                updates += ["--mark-shown", "floor", epoch, _json.dumps(floor_full)]
+            if updates:
+                await asyncio.to_thread(server.writ_session.cmd_update, sid, updates)
             out["method_meta"] = {"rule_ids": crule_ids, "cost": ccost, "query_source": qsource}
+
+    # --- Recall: once per session, master only (the hook does not ask from a sub-agent).
+    # The flag is set whether or not decisions existed, exactly as the hook used to.
+    if "recall" in sections and not cache.get("recall_briefed"):
+        from writ.server.routes import decision_memory
+        briefing = ""
+        try:
+            rresp = await decision_memory.recall(
+                RecallRequest(project_root=request.project_root or "", budget=20000)
+            )
+            if isinstance(rresp, dict):
+                briefing = str(rresp.get("briefing") or "")
+        except Exception as exc:
+            emit_exception("server.prompt_bundle.recall", exc, sid, None)
+        out["recall_block"] = clamp_lines(briefing, section_char_limit("recall"))
+        await asyncio.to_thread(server.writ_session.cmd_update, sid, ["--set-recall-briefed"])
 
     return out
 

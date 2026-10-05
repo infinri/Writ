@@ -4,5 +4,9 @@
   "rule_cost_standard": 120,
   "rule_cost_summary": 40,
   "subagent_budget": null,
-  "always_on_cap": 5000
+  "always_on_cap": 5000,
+  "prompt_char_ceiling": 9500,
+  "prompt_total_tokens": 9500,
+  "prompt_section_tokens": {"always_on": 2000, "ranked": 2300, "methodology": 2000, "recall": 500},
+  "prompt_reserved_tokens": {"document_chunks": 2700}
 }

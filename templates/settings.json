@@ -48,6 +48,33 @@
             "command": "bash \"${WRIT_DIR}/hooks/scripts/writ-rag-inject.sh\""
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${WRIT_DIR}/hooks/scripts/writ-inject-always-on.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${WRIT_DIR}/hooks/scripts/writ-inject-methodology.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${WRIT_DIR}/hooks/scripts/writ-inject-recall.sh\""
+          }
+        ]
       }
     ],
     "SubagentStart": [

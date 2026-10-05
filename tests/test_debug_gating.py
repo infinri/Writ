@@ -85,13 +85,22 @@ def _hooks_defining_the_gated_sink() -> list[Path]:
 # writ-read-rag.sh went 1 -> 2 and writ-pre-write-dispatch.sh 1 -> 2 on 2026-09-01,
 # when their mutating `_writ_session update` calls stopped sending stderr to
 # /dev/null, which tests/test_hook_stderr_logging.py forbids for exactly that call.
+#
+# writ-rag-inject.sh went 7 -> 3 and the three writ-inject-*.sh section hooks joined at 0
+# with the per-prompt injection split (docs/adr/ADR-prompt-injection-split.md): the
+# recall update and the three friction-row sinks moved into the shared body in
+# bin/lib/writ-prompt-section.sh (3 sinks there), which every injection hook sources
+# after defining WRIT_HOOK_LOG_SINK.
 EXPECTED_GATED_SINKS: dict[str, int] = {
     "inject-tier-workflow.sh": 1,
     "validate-exit-plan.sh": 1,
+    "writ-inject-always-on.sh": 0,
+    "writ-inject-methodology.sh": 0,
+    "writ-inject-recall.sh": 0,
     "writ-posttool-rag.sh": 2,
     "writ-pre-write-dispatch.sh": 2,
     "writ-quality-judge.sh": 1,
-    "writ-rag-inject.sh": 7,
+    "writ-rag-inject.sh": 3,
     "writ-read-rag.sh": 2,
     "writ-subagent-start.sh": 1,
     "writ-subagent-stop.sh": 1,

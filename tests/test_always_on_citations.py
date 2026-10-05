@@ -304,7 +304,9 @@ class TestFrictionEventCarriesRuleIds:
         in a comment above the builder, and splitting on it landed this assertion in
         prose instead of the code.
         """
-        src = open(os.path.join(SKILL_ROOT, "hooks", "scripts", "writ-rag-inject.sh")).read()
+        # The python row builder is bin/lib/writ_friction_rows.py, shared by every
+        # injection hook since the per-prompt split (docs/adr/ADR-prompt-injection-split.md).
+        src = open(os.path.join(SKILL_ROOT, "bin", "lib", "writ_friction_rows.py")).read()
         marker = "'event': 'always_on_inject'"
         assert marker in src, "the always_on_inject event builder moved"
         event = src[src.index(marker):][:400]

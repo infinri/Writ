@@ -220,6 +220,12 @@ def _default_cache() -> dict:
         # source, so a cache written before this cycle reads back False and simply never
         # fires, which is the correct degradation for a queue nobody filled.
         "post_compact_pending": False,
+        # The collapse record (writ/session/injection_state.py): always-on and floor
+        # methodology rules render in full once per epoch, (compaction_epoch,
+        # current_phase), and as one pointer line per rule after that.
+        # cmd_reset_after_compaction bumps the counter.
+        "compaction_epoch": 0,
+        "injection_shown": {},
         "last_injected_rule_ids": [],
         "detected_domain": None,
         # Phase 1 additions per plan Section 6.1 deliverable 5. Track playbook

@@ -405,6 +405,28 @@ def _call_traces_to(tree, call, target_func_name):
     return False
 
 
+def _traces_to_the_ceiling_render(tree, call):
+    """Does an argument read `.rule_ids` off a name assigned from
+    render_always_on_section(...), optionally behind `if <name> else []`?
+
+    The ceiling-aware renderer (writ/retrieval/injection_ceiling.py,
+    docs/adr/ADR-prompt-injection-split.md) returns in `.rule_ids` exactly the ids
+    present in the block it rendered, after the character ceiling dropped any rule.
+    That is the rendered-ids guarantee always_on_rule_ids gives, and stricter: a rule
+    the ceiling omitted is in always_on_rule_ids but not in the block."""
+    func = _enclosing_function(tree, call.lineno)
+    if func is None:
+        return False
+    for arg in list(call.args[1:]) + [kw.value for kw in call.keywords]:
+        node = arg.body if isinstance(arg, ast.IfExp) else arg
+        if (isinstance(node, ast.Attribute) and node.attr == "rule_ids"
+                and isinstance(node.value, ast.Name)):
+            resolved = _resolve_name_within_function(func, node.value.id, call.lineno)
+            if resolved is not None and _expr_is_derived_from(resolved, "render_always_on_section"):
+                return True
+    return False
+
+
 # --------------------------------------------------------------------------- #
 # Mutation-style self-check of the detector above: it must accept a call site
 # that DOES derive from always_on_rule_ids and reject one that does not, using
@@ -489,10 +511,12 @@ class TestOverlapArgumentIsDerivedFromRenderedIds:
         )
 
         for call in calls:
-            assert _call_traces_to(tree, call, "always_on_rule_ids"), (
+            assert (_call_traces_to(tree, call, "always_on_rule_ids")
+                    or _traces_to_the_ceiling_render(tree, call)), (
                 f"tag_overlap call at query.py:{call.lineno} does not appear to "
-                "receive an argument derived from always_on_rule_ids(...) (the "
-                "RENDERED always-on ids). If the overlap set is built from the raw "
+                "receive an argument derived from always_on_rule_ids(...) or from "
+                "render_always_on_section(...).rule_ids (the RENDERED always-on "
+                "ids). If the overlap set is built from the raw "
                 "/always-on response's `rules` list instead, a rule dropped by the "
                 "renderable filter would be suppressed in the ranked channel and "
                 "pointed at a block that never contained it."

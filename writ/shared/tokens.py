@@ -24,6 +24,20 @@ _RULE_COST_BY_MODE = {
 }
 _RULE_COST_DEFAULT = _budget_data["rule_cost_summary"]
 
+# The per-prompt injection ceilings (program item 1a, docs/adr/ADR-prompt-injection-split.md).
+# The host caps each hook command's injected text at 10,000 characters, so every
+# UserPromptSubmit injection hook stays under PROMPT_CHAR_CEILING; the section token budgets
+# plus the reserved budgets sum to PROMPT_TOTAL_TOKENS.
+CHARS_PER_TOKEN = 4
+PROMPT_CHAR_CEILING: int = int(_budget_data["prompt_char_ceiling"])
+PROMPT_TOTAL_TOKENS: int = int(_budget_data["prompt_total_tokens"])
+PROMPT_SECTION_TOKENS: dict[str, int] = {
+    k: int(v) for k, v in _budget_data["prompt_section_tokens"].items()
+}
+PROMPT_RESERVED_TOKENS: dict[str, int] = {
+    k: int(v) for k, v in _budget_data["prompt_reserved_tokens"].items()
+}
+
 
 def estimate_tokens(trigger: str | None, statement: str | None) -> int:
     """Approximate token count of a rule's trigger + statement (4 chars/token)."""

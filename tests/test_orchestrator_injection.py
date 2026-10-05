@@ -47,6 +47,7 @@ sys.path.insert(0, str(SKILL_DIR))
 from tests._hook_runner import (  # noqa: E402
     hook_env,
     instrumented_daemon,
+    run_prompt_submit_hooks,
     verify_seeded_mode,
 )
 from tests._stub_daemon import StubDaemon  # noqa: E402
@@ -194,6 +195,18 @@ def _run_rag_inject(session_id: str, prompt: str, cwd: Path,
     )
 
 
+def _run_injection_hooks(session_id: str, prompt: str, cwd: Path, env: dict):
+    """Every UserPromptSubmit injection hook, run together as the host runs them.
+
+    The always-on floor and the methodology companion are their own hooks
+    (docs/adr/ADR-prompt-injection-split.md), so a master's turn is the combined
+    output of all four; the ranked hook alone carries only its status line and the
+    suppressed ranked channel.
+    """
+    envelope = json.dumps({"session_id": session_id, "prompt": prompt})
+    return run_prompt_submit_hooks(envelope, env=env, cwd=str(cwd), timeout=20)
+
+
 # --------------------------------------------------------------------------- #
 # Capabilities 4-7: the full always-on floor, capability 6: the companion
 # survives, capability 7: the ranked channel logs a suppression rather than a
@@ -221,7 +234,7 @@ class TestOrchestratorFullFloor:
         cache_dir = daemon["health"]["cache_dir"]
         _seed_cache(sid, cache_dir, mode="work", is_orchestrator=True)
         verify_seeded_mode(daemon, sid, "work")
-        result = _run_rag_inject(sid, self.PROMPT, project_root, env=hook_env(daemon))
+        result = _run_injection_hooks(sid, self.PROMPT, project_root, env=hook_env(daemon))
         return result, sid, project_root, cache_dir
 
     def test_always_active_rules_block_reaches_stdout(self, own_daemon, tmp_path):
@@ -352,7 +365,7 @@ class TestPhaseAValidatorAcceptsTheFloor:
         # call time, so it is pinned to the same dir the daemon reports.
         monkeypatch.setenv("WRIT_CACHE_DIR", cache_dir)
         try:
-            result = _run_rag_inject(
+            result = _run_injection_hooks(
                 sid,
                 "Continue implementing the budget fix and confirm the always-on floor.",
                 project_root,

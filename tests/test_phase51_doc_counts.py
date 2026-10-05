@@ -119,9 +119,13 @@ class TestDocCounts:
         # Cycle K deleted the three COPIES of this number (test_pol5b4,
         # tests/plugin/test_hooks_routing, and a HANDBOOK sentence's worth of drift), so a
         # deliberate change now edits one assertion instead of four.
+        # 48 = the 45 pinned here before the per-prompt injection split + the three
+        # section hooks it added on UserPromptSubmit (writ-inject-always-on.sh,
+        # writ-inject-methodology.sh, writ-inject-recall.sh;
+        # docs/adr/ADR-prompt-injection-split.md).
         source_count = _count_hooks_json_entries()
-        assert source_count == 45, (
-            f"hooks/hooks.json has {source_count} 'command' entries; expected 44. "
+        assert source_count == 48, (
+            f"hooks/hooks.json has {source_count} 'command' entries; expected 48. "
             "Bump this (and HANDBOOK 'registers **N hook scripts**') when adding or "
             "removing a registration."
         )

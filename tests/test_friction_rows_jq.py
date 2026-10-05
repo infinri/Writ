@@ -9,16 +9,12 @@ order and jq's object construction does not always agree, and the consumer is js
 in the drain, so key order carries no meaning. Asserting on text would pin something that
 is not the contract and block harmless filter edits.
 
-The python arm is not a paraphrase: it is copied from writ-rag-inject.sh, which still runs
-it whenever jq is absent. If that block changes, this copy must change with it, which is
-why the test names the source explicitly.
-
-THAT COUPLING IS NOW EXECUTABLE rather than a promise in a docstring:
-tests/test_effort_hop_removed.py::TestTheCopiedPythonBuilderIsTheBlockTheHookRuns asserts
-PY_BUILDER is byte-equal to the block the hook really runs, derived from the hook source by
-tests/_inventory.py::rag_inject_python_blocks as a map keyed by the shell variable each
-inline block fills. A drifted copy would otherwise leave the parity oracle below comparing
-the filter against a fiction.
+The python arm is not a paraphrase: it is bin/lib/writ_friction_rows.py ITSELF, read off
+disk and executed, which is the file the four UserPromptSubmit injection hooks run (through
+writ_bundle_friction in bin/lib/writ-prompt-section.sh) whenever jq is absent. There is no
+copy to drift: the program this module compares against the filter is the program that
+runs on the prompt path. tests/test_effort_hop_removed.py additionally runs the shared
+function's own text in a real bash and asserts it invokes this file.
 """
 
 from __future__ import annotations
@@ -33,52 +29,16 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 JQ_FILTER = REPO / "bin" / "lib" / "friction-rows.jq"
-HOOK = REPO / "hooks" / "scripts" / "writ-rag-inject.sh"
+PY_ARM = REPO / "bin" / "lib" / "writ_friction_rows.py"
+# The shared friction-row emitter all four injection hooks call (writ_bundle_friction).
+SECTION_LIB = REPO / "bin" / "lib" / "writ-prompt-section.sh"
 
 pytestmark = pytest.mark.skipif(
     shutil.which("jq") is None, reason="jq not installed; the python arm is the fallback"
 )
 
-# Copied from writ-rag-inject.sh's fallback arm. See the module docstring.
-PY_BUILDER = r"""
-import json, os, sys
-try:
-    b = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-sid = os.environ.get('WRIT_SID', '')
-mode = os.environ.get('WRIT_MODE', '') or None
-def rag(src, meta):
-    e = {'session': sid, 'mode': mode, 'event': 'rag_query', 'query_source': src,
-         'tokens_injected': int(meta.get('cost', 0)),
-         'rules_returned_count': len(meta.get('rule_ids', [])), 'rule_ids': meta.get('rule_ids', [])}
-    e['event_name'] = 'UserPromptSubmit'; e['mechanism'] = 'stdout'
-    return e
-lines = []
-bm = b.get('broad_meta')
-if bm is not None:
-    # A suppressed ranked channel (include_ranked=false) is NOT a zero-rule
-    # rag_query: a zero-rule rag_query is the abstention signal every census
-    # that counts retrievals by source relies on, so recording the
-    # suppression that way would be indistinguishable from a real retrieval
-    # that came back empty.
-    if bm.get('suppressed'):
-        lines.append({'session': sid, 'mode': mode, 'event': 'rag_channel_suppressed',
-                      'channel': 'broad', 'event_name': 'UserPromptSubmit', 'mechanism': 'stdout'})
-    else:
-        lines.append(rag('broad', bm))
-ao = b.get('ao_meta')
-if ao is not None and int(ao.get('tokens', 0)) > 0:
-    lines.append({'session': sid, 'mode': mode, 'event': 'always_on_inject',
-                  'tokens': int(ao.get('tokens', 0)), 'rule_count': int(ao.get('count', 0)),
-                  'rule_ids': ao.get('rule_ids') or [],
-                  'event_name': 'UserPromptSubmit', 'mechanism': 'stdout'})
-mm = b.get('method_meta')
-if mm is not None:
-    lines.append(rag(mm.get('query_source', ''), mm))
-for e in lines:
-    print(json.dumps(e))
-"""
+# The fallback arm the hooks run, read from its own file. See the module docstring.
+PY_BUILDER = PY_ARM.read_text()
 
 # The first entry is the shape a live /prompt-bundle actually returns (captured
 # 2026-08-07); the rest are the degenerate shapes the endpoint or a truncated read can
@@ -216,23 +176,34 @@ class TestSuppressedRankedChannelRow:
         assert len(always_on) == 1, rows
 
 
+def _friction_function() -> str:
+    """The body of writ_bundle_friction, the one friction-row emitter the hooks share."""
+    source = SECTION_LIB.read_text()
+    start = source.find("writ_bundle_friction() {")
+    assert start != -1, "bin/lib/writ-prompt-section.sh no longer defines writ_bundle_friction"
+    end = source.find("\n}\n", start)
+    assert end > start, "writ_bundle_friction has no closing brace"
+    return source[start:end]
+
+
 class TestTheHookKeepsBothArms:
     def test_the_python_fallback_is_still_present(self) -> None:
         """The WRIT_NO_JQ seam: absence of jq must change speed, never behaviour. If the
         fallback is deleted, a machine without jq silently stops recording these audit
         rows."""
-        source = HOOK.read_text()
+        source = _friction_function()
         assert "_FRICTION_ROWS_OK" in source
-        assert "WRIT_SID=" in source and "always_on_inject" in source, (
-            "the python row builder is gone from the hook; a jq-less machine would "
-            "record no rag_query or always_on_inject rows at all"
+        assert "WRIT_SID=" in source and "bin/lib/writ_friction_rows.py" in source, (
+            "the python row builder is gone from the shared emitter; a jq-less machine "
+            "would record no rag_query or always_on_inject rows at all"
         )
+        assert "always_on_inject" in PY_BUILDER
 
     def test_the_fallback_is_chosen_on_jq_exit_status_not_empty_output(self) -> None:
         """A bundle with no metadata legitimately produces ZERO rows. Treating empty
         output as failure would spawn python to rediscover that there is nothing to
         emit, which is the pattern this cycle removed twice."""
-        source = HOOK.read_text()
+        source = _friction_function()
         assert 'if [ -z "$_FRICTION_ROWS_OK" ]; then' in source, (
             "the fallback no longer keys off jq's exit status"
         )

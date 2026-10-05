@@ -327,41 +327,42 @@ class TestProjectRootComputationIsPureBashOnTheHotPath:
 
 
 class TestOneProjectRootAnswerPerHook:
-    """writ-rag-inject.sh computes `_PROJECT_ROOT` once near the top and every
-    project_root sender added by the scoping cycle reads it. The `/recall` request
-    body predates that hoist by three weeks and built its own answer from `$PWD`.
+    """Every injection hook computes ONE project-root answer and every project_root it
+    sends reads it. The recall briefing used to build its own answer from `$PWD`.
 
-    Two things make the divergence a defect rather than a style wrinkle. `$PWD` is
-    bash's LOGICAL cwd (symlinked components unresolved) while `_PROJECT_ROOT` comes
+    Two things make a divergence a defect rather than a style wrinkle. `$PWD` is
+    bash's LOGICAL cwd (symlinked components unresolved) while the hoisted answer comes
     from `detect_project_root "$(pwd -P)"`, and /recall feeds the value to
     resolve_project_for_cwd, a raw string longest-prefix comparison against the
     registered repo_root -- a logical path resolves to NO project, which is now an
     empty briefing. And in a nested-repo tree the two can resolve to DIFFERENT
-    projects: the retrieval requests carry the inner repo root while a deep `$PWD`
-    prefix-matches the registered OUTER project, so one hook invocation would scope
-    rules to one project and brief decisions from another.
+    projects: a deep `$PWD` prefix-matches the registered OUTER project while the inner
+    repo root is what the retrieval requests carry.
+
+    The recall briefing is its own hook now (docs/adr/ADR-prompt-injection-split.md),
+    and its request is the shared section request in bin/lib/writ-prompt-section.sh,
+    so that is where the one-answer invariant is held: writ_prompt_section_main
+    computes the root once and hands that value to writ_section_request.
     """
 
     def test_the_recall_request_uses_the_hoisted_project_root(self) -> None:
-        source = (REPO_ROOT / "hooks" / "scripts" / "writ-rag-inject.sh").read_text()
-        # Anchored on the assignment and the POST that consumes it, NOT on a
-        # fixed-size window before the first "/recall" in the file: prose mentioning
-        # the route (a comment, a docstring) would silently move that window off the
-        # code and the assertions below would stop reading anything.
-        start = source.find("RECALL_REQ=")
-        assert start != -1, "writ-rag-inject.sh no longer builds a RECALL_REQ body"
-        end = source.find('/recall"', start)
-        assert end > start, "the RECALL_REQ body is no longer followed by the /recall POST"
-        window = source[start:end]
-        assert "_PROJECT_ROOT" in window, (
-            "the /recall request body does not use the hook's single _PROJECT_ROOT "
-            "answer, so this hook can send one project root to /prompt-bundle and a "
-            "different one to /recall"
+        source = (REPO_ROOT / "bin" / "lib" / "writ-prompt-section.sh").read_text()
+        # Anchored on the function body and the request it builds, NOT on a
+        # fixed-size window: prose mentioning the route would silently move a window.
+        start = source.find("writ_prompt_section_main() {")
+        assert start != -1, "writ-prompt-section.sh no longer defines writ_prompt_section_main"
+        end = source.find("writ_section_request ", start)
+        assert end > start, "the section body no longer builds its request through writ_section_request"
+        window = source[start:source.find("\n", end)]
+        assert 'root=$(detect_project_root "$(pwd -P)")' in window, (
+            "the section body does not compute its project root once from the physical cwd"
         )
-        assert 'WRIT_ROOT="${PWD}"' not in window, (
-            "the /recall request body still builds its project root from $PWD (the "
-            "logical cwd, symlinks unresolved, and a subdirectory rather than the "
-            "root); reuse _PROJECT_ROOT"
+        assert '"${root:-}"' in window[window.find("writ_section_request "):], (
+            "the section request does not send the one project-root answer the body computed"
+        )
+        assert "PWD" not in window.replace("pwd -P", ""), (
+            "the section request builds its project root from $PWD (the logical cwd, "
+            "symlinks unresolved, and a subdirectory rather than the root)"
         )
 
 

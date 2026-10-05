@@ -168,7 +168,12 @@ class TestTheInventoryDerivesFromTheSource:
         _require(inventory, name)
         value = getattr(inventory, name)()
         assert value, f"{name}() derived nothing"
-        assert len(value) >= 3, f"{name}() derived implausibly few: {value!r}"
+        # rag_inject_python_blocks holds TWO since the per-prompt injection split
+        # (docs/adr/ADR-prompt-injection-split.md) moved the friction-row builder out of the
+        # hook into bin/lib/writ_friction_rows.py; the hook keeps STATUS_LINE and
+        # BUNDLE_REQUEST. Every other population keeps the floor of three.
+        floor = {"rag_inject_python_blocks": 2}.get(name, 3)
+        assert len(value) >= floor, f"{name}() derived implausibly few: {value!r}"
 
     def test_the_check_names_match_the_registry_exactly(self) -> None:
         """The derivation must be the SOURCE, not a copy of it."""

@@ -37,10 +37,12 @@ import uuid
 from pathlib import Path
 
 from tests._hook_runner import (
+    PROMPT_INJECT_SCRIPTS,
     count_requests,
     hook_env,
     isolated_hook_daemon,  # noqa: F401  (imported for pytest fixture discovery)
     run_hook,
+    run_prompt_submit_hooks,
     seed_session_cache,
     verify_seeded_mode,
 )
@@ -173,7 +175,13 @@ def test_work_mode_runs_past_request_gate(isolated_hook_daemon, tmp_path) -> Non
     """Mutation: an empty `always_on_block` returned from
     writ/retrieval/prompt_bundle.py reddens the ALWAYS-ACTIVE RULES assertion
     while `rc` stays 0 -- the reason the request-count and queries-counter
-    assertions travel alongside it rather than standing in for it."""
+    assertions travel alongside it rather than standing in for it.
+
+    The always-on block is its own hook now (docs/adr/ADR-prompt-injection-split.md),
+    so the turn is every injection hook run as the host runs them, and the
+    assertions read their combined output. Each hook sends exactly one
+    /prompt-bundle request naming its own section, so one turn is one request
+    per injection hook."""
     daemon = isolated_hook_daemon
     cache_dir = daemon["health"]["cache_dir"]
     sid = f"test-5b3a-{uuid.uuid4().hex[:8]}"
@@ -190,14 +198,17 @@ def test_work_mode_runs_past_request_gate(isolated_hook_daemon, tmp_path) -> Non
 
     before_bundle = count_requests(daemon, _req("POST", "/prompt-bundle"))
     before_queries = _queries_count(cache_dir, sid)
-    r = run_hook(HOOK, envelope, env=env, cwd=cwd, timeout=25)
+    r = run_prompt_submit_hooks(envelope, env=env, cwd=cwd, timeout=25)
     after_bundle = count_requests(daemon, _req("POST", "/prompt-bundle"))
     after_queries = _queries_count(cache_dir, sid)
 
     assert r.returncode == 0, f"exit {r.returncode}; stderr={r.stderr[:300]!r}"
     _no_py_crash(r)
     assert "ALWAYS-ACTIVE RULES" in r.stdout, (
-        f"work-mode hook must inject the always-on block; stdout={r.stdout[:400]!r}"
+        f"a work-mode turn must inject the always-on block; stdout={r.stdout[:400]!r}"
+    )
+    assert "ALWAYS-ACTIVE RULES" in r.runs["writ-inject-always-on.sh"].stdout, (
+        "the always-on block must come from its own hook"
     )
     assert "server unavailable" not in r.stdout, (
         f"a degraded run (no-daemon fallback) cannot read as this test's green; stdout={r.stdout[:400]!r}"
@@ -205,8 +216,9 @@ def test_work_mode_runs_past_request_gate(isolated_hook_daemon, tmp_path) -> Non
     assert "query failed" not in r.stdout, (
         f"a degraded run (bundle error fallback) cannot read as this test's green; stdout={r.stdout[:400]!r}"
     )
-    assert after_bundle - before_bundle == 1, (
-        f"expected exactly one POST /prompt-bundle for this turn; delta={after_bundle - before_bundle}"
+    assert after_bundle - before_bundle == len(PROMPT_INJECT_SCRIPTS), (
+        f"expected one POST /prompt-bundle per injection hook ({len(PROMPT_INJECT_SCRIPTS)}) "
+        f"for this turn; delta={after_bundle - before_bundle}"
     )
     assert after_queries > before_queries, (
         "the daemon's own `queries` counter for this session did not increase, so the "

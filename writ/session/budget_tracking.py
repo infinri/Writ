@@ -18,7 +18,9 @@ from writ.session.config import (
     DEFAULT_ALWAYS_ON_CAP,
 )
 from writ.session.citations import _append_citation
+from writ.session.injection_state import apply_mark_shown
 from writ.session.mode_engine import _VALID_SOURCE_TYPES
+from writ.shared.injection_text import pointer_line
 from writ.shared.tokens import cost_for
 
 # The one-line stand-in cmd_format renders in place of WHEN:/RULE: for a ranked hit the
@@ -26,8 +28,10 @@ from writ.shared.tokens import cost_for
 # referent, and it names the block by the banner render_always_on actually emits
 # ("=== ALWAYS-ACTIVE RULES ==="), so the reader can find the text rather than being
 # told, vaguely, that it exists somewhere. It must not contain the substrings "WHEN:"
-# or "RULE:", which are what suppression is measured by.
-_ALWAYS_ACTIVE_POINTER = "SEE: [{rule_id}] in the ALWAYS-ACTIVE RULES block above"
+# or "RULE:", which are what suppression is measured by. It does not say "above": the
+# block is printed by a separate hook (docs/adr/ADR-prompt-injection-split.md) and the
+# host's concatenation order of hook outputs is not something Writ controls.
+_ALWAYS_ACTIVE_POINTER = "SEE: [{rule_id}] in the ALWAYS-ACTIVE RULES block"
 
 
 def _upd_add_rules(cache: dict, args: list[str], i: int) -> int:
@@ -284,6 +288,17 @@ def _upd_set_detected_domain(cache: dict, args: list[str], i: int) -> int:
     return i + 2
 
 
+def _upd_mark_shown(cache: dict, args: list[str], i: int) -> int:
+    # --mark-shown <section> <epoch> <json ids>: the collapse record (injection_state).
+    try:
+        ids = json.loads(args[i + 3])
+    except (ValueError, json.JSONDecodeError):
+        return i + 4
+    if isinstance(ids, list):
+        apply_mark_shown(cache, args[i + 1], args[i + 2], ids)
+    return i + 4
+
+
 # B6a: cmd_update's 19-branch flag if/elif (CC=59) becomes one (handler, min_extra)
 # table. min_extra = extra argv tokens the flag needs; the dispatcher skips a flag
 # whose value is missing (i + min_extra >= len), exactly reproducing each old
@@ -315,6 +330,7 @@ _UPDATE_HANDLERS: dict = {
     "--clear-post-compact-pending": (_upd_clear_post_compact_pending, 0),
     "--set-escalation-feedback-sent": (_upd_set_escalation_feedback_sent, 0),
     "--set-detected-domain": (_upd_set_detected_domain, 1),
+    "--mark-shown": (_upd_mark_shown, 3),
 }
 
 
@@ -341,14 +357,17 @@ def cmd_should_skip(session_id: str, threshold: int = 75) -> bool:
     Returns a bool for programmatic callers; when invoked from the shell
     dispatcher, the bool is translated into exit codes (0 = skip, 1 = proceed).
     """
-    cache = _read_cache(session_id)
+    return should_skip_cache(_read_cache(session_id), threshold)
+
+
+def should_skip_cache(cache: dict, threshold: int = 75) -> bool:
+    """The skip rule on a cache already read: the per-section prompt-bundle requests apply
+    it to their own snapshot, cmd_should_skip to a fresh read."""
     if cache.get("is_subagent"):
         return False  # sub-agents: unlimited budget, never skip
     if cache.get("remaining_budget", DEFAULT_SESSION_BUDGET) <= 0:
         return True  # skip: budget exhausted
-    if cache.get("context_percent", 0) >= threshold:
-        return True  # skip: context pressure
-    return False  # proceed
+    return cache.get("context_percent", 0) >= threshold
 
 
 def _estimate_cost(rules: list[dict], mode: str) -> int:
@@ -390,6 +409,12 @@ def cmd_format() -> None:
             continue
 
         rid = rule.get("rule_id", "UNKNOWN")
+        # A floor rule already shown in full this epoch (writ.retrieval.injection_ceiling
+        # .collapse_floor, or the degrade ladder). One line, no blank separator; the id
+        # still lands in WRIT_META rule_ids so citation validation sees it.
+        if rule.get("pointer_only"):
+            lines.append(pointer_line(rid, rule.get("trigger", "")))
+            continue
         severity = rule.get("severity", "?")
         authority = rule.get("authority", "?")
         score = rule.get("score", 0)

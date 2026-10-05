@@ -47,6 +47,33 @@
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-rag-inject.sh\""
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-inject-always-on.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-inject-methodology.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-inject-recall.sh\""
+          }
+        ]
       }
     ],
     "SubagentStart": [

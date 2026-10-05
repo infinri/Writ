@@ -19,8 +19,9 @@ A CHAIN TEST, NOT A PRODUCER TEST. This repository burned three cycles on a gree
 test while one module downstream discarded the value, so nothing here asserts on the
 producer alone. The request assertions read the ACTUAL JSON body the hook builds and the
 telemetry assertions read the ACTUAL rows the hook emits, both produced by running the
-hook's OWN builder blocks, lifted verbatim out of `hooks/scripts/writ-rag-inject.sh` and
-executed in a real bash. Neither arm is reimplemented here, because a guard that hand-rolls
+hook's OWN builder blocks, lifted verbatim out of `hooks/scripts/writ-rag-inject.sh` (the
+request) and `bin/lib/writ-prompt-section.sh` (the friction rows, shared by all four
+UserPromptSubmit injection hooks) and executed in a real bash. Neither arm is reimplemented here, because a guard that hand-rolls
 one of the two paths it compares proves only that the code matches a model of the route.
 
 WHICH ARM RAN IS PROVEN POSITIVELY. Each arm is selected by restricting `PATH` to a
@@ -59,6 +60,10 @@ from tests.test_prompt_parse_field_frame import (
 
 REPO = Path(__file__).resolve().parent.parent
 HOOK = REPO / "hooks" / "scripts" / "writ-rag-inject.sh"
+# writ_bundle_friction, the friction-row emitter every injection hook calls, and the
+# python arm it runs when jq is absent (docs/adr/ADR-prompt-injection-split.md).
+SECTION_LIB = REPO / "bin" / "lib" / "writ-prompt-section.sh"
+FRICTION_PY = REPO / "bin" / "lib" / "writ_friction_rows.py"
 PARSE_PY = REPO / "bin" / "lib" / "writ-prompt-parse.py"
 QUERY_PY = REPO / "writ" / "server" / "routes" / "query.py"
 
@@ -72,9 +77,11 @@ STALE_EFFORT = "xhigh"
 
 # The two builder regions, addressed by the real text that opens and closes them rather
 # than by line number. Each marker is asserted to occur exactly once, so a moved or
-# reworded boundary fails by name instead of silently slicing the wrong bytes.
+# reworded boundary fails by name instead of silently slicing the wrong bytes. The request
+# region is in the ranked hook; the friction region is the body of writ_bundle_friction in
+# SECTION_LIB.
 BUNDLE_REQUEST_REGION = ('\nBUNDLE_REQUEST=""\n', "\n# writ_http_post:")
-FRICTION_ROWS_REGION = ('\nFRICTION_ROWS=""\n', '\nif [ -n "$FRICTION_ROWS" ]; then')
+FRICTION_ROWS_REGION = ('\n    FRICTION_ROWS=""\n', '\n    if [ -n "$FRICTION_ROWS" ]; then')
 
 # The shape a live /prompt-bundle really returns (the first entry of
 # tests/test_friction_rows_jq.py::BUNDLES, captured 2026-08-07). One bundle, because the
@@ -97,6 +104,8 @@ EXPECTED_REQUEST_KEYS = {
     "project_root",
     "always_on_filter",
     "include_ranked",
+    "sections",
+    "reserve_chars",
 }
 
 _MISSING = "<tests/_inventory.py::rag_inject_python_blocks() is unavailable>"
@@ -206,6 +215,7 @@ def _build_request(tmp_path: Path, arm: str) -> dict:
         '_PROJECT_ROOT="$WRIT_T_PROOT"\n'
         "_AO_FILTER_BOOL=true\n"
         "_INCLUDE_RANKED_BOOL=true\n"
+        "_RESERVE_CHARS=0\n"
         'BUNDLE_REQUEST=""\n'
     )
     env = {
@@ -256,7 +266,8 @@ def _build_rows(tmp_path: Path, arm: str, bundle: str = LIVE_BUNDLE) -> list[dic
         env.pop("WRIT_NO_JQ", None)
     tail = '\nprintf \'%s\' "$FRICTION_ROWS"\n'
     out = _run_region(
-        _region(FRICTION_ROWS_REGION) + tail, prelude, env, _arm_path(tmp_path, arm)
+        _region(FRICTION_ROWS_REGION, hook=SECTION_LIB) + tail, prelude, env,
+        _arm_path(tmp_path, arm),
     )
     return [json.loads(line) for line in out.splitlines() if line.strip()]
 
@@ -438,6 +449,8 @@ class TestTheRequestBodyTheHookReallyBuilds:
         assert body["prompt"] == "implement the export endpoint"
         assert body["always_on_filter"] is True
         assert body["include_ranked"] is True
+        assert body["sections"] == ["ranked"]
+        assert body["reserve_chars"] == 0
 
     @pytest.mark.skipif(JQ is None, reason="jq not installed")
     def test_both_arms_build_the_same_body(self, tmp_path) -> None:
@@ -482,7 +495,7 @@ class TestTheFrictionRowsTheHookReallyEmits:
         `--arg effort` with no `$effort` in the filter is a jq error, and the reverse is a
         null reference, so the two halves must move together.
         """
-        invocation = _region(FRICTION_ROWS_REGION)
+        invocation = _region(FRICTION_ROWS_REGION, hook=SECTION_LIB)
         assert "--arg effort" not in invocation, (
             "the hook still passes --arg effort to friction-rows.jq"
         )
@@ -497,26 +510,35 @@ class TestTheFrictionRowsTheHookReallyEmits:
 class TestTheCopiedPythonBuilderIsTheBlockTheHookRuns:
     """The pre-existing hazard this cycle is obliged to close, because it edits both halves.
 
-    `tests/test_friction_rows_jq.py::PY_BUILDER` is a HAND-MAINTAINED copy of the hook's
-    python fallback, and that module's parity oracle compares the jq filter against the
-    copy. If the copy drifts, the oracle validates a fiction, which is this repository's
-    "a test that models a path is blind to it" failure in its purest form.
+    `tests/test_friction_rows_jq.py::PY_BUILDER` used to be a HAND-MAINTAINED copy of the
+    hook's inline python fallback, and that module's parity oracle compares the jq filter
+    against it. If the copy drifts, the oracle validates a fiction, which is this
+    repository's "a test that models a path is blind to it" failure in its purest form.
 
-    The two sides are independent: the left is the hook file, the right is the test
-    module's own literal, and neither is computed from the other. Verified byte-identical
-    on 2026-09-16 before this assertion was written, so it starts from a true baseline and
-    a later failure means a real drift.
+    The fallback is its own file now, bin/lib/writ_friction_rows.py, run by
+    writ_bundle_friction for all four injection hooks. So the coupling is two facts: the
+    shared function invokes THAT file, and the parity module's PY_BUILDER is THAT file's
+    text. The request builder is still an inline block of the ranked hook and is still
+    derived from it by name.
     """
 
     def test_the_derivation_names_both_blocks_this_cycle_edits(self) -> None:
         blocks = _inventory().rag_inject_python_blocks()
-        for name in ("BUNDLE_REQUEST", "FRICTION_ROWS"):
-            assert name in blocks, (
-                f"no inline python block filling {name} was derived from the hook: "
-                f"{sorted(blocks)}. A renamed shell variable or a deleted block must fail "
-                "BY NAME here rather than shrink the population every parity assertion "
-                "rests on"
-            )
+        assert "BUNDLE_REQUEST" in blocks, (
+            f"no inline python block filling BUNDLE_REQUEST was derived from the hook: "
+            f"{sorted(blocks)}. A renamed shell variable or a deleted block must fail "
+            "BY NAME here rather than shrink the population every parity assertion "
+            "rests on"
+        )
+        assert "FRICTION_ROWS" not in blocks, (
+            "the ranked hook carries an inline friction-row builder again; the one builder "
+            "is bin/lib/writ_friction_rows.py, run through writ_bundle_friction"
+        )
+        invocation = _region(FRICTION_ROWS_REGION, hook=SECTION_LIB)
+        assert 'python3 "$WRIT_DIR/bin/lib/writ_friction_rows.py"' in invocation, (
+            "writ_bundle_friction no longer runs bin/lib/writ_friction_rows.py as its "
+            "python arm"
+        )
 
     @pytest.mark.parametrize("name", _inline_block_names())
     def test_every_derived_block_is_non_empty(self, name) -> None:
@@ -528,12 +550,10 @@ class TestTheCopiedPythonBuilderIsTheBlockTheHookRuns:
     def test_the_copy_in_the_parity_module_is_byte_equal_to_the_hooks_block(self) -> None:
         import tests.test_friction_rows_jq as parity
 
-        block = _inventory().rag_inject_python_blocks()["FRICTION_ROWS"]
-        assert parity.PY_BUILDER == block, (
-            "tests/test_friction_rows_jq.py::PY_BUILDER has drifted from the block the "
-            "hook really runs, so that module's jq/python parity oracle is comparing the "
-            "filter against a fiction. The derivation returns the exact string bash hands "
-            "to `python3 -c`, leading newline included"
+        assert parity.PY_BUILDER == FRICTION_PY.read_text(encoding="utf-8"), (
+            "tests/test_friction_rows_jq.py::PY_BUILDER is not the python arm the hooks "
+            "really run (bin/lib/writ_friction_rows.py), so that module's jq/python "
+            "parity oracle is comparing the filter against a fiction"
         )
 
 
