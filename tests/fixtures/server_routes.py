@@ -27,6 +27,7 @@ from httpx import ASGITransport, AsyncClient
 
 import writ.server as _server
 from writ.graph.db import Neo4jConnection
+from writ.graph.integrity import frequency_checks
 from writ.graph.predicates import INJECTION_RULE_WHERE
 from writ.server import app
 
@@ -65,11 +66,6 @@ _POPULATION_QUERIES = {
         "AND coalesce(r.mandatory, false) = false RETURN count(r) AS c"
     ),
 }
-
-_MANDATORY_IDS_QUERY = (
-    "MATCH (r:Rule) WHERE r.mandatory = true RETURN r.rule_id AS rule_id"
-)
-
 
 @pytest.fixture()
 def client() -> TestClient:
@@ -290,6 +286,5 @@ async def mandatory_rule_ids(route_db: Neo4jConnection) -> AsyncIterator[set[str
     total.
     """
     async with route_db._driver.session(database=route_db._database) as session:
-        result = await session.run(_MANDATORY_IDS_QUERY)
-        ids = {record["rule_id"] async for record in result}
+        ids = await frequency_checks.mandatory_rule_ids(session)
     yield ids

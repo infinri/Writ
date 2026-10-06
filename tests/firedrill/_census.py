@@ -123,6 +123,7 @@ ACTION_MARKERS: dict[str, tuple[str, ...]] = {
     "record it in debug.md": ("debug-code-gate",),
     "before creating the worktree": ("worktree-safety",),
     "spell the path literally": ("worktree-safety-unresolvable-tilde-ask",),
+    "change the input": ("tool-failure-budget",),
 }
 
 
@@ -473,6 +474,50 @@ def _setup_worktree_safety_unresolvable_tilde_ask(iso: Isolation) -> dict:
             "hook_event_name": "PreToolUse",
             "tool_name": "Bash",
             "tool_input": {"command": cmd},
+        },
+    }
+
+
+_REPO = Path(__file__).resolve().parents[2]
+_TOOL_FAILURE_HELPER = _REPO / "bin" / "lib" / "writ_tool_failure.py"
+_TOOL_BUDGET_INPUT = {"command": "pytest tests/test_firedrill_never_passes.py"}
+
+
+def _tool_failure_helper():
+    """bin/lib/writ_tool_failure.py loaded by path: a hook helper rather than a package
+    module, and the fixture must hash exactly as the hook compares."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("writ_tool_failure_census",
+                                                  _TOOL_FAILURE_HELPER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _setup_tool_failure_budget(iso: Isolation) -> dict:
+    """Program item 7c: this session's last three failures of one Bash call were the identical
+    call, and the envelope repeats it. The streak is written in the shape the helper records
+    and hashed by the helper's own input_hash, so the fixture cannot drift from the hook."""
+    helper = _tool_failure_helper()
+    write_cache(iso, {
+        "mode": "work",
+        helper.CACHE_KEY: {
+            helper.streak_key("", "Bash"): {
+                "count": helper.STREAK_LIMIT,
+                "input_hash": helper.input_hash("Bash", _TOOL_BUDGET_INPUT),
+                "tool": "Bash",
+                "agent": helper.MAIN_AGENT,
+                "last_failed_at": 0,
+            },
+        },
+    })
+    return {
+        "envelope": {
+            "session_id": iso.session_id,
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": dict(_TOOL_BUDGET_INPUT),
         },
     }
 
@@ -1061,6 +1106,23 @@ REFUSALS: list[Refusal] = [
         )
         for name, command in _IRREVERSIBLE_BENCHMARK_COMMANDS.items()
     ],
+    Refusal(
+        id="tool-failure-budget",
+        script="writ-tool-failure-budget.sh",
+        event="PreToolUse",
+        mechanism="permissionDecisionReason",
+        permission_decision="deny",
+        shape="gate_decision",
+        gate_name="tool-budget",
+        setup=_setup_tool_failure_budget,
+        notes=(
+            "Program item 7c: the fourth identical call after three identical failures. "
+            "The streak is seeded in the shape bin/lib/writ_tool_failure.py records and "
+            "hashed by that module's own input_hash, so the fixture cannot drift from the "
+            "comparison the hook makes. Behavioral coverage lives in "
+            "tests/test_tool_failure_budget.py."
+        ),
+    ),
     Refusal(
         id="validate-rules-site-a",
         script="validate-rules.sh",

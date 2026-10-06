@@ -3,7 +3,7 @@
 
 # HTTP API reference
 
-All 51 endpoints, generated from the FastAPI route table. JSON bodies; no auth. The daemon listens on `http://localhost:8765` and on a unix socket (`$WRIT_SOCKET`, default `~/.cache/writ/run/writ.sock`); with `WRIT_TCP_READONLY=1` set, TCP serves reads plus `POST /query` and refuses every other state-changing request with 403, so those routes are reachable only over the socket, which is private to the user running the daemon. Logical failures return HTTP 200 with an `error` key; 422 is request validation.
+All 52 endpoints, generated from the FastAPI route table. JSON bodies; no auth. The daemon listens on `http://localhost:8765` and on a unix socket (`$WRIT_SOCKET`, default `~/.cache/writ/run/writ.sock`); with `WRIT_TCP_READONLY=1` set, TCP serves reads plus `POST /query` and refuses every other state-changing request with 403, so those routes are reachable only over the socket, which is private to the user running the daemon. Logical failures return HTTP 200 with an `error` key; 422 is request validation.
 
 ## decision_memory
 
@@ -48,9 +48,10 @@ All 51 endpoints, generated from the FastAPI route table. JSON bodies; no auth. 
 | POST | `/feedback/batch` | Record a batch of feedback signals in one db transaction (SessionEnd) |
 | GET | `/health` | Service status, rule count, index state, last ingestion timestamp |
 | POST | `/methodology-companion` | Methodology by workflow-state (floor u push u pull): CHANNEL 2 (1.5) |
-| POST | `/prompt-bundle` | #8: the three per-prompt injection channels in ONE warm call |
+| POST | `/prompt-bundle` | The per-prompt injection sections, each rendered under its own character ceiling |
 | POST | `/propose` | Propose an AI-generated rule. Runs structural gate, ingests if accepted |
 | POST | `/query` | Ranked list of matching domain rules. Mandatory rules excluded |
+| POST | `/retrieval/reload` | Rebuild retrieval from the graph and swap it in when the content changed (unix socket only) |
 | GET | `/rule/{rule_id}` | Full rule node. Optionally includes 1-hop graph context |
 | GET | `/subagent-role/{name}` | Return a SubagentRole node's canonical prompt template and its declared `write_scope` from the graph (`write_scope` is null when the role declares none and `[]` when it declares it writes nothing; the two are not coalesced). Read once per dispatch by the sub-agent seeder |
 | POST | `/subagent/start-context` | Everything writ-subagent-start.sh needs from the daemon, in one request |

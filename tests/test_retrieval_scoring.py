@@ -568,3 +568,85 @@ class TestScorersAreFixtureFree:
         assert miss_ids == []
         assert (n_pos, n_neg) == (1, 0)
         assert p_value == pytest.approx(1.0, abs=1e-9)
+
+# ---------------------------------------------------------------------------
+# split_by_channel / routed_target_findings (moved from benchmarks/bench_targets.py)
+# ---------------------------------------------------------------------------
+
+ROUTES = {"R-SEM": ["semantic"], "R-STATE": ["state"], "M-SEM": ["semantic"],
+          "R-BOTH": ["semantic", "state"], "R-EMPTY": []}
+CHANNEL_GOLD = [
+    {"id": "Q1", "expected_rule_id": "M-SEM"},
+    {"id": "Q2", "expected_rule_id": "R-STATE"},
+    {"id": "Q3", "expected_rule_id": "R-BOTH"},
+    {"id": "Q4", "expected_rule_id": "R-NONE"},
+    {"id": "Q5", "expected_rule_id": "R-SEM"},
+    {"id": "Q6", "expected_rule_id": "R-EMPTY"},
+]
+
+
+class TestSplitByChannel:
+
+    def test_partition(self) -> None:
+        from tests.fixtures.retrieval_scoring import split_by_channel  # noqa: PLC0415
+
+        eligible, always_on, routed = split_by_channel(CHANNEL_GOLD, {"M-SEM"}, ROUTES)
+        assert [q["id"] for q in eligible] == ["Q3", "Q4", "Q5"]
+        assert [q["id"] for q in always_on] == ["Q1"]
+        assert [q["id"] for q in routed] == ["Q2", "Q6"]
+
+    def test_no_route_data_makes_every_non_mandatory_target_eligible(self) -> None:
+        from tests.fixtures.retrieval_scoring import split_by_channel  # noqa: PLC0415
+
+        eligible, always_on, routed = split_by_channel(CHANNEL_GOLD, set(), {})
+        assert [q["id"] for q in eligible] == [q["id"] for q in CHANNEL_GOLD]
+        assert always_on == [] and routed == []
+
+
+class _FakeResult:
+    def __init__(self, rows: list[dict]) -> None:
+        self._rows = rows
+
+    def __aiter__(self):
+        return self._iter()
+
+    async def _iter(self):
+        for row in self._rows:
+            yield row
+
+
+class _FakeSession:
+    """Answers the BELONGS_TO count query from a fixed {rule_id: edge_count} map; a rule
+    absent from the map has no node, so it yields no row (the real MATCH behaviour)."""
+
+    def __init__(self, edges: dict[str, int]) -> None:
+        self._edges = edges
+        self.params: list[dict] = []
+
+    async def run(self, query: str, **params) -> _FakeResult:
+        self.params.append(params)
+        return _FakeResult([{"rid": rid, "edges": self._edges[rid]}
+                            for rid in params["ids"] if rid in self._edges])
+
+
+class TestRoutedTargetFindings:
+
+    @pytest.mark.asyncio
+    async def test_orphans_and_channelless_are_named(self) -> None:
+        from tests.fixtures.retrieval_scoring import routed_target_findings  # noqa: PLC0415
+
+        session = _FakeSession({"P-001": 1, "P-002": 0, "P-003": 1})
+        got = await routed_target_findings(
+            session, ["P-003", "P-001", "P-002", "P-001"],
+            {"P-001": ["state"], "P-002": ["state"], "P-003": []},
+        )
+        assert got == {"orphans": ["P-002"], "channelless": ["P-003"]}
+        assert session.params == [{"ids": ["P-001", "P-002", "P-003"]}]
+
+    @pytest.mark.asyncio
+    async def test_clean_when_every_target_is_a_deliberate_member(self) -> None:
+        from tests.fixtures.retrieval_scoring import routed_target_findings  # noqa: PLC0415
+
+        got = await routed_target_findings(_FakeSession({"P-001": 2}), ["P-001"],
+                                           {"P-001": ["state"]})
+        assert got == {"orphans": [], "channelless": []}

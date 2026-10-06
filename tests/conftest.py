@@ -16,6 +16,12 @@ import pytest
 TEST_DAEMON_PORT = "8799"
 _os.environ["WRIT_PORT"] = TEST_DAEMON_PORT
 
+# Program item 2: CLI graph writes ask the daemon at WRIT_SOCKET to reload. The default
+# socket is the operator's real daemon, which serves a different graph, and the suite runs
+# `writ import-markdown` in subprocesses (tests/_corpus.py). Off for the whole run; the
+# tests that exercise the request delete it and point WRIT_SOCKET at a short /tmp path.
+_os.environ["WRIT_DAEMON_RELOAD"] = "0"
+
 # GRAPH ISOLATION (cycle 8), forced here for exactly the same reason WRIT_PORT is:
 # it has to happen before pytest imports a single test module. At least seventeen
 # modules bind `NEO4J_URI = get_neo4j_uri()` at their OWN import

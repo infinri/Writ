@@ -81,6 +81,12 @@ def is_state_touching(method: str) -> bool:
 # survives as the read exemption below and in README.md:120, which tells every new user
 # to verify an install with `curl http://localhost:8765/health`.
 TCP_READONLY_POST_ALLOWLIST = ("/query", "/subagent/start-context")
+# Routes served over the unix socket ONLY, whatever WRIT_TCP_READONLY says (program
+# item 2). A reload makes the daemon rebuild every retrieval index from the graph: cheap
+# to ask for, costly to serve, and nothing a browser needs, so another local account must
+# not be able to trigger it over TCP. Exact paths, every verb. Refused HERE rather than in
+# the handler so the census row records the refusal.
+SOCKET_ONLY_PATHS = ("/retrieval/reload",)
 _ENFORCE_ENV = "WRIT_TCP_READONLY"
 
 
@@ -99,21 +105,28 @@ def tcp_readonly_enabled() -> bool:
 def tcp_refusal(scope: dict[str, Any]) -> str | None:
     """A refusal reason for this request, or None to serve it.
 
-    THE VERB BOUNDS WHAT TCP MAY CHANGE, not the path. None whenever enforcement is
-    off, whenever the request came over the socket, whenever the verb is a read (so the
-    browser surface and any preflight keep working on every path), and whenever the
-    path is a named body-carrying read. Everything else is socket-only.
+    SOCKET_ONLY_PATHS are refused over TCP for every verb, with or without enforcement.
+    Otherwise THE VERB BOUNDS WHAT TCP MAY CHANGE, not the path: None whenever enforcement
+    is off, whenever the request came over the socket, whenever the verb is a read (so the
+    browser surface and any preflight keep working on every path), and whenever the path
+    is a named body-carrying read. Everything else is socket-only.
 
     Reads stay served on every path rather than on a browser allowlist: closing them is
     a larger change than this sweep made, and hooks plus the CLI still read over TCP.
     """
+    path = scope.get("path", "") or ""
+    if path in SOCKET_ONLY_PATHS and request_transport(scope) == TRANSPORT_TCP:
+        return (
+            f"{scope.get('method', '')} {path} is served over the Writ daemon's unix "
+            "socket only. It rebuilds the retrieval indexes, so it is private to the "
+            "user running the daemon."
+        )
     if not tcp_readonly_enabled():
         return None
     if request_transport(scope) != TRANSPORT_TCP:
         return None
     if not is_state_touching(scope.get("method", "")):
         return None
-    path = scope.get("path", "") or ""
     if path in TCP_READONLY_POST_ALLOWLIST:
         return None
     return (

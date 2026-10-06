@@ -113,6 +113,10 @@ class MethodologyTriggerIndex:
         pull_scored = self._score_pull(nodes, prompt)
         return self._assemble_bundle(floor, push, pull_scored, budget_tokens)
 
+    def snapshot(self) -> list[dict]:
+        """The canonical node routing data, for hashing (program item 2, C1). Read-only."""
+        return self._nodes
+
     def floor_ids(self, mode: str | None) -> set[str]:
         """Ids of every node floored in `mode`, ignoring any exclude list."""
         return {n["id"] for n in self._select_floor(self._nodes, mode)}

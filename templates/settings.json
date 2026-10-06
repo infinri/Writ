@@ -164,6 +164,15 @@
             "command": "bash \"${WRIT_DIR}/hooks/scripts/writ-blackbox-capture.sh\""
           }
         ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${WRIT_DIR}/hooks/scripts/writ-tool-failure-record.sh\""
+          }
+        ]
       }
     ],
     "PreCompact": [
@@ -354,6 +363,15 @@
             "command": "bash \"${WRIT_DIR}/hooks/scripts/writ-memory-policy-guard.sh\""
           }
         ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${WRIT_DIR}/hooks/scripts/writ-tool-failure-budget.sh\""
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -448,6 +466,15 @@
           {
             "type": "command",
             "command": "bash \"${WRIT_DIR}/hooks/scripts/writ-memory-capture.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${WRIT_DIR}/hooks/scripts/writ-tool-failure-budget.sh\""
           }
         ]
       }

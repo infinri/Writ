@@ -6,8 +6,9 @@ loops previously copy-pasted in ``tests/test_graph_proximity.py`` and
 pipeline (``pipeline.query(text) -> {"rules": [{"rule_id": ...}, ...]}``) and a
 list of query dicts exposing ``query`` / ``expected_rule_id`` / ``id``.
 
-No pytest, fixture, corpus, or Neo4j coupling, so this module is import-safe
-from both ``tests/`` and ``benchmarks/``.
+No pytest, fixture or corpus coupling, and no driver import, so this module is
+import-safe from ``tests/``, ``benchmarks/`` and ``scripts/``. The one graph-reading
+helper, ``routed_target_findings``, runs its query through a session the caller opened.
 """
 from __future__ import annotations
 
@@ -134,3 +135,49 @@ def hit_rate_at_5(pipeline, queries) -> tuple[float, list[str]]:
 
     hit_rate = hits / len(queries)
     return hit_rate, miss_ids
+
+
+def split_by_channel(queries, mandatory_ids, routes_map) -> tuple[list, list, list]:
+    """Partition gold queries by delivery channel (HANDBOOK section 10).
+
+    eligible: semantic-mode /query can return the expected rule, so rank metrics apply.
+    Eligibility is the ROUTE data (Stage 1 admits a candidate only when its category
+    routes include 'semantic'), not candidate-set membership: the pipeline's metadata
+    holds every candidate, but the route filter runs at query time. A rule with no route
+    entry is universal (eligible).
+    always_on: the expected rule is mandatory; delivered via /always-on, never ranked.
+    routed: category routes exclude 'semantic'; delivered via the state/action/pull
+    channels (methodology companion), unreachable by /query BY DESIGN.
+
+    ``routes_map`` is the pipeline's node-routes map (rule id -> route tags). Returns
+    (eligible, always_on, routed), each a list of the query dicts in input order.
+    """
+    eligible, always_on, routed = [], [], []
+    for q in queries:
+        rid = q["expected_rule_id"]
+        routes = routes_map.get(rid)
+        if rid in mandatory_ids:
+            always_on.append(q)
+        elif routes is not None and "semantic" not in routes:
+            routed.append(q)
+        else:
+            eligible.append(q)
+    return eligible, always_on, routed
+
+
+async def routed_target_findings(session, rule_ids, routes_map) -> dict[str, list[str]]:
+    """Delivery check for routed targets: deliberate channel members, never accidents.
+
+    orphans: rules with NO BELONGS_TO category edge (the subset-import edge bug class),
+    so their routes were never deliberately declared. channelless: rules whose route list
+    is empty, unreachable by ANY channel. ``session`` is an open session the caller owns.
+    Both lists are sorted; a rule id with no node yields no row and is in neither.
+    """
+    ids = sorted(set(rule_ids))
+    result = await session.run(
+        "UNWIND $ids AS rid MATCH (n:Rule {rule_id: rid}) "
+        "OPTIONAL MATCH (n)-[:BELONGS_TO]->(c:Category) "
+        "RETURN rid AS rid, count(c) AS edges", ids=ids)
+    orphans = sorted([rec["rid"] async for rec in result if rec["edges"] == 0])
+    channelless = [rid for rid in ids if not routes_map.get(rid)]
+    return {"orphans": orphans, "channelless": channelless}

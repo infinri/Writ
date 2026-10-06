@@ -512,6 +512,37 @@ def heredoc_terminator(tok):
     return rest
 
 
+def heredoc_spans(toks):
+    """`(opener, sep, body_end, end)` for every heredoc BODY in `toks`, in order: the opener's
+    index, the SEP that starts its body, the index of its terminator word (len(toks) when none
+    follows), and the index just past that terminator.
+
+    THE ONE WALK THAT FINDS A BODY. strip_heredoc_bodies removes `toks[sep:end]` for each span,
+    and writ-bash-write-gate.sh's stdin pass reads `toks[sep + 1:body_end]` as the program text
+    fed to an interpreter, so the two cannot disagree about where a body starts or stops. The
+    same-line boundary and the RESIDUE are strip_heredoc_bodies' own (see there): tokens between
+    an opener and its newline are never re-read as openers, the first terminator is honored, and
+    an opener with no following SEP has no body and ends the walk.
+    """
+    spans, i, n = [], 0, len(toks)
+    while i < n:
+        word = heredoc_terminator(toks[i])
+        if word is None:
+            i += 1
+            continue
+        sep = i + 1
+        while sep < n and toks[sep] != SEP:
+            sep += 1
+        if sep == n:                              # no newline after the opener: no body
+            return spans
+        body_end = sep + 1
+        while body_end < n and toks[body_end] != word:
+            body_end += 1
+        spans.append((i, sep, body_end, min(body_end + 1, n)))
+        i = body_end + 1                          # step over the terminator itself
+    return spans
+
+
 def strip_heredoc_bodies(toks):
     """`toks` with every heredoc BODY removed, the body being the run from the newline that
     FOLLOWS the opener through the terminator word.
@@ -540,24 +571,9 @@ def strip_heredoc_bodies(toks):
     not recognized, because this runs on RAW shlex tokens, before split_control_operators.
     All three fail CLOSED, leaving an extra row rather than losing one.
     """
-    out, i, n = [], 0, len(toks)
-    while i < n:
-        word = heredoc_terminator(toks[i])
-        if word is None:
-            out.append(toks[i])
-            i += 1
-            continue
-        out.append(toks[i])                       # the opener is syntax, not body
-        j = i + 1
-        while j < n and toks[j] != SEP:
-            out.append(toks[j])                   # `> docs/notes.txt` survives
-            j += 1
-        if j == n:                                # no newline after the opener: no body
-            i = j
-            continue
-        j += 1                                    # the SEP that starts the body
-        while j < n and toks[j] != word:
-            j += 1
-        i = j + 1                                  # step over the terminator itself
-    return out
+    out, prev = [], 0
+    for _opener, sep, _body_end, end in heredoc_spans(toks):
+        out += toks[prev:sep]                     # the opener and `> docs/notes.txt` survive
+        prev = end                                # the body and its terminator do not
+    return out + toks[prev:]
 # MIRROR END split_control_operators

@@ -115,6 +115,12 @@ class AdjacencyCache:
         """For each candidate rule_id, return its neighbors from cache."""
         return {rid: self.get_neighbors(rid) for rid in rule_ids}
 
+    def snapshot(self) -> dict[str, list[dict]]:
+        """The canonical edge map, for hashing (program item 2, C1). Read-only: callers
+        must not mutate it. Deterministic, because the build query is ORDER BY
+        source, target, edge_type."""
+        return self._neighbors
+
     @property
     def build_time_ms(self) -> float:
         return self._build_time_ms

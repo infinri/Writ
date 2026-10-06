@@ -135,6 +135,8 @@ class RuleStoreMixin:
         rule_id: str,
         threshold: int = DEFAULT_GRADUATION_THRESHOLD,
         ratio_min: float = DEFAULT_GRADUATION_RATIO_MIN,
+        *,
+        state_out: dict | None = None,
     ) -> str | None:
         """6.3a: when a PROPOSED rule crosses the frequency threshold, flip its
         provenance proposed -> graduation_pending -- a CANDIDATE for the human
@@ -144,15 +146,27 @@ class RuleStoreMixin:
         authority (stays ai-provisional until a human gates it) and MUST NOT write to
         bible/ source. Idempotent and one-directional: ONLY a 'proposed' node flips; the
         decision is delegated to frequency.evaluate_graduation (single source of truth).
+
+        With `state_out`, fills it with the post-increment state this method already reads
+        (rule_id, project, times_seen_positive, times_seen_negative, provenance),
+        provenance updated when this call flips it; the daemon copies it into its ranking
+        metadata, program item 2.
         """
         async with self._driver.session(database=self._database) as session:
             read = await session.run(
                 "MATCH (r:Rule {rule_id: $rule_id}) RETURN "
                 "coalesce(r.times_seen_positive, 0) AS pos, "
-                "coalesce(r.times_seen_negative, 0) AS neg, r.provenance AS provenance",
+                "coalesce(r.times_seen_negative, 0) AS neg, r.provenance AS provenance, "
+                "r.project AS project",
                 rule_id=rule_id,
             )
             rec = await read.single()
+            if rec is not None and state_out is not None:
+                state_out.update({
+                    "rule_id": rule_id, "project": rec["project"],
+                    "times_seen_positive": rec["pos"], "times_seen_negative": rec["neg"],
+                    "provenance": rec["provenance"],
+                })
             if rec is None or rec["provenance"] != "proposed":
                 return None
             grad = evaluate_graduation(rec["pos"], rec["neg"], threshold, ratio_min)
@@ -172,6 +186,8 @@ class RuleStoreMixin:
             summary = await result.consume()
             if summary.counters.properties_set == 0:
                 return None
+        if state_out:
+            state_out["provenance"] = "graduation_pending"
         return "graduation_pending"
 
     async def apply_feedback_batch(
@@ -180,6 +196,8 @@ class RuleStoreMixin:
         threshold: int = DEFAULT_GRADUATION_THRESHOLD,
         ratio_min: float = DEFAULT_GRADUATION_RATIO_MIN,
         batch_id: str | None = None,
+        *,
+        state_out: list | None = None,
     ) -> dict:
         """Apply a batch of (rule_id, "positive"|"negative") signals in ONE transaction.
 
@@ -205,6 +223,11 @@ class RuleStoreMixin:
         applied, its result stored on the record, and up to FEEDBACK_BATCH_PRUNE_LIMIT
         records older than FEEDBACK_BATCH_TTL_DAYS are deleted. The record and the
         increments commit or roll back together, so "record exists" means "applied".
+
+        With `state_out`, fills it with one row per recorded rule from the RETURN below
+        (post-increment counts, provenance after any flip, project); cleared at the start
+        of every transaction attempt, so a retried or replayed batch leaves only what
+        committed, and a replay leaves it empty.
         """
         if not signals:
             return {"recorded": [], "not_found": [], "graduation_pending": [], "applied": 0}
@@ -215,6 +238,8 @@ class RuleStoreMixin:
         rows = [{"rule_id": rid, "pos": p, "neg": n} for rid, (p, n) in counts.items()]
 
         async def _work(tx) -> dict:
+            if state_out is not None:
+                state_out.clear()
             if batch_id is not None:
                 merged = await tx.run(
                     "MERGE (b:FeedbackBatch {batch_id: $batch_id}) "
@@ -230,13 +255,20 @@ class RuleStoreMixin:
                 "r.times_seen_negative = coalesce(r.times_seen_negative, 0) + row.neg, "
                 "r.last_seen = datetime() "
                 "RETURN r.rule_id AS rule_id, r.times_seen_positive AS pos, "
-                "r.times_seen_negative AS neg, r.provenance AS provenance",
+                "r.times_seen_negative AS neg, r.provenance AS provenance, "
+                "r.project AS project",
                 rows=rows,
             )
             recorded: list[str] = []
             crossed: list[str] = []
+            rows_seen: list[dict] = []
             async for rec in result:
                 rid = rec["rule_id"]
+                rows_seen.append({
+                    "rule_id": rid, "project": rec["project"],
+                    "times_seen_positive": rec["pos"], "times_seen_negative": rec["neg"],
+                    "provenance": rec["provenance"],
+                })
                 if rid not in recorded:
                     recorded.append(rid)
                 if rec["provenance"] != "proposed" or rid in crossed:
@@ -252,6 +284,12 @@ class RuleStoreMixin:
                     ids=crossed,
                 )
                 flipped = [rec["rule_id"] async for rec in flip]
+            if state_out is not None:
+                flipped_ids = set(flipped)
+                for row in rows_seen:
+                    if row["rule_id"] in flipped_ids:
+                        row["provenance"] = "graduation_pending"
+                state_out.extend(rows_seen)
             answer = {
                 "recorded": recorded,
                 "not_found": [rid for rid in counts if rid not in recorded],

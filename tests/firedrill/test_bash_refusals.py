@@ -48,8 +48,9 @@ from tests.firedrill._harness import (
 # 2412ba38-51e1-4b73-895b-7b240a3c21d3, finding 4), and from 33 to 35 when the same class
 # gained the benchmark-entrypoint vector's two spellings (the same plan, finding 6); the
 # three copies that used to quote it inside tests/firedrill/_census.py refer to the pin by
-# NAME now, and TestTheCountPinHasExactlyOneHome below is what keeps it that way.
-assert len(generic_refusals()) == 35
+# NAME now, and TestTheCountPinHasExactlyOneHome below is what keeps it that way. It moved
+# from 35 to 36 when program item 7c's tool-failure budget declared its refusal.
+assert len(generic_refusals()) == 36
 
 # THE MARKER COUNT PIN IS GONE, with no count replacing it (plan.md
 # 2412ba38-51e1-4b73-895b-7b240a3c21d3, defect 2). `assert len(ACTION_MARKERS) == 14`

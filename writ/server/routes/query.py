@@ -1,11 +1,11 @@
 # writ-auth-scan: internal-service
 """Retrieval + rule-metadata routes for the Writ session daemon.
 
-13 routes: /query, /methodology-companion, /prompt-bundle, /analyze,
+14 routes: /query, /methodology-companion, /prompt-bundle, /analyze,
 /rule/{rule_id}, /propose, /feedback, /feedback/batch, /conflicts, /health,
-/always-on, /subagent-role/{name}, /subagent/start-context. Plus the /health helpers (_health_status,
-_count_categories, _route_distribution, _log_destinations) and the
-_ALWAYS_ON_PROCESS_MODES const.
+/always-on, /subagent-role/{name}, /subagent/start-context, /retrieval/reload. Plus the
+/health helpers (_health_status, _count_categories, _route_distribution, _log_destinations,
+_retrieval_status) and the _ALWAYS_ON_PROCESS_MODES const.
 
 Mutable/monkeypatched daemon state (_db, _pipeline, _trigger_index, _llm_client,
 _instrumentation, _startup_time, writ_session, _run_cmd_format_locked) is read
@@ -477,6 +477,31 @@ async def propose_rule_endpoint(request: ProposeRequest) -> dict[str, Any]:
     return result
 
 
+def _refresh_ranking_inputs(rows: list[dict]) -> None:
+    """Copy the post-write feedback state the graph write returned into the served pipeline.
+
+    Program item 2: feedback used to reach the graph only, so learned confidence ranked on
+    the values loaded at startup until a restart. The rows come from the write itself
+    (rule_store state_out), so this costs no extra graph read. Never raises: the write has
+    committed, so a failure here must not change the route's answer; the served counts
+    stay stale until the next reload, and the exception row says so.
+    """
+    pipeline = server._pipeline
+    if pipeline is None or not rows:
+        return
+    try:
+        pipeline.apply_feedback(rows)
+        if server._reloader is not None:
+            # A rebuild already reading the graph may have read it before this write;
+            # queue one more so the generation it swaps in cannot carry older counts.
+            server._reloader.request_soon()
+    except Exception as exc:
+        emit_exception(
+            "server.feedback.refresh", exc, "", None,
+            rule_ids=[str(r.get("rule_id")) for r in rows][:20],
+        )
+
+
 @router.post("/feedback")
 async def record_feedback(request: FeedbackRequest) -> dict[str, Any]:
     """Record positive or negative feedback for a rule."""
@@ -496,7 +521,11 @@ async def record_feedback(request: FeedbackRequest) -> dict[str, Any]:
     # 6.3a: a positive signal may push a PROPOSED rule across the graduation
     # threshold -> flip it to graduation_pending (a CANDIDATE for the human gate).
     # Statistical crossing only -- no authority promotion, no bible/ write.
-    graduation_pending = await server._db.evaluate_and_flip_graduation(request.rule_id)
+    state: dict[str, Any] = {}
+    graduation_pending = await server._db.evaluate_and_flip_graduation(
+        request.rule_id, state_out=state,
+    )
+    _refresh_ranking_inputs([state] if state else [])
     return {
         "rule_id": request.rule_id, "signal": request.signal, "recorded": True,
         "graduation_pending": graduation_pending == "graduation_pending",
@@ -515,10 +544,15 @@ async def record_feedback_batch(request: FeedbackBatchRequest) -> dict[str, Any]
         return {"recorded": [], "not_found": [], "graduation_pending": [], "applied": 0}
     if server._db is None:
         return {"error": "Database not connected."}
-    return await server._db.apply_feedback_batch(
+    state: list[dict] = []
+    result = await server._db.apply_feedback_batch(
         [(item.rule_id, item.signal) for item in request.signals],
         batch_id=request.batch_id,
+        state_out=state,
     )
+    # Empty on a replay: the stored answer is returned and nothing new committed.
+    _refresh_ranking_inputs(state)
+    return result
 
 
 @router.post("/conflicts")
@@ -626,6 +660,23 @@ def _log_destinations() -> dict[str, str]:
     }
 
 
+def _retrieval_status() -> dict[str, Any]:
+    """Which retrieval generation this daemon serves and how its last reload went.
+
+    Reported on BOTH /health branches, for the reason tcp_readonly is: "did my reload
+    land" has an answer even on a daemon that is not ready.
+    """
+    handle = server._retrieval
+    reloader = server._reloader
+    last = reloader.last_outcome if reloader is not None else None
+    return {
+        "generation": handle.generation if handle is not None else None,
+        "built_at": handle.built_at if handle is not None else None,
+        "reloading": reloader.in_progress if reloader is not None else False,
+        "last_reload": last.as_dict() if last is not None else None,
+    }
+
+
 @router.get("/health")
 async def health() -> dict[str, Any]:
     """Service status, rule count, index state, last ingestion timestamp.
@@ -640,6 +691,9 @@ async def health() -> dict[str, Any]:
     readers, which compare it against their own `WRIT_FRICTION_LOG`, and is no longer
     the friction-log RESOLVER's answer, which with that variable unset is a bare
     cwd-relative `workflow-friction.log` that nothing writes to.
+
+    Includes `retrieval` (program item 2): the served generation, when it was built,
+    whether a reload is running, and the last reload's outcome.
     """
     from writ.server.transport import tcp_readonly_enabled
 
@@ -653,6 +707,7 @@ async def health() -> dict[str, Any]:
             "error": "Database not connected.",
             "cache_dir": cache_dir,
             "tcp_readonly": tcp_readonly_enabled(),
+            "retrieval": _retrieval_status(),
             # The log destinations are reported on THIS branch too, for the same reason
             # tcp_readonly is: where this daemon's rows land does not depend on the
             # graph being up, and "where are the gate decisions" is exactly the question
@@ -699,6 +754,7 @@ async def health() -> dict[str, Any]:
         # doctor` read its OWN environment and printed "TCP still serves every route"
         # at a daemon that was returning 403 to every TCP write.
         "tcp_readonly": tcp_readonly_enabled(),
+        "retrieval": _retrieval_status(),
     }
     if status == "degraded":
         payload["warning"] = (
@@ -706,6 +762,21 @@ async def health() -> dict[str, Any]:
             "index disagree (DB/index split). Re-ingest, or restart against the correct Neo4j."
         )
     return payload
+
+
+@router.post("/retrieval/reload")
+async def retrieval_reload() -> dict[str, Any]:
+    """Rebuild retrieval from the graph and swap it in when the content changed (unix socket only).
+
+    Coalesced with any reload already running; the answer comes from a rebuild that read
+    the graph after this request arrived. A failed rebuild keeps the previous generation
+    serving and answers status "failed" with an `error`. TCP is refused before this
+    handler runs (writ/server/transport.py SOCKET_ONLY_PATHS).
+    """
+    if server._reloader is None:
+        return {"status": "failed", "error": "Retrieval not initialized. Run writ serve."}
+    outcome = await server._reloader.request()
+    return outcome.as_dict()
 
 
 # --- Phase 2: always-on rule bundle (plan Section 3.4) -----------------------

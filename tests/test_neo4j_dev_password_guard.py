@@ -193,11 +193,11 @@ class TestDaemonLifespanRefuses:
 
         built = []
 
-        async def _pipeline_must_not_be_built(*args, **kwargs):
+        async def _retrieval_must_not_be_built(*args, **kwargs):
             built.append(True)
-            raise AssertionError("build_pipeline reached with a refused password")
+            raise AssertionError("retrieval built with a refused password")
 
-        monkeypatch.setattr("writ.server.build_pipeline", _pipeline_must_not_be_built)
+        monkeypatch.setattr("writ.server._start_retrieval", _retrieval_must_not_be_built)
 
         async def _run():
             async with server.lifespan(server.app):

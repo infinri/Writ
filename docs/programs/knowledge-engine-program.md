@@ -116,6 +116,21 @@ Promotion records only `authority`/`provenance`/`graduated_via`, not who approve
   that change together and surface them before a write ("this file usually changes
   with X").
 
+## Decisions (2026-10-06)
+
+- 1f: keep the 0.30 abstention threshold (sweep: it is the knee; no move clears the
+  interval rule). Report ranked-eligible queries separately from always-on and routed
+  targets; reword CLEAN-DEAD-001 and CLEAN-RETURN-001; hold the cosine-normalized vector
+  score until a weight re-sweep. Expand the negative query set before any threshold change.
+- 1g (added): the Bash write gate refuses read-only commands that mention a `.py` path with
+  `python3` or `grep`; fix the over-match.
+- 5: default sources docs/, ADRs and READMEs; CLAUDE.md and memory files opt-in; ingest
+  only on `writ docs ingest`.
+- 6: approver identity stays in local event records, never in writ-corpus.cypher.
+- 7b: deferred (needs about 470 human relevance judgments).
+- Build order: wave 1 = item 2, 1f, 7c + 1g in parallel; wave 2 = 6 then 4;
+  wave 3 = 5, then 7a and 7d.
+
 ## Not in scope
 
 - Multi-user and access control: revisit on a real shared deployment.

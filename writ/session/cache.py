@@ -301,6 +301,14 @@ def _default_cache() -> dict:
         # turns it into a fail-closed abstain instead of a live fallback that would
         # reinstate the divergence in the one state nobody inspects.
         "scratch_zone": "",
+        # Program item 7c: this agent's streak of IDENTICAL failures per tool, keyed
+        # "<agent id or main>|<tool>" -> {count, input_hash, tool, agent, last_failed_at}.
+        # Written only by bin/lib/writ_tool_failure.py (PostToolUseFailure extends it, a
+        # successful PostToolUse clears it) and read file-direct by
+        # hooks/scripts/writ-tool-failure-budget.sh, which refuses the fourth identical
+        # call. {} is "no streak", which is also what a cache written before this field
+        # reads back as.
+        "tool_failure_streak": {},
     }
 
 

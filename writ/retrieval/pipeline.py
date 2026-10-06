@@ -17,12 +17,16 @@ Per ARCH-DI-001: all dependencies injected via constructor.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
 import os
 import shutil
+import tempfile
 import time
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -76,6 +80,11 @@ FIRST_PASS_TOP_N = 3
 # Measured on the unfiltered top-1; since item 1d the gate reads filter survivors,
 # re-measured in benchmarks/VECTOR-GATE-2026-10-05.md.
 RULE_INJECTION_ABSTENTION_THRESHOLD = 0.30
+# Program item 2: bumped when the SHAPE of an indexed unit changes. It is a key of the
+# reload fingerprint only (pipeline_fingerprint), NOT part of the persisted BM25 or HNSW
+# cache keys: folding it there would make every install re-encode the corpus once for no
+# shape change. A shape change that must invalidate those caches changes their hash inputs.
+RETRIEVAL_INDEX_VERSION = 1
 # Domains excluded by the semantic-mode legacy fallback (node_routes absent).
 _METHODOLOGY_EXCLUDE_DOMAINS = {"process", "communication", "meta-authoring"}
 
@@ -311,6 +320,45 @@ class RetrievalPipeline:
         if node_type in routes_map:
             return routes_map[node_type]
         return meta.get("routes", []) or []
+
+    @property
+    def encoder(self) -> CachedEncoder:
+        """The query-time encoder. A live reload hands it to the next build so the
+        embedding model loads once per process, not once per reload (program item 2)."""
+        return self._model
+
+    def apply_feedback(self, rows: Iterable[Mapping[str, object]]) -> list[str]:
+        """Set absolute feedback counts and provenance on rules this pipeline already holds.
+
+        Program item 2: rows are the graph's POST-WRITE state, as the feedback writes
+        return it (rule_store state_out), never a local increment. Only existing entries
+        change; a row for an id this pipeline does not hold, or for a same-id node in
+        another project (the graph's key is rule_id + project, this dict's is rule_id), is
+        skipped. Each entry is REPLACED, never mutated in place, so a query thread reading
+        it sees the old entry or the new one, never half of each.
+        Returns the rule ids updated.
+        """
+        updated: list[str] = []
+        for row in rows:
+            rid = row.get("rule_id")
+            meta = self._metadata.get(rid) if isinstance(rid, str) else None
+            if meta is None:
+                continue
+            row_project = row.get("project")
+            if (
+                meta.get("project") is not None
+                and row_project is not None
+                and meta.get("project") != row_project
+            ):
+                continue
+            fresh = dict(meta)
+            fresh["times_seen_positive"] = int(row.get("times_seen_positive") or 0)
+            fresh["times_seen_negative"] = int(row.get("times_seen_negative") or 0)
+            if row.get("provenance") is not None:
+                fresh["provenance"] = row["provenance"]
+            self._metadata[rid] = fresh
+            updated.append(rid)
+        return updated
 
     def query(
         self,
@@ -653,6 +701,19 @@ class RetrievalPipeline:
 
 
 _BM25_SIDECAR = "writ_bm25.json"
+# Program item 2: generation layout. <cache_root>/bm25/CURRENT names the live generation;
+# each <cache_root>/bm25/gen-<hash12>-<random>/ holds one complete index and its sidecar.
+_BM25_CURRENT = "CURRENT"
+_BM25_GEN_PREFIX = "gen-"
+# A superseded generation is deleted only once it is this old, so another process's
+# not-yet-switched build directory is never pruned out from under it.
+BM25_PRUNE_GRACE_SECONDS = 3600
+# What the pre-generation code wrote directly into <cache_root>/bm25/: its sidecar, the
+# index's meta and managed-file lists, its two lock files, and segment files by extension.
+_BM25_LEGACY_NAMES = frozenset({
+    _BM25_SIDECAR, "meta.json", ".managed.json", ".tantivy-meta.lock", ".tantivy-writer.lock",
+})
+_BM25_LEGACY_SUFFIXES = (".idx", ".pos", ".term", ".store", ".fast", ".fieldnorm", ".del")
 
 
 def _compute_bm25_hash(candidates: list[dict]) -> str:
@@ -677,45 +738,119 @@ def _compute_bm25_hash(candidates: list[dict]) -> str:
     return hashlib.sha256(json.dumps(payload).encode("utf-8")).hexdigest()
 
 
+def _bm25_current_dir(bm25_root: Path) -> Path | None:
+    """The live generation directory CURRENT names, or None (absent, malformed, escaping)."""
+    try:
+        name = (bm25_root / _BM25_CURRENT).read_text().strip()
+    except OSError:
+        return None
+    if not name.startswith(_BM25_GEN_PREFIX) or "/" in name or os.sep in name:
+        return None
+    path = bm25_root / name
+    return path if path.is_dir() else None
+
+
+def _switch_bm25_current(bm25_root: Path, gen_name: str) -> None:
+    """Point CURRENT at `gen_name` atomically, through the stage-then-commit write
+    writ/neo4j_password.py already uses for writ.toml (temp file beside the target,
+    fsynced, os.replace, directory fsynced)."""
+    from writ.neo4j_password import commit_config, stage_config
+
+    target = str(bm25_root / _BM25_CURRENT)
+    commit_config(stage_config(target, gen_name, prefix=".CURRENT."), target)
+
+
+def _prune_bm25_generations(
+    bm25_root: Path, keep: set[str], now: float | None = None,
+) -> list[str]:
+    """Delete superseded generation directories. Returns the names removed.
+
+    Only `gen-*` directories, never one in `keep` (the new generation and the one CURRENT
+    named before the switch), and never one modified within BM25_PRUNE_GRACE_SECONDS. A
+    reader that still has a pruned generation open keeps working: its segment files are
+    already mapped, and POSIX unlink does not invalidate an open mapping.
+    """
+    cutoff = (time.time() if now is None else now) - BM25_PRUNE_GRACE_SECONDS
+    removed: list[str] = []
+    for child in sorted(bm25_root.iterdir()):
+        if not child.is_dir() or not child.name.startswith(_BM25_GEN_PREFIX):
+            continue
+        if child.name in keep:
+            continue
+        try:
+            if child.stat().st_mtime >= cutoff:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(child, ignore_errors=True)
+        removed.append(child.name)
+    return removed
+
+
+def _prune_bm25_legacy_files(bm25_root: Path) -> None:
+    """Remove the flat-layout files the pre-generation code left in bm25/. Called only
+    after a generation is current, so nothing this process serves lives there; a
+    pre-upgrade daemon that still maps them keeps working (POSIX unlink semantics)."""
+    for child in bm25_root.iterdir():
+        if child.is_file() and (
+            child.name in _BM25_LEGACY_NAMES or child.suffix in _BM25_LEGACY_SUFFIXES
+        ):
+            with contextlib.suppress(OSError):
+                child.unlink()
+
+
 def _load_or_build_keyword_index(
     candidates: list[dict], cache_root: str | Path
 ) -> tuple[KeywordIndex, str]:
-    """Open the persisted BM25 index when its sidecar hash matches, else rebuild.
+    """Open the live BM25 generation when its sidecar hash matches, else build a new one.
 
-    Mirrors the HNSW cache discipline below: hash first, open on hit, rebuild
-    into a fresh directory on miss (tantivy appends, so building into a
-    non-empty index would duplicate documents), sidecar written last so a
-    crash mid-build reads as a miss. Returns (index, outcome) where outcome is
-    "hit", "miss", or "nocache" (persistence unavailable; in-memory build --
-    the pre-persistence behavior, never a pipeline failure).
+    Hash first, open on hit. On a miss the index is built into a FRESH generation
+    directory (tantivy appends, so building into a non-empty index would duplicate
+    documents), its sidecar is written, and only then is CURRENT switched to it. The live
+    generation is never written to: the old in-place rmtree-and-rebuild deleted the index
+    out from under any reader that had it open, the running daemon included. Returns
+    (index, outcome): "hit", "miss", or "nocache" (persistence unavailable; in-memory
+    build, never a pipeline failure).
     """
-    bm25_dir = Path(cache_root) / "bm25"
-    sidecar = bm25_dir / _BM25_SIDECAR
+    bm25_root = Path(cache_root) / "bm25"
     corpus_hash = _compute_bm25_hash(candidates)
+    live = _bm25_current_dir(bm25_root)
+
+    if live is not None:
+        try:
+            sidecar = live / _BM25_SIDECAR
+            if sidecar.is_file() and json.loads(sidecar.read_text()).get("corpus_hash") == corpus_hash:
+                index = KeywordIndex(index_dir=live)
+                index.reload()
+                _logger.info("Loaded BM25 index from cache (hash=%s)", corpus_hash[:12])
+                return index, "hit"
+        except Exception as exc:
+            _logger.debug("BM25 cache open failed, rebuilding: %s", exc)
 
     try:
-        if sidecar.is_file() and json.loads(sidecar.read_text()).get("corpus_hash") == corpus_hash:
-            index = KeywordIndex(index_dir=bm25_dir)
-            index.reload()
-            _logger.info("Loaded BM25 index from cache (hash=%s)", corpus_hash[:12])
-            return index, "hit"
-    except Exception as exc:
-        _logger.debug("BM25 cache open failed, rebuilding: %s", exc)
-
-    try:
-        shutil.rmtree(bm25_dir, ignore_errors=True)
-        bm25_dir.mkdir(parents=True, exist_ok=True)
-        index = KeywordIndex(index_dir=bm25_dir)
+        bm25_root.mkdir(parents=True, exist_ok=True)
+        gen_dir = Path(tempfile.mkdtemp(
+            prefix=f"{_BM25_GEN_PREFIX}{corpus_hash[:12]}-", dir=str(bm25_root),
+        ))
+        index = KeywordIndex(index_dir=gen_dir)
         index.build(candidates)
-        sidecar.write_text(json.dumps(
+        (gen_dir / _BM25_SIDECAR).write_text(json.dumps(
             {"corpus_hash": corpus_hash, "count": len(candidates)}
         ))
-        return index, "miss"
+        _switch_bm25_current(bm25_root, gen_dir.name)
     except Exception as exc:
         _logger.warning("BM25 persistence unavailable, building in memory: %s", exc)
         index = KeywordIndex()
         index.build(candidates)
         return index, "nocache"
+
+    keep = {gen_dir.name} | ({live.name} if live is not None else set())
+    try:
+        _prune_bm25_generations(bm25_root, keep)
+        _prune_bm25_legacy_files(bm25_root)
+    except OSError as exc:
+        _logger.debug("BM25 prune skipped: %s", exc)
+    return index, "miss"
 
 
 def _compute_corpus_hash_from_text(rule_ids: list[str], texts: list[str]) -> str:
@@ -737,6 +872,52 @@ def _compute_corpus_hash_from_text(rule_ids: list[str], texts: list[str]) -> str
     pairs = sorted(zip(rule_ids, texts))
     digest_input = "|".join(f"{rid}:{txt}" for rid, txt in pairs)
     return hashlib.sha256(digest_input.encode()).hexdigest()
+
+
+def fingerprint_digest(value: object) -> str:
+    """SHA-256 over the JSON of `value`: the _compute_bm25_hash idiom, with sort_keys so
+    dict order is irrelevant and default=str for the graph's temporal values."""
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def _vector_corpus(candidates: list[dict]) -> tuple[list[str], list[str]]:
+    """(rule_ids, texts) exactly as the vector stage embeds them."""
+    rule_ids = [r["rule_id"] for r in candidates]
+    texts = [f"{r.get('trigger', '')} {r.get('statement', '')}" for r in candidates]
+    return rule_ids, texts
+
+
+@dataclass
+class PipelineInputs:
+    """Everything a RetrievalPipeline is built from, read from the graph in one pass.
+
+    Split from the CPU and disk work (assemble_pipeline) so the daemon can read on the
+    event loop, fingerprint the result, and hand only the expensive half to a thread.
+    """
+
+    candidates: list[dict]
+    rule_metadata: dict[str, dict]
+    adjacency_cache: AdjacencyCache
+    abstractions: list[dict]
+    node_routes: dict[str, list[str]] | None
+
+
+def pipeline_fingerprint(inputs: PipelineInputs) -> dict[str, str]:
+    """One content hash per source (program item 2, C1), each computed once. bm25 and hnsw
+    ARE the persisted cache keys; a reload whose fingerprint equals the served one skips
+    the rebuild and the swap."""
+    rule_ids, texts = _vector_corpus(inputs.candidates)
+    return {
+        "index_version": str(RETRIEVAL_INDEX_VERSION),
+        "bm25": _compute_bm25_hash(inputs.candidates),
+        "hnsw": _compute_corpus_hash_from_text(rule_ids, texts),
+        "metadata": fingerprint_digest(inputs.rule_metadata),
+        "edges": fingerprint_digest(inputs.adjacency_cache.snapshot()),
+        "routes": fingerprint_digest(inputs.node_routes),
+        "abstractions": fingerprint_digest(inputs.abstractions),
+    }
 
 
 def _fold_auxiliary_text_into_body(node: dict, label: str) -> str:
@@ -937,31 +1118,73 @@ def _resolve_encoder(embedding_model, model_name: str, texts: list[str], loaded_
     return query_encoder, embeddings
 
 
-async def build_pipeline(
-    db: Neo4jConnection,
+def _resolve_node_routes(
+    node_routes: dict[str, list[str]] | None, rule_metadata: dict[str, dict],
+) -> dict[str, list[str]] | None:
+    """The route map the Stage 1 filter may use, or None for the legacy filter.
+
+    Moved out of build_pipeline unchanged (program item 2) so the reload path applies the
+    same coverage rule.
+    """
+    if not node_routes:
+        # Empty map = graph carries no BELONGS_TO/Category routing data (e.g. a
+        # Rules-only test graph). Fall back to the legacy Stage-1 filter.
+        return None
+    missing = [rid for rid in rule_metadata if not node_routes.get(rid)]
+    if missing:
+        # Incomplete coverage: some candidate has no Category route (e.g. a
+        # graph-authored rule from `writ add` / `/propose`, which never sets a
+        # Category). _routes_for is fail-closed, so wiring a partial map would
+        # silently drop these ids from every semantic query. Fall back to the
+        # legacy Stage-1 filter for the whole pipeline -- behaviorally identical
+        # to the route map on a fully categorized corpus -- rather than failing
+        # the build: build_pipeline runs inside the FastAPI lifespan, so a raise
+        # here would crash-loop the daemon. `writ validate`
+        # (detect_category_reachability) surfaces the gap for a human to fix.
+        _logger.warning(
+            "node_routes incomplete: %d/%d candidate ids have no Category route "
+            "(e.g. %s); falling back to the legacy Rule-only/domain-exclude Stage-1 "
+            "filter. Assign a Category to these nodes to enable data-driven routing.",
+            len(missing), len(rule_metadata), missing[:5],
+        )
+        return None
+    return node_routes
+
+
+async def load_pipeline_inputs(db: Neo4jConnection) -> PipelineInputs:
+    """The graph-read half of build_pipeline. Must run on the event loop that owns `db`."""
+    all_candidates, rule_metadata = await _load_candidates(db)
+
+    # Build adjacency cache (Stage 4).
+    adjacency_cache = AdjacencyCache()
+    await adjacency_cache.build_from_db(db)
+
+    # Load Abstraction nodes so summary-mode can return abstraction summaries
+    # instead of raw rule renders when budget_tokens < SUMMARY_THRESHOLD.
+    abstractions = await db.get_all_abstractions()
+
+    node_routes = _resolve_node_routes(await db.get_category_routes_by_node(), rule_metadata)
+    return PipelineInputs(
+        candidates=all_candidates,
+        rule_metadata=rule_metadata,
+        adjacency_cache=adjacency_cache,
+        abstractions=abstractions,
+        node_routes=node_routes,
+    )
+
+
+def assemble_pipeline(
+    inputs: PipelineInputs,
     model_name: str = DEFAULT_EMBEDDING_MODEL,
     weights: RankingWeights | None = None,
     embedding_model: object | None = None,
     authority_preference_threshold: float = 0.0,
-    # Neutral factory: the gate is OFF by default so authoring
-    # (suggest_relationships) and offline diagnostics that share this factory stay
-    # ungated. Rule-injection callers opt in with RULE_INJECTION_ABSTENTION_THRESHOLD.
     abstention_threshold: float = 0.0,
 ) -> RetrievalPipeline:
-    """Build the full pipeline with pre-warmed indexes.
-
-    Called once at service startup. Per PERF-LAZY-001: expensive loading
-    happens here, not at query time.
-
-    Model selection: ONNX Runtime preferred (no PyTorch dependency).
-    Falls back to SentenceTransformer if ONNX model not exported.
-
-    Phase 1: loads Rule + all 5 retrievable methodology node types (Skill,
-    Playbook, Technique, AntiPattern, ForbiddenResponse). Non-retrievable types
-    (Phase, Rationalization, PressureScenario, WorkedExample, SubagentRole)
-    enter Stage 4 via the adjacency cache but do not appear as candidates.
-    """
-    all_candidates, rule_metadata = await _load_candidates(db)
+    """The CPU and disk half of build_pipeline: BM25 and HNSW load-or-build, the encoder,
+    and assembly. Synchronous and free of graph I/O, so the daemon runs it in a worker
+    thread while the previous pipeline keeps serving queries (program item 2)."""
+    all_candidates = inputs.candidates
 
     # Build BM25 index (Stage 2) -- includes methodology body per plan Section 3.2.
     # Persisted and keyed like the HNSW index below, so a warm cold-start skips
@@ -972,8 +1195,7 @@ async def build_pipeline(
     emit("metrics", "bm25_cache", "", None, outcome=bm25_outcome)
 
     # Build vector index (Stage 3).
-    texts = [f"{r.get('trigger', '')} {r.get('statement', '')}" for r in all_candidates]
-    rule_ids = [r["rule_id"] for r in all_candidates]
+    rule_ids, texts = _vector_corpus(all_candidates)
 
     # Item 4 (Approach C, 2026-05-15): compute the HNSW cache key from
     # rule text BEFORE running the expensive encode_batch pass, then
@@ -1047,48 +1269,54 @@ async def build_pipeline(
                 "retrieval.hnsw.save", exc, "", None, corpus_hash=corpus_hash[:12],
             )
 
-    # Build adjacency cache (Stage 4).
-    adjacency_cache = AdjacencyCache()
-    await adjacency_cache.build_from_db(db)
-
-    # Load Abstraction nodes so summary-mode can return abstraction summaries
-    # instead of raw rule renders when budget_tokens < SUMMARY_THRESHOLD.
-    abstractions = await db.get_all_abstractions()
-
-    node_routes = await db.get_category_routes_by_node()
-    if not node_routes:
-        # Empty map = graph carries no BELONGS_TO/Category routing data (e.g. a
-        # Rules-only test graph). Fall back to the legacy Stage-1 filter.
-        node_routes = None
-    else:
-        missing = [rid for rid in rule_metadata if not node_routes.get(rid)]
-        if missing:
-            # Incomplete coverage: some candidate has no Category route (e.g. a
-            # graph-authored rule from `writ add` / `/propose`, which never sets a
-            # Category). _routes_for is fail-closed, so wiring a partial map would
-            # silently drop these ids from every semantic query. Fall back to the
-            # legacy Stage-1 filter for the whole pipeline -- behaviorally identical
-            # to the route map on a fully categorized corpus -- rather than failing
-            # the build: build_pipeline runs inside the FastAPI lifespan, so a raise
-            # here would crash-loop the daemon. `writ validate`
-            # (detect_category_reachability) surfaces the gap for a human to fix.
-            _logger.warning(
-                "node_routes incomplete: %d/%d candidate ids have no Category route "
-                "(e.g. %s); falling back to the legacy Rule-only/domain-exclude Stage-1 "
-                "filter. Assign a Category to these nodes to enable data-driven routing.",
-                len(missing), len(rule_metadata), missing[:5],
-            )
-            node_routes = None
-
     return RetrievalPipeline(
         keyword_index=keyword_index,
         vector_store=vector_store,
-        adjacency_cache=adjacency_cache,
+        adjacency_cache=inputs.adjacency_cache,
         embedding_model=query_encoder,
-        rule_metadata=rule_metadata,
+        rule_metadata=inputs.rule_metadata,
         weights=weights,
         authority_preference_threshold=authority_preference_threshold,
         abstention_threshold=abstention_threshold,
-        abstractions=abstractions,
-        node_routes=node_routes,
+        abstractions=inputs.abstractions,
+        node_routes=inputs.node_routes,
+    )
+
+
+async def build_pipeline(
+    db: Neo4jConnection,
+    model_name: str = DEFAULT_EMBEDDING_MODEL,
+    weights: RankingWeights | None = None,
+    embedding_model: object | None = None,
+    authority_preference_threshold: float = 0.0,
+    # Neutral factory: the gate is OFF by default so authoring
+    # (suggest_relationships) and offline diagnostics that share this factory stay
+    # ungated. Rule-injection callers opt in with RULE_INJECTION_ABSTENTION_THRESHOLD.
+    abstention_threshold: float = 0.0,
+) -> RetrievalPipeline:
+    """Build the full pipeline with pre-warmed indexes.
+
+    Called once at service startup. Per PERF-LAZY-001: expensive loading
+    happens here, not at query time.
+
+    Model selection: ONNX Runtime preferred (no PyTorch dependency).
+    Falls back to SentenceTransformer if ONNX model not exported.
+
+    Phase 1: loads Rule + all 5 retrievable methodology node types (Skill,
+    Playbook, Technique, AntiPattern, ForbiddenResponse). Non-retrievable types
+    (Phase, Rationalization, PressureScenario, WorkedExample, SubagentRole)
+    enter Stage 4 via the adjacency cache but do not appear as candidates.
+
+    Program item 2: the graph reads (load_pipeline_inputs) and the CPU and disk build
+    (assemble_pipeline) are separate so the daemon's live reload can fingerprint between
+    them; this composition keeps every existing caller's signature.
+    """
+    inputs = await load_pipeline_inputs(db)
+    return assemble_pipeline(
+        inputs,
+        model_name=model_name,
+        weights=weights,
+        embedding_model=embedding_model,
+        authority_preference_threshold=authority_preference_threshold,
+        abstention_threshold=abstention_threshold,
     )

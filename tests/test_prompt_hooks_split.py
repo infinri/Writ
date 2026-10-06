@@ -288,14 +288,14 @@ class TestRegistration:
             assert text.startswith("#!/usr/bin/env bash")
             assert "exit 0" in text
 
-    def test_total_registered_command_count_is_forty_eight(self):
+    def test_total_registered_command_count_is_fifty_one(self):
         def count(node) -> int:
             if isinstance(node, dict):
                 return (1 if "command" in node else 0) + sum(count(v) for v in node.values())
             if isinstance(node, list):
                 return sum(count(v) for v in node)
             return 0
-        assert count(json.loads(HOOKS_JSON.read_text())) == 48
+        assert count(json.loads(HOOKS_JSON.read_text())) == 51  # 48 after item 1a, plus the three tool-failure budget registrations (item 7c)
 
 
 # --------------------------------------------------------------------------- #

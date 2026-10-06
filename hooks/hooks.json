@@ -163,6 +163,15 @@
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-blackbox-capture.sh\""
           }
         ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-tool-failure-record.sh\""
+          }
+        ]
       }
     ],
     "PreCompact": [
@@ -353,6 +362,15 @@
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-memory-policy-guard.sh\""
           }
         ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-tool-failure-budget.sh\""
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -447,6 +465,15 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-memory-capture.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-tool-failure-budget.sh\""
           }
         ]
       }

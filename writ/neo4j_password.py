@@ -197,14 +197,16 @@ def render_config(existing: str | None, new: str) -> str:
     return rendered
 
 
-def stage_config(path: str, text: str) -> str:
+def stage_config(path: str, text: str, prefix: str = STAGED_FILE_PREFIX) -> str:
     """Write `text` to a new temp file beside `path`, fsynced, mode 0600; return its path.
 
     mkstemp creates it 0600 in the SAME directory, so the later rename is atomic and never
     exposes a partial or world-readable copy. On failure nothing is left behind.
+    `prefix` names the staged file; the BM25 CURRENT pointer (writ/retrieval/pipeline.py)
+    reuses this stage-then-commit write with its own prefix.
     """
     directory = os.path.dirname(path) or "."
-    fd, staged = tempfile.mkstemp(prefix=STAGED_FILE_PREFIX, dir=directory)
+    fd, staged = tempfile.mkstemp(prefix=prefix, dir=directory)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)

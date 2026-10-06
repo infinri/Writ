@@ -28,11 +28,17 @@ from tests.fixtures.regression_floors import (
     HIT_RATE_FLOOR,
     MRR5_FLOOR,
 )
-from tests.fixtures.retrieval_scoring import hit_rate_at_5, mrr_at_5
+from tests.fixtures.retrieval_scoring import (
+    hit_rate_at_5,
+    mrr_at_5,
+    routed_target_findings,
+    split_by_channel,
+)
 from writ.config import get_neo4j_password, get_neo4j_uri, get_neo4j_user
 from writ.graph.db import Neo4jConnection
 from writ.graph.ingest import validate_parsed_rule
 from writ.graph.integrity import IntegrityChecker
+from writ.graph.integrity.frequency_checks import mandatory_rule_ids
 from writ.retrieval.pipeline import VECTOR_CANDIDATE_LIMIT, build_pipeline
 from writ.retrieval.ranking import (
     RankingWeights,
@@ -330,33 +336,13 @@ class TestRetrievalPrecision:
 
     async def _mandatory_ids(self, db) -> set[str]:
         async with db._driver.session(database=db._database) as s:
-            r = await s.run("MATCH (r:Rule {mandatory: true}) RETURN r.rule_id AS id")
-            return {rec["id"] async for rec in r}
+            return await mandatory_rule_ids(s)
 
     def _split_by_channel(self, pipeline, ground_truth, mandatory_ids):
-        """Partition targets by delivery channel (HANDBOOK section 10).
-
-        eligible: semantic-mode /query can return the expected rule -- rank
-        metrics apply. Eligibility is the ROUTE data (Stage 1 admits a candidate
-        only when its category routes include 'semantic'), not candidate-set
-        membership: _metadata holds every candidate, but the route filter runs
-        at query time. A rule with no route entry is universal (eligible).
-        always_on: expected rule is mandatory -- delivered via /always-on, never ranked.
-        routed: category routes exclude 'semantic' -- delivered via the state/
-        action/pull channels (methodology companion), unreachable by /query BY DESIGN.
-        """
-        routes_map = getattr(pipeline, "_node_routes", None) or {}
-        eligible, always_on, routed = [], [], []
-        for q in ground_truth:
-            rid = q["expected_rule_id"]
-            routes = routes_map.get(rid)
-            if rid in mandatory_ids:
-                always_on.append(q)
-            elif routes is not None and "semantic" not in routes:
-                routed.append(q)
-            else:
-                eligible.append(q)
-        return eligible, always_on, routed
+        """Delivery-channel partition; the rule lives in retrieval_scoring.split_by_channel."""
+        return split_by_channel(
+            ground_truth, mandatory_ids, getattr(pipeline, "_node_routes", None) or {},
+        )
 
     async def test_hit_rate_index_eligible_targets(self, db, pipeline, ground_truth) -> None:
         """Rank metric scored ONLY over targets the index can contain.
@@ -382,17 +368,14 @@ class TestRetrievalPrecision:
 
     async def test_always_on_targets_are_in_the_injection_floor(self, db, pipeline, ground_truth) -> None:
         """Delivery check for mandatory targets: the guarantee is bundle membership,
-        not rank. INJECTION_RULE_WHERE is the single source for floor membership."""
-        from writ.graph.predicates import INJECTION_RULE_WHERE
-
+        not rank. detect_stranded_mandatory is mandatory minus the injection floor
+        (INJECTION_RULE_WHERE), so a target in it is stranded."""
         mandatory_ids = await self._mandatory_ids(db)
         _, always_on, _ = self._split_by_channel(pipeline, ground_truth, mandatory_ids)
         assert always_on, "expected at least one always-on target in the ground truth"
 
-        async with db._driver.session(database=db._database) as s:
-            r = await s.run(f"MATCH (r:Rule) WHERE {INJECTION_RULE_WHERE} RETURN r.rule_id AS id")
-            floor_ids = {rec["id"] async for rec in r}
-        undelivered = sorted({q["expected_rule_id"] for q in always_on} - floor_ids)
+        stranded = set(await IntegrityChecker(db._driver, db._database).detect_stranded_mandatory())
+        undelivered = sorted({q["expected_rule_id"] for q in always_on} & stranded)
         print(f"\nAlways-on targets delivered via injection floor: "
               f"{len(always_on) - len(undelivered)}/{len(always_on)} queries")
         assert not undelivered, (
@@ -413,20 +396,15 @@ class TestRetrievalPrecision:
         ids = sorted({q["expected_rule_id"] for q in routed})
         routes_map = getattr(pipeline, "_node_routes", None) or {}
         async with db._driver.session(database=db._database) as s:
-            r = await s.run(
-                "UNWIND $ids AS rid MATCH (n:Rule {rule_id: rid}) "
-                "OPTIONAL MATCH (n)-[:BELONGS_TO]->(c:Category) "
-                "RETURN rid AS rid, count(c) AS edges", ids=ids)
-            orphans = [rec["rid"] async for rec in r if rec["edges"] == 0]
-        channelless = [rid for rid in ids if not routes_map.get(rid)]
+            findings = await routed_target_findings(s, ids, routes_map)
         print(f"\nRouted targets (non-semantic channels): "
               f"{ {rid: routes_map.get(rid) for rid in ids} }")
-        assert not orphans, (
-            f"routed targets with NO category edge -- accidental orphans: {orphans}"
+        assert not findings["orphans"], (
+            f"routed targets with NO category edge -- accidental orphans: {findings['orphans']}"
         )
-        assert not channelless, (
+        assert not findings["channelless"], (
             f"routed targets with an empty route list -- unreachable by ANY "
-            f"channel: {channelless}"
+            f"channel: {findings['channelless']}"
         )
 
     def test_domain_hit_rate_top5(self, db, pipeline, ground_truth) -> None:

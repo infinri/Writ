@@ -166,6 +166,7 @@ def post_json_outcome(
     socket_path: str | None = None,
     base_url: str | None = None,
     timeout: float = 0.5,
+    tcp_fallback: bool = True,
 ) -> tuple[int, str, bool]:
     """POST `payload` as JSON and return (status, text, delivered).
 
@@ -174,6 +175,10 @@ def post_json_outcome(
     delivered True: the server may have applied it). A connect failure on the socket
     may still try TCP, the stale-socket case; a request that reached the socket is
     never replayed over TCP, so a non-idempotent POST is not applied twice.
+
+    `tcp_fallback=False` makes the call socket-only, for a route TCP refuses
+    (writ/server/transport.py SOCKET_ONLY_PATHS): no socket, or a socket that refuses,
+    returns (0, "", False) instead of trying TCP.
     """
     body = json.dumps(payload).encode()
     headers = {"Host": "localhost", "Content-Type": "application/json"}
@@ -185,8 +190,10 @@ def post_json_outcome(
     if socket_available(socket_path):
         outcome = _attempt_outcome(
             UnixSocketHTTPConnection(socket_path, timeout=timeout), path, body, headers)
-        if outcome[2]:
+        if outcome[2] or not tcp_fallback:
             return outcome
+    elif not tcp_fallback:
+        return 0, "", False
 
     parsed = urllib.parse.urlsplit(base_url)
     conn = http.client.HTTPConnection(

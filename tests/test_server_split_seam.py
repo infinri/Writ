@@ -106,6 +106,7 @@ ROUTE_BASELINE: list[tuple[str, str]] = [
     ("POST", "/propose"),
     ("POST", "/query"),
     ("POST", "/recall"),
+    ("POST", "/retrieval/reload"),
     ("POST", "/session/format"),
     ("POST", "/session/{session_id}/active-playbook"),
     ("POST", "/session/{session_id}/add-pending-violation"),
@@ -144,17 +145,18 @@ def _current_route_tuples() -> list[tuple[str, str]]:
 
 class TestServerIsPackage:
     def test_route_baseline_captured_count(self) -> None:
-        """Sanity check on the frozen constant itself: exactly 59 tuples are
+        """Sanity check on the frozen constant itself: exactly 60 tuples are
         declared (53 captured from HEAD, plus /memory-record, plus the GET and POST
         halves of the verdict route added 2026-08-06, plus GET
         /session/{sid}/prompt-state added 2026-08-08, MINUS the session-cache key
         setter removed 2026-08-26, plus POST /feedback/batch and POST
         /subagent/start-context (plan f7fc2b37-9a53-4011-a69f-e6b97f5e45fe, batch 4:
-        57 -> 59)). Guards against a copy/paste mistake in ROUTE_BASELINE, independent
+        57 -> 59), plus POST /retrieval/reload (program item 2, live
+        reload; 59 to 60)). Guards against a copy/paste mistake in ROUTE_BASELINE, independent
         of the split."""
         # THE CANONICAL ROUTE LITERAL, kept here because the baseline list it guards lives
         # in this file: a deliberate route change is reviewed by editing both together.
-        assert len(ROUTE_BASELINE) == 59
+        assert len(ROUTE_BASELINE) == 60
         # This said `== 57` too, which restated the line above rather than adding a claim.
         # The claim is that no tuple appears twice.
         assert len(set(ROUTE_BASELINE)) == len(ROUTE_BASELINE), (

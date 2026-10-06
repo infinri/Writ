@@ -1933,6 +1933,37 @@ def heredoc_terminator(tok):
     return rest
 
 
+def heredoc_spans(toks):
+    """`(opener, sep, body_end, end)` for every heredoc BODY in `toks`, in order: the opener's
+    index, the SEP that starts its body, the index of its terminator word (len(toks) when none
+    follows), and the index just past that terminator.
+
+    THE ONE WALK THAT FINDS A BODY. strip_heredoc_bodies removes `toks[sep:end]` for each span,
+    and writ-bash-write-gate.sh's stdin pass reads `toks[sep + 1:body_end]` as the program text
+    fed to an interpreter, so the two cannot disagree about where a body starts or stops. The
+    same-line boundary and the RESIDUE are strip_heredoc_bodies' own (see there): tokens between
+    an opener and its newline are never re-read as openers, the first terminator is honored, and
+    an opener with no following SEP has no body and ends the walk.
+    """
+    spans, i, n = [], 0, len(toks)
+    while i < n:
+        word = heredoc_terminator(toks[i])
+        if word is None:
+            i += 1
+            continue
+        sep = i + 1
+        while sep < n and toks[sep] != SEP:
+            sep += 1
+        if sep == n:                              # no newline after the opener: no body
+            return spans
+        body_end = sep + 1
+        while body_end < n and toks[body_end] != word:
+            body_end += 1
+        spans.append((i, sep, body_end, min(body_end + 1, n)))
+        i = body_end + 1                          # step over the terminator itself
+    return spans
+
+
 def strip_heredoc_bodies(toks):
     """`toks` with every heredoc BODY removed, the body being the run from the newline that
     FOLLOWS the opener through the terminator word.
@@ -1961,32 +1992,17 @@ def strip_heredoc_bodies(toks):
     not recognized, because this runs on RAW shlex tokens, before split_control_operators.
     All three fail CLOSED, leaving an extra row rather than losing one.
     """
-    out, i, n = [], 0, len(toks)
-    while i < n:
-        word = heredoc_terminator(toks[i])
-        if word is None:
-            out.append(toks[i])
-            i += 1
-            continue
-        out.append(toks[i])                       # the opener is syntax, not body
-        j = i + 1
-        while j < n and toks[j] != SEP:
-            out.append(toks[j])                   # `> docs/notes.txt` survives
-            j += 1
-        if j == n:                                # no newline after the opener: no body
-            i = j
-            continue
-        j += 1                                    # the SEP that starts the body
-        while j < n and toks[j] != word:
-            j += 1
-        i = j + 1                                  # step over the terminator itself
-    return out
+    out, prev = [], 0
+    for _opener, sep, _body_end, end in heredoc_spans(toks):
+        out += toks[prev:sep]                     # the opener and `> docs/notes.txt` survive
+        prev = end                                # the body and its terminator do not
+    return out + toks[prev:]
 # MIRROR END split_control_operators
 try:
     from writ.session.bash_tokens import split_control_operators   # noqa: F811
     from writ.session.bash_tokens import (                         # noqa: F811
         GROUP_CLOSER_TOKENS, GROUP_VERB_TOKENS, SEP, dequote,
-        heredoc_terminator, rejoin_glued_words,
+        heredoc_spans, heredoc_terminator, rejoin_glued_words,
         split_commands, strip_group_opener, strip_heredoc_bodies,
         strip_unbalanced_close)
 except Exception:
@@ -2944,9 +2960,10 @@ def redir_target(tok, nxt):
 # kept by strip_heredoc_bodies, because it is the only marker of this spelling and the
 # 1.7.0 stripper dropped it), an input redirect (`python3 < script.py`) and an ARGUMENT-FREE
 # interpreter fed by a pipe (`printf '...' | python3`, which runs its stdin with no marker on
-# the command) -- for which the WHOLE command text is scanned instead (the UNSTRIPPED token
-# stream: a heredoc body is exactly where this vector's source lives), since the source
-# arrives from another segment or from a heredoc body that is not an argument.
+# the command) -- for which stdin_source_tokens below is scanned instead: the interpreter's own
+# PIPELINE, the heredoc bodies opened in it and every assignment word on the line, or the WHOLE
+# command when any other command on the line writes a file (the UNSTRIPPED token stream either
+# way: a heredoc body is exactly where this vector's source lives).
 # NOT COVERED, knowingly: `python -m MODULE` (module execution, not inline code -- a
 # module that itself writes, like py_compile, is not seen; the check bails there
 # because everything after `-m` is the module's own arguments, `-c`/`-p` included);
@@ -3147,6 +3164,114 @@ def scan_tokens(toks):
             out += [c for c in PATH_CAND.findall(lit) if looks_like_path(c)]
     return out
 
+
+def group_segments(stream):
+    """`(segment, piped, pipeline)` per command in `stream`, in order.
+
+    THE ONE SEGMENTER in this extractor. `segments` below is its first two fields, read by the
+    write, interpreter and egress passes exactly as before; stdin_source_tokens reads the third
+    to keep a stdin-fed interpreter's pipeline together. `piped` is whether the control token
+    BEFORE the segment was a pipe; `pipeline` counts the non-pipe control tokens seen so far, so
+    pipe-connected segments share one number. A bare group closer never enters a segment (the
+    note above `segments` says why).
+    """
+    out, cur, piped, pipeline = [], [], False, 0
+    for t in stream:
+        if t in CONTROL:
+            if cur:
+                out.append((cur, piped, pipeline))
+            cur = []
+            piped = t == "|"
+            if not piped:
+                pipeline += 1
+        elif t in GROUP_CLOSER_TOKENS:
+            continue
+        else:
+            cur.append(t)
+    if cur:
+        out.append((cur, piped, pipeline))
+    return out
+
+
+def interpreter_form(seg, piped_in):
+    """`(form, args)` for one segment: "flag" (source in an argument), "stdin" (source piped,
+    heredoc'd or redirected in) or "" (no inline-code interpreter), plus the interpreter's args.
+
+    THE ONE DEFINITION of both forms, called by the per-segment interpreter pass below and by
+    stdin_source_tokens, so the two cannot disagree about which spelling is which.
+    `printf '...' | python3`, an argument-free interpreter reading a pipe, runs the program on
+    its stdin exactly as `python3 -` does with no marker on the command at all: the pipe IS
+    the marker.
+    """
+    verb, arg0, _assigns = verb_at(seg)
+    if interpreter_name(verb) not in INLINE_INTERPRETERS:
+        return "", []
+    args = seg[arg0:]
+    form = inline_form(args)
+    if not form and piped_in and not args:
+        form = "stdin"
+    return form, args
+
+
+# A heredoc body stands in its opener's segment as one marker token while the line is
+# segmented. A real token never contains "\x00" except SEP itself, which is exactly "\x00".
+_BODY_MARK = "\x00heredoc-body-"
+
+
+def stdin_source_tokens(stream):
+    """What a STDIN-FED interpreter can read its program from, on a line whose other commands
+    write no file (the caller falls back to the whole stream otherwise).
+
+    THE DEFECT THIS NARROWS (program item 1g). The stdin pass used to scan EVERY token of the
+    command once any segment was a stdin-fed interpreter. MEASURED 2026-10-06: read-only
+    sub-agents running `cd <repo>; python3 - <<'E' ... E; sed -n 192,225p
+    writ/graph/db/_common.py` were refused for "writing" _common.py, which only `sed -n` read,
+    and an interpreter spelled by path was refused as a write to its own binary.
+
+    WHAT IS RETURNED, and why that is everything the program can see:
+      * every token of each PIPELINE (group_segments' third field) holding a stdin-fed
+        interpreter per interpreter_form, nested `find -exec` commands included with the
+        splice's own unpiped rule; an upstream segment is what feeds the program, so
+        `cat notes.md | python3 -` stays gated on notes.md;
+      * the heredoc BODIES opened in those pipelines, read through heredoc_spans, the same
+        walk strip_heredoc_bodies uses, and attributed to their opener's segment even when the
+        pipeline ended on the opener's own line (`python3 - <<'EOF' && echo done`);
+      * every ASSIGNMENT word on the line, because a variable carries a path into the program
+        (`F=src/x.py; python3 - <<'E' ... os.environ['F']`, `export F=...; python3 - "$F"`);
+      * minus each scanned segment's verb token: an interpreter spelled by path is executed,
+        never written.
+    A file is the only other channel from another command into the program, and a line that
+    writes one is scanned whole by the caller, so on the lines this applies to nothing reachable
+    is dropped. Every token returned was in the old scan: this can only remove a row.
+    """
+    code, bodies, prev = [], {}, 0
+    for k, (opener, sep, body_end, end) in enumerate(heredoc_spans(stream)):
+        mark = f"{_BODY_MARK}{k}"
+        code += stream[prev:opener + 1] + [mark] + stream[opener + 1:sep]
+        bodies[mark] = stream[sep + 1:body_end]
+        prev = end
+    code += stream[prev:]
+
+    grouped = group_segments(code)
+    feeding = {
+        pipeline for seg, piped, pipeline in grouped
+        if any(interpreter_form(cand, cand_piped)[0] == "stdin"
+               for cand, cand_piped in [(seg, piped)]
+               + [(span, False) for span in nested_command_spans(seg)])
+    }
+    out = []
+    for seg, _piped, pipeline in grouped:
+        if pipeline not in feeding:
+            out += [tok for tok in seg if ASSIGNMENT.match(dequote(strip_group_opener(tok)))]
+            continue
+        verb, arg0, _assigns = verb_at(seg)
+        skip = arg0 - 1 if verb else -1
+        for k, tok in enumerate(seg):
+            if k != skip:
+                out += bodies.get(tok, [tok])
+    return out
+
+
 # THREE STREAMS, and the split between them IS the design.
 #   raw_tokens  the pre-split stream, heredoc bodies INCLUDED.
 #   tokens      bodies STRIPPED. Segmentation and every per-segment pass read this, so a
@@ -3183,23 +3308,11 @@ tokens = split_control_operators(strip_heredoc_bodies(raw_tokens))
 # loop takes any non-flag argument), so it would both invent a phantom target AND lose the
 # real one. MEASURED before this cycle, when nothing yet stepped over the opener:
 # `( echo x | tee src/y.py )` already emitted the phantom row ('local', '/proj/)') beside
-# the real target. Dropped HERE, as syntax, rather than normalized with the values below,
+# the real target. Dropped in group_segments, as syntax, rather than normalized with the values below,
 # because the bare token IS the closer: stripping it would yield "", a NONFILE member, and
 # would delete rows instead of correcting them. `]`, `]]` and `))` are NOT dropped -- the
 # loops below COUNT them to suppress redirects inside a comparison or arithmetic span.
-segments, cur, piped = [], [], False
-for t in tokens:
-    if t in CONTROL:
-        if cur:
-            segments.append((cur, piped))
-        cur = []
-        piped = t == "|"
-    elif t in GROUP_CLOSER_TOKENS:
-        continue
-    else:
-        cur.append(t)
-if cur:
-    segments.append((cur, piped))
+segments = [(seg, piped) for seg, piped, _pipeline in group_segments(tokens)]
 
 # Nested commands, spliced in as ADDITIONAL segments BEFORE any pass runs, so the write
 # loop resolves cmd0 for them and the egress loop resolves the verb, with no new arm on
@@ -3315,16 +3428,7 @@ interp_hits = set()
 for seg, piped_in in segments:
     if not seg:
         continue
-    verb, arg0, _assigns = verb_at(seg)
-    if interpreter_name(verb) not in INLINE_INTERPRETERS:
-        continue
-    args = seg[arg0:]
-    form = inline_form(args)
-    if not form and piped_in and not args:
-        # `printf '...' | python3` -- an argument-free interpreter reading a pipe runs
-        # the program on its stdin exactly as `python3 -` does, with no marker on the
-        # command at all. The pipe IS the marker.
-        form = "stdin"
+    form, args = interpreter_form(seg, piped_in)
     if form == "flag":
         hits = scan_tokens(args)
         # NOT expanded, and that is the correct answer rather than an omission: a tilde
@@ -3336,22 +3440,23 @@ for seg, piped_in in segments:
     elif form == "stdin":
         stdin_interpreter = True
 if stdin_interpreter:
-    # The source is not in this segment's arguments: it arrives over a pipe, from a
-    # heredoc body, or from an input redirect. Every token of the command is the only
-    # place it can be, so paths named by ANY segment count -- `cat notes.md | python3 -`
-    # is gated on notes.md. Coarser than the flag form, deliberately: a stdin-fed
-    # interpreter is itself the strong signal, and the answer to "the code is somewhere
-    # in here" must not be silence.
+    # The source is not in this segment's arguments: it arrives over a pipe, from a heredoc
+    # body, from an input redirect, or through a file or variable another command set up.
+    # On a line where no other command writes a file, stdin_source_tokens is exactly the
+    # places it can be (the interpreter's pipeline, its heredoc bodies and every assignment
+    # word); scanning the rest of the line there was program item 1g's false refusal of plain
+    # reads. A line that writes a file anywhere (a target the shell vectors or the flag form
+    # already collected above) keeps the whole-stream scan, because a written file can carry
+    # the program (`printf "..." > /tmp/p.py; python3 - < /tmp/p.py`) and no coverage may be
+    # lost to the narrowing.
     #
-    # THE UNSTRIPPED STREAM, and that is a design decision with EXECUTED evidence behind
-    # it rather than an implementation detail. A heredoc body is exactly where this
-    # pass's source text lives, so the stripped stream would answer "nowhere": measured
-    # on `python3 - <<'EOF'` over `open('src/x.py','w')`, the write is DETECTED today and
-    # a stripped scan loses it. This pass is a whole-command bag-of-literals question by
-    # design, so reading the pre-strip stream matches its own contract. Built HERE rather
-    # than beside `tokens` so a command that is not a stdin-fed interpreter never pays
-    # the extra pass.
-    hits = scan_tokens(split_control_operators(raw_tokens))
+    # THE UNSTRIPPED STREAM, and that is a design decision with EXECUTED evidence behind it.
+    # A heredoc body is exactly where this pass's source text lives, so the stripped stream
+    # would answer "nowhere": measured on `python3 - <<'EOF'` over `open('src/x.py','w')`, a
+    # stripped scan loses the write (mutation M4 in tests/test_bash_newline_separator_gate.py).
+    stream = split_control_operators(raw_tokens)
+    line_writes = any(strip_unbalanced_close(raw) not in NONFILE for raw, _unres in raw_targets)
+    hits = scan_tokens(stream if line_writes else stdin_source_tokens(stream))
     raw_targets += [(h, "") for h in hits]   # not expanded, for the reason on the arm above
     interp_hits.update(hits)
 

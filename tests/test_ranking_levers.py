@@ -258,15 +258,27 @@ class TestServerStartupWiring:
     """
 
     def _lifespan_call(self) -> ast.Call:
+        """The functools.partial(build_retrieval_handle, ...) call in _start_retrieval.
+
+        Program item 2: the lifespan builds retrieval through _start_retrieval, whose
+        partial carries the startup kwargs into every build, the first and each reload.
+        """
         src = (REPO_ROOT / "writ" / "server" / "__init__.py").read_text()
         tree = ast.parse(src)
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
                 fn = node.func
                 name = getattr(fn, "id", None) or getattr(fn, "attr", None)
-                if name == "build_pipeline":
+                if (
+                    name == "partial"
+                    and node.args
+                    and getattr(node.args[0], "id", None) == "build_retrieval_handle"
+                ):
                     return node
-        raise AssertionError("no build_pipeline call found in writ/server/__init__.py")
+        raise AssertionError(
+            "no functools.partial(build_retrieval_handle, ...) call found in "
+            "writ/server/__init__.py"
+        )
 
     def test_startup_passes_the_threshold_kwarg(self) -> None:
         call = self._lifespan_call()

@@ -7,16 +7,21 @@ persistence is unavailable. No Neo4j needed.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
 
 from writ.retrieval.pipeline import (
+    BM25_PRUNE_GRACE_SECONDS,
     _BM25_SIDECAR,
+    _bm25_current_dir,
     _compute_bm25_hash,
     _load_or_build_keyword_index,
+    _prune_bm25_generations,
 )
 
 
@@ -36,7 +41,9 @@ class TestLoadOrBuildKeywordIndex:
     def test_first_build_is_a_miss_and_writes_the_sidecar(self, tmp_path: Path) -> None:
         index, outcome = _load_or_build_keyword_index(_candidates(), tmp_path)
         assert outcome == "miss"
-        sidecar = tmp_path / "bm25" / _BM25_SIDECAR
+        live = _bm25_current_dir(tmp_path / "bm25")
+        assert live is not None, "no CURRENT generation after a build"
+        sidecar = live / _BM25_SIDECAR
         assert sidecar.is_file()
         assert json.loads(sidecar.read_text())["corpus_hash"] == _compute_bm25_hash(_candidates())
         assert any(r["rule_id"] == "T-BM25-001" for r in index.search("parameterized queries", limit=5))
@@ -98,3 +105,97 @@ class TestBm25HashCoversWhatBm25Indexes:
     def test_candidate_order_does_not_change_the_hash(self) -> None:
         a = _candidates()
         assert _compute_bm25_hash(a) == _compute_bm25_hash(list(reversed(a)))
+
+
+def _tree_digest(root: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            digest.update(str(path.relative_to(root)).encode())
+            digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+class TestGenerationDirectories:
+    """Program item 2: a rebuild never writes into the directory a reader has open."""
+
+    def test_a_rebuild_never_touches_the_live_generation(self, tmp_path: Path) -> None:
+        live_index, _ = _load_or_build_keyword_index(_candidates(), tmp_path)
+        live_dir = _bm25_current_dir(tmp_path / "bm25")
+        assert live_dir is not None
+        before = _tree_digest(live_dir)
+
+        changed = _candidates(statement="Bind parameters through named placeholders.")
+        _new_index, outcome = _load_or_build_keyword_index(changed, tmp_path)
+
+        assert outcome == "miss"
+        assert live_dir.is_dir(), "the live generation directory was removed"
+        assert _tree_digest(live_dir) == before, "the live generation's bytes changed"
+        assert any(
+            r["rule_id"] == "T-BM25-001"
+            for r in live_index.search("parameterized queries", limit=5)
+        ), "an index opened on the previous generation stopped answering"
+        assert _bm25_current_dir(tmp_path / "bm25") != live_dir
+
+    def test_legacy_flat_files_are_pruned_once_a_generation_is_current(self, tmp_path: Path) -> None:
+        legacy = tmp_path / "bm25"
+        legacy.mkdir()
+        for name in (_BM25_SIDECAR, "meta.json", ".managed.json", "abc123.idx", "abc123.store"):
+            (legacy / name).write_text("{}")
+        unrelated = legacy / "notes.txt"
+        unrelated.write_text("kept")
+
+        _load_or_build_keyword_index(_candidates(), tmp_path)
+
+        leftovers = sorted(p.name for p in legacy.iterdir() if p.is_file())
+        assert leftovers == ["CURRENT", "notes.txt"], leftovers
+        assert _bm25_current_dir(legacy) is not None
+
+    def test_current_names_a_generation_and_leaves_no_staged_pointer(self, tmp_path: Path) -> None:
+        _load_or_build_keyword_index(_candidates(), tmp_path)
+        root = tmp_path / "bm25"
+        name = (root / "CURRENT").read_text()
+        assert name.startswith("gen-")
+        assert (root / name / _BM25_SIDECAR).is_file()
+        assert not list(root.glob(".CURRENT.*")), "a staged pointer file was left behind"
+
+    def test_a_pointer_escaping_the_cache_root_reads_as_a_miss(self, tmp_path: Path) -> None:
+        root = tmp_path / "bm25"
+        root.mkdir()
+        (root / "CURRENT").write_text("../../etc")
+        _index, outcome = _load_or_build_keyword_index(_candidates(), tmp_path)
+        assert outcome == "miss"
+        assert _bm25_current_dir(root).parent == root
+
+
+class TestGenerationPruning:
+    @staticmethod
+    def _gen(root: Path, name: str, age_seconds: float) -> Path:
+        path = root / name
+        path.mkdir(parents=True)
+        (path / "segment").write_text("x")
+        stamp = time.time() - age_seconds
+        os.utime(path, (stamp, stamp))
+        return path
+
+    def test_only_stale_superseded_generations_are_removed(self, tmp_path: Path) -> None:
+        root = tmp_path / "bm25"
+        stale = self._gen(root, "gen-stale-1", BM25_PRUNE_GRACE_SECONDS + 60)
+        previous = self._gen(root, "gen-prev-1", BM25_PRUNE_GRACE_SECONDS + 60)
+        live = self._gen(root, "gen-live-1", BM25_PRUNE_GRACE_SECONDS + 60)
+        building = self._gen(root, "gen-building-1", 5)
+
+        removed = _prune_bm25_generations(root, keep={live.name, previous.name})
+
+        assert removed == [stale.name]
+        assert previous.is_dir() and live.is_dir()
+        assert building.is_dir(), "a concurrent builder's fresh directory was pruned"
+
+    def test_directories_that_are_not_generations_are_never_pruned(self, tmp_path: Path) -> None:
+        root = tmp_path / "bm25"
+        other = root / "segments-dir"
+        other.mkdir(parents=True)
+        stamp = time.time() - BM25_PRUNE_GRACE_SECONDS - 60
+        os.utime(other, (stamp, stamp))
+        assert _prune_bm25_generations(root, keep=set()) == []
+        assert other.is_dir()

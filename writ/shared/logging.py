@@ -160,6 +160,9 @@ STREAM_MAP: dict[str, str] = {
     "candidate_promotion_gate_bound": "audit",
     # friction
     "repeated_denial": "friction",
+    # Program item 7c: the tool-failure budget refused a fourth identical call. The refusal
+    # itself is on audit as a gate_decision row; this is the "worth fixing" signal beside it.
+    "tool_budget_denied": "friction",
     "hallucinated_rule_ids": "friction",
     "approval_pattern_miss": "friction",
     "approval_pattern_match": "friction",

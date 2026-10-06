@@ -123,9 +123,12 @@ class TestDocCounts:
         # section hooks it added on UserPromptSubmit (writ-inject-always-on.sh,
         # writ-inject-methodology.sh, writ-inject-recall.sh;
         # docs/adr/ADR-prompt-injection-split.md).
+        # 51 = 48 + the tool-failure budget's three registrations (program item 7c,
+        # docs/adr/ADR-tool-failure-budget.md): writ-tool-failure-record.sh on
+        # PostToolUseFailure and writ-tool-failure-budget.sh on PreToolUse and PostToolUse.
         source_count = _count_hooks_json_entries()
-        assert source_count == 48, (
-            f"hooks/hooks.json has {source_count} 'command' entries; expected 48. "
+        assert source_count == 51, (
+            f"hooks/hooks.json has {source_count} 'command' entries; expected 51. "
             "Bump this (and HANDBOOK 'registers **N hook scripts**') when adding or "
             "removing a registration."
         )
@@ -164,7 +167,8 @@ class TestDocCounts:
         # 51 = 49 + POST /feedback/batch + POST /subagent/start-context (plan
         # f7fc2b37-9a53-4011-a69f-e6b97f5e45fe, batch 4: one batched SessionEnd
         # feedback write, one composite daemon call for SubagentStart context).
+        # 52 = 51 + POST /retrieval/reload (program item 2: live reload, unix socket only).
         source_count = _count_server_endpoints()
-        assert source_count == 51, (
-            f"writ.server has {source_count} @app/@router route decorators; expected 51"
+        assert source_count == 52, (
+            f"writ.server has {source_count} @app/@router route decorators; expected 52"
         )

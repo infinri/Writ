@@ -300,17 +300,19 @@ class TestTheFixIsConditional:
         # M2. The repair itself. The body-strip stays green (no phantom), which is what
         # makes this mutation specific to the boundary rather than to the stripper.
         # A TWO-PART MUTATION, and the reason is worth stating because the obvious
-        # single-part ones both fail to say anything. Neutering the mirror block's
-        # `out.append(toks[j])` alone is INERT: the package import rebinds
-        # strip_heredoc_bodies over the mirrored copy, so the edited text never runs.
-        # Dropping the stripper from the CALL is M3's mutation, not this one: measured,
-        # it returns BOTH rows, because with no stripping at all the real destination
-        # survives beside the phantom. The boundary's own effect is only observable when
-        # the mirrored copy is what executes, so this mutation removes the name from the
-        # package import AND neuters the block, which is what reproduces the 1.7.0
+        # single-part ones both fail to say anything. Narrowing the mirror block's
+        # `out += toks[prev:sep]` (strip_heredoc_bodies rebuilt on heredoc_spans, program
+        # item 1g) to keep only the opener, `out += toks[prev:_opener + 1]`, is INERT
+        # alone: the package import rebinds strip_heredoc_bodies over the mirrored copy,
+        # so the edited text never runs. Dropping the stripper from the CALL is M3's
+        # mutation, not this one: measured, it returns BOTH rows, because with no
+        # stripping at all the real destination survives beside the phantom. The
+        # boundary's own effect is only observable when the mirrored copy is what
+        # executes, so this mutation removes the name from the package import AND drops
+        # the same-line tokens in the block, which is what reproduces the 1.7.0
         # behavior: the opener's real destination lost along with the body.
         src = _extractor_src()
-        mutated = _mutate(src, "out.append(toks[j])", "pass")
+        mutated = _mutate(src, "out += toks[prev:sep]", "out += toks[prev:_opener + 1]")
         mutated = _mutate(mutated, "split_commands, strip_group_opener, strip_heredoc_bodies,",
                           "split_commands, strip_group_opener,")
         assert mutated != src
@@ -336,8 +338,8 @@ class TestTheFixIsConditional:
         # the stdin scan the STRIPPED list and the heredoc-fed write goes silent, while
         # the document case is untouched.
         src = _extractor_src()
-        mutated = _mutate(src, "scan_tokens(split_control_operators(raw_tokens))",
-                          "scan_tokens(tokens)")
+        mutated = _mutate(src, "stream = split_control_operators(raw_tokens)",
+                          "stream = tokens")
         assert mutated != src
 
         assert EXPECTED_TARGET not in _mutated_extract(mutated, HEREDOC_INTERPRETER)

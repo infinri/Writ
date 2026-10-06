@@ -42,6 +42,66 @@ async def _writ_db():
         await db.close()
 
 
+RELOAD_PATH = "/retrieval/reload"
+# Bounded per socket operation (connect, send, receive), so the worst case is a few of
+# these. A cache-miss rebuild can outlast this, and the reload then completes in the
+# daemon after the CLI has moved on; GET /health shows the generation it reached.
+RELOAD_TIMEOUT_SECONDS = 5.0
+
+
+def _reload_problem(status: int, text: str, delivered: bool) -> str | None:
+    """None when the daemon confirmed the reload, else what went wrong, in a few words."""
+    if status == 0:
+        if delivered:
+            return (f"the daemon did not answer within {RELOAD_TIMEOUT_SECONDS:g} s; it may "
+                    "still be rebuilding, GET /health shows its generation")
+        return "nothing is listening on the daemon socket"
+    try:
+        body = json.loads(text)
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        return f"HTTP {status}: unexpected answer"
+    if status == 200 and body.get("status") in ("swapped", "unchanged"):
+        return None
+    return str(body.get("error") or f"HTTP {status}")
+
+
+def _notify_daemon_reload() -> None:
+    """Ask the running daemon to serve this command's graph write now. Never raises.
+
+    Program item 2: the daemon builds its retrieval indexes from the graph, so a CLI write
+    reached retrieval only after a restart. Uses the shared daemon client
+    (bin/lib/writ_daemon_client.py, loaded the way writ/session/feedback.py loads it),
+    socket-only because the reload route refuses TCP. Silent when no daemon socket exists
+    and when the reload is confirmed; one stderr line otherwise. The exit code never
+    changes: the command's own write has already succeeded. WRIT_DAEMON_RELOAD=0 skips the
+    request (the test suite sets it so a test-run write never reaches the operator's daemon).
+    """
+    if os.environ.get("WRIT_DAEMON_RELOAD", "").strip() == "0":
+        return
+    try:
+        from writ.config import get_daemon_socket_path
+        from writ.session.feedback import _daemon_client
+
+        client = _daemon_client()
+        socket_path = get_daemon_socket_path()
+        if not client.socket_available(socket_path):
+            return
+        problem = _reload_problem(*client.post_json_outcome(
+            RELOAD_PATH, {}, socket_path=socket_path,
+            timeout=RELOAD_TIMEOUT_SECONDS, tcp_fallback=False,
+        ))
+    except Exception as exc:  # noqa: BLE001 - a notice must never fail a command that succeeded
+        problem = f"{type(exc).__name__}: {exc}"
+    if problem:
+        typer.echo(
+            f"Notice: the Writ daemon did not reload ({problem}). It serves the previous "
+            "rules until its next reload or restart.",
+            err=True,
+        )
+
+
 @app.command(name="analyze-friction")
 def analyze_friction(
     log: Path | None = typer.Option(
@@ -544,8 +604,11 @@ def import_markdown(
             )
             raise typer.Exit(code=2)
 
+    wrote = {"graph": False}
+
     async def _run() -> int:
         async with _writ_db() as db:
+            wrote["graph"] = not dry_run
             report = await ingest_path(
                 path, db, only=parsed_only, dry_run=dry_run,
             )
@@ -595,7 +658,11 @@ def import_markdown(
                     f"Materialized {result['materialized']} abstractions from artifact"
                 )
             return 1 if report.errors else 0
-    exit_code = asyncio.run(_run())
+    try:
+        exit_code = asyncio.run(_run())
+    finally:
+        if wrote["graph"]:
+            _notify_daemon_reload()
     if exit_code:
         raise typer.Exit(code=exit_code)
 
@@ -620,8 +687,11 @@ def prune(
     """
     from writ.graph.integrity import IntegrityChecker
 
+    wrote = {"graph": False}
+
     async def _run() -> None:
         async with _writ_db() as db:
+            wrote["graph"] = not dry_run
             checker = IntegrityChecker(db._driver, db._database)
             checker._default_bible_dir = bible_dir
             violations = await checker.detect_parity_violations()
@@ -637,7 +707,11 @@ def prune(
 
             if dry_run:
                 typer.echo("\nDry run: no nodes removed.")
-    asyncio.run(_run())
+    try:
+        asyncio.run(_run())
+    finally:
+        if wrote["graph"]:
+            _notify_daemon_reload()
 
 
 @app.command(name="reconcile")
@@ -662,14 +736,18 @@ def reconcile(
     """
     from writ.graph.methodology_ingest import reconcile as _reconcile
 
+    wrote = {"graph": False}
+
     async def _run() -> None:
         async with _writ_db() as db:
+            wrote["graph"] = True
             try:
                 result = await _reconcile(bible_dir, db, project=project)
             except ValueError as exc:
                 # The library reconcile refuses to run against an empty oracle
                 # (would wipe the corpus). Surface it as a clean exit, not a
                 # traceback -- mirrors add/edit/propose error handling.
+                wrote["graph"] = False
                 typer.echo(f"ERROR: reconcile aborted: {exc}", err=True)
                 raise typer.Exit(code=1) from exc
             deleted_nodes = result["deleted_nodes"]
@@ -688,7 +766,11 @@ def reconcile(
                 typer.echo(f"  - edge {etype} {src} -> {tgt}")
             for nid, props in cleared_props.items():
                 typer.echo(f"  - props {nid}: {', '.join(props)}")
-    asyncio.run(_run())
+    try:
+        asyncio.run(_run())
+    finally:
+        if wrote["graph"]:
+            _notify_daemon_reload()
 
 
 def _hook_lint_summary(findings: list[dict]) -> str:
@@ -797,6 +879,8 @@ def add() -> None:
     from writ.retrieval.pipeline import build_pipeline
     from writ.retrieval.traversal import AdjacencyCache
 
+    wrote = {"graph": False}
+
     async def _run() -> None:
         # Collect required fields.
         rule_id = typer.prompt("rule_id (e.g., ARCH-NEW-001)")
@@ -859,6 +943,7 @@ def add() -> None:
 
             # Write rule to graph. A cli-add rule is graph-first with no markdown home yet
             # (0.10), so reconcile must not delete it: source_origin='graph-authored'.
+            wrote["graph"] = True
             await db.create_rule(rule_data, source_origin="graph-authored")
             typer.echo(f"\nCreated rule: {rule_id}")
 
@@ -888,7 +973,11 @@ def add() -> None:
                 for c in result["conflicts"]:
                     typer.echo(f"  CONFLICTS_WITH {c['rule_id']}")
             typer.echo(f"\nExported {result['rules_exported']} rules to {result['export_dir']}")
-    asyncio.run(_run())
+    try:
+        asyncio.run(_run())
+    finally:
+        if wrote["graph"]:
+            _notify_daemon_reload()
 
 
 @app.command()
@@ -904,6 +993,8 @@ def edit(
     from writ.graph.schema import Rule
     from writ.retrieval.pipeline import build_pipeline
     from writ.retrieval.traversal import AdjacencyCache
+
+    wrote = {"graph": False}
 
     async def _run() -> None:
         async with _writ_db() as db:
@@ -956,6 +1047,7 @@ def edit(
             # (0.10): editing a node must NOT change how it entered the graph -- forcing
             # 'ingest' here would flip a graph-authored node and re-introduce the deletion
             # race. updated carries it from `existing`; default 'ingest' for pre-0.10 nodes.
+            wrote["graph"] = True
             await db.create_rule(updated, source_origin=updated.get("source_origin", "ingest"))
             typer.echo(f"\nUpdated rule: {rule_id}")
 
@@ -987,7 +1079,11 @@ def edit(
                 for c in result["conflicts"]:
                     typer.echo(f"  CONFLICTS_WITH {c['rule_id']}")
             typer.echo(f"\nExported {result['rules_exported']} rules to {result['export_dir']}")
-    asyncio.run(_run())
+    try:
+        asyncio.run(_run())
+    finally:
+        if wrote["graph"]:
+            _notify_daemon_reload()
 
 
 @app.command()
@@ -1078,8 +1174,11 @@ def compress() -> None:
 
     from writ.compression.abstractions import run_compression
 
+    wrote = {"graph": False}
+
     async def _run() -> None:
         async with _writ_db() as db:
+            wrote["graph"] = True
             result = await run_compression(db)
             if result["chosen"] is None:
                 typer.echo("No domain rules to cluster.")
@@ -1088,7 +1187,11 @@ def compress() -> None:
             typer.echo(f"\nCreated {len(result['abstractions'])} abstractions")
             typer.echo(f"Ungrouped rules: {len(result['ungrouped'])}")
             typer.echo(f"Average compression ratio: {result['avg_ratio']:.1f}x")
-    asyncio.run(_run())
+    try:
+        asyncio.run(_run())
+    finally:
+        if wrote["graph"]:
+            _notify_daemon_reload()
 
 
 @app.command()
@@ -1189,14 +1292,21 @@ def migrate() -> None:
 
     path = Path(DEFAULT_BIBLE_DIR)
 
+    wrote = {"graph": False}
+
     async def _run() -> int:
         async with _writ_db() as db:
+            wrote["graph"] = True
             report = await ingest_path(path, db, only=None, dry_run=False)
             typer.echo(report.render())
             for err in report.errors:
                 typer.echo(str(err), err=True)
             return 1 if report.errors else 0
-    code = asyncio.run(_run())
+    try:
+        code = asyncio.run(_run())
+    finally:
+        if wrote["graph"]:
+            _notify_daemon_reload()
     if code:
         raise typer.Exit(code=code)
 
@@ -1281,6 +1391,8 @@ def feedback(
         typer.echo(f"Invalid signal: {signal}. Must be 'positive' or 'negative'.")
         raise typer.Exit(code=1)
 
+    wrote = {"graph": False}
+
     async def _run() -> None:
         async with _writ_db() as db:
             if signal == "positive":
@@ -1291,8 +1403,13 @@ def feedback(
             if not found:
                 typer.echo(f"Rule not found: {rule_id}")
                 raise typer.Exit(code=1)
+            wrote["graph"] = True
             typer.echo(f"Recorded {signal} feedback for {rule_id}")
-    asyncio.run(_run())
+    try:
+        asyncio.run(_run())
+    finally:
+        if wrote["graph"]:
+            _notify_daemon_reload()
 
 
 @app.command()
@@ -1617,6 +1734,8 @@ def review(
     """Review AI-proposed rules. List, inspect, promote, reject, or downweight."""
     from writ import authoring
 
+    wrote = {"graph": False}
+
     async def _run() -> None:
         async with _writ_db() as db:
             if stats:
@@ -1653,6 +1772,7 @@ def review(
                 # the consumption, so reaching the line below means this process holds the
                 # user's approval and no concurrent one does.
                 sid = _authorize_rule_promotion(rule_id, existing, session_id, token)
+                wrote["graph"] = True
                 await authoring.promote(db, rule_id, existing)
                 _record_rule_promoted(sid, rule_id, existing)
                 typer.echo(f"Promoted: {rule_id} (authority: ai-promoted, confidence: peer-reviewed)")
@@ -1668,6 +1788,7 @@ def review(
                 if not confirm:
                     typer.echo("Cancelled.")
                     return
+                wrote["graph"] = True
                 await authoring.reject(db, rule_id, existing)
                 typer.echo(f"Rejected and deleted: {rule_id}")
                 return
@@ -1677,6 +1798,7 @@ def review(
                 if not confirm:
                     typer.echo("Cancelled.")
                     return
+                wrote["graph"] = True
                 await authoring.downweight(db, rule_id)
                 typer.echo(f"Downweighted: {rule_id} (confidence: speculative)")
                 return
@@ -1716,7 +1838,11 @@ def review(
             except Exception:
                 typer.echo("\n  Origin context: not available")
 
-    asyncio.run(_run())
+    try:
+        asyncio.run(_run())
+    finally:
+        if wrote["graph"]:
+            _notify_daemon_reload()
 
 
 @app.command()

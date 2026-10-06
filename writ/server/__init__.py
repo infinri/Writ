@@ -22,6 +22,7 @@ are observed (the monkeypatch seam).
 
 from __future__ import annotations
 
+import functools
 import importlib.util
 import os
 import sys
@@ -48,9 +49,9 @@ from writ.graph.predicates import INJECTION_RULE_WHERE
 from writ.retrieval.pipeline import (
     RULE_INJECTION_ABSTENTION_THRESHOLD,
     RetrievalPipeline,
-    build_pipeline,
 )
 from writ.retrieval.trigger_index import MethodologyTriggerIndex
+from writ.server.reload import RetrievalHandle, RetrievalReloader, build_retrieval_handle
 from writ.shared.logging import emit
 from writ.shared.tokens import estimate_tokens
 # POL-6-A3: single source the mode vocabulary. mode_engine.VALID_MODES is a real, normally-
@@ -150,6 +151,46 @@ _llm_client: LlmAnalyzer | None = None
 _instrumentation: Instrumentation | None = None
 # 1.6 methodology-trigger index (CHANNEL 2: methodology by workflow-state).
 _trigger_index: MethodologyTriggerIndex | None = None
+# Program item 2: the served retrieval generation and the reloader that replaces it.
+# _pipeline and _trigger_index above are ALIASES of this handle's two halves, kept as
+# module names because every route reads them live and many tests monkeypatch them;
+# only _install_retrieval assigns the three.
+_retrieval: RetrievalHandle | None = None
+_reloader: RetrievalReloader | None = None
+
+
+def _install_retrieval(handle: RetrievalHandle) -> None:
+    """Make `handle` the served generation.
+
+    No await inside, so on the event loop the three names change together: no handler
+    sees one generation's pipeline beside another's trigger index between two reads that
+    do not await. A query already running in a worker thread keeps the pipeline it was
+    started with and finishes on it.
+    """
+    global _retrieval, _pipeline, _trigger_index
+    _retrieval = handle
+    _pipeline = handle.pipeline
+    _trigger_index = handle.trigger_index
+
+
+async def _start_retrieval(db: Neo4jConnection) -> None:
+    """Build generation 1 and the reloader that replaces it. Raises on a failed first build.
+
+    The daemon is the production rule-injection path, so the S4 abstention gate is on.
+    The authority-preference threshold is read once here, not per query and not per
+    reload: the hot /query path must not touch the filesystem, and a reload changes the
+    graph's content, not this process's configuration.
+    """
+    global _reloader
+    builder = functools.partial(
+        build_retrieval_handle,
+        db,
+        abstention_threshold=RULE_INJECTION_ABSTENTION_THRESHOLD,
+        authority_preference_threshold=get_authority_preference_threshold(),
+    )
+    reloader = RetrievalReloader(builder, current=lambda: _retrieval, install=_install_retrieval)
+    await reloader.start()
+    _reloader = reloader
 
 # Serializes the global sys.stdin/sys.stdout swap in /session/format. Without it,
 # two concurrent format calls running in the asyncio.to_thread worker pool would
@@ -194,25 +235,20 @@ def _run_cmd_format_locked(payload: Any) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Pre-warm all indexes at startup per PERF-IO-001."""
-    global _pipeline, _db, _startup_time, _llm_client, _instrumentation, _trigger_index
+    global _db, _startup_time, _llm_client, _instrumentation
 
     # WRIT_CONTEXT_WINDOW_TOKENS sanity check. Log-only warning; the watcher
     # hook defaults to 200000 when the env var is missing or unparseable.
     _validate_context_window_env()
 
     _db = Neo4jConnection(get_neo4j_uri(), get_neo4j_user(), get_neo4j_password())
-    # Daemon is the production rule-injection path: enable the S4 abstention gate.
-    _pipeline = await build_pipeline(
-        _db, abstention_threshold=RULE_INJECTION_ABSTENTION_THRESHOLD,
-        # Read once at startup, not per query: the hot /query path must not touch
-        # the filesystem. Defaults to 0.0 (pass disabled) when unconfigured.
-        authority_preference_threshold=get_authority_preference_threshold(),
-    )
-    _trigger_index = await MethodologyTriggerIndex.build_from_db(_db)
+    await _start_retrieval(_db)
     _llm_client = LlmAnalyzer()
     _instrumentation = Instrumentation()
     _startup_time = datetime.now()
     yield
+    if _reloader is not None:
+        _reloader.cancel_pending()
     if _db is not None:
         await _db.close()
 

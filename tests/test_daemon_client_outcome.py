@@ -32,6 +32,7 @@ import json
 import os
 import shutil
 import socket
+import socketserver
 import sys
 import threading
 import time
@@ -253,3 +254,77 @@ class TestExistingCallersUnaffected:
             base_url=f"http://127.0.0.1:{closed_port}", timeout=1.0,
         )
         assert (status, text) == (0, "")
+
+
+class _UnixEchoServer(socketserver.UnixStreamServer):
+    def handle_error(self, request, client_address) -> None:
+        pass
+
+
+class TestSocketOnlyNeverTouchesTcp:
+    """Program item 2: post_json_outcome(tcp_fallback=False) is for a route TCP refuses
+    (the reload route), so it must never reach the TCP port."""
+
+    @staticmethod
+    def _count_tcp(monkeypatch) -> list[str]:
+        hits: list[str] = []
+        real_do_post = _EchoHandler.do_POST
+
+        def _counting(self) -> None:  # noqa: ANN001
+            hits.append(self.path)
+            real_do_post(self)
+
+        monkeypatch.setattr(_EchoHandler, "do_POST", _counting)
+        return hits
+
+    def test_a_missing_socket_is_undelivered_and_tcp_untouched(
+        self, sock_dir, tcp_echo_stub, monkeypatch,
+    ) -> None:
+        client = _client()
+        hits = self._count_tcp(monkeypatch)
+        outcome = client.post_json_outcome(
+            "/retrieval/reload", {}, socket_path=str(sock_dir / "absent.sock"),
+            base_url=f"http://127.0.0.1:{tcp_echo_stub}", timeout=1.0, tcp_fallback=False,
+        )
+        assert outcome == (0, "", False)
+        assert hits == []
+
+    def test_a_socket_with_no_listener_is_undelivered_and_tcp_untouched(
+        self, sock_dir, tcp_echo_stub, monkeypatch,
+    ) -> None:
+        client = _client()
+        hits = self._count_tcp(monkeypatch)
+        stale = sock_dir / "stale.sock"
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.bind(str(stale))
+        s.close()
+        outcome = client.post_json_outcome(
+            "/retrieval/reload", {}, socket_path=str(stale),
+            base_url=f"http://127.0.0.1:{tcp_echo_stub}", timeout=1.0, tcp_fallback=False,
+        )
+        assert outcome == (0, "", False)
+        assert hits == []
+
+    def test_an_answer_over_the_socket_is_returned(self, sock_dir) -> None:
+        client = _client()
+        path = str(sock_dir / "echo.sock")
+        server = _UnixEchoServer(path, _EchoHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            status, text, delivered = client.post_json_outcome(
+                "/retrieval/reload", {}, socket_path=path, timeout=2.0, tcp_fallback=False,
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+        assert (status, delivered) == (200, True)
+        assert json.loads(text) == {"recorded": ["r1"]}
+
+    def test_delivered_without_an_answer_is_reported_delivered(self, silent_unix_server) -> None:
+        client = _client()
+        status, _text, delivered = client.post_json_outcome(
+            "/retrieval/reload", {}, socket_path=silent_unix_server, timeout=1.0,
+            tcp_fallback=False,
+        )
+        assert (status, delivered) == (0, True)

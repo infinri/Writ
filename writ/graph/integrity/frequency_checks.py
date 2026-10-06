@@ -11,6 +11,18 @@ from writ.graph.integrity._common import (
 )
 
 
+async def mandatory_rule_ids(session) -> set[str]:
+    """Rule ids authored `mandatory=true`: the obligation set the always-on channel must cover.
+
+    One read for every caller: detect_stranded_mandatory and
+    detect_ranked_exclusion_mismatch below, the benchmark's channel split
+    (benchmarks/bench_targets.py) and scripts/measure_retrieval.py. Runs on the caller's
+    open session, so it adds no connection of its own.
+    """
+    result = await session.run("MATCH (r:Rule) WHERE r.mandatory = true RETURN r.rule_id AS id")
+    return {record["id"] async for record in result}
+
+
 class FrequencyChecksMixin:
     async def detect_stranded_mandatory(
         self, injection_where: str = INJECTION_RULE_WHERE
@@ -31,10 +43,7 @@ class FrequencyChecksMixin:
         if self._driver is None:
             return []
         async with self._driver.session(database=self._database) as session:
-            result = await session.run(
-                "MATCH (r:Rule) WHERE r.mandatory = true RETURN r.rule_id AS id"
-            )
-            mandatory = {record["id"] async for record in result}
+            mandatory = await mandatory_rule_ids(session)
             result = await session.run(
                 f"MATCH (r:Rule) WHERE {injection_where} RETURN r.rule_id AS id"
             )
@@ -63,10 +72,7 @@ class FrequencyChecksMixin:
                 f"MATCH (r:Rule) WHERE {ranked_include_where} RETURN r.rule_id AS id"
             )
             ranked_included = {record["id"] async for record in result}
-            result = await session.run(
-                "MATCH (r:Rule) WHERE r.mandatory = true RETURN r.rule_id AS id"
-            )
-            mandatory = {record["id"] async for record in result}
+            mandatory = await mandatory_rule_ids(session)
         excluded_from_ranked = all_rules - ranked_included
         if excluded_from_ranked == mandatory:
             return None
