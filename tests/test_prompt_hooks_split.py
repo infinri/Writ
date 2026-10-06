@@ -276,7 +276,10 @@ class TestRegistration:
             path = SCRIPTS / script
             assert path.is_file(), f"{path} does not exist"
             assert os.access(path, os.X_OK), f"{path} is not executable"
-            assert path.stat().st_mode & 0o777 == 0o755
+            # Executable for everyone and not world-writable; group-write varies with the
+            # checkout's umask (git stores 100755 either way).
+            mode = path.stat().st_mode
+            assert mode & 0o555 == 0o555 and not mode & 0o002, oct(mode)
 
     def test_each_new_hook_calls_the_shared_section_body_for_its_own_section(self):
         expected = {ALWAYS_ON: "writ_prompt_section_main always_on writ-inject-always-on",

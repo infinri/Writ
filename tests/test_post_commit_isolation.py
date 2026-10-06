@@ -71,6 +71,11 @@ def _commit_count_for(project_substring: str) -> int | None:
     )
     env = {k: v for k, v in os.environ.items()
            if "NEO4J" not in k.upper() and k != "WRIT_TEST_GRAPH"}
+    # This child only counts records on production; it observes the destination and does
+    # not enforce the password policy. Before the item 3 migration production still uses
+    # the development password, which Neo4jConnection refuses without this opt-in; after
+    # it, writ.toml's private password is used and the opt-in is inert.
+    env["WRIT_ALLOW_DEV_PASSWORD"] = "1"
     try:
         out = subprocess.run(
             [sys.executable, "-c", code, project_substring],
