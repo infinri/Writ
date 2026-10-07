@@ -125,6 +125,10 @@ REAL_TREE_DIRECTORY_DELETERS = {
     "test_phase_machine_reset.py": "inherits:test_gate_token_binding",
     "test_replan_reopen_planning.py": "confined",
     "test_review_promote_authority.py": "confined",
+    # Added 2026-10-06 with the trust-records cycle (program item 6). Both reuse
+    # test_review_promote_authority's token helpers instead of deleting on their own.
+    "test_trust_header_tags.py": "inherits:test_review_promote_authority",
+    "test_trust_review.py": "inherits:test_review_promote_authority",
 }
 
 # The five real test-id shapes the discriminator must reject, per plan.md's

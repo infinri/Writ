@@ -296,7 +296,7 @@ def test_approval_tier_property(isolated_hook_daemon, tmp_path, prompt, tier) ->
                 f"the exact tier with evidence must mint a gate token at {token_path}"
             )
             lines = token_path.read_text().splitlines()
-            assert len(lines) == 5, f"gate token file must have 5 lines; got {lines!r}"
+            assert len(lines) == 7, f"gate token file must have 7 lines; got {lines!r}"
             assert lines[1] == "", (
                 f"the token must be bound to no gate (line 2 empty); got {lines[1]!r}"
             )

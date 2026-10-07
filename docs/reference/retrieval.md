@@ -11,7 +11,7 @@ Nuance a doc must not flatten: the four companion node types are *also* embedded
 
 ## 2. The ranked pipeline (`RetrievalPipeline.query`)
 
-**Candidate pool** (built at daemon startup): Rules matching `RANKED_INCLUDE_WHERE` (`mandatory IS NULL OR false`; mandatory rules are structurally absent from ranking) plus the five retrievable methodology labels, each normalized with a `rule_id` alias and auxiliary text folded into `body`.
+**Candidate pool** (built at daemon startup): Rules matching `RANKED_INCLUDE_WHERE` (`mandatory IS NULL OR false`, and not superseded; mandatory and superseded rules are structurally absent from ranking, and the BM25 build skips both in lockstep) plus the five retrievable methodology labels, each normalized with a `rule_id` alias and auxiliary text folded into `body`.
 
 **Stage 1, candidate filter.** Explicit `node_types` wins; `retrieval_mode="literal"` unlocks the full pool; semantic mode uses the Category route map (a candidate needs a `semantic` route). If the route map is empty or *incomplete*, the whole pipeline falls back to the legacy filter (Rule-only plus a methodology-domain exclude) rather than partially dropping uncategorized nodes: fail-closed wholesale, logged with examples.
 
@@ -46,8 +46,12 @@ Nuance a doc must not flatten: the four companion node types are *also* embedded
 
 One predicate pair in `writ/graph/predicates.py` is the single source both for selection and validation, closing the historical class where 29 of 32 mandatory rules reached neither channel:
 
-- `INJECTION_RULE_WHERE = "r.mandatory = true OR r.always_on = true"` (the floor; plus every `ForbiddenResponse`).
-- `RANKED_INCLUDE_WHERE = "r.mandatory IS NULL OR r.mandatory = false"` (the ranked pool).
+- `INJECTION_RULE_WHERE = "((r.mandatory = true OR r.always_on = true) AND coalesce(r.superseded, false) = false)"` (the floor; plus every `ForbiddenResponse`).
+- `RANKED_INCLUDE_WHERE = "((r.mandatory IS NULL OR r.mandatory = false) AND coalesce(r.superseded, false) = false)"` (the ranked pool).
+
+Both are fully parenthesized so embedding one in a larger WHERE cannot let its OR escape. `superseded` is a graph-only flag derived from incoming `SUPERSEDES` edges (`refresh_superseded_flags`), so a superseded rule leaves both channels, including a superseded mandatory one. The Python replicas move with the predicates: the BM25 build skip, the BM25 cache key (one exclusion element, `bool(mandatory or superseded)`, so a corpus with no superseded rule keeps its key) and `corpus_footprint.always_on_bundle_cost`.
+
+**Trust tags in the header slot** (program item 6, `docs/adr/ADR-trust-records.md`). A rule is STALE when today is past `last_verified` plus `verify_interval_days` (default 180; a missing or unparseable `last_verified` is never stale) and DELIBERATE when it declares `deliberate: true`. Both are defined once in `writ/shared/trust.py`. The ranked channel computes `stale` per query in `_final_rank` (the daemon runs for days, so the clock must move without a reload) and carries both through `_HEADER_FIELDS`, rendering `[X-001] (high, STALE) score=0.912` or `(critical, ai-provisional, DELIBERATE)`. The always-on channel renders `[ENF-X-001] (STALE) WHEN: ...`; `/always-on` returns `stale` and `deliberate` per Rule row in place of the raw clock fields. A tag renders only when true, so an untagged rule renders byte-identically to before, and tags count against the existing character limit.
 
 **The size of the floor**: 32 of the 288 shipped rules are marked mandatory, 7 of them carrying universal scope and injecting on every turn, the other 25 scoped to writes and keyword-gated so they arrive the moment a write matches them rather than every turn. Both counts are derived from `writ-corpus.cypher`, the tracked canonical dump, and no change to search ranking, no swap of the underlying model, and no retuning of anything can drop one of them, because ranking never sees them.
 

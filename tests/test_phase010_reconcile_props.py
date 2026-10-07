@@ -106,6 +106,24 @@ class TestManagedPropBoundary:
         for p in ("times_seen_positive", "times_seen_negative", "last_seen", "source_origin"):
             assert p not in MANAGED_PROP_NAMES, f"{p} must be RUNTIME-exempt, not managed"
 
+    def test_authored_trust_props_are_managed(self) -> None:
+        # Program item 6: layer, basis, deliberate and verify_interval_days are declared
+        # in markdown, so reconcile must clear one that is removed from source.
+        for p in ("layer", "basis", "deliberate", "verify_interval_days"):
+            assert p in MANAGED_PROP_NAMES, f"{p} is authored, so it must be managed"
+
+    def test_graph_only_trust_props_are_runtime_exempt(self) -> None:
+        # approved_at, approval_via, last_verified, disputed and superseded are written
+        # only by the graph (approval, dispute, verify, derivation); markdown never
+        # declares them, so reconcile must never clear them.
+        from writ.graph.schema import RUNTIME_EXEMPT_PROPS, TRUST_GRAPH_ONLY_PROPS
+
+        graph_only = ("approved_at", "approval_via", "last_verified", "disputed", "superseded")
+        assert set(TRUST_GRAPH_ONLY_PROPS) == set(graph_only)
+        for p in graph_only:
+            assert p not in MANAGED_PROP_NAMES, f"{p} must be RUNTIME-exempt, not managed"
+            assert p in RUNTIME_EXEMPT_PROPS
+
 
 class TestReconcileClearsProps:
     pytestmark = pytest.mark.asyncio(loop_scope="module")

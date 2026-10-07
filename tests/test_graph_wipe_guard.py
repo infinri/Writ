@@ -277,6 +277,7 @@ class TestDefaultCallsAreNotGated:
         # preserve it exactly as it preserves the other four record labels.
         assert params["preserve"] == [
             "Commit", "Decision", "FeedbackBatch", "FileChange", "Memory", "Project",
+            "TrustEvent",
         ]
 
     @pytest.mark.asyncio

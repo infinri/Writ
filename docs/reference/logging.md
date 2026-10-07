@@ -8,7 +8,7 @@ One directory per project under `$XDG_STATE_HOME/writ/logs/` (default `~/.local/
 
 | Stream | Holds | Retention |
 |---|---|---|
-| `audit.jsonl` | The oversight record: `write_attempt`, `gate_decision` (allow AND deny), `gate_denial`, `mode_change`, `phase_advance`, `agent_self_approval_blocked`, `candidate_promoted`, `quality_judgment`, `memory_policy_deny`, `verification_evidence`, `citation_recorded`, `committed_file_not_in_plan`, `read_blocked`, exit-plan events, `session_end` | 365 days |
+| `audit.jsonl` | The oversight record: `write_attempt`, `gate_decision` (allow AND deny), `gate_denial`, `mode_change`, `phase_advance`, `agent_self_approval_blocked`, `candidate_promoted`, `rule_disputed`, `rule_verified`, `quality_judgment`, `memory_policy_deny`, `verification_evidence`, `citation_recorded`, `committed_file_not_in_plan`, `read_blocked`, exit-plan events, `session_end` | 365 days |
 | `friction.jsonl` | Worth fixing: `repeated_denial`, `hallucinated_rule_ids`, approval pattern hits/misses, `subagent_type_fallback`, `*_failed` fallbacks, compaction boundaries | 365 days |
 | `metrics.jsonl` | Volume telemetry: `hook_execution`, `daemon_request`, `retrieval_result`, `hnsw_cache`, `config_resolved`, `rag_query`, `always_on_inject`, sub-agent lifecycle, playbook steps | 90 days |
 | `errors.jsonl` | `exception` rows from `emit_exception` (bounded tracebacks, 2,000 chars), and `critical_error` rows (`severity: critical`) from `writ_critical` in `bin/lib/common.sh`, written when a hook hits a condition it must not paper over: chiefly a payload carrying no session id | 365 days |

@@ -6,6 +6,7 @@ from __future__ import annotations
 from writ.graph.integrity._common import (
     NODE_ID_FIELDS,
     ORACLE_BLIND_LABELS,
+    RANKED_INCLUDE_WHERE,
     REDUNDANCY_SIMILARITY_THRESHOLD,
     date,
     timedelta,
@@ -229,9 +230,9 @@ class StructuralChecksMixin:
 
         Uses embedding cosine similarity. Requires sentence-transformers.
         """
-        query = """
+        query = f"""
             MATCH (r:Rule)
-            WHERE r.mandatory IS NULL OR r.mandatory = false
+            WHERE {RANKED_INCLUDE_WHERE}
             RETURN r.rule_id AS rule_id,
                    r.trigger AS trigger,
                    r.statement AS statement

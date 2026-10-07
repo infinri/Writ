@@ -12,14 +12,26 @@ from writ.graph.integrity._common import (
 
 
 async def mandatory_rule_ids(session) -> set[str]:
-    """Rule ids authored `mandatory=true`: the obligation set the always-on channel must cover.
+    """Live rule ids authored `mandatory=true`: the obligation set the always-on channel must cover.
 
-    One read for every caller: detect_stranded_mandatory and
+    A superseded mandatory rule is no longer an obligation (program item 6), so it is
+    omitted. One read for every caller: detect_stranded_mandatory and
     detect_ranked_exclusion_mismatch below, the benchmark's channel split
     (benchmarks/bench_targets.py) and scripts/measure_retrieval.py. Runs on the caller's
     open session, so it adds no connection of its own.
     """
-    result = await session.run("MATCH (r:Rule) WHERE r.mandatory = true RETURN r.rule_id AS id")
+    result = await session.run(
+        "MATCH (r:Rule) WHERE r.mandatory = true AND coalesce(r.superseded, false) = false "
+        "RETURN r.rule_id AS id"
+    )
+    return {record["id"] async for record in result}
+
+
+async def superseded_rule_ids(session) -> set[str]:
+    """Rule ids flagged superseded: excluded from both retrieval channels (program item 6)."""
+    result = await session.run(
+        "MATCH (r:Rule) WHERE r.superseded = true RETURN r.rule_id AS id"
+    )
     return {record["id"] async for record in result}
 
 
@@ -53,14 +65,15 @@ class FrequencyChecksMixin:
     async def detect_ranked_exclusion_mismatch(
         self, ranked_include_where: str = RANKED_INCLUDE_WHERE
     ) -> dict | None:
-        """Assert `{excluded-from-ranked} == {mandatory}`.
+        """Assert `{excluded-from-ranked} == {mandatory} | {superseded}`.
 
         The ranked retrieval pool (pipeline load / BM25 / vector) includes rules
         matching RANKED_INCLUDE_WHERE; its complement over all Rules is the
-        excluded set, which MUST equal the mandatory set. If they diverge -- e.g.
-        the pool ever keys exclusion on `always_on`/`severity` instead of
-        `mandatory` -- a non-mandatory rule is silently dropped from ranking or a
-        mandatory rule is ranked. Returns None when equal, else the two-sided
+        excluded set, which MUST equal the live mandatory set plus the superseded
+        set. The two result keys keep their names; "mandatory" in them means that
+        expected set. If they diverge (for example, the pool ever keys exclusion
+        on `always_on`/`severity` instead of `mandatory`), a non-mandatory rule is
+        silently dropped from ranking or a mandatory rule is ranked. Returns None when equal, else the two-sided
         difference.
         """
         if self._driver is None:
@@ -72,7 +85,7 @@ class FrequencyChecksMixin:
                 f"MATCH (r:Rule) WHERE {ranked_include_where} RETURN r.rule_id AS id"
             )
             ranked_included = {record["id"] async for record in result}
-            mandatory = await mandatory_rule_ids(session)
+            mandatory = await mandatory_rule_ids(session) | await superseded_rule_ids(session)
         excluded_from_ranked = all_rules - ranked_included
         if excluded_from_ranked == mandatory:
             return None

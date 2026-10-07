@@ -147,6 +147,9 @@ STREAM_MAP: dict[str, str] = {
     "rule_promotion_gate_bound": "audit",
     "rule_promotion_claim_lost": "audit",
     "rule_promoted": "audit",
+    # The token-gated trust actions beside promotion (`writ review --dispute / --verify`).
+    "rule_disputed": "audit",
+    "rule_verified": "audit",
     # THE FOUR PRE-EXISTING BINDING REFUSALS, registered with their new sibling rather
     # than left on the friction default. Leaving them there while the newest member of the
     # same family is audited would mean a reader has to know which of the family is

@@ -226,8 +226,8 @@ default preserves a live proof that the non-isolated path still works end to end
 Decision 3 gave the run a complete CORPUS at session start. It did not give it a known
 GRAPH, and the difference is the whole of this amendment.
 
-`clear_all` preserves `RECORD_LABELS` (`Memory`, `Decision`, `FileChange`, `Commit`,
-`Project`) by default, every corpus-level restore preserves them, and `ensure_corpus` checks
+`clear_all` preserves `RECORD_LABELS` (the record labels listed once in
+`writ/graph/db/_common.py`) by default, every corpus-level restore preserves them, and `ensure_corpus` checks
 floor counts only and deliberately never restores records. So the only thing that removes a
 record is an explicit `clear_all(preserve_labels=frozenset())`, which under isolation runs
 for real in exactly two early modules. Whatever a later module leaves behind is never

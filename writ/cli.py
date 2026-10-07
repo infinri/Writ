@@ -7,10 +7,14 @@ import json
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 
 from writ.config import get_neo4j_uri, get_neo4j_user, get_neo4j_password
+
+if TYPE_CHECKING:
+    from writ.session.gate_token import GateIdentity
 
 DEFAULT_BIBLE_DIR = "bible/"
 DEFAULT_HOST = "localhost"
@@ -951,6 +955,7 @@ def add() -> None:
             if suggestions:
                 from writ.graph.db import CORPUS_EDGE_TYPES
                 edge_types = sorted(CORPUS_EDGE_TYPES)
+                superseded_any = False
                 for s in suggestions:
                     create = typer.confirm(f"Create edge to {s['rule_id']}?", default=False)
                     if create:
@@ -961,8 +966,11 @@ def add() -> None:
                         if edge_type in CORPUS_EDGE_TYPES:
                             await db.create_edge(edge_type, rule_id, s["rule_id"])
                             typer.echo(f"  Created {edge_type} -> {s['rule_id']}")
+                            superseded_any = superseded_any or edge_type == "SUPERSEDES"
                         else:
                             typer.echo(f"  Unknown edge type: {edge_type}, skipped.")
+                if superseded_any:
+                    await db.refresh_superseded_flags(rule_data.get("project", "writ"))
 
             # Conflict check (after edges created) + auto-export (Phase 7).
             result = await finalize_conflict_and_export(
@@ -1053,12 +1061,14 @@ def edit(
 
             # Offer edges.
             if suggestions:
+                superseded_any = False
                 for s in suggestions:
                     create = typer.confirm(f"Create edge to {s['rule_id']}?", default=False)
                     if create:
                         edge_type = typer.prompt("Edge type", default="RELATED_TO")
                         await db.create_edge(edge_type, rule_id, s["rule_id"])
                         typer.echo(f"  Created {edge_type} -> {s['rule_id']}")
+                        superseded_any = superseded_any or edge_type == "SUPERSEDES"
                         # 0.10-F: an edge created here lives only in the graph, not
                         # in the markdown source. For a source-backed node,
                         # `writ reconcile` will delete it (live-minus-oracle). Warn
@@ -1069,6 +1079,8 @@ def edit(
                                 f"graph-only and `writ reconcile` will remove it. Declare "
                                 f"it in the bible source (front-matter `edges:`) to persist."
                             )
+                if superseded_any:
+                    await db.refresh_superseded_flags(updated.get("project", "writ"))
 
             # Conflict check + auto-export (Phase 7).
             result = await finalize_conflict_and_export(
@@ -1474,7 +1486,7 @@ def _resolve_review_session() -> str | None:
 
 
 def _record_pending_review_rule(
-    session_id: str | None, rule_id: str, existing: dict
+    session_id: str | None, rule_id: str, existing: dict, action: str = "promote"
 ) -> None:
     """Record `rule_id` as the rule surfaced in this session, and clear any candidate.
 
@@ -1487,18 +1499,24 @@ def _record_pending_review_rule(
     pending_candidate_id, and /session/{id}/promotion-review clears
     pending_review_rule_id.
 
-    Only an ai-provisional rule is recorded. A rule that could not legally be promoted
-    must leave no binding behind for a later approval to pick up, which mirrors the
+    For promotion only an ai-provisional rule is recorded. A rule that could not legally be
+    promoted must leave no binding behind for a later approval to pick up, which mirrors the
     promotion-review route refusing to record a candidate that is not graduation_pending.
+    Dispute and verify are legal at any authority, so they always record.
+
+    What is recorded is rule_action_binding(action, rule_id): the bare id for promote,
+    `dispute:X` / `verify:X` otherwise, so an approval for one action on a rule is never
+    spendable on another.
     """
     if not session_id:
         return
-    if existing.get("authority") != "ai-provisional":
+    if action == "promote" and existing.get("authority") != "ai-provisional":
         return
     from writ.session.cache import mutate_cache
+    from writ.session.gate_token import rule_action_binding
 
     with mutate_cache(session_id) as cache:
-        cache["pending_review_rule_id"] = rule_id
+        cache["pending_review_rule_id"] = rule_action_binding(action, rule_id)
         cache["pending_candidate_id"] = ""
 
 
@@ -1526,40 +1544,86 @@ def _refuse_promotion(
     return typer.Exit(code=1)
 
 
-def _authorize_rule_promotion(
-    rule_id: str, existing: dict, session_id: str | None, token: str | None
-) -> str:
-    """Decide whether this caller may promote `rule_id`; return the session id.
+# The words each token-gated `writ review` action puts into the shared refusal templates.
+# Promote's are the strings its messages always carried, so they stay byte-identical.
+_RULE_ACTION_TEXT = {
+    "promote": {
+        "doing": "promoting a rule to ai-promoted", "past": "promoted",
+        "change": "change a rule's authority", "state": "authority", "noun": "promotion",
+    },
+    "dispute": {
+        "doing": "disputing a rule", "past": "disputed",
+        "change": "dispute a rule", "state": "the rule", "noun": "dispute",
+    },
+    "verify": {
+        "doing": "verifying a rule", "past": "verified",
+        "change": "verify a rule", "state": "the rule", "noun": "verification",
+    },
+}
+
+
+def _review_session_or_exit(rule_id: str, session_id: str | None, action: str) -> str:
+    """The session whose approval authorizes `action`, or exit 2 naming the flag.
+
+    The existing CLI convention: nothing is guessed and no cache is scanned by mtime. NO
+    audit row here on purpose: a row keyed to no session lands in the "unknown" bucket,
+    which was measured on 2026-08-11 as a defect worth 372 misfiled rows, and this refusal
+    is already visible to the operator on stderr with a non-zero exit.
+    """
+    sid = session_id or _resolve_review_session()
+    if not sid:
+        typer.echo(
+            f"Cannot {action} {rule_id}: which session's approval authorizes this is "
+            "unknown, and Writ does not guess one.\n"
+            f"  Supply it explicitly:  writ review {rule_id} --{action} --session-id "
+            "<session_id> --token <token>\n"
+            "  or export an identity:  CLAUDE_SESSION_ID=<session_id>\n"
+            "                          CLAUDE_JOB_DIR=<dir whose basename is the "
+            "session_id>\n"
+            f"Nothing was {_RULE_ACTION_TEXT[action]['past']} and nothing was consumed.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    return sid
+
+
+def _authorize_rule_action(
+    rule_id: str, existing: dict, session_id: str | None, token: str | None, *, action: str
+) -> tuple[str, GateIdentity]:
+    """Decide whether this caller may take `action` (promote, dispute or verify) on
+    `rule_id`; return (session id, the approver identity the token holds).
 
     ACCESS BOUNDARY. WHO CAN CALL IT: any local process, since this is a CLI command on
     the operator's machine. WHO CAN SUCCEED is narrower: only a caller holding the gate
-    token minted for this session, for NO phase gate, and for THIS exact rule id. That is
-    the human who typed "approved" after the rule was surfaced to them, or an agent
-    acting immediately on that approval. HOW THE CALLER IS AUTHENTICATED: by possession of
-    the single-use secret on line 1 of /tmp/writ-gate-token-<session_id>, a file only the
-    approval hook writes and only on a genuine user approval prompt, whose writes both
-    write gates refuse; plus the binding on lines 2 to 5, which is what makes possession
-    authorize one action rather than any action. WHAT OWNERSHIP APPLIES: the session id
-    scopes the credential, the rule must be ai-provisional, and it must be the rule
-    recorded as surfaced. WHAT HAPPENS WHEN UNAUTHORIZED: no graph write, a non-zero exit,
-    one audit row naming the refusal class, and a message naming the next action and who
-    may take it.
+    token minted for this session, for NO phase gate, and for THIS exact action on THIS
+    exact rule id (rule_action_binding). That is the human who typed "approved" after the
+    rule was surfaced to them, or an agent acting immediately on that approval. HOW THE
+    CALLER IS AUTHENTICATED: by possession of the single-use secret on line 1 of
+    /tmp/writ-gate-token-<session_id>, a file only the approval hook writes and only on a
+    genuine user approval prompt, whose writes both write gates refuse; plus the binding
+    on lines 2 to 5, which is what makes possession authorize one action rather than any
+    action. WHAT OWNERSHIP APPLIES: the session id scopes the credential, a promoted rule
+    must be ai-provisional, and the action must be the one recorded as surfaced. WHAT
+    HAPPENS WHEN UNAUTHORIZED: no graph write, a non-zero exit, one audit row naming the
+    refusal class, and a message naming the next action and who may take it.
 
     THE CHECK LIVES HERE, IN THE CLI, RATHER THAN BEHIND A DAEMON ROUTE. The credential is
     a FILE, not a daemon object; `writ review` opens its own Neo4j connection and never
-    speaks to the daemon, so surfacing, approving and promoting stay authorizable end to
-    end with the daemon stopped, which is exactly the state a maintainer is most likely to
-    be repairing things in; and a route would gain nothing in security, because the
-    refusal decision reads a file and a cache that are equally readable from either
-    process. A route-layer-only check would also leave this command as an unguarded
-    internal path to the same authority write.
+    speaks to the daemon, so surfacing, approving and acting stay authorizable end to end
+    with the daemon stopped, which is exactly the state a maintainer is most likely to be
+    repairing things in; and a route would gain nothing in security, because the refusal
+    decision reads a file and a cache that are equally readable from either process. A
+    route-layer-only check would also leave this command as an unguarded internal path to
+    the same write.
 
     typer.confirm is GONE from this path rather than kept alongside the token. Keeping it
     would require an interactive TTY on the very flow being built (the agent runs this
     command after the human types "approved"), so it would deadlock the fix; and a confirm
     that `echo y` satisfies adds no safety, which is measured rather than assumed.
 
-    GUARD ORDER, which is not arbitrary and mirrors cmd_reopen_planning.
+    GUARD ORDER, which is not arbitrary and mirrors cmd_reopen_planning. The identity
+    (lines 6 and 7) is read between steps 5 and 6 because the claim deletes the file; it is
+    never a binding.
     """
     from writ import authoring
     from writ.session.gate_token import (
@@ -1567,41 +1631,35 @@ def _authorize_rule_promotion(
         claim_gate_token,
         gate_token_valid,
         read_gate_binding,
+        read_gate_identity,
         read_gate_rule,
         read_gate_token,
+        rule_action_binding,
     )
 
-    # 1. WHO IS ASKING. Unresolvable refuses with exit 2 naming the flag, the existing
-    #    CLI convention: nothing is guessed and no cache is scanned by mtime. NO audit row
-    #    here on purpose: a row keyed to no session lands in the "unknown" bucket, which
-    #    was measured on 2026-08-11 as a defect worth 372 misfiled rows, and this refusal
-    #    is already visible to the operator on stderr with a non-zero exit.
-    sid = session_id or _resolve_review_session()
-    if not sid:
-        typer.echo(
-            f"Cannot promote {rule_id}: which session's approval authorizes this is "
-            "unknown, and Writ does not guess one.\n"
-            f"  Supply it explicitly:  writ review {rule_id} --promote --session-id "
-            "<session_id> --token <token>\n"
-            "  or export an identity:  CLAUDE_SESSION_ID=<session_id>\n"
-            "                          CLAUDE_JOB_DIR=<dir whose basename is the "
-            "session_id>\n"
-            "Nothing was promoted and nothing was consumed.",
-            err=True,
-        )
-        raise typer.Exit(code=2)
+    text = _RULE_ACTION_TEXT[action]
+    target = rule_action_binding(action, rule_id)
+    surface = (
+        f"writ review {rule_id} --session-id" if action == "promote"
+        else f"writ review {rule_id} --{action} --session-id"
+    )
+
+    # 1. WHO IS ASKING.
+    sid = _review_session_or_exit(rule_id, session_id, action)
 
     # 2. LEGALITY BEFORE CREDENTIALS, so an illegal transition never reaches a token
     #    check and never consumes anything. assert_ai_provisional is the single-source
     #    legality check (DRY-DUP-002); the exact 'human'-fallback message is preserved.
-    try:
-        authoring.assert_ai_provisional(existing, rule_id, "promote")
-    except authoring.IllegalAuthorityTransitionError:
-        typer.echo(
-            f"Cannot promote: {rule_id} has authority "
-            f"'{existing.get('authority', 'human')}'"
-        )
-        raise typer.Exit(code=1)
+    #    Promote's alone: dispute and verify are legal at any authority.
+    if action == "promote":
+        try:
+            authoring.assert_ai_provisional(existing, rule_id, "promote")
+        except authoring.IllegalAuthorityTransitionError:
+            typer.echo(
+                f"Cannot promote: {rule_id} has authority "
+                f"'{existing.get('authority', 'human')}'"
+            )
+            raise typer.Exit(code=1)
 
     # 3. THE SECRET. Failing here means the caller is not holding an approval at all, so
     #    nothing is consumed and nothing is written.
@@ -1609,14 +1667,15 @@ def _authorize_rule_promotion(
     if not gate_token_valid(token or "", expected):
         raise _refuse_promotion(
             sid, rule_id, "agent_self_approval_blocked",
-            f"Refusing to promote {rule_id}: promoting a rule to ai-promoted requires "
+            f"Refusing to {action} {rule_id}: {text['doing']} requires "
             "the approval token the hook writes on a genuine user approval, and the "
-            "agent cannot approve its own proposal. Authority is unchanged.\n"
-            f"  1. Surface the rule:  writ review {rule_id} --session-id {sid}\n"
+            f"agent cannot approve its own proposal. {text['state'].capitalize()} is "
+            "unchanged.\n"
+            f"  1. Surface the rule:  {surface} {sid}\n"
             "  2. THE USER replies exactly \"approved\" on their own turn.\n"
-            f"  3. Re-run:  writ review {rule_id} --promote --session-id {sid} --token "
+            f"  3. Re-run:  writ review {rule_id} --{action} --session-id {sid} --token "
             "<token from /tmp/writ-gate-token-" + sid + ">",
-            event_target="review_promote", had_token=bool(token),
+            event_target=f"review_{action}", had_token=bool(token),
             had_expected=bool(expected),
         )
 
@@ -1626,81 +1685,137 @@ def _authorize_rule_promotion(
     if binding is None:
         raise _refuse_promotion(
             sid, rule_id, "gate_token_unbound",
-            f"Refusing to promote {rule_id}: this session's gate token records nothing "
+            f"Refusing to {action} {rule_id}: this session's gate token records nothing "
             "about what it authorizes (it is the pre-binding format), so it cannot be "
-            "checked against a rule promotion. The token was left on disk and authority "
-            f"is unchanged. Surface the rule with `writ review {rule_id} --session-id "
+            f"checked against a rule {text['noun']}. The token was left on disk and "
+            f"{text['state']} is unchanged. Surface the rule with `{surface} "
             f"{sid}`, have THE USER reply \"approved\" to mint a bound token, then re-run "
             "with --token.",
-            event_target="review_promote",
+            event_target=f"review_{action}",
         )
     if binding[0]:
         raise _refuse_promotion(
             sid, rule_id, "rule_promotion_gate_bound",
-            f"Refusing to promote {rule_id}: that approval is bound to the {binding[0]} "
-            "gate, so it cannot change a rule's authority. The token was left on disk, "
+            f"Refusing to {action} {rule_id}: that approval is bound to the {binding[0]} "
+            f"gate, so it cannot {text['change']}. The token was left on disk, "
             "because it is the user's genuine phase approval and spending it here would "
             f"destroy it. Advance the {binding[0]} gate first, then surface the rule with "
-            f"`writ review {rule_id} --session-id {sid}` and have THE USER approve the "
-            "promotion on its own turn, with no phase gate pending.",
-            event_target="review_promote", bound_gate=binding[0],
+            f"`{surface} {sid}` and have THE USER approve the "
+            f"{text['noun']} on its own turn, with no phase gate pending.",
+            event_target=f"review_{action}", bound_gate=binding[0],
         )
 
-    # 5. THE RULE. "" and a different id are both refused, but they are NOT the same
-    #    thing: an unbound line 5 means this approval authorizes promoting no rule at all
-    #    (a phase approval, or a token minted before line 5 existed), while a different id
-    #    means it authorizes promoting some OTHER rule. The message names which.
+    # 5. THE RULE AND THE ACTION. "" and a different value are both refused, but they are
+    #    NOT the same thing: an unbound line 5 means this approval authorizes no rule
+    #    action at all (a phase approval, or a token minted before line 5 existed), while
+    #    a different value means it authorizes some OTHER rule, or another action on this
+    #    one. The message names which.
     bound_rule = read_gate_rule(sid)
-    if bound_rule != rule_id:
-        from writ.session.approval_workflow import _BINDING_REFUSAL_REASONS
+    if bound_rule != target:
+        if action == "promote":
+            from writ.session.approval_workflow import _BINDING_REFUSAL_REASONS
 
-        raise _refuse_promotion(
-            sid, rule_id, BINDING_RULE_MISMATCH,
-            f"Refusing to promote {rule_id}: "
-            + _BINDING_REFUSAL_REASONS[BINDING_RULE_MISMATCH].format(
+            reason = _BINDING_REFUSAL_REASONS[BINDING_RULE_MISMATCH].format(
                 bound=bound_rule or "no rule", target=rule_id,
             )
-            + " The token was left on disk and authority is unchanged.",
-            event_target="review_promote", bound_rule=bound_rule,
+        else:
+            reason = (
+                f"That approval authorizes {bound_rule or 'no rule action'}, not {target}. "
+                f"Surface it with `{surface} <session_id>`, have the user reply "
+                "\"approved\", then re-run with --token."
+            )
+        raise _refuse_promotion(
+            sid, rule_id, BINDING_RULE_MISMATCH,
+            f"Refusing to {action} {rule_id}: " + reason
+            + f" The token was left on disk and {text['state']} is unchanged.",
+            event_target=f"review_{action}", bound_rule=bound_rule,
         )
 
-    # 6. THE ATOMIC CLAIM. Claiming IS consuming, so two concurrent promotions holding one
-    #    token produce exactly ONE authority change. plan_hash is passed as the token's
-    #    OWN line-3 value, exactly as the promote-candidate route does, so _binding_refusal
-    #    compares that field against itself and plan drift cannot refuse a promotion that
-    #    has nothing to do with plan.md.
+    identity = read_gate_identity(sid)
+
+    # 6. THE ATOMIC CLAIM. Claiming IS consuming, so two concurrent actions holding one
+    #    token produce exactly ONE write. plan_hash is passed as the token's OWN line-3
+    #    value, exactly as the promote-candidate route does, so _binding_refusal compares
+    #    that field against itself and plan drift cannot refuse an action that has nothing
+    #    to do with plan.md.
     if not claim_gate_token(
         sid, token or "", gate="", plan_hash=binding[1], candidate_id="",
-        rule_id=rule_id,
+        rule_id=target,
     ):
         raise _refuse_promotion(
             sid, rule_id, "rule_promotion_claim_lost",
-            f"Refusing to promote {rule_id}: that approval was already spent (a "
+            f"Refusing to {action} {rule_id}: that approval was already spent (a "
             "concurrent request claimed it). One approval authorizes exactly one action, "
-            "so authority is unchanged here. If the promotion did not happen, have THE "
-            f"USER approve again after `writ review {rule_id} --session-id {sid}`.",
+            f"so {text['state']} is unchanged here. If the {text['noun']} did not happen, "
+            f"have THE USER approve again after `{surface} {sid}`.",
         )
-    return sid
+    return sid, identity
 
 
-def _record_rule_promoted(session_id: str, rule_id: str, existing: dict) -> None:
-    """Record the authority change and clear the surfacing it was bound to.
+def _record_rule_action(session_id: str, rule_id: str, event: str, **fields) -> None:
+    """One audit row for a committed rule action, then clear the surfacing it was bound
+    to. The row never carries the approver's identity, which lives only on the TrustEvent."""
+    from writ.analysis.friction import log_friction_event
+    from writ.session.cache import mutate_cache
+
+    log_friction_event(
+        session_id=session_id, mode=None, event=event, rule_id=rule_id,
+        confirmation_source="gate_token", **fields,
+    )
+    with mutate_cache(session_id) as cache:
+        cache["pending_review_rule_id"] = ""
+
+
+async def _record_rule_promoted(
+    db, session_id: str, rule_id: str, existing: dict, identity: GateIdentity
+) -> None:
+    """Record the authority change, clear the surfacing it was bound to, and write the
+    approval TrustEvent.
 
     Runs only after authoring.promote succeeded. A Neo4j failure after the claim above
     spends the approval and the user must approve again: that matches the advance route's
     stated contract ("the rejection spent the prior approval") and is preferred to holding
     a live canon-adjacent credential open across a failed write.
-    """
-    from writ.analysis.friction import log_friction_event
-    from writ.session.cache import mutate_cache
 
-    log_friction_event(
-        session_id=session_id, mode=None, event="rule_promoted", rule_id=rule_id,
+    The approval record is history about a promotion that already committed, so a failure
+    writing it prints one stderr line and emits one exception row, and the promotion and
+    the exit code stand.
+    """
+    from writ import authoring
+    from writ.shared.logging import emit_exception
+
+    _record_rule_action(
+        session_id, rule_id, "rule_promoted",
         from_authority=existing.get("authority", ""), to_authority="ai-promoted",
-        confirmation_source="gate_token",
     )
-    with mutate_cache(session_id) as cache:
-        cache["pending_review_rule_id"] = ""
+    try:
+        await authoring.record_approval(
+            db, rule_id, via="review_promote", session_id=session_id, identity=identity,
+        )
+    except Exception as exc:
+        emit_exception("trust.record_approval", exc, session_id, None, rule_id=rule_id)
+        typer.echo(
+            f"Promoted {rule_id}, but its approval record was not written (see the errors "
+            "log).",
+            err=True,
+        )
+
+
+def _echo_rule_summary(rule_id: str, existing: dict) -> None:
+    """The rule as the human reviews it: core fields, then each trust prop it carries."""
+    typer.echo(f"Rule: {rule_id}")
+    typer.echo(f"  authority: {existing.get('authority', 'human')}")
+    typer.echo(f"  domain: {existing.get('domain', '')}")
+    typer.echo(f"  severity: {existing.get('severity', '')}")
+    typer.echo(f"  confidence: {existing.get('confidence', '')}")
+    typer.echo(f"  trigger: {existing.get('trigger', '')}")
+    typer.echo(f"  statement: {existing.get('statement', '')}")
+    for key in (
+        "layer", "basis", "deliberate", "verify_interval_days", "last_verified",
+        "disputed", "superseded", "approved_at", "approval_via",
+    ):
+        if existing.get(key) is not None:
+            typer.echo(f"  {key}: {existing[key]}")
 
 
 @app.command()
@@ -1708,6 +1823,22 @@ def review(
     rule_id: str = typer.Argument(None, help="Rule ID to inspect. Omit to list all unreviewed."),
     promote: bool = typer.Option(False, "--promote", help="Promote AI-provisional to ai-promoted."),
     reject: bool = typer.Option(False, "--reject", help="Delete AI-provisional rule from graph."),
+    dispute: bool = typer.Option(
+        False, "--dispute",
+        help=(
+            "Mark the rule disputed (any authority). Without --token this surfaces the "
+            "rule for approval; with the token the approval hook wrote, it records the "
+            "dispute."
+        ),
+    ),
+    verify: bool = typer.Option(
+        False, "--verify",
+        help=(
+            "Record that the rule was checked and still holds, restarting its verify "
+            "clock (any authority). Surfaces without --token, records with it."
+        ),
+    ),
+    note: str = typer.Option("", "--note", help="A note recorded with --dispute or --verify."),
     downweight: bool = typer.Option(False, "--downweight", help="Set confidence floor (speculative)."),
     stats: bool = typer.Option(False, "--stats", help="Show review queue statistics."),
     session_id: str | None = typer.Option(
@@ -1731,7 +1862,7 @@ def review(
         ),
     ),
 ) -> None:
-    """Review AI-proposed rules. List, inspect, promote, reject, or downweight."""
+    """Review AI-proposed rules. List, inspect, promote, reject, downweight, dispute or verify."""
     from writ import authoring
 
     wrote = {"graph": False}
@@ -1771,11 +1902,39 @@ def review(
                 # EVERY GUARD, AND THE ATOMIC CLAIM, BEFORE THE GRAPH WRITE. The claim IS
                 # the consumption, so reaching the line below means this process holds the
                 # user's approval and no concurrent one does.
-                sid = _authorize_rule_promotion(rule_id, existing, session_id, token)
+                sid, identity = _authorize_rule_action(
+                    rule_id, existing, session_id, token, action="promote",
+                )
                 wrote["graph"] = True
                 await authoring.promote(db, rule_id, existing)
-                _record_rule_promoted(sid, rule_id, existing)
+                await _record_rule_promoted(db, sid, rule_id, existing, identity)
                 typer.echo(f"Promoted: {rule_id} (authority: ai-promoted, confidence: peer-reviewed)")
+                return
+
+            if dispute or verify:
+                action = "dispute" if dispute else "verify"
+                if token is None:
+                    # THE SURFACING for this action: record `action:rule_id` so the next
+                    # approval binds to exactly this action on exactly this rule. Writes
+                    # nothing to the graph.
+                    sid = _review_session_or_exit(rule_id, session_id, action)
+                    _echo_rule_summary(rule_id, existing)
+                    _record_pending_review_rule(sid, rule_id, existing, action=action)
+                    typer.echo(
+                        f"\nSurfaced {rule_id} for {_RULE_ACTION_TEXT[action]['noun']}.\n"
+                        "  1. THE USER replies exactly \"approved\" on their own turn.\n"
+                        f"  2. Re-run:  writ review {rule_id} --{action} --session-id {sid} "
+                        "--token <token from /tmp/writ-gate-token-" + sid + "> [--note TEXT]"
+                    )
+                    return
+                sid, identity = _authorize_rule_action(
+                    rule_id, existing, session_id, token, action=action,
+                )
+                wrote["graph"] = True
+                act = authoring.dispute if dispute else authoring.verify
+                await act(db, rule_id, session_id=sid, identity=identity, note=note)
+                _record_rule_action(sid, rule_id, f"rule_{_RULE_ACTION_TEXT[action]['past']}")
+                typer.echo(f"{_RULE_ACTION_TEXT[action]['past'].capitalize()}: {rule_id}")
                 return
 
             if reject:
@@ -1804,13 +1963,7 @@ def review(
                 return
 
             # Default: inspect the rule.
-            typer.echo(f"Rule: {rule_id}")
-            typer.echo(f"  authority: {existing.get('authority', 'human')}")
-            typer.echo(f"  domain: {existing.get('domain', '')}")
-            typer.echo(f"  severity: {existing.get('severity', '')}")
-            typer.echo(f"  confidence: {existing.get('confidence', '')}")
-            typer.echo(f"  trigger: {existing.get('trigger', '')}")
-            typer.echo(f"  statement: {existing.get('statement', '')}")
+            _echo_rule_summary(rule_id, existing)
 
             # THIS IS THE SURFACING, and it is what makes the next approval bindable: a
             # rule that was never shown to the human must never become one an approval can

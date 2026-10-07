@@ -105,9 +105,10 @@ def always_on_bundle_cost(rules: list[dict], cap: int = 5000) -> dict:
     """The every-turn injection cost: summary render (trigger+statement) of the always_on/mandatory
     set, via the house estimate_tokens, against the budget cap. Mirrors the server's summary render.
 
-    Replicates INJECTION_RULE_WHERE ("r.mandatory = true OR r.always_on = true") in Python."""
+    Replicates INJECTION_RULE_WHERE (mandatory or always_on, and not superseded) in Python."""
     from writ.shared.tokens import estimate_tokens
-    bundle = [r for r in rules if r.get("mandatory") or r.get("always_on")]
+    bundle = [r for r in rules
+              if (r.get("mandatory") or r.get("always_on")) and not r.get("superseded")]
     tokens = sum(estimate_tokens(r.get("trigger"), r.get("statement")) for r in bundle)
     return {"rule_count": len(bundle), "tokens_floor_est": tokens, "cap": cap,
             "over_cap": tokens > cap, "basis": LABEL}

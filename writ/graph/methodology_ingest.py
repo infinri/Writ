@@ -24,6 +24,7 @@ tracebacks.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable
 
@@ -488,6 +489,10 @@ async def _write_nodes(
         created, dangling = await ingest_edges(parsed_nodes, parsed_edges, db, project=project)
         report.edges_created = created
         report.edges_dangling = dangling
+        # Program item 6: start the verify clock on new Rules, and derive the
+        # superseded flag once the SUPERSEDES edges it reads are written.
+        await db.seed_last_verified(project, date.today().isoformat())
+        await db.refresh_superseded_flags(project)
 
 
 def _dedupe_edges(parsed_edges: list[dict]) -> list[dict]:
@@ -692,6 +697,8 @@ async def reconcile(path: Path, db: Neo4jConnection, project: str = "writ") -> d
     # (nodes -> edges -> props) is load-bearing and preserved by awaiting in turn.
     stale_node_ids = await _reconcile_delete_stale_nodes(db, expected_nodes, project, nid)
     stale_edges = await _reconcile_delete_stale_edges(db, expected_edges, project, a_id, b_id)
+    # A pruned SUPERSEDES edge must clear the flag it derived.
+    await db.refresh_superseded_flags(project)
     cleared_props = await _reconcile_clear_stale_props(db, path, project, nid)
 
     return {

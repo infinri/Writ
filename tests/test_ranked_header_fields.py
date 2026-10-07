@@ -461,3 +461,201 @@ class TestAbstractionLineDomainUnaffected:
 
         text, _meta = _render(monkeypatch, capsys, trimmed, mode=mode)
         assert f"[ABSTRACT: ABS-COVER-001] (covers 1 rules, {sentinel_domain})" in text, text
+
+
+# =============================================================================
+# Program item 6 (attribution and trust records): the STALE and DELIBERATE tags ride in
+# the header slot this chain already pins. The SAME anti-recurrence discipline applies:
+# the oracle is the RENDERED line reached from node metadata, never the pipeline's
+# rule_entry, because the projection (_project_rules and the _summary_with_abstractions
+# fallback, both through _HEADER_FIELDS) is where a field that is produced but not
+# carried silently disappears.
+#
+# RED today: _final_rank sets neither `stale` nor `deliberate`, _HEADER_FIELDS names only
+# severity and authority, and cmd_format appends nothing to the slot.
+#
+# Dates are relative to the process clock with a wide margin (days, not hours), so no
+# assertion here depends on the instant the suite runs.
+# =============================================================================
+from datetime import date as _date, timedelta as _timedelta  # noqa: E402
+
+
+def _days_ago(days: int) -> str:
+    return (_date.today() - _timedelta(days=days)).isoformat()
+
+
+def _trust_meta(*, stale=False, deliberate=False, severity="critical", authority="human",
+                interval=None):
+    """_node_meta plus the trust inputs the pipeline reads: last_verified, the optional
+    verify_interval_days and deliberate. A stale rule was last verified 400 days ago
+    (far past the 180-day default); a fresh one yesterday."""
+    meta = _node_meta(severity=severity, authority=authority)
+    meta["last_verified"] = _days_ago(400 if stale else 1)
+    if interval is not None:
+        meta["verify_interval_days"] = interval
+    if deliberate:
+        meta["deliberate"] = True
+    return meta
+
+
+def _budget_ladder_tokens() -> list:
+    """One budget per derived mode label, from the same probe the population tests use."""
+    return list(_probe_budget_ladder().keys())
+
+
+def _header_line(text: str, rule_id: str) -> str:
+    matches = [ln for ln in text.splitlines() if ln.startswith(f"[{rule_id}] (")]
+    assert len(matches) == 1, f"expected exactly one header line for {rule_id}, got {text!r}"
+    return matches[0]
+
+
+class TestTrustTagsSurviveProjectionForEveryDerivedMode:
+    """Capability 19, projection half: both tags survive every mode the ladder reaches."""
+
+    def _source_rule(self, **flags):
+        return {
+            "rule_id": "TAG-CARRY-001", "node_type": "Rule", "score": 0.5,
+            "authority": "human", "severity": "high", "domain": "carry",
+            "statement": "s.", "trigger": "t.", "violation": "v.",
+            "pass_example": "p.", "rationale": "r.", "relationships": [], **flags,
+        }
+
+    def test_every_derived_mode_carries_stale_and_deliberate(self):
+        ladder_results = _probe_budget_ladder()
+        assert set(ladder_results.values()) == _derive_mode_labels_from_ast()
+        for budget_tokens, mode in ladder_results.items():
+            trimmed, actual_mode = apply_context_budget(
+                [self._source_rule(stale=True, deliberate=True)], budget_tokens,
+            )
+            assert actual_mode == mode
+            assert trimmed, f"mode {mode!r} projected zero entries"
+            entry = trimmed[0]
+            assert entry.get("stale") is True, f"mode {mode!r} dropped 'stale': {entry!r}"
+            assert entry.get("deliberate") is True, f"mode {mode!r} dropped 'deliberate': {entry!r}"
+
+    def test_a_rule_with_neither_flag_projects_without_either_being_true(self):
+        for budget_tokens, mode in _probe_budget_ladder().items():
+            trimmed, _actual = apply_context_budget([self._source_rule()], budget_tokens)
+            entry = trimmed[0]
+            assert not entry.get("stale"), f"mode {mode!r}: {entry!r}"
+            assert not entry.get("deliberate"), f"mode {mode!r}: {entry!r}"
+
+    def test_the_summary_fallback_for_an_ungrouped_rule_carries_both_tags(self):
+        """_summary_with_abstractions is the SECOND stripping site: a rule no abstraction
+        covers is rebuilt there, and must carry the tags the same way _project_rules does."""
+        ungrouped = self._source_rule(stale=True, deliberate=True)
+        ungrouped["rule_id"] = "TAG-UNGROUPED-001"
+        abstractions = [{
+            "abstraction_id": "ABS-OTHER-002", "summary": "unrelated summary",
+            "rule_ids": ["SOME-OTHER-RULE-998"], "domain": "other", "compression_ratio": 2.0,
+        }]
+        trimmed, mode = apply_context_budget(
+            [ungrouped], SUMMARY_THRESHOLD - 1, abstractions=abstractions,
+        )
+        assert mode == "summary"
+        entries = [e for e in trimmed if e.get("rule_id") == "TAG-UNGROUPED-001"]
+        assert entries, f"TAG-UNGROUPED-001 not found ungrouped in {trimmed!r}"
+        assert entries[0].get("stale") is True, entries[0]
+        assert entries[0].get("deliberate") is True, entries[0]
+
+
+class TestChainTrustTagsReachTheRenderedLine:
+    """Capabilities 19 and 20, end to end: node metadata -> query() -> tag_overlap() ->
+    cmd_format(), for every budget mode in the derived ladder."""
+
+    def _rendered(self, monkeypatch, capsys, meta, budget_tokens, rule_id="CHAIN-TRUST-001"):
+        pipeline = _stub_pipeline({rule_id: meta})
+        response = pipeline.query("trust tag chain rule", budget_tokens=budget_tokens)
+        tagged = pb.tag_overlap(response["rules"], set())
+        text, _meta = _render(monkeypatch, capsys, tagged, mode=response["mode"])
+        return _header_line(text, rule_id)
+
+    def test_a_stale_rule_renders_stale_in_every_mode(self, monkeypatch, capsys):
+        for budget_tokens in _budget_ladder_tokens():
+            line = self._rendered(monkeypatch, capsys, _trust_meta(stale=True), budget_tokens)
+            assert line.startswith("[CHAIN-TRUST-001] (critical, STALE) score="), (budget_tokens, line)
+
+    def test_a_deliberate_rule_renders_deliberate_in_every_mode(self, monkeypatch, capsys):
+        for budget_tokens in _budget_ladder_tokens():
+            line = self._rendered(monkeypatch, capsys, _trust_meta(deliberate=True), budget_tokens)
+            assert line.startswith("[CHAIN-TRUST-001] (critical, DELIBERATE) score="), (budget_tokens, line)
+
+    def test_a_stale_and_deliberate_rule_renders_both_tags_in_that_order(self, monkeypatch, capsys):
+        for budget_tokens in _budget_ladder_tokens():
+            line = self._rendered(
+                monkeypatch, capsys, _trust_meta(stale=True, deliberate=True), budget_tokens,
+            )
+            assert line.startswith("[CHAIN-TRUST-001] (critical, STALE, DELIBERATE) score="), (
+                budget_tokens, line,
+            )
+
+    def test_a_non_human_authority_keeps_its_place_before_the_tags(self, monkeypatch, capsys):
+        line = self._rendered(
+            monkeypatch, capsys,
+            _trust_meta(stale=True, deliberate=True, severity="high", authority="ai-provisional"),
+            5000,
+        )
+        assert line.startswith(
+            "[CHAIN-TRUST-001] (high, ai-provisional, STALE, DELIBERATE) score="
+        ), line
+
+    def test_a_fresh_rule_renders_the_header_it_always_did_in_every_mode(self, monkeypatch, capsys):
+        for budget_tokens in _budget_ladder_tokens():
+            line = self._rendered(monkeypatch, capsys, _trust_meta(), budget_tokens)
+            assert line.startswith("[CHAIN-TRUST-001] (critical) score="), (budget_tokens, line)
+            assert "STALE" not in line and "DELIBERATE" not in line
+
+    def test_a_rule_that_declares_no_last_verified_is_never_stale(self, monkeypatch, capsys):
+        """A rule written by `writ add` has no clock until the next ingest: fail open."""
+        meta = _node_meta()
+        assert "last_verified" not in meta
+        line = self._rendered(monkeypatch, capsys, meta, 5000)
+        assert line.startswith("[CHAIN-TRUST-001] (critical) score="), line
+
+    def test_the_verify_interval_decides_staleness_not_a_fixed_window(self, monkeypatch, capsys):
+        """Verified 45 days ago: stale under a 30-day interval, fresh under the default."""
+        meta = _trust_meta()
+        meta["last_verified"] = _days_ago(45)
+        short = dict(meta, verify_interval_days=30)
+        assert self._rendered(monkeypatch, capsys, short, 5000).startswith(
+            "[CHAIN-TRUST-001] (critical, STALE) score="
+        )
+        assert self._rendered(monkeypatch, capsys, meta, 5000).startswith(
+            "[CHAIN-TRUST-001] (critical) score="
+        )
+
+
+class TestFormatterTrustTagsInIsolation:
+    """cmd_format driven directly, so the slot logic is red or green on its own."""
+
+    def _line(self, monkeypatch, capsys, **fields):
+        rule = {
+            "rule_id": "FMT-TRUST-001", "severity": "high", "authority": "human",
+            "score": 0.5, "statement": "s.", "trigger": "t.", **fields,
+        }
+        text, _meta = _render(monkeypatch, capsys, [rule])
+        return _header_line(text, "FMT-TRUST-001")
+
+    def test_stale_deliberate_and_both(self, monkeypatch, capsys):
+        assert self._line(monkeypatch, capsys, stale=True) == "[FMT-TRUST-001] (high, STALE) score=0.500"
+        assert self._line(monkeypatch, capsys, deliberate=True) == (
+            "[FMT-TRUST-001] (high, DELIBERATE) score=0.500"
+        )
+        assert self._line(monkeypatch, capsys, stale=True, deliberate=True) == (
+            "[FMT-TRUST-001] (high, STALE, DELIBERATE) score=0.500"
+        )
+
+    def test_a_non_human_authority_precedes_the_tags(self, monkeypatch, capsys):
+        assert self._line(
+            monkeypatch, capsys, authority="ai-provisional", stale=True,
+        ) == "[FMT-TRUST-001] (high, ai-provisional, STALE) score=0.500"
+
+    def test_false_and_absent_flags_render_byte_identically_to_the_current_header(
+        self, monkeypatch, capsys,
+    ):
+        """Capability 20: a tag is an exception marker, so its absence renders nothing,
+        and a False value is the same as no key at all."""
+        baseline = self._line(monkeypatch, capsys)
+        assert baseline == "[FMT-TRUST-001] (high) score=0.500"
+        assert self._line(monkeypatch, capsys, stale=False, deliberate=False) == baseline
+        assert self._line(monkeypatch, capsys, stale=None, deliberate=None) == baseline

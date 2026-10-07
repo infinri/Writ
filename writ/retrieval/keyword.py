@@ -69,13 +69,13 @@ class KeywordIndex:
     def build(self, rules: list[dict]) -> int:
         """Build the index from a list of rule dicts.
 
-        Mandatory rules (mandatory: true) are excluded.
-        Returns the number of rules indexed.
+        Mandatory and superseded rules are excluded, in lockstep with
+        RANKED_INCLUDE_WHERE. Returns the number of rules indexed.
         """
         writer = self._index.writer()
         count = 0
         for rule in rules:
-            if rule.get("mandatory", False):
+            if rule.get("mandatory", False) or rule.get("superseded", False):
                 continue
             # Boost trigger field by repeating text to increase term frequency.
             trigger_text = rule.get("trigger", "")

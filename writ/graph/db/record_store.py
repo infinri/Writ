@@ -3,7 +3,7 @@
 Moved verbatim from the former writ/graph/db.py (Wave 2 mixin split); methods read self._driver / self._database set by Neo4jConnection.__init__."""
 from __future__ import annotations
 
-from writ.graph.schema import Commit, Decision, FileChange
+from writ.graph.schema import Commit, Decision, FileChange, TrustEvent
 from writ.graph.db._common import _coerce_neo4j_value, _now_iso
 
 
@@ -47,6 +47,11 @@ class RecordStoreMixin:
         """Create or update a Commit record. Idempotent via MERGE on (commit_hash, project)."""
         commit_data.setdefault("ts", _now_iso())
         return await self._create_record(Commit(**commit_data), "commit_hash")
+
+    async def create_trust_event(self, **event_data) -> str:
+        """Create or update a TrustEvent record. Idempotent via MERGE on (event_id, project)."""
+        event_data.setdefault("ts", _now_iso())
+        return await self._create_record(TrustEvent(**event_data), "event_id")
 
     async def create_memory(
         self,

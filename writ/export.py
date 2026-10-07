@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING
 
 import yaml
 
+from writ.graph.schema import TRUST_GRAPH_ONLY_PROPS
+
 if TYPE_CHECKING:
     from writ.graph.db import Neo4jConnection
 
@@ -48,7 +50,7 @@ GRAPH_ONLY_FIELDS = {
     # 0.10: set at write time by the creation path (ingest | graph-authored), never
     # authored in markdown. Excluded from export and from 5.2's field-level parity diff.
     "source_origin",
-}
+} | TRUST_GRAPH_ONLY_PROPS
 
 # Edge types DERIVED at ingest from prose/fields, never authored in a RULE-START
 # `### Edges` section: RELATED_TO is derived from prose cross-references and
@@ -183,6 +185,16 @@ def rule_to_markdown(rule: dict, edges: list | None = None) -> str:
     keywords = rule.get('trigger_keywords')
     if keywords:
         lines.append(f"**Trigger_Keywords**: {', '.join(keywords)}")
+    # Authored trust props (program item 6): rendered only when present, since
+    # presence equals declaration and the round trip must not invent them.
+    if rule.get('layer') is not None:
+        lines.append(f"**Layer**: {rule['layer']}")
+    if rule.get('basis') is not None:
+        lines.append(f"**Basis**: {rule['basis']}")
+    if rule.get('deliberate') is not None:
+        lines.append(f"**Deliberate**: {'true' if rule['deliberate'] else 'false'}")
+    if rule.get('verify_interval_days') is not None:
+        lines.append(f"**Verify_Interval_Days**: {rule['verify_interval_days']}")
     lines.append("")
 
     # Content sections in canonical order.

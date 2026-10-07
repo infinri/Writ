@@ -1692,10 +1692,24 @@ log_friction_event() {
 # the next reader unable to tell WHICH object a token authorizes. An omitted fifth
 # argument writes an empty line 5, which is what a phase advance compares against and what
 # a rule promotion is refused for.
-# Usage: write_gate_token_file <path> <token> <gate> <plan_hash> [candidate_id] [rule_id]
+# LINES 6 AND 7 are the OS login and the global git user.name of the process that mints,
+# captured here when argument 7 or 8 is unset (first line only, carriage returns removed,
+# as the python writer does). They are identity, never a binding. The hook passes neither,
+# so production identity is always captured by the hook process; the arguments exist for
+# tests.
+# Usage: write_gate_token_file <path> <token> <gate> <plan_hash> [candidate_id] [rule_id] [os_login] [git_name]
 write_gate_token_file() {
   local path="$1" secret="$2" gate="${3:-}" plan_hash="${4:-}" candidate="${5:-}" rule="${6:-}"
-  printf '%s\n%s\n%s\n%s\n%s\n' "$secret" "$gate" "$plan_hash" "$candidate" "$rule" > "$path"
+  local os_login="${7-}" git_name="${8-}"
+  if [ -z "${7+x}" ]; then
+    os_login=$(id -un 2>/dev/null || true)
+  fi
+  if [ -z "${8+x}" ]; then
+    git_name=$(git config --global --get user.name 2>/dev/null || true)
+    git_name="${git_name%%$'\n'*}"; git_name="${git_name//$'\r'/}"
+  fi
+  printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$secret" "$gate" "$plan_hash" "$candidate" "$rule" \
+    "$os_login" "$git_name" > "$path"
   # The file holds a secret in a world-readable directory; the python writer chmods too.
   chmod 600 "$path" 2>/dev/null || true
 }

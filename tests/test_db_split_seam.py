@@ -32,6 +32,11 @@ EXPECTED_METHODS = [
     "create_commit", "create_decision", "create_edge",
     "create_filechange", "create_memory", "create_methodology_node", "create_project",
     "create_record_edge",
+    # Program item 6 (attribution and trust records): one record writer for the
+    # TrustEvent label, and the three Rule statements behind the trust summary
+    # props (allowlisted write, idempotent last_verified seed, derived superseded flag).
+    "create_trust_event", "refresh_superseded_flags", "seed_last_verified",
+    "set_rule_trust_props",
     "create_rule", "delete_abstractions", "delete_rule", "evaluate_and_flip_graduation",
     "get_abstraction", "get_all_abstractions", "get_all_edges_cross_type",
     # Added after the split by later programs and never folded into this frozen

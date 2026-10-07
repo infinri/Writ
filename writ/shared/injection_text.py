@@ -7,3 +7,8 @@ import the other.
 
 def pointer_line(rule_id: str, trigger: str) -> str:
     return f"[{rule_id}] WHEN: {(trigger or '').strip()}"
+
+
+def always_on_head_line(rule_id: str, trigger: str, tags) -> str:
+    tag_slot = f" ({', '.join(tags)})" if tags else ""
+    return f"[{rule_id}]{tag_slot} WHEN: {(trigger or '').strip()}"

@@ -25,6 +25,10 @@ from writ.retrieval.pipeline import (
 )
 
 
+# _compute_bm25_hash(_candidates()) as computed before program item 6 touched the key.
+PRE_ITEM6_FIXTURE_HASH = "ad650a15a33d7d6569f9d7abfe3135f6b7c8b8069ded45d4567a16a90e9502e6"
+
+
 def _candidates(statement: str = "Parameterized queries only.") -> list[dict]:
     return [
         {"rule_id": "T-BM25-001", "trigger": "When writing SQL strings.",
@@ -101,6 +105,34 @@ class TestBm25HashCoversWhatBm25Indexes:
         b = _candidates()
         b[0]["mandatory"] = True
         assert _compute_bm25_hash(a) != _compute_bm25_hash(b)
+
+    def test_superseded_flip_changes_the_hash(self) -> None:
+        # Program item 6: a superseded rule leaves the BM25 index, so the key moves
+        # when a rule's index membership moves.
+        a = _candidates()
+        b = _candidates()
+        b[0]["superseded"] = True
+        assert _compute_bm25_hash(a) != _compute_bm25_hash(b)
+
+    def test_corpus_with_no_superseded_rule_keeps_its_hash(self) -> None:
+        # No forced rebuild on upgrade: an explicit superseded=False, or a missing
+        # key, hashes exactly as the pre-change corpus did.
+        legacy = _candidates()
+        explicit = _candidates()
+        for row in explicit:
+            row["superseded"] = False
+        assert _compute_bm25_hash(legacy) == _compute_bm25_hash(explicit)
+        # Pinned digest of the exclusion-element-aware key for the fixture corpus:
+        # computed from the unchanged implementation before item 6 landed.
+        assert _compute_bm25_hash(legacy) == PRE_ITEM6_FIXTURE_HASH
+
+    def test_superseded_mandatory_rule_hashes_like_a_mandatory_rule(self) -> None:
+        # The exclusion element is bool(mandatory or superseded): a rule that is both
+        # is excluded once, not differently from a mandatory-only rule.
+        a = _candidates()
+        b = _candidates()
+        b[2]["superseded"] = True
+        assert _compute_bm25_hash(a) == _compute_bm25_hash(b)
 
     def test_candidate_order_does_not_change_the_hash(self) -> None:
         a = _candidates()

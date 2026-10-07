@@ -27,6 +27,7 @@ import tempfile
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -41,6 +42,7 @@ from writ.retrieval.embeddings import (
 )
 
 from writ.retrieval.node_scope import is_visible
+from writ.shared.trust import is_verify_stale
 
 _logger = logging.getLogger(__name__)
 from writ.retrieval.keyword import KeywordIndex
@@ -668,6 +670,8 @@ class RetrievalPipeline:
         """Stage 5c: final ranking with graph proximity.
         Returns the scored rule-entry dicts (unsorted; the caller sorts)."""
         scored_rules: list[dict] = []
+        # Once per query, not at load: the daemon runs for days and STALE must follow the clock.
+        today = date.today()
         for rid, scores in candidate_ids.items():
             meta = self._metadata.get(rid, {})
             final_score = compute_score(
@@ -689,6 +693,10 @@ class RetrievalPipeline:
                 # cannot put them on the line: writ.retrieval.ranking._carry_header_fields
                 # must carry them through the per-mode projection in apply_context_budget.
                 "severity": meta.get("severity", "medium"),
+                # Program item 6: the trust tags, carried the same way (_HEADER_FIELDS).
+                "stale": is_verify_stale(
+                    meta.get("last_verified"), meta.get("verify_interval_days"), today),
+                "deliberate": bool(meta.get("deliberate", False)),
                 "statement": meta.get("statement", ""),
                 "trigger": meta.get("trigger", ""),
                 "violation": meta.get("violation", ""),
@@ -720,9 +728,11 @@ def _compute_bm25_hash(candidates: list[dict]) -> str:
     """Cache key over exactly what the BM25 index consumes.
 
     The HNSW hash covers trigger+statement only (all the embedding sees); BM25
-    additionally indexes tags and body and excludes mandatory rules, so reusing
-    the HNSW key would serve a stale keyword index after a tags/body/mandatory
-    edit. Sorted by rule_id so candidate order cannot change the key.
+    additionally indexes tags and body and excludes mandatory and superseded rules,
+    so reusing the HNSW key would serve a stale keyword index after a
+    tags/body/mandatory/superseded edit. The exclusion is one element, so a corpus
+    with no superseded rule keeps its key. Sorted by rule_id so candidate order
+    cannot change the key.
     """
     payload = [
         (
@@ -731,7 +741,7 @@ def _compute_bm25_hash(candidates: list[dict]) -> str:
             r.get("statement", ""),
             str(r.get("tags", "")),
             r.get("body", "") or "",
-            bool(r.get("mandatory", False)),
+            bool(r.get("mandatory") or r.get("superseded")),
         )
         for r in sorted(candidates, key=lambda r: r["rule_id"])
     ]
@@ -956,7 +966,7 @@ async def _load_candidates(db: Neo4jConnection) -> tuple[list[dict], dict]:
     """Load Rule + retrievable methodology nodes from Neo4j into the candidate pool.
 
     Returns (all_candidates, rule_metadata). The Rule exclusion predicate is the
-    single-source RANKED_INCLUDE_WHERE constant so the {excluded-from-ranked}=={mandatory}
+    single-source RANKED_INCLUDE_WHERE constant so the {excluded-from-ranked}=={mandatory}|{superseded}
     validator (integrity.py) checks the exact predicate the pool uses (WRIT-BLUEPRINT 3.5/3.6a).
     """
     # ORDER BY is not cosmetic: this load order becomes the BM25 and vector index

@@ -38,7 +38,7 @@ that a mocked `claim_gate_token` or a same-process thread race cannot prove (mir
 tests/test_gate_token_binding.py's own `TestConcurrentClaimsRealProcesses`). The
 Neo4j authority write is the one thing stubbed EVERYWHERE in this module (a fake db
 exposing only `get_rule` / `update_rule_authority` / `update_rule_confidence` /
-`delete_rule` as bare async recorders): every test here proves the AUTHORIZATION
+`delete_rule` / `set_rule_trust_props` / `create_trust_event` as bare async recorders): every test here proves the AUTHORIZATION
 decision and the call it does or does not make, never the graph mutation itself,
 which tests/test_phase6_promote.py already owns.
 
@@ -122,6 +122,10 @@ class _FakeReviewDB:
         self.update_rule_authority = AsyncMock()
         self.update_rule_confidence = AsyncMock()
         self.delete_rule = AsyncMock()
+        # Program item 6: a successful promotion now records its approval, so the fake
+        # exposes the two writes authoring.record_approval awaits.
+        self.set_rule_trust_props = AsyncMock(return_value="writ")
+        self.create_trust_event = AsyncMock(return_value="te-fake")
 
     async def get_rule(self, rule_id: str) -> dict:
         return {
@@ -164,6 +168,8 @@ class TestPromoteRequiresToken:
         assert result.exit_code != 0, result.output
         fake_db.update_rule_authority.assert_not_awaited()
         fake_db.update_rule_confidence.assert_not_awaited()
+        fake_db.set_rule_trust_props.assert_not_awaited()
+        fake_db.create_trust_event.assert_not_awaited()
 
         rows = _read_stream_rows("review-promote-no-token", "audit")
         matches = [r for r in rows if r.get("event") == "agent_self_approval_blocked"]
@@ -282,7 +288,10 @@ class TestSuccessfulBoundPromotion:
         _write_cache(sid, cache)
 
         with _mint_cleanup(sid):
-            token = mint_gate_token(sid, gate="", plan_hash="", rule_id=rule_id)
+            token = mint_gate_token(
+                sid, gate="", plan_hash="", rule_id=rule_id,
+                os_login="alice-fixed", git_name="Alice Fixed Name",
+            )
             monkeypatch.setenv("WRIT_LOG_ROOT", str(tmp_path / "logs"))
             monkeypatch.setenv("WRIT_LOG_PROJECT", "review-promote-success")
             factory, fake_db = _make_fake_writ_db("ai-provisional")
@@ -297,6 +306,26 @@ class TestSuccessfulBoundPromotion:
             assert not os.path.exists(gate_token_path(sid)), (
                 "a spent approval must not remain on disk"
             )
+
+            # Program item 6: the success path now records the approval, with the identity
+            # the token held (lines 6 and 7), read before the claim deleted the file.
+            fake_db.set_rule_trust_props.assert_awaited_once()
+            props_args = fake_db.set_rule_trust_props.await_args.args
+            assert props_args[0] == rule_id
+            props = props_args[1]
+            assert props["approval_via"] == "review_promote", props
+            assert props["approved_at"], props
+            assert props["last_verified"], props
+            fake_db.create_trust_event.assert_awaited_once()
+            event = fake_db.create_trust_event.await_args.kwargs
+            assert event["rule_id"] == rule_id
+            assert event["kind"] == "approval"
+            assert event["via"] == "review_promote"
+            assert event["session_id"] == sid
+            assert event["os_login"] == "alice-fixed"
+            assert event["git_name"] == "Alice Fixed Name"
+            assert event["project"] == "writ", "the project comes from set_rule_trust_props"
+            assert event["event_id"].startswith("te-")
 
         rows = _read_stream_rows("review-promote-success", "audit")
         assert any(r.get("event") == "rule_promoted" for r in rows), rows
@@ -333,6 +362,8 @@ def _promote_worker(rule_id: str, sid: str, token: str, result_queue) -> None:
         def __init__(self) -> None:
             self.update_rule_authority = AsyncMock()
             self.update_rule_confidence = AsyncMock()
+            self.set_rule_trust_props = AsyncMock(return_value="writ")
+            self.create_trust_event = AsyncMock(return_value="te-fake")
 
         async def get_rule(self, rid: str) -> dict:
             return {"rule_id": rid, "authority": "ai-provisional"}
@@ -350,7 +381,11 @@ def _promote_worker(rule_id: str, sid: str, token: str, result_queue) -> None:
             cli_module.app,
             ["review", rule_id, "--promote", "--session-id", sid, "--token", token],
         )
-    result_queue.put((result.exit_code, fake_db.update_rule_authority.await_count > 0))
+    result_queue.put((
+        result.exit_code,
+        fake_db.update_rule_authority.await_count > 0,
+        fake_db.create_trust_event.await_count,
+    ))
 
 
 class TestConcurrentPromotionsRealProcesses:
@@ -389,10 +424,14 @@ class TestConcurrentPromotionsRealProcesses:
             )
 
             outcomes = [result_queue.get(timeout=5) for _ in range(n)]
-            wrote_count = sum(1 for _cli_exit, wrote_authority in outcomes if wrote_authority)
+            wrote_count = sum(1 for _cli_exit, wrote_authority, _events in outcomes if wrote_authority)
             assert wrote_count == 1, (
                 f"exactly one concurrent promotion must reach update_rule_authority; "
                 f"got {outcomes}"
+            )
+            # The approval record rides the same winner: one authority change, one event.
+            assert sum(events for _cli_exit, _wrote, events in outcomes) == 1, (
+                f"exactly one approval TrustEvent must be written; got {outcomes}"
             )
 
             # THE LOSERS MUST SAY SO IN THE AUDIT STREAM, not just fail quietly. This
@@ -591,6 +630,8 @@ class TestDaemonUnreachableEquivalence:
                 )
             assert promoted.exit_code == 0, promoted.output
             fake_db.update_rule_authority.assert_awaited_once_with(rule_id, "ai-promoted")
+            fake_db.create_trust_event.assert_awaited_once()
+            assert fake_db.create_trust_event.await_args.kwargs["kind"] == "approval"
 
 
 # ---------------------------------------------------------------------------

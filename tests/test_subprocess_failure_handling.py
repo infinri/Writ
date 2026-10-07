@@ -36,6 +36,7 @@ HANDLED_SITES = {
     "writ/session/pr_comments.py": "check=True inside except CalledProcessError",
     "writ/cli.py": "returns '' on non-zero; documented no-repo/detached-HEAD outcome",
     "writ/session/git_identity.py": "raises NotInRepoError carrying the returncode",
+    "writ/session/gate_token.py": "returns '' on non-zero (user.name unset)",
 }
 
 

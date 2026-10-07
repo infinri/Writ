@@ -11,6 +11,7 @@ from writ.frequency import (
     evaluate_graduation,
 )
 from writ.graph.db._common import _node_write_spec
+from writ.graph.schema import TRUST_GRAPH_ONLY_PROPS
 
 # FeedbackBatch replay records live this long; the client stops resending a pending batch
 # well inside it (writ.session.feedback.FEEDBACK_RESEND_MAX_AGE_DAYS), so a resend always
@@ -97,6 +98,51 @@ class RuleStoreMixin:
         """
         record = await self._run_single(query, rule_id=rule_id, authority=authority)
         return record is not None
+
+    async def set_rule_trust_props(self, rule_id: str, props: dict) -> str | None:
+        """Set graph-only trust props on a Rule. Returns its project, or None if not found.
+
+        Only TRUST_GRAPH_ONLY_PROPS minus the derived superseded flag may be written, so
+        no caller can set an arbitrary prop (or an approver) through this path.
+        """
+        allowed = TRUST_GRAPH_ONLY_PROPS - {"superseded"}
+        refused = sorted(set(props) - allowed)
+        if refused:
+            raise ValueError(
+                f"set_rule_trust_props refused keys {refused} for rule {rule_id}: "
+                f"expected a subset of {sorted(allowed)}"
+            )
+        query = """
+            MATCH (r:Rule {rule_id: $rule_id})
+            SET r += $props
+            RETURN coalesce(r.project, 'writ') AS project
+        """
+        record = await self._run_single(query, rule_id=rule_id, props=props)
+        return None if record is None else record["project"]
+
+    async def seed_last_verified(self, project: str, today: str) -> int:
+        """Start the verify clock on the project's Rules that have none. Returns rows set."""
+        query = """
+            MATCH (r:Rule {project: $project})
+            WHERE r.last_verified IS NULL
+            SET r.last_verified = $today
+            RETURN count(r) AS count
+        """
+        record = await self._run_single(query, project=project, today=today)
+        return record["count"]
+
+    async def refresh_superseded_flags(self, project: str) -> int:
+        """Derive superseded from incoming SUPERSEDES edges, writing only changed rows."""
+        query = """
+            MATCH (r:Rule {project: $project})
+            OPTIONAL MATCH (s {project: $project})-[:SUPERSEDES]->(r)
+            WITH r, count(s) > 0 AS sup
+            WHERE coalesce(r.superseded, false) <> sup
+            SET r.superseded = sup
+            RETURN count(r) AS count
+        """
+        record = await self._run_single(query, project=project)
+        return record["count"]
 
     async def update_rule_confidence(self, rule_id: str, confidence: str) -> bool:
         """Update the confidence property on a Rule node. Returns True if found."""

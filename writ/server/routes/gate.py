@@ -20,6 +20,7 @@ from typing import Any
 from fastapi import APIRouter
 
 import writ.server as server
+from writ import authoring
 from writ.server.models import (
     PreWriteCheckRequest,
     SessionAdvancePhaseRequest,
@@ -35,7 +36,7 @@ from writ.session.approval_workflow import (
 from writ.session.gate_token import BINDING_CANDIDATE_MISMATCH, BINDING_UNBOUND
 from writ.session.locators import _find_plan_md, resolve_project_root
 from writ.session.mode_engine import MODE_CONFIG, _next_pending_gate
-from writ.shared.logging import request_project_scope, set_request_project_scope
+from writ.shared.logging import emit_exception, request_project_scope, set_request_project_scope
 
 router = APIRouter()
 
@@ -592,6 +593,8 @@ async def session_promote_candidate(
     # fingerprint, so _binding_refusal compares that field against itself and cannot refuse
     # on plan drift. That preserves the asymmetry argued for above: atomicity is gained
     # without importing an enforcement this route deliberately does not want.
+    # WHO APPROVED, read before the claim below deletes the file. Not a binding.
+    identity = await asyncio.to_thread(server.read_gate_identity, session_id)
     claimed = await asyncio.to_thread(
         server.claim_gate_token, session_id, token,
         gate="", plan_hash=binding[1], candidate_id=candidate_id,
@@ -623,6 +626,16 @@ async def session_promote_candidate(
             candidate_id=candidate_id,
             graduated_via=result.get("graduated_via"),
         )
+        # The promotion has committed; its approval record is history about it, so a
+        # failed record write is logged and the response is returned unchanged.
+        try:
+            await authoring.record_approval(
+                server._db, candidate_id, via="promote_candidate", session_id=session_id,
+                identity=identity,
+            )
+        except Exception as exc:
+            emit_exception("trust.record_approval", exc, session_id, None,
+                           candidate_id=candidate_id)
     return result
 
 

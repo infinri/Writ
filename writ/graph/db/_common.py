@@ -48,8 +48,12 @@ METHODOLOGY_NODE_ID_FIELDS: dict[str, str] = {
 # `FeedbackBatch` is the replay record of an applied /feedback/batch (batch_id plus the
 # stored answer). Preserve: a corpus replay erasing it would let a resent batch apply
 # twice. Exclude: it is runtime telemetry, not corpus.
+#
+# `TrustEvent` is the attribution history behind a Rule's trust props (program item 6).
+# Preserve: it has no markdown home to restore it. Exclude: it carries approver identity
+# (os_login, git_name), which must never ship in the public corpus dump.
 RECORD_LABELS: frozenset[str] = frozenset(
-    {"Memory", "Decision", "FileChange", "Commit", "Project", "FeedbackBatch"})
+    {"Memory", "Decision", "FileChange", "Commit", "Project", "FeedbackBatch", "TrustEvent"})
 
 ALLOWED_EDGE_TYPES: frozenset[str] = frozenset({
     # Pre-existing (Change C: APPLIES_TO + JUSTIFIED_BY retired)

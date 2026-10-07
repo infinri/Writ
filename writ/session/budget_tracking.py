@@ -22,6 +22,7 @@ from writ.session.injection_state import apply_mark_shown
 from writ.session.mode_engine import _VALID_SOURCE_TYPES
 from writ.shared.injection_text import pointer_line
 from writ.shared.tokens import cost_for
+from writ.shared.trust import trust_tags
 
 # The one-line stand-in cmd_format renders in place of WHEN:/RULE: for a ranked hit the
 # always-on channel already delivered this turn. It names the rule so the pointer has a
@@ -419,6 +420,7 @@ def cmd_format() -> None:
         # severity always; authority only when it is not "human" (405 of 406 corpus
         # nodes). Absence stays "?". See docs/adr/ADR-ranked-header-fields.md.
         slot = severity if authority == "human" else f"{severity}, {authority}"
+        slot = ", ".join([f"{slot}", *trust_tags(rule)])
         lines.append(f"[{rid}] ({slot}) score={score:.3f}")
 
         # Field-level dedup against this turn's always-on channel. `already_injected`

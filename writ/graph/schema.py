@@ -8,6 +8,8 @@ from enum import Enum
 
 from pydantic import BaseModel, Field, field_validator
 
+from writ.shared.trust import VERIFY_INTERVAL_DAYS_DEFAULT
+
 # Per ARCH-CONST-001: named constants for validation patterns.
 # Matches: ARCH-ORG-001, FW-M2-RT-003, ENF-GATE-007, DB-SQL-001, SEC-UNI-001
 RULE_ID_PATTERN = re.compile(r"^[A-Z][A-Z0-9]*(-[A-Z][A-Z0-9]*)+(-\d{3}|(-[A-Z][A-Z0-9]*))$")
@@ -22,6 +24,14 @@ REDUNDANCY_SIMILARITY_THRESHOLD = 0.95
 
 # Phase 3a: valid authority values for Rule nodes.
 VALID_AUTHORITIES = ("human", "ai-provisional", "ai-promoted")
+
+# Program item 6 (trust records): the authored trust vocabularies, the TrustEvent kinds,
+# and the Rule trust props only the graph writes (never read from or written to markdown).
+LAYER_VALUES = ("observed", "inferred", "unknown")
+BASIS_VALUES = ("code", "document", "ticket", "testimony")
+TRUST_EVENT_KINDS = ("approval", "dispute", "verify")
+TRUST_GRAPH_ONLY_PROPS: frozenset[str] = frozenset(
+    {"approved_at", "approval_via", "last_verified", "disputed", "superseded"})
 
 # Phase 6.1: the provenance lineage of a node -- the 4-state refinement of 0.10's
 # binary source_origin (ingest | graph-authored). hand-authored/graduated are the
@@ -325,6 +335,30 @@ def _validate_effort_preference_value(cls, v: str | None) -> str | None:
     return v
 
 
+def _validate_layer_value(cls, v: str | None) -> str | None:
+    if v is not None and v not in LAYER_VALUES:
+        raise ValueError(f"layer '{v}' must be one of: {', '.join(LAYER_VALUES)} (or unset)")
+    return v
+
+
+def _validate_basis_value(cls, v: str | None) -> str | None:
+    if v is not None and v not in BASIS_VALUES:
+        raise ValueError(f"basis '{v}' must be one of: {', '.join(BASIS_VALUES)} (or unset)")
+    return v
+
+
+def _validate_verify_interval_days_value(cls, v: int) -> int:
+    if v < 1:
+        raise ValueError(f"verify_interval_days {v} must be an integer >= 1")
+    return v
+
+
+def _validate_trust_event_kind_value(cls, v: str) -> str:
+    if v not in TRUST_EVENT_KINDS:
+        raise ValueError(f"kind '{v}' must be one of: {', '.join(TRUST_EVENT_KINDS)}")
+    return v
+
+
 def _validate_non_empty_text_value(cls, v: str) -> str:
     if not v or not v.strip():
         raise ValueError("field must not be empty or whitespace-only")
@@ -374,6 +408,17 @@ class Rule(BaseModel):
     source_commit: str | None = None
     provenance: str = PROVENANCE_DEFAULT
     graduated_via: str | None = None
+    # Program item 6: authored trust props (managed), then the graph-only ones in
+    # TRUST_GRAPH_ONLY_PROPS (runtime-exempt). Defaults are never persisted.
+    layer: str | None = None
+    basis: str | None = None
+    deliberate: bool = False
+    verify_interval_days: int = VERIFY_INTERVAL_DAYS_DEFAULT
+    approved_at: str | None = None
+    approval_via: str | None = None
+    last_verified: str | None = None
+    disputed: bool = False
+    superseded: bool = False
 
     @field_validator("rule_id")
     @classmethod
@@ -395,6 +440,11 @@ class Rule(BaseModel):
     _validate_authority = field_validator("authority")(_validate_authority_value)
     _validate_provenance = field_validator("provenance")(_validate_provenance_value)
     _validate_graduated_via = field_validator("graduated_via")(_validate_graduated_via_value)
+    _validate_layer = field_validator("layer")(_validate_layer_value)
+    _validate_basis = field_validator("basis")(_validate_basis_value)
+    _validate_verify_interval_days = field_validator("verify_interval_days")(
+        _validate_verify_interval_days_value
+    )
 
 
 class Abstraction(BaseModel):
@@ -763,6 +813,26 @@ class Commit(BaseModel):
     ts: str
 
 
+class TrustEvent(BaseModel):
+    """Program item 6: one human-approved change to a rule's trust state. The only
+    home of approver identity (os_login, git_name), which the dump never ships."""
+
+    event_id: str
+    project: str
+    rule_id: str
+    kind: str
+    ts: str
+    via: str
+    session_id: str
+    os_login: str
+    git_name: str
+    note: str = ""
+    provenance: str = "record"
+    source_origin: str = "graph-authored"
+
+    _validate_kind = field_validator("kind")(_validate_trust_event_kind_value)
+
+
 # --- New edge types per plan Section 3.1 ---
 # Directed edges. Each extends _DirectedEdge. Neo4j relationship type matches the class name
 # uppercased-with-underscores (e.g. PressureTests -> PRESSURE_TESTS). Direction is the design
@@ -882,6 +952,7 @@ RUNTIME_EXEMPT_PROPS: frozenset[str] = frozenset(
      # must never clear or flag it -- the value is the floor for the 6.4 exemption.
      "provenance"}
     | set(NODE_ID_FIELDS.values())
+    | TRUST_GRAPH_ONLY_PROPS
 )
 MANAGED_PROP_NAMES: frozenset[str] = (
     frozenset(

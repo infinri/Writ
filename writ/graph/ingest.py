@@ -31,6 +31,7 @@ from writ.graph.schema import (
     NODE_TYPE_MODELS,
     SECTION_HEADERS,
     STALENESS_WINDOW_DEFAULT,
+    TRUST_GRAPH_ONLY_PROPS,
     Rule,
 )
 
@@ -100,6 +101,29 @@ def _apply_rederived_defaults(result: dict, node_type: str) -> None:
     result.setdefault("last_validated", date.today().isoformat())
 
 
+def _parse_trust_metadata(key: str, value: str, result: dict) -> bool:
+    """Store an authored trust prop (program item 6) when `key` names one.
+
+    Shared by the RULE-START and NODE-START whitelists so both parse the four props
+    alike. Returns whether the key was consumed. A non-integer interval is kept raw so
+    Pydantic reports the field by name.
+    """
+    if key == "layer":
+        result["layer"] = value.lower()
+    elif key == "basis":
+        result["basis"] = value.lower()
+    elif key == "deliberate":
+        result["deliberate"] = value.lower() == "true"
+    elif key == "verify_interval_days" or key == "verifyintervaldays":
+        try:
+            result["verify_interval_days"] = int(value)
+        except ValueError:
+            result["verify_interval_days"] = value
+    else:
+        return False
+    return True
+
+
 def parse_rules_from_file(filepath: Path) -> list[dict]:
     """Extract rule blocks from a Markdown file.
 
@@ -152,6 +176,8 @@ def _parse_rule_block(rule_id: str, block: str) -> dict | None:
             result["applicability_scope"] = [s.strip() for s in value.split(",") if s.strip()]
         elif key == "trigger_keywords" or key == "triggerkeywords":
             result["trigger_keywords"] = [s.strip() for s in value.split(",") if s.strip()]
+        else:
+            _parse_trust_metadata(key, value, result)
 
     # Extract sections by heading.
     for field_name, heading_prefix in SECTION_HEADERS.items():
@@ -332,6 +358,9 @@ def parse_nodes_from_file(filepath: Path) -> list[dict]:
             return []
         data = dict(fm)
         data["node_type"] = node_type
+        # Graph-only trust props are written by the graph alone: markdown never authors one.
+        for prop in TRUST_GRAPH_ONLY_PROPS:
+            data.pop(prop, None)
         # Restore the graph-only / re-derived fields export strips (last_validated,
         # confidence, evidence, ...) for every node type, mirroring the RULE-START
         # and NODE-START paths so a front-matter Rule or methodology node validates.
@@ -387,6 +416,8 @@ def _parse_node_block(node_type: str, node_id: str, block: str) -> dict | None:
             result["category"] = value
         elif key == "mandatory" and node_type == "Rule":
             result["mandatory"] = value.lower() == "true"
+        elif node_type == "Rule":
+            _parse_trust_metadata(key, value, result)
 
     for field_name, heading_prefix in SECTION_HEADERS.items():
         content = _extract_section(block, heading_prefix)

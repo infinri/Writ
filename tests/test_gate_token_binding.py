@@ -1307,3 +1307,435 @@ class TestTokenFieldCountMatchesTheMintSignature:
             "a token one field short counted as complete, so this guard cannot tell a "
             f"drifted writer from a correct one: {short!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Program item 6 (attribution and trust records), workstream R: identity on the token.
+#
+# Lines 6 and 7 of the gate token carry WHO approved: the OS login (the anchor, the
+# agent cannot change it) and the global git user.name (display only). They are captured
+# by the process that mints the token, never taken from an agent argument, and they are
+# NOT a binding: _binding_refusal still compares lines 2 to 5 only.
+#
+# RED today: mint_gate_token has no os_login / git_name parameters and writes five lines,
+# write_gate_token_file writes five lines and ignores arguments 7 and 8, and GateIdentity,
+# read_gate_identity and rule_action_binding do not exist in writ.session.gate_token.
+#
+# IDENTITY VALUES ARE CONTROLLED, never the real machine's. Explicit arguments carry fixed
+# strings; capture tests point GIT_CONFIG_GLOBAL at a file this test wrote, and compare the
+# OS login only against what this very process reports (pwd, the same source `id -un` reads).
+# ---------------------------------------------------------------------------
+
+FIXED_LOGIN = "alice-fixed"
+FIXED_GIT_NAME = "Alice Fixed Name"
+
+
+def _process_login() -> str:
+    """The OS login as this process itself reports it, and nothing more specific."""
+    import pwd
+
+    return pwd.getpwuid(os.geteuid()).pw_name
+
+
+def _gitconfig_path(tmp_path, name: str | None) -> str:
+    """A global git config naming `name`, or a path that does not exist when None."""
+    path = tmp_path / "gitconfig"
+    if name is not None:
+        path.write_text(f"[user]\n\tname = {name}\n")
+    return str(path)
+
+
+def _bash_write(tmp_path, *args: str, env_extra: dict | None = None) -> bytes:
+    """Drive write_gate_token_file with exactly `args` (path first) and return the bytes."""
+    quoted = " ".join(f'"{a}"' for a in args)
+    script = f'set -euo pipefail\nsource "{COMMON_SH}"\nwrite_gate_token_file {quoted}\n'
+    env = {**os.environ, **(env_extra or {})}
+    r = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, timeout=20, env=env,
+    )
+    assert r.returncode == 0, f"write_gate_token_file failed: {r.stderr}"
+    return Path(args[0]).read_bytes()
+
+
+class TestTokenIdentityLines:
+    """Line 6 the OS login, line 7 the global git name, in BOTH writers."""
+
+    def test_mint_writes_explicit_identity_on_lines_six_and_seven(self):
+        from writ.session.gate_token import gate_token_path, mint_gate_token
+
+        sid = _sid("ident-explicit")
+        with _mint_cleanup(sid):
+            mint_gate_token(
+                sid, gate="", plan_hash="", rule_id="ENF-TEST-001",
+                os_login=FIXED_LOGIN, git_name=FIXED_GIT_NAME,
+            )
+            lines = Path(gate_token_path(sid)).read_text().split("\n")
+        assert lines[4] == "ENF-TEST-001"
+        assert lines[5] == FIXED_LOGIN
+        assert lines[6] == FIXED_GIT_NAME
+
+    def test_mint_captures_the_process_login_and_global_git_name_when_not_given(
+        self, tmp_path, monkeypatch,
+    ):
+        from writ.session.gate_token import gate_token_path, mint_gate_token
+
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", _gitconfig_path(tmp_path, FIXED_GIT_NAME))
+        sid = _sid("ident-capture")
+        with _mint_cleanup(sid):
+            mint_gate_token(sid, gate="", plan_hash="", rule_id="ENF-TEST-001")
+            lines = Path(gate_token_path(sid)).read_text().split("\n")
+        assert lines[5] == _process_login()
+        assert lines[6] == FIXED_GIT_NAME
+
+    def test_mint_writes_an_empty_line_seven_when_no_git_name_is_configured(
+        self, tmp_path, monkeypatch,
+    ):
+        from writ.session.gate_token import gate_token_path, mint_gate_token
+
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", _gitconfig_path(tmp_path, None))
+        sid = _sid("ident-nogit")
+        with _mint_cleanup(sid):
+            mint_gate_token(sid, gate="", plan_hash="")
+            lines = Path(gate_token_path(sid)).read_text().split("\n")
+        assert lines[5] == _process_login()
+        assert lines[6] == ""
+
+    def test_an_explicit_empty_git_name_is_written_as_empty_not_captured(
+        self, tmp_path, monkeypatch,
+    ):
+        """None means capture; "" means the caller said empty. A configured name must not
+        leak in behind an explicit empty value."""
+        from writ.session.gate_token import gate_token_path, mint_gate_token
+
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", _gitconfig_path(tmp_path, FIXED_GIT_NAME))
+        sid = _sid("ident-emptygit")
+        with _mint_cleanup(sid):
+            mint_gate_token(sid, gate="", plan_hash="", os_login=FIXED_LOGIN, git_name="")
+            lines = Path(gate_token_path(sid)).read_text().split("\n")
+        assert lines[5] == FIXED_LOGIN
+        assert lines[6] == ""
+
+    def test_bash_writer_matches_python_byte_for_byte_with_explicit_identity(
+        self, tmp_path, monkeypatch,
+    ):
+        import writ.session.gate_token as gt
+
+        fixed_token = uuid.uuid4().hex
+        py_path = tmp_path / "py-token"
+        monkeypatch.setattr(gt, "gate_token_path", lambda session_id: str(py_path))
+        gt.mint_gate_token(
+            _sid("ident-parity"), gate="", plan_hash="", candidate_id="", rule_id="ENF-TEST-002",
+            os_login=FIXED_LOGIN, git_name=FIXED_GIT_NAME, token=fixed_token,
+        )
+        bash_bytes = _bash_write(
+            tmp_path, str(tmp_path / "bash-token"), fixed_token, "", "", "", "ENF-TEST-002",
+            FIXED_LOGIN, FIXED_GIT_NAME,
+        )
+        assert py_path.read_bytes() == bash_bytes, (
+            f"python: {py_path.read_bytes()!r}\nbash:   {bash_bytes!r}"
+        )
+
+    def test_bash_writer_matches_python_byte_for_byte_with_an_explicit_empty_git_name(
+        self, tmp_path, monkeypatch,
+    ):
+        import writ.session.gate_token as gt
+
+        fixed_token = uuid.uuid4().hex
+        py_path = tmp_path / "py-token"
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", _gitconfig_path(tmp_path, FIXED_GIT_NAME))
+        monkeypatch.setattr(gt, "gate_token_path", lambda session_id: str(py_path))
+        gt.mint_gate_token(
+            _sid("ident-parity-empty"), gate="", plan_hash="", rule_id="ENF-TEST-002",
+            os_login=FIXED_LOGIN, git_name="", token=fixed_token,
+        )
+        bash_bytes = _bash_write(
+            tmp_path, str(tmp_path / "bash-token"), fixed_token, "", "", "", "ENF-TEST-002",
+            FIXED_LOGIN, "",
+            env_extra={"GIT_CONFIG_GLOBAL": _gitconfig_path(tmp_path, FIXED_GIT_NAME)},
+        )
+        assert py_path.read_bytes() == bash_bytes
+        assert bash_bytes.decode().split("\n")[6] == ""
+
+    def test_both_writers_capture_the_same_identity_for_the_same_environment(
+        self, tmp_path, monkeypatch,
+    ):
+        import writ.session.gate_token as gt
+
+        config = _gitconfig_path(tmp_path, FIXED_GIT_NAME)
+        fixed_token = uuid.uuid4().hex
+        py_path = tmp_path / "py-token"
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", config)
+        monkeypatch.setattr(gt, "gate_token_path", lambda session_id: str(py_path))
+        gt.mint_gate_token(
+            _sid("ident-env"), gate="phase-a", plan_hash="0123456789ab", token=fixed_token,
+        )
+        bash_bytes = _bash_write(
+            tmp_path, str(tmp_path / "bash-token"), fixed_token, "phase-a", "0123456789ab",
+            env_extra={"GIT_CONFIG_GLOBAL": config},
+        )
+        assert py_path.read_bytes() == bash_bytes
+        lines = bash_bytes.decode().split("\n")
+        assert lines[5] == _process_login()
+        assert lines[6] == FIXED_GIT_NAME
+
+    def test_bash_writer_with_no_git_name_configured_writes_an_empty_line_seven(self, tmp_path):
+        out = _bash_write(
+            tmp_path, str(tmp_path / "bash-token"), uuid.uuid4().hex, "", "",
+            env_extra={"GIT_CONFIG_GLOBAL": _gitconfig_path(tmp_path, None)},
+        )
+        lines = out.decode().split("\n")
+        assert lines[5] == _process_login()
+        assert lines[6] == ""
+
+
+class TestHookMintSitesCaptureIdentityThemselves:
+    """Capability 25. Production identity is captured by the hook process at mint, so no
+    call site in the approval hook may hand the writer an identity of its own."""
+
+    HOOK = os.path.join(SKILL_ROOT, "hooks", "scripts", "auto-approve-gate.sh")
+
+    def _call_sites(self) -> list[list[str]]:
+        import shlex
+
+        text = Path(self.HOOK).read_text().replace("\\\n", " ")
+        sites = []
+        for raw in text.split("\n"):
+            stripped = raw.strip()
+            if stripped.startswith("#") or not stripped.startswith("write_gate_token_file "):
+                continue
+            sites.append(shlex.split(stripped, comments=True)[1:])
+        return sites
+
+    def test_the_hook_still_has_exactly_the_two_known_mint_sites(self):
+        sites = self._call_sites()
+        assert len(sites) == 2, (
+            f"expected the replan and the exact/override mint sites; found {sites!r}"
+        )
+
+    def test_no_mint_site_passes_a_seventh_or_eighth_argument(self):
+        for args in self._call_sites():
+            assert len(args) <= 6, (
+                f"a hook mint site passes {len(args)} arguments {args!r}; arguments 7 and 8 "
+                "are the identity, which only a test may supply"
+            )
+
+
+class TestReadGateIdentity:
+    def test_gate_identity_is_a_two_field_record_in_line_order(self):
+        from writ.session.gate_token import GateIdentity
+
+        assert GateIdentity._fields == ("os_login", "git_name")
+        assert GateIdentity("a", "b") == ("a", "b")
+
+    def test_reads_the_identity_the_mint_wrote(self):
+        from writ.session.gate_token import mint_gate_token, read_gate_identity
+
+        sid = _sid("readident")
+        with _mint_cleanup(sid):
+            mint_gate_token(
+                sid, gate="", plan_hash="", rule_id="ENF-TEST-001",
+                os_login=FIXED_LOGIN, git_name=FIXED_GIT_NAME,
+            )
+            identity = read_gate_identity(sid)
+        assert identity.os_login == FIXED_LOGIN
+        assert identity.git_name == FIXED_GIT_NAME
+
+    def test_an_absent_token_file_reads_empty_identity(self):
+        from writ.session.gate_token import gate_token_path, read_gate_identity
+
+        sid = _sid("readident-absent")
+        assert not os.path.exists(gate_token_path(sid))
+        identity = read_gate_identity(sid)
+        assert identity.os_login == ""
+        assert identity.git_name == ""
+
+    def test_a_five_line_token_reads_empty_identity(self):
+        from writ.session.gate_token import gate_token_path, read_gate_identity
+
+        sid = _sid("readident-five")
+        with _mint_cleanup(sid):
+            Path(gate_token_path(sid)).write_text(
+                f"{uuid.uuid4().hex}\n\n\n\nENF-TEST-001\n"
+            )
+            identity = read_gate_identity(sid)
+        assert tuple(identity) == ("", "")
+
+    def test_a_four_line_token_reads_empty_identity(self):
+        from writ.session.gate_token import gate_token_path, read_gate_identity
+
+        sid = _sid("readident-four")
+        with _mint_cleanup(sid):
+            Path(gate_token_path(sid)).write_text(f"{uuid.uuid4().hex}\nphase-a\nabc123\n\n")
+            identity = read_gate_identity(sid)
+        assert tuple(identity) == ("", "")
+
+    def test_reading_the_identity_does_not_consume_the_token(self):
+        from writ.session.gate_token import gate_token_path, mint_gate_token, read_gate_identity
+
+        sid = _sid("readident-keeps")
+        with _mint_cleanup(sid):
+            mint_gate_token(sid, gate="", plan_hash="", os_login=FIXED_LOGIN, git_name="")
+            read_gate_identity(sid)
+            assert os.path.exists(gate_token_path(sid))
+
+
+class TestIdentityIsNotABinding:
+    """Identity lines never change the outcome of the binding comparison or the claim."""
+
+    def test_the_claim_signature_gained_no_identity_parameter(self):
+        import inspect
+
+        from writ.session.gate_token import claim_gate_token, gate_binding_refusal
+
+        for fn in (claim_gate_token, gate_binding_refusal):
+            names = set(inspect.signature(fn).parameters)
+            assert not names & {"os_login", "git_name", "identity"}, (fn.__name__, names)
+
+    def test_tokens_with_different_identities_are_refused_and_accepted_identically(self):
+        from writ.session.gate_token import claim_gate_token, gate_binding_refusal, mint_gate_token
+
+        outcomes = []
+        for login, name in ((FIXED_LOGIN, FIXED_GIT_NAME), ("someone-else", ""), ("", "")):
+            sid = _sid("notbinding")
+            with _mint_cleanup(sid):
+                token = mint_gate_token(
+                    sid, gate="", plan_hash="", rule_id="ENF-TEST-001",
+                    os_login=login, git_name=name,
+                )
+                pre = gate_binding_refusal(sid, gate="", plan_hash="", rule_id="ENF-TEST-001")
+                claimed = claim_gate_token(
+                    sid, token, gate="", plan_hash="", rule_id="ENF-TEST-001",
+                )
+                outcomes.append((pre, claimed))
+        assert outcomes == [("", True)] * 3
+
+    def test_a_mismatch_is_still_named_by_its_binding_class_whatever_the_identity(self):
+        from writ.session.gate_token import BINDING_RULE_MISMATCH, gate_binding_refusal, mint_gate_token
+
+        sid = _sid("notbinding-mismatch")
+        with _mint_cleanup(sid):
+            mint_gate_token(
+                sid, gate="", plan_hash="", rule_id="ENF-RULE-A",
+                os_login=FIXED_LOGIN, git_name=FIXED_GIT_NAME,
+            )
+            assert gate_binding_refusal(
+                sid, gate="", plan_hash="", rule_id="ENF-RULE-B",
+            ) == BINDING_RULE_MISMATCH
+
+    def test_a_five_line_token_still_claims_under_its_binding(self):
+        from writ.session.gate_token import claim_gate_token, gate_token_path
+
+        sid = _sid("notbinding-five")
+        with _mint_cleanup(sid):
+            token = uuid.uuid4().hex
+            Path(gate_token_path(sid)).write_text(f"{token}\n\n\n\nENF-TEST-001\n")
+            assert claim_gate_token(
+                sid, token, gate="", plan_hash="", rule_id="ENF-TEST-001",
+            ) is True
+
+
+class TestRuleActionBinding:
+    """Line 5 binds an ACTION on a rule, so an approval for one action cannot be spent
+    on another. Promote keeps the bare rule id; every other action is qualified."""
+
+    def test_promote_keeps_the_bare_rule_id(self):
+        from writ.session.gate_token import rule_action_binding
+
+        assert rule_action_binding("promote", "ENF-TEST-001") == "ENF-TEST-001"
+
+    def test_dispute_and_verify_are_qualified_by_action(self):
+        from writ.session.gate_token import rule_action_binding
+
+        assert rule_action_binding("dispute", "ENF-TEST-001") == "dispute:ENF-TEST-001"
+        assert rule_action_binding("verify", "ENF-TEST-001") == "verify:ENF-TEST-001"
+
+    def test_a_qualified_binding_can_never_equal_a_real_rule_id(self):
+        from writ.graph.schema import RULE_ID_PATTERN
+        from writ.session.gate_token import rule_action_binding
+
+        assert RULE_ID_PATTERN.match("ENF-TEST-001")
+        for action in ("dispute", "verify"):
+            assert RULE_ID_PATTERN.match(rule_action_binding(action, "ENF-TEST-001")) is None
+
+    def test_a_token_bound_to_the_bare_rule_is_refused_for_dispute_and_verify(self):
+        from writ.session.gate_token import (
+            BINDING_RULE_MISMATCH, gate_binding_refusal, mint_gate_token, rule_action_binding,
+        )
+
+        sid = _sid("actionbind-bare")
+        with _mint_cleanup(sid):
+            mint_gate_token(sid, gate="", plan_hash="", rule_id="ENF-TEST-001")
+            for action in ("dispute", "verify"):
+                assert gate_binding_refusal(
+                    sid, gate="", plan_hash="",
+                    rule_id=rule_action_binding(action, "ENF-TEST-001"),
+                ) == BINDING_RULE_MISMATCH
+            assert gate_binding_refusal(
+                sid, gate="", plan_hash="",
+                rule_id=rule_action_binding("promote", "ENF-TEST-001"),
+            ) == ""
+
+    def test_a_token_bound_to_dispute_is_refused_for_promote_and_verify(self):
+        from writ.session.gate_token import (
+            BINDING_RULE_MISMATCH, claim_gate_token, gate_binding_refusal,
+            gate_token_path, mint_gate_token, rule_action_binding,
+        )
+
+        sid = _sid("actionbind-dispute")
+        with _mint_cleanup(sid):
+            token = mint_gate_token(
+                sid, gate="", plan_hash="",
+                rule_id=rule_action_binding("dispute", "ENF-TEST-001"),
+            )
+            for action in ("promote", "verify"):
+                bound = rule_action_binding(action, "ENF-TEST-001")
+                assert gate_binding_refusal(
+                    sid, gate="", plan_hash="", rule_id=bound,
+                ) == BINDING_RULE_MISMATCH
+                assert claim_gate_token(
+                    sid, token, gate="", plan_hash="", rule_id=bound,
+                ) is False
+                assert os.path.exists(gate_token_path(sid)), "a refused claim must not consume"
+            assert claim_gate_token(
+                sid, token, gate="", plan_hash="",
+                rule_id=rule_action_binding("dispute", "ENF-TEST-001"),
+            ) is True
+
+
+class TestFieldCountIncludesTheIdentityLines:
+    """Capability 27, on top of the signature-derived guard above: the two new binding
+    parameters exist, and both writers still agree with the signature on the count."""
+
+    def test_the_mint_signature_declares_both_identity_parameters(self):
+        names = _binding_parameters()
+        assert "os_login" in names
+        assert "git_name" in names
+
+    def test_a_minted_token_with_identity_carries_one_line_per_parameter(self):
+        from writ.session.gate_token import gate_token_path, mint_gate_token
+
+        expected = _binding_parameters()
+        sid = _sid("fieldcount-ident")
+        with _mint_cleanup(sid):
+            mint_gate_token(
+                sid, gate="phase-a", plan_hash="abc123def456", candidate_id="CAND-1",
+                rule_id="ENF-TEST-003", os_login=FIXED_LOGIN, git_name=FIXED_GIT_NAME,
+            )
+            fields = _token_fields(Path(gate_token_path(sid)).read_text())
+        assert len(fields) == len(expected), (expected, fields)
+
+    def test_the_bash_writer_agrees_with_the_signature_with_and_without_identity_arguments(
+        self, tmp_path,
+    ):
+        expected = _binding_parameters()
+        with_args = _bash_write(
+            tmp_path, str(tmp_path / "with-args"), "tok", "phase-a", "0123456789ab",
+            "CAND-1", "ENF-TEST-003", FIXED_LOGIN, FIXED_GIT_NAME,
+        )
+        captured = _bash_write(
+            tmp_path, str(tmp_path / "captured"), "tok", "phase-a", "0123456789ab",
+            "CAND-1", "ENF-TEST-003",
+            env_extra={"GIT_CONFIG_GLOBAL": _gitconfig_path(tmp_path, None)},
+        )
+        assert len(_token_fields(with_args.decode())) == len(expected)
+        assert len(_token_fields(captured.decode())) == len(expected)

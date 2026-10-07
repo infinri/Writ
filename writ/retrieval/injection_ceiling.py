@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Iterator, Protocol
 
 from writ.retrieval.prompt_bundle import _renderable_always_on, split_format
-from writ.shared.injection_text import pointer_line
+from writ.shared.injection_text import always_on_head_line, pointer_line
 from writ.shared.tokens import CHARS_PER_TOKEN, PROMPT_CHAR_CEILING, PROMPT_SECTION_TOKENS
 
 # A section hook prints "\n" + block + "\n"; the ranked hook prints block + "\n".
@@ -114,7 +114,7 @@ def render_always_on_section(ao_json: dict, shown: set[str], limit: int) -> Alwa
             lines.append(ALWAYS_ON_COLLAPSED_NOTE)
         for r in kept:
             if r["rule_id"] in full:
-                lines.append(f"[{r['rule_id']}] WHEN: {r['trigger']}")
+                lines.append(always_on_head_line(r["rule_id"], r["trigger"], r["tags"]))
                 lines.append(f"  {r['statement']}")
             else:
                 lines.append(pointer_line(r["rule_id"], r["trigger"]))

@@ -164,6 +164,13 @@ class SchemaStoreMixin:
             "FOR (n:FeedbackBatch) REQUIRE n.batch_id IS UNIQUE",
             "CREATE INDEX feedbackbatch_created_at IF NOT EXISTS "
             "FOR (n:FeedbackBatch) ON (n.created_at)",
+            # TrustEvent (program item 6): create_trust_event MERGEs on (event_id,
+            # project) through _create_record, so it needs the same race guard as the
+            # records above. rule_id backs the per-rule history read.
+            "CREATE CONSTRAINT trustevent_event_id_project_unique IF NOT EXISTS "
+            "FOR (n:TrustEvent) REQUIRE (n.event_id, n.project) IS UNIQUE",
+            "CREATE INDEX trustevent_rule_id IF NOT EXISTS "
+            "FOR (n:TrustEvent) ON (n.rule_id)",
         ])
         blocked: list[str] = []
         async with self._driver.session(database=self._database) as session:

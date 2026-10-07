@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import date
 from typing import Any
 
 from fastapi import APIRouter
@@ -40,6 +41,7 @@ from writ.server.models import (
 from writ.server.routes.session_state import _format_query_response
 from writ.shared.logging import emit, emit_destination, emit_exception
 from writ.shared.tokens import cost_for, estimate_tokens
+from writ.shared.trust import is_verify_stale
 
 router = APIRouter()
 
@@ -829,12 +831,17 @@ async def always_on_bundle(
                r.severity AS severity, r.scope AS scope, r.domain AS domain,
                r.mandatory AS mandatory,
                r.applicability_scope AS applicability_scope,
-               r.trigger_keywords AS trigger_keywords
+               r.trigger_keywords AS trigger_keywords,
+               r.deliberate AS deliberate, r.last_verified AS last_verified,
+               r.verify_interval_days AS verify_interval_days
         ORDER BY r.severity DESC, r.rule_id
     """
     async with server._db._driver.session(database=server._db._database) as session:
         result = await session.run(query)
         rows = [record.data() async for record in result]
+    today = date.today()
+    for r in rows:
+        r["stale"] = is_verify_stale(r.pop("last_verified"), r.pop("verify_interval_days"), today)
 
     # FRB-COMMS-* ForbiddenResponse nodes are also always-on.
     frb_query = """
@@ -904,6 +911,8 @@ async def always_on_bundle(
             "statement": statement,
             "severity": r.get("severity"),
             "est_tokens": est,
+            "stale": bool(r.get("stale")),
+            "deliberate": bool(r.get("deliberate")),
         })
         total_tokens += est
 

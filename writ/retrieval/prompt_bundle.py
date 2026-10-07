@@ -14,6 +14,9 @@ from __future__ import annotations
 
 import json
 
+from writ.shared.injection_text import always_on_head_line
+from writ.shared.trust import trust_tags
+
 
 def _renderable_always_on(ao_json: dict) -> list[dict]:
     """The always-on rules that actually reach the injected block.
@@ -31,7 +34,7 @@ def _renderable_always_on(ao_json: dict) -> list[dict]:
         stmt = (r.get("statement") or "").strip()
         if not rid or not trig or not stmt:
             continue
-        out.append({"rule_id": rid, "trigger": trig, "statement": stmt})
+        out.append({"rule_id": rid, "trigger": trig, "statement": stmt, "tags": trust_tags(r)})
     return out
 
 
@@ -52,7 +55,7 @@ def render_always_on(ao_json: dict) -> tuple[str, int, int]:
         return "", tokens, count
     lines = ["=== ALWAYS-ACTIVE RULES ==="]
     for r in _renderable_always_on(ao_json):
-        lines.append(f"[{r['rule_id']}] WHEN: {r['trigger']}")
+        lines.append(always_on_head_line(r["rule_id"], r["trigger"], r["tags"]))
         lines.append(f"  {r['statement']}")
     lines.append("=== END ALWAYS-ACTIVE RULES ===")
     return "\n".join(lines), tokens, count

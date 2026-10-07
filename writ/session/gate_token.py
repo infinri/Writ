@@ -16,7 +16,7 @@ one approval authorizes exactly one gated action. A bare secret cannot keep that
 promise: whatever gate happened to be pending when the token was spent got the
 approval, so an "approved" typed at a plan.md could advance the test-skeletons gate,
 or be spent promoting a decision-memory candidate into the canon. The file is now
-five lines:
+seven lines:
 
     line 1           the secret, as before
     line 2           the gate this approval authorizes, empty when none was pending
@@ -33,7 +33,13 @@ five lines:
                      happen with no human present. A SEPARATE LINE, not a namespaced
                      reuse of line 4: a graduation candidate id and a Rule id are
                      different objects, and one field holding either would leave the
-                     next reader unable to tell WHICH object a token authorizes.
+                     next reader unable to tell WHICH object a token authorizes. It
+                     holds rule_action_binding(action, rule_id), so an approval for one
+                     action on a rule is not spendable on another.
+    line 6           the OS login of the process that minted the token (the identity
+                     anchor). Not a binding: _binding_refusal never reads it.
+    line 7           the global git user.name, display only, empty when unset. Not a
+                     binding either.
 
 read_gate_token() returns LINE ONE ONLY, so the non-destructive presence checks in
 the advance and promote-candidate routes keep comparing what they always compared.
@@ -59,8 +65,11 @@ DECISIONS AND THE ALTERNATIVES THEY WERE CHOSEN OVER:
 """
 
 import os
+import pwd
 import secrets
+import subprocess
 import uuid
+from typing import NamedTuple
 
 # The refusal classes, which are also the friction-event names callers emit. A
 # fail-closed gate used to be indistinguishable in the log from an absent one, so each
@@ -87,6 +96,36 @@ BINDING_RULE_MISMATCH = "gate_token_rule_mismatch"
 REPLAN_GATE = "replan"
 
 
+class GateIdentity(NamedTuple):
+    os_login: str
+    git_name: str
+
+
+def rule_action_binding(action: str, rule_id: str) -> str:
+    """The line-5 value an approval for `action` on `rule_id` carries. RULE_ID_PATTERN
+    forbids ':', so a qualified value can never equal a real rule id."""
+    return rule_id if action == "promote" else f"{action}:{rule_id}"
+
+
+def _capture_identity() -> GateIdentity:
+    """This process's OS login and global git user.name, "" for either that cannot be
+    read. The bash writer (common.sh write_gate_token_file) captures the same two values
+    with the same first-line and carriage-return rule."""
+    try:
+        login = pwd.getpwuid(os.geteuid()).pw_name
+    except KeyError:
+        login = ""
+    try:
+        proc = subprocess.run(
+            ["git", "config", "--global", "--get", "user.name"],
+            capture_output=True, timeout=5,
+        )
+        out = proc.stdout.decode(errors="replace") if proc.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    return GateIdentity(login, out.split("\n", 1)[0].replace("\r", ""))
+
+
 def gate_token_path(session_id: str) -> str:
     # Must match the bash writer (auto-approve-gate.sh) byte-for-byte: it
     # hardcodes /tmp, as do server.py's comment and the explore.html doc. Using
@@ -103,9 +142,11 @@ def mint_gate_token(
     plan_hash: str,
     candidate_id: str = "",
     rule_id: str = "",
+    os_login: str | None = None,
+    git_name: str | None = None,
     token: str | None = None,
 ) -> str:
-    """Write the five-line token file and return the token.
+    """Write the seven-line token file and return the token.
 
     The bash writer (common.sh write_gate_token_file) produces the same bytes for the
     same inputs; the hook mints from bash so a broken writ package cannot cost the
@@ -126,14 +167,23 @@ def mint_gate_token(
     authorizes no promotion at all: that is what an ordinary phase approval binds, and it
     is also what a token minted before this line existed reads as.
 
-    `token` exists so a test can drive one fixed value through both writers and
-    compare bytes. Production callers omit it and get a fresh secret.
+    LINES 6 AND 7 ARE THE IDENTITY (OS login, global git name), captured from this
+    process when not given; they are never a binding.
+
+    `token`, `os_login` and `git_name` exist so a test can drive fixed values through
+    both writers and compare bytes. Production callers omit them.
     """
     if token is None:
         token = secrets.token_hex(16)
+    if os_login is None or git_name is None:
+        captured = _capture_identity()
+        os_login = captured.os_login if os_login is None else os_login
+        git_name = captured.git_name if git_name is None else git_name
     path = gate_token_path(session_id)
     with open(path, "w") as f:
-        f.write(f"{token}\n{gate}\n{plan_hash}\n{candidate_id}\n{rule_id}\n")
+        f.write(
+            f"{token}\n{gate}\n{plan_hash}\n{candidate_id}\n{rule_id}\n{os_login}\n{git_name}\n"
+        )
     # The secret sits in a world-readable directory; the bash writer chmods too.
     os.chmod(path, 0o600)
     return token
@@ -285,6 +335,13 @@ def read_gate_rule(session_id: str) -> str:
     """
     lines = _token_file_lines(session_id)
     return _line(lines, 4) if lines else ""
+
+
+def read_gate_identity(session_id: str) -> GateIdentity:
+    """Who approved: lines 6 and 7, ("", "") for an absent file or a token minted before
+    those lines existed. Read BEFORE a claim, which deletes the file."""
+    lines = _token_file_lines(session_id)
+    return GateIdentity(_line(lines, 5), _line(lines, 6)) if lines else GateIdentity("", "")
 
 
 def gate_token_valid(token: str, expected: str) -> bool:

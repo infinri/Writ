@@ -7,8 +7,9 @@ commands; no CLI dependency here (no typer, no echoes).
 
 Public surface: `build_rule_dict`, `check_id_collision`, `suggest_relationships`,
 `check_redundancy`, `check_conflicts`, `finalize_conflict_and_export`,
-`assert_ai_provisional`, `promote`, `reject`, `downweight`,
-`RuleIdCollisionError`, `IllegalAuthorityTransitionError`.
+`assert_ai_provisional`, `promote`, `reject`, `downweight`, `record_trust`,
+`record_approval`, `dispute`, `verify`, `RuleIdCollisionError`,
+`IllegalAuthorityTransitionError`.
 
 Per ARCH-ORG-001: domain logic separated from CLI dispatch layer.
 Per ARCH-DI-001: pipeline and cache injected, not imported globally.
@@ -16,6 +17,7 @@ Per ARCH-DI-001: pipeline and cache injected, not imported globally.
 
 from __future__ import annotations
 
+import uuid
 from datetime import date
 from typing import TYPE_CHECKING
 
@@ -23,7 +25,9 @@ if TYPE_CHECKING:
     from writ.graph.db import Neo4jConnection
     from writ.retrieval.pipeline import RetrievalPipeline
     from writ.retrieval.traversal import AdjacencyCache
+    from writ.session.gate_token import GateIdentity
 
+from writ.graph.db._common import _now_iso
 from writ.graph.schema import REDUNDANCY_SIMILARITY_THRESHOLD as REDUNDANCY_THRESHOLD
 
 SUGGESTION_LIMIT = 5
@@ -245,3 +249,58 @@ async def downweight(db: Neo4jConnection, rule_id: str) -> None:
     succeeds for any authority. Preserve exactly -- do not add a guard.
     """
     await db.update_rule_confidence(rule_id, "speculative")
+
+
+async def record_trust(
+    db: Neo4jConnection, *, kind: str, rule_id: str, rule_props: dict, via: str,
+    session_id: str, identity: GateIdentity, note: str = "",
+) -> str | None:
+    """The one trust write: the Rule's summary props, then one TrustEvent carrying who
+    approved. Rule props first, so a crash between the two never leaves history for a
+    change that did not happen. Returns the event id, or None (no event) when the rule
+    is gone."""
+    project = await db.set_rule_trust_props(rule_id, rule_props)
+    if project is None:
+        return None
+    return await db.create_trust_event(
+        event_id=f"te-{uuid.uuid4().hex}", project=project, rule_id=rule_id, kind=kind,
+        via=via, session_id=session_id, os_login=identity.os_login,
+        git_name=identity.git_name, note=note,
+    )
+
+
+async def record_approval(
+    db: Neo4jConnection, rule_id: str, *, via: str, session_id: str, identity: GateIdentity,
+) -> str | None:
+    """Record a promotion that already committed. An approval is also a verification."""
+    return await record_trust(
+        db, kind="approval", rule_id=rule_id,
+        rule_props={
+            "approved_at": _now_iso(), "approval_via": via,
+            "last_verified": date.today().isoformat(),
+        },
+        via=via, session_id=session_id, identity=identity,
+    )
+
+
+async def dispute(
+    db: Neo4jConnection, rule_id: str, *, session_id: str, identity: GateIdentity,
+    note: str = "",
+) -> str | None:
+    """Mark a rule disputed. Never adjudicated, never cleared here, any authority."""
+    return await record_trust(
+        db, kind="dispute", rule_id=rule_id, rule_props={"disputed": True},
+        via="review_dispute", session_id=session_id, identity=identity, note=note,
+    )
+
+
+async def verify(
+    db: Neo4jConnection, rule_id: str, *, session_id: str, identity: GateIdentity,
+    note: str = "",
+) -> str | None:
+    """Restart a rule's verify clock, any authority."""
+    return await record_trust(
+        db, kind="verify", rule_id=rule_id,
+        rule_props={"last_verified": date.today().isoformat()},
+        via="review_verify", session_id=session_id, identity=identity, note=note,
+    )
