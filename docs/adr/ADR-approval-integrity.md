@@ -163,6 +163,40 @@ chose to act on first. So each surfacing clears the other: the CLI clears
 `pending_candidate_id` when it records a rule, and `/session/{id}/promotion-review` clears
 `pending_review_rule_id` when it records a candidate. One surfaced object at a time.
 
+## Decision 4: one snapshot read of the token file per authorization
+
+`writ review` (`_authorize_rule_action`) and `/session/{id}/promote-candidate` read the
+token file once, through `read_gate_snapshot`, and take the secret, the binding, the rule
+or candidate, and the approver identity from that one read before claiming. The public
+`read_gate_*` readers remain, as projections of the same snapshot.
+
+**Why.** Both paths used to read the file once per check. When two processes raced on one
+token, the winner's claim could delete the file between two of the loser's reads, so the
+loser was refused as `gate_token_unbound`, `gate_token_rule_mismatch` or
+`gate_token_candidate_mismatch` instead of as the race it lost, and the identity recorded
+could come from a different read than the bytes that were checked. With one read, a loser
+is refused either at that read (`agent_self_approval_blocked`, the file was already gone)
+or at the claim (`rule_promotion_claim_lost` on the CLI, "already spent" on the route).
+
+**No extra check at the claim.** `claim_gate_token` already guarantees what a re-mint
+between snapshot and claim needs. The rename lets exactly one process win, the winner
+re-checks lines 2 to 5 from the claimed bytes, and the supplied secret must equal the
+claimed line 1. A re-mint writes a fresh secret, so a claim made from the old snapshot
+fails and nothing is written; and because the claimed secret must equal the snapshot's,
+the snapshot's identity lines belong to the token that was actually spent.
+
+**Alternatives considered.**
+
+- Extend the change to the advance route and to `cmd_advance_phase` and the replan path,
+  which have the same multi-read shape. Deferred to a separate change: their losers are
+  not covered by the failure this fixes, and their tests synchronize on `read_gate_token`.
+
+**Accepted trade-offs.** A claim that wins the rename but fails the secret comparison
+still spends the re-minted file, so the user approves again; that property is unchanged
+and stays out of scope. The unreadable-file instrumentation (`session.gate_token.read`)
+moves from `read_gate_token` into the shared line reader, so it still fires once for a
+present but unreadable file and never for an absent one.
+
 ## Consequences
 
 - Six existing test modules that drove the hook with a bare `approved` now state their

@@ -76,6 +76,7 @@ from writ.session.gate_token import (
     read_gate_binding,
     read_gate_candidate,
     read_gate_identity,
+    read_gate_snapshot,
     read_gate_token,
 )
 from writ.session.locators import _find_plan_md, plan_md_hash

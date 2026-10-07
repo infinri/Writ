@@ -196,19 +196,8 @@ def read_gate_token(session_id: str) -> str:
     caller-supplied token, so binding text leaking onto the returned value would
     fail-close every gate the moment the binding was added.
     """
-    try:
-        with open(gate_token_path(session_id)) as f:
-            return f.readline().strip()
-    except FileNotFoundError:
-        # No approval outstanding: the normal state on most turns, not a failure.
-        return ""
-    except OSError as exc:
-        # Present but unreadable is anomalous -- a fail-closed gate that should have
-        # opened. Distinguished from the absent case so this stays signal, not noise.
-        from writ.shared.logging import emit_exception
-
-        emit_exception("session.gate_token.read", exc, session_id, None)
-        return ""
+    snap = read_gate_snapshot(session_id)
+    return snap.secret if snap else ""
 
 
 def _token_file_lines(session_id: str) -> list[str] | None:
@@ -221,9 +210,15 @@ def _token_file_lines(session_id: str) -> list[str] | None:
     try:
         with open(gate_token_path(session_id)) as f:
             return f.read().split("\n")
-    except OSError:
-        # Absent or unreadable both mean "no binding to trust", which the caller
-        # treats as a refusal. read_gate_token already instruments the unreadable case.
+    except FileNotFoundError:
+        # No approval outstanding: the normal state on most turns, not a failure.
+        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        # Present but unreadable is anomalous: a fail-closed gate that should have
+        # opened. Distinguished from the absent case so this stays signal, not noise.
+        from writ.shared.logging import emit_exception
+
+        emit_exception("session.gate_token.read", exc, session_id, None)
         return None
 
 
@@ -237,6 +232,38 @@ def _line(lines: list[str], index: int) -> str:
     cases rather than raising IndexError in one of them.
     """
     return lines[index].strip() if len(lines) > index else ""
+
+
+class GateSnapshot(NamedTuple):
+    secret: str
+    gate: str
+    plan_hash: str
+    candidate: str
+    rule: str
+    identity: GateIdentity
+    bound: bool
+
+
+def _snapshot(lines: list[str]) -> GateSnapshot:
+    """Every field of the token file from one list of lines. bound is the same
+    three-line test _binding_refusal applies."""
+    return GateSnapshot(
+        _line(lines, 0), _line(lines, 1), _line(lines, 2), _line(lines, 3),
+        _line(lines, 4), GateIdentity(_line(lines, 5), _line(lines, 6)), len(lines) >= 3,
+    )
+
+
+def read_gate_snapshot(session_id: str) -> GateSnapshot | None:
+    """The whole token file from ONE read, or None when it is absent/unreadable.
+
+    An authorization checks the secret, the binding and the rule or candidate, and
+    records the identity, all from this one snapshot, so the claim is the only other
+    touch of the file. Several reads let a concurrent claim delete the file between two
+    of them, which refused a race loser under the wrong class and could record an
+    identity from bytes other than the ones checked. Non-destructive, like every reader.
+    """
+    lines = _token_file_lines(session_id)
+    return _snapshot(lines) if lines is not None else None
 
 
 def _binding_refusal(
@@ -305,10 +332,8 @@ def read_gate_binding(session_id: str) -> tuple[str, str] | None:
     separately (read_gate_candidate) rather than widened into this tuple, because every
     existing caller unpacks exactly two values.
     """
-    lines = _token_file_lines(session_id)
-    if lines is None or len(lines) < 3:
-        return None
-    return _line(lines, 1), _line(lines, 2)
+    snap = read_gate_snapshot(session_id)
+    return (snap.gate, snap.plan_hash) if snap and snap.bound else None
 
 
 def read_gate_candidate(session_id: str) -> str:
@@ -319,8 +344,8 @@ def read_gate_candidate(session_id: str) -> str:
     does not authorize promoting anything", and the promotion route refuses on the
     mismatch rather than on the reason for it.
     """
-    lines = _token_file_lines(session_id)
-    return _line(lines, 3) if lines else ""
+    snap = read_gate_snapshot(session_id)
+    return snap.candidate if snap else ""
 
 
 def read_gate_rule(session_id: str) -> str:
@@ -333,15 +358,15 @@ def read_gate_rule(session_id: str) -> str:
     reason read_gate_candidate is: every existing caller of that function unpacks exactly
     two values.
     """
-    lines = _token_file_lines(session_id)
-    return _line(lines, 4) if lines else ""
+    snap = read_gate_snapshot(session_id)
+    return snap.rule if snap else ""
 
 
 def read_gate_identity(session_id: str) -> GateIdentity:
     """Who approved: lines 6 and 7, ("", "") for an absent file or a token minted before
     those lines existed. Read BEFORE a claim, which deletes the file."""
-    lines = _token_file_lines(session_id)
-    return GateIdentity(_line(lines, 5), _line(lines, 6)) if lines else GateIdentity("", "")
+    snap = read_gate_snapshot(session_id)
+    return snap.identity if snap else GateIdentity("", "")
 
 
 def gate_token_valid(token: str, expected: str) -> bool:

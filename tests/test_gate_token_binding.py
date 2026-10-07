@@ -944,6 +944,328 @@ class TestPromoteCandidateBinding:
 
 
 # ---------------------------------------------------------------------------
+# One snapshot read per authorization
+# ---------------------------------------------------------------------------
+
+_LINE_ONE = uuid.uuid4().hex
+
+# (label, file text, snapshot fields, which are also what each public reader returned before)
+_SNAPSHOT_FIXTURES = [
+    (
+        "seven",
+        f"{_LINE_ONE}\nphase-a\nhash123\ncand-1\nENF-RULE-001\nalice\nAlice A\n",
+        dict(secret=_LINE_ONE, gate="phase-a", plan_hash="hash123", candidate="cand-1",
+             rule="ENF-RULE-001", identity=("alice", "Alice A"), bound=True),
+    ),
+    (
+        "five",
+        f"{_LINE_ONE}\n\n\n\nENF-RULE-001\n",
+        dict(secret=_LINE_ONE, gate="", plan_hash="", candidate="",
+             rule="ENF-RULE-001", identity=("", ""), bound=True),
+    ),
+    (
+        "three",
+        f"{_LINE_ONE}\nphase-a\nhash123\n",
+        dict(secret=_LINE_ONE, gate="phase-a", plan_hash="hash123", candidate="",
+             rule="", identity=("", ""), bound=True),
+    ),
+    (
+        "one",
+        f"{_LINE_ONE}\n",
+        dict(secret=_LINE_ONE, gate="", plan_hash="", candidate="",
+             rule="", identity=("", ""), bound=False),
+    ),
+]
+
+
+class TestReadGateSnapshot:
+    @pytest.mark.parametrize("label, text, expected", _SNAPSHOT_FIXTURES,
+                             ids=[f[0] for f in _SNAPSHOT_FIXTURES])
+    def test_every_field_comes_from_one_read_with_empty_for_missing_lines(
+        self, label, text, expected,
+    ):
+        from writ.session.gate_token import GateIdentity, gate_token_path, read_gate_snapshot
+
+        sid = _sid(f"snap-{label}")
+        with _mint_cleanup(sid):
+            Path(gate_token_path(sid)).write_text(text)
+            snap = read_gate_snapshot(sid)
+        assert snap is not None
+        assert snap.secret == expected["secret"]
+        assert snap.gate == expected["gate"]
+        assert snap.plan_hash == expected["plan_hash"]
+        assert snap.candidate == expected["candidate"]
+        assert snap.rule == expected["rule"]
+        assert snap.identity == GateIdentity(*expected["identity"])
+        assert snap.bound is expected["bound"]
+
+    def test_a_three_line_file_without_a_trailing_newline_is_still_bound(self):
+        from writ.session.gate_token import gate_token_path, read_gate_snapshot
+
+        sid = _sid("snap-nonl")
+        with _mint_cleanup(sid):
+            Path(gate_token_path(sid)).write_text(f"{_LINE_ONE}\nphase-a\nhash123")
+            snap = read_gate_snapshot(sid)
+        assert snap is not None and snap.bound is True
+        assert (snap.gate, snap.plan_hash, snap.candidate) == ("phase-a", "hash123", "")
+
+    def test_an_absent_file_is_none(self):
+        from writ.session.gate_token import gate_token_path, read_gate_snapshot
+
+        sid = _sid("snap-absent")
+        assert not os.path.exists(gate_token_path(sid))
+        assert read_gate_snapshot(sid) is None
+
+    def test_an_unreadable_file_is_none(self, tmp_path, monkeypatch):
+        from writ.session.gate_token import read_gate_snapshot
+
+        token_dir = tmp_path / "token-is-a-dir"
+        token_dir.mkdir()
+        monkeypatch.setattr("writ.session.gate_token.gate_token_path", lambda _sid: str(token_dir))
+        assert read_gate_snapshot("sid-unreadable") is None
+
+    def test_reading_the_snapshot_does_not_consume_the_token(self):
+        from writ.session.gate_token import gate_token_path, mint_gate_token, read_gate_snapshot
+
+        sid = _sid("snap-keeps")
+        with _mint_cleanup(sid):
+            mint_gate_token(sid, gate="", plan_hash="", os_login="a", git_name="b")
+            read_gate_snapshot(sid)
+            assert os.path.exists(gate_token_path(sid))
+
+    def test_the_route_seam_re_exports_it(self):
+        import writ.server as server_module
+        from writ.session.gate_token import read_gate_snapshot
+
+        assert server_module.read_gate_snapshot is read_gate_snapshot
+
+
+class TestPublicReadersAreProjectionsOfTheSnapshot:
+    @pytest.mark.parametrize("label, text, expected", _SNAPSHOT_FIXTURES,
+                             ids=[f[0] for f in _SNAPSHOT_FIXTURES])
+    def test_each_reader_returns_what_it_always_returned(self, label, text, expected):
+        from writ.session.gate_token import (
+            gate_token_path,
+            read_gate_binding,
+            read_gate_candidate,
+            read_gate_identity,
+            read_gate_rule,
+            read_gate_token,
+        )
+
+        sid = _sid(f"proj-{label}")
+        with _mint_cleanup(sid):
+            Path(gate_token_path(sid)).write_text(text)
+            assert read_gate_token(sid) == expected["secret"]
+            binding = read_gate_binding(sid)
+            assert read_gate_candidate(sid) == expected["candidate"]
+            assert read_gate_rule(sid) == expected["rule"]
+            assert tuple(read_gate_identity(sid)) == expected["identity"]
+        if expected["bound"]:
+            assert binding == (expected["gate"], expected["plan_hash"])
+        else:
+            assert binding is None
+
+    def test_every_reader_returns_its_empty_value_for_an_absent_file(self):
+        from writ.session.gate_token import (
+            gate_token_path,
+            read_gate_binding,
+            read_gate_candidate,
+            read_gate_identity,
+            read_gate_rule,
+            read_gate_token,
+        )
+
+        sid = _sid("proj-absent")
+        assert not os.path.exists(gate_token_path(sid))
+        assert read_gate_token(sid) == ""
+        assert read_gate_binding(sid) is None
+        assert read_gate_candidate(sid) == ""
+        assert read_gate_rule(sid) == ""
+        assert tuple(read_gate_identity(sid)) == ("", "")
+
+    def test_the_readers_agree_with_the_snapshot_for_a_minted_token(self):
+        from writ.session.gate_token import (
+            mint_gate_token,
+            read_gate_binding,
+            read_gate_candidate,
+            read_gate_identity,
+            read_gate_rule,
+            read_gate_snapshot,
+            read_gate_token,
+        )
+
+        sid = _sid("proj-minted")
+        with _mint_cleanup(sid):
+            mint_gate_token(
+                sid, gate="", plan_hash="h", candidate_id="c-9", rule_id="ENF-X-001",
+                os_login="bob", git_name="Bob B",
+            )
+            snap = read_gate_snapshot(sid)
+            assert read_gate_token(sid) == snap.secret
+            assert read_gate_binding(sid) == (snap.gate, snap.plan_hash)
+            assert read_gate_candidate(sid) == snap.candidate
+            assert read_gate_rule(sid) == snap.rule
+            assert read_gate_identity(sid) == snap.identity
+
+
+class TestAbsentAndUnreadableTokenInstrumentation:
+    @pytest.fixture()
+    def emitted(self, monkeypatch):
+        rows: list[str] = []
+        monkeypatch.setattr(
+            "writ.shared.logging.emit_exception",
+            lambda component, *a, **k: rows.append(component),
+        )
+        return rows
+
+    def test_an_absent_file_emits_nothing_through_any_reader_or_the_claim(self, emitted):
+        from writ.session import gate_token as gt
+
+        sid = _sid("instr-absent")
+        assert not os.path.exists(gt.gate_token_path(sid))
+        gt.read_gate_snapshot(sid)
+        gt.read_gate_token(sid)
+        gt.read_gate_binding(sid)
+        gt.read_gate_candidate(sid)
+        gt.read_gate_rule(sid)
+        gt.read_gate_identity(sid)
+        assert gt.claim_gate_token(sid, "x", gate="", plan_hash="") is False
+        assert emitted == []
+
+    def test_a_present_but_unreadable_file_emits_a_gate_token_read_row(
+        self, emitted, tmp_path, monkeypatch,
+    ):
+        from writ.session.gate_token import read_gate_snapshot
+
+        token_dir = tmp_path / "token-is-a-dir"
+        token_dir.mkdir()
+        monkeypatch.setattr("writ.session.gate_token.gate_token_path", lambda _sid: str(token_dir))
+        assert read_gate_snapshot("sid-instr") is None
+        assert "session.gate_token.read" in emitted
+
+    def test_a_non_utf8_byte_fails_closed_like_an_unreadable_file(
+        self, emitted, tmp_path, monkeypatch,
+    ):
+        from writ.session.gate_token import read_gate_snapshot, read_gate_token
+
+        token = tmp_path / "token"
+        token.write_bytes(b"secret\n\nhash\n\n\nlogin\n\xff\xfe\n")
+        monkeypatch.setattr("writ.session.gate_token.gate_token_path", lambda _sid: str(token))
+        assert read_gate_snapshot("sid-instr") is None
+        assert read_gate_token("sid-instr") == ""
+        assert "session.gate_token.read" in emitted
+
+
+class TestPromoteCandidateRaceLoser:
+    """The route's loser: its token is claimed by another party (the real rename) right
+    after the route's first token-file read."""
+
+    @staticmethod
+    def _wire(monkeypatch, sid, *, claim_after_first: bool, after_first=None):
+        import writ.promotion as promotion_module
+        import writ.server as server_module
+        import writ.session.gate_token as gt
+
+        promote_calls: list[tuple] = []
+        events: list[str] = []
+        approvals: list[dict] = []
+
+        async def _stub_promote(*args, **_kwargs):
+            promote_calls.append(args)
+            return {"promoted": True, "graduated_via": "test-stub"}
+
+        async def _stub_record_approval(_db, candidate_id, **kwargs):
+            approvals.append({"candidate_id": candidate_id, **kwargs})
+
+        monkeypatch.setattr(server_module, "_db", object())
+        monkeypatch.setattr(server_module, "_pipeline", object())
+        monkeypatch.setattr(promotion_module, "promote_candidate", _stub_promote)
+        monkeypatch.setattr("writ.authoring.record_approval", _stub_record_approval)
+        monkeypatch.setattr(
+            server_module, "log_friction_event",
+            lambda session_id=None, mode=None, event="", **extra: events.append(event),
+        )
+
+        real = gt._token_file_lines
+        state = {"calls": 0}
+
+        def wrapper(session_id):
+            lines = real(session_id)
+            if session_id == sid:
+                state["calls"] += 1
+                if state["calls"] == 1:
+                    if after_first is not None:
+                        after_first()
+                    elif claim_after_first:
+                        gt._claim_file(sid)
+            return lines
+
+        monkeypatch.setattr(gt, "_token_file_lines", wrapper)
+        return promote_calls, events, approvals
+
+    @pytest.mark.asyncio
+    async def test_a_token_claimed_after_the_snapshot_read_is_refused_as_already_spent(
+        self, monkeypatch,
+    ):
+        from writ.server import SessionPromoteCandidateRequest
+        from writ.server.routes.gate import session_promote_candidate
+        from writ.session.gate_token import gate_token_path, mint_gate_token
+
+        sid = _sid("promote-race")
+        promote_calls, events, _approvals = self._wire(monkeypatch, sid, claim_after_first=True)
+        with _mint_cleanup(sid):
+            token = mint_gate_token(sid, gate="", plan_hash="", candidate_id="cand-1")
+
+            result = await session_promote_candidate(
+                sid, SessionPromoteCandidateRequest(candidate_id="cand-1", token=token)
+            )
+
+            assert not os.path.exists(gate_token_path(sid))
+        assert result == {
+            "promoted": False,
+            "error": (
+                "That approval was already spent (a concurrent request claimed it). "
+                "One approval authorizes exactly one promotion."
+            ),
+        }
+        assert "gate_token_unbound" not in events, events
+        assert "gate_token_candidate_mismatch" not in events, events
+        assert promote_calls == []
+
+    @pytest.mark.asyncio
+    async def test_the_recorded_approver_is_the_identity_in_the_checked_bytes(self, monkeypatch):
+        from writ.server import SessionPromoteCandidateRequest
+        from writ.server.routes.gate import session_promote_candidate
+        from writ.session.gate_token import gate_token_path, mint_gate_token
+
+        sid = _sid("promote-ident")
+
+        def swap_identity():
+            lines = Path(gate_token_path(sid)).read_text().split("\n")
+            lines[5], lines[6] = "mallory-swapped", "Mallory Swapped"
+            Path(gate_token_path(sid)).write_text("\n".join(lines))
+
+        promote_calls, _events, approvals = self._wire(
+            monkeypatch, sid, claim_after_first=False, after_first=swap_identity,
+        )
+        with _mint_cleanup(sid):
+            token = mint_gate_token(
+                sid, gate="", plan_hash="", candidate_id="cand-1",
+                os_login=FIXED_LOGIN, git_name=FIXED_GIT_NAME,
+            )
+            result = await session_promote_candidate(
+                sid, SessionPromoteCandidateRequest(candidate_id="cand-1", token=token)
+            )
+
+        assert result.get("promoted") is True
+        assert len(promote_calls) == 1
+        assert len(approvals) == 1, approvals
+        identity = approvals[0]["identity"]
+        assert (identity.os_login, identity.git_name) == (FIXED_LOGIN, FIXED_GIT_NAME)
+
+
+# ---------------------------------------------------------------------------
 # Capability 13: cmd_current_phase reports next_gate + plan_hash
 # ---------------------------------------------------------------------------
 

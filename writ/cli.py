@@ -1621,19 +1621,19 @@ def _authorize_rule_action(
     command after the human types "approved"), so it would deadlock the fix; and a confirm
     that `echo y` satisfies adds no safety, which is measured rather than assumed.
 
-    GUARD ORDER, which is not arbitrary and mirrors cmd_reopen_planning. The identity
-    (lines 6 and 7) is read between steps 5 and 6 because the claim deletes the file; it is
-    never a binding.
+    GUARD ORDER, which is not arbitrary and mirrors cmd_reopen_planning. Steps 3 to 5 and
+    the identity (lines 6 and 7, never a binding) all come from ONE read of the token file,
+    so the claim at step 6 is the only other touch of it: a loser of a race on one token is
+    refused either at that read (the file is already gone) or at the claim, never as a
+    binding refusal it does not deserve, and the identity recorded is the one in the bytes
+    that were checked.
     """
     from writ import authoring
     from writ.session.gate_token import (
         BINDING_RULE_MISMATCH,
         claim_gate_token,
         gate_token_valid,
-        read_gate_binding,
-        read_gate_identity,
-        read_gate_rule,
-        read_gate_token,
+        read_gate_snapshot,
         rule_action_binding,
     )
 
@@ -1663,7 +1663,8 @@ def _authorize_rule_action(
 
     # 3. THE SECRET. Failing here means the caller is not holding an approval at all, so
     #    nothing is consumed and nothing is written.
-    expected = read_gate_token(sid)
+    snap = read_gate_snapshot(sid)
+    expected = snap.secret if snap else ""
     if not gate_token_valid(token or "", expected):
         raise _refuse_promotion(
             sid, rule_id, "agent_self_approval_blocked",
@@ -1681,8 +1682,7 @@ def _authorize_rule_action(
 
     # 4. THE BINDING, read NON-DESTRUCTIVELY, so naming the reason never spends an
     #    approval that legitimately authorizes something else.
-    binding = read_gate_binding(sid)
-    if binding is None:
+    if not snap.bound:
         raise _refuse_promotion(
             sid, rule_id, "gate_token_unbound",
             f"Refusing to {action} {rule_id}: this session's gate token records nothing "
@@ -1693,16 +1693,16 @@ def _authorize_rule_action(
             "with --token.",
             event_target=f"review_{action}",
         )
-    if binding[0]:
+    if snap.gate:
         raise _refuse_promotion(
             sid, rule_id, "rule_promotion_gate_bound",
-            f"Refusing to {action} {rule_id}: that approval is bound to the {binding[0]} "
+            f"Refusing to {action} {rule_id}: that approval is bound to the {snap.gate} "
             f"gate, so it cannot {text['change']}. The token was left on disk, "
             "because it is the user's genuine phase approval and spending it here would "
-            f"destroy it. Advance the {binding[0]} gate first, then surface the rule with "
+            f"destroy it. Advance the {snap.gate} gate first, then surface the rule with "
             f"`{surface} {sid}` and have THE USER approve the "
             f"{text['noun']} on its own turn, with no phase gate pending.",
-            event_target=f"review_{action}", bound_gate=binding[0],
+            event_target=f"review_{action}", bound_gate=snap.gate,
         )
 
     # 5. THE RULE AND THE ACTION. "" and a different value are both refused, but they are
@@ -1710,7 +1710,7 @@ def _authorize_rule_action(
     #    action at all (a phase approval, or a token minted before line 5 existed), while
     #    a different value means it authorizes some OTHER rule, or another action on this
     #    one. The message names which.
-    bound_rule = read_gate_rule(sid)
+    bound_rule = snap.rule
     if bound_rule != target:
         if action == "promote":
             from writ.session.approval_workflow import _BINDING_REFUSAL_REASONS
@@ -1731,7 +1731,7 @@ def _authorize_rule_action(
             event_target=f"review_{action}", bound_rule=bound_rule,
         )
 
-    identity = read_gate_identity(sid)
+    identity = snap.identity
 
     # 6. THE ATOMIC CLAIM. Claiming IS consuming, so two concurrent actions holding one
     #    token produce exactly ONE write. plan_hash is passed as the token's OWN line-3
@@ -1739,7 +1739,7 @@ def _authorize_rule_action(
     #    that field against itself and plan drift cannot refuse an action that has nothing
     #    to do with plan.md.
     if not claim_gate_token(
-        sid, token or "", gate="", plan_hash=binding[1], candidate_id="",
+        sid, token or "", gate="", plan_hash=snap.plan_hash, candidate_id="",
         rule_id=target,
     ):
         raise _refuse_promotion(

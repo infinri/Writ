@@ -753,10 +753,12 @@ class TestConcurrentDisputesRealProcesses:
         self, graph_rule, tmp_path, monkeypatch,
     ):
         """Real `writ review --dispute` processes racing one real token file against the
-        isolated graph. The loser's refusal is recorded either at the token read (the
-        winner's rename already consumed the file) or at the claim itself
-        (rule_promotion_claim_lost); which arm catches a given loser is timing, so the
-        assertion is that EVERY loser is refused and says so, and the write happens once."""
+        isolated graph. A loser is recorded by exactly one of two arms: the single snapshot
+        read (agent_self_approval_blocked: the winner's rename already consumed the file) or
+        the claim (rule_promotion_claim_lost: the loser held a snapshot and lost the
+        rename). gate_token_unbound and gate_token_rule_mismatch can no longer catch a
+        loser. Which arm catches a given loser is timing, so the assertion is that EVERY
+        loser is refused and says so, and the write happens once."""
         project = _env(monkeypatch, tmp_path, "concurrent-dispute")
         rid = graph_rule("race", "human")
         sid = _sid("race")
@@ -787,6 +789,175 @@ class TestConcurrentDisputesRealProcesses:
             f"every loser must record its refusal; got {[r.get('event') for r in audit]}"
         )
         assert all(r.get("rule_id") == rid for r in refusals)
+
+
+# ---------------------------------------------------------------------------
+# One snapshot read per authorization: a race loser is refused at the claim
+# ---------------------------------------------------------------------------
+
+
+def _seed_rule_for(action: str, graph_rule, label: str) -> str:
+    if action == "promote":
+        return graph_rule(label, "ai-provisional")
+    return graph_rule(label, "human", last_verified=OLD_VERIFIED)
+
+
+class TestRaceLoserIsRefusedAtTheClaim:
+    """Forces the race deterministically: the first token-file read made through
+    gate_token._token_file_lines returns the real lines and THEN another party wins the
+    real rename (_claim_file). Only the timing is forced; the competing claim is the real
+    filesystem rename. With one snapshot read the loser held a snapshot and loses the
+    claim (rule_promotion_claim_lost); a code path that reads the file several times
+    instead sees the file vanish between its checks and mislabels the loser."""
+
+    @staticmethod
+    def _install(monkeypatch, sid: str, after_first=None):
+        import writ.session.gate_token as gt
+
+        real = gt._token_file_lines
+        state = {"calls": 0}
+
+        def wrapper(session_id):
+            lines = real(session_id)
+            if session_id == sid:
+                state["calls"] += 1
+                if state["calls"] == 1:
+                    if after_first is None:
+                        gt._claim_file(sid)
+                    else:
+                        after_first()
+            return lines
+
+        monkeypatch.setattr(gt, "_token_file_lines", wrapper)
+        return state
+
+    @pytest.mark.parametrize("action", ["promote", "dispute", "verify"])
+    def test_a_loser_whose_token_is_claimed_after_its_read_is_refused_as_claim_lost(
+        self, action, graph_rule, tmp_path, monkeypatch,
+    ):
+        from writ.session.gate_token import gate_token_path
+
+        project = _env(monkeypatch, tmp_path, f"race-{action}")
+        rid = _seed_rule_for(action, graph_rule, f"rc{action[:3]}")
+        sid = _sid("race-det")
+        with _mint_cleanup(sid):
+            token = _mint(sid, _surface(action, rid, sid))
+            self._install(monkeypatch, sid)
+
+            result, notify = _cli(_action_args(action, rid, sid, token))
+
+            assert result.exit_code == 1, result.output
+            assert "already spent" in result.output
+            assert not os.path.exists(gate_token_path(sid))
+            notify.assert_not_called()
+
+        audit = [(r.get("event"), r.get("rule_id")) for r in _read_stream_rows(project, "audit")]
+        assert ("rule_promotion_claim_lost", rid) in audit, audit
+        names = [event for event, _rid in audit]
+        assert "gate_token_unbound" not in names, audit
+        assert "gate_token_rule_mismatch" not in names, audit
+        assert "agent_self_approval_blocked" not in names, audit
+
+        assert _trust_events(rid) == []
+        node = _rule_node(rid)
+        if action == "promote":
+            assert node["authority"] == "ai-provisional"
+        elif action == "dispute":
+            assert not node.get("disputed")
+        else:
+            assert node["last_verified"] == OLD_VERIFIED
+
+    @pytest.mark.parametrize("action", ["promote", "dispute", "verify"])
+    def test_a_process_whose_read_finds_the_token_already_claimed_is_refused_as_self_approval(
+        self, action, graph_rule, tmp_path, monkeypatch,
+    ):
+        from writ.session.gate_token import _claim_file
+
+        project = _env(monkeypatch, tmp_path, f"gone-{action}")
+        rid = _seed_rule_for(action, graph_rule, f"gn{action[:3]}")
+        sid = _sid("race-gone")
+        with _mint_cleanup(sid):
+            token = _mint(sid, _surface(action, rid, sid))
+            assert _claim_file(sid) is not None  # the winner got there first
+
+            result, _notify = _cli(_action_args(action, rid, sid, token))
+
+        assert result.exit_code == 1, result.output
+        assert "cannot approve its own proposal" in result.output
+        names = [r.get("event") for r in _read_stream_rows(project, "audit")]
+        assert "agent_self_approval_blocked" in names, names
+        for wrong in ("gate_token_unbound", "gate_token_rule_mismatch", "rule_promotion_claim_lost"):
+            assert wrong not in names, names
+        assert _trust_events(rid) == []
+
+    def test_a_token_reminted_between_the_snapshot_and_the_claim_is_refused_and_writes_nothing(
+        self, graph_rule, tmp_path, monkeypatch,
+    ):
+        project = _env(monkeypatch, tmp_path, "race-remint")
+        rid = graph_rule("remint", "human")
+        sid = _sid("race-remint")
+        with _mint_cleanup(sid):
+            binding = _surface("dispute", rid, sid)
+            token = _mint(sid, binding)
+            self._install(monkeypatch, sid, after_first=lambda: _mint(sid, binding))
+
+            result, notify = _cli(_action_args("dispute", rid, sid, token))
+
+            assert result.exit_code == 1, result.output
+            notify.assert_not_called()
+
+        names = [r.get("event") for r in _read_stream_rows(project, "audit")]
+        assert "rule_promotion_claim_lost" in names, names
+        assert "rule_disputed" not in names, names
+        assert _trust_events(rid) == []
+        assert not _rule_node(rid).get("disputed")
+
+    def test_the_recorded_identity_is_the_one_in_the_bytes_that_were_checked(
+        self, graph_rule, tmp_path, monkeypatch,
+    ):
+        """The identity lines are rewritten (same secret and binding, so the claim still
+        succeeds) right after the read that the checks used. The TrustEvent must carry the
+        identity that was in the checked bytes, not whatever a later read would see."""
+        from writ.session.gate_token import gate_token_path
+
+        _env(monkeypatch, tmp_path, "race-identity")
+        rid = graph_rule("ident", "human")
+        sid = _sid("race-ident")
+        with _mint_cleanup(sid):
+            binding = _surface("dispute", rid, sid)
+            token = _mint(sid, binding)
+
+            def swap_identity():
+                with open(gate_token_path(sid)) as f:
+                    lines = f.read().split("\n")
+                lines[5], lines[6] = "mallory-swapped", "Mallory Swapped"
+                with open(gate_token_path(sid), "w") as f:
+                    f.write("\n".join(lines))
+
+            self._install(monkeypatch, sid, after_first=swap_identity)
+            result, _notify = _cli(_action_args("dispute", rid, sid, token))
+            assert result.exit_code == 0, result.output
+
+        events = _trust_events(rid)
+        assert len(events) == 1, events
+        assert events[0]["os_login"] == LOGIN
+        assert events[0]["git_name"] == GIT_NAME
+
+    def test_one_successful_action_reads_the_token_file_exactly_twice(
+        self, graph_rule, tmp_path, monkeypatch,
+    ):
+        """The snapshot, then the claim's pre-check; nothing else touches the file."""
+        _env(monkeypatch, tmp_path, "race-reads")
+        rid = graph_rule("reads", "human")
+        sid = _sid("race-reads")
+        with _mint_cleanup(sid):
+            token = _mint(sid, _surface("verify", rid, sid))
+            state = self._install(monkeypatch, sid, after_first=lambda: None)
+
+            result, _notify = _cli(_action_args("verify", rid, sid, token))
+
+            assert result.exit_code == 0, result.output
+        assert state["calls"] == 2, state
 
 
 # ---------------------------------------------------------------------------

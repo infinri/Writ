@@ -470,7 +470,8 @@ async def session_promote_candidate(
         return {"promoted": False, "error": "candidate_id is required."}
 
     token = req.token
-    expected_token = await asyncio.to_thread(server.read_gate_token, session_id)
+    snap = await asyncio.to_thread(server.read_gate_snapshot, session_id)
+    expected_token = snap.secret if snap else ""
     if not server.gate_token_valid(token, expected_token):
         await asyncio.to_thread(
             server.log_friction_event,
@@ -530,8 +531,7 @@ async def session_promote_candidate(
     # surfaced, which is the same residual plan.md carries and which the paragraph above
     # already accepts: what the binding removes is an approval for candidate C being
     # spendable on candidate D.
-    binding = await asyncio.to_thread(server.read_gate_binding, session_id)
-    if binding is None:
+    if not snap.bound:
         await asyncio.to_thread(
             server.log_friction_event,
             session_id=session_id,
@@ -549,19 +549,19 @@ async def session_promote_candidate(
                 bound="", target="candidate-promotion",
             ),
         }
-    if binding[0]:
+    if snap.gate:
         await asyncio.to_thread(
             server.log_friction_event,
             session_id=session_id,
             mode=None,
             event="candidate_promotion_gate_bound",
             candidate_id=candidate_id,
-            bound_gate=binding[0],
+            bound_gate=snap.gate,
         )
         return {
             "promoted": False,
             "error": (
-                f"That approval is bound to the {binding[0]} gate, so it cannot promote a "
+                f"That approval is bound to the {snap.gate} gate, so it cannot promote a "
                 "candidate to canon. Approve the promotion on its own turn, with no phase "
                 "gate pending."
             ),
@@ -570,7 +570,7 @@ async def session_promote_candidate(
     # The candidate this approval was minted for. "" covers a non-promotion approval and
     # a token minted before line 4 existed; both mean "authorizes promoting nothing", so
     # both are refused here rather than distinguished.
-    bound_candidate = await asyncio.to_thread(server.read_gate_candidate, session_id)
+    bound_candidate = snap.candidate
     if bound_candidate != candidate_id:
         await asyncio.to_thread(
             server.log_friction_event,
@@ -600,11 +600,11 @@ async def session_promote_candidate(
     # fingerprint, so _binding_refusal compares that field against itself and cannot refuse
     # on plan drift. That preserves the asymmetry argued for above: atomicity is gained
     # without importing an enforcement this route deliberately does not want.
-    # WHO APPROVED, read before the claim below deletes the file. Not a binding.
-    identity = await asyncio.to_thread(server.read_gate_identity, session_id)
+    # WHO APPROVED, from the same snapshot the checks above used. Not a binding.
+    identity = snap.identity
     claimed = await asyncio.to_thread(
         server.claim_gate_token, session_id, token,
-        gate="", plan_hash=binding[1], candidate_id=candidate_id,
+        gate="", plan_hash=snap.plan_hash, candidate_id=candidate_id,
     )
     if not claimed:
         return {
