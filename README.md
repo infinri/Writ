@@ -2,6 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-support-FFDD00?logo=buymeacoffee&logoColor=white)](https://buymeacoffee.com/infinri)
 
 **Claude Code can forget your rules. Writ can refuse the action.**
 
@@ -13,7 +14,7 @@ Writ is a local governance, context, and continuity runtime for Claude Code. It 
 | **Context** | Relevant rules, skills, and methodology arrive when the current task, file, tool, or workflow phase requires them. |
 | **Continuity** | Decisions and project memory persist across sessions, while best-effort handoffs preserve active workflow state across context compaction. |
 
-Ready to try it? Jump to [Install](#install), or read [how enforcement works](#how-enforcement-works).
+[Install](#install) · [How enforcement works](#how-enforcement-works) · [Support Writ ☕](SPONSORSHIP.md)
 
 ## Why it exists
 
@@ -199,13 +200,17 @@ Two things are independently checkable before you install anything. [`docs/press
 [graph explorer](https://infinri.github.io/Writ/docs/architecture/knowledge-graph.html) |
 [corpus round trip](https://infinri.github.io/Writ/docs/architecture/corpus-roundtrip.html)
 
-## Contributing and support
+## Contributing
 
 Found a bypass, or a case where a rule you relied on did not hold? That is the most valuable thing you can send. Open an issue with the transcript. For anything exploitable, report privately through [GitHub Security Advisories](https://github.com/infinri/Writ/security/advisories/new) rather than in public.
 
 Want to contribute rules or code? [`CONTRIBUTING.md`](CONTRIBUTING.md) covers authoring, the review cadence, and how agent-proposed rules are triaged.
 
-Writ is free and developed in my own time. If it saves you some of yours, you can optionally support its continued development with [a coffee](https://buymeacoffee.com/infinri).
+## Support Writ
+
+Writ is free and open source, built and maintained by Lucio Saldivar in his own time. If the runtime, documentation, or research saves you time, a coffee helps support continued development and maintenance.
+
+[☕ Buy me a coffee](https://buymeacoffee.com/infinri) · [About supporting Writ](SPONSORSHIP.md)
 
 ## Acknowledgements
 
