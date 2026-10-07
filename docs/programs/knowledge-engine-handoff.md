@@ -12,12 +12,15 @@ whole program is done.
 | program/1a-injection-split | 8e96c03 | 1a: four capped UserPromptSubmit hooks (9,500 chars each) |
 | program/1b-1e-silent-fixes | 7c6850f | 1b-1e: language filter, compaction exclusion, gate after filter, label lists |
 | program/3-security-baseline | d696610 | 3: loopback ports, private Neo4j password, `writ neo4j` commands, lock |
-| program/wave1 (current) | 170e268, 92a008b | 2 live reload, 1f measurement + rule rewording, 7c tool-failure budget, 1g gate over-match; suite fixes |
+| program/wave1 | 170e268, 92a008b | 2 live reload, 1f measurement + rule rewording, 7c tool-failure budget, 1g gate over-match; suite fixes |
+| program/wave2 (current) | f0dc450, 9fd8f98, 82fc71a | 6 trust records; 4 decision recall; support page (SPONSORSHIP.md, README) |
 
-Full suite on program/wave1: 13148 passed, 0 failed (`.venv/bin/python3 -m pytest tests/`).
+Run the suite with `.venv/bin/python3 -m pytest tests/` (about 19 minutes).
 
-Done: 1a-1g, 2, 3, 7c. Deferred: 7b (needs ~470 human relevance labels).
-Remaining, in order: wave 2 = item 6 then item 4; wave 3 = item 5 (phases 0-4), then 7a and 7d.
+Done: 1a-1g, 2, 3, 4, 6, 7c, and the support page (ships with the program, user 2026-10-07). Deferred: 7b (needs ~470 human relevance labels).
+Remaining, in order: wave 3 = item 5 (phases 0-4), then 7a and 7d.
+
+Last full suite (2026-10-07, before the item 4 commit): 13677 passed, 1 failed. The failure, tests/test_trust_review.py::TestConcurrentDisputesRealProcesses, passed 9 times alone, under CPU load, and in a 712-test related run; not reproduced. Re-check it in the next full run.
 
 ## Not live until the end
 
