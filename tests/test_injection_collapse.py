@@ -173,7 +173,11 @@ class TestInjectionState:
 
     def test_the_tracked_sections_are_always_on_floor_recall_and_pre_write_decision(self):
         st = _imp("writ.session.injection_state")
-        assert tuple(st.COLLAPSIBLE_SECTIONS) == ("always_on", "floor", "recall", "pre_write_decision")
+        # "documents" joins the tuple (program item 5, workstream D): the documents
+        # section records its shown chunk ids per epoch through the same apply_mark_shown.
+        assert tuple(st.COLLAPSIBLE_SECTIONS) == (
+            "always_on", "floor", "recall", "pre_write_decision", "documents",
+        )
 
     def test_apply_mark_shown_records_recall_and_pre_write_decision_ids(self):
         st = _imp("writ.session.injection_state")
@@ -182,6 +186,14 @@ class TestInjectionState:
         st.apply_mark_shown(cache, "pre_write_decision", "0|", ["src/mod.py#D1"])
         assert cache["injection_shown"] == {"epoch": "0|", "recall": ["D1", "D2"],
                                             "pre_write_decision": ["src/mod.py#D1"]}
+
+    def test_apply_mark_shown_records_documents_chunk_ids(self):
+        st = _imp("writ.session.injection_state")
+        cache: dict = {}
+        st.apply_mark_shown(cache, "documents", "0|", ["p:docs/x#0001", "p:docs/x#0000"])
+        assert cache["injection_shown"] == {
+            "epoch": "0|", "documents": ["p:docs/x#0000", "p:docs/x#0001"],
+        }
 
     def test_marked_this_epoch_is_false_without_a_record(self):
         st = _imp("writ.session.injection_state")

@@ -39,6 +39,7 @@ from writ.server.models import (
     SubagentStartContextRequest,
 )
 from writ.server.routes.session_state import _format_query_response
+from writ.shared.injection_text import sanitize_retrieved
 from writ.shared.logging import emit, emit_destination, emit_exception
 from writ.shared.tokens import cost_for, estimate_tokens
 from writ.shared.trust import is_verify_stale
@@ -213,12 +214,13 @@ _LEGACY_PROMPT_SECTIONS = ("ranked", "always_on", "methodology")
 async def prompt_bundle(request: PromptBundleRequest) -> dict[str, Any]:
     """The per-prompt injection sections, each rendered under its own character ceiling.
 
-    `sections` names which of always_on / ranked / methodology / recall to build. Each
-    UserPromptSubmit hook asks for exactly one, so no hook prints another's text and none
-    crosses the host's per-hook cap (docs/adr/ADR-prompt-injection-split.md). Omitted, it
-    is the legacy trio in one call. Every section reads the ONE cache snapshot taken below,
-    which is what lets four parallel hooks agree: no section depends on a write another
-    section makes in the same turn.
+    `sections` names which of always_on / ranked / methodology / recall / documents to
+    build. Each UserPromptSubmit hook asks for exactly one, so no hook prints another's text
+    and none crosses the host's per-hook cap (docs/adr/ADR-prompt-injection-split.md).
+    Omitted, it is the legacy trio in one call. Every section reads the ONE cache snapshot
+    taken below, which is what lets five parallel hooks agree: no section depends on a write
+    another section makes in the same turn. The documents section serves the project's
+    ingested document chunks (docs/adr/ADR-document-retrieval.md).
 
     Awaits the existing /query, /always-on, /methodology-companion handlers in-process and
     applies the same cache updates the bash hook used to; friction rows stay client-side
@@ -226,7 +228,7 @@ async def prompt_bundle(request: PromptBundleRequest) -> dict[str, Any]:
     """
     import json as _json
     from writ.retrieval.injection_ceiling import (
-        NUDGE_TEXT, clamp_lines, collapse_floor, fit_methodology, fit_ranked,
+        NUDGE_TEXT, clamp_fenced, collapse_floor, fit_methodology, fit_ranked,
         ranked_char_limit, render_always_on_section, section_char_limit,
     )
     from writ.retrieval.prompt_bundle import compute_nudge, extract_rule_objects, tag_overlap
@@ -253,7 +255,7 @@ async def prompt_bundle(request: PromptBundleRequest) -> dict[str, Any]:
 
     out: dict[str, Any] = {
         "always_on_block": "", "rules_text": "", "methodology_block": "", "recall_block": "",
-        "nudge": "", "nudge_text": "", "error": False, "skipped": False,
+        "documents_block": "", "nudge": "", "nudge_text": "", "error": False, "skipped": False,
         "broad_meta": None, "ao_meta": None, "method_meta": None,
     }
     # Explicit sections only: a legacy caller keeps its old no-skip behavior.
@@ -409,12 +411,36 @@ async def prompt_bundle(request: PromptBundleRequest) -> dict[str, Any]:
                 cards = rresp.get("cards") or []
         except Exception as exc:
             emit_exception("server.prompt_bundle.recall", exc, sid, None)
-        out["recall_block"] = clamp_lines(briefing, section_char_limit("recall"))
+        out["recall_block"] = clamp_fenced(briefing, section_char_limit("recall"))
         shown = [c["id"] for c in cards if c.get("head") and c["head"] in out["recall_block"]]
         if shown or not briefed:
             await asyncio.to_thread(server.writ_session.cmd_update, sid, [
                 "--mark-shown", "recall", epoch, _json.dumps(shown),
             ])
+
+    # --- Documents: the project's ingested chunks (program item 5). Not for an orchestrator
+    # master (it dispatches; its sub-agents read). A failure leaves the block empty.
+    if "documents" in sections:
+        from writ.retrieval.documents import fit_documents_block
+        docs = server._documents
+        if docs is not None and not cache.get("is_orchestrator"):
+            try:
+                project = await resolve_caller_project(request.project_root or "")
+                result = await asyncio.to_thread(
+                    docs.query, prompt, project=project, exclude_ids=shown_ids(cache, "documents"),
+                )
+                block, entries = fit_documents_block(result, section_char_limit("documents"))
+                out["documents_block"] = block
+                shown = [e["id"] for e in entries if e["head"] in block]
+                if shown:
+                    await asyncio.to_thread(server.writ_session.cmd_update, sid, [
+                        "--mark-shown", "documents", epoch, _json.dumps(shown),
+                    ])
+                emit("metrics", "documents_query", sid, None, mode=result["mode"],
+                     top_cosine=result["abstain_signal"], hits=len(result["chunks"]),
+                     shown=len(shown), chars=len(block))
+            except Exception as exc:
+                emit_exception("server.prompt_bundle.documents", exc, sid, None)
 
     return out
 
@@ -914,8 +940,8 @@ async def always_on_bundle(
     summary_bundle = []
     total_tokens = 0
     for r in combined:
-        trigger = (r.get("trigger") or "").strip()
-        statement = (r.get("statement") or "").strip()
+        trigger = sanitize_retrieved(r.get("trigger")).strip()
+        statement = sanitize_retrieved(r.get("statement")).strip()
         est = estimate_tokens(trigger, statement)
         summary_bundle.append({
             "rule_id": r["rule_id"],

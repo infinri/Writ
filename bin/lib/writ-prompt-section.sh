@@ -1,5 +1,5 @@
-# Shared body of the single-section UserPromptSubmit hooks (always-on, methodology, recall)
-# and the friction-row emitter all four injection hooks use. Sourced after common.sh, with
+# Shared body of the single-section UserPromptSubmit hooks (always-on, methodology, recall,
+# documents) and the friction-row emitter all five injection hooks use. Sourced after common.sh, with
 # WRIT_DIR set. See docs/adr/ADR-prompt-injection-split.md.
 
 # Friction/telemetry rows for one /prompt-bundle response, buffered for the Stop drain.
@@ -72,7 +72,8 @@ print(json.dumps({
     printf '%s' "$body"
 }
 
-# One section hook, start to finish. $1 = always_on | methodology | recall, $2 = hook name.
+# One section hook, start to finish. $1 = always_on | methodology | recall | documents,
+# $2 = hook name.
 # Never autostarts the daemon (writ-rag-inject.sh owns that) and never writes the session
 # cache: every write for a section happens server-side under the cache lock.
 #
@@ -110,6 +111,7 @@ writ_prompt_section_main() {
         always_on) field=always_on_block ;;
         methodology) field=methodology_block ;;
         recall) field=recall_block ;;
+        documents) field=documents_block ;;
     esac
     eval "$(parsed_fields "$resp" err=error text="$field")"
     err="${err-}"; text="${text-}"

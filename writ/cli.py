@@ -3089,6 +3089,78 @@ def memory_audit(
     asyncio.run(_run())
 
 
+# --- Long documents: docs sub-app (program item 5) -----------------------------
+# `writ docs ingest` turns a repo's markdown into Document and Chunk records the daemon's
+# documents section retrieves from (docs/adr/ADR-document-retrieval.md).
+
+docs_app = typer.Typer(
+    name="docs",
+    help="Ingest a repo's markdown documents for the per-prompt documents section.",
+)
+app.add_typer(docs_app, name="docs")
+
+
+@docs_app.command("ingest")
+def docs_ingest(
+    repo: str = typer.Option(".", "--repo", help="Repo whose documents to ingest."),
+    include_claude_md: bool = typer.Option(
+        False, "--include-claude-md", help="Also ingest CLAUDE.md files.",
+    ),
+    memory_dir: str = typer.Option(
+        "", "--memory-dir", help="Also ingest the memory files in this directory (MEMORY.md skipped).",
+    ),
+) -> None:
+    """Ingest docs/, ADRs and READMEs; replace changed documents, delete vanished ones."""
+    from writ.documents.ingest import DEFAULT_KINDS, ingest_documents
+
+    repo_root = os.path.abspath(repo)
+    kinds = set(DEFAULT_KINDS)
+    memory_files: list[Path] = []
+    if include_claude_md:
+        kinds.add("claude_md")
+    if memory_dir:
+        mem_root = Path(memory_dir).expanduser().resolve()
+        if not mem_root.is_dir():
+            typer.echo(f"No memory directory at {mem_root}.", err=True)
+            raise typer.Exit(code=1)
+        mc = _memory_capture()
+        kinds.add("memory")
+        memory_files = [note for note in sorted(mem_root.glob("*.md"))
+                        if not mc.is_memory_index_file(str(note)) and _contained(note, mem_root)]
+
+    async def _run() -> int:
+        async with _writ_db() as db:
+            project = await db.resolve_project_for_cwd(repo_root)
+            if not project:
+                typer.echo(f"[Writ docs: {repo_root} is not registered as a project, so there "
+                           f"is nowhere to ingest its documents. Register it by running a Writ "
+                           f"session in it (or `writ hooks install`).]")
+                return 1
+            # Doc ids are relative to --repo and deletion is scoped by project and kind, so
+            # only the registered root may be ingested: a subdirectory would collide ids and
+            # delete the project's documents outside it.
+            registered = next((p.get("repo_root") or "" for p in await db.get_projects()
+                               if p.get("name") == project), "")
+            if registered.rstrip("/") != repo_root.rstrip("/"):
+                typer.echo(f"[Writ docs: {repo_root} is inside project {project}, whose registered "
+                           f"root is {registered}. Run `writ docs ingest --repo {registered}`.]")
+                return 1
+            await db.apply_constraints()
+            report = await ingest_documents(db, project, Path(repo_root), frozenset(kinds), memory_files)
+        typer.echo(
+            f"Docs ingest: project={project} scanned={report.scanned} unchanged={report.unchanged} "
+            f"written={report.written} chunks={report.chunks} deleted={report.deleted} "
+            f"skipped={report.skipped_large + report.skipped_outside}"
+        )
+        if report.written + report.deleted > 0:
+            _notify_daemon_reload()
+        return 0
+
+    code = asyncio.run(_run())
+    if code:
+        raise typer.Exit(code=code)
+
+
 # --- Sub-agent turn tripwire: transcript sub-app -------------------------------
 # The tripwire itself runs from the SubagentStop hook; this sub-app is the operator's
 # way to re-run the same predicate by hand over a file or a whole session directory.

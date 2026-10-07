@@ -127,6 +127,26 @@ replaces each entry rather than mutating it. A failed apply leaves the route's r
 unchanged and writes a `server.feedback.refresh` exception row. A crossing `/feedback`
 still issues exactly three statements.
 
+### 7. The documents half (program item 5)
+
+`RetrievalHandle` gains `documents` (last, default None), the chunk retrieval of
+`docs/adr/ADR-document-retrieval.md`. `build_retrieval_handle` loads the inputs with documents
+(one more read, the `DOCUMENT_COLLECTOR` chunk read) and the fingerprint gains
+`documents_bm25`, `documents_hnsw` and `documents_meta`. The swap is still one handle and one
+`_install_retrieval`, which now also sets `server._documents` with no `await` between the
+assignments.
+
+Partial rebuild: when only document keys moved, the previous rule pipeline object is reused and
+`assemble_pipeline` is not called; when only rule keys moved, the previous document pipeline is
+reused. The document build receives the rule pipeline's encoder.
+
+Document failure: if the document build raises, the handle is still built with the new rule half,
+the previous document half and the previous handle's three document keys (None and `"unbuilt"`
+on first start), and a `retrieval.documents.build` exception row is written. A bad chunk never
+blocks a rule reload or the daemon's first start, and the next reload retries because the stored
+keys differ from the graph's. A rule build failure still fails the whole reload and keeps the
+last good generation.
+
 ## Alternatives considered
 
 - **A file watcher or polling.** Rejected: the writers are known (the CLI commands and the

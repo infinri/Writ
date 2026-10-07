@@ -10,7 +10,7 @@ retrieval_exclude_ids below uses for the ranked exclusion (item 1c).
 """
 from __future__ import annotations
 
-COLLAPSIBLE_SECTIONS = ("always_on", "floor", "recall", "pre_write_decision")
+COLLAPSIBLE_SECTIONS = ("always_on", "floor", "recall", "pre_write_decision", "documents")
 
 
 def injection_epoch(cache: dict) -> str:

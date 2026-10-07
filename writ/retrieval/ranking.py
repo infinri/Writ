@@ -245,7 +245,7 @@ def filter_proximity_seeds(
 
 # The fields the injected header renders (writ/session/budget_tracking.py:cmd_format).
 # Every projection in this module carries them, so the header shows real values.
-_HEADER_FIELDS = ("severity", "authority", "stale", "deliberate")
+_HEADER_FIELDS = ("severity", "authority", "stale", "deliberate", "similarity")
 
 
 def _carry_header_fields(entry: dict, rule: dict) -> None:

@@ -3,8 +3,8 @@
 Moved verbatim from the former writ/graph/db.py (Wave 2 mixin split); methods read self._driver / self._database set by Neo4jConnection.__init__."""
 from __future__ import annotations
 
-from writ.graph.schema import Commit, Decision, FileChange, TrustEvent
-from writ.graph.db._common import _coerce_neo4j_value, _now_iso
+from writ.graph.schema import Chunk, Commit, Decision, Document, FileChange, TrustEvent
+from writ.graph.db._common import RECORD_ID_FIELDS, _coerce_neo4j_value, _now_iso
 
 
 class RecordStoreMixin:
@@ -36,22 +36,22 @@ class RecordStoreMixin:
 
     async def create_decision(self, **decision_data) -> str:
         """Create or update a Decision record. Idempotent via MERGE on (decision_id, project)."""
-        return await self._create_record(Decision(**decision_data), "decision_id")
+        return await self._create_record(Decision(**decision_data), RECORD_ID_FIELDS[Decision.__name__])
 
     async def create_filechange(self, **filechange_data) -> str:
         """Create or update a FileChange record. Idempotent via MERGE on (change_id, project)."""
         filechange_data.setdefault("ts", _now_iso())
-        return await self._create_record(FileChange(**filechange_data), "change_id")
+        return await self._create_record(FileChange(**filechange_data), RECORD_ID_FIELDS[FileChange.__name__])
 
     async def create_commit(self, **commit_data) -> str:
         """Create or update a Commit record. Idempotent via MERGE on (commit_hash, project)."""
         commit_data.setdefault("ts", _now_iso())
-        return await self._create_record(Commit(**commit_data), "commit_hash")
+        return await self._create_record(Commit(**commit_data), RECORD_ID_FIELDS[Commit.__name__])
 
     async def create_trust_event(self, **event_data) -> str:
         """Create or update a TrustEvent record. Idempotent via MERGE on (event_id, project)."""
         event_data.setdefault("ts", _now_iso())
-        return await self._create_record(TrustEvent(**event_data), "event_id")
+        return await self._create_record(TrustEvent(**event_data), RECORD_ID_FIELDS[TrustEvent.__name__])
 
     async def create_memory(
         self,
@@ -371,3 +371,54 @@ class RecordStoreMixin:
             )
             row["governing_rule_ids"] = row.get("governing_rule_ids") or []
         return rows
+
+    async def get_document_hashes(self, project: str) -> dict[str, dict]:
+        """doc_id -> {source_hash, kind} for every Document of `project` (program item 5)."""
+        doc_id = RECORD_ID_FIELDS["Document"]
+        rows = await self._run(
+            f"MATCH (d:Document {{project: $project}}) "
+            f"RETURN d.{doc_id} AS doc_id, d.source_hash AS source_hash, d.kind AS kind",
+            project=project,
+        )
+        return {r["doc_id"]: {"source_hash": r["source_hash"], "kind": r["kind"]} for r in rows}
+
+    async def replace_document(self, project: str, document: Document, chunks: list[Chunk]) -> int:
+        """Write one Document and exactly `chunks` as its chunk set, in ONE statement.
+
+        MERGE the Document and lock it with SET (a concurrent replace of the same file waits
+        here), delete every previous chunk of the document, create the new chunks with their
+        CONTAINS edges, then the PRECEDES chain by ordinal. The UNWIND sits in a subquery so a
+        zero-chunk document still writes. Returns the number of chunks written.
+        """
+        doc_id = RECORD_ID_FIELDS["Document"]
+        props = {k: _coerce_neo4j_value(v) for k, v in document.model_dump().items()}
+        rows = [{k: _coerce_neo4j_value(v) for k, v in c.model_dump().items()} for c in chunks]
+        await self._write_single(
+            f"MERGE (d:Document {{{doc_id}: $doc_id, project: $project}}) "
+            "SET d += $props "
+            "WITH d "
+            "CALL { WITH d "
+            f"  MATCH (old:Chunk {{project: $project, {doc_id}: $doc_id}}) DETACH DELETE old }} "
+            "CALL { WITH d "
+            "  UNWIND $chunks AS row CREATE (c:Chunk) SET c = row CREATE (d)-[:CONTAINS]->(c) } "
+            "CALL { WITH d "
+            "  MATCH (d)-[:CONTAINS]->(a:Chunk), (d)-[:CONTAINS]->(b:Chunk) "
+            "  WHERE b.ordinal = a.ordinal + 1 CREATE (a)-[:PRECEDES]->(b) } "
+            f"RETURN d.{doc_id} AS doc_id",
+            doc_id=getattr(document, doc_id), project=project, props=props, chunks=rows,
+        )
+        return len(chunks)
+
+    async def delete_documents(self, project: str, doc_ids: list[str]) -> int:
+        """DETACH DELETE the named Documents of `project` and their chunks, in one statement.
+        Returns the number of nodes removed; an empty list touches nothing."""
+        if not doc_ids:
+            return 0
+        doc_id = RECORD_ID_FIELDS["Document"]
+        record = await self._write_single(
+            "MATCH (n) WHERE (n:Document OR n:Chunk) AND n.project = $project "
+            f"AND n.{doc_id} IN $doc_ids "
+            "DETACH DELETE n RETURN count(n) AS removed",
+            project=project, doc_ids=list(doc_ids),
+        )
+        return int(record["removed"]) if record else 0

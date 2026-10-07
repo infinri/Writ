@@ -1,0 +1,17 @@
+{
+  "_instructions": "Program item 5 (workstream D), abstention calibration. Each prompt is one a developer might type while working in this repository, and each names the repo document (a docs/adr file) whose chunks answer it. tests/test_document_ingest_graph.py ingests this repo's own docs/ into the isolated graph, builds the document pipeline with the real shared encoder and requires the named document among the top 3 primary hits for at least 10 of the 12 prompts, at the DOCUMENT_ABSTENTION_THRESHOLD value recorded in docs/adr/ADR-document-retrieval.md. The abstention side reuses tests/fixtures/ground_truth_negatives.json.",
+  "queries": [
+    {"id": "D1", "prompt": "How does the daemon rebuild only the indexes that changed after the graph is edited?", "document": "docs/adr/ADR-live-reload.md"},
+    {"id": "D2", "prompt": "Why does the ranked rule header show severity but drop the domain field?", "document": "docs/adr/ADR-ranked-header-fields.md"},
+    {"id": "D3", "prompt": "How are recalled decisions ranked against the current prompt and what is the score floor?", "document": "docs/adr/ADR-decision-recall.md"},
+    {"id": "D4", "prompt": "Where is the person who approved a rule recorded, and why is identity kept off the rule node?", "document": "docs/adr/ADR-trust-records.md"},
+    {"id": "D5", "prompt": "Where does Writ keep its durable state instead of inside the install directory?", "document": "docs/adr/ADR-state-root.md"},
+    {"id": "D6", "prompt": "Why does the test suite use its own Neo4j instance on a different bolt port?", "document": "docs/adr/ADR-test-graph-isolation.md"},
+    {"id": "D7", "prompt": "After how many consecutive failures of the same tool is the agent refused?", "document": "docs/adr/ADR-tool-failure-budget.md"},
+    {"id": "D8", "prompt": "Which paths may an approved plan authorize writes to besides its own project?", "document": "docs/adr/ADR-project-write-boundary.md"},
+    {"id": "D9", "prompt": "Which injection channels does an orchestrator master keep and how is one turned off?", "document": "docs/adr/ADR-orchestrator-injection-channels.md"},
+    {"id": "D10", "prompt": "How do we catch live daemon processes that the test suite leaked onto the machine?", "document": "docs/adr/ADR-daemon-leak-guard.md"},
+    {"id": "D11", "prompt": "Why was the per-prompt injection split into separate hooks under a character ceiling?", "document": "docs/adr/ADR-prompt-injection-split.md"},
+    {"id": "D12", "prompt": "Why is an ampersand not always a control operator when splitting a bash command?", "document": "docs/adr/ADR-bash-control-operator-tokenizer.md"}
+  ]
+}

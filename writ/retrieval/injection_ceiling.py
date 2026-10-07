@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Iterator, Protocol
 
 from writ.retrieval.prompt_bundle import _renderable_always_on, split_format
-from writ.shared.injection_text import always_on_head_line, pointer_line
+from writ.shared.injection_text import always_on_head_line, is_fence_close, pointer_line
 from writ.shared.tokens import CHARS_PER_TOKEN, PROMPT_CHAR_CEILING, PROMPT_SECTION_TOKENS
 
 # A section hook prints "\n" + block + "\n"; the ranked hook prints block + "\n".
@@ -30,7 +30,8 @@ NUDGE_TEXT = {
     "NO_RULES": (
         "[Writ: no matching rules found for this task. If you discover a pattern, "
         "constraint, or gotcha during this work that would help future tasks, propose it "
-        "via POST /propose. See HANDBOOK.md for the format and trigger conditions.]"
+        "via POST /propose. See HANDBOOK.md for the format and trigger conditions. "
+        "No WRIT RULES block follows: no rule matched this prompt beyond those already shown.]"
     ),
     "LOW_SCORES": (
         "[Writ: retrieved rules have low relevance scores (< 0.3). The knowledge base may "
@@ -86,6 +87,20 @@ def clamp_lines(text: str, limit: int) -> str:
         used += cost
     kept.append(TRUNCATION_MARKER)
     return "\n".join(kept)
+
+
+def clamp_fenced(text: str, limit: int) -> str:
+    """clamp_lines for a fenced block: a cut block keeps its close line, with the truncation
+    marker inside it. Text whose last line is not a fence close is clamped by clamp_lines."""
+    if len(text) <= limit:
+        return text
+    head, _, close = text.rpartition("\n")
+    if not head or not is_fence_close(close):
+        return clamp_lines(text, limit)
+    cut = clamp_lines(head, limit - len(close) - 1)
+    if cut in ("", TRUNCATION_MARKER):
+        return ""
+    return f"{cut}\n{close}"
 
 
 def _total_tokens(ao_json: dict) -> int:

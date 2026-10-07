@@ -35,6 +35,7 @@ concatenation order is not something Writ controls.
 | `writ-inject-always-on.sh` | `always_on_block` | nothing else |
 | `writ-inject-methodology.sh` | `methodology_block` | nothing else |
 | `writ-inject-recall.sh` | `recall_block` | nothing else |
+| `writ-inject-documents.sh` (program item 5) | `documents_block` | nothing else |
 
 All control text stays in the ranked hook, so a banner or reminder exists in exactly one
 hook. The three section hooks share one body, `writ_prompt_section_main` in
@@ -70,7 +71,11 @@ budget in characters (4 per token). 500 characters of headroom stay below the ho
 - Always-on collapses full rules to pointer lines from the tail, then drops rules behind an
   "omitted" line. With nothing shown and nothing over the limit its text is byte-identical
   to the old `render_always_on`.
-- Recall is clamped at whole lines with a truncation marker.
+- Recall is a fenced block (`--- WRIT RECALL (...) ---` to `--- END WRIT RECALL ---`,
+  program item 5, `docs/adr/ADR-retrieved-text-fence.md`). `clamp_fenced` cuts it at whole
+  lines inside `section_char_limit("recall")` and keeps the close line, with the truncation
+  marker inside the block; a limit too small for the open line plus the close returns
+  nothing. Text with no close line is clamped exactly as `clamp_lines` clamps it.
 
 Every hook also releases its output through `writ_emit_capped` in `bin/lib/common.sh`:
 whole lines, never more than `WRIT_PROMPT_CHAR_CEILING` characters, ending with
@@ -88,8 +93,14 @@ bound holds there too.
 | ranked | 2,300 |
 | methodology | 2,000 |
 | recall | 500 |
-| reserved: document chunks (a future fifth hook) | 2,700 |
+| documents | 2,700 |
 | total | 9,500 |
+
+The documents budget was reserved here for a future fifth hook and is now a section of its own
+(`prompt_section_tokens.documents`, program item 5, `docs/adr/ADR-document-retrieval.md`):
+`prompt_reserved_tokens` is empty, the total is unchanged, and `section_char_limit("documents")`
+is 9,498. `writ-inject-documents.sh` runs after the recall hook over the same shared body,
+for sub-agents too, behind the minimum-prompt-length gate.
 
 Ranked retrieval asks for `min(remaining_budget, 2300)` tokens. `apply_context_budget`
 selects standard mode for 2,000 to 8,000, so the default turn and the capped turn both

@@ -171,6 +171,15 @@ class SchemaStoreMixin:
             "FOR (n:TrustEvent) REQUIRE (n.event_id, n.project) IS UNIQUE",
             "CREATE INDEX trustevent_rule_id IF NOT EXISTS "
             "FOR (n:TrustEvent) ON (n.rule_id)",
+            # Document and Chunk (program item 5): replace_document MERGEs the Document on
+            # (doc_id, project) and creates its chunks, so two concurrent ingests of one
+            # file serialize on the Document's index lock. project backs the hash read.
+            "CREATE CONSTRAINT document_doc_id_project_unique IF NOT EXISTS "
+            "FOR (n:Document) REQUIRE (n.doc_id, n.project) IS UNIQUE",
+            "CREATE CONSTRAINT chunk_chunk_id_project_unique IF NOT EXISTS "
+            "FOR (n:Chunk) REQUIRE (n.chunk_id, n.project) IS UNIQUE",
+            "CREATE INDEX document_project IF NOT EXISTS "
+            "FOR (n:Document) ON (n.project)",
         ])
         blocked: list[str] = []
         async with self._driver.session(database=self._database) as session:

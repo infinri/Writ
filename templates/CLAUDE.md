@@ -6,7 +6,7 @@ Loaded in every session, every project.
 
 Workflow rules, the mode system, gate enforcement, and orchestrator dispatch are delivered on demand via RAG-retrieved Methodology nodes (`SKL-PROC-MODE-001`, `PBK-PROC-WORK-WORKFLOW-001`, `PBK-PROC-ORCHESTRATOR-001`, `SKL-PROC-WRIT-FAILURE-001`). The `writ-rag-inject.sh` hook surfaces them at the right trigger.
 
-If you see no `--- WRIT RULES ---` block in your context, the Writ server is unavailable. Proceed with normal engineering judgment; hooks will block destructive writes if mode is unset.
+A `[Writ: no matching rules found ...]` (NO_RULES) line with no `--- WRIT RULES ---` block means retrieval ran and nothing matched beyond the rules already shown. No Writ output at all, or a `[Writ: server unavailable ...]` line, means the Writ server is unavailable or the turn was skipped. Either way, proceed with normal engineering judgment; hooks will block destructive writes if mode is unset.
 
 ## Global preferences
 

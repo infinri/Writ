@@ -50,6 +50,7 @@ from writ.retrieval.pipeline import (
     RULE_INJECTION_ABSTENTION_THRESHOLD,
     RetrievalPipeline,
 )
+from writ.retrieval.documents import DocumentPipeline
 from writ.retrieval.trigger_index import MethodologyTriggerIndex
 from writ.server.reload import RetrievalHandle, RetrievalReloader, build_retrieval_handle
 from writ.shared.logging import emit
@@ -153,10 +154,12 @@ _llm_client: LlmAnalyzer | None = None
 _instrumentation: Instrumentation | None = None
 # 1.6 methodology-trigger index (CHANNEL 2: methodology by workflow-state).
 _trigger_index: MethodologyTriggerIndex | None = None
+# Program item 5: the document half (writ/retrieval/documents.py), None until built.
+_documents: DocumentPipeline | None = None
 # Program item 2: the served retrieval generation and the reloader that replaces it.
-# _pipeline and _trigger_index above are ALIASES of this handle's two halves, kept as
-# module names because every route reads them live and many tests monkeypatch them;
-# only _install_retrieval assigns the three.
+# _pipeline, _trigger_index and _documents above are ALIASES of this handle's parts, kept
+# as module names because every route reads them live and many tests monkeypatch them;
+# only _install_retrieval assigns them.
 _retrieval: RetrievalHandle | None = None
 _reloader: RetrievalReloader | None = None
 
@@ -164,15 +167,16 @@ _reloader: RetrievalReloader | None = None
 def _install_retrieval(handle: RetrievalHandle) -> None:
     """Make `handle` the served generation.
 
-    No await inside, so on the event loop the three names change together: no handler
+    Nothing inside yields to the event loop, so the four names change together: no handler
     sees one generation's pipeline beside another's trigger index between two reads that
-    do not await. A query already running in a worker thread keeps the pipeline it was
+    do not suspend. A query already running in a worker thread keeps the pipeline it was
     started with and finishes on it.
     """
-    global _retrieval, _pipeline, _trigger_index
+    global _retrieval, _pipeline, _trigger_index, _documents
     _retrieval = handle
     _pipeline = handle.pipeline
     _trigger_index = handle.trigger_index
+    _documents = handle.documents
 
 
 async def _start_retrieval(db: Neo4jConnection) -> None:

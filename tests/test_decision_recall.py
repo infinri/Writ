@@ -62,10 +62,12 @@ from tests.test_recall_compile import (
 from writ.server.models import PromptBundleRequest, RecallRequest
 from writ.shared.tokens import PROMPT_SECTION_TOKENS
 
+# Program item 5 (workstream P): the briefing is a fenced block, so its open line is the fence's.
 HEADER = (
-    "[Writ recall: recent decisions on this project "
-    "(rule-grounded, read-back from decision memory)]"
+    "--- WRIT RECALL (recent decisions on this project, "
+    "rule-grounded, read back from decision memory) ---"
 )
+CLOSE = "--- END WRIT RECALL ---"
 PROJECT_ROOT = "/repo/proj"
 
 runner = CliRunner()
@@ -687,14 +689,16 @@ class TestTermFloorLog:
 
 
 def _card_lines(briefing: str) -> list[str]:
-    return briefing.splitlines()[1:]
+    lines = briefing.splitlines()[1:]
+    return lines[:-1] if lines and lines[-1] == CLOSE else lines
 
 
 class TestCards:
     @pytest.mark.asyncio
-    async def test_header_line_is_unchanged_byte_for_byte(self):
+    async def test_the_briefing_opens_with_the_fenced_recall_line_and_ends_with_its_close_line(self):
         result = await _recall(_db_with())
         assert result["briefing"].splitlines()[0] == HEADER
+        assert result["briefing"].splitlines()[-1] == CLOSE
 
     @pytest.mark.asyncio
     async def test_card_head_is_title_and_rule_ids(self):

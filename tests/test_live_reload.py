@@ -138,7 +138,7 @@ class TestAFailedRebuildKeepsServing:
     async def test_a_graph_read_failure_keeps_the_previous_generation(self, live, monkeypatch) -> None:
         before = server._retrieval
 
-        async def _unreachable(db):
+        async def _unreachable(db, **_kwargs):
             raise RuntimeError("graph unreachable (simulated)")
 
         monkeypatch.setattr(reload_mod, "load_pipeline_inputs", _unreachable)

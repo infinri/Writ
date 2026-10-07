@@ -7,6 +7,6 @@
   "always_on_cap": 5000,
   "prompt_char_ceiling": 9500,
   "prompt_total_tokens": 9500,
-  "prompt_section_tokens": {"always_on": 2000, "ranked": 2300, "methodology": 2000, "recall": 500},
-  "prompt_reserved_tokens": {"document_chunks": 2700}
+  "prompt_section_tokens": {"always_on": 2000, "ranked": 2300, "methodology": 2000, "recall": 500, "documents": 2700},
+  "prompt_reserved_tokens": {}
 }

@@ -337,7 +337,7 @@ class TestPromptBundleErrorPathSkipsAlwaysOn:
         assert result["error"] is True
         assert result == {
             "always_on_block": "", "rules_text": "", "methodology_block": "",
-            "recall_block": "", "nudge": "", "nudge_text": "", "error": True,
+            "recall_block": "", "documents_block": "", "nudge": "", "nudge_text": "", "error": True,
             "skipped": False,
             "broad_meta": None, "ao_meta": None, "method_meta": None,
         }

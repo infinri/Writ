@@ -35,7 +35,13 @@ from pathlib import Path
 from typing import Any
 
 from writ.session.remote_parse import normalize_path
-from writ.shared.injection_text import TITLE_CHARS, clip, first_sentence
+from writ.shared.injection_text import (
+    TITLE_CHARS,
+    clip,
+    fence,
+    first_sentence,
+    sanitize_retrieved,
+)
 from writ.shared.logging import emit
 from writ.shared.tokens import PROMPT_SECTION_TOKENS, estimate_tokens
 
@@ -49,10 +55,8 @@ RECALL_CORPUS_TTL_S = 60
 # 20-decision fixture in tests/test_decision_recall.py set; it is a tuning point.
 RECALL_TERM_FLOOR_FRACTION = 0.5 / math.log(14)
 
-_HEADER = (
-    "[Writ recall: recent decisions on this project "
-    "(rule-grounded, read-back from decision memory)]"
-)
+_RECALL_LABEL = "RECALL"
+_RECALL_DETAIL = "recent decisions on this project, rule-grounded, read back from decision memory"
 _BRIEFING_DECISIONS = 5
 _BRIEFING_MEMORIES = 2
 _CARD_FILES = 2
@@ -81,8 +85,8 @@ _corpus_cache: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 def display_title(decision: dict[str, Any]) -> str:
     """The first sentence of the rationale, else the stored title, else "(untitled)"."""
     return (
-        first_sentence(decision.get("rationale"), TITLE_CHARS)
-        or decision.get("title")
+        first_sentence(sanitize_retrieved(decision.get("rationale")), TITLE_CHARS)
+        or sanitize_retrieved(decision.get("title"))
         or "(untitled)"
     )
 
@@ -141,15 +145,17 @@ def _item_id(item: dict[str, Any]) -> str:
 
 def _render_card(item: dict[str, Any]) -> str:
     if "decision_id" not in item:
-        description = clip(item.get("description"), _RATIONALE_CHARS)
-        return f"- memory {item['name']}" + (f": {description}" if description else "")
-    rules = ", ".join(item.get("governing_rule_ids") or []) or "no rules cited"
+        description = clip(sanitize_retrieved(item.get("description")), _RATIONALE_CHARS)
+        name = sanitize_retrieved(item["name"])
+        return f"- memory {name}" + (f": {description}" if description else "")
+    rules = sanitize_retrieved(", ".join(item.get("governing_rule_ids") or [])) or "no rules cited"
     lines = [f"- {item['title']} [{rules}]"]
     if item.get("rationale"):
-        lines.append(f"  why: {clip(item['rationale'], _RATIONALE_CHARS)}")
+        lines.append(f"  why: {clip(sanitize_retrieved(item['rationale']), _RATIONALE_CHARS)}")
     for matched in (item.get("matched_files") or [])[:_CARD_FILES]:
         if matched.get("reason"):
-            lines.append(f"  {matched['path']}: {clip(matched['reason'], _REASON_CHARS)}")
+            reason = clip(sanitize_retrieved(matched["reason"]), _REASON_CHARS)
+            lines.append(f"  {sanitize_retrieved(matched['path'])}: {reason}")
     return "\n".join(lines)
 
 
@@ -176,17 +182,17 @@ def _evict(item: dict[str, Any]) -> bool:
 
 
 def _build_briefing(kept: list[dict[str, Any]]) -> tuple[str, list[dict[str, str]]]:
-    """Mechanical (no-LLM) briefing: the header plus at most _BRIEFING_DECISIONS cards, and
-    the cards' [{id, head}] (head is the card's first line)."""
+    """Mechanical (no-LLM) briefing: at most _BRIEFING_DECISIONS cards in the RECALL fence,
+    and the cards' [{id, head}] (head is the card's first line)."""
     if not kept:
         return "", []
-    lines = [_HEADER]
+    lines = []
     cards: list[dict[str, str]] = []
     for item in kept[:_BRIEFING_DECISIONS]:
         card = _render_card(item)
         lines.append(card)
         cards.append({"id": _item_id(item), "head": card.splitlines()[0]})
-    return "\n".join(lines), cards
+    return fence(_RECALL_LABEL, "\n".join(lines), _RECALL_DETAIL), cards
 
 
 def _decision_item(src: dict[str, Any], match: str) -> dict[str, Any]:
@@ -340,7 +346,7 @@ async def compile_recall(
 
     kept: list[dict[str, Any]] = []
     kept_memories = 0
-    used = estimate_tokens(_HEADER, None)
+    used = estimate_tokens(fence(_RECALL_LABEL, "", _RECALL_DETAIL), None)
     for item in ranked:
         if not full and len(kept) >= _BRIEFING_DECISIONS:
             break
@@ -398,14 +404,14 @@ async def write_decision_context(db, project: str, candidates: list[str], shown)
         f"[Writ decision memory: {path} last changed under this decision] "
         f"{display_title(row)} [{rules}]."
     ]
-    rationale = clip(row.get("rationale"), _WRITE_RATIONALE_CHARS)
+    rationale = clip(sanitize_retrieved(row.get("rationale")), _WRITE_RATIONALE_CHARS)
     if rationale:
         parts.append(_sentence(f"Why: {rationale}"))
-    reason = clip(row.get("reason"), _WRITE_REASON_CHARS)
+    reason = clip(sanitize_retrieved(row.get("reason")), _WRITE_REASON_CHARS)
     if reason:
         parts.append(_sentence(f"This file: {reason}"))
     commit = " ".join(filter(None, [
-        clip(row.get("commit_subject"), _WRITE_SUBJECT_CHARS),
+        clip(sanitize_retrieved(row.get("commit_subject")), _WRITE_SUBJECT_CHARS),
         f"({row['commit_hash'][:8]})" if row.get("commit_hash") else "",
     ]))
     if commit:

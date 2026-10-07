@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 
-from writ.shared.injection_text import always_on_head_line
+from writ.shared.injection_text import always_on_head_line, sanitize_retrieved
 from writ.shared.trust import trust_tags
 
 
@@ -30,8 +30,8 @@ def _renderable_always_on(ao_json: dict) -> list[dict]:
     out = []
     for r in ao_json.get("rules") or []:
         rid = r.get("rule_id", "")
-        trig = (r.get("trigger") or "").strip()
-        stmt = (r.get("statement") or "").strip()
+        trig = sanitize_retrieved(r.get("trigger")).strip()
+        stmt = sanitize_retrieved(r.get("statement")).strip()
         if not rid or not trig or not stmt:
             continue
         out.append({"rule_id": rid, "trigger": trig, "statement": stmt, "tags": trust_tags(r)})

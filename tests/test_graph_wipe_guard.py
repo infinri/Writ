@@ -275,9 +275,12 @@ class TestDefaultCallsAreNotGated:
         # RECORD_LABELS. It is runtime replay-protection state with no bible or
         # dump home (get_all_nodes_for_dump excludes it), so a corpus replay must
         # preserve it exactly as it preserves the other four record labels.
+        # Program item 5 (workstream D): Document and Chunk joined RECORD_LABELS. Both
+        # axes: only `writ docs ingest` can rebuild them (preserve), and chunk text is
+        # project content that must never ship in writ-corpus.cypher (exclude).
         assert params["preserve"] == [
-            "Commit", "Decision", "FeedbackBatch", "FileChange", "Memory", "Project",
-            "TrustEvent",
+            "Chunk", "Commit", "Decision", "Document", "FeedbackBatch", "FileChange",
+            "Memory", "Project", "TrustEvent",
         ]
 
     @pytest.mark.asyncio

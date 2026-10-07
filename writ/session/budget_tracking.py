@@ -20,7 +20,7 @@ from writ.session.config import (
 from writ.session.citations import _append_citation
 from writ.session.injection_state import apply_mark_shown
 from writ.session.mode_engine import _VALID_SOURCE_TYPES
-from writ.shared.injection_text import pointer_line
+from writ.shared.injection_text import fence, pointer_line, similarity_slot
 from writ.shared.tokens import cost_for
 from writ.shared.trust import trust_tags
 
@@ -381,7 +381,7 @@ def cmd_format() -> None:
 
     mode = response.get("mode", "standard")
 
-    lines = [f"--- WRIT RULES ({len(rules)} rules, {mode} mode) ---", ""]
+    lines = [""]
 
     for rule in rules:
         # Summary-mode abstraction entries (_summary_with_abstractions) carry an
@@ -414,7 +414,7 @@ def cmd_format() -> None:
         # nodes). Absence stays "?". See docs/adr/ADR-ranked-header-fields.md.
         slot = severity if authority == "human" else f"{severity}, {authority}"
         slot = ", ".join([f"{slot}", *trust_tags(rule)])
-        lines.append(f"[{rid}] ({slot}) score={score:.3f}")
+        lines.append(f"[{rid}] ({slot}) score={score:.3f}{similarity_slot(rule)}")
 
         # Field-level dedup against this turn's always-on channel. `already_injected`
         # is set by writ.retrieval.prompt_bundle.tag_overlap for a ranked hit whose
@@ -474,9 +474,7 @@ def cmd_format() -> None:
 
         lines.append("")
 
-    lines.append("--- END WRIT RULES ---")
-
-    sys.stdout.write("\n".join(lines))
+    sys.stdout.write(fence("RULES", "\n".join(lines), f"{len(rules)} rules, {mode} mode"))
     sys.stdout.write("\n")
 
     # Also output metadata as JSON on a separate fd for the hook to parse.

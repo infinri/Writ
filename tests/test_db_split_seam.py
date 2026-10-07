@@ -72,6 +72,8 @@ EXPECTED_METHODS = [
     "update_rule_authority", "update_rule_confidence", "wire_governed_by", "wire_has_change",
     "wire_has_commit", "wire_has_decision", "wire_includes", "wire_motivated_by",
     "wire_realizes",
+    # Program item 5 (workstream D): the three document record-store methods.
+    "delete_documents", "get_document_hashes", "replace_document",
 ]
 
 # (submodule, mixin class name) the facade composes Neo4jConnection from.

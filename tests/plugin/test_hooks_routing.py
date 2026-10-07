@@ -29,6 +29,8 @@ EXPECTED_EVENT_SCRIPTS: dict[str, list[str]] = {
         "writ-inject-always-on.sh",
         "writ-inject-methodology.sh",
         "writ-inject-recall.sh",
+        # Program item 5 (workstream D): the documents hook, after the recall hook.
+        "writ-inject-documents.sh",
     ],
     "SubagentStart": ["writ-subagent-start.sh"],
     "SubagentStop": ["writ-subagent-stop.sh"],

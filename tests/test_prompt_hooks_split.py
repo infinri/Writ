@@ -1,4 +1,4 @@
-"""Program item 1a: the per-prompt injection is four UserPromptSubmit hooks, each capped.
+"""Program item 1a: the per-prompt injection is five UserPromptSubmit hooks, each capped.
 
 The host caps each hook command's injected text at 10,000 characters and swaps anything
 longer for a file path plus a short preview. The single `writ-rag-inject.sh` printed 10.4 to
@@ -9,6 +9,7 @@ longer for a file path plus a short preview. The single `writ-rag-inject.sh` pri
     writ-inject-always-on.sh  the ALWAYS-ACTIVE RULES block, nothing else
     writ-inject-methodology.sh  the methodology companion block, nothing else
     writ-inject-recall.sh     the once-per-session recall briefing, nothing else
+    writ-inject-documents.sh  the fenced documents block (program item 5), nothing else
 
 This module drives the REAL hook scripts as subprocesses (`bash <hook>` with the JSON
 envelope on stdin, the way the host does) against a loopback STUB daemon, and sources the
@@ -23,7 +24,7 @@ the host really concatenates hook outputs in any order (the design does not rely
 
 THE STUB DELIBERATELY RETURNS MORE THAN A REAL SERVER WOULD in two places, both on purpose:
 20,000 characters in every text field (so the bash backstop `writ_emit_capped` is what keeps
-each hook under 9,500), and a response that carries ALL FOUR text fields to every hook (the
+each hook under 9,500), and a response that carries ALL FIVE text fields to every hook (the
 stale-daemon shape, where `sections` is ignored), so "no section text appears in more than one
 hook's output" is proven against the worst case instead of the cooperative one.
 
@@ -66,9 +67,11 @@ RANKED = "writ-rag-inject.sh"
 ALWAYS_ON = "writ-inject-always-on.sh"
 METHODOLOGY = "writ-inject-methodology.sh"
 RECALL = "writ-inject-recall.sh"
-ALL_HOOKS = [RANKED, ALWAYS_ON, METHODOLOGY, RECALL]
-SECTION_OF = {RANKED: "ranked", ALWAYS_ON: "always_on", METHODOLOGY: "methodology", RECALL: "recall"}
-SECTION_HOOKS = [ALWAYS_ON, METHODOLOGY, RECALL]
+DOCUMENTS = "writ-inject-documents.sh"
+ALL_HOOKS = [RANKED, ALWAYS_ON, METHODOLOGY, RECALL, DOCUMENTS]
+SECTION_OF = {RANKED: "ranked", ALWAYS_ON: "always_on", METHODOLOGY: "methodology", RECALL: "recall",
+              DOCUMENTS: "documents"}
+SECTION_HOOKS = [ALWAYS_ON, METHODOLOGY, RECALL, DOCUMENTS]
 
 LONG_PROMPT = "refactor the authentication middleware module for the orders service"
 ROUTING_PROMPT = "please implement the new widget handler class for the orders module"
@@ -151,9 +154,11 @@ def _meta_for(section: str, mode: str = "conversation") -> dict:
 def _section_response(section: str, text: str, **extra) -> dict:
     """What a cooperative server returns: ONLY the requested section's field is filled."""
     field = {"ranked": "rules_text", "always_on": "always_on_block",
-             "methodology": "methodology_block", "recall": "recall_block"}[section]
+             "methodology": "methodology_block", "recall": "recall_block",
+             "documents": "documents_block"}[section]
     body = {"error": False, "skipped": False, "always_on_block": "", "rules_text": "",
-            "methodology_block": "", "recall_block": "", "nudge": "", "nudge_text": "",
+            "methodology_block": "", "recall_block": "", "documents_block": "",
+            "nudge": "", "nudge_text": "",
             **_meta_for(section)}
     body[field] = text
     body.update(extra)
@@ -164,7 +169,7 @@ def _superset_response(**fields) -> dict:
     """The stale-daemon shape: every text field filled, whatever was asked for."""
     body = {"error": False, "skipped": False, "nudge": "", "nudge_text": "",
             "always_on_block": "", "rules_text": "", "methodology_block": "", "recall_block": "",
-            "broad_meta": None, "ao_meta": None, "method_meta": None}
+            "documents_block": "", "broad_meta": None, "ao_meta": None, "method_meta": None}
     body.update(fields)
     return body
 
@@ -245,7 +250,7 @@ class TestRegistration:
     def _commands(block: dict) -> list[str]:
         return [h["command"] for h in block["hooks"]]
 
-    def test_all_four_injection_hooks_are_registered_on_user_prompt_submit(self):
+    def test_all_five_injection_hooks_are_registered_on_user_prompt_submit(self):
         commands = [c for b in self._blocks() for c in self._commands(b)]
         for script in ALL_HOOKS:
             assert any(c.endswith(f'/hooks/scripts/{script}"') for c in commands), f"{script} is not registered"
@@ -257,22 +262,23 @@ class TestRegistration:
             assert len(owners[0]["hooks"]) == 1, f"{script} shares a block with another command"
 
     def test_new_hooks_use_the_plugin_root_command_form_and_an_empty_matcher(self):
-        for script in (ALWAYS_ON, METHODOLOGY, RECALL):
+        for script in (ALWAYS_ON, METHODOLOGY, RECALL, DOCUMENTS):
             block = next(b for b in self._blocks() if any(script in c for c in self._commands(b)))
             assert block["matcher"] == ""
             assert block["hooks"][0]["type"] == "command"
             assert block["hooks"][0]["command"] == f'bash "${{CLAUDE_PLUGIN_ROOT}}/hooks/scripts/{script}"'
 
-    def test_the_three_new_hooks_follow_the_ranked_hook_in_order(self):
+    def test_the_four_new_hooks_follow_the_ranked_hook_and_documents_follows_recall(self):
         commands = [c for b in self._blocks() for c in self._commands(b)]
-        positions = [next(i for i, c in enumerate(commands) if s in c) for s in (RANKED, ALWAYS_ON, METHODOLOGY, RECALL)]
+        positions = [next(i for i, c in enumerate(commands) if s in c)
+                     for s in (RANKED, ALWAYS_ON, METHODOLOGY, RECALL, DOCUMENTS)]
         assert positions == sorted(positions)
 
     def test_the_ranked_hook_keeps_its_file_name(self):
         assert (SCRIPTS / RANKED).is_file()
 
     def test_new_hook_scripts_exist_and_are_executable(self):
-        for script in (ALWAYS_ON, METHODOLOGY, RECALL):
+        for script in (ALWAYS_ON, METHODOLOGY, RECALL, DOCUMENTS):
             path = SCRIPTS / script
             assert path.is_file(), f"{path} does not exist"
             assert os.access(path, os.X_OK), f"{path} is not executable"
@@ -284,21 +290,22 @@ class TestRegistration:
     def test_each_new_hook_calls_the_shared_section_body_for_its_own_section(self):
         expected = {ALWAYS_ON: "writ_prompt_section_main always_on writ-inject-always-on",
                     METHODOLOGY: "writ_prompt_section_main methodology writ-inject-methodology",
-                    RECALL: "writ_prompt_section_main recall writ-inject-recall"}
+                    RECALL: "writ_prompt_section_main recall writ-inject-recall",
+                    DOCUMENTS: "writ_prompt_section_main documents writ-inject-documents"}
         for script, call in expected.items():
             text = (SCRIPTS / script).read_text()
             assert call in text
             assert text.startswith("#!/usr/bin/env bash")
             assert "exit 0" in text
 
-    def test_total_registered_command_count_is_fifty_one(self):
+    def test_total_registered_command_count_is_fifty_two(self):
         def count(node) -> int:
             if isinstance(node, dict):
                 return (1 if "command" in node else 0) + sum(count(v) for v in node.values())
             if isinstance(node, list):
                 return sum(count(v) for v in node)
             return 0
-        assert count(json.loads(HOOKS_JSON.read_text())) == 51  # 48 after item 1a, plus the three tool-failure budget registrations (item 7c)
+        assert count(json.loads(HOOKS_JSON.read_text())) == 52  # 48 after item 1a, plus the three tool-failure budget registrations (item 7c), plus the documents hook (item 5)
 
 
 # --------------------------------------------------------------------------- #
@@ -584,8 +591,11 @@ class TestSectionFrictionRows:
     def test_the_recall_response_yields_no_friction_row(self):
         assert self._py_rows(_section_response("recall", "briefing")) == []
 
+    def test_the_documents_response_yields_no_friction_row(self):
+        assert self._py_rows(_section_response("documents", "chunks")) == []
+
     @needs_jq
-    @pytest.mark.parametrize("section", ["ranked", "always_on", "methodology", "recall"])
+    @pytest.mark.parametrize("section", ["ranked", "always_on", "methodology", "recall", "documents"])
     def test_the_filter_and_the_python_arm_produce_identical_rows(self, section):
         body = _section_response(section, "text")
         assert sorted(map(json.dumps, self._jq_rows(body)), key=str) == sorted(map(json.dumps, self._py_rows(body)), key=str)
@@ -611,6 +621,7 @@ class TestPerHookCeiling:
         return _superset_response(
             always_on_block=_big_text("AO"), rules_text=_big_text("RK"),
             methodology_block=_big_text("MT"), recall_block=_big_text("RC"),
+            documents_block=_big_text("DC"),
             nudge="NO_RULES", nudge_text=_big_text("NG", 3000),
             broad_meta={"cost": 1, "rule_ids": ["R-1"]}, ao_meta={"tokens": 1, "count": 1, "rule_ids": ["AO-1"]},
             method_meta={"cost": 1, "rule_ids": ["M-1"], "query_source": "methodology"})
@@ -648,11 +659,13 @@ class TestPerHookCeiling:
 
 class TestNoDuplication:
     MARKERS = {"always_on_block": "AO-BLOCK-MARKER-7f3a", "rules_text": "RANKED-RULES-MARKER-91bc",
-               "methodology_block": "METHODOLOGY-MARKER-c40d", "recall_block": "RECALL-MARKER-5e12"}
+               "methodology_block": "METHODOLOGY-MARKER-c40d", "recall_block": "RECALL-MARKER-5e12",
+               "documents_block": "DOCUMENTS-MARKER-3b8e"}
     NUDGE_MARKER = "NUDGE-TEXT-MARKER-0a9f"
     MODE_REMINDER = "Conversation mode. Rules injected as context"
     OWNER = {"always_on_block": ALWAYS_ON, "rules_text": RANKED,
-             "methodology_block": METHODOLOGY, "recall_block": RECALL}
+             "methodology_block": METHODOLOGY, "recall_block": RECALL,
+             "documents_block": DOCUMENTS}
 
     def _run_all(self, tmp_path) -> dict[str, str]:
         sid = "dup-sid"
@@ -781,7 +794,7 @@ class TestIndependence:
         assert len(_bundles(requests)) == 1
 
     def test_a_section_hook_never_starts_the_daemon(self, tmp_path):
-        text = "\n".join((SCRIPTS / s).read_text() for s in (ALWAYS_ON, METHODOLOGY, RECALL))
+        text = "\n".join((SCRIPTS / s).read_text() for s in (ALWAYS_ON, METHODOLOGY, RECALL, DOCUMENTS))
         assert "writ_ensure_server" not in text and "nohup" not in text
         shared = SECTION_LIB.read_text()
         assert "writ_ensure_server" not in shared and "nohup" not in shared

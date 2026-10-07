@@ -126,9 +126,11 @@ class TestDocCounts:
         # 51 = 48 + the tool-failure budget's three registrations (program item 7c,
         # docs/adr/ADR-tool-failure-budget.md): writ-tool-failure-record.sh on
         # PostToolUseFailure and writ-tool-failure-budget.sh on PreToolUse and PostToolUse.
+        # 52 = 51 + writ-inject-documents.sh, the fifth UserPromptSubmit injection hook
+        # (program item 5, workstream D: long documents; docs/adr/ADR-document-retrieval.md).
         source_count = _count_hooks_json_entries()
-        assert source_count == 51, (
-            f"hooks/hooks.json has {source_count} 'command' entries; expected 51. "
+        assert source_count == 52, (
+            f"hooks/hooks.json has {source_count} 'command' entries; expected 52. "
             "Bump this (and HANDBOOK 'registers **N hook scripts**') when adding or "
             "removing a registration."
         )

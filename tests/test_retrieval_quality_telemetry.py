@@ -185,7 +185,8 @@ class TestStreamRegistration:
 
         src = Path(__file__).resolve().parent.parent / "writ" / "retrieval" / "pipeline.py"
         text = src.read_text()
-        assert 'emit(\n            "metrics", "hnsw_cache"' in text or '"hnsw_cache"' in text
+        # The shared index builder prefixes the metric per index ("" for rules).
+        assert 'metric_prefix}hnsw_cache"' in text or '"hnsw_cache"' in text
         assert '"retrieval.hnsw.save"' in text, (
             "a failed index save must reach the errors stream, not just _logger.warning"
         )

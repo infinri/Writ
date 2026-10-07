@@ -74,6 +74,15 @@
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-inject-recall.sh\""
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-inject-documents.sh\""
+          }
+        ]
       }
     ],
     "SubagentStart": [

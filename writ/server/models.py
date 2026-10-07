@@ -89,7 +89,7 @@ class PromptBundleRequest(BaseModel):
     project_root: str = ""
     # Which injection sections to build (writ/retrieval/injection_ceiling.py). Each
     # UserPromptSubmit hook names exactly one; None is the legacy trio.
-    sections: list[Literal["always_on", "ranked", "methodology", "recall"]] | None = None
+    sections: list[Literal["always_on", "ranked", "methodology", "recall", "documents"]] | None = None
     # Characters the ranked hook has already buffered (its control text); the ranked
     # section renders into what is left of the per-hook ceiling.
     reserve_chars: int = Field(default=0, ge=0)

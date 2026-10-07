@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol
 
-from writ.graph.schema import METHODOLOGY_NODE_TYPES, NODE_ID_FIELDS
+from writ.graph.schema import METHODOLOGY_NODE_TYPES, NODE_ID_FIELDS, NODE_TYPE_MODELS
 
 if TYPE_CHECKING:
     from neo4j import AsyncDriver
@@ -52,8 +52,31 @@ METHODOLOGY_NODE_ID_FIELDS: dict[str, str] = {
 # `TrustEvent` is the attribution history behind a Rule's trust props (program item 6).
 # Preserve: it has no markdown home to restore it. Exclude: it carries approver identity
 # (os_login, git_name), which must never ship in the public corpus dump.
+#
+# `Document` and `Chunk` are a project's ingested markdown (program item 5,
+# docs/adr/ADR-document-retrieval.md). Preserve: only `writ docs ingest` can rebuild them,
+# so a wipe or corpus replay must not destroy them. Exclude: chunk text is project content,
+# possibly private, and has no place in the public corpus dump.
 RECORD_LABELS: frozenset[str] = frozenset(
-    {"Memory", "Decision", "FileChange", "Commit", "Project", "FeedbackBatch", "TrustEvent"})
+    {"Memory", "Decision", "FileChange", "Commit", "Project", "FeedbackBatch", "TrustEvent",
+     "Document", "Chunk"})
+
+# Each record label's id property, written out beside RECORD_LABELS and guarded equal to it.
+RECORD_ID_FIELDS: dict[str, str] = {
+    "Memory": "name", "Decision": "decision_id", "FileChange": "change_id",
+    "Commit": "commit_hash", "Project": "name", "FeedbackBatch": "batch_id",
+    "TrustEvent": "event_id", "Document": "doc_id", "Chunk": "chunk_id",
+}
+if set(RECORD_ID_FIELDS) != RECORD_LABELS:
+    raise ValueError(
+        f"RECORD_ID_FIELDS keys {sorted(RECORD_ID_FIELDS)} differ from RECORD_LABELS "
+        f"{sorted(RECORD_LABELS)}; a record label needs exactly one id field"
+    )
+if RECORD_LABELS & (set(NODE_ID_FIELDS) | set(NODE_TYPE_MODELS)):
+    raise ValueError(
+        f"record label(s) {sorted(RECORD_LABELS & (set(NODE_ID_FIELDS) | set(NODE_TYPE_MODELS)))} "
+        f"appear in NODE_ID_FIELDS or NODE_TYPE_MODELS; records must stay out of the node registry"
+    )
 
 ALLOWED_EDGE_TYPES: frozenset[str] = frozenset({
     # Pre-existing (Change C: APPLIES_TO + JUSTIFIED_BY retired)
@@ -96,12 +119,9 @@ CORPUS_EDGE_TYPES: frozenset[str] = ALLOWED_EDGE_TYPES - RECORD_EDGE_TYPES
 # reach the query string (SEC-INJ: closes the label/field interpolation surface on
 # the public method). NODE_ID_FIELDS covers Rule + methodology types; the four record
 # and registry labels (off NODE_ID_FIELDS by design) are added explicitly.
+_RECORD_EDGE_ENDPOINT_LABELS = ("Decision", "FileChange", "Commit", "Project")
 _RECORD_EDGE_ENDPOINTS: dict[str, str] = {
-    **NODE_ID_FIELDS,
-    "Decision": "decision_id",
-    "FileChange": "change_id",
-    "Commit": "commit_hash",
-    "Project": "name",
+    **NODE_ID_FIELDS, **{label: RECORD_ID_FIELDS[label] for label in _RECORD_EDGE_ENDPOINT_LABELS},
 }
 
 
@@ -109,11 +129,8 @@ _RECORD_EDGE_ENDPOINTS: dict[str, str] = {
 # NODE_ID_FIELDS registry (not hardcoded) so it tracks the schema. `{v}` is the
 # Cypher variable bound to the node. THE single coalesce source: integrity.py and
 # methodology_ingest.py import this (a hardcoded duplicate was retired in DUP-S4).
-_GRAPH_ID_COALESCE: str = (
-    "coalesce("
-    + ", ".join(f"{{v}}.{f}" for f in sorted(set(NODE_ID_FIELDS.values())))
-    + ")"
-)
+_GRAPH_ID_FIELDS: tuple[str, ...] = tuple(sorted(set(NODE_ID_FIELDS.values())))
+_GRAPH_ID_COALESCE: str = "coalesce(" + ", ".join(f"{{v}}.{f}" for f in _GRAPH_ID_FIELDS) + ")"
 
 
 def _id_or_match(node_var: str, param: str) -> str:
@@ -122,9 +139,7 @@ def _id_or_match(node_var: str, param: str) -> str:
     hardcoded) so adding a node type propagates automatically (Contract C).
     Mirrors _GRAPH_ID_COALESCE; used by create_edge and the batch_create_edges
     label-less fallback."""
-    return " OR ".join(
-        f"{node_var}.{f} = ${param}" for f in sorted(set(NODE_ID_FIELDS.values()))
-    )
+    return " OR ".join(f"{node_var}.{f} = ${param}" for f in _GRAPH_ID_FIELDS)
 
 
 def _now_iso() -> str:
@@ -167,11 +182,8 @@ def _node_write_spec(
     so prop-parity/reconcile never clear it). source_origin (0.10) records markdown
     provenance: 'ingest' has a markdown home; 'graph-authored' (propose/add/edit) does not.
     """
-    if node_type == "Rule":
-        id_field = "rule_id"
-    elif node_type in METHODOLOGY_NODE_LABELS:
-        id_field = METHODOLOGY_NODE_ID_FIELDS[node_type]
-    else:
+    id_field = NODE_ID_FIELDS.get(node_type)
+    if id_field is None:
         raise ValueError(f"Unknown node_type: {node_type}")
     if id_field not in data:
         raise ValueError(f"{node_type} data missing required {id_field}")
@@ -197,7 +209,7 @@ def _node_write_spec(
 def _id_field_for_label(label: str) -> str:
     """The primary-id property name for a node label (Rule->rule_id, else the
     methodology id field). Used to build label-scoped, index-using edge matches."""
-    return "rule_id" if label == "Rule" else METHODOLOGY_NODE_ID_FIELDS[label]
+    return NODE_ID_FIELDS[label]
 
 
 async def read_live_edges(

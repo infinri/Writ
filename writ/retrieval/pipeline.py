@@ -22,17 +22,20 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 import time
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from writ.config import get_hnsw_cache_dir
 from writ.graph.predicates import RANKED_INCLUDE_WHERE
+from writ.graph.schema import NODE_ID_FIELDS, RANKED_METHODOLOGY_LABELS
+from writ.retrieval.collectors import Collector, fingerprint_digest, validate_collectors
 from writ.retrieval.embeddings import (
     DEFAULT_ONNX_DIR,
     CachedEncoder,
@@ -71,6 +74,9 @@ BM25_CANDIDATE_LIMIT = 50
 # unchanged; only more of it is returned.
 VECTOR_CANDIDATE_LIMIT = 50
 DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+# 384 is the fixed output dimensionality of all-MiniLM-L6-v2 (the only model the pipeline
+# supports). Fixed so the vector store is initialized before any embedding exists.
+EMBEDDING_DIMENSIONS = 384
 FIRST_PASS_TOP_N = 3
 # S4 CRAG abstention operating point for the rule-injection path only. Measured
 # (KG #85) do-no-harm point on the retrieval gold set: gold hit@5/ambiguous MRR@5
@@ -605,41 +611,8 @@ class RetrievalPipeline:
         return scoped
 
     def _merge_and_normalize(self, bm25_results, vector_results) -> dict:
-        """Merge BM25 + vector hits into candidate_ids and attach reciprocal-rank
-        normalized scores (bm25_norm / vector_norm) in place. Returns candidate_ids."""
-        candidate_ids: dict[str, dict] = {}
-        bm25_scores = {r["rule_id"]: r["score"] for r in bm25_results}
-        vector_scores = {r.rule_id: r.score for r in vector_results}
-
-        # ORDERED union, never `set(a) | set(b)`. Python randomizes string hashing
-        # per process, so a set's iteration order changes between daemon starts, and
-        # this order is load-bearing twice: ids_list below inherits it and
-        # normalize_ranks breaks ties with a STABLE sort (so a rule's bm25_norm
-        # actually changes), then _final_rank inherits it again and
-        # apply_context_budget trims by list position. Measured before the fix, over
-        # the 193-query gold set at PYTHONHASHSEED 0 vs 7: 30 queries returned a
-        # different SET of top-5 rules, i.e. a different rulebook reached the model
-        # after a restart. Discovery order (BM25 rank, then vector-only rank) is both
-        # deterministic and meaningful: a tie resolves toward the candidate the
-        # keyword stage surfaced first. Regression: tests/test_retrieval_determinism.py.
-        all_ids = list(bm25_scores) + [r for r in vector_scores if r not in bm25_scores]
-        for rid in all_ids:
-            candidate_ids[rid] = {
-                "bm25_score": bm25_scores.get(rid, 0.0),
-                "vector_score": vector_scores.get(rid, 0.0),
-            }
-
-        # Normalize BM25 and vector scores via reciprocal rank.
-        if candidate_ids:
-            ids_list = list(candidate_ids.keys())
-            bm25_raw = [candidate_ids[rid]["bm25_score"] for rid in ids_list]
-            vector_raw = [candidate_ids[rid]["vector_score"] for rid in ids_list]
-            bm25_norm = normalize_ranks(bm25_raw)
-            vector_norm = normalize_ranks(vector_raw)
-            for i, rid in enumerate(ids_list):
-                candidate_ids[rid]["bm25_norm"] = bm25_norm[i]
-                candidate_ids[rid]["vector_norm"] = vector_norm[i]
-        return candidate_ids
+        """Merge BM25 + vector hits into candidate_ids with normalized scores (merge_ranked_hits)."""
+        return merge_ranked_hits(bm25_results, vector_results)
 
     def _first_pass_rank(self, candidate_ids, active_weights) -> list:
         """Stage 5a: first-pass ranking without graph proximity (INV-4).
@@ -697,6 +670,9 @@ class RetrievalPipeline:
                 "stale": is_verify_stale(
                     meta.get("last_verified"), meta.get("verify_interval_days"), today),
                 "deliberate": bool(meta.get("deliberate", False)),
+                "similarity": (
+                    round(scores["similarity"], 4) if scores.get("similarity") is not None else None
+                ),
                 "statement": meta.get("statement", ""),
                 "trigger": meta.get("trigger", ""),
                 "violation": meta.get("violation", ""),
@@ -884,18 +860,55 @@ def _compute_corpus_hash_from_text(rule_ids: list[str], texts: list[str]) -> str
     return hashlib.sha256(digest_input.encode()).hexdigest()
 
 
-def fingerprint_digest(value: object) -> str:
-    """SHA-256 over the JSON of `value`: the _compute_bm25_hash idiom, with sort_keys so
-    dict order is irrelevant and default=str for the graph's temporal values."""
-    return hashlib.sha256(
-        json.dumps(value, sort_keys=True, default=str).encode("utf-8")
-    ).hexdigest()
+def merge_ranked_hits(bm25_results, vector_results) -> dict:
+    """Merge BM25 + vector hits into candidate_ids and attach reciprocal-rank
+    normalized scores (bm25_norm / vector_norm) in place. Returns candidate_ids. Shared by
+    the rule pipeline and the document pipeline (writ/retrieval/documents.py)."""
+    candidate_ids: dict[str, dict] = {}
+    bm25_scores = {r["rule_id"]: r["score"] for r in bm25_results}
+    vector_scores = {r.rule_id: r.score for r in vector_results}
+
+    # ORDERED union, never `set(a) | set(b)`. Python randomizes string hashing
+    # per process, so a set's iteration order changes between daemon starts, and
+    # this order is load-bearing twice: ids_list below inherits it and
+    # normalize_ranks breaks ties with a STABLE sort (so a rule's bm25_norm
+    # actually changes), then _final_rank inherits it again and
+    # apply_context_budget trims by list position. Measured before the fix, over
+    # the 193-query gold set at PYTHONHASHSEED 0 vs 7: 30 queries returned a
+    # different SET of top-5 rules, i.e. a different rulebook reached the model
+    # after a restart. Discovery order (BM25 rank, then vector-only rank) is both
+    # deterministic and meaningful: a tie resolves toward the candidate the
+    # keyword stage surfaced first. Regression: tests/test_retrieval_determinism.py.
+    all_ids = list(bm25_scores) + [r for r in vector_scores if r not in bm25_scores]
+    for rid in all_ids:
+        candidate_ids[rid] = {
+            "bm25_score": bm25_scores.get(rid, 0.0),
+            "vector_score": vector_scores.get(rid, 0.0),
+            # The raw cosine for the header's sim slot; None, not 0.0, for a keyword-only hit.
+            "similarity": vector_scores.get(rid),
+        }
+
+    # Normalize BM25 and vector scores via reciprocal rank.
+    if candidate_ids:
+        ids_list = list(candidate_ids.keys())
+        bm25_raw = [candidate_ids[rid]["bm25_score"] for rid in ids_list]
+        vector_raw = [candidate_ids[rid]["vector_score"] for rid in ids_list]
+        bm25_norm = normalize_ranks(bm25_raw)
+        vector_norm = normalize_ranks(vector_raw)
+        for i, rid in enumerate(ids_list):
+            candidate_ids[rid]["bm25_norm"] = bm25_norm[i]
+            candidate_ids[rid]["vector_norm"] = vector_norm[i]
+    return candidate_ids
 
 
-def _vector_corpus(candidates: list[dict]) -> tuple[list[str], list[str]]:
+def _rule_vector_text(candidate: dict) -> str:
+    return f"{candidate.get('trigger', '')} {candidate.get('statement', '')}"
+
+
+def _vector_corpus(candidates: list[dict], text_of=_rule_vector_text) -> tuple[list[str], list[str]]:
     """(rule_ids, texts) exactly as the vector stage embeds them."""
     rule_ids = [r["rule_id"] for r in candidates]
-    texts = [f"{r.get('trigger', '')} {r.get('statement', '')}" for r in candidates]
+    texts = [text_of(r) for r in candidates]
     return rule_ids, texts
 
 
@@ -912,6 +925,13 @@ class PipelineInputs:
     adjacency_cache: AdjacencyCache
     abstractions: list[dict]
     node_routes: dict[str, list[str]] | None
+    # Program item 5: DOCUMENT_COLLECTOR's units and stamp, filled only with_documents.
+    chunks: list[dict] = field(default_factory=list)
+    chunks_stamp: str = fingerprint_digest([])
+
+
+# The fingerprint keys of the document half; the reload rebuilds it only when one moves.
+DOCUMENT_FINGERPRINT_KEYS = ("documents_bm25", "documents_hnsw", "documents_meta")
 
 
 def pipeline_fingerprint(inputs: PipelineInputs) -> dict[str, str]:
@@ -927,7 +947,21 @@ def pipeline_fingerprint(inputs: PipelineInputs) -> dict[str, str]:
         "edges": fingerprint_digest(inputs.adjacency_cache.snapshot()),
         "routes": fingerprint_digest(inputs.node_routes),
         "abstractions": fingerprint_digest(inputs.abstractions),
+        **_document_fingerprint(inputs),
     }
+
+
+def _document_fingerprint(inputs: PipelineInputs) -> dict[str, str]:
+    """documents_bm25 and documents_hnsw are the document caches' persisted keys;
+    documents_meta is the DOCUMENT_COLLECTOR stamp, covering what the indexes do not hash."""
+    from writ.retrieval.documents import document_vector_text
+
+    chunk_ids, chunk_texts = _vector_corpus(inputs.chunks, document_vector_text)
+    return dict(zip(DOCUMENT_FINGERPRINT_KEYS, (
+        _compute_bm25_hash(inputs.chunks),
+        _compute_corpus_hash_from_text(chunk_ids, chunk_texts),
+        inputs.chunks_stamp,
+    )))
 
 
 def _fold_auxiliary_text_into_body(node: dict, label: str) -> str:
@@ -962,11 +996,9 @@ def _fold_auxiliary_text_into_body(node: dict, label: str) -> str:
     return " ".join(p for p in parts if p)
 
 
-async def _load_candidates(db: Neo4jConnection) -> tuple[list[dict], dict]:
-    """Load Rule + retrievable methodology nodes from Neo4j into the candidate pool.
-
-    Returns (all_candidates, rule_metadata). The Rule exclusion predicate is the
-    single-source RANKED_INCLUDE_WHERE constant so the {excluded-from-ranked}=={mandatory}|{superseded}
+async def _collect_rules(db: Neo4jConnection) -> list[dict]:
+    """The Rule half of the ranked pool. The exclusion predicate is the single-source
+    RANKED_INCLUDE_WHERE constant so the {excluded-from-ranked}=={mandatory}|{superseded}
     validator (integrity.py) checks the exact predicate the pool uses (WRIT-BLUEPRINT 3.5/3.6a).
     """
     # ORDER BY is not cosmetic: this load order becomes the BM25 and vector index
@@ -985,12 +1017,16 @@ async def _load_candidates(db: Neo4jConnection) -> tuple[list[dict], dict]:
         result = await session.run(query)
         async for record in result:
             rules.append(dict(record["r"]))
+    for r in rules:
+        r.setdefault("node_type", "Rule")
+    return rules
 
-    # Load retrievable methodology nodes. Each becomes a candidate alongside Rules.
-    # The label list (and why ForbiddenResponse is here but not in the trigger index) is
-    # writ/graph/schema.py's RANKED_METHODOLOGY_LABELS; the canonical id-field registry
-    # comes from the same module.
-    from writ.graph.schema import NODE_ID_FIELDS, RANKED_METHODOLOGY_LABELS
+
+async def _collect_methodology(db: Neo4jConnection) -> list[dict]:
+    """The retrievable methodology nodes of the ranked pool, each a candidate alongside Rules.
+    The label list (and why ForbiddenResponse is here but not in the trigger index) is
+    writ/graph/schema.py's RANKED_METHODOLOGY_LABELS; the canonical id-field registry
+    comes from the same module."""
     retrievable_id_fields = {label: NODE_ID_FIELDS[label] for label in RANKED_METHODOLOGY_LABELS}
     methodology_nodes: list[dict] = []
     for label in RANKED_METHODOLOGY_LABELS:
@@ -1020,10 +1056,56 @@ async def _load_candidates(db: Neo4jConnection) -> tuple[list[dict], dict]:
                 # field, not the default indexed text.
                 node["body"] = _fold_auxiliary_text_into_body(node, label)
                 methodology_nodes.append(node)
+    return methodology_nodes
 
-    all_candidates = rules + methodology_nodes
-    for r in rules:
-        r.setdefault("node_type", "Rule")
+
+# The ranked pool's sources, in index build order: Rule, then RANKED_METHODOLOGY_LABELS.
+RANKED_COLLECTORS: tuple[Collector, ...] = (
+    Collector("rules", ("Rule",), "doctrine", _collect_rules),
+    Collector("methodology", RANKED_METHODOLOGY_LABELS, "doctrine", _collect_methodology),
+)
+
+
+async def _collect_chunks(db: Neo4jConnection) -> list[dict]:
+    """Every Chunk with its Document's title, path and kind and its neighbours' ids, mapped
+    onto KeywordIndex's fields (rule_id = chunk_id, trigger = breadcrumb, boosted, statement =
+    the full text, tags = the path). Ordered by chunk_id: this is the index build order."""
+    query = """
+        MATCH (d:Document)-[:CONTAINS]->(c:Chunk)
+        WHERE c.project = d.project
+        OPTIONAL MATCH (c)-[:PRECEDES]->(nx:Chunk)
+        OPTIONAL MATCH (pv:Chunk)-[:PRECEDES]->(c)
+        RETURN c, d.title AS title, d.path AS path, d.kind AS kind,
+               nx.chunk_id AS next_id, pv.chunk_id AS prev_id
+        ORDER BY c.chunk_id
+    """
+    chunks: list[dict] = []
+    async with db._driver.session(database=db._database) as session:
+        result = await session.run(query)
+        async for record in result:
+            chunk = dict(record["c"])
+            chunk.update(
+                title=record["title"], path=record["path"], kind=record["kind"],
+                next_id=record["next_id"], prev_id=record["prev_id"],
+                rule_id=chunk["chunk_id"], trigger=chunk.get("breadcrumb", ""),
+                statement=chunk.get("text", ""), tags=re.sub(r"[/._-]+", " ", record["path"] or ""),
+                body="", mandatory=False, node_type="Chunk",
+            )
+            chunks.append(chunk)
+    return chunks
+
+
+# The document source (program item 5): record-scoped, never part of the ranked pool.
+DOCUMENT_COLLECTOR = Collector("documents", ("Document", "Chunk"), "record", _collect_chunks)
+validate_collectors((*RANKED_COLLECTORS, DOCUMENT_COLLECTOR))
+
+
+async def _load_candidates(db: Neo4jConnection) -> tuple[list[dict], dict]:
+    """Load Rule + retrievable methodology nodes from Neo4j into the candidate pool,
+    through RANKED_COLLECTORS in order. Returns (all_candidates, rule_metadata)."""
+    all_candidates: list[dict] = []
+    for collector in RANKED_COLLECTORS:
+        all_candidates += (await collector.run(db)).units
 
     # Build metadata lookup (keyed by rule_id which now doubles as node_id).
     rule_metadata: dict[str, dict] = {r["rule_id"]: r for r in all_candidates}
@@ -1161,8 +1243,9 @@ def _resolve_node_routes(
     return node_routes
 
 
-async def load_pipeline_inputs(db: Neo4jConnection) -> PipelineInputs:
-    """The graph-read half of build_pipeline. Must run on the event loop that owns `db`."""
+async def load_pipeline_inputs(db: Neo4jConnection, *, with_documents: bool = False) -> PipelineInputs:
+    """The graph-read half of build_pipeline. Must run on the event loop that owns `db`.
+    with_documents also runs DOCUMENT_COLLECTOR (one more read) for the daemon's document half."""
     all_candidates, rule_metadata = await _load_candidates(db)
 
     # Build adjacency cache (Stage 4).
@@ -1174,38 +1257,56 @@ async def load_pipeline_inputs(db: Neo4jConnection) -> PipelineInputs:
     abstractions = await db.get_all_abstractions()
 
     node_routes = _resolve_node_routes(await db.get_category_routes_by_node(), rule_metadata)
-    return PipelineInputs(
+    inputs = PipelineInputs(
         candidates=all_candidates,
         rule_metadata=rule_metadata,
         adjacency_cache=adjacency_cache,
         abstractions=abstractions,
         node_routes=node_routes,
     )
+    if with_documents:
+        collected = await DOCUMENT_COLLECTOR.run(db)
+        inputs.chunks, inputs.chunks_stamp = collected.units, collected.stamp
+    return inputs
 
 
-def assemble_pipeline(
-    inputs: PipelineInputs,
-    model_name: str = DEFAULT_EMBEDDING_MODEL,
-    weights: RankingWeights | None = None,
+@dataclass(frozen=True)
+class IndexLocation:
+    """Where one index pair persists: BM25 generations under bm25_root / "bm25", the HNSW
+    files in hnsw_dir. metric_prefix "" keeps the rule metric names bm25_cache / hnsw_cache."""
+
+    bm25_root: Path
+    hnsw_dir: str
+    metric_prefix: str = ""
+
+
+@dataclass(frozen=True)
+class SearchIndexes:
+    keyword_index: KeywordIndex
+    vector_store: HnswlibStore
+    encoder: CachedEncoder
+
+
+def build_search_indexes(
+    candidates: list[dict],
+    location: IndexLocation,
+    text_of,
+    *,
     embedding_model: object | None = None,
-    authority_preference_threshold: float = 0.0,
-    abstention_threshold: float = 0.0,
-) -> RetrievalPipeline:
-    """The CPU and disk half of build_pipeline: BM25 and HNSW load-or-build, the encoder,
-    and assembly. Synchronous and free of graph I/O, so the daemon runs it in a worker
-    thread while the previous pipeline keeps serving queries (program item 2)."""
-    all_candidates = inputs.candidates
-
+    model_name: str = DEFAULT_EMBEDDING_MODEL,
+    dimensions: int = EMBEDDING_DIMENSIONS,
+) -> SearchIndexes:
+    """BM25 and HNSW load-or-build plus the encoder, for one candidate set at one location.
+    The one index stack: the rule pipeline and the document pipeline (program item 5) both
+    build through it, each with its own location and vector-text builder."""
     # Build BM25 index (Stage 2) -- includes methodology body per plan Section 3.2.
     # Persisted and keyed like the HNSW index below, so a warm cold-start skips
     # the rebuild; any cache trouble degrades to the old in-memory build.
-    keyword_index, bm25_outcome = _load_or_build_keyword_index(
-        all_candidates, Path(get_hnsw_cache_dir()).parent
-    )
-    emit("metrics", "bm25_cache", "", None, outcome=bm25_outcome)
+    keyword_index, bm25_outcome = _load_or_build_keyword_index(candidates, location.bm25_root)
+    emit("metrics", f"{location.metric_prefix}bm25_cache", "", None, outcome=bm25_outcome)
 
     # Build vector index (Stage 3).
-    rule_ids, texts = _vector_corpus(all_candidates)
+    rule_ids, texts = _vector_corpus(candidates, text_of)
 
     # Item 4 (Approach C, 2026-05-15): compute the HNSW cache key from
     # rule text BEFORE running the expensive encode_batch pass, then
@@ -1217,12 +1318,8 @@ def assemble_pipeline(
     # warm-cache cold-start from O(N) embedding cost down to O(1) cache
     # load plus the fixed model load. At 10K rules this is the
     # difference between ~80s and ~3s.
-    cache_dir = get_hnsw_cache_dir()
     corpus_hash = _compute_corpus_hash_from_text(rule_ids, texts)
-    # 384 is the fixed output dimensionality of all-MiniLM-L6-v2 (the
-    # only model the pipeline supports). Hardcoding lets us initialize
-    # the vector store before we have any embeddings to inspect.
-    vector_store = HnswlibStore(dimensions=384, cache_dir=cache_dir)
+    vector_store = HnswlibStore(dimensions=dimensions, cache_dir=location.hnsw_dir)
     loaded_from_cache = False
     try:
         vector_store.load_index(corpus_hash=corpus_hash)
@@ -1234,7 +1331,7 @@ def assemble_pipeline(
         # The hit is recorded too, for the same reason every query is: without the
         # denominator, "two misses" cannot be read as either routine (two restarts after
         # corpus edits) or alarming (two misses out of two hundred starts).
-        emit("metrics", "hnsw_cache", "", None,
+        emit("metrics", f"{location.metric_prefix}hnsw_cache", "", None,
              outcome="hit", corpus_hash=corpus_hash[:12])
     except Exception as exc:
         _logger.debug("HNSW cache miss: %s", exc)
@@ -1244,7 +1341,7 @@ def assemble_pipeline(
         # biggest cold-start cost. Recorded on metrics (once per process build, so the
         # volume is trivial) to make a slow startup explainable after the fact.
         emit(
-            "metrics", "hnsw_cache", "", None,
+            "metrics", f"{location.metric_prefix}hnsw_cache", "", None,
             outcome="miss", corpus_hash=corpus_hash[:12], reason=str(exc)[:200],
         )
 
@@ -1279,11 +1376,31 @@ def assemble_pipeline(
                 "retrieval.hnsw.save", exc, "", None, corpus_hash=corpus_hash[:12],
             )
 
+    return SearchIndexes(keyword_index, vector_store, query_encoder)
+
+
+def assemble_pipeline(
+    inputs: PipelineInputs,
+    model_name: str = DEFAULT_EMBEDDING_MODEL,
+    weights: RankingWeights | None = None,
+    embedding_model: object | None = None,
+    authority_preference_threshold: float = 0.0,
+    abstention_threshold: float = 0.0,
+) -> RetrievalPipeline:
+    """The CPU and disk half of build_pipeline: BM25 and HNSW load-or-build, the encoder,
+    and assembly. Synchronous and free of graph I/O, so the daemon runs it in a worker
+    thread while the previous pipeline keeps serving queries (program item 2)."""
+    location = IndexLocation(Path(get_hnsw_cache_dir()).parent, get_hnsw_cache_dir())
+    indexes = build_search_indexes(
+        inputs.candidates, location, _rule_vector_text,
+        embedding_model=embedding_model, model_name=model_name,
+    )
+
     return RetrievalPipeline(
-        keyword_index=keyword_index,
-        vector_store=vector_store,
+        keyword_index=indexes.keyword_index,
+        vector_store=indexes.vector_store,
         adjacency_cache=inputs.adjacency_cache,
-        embedding_model=query_encoder,
+        embedding_model=indexes.encoder,
         rule_metadata=inputs.rule_metadata,
         weights=weights,
         authority_preference_threshold=authority_preference_threshold,

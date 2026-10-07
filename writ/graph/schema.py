@@ -219,17 +219,6 @@ class NodeType(str, Enum):
     SUBAGENT_ROLE = "SubagentRole"
 
 
-RETRIEVABLE_NODE_TYPES = frozenset({
-    NodeType.RULE,
-    NodeType.ABSTRACTION,
-    NodeType.SKILL,
-    NodeType.PLAYBOOK,
-    NodeType.TECHNIQUE,
-    NodeType.ANTIPATTERN,
-    NodeType.FORBIDDEN_RESPONSE,
-})
-
-
 # Program item 1e: the methodology labels each retrieval channel loads, from ONE place.
 # Channel 1's ranked candidate pool (pipeline._load_candidates) loads these next to Rule.
 # The ORDER is load-bearing: it is the BM25 and vector index build order, which can decide
@@ -259,6 +248,10 @@ if not CHANNEL1_ONLY_METHODOLOGY_LABELS <= set(RANKED_METHODOLOGY_LABELS):
         f"CHANNEL1_ONLY_METHODOLOGY_LABELS names label(s) the ranked pool does not load: "
         f"{sorted(CHANNEL1_ONLY_METHODOLOGY_LABELS - set(RANKED_METHODOLOGY_LABELS))}"
     )
+
+RETRIEVABLE_NODE_TYPES = frozenset({
+    NodeType.RULE, NodeType.ABSTRACTION, *(NodeType(label) for label in RANKED_METHODOLOGY_LABELS),
+})
 
 
 # --- Node Models ---
@@ -833,6 +826,52 @@ class TrustEvent(BaseModel):
     _validate_kind = field_validator("kind")(_validate_trust_event_kind_value)
 
 
+# Program item 5 (docs/adr/ADR-document-retrieval.md): a project's ingested markdown. Record
+# labels (RECORD_LABELS), deliberately outside NodeType, NODE_TYPE_MODELS and NODE_ID_FIELDS, so
+# parity, reconcile and ingest dispatch never see them. No property name is a NODE_ID_FIELDS value.
+DOCUMENT_KINDS = ("docs", "adr", "readme", "claude_md", "memory")
+
+
+def _validate_document_kind_value(cls, v: str) -> str:
+    if v not in DOCUMENT_KINDS:
+        raise ValueError(f"kind '{v}' must be one of: {', '.join(DOCUMENT_KINDS)}")
+    return v
+
+
+class Document(BaseModel):
+    """One ingested markdown file. doc_id is the repo-relative posix path ("memory/<file>"
+    for a memory file); path is the same, or the absolute path for a memory file."""
+
+    doc_id: str
+    project: str
+    path: str
+    kind: str
+    title: str
+    source_hash: str
+    chunk_count: int
+    ingested_at: str
+    provenance: str = "record"
+    source_origin: str = "graph-authored"
+
+    _validate_kind = field_validator("kind")(_validate_document_kind_value)
+
+
+class Chunk(BaseModel):
+    """One section-bounded piece of a Document. chunk_id is "<project>:<doc_id>#<ordinal>",
+    unique across projects because the in-memory indexes key every candidate by one string."""
+
+    chunk_id: str
+    project: str
+    doc_id: str
+    ordinal: int
+    breadcrumb: str
+    text: str
+    est_tokens: int
+    source_hash: str
+    provenance: str = "record"
+    source_origin: str = "graph-authored"
+
+
 # --- New edge types per plan Section 3.1 ---
 # Directed edges. Each extends _DirectedEdge. Neo4j relationship type matches the class name
 # uppercased-with-underscores (e.g. PressureTests -> PRESSURE_TESTS). Direction is the design
@@ -888,37 +927,30 @@ class BelongsTo(_DirectedEdge):
 # --- Canonical node-type registry (POL-3 / C6: single source) -------------------------------
 # node_type -> Pydantic model and node_type -> primary-key field name. ingest.py and db.py
 # import/derive from these instead of redefining the maps (adding a node type is now one edit).
-NODE_TYPE_MODELS: dict[str, type[BaseModel]] = {
-    "Rule": Rule,
-    "Abstraction": Abstraction,
-    "Category": Category,
-    "Skill": Skill,
-    "Playbook": Playbook,
-    "Technique": Technique,
-    "AntiPattern": AntiPattern,
-    "ForbiddenResponse": ForbiddenResponse,
-    "Phase": Phase,
-    "Rationalization": Rationalization,
-    "PressureScenario": PressureScenario,
-    "WorkedExample": WorkedExample,
-    "SubagentRole": SubagentRole,
-}
-
-NODE_ID_FIELDS: dict[str, str] = {
-    "Rule": "rule_id",
-    "Abstraction": "abstraction_id",
-    "Category": "category_id",
-    "Skill": "skill_id",
-    "Playbook": "playbook_id",
-    "Technique": "technique_id",
-    "AntiPattern": "antipattern_id",
-    "ForbiddenResponse": "forbidden_id",
-    "Phase": "phase_id",
-    "Rationalization": "rationalization_id",
-    "PressureScenario": "scenario_id",
-    "WorkedExample": "example_id",
-    "SubagentRole": "role_id",
-}
+# Both derive from one table, checked against NodeType at import (records never enter it:
+# writ/graph/db/_common.py RECORD_ID_FIELDS).
+_NODE_TYPE_TABLE: tuple[tuple[NodeType, type[BaseModel], str], ...] = (
+    (NodeType.RULE, Rule, "rule_id"),
+    (NodeType.ABSTRACTION, Abstraction, "abstraction_id"),
+    (NodeType.CATEGORY, Category, "category_id"),
+    (NodeType.SKILL, Skill, "skill_id"),
+    (NodeType.PLAYBOOK, Playbook, "playbook_id"),
+    (NodeType.TECHNIQUE, Technique, "technique_id"),
+    (NodeType.ANTIPATTERN, AntiPattern, "antipattern_id"),
+    (NodeType.FORBIDDEN_RESPONSE, ForbiddenResponse, "forbidden_id"),
+    (NodeType.PHASE, Phase, "phase_id"),
+    (NodeType.RATIONALIZATION, Rationalization, "rationalization_id"),
+    (NodeType.PRESSURE_SCENARIO, PressureScenario, "scenario_id"),
+    (NodeType.WORKED_EXAMPLE, WorkedExample, "example_id"),
+    (NodeType.SUBAGENT_ROLE, SubagentRole, "role_id"),
+)
+NODE_TYPE_MODELS: dict[str, type[BaseModel]] = {t.value: m for t, m, _ in _NODE_TYPE_TABLE}
+NODE_ID_FIELDS: dict[str, str] = {t.value: f for t, _, f in _NODE_TYPE_TABLE}
+if len(NODE_ID_FIELDS) != len(_NODE_TYPE_TABLE) or set(NODE_ID_FIELDS) != {t.value for t in NodeType}:
+    raise ValueError(
+        f"_NODE_TYPE_TABLE and NodeType disagree: table {[t.value for t, _, _ in _NODE_TYPE_TABLE]}, "
+        f"NodeType {[t.value for t in NodeType]}; every NodeType member needs exactly one table row"
+    )
 
 # Round-trip contract: the Markdown section headers export WRITES and ingest
 # READS must match exactly, or an export/import cycle silently loses fields.

@@ -183,3 +183,33 @@ and the methodology channel, which sets both. The two builders that set `severit
 So the state is reachable only from a hand-built fixture. It gets no capability for the same reason
 the sub-agent scope deferral was deleted in `e881c6d`: specifying a state the system cannot produce
 makes it read as designed and argues against its own later change.
+
+## Program item 5: the sim slot (2026-10-07)
+
+Plan: `.claude/plans/1c1f801f-c493-4e74-aa60-76c1e69ea30e/plan.md` (workstream P). Sibling:
+`docs/adr/ADR-retrieved-text-fence.md`.
+
+`score=` is the composite `compute_score` (normalized BM25 rank, normalized vector rank,
+severity, confidence, graph proximity). It cannot tell a strong semantic match from a weak
+one that rides on keyword overlap, and the raw cosine that could was computed for every
+vector-stage candidate and then dropped. The header now carries it after the score:
+
+- `[SEC-INJ-SQL-002] (critical) score=0.921 sim=0.734`: the rule came back from the vector
+  stage with that cosine (the entry holds it rounded to four places; the slot prints three).
+- `[X-001] (high) score=0.612 sim=n/a`: only the keyword stage returned the rule.
+- No slot at all: the entry has no `similarity` key.
+
+The two spellings are deliberate. `vector_score` stays 0.0 for a keyword-only hit because
+the normalizer needs a number, but 0.0 printed as a cosine would claim a measured,
+orthogonal match. `_merge_and_normalize` records `similarity` as the cosine or `None`, and
+`_final_rank` puts it on the entry; `normalize_ranks` and `compute_score` never read it, so
+ranking cannot move (measured: `benchmarks/ITEM5-PHASE01-RANKING-2026-10-07.md`).
+
+Absence renders nothing, unlike `?` for severity and authority, because absence is a real
+state here rather than a projection failure: methodology companion rows, abstraction
+summaries and hand-built payloads never come from the vector stage. Rendering `sim=?` for
+them would bill every such line for a field that cannot exist. The carry is the item 6 route:
+`similarity` joins `_HEADER_FIELDS`, so `_carry_header_fields` copies it through summary,
+standard, full and the ungrouped summary fallback only when the source declares it.
+`similarity_slot(entry)` in `writ/shared/injection_text.py` is the one spelling, which
+workstream D's document chunks reuse.

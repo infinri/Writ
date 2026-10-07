@@ -4,8 +4,9 @@ The daemon built its pipeline and trigger index once, in the lifespan, so an edi
 a new edge or a promoted node reached retrieval only after a restart. This module owns
 the rebuild and the swap:
 
-- RetrievalHandle is ONE generation: the pipeline and the trigger index, built from the
-  same graph read and installed together, never one without the other.
+- RetrievalHandle is ONE generation: the pipeline, the trigger index and the document
+  pipeline, built from the same graph read and installed together, never one without the
+  other. Only the half whose fingerprint keys moved is rebuilt (program item 5).
 - build_retrieval_handle reads the graph on the event loop (the driver is bound to it),
   fingerprints the result, and runs the CPU and disk build in a worker thread only when
   the fingerprint moved.
@@ -26,7 +27,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
+from writ.retrieval.documents import DocumentPipeline, assemble_document_pipeline
 from writ.retrieval.pipeline import (
+    DOCUMENT_FINGERPRINT_KEYS,
     RetrievalPipeline,
     assemble_pipeline,
     fingerprint_digest,
@@ -59,6 +62,7 @@ class RetrievalHandle:
     trigger_index: MethodologyTriggerIndex
     fingerprint: dict[str, str]
     built_at: str
+    documents: DocumentPipeline | None = None
 
 
 @dataclass(frozen=True)
@@ -111,8 +115,13 @@ async def build_retrieval_handle(
     (BM25 and HNSW load-or-build, the encoder) runs in a worker thread, so queries keep
     being served from `previous` while it runs. The running encoder is reused: the model
     is loaded once per process and its query cache survives the swap.
+
+    Only the half whose keys moved is rebuilt: a documents-only change reuses the previous
+    rule pipeline, a rules-only change the previous document pipeline. A document build
+    failure keeps the previous document half and its keys ("unbuilt" on first start), so it
+    never blocks a rule reload and the next reload retries it.
     """
-    inputs = await load_pipeline_inputs(db)
+    inputs = await load_pipeline_inputs(db, with_documents=True)
     trigger_index = await MethodologyTriggerIndex.build_from_db(db)
     fingerprint = {
         **pipeline_fingerprint(inputs),
@@ -120,19 +129,35 @@ async def build_retrieval_handle(
     }
     if previous is not None and previous.fingerprint == fingerprint:
         return None
-    pipeline = await asyncio.to_thread(
-        assemble_pipeline,
-        inputs,
-        embedding_model=previous.pipeline.encoder if previous is not None else None,
-        abstention_threshold=abstention_threshold,
-        authority_preference_threshold=authority_preference_threshold,
-    )
+    document_keys = ("index_version", *DOCUMENT_FINGERPRINT_KEYS)
+    rule_keys = [key for key in fingerprint if key not in DOCUMENT_FINGERPRINT_KEYS]
+    if previous is None or any(previous.fingerprint.get(k) != fingerprint[k] for k in rule_keys):
+        pipeline = await asyncio.to_thread(
+            assemble_pipeline,
+            inputs,
+            embedding_model=previous.pipeline.encoder if previous is not None else None,
+            abstention_threshold=abstention_threshold,
+            authority_preference_threshold=authority_preference_threshold,
+        )
+    else:
+        pipeline = previous.pipeline
+    documents = previous.documents if previous is not None else None
+    if previous is None or any(previous.fingerprint.get(k) != fingerprint[k] for k in document_keys):
+        try:
+            documents = await asyncio.to_thread(
+                assemble_document_pipeline, inputs.chunks, embedding_model=pipeline.encoder,
+            )
+        except Exception as exc:
+            emit_exception("retrieval.documents.build", exc, "", None, generation=generation)
+            for key in DOCUMENT_FINGERPRINT_KEYS:
+                fingerprint[key] = previous.fingerprint[key] if previous is not None else "unbuilt"
     return RetrievalHandle(
         generation=generation,
         pipeline=pipeline,
         trigger_index=trigger_index,
         fingerprint=fingerprint,
         built_at=_now(),
+        documents=documents,
     )
 
 

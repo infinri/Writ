@@ -95,6 +95,9 @@ EXPECTED_GATED_SINKS: dict[str, int] = {
     "inject-tier-workflow.sh": 1,
     "validate-exit-plan.sh": 1,
     "writ-inject-always-on.sh": 0,
+    # Program item 5 (workstream D): the fifth injection hook, the recall hook's exact
+    # shape (the shared body in bin/lib/writ-prompt-section.sh owns the sinks).
+    "writ-inject-documents.sh": 0,
     "writ-inject-methodology.sh": 0,
     "writ-inject-recall.sh": 0,
     "writ-posttool-rag.sh": 2,
