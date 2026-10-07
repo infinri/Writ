@@ -901,6 +901,128 @@ class TestGetLatestFilechangePerPath:
         assert calls == []
 
 
+class TestGetDecisionsForPaths:
+    """Program item 4: the batched FileChange -[MOTIVATED_BY]-> Decision read.
+
+    Fake driver: pins the query's shape (it traverses MOTIVATED_BY, is scoped to the project
+    on BOTH ends, filters on the IN-list, orders newest change first and slices per path),
+    the params, the row projection and that an empty path list never reaches the driver.
+    What the query RETURNS against a real graph (traversal, ordering, scoping, index seek)
+    is proven in tests/test_decision_recall_graph.py.
+    """
+
+    @staticmethod
+    def _row(**overrides) -> "_FakeRecord":
+        base = {
+            "path": "foo.py",
+            "decision_id": "DEC-1",
+            "title": "Add helper",
+            "rationale": "dedup",
+            "planned_files": json.dumps([{"path": "foo.py", "reason": "dedup it"}]),
+            "governing_rule_ids": None,
+            "phase": "harvested",
+            "decision_ts": "2026-07-01T00:00:00Z",
+            "reason": "dedupe the helper",
+            "change_ts": "2026-07-02T00:00:00Z",
+            "commit_hash": "abc123",
+            "commit_subject": "refactor(db): dedup",
+        }
+        base.update(overrides)
+        return _FakeRecord(base)
+
+    def test_sends_one_query_with_project_and_paths_params(self) -> None:
+        conn, calls = _make_conn(_FakeResult(rows=[]))
+        asyncio.run(conn.get_decisions_for_paths("writ", ["foo.py", "bar.py"], per_path=3))
+        assert len(calls) == 1
+        assert calls[0]["params"] == {
+            "project": "writ", "paths": ["foo.py", "bar.py"], "per_path": 3,
+        }
+
+    def test_per_path_defaults_to_one(self) -> None:
+        conn, calls = _make_conn(_FakeResult(rows=[]))
+        asyncio.run(conn.get_decisions_for_paths("writ", ["foo.py"]))
+        assert calls[0]["params"] == {"project": "writ", "paths": ["foo.py"], "per_path": 1}
+
+    def test_query_text_pins_the_traversal_scope_order_and_slice(self) -> None:
+        conn, calls = _make_conn(_FakeResult(rows=[]))
+        asyncio.run(conn.get_decisions_for_paths("writ", ["foo.py"]))
+        query = " ".join(calls[0]["query"].split())
+        assert "(n:FileChange)-[:MOTIVATED_BY]->(d:Decision)" in query
+        assert "n.project = $project" in query and "d.project = $project" in query, (
+            "both ends of the edge must be scoped to the project"
+        )
+        assert "n.path IN $paths" in query
+        assert "ORDER BY n.ts DESC, n.change_id DESC" in query, (
+            "newest change first, ties broken by change id, before the per-path slice"
+        )
+        assert "ORDER BY path, change_ts DESC, n.change_id DESC" in query, (
+            "the returned rows break change-time ties the same way"
+        )
+        assert "$per_path" in query
+        assert "(c:Commit {commit_hash: n.commit_hash, project: $project})" in query
+        for column in (
+            "decision_id", "title", "rationale", "planned_files", "governing_rule_ids",
+            "phase", "decision_ts", "reason", "change_ts", "commit_hash", "commit_subject",
+        ):
+            assert f"AS {column}" in query, f"projection lost {column}"
+
+    def test_groups_rows_by_path_newest_first_and_parses_the_decision_fields(self) -> None:
+        rows = [
+            self._row(),
+            self._row(
+                decision_id="DEC-2", title="Older", reason="earlier reason",
+                change_ts="2026-06-01T00:00:00Z", commit_hash="old999",
+                governing_rule_ids=["PERF-BATCH-001"], planned_files=None,
+                commit_subject=None,
+            ),
+            self._row(path="bar.py", decision_id="DEC-3"),
+        ]
+        conn, _calls = _make_conn(_FakeResult(rows=rows))
+        result = asyncio.run(conn.get_decisions_for_paths("writ", ["foo.py", "bar.py"], per_path=2))
+
+        assert set(result) == {"foo.py", "bar.py"}
+        assert [r["decision_id"] for r in result["foo.py"]] == ["DEC-1", "DEC-2"]
+        first = result["foo.py"][0]
+        assert first == {
+            "decision_id": "DEC-1",
+            "title": "Add helper",
+            "rationale": "dedup",
+            "planned_files": [{"path": "foo.py", "reason": "dedup it"}],
+            "governing_rule_ids": [],
+            "phase": "harvested",
+            "decision_ts": "2026-07-01T00:00:00Z",
+            "reason": "dedupe the helper",
+            "change_ts": "2026-07-02T00:00:00Z",
+            "commit_hash": "abc123",
+            "commit_subject": "refactor(db): dedup",
+        }
+        second = result["foo.py"][1]
+        assert second["governing_rule_ids"] == ["PERF-BATCH-001"]
+        assert second["planned_files"] == []
+        assert [r["decision_id"] for r in result["bar.py"]] == ["DEC-3"]
+
+    def test_a_decision_reached_through_two_changes_is_returned_once_keeping_the_latest(self) -> None:
+        rows = [
+            self._row(change_ts="2026-07-05T00:00:00Z", reason="latest reason"),
+            self._row(change_ts="2026-07-01T00:00:00Z", reason="earlier reason"),
+        ]
+        conn, _calls = _make_conn(_FakeResult(rows=rows))
+        result = asyncio.run(conn.get_decisions_for_paths("writ", ["foo.py"], per_path=3))
+        assert len(result["foo.py"]) == 1
+        assert result["foo.py"][0]["reason"] == "latest reason"
+
+    def test_unmatched_paths_are_absent(self) -> None:
+        conn, _calls = _make_conn(_FakeResult(rows=[self._row()]))
+        result = asyncio.run(conn.get_decisions_for_paths("writ", ["foo.py", "nowhere.py"]))
+        assert "nowhere.py" not in result
+
+    def test_empty_paths_returns_empty_dict_without_touching_the_driver(self) -> None:
+        conn, calls = _make_conn()
+        result = asyncio.run(conn.get_decisions_for_paths("writ", []))
+        assert result == {}
+        assert calls == []
+
+
 class TestGetRecentDecisions:
     def test_default_limit_sends_expected_query_and_params(self) -> None:
         conn, calls = _make_conn(_FakeResult(rows=[]))

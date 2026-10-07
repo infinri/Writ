@@ -51,7 +51,7 @@ async def commit_capture(request: CommitCaptureRequest) -> dict[str, Any]:
         return {"error": "Database not connected."}
 
     try:
-        await server.capture_commit(
+        project = await server.capture_commit(
             server._db,
             cwd=request.project_root,
             commit_hash=request.commit_hash,
@@ -70,6 +70,10 @@ async def commit_capture(request: CommitCaptureRequest) -> dict[str, Any]:
             error=str(exc),
         )
         return {"ok": True}
+    if project:
+        from writ.session.recall import invalidate_corpus
+
+        invalidate_corpus(server._db, project)
     return {"ok": True}
 
 
@@ -144,16 +148,22 @@ async def memory_record(request: MemoryRecordRequest) -> dict[str, Any]:
         except Exception:
             pass
         return {"ok": True}
+    from writ.session.recall import invalidate_corpus
+
+    invalidate_corpus(server._db, project)
     return {"ok": True, "name": name}
 
 
 @router.post("/recall")
 async def recall(request: RecallRequest) -> dict[str, Any]:
-    """Compile the project's recent rule-grounded Decisions (Phase 2 recall).
+    """Compile the ranked briefing of the project's Decisions and memories for a prompt.
 
-    The first-prompt briefing hook and `writ recall` both reach this route.
-    Recall is a SEPARATE project-scoped read (Decision is excluded from the RAG
-    pipeline), scoped to the project resolved from the caller's cwd. Fail-open:
+    The recall section of /prompt-bundle and `writ recall` both reach this route.
+    Decisions behind the files the prompt names rank first, then decisions and
+    memories whose text matches the prompt, then recent decisions unless
+    matched_only; ids in exclude_ids are left out. Recall is a SEPARATE
+    project-scoped read (Decision is excluded from the RAG pipeline), scoped to
+    the project resolved from the caller's cwd. Fail-open:
     _db None returns the error shape, and any failure is logged and returns an
     empty-but-valid payload so a recall failure never blocks a prompt.
 
@@ -182,9 +192,11 @@ async def recall(request: RecallRequest) -> dict[str, Any]:
                 event="recall_project_unresolved",
                 project_root=request.project_root,
             )
-            return {"ok": True, "briefing": "", "decisions": []}
+            return {"ok": True, "briefing": "", "decisions": [], "memories": [], "cards": []}
         payload = await compile_recall(
-            server._db, project, budget=request.budget, full=request.full
+            server._db, project, budget=request.budget, full=request.full,
+            prompt=request.prompt, project_root=request.project_root,
+            exclude_ids=request.exclude_ids, matched_only=request.matched_only,
         )
     except Exception as exc:
         try:
@@ -197,5 +209,11 @@ async def recall(request: RecallRequest) -> dict[str, Any]:
             )
         except Exception:
             pass
-        return {"ok": True, "briefing": "", "decisions": []}
-    return {"ok": True, "briefing": payload["briefing"], "decisions": payload["decisions"]}
+        return {"ok": True, "briefing": "", "decisions": [], "memories": [], "cards": []}
+    return {
+        "ok": True,
+        "briefing": payload["briefing"],
+        "decisions": payload["decisions"],
+        "memories": payload.get("memories", []),
+        "cards": payload.get("cards", []),
+    }

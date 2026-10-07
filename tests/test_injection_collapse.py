@@ -171,9 +171,45 @@ class TestInjectionState:
         st.apply_mark_shown(cache, "always_on", "0|", ["", None, "A"])
         assert cache["injection_shown"]["always_on"] == ["A"]
 
-    def test_only_always_on_and_floor_are_collapsible(self):
+    def test_the_tracked_sections_are_always_on_floor_recall_and_pre_write_decision(self):
         st = _imp("writ.session.injection_state")
-        assert tuple(st.COLLAPSIBLE_SECTIONS) == ("always_on", "floor")
+        assert tuple(st.COLLAPSIBLE_SECTIONS) == ("always_on", "floor", "recall", "pre_write_decision")
+
+    def test_apply_mark_shown_records_recall_and_pre_write_decision_ids(self):
+        st = _imp("writ.session.injection_state")
+        cache: dict = {}
+        st.apply_mark_shown(cache, "recall", "0|", ["D2", "D1"])
+        st.apply_mark_shown(cache, "pre_write_decision", "0|", ["src/mod.py#D1"])
+        assert cache["injection_shown"] == {"epoch": "0|", "recall": ["D1", "D2"],
+                                            "pre_write_decision": ["src/mod.py#D1"]}
+
+    def test_marked_this_epoch_is_false_without_a_record(self):
+        st = _imp("writ.session.injection_state")
+        assert st.marked_this_epoch({}, "recall") is False
+        assert st.marked_this_epoch({"injection_shown": {}}, "recall") is False
+
+    def test_marked_this_epoch_is_true_for_an_empty_id_list_written_this_epoch(self):
+        st = _imp("writ.session.injection_state")
+        cache: dict = {}
+        st.apply_mark_shown(cache, "recall", "0|", [])
+        assert cache["injection_shown"]["recall"] == []
+        assert st.marked_this_epoch(cache, "recall") is True
+
+    def test_marked_this_epoch_is_per_section(self):
+        st = _imp("writ.session.injection_state")
+        cache = {"injection_shown": {"epoch": "0|", "always_on": ["A"]}}
+        assert st.marked_this_epoch(cache, "always_on") is True
+        assert st.marked_this_epoch(cache, "recall") is False
+
+    def test_marked_this_epoch_is_false_for_a_record_of_another_epoch(self):
+        st = _imp("writ.session.injection_state")
+        cache = {"compaction_epoch": 1, "injection_shown": {"epoch": "0|", "recall": ["D1"]}}
+        assert st.marked_this_epoch(cache, "recall") is False
+
+    def test_marked_this_epoch_tolerates_a_malformed_record(self):
+        st = _imp("writ.session.injection_state")
+        assert st.marked_this_epoch({"injection_shown": "garbage"}, "recall") is False
+        assert st.marked_this_epoch({"injection_shown": None}, "recall") is False
 
     def test_the_default_cache_carries_the_collapse_record(self):
         cache = _imp("writ.session.cache")._default_cache()
@@ -518,7 +554,8 @@ class TestConcurrentSections:
         } for i in range(3)]
         bundle.query.return_value = {"mode": "standard", "rules": ranked_rules}
         decision_memory = importlib.import_module("writ.server.routes.decision_memory")
-        decision_memory.recall.return_value = {"briefing": "a prior decision"}
+        decision_memory.recall.return_value = {
+            "briefing": "a prior decision", "cards": [{"id": "D-1", "head": "a prior decision"}]}
 
         for round_no in range(10):
             sid = f"cc-gather-{round_no}"
@@ -530,7 +567,8 @@ class TestConcurrentSections:
             assert recall["recall_block"] == "a prior decision"
 
             cache = _read(sid)
-            assert cache["recall_briefed"] is True, f"round {round_no}: the recall write was lost"
+            assert cache["injection_shown"]["recall"] == ["D-1"], f"round {round_no}: the recall write was lost"
+            assert not cache.get("recall_briefed"), "nothing writes the retired flag"
             assert cache["queries"] == 2, f"round {round_no}: ranked and methodology each count one query"
             assert cache["always_on_rule_ids"] == sorted(_ids(bundle.always_on_rules))
             assert cache["always_on_tokens_used"] > 0
@@ -557,6 +595,23 @@ class TestConcurrentSections:
         record = _read("cc-procs")["injection_shown"]
         assert record == {"epoch": "0|", "always_on": sorted(ids)}
 
+    def test_parallel_processes_marking_recall_ids_lose_no_write(self, cache_dir):
+        ids = [f"D-{i:02d}" for i in range(12)]
+        procs = [
+            subprocess.Popen(
+                [sys.executable, str(SESSION_CLI), "update", "cc-recall-procs",
+                 "--mark-shown", "recall", "0|", json.dumps([did])],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                env={**os.environ, "WRIT_CACHE_DIR": str(cache_dir)},
+            )
+            for did in ids
+        ]
+        for proc in procs:
+            _out, err = proc.communicate(timeout=60)
+            assert proc.returncode == 0, err
+        record = _read("cc-recall-procs")["injection_shown"]
+        assert record == {"epoch": "0|", "recall": sorted(ids)}
+
     def test_parallel_processes_mixing_collapse_and_budget_writes_lose_nothing(self, cache_dir):
         env = {**os.environ, "WRIT_CACHE_DIR": str(cache_dir)}
         argsets = [
@@ -564,7 +619,7 @@ class TestConcurrentSections:
             ["--mark-shown", "floor", "0|", '["F1"]'],
             ["--add-rules", '["M1"]', "--cost", "10", "--inc-queries"],
             ["--add-always-on-rules", '["A1"]', "--add-always-on-tokens", "7"],
-            ["--set-recall-briefed"],
+            ["--mark-shown", "recall", "0|", '["D1"]'],
         ] * 3
         procs = [
             subprocess.Popen([sys.executable, str(SESSION_CLI), "update", "cc-mixed", *args],
@@ -575,8 +630,8 @@ class TestConcurrentSections:
             _out, err = proc.communicate(timeout=60)
             assert proc.returncode == 0, err
         cache = _read("cc-mixed")
-        assert cache["injection_shown"] == {"epoch": "0|", "always_on": ["A1"], "floor": ["F1"]}
+        assert cache["injection_shown"] == {
+            "epoch": "0|", "always_on": ["A1"], "floor": ["F1"], "recall": ["D1"]}
         assert cache["queries"] == 3
         assert cache["always_on_tokens_used"] == 21
-        assert cache["recall_briefed"] is True
         assert cache["loaded_rule_ids"] == ["M1"]

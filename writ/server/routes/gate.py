@@ -14,6 +14,7 @@ their origin modules.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from typing import Any
 
@@ -44,6 +45,9 @@ router = APIRouter()
 # registry read (microseconds) and small next to the write it sits in front of, so it
 # only ever fires when the event loop is wedged, where waiting longer helps nobody.
 _PROJECT_RESOLVE_TIMEOUT_S = 2.0
+# Upper bound on the write-gate's decision read: a wedged graph costs a write at most this
+# long, then the write proceeds without the decision context.
+_DECISION_CONTEXT_TIMEOUT_S = 1.0
 
 
 @router.post("/session/{session_id}/advance-phase")
@@ -347,9 +351,12 @@ async def session_advance_phase(
     # is caught + logged and never blocks the advance. _db is None skips capture.
     if server._db is not None and project_root and result["from"] == "planning":
         try:
-            await server.capture_decision_at_approve(
+            if await server.capture_decision_at_approve(
                 server._db, project_root, session_id, phase=result["from"]
-            )
+            ):
+                from writ.session.recall import invalidate_corpus
+
+                invalidate_corpus(server._db)
         except Exception as exc:
             await asyncio.to_thread(
                 server.log_friction_event,
@@ -644,7 +651,7 @@ async def pre_write_check(request: PreWriteCheckRequest) -> dict[str, Any]:
     """Combined gate check + final-gate check + RAG query for Write/Edit.
 
     Returns {"decision": "allow"|"deny"|"ask", "reason": "...", "rag_rules": "...",
-             "rag_meta": {"rule_ids": [...], "tokens": N}}.
+             "rag_meta": {"rule_ids": [...], "tokens": N}, "decision_context": "..."}.
     """
     # Captured before _check leaves the event loop. _check is sync and runs in a
     # worker thread, but resolve_project_for_cwd is a coroutine on a Neo4j driver that
@@ -713,7 +720,16 @@ async def pre_write_check(request: PreWriteCheckRequest) -> dict[str, Any]:
                 # hook drops its separate `mode get` and denial-count daemon reads.
                 "mode": mode,
                 "max_denial_count": max_count,
+                "decision_context": "",
             }
+
+        # One registry consultation per request, shared by the RAG and decision blocks.
+        resolved: list[str] = []
+
+        def project_once() -> str:
+            if not resolved:
+                resolved.append(_resolve_project(cache.get("project_root", "") or ""))
+            return resolved[0]
 
         # 2. RAG query (if pipeline available)
         file_path = request.file_path or request.tool_input.get("file_path", "")
@@ -745,7 +761,7 @@ async def pre_write_check(request: PreWriteCheckRequest) -> dict[str, Any]:
                         # a few lines up for plan_hash), so the scope comes from the
                         # session's own project rather than from a new request field
                         # every Write/Edit would have to remember to send.
-                        project = _resolve_project(cache.get("project_root", "") or "")
+                        project = project_once()
                         result = server._pipeline.query(
                             query_text=query_text,
                             budget_tokens=max_budget,
@@ -771,6 +787,35 @@ async def pre_write_check(request: PreWriteCheckRequest) -> dict[str, Any]:
                     error=str(exc),
                 )
 
+        # 3. The decision behind the file's last change, once per (path, decision) per epoch.
+        from writ.session.injection_state import injection_epoch, shown_ids
+        from writ.session.recall import path_candidates, write_decision_context
+        decision_context = ""
+        candidates = path_candidates(file_path, cache.get("project_root") or "") if file_path else []
+        if candidates and server._db is not None:
+            fut = None
+            try:
+                project = project_once()
+                if project:
+                    fut = asyncio.run_coroutine_threadsafe(write_decision_context(
+                        server._db, project, candidates, shown_ids(cache, "pre_write_decision"),
+                    ), loop)
+                    decision_context, key = fut.result(timeout=_DECISION_CONTEXT_TIMEOUT_S)
+                    if key:
+                        server.writ_session.cmd_update(session_id, [
+                            "--mark-shown", "pre_write_decision", injection_epoch(cache),
+                            json.dumps([key]),
+                        ])
+            except Exception as exc:
+                if fut is not None:
+                    fut.cancel()
+                server.log_friction_event(
+                    session_id=session_id,
+                    mode=mode,
+                    event="pre_write_decision_failed",
+                    error=str(exc),
+                )
+
         return {
             "decision": "allow",
             "reason": None,
@@ -779,6 +824,7 @@ async def pre_write_check(request: PreWriteCheckRequest) -> dict[str, Any]:
             # A11: mode for the dispatch hook's telemetry (no separate `mode get`).
             "mode": mode,
             "max_denial_count": max((cache.get("denial_counts") or {}).values(), default=0),
+            "decision_context": decision_context,
         }
 
     result = await asyncio.to_thread(_check)

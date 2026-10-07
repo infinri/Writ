@@ -21,6 +21,16 @@ Capability map:
   [compile-5]  compiled payload stays within the token budget
   [compile-6]  briefing stays within ~500-token budget
   [compile-7]  writ/session/recall.py imports no LLM/model client
+
+Program item 4 (decision recall), workstream A, re-bases this file on the card format:
+  * _FakeDB gains list_memories and get_decisions_for_paths (and records every read);
+  * the batched rule-statement tests run under full=True, the only mode that reads
+    statements (a prompt-path briefing never renders one);
+  * eviction, protected-field and budget tests assert on the RENDERED briefing cost
+    (estimate_tokens of the briefing text), not on a hand-rolled field sum;
+  * the briefing content tests follow the card format "- <title> [RULES]".
+The ranking, cadence and graph behaviors live in tests/test_decision_recall.py and
+tests/test_decision_recall_graph.py.
 """
 
 from __future__ import annotations
@@ -61,24 +71,90 @@ def _decision_factory(
     }
 
 
+def _memory_factory(
+    name: str = "feedback_testing",
+    description: str = "Integration tests hit the real database.",
+    type: str = "feedback",
+    updated_at: str = "2026-06-27T09:00:00+00:00",
+) -> dict:
+    """A Memory row exactly as list_memories returns it (no body)."""
+    return {
+        "name": name,
+        "description": description,
+        "type": type,
+        "status": "live",
+        "path": f"memory/{name}.md",
+        "links": [],
+        "updated_at": updated_at,
+    }
+
+
+def _path_hit(
+    decision: dict,
+    *,
+    reason: str = "changed under this decision",
+    change_ts: str = "2026-06-27T10:30:00+00:00",
+    commit_hash: str = "abcdef1234567890",
+    commit_subject: str = "feat: change the file",
+) -> dict:
+    """One get_decisions_for_paths row: the decision's own fields plus the change."""
+    return {
+        "decision_id": decision["decision_id"],
+        "title": decision["title"],
+        "rationale": decision["rationale"],
+        "planned_files": decision["planned_files"],
+        "governing_rule_ids": decision["governing_rule_ids"],
+        "phase": decision["phase"],
+        "decision_ts": decision["ts"],
+        "reason": reason,
+        "change_ts": change_ts,
+        "commit_hash": commit_hash,
+        "commit_subject": commit_subject,
+    }
+
+
 class _FakeDB:
     """Fake db for compile_recall tests -- no Neo4j dependency.
 
-    Records each call to get_rule_statements so tests can assert EXACTLY-ONCE
-    semantics (PERF-BATCH-001). Returns canned decisions and statements.
+    Records each read so tests can assert EXACTLY-ONCE semantics (PERF-BATCH-001)
+    and corpus-cache behavior. Returns canned decisions, memories, path hits and
+    statements. path_hits maps a normalized path to the rows get_decisions_for_paths
+    returns for it; a path absent from the map is unmatched (absent from the result,
+    exactly like the real read).
     """
 
     def __init__(
         self,
         decisions: list[dict] | None = None,
         statements: dict[str, str] | None = None,
+        memories: list[dict] | None = None,
+        path_hits: dict[str, list[dict]] | None = None,
     ) -> None:
         self._decisions = decisions or []
         self._statements = statements or {}
+        self._memories = memories or []
+        self._path_hits = path_hits or {}
         self.get_rule_statements_calls: list[list[str]] = []
+        self.recent_calls: list[tuple[str, int]] = []
+        self.memory_calls: list[tuple[str, bool]] = []
+        self.path_calls: list[tuple[str, list[str], int]] = []
 
     async def get_recent_decisions(self, project: str, limit: int = 20) -> list[dict]:
+        self.recent_calls.append((project, limit))
         return list(self._decisions)
+
+    async def list_memories(self, project: str, include_deleted: bool = False) -> list[dict]:
+        self.memory_calls.append((project, include_deleted))
+        return [dict(m) for m in self._memories]
+
+    async def get_decisions_for_paths(
+        self, project: str, paths: list[str], per_path: int = 1
+    ) -> dict[str, list[dict]]:
+        self.path_calls.append((project, list(paths), per_path))
+        return {
+            p: [dict(r) for r in self._path_hits[p][:per_path]]
+            for p in paths if p in self._path_hits
+        }
 
     async def get_rule_statements(self, rule_ids: list[str]) -> dict[str, str]:
         self.get_rule_statements_calls.append(list(rule_ids))
@@ -86,23 +162,14 @@ class _FakeDB:
 
 
 # ---------------------------------------------------------------------------
-# Token-cost helpers (used in budget tests)
+# Token-cost helper (used in budget tests)
 # ---------------------------------------------------------------------------
 
-def _rough_token_count(text: str) -> int:
-    """4-chars/token heuristic matching estimate_tokens in writ/shared/tokens.py."""
-    return max(1, len(text) // 4) if text else 0
+def _briefing_tokens(result: dict) -> int:
+    """The tokens the section budget governs: the rendered briefing text itself."""
+    from writ.shared.tokens import estimate_tokens
 
-
-def _decision_rough_cost(d: dict, statements: dict[str, str]) -> int:
-    """Rough token cost of a decision dict (mirrors _decision_token_cost)."""
-    cost = _rough_token_count((d.get("title") or "") + (d.get("decision_id") or ""))
-    cost += _rough_token_count(d.get("rationale") or "")
-    for rid in d.get("governing_rule_ids") or []:
-        cost += _rough_token_count(rid + (statements.get(rid) or ""))
-    for pf in d.get("planned_files") or []:
-        cost += _rough_token_count((pf.get("path") or "") + (pf.get("reason") or ""))
-    return cost
+    return estimate_tokens(result["briefing"], None)
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +177,11 @@ def _decision_rough_cost(d: dict, statements: dict[str, str]) -> int:
 # ---------------------------------------------------------------------------
 
 class TestCompileRecallBatchRuleStatements:
-    """[compile-1]: get_rule_statements called EXACTLY ONCE over de-duped union."""
+    """[compile-1]: get_rule_statements called EXACTLY ONCE over de-duped union.
+
+    Item 4: statements are only read under full=True (the CLI listing that prints them),
+    so every batched-statement test runs with full=True and an ample budget.
+    """
 
     @pytest.mark.asyncio
     async def test_single_call_for_two_decisions_with_distinct_rules(self) -> None:
@@ -129,7 +200,7 @@ class TestCompileRecallBatchRuleStatements:
             "RULE-003": "Fail open on errors.",
         })
 
-        await compile_recall(db, "writ")
+        await compile_recall(db, "writ", full=True, budget=200_000)
 
         assert len(db.get_rule_statements_calls) == 1, (
             f"get_rule_statements must be called EXACTLY ONCE (PERF-BATCH-001); "
@@ -149,7 +220,7 @@ class TestCompileRecallBatchRuleStatements:
         ]
         db = _FakeDB(decisions=decisions)
 
-        await compile_recall(db, "writ")
+        await compile_recall(db, "writ", full=True, budget=200_000)
 
         assert len(db.get_rule_statements_calls) == 1, (
             "get_rule_statements must be called exactly once even with overlapping ids"
@@ -169,7 +240,7 @@ class TestCompileRecallBatchRuleStatements:
 
         db = _FakeDB(decisions=[])
 
-        await compile_recall(db, "writ")
+        await compile_recall(db, "writ", full=True, budget=200_000)
 
         # Acceptable to call once with [] or to skip the call entirely (both are
         # correct PERF-BATCH-001 implementations -- a zero-id batch is a no-op).
@@ -195,7 +266,7 @@ class TestCompileRecallBatchRuleStatements:
         ]
         db = _FakeDB(decisions=decisions)
 
-        await compile_recall(db, "writ")
+        await compile_recall(db, "writ", full=True, budget=200_000)
 
         assert len(db.get_rule_statements_calls) == 1, (
             f"get_rule_statements must never be called N+1 times; "
@@ -204,81 +275,103 @@ class TestCompileRecallBatchRuleStatements:
 
 
 # ---------------------------------------------------------------------------
-# Tests: eviction order (rationale before planned_files[].reason)
+# Tests: eviction order (rationale before the matched-file reasons)
 # ---------------------------------------------------------------------------
 
+_PATH_PROMPT = "please update writ/foo.py"
+_PROJECT_ROOT = "/repo/proj"
+_LONG_RATIONALE = (
+    "Because the recall cache must be rebuilt after every harvest, so a stale index "
+    "never hides a decision. " * 4
+).strip()
+_FILE_REASON = "touches the cache writer for harvest"
+
+
+def _path_db(decision: dict, reason: str = _FILE_REASON, **kwargs: Any) -> _FakeDB:
+    """A db whose only decision is reachable through the path read for writ/foo.py."""
+    return _FakeDB(
+        decisions=[],
+        path_hits={"writ/foo.py": [_path_hit(decision, reason=reason)]},
+        **kwargs,
+    )
+
+
+async def _recall_path(db: _FakeDB, **kwargs: Any) -> dict:
+    from writ.session.recall import compile_recall
+
+    return await compile_recall(
+        db, "writ", prompt=_PATH_PROMPT, project_root=_PROJECT_ROOT, **kwargs
+    )
+
+
 class TestCompileRecallEvictionOrder:
-    """[compile-2]: rationale dropped before any planned_files[].reason."""
+    """[compile-2]: rationale dropped before any matched-file reason (card cost)."""
 
     @pytest.mark.asyncio
-    async def test_rationale_dropped_before_planned_files_reason(self) -> None:
-        # [compile-2]: when a decision is too large, rationale must be cleared
-        # BEFORE any planned_files[].reason is cleared.
-        # We use a budget that fits the decision only if rationale is cleared
-        # (so if any planned_files reason is cleared first instead, the rationale
-        # will remain and the test fails).
-        # RED: ImportError.
-        from writ.session.recall import compile_recall
-        from writ.shared.tokens import estimate_tokens
-
-        # Craft a decision with a long rationale and a short planned_files reason.
-        long_rationale = "X" * 400  # ~100 tokens
-        short_reason = "short"
+    async def test_rationale_dropped_before_matched_file_reason(self) -> None:
+        # [compile-2] / cap 12: a budget one token under the full card forces eviction;
+        # dropping the rationale alone is enough, so the file's reason must survive.
         decision = _decision_factory(
-            decision_id="DEC-EVICT",
-            title="Eviction order test",
-            rationale=long_rationale,
-            planned_files=[{"path": "writ/foo.py", "reason": short_reason}],
-            governing_rule_ids=["RULE-X"],
+            decision_id="DEC-EVICT", rationale=_LONG_RATIONALE, governing_rule_ids=["RULE-X"],
         )
+        ample = await _recall_path(_path_db(decision), budget=200_000)
+        full_tokens = _briefing_tokens(ample)
+        assert _FILE_REASON in ample["briefing"], "an ample budget renders the reason"
+        assert "why:" in ample["briefing"], "an ample budget renders the rationale line"
 
-        # Budget that forces eviction but allows the decision without its rationale.
-        # The protected fields (title+id+rule_ids+statements) + planned_files path
-        # but NOT the rationale must fit.
-        statements = {"RULE-X": "short statement"}
-        rough_protected_cost = _rough_token_count(
-            "Eviction order test" + "DEC-EVICT" + "RULE-X" + "short statement"
-            + "writ/foo.py" + short_reason
+        tight = await _recall_path(_path_db(decision), budget=full_tokens - 1)
+
+        kept = tight["decisions"]
+        assert [d["decision_id"] for d in kept] == ["DEC-EVICT"]
+        assert kept[0]["rationale"] == "", (
+            f"rationale must be evicted first; got {kept[0]['rationale']!r}"
         )
-        budget = rough_protected_cost + 50  # tight: fits without rationale, not with
-
-        db = _FakeDB(decisions=[decision], statements=statements)
-        result = await compile_recall(db, "writ", budget=budget)
-
-        kept = result["decisions"]
-        if kept:
-            # If the decision was kept, rationale must be empty/cleared.
-            assert kept[0].get("rationale", "") == "", (
-                "rationale must be evicted first (before planned_files reason); "
-                f"rationale={kept[0].get('rationale')!r}, "
-                f"planned_files={kept[0].get('planned_files')!r}"
-            )
+        assert kept[0]["matched_files"][0]["reason"] == _FILE_REASON, (
+            "the matched file's reason must outlive the rationale"
+        )
+        assert "why:" not in tight["briefing"]
+        assert _FILE_REASON in tight["briefing"]
+        assert _briefing_tokens(tight) <= full_tokens - 1
 
     @pytest.mark.asyncio
-    async def test_planned_files_reason_cleared_only_after_rationale(self) -> None:
-        # [compile-2]: with infinite budget both fields survive; they are only
-        # evicted under budget pressure and in the declared order.
-        # RED: ImportError.
-        from writ.session.recall import compile_recall
-
+    async def test_matched_file_reason_dropped_after_rationale_under_tighter_budget(self) -> None:
+        # [compile-2]: under a budget the rationale-less card still exceeds, the
+        # matched-file reason goes next; id, title and rule ids never do.
         decision = _decision_factory(
-            decision_id="DEC-FULL",
-            rationale="Important rationale.",
-            planned_files=[{"path": "writ/foo.py", "reason": "important reason"}],
-            governing_rule_ids=["RULE-X"],
+            decision_id="DEC-EVICT2", rationale=_LONG_RATIONALE, governing_rule_ids=["RULE-X"],
         )
-        db = _FakeDB(decisions=[decision])
+        ample = await _recall_path(_path_db(decision), budget=200_000)
+        no_rationale = await _recall_path(
+            _path_db(decision), budget=_briefing_tokens(ample) - 1
+        )
+        assert no_rationale["decisions"][0]["rationale"] == ""
 
-        result = await compile_recall(db, "writ", budget=200_000)
+        tighter = await _recall_path(
+            _path_db(decision), budget=_briefing_tokens(no_rationale) - 1
+        )
+
+        kept = tighter["decisions"]
+        assert [d["decision_id"] for d in kept] == ["DEC-EVICT2"]
+        assert kept[0]["rationale"] == ""
+        assert kept[0]["matched_files"][0]["reason"] == ""
+        assert _FILE_REASON not in tighter["briefing"]
+        assert "RULE-X" in tighter["briefing"], "rule ids are protected"
+        assert kept[0]["title"] in tighter["briefing"], "the title is protected"
+
+    @pytest.mark.asyncio
+    async def test_both_fields_survive_an_ample_budget(self) -> None:
+        # [compile-2]: with an ample budget nothing is evicted; the payload carries the
+        # FULL rationale (the card clips it for display only).
+        decision = _decision_factory(
+            decision_id="DEC-FULL", rationale=_LONG_RATIONALE, governing_rule_ids=["RULE-X"],
+        )
+
+        result = await _recall_path(_path_db(decision), budget=200_000)
 
         kept = result["decisions"]
         assert len(kept) == 1
-        assert kept[0]["rationale"] == "Important rationale.", (
-            "rationale must survive when budget is ample"
-        )
-        assert kept[0]["planned_files"][0]["reason"] == "important reason", (
-            "planned_files reason must survive when budget is ample"
-        )
+        assert kept[0]["rationale"] == _LONG_RATIONALE
+        assert kept[0]["matched_files"] == [{"path": "writ/foo.py", "reason": _FILE_REASON}]
 
 
 # ---------------------------------------------------------------------------
@@ -286,19 +379,19 @@ class TestCompileRecallEvictionOrder:
 # ---------------------------------------------------------------------------
 
 class TestCompileRecallProtectedFields:
-    """[compile-3]: decision_id, title, governing_rule_ids, rule_statements never dropped."""
+    """[compile-3]: decision_id, title, governing_rule_ids never dropped; statements
+    are read and carried only under full=True."""
 
     @pytest.mark.asyncio
     async def test_protected_fields_present_on_every_kept_decision(self) -> None:
-        # [compile-3]: a kept decision must always have decision_id, title,
-        # governing_rule_ids, and rule_statements -- regardless of budget pressure.
-        # RED: ImportError.
+        # [compile-3]: rationale="" so the stored title is the display title.
         from writ.session.recall import compile_recall
 
         decisions = [
             _decision_factory(
                 decision_id="DEC-PROT-001",
                 title="Protected fields test",
+                rationale="",
                 governing_rule_ids=["ERR-FALLBACK-001"],
             ),
         ]
@@ -307,50 +400,49 @@ class TestCompileRecallProtectedFields:
             statements={"ERR-FALLBACK-001": "All error paths are fail-open."},
         )
 
-        result = await compile_recall(db, "writ", budget=200_000)
+        result = await compile_recall(db, "writ", full=True, budget=200_000)
 
         kept = result["decisions"]
         assert len(kept) == 1, "decision must be kept under ample budget"
         d = kept[0]
-
-        assert d.get("decision_id") == "DEC-PROT-001", (
-            f"decision_id must be present; got {d.get('decision_id')!r}"
-        )
-        assert d.get("title") == "Protected fields test", (
-            f"title must be present; got {d.get('title')!r}"
-        )
-        assert "ERR-FALLBACK-001" in (d.get("governing_rule_ids") or []), (
-            f"governing_rule_ids must be present; got {d.get('governing_rule_ids')!r}"
-        )
-        assert "rule_statements" in d, (
-            "rule_statements must be present on every kept decision"
-        )
+        assert d.get("decision_id") == "DEC-PROT-001"
+        assert d.get("title") == "Protected fields test"
+        assert "ERR-FALLBACK-001" in (d.get("governing_rule_ids") or [])
         assert d["rule_statements"].get("ERR-FALLBACK-001") == "All error paths are fail-open.", (
-            f"rule_statements must contain the expanded statement; "
-            f"got {d['rule_statements']!r}"
+            f"full mode carries the expanded statement; got {d['rule_statements']!r}"
         )
 
     @pytest.mark.asyncio
+    async def test_without_full_no_statement_is_read_or_rendered_but_the_key_is_stable(self) -> None:
+        # [compile-3] / cap 17: the prompt path never renders a statement, so it stops
+        # paying for the read; rule_statements stays a stable key holding {}.
+        from writ.session.recall import compile_recall
+
+        decision = _decision_factory(
+            decision_id="DEC-NOSTMT", rationale="", governing_rule_ids=["ERR-FALLBACK-001"],
+        )
+        db = _FakeDB(decisions=[decision], statements={"ERR-FALLBACK-001": "STATEMENT-BODY-TEXT"})
+
+        result = await compile_recall(db, "writ")
+
+        assert db.get_rule_statements_calls == []
+        assert result["decisions"][0]["rule_statements"] == {}
+        assert "STATEMENT-BODY-TEXT" not in result["briefing"]
+        assert "ERR-FALLBACK-001" in result["briefing"], "rule ids still render"
+
+    @pytest.mark.asyncio
     async def test_rule_statements_key_present_even_with_empty_rule_ids(self) -> None:
-        # [compile-3]: even a decision with no governing_rule_ids must have a
-        # rule_statements key (empty dict, not absent).
-        # RED: ImportError.
+        # [compile-3]: a decision with no governing_rule_ids still has the key ({}).
         from writ.session.recall import compile_recall
 
         decision = _decision_factory(decision_id="DEC-NORULES", governing_rule_ids=[])
         db = _FakeDB(decisions=[decision])
 
-        result = await compile_recall(db, "writ", budget=200_000)
+        result = await compile_recall(db, "writ", full=True, budget=200_000)
 
         kept = result["decisions"]
         assert len(kept) == 1
-        assert "rule_statements" in kept[0], (
-            "rule_statements key must exist even when governing_rule_ids is empty"
-        )
-        assert kept[0]["rule_statements"] == {}, (
-            f"rule_statements must be empty dict for no rules; "
-            f"got {kept[0]['rule_statements']!r}"
-        )
+        assert kept[0]["rule_statements"] == {}
 
 
 # ---------------------------------------------------------------------------
@@ -358,101 +450,73 @@ class TestCompileRecallProtectedFields:
 # ---------------------------------------------------------------------------
 
 class TestCompileRecallWholeDecisionDrop:
-    """[compile-4]: a decision that cannot fit even after full eviction is dropped
-    WHOLE, and all older decisions are also dropped."""
+    """[compile-4]: an item whose protected fields do not fit is dropped WHOLE and
+    nothing ranked below it is kept."""
 
     @pytest.mark.asyncio
     async def test_decision_dropped_whole_when_protected_fields_exceed_budget(self) -> None:
-        # [compile-4]: if title+decision_id+rule_ids+statements alone exceed the
-        # budget, the entire decision must be dropped (not shipped without rationale).
-        # RED: ImportError.
+        # [compile-4]: the protected card head (title plus 60 rule ids, ~150 tokens)
+        # exceeds a 50-token budget even with everything evictable gone.
         from writ.session.recall import compile_recall
 
-        # A decision with a very large title that will exceed a tiny budget
-        huge_title = "T" * 2000  # ~500 tokens from title alone
         decision = _decision_factory(
             decision_id="DEC-HUGE",
-            title=huge_title,
-            governing_rule_ids=["RULE-BIG"],
+            title="Huge rule list",
+            rationale="",
+            governing_rule_ids=[f"RULE-{i:03d}" for i in range(60)],
         )
-        db = _FakeDB(
-            decisions=[decision],
-            statements={"RULE-BIG": "S" * 2000},  # another ~500 tokens
-        )
+        db = _FakeDB(decisions=[decision])
 
-        result = await compile_recall(db, "writ", budget=50)  # far too small
+        result = await compile_recall(db, "writ", budget=50)
 
         assert result["decisions"] == [], (
-            "decision must be dropped WHOLE when it cannot fit even after evicting "
-            f"all evictable fields; got {result['decisions']!r}"
+            f"decision must be dropped WHOLE when its protected fields do not fit; "
+            f"got {result['decisions']!r}"
         )
+        assert result["cards"] == []
 
     @pytest.mark.asyncio
-    async def test_older_decisions_dropped_once_budget_exhausted(self) -> None:
-        # [compile-4]: newest-first processing; once the budget is exhausted after
-        # accepting decision #1, decisions #2 and #3 must NOT appear in the output.
-        # RED: ImportError.
+    async def test_nothing_ranked_below_an_unfittable_item_is_kept(self) -> None:
+        # [compile-4]: the card loop stops after the first item that cannot fit, so a
+        # tiny item ranked BELOW the unfittable one is not smuggled in.
         from writ.session.recall import compile_recall
 
-        # Each decision is ~200 tokens. Budget fits only the first.
-        filler = "A" * 600  # ~150 tokens each field
+        filler = "A" * 1000  # a ~250-token card head
         decisions = [
             _decision_factory(
-                decision_id="DEC-NEWEST",
-                title=filler,
-                rationale=filler,
-                governing_rule_ids=[],
-                planned_files=[],
-                ts="2026-06-27T12:00:00+00:00",
+                decision_id="DEC-NEWEST", title=filler, rationale="", governing_rule_ids=[],
+                planned_files=[], ts="2026-06-27T12:00:00+00:00",
             ),
             _decision_factory(
-                decision_id="DEC-OLDER",
-                title=filler,
-                rationale=filler,
-                governing_rule_ids=[],
-                planned_files=[],
-                ts="2026-06-26T10:00:00+00:00",
+                decision_id="DEC-OLDER", title=filler, rationale="", governing_rule_ids=[],
+                planned_files=[], ts="2026-06-26T10:00:00+00:00",
             ),
             _decision_factory(
-                decision_id="DEC-OLDEST",
-                title=filler,
-                rationale=filler,
-                governing_rule_ids=[],
-                planned_files=[],
-                ts="2026-06-25T08:00:00+00:00",
+                decision_id="DEC-OLDEST", title="tiny", rationale="", governing_rule_ids=[],
+                planned_files=[], ts="2026-06-25T08:00:00+00:00",
             ),
         ]
-        # Budget: comfortably fits one decision (~350 tokens), not two.
         db = _FakeDB(decisions=decisions)
 
         result = await compile_recall(db, "writ", budget=400)
 
         kept_ids = [d["decision_id"] for d in result["decisions"]]
-        assert "DEC-NEWEST" in kept_ids, (
-            f"newest decision must be kept; kept={kept_ids!r}"
-        )
-        # Once budget is exhausted by the newest, older decisions must be dropped.
-        assert "DEC-OLDER" not in kept_ids, (
-            f"DEC-OLDER must be dropped once budget is exhausted; kept={kept_ids!r}"
-        )
-        assert "DEC-OLDEST" not in kept_ids, (
-            f"DEC-OLDEST must be dropped once budget is exhausted; kept={kept_ids!r}"
+        assert kept_ids == ["DEC-NEWEST"], (
+            f"only the newest fits; the older one cannot, and the tiny one ranked "
+            f"below it must not be kept; kept={kept_ids!r}"
         )
 
     @pytest.mark.asyncio
-    async def test_result_shape_has_decisions_key(self) -> None:
-        # [compile-4] shape: compile_recall always returns a dict with a
-        # 'decisions' key (list), even when empty.
-        # RED: ImportError.
+    async def test_result_shape_has_every_key_even_when_empty(self) -> None:
+        # [compile-4] shape: briefing, decisions, memories and cards, always present.
         from writ.session.recall import compile_recall
 
         db = _FakeDB(decisions=[])
         result = await compile_recall(db, "writ", budget=200_000)
 
-        assert "decisions" in result, f"result must have 'decisions' key; got {list(result)!r}"
-        assert isinstance(result["decisions"], list), (
-            f"'decisions' must be a list; got {type(result['decisions'])!r}"
-        )
+        assert set(result) >= {"briefing", "decisions", "memories", "cards"}, list(result)
+        assert result["briefing"] == ""
+        assert result["decisions"] == [] and result["memories"] == [] and result["cards"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -460,49 +524,40 @@ class TestCompileRecallWholeDecisionDrop:
 # ---------------------------------------------------------------------------
 
 class TestCompileRecallBudgetBound:
-    """[compile-5]: compiled payload stays within the token budget."""
+    """[compile-5]: the rendered briefing stays within the token budget."""
 
     @pytest.mark.asyncio
-    async def test_kept_decisions_fit_within_budget(self) -> None:
-        # [compile-5]: the sum of token costs for all kept decisions must be
-        # <= budget. We use the same 4-chars/token heuristic as estimate_tokens.
-        # RED: ImportError.
+    async def test_briefing_estimate_never_exceeds_the_budget(self) -> None:
+        # [compile-5] / cap 12: 10 medium decisions; whatever the eviction keeps, the
+        # estimate of the text that is injected is within the budget. No 10% margin:
+        # the cost IS the rendered text.
         from writ.session.recall import compile_recall
 
-        budget = 500
-        # 10 medium-sized decisions; most should be evicted.
+        budget = 300
         decisions = [
             _decision_factory(
                 decision_id=f"DEC-{i:03d}",
                 title="A" * 100,
-                rationale="R" * 200,
+                rationale=f"Decision number {i} rationale. " + "R" * 200,
                 planned_files=[{"path": "writ/f.py", "reason": "Q" * 100}],
                 governing_rule_ids=[f"RULE-{i:03d}"],
-                ts=f"2026-06-2{i}T10:00:00+00:00" if i < 7 else f"2026-06-2{i % 3 + 1}T10:00:00+00:00",
+                ts=f"2026-06-{10 + i:02d}T10:00:00+00:00",
             )
-            for i in range(10)
+            for i in reversed(range(10))
         ]
-        statements = {f"RULE-{i:03d}": "S" * 50 for i in range(10)}
-        db = _FakeDB(decisions=decisions, statements=statements)
+        db = _FakeDB(decisions=decisions)
 
         result = await compile_recall(db, "writ", budget=budget)
 
-        # Verify total rough cost of kept decisions is within budget.
-        total_cost = 0
-        for d in result["decisions"]:
-            stmts = d.get("rule_statements") or {}
-            total_cost += _decision_rough_cost(d, stmts)
-
-        # Allow a small margin for the heuristic rounding difference.
-        assert total_cost <= budget * 1.1, (
-            f"total token cost of kept decisions ({total_cost}) exceeds budget "
-            f"({budget}) by more than 10%; indicates the eviction policy is not working"
+        assert result["decisions"], "at least the newest card fits 300 tokens"
+        assert _briefing_tokens(result) <= budget, (
+            f"briefing estimate {_briefing_tokens(result)} exceeds budget {budget}"
         )
+        assert len(result["cards"]) == len(result["decisions"])
 
     @pytest.mark.asyncio
     async def test_all_decisions_kept_when_budget_is_ample(self) -> None:
-        # [compile-5]: with a very large budget all decisions should be kept.
-        # RED: ImportError.
+        # [compile-5]: with a very large budget all (fewer than 5) decisions are kept.
         from writ.session.recall import compile_recall
 
         decisions = [_decision_factory(decision_id=f"DEC-{i}") for i in range(3)]
@@ -560,25 +615,28 @@ class TestCompileRecallBriefingBudget:
         # RED: ImportError.
         from writ.session.recall import compile_recall
 
-        # 20 decisions with long titles to stress the briefing cap.
+        # 20 decisions with long stored titles (rationale "" so the stored title shows)
+        # and the DEFAULT budget: PROMPT_SECTION_TOKENS["recall"] is the one budget.
+        from writ.shared.tokens import PROMPT_SECTION_TOKENS
+
         decisions = [
             _decision_factory(
                 decision_id=f"DEC-{i:03d}",
                 title="A" * 200,  # ~50 tokens per title
+                rationale="",
                 governing_rule_ids=[f"RULE-{i:03d}", f"RULE-{i:03d}b"],
             )
             for i in range(20)
         ]
         db = _FakeDB(decisions=decisions)
 
-        result = await compile_recall(db, "writ", budget=200_000)
+        result = await compile_recall(db, "writ")
 
-        briefing = result.get("briefing", "")
-        briefing_tokens = max(1, len(briefing) // 4)
-        assert briefing_tokens <= 600, (
-            f"briefing must stay near the 500-token cap; "
-            f"got ~{briefing_tokens} tokens ({len(briefing)} chars)"
+        assert _briefing_tokens(result) <= PROMPT_SECTION_TOKENS["recall"], (
+            f"briefing must stay within the recall section budget; "
+            f"got ~{_briefing_tokens(result)} tokens ({len(result['briefing'])} chars)"
         )
+        assert len(result["cards"]) <= 5
 
     @pytest.mark.asyncio
     async def test_briefing_contains_decision_title(self) -> None:
@@ -590,6 +648,7 @@ class TestCompileRecallBriefingBudget:
         decision = _decision_factory(
             decision_id="DEC-BRIEFING-001",
             title="Add recall route to server",
+            rationale="",  # an empty rationale keeps the stored title as the display title
             governing_rule_ids=["ERR-FALLBACK-001"],
         )
         db = _FakeDB(
@@ -600,8 +659,8 @@ class TestCompileRecallBriefingBudget:
         result = await compile_recall(db, "writ", budget=200_000)
 
         briefing = result.get("briefing", "")
-        assert "Add recall route to server" in briefing, (
-            f"briefing must contain the decision title; got:\n{briefing!r}"
+        assert "- Add recall route to server [ERR-FALLBACK-001]" in briefing.splitlines(), (
+            f"briefing must contain the card head '- <title> [RULES]'; got:\n{briefing!r}"
         )
 
     @pytest.mark.asyncio

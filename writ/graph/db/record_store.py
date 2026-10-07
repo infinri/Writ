@@ -291,6 +291,58 @@ class RecordStoreMixin:
             for row in rows
         }
 
+    async def get_decisions_for_paths(
+        self, project: str, paths: list[str], per_path: int = 1
+    ) -> dict[str, list[dict]]:
+        """The Decisions behind each path's most recent MOTIVATED_BY-linked FileChanges.
+
+        One batched, index-backed read (filechange_project_path) modeled on
+        get_latest_filechange_per_path: FileChange -[MOTIVATED_BY]-> Decision, both ends
+        scoped to `project`, newest change first (ties by change id, descending), at most
+        `per_path` changes per path, each joined to its Commit for the subject. A change with no edge never matches, so an
+        unplanned fix-up after a planned change does not hide the decision. The caller
+        passes ALREADY-NORMALIZED paths. Returns {path -> [decision fields plus reason,
+        change_ts, commit_hash, commit_subject]}, deduped by decision_id keeping the most
+        recent change; unmatched paths are absent and empty paths return {} unread.
+        """
+        if not paths:
+            return {}
+        rows = [dict(r) for r in await self._run(
+            "MATCH (n:FileChange)-[:MOTIVATED_BY]->(d:Decision) "
+            "WHERE n.project = $project AND n.path IN $paths AND d.project = $project "
+            "WITH n, d ORDER BY n.ts DESC, n.change_id DESC "
+            "WITH n.path AS path, collect({n: n, d: d})[0..$per_path] AS hits "
+            "UNWIND hits AS h "
+            "WITH path, h.n AS n, h.d AS d "
+            "OPTIONAL MATCH (c:Commit {commit_hash: n.commit_hash, project: $project}) "
+            "RETURN path, d.decision_id AS decision_id, d.title AS title, "
+            "d.rationale AS rationale, d.planned_files AS planned_files, "
+            "d.governing_rule_ids AS governing_rule_ids, d.phase AS phase, "
+            "d.ts AS decision_ts, n.reason AS reason, n.ts AS change_ts, "
+            "n.commit_hash AS commit_hash, c.subject AS commit_subject "
+            "ORDER BY path, change_ts DESC, n.change_id DESC",
+            project=project, paths=paths, per_path=per_path,
+        )]
+        out: dict[str, list[dict]] = {}
+        for row in rows:
+            hits = out.setdefault(row["path"], [])
+            if any(h["decision_id"] == row.get("decision_id") for h in hits):
+                continue
+            hits.append({
+                "decision_id": row.get("decision_id"),
+                "title": row.get("title"),
+                "rationale": row.get("rationale"),
+                "planned_files": self._parse_planned_files(row.get("planned_files")),
+                "governing_rule_ids": row.get("governing_rule_ids") or [],
+                "phase": row.get("phase"),
+                "decision_ts": row.get("decision_ts"),
+                "reason": row.get("reason"),
+                "change_ts": row.get("change_ts"),
+                "commit_hash": row.get("commit_hash"),
+                "commit_subject": row.get("commit_subject"),
+            })
+        return out
+
     async def get_recent_decisions(
         self, project: str, limit: int = 20
     ) -> list[dict]:

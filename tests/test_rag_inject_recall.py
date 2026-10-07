@@ -2,16 +2,16 @@
 
 The briefing is its own UserPromptSubmit hook, hooks/scripts/writ-inject-recall.sh
 (docs/adr/ADR-prompt-injection-split.md). It asks POST /prompt-bundle for
-sections=["recall"]; the SERVER owns the once-per-session recall_briefed flag (it reads
-and sets it on the request's own cache snapshot), so the hook neither reads nor writes
-the flag. The hook's body is the shared writ_prompt_section_main in
+sections=["recall"]; the SERVER owns the per-epoch recall shown-ids record (it reads it
+from the request's own cache snapshot and writes it with --mark-shown recall), so the
+hook neither reads nor writes recall state. The hook's body is the shared writ_prompt_section_main in
 bin/lib/writ-prompt-section.sh, which is where its sub-agent guard and its time bounds
 live. tests/test_prompt_injection_ceiling.py covers the server side of the flag
 (TestSectionIsolation) and tests/test_prompt_hooks_split.py the hook against a stub.
 
 CRITICAL isolation guarantee: NO test in this file touches the live Neo4j
 graph. Behavioral tests that invoke the script via subprocess use an unreachable
-daemon port (19999) or patch the session-cache to simulate already-briefed state.
+daemon port (19999) or the loopback stub daemon in tests/_stub_daemon.py.
 Live-daemon behavioral tests that require a running /recall route are skipped
 hermetically rather than depending on a live daemon.
 
@@ -22,8 +22,8 @@ unreachable daemon port (test_cwd_changed.py).
 Run: .venv/bin/python -m pytest tests/test_rag_inject_recall.py
 
 Capability map:
-  [hook-recall-1]  injects the briefing exactly once per session (guarded by
-                   recall_briefed cache flag)
+  [hook-recall-1]  injects the full briefing once per epoch, plus short re-runs for
+                   unseen matches (guarded by the recall shown-ids record)
   [hook-recall-2]  fail-open: daemon-down / curl failure emits nothing and exits 0
   [hook-recall-3]  skipped inside sub-agents (AGENT_ID set -> no injection)
 """
@@ -168,19 +168,27 @@ class TestRagInjectRecallSourceShape:
             "writ-inject-recall.sh must run the shared section body for the recall section"
         )
 
-    def test_recall_briefed_flag_referenced_in_source(self) -> None:
-        # [hook-recall-1]: the once-per-session guard reads and sets the
-        # 'recall_briefed' cache flag, server-side, in the recall section.
-        assert "recall_briefed" in ROUTE_RECALL_BLOCK, (
-            "the recall section of /prompt-bundle must read 'recall_briefed' for the "
-            "once-per-session guard"
+    def test_recall_shown_record_referenced_in_source(self) -> None:
+        # [hook-recall-1]: the once-per-epoch guard reads the recall shown-ids record
+        # and writes it through --mark-shown, server-side, in the recall section.
+        assert ROUTE_RECALL_BLOCK, "the recall arm of the /prompt-bundle handler was not found"
+        assert 'shown_ids(cache, "recall")' in ROUTE_RECALL_BLOCK, (
+            "the recall section of /prompt-bundle must read the recall shown record"
         )
-        assert "--set-recall-briefed" in ROUTE_RECALL_BLOCK, (
-            "the recall section of /prompt-bundle must set the flag it reads"
+        assert "marked_this_epoch(cache, \"recall\")" in ROUTE_RECALL_BLOCK, (
+            "the recall section must ask whether this epoch was already briefed"
         )
-        assert "recall_briefed" not in SRC and "recall_briefed" not in SECTION_SRC, (
-            "the hook must not own the flag: a client-side write would race the server's"
+        assert '"--mark-shown", "recall"' in ROUTE_RECALL_BLOCK, (
+            "the recall section of /prompt-bundle must record what it showed with --mark-shown recall"
         )
+        assert "recall_briefed" not in ROUTE_RECALL_BLOCK
+        assert "--set-recall-briefed" not in ROUTE_RECALL_BLOCK
+        for owner, text in (("the hook", SRC), ("the shared section body", SECTION_SRC)):
+            for token in ("recall_briefed", "--mark-shown", "injection_shown"):
+                assert token not in text, (
+                    f"{owner} must not own recall state ({token}): a client-side write "
+                    "would race the server's"
+                )
 
     def test_recall_route_curled_in_source(self) -> None:
         # [hook-recall-1]: the briefing comes from the recall route, compiled by the
@@ -270,50 +278,55 @@ class TestRagInjectRecallFailOpen:
 
 
 # ---------------------------------------------------------------------------
-# Behavioral: once-per-session guard (recall_briefed flag)
+# Behavioral: no briefing from the server -> the hook prints nothing
 # ---------------------------------------------------------------------------
 
-class TestRagInjectRecallOncePerSession:
-    """[hook-recall-1]: briefing injected exactly once per session."""
+class TestRagInjectRecallNoBriefing:
+    """[hook-recall-1]: whether to brief is the server's decision (its recall section
+    returns an empty block once the epoch is briefed); the hook only prints what it gets."""
 
-    def test_recall_briefed_flag_prevents_second_injection(self, session_cache) -> None:
-        # [hook-recall-1]: once 'recall_briefed' is set to True in the session
-        # cache, the briefing is not repeated. The decision is the server's (its
-        # recall section returns an empty block), so here the hook is only required
-        # to stay silent and fail open against an unreachable daemon.
+    def test_hook_stays_silent_and_fails_open_when_the_server_returns_no_briefing(self, session_cache) -> None:
         sid, cache_dir, seed = session_cache
-        seed(mode="work", recall_briefed=True)
+        seed(mode="work")
 
         result = _run(_make_envelope(sid), cache_dir)
 
         assert result.returncode == 0, (
-            f"hook must exit 0 when recall_briefed=True; "
+            f"hook must exit 0 without a briefing; "
             f"returncode={result.returncode}, stderr={result.stderr[:200]!r}"
         )
         assert result.stdout == "", (
             f"nothing may be injected without a briefing; stdout={result.stdout[:200]!r}"
         )
         assert "curl: (7)" not in result.stderr, (
-            "hook must not attempt the recall curl after recall_briefed=True; "
-            "curl 'Connection refused' error found in stderr suggests guard was bypassed"
+            "a failed request must not leak curl's error text"
         )
 
-    @pytest.mark.skip(
-        reason=(
-            "ENF-SYS-005: proving the once-per-session flag is written to the cache "
-            "and persists across invocations requires a live /recall daemon and a "
-            "writable real session-cache file. This cannot be tested hermetically "
-            "without the live daemon because the hook reads back the cache it wrote "
-            "to verify idempotency. Mark this as a live-integration test requiring "
-            "'systemctl --user restart writ-server' before running."
-        )
-    )
-    def test_first_invocation_sets_recall_briefed_in_cache(self, session_cache) -> None:
-        # [hook-recall-1]: after the first successful recall injection the hook
-        # must write recall_briefed=True to the session-cache JSON so subsequent
-        # invocations skip the curl. Skipped because this requires a live /recall
-        # route to return a briefing -- cannot be tested with port 19999.
-        pass  # pragma: no cover
+    def test_an_empty_recall_block_from_the_stub_daemon_prints_nothing_and_exits_zero(
+            self, session_cache) -> None:
+        from tests._stub_daemon import STUB_HOST, StubDaemon
+
+        sid, cache_dir, seed = session_cache
+        seed(mode="work")
+        bundle = {"error": False, "skipped": False, "always_on_block": "", "rules_text": "",
+                  "methodology_block": "", "recall_block": "", "nudge": "", "nudge_text": ""}
+
+        with StubDaemon(routes={("POST", "/prompt-bundle"): bundle}) as stub:
+            env = os.environ.copy()
+            env.pop("WRIT_SOCKET", None)
+            env.update({"WRIT_CACHE_DIR": cache_dir, "WRIT_HOST": STUB_HOST,
+                        "WRIT_PORT": str(stub.port), "WRIT_NO_AUTOSTART": "1"})
+            result = subprocess.run(
+                ["bash", str(HOOK)], input=_make_envelope(sid), capture_output=True,
+                text=True, cwd=str(SKILL_DIR), env=env, timeout=15,
+            )
+            asked = stub.matching("POST", "/prompt-bundle")
+            described = stub.describe()
+
+        assert len(asked) == 1, f"the hook must ask /prompt-bundle once; {described}"
+        assert asked[0].json_body["sections"] == ["recall"]
+        assert result.returncode == 0, result.stderr[:300]
+        assert result.stdout == "", f"an empty recall block must print nothing; stdout={result.stdout[:200]!r}"
 
 
 # ---------------------------------------------------------------------------

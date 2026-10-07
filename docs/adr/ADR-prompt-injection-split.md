@@ -132,9 +132,15 @@ another hook makes in the same turn. The single script had these dependencies:
    request computes them itself with the same read-only `always_on_bundle` call and the
    same renderer, so it does not depend on the always-on hook having run. The ranked
    pointer reads `SEE: [ID] in the ALWAYS-ACTIVE RULES block`, no longer "above".
-5. **recall_briefed** is read and set only by the recall section, server-side, on the
-   snapshot the recall request took. Turns are sequential, so one turn's recall request
-   cannot race another's.
+5. **The recall shown record** (`injection_shown["recall"]`, the same per-epoch record
+   the always-on and floor sections use; it replaced the `recall_briefed` bool in program
+   item 4) is read and written only by the recall section, server-side, on the snapshot
+   the recall request took. The first prompt of an epoch briefs with recency fill and
+   marks the epoch even when nothing was shown; a later prompt asks only for unseen cards
+   the prompt matches and writes only when it showed one. A compaction or a phase change
+   starts a new epoch, so the next prompt briefs again (intended: the model lost the
+   earlier briefing). Turns are sequential, so one turn's recall request cannot race
+   another's. See `docs/adr/ADR-decision-recall.md`.
 6. **post_compact_pending** is read and cleared only by the ranked hook. The collapse reset
    does not use it (it would race the clear); it uses `compaction_epoch`.
 7. **The orchestrator flag** matters only to the ranked section (`include_ranked=false`);
@@ -156,11 +162,15 @@ write `--mark-shown` at once, asserting no write is lost.
 Per turn: the ranked request runs the pipeline (in-memory indexes) plus `always_on_bundle`
 (two read-only, indexed graph queries); the always-on request runs `always_on_bundle`
 again; methodology reads the in-memory trigger index; recall runs one project resolution
-plus the recall compile, first turn only. Worst case four always-on queries per turn, two
+plus the recall compile on every prompt: the decision and memory corpus (two reads, cached
+per project for 60 seconds) and one path read only when the prompt names a path, so at most
+three statements on a cold corpus and zero or one on a warm one
+(`docs/adr/ADR-decision-recall.md`). Worst case four always-on queries per turn, two
 more than before, in parallel requests so they add no wall-clock latency. An orchestrator
 master skips ranked retrieval and its overlap read. Session-cache writes per turn are
-unchanged in count (ranked 1, always-on 1, methodology 1, recall 1 on turn one); the recall
-write moved from a CLI process into the daemon. No caching was added; a short-lived
+unchanged in count (ranked 1, always-on 1, methodology 1, recall 1 on the first prompt of
+an epoch and on a later prompt that showed a card); the recall write moved from a CLI
+process into the daemon. No caching was added; a short-lived
 in-process memo of the always-on rows is the fallback if contention is measured.
 
 ## Failure and fallback
@@ -173,7 +183,7 @@ in-process memo of the always-on rows is the fallback if contention is measured.
 - A stale daemon that ignores `sections`: output is still correct and not duplicated,
   because each hook prints only its own field. Until restart each request runs the legacy
   trio, so budget and always-on counters are charged up to four times per turn, and no
-  recall briefing is shown (the flag is not set, so it appears after the restart).
+  recall briefing is shown (no shown record is written, so it appears after the restart).
 - No exit trap (a script that is not instrumented): no buffer and no bash backstop for the
   ranked hook; the server ceiling still bounds `rules_text` against a reserve of 0.
 

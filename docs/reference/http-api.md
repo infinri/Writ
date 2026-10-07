@@ -11,7 +11,7 @@ All 52 endpoints, generated from the FastAPI route table. JSON bodies; no auth. 
 |---|---|---|
 | POST | `/commit/capture` | Create the Commit + FileChange records for a landed commit (Phase 1d) |
 | POST | `/memory-record` | Upsert one auto-memory file as a Memory record (the graph mirror) |
-| POST | `/recall` | Compile the project's recent rule-grounded Decisions (Phase 2 recall) |
+| POST | `/recall` | Compile the ranked briefing of the project's Decisions and memories for a prompt |
 
 ## explorer
 

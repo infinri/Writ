@@ -2139,7 +2139,7 @@ def recall_cmd(
 ) -> None:
     """Read back the project's recent rule-grounded decisions from memory."""
     import os
-    from writ.session.recall import compile_recall
+    from writ.session.recall import RECALL_FULL_BUDGET, compile_recall
 
     async def _run() -> None:
         async with _writ_db() as db:
@@ -2158,7 +2158,10 @@ def recall_cmd(
                     f"capturing a commit.]"
                 )
                 return
-            payload = await compile_recall(db, project, full=full)
+            payload = await compile_recall(
+                db, project, full=full, project_root=os.path.abspath(repo),
+                **({"budget": RECALL_FULL_BUDGET} if full else {}),
+            )
             briefing = payload.get("briefing") or ""
             if briefing:
                 typer.echo(briefing)

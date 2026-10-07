@@ -21,6 +21,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from writ.shared.tokens import PROMPT_SECTION_TOKENS
+
 
 class QueryRequest(BaseModel):
     """Request body for /query endpoint."""
@@ -169,8 +171,11 @@ class RecallRequest(BaseModel):
 
     project_root: str
     branch: str = ""
-    budget: int = 20000
+    budget: int = PROMPT_SECTION_TOKENS["recall"]
     full: bool = False
+    prompt: str = ""
+    exclude_ids: list[str] = Field(default_factory=list)
+    matched_only: bool = False
 
 
 class MemoryRecordRequest(BaseModel):

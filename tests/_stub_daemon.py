@@ -137,13 +137,15 @@ class StubDaemon:
 
     `pre_write_check`, `always_on` and `query` each take either a dict (served
     as a 200 with that JSON body) or an int (served as that bare status with an
-    empty body, which is how a caller makes the route 404).
+    empty body, which is how a caller makes the route 404). `routes` adds any other
+    (method, path) the same way, e.g. `{("POST", "/prompt-bundle"): {...}}`.
     """
 
     def __init__(self, *, pre_write_check: dict | int | None = None,
                  always_on: dict | int | None = None,
-                 query: dict | int | None = None) -> None:
-        self._canned: dict[tuple[str, str], dict | int] = {}
+                 query: dict | int | None = None,
+                 routes: dict[tuple[str, str], dict | int] | None = None) -> None:
+        self._canned: dict[tuple[str, str], dict | int] = dict(routes or {})
         if pre_write_check is not None:
             self._canned[PRE_WRITE_CHECK] = pre_write_check
         if always_on is not None:

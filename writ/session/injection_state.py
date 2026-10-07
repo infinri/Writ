@@ -1,4 +1,4 @@
-"""Per-session record of which collapsible rules were already shown in full.
+"""Per-session record of the sections whose shown ids are tracked per epoch.
 
 The always-on block and a mode's floor methodology repeat every turn. They render in full
 once per EPOCH and as one pointer line per rule after that. An epoch is the pair
@@ -10,7 +10,7 @@ retrieval_exclude_ids below uses for the ranked exclusion (item 1c).
 """
 from __future__ import annotations
 
-COLLAPSIBLE_SECTIONS = ("always_on", "floor")
+COLLAPSIBLE_SECTIONS = ("always_on", "floor", "recall", "pre_write_decision")
 
 
 def injection_epoch(cache: dict) -> str:
@@ -27,6 +27,12 @@ def shown_ids(cache: dict, section: str) -> set[str]:
     if not isinstance(record, dict) or record.get("epoch") != injection_epoch(cache):
         return set()
     return {str(i) for i in (record.get(section) or [])}
+
+
+def marked_this_epoch(cache: dict, section: str) -> bool:
+    """True when the current epoch's record carries `section`, even with no ids."""
+    record = cache.get("injection_shown")
+    return isinstance(record, dict) and record.get("epoch") == injection_epoch(cache) and section in record
 
 
 def apply_mark_shown(cache: dict, section: str, epoch: str, ids: list) -> None:

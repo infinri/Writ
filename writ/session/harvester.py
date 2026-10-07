@@ -32,6 +32,7 @@ from writ.session.name_status import parse_name_status
 from writ.session.plan_harvest import harvest_plan
 from writ.session.registration import ensure_project_registered
 from writ.session.remote_parse import normalize_path
+from writ.shared.injection_text import TITLE_CHARS, first_sentence
 
 _DEC_SEP = "\x00"
 _GIT_TIMEOUT = 30
@@ -393,7 +394,8 @@ async def harvest_one_commit(
                               for f in parsed_files if f.get("path")}
             await db.create_decision(
                 decision_id=decision_id, project=name,
-                title=(harvested.get("rationale", "")[:80] or "harvested plan"),
+                title=(first_sentence(harvested.get("rationale", ""), TITLE_CHARS)
+                       or subject or "harvested plan"),
                 rationale=harvested.get("rationale", ""),
                 planned_files=[
                     {"path": f["path"], "reason": f.get("reason") or "", "resolved": False}

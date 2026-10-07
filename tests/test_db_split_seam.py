@@ -53,6 +53,9 @@ EXPECTED_METHODS = [
     "execute", "execute_many", "get_all_nodes", "get_all_nodes_by_type",
     "get_all_nodes_for_dump",
     "get_all_rules", "get_category_routes_by_node", "get_graph_nodes_and_edges",
+    # Program item 4 (decision recall): the one batched FileChange -[MOTIVATED_BY]-> Decision
+    # read behind path-ranked recall, beside get_latest_filechange_per_path on RecordStoreMixin.
+    "get_decisions_for_paths",
     "get_latest_filechange_per_path", "get_node_with_neighbors", "get_nodes_by_category",
     "get_open_decisions_for_path", "get_projects", "get_recent_decisions", "get_rule",
     "get_rule_abstraction", "get_rule_statements", "get_rules_by_authority",

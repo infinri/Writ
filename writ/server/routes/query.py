@@ -231,7 +231,9 @@ async def prompt_bundle(request: PromptBundleRequest) -> dict[str, Any]:
     )
     from writ.retrieval.prompt_bundle import compute_nudge, extract_rule_objects, tag_overlap
     from writ.session.budget_tracking import should_skip_cache
-    from writ.session.injection_state import injection_epoch, retrieval_exclude_ids, shown_ids
+    from writ.session.injection_state import (
+        injection_epoch, marked_this_epoch, retrieval_exclude_ids, shown_ids,
+    )
     from writ.shared.tokens import PROMPT_SECTION_TOKENS
 
     if server._pipeline is None:
@@ -388,21 +390,31 @@ async def prompt_bundle(request: PromptBundleRequest) -> dict[str, Any]:
                 await asyncio.to_thread(server.writ_session.cmd_update, sid, updates)
             out["method_meta"] = {"rule_ids": crule_ids, "cost": ccost, "query_source": qsource}
 
-    # --- Recall: once per session, master only (the hook does not ask from a sub-agent).
-    # The flag is set whether or not decisions existed, exactly as the hook used to.
-    if "recall" in sections and not cache.get("recall_briefed"):
+    # --- Recall: master only (the hook does not ask from a sub-agent). The first prompt of
+    # an epoch briefs in full and marks the epoch even with nothing shown; a later prompt
+    # shows only matched cards this epoch has not shown, and writes only when it shows one.
+    if "recall" in sections:
         from writ.server.routes import decision_memory
+        briefed = marked_this_epoch(cache, "recall")
+        seen = shown_ids(cache, "recall")
         briefing = ""
+        cards: list = []
         try:
-            rresp = await decision_memory.recall(
-                RecallRequest(project_root=request.project_root or "", budget=20000)
-            )
+            rresp = await decision_memory.recall(RecallRequest(
+                project_root=request.project_root or "", budget=PROMPT_SECTION_TOKENS["recall"],
+                prompt=prompt, exclude_ids=sorted(seen), matched_only=briefed,
+            ))
             if isinstance(rresp, dict):
                 briefing = str(rresp.get("briefing") or "")
+                cards = rresp.get("cards") or []
         except Exception as exc:
             emit_exception("server.prompt_bundle.recall", exc, sid, None)
         out["recall_block"] = clamp_lines(briefing, section_char_limit("recall"))
-        await asyncio.to_thread(server.writ_session.cmd_update, sid, ["--set-recall-briefed"])
+        shown = [c["id"] for c in cards if c.get("head") and c["head"] in out["recall_block"]]
+        if shown or not briefed:
+            await asyncio.to_thread(server.writ_session.cmd_update, sid, [
+                "--mark-shown", "recall", epoch, _json.dumps(shown),
+            ])
 
     return out
 

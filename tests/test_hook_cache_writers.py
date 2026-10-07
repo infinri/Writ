@@ -83,19 +83,21 @@ class TestNoDirectUnlockedCacheWriteInHooks:
 class TestHookWritersUseUpdateCli:
     def test_rag_inject_uses_set_flags(self) -> None:
         src = (HOOKS_DIR / "writ-rag-inject.sh").read_text()
-        # The recall_briefed writer is the recall section of /prompt-bundle, not a hook:
-        # the server sets the flag on the snapshot the recall request read
-        # (docs/adr/ADR-prompt-injection-split.md), through the same update verb.
+        # The recall state writer is the recall section of /prompt-bundle, not a hook:
+        # the server records the shown ids on the snapshot the recall request read
+        # (docs/adr/ADR-prompt-injection-split.md), through the --mark-shown update verb.
         route = (Path(__file__).resolve().parent.parent / "writ" / "server" / "routes"
                  / "query.py").read_text()
-        assert '["--set-recall-briefed"]' in route, (
-            "the recall section of /prompt-bundle must set recall_briefed via the "
-            "--set-recall-briefed update verb"
+        assert '"--mark-shown", "recall"' in route, (
+            "the recall section of /prompt-bundle must record its shown ids via the "
+            "--mark-shown recall update verb"
         )
-        assert "--set-recall-briefed" not in src, (
-            "writ-rag-inject.sh no longer owns the recall briefing; a second writer of the "
-            "flag would race the server's"
-        )
+        assert "--set-recall-briefed" not in route, "the retired flag must not be written"
+        for token in ("--set-recall-briefed", "--mark-shown", "recall_briefed"):
+            assert token not in src, (
+                f"writ-rag-inject.sh no longer owns the recall briefing ({token}); a second "
+                "writer of recall state would race the server's"
+            )
         assert "--set-escalation-feedback-sent" in src, (
             "writ-rag-inject.sh must set escalation.feedback_sent via the update CLI"
         )

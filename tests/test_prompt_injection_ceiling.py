@@ -580,7 +580,7 @@ def _cache(**overrides) -> dict:
 
 
 def _install(monkeypatch, *, cache=None, query=None, always_on=None, companion=None,
-             briefing="", floor_ids=()):
+             briefing="", floor_ids=(), cards=None):
     """Fake the retrieval seams and return spies. The formatter stays REAL."""
     monkeypatch.setattr(server, "_pipeline", object())
     monkeypatch.setattr(server, "_trigger_index", SimpleNamespace(floor_ids=lambda mode: set(floor_ids)))
@@ -590,7 +590,7 @@ def _install(monkeypatch, *, cache=None, query=None, always_on=None, companion=N
         query=AsyncMock(return_value=query if query is not None else {"mode": "standard", "rules": []}),
         always_on=AsyncMock(return_value=always_on if always_on is not None else {"rules": [], "total_tokens": 0}),
         companion=AsyncMock(return_value=companion if companion is not None else {"mode": "summary", "rules": []}),
-        recall=AsyncMock(return_value={"briefing": briefing}),
+        recall=AsyncMock(return_value={"briefing": briefing, "cards": list(cards or [])}),
         update=MagicMock(),
     )
     monkeypatch.setattr(qroute, "query_rules", spies.query)
@@ -607,6 +607,18 @@ def _update_flags(spies) -> set[str]:
     for call in spies.update.call_args_list:
         flags.update(a for a in call.args[-1] if isinstance(a, str) and a.startswith("--"))
     return flags
+
+
+def _mark_shown_calls(spies, section: str) -> list[tuple[str, list[str]]]:
+    """(epoch, ids) of every `--mark-shown <section>` write the route made."""
+    found = []
+    for call in spies.update.call_args_list:
+        args = list(call.args[-1])
+        if "--mark-shown" in args:
+            i = args.index("--mark-shown")
+            if args[i + 1] == section:
+                found.append((args[i + 2], json.loads(args[i + 3])))
+    return found
 
 
 def _oversize_ranked(n: int = 10, statement_len: int = 3000, score: float = 0.9) -> dict:
@@ -844,29 +856,33 @@ class TestSectionIsolation:
         assert spies.query.await_count == 0
 
     @pytest.mark.asyncio
-    async def test_recall_briefs_once_per_session_and_sets_the_flag(self, monkeypatch):
-        spies = self._fakes(monkeypatch)
+    async def test_recall_briefs_on_the_first_prompt_and_records_the_shown_ids(self, monkeypatch):
+        spies = _install(monkeypatch, briefing="a prior decision",
+                         cards=[{"id": "D-1", "head": "a prior decision"}])
         out = await qroute.prompt_bundle(PromptBundleRequest(
             session_id="s1", prompt="x", mode="work", sections=["recall"]))
         assert out["recall_block"] == "a prior decision"
-        assert "--set-recall-briefed" in _update_flags(spies)
-
-    @pytest.mark.asyncio
-    async def test_recall_is_silent_once_the_session_was_briefed(self, monkeypatch):
-        spies = _install(monkeypatch, cache=_cache(recall_briefed=True), briefing="a prior decision")
-        out = await qroute.prompt_bundle(PromptBundleRequest(
-            session_id="s1", prompt="x", mode="work", sections=["recall"]))
-        assert out["recall_block"] == ""
-        assert spies.recall.await_count == 0
+        assert _mark_shown_calls(spies, "recall") == [("0|", ["D-1"])]
         assert "--set-recall-briefed" not in _update_flags(spies)
 
     @pytest.mark.asyncio
-    async def test_recall_sets_the_flag_even_when_there_is_nothing_to_brief(self, monkeypatch):
-        spies = _install(monkeypatch, briefing="")
+    async def test_recall_is_silent_once_the_epoch_was_briefed_and_nothing_new_matches(self, monkeypatch):
+        seen = _cache(injection_shown={"epoch": "0|", "recall": ["D-1"]})
+        spies = _install(monkeypatch, cache=seen, briefing="", cards=[])
         out = await qroute.prompt_bundle(PromptBundleRequest(
             session_id="s1", prompt="x", mode="work", sections=["recall"]))
         assert out["recall_block"] == ""
-        assert "--set-recall-briefed" in _update_flags(spies)
+        assert spies.update.call_count == 0
+        assert "--set-recall-briefed" not in _update_flags(spies)
+
+    @pytest.mark.asyncio
+    async def test_recall_marks_the_epoch_briefed_even_when_there_is_nothing_to_brief(self, monkeypatch):
+        spies = _install(monkeypatch, briefing="", cards=[])
+        out = await qroute.prompt_bundle(PromptBundleRequest(
+            session_id="s1", prompt="x", mode="work", sections=["recall"]))
+        assert out["recall_block"] == ""
+        assert _mark_shown_calls(spies, "recall") == [("0|", [])]
+        assert "--set-recall-briefed" not in _update_flags(spies)
 
     @pytest.mark.asyncio
     async def test_a_recall_failure_still_returns_a_clean_response(self, monkeypatch):
@@ -1018,3 +1034,155 @@ class TestExplicitSectionsSkip:
         out, spies = await self._call(monkeypatch, _cache(context_percent=90), sections=("recall",))
         assert out["skipped"] is True
         assert "--set-recall-briefed" not in _update_flags(spies)
+
+
+# --------------------------------------------------------------------------- #
+# Program item 4: the recall cadence is a per-epoch shown-ids record, not a flag
+# --------------------------------------------------------------------------- #
+class TestRecallCadence:
+    @staticmethod
+    async def _turn(monkeypatch, *, cache=None, briefing="", cards=None, prompt="x",
+                    project_root="/repo/proj-a"):
+        spies = _install(monkeypatch, cache=cache, briefing=briefing, cards=cards)
+        out = await qroute.prompt_bundle(PromptBundleRequest(
+            session_id="s1", prompt=prompt, mode="work", sections=["recall"],
+            project_root=project_root))
+        return out, spies
+
+    @staticmethod
+    def _request(spies):
+        return spies.recall.await_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_the_first_request_of_an_epoch_asks_recall_with_the_section_budget_and_no_excludes(self, monkeypatch):
+        tokens = _imp_tokens()
+        out, spies = await self._turn(monkeypatch, prompt="fix recall.py please")
+        req = self._request(spies)
+        assert req.budget == tokens.PROMPT_SECTION_TOKENS["recall"] == 500
+        assert req.prompt == "fix recall.py please"
+        assert req.matched_only is False
+        assert list(req.exclude_ids) == []
+        assert req.project_root == "/repo/proj-a"
+
+    @pytest.mark.asyncio
+    async def test_the_briefing_is_clamped_to_the_section_limit(self, monkeypatch):
+        ic = _imp_ceiling()
+        lines = ["Writ decision memory"] + [f"- card {i} " + "z" * 300 for i in range(30)]
+        out, _spies = await self._turn(monkeypatch, briefing="\n".join(lines))
+        assert 0 < len(out["recall_block"]) <= ic.section_char_limit("recall") == 1998
+
+    @pytest.mark.asyncio
+    async def test_a_later_prompt_asks_for_matched_cards_only_and_excludes_what_was_shown(self, monkeypatch):
+        seen = _cache(injection_shown={"epoch": "0|", "recall": ["D-2", "D-1"]})
+        _out, spies = await self._turn(monkeypatch, cache=seen)
+        req = self._request(spies)
+        assert req.matched_only is True
+        assert sorted(req.exclude_ids) == ["D-1", "D-2"]
+
+    @pytest.mark.asyncio
+    async def test_a_later_prompt_that_matches_nothing_unseen_returns_no_block_and_writes_nothing(self, monkeypatch):
+        seen = _cache(injection_shown={"epoch": "0|", "recall": ["D-1"]})
+        out, spies = await self._turn(monkeypatch, cache=seen, briefing="", cards=[])
+        assert out["recall_block"] == ""
+        spies.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_later_prompt_naming_an_unseen_decision_shows_its_card_and_adds_its_id(self, monkeypatch):
+        seen = _cache(injection_shown={"epoch": "0|", "recall": ["D-1"]})
+        card = "- Rework the gate [R-1]\n  why: because"
+        out, spies = await self._turn(
+            monkeypatch, cache=seen, briefing=card,
+            cards=[{"id": "D-9", "head": "- Rework the gate [R-1]"}])
+        assert "Rework the gate" in out["recall_block"]
+        assert _mark_shown_calls(spies, "recall") == [("0|", ["D-9"])]
+
+    @pytest.mark.asyncio
+    async def test_a_decision_shown_earlier_in_the_epoch_is_never_asked_for_again(self, monkeypatch):
+        seen = _cache(injection_shown={"epoch": "0|", "recall": ["D-1"]})
+        _out, spies = await self._turn(monkeypatch, cache=seen, briefing="- card", cards=[
+            {"id": "D-2", "head": "- card"}])
+        assert "D-1" in self._request(spies).exclude_ids
+
+    @pytest.mark.asyncio
+    async def test_a_compaction_starts_a_new_epoch_and_briefs_again_with_recency_fill(self, monkeypatch):
+        stale = _cache(compaction_epoch=1, injection_shown={"epoch": "0|", "recall": ["D-1"]})
+        _out, spies = await self._turn(monkeypatch, cache=stale, briefing="- card",
+                                       cards=[{"id": "D-1", "head": "- card"}])
+        req = self._request(spies)
+        assert req.matched_only is False
+        assert list(req.exclude_ids) == []
+        assert _mark_shown_calls(spies, "recall") == [("1|", ["D-1"])]
+
+    @pytest.mark.asyncio
+    async def test_a_phase_change_starts_a_new_epoch_and_briefs_again(self, monkeypatch):
+        stale = _cache(current_phase="implementation",
+                       injection_shown={"epoch": "0|planning", "recall": ["D-1"]})
+        _out, spies = await self._turn(monkeypatch, cache=stale, briefing="- card",
+                                       cards=[{"id": "D-1", "head": "- card"}])
+        req = self._request(spies)
+        assert req.matched_only is False
+        assert list(req.exclude_ids) == []
+        assert _mark_shown_calls(spies, "recall") == [("0|implementation", ["D-1"])]
+
+    @pytest.mark.asyncio
+    async def test_a_card_whose_head_line_the_clamp_removed_is_not_recorded_as_shown(self, monkeypatch):
+        ic = _imp_ceiling()
+        limit = ic.section_char_limit("recall")
+        head_a, head_b = "- Card A [R-1]", "- Card B [R-2]"
+        briefing = "\n".join(["Writ decision memory", head_a + " " + "a" * 900,
+                              head_b + " " + "b" * (limit)])
+        out, spies = await self._turn(monkeypatch, briefing=briefing, cards=[
+            {"id": "D-A", "head": head_a}, {"id": "D-B", "head": head_b}])
+        assert head_a in out["recall_block"] and head_b not in out["recall_block"]
+        assert _mark_shown_calls(spies, "recall") == [("0|", ["D-A"])]
+
+    @pytest.mark.asyncio
+    async def test_a_recall_failure_returns_a_clean_response_logs_an_exception_and_marks_the_epoch(self, monkeypatch):
+        spies = _install(monkeypatch)
+        spies.recall.side_effect = RuntimeError("decision store unavailable")
+        emitted = MagicMock()
+        monkeypatch.setattr(qroute, "emit_exception", emitted)
+        out = await qroute.prompt_bundle(PromptBundleRequest(
+            session_id="s1", prompt="x", mode="work", sections=["recall"]))
+        assert out["error"] is False
+        assert out["recall_block"] == ""
+        assert emitted.call_args.args[0] == "server.prompt_bundle.recall"
+        assert _mark_shown_calls(spies, "recall") == [("0|", [])]
+
+    @pytest.mark.asyncio
+    async def test_a_cache_still_holding_recall_briefed_true_does_not_suppress_the_first_briefing(self, monkeypatch):
+        legacy = _cache(recall_briefed=True)
+        out, spies = await self._turn(monkeypatch, cache=legacy, briefing="a prior decision",
+                                      cards=[{"id": "D-1", "head": "a prior decision"}])
+        assert spies.recall.await_count == 1
+        assert out["recall_block"] == "a prior decision"
+        assert self._request(spies).matched_only is False
+
+    def test_the_route_never_reads_recall_briefed_and_never_writes_the_retired_flag(self):
+        src = Path(qroute.__file__).read_text()
+        start = src.index('if "recall" in sections')
+        block = src[start:src.index("return out", start)]
+        assert "recall_briefed" not in block
+        assert "--set-recall-briefed" not in block
+        assert "--mark-shown" in block and "marked_this_epoch" in block
+
+    def test_the_session_update_cli_no_longer_registers_the_retired_flag(self):
+        bt = _imp("writ.session.budget_tracking")
+        assert "--set-recall-briefed" not in bt._UPDATE_HANDLERS
+        assert not hasattr(bt, "_upd_set_recall_briefed")
+
+    def test_recall_and_pre_write_decision_are_collapsible_sections(self):
+        st = _imp("writ.session.injection_state")
+        assert {"recall", "pre_write_decision"} <= set(st.COLLAPSIBLE_SECTIONS)
+
+
+def _imp(name: str):
+    return importlib.import_module(name)
+
+
+def _imp_tokens():
+    return importlib.import_module("writ.shared.tokens")
+
+
+def _imp_ceiling():
+    return importlib.import_module("writ.retrieval.injection_ceiling")

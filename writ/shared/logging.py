@@ -182,6 +182,7 @@ STREAM_MAP: dict[str, str] = {
     "commit_capture_failed": "friction",
     "memory_capture_failed": "friction",
     "recall_failed": "friction",
+    "pre_write_decision_failed": "friction",
     "git_hooks_auto_install_failed": "friction",
     "debug_to_work_handoff": "friction",
     # Emitted from writ/session/session_lifecycle.py; they reached friction only
@@ -219,6 +220,10 @@ STREAM_MAP: dict[str, str] = {
     # Key NAMES only: that file holds neo4j.password and bitbucket.token.
     "config_resolved": "metrics",
     "rag_query": "metrics",
+    # One row per recall compile that runs the term tier: corpus size, the size-scaled score
+    # floor, the top term score and how many hits cleared it. The numbers to read when tuning
+    # RECALL_TERM_FLOOR_FRACTION; no prompt or decision text.
+    "recall_term_floor": "metrics",
     # One per-prompt injection channel was turned off by request (today: the ranked
     # channel, for an orchestrator master sending include_ranked=false). Beside rag_query
     # because the census that counts retrievals by source reads that one stream and has to

@@ -2,7 +2,7 @@
 
 Writ records *why files changed*, mechanically, and plays it back. Source of truth: `writ/session/{harvester,decision_capture,commit_capture,plan_harvest,recall,git_hooks,git_identity,pr_comments,bitbucket_client,remote_parse,registration}.py`, `writ/graph/db/record_store.py`, `writ/server/routes/decision_memory.py`.
 
-Provenance: this feature family (decision capture, session recall, pushing per-file reasons onto commits and open PRs) is adapted from concepts pioneered by JolliAI. The recall eviction policy is adapted from Jolli's ContextCompiler (the policy, not the code; `writ/session/recall.py` documents the adaptation). Writ's addition is rule grounding: every decision carries its governing rule IDs, and those are never evicted from the recall digest.
+Provenance: this feature family (decision capture, session recall, pushing per-file reasons onto commits and open PRs) is adapted from concepts pioneered by JolliAI. The recall eviction policy is adapted from Jolli's ContextCompiler (the policy, not the code; `writ/session/recall.py` documents the policy). Writ's addition is rule grounding: every decision carries its governing rule IDs, and those are never evicted from the recall digest.
 
 ## What this is, and what it is not
 
@@ -35,7 +35,30 @@ Reason fallback chain per file: plan-cited reason, else a prior open claim's rea
 
 ## Recall
 
-`writ recall` (and a once-per-session briefing injected on your first prompt) compiles recent decisions into a token-budgeted digest (default 20,000). Eviction order under pressure: rationale first, then per-file reasons, then whole oldest decisions; ids, titles, governing rules, and their statements are never evicted. The briefing caps at 5 decisions / ~500 tokens.
+The recall section of every prompt (`writ-inject-recall.sh`, through `/prompt-bundle` and `/recall`) compiles a briefing ranked by the prompt (`writ/session/recall.py`, `docs/adr/ADR-decision-recall.md`):
+
+1. **Path tier.** Decisions behind the files the prompt names: `prompt_path_tokens` keeps slash-bearing and dotted-extension tokens (at most 10), `path_candidates` turns each into repo-relative candidates under the session's project root or up to 4 of its ancestors, and one batched read (`get_decisions_for_paths`) follows `FileChange -[MOTIVATED_BY]-> Decision` for them. The decision found is the one behind the file's most recent change that has a `MOTIVATED_BY` edge.
+2. **Term tier.** Decisions and mirrored memories whose text matches the prompt, through an in-memory BM25 index over the project's 200 most recent decisions (title, rationale, planned paths, planned reasons) and its live memories (name and description), at or above `term_score_floor(N)`, a fraction (`RECALL_TERM_FLOOR_FRACTION`, about 0.19) of the score a term found in one of the N indexed documents gets, so the floor rises with the corpus (0.5 at 20 documents). A bare filename matches through the indexed planned paths. The corpus and its index are cached per project for `RECALL_CORPUS_TTL_S` (60 seconds); a commit capture, memory mirror or approval capture through the daemon drops the cached entry so the next compile reloads.
+3. **Recent tier.** The remaining decisions, newest first, on the first brief of an epoch only. Memories never fill by recency.
+
+Ties inside a tier break newest first. Each kept item renders as a card:
+
+```
+- <title> [RULE-A, RULE-B]
+  why: <rationale, clipped to 160 characters>
+  <matched path>: <that file's reason, clipped to 120>   (at most 2)
+- memory <name>: <description, clipped to 160>
+```
+
+The title is derived at read time from the first sentence of the rationale (the stored title when the rationale is empty), and harvest now stores the same first sentence (or the commit subject) instead of the first 80 characters. A decision with no rule ids renders `[no rules cited]`.
+
+**Budget.** The briefing is costed by its rendered text inside the recall section budget, `PROMPT_SECTION_TOKENS["recall"]` (500 tokens), and the route clamps it to 1,998 characters. At most 5 cards, at most 2 of them memories. Eviction order under pressure: the rationale (a memory's description) first, then each matched file's reason; ids, titles, rule ids and memory names are never evicted, and an item that still does not fit is dropped whole with everything ranked below it.
+
+**Cadence.** The ids shown are recorded per epoch in the session's shown record (`--mark-shown recall`). The first prompt of an epoch briefs with recency fill; a later prompt in the same epoch shows only unseen cards the prompt matches by path or term, and nothing otherwise. A compaction or a phase change starts a new epoch, so the next prompt briefs again.
+
+**CLI.** `writ recall` prints what the first prompt of an epoch receives without a prompt (the section budget, recency cards). `writ recall --full` uses `RECALL_FULL_BUDGET` (20,000 tokens) so nothing is evicted, and prints each kept decision's full rationale and governing rule statements, up to `--limit`.
+
+**Before a write.** `/pre-write-check` adds `decision_context` on an allowed write to a file under the session's project whose past change was motivated by a decision: one line of at most 1,000 characters naming the path, the decision's title and rule ids, its rationale, the file's recorded reason and the commit subject and short hash. It shows once per (path, decision) per epoch (`--mark-shown pre_write_decision`), fails open with a `pre_write_decision_failed` friction row and a one-second timeout, and the dispatch hook appends it to the file-context rules.
 
 ## Auto-memory mirror
 

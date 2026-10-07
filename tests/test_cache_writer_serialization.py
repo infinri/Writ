@@ -76,10 +76,31 @@ class TestNewUpdateHandlers:
         cmd_update(session_id, args)
         return _read_cache(session_id)
 
-    def test_set_recall_briefed_sets_flag_and_preserves_mode(self, tmp_path, monkeypatch) -> None:
-        cache = self._run(monkeypatch, tmp_path, ["--set-recall-briefed"])
-        assert cache.get("recall_briefed") is True
+    def test_mark_shown_recall_records_ids_and_preserves_mode(self, tmp_path, monkeypatch) -> None:
+        cache = self._run(monkeypatch, tmp_path, ["--mark-shown", "recall", "0|planning", '["D-1"]'])
+        assert cache["injection_shown"]["recall"] == ["D-1"]
+        assert cache["injection_shown"]["epoch"] == "0|planning"
         assert cache.get("mode") == "work"
+        assert cache.get("gates_approved") == ["phase-a"]
+
+    def test_mark_shown_recall_with_no_ids_still_records_the_epoch_as_briefed(self, tmp_path, monkeypatch) -> None:
+        from writ.session.injection_state import marked_this_epoch
+
+        cache = self._run(monkeypatch, tmp_path, ["--mark-shown", "recall", "0|planning", "[]"])
+        assert cache["injection_shown"]["recall"] == []
+        assert marked_this_epoch(cache, "recall") is True
+        assert cache.get("mode") == "work"
+
+    def test_set_recall_briefed_is_retired_and_writes_nothing(self, tmp_path, monkeypatch) -> None:
+        cache = self._run(monkeypatch, tmp_path, ["--set-recall-briefed"])
+        assert "recall_briefed" not in cache
+        assert cache.get("mode") == "work"
+        assert cache.get("gates_approved") == ["phase-a"]
+
+    def test_mark_shown_pre_write_decision_records_path_keys_and_preserves_gates(self, tmp_path, monkeypatch) -> None:
+        cache = self._run(monkeypatch, tmp_path,
+                          ["--mark-shown", "pre_write_decision", "0|planning", '["src/mod.py#D-1"]'])
+        assert cache["injection_shown"]["pre_write_decision"] == ["src/mod.py#D-1"]
         assert cache.get("gates_approved") == ["phase-a"]
 
     def test_set_escalation_feedback_sent_sets_nested_flag_and_preserves_mode(self, tmp_path, monkeypatch) -> None:
