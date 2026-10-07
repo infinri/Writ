@@ -4,11 +4,11 @@ Writ is free and open source. If it has saved you time, caught a mistake before 
 
 **[☕ Buy me a coffee](https://buymeacoffee.com/infinri)**
 
-One coffee, once, is genuinely welcome. There is no tier to reach and no subscription expected.
+Even a single coffee helps. No subscription is expected.
 
 ## Who's behind it
 
-I'm Lucio Saldivar, an engineer. I build and maintain Writ in my own time: the runtime, the rules, the tests, and the research and documentation around them. There is no company or team behind it.
+I'm Lucio Saldivar, an engineer. Writ is independently built and maintained by me, in my own time: the runtime, the rules, the tests, and the research and documentation around them.
 
 ## What you're supporting
 
@@ -16,21 +16,23 @@ Writ does three things for Claude Code:
 
 - **Governance.** It can allow, pause, confirm, or refuse an action when a tool runs, so the rules you rely on hold at the moment they matter.
 - **Relevant context.** It delivers the rules, methodology, and past decisions that fit the work happening now, instead of everything at once.
-- **Continuity.** It keeps project memory and decision history across sessions and through context compaction.
+- **Continuity.** It keeps project memory and decision history across sessions, with best-effort handoffs when context is compacted.
 
 Support also keeps the research and documentation going. Much of it, such as the architecture notes, the measurements, and the write-ups of how agents actually behave, is useful on its own, even if you never install Writ.
 
-## What contributions help fund
+## What contributions would help fund
 
-Today, support pays for the Claude Code subscription Writ is built and tested with. Development time, testing, maintenance, and documentation all run on it.
+I currently cover Writ's development costs myself. Contributions would help cover the Claude Code subscription I use to build and test it, and support deeper research into agent reliability, governance, and security.
 
 With more support, I would like to:
 
-- **Measure instead of guess.** Use API budget for controlled A/B tests of rule and retrieval changes.
-- **Test real agent behavior safely.** Run sandboxed environments where agents can be observed doing real work.
-- **Explore local models.** Eventually, see how Writ's governance and context delivery work with models you run yourself.
+- **Measure instead of guess.** Run controlled API experiments to evaluate retrieval, rule delivery, and whether those changes improve agent behavior.
+- **Develop stronger governance and sandboxing.** Build isolated environments to test unauthorized actions, destructive commands, sensitive-data exposure, and attempts to bypass approvals. The goal is to find where controls fail and develop stronger enforcement and containment before those failures affect real projects.
+- **Explore local models.** Investigate how Writ's governance, context delivery, and continuity could work with models you run yourself.
 
-These are goals that depend on support, not promises. Donations do not buy dedicated support, priority fixes, or features. Writ's direction stays driven by what makes it more reliable for everyone who uses it.
+Writ already enforces selected workflow boundaries through hooks. Stronger security containment is a research direction I want to develop alongside those controls.
+
+These are goals that additional funding would help me pursue. Contributions support the project; they do not purchase dedicated support, priority fixes, or specific features.
 
 ## Ways to help
 
