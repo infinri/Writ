@@ -4,8 +4,8 @@ Read this with `docs/programs/knowledge-engine-program.md` (items, decisions, or
 
 ## Where things stand
 
-Stacked local branches; nothing merged or pushed. The user said: do not merge until the
-whole program is done.
+Merged to main on 2026-10-08 (fast-forward of program/wave2) and released as 1.12.0. The
+branches below are the stacked history it was built on.
 
 | Branch | Commit | Contents |
 |---|---|---|
@@ -25,8 +25,9 @@ Last full suite (2026-10-07, before the item 4 commit): 13677 passed, 1 failed. 
 
 ## Not live until the end
 
-The running daemon is the installed plugin (~/.claude/plugins/cache/writ/writ/1.11.1), not
-this repo. After the final merge and release, the user must: run `writ neo4j set-password`
+The program shipped in release 1.12.0 (merged to main 2026-10-08). The running daemon is the
+installed plugin (~/.claude/plugins/cache/writ/writ/1.12.0 once upgraded), not this repo.
+After upgrading to 1.12.0, the user must: run `writ neo4j set-password`
 (or re-run scripts/bootstrap-plugin.sh), restart the daemon/service, start a new session,
 then fill the operational items (live hook sizes in ADR-prompt-injection-split.md, reload
 generation in /health). Do not run the password change early: the old daemon would lose

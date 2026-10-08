@@ -4,16 +4,55 @@ All notable changes to Writ are documented in this file. The format follows [Kee
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-10-08
+
+The per-prompt rules now reach the model, Writ retrieves project documents and past decisions alongside rules, and the context before a write gains the decision behind the file, open questions about it and the files it usually changes with. Rules carry attribution and trust records, ranking changes take effect without a restart, and Neo4j is secured by default. Before this release the single prompt hook exceeded Claude Code's 10,000-character cap on most turns, so most of the per-prompt rules never reached the model.
+
+### Upgrading
+
+Neo4j connections now refuse the published development password. After upgrading, run `writ neo4j set-password` (or re-run `scripts/bootstrap-plugin.sh`), restart the Writ daemon or service, and start a new session; SessionStart prints this remedy until it is done. Then run `writ docs ingest` in each project whose documents Writ should retrieve.
+
+### Added
+
+- **Project documents are retrieved.** `writ docs ingest` splits a project's markdown at H1-H3 headings with breadcrumbs, replaces changed documents, removes vanished ones and refuses a repository that is not the project's registered root. A fifth prompt hook, `writ-inject-documents.sh`, adds a documents section of up to 2,700 tokens with a 0.40 abstention threshold, a per-project candidate quota and neighbour and parent expansion. Rules and documents share one index builder, and rule ranking was measured unchanged (benchmarks/ITEM5-PHASE01-RANKING-2026-10-07.md, ITEM5-PHASE234-RANKING-2026-10-07.md).
+- **Decision recall ranked by the prompt.** Recall ranks decisions by the file paths a prompt names, then by BM25 over decision and memory text with a size-scaled score floor, then by recency. Cards (title, rule ids, rationale clipped to 160 characters, per-file reason) fit the 500-token recall budget; memories take at most 2 of 5 slots. A decision is briefed once per compaction epoch and again when a prompt names one not yet shown.
+- **Context before a write.** `/pre-write-check` adds, each at most once per epoch and each failing open on its own within one 1.0 s budget: the decision behind the file's last decided change; up to 3 open questions about the decisions behind the file or the rules retrieved for the write; and up to 3 files that changed with this one in at least 2 of the last 200 commits (confidence at least 0.4, skipping commits over 20 files, lockfiles and generated files).
+- **Open questions.** `writ question open | list | answer | close` records questions with an ABOUT edge to the rules and decisions they concern. Answering or closing one needs the user's single-use approval, bound to that action.
+- **Attribution and trust records for rules.** Approvals, disputes and verifications are recorded as TrustEvent records (who, when, how, session, note), kept out of the exported corpus and preserved across wipes. `writ review --dispute` and `--verify` record them; a SUPERSEDES edge removes a superseded rule from ranking, BM25, always-on and the integrity checks together; STALE and DELIBERATE tags appear in the rule header.
+- **Live reload.** Feedback updates ranking inputs immediately. `POST /retrieval/reload` (unix socket only) rebuilds the retrieval handle off the request path and swaps it atomically, keeping the previous one on failure; BM25 builds into generation directories, so a rebuild never touches the live index. Graph-writing CLI commands ask the daemon to reload.
+- **Tool-failure budget.** A fourth identical failure of a tool by the same agent is refused with guidance; a successful edit resets the count.
+- **Retrieval measurement.** `scripts/measure_retrieval.py` reports ranked-eligible queries separately from always-on and routed checks, replays one recorded run for both arms, sweeps the threshold and adds Wilson and paired-bootstrap intervals.
+- **Support page.** SPONSORSHIP.md, with a README badge and support section.
+
+### Changed
+
+- **The prompt injection is four capped hooks.** `writ-rag-inject.sh` (ranked rules and control lines), `writ-inject-always-on.sh`, `writ-inject-methodology.sh` and `writ-inject-recall.sh` each print one section, held to 9,500 characters server-side with a line-boundary backstop. Ranked rules lose examples, then detail, before any rule is dropped; always-on and floor methodology rules render in full on the first turn, after compaction and on a phase change, and as one pointer line otherwise.
+- **Every injected block is fenced and sanitized.** One helper frames every channel that prints retrieved text, escapes line-start markers, and strips control and format characters within the existing size limits. Each ranked rule shows its raw cosine similarity.
+- **Ranking is reproducible.** HNSW indexes are built single-threaded, so a saved index is byte-identical between builds (benchmarks/HNSW-DETERMINISM-2026-10-08.md), and equal scores are ordered by rule id, so two runs return the same order (benchmarks/RANKING-TIES-2026-10-08.md). No ranking metric moved outside its interval.
+- **Reworded CLEAN-DEAD-001 and CLEAN-RETURN-001.** Gated eligible hit@5 rose from 0.917 to 0.929 and MRR@5 from 0.566 to 0.598, with no regressed query (benchmarks/CLEAN-REWORD-2026-10-06.md). The 0.30 abstention threshold is kept (benchmarks/THRESHOLD-SWEEP-2026-10-06.md).
+
+### Fixed
+
+- **Ranked rules no longer go empty after a directory change.** The detected language was sent as a rule domain filter, and no rule domain is a language.
+- **Rules shown before a compaction come back after it outside work mode.** The exclusion now resets on every compaction.
+- **The no-good-match gate reads the best hit that survives filtering,** not the raw top 10 before it, and the vector search considers 50 candidates.
+- **The trigger index and the pipeline share one methodology label list** from `writ/graph/schema.py`.
+- **The Bash write gate no longer refuses read-only commands** that share a line with an interpreter fed from stdin.
+- **Approvals are checked against one read of the token file,** so a process that loses a race is refused at the claim with the right reason, and the recorded approver is the one that was checked. Advance and replan check the secret before claiming, so a stale secret no longer destroys a newly issued token.
+- **Messages that told users to install git hooks** now name the real command, `writ git-hooks install`.
+
 ### Security
 
 - **Neo4j is published on loopback only.** `docker-compose.yml` binds 7474 and 7687 to 127.0.0.1; both used to listen on every interface. An existing container keeps its old bindings until it is re-created (docs/install.md, "Securing an existing install").
 - **The published development password is refused.** Every Neo4j connection (daemon, CLI, `writ doctor`, scripts) goes through `Neo4jConnection`, which now refuses it unless `WRIT_ALLOW_DEV_PASSWORD=1`. `writ serve` exits 78 with the remedy, the systemd unit does not restart on 78, SessionStart prints the remedy instead of starting a daemon that would refuse, and `writ doctor` gains a `neo4j-password` check.
 - **`writ neo4j set-password`** generates a random password, changes it in the running database, saves it to `writ.toml` with mode 0600 and prints the next steps, never the password. A failure before the change leaves everything as it was; any failure after it, an interruption included, changes the database back. Concurrent runs take turns on a lock beside `writ.toml`, and the bootstraps pass `--if-default` so two of them rotate once. A bootstrap re-run finishes a migration that stopped before the container was re-created. `writ neo4j password` prints the stored value when asked and `writ neo4j check` is the exit-status probe. Both bootstraps run it on a new install and re-create the container on the new password. The compose file reads `WRIT_NEO4J_PASSWORD` for `NEO4J_AUTH` and its healthcheck.
 - **writ.toml follows a plugin upgrade.** The SessionStart venv repoint and `bootstrap-plugin.sh` copy it from the previous install directory when the new one has none, since it now holds the only copy of the password.
+- **Approval secrets are compared in constant time** (`hmac.compare_digest`).
+- **A refused write to a credential file is never turned into a confirmation prompt.** Repeated refusals of other kinds still escalate to asking the user.
 
 ### Documentation
 
-- README rewritten as an entry point (acceptance gates with an example, quick start, evidence and limits); docs/install.md gains a "Why was I blocked?" table; the reference docs correct the test-skeleton gate, approval request markers, Stop-hook exit semantics and fail-open behavior. No runtime change.
+- README rewritten as an entry point (acceptance gates with an example, quick start, evidence and limits) with a new hero image; docs/install.md gains a "Why was I blocked?" table; the reference docs correct the test-skeleton gate, approval request markers, Stop-hook exit semantics and fail-open behavior. Eleven ADRs added under docs/adr: prompt injection split, silent fixes 1b-1e, Neo4j password baseline, live reload, tool-failure budget, decision recall, trust records, retrieved-text fence, collector registry, document retrieval, and open questions and co-change.
 
 ## [1.11.1] - 2026-09-30
 
