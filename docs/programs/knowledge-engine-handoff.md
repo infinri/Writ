@@ -13,12 +13,14 @@ whole program is done.
 | program/1b-1e-silent-fixes | 7c6850f | 1b-1e: language filter, compaction exclusion, gate after filter, label lists |
 | program/3-security-baseline | d696610 | 3: loopback ports, private Neo4j password, `writ neo4j` commands, lock |
 | program/wave1 | 170e268, 92a008b | 2 live reload, 1f measurement + rule rewording, 7c tool-failure budget, 1g gate over-match; suite fixes |
-| program/wave2 (current) | f0dc450, 9fd8f98, 82fc71a | 6 trust records; 4 decision recall; support page (SPONSORSHIP.md, README) |
+| program/wave2 (current) | f0dc450, 9fd8f98, 82fc71a, 08ebf58, 3cd2a41, 46968ee | 6 trust records; 4 decision recall; support page; approval-race fix; 5 long documents |
 
 Run the suite with `.venv/bin/python3 -m pytest tests/` (about 19 minutes).
 
-Done: 1a-1g, 2, 3, 4, 6, 7c, and the support page (ships with the program, user 2026-10-07). Deferred: 7b (needs ~470 human relevance labels).
-Remaining, in order: wave 3 = item 5 (phases 0-4), then 7a and 7d.
+Done: 1a-1g, 2, 3, 4, 5, 6, 7c, the support page, and an approval-race fix (one read of the gate token per approval). Deferred: 7b (needs ~470 human relevance labels).
+Remaining: 7a (open questions) and 7d (co-change hints), planned together (user decisions 2026-10-07: `writ question` CLI reusing the generalized approval guard; OpenQuestion record label with an ABOUT-style edge; epoch-scoped dedupe; per-block caps folded into decision_context within the 1.0 s budget; commit size counted at query time).
+Item 5 decisions (2026-10-07): Document/Chunk are record labels; one shared parametrized index builder; documents join the live-reload generation.
+Follow-ups: HNSW builds are multi-threaded so ranks 5-10 can differ between builds (num_threads=1 would fix it); advance/replan token paths share the old read-then-claim shape; the item 4 index-seek test failed once and has not reproduced (a USING INDEX hint is the candidate fix).
 
 Last full suite (2026-10-07, before the item 4 commit): 13677 passed, 1 failed. The failure, tests/test_trust_review.py::TestConcurrentDisputesRealProcesses, passed 9 times alone, under CPU load, and in a 712-test related run; not reproduced. Re-check it in the next full run.
 
