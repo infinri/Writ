@@ -36,6 +36,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from tests._ansi import plain
 from tests.test_review_promote_authority import (  # noqa: F401  (autouse leak guard + helpers)
     _FakeReviewDB,
     _make_fake_writ_db,
@@ -816,9 +817,10 @@ class TestQuestionSubApp:
 
         result = CliRunner().invoke(app, ["question", "open", "--help"])
         assert result.exit_code == 0, result.output
+        help_text = plain(result.output)
         for option in ("--text", "--who", "--settled-by", "--rule", "--decision", "--repo"):
-            assert option in result.output
-        assert "--token" not in result.output
+            assert option in help_text
+        assert "--token" not in help_text
 
     @pytest.mark.parametrize("action", ["answer", "close"])
     def test_answer_and_close_take_session_id_and_token(self, action) -> None:
@@ -828,7 +830,8 @@ class TestQuestionSubApp:
 
         result = CliRunner().invoke(app, ["question", action, "--help"])
         assert result.exit_code == 0, result.output
-        assert "--session-id" in result.output and "--token" in result.output
+        help_text = plain(result.output)
+        assert "--session-id" in help_text and "--token" in help_text
 
     def test_open_on_an_unregistered_repo_exits_one_naming_the_git_hooks_command(self, tmp_path) -> None:
         factory, fake = _db()

@@ -73,6 +73,14 @@ def _graph(work):
     return asyncio.run(_go())
 
 
+async def _ensure_record_indexes(db) -> None:
+    """Create the record indexes and wait until they are online. An EXPLAIN that asserts an
+    index seek must not depend on an earlier test having created the index: CI runs each
+    shard on a fresh database."""
+    await db.apply_constraints()
+    await db._run("CALL db.awaitIndexes(60)")
+
+
 def _unique(label: str) -> str:
     return f"dr-graph-{label}-{uuid.uuid4().hex[:8]}"
 
@@ -323,6 +331,7 @@ class TestGetDecisionsForPaths:
         _graph(seed)
 
         async def explain(db):
+            await _ensure_record_indexes(db)
             with _count_statements() as state:
                 await db.get_decisions_for_paths(project, ["src/a.py"], per_path=3)
             assert state["n"] == 1, "one batched statement"

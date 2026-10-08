@@ -52,6 +52,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from typer.testing import CliRunner
 
+from tests._ansi import plain
 from tests._writ_cmd import WRIT_CMD_PREFIX
 from tests.test_review_promote_authority import (  # noqa: F401  (autouse leak guard + helpers)
     _FakeReviewDB,
@@ -733,7 +734,7 @@ class TestIdentityComesFromTheToken:
     def test_the_command_exposes_no_way_to_name_an_approver(self):
         result = runner.invoke(app, ["review", "--help"])
         assert result.exit_code == 0
-        help_text = result.output.lower()
+        help_text = plain(result.output).lower()
         for forbidden in ("identity", "os-login", "os_login", "git-name", "git_name",
                           "--user", "--approver", "--as"):
             assert forbidden not in help_text, f"review --help advertises {forbidden!r}"

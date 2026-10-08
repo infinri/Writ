@@ -42,6 +42,7 @@ import pytest
 import writ.server as server
 from tests.test_decision_recall_graph import (  # noqa: F401  (made_projects is a fixture)
     _count_statements,
+    _ensure_record_indexes,
     _graph,
     _plan_ops,
     _unique,
@@ -404,6 +405,7 @@ class TestIndexSeeks:
         _seed_pairs(project, 3, 3)
 
         async def explain(db):
+            await _ensure_record_indexes(db)
             with _count_statements() as state:
                 await db.get_cochanged_paths(project, [A], **DEFAULTS)
             assert state["n"] == 1, "one batched statement"
