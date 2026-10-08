@@ -201,10 +201,10 @@ class TestCoChangeBlock:
         assert "composer.lock" not in ctx.text and "dist/a.js" not in ctx.text
         assert [re.search(r"changes with (\S+) ", ln).group(1) for ln in lines] == ["a.py", "b.py", "c.py"]
 
-    def test_only_noise_hits_render_nothing_and_mark_nothing(self):
+    def test_only_noise_hits_render_nothing_and_mark_the_checked_path(self):
         ctx = _run(_FakeCoChangeDB(_hits(("yarn.lock", 5), base=5), rows={}))
         assert ctx.text == ""
-        assert "pre_write_cochange" not in ctx.marks or ctx.marks["pre_write_cochange"] == []
+        assert ctx.marks["pre_write_cochange"] == [REL_PATH]
 
     def test_each_line_is_at_most_two_hundred_characters(self):
         long_path = "src/" + "deep/" * 80 + "file.py"
@@ -213,10 +213,15 @@ class TestCoChangeBlock:
         assert len(lines) == 2
         assert all(len(ln) <= 200 for ln in lines)
 
-    def test_no_history_renders_nothing_and_marks_nothing(self):
+    def test_no_history_renders_nothing_and_marks_the_checked_path(self):
         ctx = _run(_FakeCoChangeDB({}, rows={}))
         assert ctx.text == ""
-        assert not ctx.marks.get("pre_write_cochange")
+        assert ctx.marks["pre_write_cochange"] == [REL_PATH]
+        assert ctx.errors == {}
+
+    def test_no_history_with_several_candidates_marks_the_first_candidate_checked(self):
+        ctx = _run(_FakeCoChangeDB({}, rows={}), candidates=(REL_PATH, "recall.py"))
+        assert ctx.marks["pre_write_cochange"] == [REL_PATH]
 
     def test_the_mark_is_the_matched_path_so_the_file_is_hinted_once(self):
         ctx = _run(_FakeCoChangeDB(_hits(("a.py", 3)), rows={}))
@@ -272,7 +277,7 @@ class TestCoChangeFailsOpenAlone:
         assert ctx.text.startswith("[Writ decision memory:")
         assert _cochange_lines(ctx.text) == []
         assert ctx.marks["pre_write_decision"] == [f"{REL_PATH}#D-1"]
-        assert not ctx.marks.get("pre_write_cochange")
+        assert "pre_write_cochange" not in ctx.marks
 
     def test_a_cochange_read_over_its_timeout_is_cancelled_and_the_card_still_renders(self):
         db = _FakeCoChangeDB(cochange_delay=5.0)
@@ -280,6 +285,7 @@ class TestCoChangeFailsOpenAlone:
         assert set(ctx.errors) == {"pre_write_cochange"}
         assert db.cochange_cancelled
         assert ctx.text.startswith("[Writ decision memory:")
+        assert "pre_write_cochange" not in ctx.marks
 
     def test_a_failing_decision_read_does_not_stop_the_hint(self):
         db = _FakeCoChangeDB(_hits(("a.py", 3)), error=RuntimeError("decision down"))
@@ -334,6 +340,34 @@ class TestCoChangeThroughPreWriteCheck:
         second = _check(sid)
         assert len(db.cochange_calls) == 1
         assert second["decision_context"] == ""
+
+    def test_a_file_whose_query_found_nothing_is_marked_and_not_queried_again(
+            self, monkeypatch, sid, friction):
+        db = self._db(cochange={})
+        _install(monkeypatch, db)
+        _open_gate(monkeypatch)
+        _check(sid)
+        assert _cache(sid)["injection_shown"]["pre_write_cochange"] == [REL_PATH]
+        second = _check(sid)
+        assert len(db.cochange_calls) == 1
+        assert "[Writ co-change]" not in second["decision_context"]
+
+    def test_a_compaction_re_queries_a_file_that_found_nothing(self, monkeypatch, sid, friction):
+        db = self._db(cochange={})
+        _install(monkeypatch, db)
+        _open_gate(monkeypatch)
+        _check(sid)
+        _seed(sid, compaction_epoch=1)
+        _check(sid)
+        assert len(db.cochange_calls) == 2
+
+    def test_a_failed_query_is_retried_on_the_next_write(self, monkeypatch, sid, friction):
+        db = self._db(cochange_error=RuntimeError("graph unavailable"))
+        _install(monkeypatch, db)
+        _open_gate(monkeypatch)
+        _check(sid)
+        _check(sid)
+        assert len(db.cochange_calls) == 2
 
     def test_a_compaction_makes_the_file_hint_again(self, monkeypatch, sid, friction):
         db = self._db()

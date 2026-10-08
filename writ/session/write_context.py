@@ -97,7 +97,8 @@ async def _cochange_block(db, project: str, candidates: list[str], shown) -> tup
     ) or {}
     hits = [h for h in result.get("hits") or [] if not is_cochange_noise(h["path"])][:_COCHANGE_LINES]
     if not hits:
-        return "", []
+        # Checked and nothing qualifies: mark the path so this epoch does not query it again.
+        return "", [result.get("path") or candidates[0]] if candidates else []
     lines = [_cochange_line(result["path"], h["path"], h["support"], result["base"]) for h in hits]
     return "\n".join(lines), [result["path"]]
 

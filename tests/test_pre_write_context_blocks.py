@@ -195,7 +195,9 @@ class TestQuestionBlock:
         assert _check(sid)["decision_context"] == ""
         _seed(sid, compaction_epoch=1)
         assert QID1 in _check(sid)["decision_context"]
-        assert _cache(sid)["injection_shown"] == {"epoch": "1|", "pre_write_questions": [QID1]}
+        shown = _cache(sid)["injection_shown"]
+        assert shown["epoch"] == "1|" and shown["pre_write_questions"] == [QID1]
+        assert set(shown) <= {"epoch", "pre_write_questions", "pre_write_cochange"}
 
     def test_a_phase_change_shows_the_question_again(self, monkeypatch, sid, friction):
         _install(monkeypatch, _BlockDB([_qrow()], rows={}))
@@ -261,9 +263,10 @@ class TestQuestionBlock:
         _check(sid)
         assert len(calls) == 1, calls
         args = calls[0]
-        assert args.count("--mark-shown") == 2
+        # The co-change block marks the path it checked even when it found nothing.
+        assert args.count("--mark-shown") == 3
         sections = [args[i + 1] for i, a in enumerate(args) if a == "--mark-shown"]
-        assert sorted(sections) == ["pre_write_decision", "pre_write_questions"]
+        assert sorted(sections) == ["pre_write_cochange", "pre_write_decision", "pre_write_questions"]
 
 
 # --------------------------------------------------------------------------- #

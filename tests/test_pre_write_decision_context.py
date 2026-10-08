@@ -337,8 +337,10 @@ class TestDecisionBlock:
         _seed(sid, compaction_epoch=1)
         again = _check(sid)["decision_context"]
         assert again != ""
-        assert _cache(sid)["injection_shown"] == {
-            "epoch": "1|", "pre_write_decision": [f"{REL_PATH}#D-1"]}
+        shown = _cache(sid)["injection_shown"]
+        assert shown["epoch"] == "1|" and shown["pre_write_decision"] == [f"{REL_PATH}#D-1"]
+        # The co-change block also marks the path it checked, even with nothing to show.
+        assert set(shown) <= {"epoch", "pre_write_decision", "pre_write_cochange"}
 
     def test_a_phase_change_resets_the_dedupe_and_the_decision_shows_again(
             self, monkeypatch, sid, friction):

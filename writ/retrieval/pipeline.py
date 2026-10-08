@@ -485,8 +485,9 @@ class RetrievalPipeline:
             candidate_ids, active_weights, proximity, enrichment,
         )
 
-        # Sort by score descending.
-        scored_rules.sort(key=lambda r: r["score"], reverse=True)
+        # Sort by score descending; equal scores by rule id, so tie order never depends on
+        # arrival order.
+        scored_rules.sort(key=lambda r: (-r["score"], r["rule_id"]))
 
         # Sticky rules tie-breaking: reorder adjacent rules within 0.02 score
         # of each other to match the prefer_rule_ids ordering. This stabilizes
@@ -636,7 +637,7 @@ class RetrievalPipeline:
             )
             first_pass_scores.append((rid, fp_score))
 
-        first_pass_scores.sort(key=lambda x: x[1], reverse=True)
+        first_pass_scores.sort(key=lambda x: (-x[1], x[0]))
         return first_pass_scores
 
     def _final_rank(self, candidate_ids, active_weights, proximity, enrichment) -> list:
