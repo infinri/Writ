@@ -222,6 +222,13 @@ class TestHeroAsset:
         ]
         assert hero in targets, "README.md has no image reference resolving to the hero asset"
 
+    def test_hero_alt_text_names_the_three_panels(self):
+        readme = _tracked_or_present("README.md").read_text(encoding="utf-8")
+        alt = re.search(r"!\[([^\]]*)\]\(docs/assets/writ-hero\.png\)", readme)
+        assert alt, "README.md has no hero image line"
+        for panel in ("just-in-time retrieval", "acceptance gates", "persistent memory"):
+            assert panel in alt.group(1), f"hero alt text does not mention {panel!r}"
+
 
 class TestEntryPointDocs:
     @pytest.mark.parametrize("rel", ENTRY_DOCS)

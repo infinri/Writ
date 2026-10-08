@@ -6,7 +6,7 @@
 
 Writ turns supported workflow requirements into executable checks and acceptance gates for Claude Code, instead of relying on the model to follow written instructions. It runs on your machine: hooks that Claude Code calls around each tool use, a local daemon that makes the decisions, and a Neo4j database in Docker that stores rules and decision records.
 
-![Writ acceptance gate: proposed actions are checked before proceeding, with Infinri branding.](docs/assets/writ-hero.png)
+![Writ: just-in-time retrieval, acceptance gates and persistent memory, shown as a library where a gatekeeper asks for approval first. Infinri branding.](docs/assets/writ-hero.png)
 
 [Quick start](#quick-start) · [Acceptance gates](#acceptance-gates) · [Why was I blocked?](docs/install.md#why-was-i-blocked) · [Documentation](#documentation) · [Support Writ](#support-writ)
 
