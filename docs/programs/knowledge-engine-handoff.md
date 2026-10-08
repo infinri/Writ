@@ -19,7 +19,7 @@ Run the suite with `.venv/bin/python3 -m pytest tests/` (about 19 minutes).
 
 PROGRAM COMPLETE (2026-10-08) except 7b, deferred (needs ~470 human relevance labels). Done: 1a-1g, 2, 3, 4, 5, 6, 7a, 7c, 7d, the support page, and an approval-race fix. Last full suite on program/wave2 before 591a020: 14758 passed, 0 failed. Ready to merge on the user's word.
 Item 5 decisions (2026-10-07): Document/Chunk are record labels; one shared parametrized index builder; documents join the live-reload generation.
-Follow-ups: HNSW builds are multi-threaded so ranks 5-10 can differ between builds (num_threads=1 would fix it); advance/replan token paths share the old read-then-claim shape; the item 4 index-seek test failed once and has not reproduced (a USING INDEX hint is the candidate fix).
+Done after the program (2026-10-08, 8df1f08 and ef36f36): README and docs rewrite with the hero image; deterministic HNSW builds; snapshot-read token claims on advance/replan; timing-safe secret comparison; credential refusals never escalate to a prompt; shared atomic-file module; corrected `writ git-hooks install` messages. The item 4 decision read is pinned to its index (591a020).
 
 Last full suite (2026-10-07, before the item 4 commit): 13677 passed, 1 failed. The failure, tests/test_trust_review.py::TestConcurrentDisputesRealProcesses, passed 9 times alone, under CPU load, and in a 712-test related run; not reproduced. Re-check it in the next full run.
 
@@ -120,10 +120,9 @@ conventions. Item 7d co-change hints: on-demand Cypher over Commit/FileChange si
 
 ## Known follow-ups
 
-- Move neo4j_password.stage_config/commit_config to a neutral shared module (wave 1 A
-  reuses it for the BM25 CURRENT pointer).
-- docs/reference/cli.md and hooks.md are stale (pre-existing); regenerate with
-  scripts/render-docs.py importing this checkout, not the plugin cache.
+- Ranking ties are still ordered by Python's per-process hash randomization in the ranking stage, so 2 gold queries can swap adjacent ranks between runs (benchmarks/HNSW-DETERMINISM-2026-10-08.md); fixing it is a ranking change.
+- The three end-of-turn checks (pending tests, quality score, reply style) exit 1 and only report; the user chose to keep that.
+- Co-change re-queries a file with no qualifying hints on every write (only shown hints are marked).
 - Expand tests/fixtures/ground_truth_negatives.json (~100, more near-domain) before any
   abstention-threshold change; hold the cosine/max vector-norm candidate until a weight
   re-sweep.
