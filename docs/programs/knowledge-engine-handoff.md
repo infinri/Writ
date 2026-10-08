@@ -19,7 +19,7 @@ Run the suite with `.venv/bin/python3 -m pytest tests/` (about 19 minutes).
 
 PROGRAM COMPLETE (2026-10-08) except 7b, deferred (needs ~470 human relevance labels). Done: 1a-1g, 2, 3, 4, 5, 6, 7a, 7c, 7d, the support page, and an approval-race fix. Last full suite on program/wave2 before 591a020: 14758 passed, 0 failed. Ready to merge on the user's word.
 Item 5 decisions (2026-10-07): Document/Chunk are record labels; one shared parametrized index builder; documents join the live-reload generation.
-Done after the program (2026-10-08, 8df1f08 and ef36f36): README and docs rewrite with the hero image; deterministic HNSW builds; snapshot-read token claims on advance/replan; timing-safe secret comparison; credential refusals never escalate to a prompt; shared atomic-file module; corrected `writ git-hooks install` messages. The item 4 decision read is pinned to its index (591a020).
+Done after the program (2026-10-08, 8df1f08 and ef36f36): README and docs rewrite with the hero image; deterministic HNSW builds; snapshot-read token claims on advance/replan; timing-safe secret comparison; credential refusals never escalate to a prompt; shared atomic-file module; corrected `writ git-hooks install` messages. Then (ranking-ties commit): ranking ties ordered by rule id (benchmarks/RANKING-TIES-2026-10-08.md) and co-change checked once per file per epoch. The item 4 decision read is pinned to its index (591a020).
 
 Last full suite (2026-10-07, before the item 4 commit): 13677 passed, 1 failed. The failure, tests/test_trust_review.py::TestConcurrentDisputesRealProcesses, passed 9 times alone, under CPU load, and in a 712-test related run; not reproduced. Re-check it in the next full run.
 
@@ -120,9 +120,7 @@ conventions. Item 7d co-change hints: on-demand Cypher over Commit/FileChange si
 
 ## Known follow-ups
 
-- Ranking ties are still ordered by Python's per-process hash randomization in the ranking stage, so 2 gold queries can swap adjacent ranks between runs (benchmarks/HNSW-DETERMINISM-2026-10-08.md); fixing it is a ranking change.
 - The three end-of-turn checks (pending tests, quality score, reply style) exit 1 and only report; the user chose to keep that.
-- Co-change re-queries a file with no qualifying hints on every write (only shown hints are marked).
 - Expand tests/fixtures/ground_truth_negatives.json (~100, more near-domain) before any
   abstention-threshold change; hold the cosine/max vector-norm candidate until a weight
   re-sweep.
