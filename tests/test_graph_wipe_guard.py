@@ -278,9 +278,12 @@ class TestDefaultCallsAreNotGated:
         # Program item 5 (workstream D): Document and Chunk joined RECORD_LABELS. Both
         # axes: only `writ docs ingest` can rebuild them (preserve), and chunk text is
         # project content that must never ship in writ-corpus.cypher (exclude).
+        # Program item 7a: OpenQuestion joined RECORD_LABELS. Both axes: only
+        # `writ question` can recreate one (preserve), and it carries the approver's
+        # identity and project-private text (exclude from the dump).
         assert params["preserve"] == [
             "Chunk", "Commit", "Decision", "Document", "FeedbackBatch", "FileChange",
-            "Memory", "Project", "TrustEvent",
+            "Memory", "OpenQuestion", "Project", "TrustEvent",
         ]
 
     @pytest.mark.asyncio

@@ -150,6 +150,10 @@ STREAM_MAP: dict[str, str] = {
     # The token-gated trust actions beside promotion (`writ review --dispute / --verify`).
     "rule_disputed": "audit",
     "rule_verified": "audit",
+    # Program item 7a: the open-question lifecycle (`writ question`).
+    "question_opened": "audit",
+    "question_answered": "audit",
+    "question_closed": "audit",
     # THE FOUR PRE-EXISTING BINDING REFUSALS, registered with their new sibling rather
     # than left on the friction default. Leaving them there while the newest member of the
     # same family is audited would mean a reader has to know which of the family is
@@ -183,6 +187,8 @@ STREAM_MAP: dict[str, str] = {
     "memory_capture_failed": "friction",
     "recall_failed": "friction",
     "pre_write_decision_failed": "friction",
+    "pre_write_questions_failed": "friction",
+    "pre_write_cochange_failed": "friction",
     "git_hooks_auto_install_failed": "friction",
     "debug_to_work_handoff": "friction",
     # Emitted from writ/session/session_lifecycle.py; they reached friction only

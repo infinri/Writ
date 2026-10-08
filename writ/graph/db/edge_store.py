@@ -159,6 +159,20 @@ class EdgeStoreMixin:
             project=project,
         )
 
+    async def wire_about(
+        self, question_id: str, target_label: str, target_id: str, project: str
+    ) -> None:
+        """Wire OpenQuestion -[ABOUT]-> Rule or Decision; any other target label raises."""
+        if target_label not in ("Rule", "Decision"):
+            raise ValueError(
+                f"ABOUT target for {question_id} must be Rule or Decision, not {target_label!r}")
+        await self.create_record_edge(
+            "ABOUT",
+            src_label="OpenQuestion", src_id_field="question_id", src_id=question_id,
+            tgt_label=target_label, tgt_id_field=_RECORD_EDGE_ENDPOINTS[target_label],
+            tgt_id=target_id, project=project,
+        )
+
     async def wire_realizes(
         self, commit_hash: str, decision_id: str, project: str
     ) -> None:

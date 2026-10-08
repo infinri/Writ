@@ -474,7 +474,8 @@ class TestWriteStatementCounts:
 
         result, issued = _graph(work)
         assert result["decision"] == "allow"
-        assert issued == 1
+        # Program item 7a/7d: decision card, open questions and co-change, concurrently.
+        assert issued == 3
         assert "Cache the widget lookups" in result["decision_context"]
 
     def test_an_allowed_write_outside_the_project_issues_no_statement(self, history, tmp_path, monkeypatch):

@@ -8,7 +8,8 @@ commands; no CLI dependency here (no typer, no echoes).
 Public surface: `build_rule_dict`, `check_id_collision`, `suggest_relationships`,
 `check_redundancy`, `check_conflicts`, `finalize_conflict_and_export`,
 `assert_ai_provisional`, `promote`, `reject`, `downweight`, `record_trust`,
-`record_approval`, `dispute`, `verify`, `RuleIdCollisionError`,
+`record_approval`, `dispute`, `verify`, `open_question`, `resolve_question`,
+`RuleIdCollisionError`,
 `IllegalAuthorityTransitionError`.
 
 Per ARCH-ORG-001: domain logic separated from CLI dispatch layer.
@@ -304,3 +305,35 @@ async def verify(
         rule_props={"last_verified": date.today().isoformat()},
         via="review_verify", session_id=session_id, identity=identity, note=note,
     )
+
+
+async def open_question(
+    db: Neo4jConnection, *, project: str, question: str, who_can_answer: str, settled_by: str,
+    session_id: str, rule_ids: list[str], decision_ids: list[str],
+) -> str:
+    """Write one open question, then one ABOUT edge per target. The node first, so an edge
+    never points from a question that was not written. Returns the question id."""
+    question_id = f"OQ-{uuid.uuid4().hex[:10]}"
+    await db.create_open_question(
+        question_id=question_id, project=project, question=question,
+        who_can_answer=who_can_answer, settled_by=settled_by, status="open",
+        opened_at=_now_iso(), opened_session_id=session_id,
+    )
+    for label, ids in (("Rule", rule_ids), ("Decision", decision_ids)):
+        for target_id in ids:
+            await db.wire_about(question_id, label, target_id, project)
+    return question_id
+
+
+async def resolve_question(
+    db: Neo4jConnection, question_id: str, *, action: str, text: str, session_id: str,
+    identity: GateIdentity,
+) -> bool:
+    """Answer or close an open question with the approver's identity, in one conditional
+    write. False when the question was no longer open."""
+    return await db.resolve_open_question(question_id, {
+        "status": "answered" if action == "answer" else "closed",
+        "answer": text, "resolved_at": _now_iso(), "resolved_via": f"question_{action}",
+        "resolved_session_id": session_id, "resolved_os_login": identity.os_login,
+        "resolved_git_name": identity.git_name,
+    })

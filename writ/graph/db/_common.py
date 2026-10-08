@@ -57,15 +57,20 @@ METHODOLOGY_NODE_ID_FIELDS: dict[str, str] = {
 # docs/adr/ADR-document-retrieval.md). Preserve: only `writ docs ingest` can rebuild them,
 # so a wipe or corpus replay must not destroy them. Exclude: chunk text is project content,
 # possibly private, and has no place in the public corpus dump.
+#
+# `OpenQuestion` is an unknown an agent recorded (program item 7a,
+# docs/adr/ADR-open-questions-and-co-change.md). Preserve: only `writ question` can recreate
+# one. Exclude: it carries the approver's identity and project-private text.
 RECORD_LABELS: frozenset[str] = frozenset(
     {"Memory", "Decision", "FileChange", "Commit", "Project", "FeedbackBatch", "TrustEvent",
-     "Document", "Chunk"})
+     "Document", "Chunk", "OpenQuestion"})
 
 # Each record label's id property, written out beside RECORD_LABELS and guarded equal to it.
 RECORD_ID_FIELDS: dict[str, str] = {
     "Memory": "name", "Decision": "decision_id", "FileChange": "change_id",
     "Commit": "commit_hash", "Project": "name", "FeedbackBatch": "batch_id",
     "TrustEvent": "event_id", "Document": "doc_id", "Chunk": "chunk_id",
+    "OpenQuestion": "question_id",
 }
 if set(RECORD_ID_FIELDS) != RECORD_LABELS:
     raise ValueError(
@@ -95,6 +100,8 @@ ALLOWED_EDGE_TYPES: frozenset[str] = frozenset({
     # endpoint resolution is a 1c/1d concern).
     "HAS_DECISION", "HAS_CHANGE", "HAS_COMMIT",
     "MOTIVATED_BY", "GOVERNED_BY", "INCLUDES", "REALIZES",
+    # Program item 7a: OpenQuestion -[ABOUT]-> Rule or Decision.
+    "ABOUT",
 })
 
 # Record-memory edge types (Decision-memory Phase 1a): these attach runtime
@@ -103,7 +110,7 @@ ALLOWED_EDGE_TYPES: frozenset[str] = frozenset({
 # set below is DERIVED, never a hand-maintained copy.
 RECORD_EDGE_TYPES: frozenset[str] = frozenset({
     "HAS_DECISION", "HAS_CHANGE", "HAS_COMMIT",
-    "MOTIVATED_BY", "GOVERNED_BY", "INCLUDES", "REALIZES",
+    "MOTIVATED_BY", "GOVERNED_BY", "INCLUDES", "REALIZES", "ABOUT",
 })
 
 # Corpus (rule/methodology cross-reference) edge types = every allowed type that
@@ -119,7 +126,7 @@ CORPUS_EDGE_TYPES: frozenset[str] = ALLOWED_EDGE_TYPES - RECORD_EDGE_TYPES
 # reach the query string (SEC-INJ: closes the label/field interpolation surface on
 # the public method). NODE_ID_FIELDS covers Rule + methodology types; the four record
 # and registry labels (off NODE_ID_FIELDS by design) are added explicitly.
-_RECORD_EDGE_ENDPOINT_LABELS = ("Decision", "FileChange", "Commit", "Project")
+_RECORD_EDGE_ENDPOINT_LABELS = ("Decision", "FileChange", "Commit", "Project", "OpenQuestion")
 _RECORD_EDGE_ENDPOINTS: dict[str, str] = {
     **NODE_ID_FIELDS, **{label: RECORD_ID_FIELDS[label] for label in _RECORD_EDGE_ENDPOINT_LABELS},
 }

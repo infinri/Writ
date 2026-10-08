@@ -30,18 +30,18 @@ class TestCorpusEdgeTypesSingleSource:
     def test_corpus_excludes_record_edges(self) -> None:
         from writ.graph.db import CORPUS_EDGE_TYPES
         for t in ("HAS_DECISION", "HAS_CHANGE", "HAS_COMMIT",
-                  "MOTIVATED_BY", "GOVERNED_BY", "INCLUDES", "REALIZES"):
+                  "MOTIVATED_BY", "GOVERNED_BY", "INCLUDES", "REALIZES", "ABOUT"):
             assert t not in CORPUS_EDGE_TYPES, (
                 f"{t} is a record-only edge; it must not be offered for "
                 f"rule-to-rule authoring"
             )
 
-    def test_record_edge_types_has_seven_entries(self) -> None:
+    def test_record_edge_types_has_eight_entries(self) -> None:
         from writ.graph.db import RECORD_EDGE_TYPES
-        assert len(RECORD_EDGE_TYPES) == 7
+        assert len(RECORD_EDGE_TYPES) == 8
 
     def test_corpus_and_allowed_agree_on_total_count(self) -> None:
-        """24 allowed total = 17 corpus + 7 record; guards a future edge-type
+        """25 allowed total = 17 corpus + 8 record; guards a future edge-type
         addition from accidentally landing in neither/both sets."""
         from writ.graph.db import ALLOWED_EDGE_TYPES, CORPUS_EDGE_TYPES, RECORD_EDGE_TYPES
         assert len(ALLOWED_EDGE_TYPES) == len(CORPUS_EDGE_TYPES) + len(RECORD_EDGE_TYPES)

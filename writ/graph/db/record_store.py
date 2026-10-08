@@ -3,8 +3,31 @@
 Moved verbatim from the former writ/graph/db.py (Wave 2 mixin split); methods read self._driver / self._database set by Neo4jConnection.__init__."""
 from __future__ import annotations
 
-from writ.graph.schema import Chunk, Commit, Decision, Document, FileChange, TrustEvent
+import re
+
+from neo4j.exceptions import ClientError
+
+from writ.graph.schema import Chunk, Commit, Decision, Document, FileChange, OpenQuestion, TrustEvent
 from writ.graph.db._common import RECORD_ID_FIELDS, _coerce_neo4j_value, _now_iso
+
+# What a server with dbms.cypher.hints_error=true raises when a hinted index is absent (the
+# server's IndexHintException status). With the default setting it is only a notification.
+_HINTED_INDEX_NOT_FOUND = "Neo.ClientError.Schema.IndexNotFound"
+_INDEX_HINT = re.compile(r"USING INDEX \w+:\w+\([^)]*\) ")
+
+
+
+
+async def _run_hinted(run, query: str, **params):
+    """`run(query)`; when the server refuses a hint because its index is absent (the daemon
+    never applies constraints at startup), rerun once with the `USING INDEX` clauses removed.
+    Every other error propagates."""
+    try:
+        return await run(query, **params)
+    except ClientError as exc:
+        if exc.code != _HINTED_INDEX_NOT_FOUND:
+            raise
+        return await run(_INDEX_HINT.sub("", query), **params)
 
 
 class RecordStoreMixin:
@@ -52,6 +75,67 @@ class RecordStoreMixin:
         """Create or update a TrustEvent record. Idempotent via MERGE on (event_id, project)."""
         event_data.setdefault("ts", _now_iso())
         return await self._create_record(TrustEvent(**event_data), RECORD_ID_FIELDS[TrustEvent.__name__])
+
+    async def create_open_question(self, **question_data) -> str:
+        """Create or update an OpenQuestion record. Idempotent via MERGE on (question_id, project)."""
+        return await self._create_record(
+            OpenQuestion(**question_data), RECORD_ID_FIELDS[OpenQuestion.__name__])
+
+    async def get_question_targets(
+        self, project: str, rule_ids: list[str], decision_ids: list[str]
+    ) -> dict[str, set[str]]:
+        """Which of the named Rules (any project) and Decisions (this project) exist, in one
+        statement: {"Rule": ids, "Decision": ids}. Empty inputs return empty sets unread."""
+        found: dict[str, set[str]] = {"Rule": set(), "Decision": set()}
+        if not rule_ids and not decision_ids:
+            return found
+        rows = await self._run(
+            "CALL { "
+            "MATCH (r:Rule) WHERE r.rule_id IN $rule_ids "
+            "RETURN 'Rule' AS label, r.rule_id AS id "
+            "UNION "
+            "MATCH (d:Decision {project: $project}) WHERE d.decision_id IN $decision_ids "
+            "RETURN 'Decision' AS label, d.decision_id AS id } "
+            "RETURN label, id",
+            project=project, rule_ids=list(rule_ids), decision_ids=list(decision_ids),
+        )
+        for row in rows:
+            found[row["label"]].add(row["id"])
+        return found
+
+    async def get_open_question(self, question_id: str) -> dict | None:
+        """One OpenQuestion's fields plus `about` (the ids it is ABOUT), matched by id alone."""
+        record = await self._run_single(
+            "MATCH (q:OpenQuestion {question_id: $id}) "
+            "OPTIONAL MATCH (q)-[:ABOUT]->(t) "
+            "WITH q, collect(coalesce(t.rule_id, t.decision_id)) AS about "
+            "RETURN properties(q) AS props, about LIMIT 1",
+            id=question_id,
+        )
+        return {**dict(record["props"]), "about": list(record["about"])} if record else None
+
+    async def list_open_questions(self, project: str, include_resolved: bool = False) -> list[dict]:
+        """The project's open questions (all of them with include_resolved), newest opened first."""
+        rows = await self._run(
+            "MATCH (q:OpenQuestion {project: $project}) "
+            "WHERE $include_resolved OR q.status = 'open' "
+            "OPTIONAL MATCH (q)-[:ABOUT]->(t) "
+            "WITH q, collect(coalesce(t.rule_id, t.decision_id)) AS about "
+            "ORDER BY q.opened_at DESC, q.question_id "
+            "RETURN properties(q) AS props, about",
+            project=project, include_resolved=include_resolved,
+        )
+        return [{**dict(r["props"]), "about": list(r["about"])} for r in rows]
+
+    async def resolve_open_question(self, question_id: str, props: dict) -> bool:
+        """SET `props` on the question only while it is open. False when nothing matched, so a
+        question resolved concurrently is never overwritten."""
+        record = await self._write_single(
+            "MATCH (q:OpenQuestion {question_id: $id}) WHERE q.status = 'open' "
+            "SET q += $props RETURN q.question_id AS question_id",
+            id=question_id, props=props,
+        )
+        return record is not None
 
     async def create_memory(
         self,
@@ -307,8 +391,10 @@ class RecordStoreMixin:
         """
         if not paths:
             return {}
-        rows = [dict(r) for r in await self._run(
+        rows = [dict(r) for r in await _run_hinted(
+            self._run,
             "MATCH (n:FileChange)-[:MOTIVATED_BY]->(d:Decision) "
+            "USING INDEX n:FileChange(project, path) "
             "WHERE n.project = $project AND n.path IN $paths AND d.project = $project "
             "WITH n, d ORDER BY n.ts DESC, n.change_id DESC "
             "WITH n.path AS path, collect({n: n, d: d})[0..$per_path] AS hits "
@@ -342,6 +428,74 @@ class RecordStoreMixin:
                 "commit_subject": row.get("commit_subject"),
             })
         return out
+
+    async def get_open_questions_for_write(
+        self, project: str, paths: list[str], rule_ids: list[str], exclude_ids: list[str],
+        limit: int = 3,
+    ) -> list[dict]:
+        """Open questions of `project` that bear on a write: ABOUT a Rule in `rule_ids`, or ABOUT
+        a Decision behind any MOTIVATED_BY-linked FileChange of `paths`. One statement seeking
+        openquestion_project_status; `exclude_ids` are dropped inside it so the LIMIT counts
+        only unseen questions. Newest opened first. Empty paths return [] unread."""
+        if not paths:
+            return []
+        return [dict(r) for r in await self._run(
+            "MATCH (q:OpenQuestion {project: $project, status: 'open'}) "
+            "WHERE NOT q.question_id IN $exclude_ids "
+            "MATCH (q)-[:ABOUT]->(t) "
+            "WHERE (t:Rule AND t.rule_id IN $rule_ids) "
+            "OR (t:Decision AND t.project = $project AND EXISTS { "
+            "MATCH (n:FileChange)-[:MOTIVATED_BY]->(t) "
+            "WHERE n.project = $project AND n.path IN $paths }) "
+            "WITH q, collect(DISTINCT coalesce(t.rule_id, t.decision_id)) AS about "
+            "RETURN q.question_id AS question_id, q.question AS question, "
+            "q.who_can_answer AS who_can_answer, q.settled_by AS settled_by, "
+            "q.opened_at AS opened_at, about "
+            "ORDER BY opened_at DESC, question_id LIMIT $limit",
+            project=project, paths=paths, rule_ids=rule_ids, exclude_ids=exclude_ids, limit=limit,
+        )]
+
+    async def get_cochanged_paths(
+        self, project: str, paths: list[str], *, max_files: int, recent_commits: int,
+        min_support: int, min_confidence: float, limit: int,
+    ) -> dict:
+        """The paths that usually change with `paths`, in one statement.
+
+        Seeks the file's FileChanges (filechange_project_path), keeps its `recent_commits` newest
+        commits, counts each commit's distinct paths at query time (filechange_project_commit_hash;
+        no stored count) and drops commits over `max_files`. base is the surviving commits; a
+        path's support is how many of them it is in. Returns {"path": the matched path, "base",
+        "hits": [{path, support}]} ordered by support then path, at most `limit` hits, keeping
+        support >= min_support and support / base >= min_confidence; {} when nothing qualifies.
+        """
+        if not paths:
+            return {}
+        record = await _run_hinted(
+            self._run_single,
+            "MATCH (n:FileChange) USING INDEX n:FileChange(project, path) "
+            "WHERE n.project = $project AND n.path IN $paths AND n.commit_hash IS NOT NULL "
+            "WITH n.commit_hash AS commit_hash, max(n.ts) AS ts, collect(DISTINCT n.path) AS matched "
+            "ORDER BY ts DESC, commit_hash LIMIT $recent_commits "
+            "CALL { WITH commit_hash "
+            "MATCH (f:FileChange) USING INDEX f:FileChange(project, commit_hash) "
+            "WHERE f.project = $project AND f.commit_hash = commit_hash "
+            "RETURN count(DISTINCT f.path) AS files, collect(DISTINCT f.path) AS commit_paths } "
+            "WITH matched, commit_paths WHERE files <= $max_files "
+            "WITH collect(matched) AS matched_lists, collect(commit_paths) AS kept "
+            "WITH matched_lists, kept, size(kept) AS base "
+            "CALL { WITH kept, base "
+            "UNWIND kept AS commit_paths "
+            "UNWIND commit_paths AS other "
+            "WITH base, other WHERE NOT other IN $paths "
+            "WITH base, other, count(*) AS support "
+            "WHERE support >= $min_support AND toFloat(support) / base >= $min_confidence "
+            "WITH other, support ORDER BY support DESC, other "
+            "RETURN collect({path: other, support: support})[0..$limit] AS hits } "
+            "RETURN head(head(matched_lists)) AS path, base, hits",
+            project=project, paths=paths, max_files=max_files, recent_commits=recent_commits,
+            min_support=min_support, min_confidence=min_confidence, limit=limit,
+        )
+        return dict(record) if record else {}
 
     async def get_recent_decisions(
         self, project: str, limit: int = 20

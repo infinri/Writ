@@ -30,6 +30,11 @@ VALID_AUTHORITIES = ("human", "ai-provisional", "ai-promoted")
 LAYER_VALUES = ("observed", "inferred", "unknown")
 BASIS_VALUES = ("code", "document", "ticket", "testimony")
 TRUST_EVENT_KINDS = ("approval", "dispute", "verify")
+
+# Program item 7a (open questions): ':'-free and disjoint from RULE_ID_PATTERN, so a
+# qualified approval binding (answer:<id>, close:<id>) never equals a bare id.
+QUESTION_ID_PATTERN = re.compile(r"^OQ-[0-9a-f]{10}$")
+OPEN_QUESTION_STATUSES = ("open", "answered", "closed")
 TRUST_GRAPH_ONLY_PROPS: frozenset[str] = frozenset(
     {"approved_at", "approval_via", "last_verified", "disputed", "superseded"})
 
@@ -349,6 +354,18 @@ def _validate_verify_interval_days_value(cls, v: int) -> int:
 def _validate_trust_event_kind_value(cls, v: str) -> str:
     if v not in TRUST_EVENT_KINDS:
         raise ValueError(f"kind '{v}' must be one of: {', '.join(TRUST_EVENT_KINDS)}")
+    return v
+
+
+def _validate_question_id_value(cls, v: str) -> str:
+    if not QUESTION_ID_PATTERN.match(v):
+        raise ValueError(f"question_id '{v}' must match {QUESTION_ID_PATTERN.pattern}")
+    return v
+
+
+def _validate_open_question_status_value(cls, v: str) -> str:
+    if v not in OPEN_QUESTION_STATUSES:
+        raise ValueError(f"status '{v}' must be one of: {', '.join(OPEN_QUESTION_STATUSES)}")
     return v
 
 
@@ -824,6 +841,33 @@ class TrustEvent(BaseModel):
     source_origin: str = "graph-authored"
 
     _validate_kind = field_validator("kind")(_validate_trust_event_kind_value)
+
+
+class OpenQuestion(BaseModel):
+    """Program item 7a: an unknown an agent recorded, linked by ABOUT to the rules and
+    decisions that depend on it. Only a user approval answers or closes it; the
+    resolver's identity (resolved_os_login, resolved_git_name) never ships in the dump."""
+
+    question_id: str
+    project: str
+    question: str = Field(max_length=1000)
+    who_can_answer: str = ""
+    settled_by: str = ""
+    status: str = "open"
+    opened_at: str
+    opened_session_id: str = ""
+    answer: str = ""
+    resolved_at: str = ""
+    resolved_via: str = ""
+    resolved_session_id: str = ""
+    resolved_os_login: str = ""
+    resolved_git_name: str = ""
+    provenance: str = "record"
+    source_origin: str = "graph-authored"
+
+    _validate_question_id = field_validator("question_id")(_validate_question_id_value)
+    _validate_question = field_validator("question")(_validate_non_empty_text_value)
+    _validate_status = field_validator("status")(_validate_open_question_status_value)
 
 
 # Program item 5 (docs/adr/ADR-document-retrieval.md): a project's ingested markdown. Record

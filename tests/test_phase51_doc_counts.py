@@ -7,7 +7,7 @@ code is correct, so a test suite failure must never hinge on doc content.
 
 Four source-derived counts:
   node types  -- len(NODE_ID_FIELDS)  == 13
-  edge types  -- len(ALLOWED_EDGE_TYPES) == 24
+  edge types  -- len(ALLOWED_EDGE_TYPES) == 25
   modes       -- len(MODE_CONFIG)     == 5
   hooks       -- json.load hooks/hooks.json, count "command" leaves == 45
   endpoints   -- regex @app/@router route decorators across writ/server/**.py == 46
@@ -88,9 +88,10 @@ class TestDocCounts:
 
     def test_edge_types_source_count(self) -> None:
         # APPLIES_TO and JUSTIFIED_BY were retired (19 -> 17); later features
-        # added edge types, so the current source-of-truth count is 24.
-        assert SOURCE_EDGE_TYPE_COUNT == 24, (
-            f"ALLOWED_EDGE_TYPES has {SOURCE_EDGE_TYPE_COUNT} entries; expected 24. "
+        # added edge types, so the current source-of-truth count is 25
+        # (program item 7a added ABOUT).
+        assert SOURCE_EDGE_TYPE_COUNT == 25, (
+            f"ALLOWED_EDGE_TYPES has {SOURCE_EDGE_TYPE_COUNT} entries; expected 25. "
             "If this changed, update writ/graph/db/_common.py ALLOWED_EDGE_TYPES."
         )
 

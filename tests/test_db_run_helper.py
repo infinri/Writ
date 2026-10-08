@@ -1444,3 +1444,244 @@ class TestClearProject:
         conn, _calls = _make_conn(_FakeResult(single=None))
         result = asyncio.run(conn.clear_project("writ"))
         assert result == 0
+
+
+class TestGetOpenQuestionsForWrite:
+    """Program item 7a: the one batched OpenQuestion read behind the pre-write question block.
+
+    Fake driver: pins the statement's shape (seek by project and status, the exclude list inside
+    the query, both ABOUT target arms, the project-scoped FileChange traversal, ordering and
+    LIMIT), the params, the projection and that empty paths never reach the driver. What the
+    statement RETURNS on a real graph (scoping, status, exclude, limit, reachability, the index
+    seek) is proven in tests/test_open_questions_graph.py.
+    """
+
+    @staticmethod
+    def _row(**overrides) -> "_FakeRecord":
+        base = {
+            "question_id": "OQ-0123456789", "question": "Does the cache expire",
+            "who_can_answer": "the owner", "settled_by": "a load test",
+            "opened_at": "2026-10-07T00:00:00+00:00", "about": ["RULE-X-001", "D-ab12"],
+        }
+        base.update(overrides)
+        return _FakeRecord(base)
+
+    def test_sends_one_query_with_the_five_named_params(self) -> None:
+        conn, calls = _make_conn(_FakeResult(rows=[]))
+        asyncio.run(conn.get_open_questions_for_write(
+            "writ", ["foo.py", "src/foo.py"], ["RULE-X-001"], ["OQ-aaaaaaaaaa"], limit=3))
+        assert len(calls) == 1
+        assert calls[0]["params"] == {
+            "project": "writ", "paths": ["foo.py", "src/foo.py"], "rule_ids": ["RULE-X-001"],
+            "exclude_ids": ["OQ-aaaaaaaaaa"], "limit": 3,
+        }
+
+    def test_query_text_pins_the_seek_filters_arms_order_and_limit(self) -> None:
+        conn, calls = _make_conn(_FakeResult(rows=[]))
+        asyncio.run(conn.get_open_questions_for_write("writ", ["foo.py"], [], [], limit=3))
+        query = " ".join(calls[0]["query"].split())
+        assert "(q:OpenQuestion {project: $project, status: 'open'})" in query
+        assert "NOT q.question_id IN $exclude_ids" in query
+        assert "(q)-[:ABOUT]->(t)" in query
+        assert "t:Rule AND t.rule_id IN $rule_ids" in query
+        assert "t:Decision AND t.project = $project" in query
+        assert "(n:FileChange)-[:MOTIVATED_BY]->(t)" in query
+        assert "n.project = $project AND n.path IN $paths" in query
+        assert "collect(DISTINCT coalesce(t.rule_id, t.decision_id)) AS about" in query
+        assert "ORDER BY opened_at DESC, question_id LIMIT $limit" in query
+        for column in ("question_id", "question", "who_can_answer", "settled_by", "opened_at", "about"):
+            assert f"AS {column}" in query, f"projection lost {column}"
+
+    def test_returns_the_rows_as_plain_dicts_in_query_order(self) -> None:
+        rows = [self._row(), self._row(question_id="OQ-abcdef0123", about=["RULE-X-001"])]
+        conn, _calls = _make_conn(_FakeResult(rows=rows))
+        result = asyncio.run(conn.get_open_questions_for_write("writ", ["foo.py"], ["RULE-X-001"], [], limit=3))
+        assert [r["question_id"] for r in result] == ["OQ-0123456789", "OQ-abcdef0123"]
+        assert result[0] == {
+            "question_id": "OQ-0123456789", "question": "Does the cache expire",
+            "who_can_answer": "the owner", "settled_by": "a load test",
+            "opened_at": "2026-10-07T00:00:00+00:00", "about": ["RULE-X-001", "D-ab12"],
+        }
+
+    def test_no_rows_returns_an_empty_list(self) -> None:
+        conn, _calls = _make_conn(_FakeResult(rows=[]))
+        assert asyncio.run(conn.get_open_questions_for_write("writ", ["foo.py"], [], [], limit=3)) == []
+
+    def test_empty_paths_returns_an_empty_list_without_touching_the_driver(self) -> None:
+        conn, calls = _make_conn()
+        result = asyncio.run(conn.get_open_questions_for_write("writ", [], ["RULE-X-001"], [], limit=3))
+        assert result == []
+        assert calls == []
+
+
+class TestOpenQuestionStoreWritesAndReads:
+    """Program item 7a: the creator, the conditional resolve and the target read, on the fake
+    driver (parameters and statement shape; behavior is proven on the isolated graph)."""
+
+    def test_resolve_open_question_sets_only_while_the_status_is_open(self) -> None:
+        conn, calls = _make_conn(_FakeResult(rows=[_FakeRecord({"question_id": "OQ-0123456789"})]))
+        props = {"status": "answered", "answer": "yes"}
+        assert asyncio.run(conn.resolve_open_question("OQ-0123456789", props)) is True
+        assert len(calls) == 1
+        query = " ".join(calls[0]["query"].split())
+        assert "MATCH (q:OpenQuestion {question_id: $id})" in query
+        assert "WHERE q.status = 'open'" in query
+        assert "SET q += $props" in query
+        assert calls[0]["params"] == {"id": "OQ-0123456789", "props": props}
+
+    def test_resolve_open_question_returns_false_when_nothing_matched(self) -> None:
+        conn, _calls = _make_conn(_FakeResult(rows=[], single=None))
+        assert asyncio.run(conn.resolve_open_question("OQ-0123456789", {"status": "closed"})) is False
+
+    def test_get_question_targets_with_empty_inputs_never_touches_the_driver(self) -> None:
+        conn, calls = _make_conn()
+        found = asyncio.run(conn.get_question_targets("writ", [], []))
+        assert calls == []
+        assert all(not v for v in found.values())
+
+
+class TestGetCochangedPaths:
+    """Program item 7d: the one batched co-change read behind the pre-write co-change block.
+
+    Fake driver: pins the statement's shape (the seek on the written file's FileChanges, the
+    recent-commit bound, the query-time per-commit file count over (project, commit_hash) with
+    the size cap, support and confidence filters, ordering, LIMIT), the parameters, the
+    projection and that empty paths never reach the driver. What the statement RETURNS on a real
+    graph (thresholds, cap, window, scoping, EXPLAIN seeks) is proven in
+    tests/test_cochange_hints_graph.py.
+    """
+
+    KW = dict(max_files=20, recent_commits=200, min_support=2, min_confidence=0.4, limit=20)
+
+    @staticmethod
+    def _result() -> "_FakeRecord":
+        return _FakeRecord({"path": "src/a.py", "base": 4,
+                            "hits": [{"path": "src/b.py", "support": 3}]})
+
+    def test_sends_one_query_with_the_named_params(self) -> None:
+        conn, calls = _make_conn(_FakeResult(rows=[self._result()]))
+        asyncio.run(conn.get_cochanged_paths("writ", ["src/a.py", "a.py"], **self.KW))
+        assert len(calls) == 1
+        params = calls[0]["params"]
+        assert params["project"] == "writ"
+        assert params["paths"] == ["src/a.py", "a.py"]
+        assert params["max_files"] == 20
+        assert params["recent_commits"] == 200
+        assert params["min_support"] == 2
+        assert params["min_confidence"] == 0.4
+        assert params["limit"] == 20 or params.get("scan_limit") == 20
+
+    def test_query_text_pins_the_seeks_the_cap_the_thresholds_and_the_order(self) -> None:
+        conn, calls = _make_conn(_FakeResult(rows=[]))
+        asyncio.run(conn.get_cochanged_paths("writ", ["src/a.py"], **self.KW))
+        query = " ".join(calls[0]["query"].split())
+        assert "FileChange" in query
+        assert "path IN $paths" in query
+        assert "commit_hash" in query
+        assert "$recent_commits" in query
+        assert "$max_files" in query
+        assert "COUNT" in query.upper()
+        assert "DISTINCT" in query.upper()
+        assert "$min_support" in query and "$min_confidence" in query
+        assert "ORDER BY support DESC" in query
+        assert "LIMIT $" in query
+        assert "n.project = $project" in query or "project: $project" in query
+        for column in ("path", "base", "hits"):
+            assert f"AS {column}" in query, f"projection lost {column}"
+
+    def test_the_commit_file_count_is_computed_in_the_statement_and_never_read_from_a_property(self) -> None:
+        conn, calls = _make_conn(_FakeResult(rows=[]))
+        asyncio.run(conn.get_cochanged_paths("writ", ["src/a.py"], **self.KW))
+        query = " ".join(calls[0]["query"].split())
+        import re
+
+        assert not re.search(r"\.(file_count|files_count|size)\b", query)
+
+    def test_returns_the_row_as_a_plain_dict(self) -> None:
+        conn, _calls = _make_conn(_FakeResult(rows=[self._result()]))
+        result = asyncio.run(conn.get_cochanged_paths("writ", ["src/a.py"], **self.KW))
+        assert result == {"path": "src/a.py", "base": 4, "hits": [{"path": "src/b.py", "support": 3}]}
+
+    def test_no_row_returns_no_hits(self) -> None:
+        conn, _calls = _make_conn(_FakeResult(rows=[], single=None))
+        result = asyncio.run(conn.get_cochanged_paths("writ", ["src/a.py"], **self.KW))
+        assert not (result or {}).get("hits")
+
+    def test_empty_paths_return_nothing_without_touching_the_driver(self) -> None:
+        conn, calls = _make_conn()
+        result = asyncio.run(conn.get_cochanged_paths("writ", [], **self.KW))
+        assert not (result or {}).get("hits")
+        assert calls == []
+
+
+class TestIndexHintFallback:
+    """The `USING INDEX` hints on get_decisions_for_paths and get_cochanged_paths. A server with
+    dbms.cypher.hints_error=true raises Neo.ClientError.Schema.IndexNotFound when the hinted
+    index is absent (the daemon never runs apply_constraints at startup), so each read reruns
+    once without its hints on exactly that error and lets every other error propagate.
+    """
+
+    KW = dict(max_files=20, recent_commits=200, min_support=2, min_confidence=0.4, limit=20)
+    MISSING = "Neo.ClientError.Schema.IndexNotFound"
+
+    @staticmethod
+    def _client_error(code: str):
+        from neo4j.exceptions import Neo4jError
+
+        return Neo4jError._hydrate_neo4j(code=code, message="hinted index missing")
+
+    def _failing_once(self, conn, attr: str, error: BaseException) -> list[str]:
+        """Make conn.<attr> raise `error` on its first call, then run normally."""
+        real = getattr(conn, attr)
+        seen: list[str] = []
+
+        async def wrapper(query, **params):
+            seen.append(query)
+            if len(seen) == 1:
+                raise error
+            return await real(query, **params)
+
+        setattr(conn, attr, wrapper)
+        return seen
+
+    def test_the_cochange_read_seeks_the_written_file_through_a_path_index_hint(self) -> None:
+        conn, calls = _make_conn(_FakeResult(rows=[]))
+        asyncio.run(conn.get_cochanged_paths("writ", ["src/a.py"], **self.KW))
+        query = " ".join(calls[0]["query"].split())
+        assert query.startswith("MATCH (n:FileChange) USING INDEX n:FileChange(project, path) ")
+        assert "USING INDEX f:FileChange(project, commit_hash)" in query
+
+    def test_a_missing_hinted_index_reruns_the_cochange_read_without_hints(self) -> None:
+        row = _FakeRecord({"path": "src/a.py", "base": 2, "hits": [{"path": "src/b.py", "support": 2}]})
+        conn, calls = _make_conn(_FakeResult(rows=[row]))
+        seen = self._failing_once(conn, "_run_single", self._client_error(self.MISSING))
+        result = asyncio.run(conn.get_cochanged_paths("writ", ["src/a.py"], **self.KW))
+        assert result == {"path": "src/a.py", "base": 2, "hits": [{"path": "src/b.py", "support": 2}]}
+        assert len(seen) == 2 and "USING INDEX" in seen[0]
+        assert "USING INDEX" not in seen[1]
+        assert seen[1] == calls[0]["query"]
+        assert " ".join(seen[1].split()) == " ".join(
+            seen[0].replace("USING INDEX n:FileChange(project, path) ", "")
+                   .replace("USING INDEX f:FileChange(project, commit_hash) ", "").split())
+
+    def test_a_missing_hinted_index_reruns_the_decision_read_without_hints(self) -> None:
+        row = _FakeRecord({"path": "foo.py", "decision_id": "D-1", "governing_rule_ids": []})
+        conn, _calls = _make_conn(_FakeResult(rows=[row]))
+        seen = self._failing_once(conn, "_run", self._client_error(self.MISSING))
+        result = asyncio.run(conn.get_decisions_for_paths("writ", ["foo.py"]))
+        assert [h["decision_id"] for h in result["foo.py"]] == ["D-1"]
+        assert len(seen) == 2 and "USING INDEX" in seen[0] and "USING INDEX" not in seen[1]
+
+    @pytest.mark.parametrize("method,attr", [("cochange", "_run_single"), ("decisions", "_run")])
+    def test_any_other_error_propagates_without_a_rerun(self, method, attr) -> None:
+        from neo4j.exceptions import ServiceUnavailable
+
+        for error in (self._client_error("Neo.ClientError.Statement.SyntaxError"),
+                      ServiceUnavailable("down")):
+            conn, calls = _make_conn()
+            seen = self._failing_once(conn, attr, error)
+            read = (conn.get_cochanged_paths("writ", ["src/a.py"], **self.KW) if method == "cochange"
+                    else conn.get_decisions_for_paths("writ", ["foo.py"]))
+            with pytest.raises(type(error)):
+                asyncio.run(read)
+            assert len(seen) == 1 and calls == []

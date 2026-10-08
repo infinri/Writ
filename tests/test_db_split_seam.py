@@ -74,6 +74,11 @@ EXPECTED_METHODS = [
     "wire_realizes",
     # Program item 5 (workstream D): the three document record-store methods.
     "delete_documents", "get_document_hashes", "replace_document",
+    # Program item 7a/7d: the seven open-question and co-change record-store methods,
+    # and the one ABOUT edge wrapper on EdgeStoreMixin beside wire_motivated_by.
+    "create_open_question", "get_question_targets", "get_open_question",
+    "list_open_questions", "resolve_open_question", "get_open_questions_for_write",
+    "get_cochanged_paths", "wire_about",
 ]
 
 # (submodule, mixin class name) the facade composes Neo4jConnection from.

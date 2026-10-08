@@ -103,7 +103,8 @@ class GateIdentity(NamedTuple):
 
 def rule_action_binding(action: str, rule_id: str) -> str:
     """The line-5 value an approval for `action` on `rule_id` carries. RULE_ID_PATTERN
-    forbids ':', so a qualified value can never equal a real rule id."""
+    forbids ':', so a qualified value can never equal a real rule id. QUESTION_ID_PATTERN
+    forbids ':' too, so `answer:<id>` and `close:<id>` can never equal a bare question id."""
     return rule_id if action == "promote" else f"{action}:{rule_id}"
 
 

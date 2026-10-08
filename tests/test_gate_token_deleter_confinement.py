@@ -129,6 +129,9 @@ REAL_TREE_DIRECTORY_DELETERS = {
     # test_review_promote_authority's token helpers instead of deleting on their own.
     "test_trust_header_tags.py": "inherits:test_review_promote_authority",
     "test_trust_review.py": "inherits:test_review_promote_authority",
+    # Added 2026-10-08 with open questions (program item 7a): both reuse the same helpers.
+    "test_open_questions.py": "inherits:test_review_promote_authority",
+    "test_open_questions_graph.py": "inherits:test_review_promote_authority",
 }
 
 # The five real test-id shapes the discriminator must reject, per plan.md's

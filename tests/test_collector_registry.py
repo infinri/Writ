@@ -58,10 +58,19 @@ from writ.graph.db import _common
 
 REPO = Path(__file__).resolve().parent.parent
 
+
+def _open_question_data(**overrides) -> dict:
+    """Minimal well-formed OpenQuestion dict (program item 7a)."""
+    defaults = {
+        "question_id": "OQ-0123456789", "project": "test-oq", "question": "Is the cache safe?",
+        "status": "open", "opened_at": "2026-10-07T00:00:00+00:00",
+    }
+    return {**defaults, **overrides}
+
 ORIGINAL_RECORD_IDS = {
     "Memory": "name", "Decision": "decision_id", "FileChange": "change_id",
     "Commit": "commit_hash", "Project": "name", "FeedbackBatch": "batch_id",
-    "TrustEvent": "event_id",
+    "TrustEvent": "event_id", "OpenQuestion": "question_id",
 }
 DOCTRINE = frozenset({"Rule", "Skill", "Playbook", "Technique", "AntiPattern", "ForbiddenResponse"})
 NODE_TABLE = [
@@ -615,7 +624,7 @@ class TestRecordIdFields:
         assert _common._RECORD_EDGE_ENDPOINTS == {
             **schema.NODE_ID_FIELDS,
             "Decision": "decision_id", "FileChange": "change_id", "Commit": "commit_hash",
-            "Project": "name",
+            "Project": "name", "OpenQuestion": "question_id",
         }
 
     def test_the_edge_endpoint_allowlist_is_written_out(self):
@@ -627,7 +636,8 @@ class TestRecordIdFields:
         ]
         assert len(literals) == 1
         assert isinstance(literals[0].value, ast.Tuple)
-        assert [e.value for e in literals[0].value.elts] == ["Decision", "FileChange", "Commit", "Project"]
+        assert [e.value for e in literals[0].value.elts] == [
+            "Decision", "FileChange", "Commit", "Project", "OpenQuestion"]
 
     def test_the_unmodified_common_source_executes_cleanly(self):
         _exec_source_as(REPO / "writ" / "graph" / "db" / "_common.py", "writ.graph.db._probe_common_control")
@@ -655,6 +665,7 @@ class TestRecordCreatorsSendTheSameParameters:
         ("create_filechange", "FileChange", _filechange_data),
         ("create_commit", "Commit", _commit_data),
         ("create_trust_event", "TrustEvent", _event),
+        ("create_open_question", "OpenQuestion", _open_question_data),
     ]
 
     @pytest.mark.parametrize("method,label,data", CASES)
@@ -762,7 +773,7 @@ class TestDocumentAndChunkAreRecordLabels:
 
     def test_the_record_edge_endpoint_allowlist_does_not_widen(self):
         assert set(_common._RECORD_EDGE_ENDPOINTS) - set(schema.NODE_ID_FIELDS) == {
-            "Decision", "FileChange", "Commit", "Project"}
+            "Decision", "FileChange", "Commit", "Project", "OpenQuestion"}
 
     def test_the_models_stamp_records_and_default_their_origin(self):
         from writ.graph.schema import Chunk, Document

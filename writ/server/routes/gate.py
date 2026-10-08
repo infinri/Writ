@@ -48,6 +48,9 @@ _PROJECT_RESOLVE_TIMEOUT_S = 2.0
 # Upper bound on the write-gate's decision read: a wedged graph costs a write at most this
 # long, then the write proceeds without the decision context.
 _DECISION_CONTEXT_TIMEOUT_S = 1.0
+# Each pre-write block (decision, questions, co-change) gets this share of it, so a slow block
+# is cancelled inside the coroutine and the others still render before the backstop fires.
+_WRITE_BLOCK_TIMEOUT_FRACTION = 0.9
 
 
 @router.post("/session/{session_id}/advance-phase")
@@ -787,32 +790,41 @@ async def pre_write_check(request: PreWriteCheckRequest) -> dict[str, Any]:
                     error=str(exc),
                 )
 
-        # 3. The decision behind the file's last change, once per (path, decision) per epoch.
+        # 3. The decision behind the file's last change, the open questions that bear on this
+        #    write and the files it usually changes with, each once per epoch (program items
+        #    7a and 7d): one coroutine, each block under its own timeout and failing alone.
         from writ.session.injection_state import injection_epoch, shown_ids
-        from writ.session.recall import path_candidates, write_decision_context
+        from writ.session.recall import path_candidates
+        from writ.session.write_context import WRITE_BLOCKS, write_context
         decision_context = ""
         candidates = path_candidates(file_path, cache.get("project_root") or "") if file_path else []
         if candidates and server._db is not None:
             fut = None
+            failed: dict[str, BaseException] = {}
             try:
                 project = project_once()
                 if project:
-                    fut = asyncio.run_coroutine_threadsafe(write_decision_context(
-                        server._db, project, candidates, shown_ids(cache, "pre_write_decision"),
+                    fut = asyncio.run_coroutine_threadsafe(write_context(
+                        server._db, project, candidates, rag_meta["rule_ids"],
+                        {s: shown_ids(cache, s) for s in WRITE_BLOCKS},
+                        timeout_s=_DECISION_CONTEXT_TIMEOUT_S * _WRITE_BLOCK_TIMEOUT_FRACTION,
                     ), loop)
-                    decision_context, key = fut.result(timeout=_DECISION_CONTEXT_TIMEOUT_S)
-                    if key:
-                        server.writ_session.cmd_update(session_id, [
-                            "--mark-shown", "pre_write_decision", injection_epoch(cache),
-                            json.dumps([key]),
-                        ])
+                    ctx = fut.result(timeout=_DECISION_CONTEXT_TIMEOUT_S)
+                    failed = ctx.errors
+                    decision_context = ctx.text
+                    marks = [arg for section, ids in ctx.marks.items() for arg in (
+                        "--mark-shown", section, injection_epoch(cache), json.dumps(ids))]
+                    if marks:
+                        server.writ_session.cmd_update(session_id, marks)
             except Exception as exc:
                 if fut is not None:
                     fut.cancel()
+                failed = {section: exc for section in WRITE_BLOCKS}
+            for section, exc in failed.items():
                 server.log_friction_event(
                     session_id=session_id,
                     mode=mode,
-                    event="pre_write_decision_failed",
+                    event=WRITE_BLOCKS[section],
                     error=str(exc),
                 )
 

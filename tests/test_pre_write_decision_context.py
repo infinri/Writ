@@ -108,6 +108,17 @@ class _FakeDecisionDB:
             raise self.error
         return {p: list(self.rows[p]) for p in paths if p in self.rows}
 
+    # Program item 7a/7d: the combined pre-write coroutine also reads open questions and
+    # co-change; both return nothing by default so every assertion in this module about the
+    # decision card (one friction row, card shape, dedupe, single resolution) holds unchanged.
+    async def get_open_questions_for_write(self, project: str, paths: list[str],
+                                           rule_ids: list[str], exclude_ids: list[str],
+                                           limit: int = 3) -> list[dict]:
+        return []
+
+    async def get_cochanged_paths(self, project: str, paths: list[str], **kwargs: Any) -> dict:
+        return {}
+
 
 @pytest.fixture()
 def cache_dir(tmp_path, monkeypatch) -> Path:

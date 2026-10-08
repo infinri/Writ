@@ -175,8 +175,11 @@ class TestInjectionState:
         st = _imp("writ.session.injection_state")
         # "documents" joins the tuple (program item 5, workstream D): the documents
         # section records its shown chunk ids per epoch through the same apply_mark_shown.
+        # Program item 7a/7d: the open-question and co-change blocks append two sections,
+        # so their shown ids are recorded per epoch through the same apply_mark_shown.
         assert tuple(st.COLLAPSIBLE_SECTIONS) == (
             "always_on", "floor", "recall", "pre_write_decision", "documents",
+            "pre_write_questions", "pre_write_cochange",
         )
 
     def test_apply_mark_shown_records_recall_and_pre_write_decision_ids(self):

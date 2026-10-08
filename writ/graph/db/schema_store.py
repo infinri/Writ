@@ -180,6 +180,12 @@ class SchemaStoreMixin:
             "FOR (n:Chunk) REQUIRE (n.chunk_id, n.project) IS UNIQUE",
             "CREATE INDEX document_project IF NOT EXISTS "
             "FOR (n:Document) ON (n.project)",
+            # OpenQuestion (program item 7a): the _create_record MERGE race guard, and the
+            # (project, status) index the pre-write question read seeks.
+            "CREATE CONSTRAINT openquestion_question_id_project_unique IF NOT EXISTS "
+            "FOR (n:OpenQuestion) REQUIRE (n.question_id, n.project) IS UNIQUE",
+            "CREATE INDEX openquestion_project_status IF NOT EXISTS "
+            "FOR (n:OpenQuestion) ON (n.project, n.status)",
         ])
         blocked: list[str] = []
         async with self._driver.session(database=self._database) as session:

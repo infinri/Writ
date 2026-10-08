@@ -43,15 +43,16 @@ class TestEdgeTypeRetirement:
         )
 
     def test_edge_count_matches_allowed_set(self) -> None:
-        """ALLOWED_EDGE_TYPES must contain exactly 24 entries: the 17 that remained
+        """ALLOWED_EDGE_TYPES must contain exactly 25 entries: the 17 that remained
         after APPLIES_TO and JUSTIFIED_BY were retired, plus the 7 record-memory edge
-        types the decision-memory feature added later. Drift tripwire pinned to the
+        types the decision-memory feature added later, plus ABOUT (open questions,
+        program item 7a, 2026-10-08). Drift tripwire pinned to the
         current reviewed baseline.
         """
         from writ.graph.db import ALLOWED_EDGE_TYPES
 
-        assert len(ALLOWED_EDGE_TYPES) == 24, (
-            f"ALLOWED_EDGE_TYPES has {len(ALLOWED_EDGE_TYPES)} entries; expected 24 "
-            "(the current reviewed baseline: 17 post-retirement + 7 record-memory edges). "
+        assert len(ALLOWED_EDGE_TYPES) == 25, (
+            f"ALLOWED_EDGE_TYPES has {len(ALLOWED_EDGE_TYPES)} entries; expected 25 "
+            "(the current reviewed baseline: 17 post-retirement + 7 record-memory edges + ABOUT). "
             f"Current set: {sorted(ALLOWED_EDGE_TYPES)!r}"
         )

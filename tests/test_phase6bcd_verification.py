@@ -99,8 +99,9 @@ class TestPhase6bEdgeContract:
         # corpus (TEACHES, DISPATCHES, PRESSURE_TESTS). The count is deliberately
         # exact so ADDING an edge type stays a conscious act that updates this
         # number; it had drifted to a permanent RED instead.
-        assert len(ALLOWED_EDGE_TYPES) == 24, (
-            f"ALLOWED_EDGE_TYPES expected 24 entries; got "
+        # 25 since ABOUT (open questions, program item 7a, 2026-10-08).
+        assert len(ALLOWED_EDGE_TYPES) == 25, (
+            f"ALLOWED_EDGE_TYPES expected 25 entries; got "
             f"{len(ALLOWED_EDGE_TYPES)}: {sorted(ALLOWED_EDGE_TYPES)}. Adding or "
             f"removing an edge type must update this count deliberately."
         )

@@ -1486,7 +1486,8 @@ def _resolve_review_session() -> str | None:
 
 
 def _record_pending_review_rule(
-    session_id: str | None, rule_id: str, existing: dict, action: str = "promote"
+    session_id: str | None, rule_id: str, existing: dict, action: str = "promote",
+    kind: str = "rule",
 ) -> None:
     """Record `rule_id` as the rule surfaced in this session, and clear any candidate.
 
@@ -1502,7 +1503,8 @@ def _record_pending_review_rule(
     For promotion only an ai-provisional rule is recorded. A rule that could not legally be
     promoted must leave no binding behind for a later approval to pick up, which mirrors the
     promotion-review route refusing to record a candidate that is not graduation_pending.
-    Dispute and verify are legal at any authority, so they always record.
+    Dispute and verify are legal at any authority, so they always record. A question
+    (kind "question", program item 7a) records only while it is open.
 
     What is recorded is rule_action_binding(action, rule_id): the bare id for promote,
     `dispute:X` / `verify:X` otherwise, so an approval for one action on a rule is never
@@ -1511,6 +1513,8 @@ def _record_pending_review_rule(
     if not session_id:
         return
     if action == "promote" and existing.get("authority") != "ai-provisional":
+        return
+    if kind == "question" and existing.get("status") != "open":
         return
     from writ.session.cache import mutate_cache
     from writ.session.gate_token import rule_action_binding
@@ -1521,7 +1525,7 @@ def _record_pending_review_rule(
 
 
 def _refuse_promotion(
-    session_id: str, rule_id: str, event: str, message: str, **fields
+    session_id: str, rule_id: str, event: str, message: str, *, kind: str = "rule", **fields
 ) -> typer.Exit:
     """Write one audit row naming the refusal CLASS, print the way out, exit non-zero.
 
@@ -1538,7 +1542,8 @@ def _refuse_promotion(
     from writ.analysis.friction import log_friction_event
 
     log_friction_event(
-        session_id=session_id, mode=None, event=event, rule_id=rule_id, **fields
+        session_id=session_id, mode=None, event=event,
+        **{_ACTION_TARGETS[kind]["id_field"]: rule_id}, **fields
     )
     typer.echo(message, err=True)
     return typer.Exit(code=1)
@@ -1559,10 +1564,42 @@ _RULE_ACTION_TEXT = {
         "doing": "verifying a rule", "past": "verified",
         "change": "verify a rule", "state": "the rule", "noun": "verification",
     },
+    "answer": {
+        "doing": "answering an open question", "past": "answered",
+        "change": "answer a question", "state": "the question", "noun": "answer",
+    },
+    "close": {
+        "doing": "closing an open question", "past": "closed",
+        "change": "close a question", "state": "the question", "noun": "closing",
+    },
+}
+
+# What the shared guard varies by the kind of target an approval acts on (program item 7a):
+# the word in its messages, the audit field naming the target, the event_target prefix,
+# and the commands that surface the target and re-run the action.
+_ACTION_TARGETS = {
+    "rule": {
+        "noun": "rule", "id_field": "rule_id", "event_prefix": "review_",
+        "surface": "writ review {id}{flag} --session-id",
+        "rerun": "writ review {id} --{action} --session-id",
+    },
+    "question": {
+        "noun": "question", "id_field": "question_id", "event_prefix": "question_",
+        "surface": "writ question {action} {id} --session-id",
+        "rerun": "writ question {action} {id} --session-id",
+    },
 }
 
 
-def _review_session_or_exit(rule_id: str, session_id: str | None, action: str) -> str:
+def _action_command(kind: str, form: str, action: str, target_id: str) -> str:
+    """The `surface` or `rerun` command for `action` on `target_id`."""
+    flag = "" if action == "promote" else f" --{action}"
+    return _ACTION_TARGETS[kind][form].format(id=target_id, action=action, flag=flag)
+
+
+def _review_session_or_exit(
+    rule_id: str, session_id: str | None, action: str, kind: str = "rule"
+) -> str:
     """The session whose approval authorizes `action`, or exit 2 naming the flag.
 
     The existing CLI convention: nothing is guessed and no cache is scanned by mtime. NO
@@ -1575,7 +1612,7 @@ def _review_session_or_exit(rule_id: str, session_id: str | None, action: str) -
         typer.echo(
             f"Cannot {action} {rule_id}: which session's approval authorizes this is "
             "unknown, and Writ does not guess one.\n"
-            f"  Supply it explicitly:  writ review {rule_id} --{action} --session-id "
+            f"  Supply it explicitly:  {_action_command(kind, 'rerun', action, rule_id)} "
             "<session_id> --token <token>\n"
             "  or export an identity:  CLAUDE_SESSION_ID=<session_id>\n"
             "                          CLAUDE_JOB_DIR=<dir whose basename is the "
@@ -1587,11 +1624,34 @@ def _review_session_or_exit(rule_id: str, session_id: str | None, action: str) -
     return sid
 
 
+def _assert_action_legal(rule_id: str, existing: dict, action: str, kind: str) -> None:
+    """Exit 1 when `action` is not legal for the target as it stands: a promoted rule must
+    be ai-provisional, a question must be open. Reads nothing from the token."""
+    from writ import authoring
+
+    if kind == "question":
+        if existing.get("status") != "open":
+            typer.echo(f"Cannot {action}: {rule_id} is {existing.get('status')}")
+            raise typer.Exit(code=1)
+        return
+    if action == "promote":
+        try:
+            authoring.assert_ai_provisional(existing, rule_id, "promote")
+        except authoring.IllegalAuthorityTransitionError:
+            typer.echo(
+                f"Cannot promote: {rule_id} has authority "
+                f"'{existing.get('authority', 'human')}'"
+            )
+            raise typer.Exit(code=1)
+
+
 def _authorize_rule_action(
-    rule_id: str, existing: dict, session_id: str | None, token: str | None, *, action: str
+    rule_id: str, existing: dict, session_id: str | None, token: str | None, *, action: str,
+    kind: str = "rule",
 ) -> tuple[str, GateIdentity]:
-    """Decide whether this caller may take `action` (promote, dispute or verify) on
-    `rule_id`; return (session id, the approver identity the token holds).
+    """Decide whether this caller may take `action` (promote, dispute or verify on a rule;
+    answer or close on a question, kind "question") on `rule_id`; return (session id, the
+    approver identity the token holds).
 
     ACCESS BOUNDARY. WHO CAN CALL IT: any local process, since this is a CLI command on
     the operator's machine. WHO CAN SUCCEED is narrower: only a caller holding the gate
@@ -1628,7 +1688,6 @@ def _authorize_rule_action(
     binding refusal it does not deserve, and the identity recorded is the one in the bytes
     that were checked.
     """
-    from writ import authoring
     from writ.session.gate_token import (
         BINDING_RULE_MISMATCH,
         claim_gate_token,
@@ -1638,28 +1697,20 @@ def _authorize_rule_action(
     )
 
     text = _RULE_ACTION_TEXT[action]
+    noun = _ACTION_TARGETS[kind]["noun"]
+    event_target = f"{_ACTION_TARGETS[kind]['event_prefix']}{action}"
     target = rule_action_binding(action, rule_id)
-    surface = (
-        f"writ review {rule_id} --session-id" if action == "promote"
-        else f"writ review {rule_id} --{action} --session-id"
-    )
+    surface = _action_command(kind, "surface", action, rule_id)
 
     # 1. WHO IS ASKING.
-    sid = _review_session_or_exit(rule_id, session_id, action)
+    sid = _review_session_or_exit(rule_id, session_id, action, kind)
 
     # 2. LEGALITY BEFORE CREDENTIALS, so an illegal transition never reaches a token
     #    check and never consumes anything. assert_ai_provisional is the single-source
     #    legality check (DRY-DUP-002); the exact 'human'-fallback message is preserved.
-    #    Promote's alone: dispute and verify are legal at any authority.
-    if action == "promote":
-        try:
-            authoring.assert_ai_provisional(existing, rule_id, "promote")
-        except authoring.IllegalAuthorityTransitionError:
-            typer.echo(
-                f"Cannot promote: {rule_id} has authority "
-                f"'{existing.get('authority', 'human')}'"
-            )
-            raise typer.Exit(code=1)
+    #    Promote's alone among rule actions: dispute and verify are legal at any
+    #    authority. A question must be open.
+    _assert_action_legal(rule_id, existing, action, kind)
 
     # 3. THE SECRET. Failing here means the caller is not holding an approval at all, so
     #    nothing is consumed and nothing is written.
@@ -1672,11 +1723,11 @@ def _authorize_rule_action(
             "the approval token the hook writes on a genuine user approval, and the "
             f"agent cannot approve its own proposal. {text['state'].capitalize()} is "
             "unchanged.\n"
-            f"  1. Surface the rule:  {surface} {sid}\n"
+            f"  1. Surface the {noun}:  {surface} {sid}\n"
             "  2. THE USER replies exactly \"approved\" on their own turn.\n"
-            f"  3. Re-run:  writ review {rule_id} --{action} --session-id {sid} --token "
+            f"  3. Re-run:  {_action_command(kind, 'rerun', action, rule_id)} {sid} --token "
             "<token from /tmp/writ-gate-token-" + sid + ">",
-            event_target=f"review_{action}", had_token=bool(token),
+            kind=kind, event_target=event_target, had_token=bool(token),
             had_expected=bool(expected),
         )
 
@@ -1687,11 +1738,11 @@ def _authorize_rule_action(
             sid, rule_id, "gate_token_unbound",
             f"Refusing to {action} {rule_id}: this session's gate token records nothing "
             "about what it authorizes (it is the pre-binding format), so it cannot be "
-            f"checked against a rule {text['noun']}. The token was left on disk and "
-            f"{text['state']} is unchanged. Surface the rule with `{surface} "
+            f"checked against a {noun} {text['noun']}. The token was left on disk and "
+            f"{text['state']} is unchanged. Surface the {noun} with `{surface} "
             f"{sid}`, have THE USER reply \"approved\" to mint a bound token, then re-run "
             "with --token.",
-            event_target=f"review_{action}",
+            kind=kind, event_target=event_target,
         )
     if snap.gate:
         raise _refuse_promotion(
@@ -1699,10 +1750,10 @@ def _authorize_rule_action(
             f"Refusing to {action} {rule_id}: that approval is bound to the {snap.gate} "
             f"gate, so it cannot {text['change']}. The token was left on disk, "
             "because it is the user's genuine phase approval and spending it here would "
-            f"destroy it. Advance the {snap.gate} gate first, then surface the rule with "
+            f"destroy it. Advance the {snap.gate} gate first, then surface the {noun} with "
             f"`{surface} {sid}` and have THE USER approve the "
             f"{text['noun']} on its own turn, with no phase gate pending.",
-            event_target=f"review_{action}", bound_gate=snap.gate,
+            kind=kind, event_target=event_target, bound_gate=snap.gate,
         )
 
     # 5. THE RULE AND THE ACTION. "" and a different value are both refused, but they are
@@ -1720,7 +1771,7 @@ def _authorize_rule_action(
             )
         else:
             reason = (
-                f"That approval authorizes {bound_rule or 'no rule action'}, not {target}. "
+                f"That approval authorizes {bound_rule or f'no {noun} action'}, not {target}. "
                 f"Surface it with `{surface} <session_id>`, have the user reply "
                 "\"approved\", then re-run with --token."
             )
@@ -1728,7 +1779,7 @@ def _authorize_rule_action(
             sid, rule_id, BINDING_RULE_MISMATCH,
             f"Refusing to {action} {rule_id}: " + reason
             + f" The token was left on disk and {text['state']} is unchanged.",
-            event_target=f"review_{action}", bound_rule=bound_rule,
+            kind=kind, event_target=event_target, bound_rule=bound_rule,
         )
 
     identity = snap.identity
@@ -1748,18 +1799,23 @@ def _authorize_rule_action(
             "concurrent request claimed it). One approval authorizes exactly one action, "
             f"so {text['state']} is unchanged here. If the {text['noun']} did not happen, "
             f"have THE USER approve again after `{surface} {sid}`.",
+            kind=kind,
         )
     return sid, identity
 
 
-def _record_rule_action(session_id: str, rule_id: str, event: str, **fields) -> None:
-    """One audit row for a committed rule action, then clear the surfacing it was bound
-    to. The row never carries the approver's identity, which lives only on the TrustEvent."""
+def _record_rule_action(
+    session_id: str, rule_id: str, event: str, *, kind: str = "rule", **fields
+) -> None:
+    """One audit row for a committed rule or question action, then clear the surfacing it
+    was bound to. The row never carries the approver's identity, which lives only on the
+    TrustEvent or the OpenQuestion."""
     from writ.analysis.friction import log_friction_event
     from writ.session.cache import mutate_cache
 
     log_friction_event(
-        session_id=session_id, mode=None, event=event, rule_id=rule_id,
+        session_id=session_id, mode=None, event=event,
+        **{_ACTION_TARGETS[kind]["id_field"]: rule_id},
         confirmation_source="gate_token", **fields,
     )
     with mutate_cache(session_id) as cache:
@@ -3159,6 +3215,201 @@ def docs_ingest(
     code = asyncio.run(_run())
     if code:
         raise typer.Exit(code=code)
+
+
+# --- Open questions: question sub-app (program item 7a) -------------------------
+# An agent opens a question without a token; only the user's approval answers or closes
+# it, through the same guard `writ review` uses (docs/adr/ADR-open-questions-and-co-change.md).
+
+question_app = typer.Typer(
+    name="question",
+    help="Record open questions about rules and decisions; the user's approval settles them.",
+)
+app.add_typer(question_app, name="question")
+
+_QUESTION_MAX_TARGETS = 10
+
+
+def _echo_question(q: dict) -> None:
+    """One question as the human reviews it."""
+    typer.echo(f"Question: {q.get('question_id')}  [{q.get('status')}]  opened {q.get('opened_at', '')}")
+    typer.echo(f"  question: {q.get('question', '')}")
+    if q.get("who_can_answer"):
+        typer.echo(f"  who can answer: {q['who_can_answer']}")
+    if q.get("settled_by"):
+        typer.echo(f"  settled by: {q['settled_by']}")
+    typer.echo(f"  about: {', '.join(q.get('about') or [])}")
+    if q.get("answer"):
+        typer.echo(f"  answer: {q['answer']}")
+
+
+@question_app.command("open")
+def question_open(
+    text: str = typer.Option("", "--text", help="The question."),
+    who: str = typer.Option("", "--who", help="Who can answer it."),
+    settled_by: str = typer.Option("", "--settled-by", help="What would settle it."),
+    rule: list[str] = typer.Option([], "--rule", help="A rule id the question bears on (repeatable)."),
+    decision: list[str] = typer.Option(
+        [], "--decision", help="A decision id of this project the question bears on (repeatable).",
+    ),
+    repo: str = typer.Option(".", "--repo", help="The repo whose project the question belongs to."),
+) -> None:
+    """Open a question about one or more rules or decisions. Needs no approval."""
+    from writ import authoring
+    from writ.analysis.friction import log_friction_event
+
+    if not text.strip() or len(text) > 1000:
+        typer.echo("Cannot open a question: --text must be 1 to 1000 characters.", err=True)
+        raise typer.Exit(code=1)
+    targets = len(rule) + len(decision)
+    if not 1 <= targets <= _QUESTION_MAX_TARGETS:
+        typer.echo(
+            f"Cannot open a question: name 1 to {_QUESTION_MAX_TARGETS} targets with --rule or "
+            f"--decision (got {targets}).", err=True,
+        )
+        raise typer.Exit(code=1)
+    rule_ids, decision_ids = list(dict.fromkeys(rule)), list(dict.fromkeys(decision))
+    repo_root = os.path.abspath(repo)
+
+    async def _run() -> int:
+        async with _writ_db() as db:
+            project = await db.resolve_project_for_cwd(repo_root)
+            if not project:
+                typer.echo(f"[Writ question: {repo_root} is not registered as a project, so the "
+                           f"question has no project. Register it by running a Writ session in "
+                           f"it (or `writ hooks install`).]", err=True)
+                return 1
+            found = await db.get_question_targets(project, rule_ids, decision_ids)
+            missing = [r for r in rule_ids if r not in found["Rule"]] + [
+                d for d in decision_ids if d not in found["Decision"]]
+            if missing:
+                typer.echo(f"Cannot open a question: not found in project {project}: "
+                           f"{', '.join(missing)}", err=True)
+                return 1
+            await db.apply_constraints()
+            sid = _resolve_review_session() or ""
+            question_id = await authoring.open_question(
+                db, project=project, question=text, who_can_answer=who, settled_by=settled_by,
+                session_id=sid, rule_ids=rule_ids, decision_ids=decision_ids,
+            )
+        log_friction_event(
+            session_id=sid, mode=None, event="question_opened", question_id=question_id,
+            rule_ids=rule_ids, decision_ids=decision_ids,
+        )
+        typer.echo(f"Opened: {question_id}")
+        return 0
+
+    code = asyncio.run(_run())
+    if code:
+        raise typer.Exit(code=code)
+
+
+@question_app.command("list")
+def question_list(
+    repo: str = typer.Option(".", "--repo", help="The repo whose project's questions to list."),
+    include_resolved: bool = typer.Option(False, "--all", help="Include answered and closed questions."),
+) -> None:
+    """List the project's open questions, newest first."""
+    repo_root = os.path.abspath(repo)
+
+    async def _run() -> int:
+        async with _writ_db() as db:
+            project = await db.resolve_project_for_cwd(repo_root)
+            if not project:
+                typer.echo(f"[Writ question: {repo_root} is not registered as a project.]", err=True)
+                return 1
+            questions = await db.list_open_questions(project, include_resolved=include_resolved)
+        if not questions:
+            typer.echo(f"No questions in project {project}.")
+        for q in questions:
+            _echo_question(q)
+        return 0
+
+    code = asyncio.run(_run())
+    if code:
+        raise typer.Exit(code=code)
+
+
+def _settle_question(
+    action: str, question_id: str, text: str, session_id: str | None, token: str | None,
+) -> None:
+    """Answer or close: surface without --token, act with the user's approval token."""
+    from writ import authoring
+    from writ.graph.schema import QUESTION_ID_PATTERN
+
+    if not QUESTION_ID_PATTERN.match(question_id):
+        typer.echo(f"Not a question id: {question_id!r} (expected OQ- and 10 lowercase hex).", err=True)
+        raise typer.Exit(code=2)
+    past = _RULE_ACTION_TEXT[action]["past"]
+
+    async def _run() -> None:
+        async with _writ_db() as db:
+            existing = await db.get_open_question(question_id)
+            if existing is None:
+                typer.echo(f"Question not found: {question_id}")
+                raise typer.Exit(code=1)
+            if token is None:
+                sid = _review_session_or_exit(question_id, session_id, action, "question")
+                _assert_action_legal(question_id, existing, action, "question")
+                _echo_question(existing)
+                _record_pending_review_rule(sid, question_id, existing, action=action, kind="question")
+                typer.echo(
+                    f"\nSurfaced {question_id} for {_RULE_ACTION_TEXT[action]['noun']}.\n"
+                    "  1. THE USER replies exactly \"approved\" on their own turn.\n"
+                    f"  2. Re-run:  writ question {action} {question_id} --session-id {sid} "
+                    "--token <token from /tmp/writ-gate-token-" + sid + "> "
+                    + ("--text TEXT" if action == "answer" else "[--note TEXT]")
+                )
+                return
+            if action == "answer" and not text.strip():
+                typer.echo(f"Refusing to answer {question_id}: --text is required. Nothing was "
+                           "consumed.", err=True)
+                raise typer.Exit(code=1)
+            sid, identity = _authorize_rule_action(
+                question_id, existing, session_id, token, action=action, kind="question",
+            )
+            if not await authoring.resolve_question(
+                db, question_id, action=action, text=text, session_id=sid, identity=identity,
+            ):
+                typer.echo(f"{question_id} was settled concurrently, so nothing was written; the "
+                           "approval was spent.", err=True)
+                raise typer.Exit(code=1)
+            _record_rule_action(sid, question_id, f"question_{past}", kind="question")
+            typer.echo(f"{past.capitalize()}: {question_id}")
+
+    asyncio.run(_run())
+
+
+_QUESTION_SESSION_HELP = (
+    "The session whose approval authorizes this. Without it the current session is resolved "
+    "from $CLAUDE_SESSION_ID, then basename($CLAUDE_JOB_DIR); nothing is guessed."
+)
+_QUESTION_TOKEN_HELP = (
+    "The single-use gate token the approval hook wrote when the user replied \"approved\" "
+    "after this question was surfaced. Without it the question is surfaced for approval."
+)
+
+
+@question_app.command("answer")
+def question_answer(
+    question_id: str = typer.Argument(..., help="The question id (OQ-...)."),
+    text: str = typer.Option("", "--text", help="The answer. Required with --token."),
+    session_id: str | None = typer.Option(None, "--session-id", help=_QUESTION_SESSION_HELP),
+    token: str | None = typer.Option(None, "--token", help=_QUESTION_TOKEN_HELP),
+) -> None:
+    """Answer an open question with the user's approval."""
+    _settle_question("answer", question_id, text, session_id, token)
+
+
+@question_app.command("close")
+def question_close(
+    question_id: str = typer.Argument(..., help="The question id (OQ-...)."),
+    note: str = typer.Option("", "--note", help="Why it is closed without an answer."),
+    session_id: str | None = typer.Option(None, "--session-id", help=_QUESTION_SESSION_HELP),
+    token: str | None = typer.Option(None, "--token", help=_QUESTION_TOKEN_HELP),
+) -> None:
+    """Close an open question without an answer, with the user's approval."""
+    _settle_question("close", question_id, note, session_id, token)
 
 
 # --- Sub-agent turn tripwire: transcript sub-app -------------------------------
