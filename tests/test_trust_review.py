@@ -905,6 +905,11 @@ class TestRaceLoserIsRefusedAtTheClaim:
 
             assert result.exit_code == 1, result.output
             notify.assert_not_called()
+            from writ.session.gate_token import gate_token_path
+
+            assert os.path.exists(gate_token_path(sid)), (
+                "the stale caller destroyed the re-minted approval"
+            )
 
         names = [r.get("event") for r in _read_stream_rows(project, "audit")]
         assert "rule_promotion_claim_lost" in names, names

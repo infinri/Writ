@@ -737,13 +737,13 @@ def _bm25_current_dir(bm25_root: Path) -> Path | None:
 
 
 def _switch_bm25_current(bm25_root: Path, gen_name: str) -> None:
-    """Point CURRENT at `gen_name` atomically, through the stage-then-commit write
-    writ/neo4j_password.py already uses for writ.toml (temp file beside the target,
-    fsynced, os.replace, directory fsynced)."""
-    from writ.neo4j_password import commit_config, stage_config
+    """Point CURRENT at `gen_name` atomically, through the stage-then-commit write in
+    writ/shared/atomic_file.py (temp file beside the target, fsynced, os.replace,
+    directory fsynced)."""
+    from writ.shared.atomic_file import commit_file, stage_file
 
     target = str(bm25_root / _BM25_CURRENT)
-    commit_config(stage_config(target, gen_name, prefix=".CURRENT."), target)
+    commit_file(stage_file(target, gen_name, ".CURRENT."), target)
 
 
 def _prune_bm25_generations(

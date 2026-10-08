@@ -34,7 +34,11 @@ from writ.session.approval_workflow import (
     apply_phase_advance,
     write_gate_artifact,
 )
-from writ.session.gate_token import BINDING_CANDIDATE_MISMATCH, BINDING_UNBOUND
+from writ.session.gate_token import (
+    BINDING_CANDIDATE_MISMATCH,
+    BINDING_UNBOUND,
+    snapshot_binding_refusal,
+)
 from writ.session.locators import _find_plan_md, resolve_project_root
 from writ.session.mode_engine import MODE_CONFIG, _next_pending_gate
 from writ.shared.logging import emit_exception, request_project_scope, set_request_project_scope
@@ -83,9 +87,12 @@ async def session_advance_phase(
     # writes /tmp/writ-gate-token-<sid> ONLY when the user's prompt matches an approval
     # pattern -- input the agent cannot forge -- so requiring the token is what makes the
     # human the approver. This check must NOT claim: a clearly-invalid token cannot be
-    # allowed to consume the real one.
+    # allowed to consume the real one. The token file is read ONCE here; the binding
+    # check at (4) uses the same snapshot, so a token claimed by a concurrent request in
+    # between is refused at the claim, not misreported as unbound.
     token = req.token
-    expected_token = await asyncio.to_thread(server.read_gate_token, session_id)
+    snap = await asyncio.to_thread(server.read_gate_snapshot, session_id)
+    expected_token = snap.secret if snap else ""
     if not server.gate_token_valid(token, expected_token):
         await asyncio.to_thread(
             server.log_friction_event,
@@ -220,22 +227,19 @@ async def session_advance_phase(
     # always been: the internal mutual-exclusion primitive claim_gate_token is built on,
     # never a route-level substitute for it.
     #
-    # Both calls below read files (plan.md, the token file), so they go to a thread like
-    # every other blocking call on this route.
+    # plan_md_hash reads plan.md, so it goes to a thread like every other blocking call
+    # on this route; the binding is compared against the snapshot read at (1).
     plan_hash = await asyncio.to_thread(
         server.plan_md_hash, cache.get("project_root"), session_id
     ) or ""
-    refusal = await asyncio.to_thread(
-        server.gate_binding_refusal, session_id, gate=target_gate, plan_hash=plan_hash
-    )
+    refusal = snapshot_binding_refusal(snap, gate=target_gate, plan_hash=plan_hash)
     if refusal:
         # Fail closed and say WHY: the previous behavior of every refusal on this
         # route was a message the user read as "no gate pending". The token is NOT
         # spent (nothing was claimed), so the approval it does authorize survives.
         # The reason text comes from the CLI's table so the two gate paths cannot
         # drift into telling the user two different things about the same refusal.
-        binding = await asyncio.to_thread(server.read_gate_binding, session_id)
-        bound_gate = binding[0] if binding else ""
+        bound_gate = snap.gate if snap and snap.bound else ""
         await asyncio.to_thread(
             server.log_friction_event,
             session_id=session_id,
@@ -713,7 +717,9 @@ async def pre_write_check(request: PreWriteCheckRequest) -> dict[str, Any]:
             # Check denial count for escalation (cache reflects the just-applied bump)
             denial_counts = cache.get("denial_counts", {})
             max_count = max(denial_counts.values()) if denial_counts else 0
-            decision = "ask" if max_count >= 2 else "deny"
+            # A credential-path refusal is never softened into a prompt (SEC-CREDENTIAL-WRITE).
+            hard = str(gate_result.get("reason") or "").startswith("[SEC-CREDENTIAL-WRITE]")
+            decision = "ask" if max_count >= 2 and not hard else "deny"
             return {
                 "decision": decision,
                 "reason": gate_result["reason"],

@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# ENF-COMMS-OUTPUT-001 punctuation floor: block em-dash slop in the agent's final
+# ENF-COMMS-OUTPUT-001 punctuation floor: report em-dash slop in the agent's final
 # response. The user forbids em dashes, en-dash-as-punctuation, and " -- " used as an
 # em-dash substitute. Advisory rule-text alone failed, so this is a deterministic
 # lexical backstop (zero false positives: the char is present or it is not).
 #
-# Stop hook, ALL modes. Loop-safe: surfaces via stderr + exit 1 (the verify-before-
-# claim pattern), guarded by stop_hook_active so a continuation Stop is a no-op. Reads
+# Stop hook, ALL modes. On a finding it prints the message to stderr and exits 1, which
+# CC treats as a non-blocking hook error: the message is surfaced to the user and the
+# turn still ends. Exit 2 would block; the user chose not to. Loop-safe (the verify-
+# before-claim pattern): guarded by stop_hook_active so a continuation Stop is a no-op. Reads
 # the last assistant message from transcript_path; strips code spans first so an em
 # dash inside quoted code or a `git checkout --` example is not flagged.
 set -euo pipefail
@@ -54,7 +56,7 @@ SESSION_ID="$(printf '%s' "$STDIN_JSON" | json_transform \
 SESSION_ID="${SESSION_ID#"${SESSION_ID%%[![:space:]]*}"}"
 SESSION_ID="${SESSION_ID%"${SESSION_ID##*[![:space:]]}"}"
 
-stop_hook_active "$STDIN_JSON" && exit 0          # block at most once; never loop
+stop_hook_active "$STDIN_JSON" && exit 0          # report at most once; never loop
 
 TP=$(printf '%s' "$STDIN_JSON" \
     | python3 -c "import sys,json; print(json.load(sys.stdin).get('transcript_path',''))" 2>/dev/null || echo "")

@@ -329,6 +329,8 @@ class TestRecallCmdUnresolvedProject:
             f"output must explicitly say the project could not be resolved; "
             f"got:\n{result.output!r}"
         )
+        assert "writ git-hooks install" in result.output, result.output
+        assert "writ hooks install" not in result.output, result.output
 
     def test_unresolved_project_never_calls_compile_recall(self) -> None:
         """The empty-string project must not reach compile_recall at all --

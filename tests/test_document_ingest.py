@@ -397,6 +397,8 @@ class TestCli:
         assert result.exit_code == 1
         assert "not registered" in result.output
         assert os.path.abspath(str(repo)) in result.output
+        assert "writ git-hooks install" in result.output
+        assert "writ hooks install" not in result.output
         assert "Traceback" not in result.output
         assert [c[0] for c in db.calls] == ["resolve"]
         assert self.notified == []

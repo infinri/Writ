@@ -21,10 +21,9 @@ from writ.session.gate_token import (
     REPLAN_GATE,
     claim_gate_token,
     consume_gate_token,
-    gate_binding_refusal,
     gate_token_valid,
-    read_gate_binding,
-    read_gate_token,
+    read_gate_snapshot,
+    snapshot_binding_refusal,
 )
 from writ.session.locators import (
     _find_plan_md,
@@ -584,8 +583,10 @@ def cmd_advance_phase(session_id: str, project_root: str = "", token: str = "") 
     Output: JSON {"advanced": true, "gate": "...", "phase": "..."} or
             {"advanced": false, "reason": "..."}
     """
-    # Validate caller token (shared mechanism: writ.session.gate_token).
-    expected_token = read_gate_token(session_id)
+    # Validate caller token (shared mechanism: writ.session.gate_token). The token file is
+    # read once; the binding check below uses the same snapshot.
+    snap = read_gate_snapshot(session_id)
+    expected_token = snap.secret if snap else ""
 
     if not gate_token_valid(token, expected_token):
         cache = _read_cache(session_id)
@@ -644,14 +645,13 @@ def cmd_advance_phase(session_id: str, project_root: str = "", token: str = "") 
         # same file by construction; deriving one of them from a separately-resolved
         # root would refuse legitimate approvals whenever the two roots differ.
         plan_hash = plan_md_hash(cache.get("project_root"), session_id) or ""
-        refusal = gate_binding_refusal(session_id, gate=target_gate, plan_hash=plan_hash)
+        refusal = snapshot_binding_refusal(snap, gate=target_gate, plan_hash=plan_hash)
         if refusal:
             # Refuse WITHOUT claiming: the token may legitimately authorize something
             # else (another gate, a candidate promotion), and spending it here would
             # destroy an approval the user did give. One friction event per refusal
             # class, so the log can tell a fail-closed gate from an absent one.
-            binding = read_gate_binding(session_id)
-            bound_gate = binding[0] if binding else ""
+            bound_gate = snap.gate if snap and snap.bound else ""
             _log_friction_event(
                 session_id, mode, refusal,
                 gate=target_gate, bound_gate=bound_gate,
@@ -793,8 +793,10 @@ def cmd_reopen_planning(session_id: str, token: str = "") -> None:
     # 1. The secret. Mirrors cmd_advance_phase: the token is minted only by the approval
     # hook from the user's own words, so failing here means the caller is not the hook.
     # Nothing is consumed and nothing is reset -- an agent guessing a token must not be
-    # able to destroy a real pending approval as a side effect of being refused.
-    expected_token = read_gate_token(session_id)
+    # able to destroy a real pending approval as a side effect of being refused. The token
+    # file is read once; step 2 checks the binding from the same snapshot.
+    snap = read_gate_snapshot(session_id)
+    expected_token = snap.secret if snap else ""
     if not gate_token_valid(token, expected_token):
         _log_friction_event(
             session_id, mode, "agent_self_approval_blocked",
@@ -816,13 +818,12 @@ def cmd_reopen_planning(session_id: str, token: str = "") -> None:
     # user's genuine phase approval and must survive this refusal; None means the
     # pre-binding one-line format, which records nothing about what it authorizes and so
     # cannot be checked against anything.
-    binding = read_gate_binding(session_id)
-    if binding is None or binding[0] != REPLAN_GATE:
+    if snap is None or not snap.bound or snap.gate != REPLAN_GATE:
         _reopen_refused(
             session_id, mode, "token_not_replan",
             (
                 "This approval does not authorize re-opening planning"
-                + (f" (it is bound to the {binding[0]} gate)" if binding and binding[0] else "")
+                + (f" (it is bound to the {snap.gate} gate)" if snap and snap.bound and snap.gate else "")
                 + ". Re-opening planning needs the user to reply exactly `replan approved` "
                 "on their own turn; that mints the one approval this command accepts."
             ),

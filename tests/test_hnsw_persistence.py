@@ -419,3 +419,68 @@ class TestBinFingerprintIntegrity:
         assert not list(tmp_path.glob("*.tmp")), "tempfiles leaked on rename failure"
         assert not (tmp_path / "writ_hnsw.bin").exists()
         assert not (tmp_path / "writ_hnsw.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# TestDeterministicBuild (F4)
+# ---------------------------------------------------------------------------
+
+
+class TestDeterministicBuild:
+    """Insertion order across threads decides the graph links, so two builds of the same
+    vectors can return different neighbour tails. A single insertion thread removes that."""
+
+    def test_build_index_inserts_with_a_single_thread(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Deterministic: records the keyword arguments build_index passes to add_items."""
+        from types import SimpleNamespace
+
+        import hnswlib
+
+        import writ.retrieval.embeddings as embeddings
+
+        recorded: list[dict[str, Any]] = []
+
+        class _RecordingIndex:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                self._real = hnswlib.Index(*args, **kwargs)
+
+            def add_items(self, *args: Any, **kwargs: Any) -> Any:
+                recorded.append(dict(kwargs))
+                return self._real.add_items(*args, **kwargs)
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(self._real, name)
+
+        monkeypatch.setattr(embeddings, "hnswlib", SimpleNamespace(Index=_RecordingIndex))
+        store = _make_store()
+        _build_tiny_index(store, n=5)
+
+        assert len(recorded) == 1, recorded
+        assert recorded[0].get("num_threads") == 1, recorded
+
+    def test_two_builds_of_the_same_vectors_agree_on_neighbours_and_bytes(self, tmp_path: Path) -> None:
+        """Behavioural proof. On a multi-core machine this is expected to fail before the
+        fix, but a lucky thread schedule can pass it; the test above is the deterministic pin."""
+        dims, count, queries, k = 384, 2000, 50, 10
+        rng = np.random.RandomState(7)
+        vectors = rng.randn(count, dims).astype(np.float32)
+        vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+        vector_lists = vectors.tolist()
+        rule_ids = [f"DET-RULE-{i:05d}" for i in range(count)]
+        query_vectors = rng.randn(queries, dims).astype(np.float32).tolist()
+
+        stores = []
+        for label in ("a", "b"):
+            store = HnswlibStore(dimensions=dims, cache_dir=str(tmp_path / label))
+            store.build_index(rule_ids, vector_lists)
+            store.save_index(corpus_hash="same-corpus")
+            stores.append(store)
+
+        for query in query_vectors:
+            first = [r.rule_id for r in stores[0].search(query, k=k)]
+            second = [r.rule_id for r in stores[1].search(query, k=k)]
+            assert first == second, (first, second)
+
+        digests = [json.loads((tmp_path / label / "writ_hnsw.json").read_text())["bin_sha256"]
+                   for label in ("a", "b")]
+        assert digests[0] == digests[1], digests

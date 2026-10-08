@@ -258,6 +258,8 @@ class HnswlibStore:
         """Build HNSW index from rule_ids and their embedding vectors.
 
         Caller is responsible for excluding mandatory rules before calling.
+        Inserts on one thread: with several, insertion order varies and so do the graph
+        links, so two builds of the same vectors could return different neighbours.
         """
         if not rule_ids:
             return
@@ -270,7 +272,7 @@ class HnswlibStore:
         )
         self._index.set_ef(self._ef_search)
         self._id_to_rule = {i: rid for i, rid in enumerate(rule_ids)}
-        self._index.add_items(vectors, list(range(count)))
+        self._index.add_items(vectors, list(range(count)), num_threads=1)
 
     def search(self, vector: list[float], k: int) -> list[ScoredResult]:
         """Return top-k nearest neighbors by cosine similarity."""

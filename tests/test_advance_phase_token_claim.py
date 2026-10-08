@@ -262,7 +262,7 @@ class TestServerConcurrentDoubleFire:
     async def test_two_concurrent_advances_same_token_advance_exactly_once(self, monkeypatch, tmp_path):
         import writ.server as server_module
         from writ.session.cache import _read_cache as real_read_cache
-        from writ.session.gate_token import read_gate_token as real_read_gate_token
+        from writ.session.gate_token import read_gate_snapshot as real_read_gate_snapshot
 
         sid = f"g1b-{uuid.uuid4().hex[:8]}"
         _seed_cache(sid)
@@ -272,15 +272,18 @@ class TestServerConcurrentDoubleFire:
         token_barrier = threading.Barrier(2, timeout=5)
         cache_barrier = threading.Barrier(2, timeout=5)
 
-        def _synced_read_token(session_id: str) -> str:
+        synced_reads: list[str] = []
+
+        def _synced_read_token(session_id: str):
+            synced_reads.append(session_id)
             token_barrier.wait()
-            return real_read_gate_token(session_id)
+            return real_read_gate_snapshot(session_id)
 
         def _synced_read_cache(session_id: str) -> dict:
             cache_barrier.wait()
             return real_read_cache(session_id)
 
-        monkeypatch.setattr(server_module, "read_gate_token", _synced_read_token)
+        monkeypatch.setattr(server_module, "read_gate_snapshot", _synced_read_token)
         monkeypatch.setattr(server_module.writ_session, "_read_cache", _synced_read_cache)
 
         friction_calls: list[dict] = []
@@ -305,6 +308,11 @@ class TestServerConcurrentDoubleFire:
                 os.remove(token_path)
             except OSError:
                 pass
+
+        assert synced_reads == [sid, sid], (
+            "the route must read the token file once per request through "
+            f"server.read_gate_snapshot, or the barrier synchronizes nothing; got {synced_reads}"
+        )
 
         def _is_real_advance(r: dict) -> bool:
             return "error" not in r and r.get("advanced") is not False and "phase" in r
@@ -442,3 +450,213 @@ class TestPreservedBehaviorGuards:
                 os.remove(token_path)
             except OSError:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# F3 -- one snapshot per request; a stale secret never spends a re-minted token
+# ---------------------------------------------------------------------------
+
+
+def _install_token_race(monkeypatch, sid: str, action: str = "none", new_token: str = "") -> dict:
+    """Force only the timing of a race on the token file.
+
+    The first token-file read for `sid` (gate_token._token_file_lines) returns the real
+    lines and THEN `action` happens for real: "claim" wins the real rename (_claim_file),
+    "remint" mints a fresh bound file with `new_token` (same gate and plan hash, new secret),
+    "none" does nothing. `reads_at_rename` records how many reads preceded the claim's own
+    rename."""
+    import writ.session.gate_token as gt
+
+    real_lines, real_claim = gt._token_file_lines, gt._claim_file
+    state = {"reads": 0, "reads_at_rename": None}
+
+    def lines_wrapper(session_id):
+        lines = real_lines(session_id)
+        if session_id == sid:
+            state["reads"] += 1
+            if state["reads"] == 1:
+                if action == "claim":
+                    real_claim(sid)
+                elif action == "remint":
+                    write_bound_gate_token(sid, new_token)
+        return lines
+
+    def claim_wrapper(session_id):
+        if session_id == sid and state["reads_at_rename"] is None:
+            state["reads_at_rename"] = state["reads"]
+        return real_claim(session_id)
+
+    monkeypatch.setattr(gt, "_token_file_lines", lines_wrapper)
+    monkeypatch.setattr(gt, "_claim_file", claim_wrapper)
+    return state
+
+
+def _remove(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+class TestAdvanceRouteTokenRaces:
+    @pytest.fixture(autouse=True)
+    def _cache_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("WRIT_CACHE_DIR", str(tmp_path))
+
+    @staticmethod
+    def _request(token: str, root: str) -> SessionAdvancePhaseRequest:
+        return SessionAdvancePhaseRequest(confirmation_source="explicit", token=token, project_root=root)
+
+    @pytest.mark.asyncio
+    async def test_a_claim_after_the_first_read_is_the_already_consumed_noop(self, monkeypatch, tmp_path):
+        import writ.server as server_module
+        from writ.session.gate_token import BINDING_UNBOUND
+
+        sid = f"f3-route-claim-{uuid.uuid4().hex[:8]}"
+        _seed_cache(sid)
+        token = uuid.uuid4().hex
+        token_path = _write_bound_token(sid, token)
+        friction: list[dict] = []
+        monkeypatch.setattr(server_module, "log_friction_event", lambda *a, **k: friction.append(k))
+        _install_token_race(monkeypatch, sid, "claim")
+        try:
+            result = await server_module.session_advance_phase(
+                sid, self._request(token, _project_with_test_skeleton(tmp_path)))
+        finally:
+            _remove(token_path)
+
+        assert result.get("advanced") is False, result
+        assert "already consumed" in result.get("reason", ""), result
+        assert "error" not in result, result
+        assert BINDING_UNBOUND not in [k.get("event") for k in friction], friction
+        assert _read_cache(sid).get("phase_transitions") == []
+
+    @pytest.mark.asyncio
+    async def test_a_remint_after_the_first_read_survives_and_the_new_secret_advances_once(
+        self, monkeypatch, tmp_path,
+    ):
+        import writ.server as server_module
+        from writ.session.gate_token import read_gate_token
+
+        sid = f"f3-route-remint-{uuid.uuid4().hex[:8]}"
+        _seed_cache(sid)
+        stale, fresh = uuid.uuid4().hex, uuid.uuid4().hex
+        token_path = _write_bound_token(sid, stale)
+        monkeypatch.setattr(server_module, "log_friction_event", lambda *a, **k: None)
+        _install_token_race(monkeypatch, sid, "remint", new_token=fresh)
+        root = _project_with_test_skeleton(tmp_path)
+        try:
+            first = await server_module.session_advance_phase(sid, self._request(stale, root))
+            assert first.get("advanced") is False, first
+            assert "already consumed" in first.get("reason", ""), first
+            assert os.path.exists(token_path), "the stale request destroyed the re-minted approval"
+            assert read_gate_token(sid) == fresh
+            assert _read_cache(sid).get("phase_transitions") == []
+
+            second = await server_module.session_advance_phase(sid, self._request(fresh, root))
+            assert "error" not in second and second.get("phase") == "implementation", second
+            assert len(_read_cache(sid).get("phase_transitions", [])) == 1
+            assert not os.path.exists(token_path)
+        finally:
+            _remove(token_path)
+
+    @pytest.mark.asyncio
+    async def test_one_successful_advance_reads_the_token_file_twice_before_the_rename(
+        self, monkeypatch, tmp_path,
+    ):
+        import writ.server as server_module
+
+        sid = f"f3-route-reads-{uuid.uuid4().hex[:8]}"
+        _seed_cache(sid)
+        token = uuid.uuid4().hex
+        token_path = _write_bound_token(sid, token)
+        monkeypatch.setattr(server_module, "log_friction_event", lambda *a, **k: None)
+        state = _install_token_race(monkeypatch, sid, "none")
+        try:
+            result = await server_module.session_advance_phase(
+                sid, self._request(token, _project_with_test_skeleton(tmp_path)))
+        finally:
+            _remove(token_path)
+
+        assert "error" not in result and result.get("phase") == "implementation", result
+        assert state["reads_at_rename"] == 2, state
+
+
+class TestCmdAdvancePhaseTokenRaces:
+    @pytest.fixture(autouse=True)
+    def _cache_dir(self, tmp_path, monkeypatch):
+        import io
+
+        monkeypatch.setenv("WRIT_CACHE_DIR", str(tmp_path))
+        monkeypatch.setattr("sys.stdin", io.StringIO(""))
+
+    @staticmethod
+    def _advance(capsys, sid: str, root: str, token: str) -> dict:
+        import json
+
+        from writ.session.approval_workflow import cmd_advance_phase
+
+        capsys.readouterr()
+        cmd_advance_phase(sid, root, token)
+        return json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+
+    def test_a_claim_after_the_first_read_is_the_already_consumed_noop(self, monkeypatch, tmp_path, capsys):
+        from writ.session.gate_token import BINDING_UNBOUND
+
+        sid = f"f3-cli-claim-{uuid.uuid4().hex[:8]}"
+        _seed_cache(sid)
+        token = uuid.uuid4().hex
+        token_path = _write_bound_token(sid, token)
+        friction: list[tuple] = []
+        monkeypatch.setattr("writ.session.approval_workflow._log_friction_event",
+                            lambda *a, **k: friction.append(a))
+        _install_token_race(monkeypatch, sid, "claim")
+        try:
+            out = self._advance(capsys, sid, _project_with_test_skeleton(tmp_path), token)
+        finally:
+            _remove(token_path)
+
+        assert out.get("advanced") is False, out
+        assert "already consumed" in out.get("reason", ""), out
+        assert BINDING_UNBOUND not in [a[2] for a in friction if len(a) > 2], friction
+        assert _read_cache(sid).get("phase_transitions") == []
+
+    def test_a_remint_after_the_first_read_survives_and_the_new_secret_advances_once(
+        self, monkeypatch, tmp_path, capsys,
+    ):
+        from writ.session.gate_token import read_gate_token
+
+        sid = f"f3-cli-remint-{uuid.uuid4().hex[:8]}"
+        _seed_cache(sid)
+        stale, fresh = uuid.uuid4().hex, uuid.uuid4().hex
+        token_path = _write_bound_token(sid, stale)
+        _install_token_race(monkeypatch, sid, "remint", new_token=fresh)
+        root = _project_with_test_skeleton(tmp_path)
+        try:
+            first = self._advance(capsys, sid, root, stale)
+            assert first.get("advanced") is False, first
+            assert "already consumed" in first.get("reason", ""), first
+            assert os.path.exists(token_path), "the stale caller destroyed the re-minted approval"
+            assert read_gate_token(sid) == fresh
+
+            second = self._advance(capsys, sid, root, fresh)
+            assert second.get("advanced") is True, second
+            assert len(_read_cache(sid).get("phase_transitions", [])) == 1
+        finally:
+            _remove(token_path)
+
+    def test_one_successful_advance_reads_the_token_file_twice_before_the_rename(
+        self, monkeypatch, tmp_path, capsys,
+    ):
+        sid = f"f3-cli-reads-{uuid.uuid4().hex[:8]}"
+        _seed_cache(sid)
+        token = uuid.uuid4().hex
+        token_path = _write_bound_token(sid, token)
+        state = _install_token_race(monkeypatch, sid, "none")
+        try:
+            out = self._advance(capsys, sid, _project_with_test_skeleton(tmp_path), token)
+        finally:
+            _remove(token_path)
+
+        assert out.get("advanced") is True, out
+        assert state["reads_at_rename"] == 2, state

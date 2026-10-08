@@ -197,6 +197,41 @@ and stays out of scope. The unreadable-file instrumentation (`session.gate_token
 moves from `read_gate_token` into the shared line reader, so it still fires once for a
 present but unreadable file and never for an absent one.
 
+## Decision 5: the advance and replan paths take one snapshot, and the claim checks the secret first
+
+This closes the two items Decision 4 deferred.
+
+- The advance route (`/session/{id}/advance-phase`), `cmd_advance_phase` and
+  `cmd_reopen_planning` read the token file once, through `read_gate_snapshot`, and take
+  the secret, the binding and the bound gate named in a refusal from that one read. The
+  binding comparison is `snapshot_binding_refusal`, a pure function over the snapshot;
+  `_binding_refusal` delegates to it, so there is still exactly one comparison. A race
+  loser on these paths is now refused at its single read or at the claim ("already
+  consumed" on the advance paths, `token_claimed` on the replan path), not as
+  `gate_token_unbound` or `token_not_replan`. Messages, events, fields, `token_spent`
+  values and consume behavior are unchanged.
+- `claim_gate_token` checks the supplied secret, as well as the binding, against its
+  pre-check read, and returns False without renaming when either fails. A caller holding a
+  stale secret no longer spends a token re-minted after it read the file (for example the
+  user approving again while a slow validator run was still in flight). The pre-check is
+  still one read of the file, so a successful advance or re-open reads it twice before the
+  rename, and the claimed bytes are still re-checked after it.
+
+**Alternative considered.** Restoring the file after a claim that wins the rename but
+fails the comparison. That would close the remaining window below, but it puts a write
+back into the one step whose job is to make spending atomic. Not done.
+
+**Accepted residuals.**
+
+- The window between the claim's pre-check read and its rename is still open: a re-mint
+  landing exactly there is spent by the stale caller. It is microseconds wide, against the
+  seconds a validator run takes.
+- Spend-on-rejection stays unconditional. The advance route consumes the token when the
+  target gate's validator rejects the artifact, and the replan refusals that consume
+  (`state_unknown`, `not_work_mode`, `not_implementation`, `gate_pending`) delete the file
+  without comparing secrets, so a stale request rejected there can still remove a
+  re-minted file.
+
 ## Consequences
 
 - Six existing test modules that drove the hook with a bare `approved` now state their

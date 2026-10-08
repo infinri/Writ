@@ -31,7 +31,6 @@ import os
 import re
 import secrets
 import string
-import tempfile
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -49,13 +48,19 @@ from writ.config import (
     get_neo4j_user,
     get_production_neo4j_uri,
 )
+from writ.shared.atomic_file import (
+    PRIVATE_FILE_MODE,
+    commit_file,
+    discard_staged,
+    stage_file,
+)
 
 GENERATED_LENGTH = 32
 # Letters and digits only: Compose interpolates the value into a shell healthcheck and it is
 # written into a TOML basic string, and this alphabet needs quoting in neither. 62**32 is about
 # 190 bits.
 GENERATED_ALPHABET = string.ascii_letters + string.digits
-CONFIG_FILE_MODE = 0o600
+CONFIG_FILE_MODE = PRIVATE_FILE_MODE
 RETRY_INTERVAL_SECONDS = 1.0
 # Beside writ.toml, so every run on one install contends for the same lock; matched by the
 # `.writ.toml.*` .gitignore line. It stays after a run: unlinking a flock file lets a waiter that
@@ -197,48 +202,17 @@ def render_config(existing: str | None, new: str) -> str:
     return rendered
 
 
-def stage_config(path: str, text: str, prefix: str = STAGED_FILE_PREFIX) -> str:
-    """Write `text` to a new temp file beside `path`, fsynced, mode 0600; return its path.
-
-    mkstemp creates it 0600 in the SAME directory, so the later rename is atomic and never
-    exposes a partial or world-readable copy. On failure nothing is left behind.
-    `prefix` names the staged file; the BM25 CURRENT pointer (writ/retrieval/pipeline.py)
-    reuses this stage-then-commit write with its own prefix.
-    """
-    directory = os.path.dirname(path) or "."
-    fd, staged = tempfile.mkstemp(prefix=prefix, dir=directory)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(staged, CONFIG_FILE_MODE)
-    except BaseException:
-        _discard(staged)
-        raise
-    return staged
+def stage_config(path: str, text: str) -> str:
+    """Stage `text` beside writ.toml at `path` (writ.shared.atomic_file.stage_file) under the
+    `.writ.toml.` prefix the .gitignore line matches; return the staged path."""
+    return stage_file(path, text, STAGED_FILE_PREFIX)
 
 
-def commit_config(staged: str, path: str) -> None:
-    """Rename the staged file over `path`, then fsync the directory so the rename is durable."""
-    os.replace(staged, path)
-    try:
-        dir_fd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
-    except OSError:
-        # The rename already happened: file and database agree. A filesystem that cannot fsync
-        # a directory must not turn that into a reported failure.
-        pass
+commit_config = commit_file
 
 
 def _discard(staged: str) -> None:
-    try:
-        os.unlink(staged)
-    except FileNotFoundError:
-        pass
+    discard_staged(staged)
 
 
 async def _locked(directory: str, timeout: float) -> int:

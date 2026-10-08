@@ -1081,6 +1081,96 @@ class TestReplanTokenLifecycle:
             )
 
 
+class TestReplanTokenRaces:
+    """F3: one snapshot read per re-open, so a loser is refused at the claim, and a stale
+    secret cannot spend a re-minted approval. Only the timing is forced: the first
+    token-file read returns the real lines and THEN the real rename or a real re-mint
+    happens."""
+
+    @staticmethod
+    def _install(monkeypatch, sid: str, action: str = "none") -> dict:
+        real_lines, real_claim = gate_token._token_file_lines, gate_token._claim_file
+        state = {"reads": 0, "reads_at_rename": None}
+
+        def lines_wrapper(session_id):
+            lines = real_lines(session_id)
+            if session_id == sid:
+                state["reads"] += 1
+                if state["reads"] == 1:
+                    if action == "claim":
+                        real_claim(sid)
+                    elif action == "remint":
+                        write_bound_gate_token(sid, "the-fresh-secret", gate=gate_token.REPLAN_GATE)
+            return lines
+
+        def claim_wrapper(session_id):
+            if session_id == sid and state["reads_at_rename"] is None:
+                state["reads_at_rename"] = state["reads"]
+            return real_claim(session_id)
+
+        monkeypatch.setattr(gate_token, "_token_file_lines", lines_wrapper)
+        monkeypatch.setattr(gate_token, "_claim_file", claim_wrapper)
+        return state
+
+    @staticmethod
+    def _setup(tmp_path, monkeypatch, sandbox_cwd, label: str) -> str:
+        monkeypatch.setenv("WRIT_CACHE_DIR", str(tmp_path / "cache"))
+        (tmp_path / "cache").mkdir()
+        sid = _sid(label)
+        _seed_deadlocked_cache(sandbox_cwd, sid)
+        return sid
+
+    def test_a_loser_whose_token_is_claimed_after_its_read_is_refused_as_token_claimed(
+        self, tmp_path, monkeypatch, sandbox_cwd,
+    ) -> None:
+        sid = self._setup(tmp_path, monkeypatch, sandbox_cwd, "race-claim")
+        refusals: list[str] = []
+        monkeypatch.setattr(
+            approval_workflow, "_log_friction_event",
+            lambda session_id, mode, event, **extra: refusals.append(extra.get("reason", event)),
+        )
+        with _mint_cleanup(sid):
+            token = write_bound_gate_token(sid, gate=gate_token.REPLAN_GATE)
+            self._install(monkeypatch, sid, "claim")
+
+            result = _call_stdin_safe_json(monkeypatch, approval_workflow.cmd_reopen_planning, sid, token)
+
+            assert result.get("reopened") is False, result
+            assert result.get("refusal") == "token_claimed", result
+            assert "token_not_replan" not in refusals, refusals
+            assert _read_cache(sid)["current_phase"] == "implementation"
+
+    def test_a_remint_after_the_first_read_is_refused_and_the_reminted_file_survives(
+        self, tmp_path, monkeypatch, sandbox_cwd,
+    ) -> None:
+        sid = self._setup(tmp_path, monkeypatch, sandbox_cwd, "race-remint")
+        with _mint_cleanup(sid):
+            stale = write_bound_gate_token(sid, gate=gate_token.REPLAN_GATE)
+            self._install(monkeypatch, sid, "remint")
+
+            result = _call_stdin_safe_json(monkeypatch, approval_workflow.cmd_reopen_planning, sid, stale)
+
+            assert result.get("refusal") == "token_claimed", result
+            assert os.path.exists(gate_token.gate_token_path(sid)), (
+                "the stale caller destroyed the re-minted replan approval"
+            )
+            assert gate_token.read_gate_token(sid) == "the-fresh-secret"
+            assert _read_cache(sid)["current_phase"] == "implementation"
+
+    def test_one_successful_reopen_reads_the_token_file_twice_before_the_rename(
+        self, tmp_path, monkeypatch, sandbox_cwd,
+    ) -> None:
+        sid = self._setup(tmp_path, monkeypatch, sandbox_cwd, "race-reads")
+        with _mint_cleanup(sid):
+            token = write_bound_gate_token(sid, gate=gate_token.REPLAN_GATE)
+            state = self._install(monkeypatch, sid, "none")
+
+            result = _call_stdin_safe_json(monkeypatch, approval_workflow.cmd_reopen_planning, sid, token)
+
+            assert result.get("reopened") is True, result
+            assert state["reads_at_rename"] == 2, state
+
+
 # =============================================================================
 # Capability 12: the audit trail
 # =============================================================================

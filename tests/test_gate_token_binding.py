@@ -2061,3 +2061,85 @@ class TestFieldCountIncludesTheIdentityLines:
         )
         assert len(_token_fields(with_args.decode())) == len(expected)
         assert len(_token_fields(captured.decode())) == len(expected)
+
+
+# ---------------------------------------------------------------------------
+# F3: one comparison over a snapshot, and a claim that checks the secret first
+# ---------------------------------------------------------------------------
+
+_SNAP_REFUSAL_CASES = [
+    ("absent", None, {}),
+    ("one-line", ["secret"], {}),
+    ("gate-mismatch", ["secret", "phase-a", "h1", "", ""], {"gate": "test-skeletons", "plan_hash": "h1"}),
+    ("plan-drift", ["secret", "phase-a", "h1", "", ""], {"gate": "phase-a", "plan_hash": "h2"}),
+    ("candidate-mismatch", ["secret", "phase-a", "h1", "C-1", ""],
+     {"gate": "phase-a", "plan_hash": "h1", "candidate_id": "C-2"}),
+    ("rule-mismatch", ["secret", "phase-a", "h1", "", "ENF-A-001"],
+     {"gate": "phase-a", "plan_hash": "h1", "rule_id": "ENF-B-001"}),
+    ("authorized", ["secret", "phase-a", "h1", "C-1", "ENF-A-001", "bob", "Bob B"],
+     {"gate": "phase-a", "plan_hash": "h1", "candidate_id": "C-1", "rule_id": "ENF-A-001"}),
+    ("three-line-legacy", ["secret", "phase-a", "h1"], {"gate": "phase-a", "plan_hash": "h1"}),
+]
+
+
+class TestSnapshotBindingRefusal:
+    @pytest.mark.parametrize("label, lines, kwargs", _SNAP_REFUSAL_CASES,
+                             ids=[c[0] for c in _SNAP_REFUSAL_CASES])
+    def test_it_returns_the_class_binding_refusal_returns(self, label, lines, kwargs):
+        from writ.session.gate_token import _binding_refusal, _snapshot, snapshot_binding_refusal
+
+        kwargs = {"gate": "", "plan_hash": "", **kwargs}
+        snap = _snapshot(lines) if lines is not None else None
+        expected = _binding_refusal(
+            lines, kwargs["gate"], kwargs["plan_hash"],
+            kwargs.get("candidate_id", ""), kwargs.get("rule_id", ""),
+        )
+        assert snapshot_binding_refusal(snap, **kwargs) == expected
+        assert (expected == "") is (label in {"authorized", "three-line-legacy"})
+
+    def test_binding_refusal_delegates_to_it(self, monkeypatch):
+        import writ.session.gate_token as gt
+
+        monkeypatch.setattr(gt, "snapshot_binding_refusal", lambda *a, **k: "sentinel-class")
+        assert gt._binding_refusal(["s", "g", "h"], "g", "h") == "sentinel-class"
+        assert gt._binding_refusal(None, "g", "h") == "sentinel-class"
+
+
+class TestClaimChecksTheSecretBeforeTheRename:
+    def test_a_wrong_secret_on_a_correctly_bound_token_leaves_the_file_unchanged(self):
+        from writ.session.gate_token import claim_gate_token, gate_token_path, mint_gate_token
+
+        sid = _sid("wrongsecret")
+        with _mint_cleanup(sid):
+            token = mint_gate_token(sid, gate="phase-a", plan_hash="abc123def456")
+            before = Path(gate_token_path(sid)).read_bytes()
+            claimed = claim_gate_token(sid, token + "-stale", gate="phase-a", plan_hash="abc123def456")
+            assert claimed is False
+            assert os.path.exists(gate_token_path(sid))
+            assert Path(gate_token_path(sid)).read_bytes() == before
+
+    def test_the_right_secret_still_claims_and_spends_the_file(self):
+        from writ.session.gate_token import claim_gate_token, gate_token_path, mint_gate_token
+
+        sid = _sid("rightsecret")
+        with _mint_cleanup(sid):
+            token = mint_gate_token(sid, gate="phase-a", plan_hash="abc123def456")
+            assert claim_gate_token(sid, token, gate="phase-a", plan_hash="abc123def456") is True
+            assert not os.path.exists(gate_token_path(sid))
+
+    def test_the_pre_check_is_still_one_token_file_read(self, monkeypatch):
+        import writ.session.gate_token as gt
+
+        sid = _sid("onepre")
+        calls = []
+        real = gt._token_file_lines
+
+        def counting(session_id):
+            calls.append(session_id)
+            return real(session_id)
+
+        with _mint_cleanup(sid):
+            token = gt.mint_gate_token(sid, gate="phase-a", plan_hash="abc123def456")
+            monkeypatch.setattr(gt, "_token_file_lines", counting)
+            assert gt.claim_gate_token(sid, token, gate="phase-a", plan_hash="abc123def456") is True
+        assert calls == [sid]

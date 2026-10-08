@@ -12,9 +12,12 @@
 # ONLY when actionable.
 #
 # Check: any artifact whose Gate 5 quality self-review scored < 3 and was not
-# overridden blocks a clean completion claim. The feeder is writ-quality-judge,
-# which (since #2) delivers its self-review directive via additionalContext, so the
-# agent actually receives it and POSTs the score to /session/{sid}/quality-judgment.
+# overridden is named in a stderr message at the end of the turn. The hook then exits 1,
+# which CC treats as a non-blocking hook error: the message is surfaced to the user and
+# the turn still ends. Exit 2 would block; the user chose not to. The feeder is
+# writ-quality-judge, which (since #2) delivers its self-review directive via
+# additionalContext, so the agent actually receives it and POSTs the score to
+# /session/{sid}/quality-judgment.
 # The "tests must pass" half of verification is enforced by writ-run-pending-tests
 # (ENF-TEST-001); claim-phrase discipline by FRB-COMMS-002.
 #

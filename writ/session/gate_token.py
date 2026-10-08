@@ -37,7 +37,7 @@ seven lines:
                      holds rule_action_binding(action, rule_id), so an approval for one
                      action on a rule is not spendable on another.
     line 6           the OS login of the process that minted the token (the identity
-                     anchor). Not a binding: _binding_refusal never reads it.
+                     anchor). Not a binding: snapshot_binding_refusal never reads it.
     line 7           the global git user.name, display only, empty when unset. Not a
                      binding either.
 
@@ -64,6 +64,7 @@ DECISIONS AND THE ALTERNATIVES THEY WERE CHOSEN OVER:
     "must be exactly empty"; it is not a skip sentinel.
 """
 
+import hmac
 import os
 import pwd
 import secrets
@@ -247,7 +248,7 @@ class GateSnapshot(NamedTuple):
 
 def _snapshot(lines: list[str]) -> GateSnapshot:
     """Every field of the token file from one list of lines. bound is the same
-    three-line test _binding_refusal applies."""
+    three-line test snapshot_binding_refusal applies."""
     return GateSnapshot(
         _line(lines, 0), _line(lines, 1), _line(lines, 2), _line(lines, 3),
         _line(lines, 4), GateIdentity(_line(lines, 5), _line(lines, 6)), len(lines) >= 3,
@@ -267,19 +268,20 @@ def read_gate_snapshot(session_id: str) -> GateSnapshot | None:
     return _snapshot(lines) if lines is not None else None
 
 
-def _binding_refusal(
-    lines: list[str] | None,
+def snapshot_binding_refusal(
+    snap: GateSnapshot | None,
+    *,
     gate: str,
     plan_hash: str,
     candidate_id: str = "",
     rule_id: str = "",
 ) -> str:
-    """Return the refusal class for these token-file lines, or "" when they authorize.
+    """Return the refusal class for this token-file snapshot, or "" when it authorizes.
 
-    Pure, and the ONLY comparison of a binding in the codebase: the destructive claim
-    and the non-destructive pre-check below both route through it, because the last
-    time this module let two call sites answer the same security question separately
-    they drifted.
+    Pure, and the ONLY comparison of a binding in the codebase: the destructive claim,
+    the non-destructive pre-check below and every caller holding a snapshot route
+    through it, because the last time this module let two call sites answer the same
+    security question separately they drifted.
 
     THE CANDIDATE COMPARISON IS BACKWARDS-COMPATIBLE AND FAILS SAFE. A token minted
     before line 4 existed reads as candidate "", so a phase advance (which passes "")
@@ -293,17 +295,31 @@ def _binding_refusal(
     "BOUNDS-SAFE ON PURPOSE"), a phase advance passes "" and still matches, and a rule
     promotion passes a real rule id against that empty value and is refused.
     """
-    if lines is None or len(lines) < 3:
+    if snap is None or not snap.bound:
         return BINDING_UNBOUND
-    if _line(lines, 1) != (gate or ""):
+    if snap.gate != (gate or ""):
         return BINDING_GATE_MISMATCH
-    if _line(lines, 2) != (plan_hash or ""):
+    if snap.plan_hash != (plan_hash or ""):
         return BINDING_PLAN_DRIFT
-    if _line(lines, 3) != (candidate_id or ""):
+    if snap.candidate != (candidate_id or ""):
         return BINDING_CANDIDATE_MISMATCH
-    if _line(lines, 4) != (rule_id or ""):
+    if snap.rule != (rule_id or ""):
         return BINDING_RULE_MISMATCH
     return ""
+
+
+def _binding_refusal(
+    lines: list[str] | None,
+    gate: str,
+    plan_hash: str,
+    candidate_id: str = "",
+    rule_id: str = "",
+) -> str:
+    """snapshot_binding_refusal over raw token-file lines (None when absent)."""
+    return snapshot_binding_refusal(
+        _snapshot(lines) if lines is not None else None,
+        gate=gate, plan_hash=plan_hash, candidate_id=candidate_id, rule_id=rule_id,
+    )
 
 
 def gate_binding_refusal(
@@ -372,7 +388,7 @@ def read_gate_identity(session_id: str) -> GateIdentity:
 
 def gate_token_valid(token: str, expected: str) -> bool:
     """True only when a non-empty supplied token matches a non-empty expected one."""
-    return bool(token) and bool(expected) and token == expected
+    return bool(token) and bool(expected) and hmac.compare_digest(token.encode(), expected.encode())
 
 
 def consume_gate_token(session_id: str) -> None:
@@ -472,13 +488,16 @@ def claim_gate_token(
     empty because that is what every phase advance binds and passes, and only the
     promotion route has a candidate and only the promote path has a rule.
 
-    The binding is checked BEFORE the claim so a refusal does not consume an approval
-    that authorizes a different action, and again from the claimed bytes, which are
-    the only bytes that were actually spent.
+    The binding and the secret are checked BEFORE the claim, from one read, so a refusal
+    does not consume an approval that authorizes a different action, and a stale secret
+    does not spend a token re-minted after its caller read it. Both are checked again
+    from the claimed bytes, which are the only bytes that were actually spent: a re-mint
+    can still land between the pre-check and the rename.
     """
-    if _binding_refusal(
-        _token_file_lines(session_id), gate, plan_hash, candidate_id, rule_id
-    ):
+    snap = read_gate_snapshot(session_id)
+    if snap is None or snapshot_binding_refusal(
+        snap, gate=gate, plan_hash=plan_hash, candidate_id=candidate_id, rule_id=rule_id,
+    ) or not gate_token_valid(supplied_token, snap.secret):
         return False
     content = _claim_file(session_id)
     if content is None:

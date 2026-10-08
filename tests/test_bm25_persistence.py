@@ -231,3 +231,80 @@ class TestGenerationPruning:
         os.utime(other, (stamp, stamp))
         assert _prune_bm25_generations(root, keep=set()) == []
         assert other.is_dir()
+
+
+class TestAtomicFileModule:
+    """F5: the stage-then-commit write lives in writ/shared/atomic_file.py, which knows
+    nothing about writ.toml; the CURRENT switch uses it directly."""
+
+    def test_stage_file_writes_a_private_prefixed_sibling(self, tmp_path: Path) -> None:
+        import stat
+
+        from writ.shared.atomic_file import PRIVATE_FILE_MODE, stage_file
+
+        target = tmp_path / "CURRENT"
+        staged = stage_file(str(target), "gen-abc", ".CURRENT.")
+
+        staged_path = Path(staged)
+        assert staged_path.parent == tmp_path
+        assert staged_path.name.startswith(".CURRENT.")
+        assert staged_path.read_text() == "gen-abc"
+        assert PRIVATE_FILE_MODE == 0o600
+        assert stat.S_IMODE(staged_path.stat().st_mode) == 0o600
+        assert not target.exists(), "staging must not touch the target"
+
+    def test_commit_file_replaces_the_target_and_leaves_nothing_staged(self, tmp_path: Path) -> None:
+        from writ.shared.atomic_file import commit_file, stage_file
+
+        target = tmp_path / "CURRENT"
+        target.write_text("old")
+        commit_file(stage_file(str(target), "new", ".CURRENT."), str(target))
+
+        assert target.read_text() == "new"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["CURRENT"]
+
+    def test_discard_staged_removes_the_file_and_tolerates_a_missing_one(self, tmp_path: Path) -> None:
+        from writ.shared.atomic_file import discard_staged, stage_file
+
+        staged = stage_file(str(tmp_path / "CURRENT"), "x", ".CURRENT.")
+        discard_staged(staged)
+        assert not os.path.exists(staged)
+        discard_staged(staged)
+
+    def test_a_failed_stage_leaves_nothing_behind(self, tmp_path: Path, monkeypatch) -> None:
+        from writ.shared import atomic_file
+
+        def boom(_fd: int) -> None:
+            raise OSError("simulated fsync failure")
+
+        monkeypatch.setattr(os, "fsync", boom)
+        with pytest.raises(OSError):
+            atomic_file.stage_file(str(tmp_path / "CURRENT"), "x", ".CURRENT.")
+        assert list(tmp_path.iterdir()) == []
+
+    def test_the_neo4j_password_names_are_the_same_behavior_over_the_shared_module(
+        self, tmp_path: Path,
+    ) -> None:
+        import writ.neo4j_password as np_mod
+        from writ.shared import atomic_file
+
+        assert np_mod.CONFIG_FILE_MODE == atomic_file.PRIVATE_FILE_MODE
+        assert np_mod.commit_config is atomic_file.commit_file
+        staged = np_mod.stage_config(str(tmp_path / "writ.toml"), "x = 1\n")
+        assert Path(staged).name.startswith(".writ.toml.")
+        assert Path(staged).read_text() == "x = 1\n"
+        np_mod._discard(staged)
+        assert list(tmp_path.iterdir()) == []
+
+    def test_the_current_switch_does_not_import_neo4j_password(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        import sys
+
+        from writ.retrieval.pipeline import _switch_bm25_current
+
+        monkeypatch.setitem(sys.modules, "writ.neo4j_password", None)  # an import now raises
+        _switch_bm25_current(tmp_path, "gen-switched")
+
+        assert (tmp_path / "CURRENT").read_text() == "gen-switched"
+        assert not list(tmp_path.glob(".CURRENT.*")), "a staged pointer file was left behind"

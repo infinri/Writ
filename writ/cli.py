@@ -2210,7 +2210,7 @@ def recall_cmd(
                 typer.echo(
                     f"[Writ recall: {os.path.abspath(repo)} is not registered as a "
                     f"project, so there are no decisions to recall. Register it by "
-                    f"running a Writ session in it (or `writ hooks install`) and "
+                    f"running a Writ session in it (or `writ git-hooks install`) and "
                     f"capturing a commit.]"
                 )
                 return
@@ -3190,7 +3190,7 @@ def docs_ingest(
             if not project:
                 typer.echo(f"[Writ docs: {repo_root} is not registered as a project, so there "
                            f"is nowhere to ingest its documents. Register it by running a Writ "
-                           f"session in it (or `writ hooks install`).]")
+                           f"session in it (or `writ git-hooks install` and a commit).]")
                 return 1
             # Doc ids are relative to --repo and deletion is scoped by project and kind, so
             # only the registered root may be ingested: a subdirectory would collide ids and
@@ -3277,7 +3277,7 @@ def question_open(
             if not project:
                 typer.echo(f"[Writ question: {repo_root} is not registered as a project, so the "
                            f"question has no project. Register it by running a Writ session in "
-                           f"it (or `writ hooks install`).]", err=True)
+                           f"it (or `writ git-hooks install` and a commit).]", err=True)
                 return 1
             found = await db.get_question_targets(project, rule_ids, decision_ids)
             missing = [r for r in rule_ids if r not in found["Rule"]] + [

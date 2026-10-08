@@ -830,6 +830,21 @@ class TestQuestionSubApp:
         assert result.exit_code == 0, result.output
         assert "--session-id" in result.output and "--token" in result.output
 
+    def test_open_on_an_unregistered_repo_exits_one_naming_the_git_hooks_command(self, tmp_path) -> None:
+        factory, fake = _db()
+        fake.resolve_project_for_cwd = AsyncMock(return_value="")
+
+        result, _n = _cli(
+            ["question", "open", "--text", QUESTION_TEXT, "--rule", RULE_ID, "--repo", str(tmp_path)],
+            db_factory=factory,
+        )
+
+        assert result.exit_code == 1, result.output
+        assert "not registered" in result.stderr
+        assert "writ git-hooks install" in result.stderr, result.stderr
+        assert "writ hooks install" not in result.output, result.output
+        fake.create_open_question.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # Caps 16 and 19 (question line): write_context against a fake db

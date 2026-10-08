@@ -83,10 +83,11 @@ persisted BM25 or HNSW keys.
 `<cache_root>/bm25/CURRENT` names the live generation; each `gen-<hash12>-<random>/` holds
 one complete index plus its sidecar. On a hit the generation `CURRENT` names is opened. On a
 miss a fresh directory is created, built, given its sidecar, and only then is `CURRENT`
-switched. The switch reuses the stage-then-commit write in `writ/neo4j_password.py`
-(`stage_config` writes a private temp file beside the target and fsyncs it, `commit_config`
-renames it and fsyncs the directory); `stage_config` gained an optional `prefix` so the
-pointer stages under its own name. After the switch two prunes run: superseded `gen-*`
+switched. The switch uses the stage-then-commit write in `writ/shared/atomic_file.py`
+(`stage_file` writes a private temp file beside the target and fsyncs it, `commit_file`
+renames it and fsyncs the directory), the same write `writ/neo4j_password.py` uses for
+writ.toml through `stage_config` and `commit_config`; the pointer stages under its own
+`.CURRENT.` prefix. After the switch two prunes run: superseded `gen-*`
 directories that are neither the new one nor the one `CURRENT` named before, and that are
 older than `BM25_PRUNE_GRACE_SECONDS` (one hour, so another process's not yet switched
 build survives); and the flat-layout files the old code left directly in `bm25/`, matched

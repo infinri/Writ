@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Stop hook. Runs tests for files marked by writ-mark-pending-test.sh.
 # Silent on pass. On failure, emits one-line summary via emit-summary.py.
+# On failure the summary goes to stderr and the hook exits 1, which CC treats as a
+# non-blocking hook error: the summary is surfaced to the user and the turn still ends.
+# Exit 2 would block; the user chose not to.
 # All test-path knowledge lives in bin/lib/test_paths.py (config-driven).
 set -euo pipefail
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -164,11 +167,12 @@ SUMMARY=$(python3 "$WRIT_DIR/bin/lib/emit-summary.py" \
     --rule "ENF-TEST-001" \
     --label "test failure(s)" 2>&1)
 [ -z "$SUMMARY" ] && exit 0
-# The hook_execution rows above say the runner RAN; none of them says this hook REFUSED the
-# stop. Found while enumerating the refusing surfaces beside enforce-violations.sh: same
-# class of gap, so fixing only the other one would have been fixing the string instead of
-# the class. The exit code stays 1, because flipping it to 2 would start blocking real turns and
-# needs the user's explicit consent, so the drill pins it at 1 rather than changing it.
+# The hook_execution rows above say the runner RAN; none of them says this hook reported
+# failing tests at the stop. Found while enumerating the refusing surfaces beside
+# enforce-violations.sh: same class of gap, so fixing only the other one would have been
+# fixing the string instead of the class. The exit code stays 1 (non-blocking: the turn
+# still ends), because flipping it to 2 would start blocking real turns and needs the
+# user's explicit consent, so the drill pins it at 1 rather than changing it.
 log_gate_decision "pending-tests" "deny" "$SUMMARY" "$SESSION_ID"
 echo "$SUMMARY" >&2
 exit 1
