@@ -9,8 +9,8 @@ Four source-derived counts:
   node types  -- len(NODE_ID_FIELDS)  == 13
   edge types  -- len(ALLOWED_EDGE_TYPES) == 25
   modes       -- len(MODE_CONFIG)     == 5
-  hooks       -- json.load hooks/hooks.json, count "command" leaves == 45
-  endpoints   -- regex @app/@router route decorators across writ/server/**.py == 46
+  hooks       -- json.load hooks/hooks.json, count "command" leaves == 52
+  endpoints   -- regex @app/@router route decorators across writ/server/**.py == 52
 """
 from __future__ import annotations
 

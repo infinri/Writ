@@ -23,8 +23,8 @@ FOUR MEASUREMENTS SHAPE THESE TESTS, and the first inverts the obvious design.
    `("127.0.0.1", 57966)`. That is the whole basis of the middleware.
 
 THIS CYCLE ENFORCES NOTHING, and one test asserts that directly. TCP cannot simply be
-switched off: `/dashboard` and `/explore` serve HTML to a browser, and `README.md:120`
-tells new users to verify an install with `curl http://localhost:8765/health`. 16 files
+switched off: `/dashboard` and `/explore` serve HTML to a browser, and `docs/install.md`
+("Verify") tells new users to read `http://localhost:8765/health` over TCP. 16 files
 POST to the daemon and 27 hold a daemon URL, so the enforcement flip waits for E2b and is
 driven by the audit rows this cycle produces rather than by a grep that has already been
 wrong once.

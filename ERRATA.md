@@ -2,15 +2,43 @@
 
 Corrections to figures this project has published. Two kinds of error end up here.
 
-**Errata with a consumer** stay in the README as well, because someone may have cited the
-wrong number and needs to see the correction where they found the claim: the retrieval
-nondeterminism disclosure and the monthly-review event count are both in that category.
+**Errata with a consumer** stay in the README as well, in its "Evidence and limits"
+section, because someone may have cited the wrong number and needs to see the correction
+where they found the claim: the retrieval nondeterminism disclosure and the monthly-review
+event count are both in that category.
 
 **Errata without a consumer** live only here. Nobody was misled by them, and confessing
 every one of them in the README teaches a reader to discount the self-criticism that does
 matter. That trade is the reason this file exists.
 
 ---
+
+## 2026-10-08: counts and claims corrected in the documentation rewrite
+
+Checked against the code and the generated reference pages while the README was rewritten.
+
+- `SECURITY.md` said Writ installs "about 44 hook registrations". `hooks/hooks.json` holds
+  52, across 12 events.
+- HANDBOOK and `docs/reference/architecture.md` said the daemon has 49 endpoints; it has 52.
+  The architecture page also said "40 bash hooks (44 registrations)".
+- The README described the test-skeleton gate as requiring "at least one assertion-bearing
+  test". The gate checks for a test signature (`def test_`, `it(`, `@Test`, ...), not for
+  assertions; assertion markers belong to the separate ENF-PROC-TDD-001 check.
+- The README and HANDBOOK described the pending-test, quality-score and reply-style Stop
+  hooks as blocking. They exit 1, which Claude Code treats as a non-blocking hook error:
+  they report, and the turn still ends.
+- The README and `docs/reference/session-and-gates.md` said hooks allow when the service is
+  unreachable, without the local fallback. The write hooks first run the same check locally
+  from the session file and allow only when no verdict can be obtained at all.
+- The README said that without a human keystroke "writing new rules into the rulebook"
+  halts. `writ add`, `writ edit`, `writ propose` and `writ import-markdown` need no token;
+  promotion, recording a dispute or verification, and answering or closing an open question
+  do.
+- `docs/reference/session-and-gates.md` called the research triangulation check a hard gate.
+  It is counted but wired to no refusal.
+
+Each is replaced in the sentence that carried it, so no standing README note is added, for
+the reason the 2026-08-14 entry below gives.
 
 ## 2026-08-14: the published corpus counts stopped matching the corpus
 

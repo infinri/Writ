@@ -4,6 +4,18 @@ Writ records *why files changed*, mechanically, and plays it back. Source of tru
 
 Provenance: this feature family (decision capture, session recall, pushing per-file reasons onto commits and open PRs) is adapted from concepts pioneered by JolliAI. The recall eviction policy is adapted from Jolli's ContextCompiler (the policy, not the code; `writ/session/recall.py` documents the policy). Writ's addition is rule grounding: every decision carries its governing rule IDs, and those are never evicted from the recall digest.
 
+## Continuity at a glance
+
+| Mechanism | What it records | Read it with |
+|---|---|---|
+| Decision capture (post-commit hook, plan approval) | Decision, FileChange and Commit records | `writ recall`, `writ recall --full`; git notes on `refs/notes/writ-decisions`; `writ pr sync` (Bitbucket Cloud) |
+| Write-time context | The decision behind a file's last change, open questions about it, files that usually change with it | Shown before an allowed write |
+| Open questions | OpenQuestion records | `writ question list`, `writ question answer` and `writ question close` (answer and close need the approval token) |
+| Auto-memory mirror | Memory records, latest contents only | `writ memory list`, `writ memory audit`, `writ memory backfill` |
+| Compaction handoff | `.claude/handoffs/session-<id>.md` | `writ handoff --session <id>` (also written automatically at compaction) |
+| Project documents | Document chunks | `writ docs ingest` |
+| Audit stream | Gate and approval rows | `writ audit-session <id>`, `writ logs tail` |
+
 ## What this is, and what it is not
 
 This is not conversational memory. Writ does not read your chat history and guess what mattered. It builds the record mechanically, from things that already exist.

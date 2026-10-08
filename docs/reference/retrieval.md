@@ -97,6 +97,36 @@ Negative-query ground truth (20 off-domain and near-domain queries) pins the fal
 
 One more distinction worth keeping straight: `writ/retrieval/session.py` (`SessionTracker`) is a *client-side* accumulator for sequential queries; the server-side session cache under `writ/session/` is an unrelated mechanism that happens to share the word. One non-obvious `SessionTracker` behavior: when an Abstraction is returned, every member rule id joins the exclude set, not just the abstraction's own id.
 
-## 7. Not measured: the graph traversal stage's own contribution
+## 7. The graph traversal stage's own contribution
 
-The pipeline runs five stages, one of which walks the rule graph, and **that stage is the reason this project needs a graph database at all**. Its individual contribution has never been isolated. Nobody has run the test set with graph traversal disabled and compared the ranking quality, so the honest position is that the dependency is justified by design reasoning rather than by a measurement. The nondeterminism finding above makes this more pressing rather than less: if iteration order was quietly deciding thirty questions' results, per-stage attribution was even shakier than it looked. The number will be published wherever it lands, including at or near zero.
+The pipeline runs five stages, one of which walks the rule graph, and **that stage is the reason this project needs a graph database at all**. Measured 2026-09-18: setting the graph weight to zero, from the 0.01 then shipped, costs one query of 193 on hit@5 (`benchmarks/NEO4J-ABLATION-2026-09-18.md`); the same sweep moved the shipped weight to 0.05 (section 2). The graph's contribution is small and measured; the dependency rests on that measurement plus the design reasoning above.
+
+## 8. Custom rules and what enforces them
+
+### What you can supply
+
+- **Rules**, through `writ add`, `writ edit <rule_id>` or `writ import-markdown <dir>`. Import reads three Markdown formats in strict precedence: YAML front-matter (one node per file), `<!-- NODE START type=X id=Y -->` block markers, and legacy `<!-- RULE START: id -->` markers (HANDBOOK section 11).
+- **Methodology nodes** (Skill, Playbook, Technique, AntiPattern) with the companion's matching fields: `floor_modes`, `action_triggers` and `trigger_keywords` (section 5).
+- **Routing fields** on a rule: `severity`, `mandatory`, `always_on`, `applicability_scope`, `trigger_keywords`, and the routes of the Category it belongs to.
+- **Project documents**, through `writ docs ingest` (docs, ADRs and READMEs of a registered project).
+- **Retirement**: a `SUPERSEDES` edge from the replacement takes the old rule out of both channels (section 4).
+- **Agent proposals**, through `writ propose` or `POST /propose`. A proposal that passes the structural gate is stored `ai-provisional` and is still injected like any other rule; it is promoted only through the token-gated `writ review <id> --promote`.
+
+### How a rule is selected
+
+Floor rules (mandatory or always-on) are injected on every prompt in their scope. Ranked rules come from the pipeline above, which abstains when nothing fits. Write-scoped rules are matched at write time against the file path and content. Methodology nodes are matched deterministically by workflow state. All of it is cut to the per-section budgets.
+
+### What is enforced and what is only injected
+
+| Requirement | Enforced by | Kind |
+|---|---|---|
+| A plan before source writes | The plan gate, `phase-a` (`writ/session/gates.py`) | Blocks |
+| A test skeleton before source writes | The test-skeleton gate | Blocks |
+| A test file with assertion markers before a Write of a source file under `src/`, `lib/` or `app/` | ENF-PROC-TDD-001 (`hooks/scripts/validate-test-file.sh`) | Blocks |
+| No writes to credential paths | `_is_credential_path` (`writ/session/gates.py`) and the Bash write gate | Blocks |
+| No error-level finding from a fixed set of static analyzers in new content | `hooks/scripts/pre-validate-file.sh` (`[ENF-POST-007]`, through `bin/run-analysis.sh`), independent of the corpus | Blocks |
+| No violation matched from a loaded rule's examples | `hooks/scripts/validate-rules.sh` | Advisory per write; at the plan boundary a confirmed violation invalidates the plan gate |
+| Reply punctuation | `hooks/scripts/writ-comms-output-gate.sh` (`[ENF-COMMS-OUTPUT-001]`) | Reports |
+| Every other rule | Nothing | Injected text only |
+
+`mechanical_enforcement_path` is a declared field: a mandatory proposal must fill it (`writ/gate.py`), and `writ validate` flags a critical or high rule that carries one without being mandatory, but nothing executes it. Adding a rule never adds a gate; removing one never removes a gate.

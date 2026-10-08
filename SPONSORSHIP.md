@@ -14,20 +14,20 @@ I'm Lucio Saldivar, an engineer. Writ is independently built and maintained by m
 
 Writ does three things for Claude Code:
 
-- **Governance.** It can allow, pause, confirm, or refuse an action when a tool runs, so the rules you rely on hold at the moment they matter.
-- **Relevant context.** It delivers the rules, methodology, and past decisions that fit the work happening now, instead of everything at once.
+- **Enforcement.** Checks that run when a tool is called and can block an action, ask you to confirm, or report a finding.
+- **Context.** It delivers the rules, methodology, and past decisions that fit the work happening now, instead of everything at once.
 - **Continuity.** It keeps project memory and decision history across sessions, with best-effort handoffs when context is compacted.
 
 Support also keeps the research and documentation going. Much of it, such as the architecture notes, the measurements, and the write-ups of how agents actually behave, is useful on its own, even if you never install Writ.
 
 ## What contributions would help fund
 
-I currently cover Writ's development costs myself. Contributions would help cover the Claude Code subscription I use to build and test it, and support deeper research into agent reliability, governance, and security.
+I currently cover Writ's costs myself. Contributions would help fund maintenance, evaluation and research: the Claude Code subscription used to build and test it, and the experiments below.
 
 With more support, I would like to:
 
 - **Measure instead of guess.** Run controlled API experiments to evaluate retrieval, rule delivery, and whether those changes improve agent behavior.
-- **Develop stronger governance and sandboxing.** Build isolated environments to test unauthorized actions, destructive commands, sensitive-data exposure, and attempts to bypass approvals. The goal is to find where controls fail and develop stronger enforcement and containment before those failures affect real projects.
+- **Develop stronger governance and sandboxing.** Build isolated environments to test unauthorized actions, destructive commands, sensitive-data exposure, and attempts to bypass approvals. The goal is to find where controls fail and develop stronger enforcement and containment before those failures affect real projects. This is future research, not a shipped feature.
 - **Explore local models.** Investigate how Writ's governance, context delivery, and continuity could work with models you run yourself.
 
 Writ already enforces selected workflow boundaries through hooks. Stronger security containment is a research direction I want to develop alongside those controls.
@@ -45,6 +45,6 @@ Money is one way to help, and not the only one:
 
 ## Thank you
 
-Thank you for reading this far, and for using Writ. Every coffee, bug report, and kind word goes straight into making it better.
+Thank you for reading this far, and for using Writ. Any coffee, bug report or kind word would go straight into making it better.
 
 **[☕ Buy me a coffee](https://buymeacoffee.com/infinri)**

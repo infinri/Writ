@@ -1,7 +1,30 @@
 # Writ Scale Benchmark Results
 
-**Date:** 2026-08-01 13:54 UTC
+**Date:** 2026-08-01 13:54 UTC (the synthetic scale run; later sections carry their own dates)
 **Scales tested:** 80, 500, 1,000, 10,000
+
+---
+
+## Current retrieval quality and abstention (2026-10-06 and 2026-10-07)
+
+**Method.** `scripts/measure_retrieval.py` on the isolated test graph, loaded from `writ-corpus.cypher` (corpus digest `30fd101d039f`). The gold set is `tests/fixtures/ground_truth_queries.json`, 193 queries: 169 are eligible for ranking because `/query` can return their expected rule, while 21 always-on targets and 3 routed targets are scored as delivery checks (zero undelivered). MRR@5 is taken over the 47 deliberately ambiguous queries. Twenty negative queries should inject nothing. Intervals are 95% percentile bootstrap (10,000 resamples, seed 0); the false-injection interval is 95% Wilson. A metric counts as moved only when its intervals are disjoint. Each query has one expected rule, and the set was written by the project that wrote the rules.
+
+Eligible pool, 2026-10-07 (`benchmarks/ITEM5-PHASE234-RANKING-2026-10-07.md`):
+
+| Metric | Gated (abstention at 0.30, shipped) | Ungated |
+|---|---|---|
+| hit@5 (n=169) | 0.9290 [0.8876, 0.9645] | 0.9408 [0.9053, 0.9704] |
+| MRR@5, ambiguous (n=47) | 0.6028 [0.4858, 0.7163] | 0.6348 [0.5213, 0.7429] |
+| nDCG@10 (n=169) | 0.8322 [0.7892, 0.8728] | 0.8438 [0.8033, 0.8811] |
+| False injection (n=20) | 4 of 20, 0.20 [0.0807, 0.4160] | 20 of 20, 1.00 [0.8389, 1.0000] |
+
+**Threshold sweep** (2026-10-06, `benchmarks/THRESHOLD-SWEEP-2026-10-06.md`, on the earlier corpus digest `a2420df5008f`): at the shipped 0.30, 4 of 20 negatives inject and two gold queries (Q66, Q175) lose the top-5 hit they had ungated. The same day's rewording of CLEAN-DEAD-001 and CLEAN-RETURN-001 (`benchmarks/CLEAN-REWORD-2026-10-06.md`) moved the corpus to the digest measured above; no metric moved by the disjoint-interval rule.
+
+**Not comparable to the older rows.** The eligible pool scores only queries the ranked channel can answer, so its hit@5 is not comparable to the all-193 rows in "Search quality against the gold set" below, which count always-on and routed targets as misses.
+
+**Index builds.** Positions 5 to 10 of the top-10 varied between two fresh HNSW index builds of the same code (8 queries); no top-5 hit changed (`benchmarks/ITEM5-PHASE234-RANKING-2026-10-07.md`).
+
+**Scope.** These measure ranking and abstention against a self-authored gold set. They say nothing about code quality, rule compliance or agent behavior.
 
 ---
 
@@ -142,7 +165,7 @@ Three appear across this project's files and they are not in competition, they a
 
 ---
 
-## Search quality against the gold set (2026-08-01, 2026-08-05, 2026-08-06)
+## Search quality against the gold set (2026-08-01, 2026-08-05, 2026-08-06) (historical, all-193 pool)
 
 Search quality against a 193 question test set (47 of them deliberately ambiguous), measured against the 287 rule corpus on the three dates in the column headers. The floors are automated gates the build fails below, set deliberately under the measured values:
 
@@ -172,16 +195,18 @@ Across 67 real sessions and 891 turns of logged injections: mean 537 tokens per 
 
 ---
 
-## Published headline figures (2026-08-01 through 2026-08-14)
+## Figures the README quotes
 
-`README.md` publishes four bullets drawn from this file, and this section is where those figures have one page stating what each one is and which section here backs it. Every one is a dated measurement rather than a live readout, taken on one developer machine with an uncapped database container, so your numbers will differ.
+`README.md` quotes the figures below in its "Evidence and limits" section, and this section is where each one has a page stating what it is and which section here backs it. Every one is a dated measurement rather than a live readout, taken on one developer machine, so your numbers will differ.
 
-| Published figure | Date | Backed by |
+| Figure | Date | Backed by |
 |---|---|---|
-| 0.923 hit rate at 5 across the 169 index-eligible questions of the gold set, and 0.608 mean reciprocal rank at 5 across the 47 deliberately ambiguous ones | 2026-08-06 | "Search quality against the gold set", the 2026-08-06 column |
-| A warm 95th percentile of 0.827 ms in the published synthetic run against 10,000 rules | 2026-08-01 | "Summary", the 10,000-rule E2E p95 row |
-| About 2,000 tokens of rule text per turn against the live 287-rule corpus | 2026-08-05 | "Live-corpus addendum", context tokens (retrieved) |
-| About 1,590 tokens of rule text per turn against the 10,000-rule synthetic corpus | 2026-08-01 | "Summary", context tokens (retrieved) |
-| Seventeen benchmark targets run in continuous integration on every push and every pull request, and passed 17 of 17 | 2026-08-14 | "Corpus growth since those runs, and the floors re-run against it" |
+| Gated (shipped) hit@5 0.929 [0.888, 0.965] across the 169 eligible queries | 2026-10-07 | "Current retrieval quality and abstention" |
+| Gated MRR@5 0.603 [0.486, 0.716] across the 47 ambiguous queries | 2026-10-07 | "Current retrieval quality and abstention" |
+| Gated nDCG@10 0.832 [0.789, 0.873] across the 169 eligible queries | 2026-10-07 | "Current retrieval quality and abstention" |
+| Gated false injection, 4 of 20 negatives, 0.20 [0.08, 0.42] | 2026-10-07 | "Current retrieval quality and abstention" |
+| Ungated hit@5 0.941 [0.905, 0.970] and false injection 20 of 20 (with MRR@5 0.635 and nDCG@10 0.844 beside them) | 2026-10-07 | "Current retrieval quality and abstention" |
+| 1.02 ms p95, retrieval alone, over the 193 gold queries against the 287-rule corpus | 2026-08-05 | "Live-corpus addendum", E2E p95 (ground-truth workload), and "Which 95th percentile" |
+| 0.827 ms p95 in the synthetic 10,000-rule run | 2026-08-01 | "Summary", the 10,000-rule E2E p95 row |
 
 The 287-rule figure keeps its 2026-08-05 date wherever it is quoted, on the README or here. It is a correct historical measurement: one rule arrived with the corpus commit dated 2026-08-14, which is why the present-tense count is 288, and `ERRATA.md` records that correction. Stripping the date is what would turn a correct dated reading into a wrong present-tense claim.

@@ -74,7 +74,7 @@ Maintainer reference for submitting `writ@writ` to the official Anthropic plugin
 - [x] **Manifest validates**: `claude plugin validate <install>` exits 0 with no warnings (pinned by `tests/plugin/test_plugin_validate_cli.py`).
 - [x] **Marketplace name not reserved**: `writ` is not on the reserved list.
 - [x] **Plugin source publicly reachable**: `marketplace.json` points at `./` and the repo is public at https://github.com/infinri/Writ.
-- [x] **README documents install + usage**: the "Install as a Claude Code plugin" section ships the collapsed sequence: `claude plugin marketplace add`, `claude plugin install writ@writ`, then the one absolute `bootstrap-plugin.sh` command Writ itself prints on first session (that run also patches `~/.claude` and installs the slash commands, so there is no separate patch step and no install-path lookup). Prerequisites are Python 3.11+ and Docker only; `jq`, `curl` and `envsubst` are no longer required. Full detail in `docs/install.md`.
+- [x] **README documents install + usage**: the "Quick start" section ships the collapsed sequence: `claude plugin marketplace add`, `claude plugin install writ@writ`, then the one absolute `bootstrap-plugin.sh` command Writ itself prints on first session (that run also patches `~/.claude` and installs the slash commands, so there is no separate patch step and no install-path lookup). Prerequisites are Python 3.11+ and Docker only; `jq`, `curl` and `envsubst` are no longer required. Full detail in `docs/install.md`.
 - [x] **Agents load**: measured `Agents (5)` on Claude Code 2.1.220 with roles auto-discovered from `agents/` (commit `a56ca1e`).
 - [x] **License OSI-approved**: MIT.
 - [x] **No secrets in repo**: `writ.toml` is gitignored; the shipped template carries only the documented dev Neo4j default.
@@ -108,7 +108,7 @@ The flatness is the honest claim; the multiplier is a number about a baseline no
 has moved. Do not count `bible/`: it is a gitignored derived export holding only 160
 rule-shaped files, and citing it is how one fact became two published numbers before.)
 
-**Long description**: mirror README "The problem" + "What Writ does about it" verbatim (kept current there; do not fork the text here).
+**Long description**: mirror the README's description and "The problem, and the approach" verbatim (kept current there; do not fork the text here).
 
 **Category**: Development workflows. **Keywords**: mirror `.claude-plugin/plugin.json`, which as of 2026-08-14 holds `claude-code`, `rag`, `rules`, `enforcement`, `neo4j`, `fastapi`, `hooks`, `workflow`, `code-quality`, `ai-tooling`, `governance`, `guardrails`, `knowledge-graph`, `tdd`. That list is kept byte-identical in `pyproject.toml` and `.claude-plugin/marketplace.json`; read it from the file rather than from this line if the two ever disagree.
 
@@ -165,7 +165,7 @@ with `claude plugin validate`, exit 0, including `--strict`.
 4. The `/dashboard` friction analytics view, or the `/explore` graph explorer.
 5. Optional: the architecture pages under `docs/architecture/`.
 
-**Items 1 and 2 are also the README's demonstration assets, so the capture work counts once.** `README.md`'s "See it refuse, in about a minute" section ships the command sequence plus the denial text quoted verbatim from the string literal at `writ/session/gates.py:801-809`, and deliberately ships **no** composed output: nothing there is paraphrased or reconstructed. The two captures above are the real output that section is missing. Until they exist, the section stands on the commands and the one string that already lives in source; when they are captured, paste them in rather than approximating them.
+**Items 1 and 2 are also the README's demonstration assets, so the capture work counts once.** `README.md`'s "Acceptance gates" example ships the denial text quoted verbatim from `writ/session/gates.py` (the `[ENF-GATE-PLAN]` and `[ENF-GATE-TEST]` literals) and labels the rest of the session illustrative: nothing there is paraphrased or reconstructed as if it were captured output. The two captures above are the real output that section is missing. Until they exist, the section stands on the strings that already live in source; when they are captured, paste them in rather than approximating them.
 
 Dark theme, 14-16pt font, redact personal paths.
 
@@ -178,7 +178,7 @@ Dark theme, 14-16pt font, redact personal paths.
 
 ---
 
-# Appendix: positioning (former PROMOTIONAL-BRIEF.md, corrected 2026-07-31)
+## Appendix: positioning (former PROMOTIONAL-BRIEF.md, corrected 2026-07-31)
 
 **Elevator pitch.** Writ gives every Claude Code session two helpers: a librarian that picks the rules that fit the current task in well under a millisecond, and a process keeper that blocks risky writes until you have approved a plan and tests. Self-approval is structurally impossible: advancing a gate requires a single-use token that only the user's typed approval mints.
 
@@ -194,7 +194,7 @@ Dark theme, 14-16pt font, redact personal paths.
 8. Pre-computation throughout: every index pre-warmed in memory, HNSW persisted with checksum guards, sticky rule ordering for prompt-cache stability.
 9. Zero per-project configuration: one shared graph, project-scoped isolation, hooks detect the project's language from marker files.
 
-**By the numbers**: quote README's Performance section (dated measurements) and `SCALE_BENCHMARK_RESULTS.md`; do not fork numbers into this file. Corpus and surface counts live in the generated `docs/reference/` pages.
+**By the numbers**: quote README's "Evidence and limits" section (dated measurements) and `SCALE_BENCHMARK_RESULTS.md`; do not fork numbers into this file. Corpus and surface counts live in the generated `docs/reference/` pages.
 
 **Use cases**: multi-language enterprise codebases (path-derived per-file rule injection); AI-discovered pattern capture (propose -> graduate -> promote instead of losing observations in transcripts); orchestrated sub-agent builds with human-held gates; pressure-tested rule authoring (RED-GREEN-REFACTOR applied to documentation); friction-driven retrospectives (tune the corpus from data, not anecdote).
 
@@ -204,7 +204,7 @@ Dark theme, 14-16pt font, redact personal paths.
 
 | Audience | Pitch |
 |---|---|
-| CTO / VP Eng | Ranked retrieval instead of context stuffing, enforceable plan-first/test-first discipline, and an AI-proposes-human-promotes evolution model. 749x context reduction at 10k rules, zero per-project config. |
+| CTO / VP Eng | Ranked retrieval instead of context stuffing, enforceable plan-first/test-first discipline, and an AI-proposes-human-promotes evolution model. Retrieved rule text stays roughly flat as the rulebook grows, with zero per-project config. |
 | Tech lead | One shared rulebook across every repo, graph-aware retrieval, hook-enforced gates, typed sub-agent roles. |
 | Engineer | Drop the plugin in. The right rules appear per turn; "approved" advances the workflow; writes are gated until then. |
 | Corpus maintainer | Rules live in a graph with explicit relationships; AI proposals arrive gated and provisional; friction analytics tell you what to graduate or trim. |

@@ -606,8 +606,9 @@ class TestEnforcementIsOptIn:
 
     @pytest.mark.parametrize("path", READ_ONLY_TCP_ROUTES)
     def test_enabled_it_still_serves_the_browser_surface(self, monkeypatch, path) -> None:
-        """README.md:120 tells new users to curl /health, and a browser cannot open
-        a unix socket, so these five stay on TCP."""
+        """`docs/install.md` ("Verify") tells new users to read
+        `http://localhost:8765/health` over TCP, and a browser cannot open a unix
+        socket, so these five stay on TCP."""
         transport = _require_module("writ.server.transport")
 
         _require(transport, "tcp_refusal")

@@ -3,7 +3,7 @@
 
 # Hook registration matrix
 
-45 registrations across 12 events wiring 41 scripts under `hooks/scripts/`, generated from `hooks/hooks.json` (the single source; `templates/settings.json` is rendered from the same file). `writ-statusline.sh` is wired through the settings `statusLine` channel, not a hook event. Behavior and blocking semantics: `HANDBOOK.md` section 14.
+52 registrations across 12 events wiring 47 scripts under `hooks/scripts/`, generated from `hooks/hooks.json` (the single source; `templates/settings.json` is rendered from the same file). `writ-statusline.sh` is wired through the settings `statusLine` channel, not a hook event. Behavior and blocking semantics: `HANDBOOK.md` section 14.
 
 ## SessionStart
 
@@ -19,6 +19,10 @@
 | `(all)` | `writ-manual-test-grant.sh` |
 | `(all)` | `auto-approve-gate.sh` |
 | `(all)` | `writ-rag-inject.sh` |
+| `(all)` | `writ-inject-always-on.sh` |
+| `(all)` | `writ-inject-methodology.sh` |
+| `(all)` | `writ-inject-recall.sh` |
+| `(all)` | `writ-inject-documents.sh` |
 
 ## SubagentStart
 
@@ -48,6 +52,7 @@
 | Matcher | Script |
 |---|---|
 | `.*` | `writ-blackbox-capture.sh` |
+| `.*` | `writ-tool-failure-record.sh` |
 
 ## PreCompact
 
@@ -93,6 +98,7 @@
 | `Write` | `validate-test-file.sh` |
 | `Write` | `validate-design-doc.sh` |
 | `Write` | `writ-memory-policy-guard.sh` |
+| `.*` | `writ-tool-failure-budget.sh` |
 
 ## PostToolUse
 
@@ -109,3 +115,4 @@
 | `Write` | `writ-quality-judge.sh` |
 | `Write|Edit` | `writ-mark-pending-test.sh` |
 | `Write|Edit` | `writ-memory-capture.sh` |
+| `.*` | `writ-tool-failure-budget.sh` |

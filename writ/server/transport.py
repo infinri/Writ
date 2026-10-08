@@ -78,8 +78,8 @@ def is_state_touching(method: str) -> bool:
 # five actually needed is for reads, which `tcp_refusal` now grants on every path. A
 # constant that grants nothing while its name claims a boundary is worse than no
 # constant, so it is deleted rather than amended. The reason those paths mattered
-# survives as the read exemption below and in README.md:120, which tells every new user
-# to verify an install with `curl http://localhost:8765/health`.
+# survives as the read exemption below and in `docs/install.md` ("Verify"), which tells
+# new users to read `http://localhost:8765/health` over TCP.
 TCP_READONLY_POST_ALLOWLIST = ("/query", "/subagent/start-context")
 # Routes served over the unix socket ONLY, whatever WRIT_TCP_READONLY says (program
 # item 2). A reload makes the daemon rebuild every retrieval index from the graph: cheap

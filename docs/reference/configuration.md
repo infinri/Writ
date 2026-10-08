@@ -2,6 +2,8 @@
 
 Every knob, its real location, and its default. The theme to keep straight: `writ.toml` holds five sections; most values people expect in config are deliberately code constants with tests pinning them.
 
+Modes are not configuration: each session declares one (`writ mode set <mode> <session_id>`); see HANDBOOK section 3.
+
 ## writ.toml
 
 At the install root, gitignored; `writ.toml.example` is the template. Readers in `writ/config.py`, each with a coded default; a missing or malformed file falls back silently to the caller (one warning line to stderr, a `config_resolved` metrics event recording key *names*, never values, since the same file holds credentials).
@@ -44,6 +46,8 @@ At the install root, gitignored; `writ.toml.example` is the template. Readers in
 | `WRIT_CONFIG_PATH` | Config file `get_egress_allow_hosts()` reads when called with no explicit path (the hook-side test seam; the other readers keep the fixed install-root location) | `<install>/writ.toml` |
 | `WRIT_CONTEXT_WINDOW_TOKENS` | Context-pressure reference for the statusline/watcher; validated 1,000-10,000,000 at daemon startup, warn-only | 200,000 hook-side |
 | `WRIT_BLACKBOX=1` (or `~/.claude/writ-blackbox.on`) | Raw hook-payload capture to `~/.claude/writ-blackbox.jsonl` | off |
+| `WRIT_STRICT=1` | The three write-path sites (two in `bin/lib/common.sh`, one in `hooks/scripts/writ-bash-write-gate.sh`) deny with `[ENF-STRICT-001]` when no verdict can be obtained, neither from the daemon nor from the local evaluator. Does not affect approvals, read gates or dispatch | unset (fail open) |
+| `WRIT_TCP_READONLY=1` | Daemon-side: TCP serves reads plus `POST /query` and `POST /subagent/start-context`; every other state-changing route answers 403 over TCP and is reachable only over the unix socket (`$WRIT_SOCKET`, default `~/.cache/writ/run/writ.sock`) | off |
 | `WRIT_READ_JUNK_GATE=enforce` | Turn the read-junk gate from observe-only into blocking; `WRIT_READ_SIZE_KB` sets the oversize bound | `observe` / 100 KB |
 | `WRIT_REALIGN_CACHE=1` | Let `ensure-server` restart a daemon whose cache dir diverged | off (systemd owns restarts) |
 | `WRIT_NEO4J_URI` / `WRIT_NEO4J_USER` / `WRIT_NEO4J_PASSWORD` | Point one process at a different Neo4j instance without editing the shared `writ.toml`; wins over the file | unset (falls through to `[neo4j]`, then the coded defaults) |

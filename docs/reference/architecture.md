@@ -8,8 +8,8 @@ Contributor-facing system design: the spine `README.md` and `HANDBOOK.md` refere
 
 | Piece | What it is | Where |
 |---|---|---|
-| **FastAPI daemon** | The single HTTP service all hooks talk to: retrieval, session state, gates, self-authoring. Binds `127.0.0.1:8765`, 49 endpoints, no auth (localhost only). | `writ/server/` (package: `__init__.py` app + lifespan, `models.py`, `routes/*.py`) |
-| **Hooks + session state machine** | 40 bash hooks intercept the Claude Code tool lifecycle (44 registrations, 12 events, `hooks/hooks.json`); a Python package owns mode/phase/budget/gate state per session. | `hooks/`, `writ/session/` |
+| **FastAPI daemon** | The single HTTP service all hooks talk to: retrieval, session state, gates, self-authoring. Binds `127.0.0.1:8765` and a private unix socket, 52 endpoints, no auth (localhost only). | `writ/server/` (package: `__init__.py` app + lifespan, `models.py`, `routes/*.py`) |
+| **Hooks + session state machine** | Bash hooks registered in `hooks/hooks.json` intercept the Claude Code tool lifecycle (52 registrations across 12 events; generated table: `docs/reference/hooks.md`); a Python package owns mode/phase/budget/gate state per session. | `hooks/`, `writ/session/` |
 | **Neo4j canonical store** | The graph is the source of truth for rules, methodology, and decision-memory records. Docker container `writ-neo4j`, bolt 7687. | `writ/graph/db/` (mixin package composing `Neo4jConnection`) |
 | **The CLI** | Operator surface: ingest, export, reconcile, validate, author, query, doctor, logs, decision memory. | `writ/cli.py` (Typer), plus the hook-facing `bin/lib/writ-session.py` facade |
 
@@ -23,15 +23,15 @@ Contributor-facing system design: the spine `README.md` and `HANDBOOK.md` refere
 
 **Commit path** (`PreToolUse` Bash, added 2026-08-06): `git commit` asks for human confirmation while a `writ-reviewer` verdict with CRITICAL findings stands. The verdict is recorded by `writ-subagent-stop.sh` straight from the `SubagentStop` payload, so the agent whose code was reviewed never carries its own critic's findings. It asks rather than refuses because any override the agent could set would re-open that defect; an unparseable verdict counts as blocking, and only a fresh clean reviewer verdict lifts it. Shared parser and blocking rule: `bin/lib/review_findings.py`, also behind `POST`/`GET /session/{sid}/review-findings`.
 
-**Stop path**: pending-test runner (blocks on failure only in implementation/complete phase), violation enforcement (work mode), verify-before-claim (unoverridden quality scores under 3), and the deterministic comms gate (em/en dash, ` -- ` in prose). Blocking Stop hooks use stderr + non-zero exit guarded by `stop_hook_active`; a Stop hook's `additionalContext` would loop the turn.
+**Stop path**: violation enforcement (work mode) blocks the stop with exit 2 while rule violations are unresolved. The pending-test runner (failures in implementation/complete phase), verify-before-claim (unoverridden quality scores under 3) and the deterministic comms check (em/en dash, ` -- ` in prose) report instead: they print to stderr and exit 1, which Claude Code treats as a non-blocking hook error (`claude-code-blackbox.md`, Exit codes), so the turn still ends. All four are guarded by `stop_hook_active`; a Stop hook's `additionalContext` would loop the turn.
 
-**Fail-open discipline.** Every hook is daemon-first with a subprocess fallback (`_writ_session`, `bin/lib/common.sh`) and fails open when the daemon is down; failures are logged, not silent. The deliberate fail-closed exceptions: credential-path denial, the research triangulation gate, and token validation on `/advance-phase`.
+**Fail-open discipline.** Every hook is daemon-first with a subprocess fallback (`_writ_session`, `bin/lib/common.sh`). When the daemon is down the write hooks run the same check locally from the session file, and allow a write only when no verdict can be obtained at all (`WRIT_STRICT=1` refuses it instead); failures are logged, not silent. The deliberate fail-closed exceptions: credential-path denial, gate-state protection, and token validation on `/advance-phase`.
 
 ## 3. The daemon
 
 **Lifespan order** (`writ/server/__init__.py`): Neo4j connection -> `build_pipeline` (with the abstention threshold 0.30, the one call site that enables it) -> `MethodologyTriggerIndex.build_from_db` -> analyzer clients. Indexes are pre-warmed; request handlers do no synchronous I/O.
 
-**49 endpoints** by group: retrieval (`/query`, `/prompt-bundle`, `/always-on`, `/methodology-companion`, `/conflicts`, `/rule/{id}`, `/subagent-role/{name}`), authoring (`/propose`, `/feedback`, `/analyze`), gates (`/pre-write-check`, `/session/{sid}/advance-phase`, `/session/{sid}/promote-candidate`), 27 session-state routes under `/session/{sid}/...` (including `/session/{sid}/prompt-state`) plus `/session/format`, decision memory (`/commit/capture`, `/recall`), `/git-hooks/auto-install`, and the explorer (`/dashboard`, `/explore`, `/graph`, `/node/{id}`). Count them: `grep -rcE '@router\.(get|post)' writ/server/routes/`.
+**52 endpoints** (generated list: `docs/reference/http-api.md`), for example by group: retrieval (`/query`, `/prompt-bundle`, `/always-on`, `/methodology-companion`, `/conflicts`, `/rule/{id}`, `/subagent-role/{name}`), authoring (`/propose`, `/feedback`, `/analyze`), gates (`/pre-write-check`, `/session/{sid}/advance-phase`, `/session/{sid}/promote-candidate`), 27 session-state routes under `/session/{sid}/...` (including `/session/{sid}/prompt-state`) plus `/session/format`, decision memory (`/commit/capture`, `/recall`), `/git-hooks/auto-install`, and the explorer (`/dashboard`, `/explore`, `/graph`, `/node/{id}`). Count them: `grep -rcE '@router\.(get|post)' writ/server/routes/`.
 
 **Error contract.** Logical failures return HTTP 200 with an `error` key; 422 is Pydantic validation; a raising `/query` re-raises after emitting an exception row (hooks fail open on the 500). `POST /session/{id}/mode` is the one route that returns a real 400 (invalid mode).
 
@@ -58,11 +58,11 @@ The daemon runs as a **systemd user service** in production (`scripts/install-se
 | ~~Authority-preference re-ranking~~ | RESOLVED 2026-08-06: configurable via `[retrieval] authority_preference_threshold`, default still 0.0 because a gold-set sweep measured no change from enabling it (the corpus's one ai-provisional node is not semantic-routed). The tiebreak coupling is fixed: the preference now runs after the tiebreak, not before. | `writ/retrieval/pipeline.py` |
 | ~~Bundle-cohesion weight~~ | RESOLVED 2026-08-06: deleted. No weight improved all three metrics, and the methodology channel it was built for shipped deterministic. See `benchmarks/RANKING-LEVERS-2026-08-06.md`. | `writ/retrieval/ranking.py` |
 | `/analyze` LLM escalation | Real code; the `anthropic` SDK is not a declared dependency, so a default install gets "SDK not installed" placeholder findings and the calibration log fills with placeholders. | `writ/analysis/llm.py` |
-| BM25 persistence | The HNSW index persists with checksum guards; the Tantivy index rebuilds on every daemon start. | `writ/retrieval/keyword.py` |
+| BM25 persistence | Both indexes persist: HNSW with checksum guards, Tantivy in hash-keyed generation directories under `bm25/` with a `CURRENT` pointer. | `writ/retrieval/pipeline.py` |
 | `debug` log stream | Reserved retention entry, never written; debug output stays in `WRIT_DEBUG`-gated `/tmp` sinks. | `writ/session/log_rotation.py` |
 | `ENFORCEMENT_CONVENTIONS` | Discoverability convention only, not validated. | `writ/graph/schema.py:70` |
 | `detect_confidence_defaults` | Exists as a callable check but is not wired into `run_all_checks`. | `writ/graph/integrity/` |
-| Marketplace listing | Install works end to end; community submission pending. | `docs/SUBMISSION.md` |
+| Marketplace listing | Install works end to end; community submission pending. | `docs/marketplace/SUBMISSION.md` |
 
 Closed seams worth knowing the history of: the Stage-1 route filter and the `/methodology-companion` channel both shipped (the companion is live inside `/prompt-bundle`); `authority` promotion has a live path (`promotion.py:220` stamps `ai-promoted`); the edge OR-match is registry-derived; `Abstraction` identity and edge resolution are project-scoped.
 

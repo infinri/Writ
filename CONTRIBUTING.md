@@ -2,6 +2,16 @@
 
 Rules in the Writ knowledge graph are governed by a structured authoring process. This document defines the workflow for adding, editing, and deprecating rules in a multi-author environment.
 
+## Ways to contribute
+
+- **A rule or gate that did not hold.** Open an issue with the transcript. It is the most useful report there is.
+- **Anything exploitable.** Report it privately through [GitHub Security Advisories](https://github.com/infinri/Writ/security/advisories/new), not in a public issue. [`SECURITY.md`](SECURITY.md) has the details.
+- **Rules, code and documentation**, by pull request. The sections below cover rules.
+- **Documentation conventions.** Tracked markdown prose uses no em dash, no en dash as punctuation and no spaced double hyphen (written `--` when it has to be quoted in a code span); `tests/test_doc_style_ratchet.py` enforces it. After changing CLI commands, hooks or HTTP routes, run `make docs` to regenerate the reference pages under `docs/reference/`; CI runs `make docs-check`.
+- **Financial support.** See [`SPONSORSHIP.md`](SPONSORSHIP.md).
+
+Before writing a rule, read what a rule can and cannot enforce: [`docs/reference/retrieval.md`](docs/reference/retrieval.md#8-custom-rules-and-what-enforces-them). A rule is text delivered to the model; adding one never adds a refusal.
+
 ## Adding a rule
 
 1. Run `writ add` to enter the interactive authoring flow.
@@ -22,14 +32,14 @@ Rules in the Writ knowledge graph are governed by a structured authoring process
 
 4. Accept or reject each suggested relationship. No edges are created automatically.
 
-5. Submit a PR containing the `writ add` output and any edge decisions for review.
+5. Run `writ export-cypher` from the repository root so the tracked `writ-corpus.cypher` carries the change, and include it in the PR. Submit the PR with the `writ add` output and any edge decisions for review.
 
 ## Editing a rule
 
 1. Run `writ edit <rule_id>` to load the current rule and modify fields.
 2. The same validation, redundancy, and conflict checks run on the updated text.
 3. Edits use `MERGE` (idempotent). Running the same edit twice produces no change.
-4. Submit a PR with the edit for review.
+4. Run `writ export-cypher` from the repository root so the tracked `writ-corpus.cypher` carries the change, and include it in the PR. Submit the PR with the edit for review.
 
 ## Deprecating a rule
 
@@ -68,6 +78,7 @@ Use `writ review` to triage AI proposed rules:
 - `writ review <rule_id> --promote` moves the rule to `authority = ai-promoted` and `confidence = peer-reviewed`. It requires `--session-id` and a `--token` minted from a human's typed approval, the same anti-self-approval gate described in `HANDBOOK.md` section 7: an agent cannot promote its own proposal, and an attempt is recorded as `agent_self_approval_blocked`.
 - `writ review <rule_id> --reject` deletes the rule from the graph.
 - `writ review <rule_id> --downweight` pins confidence to `speculative`.
+- `--reject` and `--downweight` ask for confirmation at the terminal and are not token-gated; `--promote` needs the approval token, and so does recording a `--dispute` or `--verify`.
 - `writ review --stats` prints counts grouped by authority.
 
 Promotion is a deliberate human act. The system does not promote on its own; frequency tracking only changes the runtime ranking weight, not the stored authority.

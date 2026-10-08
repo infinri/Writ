@@ -7,9 +7,24 @@ Writ runs the same way under two install paths; pick one:
 
 In every path, hook registrations come from one place, `hooks/hooks.json`. The current counts are generated from that file into [`reference/hooks.md`](reference/hooks.md). Editing that file is all a hook change needs.
 
+The daemon, in this guide and everywhere else in the docs, is Writ's local server process (`writ serve`, on `http://localhost:8765` and a private unix socket) that the hooks call for retrieval, session state and gate decisions.
+
 **Where state lives (both paths):** session caches, approvals and the pending-test and lint scratch files under `$XDG_STATE_HOME/writ` (default `~/.local/state/writ`), typed logs under its `logs/`. None of it is inside the install, so an upgrade or a second copy of Writ sees the same sessions. The first session after upgrading from 1.8.0 or earlier copies each old `<install>/var/session/writ-session-*.json` across once, never overwriting.
 
-**Prerequisites (all paths):** Python 3.11+, Docker (Neo4j runs in a container), and `git` for the clone paths. That is the whole list. `jq` and `curl` are optional accelerators: every JSON read has a Python fallback and every HTTP call has a `urllib` fallback, so their absence changes speed, never behavior. Nothing needs `envsubst`/gettext.
+## Prerequisites
+
+Linux or macOS (the hooks are bash; Windows is not supported). Python 3.11+. Docker with its daemon running (Neo4j runs in a container and wants about 1 GB of memory). `git` for the clone path. Network access once, for Python packages and the embedding model. `jq` and `curl` are optional accelerators: every JSON read has a Python fallback and every HTTP call has a `urllib` fallback, so their absence changes speed, never behavior. Nothing needs `envsubst`/gettext.
+
+### Python dependencies
+
+Both bootstraps install the package with its `dev` extra into their venv; you do not install these by hand.
+
+| Group | What it holds | When it is installed |
+|---|---|---|
+| Required | `fastapi`, `starlette`, `uvicorn`, `neo4j`, `tantivy`, `hnswlib`, `httpx`, `pydantic`, `typer`, `rich`, `onnxruntime` | Always |
+| `dev` | Test and lint tools, and `optimum`, which exports the ONNX embedding model during bootstrap | By both bootstraps |
+| `fallback` | `sentence-transformers` and `scikit-learn` (about 5 GB with their dependencies) | Only by hand, for `WRIT_ALLOW_EMBEDDING_FALLBACK=1`, `writ compress` and the redundancy check in `writ validate` |
+| `benchmark` | Benchmark tooling | Maintainers only |
 
 ## 1. Install (path A: marketplace plugin)
 
@@ -24,15 +39,27 @@ Now open Claude Code once in any project. Writ sees the un-bootstrapped install 
 bash /path/it/prints/scripts/bootstrap-plugin.sh
 ```
 
-Run that, restart Claude Code, and you are done: there is no install-path lookup step and no separate config patch. (If you would rather not open Claude Code first, `claude plugin list --json` carries the `installPath`; read it by eye. There is no `claude plugin path` subcommand.)
+Run that, restart Claude Code, and you are done: there is no install-path lookup step and no separate config patch. (If you would rather not open Claude Code first, `claude plugin list --json` carries the `installPath`; read it by eye. There is no `claude plugin path` subcommand.) Add `--preflight` to the command to run only the prerequisite checks.
+
+When the bootstrap finishes it prints a banner headed `Writ plugin is ready`, with the lines `Plugin root`, `Venv`, `Neo4j`, `Writ daemon`, `Rules loaded`, `Daemon log`, `Global config` and `Verify`, and ends with `! Restart Claude Code for the hooks to take effect.` Keep the `Plugin root` path; the Verify section below uses it.
+
+### Let Claude Code run the install
+
+You already have an agent that reads instructions and runs commands. Point it at this page:
+
+> Install Writ from https://github.com/infinri/Writ. Verify that Python 3.11+ and Docker are available, follow the plugin installation instructions, run the bootstrap command Writ prints after Claude Code starts, restart Claude Code, and verify that the Writ service is healthy. Stop and explain anything that requires me to install or approve it manually.
+
+Claude Code can do the project setup. It cannot install Docker or Python for you, so if either is missing you will be asked to handle that part yourself.
 
 **Path B (clone):**
 
 ```bash
-git clone <writ-repo> /any/path/you/like/writ
+git clone https://github.com/infinri/Writ /any/path/you/like/writ
 WRIT_DIR=/any/path/you/like/writ
 bash "$WRIT_DIR/scripts/bootstrap.sh"
 ```
+
+It ends with a banner headed `Writ is ready`. The clone path also links `~/.local/bin/writ` (and warns when `~/.local/bin` is not on your PATH); the plugin path does not, and its CLI is `<plugin root>/bin/writ` (inside Claude Code the plugin's `bin/` is on the Bash tool's PATH).
 
 ## 2. What the one bootstrap does
 
@@ -93,7 +120,10 @@ Installs `writ-server.service` (waits for Neo4j, `Restart=on-failure`) and the d
 
 ## Verify
 
+First set `WRIT_DIR`. Path A: the `Plugin root` line of the bootstrap banner. Path B: your clone.
+
 ```bash
+WRIT_DIR="<plugin root, or your clone>"
 "$WRIT_DIR"/bin/writ status                    # daemon health + rule count
 test -f ~/.claude/commands/writ-approve.md && echo "/writ-approve installed"
 "$WRIT_DIR"/bin/writ doctor                    # run it for the current check list; --fix repairs 7 of them
@@ -107,7 +137,19 @@ python3 "$WRIT_DIR"/bin/lib/writ_install.py http-get http://localhost:8765/healt
 
 `writ doctor` covers daemon liveness, orphaned-port conflicts, Neo4j connectivity, the Neo4j password, uniqueness constraints, duplicate records, index degeneracy, the daemon socket, the embedding stack, corpus drift, Bitbucket credential presence, the git post-commit hook, the `writ` PATH symlink, Claude Code hook registration and duplicate registration, hook telemetry coverage, stranded telemetry, sub-agent role coverage and declared write scope, the sub-agent governance census, role symlinks, mode and gate sanity, gate refusal liveness, and the extension trust ledger. Run the command for the authoritative list rather than relying on this sentence staying complete.
 
-Then open Claude Code in any project and type a prompt: you should see a `[Writ: ...]` status line and a `--- WRIT RULES ---` block.
+### What success looks like
+
+- `writ status` prints the daemon's `/health` JSON with `"status": "healthy"`, `"index_state": "warm"` and a non-zero `"rule_count"` (with `"mandatory_count"` beside it). `"status": "degraded"` means the index is warm but the database reports zero rules; re-run the bootstrap.
+- `Service not running. Start with: writ serve` (exit 1) means the daemon is down. See "Restarting the daemon" below.
+- `writ doctor` prints a `STATUS  NAME  DETAIL` table whose statuses are `ok`, `warn` or `fail`, and exits non-zero when any row is `fail`.
+- In Claude Code, the status bar shows `Writ ctx <n>%`.
+- A prompt carries a `--- WRIT RULES (<n> rules, <mode> mode) ---` block when retrieval matched, or a line beginning `[Writ: no matching rules found for this task.` when it did not. The first prompt of a session also carries the `=== ALWAYS-ACTIVE RULES ===` block.
+
+### Next
+
+- Set a mode, or let auto-route set one: `writ mode set <conversation|debug|investigate|review|work> <session_id>`.
+- Make a repository's docs, ADRs and READMEs retrievable with `writ docs ingest --repo <repo root>`. The repository must be a registered project first; approving a plan in it, or a captured commit, registers it.
+- `writ git-hooks install --repo <repo root>` installs the post-commit hook that records decisions. Writ also installs it automatically on the first Work-mode entry into a repository.
 
 ## Updating
 
@@ -179,6 +221,56 @@ The standalone install keeps working; the plugin path is additive. To move over:
 2. Remove the standalone symlinks: `rm -f ~/.claude/rules/writ-*.md ~/.claude/agents/writ-*.md`.
 3. If you ever ran `--hooks` seeding, remove the Writ `hooks` entries from `~/.claude/settings.json` (back it up first); the plugin now supplies them.
 4. Install via path A above. The Neo4j Docker volume (`writ-neo4j-data`) is shared between modes, so the corpus survives the switch.
+
+## Why was I blocked?
+
+Every refusal starts with a tag in brackets. Find it here. "Blocks" means the tool call is refused, "Asks" means Claude Code asks you to confirm, and "Reports" means the message is shown and nothing is refused.
+
+| Message starts with | Kind | What it means | What to do |
+|---|---|---|---|
+| `[ENF-GATE-MODE]` | Blocks | The session has no mode, so no write is allowed | Run the `writ mode set` command the message prints; it carries your session id. If a sub-agent was refused, the main session sets the mode and dispatches it again. |
+| `[ENF-GATE-PLAN] ALL writes blocked` | Blocks | Work mode, and the plan is not approved | Read the plan, and reply `approved` after the agent asks for it. |
+| `[ENF-GATE-PLAN] plan.md cannot be modified` | Blocks | The implementation phase freezes `plan.md` | Reply `replan approved`. The session returns to planning and both gates are cleared. |
+| `[ENF-GATE-TEST]` | Blocks | The plan is approved and the test skeletons are not | The agent writes a test file with a test signature and asks; reply `approved`. With no runnable tests, reply `manual test approved` (a grant that lasts 30 minutes), then `approved` when asked. |
+| `[ENF-GATE-DRIFT]` | Blocks | `plan.md` changed after you approved it | Review the change, and reply `approved` when the agent asks. |
+| `[ENF-PROJECT-BOUNDARY]` | Blocks | The path is outside the project root | Declare the absolute path in the plan's `## Files`, then approve again. A sub-agent cannot do this; it reports to the main session. |
+| `[ENF-ROLE-SCOPE]` or `[ENF-GATE-SUBAGENT]` | Blocks | A sub-agent wrote outside its role's declared scope, or where its orchestrator would be refused | A role scope changes only when a human edits the role. For gate inheritance, resolve the main session's pending gate. |
+| `[SEC-CREDENTIAL-WRITE]` | Blocks | The path is a credential or secret file | Write the file yourself. Templates named `.env.example`, `.env.sample` or `*.pub` are allowed. |
+| `[DEBUG-GATE-ROOT-CAUSE]` or `[DEBUG-EVIDENCE-FIRST]` | Blocks (debug mode) | Source edits before a root cause is written, or source reads before evidence is recorded | Fill `## Root cause` (for edits), or `## Evidence` and `## Narrowing` (for reads), in the session's `debug.md` (`.claude/debug/<session_id>/debug.md`). |
+| `ENF-PROC-TDD-001:` | Blocks (Work mode) | A Write of a source file under `src/`, `lib/` or `app/` with no conventional test file carrying assertion markers | Add the test file the message lists, with assertions; or, for code with no runnable harness, reply `manual test approved`. |
+| `[ENF-POST-007]` or `[ENF-POST-008]` | Blocks | Pre-write checks found an error in the proposed content, or a shell file with a syntax error or with all its code commented out | Fix the flagged content. |
+| `[ENF-IRREVERSIBLE]` | Blocks | A destructive command (for example a hard reset, a force push, or a destructive database statement) | If you intend it, run it yourself with a leading `!` in Claude Code. |
+| `[ENF-GATE-STATE]` | Blocks | The command or write targets Writ's own approval state | Nothing to do: approvals come from your replies. To write prose that names gate state in a commit, use `git commit -F <file>`. |
+| `[ENF-TOOL-BUDGET]` | Blocks | The identical call already failed three times in a row | Change the input. For a shell command you want repeated, run it yourself with `!`. |
+| `[ENF-STRICT-001]` | Blocks | `WRIT_STRICT=1` is set and no verdict could be obtained | Start the daemon, or unset `WRIT_STRICT`. |
+| `ENF-PROC-WORKTREE-001:` | Blocks, or asks when the target cannot be resolved | `git worktree add` into a path inside the project that `.gitignore` does not cover | Add the directory to `.gitignore`, or create the worktree outside the project. |
+| `[SEC-BASH-EGRESS]` | Asks | A shell command appears to send local data to a host not on your allowlist | Confirm or decline. Allowlist hosts in `writ.toml` (`[egress] allow_hosts`) or `WRIT_EGRESS_ALLOW_HOSTS`. |
+| `[ENF-BASH-WRITE-UNRESOLVED]` | Asks | A shell write whose target Writ cannot resolve, such as an unset variable | Confirm or decline; spelling the path literally avoids the question. |
+| `[Writ] The reviewer left` | Asks | `git commit` while CRITICAL reviewer findings stand | Fix the findings and re-run `writ-reviewer`, or confirm to commit anyway. |
+| `[ENF-DECIDER-INCOMPLETE]` or `[WRIT CRITICAL]` | Asks, or reports | A Writ decision helper did not finish, so the call was not judged | Run `writ doctor`. |
+| `[WRIT-READ-SIZE]` or `[WRIT-READ-JUNK]` | Blocks only with `WRIT_READ_JUNK_GATE=enforce`; by default the check only records | A whole-file read of a large or generated file | Read with offset and limit, or grep for what you need. |
+| `[ENF-COMMS-OUTPUT-001]`, `[ENF-TEST-001]` or `ENF-PROC-VERIFY-001` at the end of a turn | Reports | The reply used forbidden punctuation, a marked test failed, or a quality self-score was under 3 | Read it and fix what it names. These exit 1, which Claude Code treats as a non-blocking hook error, so the turn is not held. |
+
+Two more things can look like a block. Once any gate (drift, plan or test skeletons) has refused twice in a session, the Write and Edit hook asks you instead of refusing, for every refusal on that hook except credential paths, which always stay refused, prefixed `[Writ: repeated gate violation #N]`; declining keeps the refusal. The counts clear when that gate advances. And an approval can be refused by the gate's validator:
+
+```text
+[Writ: planning gate REJECTED, not advanced] plan.md validation failed: ...
+Fix the issue above in one edit; the rejection spent the prior approval, so the user must approve again.
+```
+
+Fix what the message names (the plan's sections, its `## Files` lines, rule ids it cites that were never injected), then reply `approved` again when asked. When the gate could not evaluate the artifact at all, the second line reads `Your approval was NOT consumed: fix the cause above and retry; you do not need to approve again.` instead.
+
+If the daemon is down when you approve, nothing advances and Writ prints:
+
+```text
+[Writ: <gate> gate NOT advanced -- the Writ daemon did not answer]
+Your approval was not consumed. Start the daemon and try again:
+  systemctl --user restart writ-server
+Then reply "approved" once more; a duplicate advance on an already-advanced gate is a
+no-op, so retrying is safe.
+```
+
+Without the systemd service, start it with `bash "$WRIT_DIR/scripts/ensure-server.sh"`, then reply `approved` again.
 
 ## Troubleshooting
 

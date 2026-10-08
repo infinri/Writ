@@ -13,6 +13,7 @@ Every `writ` command, generated from the Typer app. Run `writ <command> --help` 
 | `writ blackbox-census` | Regenerate the payload census from a blackbox capture log |
 | `writ compress` | Cluster rules into abstraction nodes for compressed retrieval |
 | `writ corpus-footprint` | No-API corpus footprint: rank per-rule bloat (WASTE) cut-candidates. Proposes, never applies |
+| `writ docs ingest` | Ingest docs/, ADRs and READMEs; replace changed documents, delete vanished ones |
 | `writ doctor` | Run the operability self-diagnostic; exit non-zero if any check fails |
 | `writ edit` | Edit an existing rule in the graph |
 | `writ export` | Regenerate Markdown from graph. Overwrites output directory |
@@ -42,9 +43,13 @@ Every `writ` command, generated from the Typer app. Run `writ <command> --help` 
 | `writ propose` | Propose an AI-generated rule. Runs structural gate before ingestion |
 | `writ prune` | Detect graph nodes absent from the bible markdown (parity violations) |
 | `writ query` | CLI rule query for testing retrieval quality |
+| `writ question answer` | Answer an open question with the user's approval |
+| `writ question close` | Close an open question without an answer, with the user's approval |
+| `writ question list` | List the project's open questions, newest first |
+| `writ question open` | Open a question about one or more rules or decisions. Needs no approval |
 | `writ recall` | Read back the project's recent rule-grounded decisions from memory |
 | `writ reconcile` | Make the graph match the source-of-truth: delete stale nodes/edges and clear stale props |
-| `writ review` | Review AI-proposed rules. List, inspect, promote, reject, or downweight |
+| `writ review` | Review AI-proposed rules. List, inspect, promote, reject, downweight, dispute or verify |
 | `writ role-prompt` | Print the graph-canonical prompt template for a SubagentRole |
 | `writ serve` | Start Writ service on a private unix socket AND the TCP port. Pre-warms indexes |
 | `writ status` | Health check: rule count, index status, last ingestion, stale rules |
