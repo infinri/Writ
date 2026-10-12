@@ -2,6 +2,10 @@
 
 Rules in the Writ knowledge graph are governed by a structured authoring process. This document defines the workflow for adding, editing, and deprecating rules in a multi-author environment.
 
+## Project governance and conduct
+
+[GOVERNANCE.md](GOVERNANCE.md) defines contribution decisions, release authority, security coordination and maintainer continuity. [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) defines community expectations and private conduct reporting.
+
 ## Ways to contribute
 
 - **A rule or gate that did not hold.** Open an issue with the transcript. It is the most useful report there is.
