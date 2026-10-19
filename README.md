@@ -12,7 +12,9 @@ Writ turns supported workflow requirements into executable checks and acceptance
 
 ## Watch Writ in action
 
-[![Watch the 81-second Writ demo: agents do the work, Writ controls the workflow.](docs/assets/writ-demo-preview.jpg)](https://infinri.github.io/Writ/docs/demo.html)
+[![Watch the 81-second Writ demo: agents do the work, Writ controls the workflow.](docs/assets/writ-demo-preview.gif)](https://infinri.github.io/Writ/docs/demo.html)
+
+Looping excerpt above. Click it for the full captioned demo.
 
 **[Watch the demo (1:21)](https://infinri.github.io/Writ/docs/demo.html)** · [Download the MP4](docs/assets/writ-demo.mp4)
 
