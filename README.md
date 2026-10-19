@@ -8,7 +8,17 @@ Writ turns supported workflow requirements into executable checks and acceptance
 
 ![Writ: just-in-time retrieval, acceptance gates and persistent memory, shown as a library where a gatekeeper asks for approval first. Infinri branding.](docs/assets/writ-hero.png)
 
-[Quick start](#quick-start) · [Acceptance gates](#acceptance-gates) · [Why was I blocked?](docs/install.md#why-was-i-blocked) · [Documentation](#documentation) · [Support Writ](#support-writ)
+[Watch demo](#watch-writ-in-action) · [Quick start](#quick-start) · [Acceptance gates](#acceptance-gates) · [Why was I blocked?](docs/install.md#why-was-i-blocked) · [Documentation](#documentation) · [Support Writ](#support-writ)
+
+## Watch Writ in action
+
+[![Watch the 81-second Writ demo: agents do the work, Writ controls the workflow.](docs/assets/writ-demo-preview.jpg)](https://infinri.github.io/Writ/docs/demo.html)
+
+**[Watch the demo (1:21)](https://infinri.github.io/Writ/docs/demo.html)** · [Download the MP4](docs/assets/writ-demo.mp4)
+
+A real Claude Code session building an offline security briefing command in A.S.E., edited for length with captions and no narration. See the plan and test approval gates refuse writes, specialist agents explore, plan, implement and review, and `writ audit-session` record the gate events.
+
+The checks pass, then review finds additional edge cases. The recording shows workflow enforcement and verification, not a guarantee of bug-free code.
 
 ## The problem, and the approach
 
@@ -240,6 +250,7 @@ These are future work, not shipped features.
 
 | If you want to... | Read |
 |---|---|
+| Watch a real session with approval gates and specialist agents | [81-second demo](https://infinri.github.io/Writ/docs/demo.html) |
 | Install, update, troubleshoot, or find out why you were blocked | [`docs/install.md`](docs/install.md) |
 | Run it day to day: modes, gates, the CLI | [`HANDBOOK.md`](HANDBOOK.md) |
 | Know the exact gate and approval contract | [`docs/reference/session-and-gates.md`](docs/reference/session-and-gates.md) |

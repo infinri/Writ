@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Writ in action | Infinri</title>
+  <meta name="description" content="An 81-second captioned demo of Writ approval gates, specialist agents, verification and the session audit trail.">
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #120e1c; color: #f0e7d5; }
+    body { max-width: 1120px; margin: auto; padding: 32px 20px 56px; line-height: 1.6; }
+    a { color: #c69aff; text-underline-offset: .2em; }
+    header { display: flex; align-items: baseline; gap: 16px; border-bottom: 1px solid #483653; margin-bottom: 24px; }
+    h1 { font-size: clamp(2rem, 6vw, 3rem); margin: 0 0 12px; }
+    header p { color: #b7adc8; }
+    video { display: block; width: 100%; aspect-ratio: 16 / 9; background: #000; border: 1px solid #6a4b86; border-radius: 8px; }
+    .summary { max-width: 80ch; } .meta { color: #b7adc8; }
+    footer { margin-top: 32px; border-top: 1px solid #483653; padding-top: 20px; }
+  </style>
+</head>
+<body>
+  <header><h1>Writ in action</h1><p>By Infinri</p></header>
+  <p class="summary">A real Claude Code session building an offline security briefing command in A.S.E. Writ checks the workflow while specialist agents do the work.</p>
+  <video controls playsinline preload="metadata" poster="assets/writ-demo-preview.jpg" aria-label="Writ demo, 81 seconds, with captions embedded in the video and no narration">
+    <source src="assets/writ-demo.mp4" type="video/mp4">
+    <p>Your browser cannot play this video. <a href="assets/writ-demo.mp4">Download the MP4</a>.</p>
+  </video>
+  <p class="meta">1 minute 21 seconds. Captioned screen capture, no narration. Edited for length; source timestamps remain visible.</p>
+  <p><a href="assets/writ-demo.mp4" download>Download the MP4</a> · <a href="https://github.com/infinri/Writ#quick-start">Install Writ</a></p>
+  <h2>What the recording shows</h2>
+  <ul>
+    <li>Specialist exploration and planning.</li>
+    <li>A write refused before plan approval, then another refused while test approval is pending.</li>
+    <li>Human test approval followed by implementation.</li>
+    <li>190 passing tests and a clean static-analysis result.</li>
+    <li>Review finding additional edge cases after those checks pass.</li>
+    <li>The session audit recording the plan and test gate denials.</li>
+  </ul>
+  <p class="summary">This demonstrates workflow enforcement and verification. Passing tests does not establish that the code has no bugs, and the recording does not demonstrate sandbox containment or fresh-session memory recall.</p>
+  <footer><a href="https://github.com/infinri/Writ">Writ on GitHub</a> · <a href="architecture/index.html">Architecture</a></footer>
+</body>
+</html>
