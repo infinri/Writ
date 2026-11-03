@@ -40,19 +40,6 @@ readonly DAEMON_WAIT_SECONDS=10  # Max wait for writ serve /health after launch
 readonly MIN_PYTHON_MAJOR=3
 readonly MIN_PYTHON_MINOR=11
 
-# ── Paths ───────────────────────────────────────────────────────────────────
-# Plugin install root: prefer ${CLAUDE_PLUGIN_ROOT} (set by Claude Code when
-# the plugin is loaded). Fall back to a dirname walk so the script also works
-# when invoked from a checked-out repo without the plugin env set.
-if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
-    WRIT_DIR="${CLAUDE_PLUGIN_ROOT}"
-else
-    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-    WRIT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-fi
-
-COMPOSE_FILE="${WRIT_DIR}/docker-compose.yml"
-
 # ── Colors (ANSI, degrade gracefully on dumb terminals) ─────────────────────
 if [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ]; then
     GREEN='\033[0;32m'
@@ -124,6 +111,19 @@ if [ "$PREFLIGHT" = "1" ]; then
     exit 0
 fi
 
+# ── Paths ───────────────────────────────────────────────────────────────────
+# Plugin install root: prefer ${CLAUDE_PLUGIN_ROOT} (set by Claude Code when
+# the plugin is loaded). Fall back to a dirname walk so the script also works
+# when invoked from a checked-out repo without the plugin env set.
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+    WRIT_DIR="${CLAUDE_PLUGIN_ROOT}"
+else
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    WRIT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+fi
+
+COMPOSE_FILE="${WRIT_DIR}/docker-compose.yml"
+
 # ── 2. Docker daemon reachable ──────────────────────────────────────────────
 step "Checking Docker daemon"
 if ! docker info >/dev/null 2>&1; then
@@ -136,8 +136,7 @@ ok "docker daemon reachable"
 # ── 3. Python venv (location from bin/lib/writ-venv.sh) ─────────────────────
 # The venv comes from the shared resolver. Run by hand from the plugin cache with no
 # CLAUDE_PLUGIN_DATA exported, it still lands in the directory the loader would name,
-# ~/.claude/plugins/data/<plugin>-<marketplace>. Sourced here, after the preflight: under its
-# stripped PATH the dirname walk above cannot resolve WRIT_DIR.
+# ~/.claude/plugins/data/<plugin>-<marketplace>. Sourced after preflight and path setup.
 # shellcheck source=bin/lib/writ-venv.sh
 source "${WRIT_DIR}/bin/lib/writ-venv.sh"
 writ_resolve_venv "${WRIT_DIR}" || true

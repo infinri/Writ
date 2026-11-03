@@ -31,11 +31,6 @@ readonly DAEMON_WAIT_SECONDS=10  # Max wait for writ serve /health after launch
 readonly MIN_PYTHON_MAJOR=3
 readonly MIN_PYTHON_MINOR=11
 
-# ── Paths ───────────────────────────────────────────────────────────────────
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-WRIT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-COMPOSE_FILE="$WRIT_DIR/docker-compose.yml"
-
 # ── Colors (ANSI, degrade gracefully on dumb terminals) ─────────────────────
 if [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ]; then
     GREEN='\033[0;32m'
@@ -108,6 +103,11 @@ if [ "$PREFLIGHT" = "1" ]; then
     exit 0
 fi
 
+# ── Paths ───────────────────────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WRIT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+COMPOSE_FILE="$WRIT_DIR/docker-compose.yml"
+
 # ── 2. Docker daemon reachable ──────────────────────────────────────────────
 step "Checking Docker daemon"
 if ! docker info >/dev/null 2>&1; then
@@ -119,8 +119,7 @@ ok "docker daemon reachable"
 
 # ── 3. Python venv ──────────────────────────────────────────────────────────
 # The shared resolver: for a clone that is $WRIT_DIR/.venv unless WRIT_VENV says otherwise.
-# Sourced here, after the preflight: under its stripped PATH the dirname walk above cannot
-# resolve WRIT_DIR, so the resolver file would not be found.
+# Sourced after preflight and path setup so prerequisite checks need no filesystem helpers.
 # shellcheck source=bin/lib/writ-venv.sh
 source "$WRIT_DIR/bin/lib/writ-venv.sh"
 writ_resolve_venv "$WRIT_DIR" || true
