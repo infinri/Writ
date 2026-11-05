@@ -3,12 +3,12 @@
 Read this first after compaction or in a new session, then [WORK-STATE](WORK-STATE.md).
 
 1. **Objective:** build Writ V2, a model- and domain-agnostic governance, retrieval and memory platform, per [master plan](MASTER-IMPLEMENTATION-PLAN.md).
-2. **Milestone:** M0 (audit and cross-domain contracts). No production language chosen (ADR-0002 OPEN).
-3. **Active task:** none in progress; waiting on independent review of the 24 golden cases and implementation (M0-05a) with security priorities SR-01..SR-06. M0 is NOT complete.
-4. **Most recent work:** pushed `38ccbf6` and CI passed with 223 tests (run 42098268490); golden review package `docs/audit/m0/GOLDEN-DECISION-REVIEW.md` (all PENDING INDEPENDENT REVIEW, do not self-approve); V1 regression port `m0/tests/test_v1_regressions.py` with `docs/audit/m0/V1-REGRESSION-PORT.md`.
-5. **Relevant files:** `m0/writ_m0/`, `m0/tests/`, `docs/contracts/` (schemas and fixtures), `docs/audit/m0/`, `docs/implementation/TASKS.md`.
-6. **Constraints:** branch `v2/architecture-rebuild` only; V1 code is reference; README untouched; no production data; kernel/broker import no model SDK; packs never grant permissions; nothing in `m0/` is the production kernel.
-7. **Do not reverse:** D-001 Python oracle not kernel; D-002 audit reads pinned `ebdafe5`; D-003 generated evidence drift-checked; D-004 rule disposition first pass only; D-005 m0 tests isolated; D-006 canonical JSON without floats; D-007 evaluators ignore producer verification status; D-008 precedence, scoped resource ids `<scheme>:<tenant>/<project>/<path>`, broker re-decides at use time; D-009 no grant inheritance, malformed grants refused. Never change golden expected outcomes without a recorded reviewer verdict. Do not start M1 or choose Rust/Go.
-8. **Failures/blockers:** no failing tests. Pages deploy blocked by repo environment protection (pre-existing). Rust/Go toolchains absent. M1 not started by instruction.
-9. **Last verified tests:** CI E-005 223 passed at `38ccbf6`.
+2. **Milestone:** M0, NOT complete. M1 not started; Rust vs Go not chosen (instruction).
+3. **Active task:** none in progress; security corrections SR-01/02/03/07/08/09 done locally and IN REVIEW.
+4. **Most recent work:** independent review recorded in `docs/audit/m0/INDEPENDENT-REVIEW-M0.md`; one commit per fix with failing-first tests; review package updated with a post-review change table.
+5. **Relevant files:** `m0/writ_m0/` (`ingress.py` new), `m0/tests/`, `docs/contracts/`, `docs/audit/m0/`, `docs/implementation/TASKS.md`.
+6. **Constraints:** branch `v2/architecture-rebuild` only; no push without separate authorization; V1 code is reference; README untouched; kernel/broker import no model SDK; packs never grant permissions; `m0/` is not the production kernel.
+7. **Do not reverse:** D-001..D-010. In particular D-008 precedence and scoped ids, D-009 no grant inheritance, D-010 broker accepts only adapter-sealed requests and the kernel stays key-free. Never change a golden expected outcome or `review_status` without a recorded reviewer verdict; cases 01 and 08 need a human policy decision.
+8. **Failures/blockers:** no failing tests. Correction commits not pushed. Pages deploy blocked by repo settings.
+9. **Last verified tests:** local E-006 256 passed; last CI E-005 223 passed at `89f8caa`.
 10. **Next action:** see WORK-STATE "Next exact action".

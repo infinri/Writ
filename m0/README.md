@@ -10,7 +10,8 @@
 | `evaluation.py` | Domain-neutral evidence evaluator | INV-24, INV-25 |
 | `reference_packs.py` | Evidence-kind checks owned by the three reference packs | P-15, P-17 |
 | `decision.py` | Pure decision oracle (D-008) | INV-03..05, INV-10, INV-13, INV-17 |
-| `broker.py` | Ledger, approvals, permits, receipts | INV-01, INV-06..09 |
+| `ingress.py` | Adapter-sealed broker ingress (D-010) | INV-02, INV-05, T1 |
+| `broker.py` | Ledger, approvals, single-use permits, receipts | INV-01, INV-06..09 |
 | `hosts.py` | Host adapters, principal proofs, canonical targets | INV-02, INV-14, INV-19, INV-22, P-01 |
 | `providers.py`, `runner.py` | Stub model adapters and managed runner | INV-21, INV-26, P-13, P-18, P-19 |
 | `packs.py` | Pack verification and task instantiation | INV-23, P-16 |

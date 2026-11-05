@@ -404,3 +404,18 @@ The project owner flagged these for the independent review (tracked as SR-01 to 
 4. Parent/subagent approval isolation ([D-009](../../implementation/DECISION-LOG.md); `test_v1_regressions.py::test_subagent_does_not_inherit_parent_grant`).
 5. Project-level evidence isolation ([V1-REGRESSION-PORT](V1-REGRESSION-PORT.md) gaps).
 6. Fail-closed behavior when Claude Code hooks crash ([UNMEDIATED-TOOLS](UNMEDIATED-TOOLS.md)).
+
+## Changes after the independent source review (2026-11-05)
+
+Review record: [INDEPENDENT-REVIEW-M0](INDEPENDENT-REVIEW-M0.md). No existing expected outcome changed. Every case, old and new, remains **PENDING INDEPENDENT REVIEW**; cases 01 and 08 additionally await an explicit human policy decision.
+
+| Item | Change | Commit | Tests |
+|---|---|---|---|
+| SR-08 | Kernel rejects empty segments anywhere in a canonical id. **New case 25 `resource-trailing-empty-segment`**: `memory.write` on `memory:fixture-tenant/fixture-project/` expects invalid/RESOURCE_NOT_CANONICAL (previously matched the memory permit and allowed) | `64a5b01` | `TestCanonicalResourceIds` |
+| SR-03 | `deadline_at <= now` returns invalid/DEADLINE_EXCEEDED right after schema validation; Decision and permit expiry capped at the deadline; broker re-checks at use time. **New case 26 `deadline-exceeded`**. Open question for the reviewer: `invalid` vs `deny` | `4947489` | `TestDeadlines`, `TestDeadlinesAtUseTime` |
+| SR-02 | Approval request id, ApprovalGrant (new required `requested_capabilities`) and broker binding include the sorted capability set. Affects case 20's execution path, not its decision | `f8ad085` | `TestApprovalBindsCapabilitySet` |
+| SR-07 | Permits are single use, consumed durably in the ledger before the effect | `2800da3` | `TestPermitReplay` |
+| SR-01 | Broker accepts only adapter-sealed requests (D-010). Case 10's kernel decision is unchanged; the kernel's trust in `verified_by` is now guarded by authenticated ingress | `94d3701` | `TestAuthenticatedIngress` |
+| SR-09 | Case 22 patch repaired to include `approved`, `grant_policy`, `writ_mode` attributes; expected outcome unchanged | `f4489c9` | `test_attributes_case_actually_carries_untrusted_attributes` |
+
+Still open from the review: cases 01 and 08 policy decisions; case 24 rename; SR-04 human signoff; SR-05 project-scoped evidence; SR-06 live host; extra coverage notes for cases 02, 04, 16 (case/alias secrets paths, competing permit in golden set, encoded traversal, use-time path substitution).

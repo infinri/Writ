@@ -12,9 +12,9 @@ Both prototypes consume the **same language-neutral fixtures** and must reproduc
 |---|---|---|
 | Canonical digest | fixed vector in `m0/tests/test_contracts.py::TestCanonical::test_known_vector`; rules in D-006 | Byte-identical canonical form and digest; same rejections (floats, unsafe ints, lone surrogates, depth > 64) |
 | Contract validation | `docs/contracts/*.schema.json`, positive and negative fixtures | Same accept/reject per fixture, strict RFC 3339 date-time |
-| Golden decisions | `docs/contracts/fixtures/decisions/m0-golden.json` (24 cases, RFC 7396 patches) | Identical `status`, `reason_code`, `matched_rule_ids` |
+| Golden decisions | `docs/contracts/fixtures/decisions/m0-golden.json` (26 cases, RFC 7396 patches; all pending independent review) | Identical `status`, `reason_code`, `matched_rule_ids` |
 | Bundle loading | `docs/contracts/fixtures/policy/m0-reference.bundle.json` and damaged variants from `test_decision.py::TestBundleLoading` | Same bundle sha; same rejections |
-| Broker semantics | scenarios in `m0/tests/test_broker.py` | Single-use grant under 16-way race; no double dispatch; IDEMPOTENCY_CONFLICT; crash leaves `dispatched`, reconcile yields `unknown_reconcile`; policy change invalidates grants |
+| Broker semantics | scenarios in `m0/tests/test_broker.py` | Sealed-ingress refusal (D-010); deadline at use time; capability-set binding; single-use permits; single-use grant under 16-way race; no double dispatch; IDEMPOTENCY_CONFLICT; crash leaves `dispatched`, reconcile yields `unknown_reconcile`; policy change invalidates grants |
 | Host normalization | scenarios in `m0/tests/test_independence.py::TestHostNormalization` | Same canonical resource id and action digest for both host extractors; symlink escapes refused |
 | Cross-domain evaluation | `docs/contracts/fixtures/domains/` | Same EvaluationRecord status per task and negative case |
 | Property tests | Hypothesis properties in `test_contracts.py`, `test_decision.py` | Ported as property tests with at least the same example counts |

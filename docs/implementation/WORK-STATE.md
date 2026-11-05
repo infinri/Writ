@@ -1,46 +1,51 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-05 · **Branch:** v2/architecture-rebuild (pushed through `38ccbf6`) · **Milestone:** M0
+**Last updated:** 2026-11-05 · **Branch:** v2/architecture-rebuild (pushed through `89f8caa`; security-correction commits local, push needs separate authorization) · **Milestone:** M0, **NOT complete**
 
 ## Current
 
-- **Work packages:** A (baseline audit) automated parts done; B, C, D done in the Python reference harness; E specified.
-- **Active task:** none in progress. M0-05a review package delivered (`docs/audit/m0/GOLDEN-DECISION-REVIEW.md`), all 24 cases PENDING INDEPENDENT REVIEW; M0-01f done.
-- **Last relevant commits:** `5e011c9` (V1 regression port), `cd76fdd` (review package); pushed head `487b95d`.
+- **Phase:** security corrections from the independent source review ([record](../audit/m0/INDEPENDENT-REVIEW-M0.md)).
+- **Active task:** none in progress. SR-01, SR-02, SR-03, SR-07, SR-08, SR-09 fixed and IN REVIEW; awaiting review of the fixes and regression tests.
+- **Last commits:** `f4489c9` SR-09, `94d3701` SR-01, `2800da3` SR-07, `f8ad085` SR-02, `4947489` SR-03, `64a5b01` SR-08, `1c53247` review record; plus the docs commit following this file.
 
-## Completed and verified (E-001, E-002)
+## Completed and verified
 
 | Area | Result |
 |---|---|
-| Continuity | TASKS, DECISION-LOG (D-001..D-008), TEST-EVIDENCE, SESSION-HANDOFF, CLAUDE.md |
-| V1 audit | Pinned manifest, 52-hook inventory, 288-rule first pass, test inventory, retrieval golden export, unmediated-tool table |
-| Contracts | 17 schemas strictly validated; canonical digest (D-006); 4 new authority schemas; Evidence extension (D-007) |
-| Cross-domain | Code review, research with contradictory sources, noncode document review through one evaluator; fabricated citation and missing counterevidence negatives |
-| Kernel oracle | Pure decide(), 24 hand-reasoned golden cases, deny precedence, scoped resource ids (D-008) |
-| Broker | SQLite ledger, atomic single-use grants, idempotency, HMAC permits, receipts and reconciliation |
-| Independence | Two host extractors, principal proofs, two stub providers, managed runner, pack registry, import-layer checks |
-| M1 prep | Parity suite spec, benchmark environment record |
-| Review and regressions | Golden review package (pending reviewer); 21 ported V1 regressions with provenance; GRANT_MALFORMED fix (D-009) |
+| Continuity | TASKS, DECISION-LOG (D-001..D-010), TEST-EVIDENCE (E-001..E-006), SESSION-HANDOFF, CLAUDE.md |
+| V1 audit | Pinned manifest, 52 hooks, 288-rule first pass, test inventory, retrieval golden export, unmediated tools, 21 ported regressions |
+| Contracts and domains | 17 schemas; canonical digest; cross-domain evaluation with negatives |
+| Kernel oracle | 26 golden cases (all PENDING INDEPENDENT REVIEW); deadlines; strict canonical ids |
+| Broker | Sealed ingress (D-010), capability-set-bound grants, single-use permits, idempotency, receipts |
+| CI | Last CI: `89f8caa`, 223 passed (E-005). Local after fixes: 256 passed (E-006) |
+
+## Open M0 acceptance requirements
+
+| Item | Needs |
+|---|---|
+| Review of SR-01/02/03/07/08/09 fixes and tests | Reviewer |
+| Golden cases 01 and 08 | Explicit human policy decision |
+| All 26 golden cases | Independent verdicts (none self-approved) |
+| SR-04 subagent grant isolation | Human signoff |
+| SR-05 project-scoped evidence | Contract and evaluator change plus negative tests |
+| SR-06 hook crash fail-closed | Isolated live Claude Code host |
+| M0-01d rule semantic review, M0-01e live hook posture | Human reviewer; isolated host |
+| M0-05c go/no-go | All of the above |
 
 ## Known blockers
 
-- Rust and Go toolchains are not installed; M1 prototypes cannot be built here yet.
-- GitHub Pages publish for this branch is blocked by repository environment protection (pre-existing).
-
-## Outstanding risks and defects
-
-- Golden decision expectations are author-reasoned, not independently reviewed (M0-05a).
-- Rule dispositions and hook failure posture are static (M0-01d, M0-01e).
-- V1 findings confirmed statically on the live V1 code: Stop hooks H15-H17 log deny but exit 1 (non-blocking); 5 pre-effect hooks allow when the daemon is down (default, not WRIT_STRICT); 2 UserPromptSubmit hooks mint authority from prompt text; WebFetch/WebSearch and MCP tools have no pre-effect gate. Reported to the user; not fixed (V1 is out of scope on this branch).
+- Push of the correction commits needs separate authorization.
+- Rust and Go toolchains absent (M1 not started, by instruction).
+- Pages deploy blocked by repository environment protection (pre-existing).
 
 ## Relevant files
 
-`m0/writ_m0/{contracts,canonical,evaluation,reference_packs,decision,broker,hosts,providers,runner,packs}.py`, `m0/writ_m0/audit/`, `m0/tests/`, `docs/contracts/fixtures/{domains,decisions,policy}/`, `docs/audit/m0/`, `docs/implementation/{M1-PARITY-SUITE,BENCHMARK-ENVIRONMENT}.md`.
+`m0/writ_m0/{ingress,broker,decision,hosts,runner}.py`, `m0/tests/test_{broker,decision,independence,v1_regressions}.py`, `docs/contracts/approval-grant.schema.json`, `docs/contracts/fixtures/decisions/m0-golden.json`, `docs/audit/m0/{INDEPENDENT-REVIEW-M0,GOLDEN-DECISION-REVIEW}.md`.
 
 ## Last tests
 
-CI E-005 (`38ccbf6`): 223 passed, audit and docs checks pass (run 42098268490).
+E-006: 256 passed, 0 failed locally; audit and docs checks pass.
 
 ## Next exact action
 
-Independent review of the golden decisions and their implementation, with security priorities SR-01 to SR-06 (TASKS). Apply only reviewer-recorded corrections; leave all 24 cases PENDING INDEPENDENT REVIEW until then. M0 is NOT complete: SR-01..06, M0-01d, M0-01e, M0-05a and M0-05c remain. Do not start M1.
+Ask for authorization to push the correction commits and run CI. Then, without self-approving any case: SR-05 (project scope on Evidence/SourceCatalog with cross-project negatives) is the next code item that needs no human decision. Propose the M0 go/no-go only after the fixes are reviewed and the open items above are resolved or explicitly risk-accepted.

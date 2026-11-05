@@ -5,7 +5,7 @@
 ## Execution and authority
 
 - [Action Request](action-request.schema.json), [Decision](decision.schema.json), [Effect Receipt](effect-receipt.schema.json), [Audit Event](audit-event.schema.json), [Policy Manifest](policy-manifest.schema.json).
-- M0-03a drafts: [Principal Proof](principal-proof.schema.json), [Approval Grant](approval-grant.schema.json), [Broker Permit](broker-permit.schema.json), [Policy Bundle](policy-bundle.schema.json). Digests use the canonical JSON form defined in `m0/writ_m0/canonical.py` ([D-006](../implementation/DECISION-LOG.md)).
+- M0-03a drafts: [Principal Proof](principal-proof.schema.json), [Approval Grant](approval-grant.schema.json), [Broker Permit](broker-permit.schema.json), [Policy Bundle](policy-bundle.schema.json). Digests use the canonical JSON form defined in `m0/writ_m0/canonical.py` ([D-006](../implementation/DECISION-LOG.md)). ApprovalGrant binds the sorted `requested_capabilities` set (SR-02). The M0 broker accepts ActionRequests only when sealed by a registered adapter ([D-010](../implementation/DECISION-LOG.md)); permits are single use (SR-07).
 
 ## Model and domain independence
 
