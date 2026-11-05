@@ -47,7 +47,8 @@
           "permit-workspace-files"
         ]
       },
-      "rationale": "baseline permit"
+      "rationale": "baseline permit",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     },
     {
       "case_id": "secrets-write-forbidden",
@@ -66,7 +67,8 @@
           "forbid-secrets"
         ]
       },
-      "rationale": "forbid beats overlapping permit"
+      "rationale": "forbid beats overlapping permit",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     },
     {
       "case_id": "secrets-read-forbidden",
@@ -86,7 +88,8 @@
           "forbid-secrets"
         ]
       },
-      "rationale": "read is governed too"
+      "rationale": "read is governed too",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     },
     {
       "case_id": "egress-forbidden-tenant",
@@ -106,7 +109,8 @@
           "forbid-network-egress"
         ]
       },
-      "rationale": "tenant-scoped forbid"
+      "rationale": "tenant-scoped forbid",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     },
     {
       "case_id": "egress-other-tenant-default-deny",
@@ -125,7 +129,8 @@
         "reason_code": "DEFAULT_DENY",
         "matched_rule_ids": []
       },
-      "rationale": "no permit means deny"
+      "rationale": "no permit means deny",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     },
     {
       "case_id": "publish-requires-approval",
@@ -145,7 +150,8 @@
           "approve-publish"
         ]
       },
-      "rationale": "approval class"
+      "rationale": "approval class",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     },
     {
       "case_id": "process-requires-approval",
@@ -165,7 +171,8 @@
           "approve-process"
         ]
       },
-      "rationale": "approval class"
+      "rationale": "approval class",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     },
     {
       "case_id": "operator-process-still-requires-approval",
@@ -190,7 +197,8 @@
           "approve-process"
         ]
       },
-      "rationale": "require_approval beats permit"
+      "rationale": "require_approval beats permit",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     },
     {
       "case_id": "unknown-capability",
@@ -205,7 +213,8 @@
         "reason_code": "UNKNOWN_CAPABILITY",
         "matched_rule_ids": []
       },
-      "rationale": "INV-13 unknown tool not covered"
+      "rationale": "INV-13 unknown tool not covered",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     },
     {
       "case_id": "untrusted-issuer",
@@ -220,7 +229,8 @@
         "reason_code": "PRINCIPAL_UNVERIFIED",
         "matched_rule_ids": []
       },
-      "rationale": "INV-05 self-asserted identity"
+      "rationale": "INV-05 self-asserted identity",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     },
     {
       "case_id": "stale-revision",
@@ -233,7 +243,8 @@
         "reason_code": "STATE_REVISION_CONFLICT",
         "matched_rule_ids": []
       },
-      "rationale": "INV-17 state revision 5"
+      "rationale": "INV-17 state revision 5",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     },
     {
       "case_id": "policy-pin-mismatch",
@@ -246,7 +257,8 @@
         "reason_code": "POLICY_VERSION_MISMATCH",
         "matched_rule_ids": []
       },
-      "rationale": "pinned to another bundle"
+      "rationale": "pinned to another bundle",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     },
     {
       "case_id": "no-policy-loaded",
@@ -257,7 +269,8 @@
         "reason_code": "POLICY_UNAVAILABLE",
         "matched_rule_ids": []
       },
-      "rationale": "fail closed without policy; bundle absent"
+      "rationale": "fail closed without policy; bundle absent",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     },
     {
       "case_id": "missing-principal",
@@ -270,7 +283,8 @@
         "reason_code": "REQUEST_SCHEMA_INVALID",
         "matched_rule_ids": []
       },
-      "rationale": "schema violation"
+      "rationale": "schema violation",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     },
     {
       "case_id": "resource-not-canonical",
@@ -287,7 +301,8 @@
         "reason_code": "RESOURCE_NOT_CANONICAL",
         "matched_rule_ids": []
       },
-      "rationale": "adapter did not canonicalize"
+      "rationale": "adapter did not canonicalize",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     },
     {
       "case_id": "resource-dot-dot",
@@ -304,7 +319,8 @@
         "reason_code": "RESOURCE_NOT_CANONICAL",
         "matched_rule_ids": []
       },
-      "rationale": "INV-14 traversal segment"
+      "rationale": "INV-14 traversal segment",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     },
     {
       "case_id": "cross-tenant-resource",
@@ -317,7 +333,8 @@
         "reason_code": "RESOURCE_SCOPE_MISMATCH",
         "matched_rule_ids": []
       },
-      "rationale": "INV-10 foreign tenant target"
+      "rationale": "INV-10 foreign tenant target",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     },
     {
       "case_id": "cross-project-resource",
@@ -334,7 +351,8 @@
         "reason_code": "RESOURCE_SCOPE_MISMATCH",
         "matched_rule_ids": []
       },
-      "rationale": "foreign project target"
+      "rationale": "foreign project target",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     },
     {
       "case_id": "piggyback-forbidden-capability",
@@ -353,7 +371,8 @@
           "forbid-network-egress"
         ]
       },
-      "rationale": "requested capability is evaluated"
+      "rationale": "requested capability is evaluated",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     },
     {
       "case_id": "piggyback-approval-capability",
@@ -372,7 +391,8 @@
           "approve-publish"
         ]
       },
-      "rationale": "strongest class wins"
+      "rationale": "strongest class wins",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     },
     {
       "case_id": "piggyback-unpermitted-capability",
@@ -391,7 +411,8 @@
           "permit-workspace-files"
         ]
       },
-      "rationale": "permit does not carry other kinds"
+      "rationale": "permit does not carry other kinds",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     },
     {
       "case_id": "attributes-cannot-grant",
@@ -411,7 +432,8 @@
           "forbid-network-egress"
         ]
       },
-      "rationale": "INV-02/INV-11 payload text has no authority"
+      "rationale": "INV-02/INV-11 payload text has no authority",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     },
     {
       "case_id": "project-memory-write",
@@ -431,7 +453,8 @@
           "permit-project-memory"
         ]
       },
-      "rationale": "scoped memory"
+      "rationale": "scoped memory",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     },
     {
       "case_id": "workspace-outside-project-prefix-default-deny",
@@ -449,7 +472,13 @@
         "reason_code": "RESOURCE_SCOPE_MISMATCH",
         "matched_rule_ids": []
       },
-      "rationale": "prefix lookalike project is out of scope"
+      "rationale": "prefix lookalike project is out of scope",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     }
-  ]
+  ],
+  "review": {
+    "status": "PENDING INDEPENDENT REVIEW",
+    "package": "docs/audit/m0/GOLDEN-DECISION-REVIEW.md",
+    "note": "Expected values are author-reasoned. No case is approved until an independent reviewer records a verdict."
+  }
 }

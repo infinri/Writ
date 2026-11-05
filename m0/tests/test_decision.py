@@ -110,3 +110,12 @@ class TestDeterminismAndPrecedence:
         a = decision.decide(req, bundle, STATE, NOW)["approval_request_reference"]
         b = decision.decide(other, bundle, STATE, NOW)["approval_request_reference"]
         assert a and b and a != b
+
+
+def test_golden_cases_carry_review_status_and_none_is_self_approved():
+    """Cases stay PENDING until an independent reviewer records a verdict (M0-05a)."""
+    for case in GOLDEN["cases"]:
+        status = case.get("review_status")
+        assert status is not None, case["case_id"]
+        if status != "PENDING INDEPENDENT REVIEW":
+            assert case.get("reviewer") and case.get("reviewed_at"), case["case_id"]

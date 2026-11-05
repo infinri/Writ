@@ -10,7 +10,7 @@ Source checklists: [M0-START-HERE](M0-START-HERE.md), [master plan](MASTER-IMPLE
 |---|---|---|---|---|---|---|---|---|
 | M0-00a | Persistent tracking docs and project CLAUDE.md | P0 | none | DONE | WORK-STATE, TASKS, DECISION-LOG, TEST-EVIDENCE, SESSION-HANDOFF exist; CLAUDE.md links them and states recovery protocol | directive section 4 | docs check | see git log for "M0-00" |
 | M0-00b | Isolated M0 Python harness (`m0/`) with its own pytest config and venv | P0 | none | DONE | `m0/.venv/bin/python -m pytest` runs without V1 conftest or Neo4j | D-001, D-005 | suite runs | TEST-EVIDENCE E-001 |
-| M0-00c | CI job running M0 tests and audit drift check | P1 | M0-00b | IN REVIEW | v2 workflow runs `pytest` in `m0/` and `python -m writ_m0.audit check` | testing doc CI target | CI green | workflow job `m0-harness` added; not yet run on GitHub (nothing pushed) |
+| M0-00c | CI job running M0 tests and audit drift check | P1 | M0-00b | DONE | v2 workflow runs `pytest` in `m0/` and `python -m writ_m0.audit check` | testing doc CI target | CI green | CI run 42094649411: m0-harness 201 passed, audit current (E-003) |
 
 ## M0-01 V1 baseline audit (work package A)
 
@@ -52,12 +52,12 @@ Source checklists: [M0-START-HERE](M0-START-HERE.md), [master plan](MASTER-IMPLE
 |---|---|---|---|---|---|---|---|---|
 | M0-04a | Define Rust/Go parity suite and workload distribution | P0 | M0-03b | DONE | Spec lists fixture sets, workloads A-H mapping, harness interface, recording format | ADR-0002 | n/a | `docs/implementation/M1-PARITY-SUITE.md` (specification only) |
 | M0-04b | Record benchmark environment template (hardware, toolchains) with no invented numbers | P1 | M0-04a | DONE | Template plus this machine's hardware recorded; Rust/Go toolchains noted as absent if absent | testing doc | n/a | `docs/implementation/BENCHMARK-ENVIRONMENT.md`; Rust and Go toolchains absent |
-| M0-04c | CI checks for schemas, examples, links and fixture suite | P1 | M0-00c | IN REVIEW | Workflow runs docs check, M0 tests and audit check | M0 first PR DoD | CI | same workflow as M0-00c; awaiting first CI run |
+| M0-04c | CI checks for schemas, examples, links and fixture suite | P1 | M0-00c | DONE | Workflow runs docs check, M0 tests and audit check | M0 first PR DoD | CI | same CI run as M0-00c (E-003) |
 
 ## M0 exit and follow-ups
 
 | ID | Task | Pri | Deps | Status | Acceptance criteria | Refs | Tests | Evidence |
 |---|---|---|---|---|---|---|---|---|
-| M0-05a | Independent human review of golden decision expectations and broker scenarios | P0 | M0-03b | NOT STARTED | A reviewer other than the author signs off each high-risk case in `m0-golden.json` or files corrections | testing doc "independent reviewers own oracle decisions" | n/a | |
-| M0-05b | Push branch and confirm both v2 CI jobs green | P0 | M0-00c | NOT STARTED | GitHub Actions run URL recorded in TEST-EVIDENCE | M0 first PR DoD | CI | requires user approval to push |
+| M0-05a | Independent human review of golden decision expectations and broker scenarios | P0 | M0-03b | IN REVIEW | A reviewer other than the author signs off each high-risk case in `m0-golden.json` or files corrections | testing doc "independent reviewers own oracle decisions" | n/a | package `docs/audit/m0/GOLDEN-DECISION-REVIEW.md`; all 24 cases PENDING INDEPENDENT REVIEW; awaiting external reviewer named by user |
+| M0-05b | Push branch and confirm both v2 CI jobs green | P0 | M0-00c | DONE | GitHub Actions run URL recorded in TEST-EVIDENCE | M0 first PR DoD | CI | pushed `487b95d`; run https://github.com/infinri/Writ/actions/runs/42094649411 both jobs success (E-003) |
 | M0-05c | M0 go/no-go record | P0 | all P0 above | NOT STARTED | WORK-STATE lists every M0 checklist item with evidence or explicit gap; user decision recorded | master plan section 10 | n/a | |
