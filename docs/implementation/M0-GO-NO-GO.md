@@ -20,7 +20,7 @@
 | Unmediated tools enumerated (M0-03) | `UNMEDIATED-TOOLS.md` | Static; runtime confirmation is G3 |
 | M1 parity suite and workloads defined (M0-04) | `M1-PARITY-SUITE.md` | Specification only |
 | Hardware/toolchain record with no invented numbers (M0-04) | `BENCHMARK-ENVIRONMENT.md` | Rust and Go absent locally |
-| CI for schemas, examples, links, fixture suite (M0-04, first PR DoD) | `.github/workflows/v2-docs.yml`; last run 42126984730, 280 passed | Pages deploy job fails on a repository protection rule (unrelated) |
+| CI for schemas, examples, links, fixture suite (M0-04, first PR DoD) | `.github/workflows/v2-docs.yml`; last run 42130113990, 281 passed | Pages deploy job fails on a repository protection rule (unrelated) |
 | Model output cannot mint approval; external host needs no ModelAdapter (first PR DoD) | `test_model_saying_approved_mints_nothing`, `test_approval_text_anywhere_mints_nothing`, INV-22 subprocess test | |
 | Security findings SR-01..SR-05, SR-07..SR-12 | DONE (harness) per AI-assisted reviews 2 to 4; `INDEPENDENT-REVIEW-M0-*.md` | Reference-harness scope only |
 
