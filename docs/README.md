@@ -9,6 +9,7 @@ This documentation replaces the prior V1 docs (including old ADRs, reference pag
 
 ## Canonical reading order
 
+0. Implementation state: [session handoff](implementation/SESSION-HANDOFF.md), [work state](implementation/WORK-STATE.md), [tasks](implementation/TASKS.md), [decision log](implementation/DECISION-LOG.md), [test evidence](implementation/TEST-EVIDENCE.md), [M0 audit evidence](audit/m0/SUMMARY.md).
 1. [M0 start checklist](implementation/M0-START-HERE.md) and [Master implementation specification](implementation/MASTER-IMPLEMENTATION-PLAN.md) — complete build and release program.
 2. [System architecture](architecture/architecture.md) and [repository layout](architecture/repository-layout.md).
 3. [Execution & state](architecture/execution-and-state.md) and [authorization & approvals](architecture/authorization-and-approvals.md).
