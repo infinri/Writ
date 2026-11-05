@@ -82,3 +82,12 @@ Implementation-level decisions. Architectural decisions belong in [ADRs](../deci
 - **Alternatives:** (a) kernel verifies a PrincipalProof itself (pulls keys and clock-sensitive proof checks into the pure kernel, and still leaves the operation digest unauthenticated); (b) broker verifies a PrincipalProof passed beside the request (authenticates identity but not that the digest and capabilities came from trusted normalization); (c) adapter seals the complete normalized request, broker verifies the seal.
 - **Selected:** (c). `writ_m0/ingress.py`: a trusted adapter seals the canonical ActionRequest with its registered ingress key after verifying the proof and computing the digest; the broker refuses anything else with `INGRESS_UNAUTHENTICATED`, and the seal's adapter id must equal `principal.verified_by`. HostAdapter refuses construction if its sealer identity differs from its proof issuer.
 - **Consequences:** Kernel `decide()` remains pure and keyless; its `verified_by` check is sound only behind this ingress, which is now the documented precondition. Production key management, rotation and adapter registration are open (M3/M5). This does not authenticate the host process itself (threat model residual risk).
+
+## D-011: Owner policy decisions on cases 01, 08, SR-03 and SR-04
+
+- **Date:** 2026-11-05. **Decided by:** project owner (human). Recorded verbatim in substance; no code change accompanies this entry.
+- **Case 01 (workspace writes):** ordinary project-scoped workspace writes stay permitted under an explicitly authorized policy, without human approval per edit, provided trusted identity, canonical paths, project isolation and explicit sensitive-path protection are enforced. The reference fixture's broad, role-free permit is **not** the production default.
+- **Case 08 (precedence):** require_approval stays above permit. An operator role does not override an approval requirement; any administrator exemption must be an explicit, separately reviewed policy provision.
+- **SR-04:** subagents do not inherit a parent's approval (confirms D-009). Bounded, explicit delegation may be designed later.
+- **SR-03:** an expired request is `invalid` / `DEADLINE_EXCEEDED`; every non-allow status must fail closed at every host and adapter.
+- **Effect on review status:** these are policy decisions, not independent review verdicts. All golden cases remain PENDING INDEPENDENT REVIEW.

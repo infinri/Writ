@@ -24,9 +24,9 @@
 | Item | Needs |
 |---|---|
 | Review of SR-01/02/03/07/08/09 fixes and tests | Reviewer |
-| Golden cases 01 and 08 | Explicit human policy decision |
+| Golden cases 01 and 08 | Policy decided by owner (D-011); independent verdicts still pending |
 | All 26 golden cases | Independent verdicts (none self-approved) |
-| SR-04 subagent grant isolation | Human signoff |
+| SR-04 subagent grant isolation | Owner decided no inheritance (D-011); independent review pending |
 | SR-05 project-scoped evidence | Contract and evaluator change plus negative tests |
 | SR-06 hook crash fail-closed | Isolated live Claude Code host |
 | M0-01d rule semantic review, M0-01e live hook posture | Human reviewer; isolated host |
@@ -48,4 +48,4 @@ E-007: CI 256 passed at `d3f722d`; audit and docs checks pass.
 
 ## Next exact action
 
-Wait for the independent review of the GitHub code and regression tests for SR-01/02/03/07/08/09 (all IN REVIEW). Start no implementation work, SR-05 included, until that review is in. Propose the M0 go/no-go only after the fixes are reviewed and the open items above are resolved or explicitly risk-accepted.
+Wait for the independent review of the GitHub code and regression tests for SR-01/02/03/07/08/09 (all IN REVIEW). Reviewer focus: seal forgery and replay, capability-binding completeness, deadlines, durable permit consumption across processes and crashes (see E-008 and its gaps), canonical ids. Start no implementation work until that review is in; then SR-05 is the next implementation priority. Propose the M0 go/no-go only after the fixes are reviewed and the open items above are resolved or explicitly risk-accepted.

@@ -59,6 +59,17 @@ Only results actually executed are recorded under **Executed**. Planned verifica
 - **Result:** both jobs success. M0 tests 256 passed in 8.76s (matches local E-006). Audit check 8 files current. Docs check 48 Markdown, 15 HTML, 17 schemas.
 - **Unrelated:** Pages publish run 42103334296 failed on the same environment protection rule as E-003.
 
+### E-008: Cross-process and crash behavior of single-use permits (exploratory, not committed)
+
+- **Revision:** `d3f722d` code, unmodified. Ad hoc script outside the repository (session scratchpad, `permit_xproc.py`), run with `m0/.venv/bin/python`.
+- **Setup:** one SQLite ledger file (WAL, local ext4 disk); workers are separate OS processes (`multiprocessing`, fork) each opening their own `Ledger` and `PermitSigner`. The broker HMAC key was injected into each worker, because in M0 the key lives only in process memory (a second process otherwise cannot verify any permit).
+- **Results:**
+  - 20 trials x 16 processes racing to consume one permit: exactly 1 winner in 20/20 trials.
+  - Worker killed with `os._exit(137)` immediately after `consume` and before any effect: a later replay from another process was refused.
+  - A broker restarted with the default (new random) key refused an old, never-consumed permit.
+- **What this does not show:** network or shared filesystems (SQLite locking is unreliable there); power loss (`synchronous` left at the driver default, not tested); a crash *inside* the commit; multi-host workers. Crash after consume but before the effect loses the attempt (at-most-once): the broker receipt stays `dispatched` and `reconcile` marks it `unknown_reconcile`, as covered by `test_crash_after_effect_leaves_reconcilable_receipt`.
+- **Gap for review:** M0 has no shared or persisted permit key, so "concurrent workers" is only a supported configuration once key management exists (M3). A committed multi-process test should be added after the security review.
+
 ## Not yet executed
 
 - Hook failure posture on a live host (M0-01e); rule semantic review (M0-01d).

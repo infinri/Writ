@@ -419,3 +419,12 @@ Review record: [INDEPENDENT-REVIEW-M0](INDEPENDENT-REVIEW-M0.md). No existing ex
 | SR-09 | Case 22 patch repaired to include `approved`, `grant_policy`, `writ_mode` attributes; expected outcome unchanged | `f4489c9` | `test_attributes_case_actually_carries_untrusted_attributes` |
 
 Still open from the review: cases 01 and 08 policy decisions; case 24 rename; SR-04 human signoff; SR-05 project-scoped evidence; SR-06 live host; extra coverage notes for cases 02, 04, 16 (case/alias secrets paths, competing permit in golden set, encoded traversal, use-time path substitution).
+
+## Owner policy decisions (D-011)
+
+Recorded in [DECISION-LOG D-011](../../implementation/DECISION-LOG.md) and as `policy_decision` on the affected fixture cases. They settle the policy questions; they are not review verdicts, so every case remains PENDING INDEPENDENT REVIEW.
+
+- **Case 01:** workspace writes permitted under explicitly authorized, project-scoped policy with trusted identity, canonical paths and sensitive-path protection; the fixture's role-free permit is not a production default.
+- **Case 08:** require_approval above permit; operator role is not an approval override.
+- **Case 26 / SR-03:** invalid / DEADLINE_EXCEEDED; all non-allow statuses fail closed.
+- **SR-04:** no grant inheritance by subagents.

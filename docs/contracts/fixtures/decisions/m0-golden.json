@@ -48,7 +48,8 @@
         ]
       },
       "rationale": "baseline permit",
-      "review_status": "PENDING INDEPENDENT REVIEW"
+      "review_status": "PENDING INDEPENDENT REVIEW",
+      "policy_decision": "Owner decision D-011: permitted under an explicitly authorized policy with trusted identity, canonical paths, project isolation and sensitive-path protection; this fixture's role-free permit is not the production default."
     },
     {
       "case_id": "secrets-write-forbidden",
@@ -198,7 +199,8 @@
         ]
       },
       "rationale": "require_approval beats permit",
-      "review_status": "PENDING INDEPENDENT REVIEW"
+      "review_status": "PENDING INDEPENDENT REVIEW",
+      "policy_decision": "Owner decision D-011: require_approval stays above permit; operator role is not an approval override; exemptions need an explicit, separately reviewed provision."
     },
     {
       "case_id": "unknown-capability",
@@ -511,7 +513,8 @@
         "matched_rule_ids": []
       },
       "rationale": "SR-03: a request past its own deadline is never evaluated as allowable; status invalid (not deny) is a choice pending review",
-      "review_status": "PENDING INDEPENDENT REVIEW"
+      "review_status": "PENDING INDEPENDENT REVIEW",
+      "policy_decision": "Owner decision D-011: invalid / DEADLINE_EXCEEDED; every non-allow status fails closed."
     }
   ],
   "review": {
