@@ -101,3 +101,12 @@ Implementation-level decisions. Architectural decisions belong in [ADRs](../deci
   - Evidence carries a required `project_id`; SourceCatalog resolution is keyed by tenant and project; evaluators require evidence scope to equal the task's.
 - **Alternatives:** compare a list of normative fields (rejected: silently misses fields added later); widen the idempotency namespace to include principal and project (rejected for now: a conflict refusal is fail-closed and simpler; revisit if legitimate cross-principal key reuse appears).
 - **Consequences:** Retries must resend the identical request (same request id and idempotency key) to receive the original receipt. Explicitly shared cross-project evidence needs a future contract. Kernel unchanged and key-free.
+
+## D-013: Artifact and signoff scope; scope mismatch is an evaluation failure
+
+- **Date:** 2026-11-05
+- **Context:** Independent review 3, SR-12. Evidence was project-scoped (D-012) but artifacts and human signoffs were not.
+- **Selected:** Artifact requires `project_id`. `evaluate()` records an `artifact:scope` criterion that fails unless artifact tenant, project and task equal the TaskSpec's. A SignoffGrant counts only when tenant, project, task and artifact digest all match.
+- **Malformed vs mismatched scope:** schema-invalid input (missing `project_id`, wrong types) raises ContractError, as before; a schema-valid artifact or evidence item from another scope produces an evaluation `fail`, never `pass`. Both are non-pass and therefore fail closed.
+- **Not covered:** SignoffGrant is still a value the caller asserts was verified; in production it must be produced only by the authenticated approval service (as ApprovalGrant is in the broker). Shared cross-project artifacts are not modeled.
+- **Related:** INV-10, INV-25, P-17, D-012.

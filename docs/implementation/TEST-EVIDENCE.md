@@ -81,7 +81,14 @@ Only results actually executed are recorded under **Executed**. Planned verifica
 - **Revision:** `f5a950e` (local, not pushed)
 - **Red first:** SR-10 5 failures (altered request spent a valid permit: DID NOT RAISE); SR-11 3 failures (other principal and unrelated grant received the original receipt: DID NOT RAISE; receipt lacked fingerprint); SR-05 4 failures (contract and catalog API lacked project scope).
 - **After:** `cd m0 && .venv/bin/python -m pytest` 270 passed, 0 failed; concurrency tests 5/5; audit check current; docs check OK.
-- **Not run in CI:** commits after `61b0eca` are local.
+- **CI:** run https://github.com/infinri/Writ/actions/runs/42123472509 at `957e32f`, 270 passed, audit and docs checks pass.
+
+### E-010: SR-12 artifact and signoff scope
+
+- **Revision:** `0315fde` (local, not pushed)
+- **Red first:** 12 failures. Behavioral: 4 (artifact with another tenant or task evaluated `pass` with valid evidence, for code-review and research). Missing contract: 8 (Artifact had no `project_id`; SignoffGrant had no project or task; 2 existing signoff tests updated to the scoped constructor).
+- **After:** `cd m0 && .venv/bin/python -m pytest` 280 passed, 0 failed; audit check current; docs check OK. Golden decision fixture unchanged.
+- **Not run in CI:** commits after `957e32f` are local.
 
 ## Not yet executed
 
