@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://writ.dev/contracts/v2/approval-grant.schema.json",
+  "title": "Writ V2 ApprovalGrant",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "grant_id",
+    "approval_request_id",
+    "tenant_id",
+    "approver_principal_id",
+    "approval_channel",
+    "requester_principal_id",
+    "action_kind",
+    "canonical_resource_id",
+    "action_digest",
+    "policy_bundle_sha",
+    "nonce",
+    "issued_at",
+    "expires_at",
+    "max_uses",
+    "verdict"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "2.0"
+    },
+    "grant_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "approval_request_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tenant_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "approver_principal_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Authenticated human; must differ from any agent identity"
+    },
+    "approval_channel": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Trusted channel identity; transcripts and model output are never channels"
+    },
+    "requester_principal_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "action_kind": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.-]*$"
+    },
+    "canonical_resource_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "action_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "policy_bundle_sha": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "nonce": {
+      "type": "string",
+      "minLength": 16
+    },
+    "issued_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "max_uses": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "verdict": {
+      "enum": [
+        "approved",
+        "denied"
+      ]
+    },
+    "channel_signature": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

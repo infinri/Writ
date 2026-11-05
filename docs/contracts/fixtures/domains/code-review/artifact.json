@@ -1,0 +1,15 @@
+{
+  "contract_version": "2.0",
+  "artifact_id": "art-cr-1",
+  "tenant_id": "fixture-tenant",
+  "task_id": "fixture-code-review",
+  "artifact_type": "code-review.findings",
+  "content_ref": "fixture://artifacts/art-cr-1",
+  "schema_ref": null,
+  "provenance_refs": [
+    "ev-cr-1",
+    "ev-cr-2"
+  ],
+  "status": "complete",
+  "created_at": "2026-11-05T12:00:00Z"
+}

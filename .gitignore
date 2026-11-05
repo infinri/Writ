@@ -86,3 +86,6 @@ RESUME.md
 WRIT-ROADMAP.md
 CONTAINMENT-AUDIT-*.md
 WRIT-DEMO-*.md
+
+# Hypothesis example database (M0 property tests)
+.hypothesis/

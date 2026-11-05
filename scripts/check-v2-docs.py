@@ -55,6 +55,8 @@ NEW_SCHEMAS = {
 EXISTING_SCHEMAS = {
     "action-request", "decision", "effect-receipt", "audit-event", "policy-manifest"
 }
+# M0-03a authority contracts (docs/implementation/TASKS.md).
+AUTHORITY_SCHEMAS = {"principal-proof", "approval-grant", "broker-permit", "policy-bundle"}
 EXPECTED_PACKS = {"software-engineering", "research-investigation", "review-audit"}
 EXPECTED_TASKS = {"code-review", "research", "document-review"}
 
@@ -160,7 +162,7 @@ def main() -> int:
             errors.append(f"Incomplete schema: {source.relative_to(ROOT)}")
         schema_by_name[source.name.removesuffix(".schema.json")] = document
 
-    expected_schema_names = NEW_SCHEMAS | EXISTING_SCHEMAS
+    expected_schema_names = NEW_SCHEMAS | EXISTING_SCHEMAS | AUTHORITY_SCHEMAS
     if set(schema_by_name) != expected_schema_names:
         errors.append(f"Expected schema names {sorted(expected_schema_names)}, got {sorted(schema_by_name)}")
 

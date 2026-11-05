@@ -1,0 +1,10 @@
+{
+  "fixture://repo/pr-42/diff": {
+    "published_at": "2026-11-01T09:00:00Z",
+    "content": "--- a/src/payments.py\n+++ b/src/payments.py\n@@ -40,3 +40,4 @@\n def refund(order, amount):\n+    # no check that amount is positive\n     order.balance += amount\n     return order\n"
+  },
+  "fixture://ci/run-7": {
+    "published_at": "2026-11-01T09:05:00Z",
+    "content": "tests/test_payments.py::test_refund_negative FAILED\ntests/test_payments.py::test_refund_ok PASSED\n"
+  }
+}

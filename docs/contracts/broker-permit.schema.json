@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://writ.dev/contracts/v2/broker-permit.schema.json",
+  "title": "Writ V2 BrokerPermit",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "permit_id",
+    "decision_id",
+    "request_id",
+    "tenant_id",
+    "principal_id",
+    "action_kind",
+    "canonical_resource_id",
+    "action_digest",
+    "policy_bundle_sha",
+    "issued_at",
+    "expires_at",
+    "broker_mac"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "2.0"
+    },
+    "permit_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "decision_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tenant_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "principal_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "action_kind": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.-]*$"
+    },
+    "canonical_resource_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "action_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "policy_bundle_sha": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "issued_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "approval_grant_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "broker_mac": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Broker-held key MAC over the canonical permit; effect adapters verify it"
+    }
+  }
+}

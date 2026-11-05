@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://writ.dev/contracts/v2/policy-bundle.schema.json",
+  "title": "Writ V2 PolicyBundle (M0 draft)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "bundle_id",
+    "version",
+    "publisher",
+    "known_capabilities",
+    "trusted_principal_issuers",
+    "statements"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "2.0"
+    },
+    "bundle_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "publisher": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "known_capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_.-]*$"
+      },
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "trusted_principal_issuers": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "statements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "statement_id",
+          "effect",
+          "action_kinds",
+          "reason_code"
+        ],
+        "properties": {
+          "statement_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "effect": {
+            "enum": [
+              "forbid",
+              "require_approval",
+              "permit"
+            ]
+          },
+          "tenants": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true,
+            "description": "Omitted means any tenant"
+          },
+          "principal_roles": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true,
+            "description": "Principal must hold at least one; omitted means any verified principal"
+          },
+          "action_kinds": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true
+          },
+          "resource_prefixes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true,
+            "description": "Canonical resource id prefixes; omitted means any resource"
+          },
+          "reason_code": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]*$"
+          }
+        }
+      }
+    },
+    "publisher_signature": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

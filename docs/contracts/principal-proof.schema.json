@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://writ.dev/contracts/v2/principal-proof.schema.json",
+  "title": "Writ V2 PrincipalProof",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "proof_id",
+    "tenant_id",
+    "principal_id",
+    "issuer",
+    "authn_method",
+    "session_id",
+    "issued_at",
+    "expires_at",
+    "signature"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "2.0"
+    },
+    "proof_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "tenant_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "principal_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "issuer": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Trusted authentication boundary that produced this proof; never the agent or model"
+    },
+    "authn_method": {
+      "enum": [
+        "os_peer_credential",
+        "signed_token",
+        "mtls",
+        "operator_cli_session",
+        "test_fixture"
+      ]
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "roles": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "issued_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "signature": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Issuer signature over the canonical proof without this field"
+    }
+  }
+}

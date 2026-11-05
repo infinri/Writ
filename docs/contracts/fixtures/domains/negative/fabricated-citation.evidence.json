@@ -1,0 +1,49 @@
+[
+  {
+    "contract_version": "2.0",
+    "evidence_id": "ev-neg-1",
+    "tenant_id": "fixture-tenant",
+    "task_id": "fixture-research",
+    "source_ref": "fixture://sources/vendor-report-2026-03",
+    "claim_ids": [
+      "claim-A"
+    ],
+    "observed_at": "2026-11-05T12:00:00Z",
+    "retrieval_method": "fixture",
+    "content_digest": "sha256:4986e46f9745523d3563587d7e0c4a1703e888a126669f2c5db4af8ef8621dc6",
+    "verification_status": "verified",
+    "confidence_note": null,
+    "citation_locator": "paragraph 1",
+    "evidence_kinds": [
+      "dated_source",
+      "citation_locator"
+    ],
+    "stance": "supports",
+    "source_published_at": "2026-03-15T00:00:00Z",
+    "quoted_excerpt": "reduced median checkout latency by 75% in every store"
+  },
+  {
+    "contract_version": "2.0",
+    "evidence_id": "ev-neg-2",
+    "tenant_id": "fixture-tenant",
+    "task_id": "fixture-research",
+    "source_ref": "fixture://sources/does-not-exist",
+    "claim_ids": [
+      "claim-A"
+    ],
+    "observed_at": "2026-11-05T12:00:00Z",
+    "retrieval_method": "fixture",
+    "content_digest": null,
+    "verification_status": "verified",
+    "confidence_note": null,
+    "citation_locator": "page 4",
+    "evidence_kinds": [
+      "dated_source",
+      "citation_locator",
+      "counterevidence"
+    ],
+    "stance": "contradicts",
+    "source_published_at": "2026-07-01T00:00:00Z",
+    "quoted_excerpt": "no measurable change"
+  }
+]

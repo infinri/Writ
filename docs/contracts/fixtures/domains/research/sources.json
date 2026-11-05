@@ -1,0 +1,10 @@
+{
+  "fixture://sources/vendor-report-2026-03": {
+    "published_at": "2026-03-15T00:00:00Z",
+    "content": "Vendor report, March 2026: Product X reduced median checkout latency by 40% across pilot stores."
+  },
+  "fixture://sources/independent-audit-2026-06": {
+    "published_at": "2026-06-20T00:00:00Z",
+    "content": "Independent audit, June 2026: across all stores, Product X changed median checkout latency by less than 5%."
+  }
+}

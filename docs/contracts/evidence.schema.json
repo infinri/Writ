@@ -77,6 +77,38 @@
         "string",
         "null"
       ]
+    },
+    "evidence_kinds": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_.-]*$"
+      },
+      "uniqueItems": true,
+      "description": "Evidence requirement kinds this item claims to satisfy; a pack evaluator verifies each claim"
+    },
+    "stance": {
+      "enum": [
+        "supports",
+        "contradicts",
+        "context"
+      ],
+      "description": "Relationship to claim_ids; contradicts records counterevidence"
+    },
+    "source_published_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "quoted_excerpt": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 4000,
+      "description": "Verbatim source text; evidence evaluators check it against the resolved source"
     }
   }
 }

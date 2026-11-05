@@ -1,0 +1,48 @@
+[
+  {
+    "contract_version": "2.0",
+    "evidence_id": "ev-dr-1",
+    "tenant_id": "fixture-tenant",
+    "task_id": "fixture-document-review",
+    "source_ref": "fixture://policy/document-1",
+    "claim_ids": [
+      "criterion:limits-stated"
+    ],
+    "observed_at": "2026-11-05T12:00:00Z",
+    "retrieval_method": "fixture",
+    "content_digest": "sha256:50bec6ea2a403e72bf067f0f3e3d085cafb1836851e853a71dcca22cd41b4669",
+    "verification_status": "unverified",
+    "confidence_note": null,
+    "citation_locator": "chars:81-119",
+    "evidence_kinds": [
+      "document_range",
+      "rubric_criterion"
+    ],
+    "stance": "supports",
+    "source_published_at": null,
+    "quoted_excerpt": "Meals are reimbursed up to 50 per day."
+  },
+  {
+    "contract_version": "2.0",
+    "evidence_id": "ev-dr-2",
+    "tenant_id": "fixture-tenant",
+    "task_id": "fixture-document-review",
+    "source_ref": "fixture://policy/document-1",
+    "claim_ids": [
+      "criterion:approval-threshold-stated"
+    ],
+    "observed_at": "2026-11-05T12:00:00Z",
+    "retrieval_method": "fixture",
+    "content_digest": "sha256:50bec6ea2a403e72bf067f0f3e3d085cafb1836851e853a71dcca22cd41b4669",
+    "verification_status": "unverified",
+    "confidence_note": null,
+    "citation_locator": "chars:141-185",
+    "evidence_kinds": [
+      "document_range",
+      "rubric_criterion"
+    ],
+    "stance": "supports",
+    "source_published_at": null,
+    "quoted_excerpt": "Expenses above 500 require manager approval."
+  }
+]

@@ -38,3 +38,19 @@ Implementation-level decisions. Architectural decisions belong in [ADRs](../deci
 - **Date:** 2026-11-05
 - **Selected:** `m0/pytest.ini` and a dedicated venv at `m0/.venv` (gitignored by the existing `.venv/` pattern).
 - **Rationale:** V1's root pyproject addopts and `tests/conftest.py` require a disposable Neo4j; M0 must run with no external services.
+
+## D-006: Canonical JSON for digests admits no floats
+
+- **Date:** 2026-11-05
+- **Context:** Approval grants, permits and receipts bind to `action_digest`; Rust and Go must compute byte-identical digests. Float formatting differs across languages unless a full RFC 8785 number serializer is shared.
+- **Alternatives:** full RFC 8785 (JCS) including ECMAScript number formatting; ad hoc per-language JSON; restricted domain.
+- **Selected:** JCS-style encoding (sorted keys by code point, no whitespace, UTF-8, minimal escaping) over a restricted domain: no floats, integers within +/-(2^53-1), no lone surrogates, no Unicode normalization, depth <= 64. Digest string `sha256:<hex>`.
+- **Rationale:** Removes the main cross-language divergence source at the cost of encoding quantities as integers or strings. Unicode normalization is refused because it can alias distinct identifiers and paths.
+- **Consequences:** Any digested payload containing a float is rejected. Key ordering is by code point, which differs from JCS UTF-16 ordering only for astral-plane keys; M1 implementations must follow this module. Reference: `m0/writ_m0/canonical.py`, fixed vector in `m0/tests/test_contracts.py`.
+
+## D-007: Evidence carries verifiable claims; evaluators ignore producer status
+
+- **Date:** 2026-11-05
+- **Context:** The Evidence draft could not express counterevidence, publication dates or the verbatim text a citation relies on, so a fabricated citation could not be detected mechanically.
+- **Selected:** Optional Evidence fields `evidence_kinds`, `stance`, `source_published_at`, `quoted_excerpt` (still contract 2.0 draft). The core evaluator resolves every source through a tenant-scoped SourceCatalog port, verifies digest and excerpt, and delegates kind-specific checks to pack-supplied functions. Producer `verification_status` is never trusted. Model-assisted records cannot raise an aggregate to pass.
+- **Consequences:** Packs must register a check for every evidence kind they use; an unregistered kind fails. Related: INV-24, INV-25, P-17.

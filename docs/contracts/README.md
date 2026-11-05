@@ -5,12 +5,13 @@
 ## Execution and authority
 
 - [Action Request](action-request.schema.json), [Decision](decision.schema.json), [Effect Receipt](effect-receipt.schema.json), [Audit Event](audit-event.schema.json), [Policy Manifest](policy-manifest.schema.json).
+- M0-03a drafts: [Principal Proof](principal-proof.schema.json), [Approval Grant](approval-grant.schema.json), [Broker Permit](broker-permit.schema.json), [Policy Bundle](policy-bundle.schema.json). Digests use the canonical JSON form defined in `m0/writ_m0/canonical.py` ([D-006](../implementation/DECISION-LOG.md)).
 
 ## Model and domain independence
 
 - [Model Capabilities](model-capabilities.schema.json), [Model Request](model-request.schema.json), [Model Event](model-event.schema.json).
 - [Capability Pack](capability-pack.schema.json), [TaskSpec](task-spec.schema.json), [Artifact](artifact.schema.json), [Evidence](evidence.schema.json), [EvaluationRecord](evaluation-record.schema.json).
-- Three [TaskSpec fixtures](fixtures/) demonstrate coding, research and noncode review without core file-specific fields.
+- Three [TaskSpec fixtures](fixtures/) demonstrate coding, research and noncode review without core file-specific fields. [Domain fixtures](fixtures/domains/) add artifacts, evidence and source catalogs for each, plus negative cases (fabricated citation, missing counterevidence). Evidence gained optional `evidence_kinds`, `stance`, `source_published_at` and `quoted_excerpt` so evaluators can verify claims instead of trusting producer status.
 
 An identity field is *not* authentication proof. Tool descriptions and pack manifests are *not* broker permits. Model-provided JSON must be validated; provider-native structured output support is advisory until locally checked. The example `writ://` artifact references are not an implemented registry.
 

@@ -1,0 +1,46 @@
+[
+  {
+    "contract_version": "2.0",
+    "evidence_id": "ev-cr-1",
+    "tenant_id": "fixture-tenant",
+    "task_id": "fixture-code-review",
+    "source_ref": "fixture://repo/pr-42/diff",
+    "claim_ids": [
+      "finding-1"
+    ],
+    "observed_at": "2026-11-05T12:00:00Z",
+    "retrieval_method": "fixture",
+    "content_digest": "sha256:1890ade79f90e7ed4ea5d0b4520dc37ee4b408efa84095ba181cc13b60368efb",
+    "verification_status": "unverified",
+    "confidence_note": null,
+    "citation_locator": "src/payments.py:42",
+    "evidence_kinds": [
+      "file_line"
+    ],
+    "stance": "supports",
+    "source_published_at": null,
+    "quoted_excerpt": "order.balance += amount"
+  },
+  {
+    "contract_version": "2.0",
+    "evidence_id": "ev-cr-2",
+    "tenant_id": "fixture-tenant",
+    "task_id": "fixture-code-review",
+    "source_ref": "fixture://ci/run-7",
+    "claim_ids": [
+      "finding-1"
+    ],
+    "observed_at": "2026-11-05T12:00:00Z",
+    "retrieval_method": "fixture",
+    "content_digest": "sha256:159769576322060687e32b1071f47d983b65dfb70a8087a34a094f955b096664",
+    "verification_status": "unverified",
+    "confidence_note": null,
+    "citation_locator": null,
+    "evidence_kinds": [
+      "test_outcome"
+    ],
+    "stance": "supports",
+    "source_published_at": null,
+    "quoted_excerpt": "tests/test_payments.py::test_refund_negative FAILED"
+  }
+]
