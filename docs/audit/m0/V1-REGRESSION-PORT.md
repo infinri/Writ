@@ -43,5 +43,5 @@ A ledger grant row missing a binding field (`action_digest`, `policy_bundle_sha`
 ## Not ported (gaps)
 
 - **Host-level crash semantics.** V1's deepest fail-open was a crashing hook that Claude Code treats as non-blocking. The M0 harness has no Claude Code hook-output layer, so this cannot be tested here. The M5 Claude Code adapter must turn any internal error into an explicit deny reply. Tracked in M0-01e.
-- **Project-scoped evidence sources.** `SourceCatalog.resolve` is tenant-scoped only; Evidence carries no `project_id`. Cross-project evidence isolation within one tenant is therefore not enforced by the M0 evaluator. Flag for M7/M8.
+- **Project-scoped evidence sources.** Addressed after this port by SR-05 (`f5a950e`): Evidence requires `project_id` and sources resolve per tenant and project; see `test_evaluation.py::TestProjectIsolation`. Retrieval and graph isolation remain M7/M8.
 - **Retrieval isolation against a real graph.** Requires M7/M8 and a disposable Neo4j.

@@ -1,51 +1,43 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-05 · **Branch:** v2/architecture-rebuild (pushed through `d3f722d`) · **Milestone:** M0, **NOT complete**
+**Last updated:** 2026-11-05 · **Branch:** v2/architecture-rebuild (pushed through `61b0eca`; later commits local, push needs authorization) · **Milestone:** M0, **NOT complete**; M1 blocked
 
 ## Current
 
-- **Phase:** security corrections from the independent source review ([record](../audit/m0/INDEPENDENT-REVIEW-M0.md)).
-- **Active task:** none in progress. SR-01, SR-02, SR-03, SR-07, SR-08, SR-09 fixed and IN REVIEW; awaiting review of the fixes and regression tests.
-- **Last commits:** `f4489c9` SR-09, `94d3701` SR-01, `2800da3` SR-07, `f8ad085` SR-02, `4947489` SR-03, `64a5b01` SR-08, `1c53247` review record; plus the docs commit following this file.
+- **Phase:** remediation after independent review 2 ([record](../audit/m0/INDEPENDENT-REVIEW-M0-2.md)).
+- **Active task:** none in progress. SR-10, SR-11 and SR-05 fixed locally and IN REVIEW.
+- **Local commits since `61b0eca`:** `f140cb7` review record, `9b90b13` SR-10, `4e42d33` SR-11, `f5a950e` SR-05, plus the docs commit following this file.
 
-## Completed and verified
+## Security findings
 
-| Area | Result |
+| Status | Findings |
 |---|---|
-| Continuity | TASKS, DECISION-LOG (D-001..D-010), TEST-EVIDENCE (E-001..E-006), SESSION-HANDOFF, CLAUDE.md |
-| V1 audit | Pinned manifest, 52 hooks, 288-rule first pass, test inventory, retrieval golden export, unmediated tools, 21 ported regressions |
-| Contracts and domains | 17 schemas; canonical digest; cross-domain evaluation with negatives |
-| Kernel oracle | 26 golden cases (all PENDING INDEPENDENT REVIEW); deadlines; strict canonical ids |
-| Broker | Sealed ingress (D-010), capability-set-bound grants, single-use permits, idempotency, receipts |
-| CI | `d3f722d`: 256 passed, audit and docs checks pass (E-007) |
+| DONE for reference harness (owner-accepted after review 2; production limits recorded) | SR-01, SR-02, SR-03, SR-04, SR-07, SR-08, SR-09 |
+| IN REVIEW (fixed locally) | SR-05, SR-10, SR-11 |
+| Open | SR-06 (live host) |
 
 ## Open M0 acceptance requirements
 
 | Item | Needs |
 |---|---|
-| Review of SR-01/02/03/07/08/09 fixes and tests | Reviewer |
-| Golden cases 01 and 08 | Policy decided by owner (D-011); independent verdicts still pending |
-| All 26 golden cases | Independent verdicts (none self-approved) |
-| SR-04 subagent grant isolation | Owner decided no inheritance (D-011); independent review pending |
-| SR-05 project-scoped evidence | Contract and evaluator change plus negative tests |
-| SR-06 hook crash fail-closed | Isolated live Claude Code host |
-| M0-01d rule semantic review, M0-01e live hook posture | Human reviewer; isolated host |
-| M0-05c go/no-go | All of the above |
+| Review of SR-05, SR-10, SR-11 | Reviewer |
+| 26 golden cases | Named reviewer verdicts (AI review 2 provisionally AGREES; status stays PENDING) |
+| SR-06 / M0-01e | Isolated live Claude Code host |
+| M0-01d | Human semantic review of 288 rules |
+| M0-05c | Go/no-go after all of the above |
+
+Production hardening (key registration and rotation, trusted host boundary, policy signatures, trusted clocks, OS effect mediation, filesystem TOCTOU, crash reconciliation, distributed storage) is M3/M5 roadmap.
 
 ## Known blockers
 
-- No implementation work until the security fixes are independently reviewed (instruction).
-- Rust and Go toolchains absent (M1 not started, by instruction).
+- Push of local commits needs authorization.
+- Rust and Go toolchains absent; M1 blocked by instruction.
 - Pages deploy blocked by repository environment protection (pre-existing).
-
-## Relevant files
-
-`m0/writ_m0/{ingress,broker,decision,hosts,runner}.py`, `m0/tests/test_{broker,decision,independence,v1_regressions}.py`, `docs/contracts/approval-grant.schema.json`, `docs/contracts/fixtures/decisions/m0-golden.json`, `docs/audit/m0/{INDEPENDENT-REVIEW-M0,GOLDEN-DECISION-REVIEW}.md`.
 
 ## Last tests
 
-E-007: CI 256 passed at `d3f722d`; audit and docs checks pass.
+E-009: 270 passed, 0 failed locally; audit and docs checks pass. Last CI: E-007 era run 42112799616 at `61b0eca`, 256 passed.
 
 ## Next exact action
 
-Wait for the independent review of the GitHub code and regression tests for SR-01/02/03/07/08/09 (all IN REVIEW). Reviewer focus: seal forgery and replay, capability-binding completeness, deadlines, durable permit consumption across processes and crashes (see E-008 and its gaps), canonical ids. Start no implementation work until that review is in; then SR-05 is the next implementation priority. Propose the M0 go/no-go only after the fixes are reviewed and the open items above are resolved or explicitly risk-accepted.
+Request authorization to push the local commits and run CI; then await review of SR-05, SR-10, SR-11. No further implementation until that review. Live-host verification and the 288-rule human review remain outstanding before go/no-go.

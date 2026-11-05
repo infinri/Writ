@@ -91,3 +91,13 @@ Implementation-level decisions. Architectural decisions belong in [ADRs](../deci
 - **SR-04:** subagents do not inherit a parent's approval (confirms D-009). Bounded, explicit delegation may be designed later.
 - **SR-03:** an expired request is `invalid` / `DEADLINE_EXCEEDED`; every non-allow status must fail closed at every host and adapter.
 - **Effect on review status:** these are policy decisions, not independent review verdicts. All golden cases remain PENDING INDEPENDENT REVIEW.
+
+## D-012: Bind effects and receipts to the whole request; scope evidence by project
+
+- **Date:** 2026-11-05
+- **Context:** Independent review 2 (SR-10, SR-11) and open SR-05.
+- **Selected:**
+  - BrokerPermit and EffectReceipt carry `request_fingerprint`, the canonical digest of the complete ActionRequest. The effect adapter refuses a request whose fingerprint differs from the (MAC-protected) permit before consuming the permit. An idempotent duplicate returns the stored receipt only when both fingerprint and the authorizing grant match; otherwise IDEMPOTENCY_CONFLICT.
+  - Evidence carries a required `project_id`; SourceCatalog resolution is keyed by tenant and project; evaluators require evidence scope to equal the task's.
+- **Alternatives:** compare a list of normative fields (rejected: silently misses fields added later); widen the idempotency namespace to include principal and project (rejected for now: a conflict refusal is fail-closed and simpler; revisit if legitimate cross-principal key reuse appears).
+- **Consequences:** Retries must resend the identical request (same request id and idempotency key) to receive the original receipt. Explicitly shared cross-project evidence needs a future contract. Kernel unchanged and key-free.

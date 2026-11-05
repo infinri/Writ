@@ -76,6 +76,13 @@ Only results actually executed are recorded under **Executed**. Planned verifica
   5. A consumed permit whose effect did not execute must never be reported as a successful effect. In M0 such an attempt remains `dispatched` and reconciles to `unknown_reconcile`, never `observed_success`.
 - **Gap for review:** M0 has no shared or persisted permit key, so "concurrent workers" is only a supported configuration once key management exists (M3). A committed multi-process test should be added after the security review.
 
+### E-009: SR-10, SR-11, SR-05 remediation
+
+- **Revision:** `f5a950e` (local, not pushed)
+- **Red first:** SR-10 5 failures (altered request spent a valid permit: DID NOT RAISE); SR-11 3 failures (other principal and unrelated grant received the original receipt: DID NOT RAISE; receipt lacked fingerprint); SR-05 4 failures (contract and catalog API lacked project scope).
+- **After:** `cd m0 && .venv/bin/python -m pytest` 270 passed, 0 failed; concurrency tests 5/5; audit check current; docs check OK.
+- **Not run in CI:** commits after `61b0eca` are local.
+
 ## Not yet executed
 
 - Hook failure posture on a live host (M0-01e); rule semantic review (M0-01d).

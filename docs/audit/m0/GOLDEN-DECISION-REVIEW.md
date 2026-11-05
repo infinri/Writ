@@ -428,3 +428,7 @@ Recorded in [DECISION-LOG D-011](../../implementation/DECISION-LOG.md) and as `p
 - **Case 08:** require_approval above permit; operator role is not an approval override.
 - **Case 26 / SR-03:** invalid / DEADLINE_EXCEEDED; all non-allow statuses fail closed.
 - **SR-04:** no grant inheritance by subagents.
+
+## Independent review 2 assessment (AI-assisted, revision 61b0eca)
+
+Recorded in [INDEPENDENT-REVIEW-M0-2](INDEPENDENT-REVIEW-M0-2.md). The reviewer provisionally AGREES with all 26 expected outcomes under the M0 reference semantics, and the owner accepted them as consistent with those semantics. This is not production certification, not M0 approval, and not a named human verdict: every `review_status` stays PENDING INDEPENDENT REVIEW until a named reviewer records verdicts. Reviewer notes carried forward: case 24 id should drop "default-deny"; cases 02, 03, 16 need integration coverage for case, alias, encoded and symlink paths; case 04 lacks a competing permit in the golden set; case 20's effect-boundary gap was SR-10 (fixed in `9b90b13`); case 23 does not demonstrate source isolation (SR-05, fixed in `f5a950e`).
