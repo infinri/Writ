@@ -32,7 +32,7 @@ def world(tmp_path, bundle):
     proof = keyring.issue(proof_id="p-1", tenant_id="fixture-tenant", principal_id="agent:session-1",
                           session_id=SESSION, roles=["agent"], issued_at=NOW, expires_at=NOW + timedelta(hours=1))
     ledger = b.Ledger(tmp_path / "ledger.db")
-    signer = b.PermitSigner()
+    signer = b.PermitSigner(ledger)
     brk = b.Broker(ledger=ledger, bundle_provider=lambda: bundle, state_provider=lambda: STATE, signer=signer)
 
     def adapter(name, extractor):
@@ -362,8 +362,9 @@ proof = kr.issue(proof_id='p', tenant_id='fixture-tenant', principal_id='agent:a
                  issued_at=now, expires_at=now + timedelta(hours=1))
 host = hosts.HostAdapter(name='h', keyring=kr, workspace=ws, project_id='fixture-project', extractor=hosts.CLAUDE_LIKE)
 bundle = decision.load_bundle(contracts.load_fixture('policy/m0-reference.bundle.json'))
-signer = broker.PermitSigner()
-brk = broker.Broker(ledger=broker.Ledger(ws / 'l.db'), bundle_provider=lambda: bundle,
+ledger = broker.Ledger(ws / 'l.db')
+signer = broker.PermitSigner(ledger)
+brk = broker.Broker(ledger=ledger, bundle_provider=lambda: bundle,
                     state_provider=lambda: decision.KernelState(5), signer=signer)
 req = host.normalize(tool='Write', args={{'file_path': 'a.txt', 'content': 'x'}}, call_id='c', session_id='s', proof=proof, now=now)
 print(brk.execute(req, broker.RecordingEffect(signer, lambda: now), now)['status'])

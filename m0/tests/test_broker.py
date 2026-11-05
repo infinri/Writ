@@ -17,7 +17,7 @@ PUBLISH = {"action": {"kind": "repository.publish", "resource": {
 @pytest.fixture
 def env(tmp_path, bundle):
     ledger = b.Ledger(tmp_path / "ledger.db")
-    signer = b.PermitSigner()
+    signer = b.PermitSigner(ledger)
     current = {"bundle": bundle}
     broker = b.Broker(ledger=ledger, bundle_provider=lambda: current["bundle"],
                       state_provider=lambda: STATE, signer=signer)
@@ -303,3 +303,53 @@ class TestApprovalBindsCapabilitySet:
         c = merge_patch(base_request, {"action": {"requested_capabilities": ["process.execute", "repository.publish"]}})
         grant = approve(env, a)
         assert env["broker"].execute(c, env["effect"], NOW, grant["grant_id"])["status"] == "observed_success"
+
+
+class TestPermitReplay:
+    """SR-07: a captured, still-valid permit cannot drive a second effect."""
+
+    def capture(self, env, request):
+        captured = {}
+
+        class Capture(b.RecordingEffect):
+            def apply(self, permit, req):
+                captured["permit"] = permit
+                return super().apply(permit, req)
+
+        effect = Capture(env["signer"], lambda: NOW)
+        env["broker"].execute(request, effect, NOW)
+        return captured["permit"], effect
+
+    def test_direct_replay_at_same_adapter_refused(self, env, base_request):
+        permit, effect = self.capture(env, base_request)
+        with pytest.raises(b.UnauthorizedEffect):
+            effect.apply(permit, base_request)
+        assert len(effect.applied) == 1
+
+    def test_replay_at_a_fresh_adapter_instance_refused(self, env, base_request):
+        """Restart of the effect adapter: single use is recorded durably, not in adapter memory."""
+        permit, _ = self.capture(env, base_request)
+        restarted = b.RecordingEffect(env["signer"], lambda: NOW)
+        with pytest.raises(b.UnauthorizedEffect):
+            restarted.apply(permit, base_request)
+        assert restarted.applied == []
+
+    def test_concurrent_replays_apply_at_most_once(self, env, base_request):
+        permit, _ = self.capture(env, base_request)
+        fresh = b.RecordingEffect(env["signer"], lambda: NOW)
+        barrier, outcomes = threading.Barrier(8), []
+
+        def attempt():
+            barrier.wait()
+            try:
+                fresh.apply(permit, base_request)
+                outcomes.append("applied")
+            except b.UnauthorizedEffect:
+                outcomes.append("refused")
+
+        threads = [threading.Thread(target=attempt) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert outcomes.count("applied") == 0

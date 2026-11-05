@@ -60,6 +60,8 @@ CREATE TABLE IF NOT EXISTS receipts (
   tenant_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, action_digest TEXT NOT NULL,
   attempt_id TEXT NOT NULL, status TEXT NOT NULL, body TEXT NOT NULL,
   PRIMARY KEY (tenant_id, idempotency_key));
+CREATE TABLE IF NOT EXISTS consumed_permits (
+  permit_id TEXT PRIMARY KEY, consumed_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS audit (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, body TEXT NOT NULL);
 """
@@ -187,10 +189,18 @@ class EffectAdapter(Protocol):
 
 
 class PermitSigner:
-    """Holds the broker key. Effect adapters receive only the verify capability."""
+    """Holds the broker key. Effect adapters receive only verify/consume capabilities.
 
-    def __init__(self) -> None:
+    Permits are single use (SR-07): `consume` records the permit id in the ledger
+    before the effect runs, so a captured permit cannot drive a second effect,
+    including through a restarted adapter. Recording first means a crash after
+    consume and before the effect loses the attempt rather than repeating it;
+    the broker receipt (still `dispatched`) is what reconciliation inspects.
+    """
+
+    def __init__(self, ledger: Ledger) -> None:
         self._key = secrets.token_bytes(32)
+        self._ledger = ledger
 
     def sign(self, body: dict) -> str:
         return hmac.new(self._key, canonical.canonical_bytes(body), hashlib.sha256).hexdigest()
@@ -200,6 +210,14 @@ class PermitSigner:
         if not hmac.compare_digest(self.sign(body), permit.get("broker_mac", "")):
             return False
         return datetime.fromisoformat(permit["expires_at"].replace("Z", "+00:00")) > now
+
+    def consume(self, permit: dict, now: datetime) -> bool:
+        if not self.verify(permit, now):
+            return False
+        with self._ledger.transaction() as tx:
+            inserted = tx.execute("INSERT OR IGNORE INTO consumed_permits VALUES (?, ?)",
+                                  (permit["permit_id"], iso(now))).rowcount
+        return inserted == 1
 
 
 class Broker:
@@ -340,18 +358,21 @@ class RecordingEffect:
     """Effect adapter that verifies the permit, then records the operation."""
 
     def __init__(self, signer: PermitSigner, clock: Callable[[], datetime]):
-        self._verify = signer.verify
+        self._consume = signer.consume
         self._clock = clock
         self.applied: list[str] = []
         self.crash_after_apply = False
 
     def apply(self, permit: dict | None, request: dict) -> str:
-        if not permit or not self._verify(permit, self._clock()):
-            raise UnauthorizedEffect("missing or invalid broker permit")
+        if not permit:
+            raise UnauthorizedEffect("missing broker permit")
         action = request["action"]
-        if (permit["action_digest"], permit["canonical_resource_id"], permit["tenant_id"]) != (
+        # Match before consuming, so a mismatched attempt cannot burn a legitimate permit.
+        if (permit.get("action_digest"), permit.get("canonical_resource_id"), permit.get("tenant_id")) != (
                 action["action_digest"], action["resource"]["canonical_resource_id"], request["tenant_id"]):
             raise UnauthorizedEffect("permit does not match the requested operation")
+        if not self._consume(permit, self._clock()):
+            raise UnauthorizedEffect("invalid, expired or already used broker permit")
         self.applied.append(action["action_digest"])
         if self.crash_after_apply:
             raise SimulatedCrash()

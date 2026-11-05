@@ -27,7 +27,7 @@ PROCESS = {"action": {"kind": "process.execute", "resource": {
 @pytest.fixture
 def env(tmp_path, bundle):
     ledger = b.Ledger(tmp_path / "ledger.db")
-    signer = b.PermitSigner()
+    signer = b.PermitSigner(ledger)
     current = {"bundle": bundle}
     brk = b.Broker(ledger=ledger, bundle_provider=lambda: current["bundle"], state_provider=lambda: STATE,
                    signer=signer)
