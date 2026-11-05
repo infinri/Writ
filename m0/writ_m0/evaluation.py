@@ -2,8 +2,9 @@
 
 The core knows nothing about code, research or documents. It:
 
-1. checks scope (tenant and task) of every evidence item,
-2. resolves each item's source through a SourceCatalog port and verifies the
+1. checks scope (tenant, project and task) of every evidence item,
+2. resolves each item's source through a SourceCatalog port scoped to the
+   task's tenant and project (SR-05) and verifies the
    content digest and verbatim excerpt,
 3. asks the pack-supplied check for each evidence kind the item claims,
 4. marks each TaskSpec evidence requirement satisfied only by items that
@@ -36,7 +37,7 @@ class Source:
 
 
 class SourceCatalog(Protocol):
-    def resolve(self, source_ref: str, tenant_id: str) -> Source | None: ...
+    def resolve(self, source_ref: str, tenant_id: str, project_id: str) -> Source | None: ...
 
 
 @dataclass(frozen=True)
@@ -53,15 +54,15 @@ KindCheck = Callable[[dict, Source], "str | None"]
 
 
 class FixtureCatalog:
-    """SourceCatalog over a fixture sources.json, visible to exactly one tenant."""
+    """SourceCatalog over a fixture sources.json, visible to exactly one tenant and project."""
 
-    def __init__(self, sources: Mapping[str, Mapping[str, str]], tenant_id: str):
-        self._tenant_id = tenant_id
+    def __init__(self, sources: Mapping[str, Mapping[str, str]], tenant_id: str, project_id: str):
+        self._scope = (tenant_id, project_id)
         self._sources = {ref: Source(ref, s["content"], s.get("published_at"))
                          for ref, s in sources.items()}
 
-    def resolve(self, source_ref: str, tenant_id: str) -> Source | None:
-        if tenant_id != self._tenant_id:
+    def resolve(self, source_ref: str, tenant_id: str, project_id: str) -> Source | None:
+        if (tenant_id, project_id) != self._scope:
             return None
         return self._sources.get(source_ref)
 
@@ -73,9 +74,10 @@ def content_digest(text: str) -> str:
 def _check_item(item: dict, task: dict, catalog: SourceCatalog,
                 kind_checks: Mapping[str, KindCheck]) -> list[str]:
     problems = []
-    if item["tenant_id"] != task["tenant_id"] or item["task_id"] != task["task_id"]:
-        return ["evidence scope does not match task tenant/task"]
-    source = catalog.resolve(item["source_ref"], task["tenant_id"])
+    if (item["tenant_id"], item["project_id"], item["task_id"]) != (
+            task["tenant_id"], task["project_id"], task["task_id"]):
+        return ["evidence scope does not match task tenant/project/task"]
+    source = catalog.resolve(item["source_ref"], task["tenant_id"], task["project_id"])
     if source is None:
         return ["source does not resolve"]
     if item.get("content_digest") and item["content_digest"] != content_digest(source.content):

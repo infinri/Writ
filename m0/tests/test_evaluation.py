@@ -16,7 +16,7 @@ def load(task: str):
     sources = contracts.load_fixture(f"domains/{task}/sources.json")
     return (t, contracts.load_fixture(f"domains/{task}/artifact.json"),
             contracts.load_fixture(f"domains/{task}/evidence.json"),
-            evaluation.FixtureCatalog(sources, TENANT))
+            evaluation.FixtureCatalog(sources, TENANT, "fixture-project"))
 
 
 def checks_for(task: str, catalog):
@@ -24,7 +24,7 @@ def checks_for(task: str, catalog):
         return reference_packs.SOFTWARE_ENGINEERING
     if task == "research":
         return reference_packs.RESEARCH
-    return reference_packs.review_audit(catalog.resolve("fixture://rubric/1", TENANT))
+    return reference_packs.review_audit(catalog.resolve("fixture://rubric/1", TENANT, "fixture-project"))
 
 
 def run(task, evidence=None, signoffs=(), tenant_catalog=None):
@@ -92,7 +92,7 @@ class TestNegativeDomains:
 
     def test_catalog_scoped_to_other_tenant_resolves_nothing(self):
         sources = contracts.load_fixture("domains/research/sources.json")
-        record = run("research", tenant_catalog=evaluation.FixtureCatalog(sources, "other-tenant"))
+        record = run("research", tenant_catalog=evaluation.FixtureCatalog(sources, "other-tenant", "fixture-project"))
         assert record["status"] == "fail"
 
     def test_unregistered_evidence_kind_is_not_silently_accepted(self):
@@ -126,3 +126,35 @@ def test_core_evaluator_has_no_domain_imports():
     source = inspect.getsource(evaluation)
     for word in ("file_line", "diff", "citation_locator", "rubric_criterion"):
         assert word not in source
+
+
+class TestProjectIsolation:
+    """SR-05: evidence and sources are scoped to tenant AND project, not tenant alone."""
+
+    def test_evidence_from_a_sibling_project_is_rejected(self):
+        items = [e | {"project_id": "other-project"} for e in contracts.load_fixture("domains/research/evidence.json")]
+        assert run("research", evidence=items)["status"] == "fail"
+
+    def test_catalog_scoped_to_a_sibling_project_resolves_nothing(self):
+        sources = contracts.load_fixture("domains/research/sources.json")
+        record = run("research", tenant_catalog=evaluation.FixtureCatalog(sources, TENANT, "other-project"))
+        assert record["status"] == "fail"
+
+    def test_colliding_source_ids_resolve_to_their_own_project(self):
+        """Two projects in one tenant use the same source_ref with different content."""
+        ref = "fixture://sources/vendor-report-2026-03"
+        own = contracts.load_fixture("domains/research/sources.json")
+        foreign = {ref: {"published_at": own[ref]["published_at"],
+                         "content": "Sibling project copy: Product X reduced median checkout latency by 90%."}}
+        sibling = evaluation.FixtureCatalog(foreign, TENANT, "other-project")
+        mine = evaluation.FixtureCatalog(own, TENANT, "fixture-project")
+        assert sibling.resolve(ref, TENANT, "fixture-project") is None
+        assert mine.resolve(ref, TENANT, "fixture-project").content == own[ref]["content"]
+        items = contracts.load_fixture("domains/research/evidence.json")
+        items[0] = items[0] | {"quoted_excerpt": "reduced median checkout latency by 90%", "content_digest": None}
+        assert run("research", evidence=items, tenant_catalog=mine)["status"] == "fail"
+
+    def test_evidence_contract_requires_project_scope(self):
+        item = contracts.load_fixture("domains/research/evidence.json")[0]
+        item.pop("project_id", None)
+        assert contracts.violations("evidence", item)

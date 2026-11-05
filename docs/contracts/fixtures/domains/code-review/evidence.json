@@ -3,6 +3,7 @@
     "contract_version": "2.0",
     "evidence_id": "ev-cr-1",
     "tenant_id": "fixture-tenant",
+    "project_id": "fixture-project",
     "task_id": "fixture-code-review",
     "source_ref": "fixture://repo/pr-42/diff",
     "claim_ids": [
@@ -25,6 +26,7 @@
     "contract_version": "2.0",
     "evidence_id": "ev-cr-2",
     "tenant_id": "fixture-tenant",
+    "project_id": "fixture-project",
     "task_id": "fixture-code-review",
     "source_ref": "fixture://ci/run-7",
     "claim_ids": [

@@ -3,6 +3,7 @@
     "contract_version": "2.0",
     "evidence_id": "ev-neg-3",
     "tenant_id": "fixture-tenant",
+    "project_id": "fixture-project",
     "task_id": "fixture-research",
     "source_ref": "fixture://sources/vendor-report-2026-03",
     "claim_ids": [

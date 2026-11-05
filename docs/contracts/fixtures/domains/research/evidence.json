@@ -3,6 +3,7 @@
     "contract_version": "2.0",
     "evidence_id": "ev-rs-1",
     "tenant_id": "fixture-tenant",
+    "project_id": "fixture-project",
     "task_id": "fixture-research",
     "source_ref": "fixture://sources/vendor-report-2026-03",
     "claim_ids": [
@@ -26,6 +27,7 @@
     "contract_version": "2.0",
     "evidence_id": "ev-rs-2",
     "tenant_id": "fixture-tenant",
+    "project_id": "fixture-project",
     "task_id": "fixture-research",
     "source_ref": "fixture://sources/independent-audit-2026-06",
     "claim_ids": [

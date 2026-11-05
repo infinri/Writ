@@ -8,6 +8,7 @@
     "contract_version",
     "evidence_id",
     "tenant_id",
+    "project_id",
     "task_id",
     "source_ref",
     "claim_ids",
@@ -25,6 +26,11 @@
     "tenant_id": {
       "type": "string",
       "minLength": 1
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Project scope; evidence and its sources are visible only within this tenant and project (SR-05)"
     },
     "task_id": {
       "type": "string",
