@@ -90,6 +90,12 @@ Only results actually executed are recorded under **Executed**. Planned verifica
 - **After:** `cd m0 && .venv/bin/python -m pytest` 280 passed, 0 failed; audit check current; docs check OK. Golden decision fixture unchanged.
 - **CI:** run https://github.com/infinri/Writ/actions/runs/42126984730 at `e086341`, 280 passed, audit and docs checks pass.
 
+### E-011: Gate preparation
+
+- **Revision:** local, after `c3b37af`
+- **Command:** `cd m0 && .venv/bin/python -m pytest` 281 passed, 0 failed (adds `TestRuleReviewBatches`: 288 rules partitioned once across 15 batches, all reviewer columns blank). Audit check current; docs check OK. `python -m writ_m0.audit.rule_review` refused a second run (exit 1) as designed.
+- **No gate executed:** golden human review, rule review and live-host trials have not been performed.
+
 ## Not yet executed
 
 - Hook failure posture on a live host (M0-01e); rule semantic review (M0-01d).

@@ -1,44 +1,41 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-05 · **Branch:** v2/architecture-rebuild (pushed through `957e32f`; later commits local, push needs authorization) · **Milestone:** M0, **NOT complete**; M1 blocked
+**Last updated:** 2026-11-05 · **Branch:** v2/architecture-rebuild (pushed through `e086341`; later commits local, push needs authorization) · **Milestone:** M0, **NOT complete, recommendation NO-GO**; M1 blocked
 
 ## Current
 
-- **Phase:** remediation after independent review 3 ([record](../audit/m0/INDEPENDENT-REVIEW-M0-3.md)).
-- **Active task:** none in progress. SR-12 fixed locally and IN REVIEW.
-- **Local commits since `957e32f`:** `f7eae30` review 3 record and 26-case tracking fix, `0315fde` SR-12, plus the docs commit following this file.
+- **Phase:** closing M0 acceptance gates. Reference harness review complete for now (review 4); no implementation phase open. Further code changes only if acceptance-test evidence requires them.
+- **Active task:** none in progress; gate packages prepared and awaiting people or a disposable host.
+- **Local commits since `e086341`:** `b8b7e1c` review 4 record, `a4a7103` golden worksheet, `703a1c1` rule review batches, `c3b37af` live-host procedure, plus the commit following this file (go/no-go checklist and tracking).
 
 ## Security findings
 
 | Status | Findings |
 |---|---|
-| DONE for reference harness (accepted by reviews 2 and 3; production limits recorded) | SR-01, SR-02, SR-03, SR-04, SR-05, SR-07, SR-08, SR-09, SR-10, SR-11 |
-| IN REVIEW (fixed locally) | SR-12 |
-| Roadmap | RM-01 composite multi-effect requests (M1/M3) |
-| Open | SR-06 (live host) |
+| DONE (harness), accepted by AI-assisted reviews 2-4 with production limits | SR-01..SR-05, SR-07..SR-12 |
+| Open | SR-06 (gate G3) |
+| Roadmap | RM-01 composite multi-effect requests |
 
-## Open M0 acceptance requirements
+## M0 gates ([checklist](M0-GO-NO-GO.md))
 
-| Item | Needs |
-|---|---|
-| Review of SR-12 | Reviewer |
-| 26 golden cases | Named human reviewer verdicts (AI reviews 2 and 3 technically AGREE; status stays PENDING) |
-| SR-06 / M0-01e | Isolated live Claude Code host |
-| M0-01d | Human semantic review of 288 rules |
-| M0-05c | Go/no-go after all of the above |
-
-Production hardening (key registration and rotation, trusted host boundary, policy signatures, trusted clocks, OS effect mediation, filesystem TOCTOU, crash reconciliation, distributed storage) is M3/M5 roadmap.
+| Gate | Prepared | Needs |
+|---|---|---|
+| G1 golden cases (M0-05a) | [worksheet](../audit/m0/GOLDEN-HUMAN-REVIEW-WORKSHEET.md) | Named human reviewer; 0 of 26 |
+| G2 288 rules (M0-01d) | [15 batches](../audit/m0/rule-review/README.md) | Human reviewer; 0 of 288 |
+| G3 live host (M0-01e, SR-06) | [procedure](../audit/m0/LIVE-HOST-VERIFICATION.md) | Disposable host, operator, pinned Claude Code version |
+| G4 go/no-go (M0-05c) | [checklist](M0-GO-NO-GO.md) | Owner decision and risk table |
 
 ## Known blockers
 
-- Push of local commits needs authorization.
+- Gates G1-G3 need human reviewers or a disposable host; none can be completed by Claude alone.
+- Local commits need push authorization.
 - Rust and Go toolchains absent; M1 blocked by instruction.
 - Pages deploy blocked by repository environment protection (pre-existing).
 
 ## Last tests
 
-E-010: 280 passed, 0 failed locally; audit and docs checks pass. Last CI: run 42123472509 at `957e32f`, 270 passed.
+Local: 281 passed (adds the rule-review batch partition test); audit and docs checks pass. Last CI: run 42126984730 at `e086341`, 280 passed.
 
 ## Next exact action
 
-Request authorization to push the local commits and run CI; then await review of SR-12. No further implementation until that review. Live-host verification and the 288-rule human review remain outstanding before go/no-go.
+Request push authorization for the local gate-preparation commits. Then wait for: a named reviewer for G1, a reviewer for G2, and an operator plus disposable host for G3. Transcribe completed, attributable verdicts only when asked. Do not fill any verdict, and do not start M1.
