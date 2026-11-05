@@ -20,7 +20,7 @@ This documentation replaces the prior V1 docs (including old ADRs, reference pag
 7. [V1 disposition and migration](audit/V1-ARCHITECTURE-BASELINE.md), [migration strategy](migration/v1-to-v2.md).
 8. [Operations](operations/deployment.md), [extensions](architecture/extensibility.md), [observability](architecture/observability.md).
 9. [ADRs](decisions/) for decisions and open questions.
-10. [HTML architecture portal](architecture/index.html) — a visual guide, not an alternate source of truth.
+10. [Live V2 HTML architecture](https://infinri.github.io/Writ/v2/docs/architecture/index.html) ([repository source](architecture/index.html)) — a visual guide, not an alternate source of truth.
 
 ## Decision language
 

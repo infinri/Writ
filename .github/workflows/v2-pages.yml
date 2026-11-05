@@ -1,0 +1,99 @@
+name: Publish Writ V2 architecture website
+
+# GitHub Pages must have Source = GitHub Actions in repository settings.
+# V1 remains under /Writ/docs/; V2 is hosted under /Writ/v2/docs/.
+on:
+  push:
+    branches:
+      - v2/architecture-rebuild
+    paths:
+      - "docs/**"
+      - "V2-ARCHITECTURE.md"
+      - "README.md"
+      - ".github/workflows/v2-pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: writ-github-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Assemble V1 and V2 documentation site
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout existing V1 documentation from main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: v1-source
+          persist-credentials: false
+
+      - name: Checkout V2 architecture
+        uses: actions/checkout@v4
+        with:
+          ref: v2/architecture-rebuild
+          path: v2-source
+          persist-credentials: false
+
+      - name: Assemble static site
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p site/docs site/v2/docs
+          cp -a v1-source/docs/. site/docs/
+          cp -a v2-source/docs/. site/v2/docs/
+
+          test -s site/docs/demo.html
+          test -s site/docs/assets/writ-demo.mp4
+          test -s site/v2/docs/architecture/index.html
+          test -s site/v2/docs/architecture/assets/v2.css
+
+          cat > site/index.html <<'HTML'
+          <!doctype html>
+          <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+          <title>Writ documentation</title>
+          <style>body{background:#0b1722;color:#e5f1f6;font:16px/1.7 system-ui;margin:0;padding:10vh 7vw}main{max-width:760px;margin:auto}a{color:#83e9d1}h1{font-size:2.5rem}article{padding:20px;border:1px solid #345467;border-radius:12px;margin:18px 0}</style>
+          </head><body><main><h1>Writ documentation</h1><p>Choose a documentation version:</p>
+          <article><h2>Writ V1</h2><p>Current released Claude Code integration.</p><a href="docs/demo.html">Watch the existing demo</a></article>
+          <article><h2>Writ V2 — Architecture</h2><p>Model-agnostic and domain-agnostic execution platform. Design in progress; not yet released.</p><a href="v2/docs/architecture/index.html">Open V2 architecture website</a></article>
+          </main></body></html>
+          HTML
+
+          cat > site/v2/index.html <<'HTML'
+          <!doctype html><html lang="en"><head><meta charset="utf-8">
+          <meta name="viewport" content="width=device-width,initial-scale=1">
+          <meta http-equiv="refresh" content="0;url=docs/architecture/index.html">
+          <title>Writ V2 Architecture</title></head><body>
+          <p><a href="docs/architecture/index.html">Open Writ V2 architecture</a></p>
+          </body></html>
+          HTML
+
+          touch site/.nojekyll
+          echo "Website staged: V1 demo and V2 architecture present."
+          find site/v2/docs/architecture -maxdepth 1 -name '*.html' | sort
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload combined static website
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: Publish combined site to GitHub Pages
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
