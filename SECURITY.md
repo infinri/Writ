@@ -23,3 +23,7 @@ A human approval is bound to principal, tenant, action, canonical target, conten
 ## Reporting
 
 Open a GitHub security advisory/private report when available. Avoid filing exploitable secrets or full exploit payloads in public issues. For this planning branch, refer to [threat model](docs/security/threat-model.md) and [invariants](docs/security/invariants.md). All actual security guarantees require implementation evidence and adversarial verification.
+
+## Model- and domain-pack threats
+
+A ModelAdapter is an untrusted suggestion source, not a permission authority. Capability Packs declare symbolic tool requirements, never permissions. Research citations and review scores are evidence whose authenticity is separately validated. Cross-provider fallback must respect the tenant's data-residency and approved egress restrictions. See [model runtime](docs/architecture/model-agnostic-runtime.md) and [packs](docs/architecture/capability-packs.md).

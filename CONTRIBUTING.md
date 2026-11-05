@@ -21,3 +21,7 @@ Provide: scope and milestone, design references, concrete tests, benchmark impli
 ## V1 artifacts
 
 The old docs are accessible through main and Git history. Do not copy V1 acceptance criteria blindly; classify each as retain, redesign, discard or research before bringing it forward.
+
+## Domain-neutral requirements
+
+New core contracts must work for coding, research and noncode document review. Add or revise the matching Capability Pack and evaluation fixtures, including a negative test for unsupported model features and unauthorized tool effects. A provider adapter cannot bypass broker authorization, and an adapter's advertised feature list must be validated with integration tests before marking it supported.

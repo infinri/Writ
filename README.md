@@ -2,7 +2,7 @@
 
 > **Status: architecture and implementation specification only.** This branch is not a functioning V2 runtime. The existing V1 source tree is retained as an isolated reference until a replacement is implemented, verified, and explicitly cut over.
 
-Writ V2 is a portable, deterministic governance and intelligence engine for AI-assisted work. It combines **just-in-time retrieval**, **independently enforced permissions and human approvals**, and **persistent, provenance-aware memory**. Models advise and propose; the trusted execution boundary authorizes and performs side effects.
+Writ V2 is a **model-agnostic, domain-agnostic intelligence and execution platform** for AI-assisted work. Claude Code is the first external host integration, not the platform's boundary. Research, independent review, business operations and software engineering are distinct Capability Packs. Writ can serve an existing agent or, optionally, manage its own model-driven task loop. It combines **just-in-time retrieval**, **independently enforced permissions and human approvals**, and **persistent, provenance-aware memory**. Models advise and propose; the trusted execution boundary authorizes and performs side effects.
 
 ## Start here
 
@@ -12,6 +12,10 @@ Writ V2 is a portable, deterministic governance and intelligence engine for AI-a
 - [Execution and state](docs/architecture/execution-and-state.md)
 - [Authorization and approvals](docs/architecture/authorization-and-approvals.md)
 - [JIT retrieval and memory](docs/architecture/retrieval-and-memory.md)
+- [Model independence and integrations](docs/architecture/model-agnostic-runtime.md)
+- [Domain Capability Packs](docs/architecture/capability-packs.md)
+- [Agent orchestration and evaluation](docs/architecture/agent-orchestration.md)
+- [M0 start checklist](docs/implementation/M0-START-HERE.md)
 - [Security invariants](docs/security/invariants.md)
 - [V1 audit and disposition](docs/audit/V1-ARCHITECTURE-BASELINE.md)
 - [Architecture website](docs/architecture/index.html)
@@ -25,11 +29,14 @@ Writ V2 is a portable, deterministic governance and intelligence engine for AI-a
 5. **Separate fast local decisions from distributed workflows.** An ordinary tool decision must not depend on a remote workflow orchestrator or a graph query.
 6. **Graph intelligence is not authorization.** Neo4j holds relationships, knowledge and memory; transactional authorization and execution records live in operational storage.
 7. **Ports, adapters and bounded modules.** Provider-specific hooks stay at the edge. Enterprise services are optional until validated by workloads.
-8. **No self-editing security posture.** Adaptive retrieval and planning may change recommendations, never silently rewrite enforcement rules.
+8. **Model/provider neutrality.** External agent hosts need not send inference requests through Writ; optional ModelAdapters serve Writ-managed agents.
+9. **Domain neutrality.** Coding, research and review are modular task packs, not hardcoded kernel behaviors.
+10. **Explicit evaluation.** Model conclusions are hypotheses until validated against typed evidence and rubrics.
+11. **No self-editing security posture.** Adaptive retrieval and planning may change recommendations, never silently rewrite enforcement rules.
 
 ## What is committed versus undecided
 
-**Architecturally committed:** a small deterministic execution core; explicit authorization; host-backed effect mediation; typed action and event contracts; Neo4j for provenance and graph intelligence; durable operational state; traceable policy/rule registry; portable host adapters; local-first functionality; tenant-aware authorization.
+**Architecturally committed:** external-agent and optional managed-agent modes; ModelAdapter and CapabilityPack boundaries; domain-neutral task/evidence/artifact contracts; a small deterministic execution core; explicit authorization; host-backed effect mediation; typed action and event contracts; Neo4j for provenance and graph intelligence; durable operational state; traceable policy/rule registry; portable host adapters; local-first functionality; tenant-aware authorization.
 
 **Pending benchmark/ADR:** Rust versus Go as the primary kernel language. Rust/Cedar/Wasmtime and Go/Cedar-Go/wazero are candidate implementations. Neither is adopted before the same parity, latency, memory and operability suite runs.
 

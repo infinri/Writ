@@ -42,3 +42,7 @@ Per-tenant quotas, admission control, max concurrency, prioritized queues, backp
 ## Replaceability tests
 
 Every adapter must pass the same contract suite, not merely implement a method with the same name. Change implementations behind stable API versions, compare verdicts in shadow mode, and run failure injection for extension crash/unavailability. None may alter security decisions on timeout.
+
+## Capability Packs versus executable plugins
+
+A Capability Pack is primarily a signed, declarative **domain workflow** (task types, artifacts, evidence requirements, rubrics, tool requirements and memory scopes). It is not automatically executable or authorized. This is how research and noncode review coexist with coding in one kernel. An executable WASM/sidecar extension is a separate trust tier with explicit broker capabilities. An optional ModelAdapter/AgentRunner is not needed for an external host. See [packs](capability-packs.md) and [managed runner](agent-orchestration.md).

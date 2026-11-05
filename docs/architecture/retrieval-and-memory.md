@@ -36,3 +36,7 @@ Memory merging needs contradiction and temporal semantics; don't keep a second m
 Freeze golden V1 query sets covering general coding, Magento/opaque SDKs, permissions, multi-project isolation, near misses, abstentions and conflicting evidence. Compare precision/recall@k, mean reciprocal rank, relevant tokens per turn, memory RSS, refresh time and p95. Re-run with 10x corpus growth. Preserve strong V1 ranking where it wins; replace only with measured evidence.
 
 See [data model](data-model.md) and [benchmark plan](../testing/verification-and-benchmarks.md).
+
+## Cross-domain evidence
+
+JIT retrieval is not code-only. A Research pack may prioritize dated source provenance and contradictory claims; a Review pack may prioritize document ranges, rubric criteria and verification status; a Coding pack may prioritize diffs and tests. All share the same scoped Evidence/Artifact contracts, graph/visibility protections and abstention behavior. Model outputs may create observations marked unverified but cannot promote themselves into policy. [Capability Pack design](capability-packs.md).

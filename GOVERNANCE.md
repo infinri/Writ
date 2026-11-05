@@ -19,3 +19,7 @@ Change contracts via explicit versioning, migration fixtures and a bounded depre
 ## Historic V1
 
 V1 governance documentation is preserved on main. V2 documentation is normative only for the rebuild branch until implemented and released.
+
+## Domain packs and provider compatibility
+
+The platform's security invariants apply identically regardless of model, host or Capability Pack. A domain pack may require stronger evaluation or human review, but cannot relax organization policy. Provider-specific capability claims must be verified by adapter tests, and domain artifacts/rubrics must be versioned before release. [ADR-0006](docs/decisions/ADR-0006-model-and-domain-independence.md) is accepted as a target architecture, not a declaration of shipped integrations.

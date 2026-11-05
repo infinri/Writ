@@ -57,3 +57,17 @@ For now, top-level writ/, hooks/, bin/, agents/, rules/, legacy V1 CI and tests 
 ## Generated artifact rule
 
 The architecture website is a static projection of Markdown source. In M2, generate the pages from a single manifest to prevent drift. Until that generator exists, reviewers must update both in the same PR, and CI should validate page/link sets. No production data or old V1 graph-data.js payload belongs in these pages.
+
+## Domain-independent additions
+
+~~~text
+adapters/models/             # managed-agent provider clients only (optional)
+agents/runner/                # bounded generic task loop; not a security authority
+packs/registry/              # signed manifest verification, dependency constraints
+packs/examples/              # reference coding, research, review packs
+artifacts/                   # typed outputs, provenance and versioned schemas
+evaluation/                  # mechanical, evidence, model-assisted, human evaluators
+contracts/task-and-model/     # provider-neutral TaskSpec/ModelEvent/Evidence/Artifact
+~~~
+
+These describe target folders, not current source. An externally managed Claude Code integration must not import AgentRunner or a model client. The kernel must not import a pack, model provider or coding-specific module. See [model](model-agnostic-runtime.md), [packs](capability-packs.md) and [M0](../implementation/M0-START-HERE.md).

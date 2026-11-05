@@ -1,10 +1,10 @@
 # Writ V2 — master implementation specification
 
-**Document:** V2-IMP-001 · **Status:** approved architectural direction, implementation pending · **Version:** 0.1 · **Date:** 2026-11-05
+**Document:** V2-IMP-001 · **Status:** approved architectural direction, implementation pending · **Version:** 0.2 · **Date:** 2026-11-05
 
 ## 0. Executive decision
 
-Rebuild Writ as a small **trusted execution kernel** surrounded by replaceable modules for policy, retrieval, memory, graph access, host integration and distributed orchestration. Do **not** translate the legacy Python/Bash application wholesale. Its tests and domain data are evidence to mine selectively, not architecture to imitate.
+Rebuild Writ as a **model-agnostic, domain-agnostic intelligence and execution platform**: a small trusted kernel, with replaceable policy, retrieval, memory, graph and host interfaces. Two first-class operating modes are **external agent integration** (e.g. Claude Code, without Writ invoking a model) and **optional Writ-managed agent execution** (AgentRunner plus ModelAdapter). Software engineering is the initial reference Capability Pack, alongside noncode research and general document review. No model API, software-specific artifact, coding phase or domain-specific evaluator belongs inside the kernel. Do **not** translate the legacy Python/Bash application wholesale. Its tests and domain data are evidence to mine selectively, not architecture to imitate.
 
 Three product capabilities survive:
 
@@ -32,6 +32,13 @@ V2 must be useful as a fast local tool without Neo4j availability on every actio
 | P-10 | Extensibility | Adapters and analyzers replaceable without linking to kernel internals |
 | P-11 | Enterprise hardening | Crash/retry tests show no unauthorized or duplicate externally visible effects |
 | P-12 | Human override with bounds | Authorized approvals are exact, single use, expiry bound and recorded |
+| P-13 | Model neutrality | Two stub model providers satisfy shared event/structured-output contracts; no model API imported into kernel |
+| P-14 | External host independence | Host-managed agent works without a direct Writ model request |
+| P-15 | Domain neutrality | Code-review, noncode research and document review fit one TaskSpec and artifact/evidence contracts |
+| P-16 | Versioned Capability Packs | Pack manifests verify schemas/capability needs and do not grant authority |
+| P-17 | Evaluator neutrality | Rubrics and evidence validation are domain-pack interfaces; model claims never count as independent verification |
+| P-18 | Provider capability negotiation | Unsupported features/fallbacks are explicit and honor residency/privacy/cost requirements |
+| P-19 | Managed agent separation | Optional AgentRunner can plan/stream tools without directly executing effects or weakening policy |
 
 ### Performance and operability objectives
 
@@ -39,7 +46,7 @@ Initial **targets, not measured facts**: local no-I/O decision p95 below 5 ms an
 
 ### Explicit non-goals for first release
 
-Not an OS-level sandbox; not a fully autonomous coding agent; not a graph database rewrite; not automatic escalation from an advisory rule to a denial; not support for every conceivable shell command; not a distributed workflow engine on each local hook; not silently improving security by instructing the LLM. Privileged operations outside the host-controlled path must be labeled **unmediated** unless a verified sandbox intercepts them.
+Not an OS-level sandbox; not a mandatory all-purpose autonomous agent (an optional managed runner may be added); not a graph database rewrite; not automatic escalation from an advisory rule to a denial; not support for every conceivable shell command; not a distributed workflow engine on each local hook; not silently improving security by instructing the LLM. Privileged operations outside the host-controlled path must be labeled **unmediated** unless a verified sandbox intercepts them.
 
 ## 2. Trust and ownership model
 
@@ -65,12 +72,21 @@ Not an OS-level sandbox; not a fully autonomous coding agent; not a graph databa
 | API transport | **PROVISIONAL** local UDS/named pipe + typed RPC; HTTP gateway optional | Require explicit auth and local peer validation |
 | Observability | **DECIDED** OpenTelemetry traces + append-only audit contracts | Separate telemetry (best effort) from authorization receipts (durable) |
 | Tenancy | **DECIDED** explicit tenant_id/principal/project; deny-by-default | No ambient global project namespace |
+| Model integrations | **DECIDED** separate ModelAdapter (managed mode) from HostAdapter (external mode) | Capability discovery and contract tests, never assume universal compatibility |
+| Domain modules | **DECIDED** versioned Capability Packs | Coding, research and review fixtures; pack cannot publish policy or grant tools |
+| AgentRunner | **PROVISIONAL** local optional task runner | Not required for external Claude/Codex/Gemini host integrations |
+| Evaluation | **DECIDED** typed artifacts, source evidence and versioned rubrics | Mechanical/evidence/model-assisted/human classes with explicit limitations |
 
 ## 4. Target boundaries
 
 ~~~mermaid
 flowchart TB
-  Host[Host tools / API / agent SDK] --> Adapter[Host adapter: verify identity, normalize]
+  Host[External agent: Claude Code / Codex / other host] --> Adapter[Host adapter: verify identity, normalize]
+  Model[Claude / GPT / Gemini / local model] --> ModelAdapter[ModelAdapter: capabilities and streaming]
+  ModelAdapter --> Runner[Optional AgentRunner]
+  Runner --> Adapter
+  Pack[Capability Pack: tasks / artifacts / evaluators] --> Runner
+  Pack --> Intelligence
   Adapter --> Kernel[Kernel: state, policy, decision]
   Kernel --> Policy[Versioned policy bundle]
   Kernel --> Approval[Approval service / operational ledger]
@@ -88,7 +104,7 @@ The broker **revalidates** the permit/approval at use time against target/action
 
 ## 5. Repository blueprint
 
-See [repository layout](../architecture/repository-layout.md). Target is a single repository with independent buildable packages: kernel, contracts, policy, broker, adapters, retrieval, memory, graph, persistence, CLI, gateway and test harnesses. Default local installation starts only kernel/broker/adapter plus embedded policy and state. Enterprise composition adds graph, Postgres, remote coordination and optional extension runtime.
+See [repository layout](../architecture/repository-layout.md). Target is a single repository with independent buildable packages: kernel, contracts, policy, broker, adapters, retrieval, memory, graph, persistence, CLI, gateway and test harnesses. Default local installation starts only kernel/broker/host adapter plus embedded policy and state. Writ-managed inference uses an optional AgentRunner and ModelAdapter. Domain logic lives in versioned Capability Packs, not core. Enterprise composition adds graph, Postgres, remote coordination and optional extension runtime.
 
 ## 6. Domain and wire contracts
 
@@ -100,7 +116,7 @@ The **EffectReceipt** records attempt ID, decision reference, broker principal, 
 
 The **Event** carries typed name, version, correlation ID, causal parent, actor, tenant, subject, policy version, timestamp and hash-chain/audit verification metadata. Events are append-only; state materializations are derived and revocable.
 
-JSON schema drafts live in [contracts](../contracts/) and are revised before any stable public API ships.
+Additional contracts: ModelCapabilities, ModelRequest, ModelEvent, CapabilityPack, TaskSpec, Artifact, Evidence and EvaluationRecord. Their fields contain no mandatory code repo, PR or source file. External agent mode does not require a ModelRequest. A pack may request tools but cannot authorize execution. JSON schema drafts live in [contracts](../contracts/) and are revised before any stable public API ships.
 
 ## 7. Policy lifecycle
 
@@ -139,18 +155,18 @@ Memory types: user-approved durable preference, project decision, tool outcome, 
 
 | Milestone | Deliverable | Blocking gate |
 |---|---|---|
-| **M0 — audit freeze** | Source census, 52 hook registration trace, 288-rule disposition, V1 behavior corpus, threat matrix, benchmark harness | Every claim marked proven/inferred/unknown; no undocumented policy bypass in specification |
-| **M1 — language bake-off** | Same Rust and Go executable action/policy core, local transport & state tests | Both run same fixtures; decide via ADR and reproducible perf/ops/security evidence |
+| **M0 — audit and cross-domain contracts** | Source census, 52 hooks, 288-rule disposition, V1 corpus; TaskSpec/Artifact/Evidence; coding/research/review task fixtures; ModelAdapter/CapabilityPack schemas | Security inventory and provider/domain-neutral fixtures verified without real model credentials |
+| **M1 — language bake-off** | Same Rust and Go executable action/policy core; independent stub-provider and cross-domain TaskSpec tests | Both run same permission/agent-independent fixtures; choose via ADR and reproducible perf/ops/security evidence |
 | **M2 — contracts & kernel** | Typed schemas, pure state-transition reducer, policy resolution, decision provenance | Determinism, deny precedence, invalid/malformed input behavior, property tests |
 | **M3 — authorization broker** | Trusted identity binding, effect mediation, canonical resource/digest, receipts | No effect without valid authorization; TOCTOU, replay and idempotency tests |
 | **M4 — human approval** | Authenticated approval request/consume/revocation, UX and audit | Untrusted transcript cannot mint; stale, replayed or mismatched approval denied |
-| **M5 — Claude adapter** | Thin host integration with a single event normalization path | All declared tool actions have coverage matrix and host-integration tests; unmediated surfaces disclosed |
+| **M5 — host and model adapters** | Claude Code host adapter first, generic host/ModelAdapter contracts, optional AgentRunner stub | External host needs no model API; two stub providers and coding/research/review fixtures work without policy divergence |
 | **M6 — rule registry** | Policy manifests, compile/validate, conflict analyzer, rule-to-enforcer proof | 100% of enforced rules have fixtures, registered implementation and active enforcement point |
 | **M7 — JIT retrieval** | Rebuilt/adapted ranker, scoped indexes, abstention, context budgets | Quality >= approved V1 golden set, predictable memory and p95; no cross-tenant data |
 | **M8 — Recall & Neo4j** | Provenance schema, scoped memory, graph adapter, import/reconcile | Isolation, stale/contradictory evidence handling, round-trip and integrity tests |
 | **M9 — operations** | Local installer, config, auth, backups, audit verification and OTel | Crash recovery, interrupted update, lost network and corrupted index drills |
 | **M10 — enterprise profile** | Postgres HA configuration, tenant isolation, throttling and horizontal workers | Load/chaos/resource quota tests; explicit SLOs and total cost benchmark |
-| **M11 — optional orchestration & plugins** | Temporal/Restate/WASM pilot only if required | Measured improvement and robust permissions; isolated failure cannot alter kernel |
+| **M11 — optional orchestration & plugins** | Writ-managed AgentRunner/CapPack activation as workload-driven, plus Temporal/Restate/WASM pilot only if required | Same task/evaluation schemas operate across providers/domains; isolated failure cannot alter kernel |
 | **M12 — release & cutover** | Migration tooling, read-only V1 export, V2 import, dual comparison, rollback | Signed sign-off; safety tests green; no outstanding P0 defects; documented revert |
 
 No milestone may claim 'done' because a document exists. Gate requires running code and recorded evidence.
@@ -186,3 +202,7 @@ Track these as explicit ADRs/experiments before promising features.
 ## 15. Definition of architecture-complete
 
 Architecture is complete only when each module has: an API contract, caller, trust boundary, authoritative owner, storage responsibility, failure posture, upgrade strategy, threat-test suite and benchmark hypothesis. **Documentation complete is not implementation complete.**
+
+## 16. Domain/platform requirements (normative extension)
+
+[ADR-0006](../decisions/ADR-0006-model-and-domain-independence.md) establishes provider neutrality and general-purpose Capability Packs. The [model runtime](../architecture/model-agnostic-runtime.md), [Capability Pack design](../architecture/capability-packs.md), and [AgentRunner/evaluation](../architecture/agent-orchestration.md) are part of the V2 target architecture, not optional marketing claims. **ModelAdapter is optional for externally managed hosts**, and every provider feature requires negotiation. **Capability Packs never grant security rights**. The same TaskSpec, artifact, evidence and evaluation contracts must support software code review, noncode research and document review. Begin with the [M0 start checklist](M0-START-HERE.md). Real adapter support, pack activation and model quality remain unimplemented until passing tests.

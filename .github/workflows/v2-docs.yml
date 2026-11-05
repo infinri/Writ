@@ -1,4 +1,4 @@
-name: V2 documentation integrity
+name: V2 documentation and contract integrity
 on:
   push:
     branches:
@@ -8,9 +8,11 @@ on:
       - 'v2/**'
 jobs:
   docs-v2:
-    name: V2 docs and link validation
+    name: V2 documentation and schemas
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Check Markdown, HTML, links and contract JSON
+      - name: Install schema validator
+        run: python3 -m pip install --disable-pip-version-check -r requirements-v2-docs.txt
+      - name: Check docs, HTML, schemas, packs and task fixtures
         run: python3 scripts/check-v2-docs.py

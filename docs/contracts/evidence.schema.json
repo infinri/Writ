@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://writ.dev/contracts/v2/evidence.schema.json",
+  "title": "Evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "evidence_id",
+    "tenant_id",
+    "task_id",
+    "source_ref",
+    "claim_ids",
+    "observed_at",
+    "verification_status"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "2.0"
+    },
+    "evidence_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tenant_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "claim_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "observed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "retrieval_method": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "content_digest": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "verification_status": {
+      "enum": [
+        "verified",
+        "corroborated",
+        "unverified",
+        "contradicted",
+        "expired"
+      ]
+    },
+    "confidence_note": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "citation_locator": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

@@ -20,3 +20,7 @@ This guide supersedes the V1 architecture notes formerly stored here. The old no
 No new V1-style hook policy copies, implicit current-session pointers, natural-language approval tokens, graph-as-permission checks or recursive shell parsing as an enterprise security guarantee. Work against normalized contracts and one capability broker. Classify code and tests as keep/reimplement/discard before porting. Always distinguish **planned**, **implemented** and **verified**.
 
 Use python3 scripts/check-v2-docs.py (or make docs-check on this branch) for documentation integrity. V1's scripts/render-docs.py is intentionally not the renderer for the replacement documentation.
+
+## V2 scope explicitly extends beyond coding
+
+External agent hosts need no Writ ModelAdapter; a Writ-managed runner does. The kernel never imports model APIs, source-code-specific workflow stages or domain artifact schemas. Read [model integration](../docs/architecture/model-agnostic-runtime.md), [Capability Packs](../docs/architecture/capability-packs.md), [AgentRunner](../docs/architecture/agent-orchestration.md) and [M0 start](../docs/implementation/M0-START-HERE.md) before implementing M1.

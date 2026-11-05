@@ -44,3 +44,7 @@ Threat tests must be executed in an isolated, disposable environment; do not run
 ## Residual risks
 
 Kernel authorization cannot compensate for a compromised host OS or an unmediated privileged process. Neo4j access controls and transactional authorization stores have their own deployment/licensing limits. A permissionless process running outside Writ is not governed by Writ. Record these clearly in release notes.
+
+## Model/provider and domain-pack threats
+
+A provider's feature flag, structured output guarantee or tool-call proposal is **not** trust evidence. A model fallback can leak private sources across regions and must satisfy authenticated tenant egress/privacy policy. A pack may contain prompt injection or request tools beyond its grants; pack manifests cannot mint permissions. A review task can fabricate citations or imply independent verification; evaluation must check external evidence and provenance. Include these cases in M0 threat fixtures. [Model](../architecture/model-agnostic-runtime.md) and [packs](../architecture/capability-packs.md).

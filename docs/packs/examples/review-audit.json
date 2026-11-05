@@ -1,0 +1,72 @@
+{
+  "contract_version": "2.0",
+  "publisher": "writ-v2-design-fixture",
+  "version": "0.1.0",
+  "signature_ref": null,
+  "supported_modes": [
+    "external_host",
+    "managed_agent"
+  ],
+  "required_model_features": [],
+  "limits": {
+    "max_tool_calls": 30,
+    "max_duration_seconds": 1800,
+    "max_model_calls": 12,
+    "max_cost_usd": 2
+  },
+  "pack_id": "org.writ.review-audit",
+  "domain": "review",
+  "description": "Noncode document review and rubric assessment",
+  "task_types": [
+    "document.review"
+  ],
+  "tool_capabilities": [
+    "file.read"
+  ],
+  "workflows": [
+    {
+      "workflow_id": "document-review",
+      "task_type": "document.review",
+      "steps": [
+        "scope-rubric",
+        "inspect",
+        "collect-findings",
+        "verify",
+        "human-review"
+      ],
+      "human_gates": [
+        "final-signoff"
+      ]
+    }
+  ],
+  "artifacts": [
+    {
+      "artifact_type": "review.findings",
+      "schema_ref": "writ://artifacts/review-findings/1",
+      "format": "json"
+    }
+  ],
+  "evaluators": [
+    {
+      "evaluator_id": "rubric-completeness",
+      "kind": "mechanical",
+      "rubric_version": "1",
+      "blocking": true
+    },
+    {
+      "evaluator_id": "high-stakes-signoff",
+      "kind": "human",
+      "rubric_version": "1",
+      "blocking": true
+    }
+  ],
+  "memory": {
+    "read_types": [
+      "review-decision"
+    ],
+    "write_types": [
+      "review-observation"
+    ],
+    "retention_class": "project"
+  }
+}

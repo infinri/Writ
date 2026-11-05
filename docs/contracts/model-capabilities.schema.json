@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://writ.dev/contracts/v2/modelcapabilities.schema.json",
+  "title": "ModelCapabilities",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "adapter_id",
+    "provider_id",
+    "model_id",
+    "features",
+    "limits"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "2.0"
+    },
+    "adapter_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "provider_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "model_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "features": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "streaming",
+        "tool_proposals",
+        "structured_output",
+        "cancellation"
+      ],
+      "properties": {
+        "streaming": {
+          "type": "boolean"
+        },
+        "tool_proposals": {
+          "type": "boolean"
+        },
+        "structured_output": {
+          "type": "boolean"
+        },
+        "cancellation": {
+          "type": "boolean"
+        },
+        "vision": {
+          "type": "boolean"
+        },
+        "audio_in": {
+          "type": "boolean"
+        },
+        "audio_out": {
+          "type": "boolean"
+        },
+        "prompt_caching": {
+          "type": "boolean"
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "required": [
+        "context_tokens",
+        "output_tokens"
+      ],
+      "properties": {
+        "context_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "output_tokens": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "regions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "verified_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    }
+  }
+}

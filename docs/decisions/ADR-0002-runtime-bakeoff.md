@@ -21,3 +21,7 @@ Correctness and security invariants are **hard pass/fail gates**. Once both pass
 ## Implication
 
 Documentation refers to the 'kernel' rather than assuming Rust crate APIs or Go package types until the bake-off is finished.
+
+## Expanded M1 cross-domain scope
+
+Rust and Go prototypes must process the exact same TaskSpec, ModelEvent and pack-fixture metadata **without depending on any model provider SDK or coding-only fields**. The managed AgentRunner is not part of the deterministic kernel performance benchmark; separate the cost of model inference from authorization decisions. Include one simulated external host task that never calls a Writ model.

@@ -1,0 +1,21 @@
+{
+  "contract_version": "2.0",
+  "adapter_id": "stub-limited",
+  "provider_id": "fixture",
+  "model_id": "fixture-limited",
+  "features": {
+    "streaming": false,
+    "tool_proposals": false,
+    "structured_output": false,
+    "cancellation": true
+  },
+  "limits": {
+    "context_tokens": 8192,
+    "output_tokens": 1024
+  },
+  "regions": [
+    "local"
+  ],
+  "version": "0.1.0",
+  "verified_at": null
+}

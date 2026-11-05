@@ -68,3 +68,7 @@ All P0/P1 security findings resolved or risk accepted by explicit authority with
   "notes": "No numbers until executed"
 }
 ~~~
+
+## Cross-provider and cross-domain acceptance
+
+M0/M1 use two stub ModelAdapters with different capability profiles (streaming, tool proposals and structured output), plus one simulated external host that never calls a Writ model. Run three TaskSpecs—code-review with line evidence, research with dated contradictory sources and noncode document review against a rubric—through the same contracts. Test fabricated citations, missing evidence, unsupported tool feature, privacy-incompatible provider fallback, cancelled streams and pack attempts to grant forbidden tools. No evaluation may interpret model agreement as independent verification. Track first-token latency, total model calls/tokens/cost, tool receipts and per-pack artifact quality separately from kernel decision latency. [M0 checklist](../implementation/M0-START-HERE.md).

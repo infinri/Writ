@@ -50,3 +50,7 @@ Each adapter publishes a machine-readable matrix: event name, tool variants, can
 ## Portability acceptance
 
 At M5, two independent adapters shall pass identical ActionRequest and Decision fixtures. Differential tests include Unicode paths, symlinks, huge payloads, host failures, nested subagents and permission-prompt semantics. No adapter may introduce a host-specific rule bypass.
+
+## External agent hosts versus model providers
+
+A HostAdapter integrates with an agent runtime/tool execution environment; a ModelAdapter integrates with model inference APIs. Claude Code, Codex and Gemini CLI are potential **host** integrations, not merely model aliases. Claude/GPT/Gemini/local models are **inference providers** when Writ manages its own AgentRunner. External host mode must function without Writ model credentials. A model proposing a tool call never grants its execution. [Full design](model-agnostic-runtime.md).

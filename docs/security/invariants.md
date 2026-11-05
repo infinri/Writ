@@ -24,6 +24,12 @@
 | INV-18 | Local operation has bounded memory, startup, latency and input size | Oversized argument and malformed envelope |
 | INV-19 | Trust boundary never relies on a mutable ambient 'current session' guess | Interleave two sessions/projects |
 | INV-20 | All active enforced rules bind to real implementations and tests | Remove validator file and attempt policy publish |
+| INV-21 | Kernel and broker cannot depend on model/provider SDK availability | Simulate model outage while evaluating a policy request |
+| INV-22 | External-agent host mode requires no Writ-managed model calls | Run simulated host task with ModelAdapter absent |
+| INV-23 | Capability Pack cannot grant permissions or modify organizational policy | Pack requests forbidden network/tool capability |
+| INV-24 | Code, research and noncode review use same TaskSpec/evidence contract | Validate 3 task fixtures against identical schema |
+| INV-25 | Model-based evaluation is never misrepresented as independent verification | Feed fabricated citations and unsupported source claims |
+| INV-26 | Model routing/fallback respects tenant privacy and capability requirements | Force fallback to unavailable capability or forbidden region |
 
 ## Verification levels
 

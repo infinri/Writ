@@ -1,15 +1,17 @@
-# V2 contracts (draft)
+# Writ V2 versioned draft contracts
 
-These JSON Schemas describe the first normalized boundary contracts: [action request](action-request.schema.json), [decision](decision.schema.json), [effect receipt](effect-receipt.schema.json), [audit event](audit-event.schema.json), and [policy manifest](policy-manifest.schema.json).
+**Status:** design contracts; not stable public APIs and not yet implemented.
 
-**Status:** SPECIFICATION; not compiled into clients or guaranteed as a public stable API. A caller-supplied principal.verified_by string is **not** an authentication credential; trusted adapter code must derive identity independently. 'format: date-time' requires schema tooling with format assertion configured if validation is desired.
+## Execution and authority
 
-## Required evolution rules
+- [Action Request](action-request.schema.json), [Decision](decision.schema.json), [Effect Receipt](effect-receipt.schema.json), [Audit Event](audit-event.schema.json), [Policy Manifest](policy-manifest.schema.json).
 
-Version via explicit contract_version/manifest_version and per-event payload schema; no silent widening of acceptance for privileged actions. Provide positive and negative fixtures, maximum field/input sizes, canonical JSON serialization for digests, and language-independent conformance tests before M2.
+## Model and domain independence
 
-Missing permit_reference on an allow is not a broker permission; issuing and verifying broker permits is a separate protocol. Likewise a stored policy manifest does not make policy enforced: the evaluator_binding must resolve to registered executable policy and passing tests.
+- [Model Capabilities](model-capabilities.schema.json), [Model Request](model-request.schema.json), [Model Event](model-event.schema.json).
+- [Capability Pack](capability-pack.schema.json), [TaskSpec](task-spec.schema.json), [Artifact](artifact.schema.json), [Evidence](evidence.schema.json), [EvaluationRecord](evaluation-record.schema.json).
+- Three [TaskSpec fixtures](fixtures/) demonstrate coding, research and noncode review without core file-specific fields.
 
-## Follow-up schemas
+An identity field is *not* authentication proof. Tool descriptions and pack manifests are *not* broker permits. Model-provided JSON must be validated; provider-native structured output support is advisory until locally checked. The example `writ://` artifact references are not an implemented registry.
 
-M2/M3 must add: normalized principal proof envelope, canonical target algorithm, authorization permit, human approval request/grant/revocation, immutable state transition command, tenant policy publication and retrieval evidence record. The absence of these files is deliberate; do not assume unspecified details.
+Before production usage, define canonical digests, principal proof, broker permit, human grant and revocation, independent JSON Schema validation, error taxonomy and stable versioning.

@@ -1,0 +1,26 @@
+{
+  "contract_version": "2.0",
+  "task_id": "fixture-document-review",
+  "tenant_id": "fixture-tenant",
+  "project_id": "fixture-project",
+  "pack_id": "org.writ.review-audit",
+  "task_type": "document.review",
+  "goal": "Review a noncode policy document against a versioned rubric",
+  "inputs": {
+    "document_ref": "fixture://policy/document-1",
+    "rubric_ref": "fixture://rubric/1"
+  },
+  "required_artifacts": [
+    "review.findings"
+  ],
+  "evidence_requirements": [
+    "document_range",
+    "rubric_criterion",
+    "human_signoff"
+  ],
+  "limits": {
+    "max_duration_seconds": 600,
+    "max_cost_usd": 0,
+    "max_model_calls": 3
+  }
+}

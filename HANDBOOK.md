@@ -42,3 +42,7 @@ Do not port all V1 hooks literally. Do not expose privileged operations through 
 ## Decision recording
 
 Any stack lock-in or change to security posture requires an ADR with alternatives, evidence, compatibility impact and rollback strategy. Language choice is intentionally provisional until milestone M1 benchmark gates are satisfied.
+
+## Model- and domain-agnostic design
+
+Writ V2 serves both externally managed agents and an optional Writ-managed AgentRunner. Never put model API calls, provider-specific reasoning or coding-only workflow stages inside the kernel. Provider capability negotiation lives in ModelAdapter; domain workflows, evaluation rubrics and artifact types belong to Capability Packs. Use [M0 start](docs/implementation/M0-START-HERE.md), [models](docs/architecture/model-agnostic-runtime.md) and [packs](docs/architecture/capability-packs.md).

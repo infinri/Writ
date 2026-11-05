@@ -66,3 +66,7 @@ Conversation, investigation, review, plan and implementation are **workflow stat
 ## Extension points
 
 HostAdapter, PolicyProvider, ActionExecutor, GraphPort, RetrievalPort, MemoryPort, EventStore and WorkflowCoordinator. Each has a versioned contract; test doubles prove interchangeability. See [extensions](extensibility.md) and [repository layout](repository-layout.md).
+
+## Model and domain independence
+
+The external agent host (Claude Code initially, others later) may own the entire model and agent loop: Writ connects through HostAdapter and never needs direct provider API access in this mode. Optional Writ-managed AgentRunner connects to ModelAdapter for inference and CapabilityPacks for domain TaskSpecs, evaluation rubrics and artifact/evidence schemas; tool effects still require the same kernel/broker path. No coding stage, PR field, provider SDK or research rubric belongs inside the deterministic core. See [Model Runtime](model-agnostic-runtime.md), [Capability Packs](capability-packs.md), [AgentRunner](agent-orchestration.md), and [ADR-0006](../decisions/ADR-0006-model-and-domain-independence.md).
