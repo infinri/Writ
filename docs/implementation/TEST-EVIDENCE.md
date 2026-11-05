@@ -68,6 +68,12 @@ Only results actually executed are recorded under **Executed**. Planned verifica
   - Worker killed with `os._exit(137)` immediately after `consume` and before any effect: a later replay from another process was refused.
   - A broker restarted with the default (new random) key refused an old, never-consumed permit.
 - **What this does not show:** network or shared filesystems (SQLite locking is unreliable there); power loss (`synchronous` left at the driver default, not tested); a crash *inside* the commit; multi-host workers. Crash after consume but before the effect loses the attempt (at-most-once): the broker receipt stays `dispatched` and `reconcile` marks it `unknown_reconcile`, as covered by `test_crash_after_effect_leaves_reconcilable_receipt`.
+- **Required limitations (owner, 2026-11-05; preserve in any report citing E-008):**
+  1. Multi-process testing used manually distributed key material (key injected into each worker).
+  2. Production permit-key provisioning and rotation are unimplemented.
+  3. SQLite must not be assumed reliable for coordination over shared or network filesystems.
+  4. Power-loss durability and interrupted database commits are unverified.
+  5. A consumed permit whose effect did not execute must never be reported as a successful effect. In M0 such an attempt remains `dispatched` and reconciles to `unknown_reconcile`, never `observed_success`.
 - **Gap for review:** M0 has no shared or persisted permit key, so "concurrent workers" is only a supported configuration once key management exists (M3). A committed multi-process test should be added after the security review.
 
 ## Not yet executed
