@@ -398,3 +398,38 @@ class TestAuthenticatedIngress:
 
     def test_sealed_request_from_trusted_adapter_executes(self, env, base_request):
         assert env["broker"].execute(SEALER.seal(base_request), env["effect"], NOW)["status"] == "observed_success"
+
+
+class TestPermitBindsWholeRequest:
+    """SR-10: a valid, unused permit cannot be spent on a request that differs in any field."""
+
+    def unused_permit(self, env, request):
+        captured = {}
+
+        class CaptureOnly(b.RecordingEffect):
+            def apply(self, permit, req):
+                captured["permit"] = permit  # keep it unused
+                return "sha256:" + "0" * 64
+
+        env["execute"](request, CaptureOnly(env["signer"], lambda: NOW), NOW)
+        return captured["permit"]
+
+    @pytest.mark.parametrize("patch", [
+        {"principal": {"id": "agent:other-session", "roles": ["operator"]}},
+        {"action": {"requested_capabilities": ["memory.write"]}},
+        {"action": {"kind": "file.read"}},
+        {"session_id": "session-2"},
+        {"request_id": "req-other", "idempotency_key": "idem-other"},
+    ], ids=["principal", "capabilities", "kind", "session", "request-id"])
+    def test_altered_request_refused_and_permit_not_consumed(self, env, base_request, patch):
+        permit = self.unused_permit(env, base_request)
+        altered = merge_patch(base_request, patch)
+        # Same tenant, resource and action digest as the permit: the old three-field check passes.
+        assert (altered["tenant_id"], altered["action"]["resource"], altered["action"]["action_digest"]) == (
+            base_request["tenant_id"], base_request["action"]["resource"], base_request["action"]["action_digest"])
+        adapter = b.RecordingEffect(env["signer"], lambda: NOW)
+        with pytest.raises(b.UnauthorizedEffect):
+            adapter.apply(permit, altered)
+        assert adapter.applied == []
+        adapter.apply(permit, base_request)  # the legitimate request still succeeds
+        assert adapter.applied == [base_request["action"]["action_digest"]]

@@ -14,6 +14,7 @@
     "action_kind",
     "canonical_resource_id",
     "action_digest",
+    "request_fingerprint",
     "policy_bundle_sha",
     "issued_at",
     "expires_at",
@@ -54,6 +55,11 @@
     "action_digest": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "request_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Canonical digest of the complete authorized ActionRequest; the effect adapter refuses any request whose fingerprint differs"
     },
     "policy_bundle_sha": {
       "type": "string",

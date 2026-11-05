@@ -38,6 +38,15 @@ from .decision import KernelState, LoadedBundle, capability_set, decide, iso, pa
 PERMIT_TTL = timedelta(seconds=30)
 
 
+def request_fingerprint(request: dict) -> str:
+    """Canonical digest of the complete ActionRequest (SR-10, SR-11).
+
+    Binding the whole request, rather than a list of fields, means a field added to
+    the contract later is covered without anyone remembering to add it here.
+    """
+    return canonical.digest(request)
+
+
 class BrokerRefusal(Exception):
     def __init__(self, code: str, decision: dict | None = None):
         super().__init__(code)
@@ -326,6 +335,7 @@ class Broker:
             "action_kind": action["kind"],
             "canonical_resource_id": action["resource"]["canonical_resource_id"],
             "action_digest": action["action_digest"],
+            "request_fingerprint": request_fingerprint(request),
             "policy_bundle_sha": decision["policy_bundle_sha"],
             "issued_at": iso(now),
             # A permit never outlives the request it serves (SR-03).
@@ -377,9 +387,10 @@ class RecordingEffect:
         if not permit:
             raise UnauthorizedEffect("missing broker permit")
         action = request["action"]
-        # Match before consuming, so a mismatched attempt cannot burn a legitimate permit.
-        if (permit.get("action_digest"), permit.get("canonical_resource_id"), permit.get("tenant_id")) != (
-                action["action_digest"], action["resource"]["canonical_resource_id"], request["tenant_id"]):
+        # Match the complete request before consuming, so a mismatched attempt cannot
+        # burn a legitimate permit (SR-10). The MAC check inside consume() authenticates
+        # the fingerprint compared here.
+        if permit.get("request_fingerprint") != request_fingerprint(request):
             raise UnauthorizedEffect("permit does not match the requested operation")
         if not self._consume(permit, self._clock()):
             raise UnauthorizedEffect("invalid, expired or already used broker permit")
