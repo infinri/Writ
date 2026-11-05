@@ -104,6 +104,11 @@ def _statement_applies(stmt: dict, request: dict, kinds: set[str]) -> bool:
     return True
 
 
+def capability_set(request: dict) -> list[str]:
+    """Canonical (sorted, unique) form of the requested capability set (SR-02)."""
+    return sorted(set(request["action"].get("requested_capabilities", [])))
+
+
 def approval_request_id(request: dict, bundle: LoadedBundle) -> str:
     """Deterministic id binding an approval to the exact operation and policy version."""
     binding = {
@@ -112,6 +117,7 @@ def approval_request_id(request: dict, bundle: LoadedBundle) -> str:
         "action_kind": request["action"]["kind"],
         "canonical_resource_id": request["action"]["resource"]["canonical_resource_id"],
         "action_digest": request["action"]["action_digest"],
+        "requested_capabilities": capability_set(request),
         "policy_bundle_sha": bundle.sha,
     }
     return "apr:" + canonical.digest(binding).removeprefix(canonical.DIGEST_PREFIX)[:32]

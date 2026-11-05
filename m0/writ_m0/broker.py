@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from . import canonical, contracts
-from .decision import KernelState, LoadedBundle, decide, iso, parse_time
+from .decision import KernelState, LoadedBundle, capability_set, decide, iso, parse_time
 
 PERMIT_TTL = timedelta(seconds=30)
 
@@ -165,6 +165,7 @@ class ApprovalService:
             "action_kind": action["kind"],
             "canonical_resource_id": action["resource"]["canonical_resource_id"],
             "action_digest": action["action_digest"],
+            "requested_capabilities": capability_set(request),
             "policy_bundle_sha": decision["policy_bundle_sha"],
             "nonce": secrets.token_hex(16),
             "issued_at": iso(now),
@@ -272,6 +273,7 @@ class Broker:
             "action_kind": action["kind"],
             "canonical_resource_id": action["resource"]["canonical_resource_id"],
             "action_digest": action["action_digest"],
+            "requested_capabilities": capability_set(request),
             "policy_bundle_sha": decision["policy_bundle_sha"],
         }
         mismatched = sorted(k for k, v in expected.items() if grant[k] != v)

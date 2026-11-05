@@ -278,3 +278,28 @@ class TestDeadlinesAtUseTime:
         req = merge_patch(base_request, {"deadline_at": "2026-11-05T12:00:05Z"})
         env["broker"].execute(req, Capture(env["signer"], lambda: NOW), NOW)
         assert captured["permit"]["expires_at"] == "2026-11-05T12:00:05Z"
+
+
+class TestApprovalBindsCapabilitySet:
+    """SR-02: one grant cannot cover a different requested capability set."""
+
+    def test_capability_substitution_under_same_grant_refused(self, env, base_request):
+        approved = merge_patch(base_request, PUBLISH)
+        grant = approve(env, approved)
+        widened = merge_patch(approved, {"idempotency_key": "idem-2", "request_id": "req-2",
+                                         "action": {"requested_capabilities": ["process.execute"]}})
+        assert decision.decide(widened, env["current"]["bundle"], STATE, NOW)["status"] == "require_approval"
+        with pytest.raises(b.BrokerRefusal) as info:
+            env["broker"].execute(widened, env["effect"], NOW, grant["grant_id"])
+        assert info.value.code.startswith("GRANT_MISMATCH")
+        assert env["effect"].applied == []
+
+    def test_grant_records_the_approved_capability_set(self, env, base_request):
+        req = merge_patch(base_request, PUBLISH | {"action": {"requested_capabilities": ["process.execute"]}})
+        assert approve(env, req)["requested_capabilities"] == ["process.execute"]
+
+    def test_capability_order_does_not_matter(self, env, base_request):
+        a = merge_patch(base_request, {"action": {"requested_capabilities": ["repository.publish", "process.execute"]}})
+        c = merge_patch(base_request, {"action": {"requested_capabilities": ["process.execute", "repository.publish"]}})
+        grant = approve(env, a)
+        assert env["broker"].execute(c, env["effect"], NOW, grant["grant_id"])["status"] == "observed_success"

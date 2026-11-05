@@ -15,6 +15,7 @@
     "action_kind",
     "canonical_resource_id",
     "action_digest",
+    "requested_capabilities",
     "policy_bundle_sha",
     "nonce",
     "issued_at",
@@ -63,6 +64,15 @@
     "action_digest": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "requested_capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_.-]*$"
+      },
+      "uniqueItems": true,
+      "description": "Sorted set of additional capabilities the approved request carried; a request with any other set is not covered"
     },
     "policy_bundle_sha": {
       "type": "string",

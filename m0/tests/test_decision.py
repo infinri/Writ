@@ -154,3 +154,13 @@ class TestDeadlines:
         result = decision.decide(merge_patch(base_request, {"deadline_at": "2026-11-05T12:00:30Z"}), bundle, STATE, NOW)
         assert result["status"] == "allow"
         assert result["expires_at"] == "2026-11-05T12:00:30Z"
+
+
+def test_approval_reference_binds_requested_capabilities(bundle, base_request):
+    """SR-02."""
+    req = merge_patch(base_request, {"action": {"kind": "repository.publish", "resource": {
+        "canonical_resource_id": "repo:fixture-tenant/fixture-project/origin"}}})
+    wider = merge_patch(req, {"action": {"requested_capabilities": ["process.execute"]}})
+    a = decision.decide(req, bundle, STATE, NOW)["approval_request_reference"]
+    w = decision.decide(wider, bundle, STATE, NOW)["approval_request_reference"]
+    assert a and w and a != w
