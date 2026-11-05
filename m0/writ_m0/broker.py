@@ -260,6 +260,9 @@ class Broker:
         if row is None:
             raise BrokerRefusal("GRANT_UNKNOWN", decision)
         grant = json.loads(row[0])
+        # A stored grant that cannot prove what it covers is refused, never partially honored.
+        if contracts.violations("approval-grant", grant):
+            raise BrokerRefusal("GRANT_MALFORMED", decision)
         action = request["action"]
         expected = {
             "verdict": "approved",

@@ -66,3 +66,11 @@ Implementation-level decisions. Architectural decisions belong in [ADRs](../deci
   - The broker does not trust a previously returned Decision. It re-runs the kernel decision at use time, consumes approval grants inside the same SQLite `BEGIN IMMEDIATE` transaction that reserves the idempotency key, and passes effect adapters an HMAC permit they must verify.
 - **Alternatives:** broker trusting decisions handed to it by the host (rejected: stale or forged decisions); separate grant and idempotency transactions (rejected: crash windows that double-consume or strand grants).
 - **Consequences:** Policy change invalidates outstanding grants (binding includes bundle sha). Golden cases in `docs/contracts/fixtures/decisions/m0-golden.json` are hand-reasoned and become the M1 parity oracle. Related: INV-01..INV-10, INV-13, INV-14, INV-17, ADR-0003.
+
+## D-009: Grants are per requester principal; malformed grants are refused
+
+- **Date:** 2026-11-05
+- **Context:** Porting V1 regressions (M0-01f). V1 let a subagent inherit its parent's manual-test grant; a V2 ledger grant missing a binding field crashed the broker with KeyError.
+- **Selected:** No grant inheritance: a subagent (distinct requester principal) needs its own approval. The broker validates a stored grant against the ApprovalGrant schema before use and refuses with `GRANT_MALFORMED`.
+- **Rationale:** Inheritance widens a human approval to principals the human never saw. A grant that cannot prove its binding must count as unapproved (V1 `test_gate_approval_plan_binding` lesson).
+- **Consequences:** Multi-agent workflows request approval per subagent unless a future, explicitly reviewed delegation contract is added. Pending independent review with the golden cases (M0-05a).

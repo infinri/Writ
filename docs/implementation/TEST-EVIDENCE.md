@@ -22,8 +22,22 @@ Only results actually executed are recorded under **Executed**. Planned verifica
 - **Mutation checks (manual, reverted after):** removing the date-time format checker failed 4 contract tests; removing `AND uses < max_uses` from grant consume failed 2 broker tests. Confirms those tests detect the defects they target.
 - **Coverage:** not measured.
 
+### E-003: First GitHub CI run of the M0 harness
+
+- **Revision:** `487b95d47f6ac8b8a4480935ee8388d27b930191` (pushed to `origin/v2/architecture-rebuild`)
+- **Run:** https://github.com/infinri/Writ/actions/runs/42094649411 (workflow file `.github/workflows/v2-docs.yml`, ubuntu-latest, Python 3.12 via setup-python)
+- **Result:** both jobs success. Docs check: 45 Markdown, 15 HTML, 17 schemas. M0 tests: 201 passed in 7.21s. Audit check: 8 files current (pinned-SHA git reads worked with `fetch-depth: 0`).
+- **Local vs CI:** identical counts (201 passed locally, E-002). Differences: CI installs with pip into the runner Python, not the uv venv; the workflow's display name shows as "V2 documentation integrity" in the run list (registered name) although the file says "V2 documentation and contract integrity".
+- **Unrelated failure in the same push:** "Publish Writ V2 architecture website" run https://github.com/infinri/Writ/actions/runs/42094649959 failed at "Publish combined site to GitHub Pages": `Branch "v2/architecture-rebuild" is not allowed to deploy to github-pages due to environment protection rules.` The same failure occurred on the previous push (`f89b442`, run 42075753295). Repository settings issue, not caused by M0 changes.
+
+### E-004: V1 regression port and grant validation fix
+
+- **Revision:** working tree on `cd76fdd`, committed in the M0-01f commit (see `git log`)
+- **Red first:** `test_grant_missing_a_binding_field_is_not_honored` failed 4/4 with `KeyError` before the fix (no effect applied).
+- **After fix:** `cd m0 && .venv/bin/python -m pytest` 223 passed, 0 failed (202 before plus 21 in `test_v1_regressions.py`). Audit check current.
+- **Not run in CI yet:** commits after `487b95d` are local.
+
 ## Not yet executed
 
-- CI: the `m0-harness` job in `.github/workflows/v2-docs.yml` has not run (branch not pushed).
 - Hook failure posture on a live host (M0-01e); rule semantic review (M0-01d).
 - Any Rust or Go build, and any performance benchmark.
