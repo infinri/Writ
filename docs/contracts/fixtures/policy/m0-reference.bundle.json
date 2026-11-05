@@ -1,0 +1,70 @@
+{
+  "contract_version": "2.0",
+  "bundle_id": "m0-reference",
+  "version": "0.1.0",
+  "publisher": "writ-v2-design-fixture",
+  "description": "M0 oracle fixture. Not a production policy and not signed.",
+  "known_capabilities": [
+    "agent.dispatch",
+    "file.read",
+    "file.write",
+    "memory.write",
+    "network.egress",
+    "process.execute",
+    "repository.publish",
+    "workflow.transition"
+  ],
+  "trusted_principal_issuers": [
+    "writ-host-adapter:fixture"
+  ],
+  "statements": [
+    {
+      "statement_id": "forbid-secrets",
+      "effect": "forbid",
+      "action_kinds": ["file.read", "file.write"],
+      "resource_prefixes": ["workspace:fixture-tenant/fixture-project/secrets/"],
+      "reason_code": "SECRETS_PATH_FORBIDDEN"
+    },
+    {
+      "statement_id": "forbid-network-egress",
+      "effect": "forbid",
+      "tenants": ["fixture-tenant"],
+      "action_kinds": ["network.egress"],
+      "reason_code": "NETWORK_EGRESS_FORBIDDEN"
+    },
+    {
+      "statement_id": "approve-publish",
+      "effect": "require_approval",
+      "action_kinds": ["repository.publish"],
+      "reason_code": "PUBLISH_REQUIRES_APPROVAL"
+    },
+    {
+      "statement_id": "approve-process",
+      "effect": "require_approval",
+      "action_kinds": ["process.execute"],
+      "reason_code": "PROCESS_REQUIRES_APPROVAL"
+    },
+    {
+      "statement_id": "permit-workspace-files",
+      "effect": "permit",
+      "action_kinds": ["file.read", "file.write"],
+      "resource_prefixes": ["workspace:fixture-tenant/fixture-project/"],
+      "reason_code": "WORKSPACE_FILE_PERMITTED"
+    },
+    {
+      "statement_id": "permit-process-for-operators",
+      "effect": "permit",
+      "principal_roles": ["operator"],
+      "action_kinds": ["process.execute"],
+      "reason_code": "OPERATOR_PROCESS_PERMITTED"
+    },
+    {
+      "statement_id": "permit-project-memory",
+      "effect": "permit",
+      "action_kinds": ["memory.write"],
+      "resource_prefixes": ["memory:fixture-tenant/fixture-project/"],
+      "reason_code": "PROJECT_MEMORY_PERMITTED"
+    }
+  ],
+  "publisher_signature": null
+}

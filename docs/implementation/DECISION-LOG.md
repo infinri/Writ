@@ -54,3 +54,15 @@ Implementation-level decisions. Architectural decisions belong in [ADRs](../deci
 - **Context:** The Evidence draft could not express counterevidence, publication dates or the verbatim text a citation relies on, so a fabricated citation could not be detected mechanically.
 - **Selected:** Optional Evidence fields `evidence_kinds`, `stance`, `source_published_at`, `quoted_excerpt` (still contract 2.0 draft). The core evaluator resolves every source through a tenant-scoped SourceCatalog port, verifies digest and excerpt, and delegates kind-specific checks to pack-supplied functions. Producer `verification_status` is never trusted. Model-assisted records cannot raise an aggregate to pass.
 - **Consequences:** Packs must register a check for every evidence kind they use; an unregistered kind fails. Related: INV-24, INV-25, P-17.
+
+## D-008: Reference decision semantics, scoped resource ids and use-time re-decision
+
+- **Date:** 2026-11-05
+- **Context:** M1 needs one unambiguous semantics for Rust and Go to reproduce; the drafts left precedence, resource identity and permit flow open.
+- **Selected:**
+  - Evaluation order: schema validity, policy loaded and pin match, principal issuer trusted by the bundle, state revision, all capabilities known, canonical resource id, resource scope, statements.
+  - Precedence forbid > require_approval > permit > default deny. Every requested capability must be covered by a matching approval or permit statement.
+  - Canonical resource ids are `<scheme>:<tenant>/<project>/<path>` with no empty, `.` or `..` segments; a request may only target its own tenant and project (structural INV-10 check, independent of policy statements).
+  - The broker does not trust a previously returned Decision. It re-runs the kernel decision at use time, consumes approval grants inside the same SQLite `BEGIN IMMEDIATE` transaction that reserves the idempotency key, and passes effect adapters an HMAC permit they must verify.
+- **Alternatives:** broker trusting decisions handed to it by the host (rejected: stale or forged decisions); separate grant and idempotency transactions (rejected: crash windows that double-consume or strand grants).
+- **Consequences:** Policy change invalidates outstanding grants (binding includes bundle sha). Golden cases in `docs/contracts/fixtures/decisions/m0-golden.json` are hand-reasoned and become the M1 parity oracle. Related: INV-01..INV-10, INV-13, INV-14, INV-17, ADR-0003.
