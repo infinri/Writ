@@ -50,7 +50,14 @@ Only results actually executed are recorded under **Executed**. Planned verifica
 - **Red first (each observed before its fix):** SR-08 4 failures; SR-03 8 failures; SR-02 3 failures (substitution test: DID NOT RAISE); SR-07 3 failures; SR-01 unsealed request with trusted issuer string executed (DID NOT RAISE) plus 8 more ingress failures; SR-09 1 failure.
 - **After all fixes:** `cd m0 && .venv/bin/python -m pytest` 256 passed, 0 failed. Concurrency tests (`-k concurrent`, now including concurrent permit replay) 10/10 runs passed.
 - **Mutation:** replacing ingress verification with pass-through fails 9 of 10 ingress tests (the passing one is the positive case).
-- **Not run in CI:** commits after `89f8caa` are local.
+- **CI:** see E-007.
+
+### E-007: CI on the security corrections
+
+- **Revision:** `d3f722d11ba4b942bd067b87b18acb2d72ea2805`
+- **Run:** https://github.com/infinri/Writ/actions/runs/42103334452
+- **Result:** both jobs success. M0 tests 256 passed in 8.76s (matches local E-006). Audit check 8 files current. Docs check 48 Markdown, 15 HTML, 17 schemas.
+- **Unrelated:** Pages publish run 42103334296 failed on the same environment protection rule as E-003.
 
 ## Not yet executed
 

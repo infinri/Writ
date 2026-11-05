@@ -1,6 +1,6 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-05 · **Branch:** v2/architecture-rebuild (pushed through `89f8caa`; security-correction commits local, push needs separate authorization) · **Milestone:** M0, **NOT complete**
+**Last updated:** 2026-11-05 · **Branch:** v2/architecture-rebuild (pushed through `d3f722d`) · **Milestone:** M0, **NOT complete**
 
 ## Current
 
@@ -17,7 +17,7 @@
 | Contracts and domains | 17 schemas; canonical digest; cross-domain evaluation with negatives |
 | Kernel oracle | 26 golden cases (all PENDING INDEPENDENT REVIEW); deadlines; strict canonical ids |
 | Broker | Sealed ingress (D-010), capability-set-bound grants, single-use permits, idempotency, receipts |
-| CI | Last CI: `89f8caa`, 223 passed (E-005). Local after fixes: 256 passed (E-006) |
+| CI | `d3f722d`: 256 passed, audit and docs checks pass (E-007) |
 
 ## Open M0 acceptance requirements
 
@@ -34,7 +34,7 @@
 
 ## Known blockers
 
-- Push of the correction commits needs separate authorization.
+- No implementation work until the security fixes are independently reviewed (instruction).
 - Rust and Go toolchains absent (M1 not started, by instruction).
 - Pages deploy blocked by repository environment protection (pre-existing).
 
@@ -44,8 +44,8 @@
 
 ## Last tests
 
-E-006: 256 passed, 0 failed locally; audit and docs checks pass.
+E-007: CI 256 passed at `d3f722d`; audit and docs checks pass.
 
 ## Next exact action
 
-Ask for authorization to push the correction commits and run CI. Then, without self-approving any case: SR-05 (project scope on Evidence/SourceCatalog with cross-project negatives) is the next code item that needs no human decision. Propose the M0 go/no-go only after the fixes are reviewed and the open items above are resolved or explicitly risk-accepted.
+Wait for the independent review of the GitHub code and regression tests for SR-01/02/03/07/08/09 (all IN REVIEW). Start no implementation work, SR-05 included, until that review is in. Propose the M0 go/no-go only after the fixes are reviewed and the open items above are resolved or explicitly risk-accepted.
