@@ -27,13 +27,21 @@ def checks_for(task: str, catalog):
     return reference_packs.review_audit(catalog.resolve("fixture://rubric/1", TENANT, "fixture-project"))
 
 
-def run(task, evidence=None, signoffs=(), tenant_catalog=None):
+def run(task, evidence=None, signoffs=(), tenant_catalog=None, artifact_patch=None):
     t, artifact, items, catalog = load(task)
     catalog = tenant_catalog or catalog
+    artifact = artifact | (artifact_patch or {})
     return evaluation.evaluate(
         task=t, artifact=artifact, evidence=items if evidence is None else evidence,
         catalog=catalog, kind_checks=checks_for(task, catalog), rubric_id=f"{task}-rubric",
         rubric_version="1", evaluation_id=f"eval-{task}", signoffs=signoffs)
+
+
+def signoff(artifact, **scope):
+    fields = {"grant_id": "g-1", "tenant_id": TENANT, "project_id": "fixture-project",
+              "task_id": "fixture-document-review", "approver_principal_id": "human:reviewer",
+              "artifact_digest": canonical.digest(artifact)} | scope
+    return evaluation.SignoffGrant(**fields)
 
 
 class TestPositiveDomains:
@@ -51,11 +59,11 @@ class TestPositiveDomains:
 
     def test_document_review_passes_with_authenticated_signoff_bound_to_artifact(self):
         artifact = contracts.load_fixture("domains/document-review/artifact.json")
-        grant = evaluation.SignoffGrant("g-1", TENANT, "human:reviewer", canonical.digest(artifact))
+        grant = signoff(artifact)
         assert run("document-review", signoffs=[grant])["status"] == "pass"
 
     def test_signoff_for_a_different_artifact_does_not_count(self):
-        grant = evaluation.SignoffGrant("g-1", TENANT, "human:reviewer", canonical.digest({"other": 1}))
+        grant = signoff({"other": 1})
         assert run("document-review", signoffs=[grant])["status"] == "needs_human_review"
 
     @pytest.mark.parametrize("task", ["code-review", "research", "document-review"])
@@ -158,3 +166,25 @@ class TestProjectIsolation:
         item = contracts.load_fixture("domains/research/evidence.json")[0]
         item.pop("project_id", None)
         assert contracts.violations("evidence", item)
+
+
+class TestArtifactAndSignoffScope:
+    """SR-12: valid evidence cannot carry an artifact or a signoff from another scope."""
+
+    @pytest.mark.parametrize("patch", [{"tenant_id": "other-tenant"}, {"task_id": "other-task"},
+                                       {"project_id": "other-project"}], ids=["tenant", "task", "project"])
+    @pytest.mark.parametrize("task", ["code-review", "research"])
+    def test_out_of_scope_artifact_never_passes(self, task, patch):
+        assert run(task)["status"] == "pass"  # the evidence alone would pass
+        assert run(task, artifact_patch=patch)["status"] == "fail"
+
+    @pytest.mark.parametrize("scope", [{"project_id": "other-project"}, {"task_id": "other-task"},
+                                       {"tenant_id": "other-tenant"}], ids=["project", "task", "tenant"])
+    def test_signoff_from_another_scope_does_not_count(self, scope):
+        artifact = contracts.load_fixture("domains/document-review/artifact.json")
+        assert run("document-review", signoffs=[signoff(artifact, **scope)])["status"] == "needs_human_review"
+
+    def test_artifact_contract_requires_project_scope(self):
+        artifact = contracts.load_fixture("domains/research/artifact.json")
+        artifact.pop("project_id", None)
+        assert contracts.violations("artifact", artifact)

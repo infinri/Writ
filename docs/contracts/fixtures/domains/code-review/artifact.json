@@ -2,6 +2,7 @@
   "contract_version": "2.0",
   "artifact_id": "art-cr-1",
   "tenant_id": "fixture-tenant",
+  "project_id": "fixture-project",
   "task_id": "fixture-code-review",
   "artifact_type": "code-review.findings",
   "content_ref": "fixture://artifacts/art-cr-1",

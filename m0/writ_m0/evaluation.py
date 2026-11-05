@@ -2,6 +2,7 @@
 
 The core knows nothing about code, research or documents. It:
 
+0. checks the artifact belongs to the task's tenant, project and task (SR-12),
 1. checks scope (tenant, project and task) of every evidence item,
 2. resolves each item's source through a SourceCatalog port scoped to the
    task's tenant and project (SR-05) and verifies the
@@ -9,7 +10,8 @@ The core knows nothing about code, research or documents. It:
 3. asks the pack-supplied check for each evidence kind the item claims,
 4. marks each TaskSpec evidence requirement satisfied only by items that
    passed 1-3, and
-5. treats `human_signoff` as satisfiable only by an authenticated grant.
+5. treats `human_signoff` as satisfiable only by an authenticated grant bound to
+   the same tenant, project, task and artifact digest (SR-12).
 
 Producer-claimed `verification_status` is ignored: a model or agent labeling
 its own evidence "verified" changes nothing (INV-25). Unavailable verification
@@ -45,6 +47,8 @@ class SignoffGrant:
     """A human signoff already verified by the approval service (see broker.ApprovalService)."""
     grant_id: str
     tenant_id: str
+    project_id: str
+    task_id: str
     approver_principal_id: str
     artifact_digest: str
 
@@ -105,7 +109,13 @@ def evaluate(*, task: dict, artifact: dict, evidence: Iterable[dict], catalog: S
     contracts.validate("artifact", artifact)
     items = [contracts.validate("evidence", e) for e in evidence]
 
-    criteria = []
+    # SR-12: the artifact must belong to the evaluated task's tenant, project and task.
+    scope = (task["tenant_id"], task["project_id"], task["task_id"])
+    criteria = [{
+        "criterion_id": "artifact:scope",
+        "status": "pass" if (artifact["tenant_id"], artifact["project_id"], artifact["task_id"]) == scope else "fail",
+        "evidence_refs": [],
+    }]
     verified_kinds: set[str] = set()
     for item in sorted(items, key=lambda e: e["evidence_id"]):
         problems = _check_item(item, task, catalog, kind_checks)
@@ -118,7 +128,8 @@ def evaluate(*, task: dict, artifact: dict, evidence: Iterable[dict], catalog: S
             verified_kinds.update(item.get("evidence_kinds", []))
 
     artifact_digest = canonical.digest(artifact)
-    signed = any(g.tenant_id == task["tenant_id"] and g.artifact_digest == artifact_digest
+    # A signoff counts only for this exact tenant, project, task and artifact content.
+    signed = any((g.tenant_id, g.project_id, g.task_id, g.artifact_digest) == scope + (artifact_digest,)
                  for g in signoffs)
     for requirement in task["evidence_requirements"]:
         if requirement == HUMAN_SIGNOFF:

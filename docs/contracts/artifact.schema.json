@@ -8,6 +8,7 @@
     "contract_version",
     "artifact_id",
     "tenant_id",
+    "project_id",
     "task_id",
     "artifact_type",
     "content_ref",
@@ -25,6 +26,11 @@
     "tenant_id": {
       "type": "string",
       "minLength": 1
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Project scope; an artifact is evaluated and signed off only within this tenant, project and task (SR-12)"
     },
     "task_id": {
       "type": "string",
