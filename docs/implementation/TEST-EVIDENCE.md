@@ -88,7 +88,7 @@ Only results actually executed are recorded under **Executed**. Planned verifica
 - **Revision:** `0315fde` (local, not pushed)
 - **Red first:** 12 failures. Behavioral: 4 (artifact with another tenant or task evaluated `pass` with valid evidence, for code-review and research). Missing contract: 8 (Artifact had no `project_id`; SignoffGrant had no project or task; 2 existing signoff tests updated to the scoped constructor).
 - **After:** `cd m0 && .venv/bin/python -m pytest` 280 passed, 0 failed; audit check current; docs check OK. Golden decision fixture unchanged.
-- **Not run in CI:** commits after `957e32f` are local.
+- **CI:** run https://github.com/infinri/Writ/actions/runs/42126984730 at `e086341`, 280 passed, audit and docs checks pass.
 
 ## Not yet executed
 
