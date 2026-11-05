@@ -1,43 +1,21 @@
-# Writ project governance
+# Writ V2 architecture and change governance
 
-## Maintainer and authority
+## Authority
 
-Writ is currently maintained by Lucio Saldivar, GitHub account [infinri](https://github.com/infinri).
+The [implementation plan](docs/implementation/MASTER-IMPLEMENTATION-PLAN.md) is the roadmap. The [security invariants](docs/security/invariants.md) and versioned wire contracts are normative for behavior. Accepted ADRs describe design choices; they do not supersede security invariants without an explicitly approved revision. The docs/architecture HTML pages are explanatory projections of these normative sources.
 
-The maintainer decides which contributions are accepted, approves releases, manages repository access and coordinates security responses. Contributors retain credit for their work. Sponsorship does not purchase control over releases, security decisions or the roadmap.
+## Decision process
 
-This policy describes project decision-making. It does not change Writ's license or its technical approval mechanisms.
+A major architecture decision documents: problem, constraints, viable options, scored evidence, selected choice, rejected alternatives, operational cost, rollback, and the milestone responsible. Security-sensitive changes require a human reviewer and reproducible adversarial tests.
 
-## Contributions and decisions
+## Ownership
 
-Propose changes through issues and pull requests. Follow [CONTRIBUTING.md](CONTRIBUTING.md) for rule authoring, review and validation.
+The execution kernel owns state-transition semantics. The policy registry owns policy version and rule provenance. The broker owns side effects and receipts. Host adapters own host-specific delivery and authentication handoff. The graph module owns knowledge relationships, not authorization. Operational persistence owns transaction and approval state. No component may take another component's authority by reading its derived cache.
 
-Material changes to architecture, security boundaries or compatibility should explain the problem, alternatives, evidence and resulting behavior. Record durable architectural decisions under `docs/adr/`. Acceptance of a proposal is not proof that its claims are correct.
+## Breaking changes
 
-The maintainer reviews contributions for fit, maintainability and relevant validation. For changes needing expertise beyond the maintainer's own, seek outside review and describe any remaining uncertainty. A single-maintainer project cannot promise independent review of every change.
+Change contracts via explicit versioning, migration fixtures and a bounded deprecation period. Never silently relax authorization or 'fix' an incident by adding a second independent bypass path.
 
-## Disagreements
+## Historic V1
 
-Raise a specific concern in the relevant issue or pull request and explain the evidence or alternative. The maintainer should explain the final decision. New evidence can reopen a decision; repeated demands without new evidence do not require repeated review.
-
-Community participation follows [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Technical disagreement and criticism are welcome.
-
-## Security decisions
-
-Report potentially exploitable issues privately as described in [SECURITY.md](SECURITY.md). Do not publish sensitive reproductions in ordinary issues.
-
-The maintainer coordinates investigation, fixes, advisories and credit. Public documentation should distinguish implemented controls, measured outcomes and unsupported boundaries. The security policy defines the supported threat model.
-
-## Releases and access
-
-The maintainer authorizes release tags and repository access. Release changes should include relevant validation and compatibility information. Required checks and access controls are repository settings and must be verified separately from this policy.
-
-Additional maintainers may be appointed after sustained contributions and explicit agreement on responsibilities. Record changes to authority in this file and grant only the permissions needed.
-
-## Continuity
-
-If the maintainer intends to step down, announce that intention and seek a willing successor with a documented handover. If no successor is available, explain the maintenance status and consider archiving the repository. This policy does not guarantee succession, response times or ongoing support.
-
-## Policy changes
-
-Propose changes to this policy through a pull request with a rationale. The maintainer approves changes and keeps the named maintainers and responsibilities current.
+V1 governance documentation is preserved on main. V2 documentation is normative only for the rebuild branch until implemented and released.

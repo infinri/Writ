@@ -1,63 +1,25 @@
-# Security Policy
+# Writ V2 security policy and trust model
 
-## Reporting a vulnerability
+> **Specification, not certification.** No implementation of the V2 security model has yet been released from this branch.
 
-Report privately through [GitHub Security Advisories](https://github.com/infinri/Writ/security/advisories/new). Please do not open a public issue for anything exploitable.
+The most important distinction: **host hooks can refuse selected host tool calls, but do not automatically sandbox a process or control every side effect.** Writ may claim prevention only where it owns or reliably mediates the execution path.
 
-Useful things to include: what you did, what happened, what you expected, the Writ commit you are on (`git rev-parse --short HEAD`), and your Claude Code version. A minimal reproduction beats a description.
+## Trusted base
 
-Expect an acknowledgement within a few days. Writ is maintained by one person in their own time, so please size your expectations to that rather than to a vendor SLA. If a report is valid and you want credit in the advisory, say so.
+The trusted base comprises the kernel, policy evaluator, capability broker, durable approval/receipt store, host's authenticated identity binding and any configured host sandbox. Model output, prompts, transcripts, retrieved documents, shell strings and graph content are untrusted input.
 
-## Supported versions
+## Protected capabilities
 
-The latest released version on the `main` branch. There are no long-term support branches and no backported fixes; a security fix ships in the next release.
+Policy evaluation applies to normalized actions (for example file.write, process.execute, network.egress, repository.publish, authority.promote) regardless of the host-specific tool that originated the request. Unsupported host operations must be explicitly disclosed; do not claim all Bash or external-process operations are mediated by a hook.
 
-## What Writ actually is, in security terms
+## Failures
 
-Read this before you decide how much to trust it. Writ is not a sandbox and its gates are not a security boundary.
+Policy or broker uncertainty on privileged operations defaults to **deny/error**, not silent allow. Advisory context retrieval may degrade to empty/abstain without blocking work. A local personal-use mode may permit clearly labeled ungoverned fallback only if it is outside enterprise enforcement claims, enabled by a trusted operator and auditable.
 
-**It runs shell scripts with your privileges.** Writ installs the hook registrations listed in [`docs/reference/hooks.md`](docs/reference/hooks.md) (52 across 12 events as of 2026-10-08), which Claude Code invokes on your behalf. Those hooks are bash, they run as your user, and they read and write inside your repositories. Anything your shell can do, a hook can do.
+## Approvals
 
-**The daemon has no authentication.** `writ-server` listens on port 8765 and every route is unauthenticated. The bind address is the whole access control, and it defaults to `localhost`. Any process on the machine that can reach that port can read and modify session state, gate approvals, and the rule corpus, so treat a shared or multi-tenant host as one where Writ's session state is readable by anyone on it. The daemon also listens on a private unix socket; setting `WRIT_TCP_READONLY=1` for the daemon limits TCP to reads plus two named read-only POST routes. It ships off.
+A human approval is bound to principal, tenant, action, canonical target, content/action digest, policy version, expiry and nonce. It is durable and consumed atomically. A transcript line or an LLM claim cannot mint, expand or renew one.
 
-The bind address is configurable through `WRIT_HOST` (see `scripts/install-server-service.sh`). **Setting it to a non-loopback address publishes an unauthenticated read-write API to that network.** There is no auth layer behind it to fall back on. Do not do this on any network you do not fully control, and understand that "fully control" includes every other container and VM on the same bridge.
+## Reporting
 
-**The gates protect against mistakes, not adversaries.** Writ's write gates, mode gates, and approval gates exist to stop a capable assistant from doing something careless: overwriting a file it should not, skipping a plan, wiping a graph. They are guardrails against error. They are not designed to withstand a determined attacker or a prompt-injection payload aiming to get around them, and they have documented limits. The Bash write gate, for example, inspects redirects, copy destinations, and interpreter one-liners (`python -c`, `node -e`, `perl -e`, `ruby -e`, `php -r`), and its own source names what it does not catch, including `python -m MODULE`, `sh -c` wrappers (whose quoted body is not inspected at all, measured, rather than merely having its prefix left unstripped), values assembled through shell variables, and `eval`. A missing gate decision is a gap in the guardrail, and worth reporting. It is not a sandbox escape, because there is no sandbox.
-
-**Credentials.** Neo4j credentials resolve from environment variables, then `writ.toml`, then a built-in default (`writ/config.py`). That default is a development password published in this repository, so Writ refuses it: the daemon, the CLI, `writ doctor` and every script connect through one class that will not open a connection with it unless `WRIT_ALLOW_DEV_PASSWORD=1` is set, which is meant for throwaway instances and CI only. A new install replaces it during bootstrap with `writ neo4j set-password`, which generates a random password, changes it in the running database and stores it in `writ.toml` with mode 0600; an existing install runs that command once. The command never prints the password; `writ neo4j password` prints it when you ask, for the compose environment. `docker-compose.yml` publishes the Neo4j ports on 127.0.0.1 only. The password does reach the container: Compose interpolates it into `NEO4J_AUTH` and into the healthcheck command when the container is created, so anyone who can use docker on this machine can read it with `docker inspect writ-neo4j`, and from the container's process list while a healthcheck runs. It is never on the host process list: the documented commands pass it to `docker compose` as an environment variable, never as an argument, and nothing on the host runs `cypher-shell` with it. Treat docker access as what it is, root-equivalent on the host; anyone who has it can read the password and the graph whatever Writ does. `writ doctor` reports whether the password is private and never returns, logs, or prints a credential value (`writ/session/doctor.py`).
-
-**What Writ stores.** The rule corpus and decision records live in Neo4j (Docker volume `writ-neo4j-data`). Session state and logs live under `$XDG_STATE_HOME/writ` (default `~/.local/state/writ`), the embedding model and the vector-index cache under `~/.cache/writ`, and the trust-ledger baseline at `var/trust-ledger.json` inside the install. Session logs can contain file paths, command text, and excerpts of your code. Before publishing a graph dump, an audit log, or a benchmark result, read it. Paths and command lines carry more about your environment and your employer than people expect.
-
-### What Writ does not guarantee
-
-**Writ constrains a cooperative agent; it is not an adversarial sandbox.** Writ assumes the AI uses its tools in the ordinary way and is not deliberately searching for ways around the harness. Under that assumption the gates hold. Against an AI actively working around them they do not, and the gaps are written down here rather than glossed:
-
-* Writes made through shell commands are inspected, and as of 1.7.0 that inspection reads inside interpreter one-liners too (`python -c`, `node -e`, `perl -e`, `ruby -e`, `php -r`, including heredoc and piped forms). The gaps that remain are named in the hook itself rather than left vague: a path assembled from shell variables, `eval` or base64, an `sh -c` wrapper (whose quoted body is not inspected at all, measured, rather than merely having its prefix left unstripped), program text handed to awk or sed, an interpreter reached through a variable or alias, and `python -m MODULE`, which is deliberately unscanned because matching it would refuse every `python -m pytest` run.
-* When the daemon does not answer, the write hooks run the same check locally from the session file. Only when no verdict can be obtained at all does a write proceed; `WRIT_STRICT=1` refuses it instead (write path only). This is the specification, not a bug: an infrastructure outage must never lock you out of your own repository. Credential refusals and gate-state protection need no daemon, and approvals fail visibly while it is down. A decision helper that crashes asks rather than allows, and a machine with no `python3` allows with one `[WRIT CRITICAL]` line.
-* Some checks report rather than refuse: the end-of-turn test, quality and reply-style checks exit 1, post-write validators, investigate-mode checks and the trust ledger only report, and the read-size check only records unless `WRIT_READ_JUNK_GATE=enforce` is set.
-* Rules are context. The rule corpus is text delivered to the model; the checks that refuse are fixed hooks, and adding or removing a rule does not add or remove one.
-* Subagents (helper AIs spawned by the main one) are not re-policed from scratch, but they no longer bypass the write gates outright. A subagent is refused any path its orchestrator would be refused at that moment, so a dispatch cannot reach past a gate the human has not opened. Beyond that inherited refusal, a subagent's limits come from the tools its role grants it and the write scope that role declares.
-
-If you need enforcement against an AI that is actively adversarial, Writ is not that tool. What Writ can do is mechanically refuse selected tool actions until configured workflow conditions are satisfied. Whether that produces better engineering outcomes is a different question, and the limit below, together with the central claim recorded as unproven in [`README.md`](README.md#evidence-and-limits), is why it is still open.
-
-It can tell that a plan exists. It cannot tell whether the plan is any good. The checks confirm the shape of the thing, not the thought behind it. A plausible plan and a careful one look identical to a machine, so this replaces none of your judgement, and reviewing the work is still your job. Writ relocates oversight. It does not remove it.
-
-## What leaves your machine
-
-Short answer: your rules and your code do not. The longer answer, because "nothing is sent anywhere" is the kind of absolute worth checking rather than trusting.
-
-**Stays local, always.** The rule corpus, the graph database, session state, decision records, and every log stream. Neo4j runs in a container on your machine with its ports published on loopback only, and the daemon binds loopback. There is no telemetry, no analytics, no usage reporting, and no phone-home of any kind. Nothing about your code, your prompts, or your session is transmitted for the project's benefit.
-
-**Goes out, opt-in, one destination.** The decision-memory PR sync posts per-file reasoning to Bitbucket Cloud, and `api.bitbucket.org` is the only host that client ever contacts (`writ/session/bitbucket_client.py`). It is off unless you put a token in `writ.toml`, and it is the only outbound network call Writ itself makes at runtime. Self-hosted Bitbucket Server is refused outright rather than half-supported. There is no GitHub client, so on a GitHub-hosted project this channel does nothing.
-
-**Goes out once, at install.** Bootstrap downloads the embedding model (`sentence-transformers/all-MiniLM-L6-v2`) and the Python dependencies. Ordinary package and model fetches, and after that the embedding runs locally.
-
-**Not Writ, but worth knowing.** Your AI assistant has its own network access and its own tools. If it searches the web or fetches a URL, that is the assistant acting, not Writ, and Writ neither performs nor prevents it. What Writ does add is a Bash egress guard that questions outbound commands to hosts you have not allowlisted (`[egress] allow_hosts` in `writ.toml`), which narrows one channel without pretending to close all of them.
-
-## Your responsibility
-
-**Audit anything you install, including this.** Writ is a tool that hands an AI assistant hooks into your shell and your repositories. Before you run it, or any other plugin, skill, agent, or MCP server, read what it does. Check what it executes, what it sends over the network, and what it writes. Clone it and look, rather than trusting a description, a star count, or a summary that something else generated for you.
-
-**AI assistance is not a substitute for judgement.** An assistant, this project included, can be confidently wrong, can miss what it was not looking for, and can produce a clean-looking review of code it did not properly read. "The AI said it was fine", "the AI wrote it", and "the AI reviewed it" are not answers to a security question, and they will not be answers to your users, your employer, or your auditor. The responsibility for what runs on your machine and ships to production stays with the person who ran it. Writ exists to relocate oversight, not to remove it, and a tool that helps you check your work does not transfer the accountability for that work.
-
-If you are using Writ in an environment where a mistake is expensive, treat its output as a draft that needs your review, keep the human approval gates on, and read the diffs.
+Open a GitHub security advisory/private report when available. Avoid filing exploitable secrets or full exploit payloads in public issues. For this planning branch, refer to [threat model](docs/security/threat-model.md) and [invariants](docs/security/invariants.md). All actual security guarantees require implementation evidence and adversarial verification.

@@ -1,4 +1,0 @@
-{"ts": "2026-04-24T22:55:45Z", "session": "ad5a7728-c147-493e-b574-c5f49e345375", "mode": null, "event": "hook_execution", "hook_name": "enforce-violations", "duration_ms": 54}
-{"ts": "2026-04-24T18:22:09.401165", "session": "07327764-a59f-4339-99dd-c148f059cb8a", "event": "phase_advance", "from_phase": "planning", "to_phase": "testing", "confirmation_source": "tool"}
-{"ts": "2026-04-24T18:23:51.861078", "session": "07327764-a59f-4339-99dd-c148f059cb8a", "event": "phase_advance", "from_phase": "testing", "to_phase": "implementation", "confirmation_source": "tool"}
-{"ts": "2026-04-24T23:29:07Z", "session": "ad5a7728-c147-493e-b574-c5f49e345375", "mode": null, "event": "rag_query", "query_source": "broad", "tokens_injected": 600, "rules_returned_count": 5, "rule_ids": ["FW-M2-RT-005", "ARCH-EXT-001", "PY-ASYNC-001", "PERF-OPT-001", "ARCH-DI-001"]}
