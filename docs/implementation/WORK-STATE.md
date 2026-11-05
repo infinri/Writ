@@ -6,7 +6,7 @@
 
 - **Work packages:** A (baseline audit) automated parts done; B, C, D done in the Python reference harness; E specified.
 - **Active task:** none in progress. Remaining M0 work needs either a human reviewer (M0-01d, M0-05a), an isolated live host (M0-01e), more V1 mining (M0-01f) or a push (M0-05b).
-- **Last relevant commit:** the WP-D/E checkpoint (`git log -1`); previous `fd0ce8f`, `abfb14f`, `5791cb7`.
+- **Last relevant commit:** the WP-D/E checkpoint (`git log -1`); previous `fd0ce8f`, `e8773ce`, `5791cb7`.
 
 ## Completed and verified (E-001, E-002)
 

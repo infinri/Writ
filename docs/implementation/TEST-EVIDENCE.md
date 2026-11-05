@@ -15,7 +15,7 @@ Only results actually executed are recorded under **Executed**. Planned verifica
 
 ### E-002: Full M0 harness (contracts, evaluation, decision oracle, broker, independence, packs)
 
-- **Revision:** working tree on `fd0ce8f`, committed in the WP-D/E checkpoint commit (see `git log`)
+- **Revision:** `c213d7c`
 - **Command:** `cd m0 && .venv/bin/python -m pytest`; `.venv/bin/python -m writ_m0.audit check`; `python3 scripts/check-v2-docs.py`
 - **Result:** 201 passed, 0 failed (test_audit 19, test_broker 26, test_contracts 48, test_decision 36, test_evaluation 20, test_independence 52). Audit artifacts current (8 files). Docs check OK: 45 Markdown, 15 HTML, 17 schemas.
 - **Concurrency:** `test_broker.py -k concurrent` repeated 15 times, 15/15 passed (16-thread grant race, 8-thread duplicate dispatch).
