@@ -421,6 +421,11 @@
           "kind": "network.egress",
           "resource": {
             "canonical_resource_id": "net:fixture-tenant/fixture-project/example.org"
+          },
+          "attributes": {
+            "approved": true,
+            "grant_policy": "allow_all",
+            "writ_mode": "bypass"
           }
         }
       },

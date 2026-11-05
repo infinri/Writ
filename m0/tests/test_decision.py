@@ -164,3 +164,10 @@ def test_approval_reference_binds_requested_capabilities(bundle, base_request):
     a = decision.decide(req, bundle, STATE, NOW)["approval_request_reference"]
     w = decision.decide(wider, bundle, STATE, NOW)["approval_request_reference"]
     assert a and w and a != w
+
+
+def test_attributes_case_actually_carries_untrusted_attributes():
+    """SR-09: the golden case must demonstrate its title, not just reach the same verdict."""
+    case = next(c for c in GOLDEN["cases"] if c["case_id"] == "attributes-cannot-grant")
+    attrs = merge_patch(GOLDEN["base_request"], case["patch"])["action"]["attributes"]
+    assert attrs == {"approved": True, "grant_policy": "allow_all", "writ_mode": "bypass"}
