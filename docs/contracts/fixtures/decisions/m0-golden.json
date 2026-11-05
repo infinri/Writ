@@ -493,6 +493,20 @@
       },
       "rationale": "SR-08: a trailing empty segment names no resource; without the check it would match the memory permit prefix and allow",
       "review_status": "PENDING INDEPENDENT REVIEW"
+    },
+    {
+      "case_id": "deadline-exceeded",
+      "patch": {
+        "deadline_at": "2026-11-05T11:59:00Z"
+      },
+      "bundle_loaded": true,
+      "expected": {
+        "status": "invalid",
+        "reason_code": "DEADLINE_EXCEEDED",
+        "matched_rule_ids": []
+      },
+      "rationale": "SR-03: a request past its own deadline is never evaluated as allowable; status invalid (not deny) is a choice pending review",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     }
   ],
   "review": {

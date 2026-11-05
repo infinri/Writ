@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from . import canonical, contracts
-from .decision import KernelState, LoadedBundle, iso, decide
+from .decision import KernelState, LoadedBundle, decide, iso, parse_time
 
 PERMIT_TTL = timedelta(seconds=30)
 
@@ -298,7 +298,9 @@ class Broker:
             "action_digest": action["action_digest"],
             "policy_bundle_sha": decision["policy_bundle_sha"],
             "issued_at": iso(now),
-            "expires_at": iso(now + PERMIT_TTL),
+            # A permit never outlives the request it serves (SR-03).
+            "expires_at": iso(min([now + PERMIT_TTL] + (
+                [parse_time(request["deadline_at"])] if request.get("deadline_at") else []))),
             "approval_grant_id": grant_id,
         }
         return contracts.validate("broker-permit", body | {"broker_mac": self._signer.sign(body)})

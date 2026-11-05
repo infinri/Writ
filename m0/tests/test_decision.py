@@ -135,3 +135,22 @@ class TestCanonicalResourceIds:
         req = merge_patch(base_request, {"action": {"resource": {"canonical_resource_id": resource}}})
         result = decision.decide(req, bundle, STATE, NOW)
         assert (result["status"], result["reason_code"]) == ("invalid", "RESOURCE_NOT_CANONICAL")
+
+
+class TestDeadlines:
+    """SR-03: an expired request never yields allow or require_approval."""
+
+    @pytest.mark.parametrize("deadline", ["2026-11-05T11:59:59Z", "2026-11-05T12:00:00Z", "2026-11-05T06:00:00-06:00"])
+    def test_deadline_at_or_before_now_is_refused(self, bundle, base_request, deadline):
+        result = decision.decide(merge_patch(base_request, {"deadline_at": deadline}), bundle, STATE, NOW)
+        assert (result["status"], result["reason_code"]) == ("invalid", "DEADLINE_EXCEEDED")
+
+    def test_expired_request_refused_even_when_policy_would_require_approval(self, bundle, base_request):
+        req = merge_patch(base_request, {"deadline_at": "2026-11-05T11:00:00Z", "action": {
+            "kind": "repository.publish", "resource": {"canonical_resource_id": "repo:fixture-tenant/fixture-project/origin"}}})
+        assert decision.decide(req, bundle, STATE, NOW)["status"] == "invalid"
+
+    def test_decision_expiry_never_outlives_the_request_deadline(self, bundle, base_request):
+        result = decision.decide(merge_patch(base_request, {"deadline_at": "2026-11-05T12:00:30Z"}), bundle, STATE, NOW)
+        assert result["status"] == "allow"
+        assert result["expires_at"] == "2026-11-05T12:00:30Z"

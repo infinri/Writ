@@ -3,7 +3,7 @@
 Non-production (D-001). It fixes the semantics the M1 Rust and Go kernels must
 reproduce:
 
-- Evaluation order: request validity, policy availability and version pin,
+- Evaluation order: request validity, request deadline, policy availability and version pin,
   principal issuer trust, state revision, capability knowledge, resource
   canonical form, resource tenant/project scope, then statements.
 - Canonical resource ids are '<scheme>:<tenant>/<project>/<path>'; a request
@@ -82,6 +82,10 @@ def _in_scope(resource_id: str, tenant_id: str, project_id: str) -> bool:
     return resource_id.partition(":")[2].startswith(f"{tenant_id}/{project_id}/")
 
 
+def parse_time(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
 def iso(moment: datetime) -> str:
     return moment.isoformat().replace("+00:00", "Z")
 
@@ -116,6 +120,7 @@ def approval_request_id(request: dict, bundle: LoadedBundle) -> str:
 def decide(request: dict, bundle: LoadedBundle | None, state: KernelState, now: datetime) -> dict:
     policy_sha = bundle.sha if bundle else NO_POLICY_SHA
     request_id = request.get("request_id") if isinstance(request, dict) else None
+    deadline: datetime | None = None
 
     def result(status: str, reason: str, matched: list[str] = (), approval_ref: str | None = None) -> dict:
         decision = {
@@ -134,12 +139,17 @@ def decide(request: dict, bundle: LoadedBundle | None, state: KernelState, now: 
             "decided_at": iso(now),
             "permit_reference": None,
             "approval_request_reference": approval_ref,
-            "expires_at": iso(now + DECISION_TTL) if status in ("allow", "require_approval") else None,
+            "expires_at": iso(min([now + DECISION_TTL] + ([deadline] if deadline else [])))
+            if status in ("allow", "require_approval") else None,
         }
         return contracts.validate("decision", decision)
 
     if contracts.violations("action-request", request):
         return result("invalid", "REQUEST_SCHEMA_INVALID")
+    if request.get("deadline_at") is not None:
+        deadline = parse_time(request["deadline_at"])
+        if deadline <= now:
+            return result("invalid", "DEADLINE_EXCEEDED")
     if bundle is None:
         return result("unavailable", "POLICY_UNAVAILABLE")
     pinned = request.get("policy_bundle_sha")

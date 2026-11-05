@@ -254,3 +254,27 @@ class TestIdempotencyAndReceipts:
             env["broker"].execute(base_request, env["effect"], NOW)
         assert info.value.code == "POLICY_UNAVAILABLE"
         assert env["effect"].applied == []
+
+
+class TestDeadlinesAtUseTime:
+    """SR-03: the deadline is re-checked when the broker executes, and bounds the permit."""
+
+    def test_valid_grant_cannot_execute_after_the_deadline(self, env, base_request):
+        req = merge_patch(base_request, PUBLISH | {"deadline_at": "2026-11-05T12:01:00Z"})
+        grant = approve(env, req)
+        with pytest.raises(b.BrokerRefusal) as info:
+            env["broker"].execute(req, env["effect"], NOW + timedelta(minutes=2), grant["grant_id"])
+        assert info.value.code == "DEADLINE_EXCEEDED"
+        assert env["effect"].applied == []
+
+    def test_permit_expiry_bounded_by_request_deadline(self, env, base_request):
+        captured = {}
+
+        class Capture(b.RecordingEffect):
+            def apply(self, permit, request):
+                captured["permit"] = permit
+                return super().apply(permit, request)
+
+        req = merge_patch(base_request, {"deadline_at": "2026-11-05T12:00:05Z"})
+        env["broker"].execute(req, Capture(env["signer"], lambda: NOW), NOW)
+        assert captured["permit"]["expires_at"] == "2026-11-05T12:00:05Z"
