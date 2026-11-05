@@ -62,7 +62,7 @@ Source checklists: [M0-START-HERE](M0-START-HERE.md), [master plan](MASTER-IMPLE
 | M0-05b | Push branch and confirm both v2 CI jobs green | P0 | M0-00c | DONE | GitHub Actions run URL recorded in TEST-EVIDENCE | M0 first PR DoD | CI | pushed `487b95d`; run https://github.com/infinri/Writ/actions/runs/42094649411 both jobs success (E-003) |
 | M0-05c | M0 go/no-go record | P0 | all P0 above | NOT STARTED | WORK-STATE lists every M0 checklist item with evidence or explicit gap; user decision recorded | master plan section 10 | n/a | |
 
-## M0 security review priorities (from the user, 2026-11-05)
+## M0 security review priorities (from the user and the independent review, 2026-11-05; see docs/audit/m0/INDEPENDENT-REVIEW-M0.md)
 
 M0 is **not complete** until these are reviewed and resolved or explicitly risk-accepted, together with M0-01d, M0-01e, M0-05a and M0-05c. No code changes for these until the independent reviewer's findings are in.
 
@@ -74,3 +74,6 @@ M0 is **not complete** until these are reviewed and resolved or explicitly risk-
 | SR-04 | Parent/subagent approval isolation (D-009 divergence from V1) | P0 | M0-05a | NOT STARTED | Reviewer confirms no inheritance or specifies a delegation contract | INV-06, INV-19 | `test_subagent_does_not_inherit_parent_grant` | |
 | SR-05 | Project-level evidence isolation: SourceCatalog and Evidence are tenant-scoped only | P0 | M0-05a | NOT STARTED | Evidence and catalog carry project scope; cross-project negative test | INV-10, P-08 | negative test | |
 | SR-06 | Fail-closed behavior when Claude Code hooks crash (host treats non-2 exits as non-blocking) | P0 | M0-01e | NOT STARTED | Isolated live-host test of crash, timeout and malformed output; adapter design that turns internal errors into explicit deny | INV-15, threat T-13, `UNMEDIATED-TOOLS.md` | live host test | |
+| SR-07 | Broker permit replay at the effect adapter: permit_id never consumed | P0 | none | NOT STARTED | Second presentation of a captured valid permit produces no second effect, including after a new verifier instance on the same ledger | INV-01, INV-09 | replay test | |
+| SR-08 | Kernel accepts a canonical resource id with a trailing empty segment | P1 | none | NOT STARTED | `workspace:t/p/` and repeated separators return invalid RESOURCE_NOT_CANONICAL | INV-14, D-008 | golden case + unit test | |
+| SR-09 | Golden case 22 patch carried no malicious attributes (fixture generator defect) | P1 | none | NOT STARTED | Patch contains the attributes; expected outcome unchanged; test asserts the attributes reach decide() | INV-02, INV-11 | golden case | |
