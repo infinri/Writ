@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://writ.dev/contracts/v2/decision.schema.json",
+  "title": "Writ V2 Decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "decision_id",
+    "request_id",
+    "status",
+    "policy_bundle_sha",
+    "reason_code",
+    "state_revision",
+    "decided_at"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "2.0"
+    },
+    "decision_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "allow",
+        "deny",
+        "require_approval",
+        "unavailable",
+        "invalid"
+      ]
+    },
+    "policy_bundle_sha": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reason_code": {
+      "type": "string",
+      "minLength": 1
+    },
+    "safe_message": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "matched_rule_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "state_revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "decided_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "permit_reference": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "approval_request_reference": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "expires_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    }
+  }
+}

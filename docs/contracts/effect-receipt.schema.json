@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://writ.dev/contracts/v2/effect-receipt.schema.json",
+  "title": "Writ V2 EffectReceipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "tenant_id",
+    "attempt_id",
+    "request_id",
+    "decision_id",
+    "idempotency_key",
+    "action_digest",
+    "status",
+    "observed_at"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "2.0"
+    },
+    "tenant_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "attempt_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "decision_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "action_digest": {
+      "type": "string",
+      "minLength": 16
+    },
+    "status": {
+      "enum": [
+        "reserved",
+        "dispatched",
+        "observed_success",
+        "observed_failure",
+        "unknown_reconcile",
+        "compensated"
+      ]
+    },
+    "resource_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "external_operation_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "observed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "result_digest": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reconciliation_notes": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}
