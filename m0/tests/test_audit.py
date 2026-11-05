@@ -124,3 +124,23 @@ class TestBaselineArtifacts:
         by_expect = {k: sum(1 for c in cases if c["expect"] == k) for k in ("rank", "abstain", "document")}
         assert by_expect == {"rank": 193 + 40, "abstain": 20, "document": 12}
         assert all(c["expected_ids_in_corpus"] for c in cases if c["expect"] == "rank")
+
+
+@pytest.mark.baseline
+class TestRuleReviewBatches:
+    """M0-01d preparation: every rule appears exactly once and nothing is pre-reviewed."""
+
+    def test_batches_partition_all_rules_with_blank_review_columns(self):
+        import csv
+        import io
+        from writ_m0.audit import rule_review
+        files = rule_review.build()
+        rows = [r for name, text in files.items() if name.endswith(".csv")
+                for r in csv.DictReader(io.StringIO(text))]
+        ids = [r["rule_id"] for r in rows]
+        assert len(ids) == 288 and len(set(ids)) == 288
+        filled = {"reviewed_disposition", "intent_survives_in_v2", "v2_destination", "enforcement_verified",
+                  "conflicts_or_duplicates", "corrections", "reviewer", "reviewed_at", "rationale"}
+        assert all(not r[c] for r in rows for c in filled)
+        assert all(sum(1 for _ in csv.DictReader(io.StringIO(t))) <= rule_review.MAX_BATCH
+                   for n, t in files.items() if n.endswith(".csv"))
