@@ -15,7 +15,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from . import baseline, hooks, rules, v1source
+from . import baseline, golden, hooks, rules, v1source
 
 OUT_DIR = v1source.REPO_ROOT / "docs" / "audit" / "m0"
 
@@ -32,7 +32,7 @@ def _json(data: object) -> str:
     return json.dumps(data, indent=2, sort_keys=True) + "\n"
 
 
-def _summary(hook_rows, rule_rows, near_dups, corpus, tree, tests) -> str:
+def _summary(hook_rows, rule_rows, near_dups, corpus, tree, tests, gold) -> str:
     cls = Counter(r["coverage_class"] for r in hook_rows)
     events = Counter(r["event"] for r in hook_rows)
     findings = Counter(f for r in hook_rows for f in r["findings"].split())
@@ -98,6 +98,16 @@ def _summary(hook_rows, rule_rows, near_dups, corpus, tree, tests) -> str:
         "|---|---|",
         *[f"| {k} | {v} |" for k, v in sorted(topics.items())],
         "",
+        "## Retrieval golden sets ([JSON](v1-golden-retrieval.json))",
+        "",
+        "| Expectation | Cases |",
+        "|---|---|",
+        *[f"| {k} | {v} |" for k, v in sorted(Counter(c["expect"] for c in gold["cases"]).items())],
+        "",
+        f"- Ranked cases whose expected ids are absent from the corpus: "
+        f"{sum(1 for c in gold['cases'] if c.get('expected_ids_in_corpus') is False)}",
+        "- Document cases target V1 docs removed on this branch; they need the baseline docs corpus.",
+        "",
     ]
     return "\n".join(lines)
 
@@ -108,7 +118,9 @@ def build() -> dict[str, str]:
     corpus = baseline.corpus_manifest()
     tree = baseline.tree_manifest()
     tests = baseline.test_inventory()
+    gold = golden.build()
     return {
+        "v1-golden-retrieval.json": _json(gold),
         "hook-registrations.csv": _csv(hooks.COLUMNS, hook_rows),
         "rule-disposition.csv": _csv(rules.COLUMNS, rule_rows),
         "rule-near-duplicates.csv": _csv(
@@ -117,7 +129,7 @@ def build() -> dict[str, str]:
         "v1-corpus-manifest.json": _json(corpus),
         "v1-baseline-manifest.json": _json(tree),
         "v1-test-inventory.csv": _csv(baseline.TEST_COLUMNS, tests),
-        "SUMMARY.md": _summary(hook_rows, rule_rows, near_dups, corpus, tree, tests),
+        "SUMMARY.md": _summary(hook_rows, rule_rows, near_dups, corpus, tree, tests, gold),
     }
 
 

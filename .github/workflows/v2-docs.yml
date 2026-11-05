@@ -16,3 +16,22 @@ jobs:
         run: python3 -m pip install --disable-pip-version-check -r requirements-v2-docs.txt
       - name: Check docs, HTML, schemas, packs and task fixtures
         run: python3 scripts/check-v2-docs.py
+  m0-harness:
+    name: M0 reference harness and audit drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The audit reads V1 from pinned main commit ebdafe5 through git objects.
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install M0 dependencies
+        run: python -m pip install --disable-pip-version-check -r m0/requirements.txt
+      - name: Run M0 tests
+        working-directory: m0
+        run: python -m pytest
+      - name: Check generated audit evidence is current
+        working-directory: m0
+        run: python -m writ_m0.audit check

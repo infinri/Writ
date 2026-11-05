@@ -1,0 +1,2661 @@
+{
+  "baseline_commit": "ebdafe5450b201339f81e717ed104e6bcfd3fe3e",
+  "cases": [
+    {
+      "case_id": "v1:Q1",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-INJ-SQL-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "controller contains SQL query",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q2",
+      "expect": "rank",
+      "expected_ids": [
+        "SOLID-DIP-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "dependency injection constructor",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q3",
+      "expect": "rank",
+      "expected_ids": [
+        "PY-ASYNC-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "async blocking event loop",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q4",
+      "expect": "rank",
+      "expected_ids": [
+        "PY-IMPORT-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "circular import between modules",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q5",
+      "expect": "rank",
+      "expected_ids": [
+        "CLEAN-MAGIC-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "magic number in conditional",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q6",
+      "expect": "rank",
+      "expected_ids": [
+        "CLEAN-FUNC-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "function too long needs refactor",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q7",
+      "expect": "rank",
+      "expected_ids": [
+        "PHP-TRY-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "catch exception without context",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q8",
+      "expect": "rank",
+      "expected_ids": [
+        "PY-PROTO-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "protocol vs abstract base class",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q9",
+      "expect": "rank",
+      "expected_ids": [
+        "PY-PYDANTIC-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "pydantic validation external data",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q10",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-INJ-SQL-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "SQL positional placeholder",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q11",
+      "expect": "rank",
+      "expected_ids": [
+        "ARCH-COMP-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "deep inheritance hierarchy",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q12",
+      "expect": "rank",
+      "expected_ids": [
+        "DRY-DUP-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "duplicate logic across modules",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q13",
+      "expect": "rank",
+      "expected_ids": [
+        "PHP-TYPE-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "public method missing type annotation",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q14",
+      "expect": "rank",
+      "expected_ids": [
+        "FW-M2-RT-004"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "single source of truth REST GraphQL",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q15",
+      "expect": "rank",
+      "expected_ids": [
+        "FW-M2-004"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "plugin targeting interface vs concrete",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q16",
+      "expect": "rank",
+      "expected_ids": [
+        "FW-M2-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "repository pattern entity retrieval",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q17",
+      "expect": "rank",
+      "expected_ids": [
+        "TEST-ISOLATE-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "test isolation shared state",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q18",
+      "expect": "rank",
+      "expected_ids": [
+        "TEST-EXIST-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "test first before implementation",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q19",
+      "expect": "rank",
+      "expected_ids": [
+        "TEST-INT-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "integration test real database",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q20",
+      "expect": "rank",
+      "expected_ids": [
+        "DB-SQL-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "SQL string concatenation fragmented",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q21",
+      "expect": "rank",
+      "expected_ids": [
+        "PERF-OPT-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "performance optimization without measurement",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q22",
+      "expect": "rank",
+      "expected_ids": [
+        "PERF-LAZY-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "lazy loading deferred resource",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q23",
+      "expect": "rank",
+      "expected_ids": [
+        "PERF-BIGO-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "nested loop O(n^2)",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q24",
+      "expect": "rank",
+      "expected_ids": [
+        "PY-ASYNC-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "synchronous IO in request handler",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q25",
+      "expect": "rank",
+      "expected_ids": [
+        "PERF-QBUDGET-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "query budget database calls",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q26",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-AUTHZ-ENFORCE-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "authentication vs authorization check",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q27",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-DATA-PII-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "API endpoint data exposure",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q28",
+      "expect": "rank",
+      "expected_ids": [
+        "SOLID-OCP-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "extend vendor class without modifying",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q29",
+      "expect": "rank",
+      "expected_ids": [
+        "FW-M2-RT-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "order state machine transitions",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q30",
+      "expect": "rank",
+      "expected_ids": [
+        "FW-M2-RT-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "MSI inventory salability",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q31",
+      "expect": "rank",
+      "expected_ids": [
+        "FW-M2-RT-003"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "admin config system value",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q32",
+      "expect": "rank",
+      "expected_ids": [
+        "FW-M2-RT-004"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "REST endpoint authorization ACL",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q33",
+      "expect": "rank",
+      "expected_ids": [
+        "FW-M2-RT-005"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "message queue consumer setup",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q34",
+      "expect": "rank",
+      "expected_ids": [
+        "FW-M2-RT-006"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "multi-website stock scope",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q35",
+      "expect": "rank",
+      "expected_ids": [
+        "FW-M2-005"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "totals collector execution order",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q36",
+      "expect": "rank",
+      "expected_ids": [
+        "FW-M2-003"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "quote state before collect totals",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q37",
+      "expect": "rank",
+      "expected_ids": [
+        "FW-M2-006"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "CartTotalRepository stale read",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q38",
+      "expect": "rank",
+      "expected_ids": [
+        "PHP-TYPE-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "PHP docblock type annotation",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q39",
+      "expect": "rank",
+      "expected_ids": [
+        "PHP-TRY-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "PHP try catch throwable",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q40",
+      "expect": "rank",
+      "expected_ids": [
+        "CLEAN-ERR-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "fail fast guard clause",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q41",
+      "expect": "rank",
+      "expected_ids": [
+        "CLEAN-ERR-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "graceful degradation error recovery",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q42",
+      "expect": "rank",
+      "expected_ids": [
+        "ENF-SYS-003"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "race condition concurrent writers",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q43",
+      "expect": "rank",
+      "expected_ids": [
+        "SCALE-QUEUE-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "idempotent message processing",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q44",
+      "expect": "rank",
+      "expected_ids": [
+        "FW-M2-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "persistence backed validation",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q45",
+      "expect": "rank",
+      "expected_ids": [
+        "PY-PYDANTIC-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "input sanitization trust boundary",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q46",
+      "expect": "rank",
+      "expected_ids": [
+        "DB-SQL-003"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "SQL formatting readable vertical",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q47",
+      "expect": "rank",
+      "expected_ids": [
+        "SOLID-OCP-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "composer update vendor override",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q48",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-DATA-PII-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "response field minimization API",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q49",
+      "expect": "rank",
+      "expected_ids": [
+        "FW-M2-004"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "multiple plugins same method sort order",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q50",
+      "expect": "rank",
+      "expected_ids": [
+        "PERF-LAZY-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "constructor loads database eagerly",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q51",
+      "expect": "rank",
+      "expected_ids": [
+        "FW-M2-003"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "my totals are wrong after adding item to cart",
+      "set": "rules/symptom"
+    },
+    {
+      "case_id": "v1:Q52",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-AUTHZ-IDOR-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "customer can see another's order by changing the ID",
+      "set": "rules/symptom"
+    },
+    {
+      "case_id": "v1:Q54",
+      "expect": "rank",
+      "expected_ids": [
+        "FW-M2-003"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "my before plugin runs but the data is not there yet",
+      "set": "rules/symptom"
+    },
+    {
+      "case_id": "v1:Q55",
+      "expect": "rank",
+      "expected_ids": [
+        "PY-ASYNC-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "server hangs calling Neo4j in async endpoint",
+      "set": "rules/symptom"
+    },
+    {
+      "case_id": "v1:Q56",
+      "expect": "rank",
+      "expected_ids": [
+        "DRY-CONFIG-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "same discount different in REST vs GraphQL",
+      "set": "rules/symptom"
+    },
+    {
+      "case_id": "v1:Q57",
+      "expect": "rank",
+      "expected_ids": [
+        "TEST-ISOLATE-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "test passes alone but fails with other tests",
+      "set": "rules/symptom"
+    },
+    {
+      "case_id": "v1:Q58",
+      "expect": "rank",
+      "expected_ids": [
+        "PY-IMPORT-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "I keep getting ImportError at startup",
+      "set": "rules/symptom"
+    },
+    {
+      "case_id": "v1:Q59",
+      "expect": "rank",
+      "expected_ids": [
+        "FW-M2-RT-005"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "two queue consumers processing the same message",
+      "set": "rules/symptom"
+    },
+    {
+      "case_id": "v1:Q60",
+      "expect": "rank",
+      "expected_ids": [
+        "CLEAN-FUNC-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "my class has 50 lines and does too many things",
+      "set": "rules/symptom"
+    },
+    {
+      "case_id": "v1:Q61",
+      "expect": "rank",
+      "expected_ids": [
+        "FW-M2-RT-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "stock available but order fails at checkout",
+      "set": "rules/symptom"
+    },
+    {
+      "case_id": "v1:Q62",
+      "expect": "rank",
+      "expected_ids": [
+        "TEST-INT-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "I mocked the repository but prod still fails",
+      "set": "rules/symptom"
+    },
+    {
+      "case_id": "v1:Q63",
+      "expect": "rank",
+      "expected_ids": [
+        "FW-M2-RT-003"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "admin config not loading in different store view",
+      "set": "rules/symptom"
+    },
+    {
+      "case_id": "v1:Q64",
+      "expect": "rank",
+      "expected_ids": [
+        "CLEAN-MAGIC-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "hard coded 5 in the if statement what does it mean",
+      "set": "rules/symptom"
+    },
+    {
+      "case_id": "v1:Q65",
+      "expect": "rank",
+      "expected_ids": [
+        "ERR-GRACEFUL-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "process crashes halfway through leaves partial state",
+      "set": "rules/symptom"
+    },
+    {
+      "case_id": "v1:Q66",
+      "expect": "rank",
+      "expected_ids": [
+        "ARCH-ENV-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "my code works in dev but breaks in production",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q67",
+      "expect": "rank",
+      "expected_ids": [
+        "DRY-DUP-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "I have the same logic in three different places",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q68",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-DATA-PII-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "the API returns too much data to the frontend",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q69",
+      "expect": "rank",
+      "expected_ids": [
+        "FW-M2-003"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "my plugin fires but nothing happens",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q71",
+      "expect": "rank",
+      "expected_ids": [
+        "PERF-LAZY-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "the page loads slowly with lots of products",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q72",
+      "expect": "rank",
+      "expected_ids": [
+        "SOLID-SRP-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "I wrote a class that handles validation and saves to DB",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q73",
+      "expect": "rank",
+      "expected_ids": [
+        "FW-M2-003"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "discount applies in checkout but not in cart summary",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q74",
+      "expect": "rank",
+      "expected_ids": [
+        "TEST-INT-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "CI passes but the feature is broken on staging",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q75",
+      "expect": "rank",
+      "expected_ids": [
+        "FW-M2-RT-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "I need to change how orders are cancelled, afraid of side effects",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q76",
+      "expect": "rank",
+      "expected_ids": [
+        "PY-ASYNC-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "my async function takes forever even though the query is fast",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q77",
+      "expect": "rank",
+      "expected_ids": [
+        "ENF-SYS-003"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "two cron jobs updating the same table at midnight",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q78",
+      "expect": "rank",
+      "expected_ids": [
+        "ARCH-COMP-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "I inherited this class three levels deep and cannot figure it out",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q79",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-DATA-PII-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "customer data is leaking through the GraphQL API",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q80",
+      "expect": "rank",
+      "expected_ids": [
+        "TEST-ISOLATE-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "the test only works if you run it after the other test",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q81",
+      "expect": "rank",
+      "expected_ids": [
+        "SOLID-DIP-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "I am newing up services inside my controller",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q82",
+      "expect": "rank",
+      "expected_ids": [
+        "FW-M2-RT-006"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "product shows in stock on one website but out of stock on another",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q83",
+      "expect": "rank",
+      "expected_ids": [
+        "API-ERROR-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "error message says nothing useful just something went wrong",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q84",
+      "expect": "rank",
+      "expected_ids": [
+        "CLEAN-MAGIC-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "I added a column but forgot what the number 30 means in where clause",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q85",
+      "expect": "rank",
+      "expected_ids": [
+        "FW-M2-RT-005"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "the queue keeps reprocessing the same order",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q86",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-INJ-XSS-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "user input rendered as raw HTML in template",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q87",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-INJ-CMD-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "subprocess shell true command injection",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q88",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-INJ-DESER-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "deserialize untrusted pickle yaml",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q89",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-INJ-REDIR-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "open redirect from request parameter",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q90",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-INJ-CSRF-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "CSRF token missing on POST",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q91",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-INJ-SSRF-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "SSRF allowlist outbound URLs",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q92",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-INJ-PATH-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "path traversal directory escape",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q93",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-VAL-REGEX-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "regex denial of service ReDoS",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q94",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-AUTH-HASH-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "password hash MD5 SHA256 bcrypt",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q95",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-AUTH-TOKEN-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "session token CSPRNG random secure",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q96",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-AUTH-BRUTE-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "rate limit login brute force",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q97",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-AUTH-TIMING-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "constant time comparison timing attack",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q98",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-AUTHZ-IDOR-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "object access ownership check IDOR",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q99",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-AUTHZ-ENFORCE-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "endpoint missing authorization decorator",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q100",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-AUTHZ-MASS-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "mass assignment from request body",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q101",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-AUTHZ-TENANT-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "multi-tenant data filter at data layer",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q102",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-AUTHZ-DEFAULT-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "deny by default new endpoint",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q103",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-VAL-SERVER-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "server-side input validation client-side UX only",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q104",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-VAL-TYPE-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "pydantic schema typed payload",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q105",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-VAL-FILE-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "file upload magic bytes content type",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q106",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-VAL-ALLOW-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "allowlist over blocklist validation",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q107",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-CRYPTO-KEY-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "hardcoded API key secret in source",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q108",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-CRYPTO-ALGO-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "AES ECB mode weak cipher",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q109",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-CRYPTO-IV-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "nonce IV reuse GCM encryption",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q110",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-CRYPTO-CERT-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "verify false TLS certificate disabled",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q111",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-CRYPTO-TLS-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "TLS 1.2 minimum cipher suite",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q112",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-HDR-CORS-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "CORS wildcard credentials origin",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q113",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-HDR-CSP-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "Content Security Policy header CSP",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q114",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-HDR-HSTS-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "HSTS strict transport security max-age",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q115",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-RATE-API-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "API rate limiting per identity",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q116",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-DATA-PII-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "PII email phone logged plaintext",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q117",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-DATA-PII-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "API response field allowlist over-fetching",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q118",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-DEP-AUDIT-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "dependency CVE audit lockfile",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q119",
+      "expect": "rank",
+      "expected_ids": [
+        "CLEAN-FUNC-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "function 50 lines too long",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q120",
+      "expect": "rank",
+      "expected_ids": [
+        "CLEAN-MAGIC-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "magic number named constant",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q121",
+      "expect": "rank",
+      "expected_ids": [
+        "CLEAN-ERR-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "empty except catch swallow exception",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q122",
+      "expect": "rank",
+      "expected_ids": [
+        "CLEAN-ERR-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "specific exception type bare except",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q123",
+      "expect": "rank",
+      "expected_ids": [
+        "CLEAN-LOG-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "structured logging JSON levels",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q124",
+      "expect": "rank",
+      "expected_ids": [
+        "CLEAN-LOG-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "correlation id request trace",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q125",
+      "expect": "rank",
+      "expected_ids": [
+        "CLEAN-NEST-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "deeply nested code early return",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q126",
+      "expect": "rank",
+      "expected_ids": [
+        "DRY-DUP-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "duplicate logic extract shared function",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q127",
+      "expect": "rank",
+      "expected_ids": [
+        "DRY-CONFIG-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "single source of truth config",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q128",
+      "expect": "rank",
+      "expected_ids": [
+        "SOLID-SRP-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "single responsibility class layer",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q129",
+      "expect": "rank",
+      "expected_ids": [
+        "SOLID-SRP-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "controller delegates service layer",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q130",
+      "expect": "rank",
+      "expected_ids": [
+        "SOLID-OCP-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "polymorphism switch type extensibility",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q131",
+      "expect": "rank",
+      "expected_ids": [
+        "SOLID-DIP-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "constructor inject abstraction protocol",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q132",
+      "expect": "rank",
+      "expected_ids": [
+        "ARCH-LAYER-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "domain model framework imports",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q133",
+      "expect": "rank",
+      "expected_ids": [
+        "ARCH-BOUNDARY-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "adapter external service HTTP client",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q134",
+      "expect": "rank",
+      "expected_ids": [
+        "ARCH-IDEMPOTENT-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "idempotency key write endpoint retry",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q135",
+      "expect": "rank",
+      "expected_ids": [
+        "ARCH-DTO-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "DTO dataclass typed transfer",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q136",
+      "expect": "rank",
+      "expected_ids": [
+        "ARCH-MIGRATION-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "versioned migration backwards compatible",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q137",
+      "expect": "rank",
+      "expected_ids": [
+        "ARCH-FEATURE-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "feature flag expiration sunset date",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q138",
+      "expect": "rank",
+      "expected_ids": [
+        "TEST-EXIST-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "test every public function happy path",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q139",
+      "expect": "rank",
+      "expected_ids": [
+        "TEST-NAME-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "test names describe scenario outcome",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q140",
+      "expect": "rank",
+      "expected_ids": [
+        "TEST-EDGE-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "test error path edge invalid input",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q141",
+      "expect": "rank",
+      "expected_ids": [
+        "TEST-REGRESSION-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "regression test bug fix accompanies",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q142",
+      "expect": "rank",
+      "expected_ids": [
+        "TEST-MOCK-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "mock verify behavior call arguments",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q143",
+      "expect": "rank",
+      "expected_ids": [
+        "ERR-RETRY-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "exponential backoff jitter retry",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q144",
+      "expect": "rank",
+      "expected_ids": [
+        "ERR-CIRCUIT-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "circuit breaker repeated failure",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q145",
+      "expect": "rank",
+      "expected_ids": [
+        "ERR-TIMEOUT-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "timeout external call unbounded wait",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q146",
+      "expect": "rank",
+      "expected_ids": [
+        "ERR-GRACEFUL-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "graceful shutdown SIGTERM drain",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q147",
+      "expect": "rank",
+      "expected_ids": [
+        "ERR-VALIDATION-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "structured validation error field code",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q148",
+      "expect": "rank",
+      "expected_ids": [
+        "PERF-QUERY-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "N+1 query eager loading join",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q149",
+      "expect": "rank",
+      "expected_ids": [
+        "PERF-QUERY-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "WHERE join column index",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q150",
+      "expect": "rank",
+      "expected_ids": [
+        "PERF-CACHE-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "cache key user tenant parameter",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q151",
+      "expect": "rank",
+      "expected_ids": [
+        "PERF-CACHE-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "cache TTL explicit invalidation",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q152",
+      "expect": "rank",
+      "expected_ids": [
+        "PERF-MEM-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "streaming chunked read large dataset",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q153",
+      "expect": "rank",
+      "expected_ids": [
+        "PERF-BATCH-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "parallel async gather Promise all",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q154",
+      "expect": "rank",
+      "expected_ids": [
+        "SCALE-STATELESS-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "stateless process Redis session",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q155",
+      "expect": "rank",
+      "expected_ids": [
+        "SCALE-QUEUE-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "background queue long running operation",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q156",
+      "expect": "rank",
+      "expected_ids": [
+        "SCALE-DB-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "connection pool database size limit",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q157",
+      "expect": "rank",
+      "expected_ids": [
+        "SCALE-HEALTH-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "health check readiness DB dependency",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q158",
+      "expect": "rank",
+      "expected_ids": [
+        "SCALE-MIGRATE-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "rolling deploy backwards compatible schema",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q159",
+      "expect": "rank",
+      "expected_ids": [
+        "API-REST-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "HTTP method GET POST PUT DELETE semantics",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q160",
+      "expect": "rank",
+      "expected_ids": [
+        "API-STATUS-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "status code 422 validation 5xx server",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q161",
+      "expect": "rank",
+      "expected_ids": [
+        "API-CONTRACT-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "OpenAPI spec generated documentation",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q162",
+      "expect": "rank",
+      "expected_ids": [
+        "DOC-TYPE-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "type annotations public function return",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q163",
+      "expect": "rank",
+      "expected_ids": [
+        "DOC-README-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "README setup clean machine prerequisites",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q164",
+      "expect": "rank",
+      "expected_ids": [
+        "DOC-ARCH-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "ADR architecture decision record",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q165",
+      "expect": "rank",
+      "expected_ids": [
+        "PROC-ROLLBACK-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "rollback canary blue-green deploy",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q166",
+      "expect": "rank",
+      "expected_ids": [
+        "PROC-INCIDENT-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "post-incident review action items owners",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q167",
+      "expect": "rank",
+      "expected_ids": [
+        "PROC-ENV-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "credential never share chat ticket",
+      "set": "rules/keyword"
+    },
+    {
+      "case_id": "v1:Q168",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-AUTH-ENUM-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "When I type a real customer's email into the 'forgot password' box the site says 'check your inbox', but a made-up email says 'no account exists with that email' -- someone could use this to build a list of every email address we have on file.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q169",
+      "expect": "rank",
+      "expected_ids": [
+        "SCALE-QUEUE-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "Our checkout worker got OOM-killed right after it charged the customer's card but before it acknowledged the message, so the broker redelivered the same order to a fresh worker a minute later -- and the customer was charged twice for one order.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q170",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-AUTH-LOGOUT-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "When a user clicks 'log out,' the app just clears the cookie in their browser. If someone had already grabbed that session value earlier (shared computer, intercepted traffic, whatever), it still gets them into the account for hours afterward -- the log-out button doesn't seem to actually do anything on our end.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q171",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-AUTHZ-PRIV-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "One of our support reps has had the same browser tab logged in for four days straight, and this morning they were able to grant a coworker's account the 'billing admin' role without being asked for a password or MFA code again.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q172",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-INJ-SSTI-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "We added a 'custom email signature' feature where users can type their own formatting markup for the footer of outgoing emails. Someone figured out that pasting a particular syntax into their signature makes the sent email include values from our server's internal configuration.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q173",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-AUTH-MFA-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "Our two-factor code entry is pretty forgiving -- it still accepts a six-digit code someone generated up to five minutes ago, so a code caught in an old screenshot or glimpsed over someone's shoulder a while back can still get an attacker in.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q174",
+      "expect": "rank",
+      "expected_ids": [
+        "SCALE-HEALTH-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "Our Kubernetes pods keep getting killed and restarted every time the database has a brief few-second blip, even though the application process itself is completely fine and would have recovered on its own if it hadn't been restarted.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q175",
+      "expect": "rank",
+      "expected_ids": [
+        "ERR-HANDLE-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "During the payment-outage postmortem, all the error tracker shows is 'PaymentFailed: order 4471' -- we know the payment provider threw something first, but that detail is completely gone by the time it reaches us.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q176",
+      "expect": "rank",
+      "expected_ids": [
+        "PERF-CACHE-004"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "Right around midnight when the homepage's cached data expires, we get a two-second spike where database CPU maxes out, as if hundreds of requests all try to rebuild that same homepage data at the exact same instant.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q177",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-AUTH-HASH-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "Every user's password gets hashed with bcrypt, which is correct, but to keep things simple the whole application appends one fixed secret string (stored in a single config value) to every password before hashing it, instead of letting the hashing library generate a fresh random value per account.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q178",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-CRYPTO-ALGO-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "We just discovered the script that generates signing keys for a payment-partner integration hasn't been touched in years and still asks the crypto library for whatever its default key size was back then. A security scanner flagged those keys as crackable with modern hardware in a realistic amount of time.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q179",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-INJ-XSS-003"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "We don't use any front-end framework on this page -- just plain JavaScript that builds the comment list by gluing each commenter's text into one big string and dropping it straight into the page's container element. Someone posted a comment that now pops an alert box for every other visitor who opens that page.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q180",
+      "expect": "rank",
+      "expected_ids": [
+        "ARCH-STATE-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "We keep a plain in-memory dictionary that tracks how many requests are currently in flight for each user, and under heavy concurrent traffic the counts drift and sometimes go negative even though nothing in the code ever deletes an entry.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q181",
+      "expect": "rank",
+      "expected_ids": [
+        "SCALE-DB-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "The nightly analytics dashboard pulls from the same database as checkout, and lately regular customers have started complaining that checkout itself feels sluggish during business hours whenever that dashboard job runs.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q182",
+      "expect": "rank",
+      "expected_ids": [
+        "ERR-FALLBACK-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "Our checkout page shows cross-sell suggestions pulled from a separate recommendation service. Nobody ever actually decided what the page should do if that service is slow or unreachable -- right now it's whatever the code happens to do that day.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q183",
+      "expect": "rank",
+      "expected_ids": [
+        "TEST-ISOLATE-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "Our checkout tests run instantly on my laptop, but three teammates are now seeing random 30-second hangs and connection-refused failures in CI on the exact same commit, and it always traces back to the same test file.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q184",
+      "expect": "rank",
+      "expected_ids": [
+        "TEST-MOCK-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "All our payment tests mock the gateway to just return `True`, and they've been green for months -- but the first real transaction in staging blew up because the actual gateway response is a nested object with a status field and a separate charge id, not a plain boolean.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q185",
+      "expect": "rank",
+      "expected_ids": [
+        "PERF-MEM-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "Our email-notification worker looks fine right after a deploy, but three or four days into continuous uptime it's using 8GB of RAM and needs a restart before it eventually falls over.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q186",
+      "expect": "rank",
+      "expected_ids": [
+        "TEST-FIXTURE-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "Every time product adds one new required field to the customer record, someone has to go update the same hand-written object-construction code that's been copy-pasted across 40 different test files.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q187",
+      "expect": "rank",
+      "expected_ids": [
+        "SEC-VAL-REGEX-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "One customer used the product-search page's 'match pattern' advanced filter, typing something like 'a+a+a+b', and that single request has been pegged at 100% CPU for the last ten minutes while every other request queues up behind it.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q188",
+      "expect": "rank",
+      "expected_ids": [
+        "API-IDEMPOTENT-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "Our mobile app times out on a delete-item call and automatically retries it, and the retry comes back as a 404 which the app shows the user as a scary error, even though the item was actually removed successfully on the first attempt.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q189",
+      "expect": "rank",
+      "expected_ids": [
+        "CLEAN-RETURN-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "This lookup helper returns the actual record when it finds one, but returns the literal value False when it doesn't -- so every caller downstream has to remember to check `is False` specifically instead of just checking for None or an empty result.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q190",
+      "expect": "rank",
+      "expected_ids": [
+        "DRY-TYPE-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "Three separate services each hand-roll their own version of what a Customer record looks like, and last sprint two of them silently drifted out of sync after someone added a new field to only one of the three copies.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q191",
+      "expect": "rank",
+      "expected_ids": [
+        "TEST-ISOLATE-003"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "If I run tests/test_users.py by itself every test passes. Run the whole suite in one go and the third test in that same file blows up with a duplicate-email database error that nobody can reproduce by running the file alone.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q192",
+      "expect": "rank",
+      "expected_ids": [
+        "PHP-ERR-002"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "Our nightly PHP inventory-import job hits a parse error on a bad row, and instead of logging it and retrying, it just echoes the exact same HTML error page our storefront shows customers -- straight into a log file nobody is watching, so failed imports go unnoticed for a week.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q193",
+      "expect": "rank",
+      "expected_ids": [
+        "CLEAN-DEAD-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "There's a chunk of code sitting right after a return statement in this function that can never actually execute, plus a couple of imports at the top nobody's referenced in months, but everyone's too nervous to delete them in case something secretly depends on it.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q194",
+      "expect": "rank",
+      "expected_ids": [
+        "CLEAN-COUPLING-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "The validate_order() function builds a brand-new RegexEmailValidator instance right inside its own body instead of accepting a validator as an argument, so I can't run this function in a test without dragging in the real regex validator, and swapping in a stricter one later means editing this function's internals all over again.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:Q195",
+      "expect": "rank",
+      "expected_ids": [
+        "CLEAN-SIDE-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "Everyone treats get_account_summary() as safe to call from anywhere for a quick peek at the numbers, but it actually writes a row to the audit log and bumps a last_viewed timestamp on the account object every single time it runs.",
+      "set": "rules/ambiguous"
+    },
+    {
+      "case_id": "v1:N1",
+      "expect": "abstain",
+      "expected_ids": [],
+      "query": "What's a good recipe for a weeknight chicken curry?",
+      "set": "abstain/A"
+    },
+    {
+      "case_id": "v1:N2",
+      "expect": "abstain",
+      "expected_ids": [],
+      "query": "What's the best time of year to visit Portugal to avoid crowds?",
+      "set": "abstain/A"
+    },
+    {
+      "case_id": "v1:N3",
+      "expect": "abstain",
+      "expected_ids": [],
+      "query": "Should I max out my 401k or pay off my mortgage early?",
+      "set": "abstain/A"
+    },
+    {
+      "case_id": "v1:N4",
+      "expect": "abstain",
+      "expected_ids": [],
+      "query": "Who won the Super Bowl in 2019?",
+      "set": "abstain/A"
+    },
+    {
+      "case_id": "v1:N5",
+      "expect": "abstain",
+      "expected_ids": [],
+      "query": "What's the capital of Kazakhstan?",
+      "set": "abstain/A"
+    },
+    {
+      "case_id": "v1:N6",
+      "expect": "abstain",
+      "expected_ids": [],
+      "query": "How many calories are in an avocado?",
+      "set": "abstain/A"
+    },
+    {
+      "case_id": "v1:N7",
+      "expect": "abstain",
+      "expected_ids": [],
+      "query": "What's a good stretching routine for lower back pain after sitting all day?",
+      "set": "abstain/A"
+    },
+    {
+      "case_id": "v1:N8",
+      "expect": "abstain",
+      "expected_ids": [],
+      "query": "How do I remove a red wine stain from a white carpet?",
+      "set": "abstain/A"
+    },
+    {
+      "case_id": "v1:N9",
+      "expect": "abstain",
+      "expected_ids": [],
+      "query": "What's the best way to train a puppy not to bark at the doorbell?",
+      "set": "abstain/A"
+    },
+    {
+      "case_id": "v1:N10",
+      "expect": "abstain",
+      "expected_ids": [],
+      "query": "How often should I rotate my car's tires?",
+      "set": "abstain/A"
+    },
+    {
+      "case_id": "v1:N11",
+      "expect": "abstain",
+      "expected_ids": [],
+      "query": "How do I center a div vertically and horizontally with flexbox?",
+      "set": "abstain/B"
+    },
+    {
+      "case_id": "v1:N12",
+      "expect": "abstain",
+      "expected_ids": [],
+      "query": "What's the right way to resolve a merge conflict after a git rebase -i?",
+      "set": "abstain/B"
+    },
+    {
+      "case_id": "v1:N13",
+      "expect": "abstain",
+      "expected_ids": [],
+      "query": "How do I set up VSCode to auto-lint Python files with flake8 on save?",
+      "set": "abstain/B"
+    },
+    {
+      "case_id": "v1:N14",
+      "expect": "abstain",
+      "expected_ids": [],
+      "query": "How do I add a request interceptor in axios to attach an auth header to every outgoing call?",
+      "set": "abstain/B"
+    },
+    {
+      "case_id": "v1:N15",
+      "expect": "abstain",
+      "expected_ids": [],
+      "query": "What flags do I need to pass to docker build to use a multi-stage build with build secrets?",
+      "set": "abstain/B"
+    },
+    {
+      "case_id": "v1:N16",
+      "expect": "abstain",
+      "expected_ids": [],
+      "query": "How do I write a GitHub Actions matrix build that tests against three Python versions?",
+      "set": "abstain/B"
+    },
+    {
+      "case_id": "v1:N17",
+      "expect": "abstain",
+      "expected_ids": [],
+      "query": "What's the regex pattern to validate an email address in Python?",
+      "set": "abstain/B"
+    },
+    {
+      "case_id": "v1:N18",
+      "expect": "abstain",
+      "expected_ids": [],
+      "query": "What autovacuum settings should I tune in Postgres to stop table bloat?",
+      "set": "abstain/B"
+    },
+    {
+      "case_id": "v1:N19",
+      "expect": "abstain",
+      "expected_ids": [],
+      "query": "Can you explain how the TCP three-way handshake works?",
+      "set": "abstain/B"
+    },
+    {
+      "case_id": "v1:N20",
+      "expect": "abstain",
+      "expected_ids": [],
+      "query": "How do I add a custom KnockoutJS component to a Magento 2 checkout step via layout XML?",
+      "set": "abstain/B"
+    },
+    {
+      "case_id": "v1:P1",
+      "expect": "rank",
+      "expected_ids": [
+        "SKL-PROC-BRAIN-001",
+        "PBK-PROC-BRAIN-001",
+        "ENF-PROC-BRAIN-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "should I design this feature before writing code",
+      "set": "methodology/direct"
+    },
+    {
+      "case_id": "v1:P2",
+      "expect": "rank",
+      "expected_ids": [
+        "SKL-PROC-BRAIN-001",
+        "ENF-PROC-BRAIN-001",
+        "PBK-PROC-BRAIN-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "this project is too simple to need a design",
+      "set": "methodology/rationalization"
+    },
+    {
+      "case_id": "v1:P3",
+      "expect": "rank",
+      "expected_ids": [
+        "SKL-PROC-BRAIN-001",
+        "ENF-PROC-BRAIN-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "I've brainstormed enough let me start coding now",
+      "set": "methodology/red_flag"
+    },
+    {
+      "case_id": "v1:P4",
+      "expect": "rank",
+      "expected_ids": [
+        "SKL-PROC-VISUAL-001",
+        "SKL-PROC-BRAIN-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "how do I present visual options when brainstorming a UI feature",
+      "set": "methodology/direct"
+    },
+    {
+      "case_id": "v1:P5",
+      "expect": "rank",
+      "expected_ids": [
+        "SKL-PROC-PLAN-001",
+        "PBK-PROC-PLAN-001",
+        "ENF-PROC-PLAN-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "create an implementation plan for this task",
+      "set": "methodology/direct"
+    },
+    {
+      "case_id": "v1:P6",
+      "expect": "rank",
+      "expected_ids": [
+        "SKL-PROC-PLAN-001",
+        "ENF-PROC-PLAN-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "I'll just put TBD in step 3 and fill it in later",
+      "set": "methodology/rationalization"
+    },
+    {
+      "case_id": "v1:P7",
+      "expect": "rank",
+      "expected_ids": [
+        "SKL-PROC-PLAN-001",
+        "ENF-PROC-PLAN-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "step 4 is similar to step 2 I don't need to spell it out",
+      "set": "methodology/rationalization"
+    },
+    {
+      "case_id": "v1:P8",
+      "expect": "rank",
+      "expected_ids": [
+        "SKL-PROC-EXEC-001",
+        "PBK-PROC-SDD-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "how do I execute an approved plan task by task",
+      "set": "methodology/direct"
+    },
+    {
+      "case_id": "v1:P9",
+      "expect": "rank",
+      "expected_ids": [
+        "SKL-PROC-EXEC-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "hit a blocker mid-task should I just work around it",
+      "set": "methodology/red_flag"
+    },
+    {
+      "case_id": "v1:P10",
+      "expect": "rank",
+      "expected_ids": [
+        "PBK-PROC-SDD-001",
+        "ENF-PROC-SDD-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "use subagents to split up this implementation",
+      "set": "methodology/direct"
+    },
+    {
+      "case_id": "v1:P11",
+      "expect": "rank",
+      "expected_ids": [
+        "PBK-PROC-SDD-001",
+        "ENF-PROC-SDD-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "which review comes first spec compliance or code quality",
+      "set": "methodology/direct"
+    },
+    {
+      "case_id": "v1:P12",
+      "expect": "rank",
+      "expected_ids": [
+        "PBK-PROC-SDD-001",
+        "ENF-PROC-SDD-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "self-review by the implementer should be enough skip the reviewer subagent",
+      "set": "methodology/rationalization"
+    },
+    {
+      "case_id": "v1:P13",
+      "expect": "rank",
+      "expected_ids": [
+        "ANT-PROC-VERIFY-001",
+        "PBK-PROC-SDD-001",
+        "SKL-PROC-VERIFY-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "implementer subagent reported success can I move on",
+      "set": "methodology/cross_skill"
+    },
+    {
+      "case_id": "v1:P14",
+      "expect": "rank",
+      "expected_ids": [
+        "PBK-PROC-TDD-001",
+        "ENF-PROC-TDD-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "should I write the test first or the code first",
+      "set": "methodology/direct"
+    },
+    {
+      "case_id": "v1:P15",
+      "expect": "rank",
+      "expected_ids": [
+        "ANT-PROC-TDD-005",
+        "PBK-PROC-TDD-001",
+        "ENF-PROC-TDD-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "I already manually tested it adding unit tests later is the same",
+      "set": "methodology/rationalization"
+    },
+    {
+      "case_id": "v1:P16",
+      "expect": "rank",
+      "expected_ids": [
+        "ANT-PROC-TDD-001",
+        "PBK-PROC-TDD-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "my test passed the first time I ran it",
+      "set": "methodology/anti_pattern"
+    },
+    {
+      "case_id": "v1:P17",
+      "expect": "rank",
+      "expected_ids": [
+        "ANT-PROC-TDD-002",
+        "PBK-PROC-TDD-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "the test mocks the function it's supposed to verify",
+      "set": "methodology/anti_pattern"
+    },
+    {
+      "case_id": "v1:P18",
+      "expect": "rank",
+      "expected_ids": [
+        "ANT-PROC-TDD-005",
+        "PBK-PROC-TDD-001",
+        "ENF-PROC-TDD-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "I already spent four hours on this code deleting to start over is wasteful",
+      "set": "methodology/rationalization"
+    },
+    {
+      "case_id": "v1:P19",
+      "expect": "rank",
+      "expected_ids": [
+        "SKL-PROC-VERIFY-001",
+        "ENF-PROC-VERIFY-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "I'm about to say the implementation is done",
+      "set": "methodology/direct"
+    },
+    {
+      "case_id": "v1:P20",
+      "expect": "rank",
+      "expected_ids": [
+        "SKL-PROC-VERIFY-001",
+        "ENF-PROC-VERIFY-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "linter passed so I can mark this complete",
+      "set": "methodology/red_flag"
+    },
+    {
+      "case_id": "v1:P21",
+      "expect": "rank",
+      "expected_ids": [
+        "FRB-COMMS-002",
+        "SKL-PROC-VERIFY-001",
+        "FRB-COMMS-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "should work now",
+      "set": "methodology/forbidden"
+    },
+    {
+      "case_id": "v1:P22",
+      "expect": "rank",
+      "expected_ids": [
+        "PBK-PROC-DEBUG-001",
+        "ENF-PROC-DEBUG-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "bug keeps reappearing what's the systematic debugging process",
+      "set": "methodology/direct"
+    },
+    {
+      "case_id": "v1:P23",
+      "expect": "rank",
+      "expected_ids": [
+        "PBK-PROC-DEBUG-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "I've tried three fixes already let me try one more",
+      "set": "methodology/red_flag"
+    },
+    {
+      "case_id": "v1:P24",
+      "expect": "rank",
+      "expected_ids": [
+        "PBK-PROC-DEBUG-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "emergency just try something quickly to fix this",
+      "set": "methodology/rationalization"
+    },
+    {
+      "case_id": "v1:P25",
+      "expect": "rank",
+      "expected_ids": [
+        "TEC-PROC-WORKTREE-001",
+        "ENF-PROC-WORKTREE-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "create a git worktree for this feature branch",
+      "set": "methodology/direct"
+    },
+    {
+      "case_id": "v1:P26",
+      "expect": "rank",
+      "expected_ids": [
+        "TEC-PROC-WORKTREE-001",
+        "ENF-PROC-WORKTREE-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "skip the gitignore check I'm sure it's fine",
+      "set": "methodology/red_flag"
+    },
+    {
+      "case_id": "v1:P27",
+      "expect": "rank",
+      "expected_ids": [
+        "PBK-PROC-FINISH-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "tests pass what do I do to finish this branch",
+      "set": "methodology/direct"
+    },
+    {
+      "case_id": "v1:P28",
+      "expect": "rank",
+      "expected_ids": [
+        "PBK-PROC-FINISH-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "let me offer the user a custom merge workflow instead of the standard options",
+      "set": "methodology/anti_pattern"
+    },
+    {
+      "case_id": "v1:P29",
+      "expect": "rank",
+      "expected_ids": [
+        "PBK-PROC-REVREQ-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "the task is done should I request a code review",
+      "set": "methodology/direct"
+    },
+    {
+      "case_id": "v1:P30",
+      "expect": "rank",
+      "expected_ids": [
+        "PBK-PROC-REVREQ-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "dispatch the code reviewer subagent with the git SHA",
+      "set": "methodology/direct"
+    },
+    {
+      "case_id": "v1:P31",
+      "expect": "rank",
+      "expected_ids": [
+        "FRB-COMMS-001",
+        "SKL-PROC-REVRECV-001",
+        "ENF-COMMS-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "you're absolutely right great point let me implement that",
+      "set": "methodology/forbidden"
+    },
+    {
+      "case_id": "v1:P32",
+      "expect": "rank",
+      "expected_ids": [
+        "SKL-PROC-REVRECV-001",
+        "ENF-COMMS-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "external reviewer is authoritative just implement what they said",
+      "set": "methodology/rationalization"
+    },
+    {
+      "case_id": "v1:P33",
+      "expect": "rank",
+      "expected_ids": [
+        "FRB-COMMS-001",
+        "SKL-PROC-REVRECV-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "thanks for the excellent feedback",
+      "set": "methodology/forbidden"
+    },
+    {
+      "case_id": "v1:P34",
+      "expect": "rank",
+      "expected_ids": [
+        "SKL-PROC-PARALLEL-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "can I run these independent investigations in parallel",
+      "set": "methodology/direct"
+    },
+    {
+      "case_id": "v1:P35",
+      "expect": "rank",
+      "expected_ids": [
+        "ANT-PROC-PARALLEL-001",
+        "SKL-PROC-PARALLEL-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "one agent to fix all the failing tests",
+      "set": "methodology/anti_pattern"
+    },
+    {
+      "case_id": "v1:P36",
+      "expect": "rank",
+      "expected_ids": [
+        "META-AUTH-001",
+        "PBK-PROC-TDD-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "I want to author a new skill for this project",
+      "set": "methodology/direct"
+    },
+    {
+      "case_id": "v1:P37",
+      "expect": "rank",
+      "expected_ids": [
+        "META-AUTH-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "I'll write the skill's description as a workflow summary",
+      "set": "methodology/rationalization"
+    },
+    {
+      "case_id": "v1:P38",
+      "expect": "rank",
+      "expected_ids": [
+        "ANT-PROC-TDD-005",
+        "PBK-PROC-TDD-001",
+        "PBK-PROC-DEBUG-001",
+        "ENF-PROC-TDD-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "I'll write the test after I confirm the fix works",
+      "set": "methodology/cross_skill"
+    },
+    {
+      "case_id": "v1:P39",
+      "expect": "rank",
+      "expected_ids": [
+        "SKL-PROC-BRAIN-001",
+        "SKL-PROC-PLAN-001",
+        "ENF-PROC-BRAIN-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "this simple task doesn't need a plan or a brainstorm",
+      "set": "methodology/cross_skill"
+    },
+    {
+      "case_id": "v1:P40",
+      "expect": "rank",
+      "expected_ids": [
+        "ANT-PROC-VERIFY-001",
+        "SKL-PROC-VERIFY-001",
+        "PBK-PROC-SDD-001"
+      ],
+      "expected_ids_in_corpus": true,
+      "query": "the subagent said it's done so I can mark complete",
+      "set": "methodology/red_flag"
+    },
+    {
+      "case_id": "v1:D1",
+      "expect": "document",
+      "expected_ids": [
+        "docs/adr/ADR-live-reload.md"
+      ],
+      "note": "depends on V1 docs corpus at baseline",
+      "query": "How does the daemon rebuild only the indexes that changed after the graph is edited?",
+      "set": "documents"
+    },
+    {
+      "case_id": "v1:D2",
+      "expect": "document",
+      "expected_ids": [
+        "docs/adr/ADR-ranked-header-fields.md"
+      ],
+      "note": "depends on V1 docs corpus at baseline",
+      "query": "Why does the ranked rule header show severity but drop the domain field?",
+      "set": "documents"
+    },
+    {
+      "case_id": "v1:D3",
+      "expect": "document",
+      "expected_ids": [
+        "docs/adr/ADR-decision-recall.md"
+      ],
+      "note": "depends on V1 docs corpus at baseline",
+      "query": "How are recalled decisions ranked against the current prompt and what is the score floor?",
+      "set": "documents"
+    },
+    {
+      "case_id": "v1:D4",
+      "expect": "document",
+      "expected_ids": [
+        "docs/adr/ADR-trust-records.md"
+      ],
+      "note": "depends on V1 docs corpus at baseline",
+      "query": "Where is the person who approved a rule recorded, and why is identity kept off the rule node?",
+      "set": "documents"
+    },
+    {
+      "case_id": "v1:D5",
+      "expect": "document",
+      "expected_ids": [
+        "docs/adr/ADR-state-root.md"
+      ],
+      "note": "depends on V1 docs corpus at baseline",
+      "query": "Where does Writ keep its durable state instead of inside the install directory?",
+      "set": "documents"
+    },
+    {
+      "case_id": "v1:D6",
+      "expect": "document",
+      "expected_ids": [
+        "docs/adr/ADR-test-graph-isolation.md"
+      ],
+      "note": "depends on V1 docs corpus at baseline",
+      "query": "Why does the test suite use its own Neo4j instance on a different bolt port?",
+      "set": "documents"
+    },
+    {
+      "case_id": "v1:D7",
+      "expect": "document",
+      "expected_ids": [
+        "docs/adr/ADR-tool-failure-budget.md"
+      ],
+      "note": "depends on V1 docs corpus at baseline",
+      "query": "After how many consecutive failures of the same tool is the agent refused?",
+      "set": "documents"
+    },
+    {
+      "case_id": "v1:D8",
+      "expect": "document",
+      "expected_ids": [
+        "docs/adr/ADR-project-write-boundary.md"
+      ],
+      "note": "depends on V1 docs corpus at baseline",
+      "query": "Which paths may an approved plan authorize writes to besides its own project?",
+      "set": "documents"
+    },
+    {
+      "case_id": "v1:D9",
+      "expect": "document",
+      "expected_ids": [
+        "docs/adr/ADR-orchestrator-injection-channels.md"
+      ],
+      "note": "depends on V1 docs corpus at baseline",
+      "query": "Which injection channels does an orchestrator master keep and how is one turned off?",
+      "set": "documents"
+    },
+    {
+      "case_id": "v1:D10",
+      "expect": "document",
+      "expected_ids": [
+        "docs/adr/ADR-daemon-leak-guard.md"
+      ],
+      "note": "depends on V1 docs corpus at baseline",
+      "query": "How do we catch live daemon processes that the test suite leaked onto the machine?",
+      "set": "documents"
+    },
+    {
+      "case_id": "v1:D11",
+      "expect": "document",
+      "expected_ids": [
+        "docs/adr/ADR-prompt-injection-split.md"
+      ],
+      "note": "depends on V1 docs corpus at baseline",
+      "query": "Why was the per-prompt injection split into separate hooks under a character ceiling?",
+      "set": "documents"
+    },
+    {
+      "case_id": "v1:D12",
+      "expect": "document",
+      "expected_ids": [
+        "docs/adr/ADR-bash-control-operator-tokenizer.md"
+      ],
+      "note": "depends on V1 docs corpus at baseline",
+      "query": "Why is an ampersand not always a control operator when splitting a bash command?",
+      "set": "documents"
+    }
+  ],
+  "description": "V1 retrieval golden sets at the pinned baseline, for M7 quality comparison. Generated.",
+  "lineage": [
+    {
+      "path": "tests/fixtures/ground_truth_queries.json",
+      "set": "rules",
+      "sha256": "bbe7d61d692d5014412c2112f79ae5cbc8d9aac06f670506fe398ed6d3972017"
+    },
+    {
+      "path": "tests/fixtures/ground_truth_negatives.json",
+      "set": "abstain",
+      "sha256": "02e8606577ab9b49e77c46a658f62c4c9e508144eec66d0295d5591451a02bba"
+    },
+    {
+      "path": "tests/fixtures/ground_truth_proc.json",
+      "set": "methodology",
+      "sha256": "8a24f694cda95a715f9fec0205322aa8ec9afd3139bcadc939f7e2c6fe757b72"
+    },
+    {
+      "path": "tests/fixtures/document_queries.json",
+      "set": "documents",
+      "sha256": "f548a5fbc37c26712e29400c915ffcaf58762b3d504d82a3f3fd56b12480cb32"
+    }
+  ]
+}

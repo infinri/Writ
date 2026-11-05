@@ -117,3 +117,10 @@ class TestBaselineArtifacts:
         assert len(rule_rows) == 288
         assert sum(r["mandatory"] == "true" for r in rule_rows) == 32
         assert all(r["review_status"] == "automated_first_pass" for r in rule_rows)
+
+    def test_golden_retrieval_export_preserves_v1_sets(self):
+        from writ_m0.audit import golden
+        cases = golden.build()["cases"]
+        by_expect = {k: sum(1 for c in cases if c["expect"] == k) for k in ("rank", "abstain", "document")}
+        assert by_expect == {"rank": 193 + 40, "abstain": 20, "document": 12}
+        assert all(c["expected_ids_in_corpus"] for c in cases if c["expect"] == "rank")

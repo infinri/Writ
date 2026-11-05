@@ -71,3 +71,14 @@ Pre-effect registrations that consult the daemon default to allow when it is unr
 | isolation | 22 |
 | path_safety | 9 |
 | retrieval | 30 |
+
+## Retrieval golden sets ([JSON](v1-golden-retrieval.json))
+
+| Expectation | Cases |
+|---|---|
+| abstain | 20 |
+| document | 12 |
+| rank | 233 |
+
+- Ranked cases whose expected ids are absent from the corpus: 0
+- Document cases target V1 docs removed on this branch; they need the baseline docs corpus.
