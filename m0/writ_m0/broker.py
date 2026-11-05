@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS grants (
   grant_id TEXT PRIMARY KEY, body TEXT NOT NULL, uses INTEGER NOT NULL, max_uses INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS receipts (
   tenant_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, action_digest TEXT NOT NULL,
+  request_fingerprint TEXT NOT NULL, grant_id TEXT,
   attempt_id TEXT NOT NULL, status TEXT NOT NULL, body TEXT NOT NULL,
   PRIMARY KEY (tenant_id, idempotency_key));
 CREATE TABLE IF NOT EXISTS consumed_permits (
@@ -262,18 +263,24 @@ class Broker:
 
         tenant, key, digest = request["tenant_id"], request["idempotency_key"], request["action"]["action_digest"]
         with self._ledger.transaction() as tx:
-            existing = tx.execute("SELECT action_digest, body FROM receipts WHERE tenant_id=? AND idempotency_key=?",
-                                  (tenant, key)).fetchone()
+            fingerprint = request_fingerprint(request)
+            # The grant that actually authorizes this execution; ignored for allow decisions.
+            effective_grant = grant_id if status == "require_approval" else None
+            existing = tx.execute("SELECT request_fingerprint, grant_id, body FROM receipts "
+                                  "WHERE tenant_id=? AND idempotency_key=?", (tenant, key)).fetchone()
             if existing:
-                if existing[0] != digest:
+                # SR-11: the original receipt belongs only to the identical request under the
+                # same grant; anything else reusing the key is a conflict, not a success.
+                if (existing[0], existing[1]) != (fingerprint, effective_grant):
                     raise BrokerRefusal("IDEMPOTENCY_CONFLICT", decision)
-                return json.loads(existing[1])
+                return json.loads(existing[2])
             if status == "require_approval":
                 self._consume_grant(tx, grant_id, request, decision, now)
             attempt_id = "attempt:" + uuid.uuid4().hex
             receipt = self._receipt(request, decision, attempt_id, "reserved", now)
-            tx.execute("INSERT INTO receipts VALUES (?, ?, ?, ?, ?, ?)",
-                       (tenant, key, digest, attempt_id, "reserved", json.dumps(receipt)))
+            tx.execute("INSERT INTO receipts VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                       (tenant, key, digest, fingerprint, effective_grant,
+                        attempt_id, "reserved", json.dumps(receipt)))
 
         permit = self._permit(request, decision, grant_id, now)
         self._update(receipt, "dispatched", now)
@@ -354,6 +361,7 @@ class Broker:
             "decision_id": decision["decision_id"],
             "idempotency_key": request["idempotency_key"],
             "action_digest": request["action"]["action_digest"],
+            "request_fingerprint": request_fingerprint(request),
             "status": status,
             "resource_id": request["action"]["resource"]["canonical_resource_id"],
             "external_operation_id": None,

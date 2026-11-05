@@ -433,3 +433,39 @@ class TestPermitBindsWholeRequest:
         assert adapter.applied == []
         adapter.apply(permit, base_request)  # the legitimate request still succeeds
         assert adapter.applied == [base_request["action"]["action_digest"]]
+
+
+class TestIdempotentReplayBinding:
+    """SR-11: a duplicate returns the original receipt only for the same request and grant."""
+
+    def test_other_principal_with_same_key_and_digest_refused(self, env, base_request):
+        env["execute"](base_request, env["effect"], NOW)
+        other = merge_patch(base_request, {"principal": {"id": "agent:other-session"}, "session_id": "session-2"})
+        with pytest.raises(b.BrokerRefusal) as info:
+            env["execute"](other, env["effect"], NOW)
+        assert info.value.code == "IDEMPOTENCY_CONFLICT"
+        assert len(env["effect"].applied) == 1
+
+    def test_duplicate_with_unrelated_grant_refused(self, env, base_request):
+        req = merge_patch(base_request, PUBLISH)
+        grant = approve(env, req)
+        env["execute"](req, env["effect"], NOW, grant["grant_id"])
+        with pytest.raises(b.BrokerRefusal) as info:
+            env["execute"](req, env["effect"], NOW, "grant:unrelated")
+        assert info.value.code == "IDEMPOTENCY_CONFLICT"
+
+    def test_identical_retry_with_same_grant_returns_original_without_reuse(self, env, base_request):
+        req = merge_patch(base_request, PUBLISH)
+        grant = approve(env, req)
+        first = env["execute"](req, env["effect"], NOW, grant["grant_id"])
+        assert env["execute"](req, env["effect"], NOW, grant["grant_id"]) == first
+        assert len(env["effect"].applied) == 1
+
+    def test_receipt_records_the_request_fingerprint(self, env, base_request):
+        receipt = env["execute"](base_request, env["effect"], NOW)
+        assert receipt["request_fingerprint"] == b.request_fingerprint(base_request)
+
+    def test_identical_allowed_retry_with_ignored_grant_id_returns_original(self, env, base_request):
+        first = env["execute"](base_request, env["effect"], NOW, "grant:irrelevant")
+        assert env["execute"](base_request, env["effect"], NOW, "grant:irrelevant") == first
+        assert len(env["effect"].applied) == 1

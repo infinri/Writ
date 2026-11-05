@@ -12,6 +12,7 @@
     "decision_id",
     "idempotency_key",
     "action_digest",
+    "request_fingerprint",
     "status",
     "observed_at"
   ],
@@ -42,6 +43,11 @@
     "action_digest": {
       "type": "string",
       "minLength": 16
+    },
+    "request_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Canonical digest of the complete ActionRequest this receipt is for; an idempotent replay returns the receipt only for the same fingerprint and grant"
     },
     "status": {
       "enum": [
