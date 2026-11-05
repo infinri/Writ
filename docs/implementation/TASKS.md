@@ -61,3 +61,16 @@ Source checklists: [M0-START-HERE](M0-START-HERE.md), [master plan](MASTER-IMPLE
 | M0-05a | Independent human review of golden decision expectations and broker scenarios | P0 | M0-03b | IN REVIEW | A reviewer other than the author signs off each high-risk case in `m0-golden.json` or files corrections | testing doc "independent reviewers own oracle decisions" | n/a | package `docs/audit/m0/GOLDEN-DECISION-REVIEW.md`; all 24 cases PENDING INDEPENDENT REVIEW; awaiting external reviewer named by user |
 | M0-05b | Push branch and confirm both v2 CI jobs green | P0 | M0-00c | DONE | GitHub Actions run URL recorded in TEST-EVIDENCE | M0 first PR DoD | CI | pushed `487b95d`; run https://github.com/infinri/Writ/actions/runs/42094649411 both jobs success (E-003) |
 | M0-05c | M0 go/no-go record | P0 | all P0 above | NOT STARTED | WORK-STATE lists every M0 checklist item with evidence or explicit gap; user decision recorded | master plan section 10 | n/a | |
+
+## M0 security review priorities (from the user, 2026-11-05)
+
+M0 is **not complete** until these are reviewed and resolved or explicitly risk-accepted, together with M0-01d, M0-01e, M0-05a and M0-05c. No code changes for these until the independent reviewer's findings are in.
+
+| ID | Issue | Pri | Deps | Status | Acceptance criteria | Refs | Tests | Evidence |
+|---|---|---|---|---|---|---|---|---|
+| SR-01 | Host identity issuer authenticity and signature verification: kernel trusts adapter-set `verified_by`; proofs are verified only in the host adapter | P0 | M0-05a | NOT STARTED | Reviewer decides where T1 is enforced; if the kernel must verify, add PrincipalProof verification plus forged-issuer negative tests | INV-05, T1, golden case 10 | negative tests | |
+| SR-02 | Approval grants do not bind `requested_capabilities` | P0 | M0-05a | NOT STARTED | Grant and approval request id bind the full capability set, or reviewer records why not; swap test added | INV-06, INV-23, golden case 20 | swap test | |
+| SR-03 | Request `deadline_at` is never checked | P0 | M0-05a | NOT STARTED | Expired requests refused at kernel or adapter per reviewer decision; golden case added | INV-15, INV-18 | golden case | |
+| SR-04 | Parent/subagent approval isolation (D-009 divergence from V1) | P0 | M0-05a | NOT STARTED | Reviewer confirms no inheritance or specifies a delegation contract | INV-06, INV-19 | `test_subagent_does_not_inherit_parent_grant` | |
+| SR-05 | Project-level evidence isolation: SourceCatalog and Evidence are tenant-scoped only | P0 | M0-05a | NOT STARTED | Evidence and catalog carry project scope; cross-project negative test | INV-10, P-08 | negative test | |
+| SR-06 | Fail-closed behavior when Claude Code hooks crash (host treats non-2 exits as non-blocking) | P0 | M0-01e | NOT STARTED | Isolated live-host test of crash, timeout and malformed output; adapter design that turns internal errors into explicit deny | INV-15, threat T-13, `UNMEDIATED-TOOLS.md` | live host test | |

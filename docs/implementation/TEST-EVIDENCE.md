@@ -35,7 +35,14 @@ Only results actually executed are recorded under **Executed**. Planned verifica
 - **Revision:** working tree on `cd76fdd`, committed in the M0-01f commit (see `git log`)
 - **Red first:** `test_grant_missing_a_binding_field_is_not_honored` failed 4/4 with `KeyError` before the fix (no effect applied).
 - **After fix:** `cd m0 && .venv/bin/python -m pytest` 223 passed, 0 failed (202 before plus 21 in `test_v1_regressions.py`). Audit check current.
-- **Not run in CI yet:** commits after `487b95d` are local.
+- **CI:** see E-005.
+
+### E-005: CI on the review package and regression port
+
+- **Revision:** `38ccbf6b36d5913cc4514374d6dfb4bd5094ca29`
+- **Run:** https://github.com/infinri/Writ/actions/runs/42098268490
+- **Result:** both jobs success. M0 tests 223 passed in 6.84s (matches local E-004; count includes the 21 tests in `test_v1_regressions.py`). Audit check: 8 files current. Docs check: 47 Markdown, 15 HTML, 17 schemas.
+- **Unrelated:** Pages publish run https://github.com/infinri/Writ/actions/runs/42098268329 failed with the same environment protection rule as E-003.
 
 ## Not yet executed
 

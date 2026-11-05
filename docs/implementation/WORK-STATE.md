@@ -1,6 +1,6 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-05 · **Branch:** v2/architecture-rebuild (pushed through `487b95d`; later commits local) · **Milestone:** M0
+**Last updated:** 2026-11-05 · **Branch:** v2/architecture-rebuild (pushed through `38ccbf6`) · **Milestone:** M0
 
 ## Current
 
@@ -25,7 +25,6 @@
 ## Known blockers
 
 - Rust and Go toolchains are not installed; M1 prototypes cannot be built here yet.
-- Commits after `487b95d` not yet pushed or run in CI (awaiting user approval to push).
 - GitHub Pages publish for this branch is blocked by repository environment protection (pre-existing).
 
 ## Outstanding risks and defects
@@ -40,8 +39,8 @@
 
 ## Last tests
 
-Local E-004: 223 passed, 0 failed. CI E-003 (`487b95d`): 201 passed, both jobs success.
+CI E-005 (`38ccbf6`): 223 passed, audit and docs checks pass (run 42098268490).
 
 ## Next exact action
 
-Wait for the independent reviewer's verdicts on `GOLDEN-DECISION-REVIEW.md`; apply only reviewer-recorded corrections. Ask the user to approve pushing `cd76fdd` and `5e011c9` (and the state commit) to run CI. Remaining M0 items: M0-01d rule semantic review, M0-01e live-host failure posture, M0-05a review, M0-05c go/no-go. Do not start M1.
+Independent review of the golden decisions and their implementation, with security priorities SR-01 to SR-06 (TASKS). Apply only reviewer-recorded corrections; leave all 24 cases PENDING INDEPENDENT REVIEW until then. M0 is NOT complete: SR-01..06, M0-01d, M0-01e, M0-05a and M0-05c remain. Do not start M1.

@@ -393,3 +393,14 @@ Expired `deadline_at`; empty-roles principal; admin-like role attempting to over
 | 22 | `attributes-cannot-grant` | PENDING INDEPENDENT REVIEW | | | |
 | 23 | `project-memory-write` | PENDING INDEPENDENT REVIEW | | | |
 | 24 | `workspace-outside-project-prefix-default-deny` | PENDING INDEPENDENT REVIEW | | | |
+
+## Security review priorities
+
+The project owner flagged these for the independent review (tracked as SR-01 to SR-06 in [TASKS](../../implementation/TASKS.md)). They are open questions, not resolved findings:
+
+1. Host identity issuer authenticity and signature verification (case 10).
+2. Approval grants not binding all requested capabilities (case 20).
+3. Unchecked request deadlines (`deadline_at`).
+4. Parent/subagent approval isolation ([D-009](../../implementation/DECISION-LOG.md); `test_v1_regressions.py::test_subagent_does_not_inherit_parent_grant`).
+5. Project-level evidence isolation ([V1-REGRESSION-PORT](V1-REGRESSION-PORT.md) gaps).
+6. Fail-closed behavior when Claude Code hooks crash ([UNMEDIATED-TOOLS](UNMEDIATED-TOOLS.md)).
