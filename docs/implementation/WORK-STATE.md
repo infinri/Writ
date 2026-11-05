@@ -1,12 +1,12 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-05 · **Branch:** v2/architecture-rebuild (local only, not pushed) · **Milestone:** M0
+**Last updated:** 2026-11-05 · **Branch:** v2/architecture-rebuild (pushed through `487b95d`; later commits local) · **Milestone:** M0
 
 ## Current
 
 - **Work packages:** A (baseline audit) automated parts done; B, C, D done in the Python reference harness; E specified.
-- **Active task:** none in progress. Remaining M0 work needs either a human reviewer (M0-01d, M0-05a), an isolated live host (M0-01e), more V1 mining (M0-01f) or a push (M0-05b).
-- **Last relevant commit:** the WP-D/E checkpoint (`git log -1`); previous `fd0ce8f`, `e8773ce`, `5791cb7`.
+- **Active task:** none in progress. M0-05a review package delivered (`docs/audit/m0/GOLDEN-DECISION-REVIEW.md`), all 24 cases PENDING INDEPENDENT REVIEW; M0-01f done.
+- **Last relevant commits:** `5e011c9` (V1 regression port), `cd76fdd` (review package); pushed head `487b95d`.
 
 ## Completed and verified (E-001, E-002)
 
@@ -20,11 +20,13 @@
 | Broker | SQLite ledger, atomic single-use grants, idempotency, HMAC permits, receipts and reconciliation |
 | Independence | Two host extractors, principal proofs, two stub providers, managed runner, pack registry, import-layer checks |
 | M1 prep | Parity suite spec, benchmark environment record |
+| Review and regressions | Golden review package (pending reviewer); 21 ported V1 regressions with provenance; GRANT_MALFORMED fix (D-009) |
 
 ## Known blockers
 
 - Rust and Go toolchains are not installed; M1 prototypes cannot be built here yet.
-- CI unverified until the branch is pushed (needs user approval).
+- Commits after `487b95d` not yet pushed or run in CI (awaiting user approval to push).
+- GitHub Pages publish for this branch is blocked by repository environment protection (pre-existing).
 
 ## Outstanding risks and defects
 
@@ -38,8 +40,8 @@
 
 ## Last tests
 
-E-002: 201 passed, 0 failed; audit check current; docs check OK.
+Local E-004: 223 passed, 0 failed. CI E-003 (`487b95d`): 201 passed, both jobs success.
 
 ## Next exact action
 
-Ask the user to approve pushing `v2/architecture-rebuild` (M0-05b) and to name a reviewer for M0-05a. Without that, continue M0-01f: mine `tests/test_approval_*.py`, `tests/test_cross_project_retrieval_isolation.py` and `tests/test_gates_fail_open.py` at `ebdafe5` into V2 golden decision or broker cases with source lineage.
+Wait for the independent reviewer's verdicts on `GOLDEN-DECISION-REVIEW.md`; apply only reviewer-recorded corrections. Ask the user to approve pushing `cd76fdd` and `5e011c9` (and the state commit) to run CI. Remaining M0 items: M0-01d rule semantic review, M0-01e live-host failure posture, M0-05a review, M0-05c go/no-go. Do not start M1.
