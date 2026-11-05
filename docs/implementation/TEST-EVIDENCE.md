@@ -96,6 +96,14 @@ Only results actually executed are recorded under **Executed**. Planned verifica
 - **Command:** `cd m0 && .venv/bin/python -m pytest` 281 passed, 0 failed (adds `TestRuleReviewBatches`: 288 rules partitioned once across 15 batches, all reviewer columns blank). Audit check current; docs check OK. `python -m writ_m0.audit.rule_review` refused a second run (exit 1) as designed.
 - **No gate executed:** golden human review, rule review and live-host trials have not been performed.
 
+### E-012: CI on the gate-preparation commits
+
+- **Revision:** `6ab870d24f5b75fe83ddbc701ddb9fc000b88f3c` (`v2/architecture-rebuild`)
+- **Run:** https://github.com/infinri/Writ/actions/runs/42129295198
+- **Result:** both jobs success. M0 tests 281 passed (matches local E-011). Audit check 8 files current. Docs and schema check passed (70 Markdown, 15 HTML).
+- **Push note:** four push attempts from this workstation were rejected with `remote: fatal error in commit_refs`; the branch was later found at `6ab870d` on GitHub. How the update landed was not determined.
+- **Unrelated:** the Pages publish run on the same push (42129294844) failed, as on every earlier push (environment protection rule).
+
 ## Not yet executed
 
 - Hook failure posture on a live host (M0-01e); rule semantic review (M0-01d).

@@ -1,12 +1,12 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-05 · **Branch:** v2/architecture-rebuild (pushed through `e086341`; later commits local, push needs authorization) · **Milestone:** M0, **NOT complete, recommendation NO-GO**; M1 blocked
+**Last updated:** 2026-11-05 · **Branch:** v2/architecture-rebuild (pushed through `6ab870d`; CI run 42129295198 green) · **Milestone:** M0, **NOT complete, recommendation NO-GO**; M1 blocked
 
 ## Current
 
 - **Phase:** closing M0 acceptance gates. Reference harness review complete for now (review 4); no implementation phase open. Further code changes only if acceptance-test evidence requires them.
 - **Active task:** none in progress; gate packages prepared and awaiting people or a disposable host.
-- **Local commits since `e086341`:** `b8b7e1c` review 4 record, `a4a7103` golden worksheet, `703a1c1` rule review batches, `c3b37af` live-host procedure, plus the commit following this file (go/no-go checklist and tracking).
+- **Gate-preparation commits (pushed):** `b8b7e1c` review 4 record, `a4a7103` golden worksheet, `703a1c1` rule review batches, `c3b37af` live-host procedure, `6ab870d` go/no-go checklist and tracking; plus a later tracking-reconciliation commit.
 
 ## Security findings
 
@@ -28,14 +28,13 @@
 ## Known blockers
 
 - Gates G1-G3 need human reviewers or a disposable host; none can be completed by Claude alone.
-- Local commits need push authorization.
 - Rust and Go toolchains absent; M1 blocked by instruction.
 - Pages deploy blocked by repository environment protection (pre-existing).
 
 ## Last tests
 
-Local: 281 passed (adds the rule-review batch partition test); audit and docs checks pass. Last CI: run 42126984730 at `e086341`, 280 passed.
+CI E-012: run [42129295198](https://github.com/infinri/Writ/actions/runs/42129295198) at `6ab870d`, 281 passed; audit 8 files current; docs and schema checks pass.
 
 ## Next exact action
 
-Request push authorization for the local gate-preparation commits. Then wait for: a named reviewer for G1, a reviewer for G2, and an operator plus disposable host for G3. Transcribe completed, attributable verdicts only when asked. Do not fill any verdict, and do not start M1.
+Wait for: a named reviewer for G1, a reviewer for G2, and an operator plus disposable host for G3. Transcribe completed, attributable verdicts only when asked. Do not fill any verdict, and do not start M1.
