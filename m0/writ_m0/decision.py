@@ -72,8 +72,7 @@ def _is_canonical_id(resource_id: str) -> bool:
     if not sep or not scheme or not rest:
         return False
     segments = rest.split("/")
-    return len(segments) >= 3 and all(seg not in ("", ".", "..") for seg in segments[:-1]) \
-        and segments[-1] not in (".", "..") and "\\" not in rest
+    return len(segments) >= 3 and all(seg not in ("", ".", "..") for seg in segments) and "\\" not in rest
 
 
 def _in_scope(resource_id: str, tenant_id: str, project_id: str) -> bool:

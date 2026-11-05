@@ -119,3 +119,19 @@ def test_golden_cases_carry_review_status_and_none_is_self_approved():
         assert status is not None, case["case_id"]
         if status != "PENDING INDEPENDENT REVIEW":
             assert case.get("reviewer") and case.get("reviewed_at"), case["case_id"]
+
+
+class TestCanonicalResourceIds:
+    """SR-08: D-008 says canonical ids have no empty segments, including the last one."""
+
+    @pytest.mark.parametrize("resource", [
+        "workspace:fixture-tenant/fixture-project/",
+        "workspace:fixture-tenant/fixture-project//",
+        "workspace:fixture-tenant/fixture-project/src//app.py",
+        "workspace:fixture-tenant/fixture-project/src/",
+        "memory:fixture-tenant/fixture-project/",
+    ])
+    def test_empty_segments_anywhere_are_not_canonical(self, bundle, base_request, resource):
+        req = merge_patch(base_request, {"action": {"resource": {"canonical_resource_id": resource}}})
+        result = decision.decide(req, bundle, STATE, NOW)
+        assert (result["status"], result["reason_code"]) == ("invalid", "RESOURCE_NOT_CANONICAL")

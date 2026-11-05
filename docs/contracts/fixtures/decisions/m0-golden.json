@@ -474,6 +474,25 @@
       },
       "rationale": "prefix lookalike project is out of scope",
       "review_status": "PENDING INDEPENDENT REVIEW"
+    },
+    {
+      "case_id": "resource-trailing-empty-segment",
+      "patch": {
+        "action": {
+          "kind": "memory.write",
+          "resource": {
+            "canonical_resource_id": "memory:fixture-tenant/fixture-project/"
+          }
+        }
+      },
+      "bundle_loaded": true,
+      "expected": {
+        "status": "invalid",
+        "reason_code": "RESOURCE_NOT_CANONICAL",
+        "matched_rule_ids": []
+      },
+      "rationale": "SR-08: a trailing empty segment names no resource; without the check it would match the memory permit prefix and allow",
+      "review_status": "PENDING INDEPENDENT REVIEW"
     }
   ],
   "review": {
