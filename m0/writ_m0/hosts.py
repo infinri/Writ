@@ -2,6 +2,8 @@
 
 A HostAdapter turns a host-specific tool event into a normalized ActionRequest:
 
+- Output is a SealedRequest: the broker refuses requests not sealed by a
+  registered adapter, so the kernel's trust in `verified_by` holds (SR-01).
 - Identity comes only from a PrincipalProof signed by a trusted issuer and
   bound to the event's session. Principal, tenant or approval claims inside
   the tool input are ignored (T1, INV-02, INV-19).
@@ -29,6 +31,7 @@ from urllib.parse import urlsplit
 
 from . import canonical, contracts
 from .decision import iso
+from .ingress import IngressSealer, SealedRequest
 
 UNMAPPED_KIND = "host.unmapped"
 
@@ -113,16 +116,20 @@ ALT_HOST: Extractor = _alt_host
 
 
 class HostAdapter:
-    def __init__(self, *, name: str, keyring: IssuerKeyring, workspace: Path, project_id: str,
-                 extractor: Extractor):
+    def __init__(self, *, name: str, keyring: IssuerKeyring, sealer: IngressSealer, workspace: Path,
+                 project_id: str, extractor: Extractor):
+        if sealer.adapter_id != keyring.issuer:
+            raise ValueError("adapter may only seal identities its own issuer verifies")
         self.name = name
         self._keyring = keyring
+        self._sealer = sealer
         self._workspace = workspace.resolve()
         self._project_id = project_id
         self._extract = extractor
 
     def normalize(self, *, tool: str, args: dict, call_id: str, session_id: str, proof: dict,
-                  now: datetime) -> dict:
+                  now: datetime) -> SealedRequest:
+        """Verify identity, normalize, then seal for the broker (SR-01)."""
         verified = self._keyring.verify(proof, session_id, now)
         tenant = verified["tenant_id"]
         op = self._extract(tool, args)
@@ -150,7 +157,7 @@ class HostAdapter:
                 "requested_capabilities": [],
             },
         }
-        return contracts.validate("action-request", request)
+        return self._sealer.seal(contracts.validate("action-request", request))
 
     def _scope(self, scheme: str, tenant: str, suffix: str) -> str:
         return f"{scheme}:{tenant}/{self._project_id}/{suffix}"

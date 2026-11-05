@@ -5,10 +5,14 @@ from datetime import datetime, timezone
 
 import pytest
 
-from writ_m0 import contracts, decision
+from writ_m0 import contracts, decision, ingress
 
 NOW = datetime(2026, 11, 5, 12, 0, tzinfo=timezone.utc)
 STATE = decision.KernelState(revision=5)
+# Test-only ingress key for the fixture adapter identity (SR-01).
+INGRESS_ADAPTER = "writ-host-adapter:fixture"
+INGRESS_KEY = b"fixture-ingress-key"
+SEALER = ingress.IngressSealer(INGRESS_ADAPTER, INGRESS_KEY)
 
 
 def merge_patch(target, patch):

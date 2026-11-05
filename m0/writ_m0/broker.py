@@ -2,6 +2,7 @@
 
 The broker is the only path to a governed effect:
 
+0. It accepts only requests sealed by a registered trusted adapter (SR-01).
 1. It re-runs the kernel decision at use time with the currently loaded policy
    and state, so a stale preview decision is never honored (T4).
 2. REQUIRE_APPROVAL proceeds only with a ledger-recorded grant whose binding
@@ -31,6 +32,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from . import canonical, contracts
+from .ingress import IngressRejected, IngressVerifier, SealedRequest
 from .decision import KernelState, LoadedBundle, capability_set, decide, iso, parse_time
 
 PERMIT_TTL = timedelta(seconds=30)
@@ -222,15 +224,23 @@ class PermitSigner:
 
 class Broker:
     def __init__(self, *, ledger: Ledger, bundle_provider: Callable[[], LoadedBundle | None],
-                 state_provider: Callable[[], KernelState], signer: PermitSigner,
+                 state_provider: Callable[[], KernelState], signer: PermitSigner, ingress: IngressVerifier,
                  principal_id: str = "writ-broker:local"):
         self._ledger = ledger
+        self._ingress = ingress
         self._bundle = bundle_provider
         self._state = state_provider
         self._signer = signer
         self._principal_id = principal_id
 
-    def execute(self, request: dict, effect: EffectAdapter, now: datetime, grant_id: str | None = None) -> dict:
+    def execute(self, sealed: SealedRequest, effect: EffectAdapter, now: datetime,
+                grant_id: str | None = None) -> dict:
+        # SR-01: only requests sealed by a registered trusted adapter reach the kernel.
+        try:
+            request = self._ingress.verify(sealed)
+        except IngressRejected as exc:
+            self._ledger.audit("refused", {"reason": "INGRESS_UNAUTHENTICATED", "detail": str(exc)})
+            raise BrokerRefusal("INGRESS_UNAUTHENTICATED") from None
         bundle = self._bundle()
         decision = decide(request, bundle, self._state(), now)
         status = decision["status"]

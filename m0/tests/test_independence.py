@@ -16,8 +16,8 @@ from pathlib import Path
 import pytest
 
 from writ_m0 import broker as b
-from writ_m0 import contracts, decision, hosts, packs, providers, runner
-from conftest import NOW, STATE
+from writ_m0 import contracts, decision, hosts, ingress, packs, providers, runner
+from conftest import INGRESS_ADAPTER, INGRESS_KEY, NOW, SEALER, STATE
 
 PKG = Path(__file__).resolve().parents[1] / "writ_m0"
 ISSUER = "writ-host-adapter:fixture"
@@ -33,10 +33,11 @@ def world(tmp_path, bundle):
                           session_id=SESSION, roles=["agent"], issued_at=NOW, expires_at=NOW + timedelta(hours=1))
     ledger = b.Ledger(tmp_path / "ledger.db")
     signer = b.PermitSigner(ledger)
-    brk = b.Broker(ledger=ledger, bundle_provider=lambda: bundle, state_provider=lambda: STATE, signer=signer)
+    brk = b.Broker(ledger=ledger, bundle_provider=lambda: bundle, state_provider=lambda: STATE, signer=signer,
+                   ingress=ingress.IngressVerifier({INGRESS_ADAPTER: INGRESS_KEY}))
 
     def adapter(name, extractor):
-        return hosts.HostAdapter(name=name, keyring=keyring, workspace=workspace,
+        return hosts.HostAdapter(name=name, keyring=keyring, sealer=SEALER, workspace=workspace,
                                  project_id="fixture-project", extractor=extractor)
 
     return {"workspace": workspace, "keyring": keyring, "proof": proof, "broker": brk, "ledger": ledger,
@@ -46,7 +47,7 @@ def world(tmp_path, bundle):
 
 def normalize(world, host, tool, args, call_id="c1", proof=None, session=SESSION):
     return world[host].normalize(tool=tool, args=args, call_id=call_id, session_id=session,
-                                 proof=proof or world["proof"], now=NOW)
+                                 proof=proof or world["proof"], now=NOW).request
 
 
 class TestHostNormalization:
@@ -242,7 +243,7 @@ class TestManagedRunner:
             class Spy:
                 def normalize(self, **kw):
                     r = normalizer.normalize(**kw)
-                    captured.append(decision.decide(r, world["bundle"], STATE, NOW))
+                    captured.append(decision.decide(r.request, world["bundle"], STATE, NOW))
                     return r
 
             runner.AgentRunner(adapter=adapter, normalizer=Spy(), broker=world["broker"], effect=world["effect"]).run(
@@ -354,18 +355,20 @@ sys.modules['writ_m0.providers'] = None
 sys.modules['writ_m0.runner'] = None
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from writ_m0 import broker, contracts, decision, hosts
+from writ_m0 import broker, contracts, decision, hosts, ingress
 now = datetime(2026, 11, 5, 12, tzinfo=timezone.utc)
 ws = Path({str(tmp_path)!r}) / 'ws'; ws.mkdir()
 kr = hosts.IssuerKeyring('{ISSUER}', b'k')
 proof = kr.issue(proof_id='p', tenant_id='fixture-tenant', principal_id='agent:a', session_id='s', roles=[],
                  issued_at=now, expires_at=now + timedelta(hours=1))
-host = hosts.HostAdapter(name='h', keyring=kr, workspace=ws, project_id='fixture-project', extractor=hosts.CLAUDE_LIKE)
+sealer = ingress.IngressSealer('{ISSUER}', b'ingress')
+host = hosts.HostAdapter(name='h', keyring=kr, sealer=sealer, workspace=ws, project_id='fixture-project', extractor=hosts.CLAUDE_LIKE)
 bundle = decision.load_bundle(contracts.load_fixture('policy/m0-reference.bundle.json'))
 ledger = broker.Ledger(ws / 'l.db')
 signer = broker.PermitSigner(ledger)
 brk = broker.Broker(ledger=ledger, bundle_provider=lambda: bundle,
-                    state_provider=lambda: decision.KernelState(5), signer=signer)
+                    state_provider=lambda: decision.KernelState(5), signer=signer,
+                    ingress=ingress.IngressVerifier({{'{ISSUER}': b'ingress'}}))
 req = host.normalize(tool='Write', args={{'file_path': 'a.txt', 'content': 'x'}}, call_id='c', session_id='s', proof=proof, now=now)
 print(brk.execute(req, broker.RecordingEffect(signer, lambda: now), now)['status'])
 """
@@ -373,3 +376,10 @@ print(brk.execute(req, broker.RecordingEffect(signer, lambda: now), now)['status
                              cwd=PKG.parent, check=False)
         assert out.returncode == 0, out.stderr
         assert out.stdout.strip() == "observed_success"
+
+
+def test_adapter_cannot_seal_for_a_different_issuer(tmp_path):
+    """SR-01: an adapter's ingress identity must equal the issuer whose proofs it verifies."""
+    with pytest.raises(ValueError):
+        hosts.HostAdapter(name="h", keyring=hosts.IssuerKeyring("writ-host-adapter:other", b"k"), sealer=SEALER,
+                          workspace=tmp_path, project_id="fixture-project", extractor=hosts.CLAUDE_LIKE)

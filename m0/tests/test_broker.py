@@ -7,8 +7,8 @@ from datetime import timedelta
 import pytest
 
 from writ_m0 import broker as b
-from writ_m0 import decision
-from conftest import NOW, STATE, merge_patch
+from writ_m0 import decision, ingress
+from conftest import INGRESS_ADAPTER, INGRESS_KEY, NOW, SEALER, STATE, merge_patch
 
 PUBLISH = {"action": {"kind": "repository.publish", "resource": {
     "canonical_resource_id": "repo:fixture-tenant/fixture-project/origin"}}}
@@ -20,12 +20,15 @@ def env(tmp_path, bundle):
     signer = b.PermitSigner(ledger)
     current = {"bundle": bundle}
     broker = b.Broker(ledger=ledger, bundle_provider=lambda: current["bundle"],
-                      state_provider=lambda: STATE, signer=signer)
+                      state_provider=lambda: STATE, signer=signer,
+                      ingress=ingress.IngressVerifier({INGRESS_ADAPTER: INGRESS_KEY}))
     channel = b.TrustedChannel("approval-ui:fixture", {"human:alice": "alice-secret"})
     approvals = b.ApprovalService(ledger, [channel])
     effect = b.RecordingEffect(signer, lambda: NOW)
     return {"ledger": ledger, "broker": broker, "channel": channel, "approvals": approvals,
-            "effect": effect, "current": current, "signer": signer}
+            "effect": effect, "current": current, "signer": signer,
+            # A trusted adapter seals what it normalized; tests stand in for that adapter.
+            "execute": lambda req, *a, **k: broker.execute(SEALER.seal(req), *a, **k)}
 
 
 def approve(env, request, **kw):
@@ -36,7 +39,7 @@ def approve(env, request, **kw):
 
 class TestAllowPath:
     def test_allowed_effect_produces_success_receipt(self, env, base_request):
-        receipt = env["broker"].execute(base_request, env["effect"], NOW)
+        receipt = env["execute"](base_request, env["effect"], NOW)
         assert receipt["status"] == "observed_success"
         assert env["effect"].applied == [base_request["action"]["action_digest"]]
 
@@ -45,7 +48,7 @@ class TestAllowPath:
             "canonical_resource_id": "workspace:fixture-tenant/fixture-project/secrets/key"}}})
         for _ in range(5):  # INV-03: retries do not soften a deny
             with pytest.raises(b.BrokerRefusal) as info:
-                env["broker"].execute(req, env["effect"], NOW)
+                env["execute"](req, env["effect"], NOW)
             assert info.value.code == "SECRETS_PATH_FORBIDDEN"
         assert env["effect"].applied == []
         assert env["ledger"].audit_kinds().count("refused") == 5
@@ -70,7 +73,7 @@ class TestEffectMediation:
                 captured["permit"] = permit
                 return super().apply(permit, request)
 
-        env["broker"].execute(base_request, Capture(env["signer"], lambda: NOW), NOW)
+        env["execute"](base_request, Capture(env["signer"], lambda: NOW), NOW)
         other = merge_patch(base_request, {"action": {"action_digest": "sha256:" + "c" * 64}})
         with pytest.raises(b.UnauthorizedEffect):
             env["effect"].apply(captured["permit"], other)
@@ -83,7 +86,7 @@ class TestEffectMediation:
                 captured["permit"] = permit
                 return "sha256:" + "0" * 64
 
-        env["broker"].execute(base_request, Capture(env["signer"], lambda: NOW), NOW)
+        env["execute"](base_request, Capture(env["signer"], lambda: NOW), NOW)
         late = b.RecordingEffect(env["signer"], lambda: NOW + b.PERMIT_TTL + timedelta(seconds=1))
         with pytest.raises(b.UnauthorizedEffect):
             late.apply(captured["permit"], base_request)
@@ -92,16 +95,16 @@ class TestEffectMediation:
 class TestApprovals:
     def test_require_approval_without_grant_refused(self, env, base_request):
         with pytest.raises(b.BrokerRefusal) as info:
-            env["broker"].execute(merge_patch(base_request, PUBLISH), env["effect"], NOW)
+            env["execute"](merge_patch(base_request, PUBLISH), env["effect"], NOW)
         assert info.value.code == "APPROVAL_REQUIRED"
 
     def test_authenticated_grant_allows_exactly_once(self, env, base_request):
         req = merge_patch(base_request, PUBLISH)
         grant = approve(env, req)
-        assert env["broker"].execute(req, env["effect"], NOW, grant["grant_id"])["status"] == "observed_success"
+        assert env["execute"](req, env["effect"], NOW, grant["grant_id"])["status"] == "observed_success"
         replay = merge_patch(req, {"idempotency_key": "idem-2", "request_id": "req-2"})
         with pytest.raises(b.BrokerRefusal) as info:
-            env["broker"].execute(replay, env["effect"], NOW, grant["grant_id"])
+            env["execute"](replay, env["effect"], NOW, grant["grant_id"])
         assert info.value.code == "GRANT_EXHAUSTED"
 
     @pytest.mark.parametrize("swap", [
@@ -113,7 +116,7 @@ class TestApprovals:
         req = merge_patch(base_request, PUBLISH)
         grant = approve(env, req)
         with pytest.raises(b.BrokerRefusal) as info:
-            env["broker"].execute(merge_patch(req, swap), env["effect"], NOW, grant["grant_id"])
+            env["execute"](merge_patch(req, swap), env["effect"], NOW, grant["grant_id"])
         assert info.value.code.startswith("GRANT_MISMATCH")
         assert env["effect"].applied == []
 
@@ -123,14 +126,14 @@ class TestApprovals:
         newer = dict(bundle.document, version="0.1.1")
         env["current"]["bundle"] = decision.load_bundle(newer)
         with pytest.raises(b.BrokerRefusal) as info:
-            env["broker"].execute(req, env["effect"], NOW, grant["grant_id"])
+            env["execute"](req, env["effect"], NOW, grant["grant_id"])
         assert "policy_bundle_sha" in info.value.code
 
     def test_expired_grant_refused(self, env, base_request):
         req = merge_patch(base_request, PUBLISH)
         grant = approve(env, req, ttl=timedelta(seconds=1))
         with pytest.raises(b.BrokerRefusal) as info:
-            env["broker"].execute(req, env["effect"], NOW + timedelta(seconds=2), grant["grant_id"])
+            env["execute"](req, env["effect"], NOW + timedelta(seconds=2), grant["grant_id"])
         assert info.value.code == "GRANT_EXPIRED"
 
     def test_denied_verdict_does_not_authorize(self, env, base_request):
@@ -139,18 +142,18 @@ class TestApprovals:
         human = env["channel"].authenticate("human:alice", "alice-secret")
         grant = env["approvals"].decide(request=req, decision=pending, human=human, approve=False, now=NOW)
         with pytest.raises(b.BrokerRefusal):
-            env["broker"].execute(req, env["effect"], NOW, grant["grant_id"])
+            env["execute"](req, env["effect"], NOW, grant["grant_id"])
 
     def test_grant_cannot_override_a_forbid(self, env, base_request):
         req = merge_patch(base_request, {"action": {"kind": "network.egress", "resource": {
             "canonical_resource_id": "net:fixture-tenant/fixture-project/example.org"}}})
         with pytest.raises(b.BrokerRefusal) as info:
-            env["broker"].execute(req, env["effect"], NOW, grant_id="grant:anything")
+            env["execute"](req, env["effect"], NOW, grant_id="grant:anything")
         assert info.value.code == "NETWORK_EGRESS_FORBIDDEN"
 
     def test_unknown_or_forged_grant_id_refused(self, env, base_request):
         with pytest.raises(b.BrokerRefusal) as info:
-            env["broker"].execute(merge_patch(base_request, PUBLISH), env["effect"], NOW, "grant:forged")
+            env["execute"](merge_patch(base_request, PUBLISH), env["effect"], NOW, "grant:forged")
         assert info.value.code == "GRANT_UNKNOWN"
 
     def test_wrong_credential_cannot_authenticate(self, env):
@@ -179,7 +182,7 @@ class TestApprovals:
         def attempt(i):
             barrier.wait()
             try:
-                r = env["broker"].execute(merge_patch(req, {"idempotency_key": f"k-{i}", "request_id": f"r-{i}"}),
+                r = env["execute"](merge_patch(req, {"idempotency_key": f"k-{i}", "request_id": f"r-{i}"}),
                                           env["effect"], NOW, grant["grant_id"])
                 outcomes.append(r["status"])
             except b.BrokerRefusal as exc:
@@ -197,16 +200,16 @@ class TestApprovals:
 
 class TestIdempotencyAndReceipts:
     def test_duplicate_key_same_digest_returns_original_without_reapplying(self, env, base_request):
-        first = env["broker"].execute(base_request, env["effect"], NOW)
-        second = env["broker"].execute(base_request, env["effect"], NOW)
+        first = env["execute"](base_request, env["effect"], NOW)
+        second = env["execute"](base_request, env["effect"], NOW)
         assert first == second
         assert len(env["effect"].applied) == 1
 
     def test_duplicate_key_different_digest_refused(self, env, base_request):
-        env["broker"].execute(base_request, env["effect"], NOW)
+        env["execute"](base_request, env["effect"], NOW)
         changed = merge_patch(base_request, {"action": {"action_digest": "sha256:" + "e" * 64}})
         with pytest.raises(b.BrokerRefusal) as info:
-            env["broker"].execute(changed, env["effect"], NOW)
+            env["execute"](changed, env["effect"], NOW)
         assert info.value.code == "IDEMPOTENCY_CONFLICT"
         assert len(env["effect"].applied) == 1
 
@@ -215,7 +218,7 @@ class TestIdempotencyAndReceipts:
 
         def attempt():
             barrier.wait()
-            results.append(env["broker"].execute(base_request, env["effect"], NOW)["attempt_id"])
+            results.append(env["execute"](base_request, env["effect"], NOW)["attempt_id"])
 
         threads = [threading.Thread(target=attempt) for _ in range(8)]
         for t in threads:
@@ -228,12 +231,12 @@ class TestIdempotencyAndReceipts:
     def test_crash_after_effect_leaves_reconcilable_receipt(self, env, base_request):
         env["effect"].crash_after_apply = True
         with pytest.raises(b.SimulatedCrash):
-            env["broker"].execute(base_request, env["effect"], NOW)
+            env["execute"](base_request, env["effect"], NOW)
         stranded = env["ledger"].receipt("fixture-tenant", base_request["idempotency_key"])
         assert stranded["status"] == "dispatched"
         env["effect"].crash_after_apply = False
         # A retry must not dispatch again while the outcome is unknown.
-        assert env["broker"].execute(base_request, env["effect"], NOW)["status"] == "dispatched"
+        assert env["execute"](base_request, env["effect"], NOW)["status"] == "dispatched"
         assert len(env["effect"].applied) == 1
         reconciled = env["broker"].reconcile(NOW)
         assert [r["status"] for r in reconciled] == ["unknown_reconcile"]
@@ -244,14 +247,14 @@ class TestIdempotencyAndReceipts:
                 super().apply(permit, request)
                 raise OSError("disk full")
 
-        receipt = env["broker"].execute(base_request, Failing(env["signer"], lambda: NOW), NOW)
+        receipt = env["execute"](base_request, Failing(env["signer"], lambda: NOW), NOW)
         assert receipt["status"] == "observed_failure"
         assert receipt["reconciliation_notes"] == "OSError"
 
     def test_unavailable_policy_fails_closed(self, env, base_request):
         env["current"]["bundle"] = None
         with pytest.raises(b.BrokerRefusal) as info:
-            env["broker"].execute(base_request, env["effect"], NOW)
+            env["execute"](base_request, env["effect"], NOW)
         assert info.value.code == "POLICY_UNAVAILABLE"
         assert env["effect"].applied == []
 
@@ -263,7 +266,7 @@ class TestDeadlinesAtUseTime:
         req = merge_patch(base_request, PUBLISH | {"deadline_at": "2026-11-05T12:01:00Z"})
         grant = approve(env, req)
         with pytest.raises(b.BrokerRefusal) as info:
-            env["broker"].execute(req, env["effect"], NOW + timedelta(minutes=2), grant["grant_id"])
+            env["execute"](req, env["effect"], NOW + timedelta(minutes=2), grant["grant_id"])
         assert info.value.code == "DEADLINE_EXCEEDED"
         assert env["effect"].applied == []
 
@@ -276,7 +279,7 @@ class TestDeadlinesAtUseTime:
                 return super().apply(permit, request)
 
         req = merge_patch(base_request, {"deadline_at": "2026-11-05T12:00:05Z"})
-        env["broker"].execute(req, Capture(env["signer"], lambda: NOW), NOW)
+        env["execute"](req, Capture(env["signer"], lambda: NOW), NOW)
         assert captured["permit"]["expires_at"] == "2026-11-05T12:00:05Z"
 
 
@@ -290,7 +293,7 @@ class TestApprovalBindsCapabilitySet:
                                          "action": {"requested_capabilities": ["process.execute"]}})
         assert decision.decide(widened, env["current"]["bundle"], STATE, NOW)["status"] == "require_approval"
         with pytest.raises(b.BrokerRefusal) as info:
-            env["broker"].execute(widened, env["effect"], NOW, grant["grant_id"])
+            env["execute"](widened, env["effect"], NOW, grant["grant_id"])
         assert info.value.code.startswith("GRANT_MISMATCH")
         assert env["effect"].applied == []
 
@@ -302,7 +305,7 @@ class TestApprovalBindsCapabilitySet:
         a = merge_patch(base_request, {"action": {"requested_capabilities": ["repository.publish", "process.execute"]}})
         c = merge_patch(base_request, {"action": {"requested_capabilities": ["process.execute", "repository.publish"]}})
         grant = approve(env, a)
-        assert env["broker"].execute(c, env["effect"], NOW, grant["grant_id"])["status"] == "observed_success"
+        assert env["execute"](c, env["effect"], NOW, grant["grant_id"])["status"] == "observed_success"
 
 
 class TestPermitReplay:
@@ -317,7 +320,7 @@ class TestPermitReplay:
                 return super().apply(permit, req)
 
         effect = Capture(env["signer"], lambda: NOW)
-        env["broker"].execute(request, effect, NOW)
+        env["execute"](request, effect, NOW)
         return captured["permit"], effect
 
     def test_direct_replay_at_same_adapter_refused(self, env, base_request):
@@ -353,3 +356,45 @@ class TestPermitReplay:
         for t in threads:
             t.join()
         assert outcomes.count("applied") == 0
+
+
+class TestAuthenticatedIngress:
+    """SR-01: the broker accepts only requests sealed by a registered trusted adapter."""
+
+    def test_unsealed_request_with_trusted_issuer_string_refused(self, env, base_request):
+        assert base_request["principal"]["verified_by"] == "writ-host-adapter:fixture"
+        for forged in (base_request, ingress.SealedRequest(base_request, "writ-host-adapter:fixture", "0" * 64)):
+            with pytest.raises(b.BrokerRefusal) as info:
+                env["broker"].execute(forged, env["effect"], NOW)
+            assert info.value.code == "INGRESS_UNAUTHENTICATED"
+        assert env["effect"].applied == []
+
+    @pytest.mark.parametrize("patch", [
+        {"principal": {"id": "human:admin"}},
+        {"principal": {"roles": ["operator"]}},
+        {"tenant_id": "tenant-b"},
+        {"session_id": "session-2"},
+        {"action": {"action_digest": "sha256:" + "9" * 64}},
+        {"action": {"requested_capabilities": ["process.execute"]}},
+    ], ids=["principal", "roles", "tenant", "session", "digest", "capabilities"])
+    def test_any_change_after_sealing_refused(self, env, base_request, patch):
+        sealed = SEALER.seal(base_request)
+        tampered = ingress.SealedRequest(merge_patch(sealed.request, patch), sealed.adapter_id, sealed.seal)
+        with pytest.raises(b.BrokerRefusal) as info:
+            env["broker"].execute(tampered, env["effect"], NOW)
+        assert info.value.code == "INGRESS_UNAUTHENTICATED"
+
+    def test_seal_from_unregistered_key_refused(self, env, base_request):
+        rogue = ingress.IngressSealer("writ-host-adapter:fixture", b"attacker-key")
+        with pytest.raises(b.BrokerRefusal) as info:
+            env["broker"].execute(rogue.seal(base_request), env["effect"], NOW)
+        assert info.value.code == "INGRESS_UNAUTHENTICATED"
+
+    def test_adapter_cannot_vouch_for_another_issuers_principal(self, env, base_request):
+        other = merge_patch(base_request, {"principal": {"verified_by": "writ-host-adapter:other"}})
+        with pytest.raises(b.BrokerRefusal) as info:
+            env["broker"].execute(SEALER.seal(other), env["effect"], NOW)
+        assert info.value.code == "INGRESS_UNAUTHENTICATED"
+
+    def test_sealed_request_from_trusted_adapter_executes(self, env, base_request):
+        assert env["broker"].execute(SEALER.seal(base_request), env["effect"], NOW)["status"] == "observed_success"

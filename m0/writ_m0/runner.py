@@ -71,12 +71,12 @@ class AgentRunner:
             args = json.loads(call["arguments_json"])
             if not isinstance(args, dict):
                 raise ValueError("arguments must be an object")
-            request = self._normalizer.normalize(tool=call["name"], args=args, call_id=call["call_id"],
+            sealed = self._normalizer.normalize(tool=call["name"], args=args, call_id=call["call_id"],
                                                  session_id=session_id, proof=proof, now=now)
         except (ValueError, NormalizationError) as exc:
             result.refusals.append(f"INVALID_TOOL_ARGUMENTS:{type(exc).__name__}")
             return
         try:
-            result.receipts.append(self._broker.execute(request, self._effect, now))
+            result.receipts.append(self._broker.execute(sealed, self._effect, now))
         except BrokerRefusal as refusal:
             result.refusals.append(refusal.code)

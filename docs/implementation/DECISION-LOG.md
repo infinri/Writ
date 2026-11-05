@@ -74,3 +74,11 @@ Implementation-level decisions. Architectural decisions belong in [ADRs](../deci
 - **Selected:** No grant inheritance: a subagent (distinct requester principal) needs its own approval. The broker validates a stored grant against the ApprovalGrant schema before use and refuses with `GRANT_MALFORMED`.
 - **Rationale:** Inheritance widens a human approval to principals the human never saw. A grant that cannot prove its binding must count as unapproved (V1 `test_gate_approval_plan_binding` lesson).
 - **Consequences:** Multi-agent workflows request approval per subagent unless a future, explicitly reviewed delegation contract is added. Pending independent review with the golden cases (M0-05a).
+
+## D-010: Authenticated broker ingress; the kernel stays key-free
+
+- **Date:** 2026-11-05
+- **Context:** Independent review SR-01. The broker accepted any ActionRequest dict, and the kernel trusts `principal.verified_by` if it names a bundle-trusted issuer, so a caller bypassing the host adapter could assert any identity, tenant, roles or digest.
+- **Alternatives:** (a) kernel verifies a PrincipalProof itself (pulls keys and clock-sensitive proof checks into the pure kernel, and still leaves the operation digest unauthenticated); (b) broker verifies a PrincipalProof passed beside the request (authenticates identity but not that the digest and capabilities came from trusted normalization); (c) adapter seals the complete normalized request, broker verifies the seal.
+- **Selected:** (c). `writ_m0/ingress.py`: a trusted adapter seals the canonical ActionRequest with its registered ingress key after verifying the proof and computing the digest; the broker refuses anything else with `INGRESS_UNAUTHENTICATED`, and the seal's adapter id must equal `principal.verified_by`. HostAdapter refuses construction if its sealer identity differs from its proof issuer.
+- **Consequences:** Kernel `decide()` remains pure and keyless; its `verified_by` check is sound only behind this ingress, which is now the documented precondition. Production key management, rotation and adapter registration are open (M3/M5). This does not authenticate the host process itself (threat model residual risk).
