@@ -1,0 +1,16 @@
+name: V2 documentation integrity
+on:
+  push:
+    branches:
+      - 'v2/**'
+  pull_request:
+    branches:
+      - 'v2/**'
+jobs:
+  docs-v2:
+    name: V2 docs and link validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Markdown, HTML, links and contract JSON
+        run: python3 scripts/check-v2-docs.py
