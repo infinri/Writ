@@ -1,6 +1,6 @@
-# M0 development-GO signoff package (prepared, not signed)
+# M0 development-GO signoff package
 
-**Status: PREPARED FOR OWNER APPROVAL. Nothing in this file is a decision.** Prepared by Claude on 2026-11-06. The owner signs; Claude does not sign, impersonate the owner, invent verdicts or mark D-014 ACCEPTED.
+**Status (2026-11-06): decision RECORDED per owner instruction, PENDING OWNER ATTESTATION.** Prepared by Claude on 2026-11-06. The owner instructed adoption of A-1 on 2026-11-06; the decision commit records that instruction in [M0-GO-NO-GO](M0-GO-NO-GO.md). Claude does not sign, impersonate the owner, invent verdicts or mark D-014 ACCEPTED before the attestation exists.
 
 | Input | Value |
 |---|---|
@@ -50,13 +50,18 @@ All remain open. Accepting them authorizes M1 development only.
 
 ## 3. Decision and attestation procedure (no self-reference)
 
-1. **Decision commit.** Fill the Decision table with the text in section 1; set D-014 to ACCEPTED *citing the owner attestation*; update TASKS (M0-05c, M0-06), WORK-STATE and SESSION-HANDOFF. This commit cites the evidence baseline `6007d09` and run 42308217716 only. It contains no SHA or CI URL of itself. Push normally.
-2. **CI on the decision commit** must pass. M1 may not start before it does.
+Revised 2026-11-06 per owner instruction: the decision commit **records** the decision as pending; acceptance is recorded only after the attestation is verified.
+
+1. **Decision commit (Claude prepares, owner authorizes the push).** Fills the Decision table with the section 1 text marked RECORDED, PENDING OWNER ATTESTATION; adopts the 16 dispositions; keeps D-014 PROPOSED; sets M0-06 IN REVIEW. Cites the evidence baseline `6007d09` and run 42308217716 only, never its own SHA or CI. Pushed **alone** (no later commit in the same push) so that CI runs on exactly this commit.
+2. **CI on the decision commit** must pass (both jobs of `v2-docs.yml`).
 3. **Owner attestation, performed by the owner personally** through a channel this Claude Code session cannot use on the owner's behalf:
-   - preferred: a comment on the decision commit or a review on a pull request, posted by the owner in the GitHub web UI; or
+   - preferred: a comment on the decision commit posted by the owner in the GitHub web UI (`https://github.com/infinri/Writ/commit/<decision SHA>`, comment box at the bottom of the page); or
    - a tag signed with a key whose use requires the owner (passphrase or hardware key) and that Claude does not operate.
    The attestation text (template below) names the decision commit SHA and its CI run URL; those exist by then, so nothing is circular.
-4. **Optional follow-up evidence record.** If a repository record of the attestation is wanted, one documentation commit may add the attestation link to TEST-EVIDENCE. Its own CI is not recorded anywhere; no further commits chase CI URLs.
+4. **Verification by the session (read-only).** Claude reads the comment through the GitHub API and checks: author login `infinri`; created in the web UI after the decision commit's CI completed; body names the decision SHA and a successful CI run of it; scope text matches section 1. Claude reports what it read; it does not post, edit or react to the comment.
+5. **Acceptance commit.** Only after step 4 passes: D-014 ACCEPTED citing the attestation URL; M0-05c and M0-06 DONE; M0 closed **for development only**; release and production stay NO-GO; M1 tasks and deferred risk-mitigation tasks active; TEST-EVIDENCE records the decision commit, its CI run and the attestation link. This commit's own CI is checked before M1 code lands but is not recorded in any further commit.
+
+Residual limitation: a `gh api` call from this session could post a comment as `infinri`; step 4 cannot cryptographically distinguish that from a web UI comment. The safeguard is procedural: this session never posts comments or reactions, and the owner should confirm in the session that the comment was posted personally. A signed tag (second channel) removes that limitation.
 
 Why not a plain commit: on this workstation, commits made by Claude carry the owner's git identity (`Lucio`), commit and tag signing are not configured, and the `gh` CLI acts as the owner's GitHub account. A commit or `gh` action from the session therefore proves nothing about who decided.
 
@@ -64,14 +69,15 @@ Why not a plain commit: on this workstation, commits made by Claude carry the ow
 
 > **Writ V2 M0 development GO, owner attestation.** I, *(name)*, on *(date)*, made the decision recorded in commit *(decision commit SHA)* on `v2/architecture-rebuild`, whose CI run *(URL)* passed. Evidence baseline: `6007d09`, run 42308217716. Scope: M1 development only; golden outcomes provisional; the 26 independent human golden reviews, the 288-rule review and SR-06 remain incomplete; AI-assisted technical assessments 1 to 4 are not independent human certification; release, production deployment, privileged production workloads and unverified security claims remain prohibited; the 16 risks in M0-GO-SIGNOFF-PACKAGE section 2 are accepted as open; the release standard will be revisited by explicit decision at the release milestone. I performed this attestation myself, not through an AI session.
 
-## 4. Files changed at signing (decision commit)
+## 4. Files changed
 
-| File | Change |
-|---|---|
-| `docs/implementation/M0-GO-NO-GO.md` | Decision table filled from section 1; "owner signature pending" in all 16 risk rows replaced by the owner's name and date |
-| `docs/implementation/DECISION-LOG.md` | D-014 status PROPOSED to ACCEPTED, citing the decision date and "owner attestation linked from TEST-EVIDENCE" (no SHA of itself) |
-| `docs/implementation/TASKS.md` | M0-05c DONE with the decision date; M0-06 DONE (decision recorded, attestation pending until posted); REL-01, M5-SR06, M6-RULES, V2-TEL become active with their milestones |
-| `docs/implementation/WORK-STATE.md` | Milestone: M0 closed for development under accepted risks, release NO-GO; next action: await CI and attestation, then start M1 |
-| `docs/implementation/SESSION-HANDOFF.md` | Same as WORK-STATE; do-not-reverse adds D-014 and the release-gate revisit |
+| File | Decision commit (step 1) | Acceptance commit (step 5) |
+|---|---|---|
+| `docs/implementation/M0-GO-NO-GO.md` | Decision table filled, RECORDED, PENDING OWNER ATTESTATION; 16 risk rows "adopted by owner instruction; effective only on owner attestation" | Effective status ACCEPTED with attestation link and date |
+| `docs/implementation/M0-GO-SIGNOFF-PACKAGE.md` | This two-step procedure | Status line |
+| `docs/implementation/DECISION-LOG.md` | D-014 stays PROPOSED, status note | D-014 ACCEPTED citing the attestation |
+| `docs/implementation/TASKS.md` | M0-06 IN REVIEW | M0-05c, M0-06 DONE; REL-01, M5-SR06, M6-RULES, V2-TEL active; M1 tasks active |
+| `docs/implementation/WORK-STATE.md`, `SESSION-HANDOFF.md` | Next action: push, CI, owner attestation | M0 closed for development only, release NO-GO; next: M1 |
+| `docs/implementation/TEST-EVIDENCE.md` | unchanged | Decision commit CI run and attestation link |
 
-Unchanged at signing: golden fixture and its 26 `PENDING INDEPENDENT REVIEW` statuses, the 288 rule-review rows, SR-06 status (NOT VERIFIED), V1, the M0 harness.
+Unchanged in both: golden fixture and its 26 `PENDING INDEPENDENT REVIEW` statuses, the 288 rule-review rows, SR-06 status (NOT VERIFIED), V1, the M0 harness.

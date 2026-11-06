@@ -60,7 +60,7 @@ Source checklists: [M0-START-HERE](M0-START-HERE.md), [master plan](MASTER-IMPLE
 |---|---|---|---|---|---|---|---|---|
 | M0-05a | Independent human review of golden decision expectations and broker scenarios | P0 | M0-03b | IN REVIEW | A reviewer other than the author signs off each high-risk case in `m0-golden.json` or files corrections | testing doc "independent reviewers own oracle decisions" | n/a | worksheet `docs/audit/m0/GOLDEN-HUMAN-REVIEW-WORKSHEET.md`; all 26 cases PENDING INDEPENDENT REVIEW; AI-assisted reviews 2-4 technically AGREE; named human verdicts required; PROPOSED: owner-led review substitutes for M1 development only (D-014); independent verdicts still required before release |
 | M0-05b | Push branch and confirm both v2 CI jobs green | P0 | M0-00c | DONE | GitHub Actions run URL recorded in TEST-EVIDENCE | M0 first PR DoD | CI | pushed `487b95d`; run https://github.com/infinri/Writ/actions/runs/42094649411 both jobs success (E-003) |
-| M0-05c | M0 go/no-go record | P0 | all P0 above | IN PROGRESS | WORK-STATE lists every M0 checklist item with evidence or explicit gap; user decision recorded | master plan section 10 | n/a | checklist `docs/implementation/M0-GO-NO-GO.md`; current recommendation NO-GO; owner decision and risk table open |
+| M0-05c | M0 go/no-go record | P0 | all P0 above | IN PROGRESS | WORK-STATE lists every M0 checklist item with evidence or explicit gap; user decision recorded | master plan section 10 | n/a | checklist `docs/implementation/M0-GO-NO-GO.md`; development GO RECORDED, PENDING OWNER ATTESTATION (2026-11-06); release and production NO-GO; DONE only after the attestation is verified |
 
 ## M0 security review priorities (from the user and the independent review, 2026-11-05; see docs/audit/m0/INDEPENDENT-REVIEW-M0.md)
 
@@ -83,11 +83,11 @@ M0 is **not complete** until these are reviewed and resolved or explicitly risk-
 | RM-01 | Composite multi-effect requests: bind each sub-effect target, digest and permission, or prohibit multiple independent effects per request | roadmap (M1/M3) | none | NOT STARTED | Architecture decision before production multi-effect actions | review 3 design note | n/a | |
 
 
-## PROPOSED tasks (D-014; A-1 approved in principle; active once the owner signs the development GO)
+## PROPOSED tasks (D-014; active once the owner attestation is verified and CI on the decision commit is green)
 
 | ID | Task | Pri | Deps | Status | Acceptance criteria | Refs | Tests | Evidence |
 |---|---|---|---|---|---|---|---|---|
-| M0-06 | Owner-directed scoped M1 development GO decision | P0 | M0-05c | PROPOSED | Criteria 1-6 of amendment A-1 met; Decision table filled with owner, date, commit, accepted risks; release and production stated NO-GO | D-014 | CI on decision commit | |
+| M0-06 | Owner-directed scoped M1 development GO decision | P0 | M0-05c | IN REVIEW | Criteria 1-6 of amendment A-1 met; Decision table filled with owner, date, accepted risks; release and production stated NO-GO; owner attestation verified; CI green on decision commit | D-014 | CI on decision commit | decision RECORDED per owner instruction 2026-11-06, PENDING OWNER ATTESTATION; awaiting push, CI and attestation (signoff package section 3) |
 | REL-01 | Independent named human verdicts on all 26 golden cases before any V2 release | P0 (release) | M0-06 | PROPOSED | Worksheet attestation complete; fixture statuses updated only from attributable verdicts; parity re-run on any correction | R-G1, R-ORACLE | parity re-run | |
 | M5-SR06 | Execute SR-06 live-host trials (69 priority, then full acceptance) before any host-enforcement claim | P0 (M5) | sandbox credential, R-SB decision | PROPOSED | SR-06-TRIAL-PLAN section 9 met | R-G3, R-SB | 69 experiments + full matrix | |
 | M6-RULES | Semantic review of each V1 rule before it is imported; no unreviewed rule enforced | P0 (M6) | M0-06 | PROPOSED | Rule-review CSV row reviewed, re-bound to a V2 evaluator, fixtures pass, INV-20 negative control | R-G2, INV-20 | per-rule fixtures | |

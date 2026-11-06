@@ -1,12 +1,11 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-06 (pre-compaction checkpoint) · **Branch:** v2/architecture-rebuild at `e8aa771` = origin, CI 42309913797 green · **Milestone:** M0, **NOT complete, recommendation NO-GO**; M1 blocked. Amendment A-1 APPROVED IN PRINCIPLE as a development-only framework; D-014 PROPOSED; GO Decision table blank (owner signature required)
+**Last updated:** 2026-11-06 (decision commit) · **Branch:** v2/architecture-rebuild · **Milestone:** M0 NOT closed. Development GO **RECORDED, PENDING OWNER ATTESTATION** (owner instruction 2026-11-06); D-014 PROPOSED; release and production NO-GO. M1 implementation has not started.
 
 ## Current
 
-- **Phase:** closing M0 acceptance gates. Reference harness review complete for now (review 4); no implementation phase open. Further code changes only if acceptance-test evidence requires them.
-- **Active task:** none in progress. Awaiting the owner's attributable signature on the development GO ([M0-GO-NO-GO](M0-GO-NO-GO.md)); all 16 risks carry recommended dispositions (owner signature pending, none closed).
-- **Gate-preparation commits (pushed):** `b8b7e1c` review 4 record, `a4a7103` golden worksheet, `703a1c1` rule review batches, `c3b37af` live-host procedure, `6ab870d` go/no-go checklist and tracking; plus a later tracking-reconciliation commit.
+- **Phase:** M0 development-GO signoff. The decision commit records the owner's instruction of 2026-11-06 in [M0-GO-NO-GO](M0-GO-NO-GO.md); the [signoff package](M0-GO-SIGNOFF-PACKAGE.md) section 3 defines the remaining steps.
+- **Active task:** M0-06 IN REVIEW. Remaining: push the decision commit alone; CI green on it; the owner posts the attestation personally in the GitHub web UI; Claude verifies it read-only; acceptance commit (D-014 ACCEPTED, M0 closed for development only).
 
 ## Security findings
 
@@ -45,4 +44,4 @@ CI E-013: run [42309913797](https://github.com/infinri/Writ/actions/runs/4230991
 
 ## Next exact action
 
-None authorized. Await the owner: (1) decision text and risk acceptance per [M0-GO-SIGNOFF-PACKAGE](M0-GO-SIGNOFF-PACKAGE.md); (2) authorization for the decision commit; (3) the owner's personal attestation after its CI passes. Compaction checkpoint and prohibitions: [SESSION-HANDOFF](SESSION-HANDOFF.md). Do not start M1.
+Push the decision commit alone (owner confirmation required), confirm its CI, then the owner posts the attestation (signoff package section 3). Do not start M1 implementation before the acceptance commit.
