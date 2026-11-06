@@ -20,7 +20,7 @@
 | Unmediated tools enumerated (M0-03) | `UNMEDIATED-TOOLS.md` | Static; runtime confirmation is G3 |
 | M1 parity suite and workloads defined (M0-04) | `M1-PARITY-SUITE.md` | Specification only |
 | Hardware/toolchain record with no invented numbers (M0-04) | `BENCHMARK-ENVIRONMENT.md` | Rust and Go absent locally |
-| CI for schemas, examples, links, fixture suite (M0-04, first PR DoD) | `.github/workflows/v2-docs.yml`; last run 42130113990, 281 passed | Pages deploy job fails on a repository protection rule (unrelated) |
+| CI for schemas, examples, links, fixture suite (M0-04, first PR DoD) | `.github/workflows/v2-docs.yml`; latest verified baseline `6007d09` with run [42308217716](https://github.com/infinri/Writ/actions/runs/42308217716), 281 passed (earlier runs, for example 42130113990, remain in TEST-EVIDENCE) | Pages deploy job fails on a repository protection rule (unrelated) |
 | Model output cannot mint approval; external host needs no ModelAdapter (first PR DoD) | `test_model_saying_approved_mints_nothing`, `test_approval_text_anywhere_mints_nothing`, INV-22 subprocess test | |
 | Security findings SR-01..SR-05, SR-07..SR-12 | DONE (harness) per AI-assisted reviews 2 to 4; `INDEPENDENT-REVIEW-M0-*.md` | Reference-harness scope only |
 
@@ -37,15 +37,15 @@
 
 | Risk | Owner milestone | Decision | Decided by / date |
 |---|---|---|---|
-| Ingress seal and permit keys are in-process; no provisioning, rotation or registration (SR-01, SR-07) | M3/M5 | Mitigate in M3/M5 (key provisioning, rotation, registration); not closed | Recommended by independent technical review 2026-11-06; owner signature pending |
-| SignoffGrant provenance caller-asserted in M0 (SR-12, D-013) | M4 | Mitigate in M4 (authenticated approval service); not closed | Recommended by independent technical review 2026-11-06; owner signature pending |
-| Policy bundles unsigned; signature verification absent | M6 | Mitigate in M6 (signed bundles); not closed | Recommended by independent technical review 2026-11-06; owner signature pending |
-| Composite multi-effect requests not individually bound (RM-01) | M1/M3 | Mitigate in M1/M3 (bind or prohibit sub-effects); not closed | Recommended by independent technical review 2026-11-06; owner signature pending |
-| SQLite ledger: no network filesystem, power-loss or interrupted-commit guarantees (E-008) | M3/M9 | Mitigate in M3/M9; E-008 limitations stand; not closed | Recommended by independent technical review 2026-11-06; owner signature pending |
-| Use-time filesystem TOCTOU and real OS effect mediation absent | M3 | Mitigate in M3; not closed | Recommended by independent technical review 2026-11-06; owner signature pending |
-| Trusted clocks for deadlines and expiry | M3 | Mitigate in M3; not closed | Recommended by independent technical review 2026-11-06; owner signature pending |
-| Claude Code hooks are advisory, not an OS sandbox; crash behavior unobserved (until G3) | M5 | Mitigate in M5 together with R-G3; not closed | Recommended by independent technical review 2026-11-06; owner signature pending |
-| Golden case 24 id misnamed (cosmetic) | M0 | Accept; rename only after independent review links are reconciled; not closed | Recommended by independent technical review 2026-11-06; owner signature pending |
+| Ingress seal and permit keys are in-process; no provisioning, rotation or registration (SR-01, SR-07) | M3/M5 | Mitigate in M3/M5 (key provisioning, rotation, registration); not closed | Recommended by AI-assisted technical assessment 2026-11-06; owner signature pending |
+| SignoffGrant provenance caller-asserted in M0 (SR-12, D-013) | M4 | Mitigate in M4 (authenticated approval service); not closed | Recommended by AI-assisted technical assessment 2026-11-06; owner signature pending |
+| Policy bundles unsigned; signature verification absent | M6 | Mitigate in M6 (signed bundles); not closed | Recommended by AI-assisted technical assessment 2026-11-06; owner signature pending |
+| Composite multi-effect requests not individually bound (RM-01) | M1/M3 | Mitigate in M1/M3 (bind or prohibit sub-effects); not closed | Recommended by AI-assisted technical assessment 2026-11-06; owner signature pending |
+| SQLite ledger: no network filesystem, power-loss or interrupted-commit guarantees (E-008) | M3/M9 | Mitigate in M3/M9; E-008 limitations stand; not closed | Recommended by AI-assisted technical assessment 2026-11-06; owner signature pending |
+| Use-time filesystem TOCTOU and real OS effect mediation absent | M3 | Mitigate in M3; not closed | Recommended by AI-assisted technical assessment 2026-11-06; owner signature pending |
+| Trusted clocks for deadlines and expiry | M3 | Mitigate in M3; not closed | Recommended by AI-assisted technical assessment 2026-11-06; owner signature pending |
+| Claude Code hooks are advisory, not an OS sandbox; crash behavior unobserved (until G3) | M5 | Mitigate in M5 together with R-G3; not closed | Recommended by AI-assisted technical assessment 2026-11-06; owner signature pending |
+| Golden case 24 id misnamed (cosmetic) | M0 | Accept; rename only after independent review links are reconciled; not closed | Recommended by AI-assisted technical assessment 2026-11-06; owner signature pending |
 
 ## Go criteria
 
@@ -53,7 +53,7 @@ GO for M1 requires: G1, G2 and G3 complete with evidence; every row in the risk 
 
 ## PROPOSED amendment A-1: owner-directed, scoped M1 development GO (not decided)
 
-**Status: APPROVED IN PRINCIPLE as a development-only acceptance framework (owner instruction, 2026-11-06). Not a GO decision. The Decision table below stays blank until the owner signs it.** [DECISION-LOG D-014](DECISION-LOG.md) remains PROPOSED until the owner's exact policy approval is attributable (criterion 5). Risk dispositions below are recommendations from the independent technical review; none is signed and no risk is CLOSED.
+**Status: APPROVED IN PRINCIPLE as a development-only acceptance framework (owner instruction, 2026-11-06). Not a GO decision. The Decision table below stays blank until the owner signs it.** [DECISION-LOG D-014](DECISION-LOG.md) remains PROPOSED until the owner's exact policy approval is attributable (criterion 5). Risk dispositions below are recommendations from the AI-assisted technical assessment; none is signed and no risk is CLOSED.
 
 ### What a development GO would and would not permit
 
@@ -76,28 +76,34 @@ GO for M1 requires: G1, G2 and G3 complete with evidence; every row in the risk 
 
 ### Proposed development GO criteria (all must hold at the decision commit)
 
-1. **CI green** on the decision commit: both jobs of `.github/workflows/v2-docs.yml` pass (M0 suite, audit drift, docs and schema checks); run URL recorded.
-2. **Technical review evidence complete:** reviews 1 to 4 recorded under `docs/audit/m0/INDEPENDENT-REVIEW-M0*.md`; SR-01..SR-05 and SR-07..SR-12 DONE (harness) with production limits stated; owner-led technical review of this checklist recorded.
+1. **CI green on the evidence baseline and, afterwards, on the decision commit.** The decision text cites the latest verified baseline (`6007d09`, run 42308217716). The decision commit's own SHA and its CI run cannot be written into that commit; they are recorded afterwards in the owner attestation (see the signoff package), which links to the decision commit. One attestation record suffices; no chain of commits chasing the latest CI URL.
+2. **Technical assessment evidence complete:** AI-assisted technical assessments 1 to 4 recorded under `docs/audit/m0/INDEPENDENT-REVIEW-M0*.md` (the file names say "independent review"; the assessments are AI-assisted and are **not** independent human certification); SR-01..SR-05 and SR-07..SR-12 DONE (harness) with production limits stated; the owner's own technical review of this checklist recorded in the attestation.
 3. **No unresolved critical M0 reference-harness defect:** no open P0 harness finding in [TASKS](TASKS.md). (SR-06 is a host-verification gap, not a harness defect, and is covered by risk R-G3.)
 4. **Every risk in the table above and in the additional risks below has a recorded decision** (accept for development, mitigate in a named milestone, or block).
-5. **Attributable owner decision:** owner name, date, decision commit SHA, and a verifiable channel (signed commit, or a PR review or comment from the owner's account).
+5. **Attributable owner decision:** the owner's name and date in the Decision table, plus an attestation the owner performs personally through a channel this Claude Code session cannot use on the owner's behalf. On this workstation, commits made by Claude carry the owner's git identity, are unsigned, and the `gh` CLI acts as the owner's GitHub account; therefore neither a commit nor a `gh` action from the session proves owner action. Acceptable channels: a GitHub comment or review posted by the owner in the web UI, or a tag or commit signed with a key whose use requires the owner (passphrase or hardware key) and that Claude does not operate.
 6. **Release and production remain NO-GO**, stated in the Decision table.
+
+### Release gate (unchanged by a development GO)
+
+Before any V2 release, the amendment still requires independent human verdicts on the 26 golden decisions (REL-01), the per-rule review of any rule being imported (M6-RULES) and the SR-06 live-host trials (M5-SR06). Given the owner's reviewer constraints, the release standard is to be **revisited explicitly at the release milestone** through a recorded decision; it is not waived or bypassed by this development GO.
 
 ### Additional risks the owner must decide for a development GO
 
 | ID | Risk | Owner milestone | Required negative tests before the risk can be closed | Decision | Decided by / date |
 |---|---|---|---|---|---|
-| R-G1 | No independent human has verified the 26 golden decisions. The author and the reviewers 1-4 are AI systems and may share blind spots; owner policy decisions (D-011) are not independent review | Before release | Independent verdicts on all 26; parity re-run on any correction | Accept for M1 development only; independent human golden review remains unresolved (REL-01) | Recommended by independent technical review 2026-11-06; owner signature pending |
-| R-ORACLE | M1 Rust and Go prototypes inherit any error in the provisional oracle; parity agreement would not detect it | M1 | Golden cases re-reviewed independently; property tests and differential tests kept beside parity | Mitigate in M1: independent test properties, adversarial cases and cross-implementation checks beyond parity | Recommended by independent technical review 2026-11-06; owner signature pending |
-| R-G2 | 288 V1 rules uncurated; some may be duplicated, conflicting or obsolete | M6/M7/M12 | INV-20 (remove validator, attempt policy publish); per-rule fixtures before import | Accept for M1; no unreviewed V1 rule may be imported as enforced policy (M6-RULES) | Recommended by independent technical review 2026-11-06; owner signature pending |
-| R-G3 | Real Claude Code host behavior unobserved: crash, timeout, invalid output, subagent and MCP coverage, `onFailure` effect, V1 fail-open paths | M5 | The 69 priority experiments, including NC-1, and full SR-06 acceptance | Accept for M1; SR-06 must be completed before any host-enforcement claim (M5-SR06) | Recommended by independent technical review 2026-11-06; owner signature pending |
-| R-SB | Sandbox limitations: shared rootful Docker daemon (container escape is host root), not a VM. Owner position: injection (P4), bypass (P5) and approval-provenance (P3) experiments are not authorized on this workstation and need a disposable VM or separate machine | M5 (before live trials) | Adversarial experiments only on a VM or separate test machine; container use for probe-only experiments only if the owner accepts it | Accept non-adversarial sandbox preparation only; adversarial and fault-injection trials deferred to stronger isolation (VM or separate machine) | Recommended by independent technical review 2026-11-06; owner signature pending |
-| R-V1TEL | The V1 daemon attempts outbound connections to `mobile.events.data.microsoft.com` (62 blocked attempts in the sandbox), most likely ONNX Runtime 1.31.1 telemetry; stopped by `ORT_DISABLE_TELEMETRY=1` in a 10-minute controlled run; not proven at packet level | M7 (retrieval runtime) and before any credential | Packet- or library-level confirmation; V2 retrieval runtime must make no undeclared egress (egress test with an allowlist proxy) | Investigate now (diagnostic done 2026-11-06: ORT_DISABLE_TELEMETRY=1 stopped requests in a 10-minute window); prevent undeclared telemetry in V2 | Recommended by independent technical review 2026-11-06; owner signature pending |
-| R-V1PKG | V1 imports `PyYAML` and `tokenizers` without declaring them (observed in the sandbox build) | M12 (migration tooling) | Migration and import tooling installs from a lock that is verified, not from V1's pyproject alone | Mitigate before any migration tooling release | Recommended by independent technical review 2026-11-06; owner signature pending |
+| R-G1 | No independent human has verified the 26 golden decisions. The author and the reviewers 1-4 are AI systems and may share blind spots; owner policy decisions (D-011) are not independent review | Before release | Independent verdicts on all 26; parity re-run on any correction | Accept for M1 development only; independent human golden review remains unresolved (REL-01) | Recommended by AI-assisted technical assessment 2026-11-06; owner signature pending |
+| R-ORACLE | M1 Rust and Go prototypes inherit any error in the provisional oracle; parity agreement would not detect it | M1 | Golden cases re-reviewed independently; property tests and differential tests kept beside parity | Mitigate in M1: independent test properties, adversarial cases and cross-implementation checks beyond parity | Recommended by AI-assisted technical assessment 2026-11-06; owner signature pending |
+| R-G2 | 288 V1 rules uncurated; some may be duplicated, conflicting or obsolete | M6/M7/M12 | INV-20 (remove validator, attempt policy publish); per-rule fixtures before import | Accept for M1; no unreviewed V1 rule may be imported as enforced policy (M6-RULES) | Recommended by AI-assisted technical assessment 2026-11-06; owner signature pending |
+| R-G3 | Real Claude Code host behavior unobserved: crash, timeout, invalid output, subagent and MCP coverage, `onFailure` effect, V1 fail-open paths | M5 | The 69 priority experiments, including NC-1, and full SR-06 acceptance | Accept for M1; SR-06 must be completed before any host-enforcement claim (M5-SR06) | Recommended by AI-assisted technical assessment 2026-11-06; owner signature pending |
+| R-SB | Sandbox limitations: shared rootful Docker daemon (container escape is host root), not a VM. Owner position: injection (P4), bypass (P5) and approval-provenance (P3) experiments are not authorized on this workstation and need a disposable VM or separate machine | M5 (before live trials) | Adversarial experiments only on a VM or separate test machine; container use for probe-only experiments only if the owner accepts it | Accept non-adversarial sandbox preparation only; adversarial and fault-injection trials deferred to stronger isolation (VM or separate machine) | Recommended by AI-assisted technical assessment 2026-11-06; owner signature pending |
+| R-V1TEL | The V1 daemon attempts outbound connections to `mobile.events.data.microsoft.com` (62 blocked attempts in the sandbox), most likely ONNX Runtime 1.31.1 telemetry; stopped by `ORT_DISABLE_TELEMETRY=1` in a 10-minute controlled run; not proven at packet level | M7 (retrieval runtime) and before any credential | Packet- or library-level confirmation; V2 retrieval runtime must make no undeclared egress (egress test with an allowlist proxy) | Investigate now (diagnostic done 2026-11-06: ORT_DISABLE_TELEMETRY=1 stopped requests in a 10-minute window); prevent undeclared telemetry in V2 | Recommended by AI-assisted technical assessment 2026-11-06; owner signature pending |
+| R-V1PKG | V1 imports `PyYAML` and `tokenizers` without declaring them (observed in the sandbox build) | M12 (migration tooling) | Migration and import tooling installs from a lock that is verified, not from V1's pyproject alone | Mitigate before any migration tooling release | Recommended by AI-assisted technical assessment 2026-11-06; owner signature pending |
 
 Existing risks in the table above keep their milestones; their required negative tests (proposed) are: keys and rotation, permit and seal forgery after key rotation (M3/M5); SignoffGrant, a forged in-scope signoff refused without an authenticated approval-service record (M4); policy bundles, a damaged signature and a downgraded bundle refused (INV-05, INV-12, M6); RM-01, a sub-effect target swapped under one approval refused (M1/M3); SQLite ledger, crash during commit and on network filesystems (M3/M9); TOCTOU, symlink and path substitution between decision and use (INV-14, T-03, M3); trusted clocks, skewed or rolled-back clock cannot extend a grant or deadline (M3); hooks, as R-G3 (M5).
 
 ## Decision
+
+Prepared signoff text, risk list and attestation procedure: [M0-GO-SIGNOFF-PACKAGE](M0-GO-SIGNOFF-PACKAGE.md). This table stays blank until the owner signs.
 
 | Field | Value |
 |---|---|
