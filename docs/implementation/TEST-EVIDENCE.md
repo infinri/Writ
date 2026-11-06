@@ -104,7 +104,17 @@ Only results actually executed are recorded under **Executed**. Planned verifica
 - **Push note:** four push attempts from this workstation were rejected with `remote: fatal error in commit_refs`; the branch was later found at `6ab870d` on GitHub. How the update landed was not determined.
 - **Unrelated:** the Pages publish run on the same push (42129294844) failed, as on every earlier push (environment protection rule).
 
+### E-013: CI on SR-06 preparation, GO framework and signoff package
+
+| Commit | Content | CI run | Result |
+|---|---|---|---|
+| `926b8b6` | SR-06 trial plan and sandbox setup | [42278124378](https://github.com/infinri/Writ/actions/runs/42278124378) | success, 281 passed, docs OK |
+| `6007d09` | A-1 framework, risk dispositions, sandbox readiness evidence and teardown | [42308217716](https://github.com/infinri/Writ/actions/runs/42308217716) | success, 281 passed, audit 8 current, docs OK |
+| `e8aa771` | signoff package (not signed) | [42309913797](https://github.com/infinri/Writ/actions/runs/42309913797) | success, 281 passed, audit 8 current, docs OK |
+
+SR-06 sandbox facts (preflight PASS, telemetry diagnostic) are recorded in `docs/audit/m0/live-host/2026-11-06-sandbox-readiness/`; none is an SR-06 trial result. Plan corrections (600 s default timeout, `{not json}` probe) are plan revisions, not test evidence.
+
 ## Not yet executed
 
-- Hook failure posture on a live host (M0-01e); rule semantic review (M0-01d).
+- SR-06 live-host experiments (0 of 69; sandbox torn down) and full SR-06 acceptance; rule semantic review (M0-01d); independent human golden review (M0-05a).
 - Any Rust or Go build, and any performance benchmark.

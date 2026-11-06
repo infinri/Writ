@@ -1,6 +1,6 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-06 · **Branch:** v2/architecture-rebuild · **Milestone:** M0, **NOT complete, recommendation NO-GO**; M1 blocked. Amendment A-1 APPROVED IN PRINCIPLE as a development-only framework; D-014 PROPOSED; GO Decision table blank (owner signature required)
+**Last updated:** 2026-11-06 (pre-compaction checkpoint) · **Branch:** v2/architecture-rebuild at `e8aa771` = origin, CI 42309913797 green · **Milestone:** M0, **NOT complete, recommendation NO-GO**; M1 blocked. Amendment A-1 APPROVED IN PRINCIPLE as a development-only framework; D-014 PROPOSED; GO Decision table blank (owner signature required)
 
 ## Current
 
@@ -41,8 +41,8 @@ SANDBOX PREPARED / LIVE VERIFICATION NOT EXECUTED; sandbox **torn down** 2026-11
 
 ## Last tests
 
-CI E-012: run [42129295198](https://github.com/infinri/Writ/actions/runs/42129295198) at `6ab870d`, 281 passed; audit 8 files current; docs and schema checks pass.
+CI E-013: run [42309913797](https://github.com/infinri/Writ/actions/runs/42309913797) at `e8aa771`, 281 passed; audit 8 files current; docs and schema checks pass. Signoff-package evidence baseline: `6007d09`, run 42308217716.
 
 ## Next exact action
 
-Owner signs (or declines) the development GO in the Decision table with name, date, commit and a verifiable channel; only then may D-014 become ACCEPTED and M1 start. Do not record a GO, mark SR-06 passed, fill any verdict, or start M1 before that.
+None authorized. Await the owner: (1) decision text and risk acceptance per [M0-GO-SIGNOFF-PACKAGE](M0-GO-SIGNOFF-PACKAGE.md); (2) authorization for the decision commit; (3) the owner's personal attestation after its CI passes. Compaction checkpoint and prohibitions: [SESSION-HANDOFF](SESSION-HANDOFF.md). Do not start M1.
