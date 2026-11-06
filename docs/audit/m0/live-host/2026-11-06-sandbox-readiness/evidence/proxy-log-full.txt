@@ -1,0 +1,203 @@
+2026-11-06T19:31:11.276510509Z DEBUG     Nov 06 19:31:11.276 [1]: sending stored logs
+2026-11-06T19:31:11.276545454Z NOTICE    Nov 06 19:31:11.276 [1]: Initializing tinyproxy ...
+2026-11-06T19:31:11.276548600Z NOTICE    Nov 06 19:31:11.276 [1]: Reloading config file (/etc/tinyproxy/tinyproxy.conf)
+2026-11-06T19:31:11.276550874Z NOTICE    Nov 06 19:31:11.276 [1]: Reloading config file finished
+2026-11-06T19:31:11.276553028Z DEBUG     Nov 06 19:31:11.276 [1]: done sending stored logs
+2026-11-06T19:31:29.886499184Z CONNECT   Nov 06 19:31:29.886 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T19:31:29.886525593Z CONNECT   Nov 06 19:31:29.886 [1]: Request (file descriptor 4): CONNECT example.com:443 HTTP/1.1
+2026-11-06T19:31:29.886528849Z NOTICE    Nov 06 19:31:29.886 [1]: Proxying refused on filtered domain "example.com"
+2026-11-06T19:31:29.893375876Z CONNECT   Nov 06 19:31:29.893 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T19:31:29.893401113Z CONNECT   Nov 06 19:31:29.893 [1]: Request (file descriptor 4): CONNECT github.com:443 HTTP/1.1
+2026-11-06T19:31:29.893425448Z NOTICE    Nov 06 19:31:29.893 [1]: Proxying refused on filtered domain "github.com"
+2026-11-06T19:31:29.900941371Z CONNECT   Nov 06 19:31:29.900 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T19:31:29.900982779Z CONNECT   Nov 06 19:31:29.900 [1]: Request (file descriptor 4): CONNECT registry.npmjs.org:443 HTTP/1.1
+2026-11-06T19:31:29.900993318Z NOTICE    Nov 06 19:31:29.900 [1]: Proxying refused on filtered domain "registry.npmjs.org"
+2026-11-06T19:31:29.908051298Z CONNECT   Nov 06 19:31:29.907 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T19:31:29.908078549Z CONNECT   Nov 06 19:31:29.907 [1]: Request (file descriptor 4): CONNECT api.anthropic.com:443 HTTP/1.1
+2026-11-06T19:31:30.061021180Z CONNECT   Nov 06 19:31:30.060 [1]: Established connection to host "api.anthropic.com" using file descriptor 5.
+2026-11-06T19:38:53.892377079Z CONNECT   Nov 06 19:38:53.892 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T19:38:53.892591400Z CONNECT   Nov 06 19:38:53.892 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T19:38:53.892608041Z NOTICE    Nov 06 19:38:53.892 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T19:38:59.413892540Z CONNECT   Nov 06 19:38:59.413 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T19:38:59.413930801Z CONNECT   Nov 06 19:38:59.413 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T19:38:59.413938736Z NOTICE    Nov 06 19:38:59.413 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T19:39:07.781376383Z CONNECT   Nov 06 19:39:07.781 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T19:39:07.781410767Z CONNECT   Nov 06 19:39:07.781 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T19:39:07.781418672Z NOTICE    Nov 06 19:39:07.781 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T19:39:29.180002272Z CONNECT   Nov 06 19:39:29.179 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T19:39:29.180047797Z CONNECT   Nov 06 19:39:29.179 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T19:39:29.180052265Z NOTICE    Nov 06 19:39:29.179 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T19:40:12.344112999Z CONNECT   Nov 06 19:40:12.343 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T19:40:12.344157963Z CONNECT   Nov 06 19:40:12.343 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T19:40:12.344168723Z NOTICE    Nov 06 19:40:12.343 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T19:41:44.104497779Z CONNECT   Nov 06 19:41:44.104 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T19:41:44.104541250Z CONNECT   Nov 06 19:41:44.104 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T19:41:44.104549305Z NOTICE    Nov 06 19:41:44.104 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T19:43:39.070119125Z CONNECT   Nov 06 19:43:39.069 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T19:43:39.070191660Z CONNECT   Nov 06 19:43:39.069 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T19:43:39.070205116Z NOTICE    Nov 06 19:43:39.069 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T19:46:31.434055285Z CONNECT   Nov 06 19:46:31.433 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T19:46:31.434122661Z CONNECT   Nov 06 19:46:31.433 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T19:46:31.434133501Z NOTICE    Nov 06 19:46:31.433 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T19:50:46.935648124Z CONNECT   Nov 06 19:50:46.935 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T19:50:46.935707275Z CONNECT   Nov 06 19:50:46.935 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T19:50:46.935717484Z NOTICE    Nov 06 19:50:46.935 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T19:53:28.269751256Z CONNECT   Nov 06 19:53:28.269 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T19:53:28.269812821Z CONNECT   Nov 06 19:53:28.269 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T19:53:28.269823111Z NOTICE    Nov 06 19:53:28.269 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T19:57:02.633572672Z CONNECT   Nov 06 19:57:02.633 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T19:57:02.633628286Z CONNECT   Nov 06 19:57:02.633 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T19:57:02.633634387Z NOTICE    Nov 06 19:57:02.633 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T20:00:22.295443305Z CONNECT   Nov 06 20:00:22.295 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T20:00:22.295480074Z CONNECT   Nov 06 20:00:22.295 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T20:00:22.295483430Z NOTICE    Nov 06 20:00:22.295 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T20:04:11.039766802Z CONNECT   Nov 06 20:04:11.039 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T20:04:11.039834549Z CONNECT   Nov 06 20:04:11.039 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T20:04:11.039873412Z NOTICE    Nov 06 20:04:11.039 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T20:07:09.079158552Z CONNECT   Nov 06 20:07:09.078 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T20:07:09.079202224Z CONNECT   Nov 06 20:07:09.079 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T20:07:09.079206562Z NOTICE    Nov 06 20:07:09.079 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T20:10:35.652637317Z CONNECT   Nov 06 20:10:35.652 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T20:10:35.652676852Z CONNECT   Nov 06 20:10:35.652 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T20:10:35.652684606Z NOTICE    Nov 06 20:10:35.652 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T20:18:47.906568493Z CONNECT   Nov 06 20:18:47.906 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T20:18:47.906616112Z CONNECT   Nov 06 20:18:47.906 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T20:18:47.906623867Z NOTICE    Nov 06 20:18:47.906 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T20:18:53.428726129Z CONNECT   Nov 06 20:18:53.428 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T20:18:53.428775181Z CONNECT   Nov 06 20:18:53.428 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T20:18:53.428783417Z NOTICE    Nov 06 20:18:53.428 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T20:19:01.796267515Z CONNECT   Nov 06 20:19:01.796 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T20:19:01.796316316Z CONNECT   Nov 06 20:19:01.796 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T20:19:01.796324121Z NOTICE    Nov 06 20:19:01.796 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T20:19:23.194977701Z CONNECT   Nov 06 20:19:23.194 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T20:19:23.195026443Z CONNECT   Nov 06 20:19:23.194 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T20:19:23.195034398Z NOTICE    Nov 06 20:19:23.194 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T20:20:06.358686592Z CONNECT   Nov 06 20:20:06.358 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T20:20:06.358744240Z CONNECT   Nov 06 20:20:06.358 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T20:20:06.358748568Z NOTICE    Nov 06 20:20:06.358 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T20:21:38.119371623Z CONNECT   Nov 06 20:21:38.119 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T20:21:38.119411918Z CONNECT   Nov 06 20:21:38.119 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T20:21:38.119415254Z NOTICE    Nov 06 20:21:38.119 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T20:23:33.085242451Z CONNECT   Nov 06 20:23:33.085 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T20:23:33.085313615Z CONNECT   Nov 06 20:23:33.085 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T20:23:33.085320738Z NOTICE    Nov 06 20:23:33.085 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T20:26:25.448267073Z CONNECT   Nov 06 20:26:25.448 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T20:26:25.448302269Z CONNECT   Nov 06 20:26:25.448 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T20:26:25.448320052Z NOTICE    Nov 06 20:26:25.448 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T20:30:40.950064109Z CONNECT   Nov 06 20:30:40.949 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T20:30:40.950095237Z CONNECT   Nov 06 20:30:40.949 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T20:30:40.950099765Z NOTICE    Nov 06 20:30:40.949 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T20:33:22.283003757Z CONNECT   Nov 06 20:33:22.282 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T20:33:22.283031419Z CONNECT   Nov 06 20:33:22.282 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T20:33:22.283035687Z NOTICE    Nov 06 20:33:22.282 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T20:36:56.647081165Z CONNECT   Nov 06 20:36:56.646 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T20:36:56.647162999Z CONNECT   Nov 06 20:36:56.646 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T20:36:56.647215908Z NOTICE    Nov 06 20:36:56.646 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T20:40:16.308666775Z CONNECT   Nov 06 20:40:16.308 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T20:40:16.308709194Z CONNECT   Nov 06 20:40:16.308 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T20:40:16.308712330Z NOTICE    Nov 06 20:40:16.308 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T20:44:05.053306378Z CONNECT   Nov 06 20:44:05.053 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T20:44:05.053329531Z CONNECT   Nov 06 20:44:05.053 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T20:44:05.053332888Z NOTICE    Nov 06 20:44:05.053 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T20:47:03.092953525Z CONNECT   Nov 06 20:47:03.092 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T20:47:03.093017505Z CONNECT   Nov 06 20:47:03.092 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T20:47:03.093028135Z NOTICE    Nov 06 20:47:03.092 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T20:50:29.666927116Z CONNECT   Nov 06 20:50:29.666 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T20:50:29.666953506Z CONNECT   Nov 06 20:50:29.666 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T20:50:29.666957603Z NOTICE    Nov 06 20:50:29.666 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T20:55:20.496303961Z CONNECT   Nov 06 20:55:20.496 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T20:55:20.496361810Z CONNECT   Nov 06 20:55:20.496 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T20:55:20.496369915Z NOTICE    Nov 06 20:55:20.496 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T21:00:04.407143955Z CONNECT   Nov 06 21:00:04.406 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T21:00:04.407206191Z CONNECT   Nov 06 21:00:04.406 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T21:00:04.407211982Z NOTICE    Nov 06 21:00:04.407 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T21:03:54.464585205Z CONNECT   Nov 06 21:03:54.464 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T21:03:54.464638074Z CONNECT   Nov 06 21:03:54.464 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T21:03:54.464648784Z NOTICE    Nov 06 21:03:54.464 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T21:08:00.187040080Z CONNECT   Nov 06 21:08:00.186 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T21:08:00.187078992Z CONNECT   Nov 06 21:08:00.186 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T21:08:00.187082378Z NOTICE    Nov 06 21:08:00.186 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T21:10:15.376279002Z CONNECT   Nov 06 21:10:15.376 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T21:10:15.376329025Z CONNECT   Nov 06 21:10:15.376 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T21:10:15.376337100Z NOTICE    Nov 06 21:10:15.376 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T21:13:59.915618476Z CONNECT   Nov 06 21:13:59.915 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T21:13:59.915672026Z CONNECT   Nov 06 21:13:59.915 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T21:13:59.915679901Z NOTICE    Nov 06 21:13:59.915 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T21:15:51.046375059Z CONNECT   Nov 06 21:15:51.046 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T21:15:51.046433378Z CONNECT   Nov 06 21:15:51.046 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T21:15:51.046448306Z NOTICE    Nov 06 21:15:51.046 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T21:18:25.682767116Z CONNECT   Nov 06 21:18:25.682 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T21:18:25.682806800Z CONNECT   Nov 06 21:18:25.682 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T21:18:25.682810797Z NOTICE    Nov 06 21:18:25.682 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T21:20:40.032509960Z CONNECT   Nov 06 21:20:40.032 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T21:20:40.032569331Z CONNECT   Nov 06 21:20:40.032 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T21:20:40.032580381Z NOTICE    Nov 06 21:20:40.032 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T21:25:02.435402098Z CONNECT   Nov 06 21:25:02.435 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T21:25:02.435458794Z CONNECT   Nov 06 21:25:02.435 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T21:25:02.435469434Z NOTICE    Nov 06 21:25:02.435 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T21:27:20.519213695Z CONNECT   Nov 06 21:27:20.518 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T21:27:20.519275561Z CONNECT   Nov 06 21:27:20.519 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T21:27:20.519288185Z NOTICE    Nov 06 21:27:20.519 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T21:30:25.501677253Z CONNECT   Nov 06 21:30:25.501 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T21:30:25.501728148Z CONNECT   Nov 06 21:30:25.501 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T21:30:25.501732266Z NOTICE    Nov 06 21:30:25.501 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T21:32:38.422973519Z CONNECT   Nov 06 21:32:38.422 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T21:32:38.423022561Z CONNECT   Nov 06 21:32:38.422 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T21:32:38.423030425Z NOTICE    Nov 06 21:32:38.422 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T21:34:47.315441464Z CONNECT   Nov 06 21:34:47.315 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T21:34:47.315481369Z CONNECT   Nov 06 21:34:47.315 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T21:34:47.315484645Z NOTICE    Nov 06 21:34:47.315 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T21:39:47.110307168Z CONNECT   Nov 06 21:39:47.110 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T21:39:47.110360949Z CONNECT   Nov 06 21:39:47.110 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T21:39:47.110365337Z NOTICE    Nov 06 21:39:47.110 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T21:42:17.017440283Z CONNECT   Nov 06 21:42:17.017 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T21:42:17.017506918Z CONNECT   Nov 06 21:42:17.017 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T21:42:17.017517768Z NOTICE    Nov 06 21:42:17.017 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T21:45:43.501576092Z CONNECT   Nov 06 21:45:43.501 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T21:45:43.501619072Z CONNECT   Nov 06 21:45:43.501 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T21:45:43.501629622Z NOTICE    Nov 06 21:45:43.501 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T21:50:12.612119879Z CONNECT   Nov 06 21:50:12.611 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T21:50:12.612199297Z CONNECT   Nov 06 21:50:12.611 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T21:50:12.612211440Z NOTICE    Nov 06 21:50:12.612 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T21:53:58.239364341Z CONNECT   Nov 06 21:53:58.239 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T21:53:58.239395309Z CONNECT   Nov 06 21:53:58.239 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T21:53:58.239403174Z NOTICE    Nov 06 21:53:58.239 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T21:56:43.078538703Z CONNECT   Nov 06 21:56:43.078 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T21:56:43.078567777Z CONNECT   Nov 06 21:56:43.078 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T21:56:43.078574520Z NOTICE    Nov 06 21:56:43.078 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T22:00:33.490193871Z CONNECT   Nov 06 22:00:33.489 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T22:00:33.490228916Z CONNECT   Nov 06 22:00:33.490 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T22:00:33.490233264Z NOTICE    Nov 06 22:00:33.490 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T22:04:02.155546716Z CONNECT   Nov 06 22:04:02.155 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T22:04:02.155590819Z CONNECT   Nov 06 22:04:02.155 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T22:04:02.155601679Z NOTICE    Nov 06 22:04:02.155 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T22:07:24.924541957Z CONNECT   Nov 06 22:07:24.924 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T22:07:24.924598193Z CONNECT   Nov 06 22:07:24.924 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T22:07:24.924609073Z NOTICE    Nov 06 22:07:24.924 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T22:12:19.698233699Z CONNECT   Nov 06 22:12:19.698 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T22:12:19.698288231Z CONNECT   Nov 06 22:12:19.698 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T22:12:19.698298891Z NOTICE    Nov 06 22:12:19.698 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T22:15:03.863081204Z CONNECT   Nov 06 22:15:03.862 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T22:15:03.863130978Z CONNECT   Nov 06 22:15:03.862 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T22:15:03.863144222Z NOTICE    Nov 06 22:15:03.862 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T22:19:19.964945085Z CONNECT   Nov 06 22:19:19.964 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T22:19:19.964989139Z CONNECT   Nov 06 22:19:19.964 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T22:19:19.965004469Z NOTICE    Nov 06 22:19:19.964 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T22:22:49.101569986Z CONNECT   Nov 06 22:22:49.101 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T22:22:49.101620041Z CONNECT   Nov 06 22:22:49.101 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T22:22:49.101630772Z NOTICE    Nov 06 22:22:49.101 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T22:27:04.925105597Z CONNECT   Nov 06 22:27:04.924 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T22:27:04.925135504Z CONNECT   Nov 06 22:27:04.925 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T22:27:04.925139191Z NOTICE    Nov 06 22:27:04.925 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T22:30:09.769152618Z CONNECT   Nov 06 22:30:09.768 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T22:30:09.769199326Z CONNECT   Nov 06 22:30:09.769 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T22:30:09.769210437Z NOTICE    Nov 06 22:30:09.769 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T22:34:48.943919745Z CONNECT   Nov 06 22:34:48.943 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T22:34:48.943966824Z CONNECT   Nov 06 22:34:48.943 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T22:34:48.943977504Z NOTICE    Nov 06 22:34:48.943 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T22:37:31.341571375Z CONNECT   Nov 06 22:37:31.341 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T22:37:31.341614837Z CONNECT   Nov 06 22:37:31.341 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T22:37:31.341625648Z NOTICE    Nov 06 22:37:31.341 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+2026-11-06T22:40:27.015255646Z CONNECT   Nov 06 22:40:27.014 [1]: Connect (file descriptor 4): 10.231.61.10
+2026-11-06T22:40:27.015311471Z CONNECT   Nov 06 22:40:27.015 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+2026-11-06T22:40:27.015321800Z NOTICE    Nov 06 22:40:27.015 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"

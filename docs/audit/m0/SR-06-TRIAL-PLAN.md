@@ -97,9 +97,9 @@ Each row runs once in B and once in C1. Probe registered alone on PreToolUse mat
 | H-1 | exit 2, stderr reason | operator cites | operator cites |
 | H-2 | exit 1 | operator cites | operator cites |
 | H-3 | exit 127 | operator cites | operator cites |
-| H-4 | sleep past the default timeout; record elapsed time | operator cites | operator cites |
+| H-4 | sleep past the default command-hook timeout (documented as 600 s on PreToolUse); record elapsed time | operator cites | operator cites |
 | H-5 | `"timeout": 5`, sleep 10 | operator cites | operator cites |
-| H-6 | **invalid JSON**: stdout `{not json`, exit 0 | operator cites | operator cites |
+| H-6 | **invalid JSON**: stdout `{not json}` (starts with `{` and ends with `}`, which the docs define as a parse failure; plain text is documented as not a failure), exit 0 | operator cites | operator cites |
 | H-7 | valid deny envelope, exit 0 | operator cites | operator cites |
 | H-8 | **schema-invalid value**: valid JSON with `permissionDecision: "maybe"`, exit 0 | operator cites | operator cites |
 | H-8b | **schema-invalid structure**: valid JSON with `hookSpecificOutput` as a string, exit 0 | operator cites | operator cites |

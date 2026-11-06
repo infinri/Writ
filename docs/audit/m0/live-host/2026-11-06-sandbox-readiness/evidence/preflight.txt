@@ -1,0 +1,69 @@
+### PF-1 mounts (outside: docker inspect Mounts)
+writ-sr06-sandbox [] binds=null privileged=false
+writ-sr06-neo4j [] binds=null privileged=false
+writ-sr06-proxy [] binds=null privileged=false
+### PF-1 mounts (inside sandbox)
+/ overlay rw,<container overlay root; host snapshot paths redacted>
+/etc/resolv.conf <host-device> rw
+/etc/hostname <host-device> rw
+/etc/hosts <host-device> rw
+### PF-2 sockets and capabilities
+absent /var/run/docker.sock
+absent /run/docker.sock
+absent /run/containerd/containerd.sock
+absent /run/podman/podman.sock
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	0000000000000000
+NoNewPrivs:	1
+### PF-3 user
+uid=1500(tester) gid=1500(tester) groups=1500(tester)
+sudo: not installed
+Password: su: Authentication failure
+### PF-4 credentials
+.
+..
+.bash_logout
+.bashrc
+.cache
+.profile
+remote.git
+run
+ws
+absent /home/tester/.ssh
+absent /home/tester/.aws
+absent /home/tester/.config/gcloud
+absent /home/tester/.claude
+absent /home/tester/.config/claude
+absent /home/tester/.netrc
+absent /home/tester/.git-credentials
+fatal: unable to read config file '/home/tester/.gitconfig': No such file or directory
+fatal: unable to read config file '/etc/gitconfig': No such file or directory
+WRIT_NEO4J_PASSWORD=<masked>
+### PF-5 remotes
+origin	/home/tester/remote.git (fetch)
+origin	/home/tester/remote.git (push)
+### PF-6 network
+direct example.com:
+000
+proxy example.com:
+000
+proxy github.com:
+000
+proxy registry.npmjs.org:
+000
+proxy api.anthropic.com (no credential):
+401
+direct LAN <LAN-gateway>:
+000
+direct docker host gateway 10.231.61.1:
+000
+### PF-7 data
+FAKE
+/home/tester/ws/secrets/FAKE
+/home/tester/ws/seed
+/home/tester/ws/src/app.py
+/home/tester/ws/src/app2.py
+/home/tester/ws/src/app3.py
+### PF-8 version
+2.1.318 (Claude Code)

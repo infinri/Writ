@@ -1,0 +1,5 @@
+/usr/local/lib
++-- @anthropic-ai/claude-code@2.1.318
++-- corepack@0.36.0
+`-- npm@10.9.9
+

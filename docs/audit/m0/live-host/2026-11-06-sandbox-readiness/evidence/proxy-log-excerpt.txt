@@ -1,0 +1,6 @@
+CONNECT   Nov 06 19:39:07.781 [1]: Connect (file descriptor 4): 10.231.61.10
+CONNECT   Nov 06 19:39:07.781 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+NOTICE    Nov 06 19:39:07.781 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"
+CONNECT   Nov 06 19:39:29.179 [1]: Connect (file descriptor 4): 10.231.61.10
+CONNECT   Nov 06 19:39:29.179 [1]: Request (file descriptor 4): CONNECT mobile.events.data.microsoft.com:443 HTTP/1.1
+NOTICE    Nov 06 19:39:29.179 [1]: Proxying refused on filtered domain "mobile.events.data.microsoft.com"

@@ -1,0 +1,70 @@
+263c263,264
+<             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/validate-exit-plan.sh\""
+---
+>             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/validate-exit-plan.sh\"",
+>             "onFailure": "block"
+272c273,274
+<             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-read-junk-gate.sh\""
+---
+>             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-read-junk-gate.sh\"",
+>             "onFailure": "block"
+281c283,284
+<             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-read-rag.sh\""
+---
+>             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-read-rag.sh\"",
+>             "onFailure": "block"
+290c293,294
+<             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-debug-code-gate.sh\""
+---
+>             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-debug-code-gate.sh\"",
+>             "onFailure": "block"
+299c303,304
+<             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-state-write-gate.sh\""
+---
+>             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-state-write-gate.sh\"",
+>             "onFailure": "block"
+308c313,314
+<             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-pre-write-dispatch.sh\""
+---
+>             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-pre-write-dispatch.sh\"",
+>             "onFailure": "block"
+317c323,324
+<             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/pre-validate-file.sh\""
+---
+>             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/pre-validate-file.sh\"",
+>             "onFailure": "block"
+326c333,334
+<             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-dispatch-discipline.sh\""
+---
+>             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-dispatch-discipline.sh\"",
+>             "onFailure": "block"
+335c343,344
+<             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-worktree-safety.sh\""
+---
+>             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-worktree-safety.sh\"",
+>             "onFailure": "block"
+344c353,354
+<             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-bash-write-gate.sh\""
+---
+>             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-bash-write-gate.sh\"",
+>             "onFailure": "block"
+353c363,364
+<             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/validate-test-file.sh\""
+---
+>             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/validate-test-file.sh\"",
+>             "onFailure": "block"
+362c373,374
+<             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/validate-design-doc.sh\""
+---
+>             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/validate-design-doc.sh\"",
+>             "onFailure": "block"
+371c383,384
+<             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-memory-policy-guard.sh\""
+---
+>             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-memory-policy-guard.sh\"",
+>             "onFailure": "block"
+380c393,394
+<             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-tool-failure-budget.sh\""
+---
+>             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/writ-tool-failure-budget.sh\"",
+>             "onFailure": "block"

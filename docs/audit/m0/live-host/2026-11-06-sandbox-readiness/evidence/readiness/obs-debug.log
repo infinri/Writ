@@ -1,0 +1,2 @@
+2026-11-06T19:39:19.818Z [DEBUG] Hooks: SessionStart:startup [/opt/probes/probe.sh OBS-0 allow] finished with status 0 (90ms)
+2026-11-06T19:39:19.854Z [DEBUG] Hooks: checkForNewResponses returning 0 responses, 0 hooks still pending
