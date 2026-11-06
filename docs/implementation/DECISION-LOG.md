@@ -120,3 +120,11 @@ Implementation-level decisions. Architectural decisions belong in [ADRs](../deci
 - **Consequences if accepted:** M1 parity rests on a provisional oracle (risk R-ORACLE); independent human review moves to the release gate; host enforcement remains unproven until M5.
 - **Status note 2026-11-06:** amendment A-1 APPROVED IN PRINCIPLE by owner instruction as a development-only framework, with recommended risk dispositions from an AI-assisted technical assessment recorded in M0-GO-NO-GO (owner signature pending). D-014 stays PROPOSED until the owner's exact policy approval is attributable; the GO Decision table stays blank.
 - **Status note 2026-11-06 (later):** the owner instructed adoption of A-1 and M1 development under the 16 risk dispositions. The decision commit records this in M0-GO-NO-GO as RECORDED, PENDING OWNER ATTESTATION. D-014 stays PROPOSED until (a) the owner's personal attestation is posted and verified read-only and (b) CI on the decision commit is green ([signoff package](M0-GO-SIGNOFF-PACKAGE.md) section 3). The acceptance commit then sets this entry ACCEPTED.
+
+## D-015: Writ Control Center is a first-class product requirement and a separate management plane
+
+- **Date:** 2026-11-06. **Decided by:** project owner (instruction in session 2026-11-06); recorded by Claude. Independent of D-014 and of the M0 development-GO signoff.
+- **Context:** V2 needs a way for authorized people to understand, configure, monitor, troubleshoot and administer Writ without routine direct edits of JSON, YAML, scripts or Neo4j.
+- **Selected:** add Writ Control Center ([specification](../control-center/README.md), [ADR-0007](../decisions/ADR-0007-control-center-management-plane.md)): navigation Overview, Activity & Audit, Rules & Policies, Knowledge & Memory, Integrations, Administration; separate management service with versioned authenticated APIs outside the decision path; work distributed across M2 to M10+; minimum usable Control Center for the first local beta; enterprise set separately justified; not a prerequisite for M1.
+- **Consequences:** invariants INV-27 to INV-31; product requirements P-20 to P-24; CC tasks in TASKS. Status of every Control Center requirement: planned.
+

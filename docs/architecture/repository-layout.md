@@ -32,6 +32,8 @@
 ├── orchestration/               # optional remote durable workflows
 ├── extensions/                  # optional sandboxed plugins
 ├── telemetry/                   # OpenTelemetry + audit verification
+├── management/                  # Control Center management service and API (outside the decision path, ADR-0007)
+├── control-center/              # optional web UI over the management API
 ├── cmd/                         # local agent, operator CLI, server
 ├── deployments/                 # local install and enterprise manifests
 ├── tests/
@@ -46,7 +48,7 @@
 
 ## Import rules
 
-Core imports contracts and pure domain types only. Policy evaluator imports contracts plus Cedar adapter. Broker imports contracts/core policy interface and persistence port; it does not reach into prompt retrieval. Graph and retrieval may import read-only domain types but not broker internals. Adapters translate events into contracts; they do not implement a second state machine.
+Core imports contracts and pure domain types only. Policy evaluator imports contracts plus Cedar adapter. Broker imports contracts/core policy interface and persistence port; it does not reach into prompt retrieval. Graph and retrieval may import read-only domain types but not broker internals. Adapters translate events into contracts; they do not implement a second state machine. Core, policy evaluator and broker never import `management/` or `control-center/`; the management service talks to the registry, approval service and read-only stores through their APIs (ADR-0007).
 
 A module may implement ports in a separate package, not use package-level mutable globals to impersonate dependency injection. No single 3,000-line CLI module or 200-KB shell enforcement script. Keep files cohesive, not arbitrarily below a fixed line threshold.
 

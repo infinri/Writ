@@ -28,6 +28,7 @@ Authority to perform tool effects; user/organization approvals; source code and 
 | Local state | Symlink tampering, cached session confusion | Secure directories, scoped keys, revisioned storage |
 | Extension | Code execution, data egress | Optional WASM with explicit capabilities/fuel/limits; host OS isolation where needed |
 | Audit pipeline | Lost/forged history | Append-only durable linkage, integrity verification, independent permissions |
+| Control Center / management API | Agent reaches admin functions; CSRF; stored XSS; toggles weaken enforcement; outage blocks decisions | Separate management realm, step-up for high-risk actions, registry-side invariant checks, untrusted rendering, plane outside the hot path ([trust and authorization](../control-center/trust-and-authorization.md), INV-27..INV-31) |
 
 ## Enforcement profiles
 

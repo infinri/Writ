@@ -12,6 +12,7 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 | Last pushed and CI-verified | `e8aa771` (signoff package), run 42309913797. Local commits after it: checkpoint `df87cf4`, then this decision commit |
 | Evidence baseline cited by the decision | `6007d09`, run 42308217716 |
 | Milestone | M0 NOT closed. Development GO **RECORDED, PENDING OWNER ATTESTATION** (owner instruction 2026-11-06). D-014 PROPOSED. Release and production NO-GO. M1 not started |
+| Control Center | D-015 ACCEPTED (owner direction 2026-11-06); spec in `docs/control-center/`, ADR-0007, INV-27..31, P-20..24, tasks CC-00 (DONE, docs) and CC-M2..CC-E (NOT STARTED). Not a prerequisite for M1 |
 | Working tree | Untracked `docs/audit/m0/hook-audit/` (must NOT be staged or published; pending disclosure review) |
 
 ### Remaining signoff sequence ([signoff package](M0-GO-SIGNOFF-PACKAGE.md) section 3)

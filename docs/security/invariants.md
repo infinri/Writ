@@ -30,6 +30,11 @@
 | INV-24 | Code, research and noncode review use same TaskSpec/evidence contract | Validate 3 task fixtures against identical schema |
 | INV-25 | Model-based evaluation is never misrepresented as independent verification | Feed fabricated citations and unsupported source claims |
 | INV-26 | Model routing/fallback respects tenant privacy and capability requirements | Force fallback to unavailable capability or forbidden region |
+| INV-27 | The management plane (Control Center, management service) is outside the decision path; its absence or failure never changes a decision or effect outcome | Kill or overload the management service during the parity and broker suites (CC-SEC-01) |
+| INV-28 | Management APIs accept only authenticated management-realm principals; agent-realm credentials are refused and UI state never widens authorization | Call every management endpoint with an adapter or agent credential (CC-SEC-02) |
+| INV-29 | No management action can disable, weaken or reorder a mandatory policy or edit a core security contract | Crafted bundle omitting a mandatory policy sent directly to the registry (CC-SEC-04, CC-SEC-13) |
+| INV-30 | Administrative mutations are audited before they take effect; knowledge and memory deletion never removes security audit records | Audit store down during a mutation; delete content referenced by decisions (CC-SEC-08, CC-SEC-09) |
+| INV-31 | No management API, export or diagnostics bundle returns a secret value | Canary secrets planted in keys, settings and logs (CC-SEC-05) |
 
 ## Verification levels
 

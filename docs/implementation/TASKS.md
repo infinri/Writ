@@ -93,3 +93,21 @@ M0 is **not complete** until these are reviewed and resolved or explicitly risk-
 | M6-RULES | Semantic review of each V1 rule before it is imported; no unreviewed rule enforced | P0 (M6) | M0-06 | PROPOSED | Rule-review CSV row reviewed, re-bound to a V2 evaluator, fixtures pass, INV-20 negative control | R-G2, INV-20 | per-rule fixtures | |
 | SB-01 | SR-06 sandbox teardown (only `sr06=1` objects) | P2 | owner authorization | DONE | Procedure in the readiness README executed and verified | R-SB | n/a | executed 2026-11-06 after the telemetry diagnostic; 3 containers and 2 networks removed, nothing else touched; readiness README |
 | V2-TEL | V2 makes no undeclared egress; third-party telemetry (for example ONNX Runtime) disabled or proxied by declared policy | P1 (M7) | none | PROPOSED | Allowlist-proxy egress test in CI shows zero undeclared destinations | R-V1TEL | egress test | V1 diagnostic: `evidence/telemetry-attribution.txt` |
+
+## Writ Control Center (D-015, ADR-0007; specification in docs/control-center)
+
+Not a prerequisite for M1. Each task starts with its milestone; acceptance tests in `docs/control-center/acceptance-tests.md`.
+
+| ID | Task | Pri | Deps | Status | Acceptance criteria | Refs | Tests | Evidence |
+|---|---|---|---|---|---|---|---|---|
+| CC-00 | Control Center product specification, architecture, ADR and roadmap integration | P1 | D-015 | DONE | Spec, journeys, management API, trust, audit model, lifecycle semantics, acceptance tests, plan, ADR-0007, INV-27..31, P-20..24 committed; docs check passes | D-015 | docs check | `docs/control-center/`; documentation only, nothing implemented |
+| CC-M2 | Management contracts and conventions; kernel builds and tests without management modules | P1 (M2) | M2 | NOT STARTED | Schemas and fixtures in `docs/contracts/management/`; CC-SEC-01 harness | INV-27 | CC-SEC-01, CC-SEC-14 | |
+| CC-M3 | Management service skeleton, management authorization policy, audit query model, correlation, explanation service | P1 (M3) | CC-M2, M3 | NOT STARTED | CC-A01..A04, CC-G06 service | INV-28, INV-30 | CC-SEC-01, 02, 03, 05, 08, 11, 14; CC-UX-09 | |
+| CC-M4 | Approval experience with step-up | P0 (M4) | CC-M3, M4 | NOT STARTED | CC-AP01..AP03 | INV-06, P-03 | CC-SEC-07 | |
+| CC-M5 | Adapter status, coverage labels, unmediated activity | P1 (M5) | CC-M3, M5, M5-SR06 | NOT STARTED | CC-I01, I02, I04, A05 | INV-13, INV-16 | label-evidence tests | |
+| CC-M6 | Policy, contract and pack management; enforcement labels | P1 (M6) | CC-M3, M6 | NOT STARTED | CC-R01..R05, CC-C01..C06, CC-I03, CC-G07 | INV-12, INV-20, INV-29 | CC-SEC-04, 12, 13, 16, 18 | |
+| CC-M7 | Knowledge administration and retrieval observability | P1 (M7) | CC-M3, M7 | NOT STARTED | CC-K01..K07 | INV-10, INV-11, INV-30 | CC-SEC-03, 09, 10 | |
+| CC-M8 | Memory and graph management | P1 (M8) | CC-M3, M8 | NOT STARTED | CC-M01..M04 | INV-10, INV-30 | CC-SEC-03, 09 | |
+| CC-M9 | Unified local Control Center (minimum usable beta scope) | P0 (M9) | CC-M3..CC-M8 | NOT STARTED | All tier B requirements | P-20..P-24 | all beta CC-SEC; CC-UX-01..09 | |
+| CC-E | Enterprise feature set, each with its own ADR | P2 (M10+) | CC-M9 | NOT STARTED | Tier E requirements justified by recorded workload | P-20 | per feature | |
+

@@ -39,6 +39,11 @@ V2 must be useful as a fast local tool without Neo4j availability on every actio
 | P-17 | Evaluator neutrality | Rubrics and evidence validation are domain-pack interfaces; model claims never count as independent verification |
 | P-18 | Provider capability negotiation | Unsupported features/fallbacks are explicit and honor residency/privacy/cost requirements |
 | P-19 | Managed agent separation | Optional AgentRunner can plan/stream tools without directly executing effects or weakening policy |
+| P-20 | Writ Control Center: unified management and administration without routine direct JSON, YAML, script or Neo4j edits | Tier B requirements in [control-center](../control-center/README.md) met with CC-SEC and CC-UX tests at the M9 gate |
+| P-21 | Management plane outside the decision path | CC-SEC-01: management service absent or overloaded, decisions and kernel p95 unchanged (INV-27) |
+| P-22 | Every important action explainable | "Why did this happen?" for every decision status and effect state from recorded records only (CC-G06, CC-SEC-11, CC-UX-09) |
+| P-23 | Administrative changes authenticated, authorized, audited and versioned; no bypass of mandatory invariants | CC-SEC-02, 04, 08, 12, 13 (INV-28..INV-30) |
+| P-24 | Headless operation and CLI parity | Kernel, broker and adapters run without the UI; essential operations available in CLI and API (CC-G13, CC-G14) |
 
 ### Performance and operability objectives
 
@@ -76,6 +81,8 @@ Not an OS-level sandbox; not a mandatory all-purpose autonomous agent (an option
 | Domain modules | **DECIDED** versioned Capability Packs | Coding, research and review fixtures; pack cannot publish policy or grant tools |
 | AgentRunner | **PROVISIONAL** local optional task runner | Not required for external Claude/Codex/Gemini host integrations |
 | Evaluation | **DECIDED** typed artifacts, source evidence and versioned rubrics | Mechanical/evidence/model-assisted/human classes with explicit limitations |
+| Management plane | **DECIDED** separate Control Center management service with versioned authenticated APIs, outside the decision path ([ADR-0007](../decisions/ADR-0007-control-center-management-plane.md)) | CC-SEC-01; agent principals refused; registry enforces mandatory invariants |
+| Management service language and UI technology | **OPEN** | Service language after ADR-0002; UI technology by ADR at the start of M9 |
 
 ## 4. Target boundaries
 
@@ -206,3 +213,20 @@ Architecture is complete only when each module has: an API contract, caller, tru
 ## 16. Domain/platform requirements (normative extension)
 
 [ADR-0006](../decisions/ADR-0006-model-and-domain-independence.md) establishes provider neutrality and general-purpose Capability Packs. The [model runtime](../architecture/model-agnostic-runtime.md), [Capability Pack design](../architecture/capability-packs.md), and [AgentRunner/evaluation](../architecture/agent-orchestration.md) are part of the V2 target architecture, not optional marketing claims. **ModelAdapter is optional for externally managed hosts**, and every provider feature requires negotiation. **Capability Packs never grant security rights**. The same TaskSpec, artifact, evidence and evaluation contracts must support software code review, noncode research and document review. Begin with the [M0 start checklist](M0-START-HERE.md). Real adapter support, pack activation and model quality remain unimplemented until passing tests.
+
+## 17. Writ Control Center (normative extension)
+
+[ADR-0007](../decisions/ADR-0007-control-center-management-plane.md) and [D-015](DECISION-LOG.md) add the Control Center as a first-class product requirement: **simple for ordinary users, powerful for advanced users, every important action explainable.** Specification: [docs/control-center](../control-center/README.md). It is a separate management plane, never in the decision path, never an authority, never required for headless operation, and not a prerequisite for M1.
+
+| Milestone | Control Center deliverable |
+|---|---|
+| M2, M3 | Management contracts, service APIs, management authorization policy, audit query model, correlation, effect states, explanation service |
+| M4 | Authenticated human approval experience (inbox, step-up, approve, deny, revoke) |
+| M5 | Adapter status, integration diagnostics, coverage labels, host visibility |
+| M6 | Rules, policies, contracts and Capability Pack management; enforcement labels |
+| M7 | Knowledge-base administration and retrieval observability |
+| M8 | Persistent memory and graph management |
+| M9 | Unified local Control Center UI and operational administration; minimum usable Control Center for the first local beta complete |
+| M10+ | Enterprise features where justified |
+
+Details and gates: [implementation plan](../control-center/implementation-plan.md). Status: planned; no Control Center code exists.

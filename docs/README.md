@@ -20,6 +20,7 @@ This documentation replaces the prior V1 docs (including old ADRs, reference pag
 6. [Testing, benchmarks & acceptance](testing/verification-and-benchmarks.md).
 7. [V1 disposition and migration](audit/V1-ARCHITECTURE-BASELINE.md), [migration strategy](migration/v1-to-v2.md).
 8. [Operations](operations/deployment.md), [extensions](architecture/extensibility.md), [observability](architecture/observability.md).
+8a. [Writ Control Center](control-center/README.md): management plane product specification (planned; [ADR-0007](decisions/ADR-0007-control-center-management-plane.md)).
 9. [ADRs](decisions/) for decisions and open questions.
 10. [Live V2 HTML architecture](https://infinri.github.io/Writ/v2/docs/architecture/index.html) ([repository source](architecture/index.html)) — a visual guide, not an alternate source of truth.
 
