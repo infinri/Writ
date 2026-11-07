@@ -8,11 +8,13 @@
 
 ## Recover state first (every new session and after every compaction)
 
-1. `git branch --show-current`, `git status`, `git log --oneline -10`.
+**Start here: read [SESSION-HANDOFF](docs/implementation/SESSION-HANDOFF.md) at the start of every development session and after every compaction. It is the authoritative recovery entry point.**
+
+1. `git branch --show-current`, `git status`, `git log --oneline -10`, `git fetch origin && git rev-parse HEAD origin/v2/architecture-rebuild`.
 2. Read [SESSION-HANDOFF](docs/implementation/SESSION-HANDOFF.md), then [WORK-STATE](docs/implementation/WORK-STATE.md), then active rows in [TASKS](docs/implementation/TASKS.md) and [DECISION-LOG](docs/implementation/DECISION-LOG.md).
 3. If the docs and the repository disagree, reconcile before writing code. The repository is the source of truth, not the previous conversation.
 
-Before compaction or ending a session: update WORK-STATE, TASKS, TEST-EVIDENCE and SESSION-HANDOFF, and record new decisions.
+**Continuity rule.** Before context compaction, milestone completion, or ending a substantive development session, update the authoritative session handoff with verified repository state, implemented versus unimplemented features, test evidence, open risks, decisions, and an executable next-task plan. After context compaction or a new session, read CLAUDE.md and the authoritative session handoff before changing code. Verify git state and resume the next unfinished authorized task without repeating completed work.
 
 ## Authoritative architecture
 
@@ -29,6 +31,7 @@ Non-negotiables: model output is untrusted; packs never grant permissions; appro
 
 ## Commands
 
+- M1 (pinned toolchains, user space): `source m1/tools/env.sh` (install: `m1/tools/install-toolchains.sh`). Rust: `cd m1/rust && cargo build --release --locked && cargo test --release --locked`. Go: `cd m1/go && go vet ./... && go build -o proto ./cmd/proto && go test -race -count=1 ./...`. Fixtures: `python3 m1/driver/parity.py --proto <binary> --manifest m1/fixtures/manifest.json --repeat 2`. Properties: `python3 m1/props/run.py --profile ci --seed 20261107 --rust m1/rust/target/release/proto --go m1/go/proto --out <report.json>`. Fixture drift: `python3 m1/fixtures/export_m0_fixtures.py --check`. Driver and fixture self-tests: `python3 -m unittest discover -s m1/driver/tests`.
 - M0 tests: `cd m0 && .venv/bin/python -m pytest` (create venv: `uv venv m0/.venv -p 3.12 && uv pip install -p m0/.venv/bin/python -r m0/requirements.txt`)
 - Audit artifacts: `cd m0 && .venv/bin/python -m writ_m0.audit generate|check`
 - Docs integrity: `python3 scripts/check-v2-docs.py`

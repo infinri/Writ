@@ -71,3 +71,42 @@ jobs:
           go test -race -count=1 ./...
       - name: Parity driver, all fixture sets
         run: python3 m1/driver/parity.py --proto "$GITHUB_WORKSPACE/m1/go/proto" --manifest m1/fixtures/manifest.json --repeat 2
+  m1-props:
+    name: M1 property and differential tests (required; seeded CI profile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust 1.99.1
+        run: rustup toolchain install 1.99.1 --profile minimal --no-self-update
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+      - name: Build both prototypes independently
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          (cd m1/rust && cargo +1.99.1 build --release --locked)
+          (cd m1/go && go build -o proto ./cmd/proto)
+      - name: Property-found regression cases
+        run: |
+          python3 m1/driver/parity.py --proto "$GITHUB_WORKSPACE/m1/rust/target/release/proto" --manifest m1/props/regressions/manifest.json
+          python3 m1/driver/parity.py --proto "$GITHUB_WORKSPACE/m1/go/proto" --manifest m1/props/regressions/manifest.json
+      - name: Seeded property, invariant and differential campaigns (seeds 20261107 and 1)
+        run: |
+          set -o pipefail
+          for seed in 20261107 1; do
+            python3 m1/props/run.py --profile ci --seed "$seed" --rust "$GITHUB_WORKSPACE/m1/rust/target/release/proto" --go "$GITHUB_WORKSPACE/m1/go/proto" --out "props-ci-$seed.json"
+          done
+      - name: Mutation smoke test (every deliberate mutant must be caught)
+        run: |
+          python3 m1/props/mutants/smoke.py --real "$GITHUB_WORKSPACE/m1/rust/target/release/proto" --seed 7 --cases 300 --out props-smoke-rust.json
+          python3 m1/props/mutants/smoke.py --real "$GITHUB_WORKSPACE/m1/go/proto" --seed 7 --cases 300 --out props-smoke-go.json
+      - name: Upload property reports (reproduction evidence)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m1-props-reports
+          path: |
+            props-ci-*.json
+            props-smoke-*.json
+          if-no-files-found: warn
