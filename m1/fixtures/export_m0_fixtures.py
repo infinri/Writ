@@ -6,6 +6,7 @@ Inputs are the committed contract fixtures only (no M0 Python code is imported):
   all PENDING INDEPENDENT REVIEW (provisional oracle, risk R-ORACLE).
 - the canonical-JSON known vector fixed in D-006.
 - m1/fixtures/acceptance/acceptance-binding.cases.json: hand-reasoned check-acceptance cases (M1-02).
+- m1/fixtures/transition/*.cases.json: hand-reasoned workflow.transition decisions and scenarios (M1-02).
 
 Usage: export_m0_fixtures.py            write sets/*.jsonl
        export_m0_fixtures.py --check    exit 1 if the committed sets are stale
@@ -107,8 +108,77 @@ def acceptance_binding() -> list[str]:
     return out
 
 
+TRANSITION = HERE / "transition"
+
+
+def build_record(base: dict, spec: dict) -> dict:
+    record = merge_patch(base, spec.get("record_patch", {}))
+    for cid, patch in spec.get("criteria_patch", {}).items():
+        matches = [c for c in record["criteria"] if c["criterion_id"] == cid]
+        if len(matches) != 1:
+            raise SystemExit(f"criteria_patch target {cid!r} not unique")
+        matches[0].update(merge_patch(matches[0], patch))
+    record["record_digest"] = d006_digest(record)
+    return record
+
+
+def transition_decisions() -> list[str]:
+    src = json.loads((TRANSITION / "transition-decisions.cases.json").read_text(encoding="utf-8"))
+    bundle = json.loads((TRANSITION / src["bundle"]).read_text(encoding="utf-8"))
+    bundle_sha = d006_digest({k: v for k, v in bundle.items() if k != "publisher_signature"})
+    out = []
+    for case in src["cases"]:
+        request = merge_patch(src["base_request"], case["patch"])
+        if case.get("pin_actual_bundle_sha"):
+            request["policy_bundle_sha"] = bundle_sha
+        out.append(line({
+            "id": case["id"],
+            "input": {"bundle": bundle if case.get("bundle_loaded", True) else None,
+                      "state_revision": src["state_revision"], "now": src["now"], "request": request},
+            "expect": case["expected"],
+            "compare": "fields",
+            "fields": ["status", "reason_code", "matched_rule_ids"],
+            "meta": {"source": "m1/fixtures/transition/transition-decisions.cases.json",
+                     "review_status": src["review_status"], "rationale": case["rationale"]},
+        }))
+    return out
+
+
+def transition_scenarios() -> list[str]:
+    src = json.loads((TRANSITION / "transition-scenarios.cases.json").read_text(encoding="utf-8"))
+    base_record = json.loads(ACCEPTANCE.read_text(encoding="utf-8"))["base_record"]
+
+    def expand_promote(overrides: dict) -> dict:
+        op = merge_patch(src["base_promote"], {k: v for k, v in overrides.items() if k != "record"})
+        op["record"] = build_record(base_record, overrides.get("record", {}))
+        return op
+
+    out = []
+    for case in src["cases"]:
+        steps = []
+        for step in case["steps"]:
+            if "promote" in step and "op" not in step:
+                steps.append(expand_promote(step["promote"]))
+            elif step.get("op") == "promote_concurrent":
+                steps.append({"op": "promote_concurrent", "count": step["count"],
+                              "promote": expand_promote(step["promote"])})
+            else:
+                steps.append(step)
+        out.append(line({
+            "id": case["id"],
+            "input": {"initial": src["base_initial"], "steps": steps},
+            "expect": case["expect"],
+            "compare": "exact",
+            "meta": {"source": "m1/fixtures/transition/transition-scenarios.cases.json",
+                     "review_status": src["review_status"], "rationale": case["rationale"]},
+        }))
+    return out
+
+
 SETS = {"sets/golden-decisions.jsonl": golden_decisions, "sets/canonical-vector.jsonl": canonical_vector,
-        "sets/acceptance-binding.jsonl": acceptance_binding}
+        "sets/acceptance-binding.jsonl": acceptance_binding,
+        "sets/transition-decisions.jsonl": transition_decisions,
+        "sets/transition-scenarios.jsonl": transition_scenarios}
 
 
 def main() -> int:

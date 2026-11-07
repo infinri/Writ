@@ -46,4 +46,4 @@ CI E-013: run [42309913797](https://github.com/infinri/Writ/actions/runs/4230991
 
 ## Next exact action
 
-M1-02: finish the hand-written acceptance-binding fixtures and the transition-decision set before writing either prototype; then M1-03 and M1-04. M1-00 and M1-01 DONE (E-016, E-017).
+Stop for owner review of M1-02 (`docs/implementation/M1-02-FIXTURE-REVIEW.md`), including the open semantics (duplicate JSON keys, normalization, attribute and resource agreement, permit binding for transitions). After review: M1-03 and M1-04 prototypes against identical sets. No comparative benchmarks while on battery or with an uncontrolled governor.

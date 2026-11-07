@@ -142,6 +142,13 @@ SR-06 sandbox facts (preflight PASS, telemetry diagnostic) are recorded in `docs
 - **Command:** `python3 -m unittest discover -s m1/driver/tests -v` (system Python 3.12.3; M0 adapter run with `m0/.venv/bin/python`).
 - **Result:** 11 tests, OK. Correct stub passes all sets; faulty stubs (wrong field, missing answer, non-JSON line, crash exit 3, hang with 2 s timeout, duplicate id, nondeterministic output under `--repeat 3`) each make the driver exit 1 with the fault recorded; report carries manifest, fixture and executable digests; exported sets current. The M0 reference adapter answered 27 of 27 cases (1 canonical vector, 26 golden decisions) through the protocol. Agreement with the M0 oracle is not evidence that the golden expectations are right (R-ORACLE).
 
+### E-018: M1-02 fixture construction checks (no prototype exists)
+
+- **Date:** 2026-11-07. **Commands:** `python3 m1/fixtures/export_m0_fixtures.py` then `--check` (5 sets, 117 cases, current); `jsonschema` (m0 venv): `m1-transition.bundle.json` valid against `policy-bundle.schema.json`; 22 of 23 transition requests valid against `action-request.schema.json` (tx-23 invalid by design).
+- **Consistency check after expectations were frozen:** `python3 m1/driver/parity.py --proto "m0/.venv/bin/python m1/adapters/m0_oracle_proto.py" --sets transition-decisions,golden-decisions,canonical-vector`: 23/23, 26/26, 1/1. This shows agreement with M0 semantics only, not correctness (R-ORACLE); expectations were not edited after the run.
+- **Driver self-tests** with all five sets: 11 of 11 OK.
+- **Not executed:** any implementation of `check-acceptance` or `transition-scenario` (67 cases have no implementation yet); any Rust or Go code; any benchmark.
+
 ## Not yet executed
 
 - SR-06 live-host experiments (0 of 69; sandbox torn down) and full SR-06 acceptance; rule semantic review (M0-01d); independent human golden review (M0-05a).
