@@ -1,0 +1,109 @@
+{
+  "description": "Hand-reasoned check-acceptance cases (M1-02). Expected codes written from SEMANTICS.md before any implementation. PENDING INDEPENDENT REVIEW. Each case applies RFC 7396 merge patches to base_record and base_current; criteria_patch merges into the named criterion; criteria_replace replaces the whole array; record_digest is recomputed after patching unless keep_digest is true.",
+  "review_status": "PENDING INDEPENDENT REVIEW",
+  "base_record": {
+    "contract_version": "m1-draft-1",
+    "acceptance_record_id": "acc-1",
+    "tenant_id": "t1",
+    "project_id": "p1",
+    "task_id": "task-1",
+    "workflow_id": "wf-1",
+    "transition": {"from_state": "verifying", "to_state": "accepted"},
+    "artifact_snapshot_id": "snap-1",
+    "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "acceptance_policy_id": "accept-code-review",
+    "acceptance_policy_version": "3",
+    "policy_bundle_sha": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "state_revision": 7,
+    "status": "accepted",
+    "issued_at": "2026-11-07T10:00:00Z",
+    "expires_at": "2026-11-07T12:00:00Z",
+    "criteria": [
+      {"criterion_id": "build", "mandatory": true, "required_class": "mechanical", "status": "pass", "evaluator_trust": "M", "fresh_until": "2026-11-07T11:30:00Z"},
+      {"criterion_id": "citations", "mandatory": true, "required_class": "evidence", "status": "pass", "evaluator_trust": "E", "fresh_until": "2026-11-07T11:30:00Z"},
+      {"criterion_id": "signoff", "mandatory": true, "required_class": "human", "status": "pass", "evaluator_trust": "H", "fresh_until": "2026-11-07T11:30:00Z"},
+      {"criterion_id": "style", "mandatory": false, "required_class": "model_assisted", "status": "fail", "evaluator_trust": "MA", "fresh_until": "2026-11-07T11:30:00Z"}
+    ]
+  },
+  "base_current": {
+    "tenant_id": "t1",
+    "project_id": "p1",
+    "task_id": "task-1",
+    "workflow_id": "wf-1",
+    "transition": {"from_state": "verifying", "to_state": "accepted"},
+    "artifact_snapshot_id": "snap-1",
+    "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "acceptance_policy_id": "accept-code-review",
+    "acceptance_policy_version": "3",
+    "policy_bundle_sha": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "state_revision": 7,
+    "now": "2026-11-07T11:00:00Z",
+    "consumed_record_ids": []
+  },
+  "cases": [
+    {"id": "pos-01-valid", "expect": {"ok": true}, "rationale": "all mandatory criteria pass from correctly trusted evaluators; optional model-assisted failure ignored"},
+    {"id": "pos-02-single-mandatory", "criteria_replace": [{"criterion_id": "build", "mandatory": true, "required_class": "mechanical", "status": "pass", "evaluator_trust": "M", "fresh_until": "2026-11-07T11:30:00Z"}], "expect": {"ok": true}, "rationale": "one mandatory criterion is enough"},
+    {"id": "pos-03-last-valid-second", "current_patch": {"now": "2026-11-07T11:29:59Z"}, "expect": {"ok": true}, "rationale": "one second before fresh_until and before expires_at"},
+    {"id": "pos-04-other-records-consumed", "current_patch": {"consumed_record_ids": ["acc-0", "acc-2"]}, "expect": {"ok": true}, "rationale": "only this record id matters for replay"},
+
+    {"id": "mal-01-missing-artifact-digest", "record_patch": {"artifact_digest": null}, "expect": {"refusal": "ACCEPTANCE_RECORD_MALFORMED"}, "rationale": "required field absent"},
+    {"id": "mal-02-unknown-field", "record_patch": {"verified_by_agent": true}, "expect": {"refusal": "ACCEPTANCE_RECORD_MALFORMED"}, "rationale": "no extra fields: an agent-added claim cannot ride along"},
+    {"id": "mal-03-empty-criteria", "criteria_replace": [], "expect": {"refusal": "ACCEPTANCE_RECORD_MALFORMED"}, "rationale": "criteria must be non-empty"},
+    {"id": "mal-04-duplicate-criterion", "criteria_replace": [
+      {"criterion_id": "build", "mandatory": true, "required_class": "mechanical", "status": "fail", "evaluator_trust": "M", "fresh_until": "2026-11-07T11:30:00Z"},
+      {"criterion_id": "build", "mandatory": true, "required_class": "mechanical", "status": "pass", "evaluator_trust": "M", "fresh_until": "2026-11-07T11:30:00Z"}],
+      "expect": {"refusal": "ACCEPTANCE_RECORD_MALFORMED"}, "rationale": "duplicate ids could let a passing copy shadow a failing one"},
+    {"id": "mal-05-revision-as-string", "record_patch": {"state_revision": "7"}, "expect": {"refusal": "ACCEPTANCE_RECORD_MALFORMED"}, "rationale": "type confusion"},
+    {"id": "mal-06-uppercase-digest", "record_patch": {"artifact_digest": "sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"}, "expect": {"refusal": "ACCEPTANCE_RECORD_MALFORMED"}, "rationale": "digest must be lowercase hex, so equal digests have one spelling"},
+    {"id": "mal-07-offset-timestamp", "record_patch": {"expires_at": "2026-11-07T12:00:00+00:00"}, "expect": {"refusal": "ACCEPTANCE_RECORD_MALFORMED"}, "rationale": "one timestamp spelling only"},
+    {"id": "mal-08-unknown-trust", "criteria_patch": {"build": {"evaluator_trust": "X"}}, "expect": {"refusal": "ACCEPTANCE_RECORD_MALFORMED"}, "rationale": "enum"},
+    {"id": "mal-09-current-missing-now", "current_patch": {"now": null}, "expect": {"refusal": "CURRENT_STATE_MALFORMED"}, "rationale": "current state is checked first"},
+    {"id": "mal-10-revision-fraction", "record_patch": {"state_revision": 7.5}, "expect": {"refusal": "ACCEPTANCE_RECORD_MALFORMED"}, "rationale": "non-integer number"},
+    {"id": "mal-11-mandatory-as-string", "criteria_patch": {"signoff": {"mandatory": "true"}}, "expect": {"refusal": "ACCEPTANCE_RECORD_MALFORMED"}, "rationale": "type confusion on the flag that decides whether a criterion counts"},
+    {"id": "mal-12-both-malformed", "record_patch": {"tenant_id": ""}, "current_patch": {"state_revision": -1}, "expect": {"refusal": "CURRENT_STATE_MALFORMED"}, "rationale": "current checked before record"},
+
+    {"id": "int-01-tampered-after-digest", "record_patch": {"artifact_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}, "current_patch": {"artifact_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}, "keep_digest": true, "expect": {"refusal": "ACCEPTANCE_RECORD_INVALID"}, "rationale": "record edited to match a new artifact without a new digest"},
+    {"id": "int-02-issued-in-future", "record_patch": {"issued_at": "2026-11-07T11:00:01Z"}, "expect": {"refusal": "ACCEPTANCE_RECORD_INVALID"}, "rationale": "issued after now"},
+    {"id": "int-03-status-inconsistent", "record_patch": {"status": "rejected"}, "expect": {"refusal": "ACCEPTANCE_RECORD_INVALID"}, "rationale": "all mandatory pass but record says rejected: inconsistent record is refused, not reinterpreted"},
+    {"id": "int-04-noop-patch-control", "criteria_patch": {"build": {"evaluator_trust": "M", "status": "pass"}, "signoff": {"evaluator_trust": "H"}}, "record_patch": {"status": "accepted"}, "keep_digest": true, "expect": {"ok": true}, "rationale": "control: patch that changes nothing keeps a valid digest"},
+
+    {"id": "rep-01-consumed", "current_patch": {"consumed_record_ids": ["acc-1"]}, "expect": {"refusal": "ACCEPTANCE_REPLAYED"}, "rationale": "single use"},
+
+    {"id": "scope-01-tenant", "record_patch": {"tenant_id": "t2"}, "expect": {"refusal": "ACCEPTANCE_SCOPE_MISMATCH"}, "rationale": "cross-tenant"},
+    {"id": "scope-02-project", "current_patch": {"project_id": "p2"}, "expect": {"refusal": "ACCEPTANCE_SCOPE_MISMATCH"}, "rationale": "cross-project"},
+    {"id": "scope-03-task", "record_patch": {"task_id": "task-2"}, "expect": {"refusal": "ACCEPTANCE_SCOPE_MISMATCH"}, "rationale": "another task's acceptance"},
+    {"id": "scope-04-workflow", "current_patch": {"workflow_id": "wf-2"}, "expect": {"refusal": "ACCEPTANCE_SCOPE_MISMATCH"}, "rationale": "another workflow"},
+
+    {"id": "tr-01-to-state", "current_patch": {"transition": {"to_state": "deployed"}}, "expect": {"refusal": "ACCEPTANCE_TRANSITION_MISMATCH"}, "rationale": "acceptance for accepted used to deploy"},
+    {"id": "tr-02-from-state", "current_patch": {"transition": {"from_state": "planning"}}, "expect": {"refusal": "ACCEPTANCE_TRANSITION_MISMATCH"}, "rationale": "workflow not in the evaluated state"},
+
+    {"id": "art-01-artifact-replaced", "current_patch": {"artifact_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}, "expect": {"refusal": "ACCEPTANCE_ARTIFACT_MISMATCH"}, "rationale": "artifact substituted after validation"},
+    {"id": "art-02-snapshot-swapped", "current_patch": {"artifact_snapshot_id": "snap-2"}, "expect": {"refusal": "ACCEPTANCE_ARTIFACT_MISMATCH"}, "rationale": "same digest claimed but different snapshot identity"},
+
+    {"id": "pol-01-version", "current_patch": {"acceptance_policy_version": "4"}, "expect": {"refusal": "ACCEPTANCE_POLICY_MISMATCH"}, "rationale": "policy changed since evaluation"},
+    {"id": "pol-02-bundle-downgrade", "record_patch": {"policy_bundle_sha": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}, "expect": {"refusal": "ACCEPTANCE_POLICY_MISMATCH"}, "rationale": "record evaluated under a different bundle"},
+    {"id": "pol-03-policy-id", "record_patch": {"acceptance_policy_id": "accept-lenient"}, "expect": {"refusal": "ACCEPTANCE_POLICY_MISMATCH"}, "rationale": "agent-chosen weaker policy"},
+
+    {"id": "rev-01-revision-moved", "current_patch": {"state_revision": 8}, "expect": {"refusal": "ACCEPTANCE_REVISION_MISMATCH"}, "rationale": "stale workflow revision"},
+
+    {"id": "exp-01-at-expiry", "current_patch": {"now": "2026-11-07T12:00:00Z"}, "criteria_patch": {"build": {"fresh_until": "2026-11-07T13:00:00Z"}, "citations": {"fresh_until": "2026-11-07T13:00:00Z"}, "signoff": {"fresh_until": "2026-11-07T13:00:00Z"}}, "expect": {"refusal": "ACCEPTANCE_EXPIRED"}, "rationale": "expiry is exclusive"},
+
+    {"id": "crit-01-model-says-tests-pass", "criteria_patch": {"build": {"evaluator_trust": "MA"}}, "expect": {"refusal": "ACCEPTANCE_UNTRUSTED_EVALUATOR"}, "rationale": "model-assisted result on a mechanical criterion"},
+    {"id": "crit-02-transcript-approval", "criteria_patch": {"signoff": {"evaluator_trust": "U"}}, "expect": {"refusal": "ACCEPTANCE_UNTRUSTED_EVALUATOR"}, "rationale": "untrusted source for a human signoff"},
+    {"id": "crit-03-wrong-trusted-class", "criteria_patch": {"citations": {"evaluator_trust": "M"}}, "expect": {"refusal": "ACCEPTANCE_UNTRUSTED_EVALUATOR"}, "rationale": "trust must match the class exactly, not exceed it"},
+    {"id": "crit-04-evaluator-unavailable", "criteria_patch": {"citations": {"status": "unknown"}}, "record_patch": {"status": "incomplete"}, "expect": {"refusal": "ACCEPTANCE_INCOMPLETE"}, "rationale": "unavailable evaluator never passes"},
+    {"id": "crit-05-failed", "criteria_patch": {"build": {"status": "fail"}}, "record_patch": {"status": "rejected"}, "expect": {"refusal": "ACCEPTANCE_INCOMPLETE"}, "rationale": "failed mandatory criterion"},
+    {"id": "crit-06-fresh-until-reached", "criteria_patch": {"signoff": {"fresh_until": "2026-11-07T11:00:00Z"}}, "expect": {"refusal": "ACCEPTANCE_STALE"}, "rationale": "freshness is exclusive"},
+    {"id": "crit-07-marked-stale", "criteria_patch": {"citations": {"status": "stale"}}, "expect": {"refusal": "ACCEPTANCE_STALE"}, "rationale": "evidence source changed"},
+    {"id": "crit-08-waived", "criteria_patch": {"signoff": {"status": "waived"}}, "expect": {"refusal": "ACCEPTANCE_INCOMPLETE"}, "rationale": "no waivers in M1"},
+    {"id": "crit-09-no-mandatory", "criteria_patch": {"build": {"mandatory": false}, "citations": {"mandatory": false}, "signoff": {"mandatory": false}}, "expect": {"refusal": "ACCEPTANCE_INCOMPLETE"}, "rationale": "a policy with no mandatory criterion fails closed"},
+    {"id": "crit-10-order-by-id", "criteria_patch": {"build": {"evaluator_trust": "MA"}, "citations": {"status": "fail"}}, "expect": {"refusal": "ACCEPTANCE_UNTRUSTED_EVALUATOR"}, "rationale": "build sorts before citations"},
+    {"id": "crit-11-untrusted-before-status", "criteria_patch": {"build": {"evaluator_trust": "U", "status": "fail"}}, "expect": {"refusal": "ACCEPTANCE_UNTRUSTED_EVALUATOR"}, "rationale": "trust checked before status within a criterion"},
+    {"id": "crit-12-optional-untrusted-ignored", "criteria_patch": {"style": {"evaluator_trust": "U", "status": "pass"}}, "expect": {"ok": true}, "rationale": "non-mandatory criteria never affect the result"},
+
+    {"id": "ord-01-scope-before-artifact", "record_patch": {"tenant_id": "t2"}, "current_patch": {"artifact_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}, "expect": {"refusal": "ACCEPTANCE_SCOPE_MISMATCH"}, "rationale": "check order"},
+    {"id": "ord-02-replay-before-scope", "record_patch": {"project_id": "p9"}, "current_patch": {"consumed_record_ids": ["acc-1"]}, "expect": {"refusal": "ACCEPTANCE_REPLAYED"}, "rationale": "check order"},
+    {"id": "ord-03-integrity-before-replay", "record_patch": {"task_id": "task-9"}, "current_patch": {"consumed_record_ids": ["acc-1"]}, "keep_digest": true, "expect": {"refusal": "ACCEPTANCE_RECORD_INVALID"}, "rationale": "check order"},
+    {"id": "ord-04-expiry-before-criteria", "current_patch": {"now": "2026-11-07T12:30:00Z"}, "expect": {"refusal": "ACCEPTANCE_EXPIRED"}, "rationale": "criteria are also stale here, but expiry is checked first"}
+  ]
+}

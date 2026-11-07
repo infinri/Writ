@@ -5,6 +5,7 @@ Inputs are the committed contract fixtures only (no M0 Python code is imported):
 - docs/contracts/fixtures/decisions/m0-golden.json: 26 hand-reasoned golden decisions,
   all PENDING INDEPENDENT REVIEW (provisional oracle, risk R-ORACLE).
 - the canonical-JSON known vector fixed in D-006.
+- m1/fixtures/acceptance/acceptance-binding.cases.json: hand-reasoned check-acceptance cases (M1-02).
 
 Usage: export_m0_fixtures.py            write sets/*.jsonl
        export_m0_fixtures.py --check    exit 1 if the committed sets are stale
@@ -71,7 +72,43 @@ def canonical_vector() -> list[str]:
     })]
 
 
-SETS = {"sets/golden-decisions.jsonl": golden_decisions, "sets/canonical-vector.jsonl": canonical_vector}
+ACCEPTANCE = HERE / "acceptance/acceptance-binding.cases.json"
+
+
+def d006_digest(value) -> str:
+    """Digest for fixture construction only (keys here are ASCII, no floats in valid records)."""
+    text = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def acceptance_binding() -> list[str]:
+    src = json.loads(ACCEPTANCE.read_text(encoding="utf-8"))
+    base_digest = d006_digest(src["base_record"])
+    out = []
+    for case in src["cases"]:
+        record = merge_patch(src["base_record"], case.get("record_patch", {}))
+        if "criteria_replace" in case:
+            record["criteria"] = copy.deepcopy(case["criteria_replace"])
+        for cid, patch in case.get("criteria_patch", {}).items():
+            matches = [c for c in record["criteria"] if c["criterion_id"] == cid]
+            if len(matches) != 1:
+                raise SystemExit(f"{case['id']}: criteria_patch target {cid!r} not unique")
+            matches[0].update(merge_patch(matches[0], patch))
+        record["record_digest"] = base_digest if case.get("keep_digest") else d006_digest(record)
+        current = merge_patch(src["base_current"], case.get("current_patch", {}))
+        out.append(line({
+            "id": case["id"],
+            "input": {"record": record, "current": current},
+            "expect": case["expect"],
+            "compare": "exact",
+            "meta": {"source": "m1/fixtures/acceptance/acceptance-binding.cases.json",
+                     "review_status": src["review_status"], "rationale": case["rationale"]},
+        }))
+    return out
+
+
+SETS = {"sets/golden-decisions.jsonl": golden_decisions, "sets/canonical-vector.jsonl": canonical_vector,
+        "sets/acceptance-binding.jsonl": acceptance_binding}
 
 
 def main() -> int:

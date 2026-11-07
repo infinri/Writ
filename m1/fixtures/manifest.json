@@ -14,6 +14,13 @@
       "file": "sets/golden-decisions.jsonl",
       "hard_gate": true,
       "provenance": "docs/contracts/fixtures/decisions/m0-golden.json (26 hand-reasoned cases, PENDING INDEPENDENT REVIEW)"
+    },
+    {
+      "name": "acceptance-binding",
+      "command": "check-acceptance",
+      "file": "sets/acceptance-binding.jsonl",
+      "hard_gate": true,
+      "provenance": "m1/fixtures/acceptance/acceptance-binding.cases.json (hand-reasoned from SEMANTICS.md, PENDING INDEPENDENT REVIEW)"
     }
   ]
 }

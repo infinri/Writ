@@ -102,7 +102,8 @@ class DriverTests(unittest.TestCase):
 
     @unittest.skipUnless(M0_PY.exists(), "M0 Python (WRIT_M0_PYTHON or m0/.venv) not present")
     def test_m0_reference_adapter_through_protocol(self):
-        code, report = self.run_driver(f"{M0_PY} {ADAPTER}")
+        # The M0 harness has no check-acceptance; only the sets it implements are run.
+        code, report = self.run_driver(f"{M0_PY} {ADAPTER}", "echo", "--sets", "canonical-vector,golden-decisions")
         self.assertEqual(code, 0, json.dumps(report.get("sets"), indent=1)[:2000])
         self.assertEqual(report["summary"]["passed"], 27)
 
