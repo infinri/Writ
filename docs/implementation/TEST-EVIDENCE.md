@@ -129,7 +129,20 @@ SR-06 sandbox facts (preflight PASS, telemetry diagnostic) are recorded in `docs
 - **Limitation:** a web UI comment cannot be cryptographically distinguished from an API comment by the same account; Claude posted no comment.
 - **Docs commits:** `ae7944f`, `606ab5c` pushed (origin `38e2d1f..606ab5c`, no force); CI run https://github.com/infinri/Writ/actions/runs/42320181315 success on `606ab5c`.
 
+### E-016: M1-00 toolchain installation and smoke tests
+
+- **Date:** 2026-11-07. **Script:** `m1/tools/install-toolchains.sh` (pinned versions, SHA-256 and GPG fingerprints).
+- **Result:** Rust 1.99.1 archive SHA-256 `231fcae4...76cfe7` OK, good signature from primary key `108F66205EAEB0AAA8DD5E1C85AB96E6FA1BE5FE`; Go 1.27.3 archive SHA-256 `65efbc80...379b40` OK (matches go.dev JSON), good signature from primary key `EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796`. Installed to `~/.local/writ-m1-toolchains`; no prior Rust or Go present; no sudo.
+- **Versions:** `rustc 1.99.1 (58cf8f9c3 2026-10-13)`, LLVM 23.1.1; `cargo 1.99.1 (5f94df478 2026-08-27)`; `go version go1.27.3 linux/amd64`; `GOTOOLCHAIN=local`; Go telemetry mode `local` (no upload).
+- **Smoke:** `m1/tools/smoke/run.sh` printed `rust-smoke ok sum=55`, `Hello, world!` (cargo), `go-smoke ok sum=55 sha256(writ)=bd998adf...46bc8adbb` (equal to `sha256sum`), `smoke: all passed`; `go vet` clean.
+- Details: [BENCHMARK-ENVIRONMENT](BENCHMARK-ENVIRONMENT.md).
+
+### E-017: M1-01 parity driver self-tests
+
+- **Command:** `python3 -m unittest discover -s m1/driver/tests -v` (system Python 3.12.3; M0 adapter run with `m0/.venv/bin/python`).
+- **Result:** 11 tests, OK. Correct stub passes all sets; faulty stubs (wrong field, missing answer, non-JSON line, crash exit 3, hang with 2 s timeout, duplicate id, nondeterministic output under `--repeat 3`) each make the driver exit 1 with the fault recorded; report carries manifest, fixture and executable digests; exported sets current. The M0 reference adapter answered 27 of 27 cases (1 canonical vector, 26 golden decisions) through the protocol. Agreement with the M0 oracle is not evidence that the golden expectations are right (R-ORACLE).
+
 ## Not yet executed
 
 - SR-06 live-host experiments (0 of 69; sandbox torn down) and full SR-06 acceptance; rule semantic review (M0-01d); independent human golden review (M0-05a).
-- Any Rust or Go build, and any performance benchmark.
+- Any Rust or Go prototype build, and any performance benchmark (toolchain smoke builds only, E-016).

@@ -35,3 +35,7 @@ jobs:
       - name: Check generated audit evidence is current
         working-directory: m0
         run: python -m writ_m0.audit check
+      - name: M1 parity driver self-tests and fixture drift
+        env:
+          WRIT_M0_PYTHON: ${{ env.pythonLocation }}/bin/python
+        run: python -m unittest discover -s m1/driver/tests -v

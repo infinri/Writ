@@ -1,0 +1,19 @@
+{
+  "description": "M1 parity fixture sets. Every set is identical for Rust and Go. Provenance per set; golden decisions are a provisional oracle (PENDING INDEPENDENT REVIEW, risk R-ORACLE).",
+  "sets": [
+    {
+      "name": "canonical-vector",
+      "command": "canonical",
+      "file": "sets/canonical-vector.jsonl",
+      "hard_gate": true,
+      "provenance": "D-006 known vector, expected text written by hand"
+    },
+    {
+      "name": "golden-decisions",
+      "command": "decide",
+      "file": "sets/golden-decisions.jsonl",
+      "hard_gate": true,
+      "provenance": "docs/contracts/fixtures/decisions/m0-golden.json (26 hand-reasoned cases, PENDING INDEPENDENT REVIEW)"
+    }
+  ]
+}

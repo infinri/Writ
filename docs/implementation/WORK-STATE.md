@@ -46,4 +46,4 @@ CI E-013: run [42309913797](https://github.com/infinri/Writ/actions/runs/4230991
 
 ## Next exact action
 
-M1-00: install pinned Rust and Go toolchains in user space and record versions (owner confirmation of the install requested first). Then M1-01 (parity driver) and M1-02 (hand-reasoned acceptance fixtures).
+M1-02: finish the hand-written acceptance-binding fixtures and the transition-decision set before writing either prototype; then M1-03 and M1-04. M1-00 and M1-01 DONE (E-016, E-017).

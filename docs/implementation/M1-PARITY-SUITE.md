@@ -55,16 +55,24 @@ Selection still follows the rule below: hard gates first, then the weighted rubr
 
 ## Prototype interface
 
-Each prototype ships one binary exposing line-delimited JSON commands so one harness drives both:
+Each prototype ships one binary, `proto <command>`, driven by the language-neutral parity driver `m1/driver/parity.py` (M1-01). Every command uses the same JSON Lines envelope:
 
 ```text
-proto canonical            stdin: JSON value         stdout: {"canonical": "<utf8>", "digest": "sha256:..."} | {"error": "..."}
-proto decide               stdin: {"bundle": {...}|null, "state_revision": N, "now": "<rfc3339>", "request": {...}}
-                           stdout: Decision JSON
-proto decide-batch         stdin: JSON lines of the above   stdout: JSON lines of Decisions (for workload A)
-proto broker-scenario      stdin: scenario JSON              stdout: receipts and refusal codes
-proto check-acceptance     stdin: {"record": {...}, "current": {...}}   stdout: {"ok": true} | {"refusal": "<CODE>"}
+stdin   one object per line: {"id": "<case id>", "input": <JSON value>}
+                          or {"id": "<case id>", "input_text": "<raw JSON text the prototype must parse itself>"}
+stdout  exactly one object per input line, any order: {"id": "<case id>", "output": {...}}
+exit    0 when every line was answered; a refusal or rejection is an output, never a crash
 ```
+
+| Command | `input` / `input_text` | `output` |
+|---|---|---|
+| `canonical` | `input_text`: raw JSON (parsing is part of the test) | `{"canonical": "<utf8>", "digest": "sha256:..."}` or `{"error": "<CODE>"}` |
+| `decide` | `{"bundle": {...} \| null, "state_revision": N, "now": "<rfc3339>", "request": {...}}` | Decision JSON (`status`, `reason_code`, `matched_rule_ids`, ...) |
+| `decide-batch` | same as `decide`, many lines (workload A) | Decisions |
+| `broker-scenario` | scenario JSON | receipts and refusal codes |
+| `check-acceptance` | `{"record": {...}, "current": {...}}` | `{"ok": true}` or `{"refusal": "<CODE>"}` |
+
+The driver records the prototype argv and executable digest, manifest and fixture-file digests, repository commit, per-set pass and fail counts, protocol errors (missing, duplicate, unknown or non-JSON lines, crash, timeout) and nondeterminism across `--repeat` runs. It exits 0 only if every selected set passes. Self-tests: `python3 -m unittest discover -s m1/driver/tests`.
 
 Neither prototype may link a model-provider SDK, an AgentRunner, or a pack module into the decision path (INV-21, ADR-0006).
 
