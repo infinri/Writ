@@ -1,6 +1,6 @@
 # Acceptance Gate Integrity
 
-**Status:** requirement ACCEPTED as a core architectural requirement (owner direction 2026-11-06, [D-016](../implementation/DECISION-LOG.md)); design **PROPOSED** ([ADR-0008](../decisions/ADR-0008-acceptance-gate-integrity.md)). Documentation only. Section 12 separates what the M0 reference harness does from what is not implemented.
+**Status:** requirement ACCEPTED as a core architectural requirement (owner direction 2026-11-06, [D-016](../implementation/DECISION-LOG.md)); design **APPROVED IN PRINCIPLE** by the owner 2026-11-07, not ACCEPTED until sections 6a and 12a are reviewed ([ADR-0008](../decisions/ADR-0008-acceptance-gate-integrity.md)). Documentation only. Section 12 separates what the M0 reference harness does from what is not implemented.
 
 **Objective.** Writ acts as an independent authority for governed AI execution and verified workflow acceptance. The AI proposes actions and produces work; it cannot authorize its own execution, invent independent verification, or promote incomplete work across protected boundaries.
 
@@ -95,6 +95,16 @@ The workflow state store accepts writes only from the transition service identit
 
 Composite transitions (promote and deploy in one request) are prohibited until RM-01 is resolved; each effect is a separate governed request.
 
+## 6a. Immutable artifact snapshots and use-time mediation
+
+Recomputing a digest at promotion time is not enough if the artifact lives in a location the agent or another process can change between evaluation, promotion and the downstream effect (publish, deploy). Governed Execution therefore requires one of these, per artifact class, declared in the acceptance policy:
+
+1. **Content-addressed snapshot (default).** At evaluation request time the artifact service copies the artifact into a content-addressed store keyed by its digest. The store is writable only by the artifact service and readable by evaluators, the mechanical runner, the transition service and effect adapters. Evaluators and the runner receive the snapshot (read-only mount or byte stream), never the agent's working copy. The transition and every downstream effect (publish, deploy, release) consume **the snapshot by digest**, not a path. Changing the working copy after evaluation cannot change what was evaluated or what is promoted; it only creates a new artifact needing its own record.
+2. **Use-time mediation (when a snapshot is impractical, for example a large repository).** The effect adapter resolves the artifact at use time through a mediated, non-following path (no symlink traversal outside the canonical root, open-by-handle, then hash the opened content) and compares the digest under the same handle it then uses for the effect. Only digest-and-use under one handle counts; check-then-reopen does not.
+3. **External systems** (registries, deployment targets) are trusted only if they accept an immutable digest reference (for example an image digest) and the adapter verifies the digest the target reports after the effect; otherwise the step is labelled UNVERIFIED.
+
+Rules: the AcceptanceRecord binds the snapshot digest (`artifact_digest`) and snapshot id; a record bound to a mutable path is invalid in Governed Execution; snapshots are retained at least until every record and receipt referencing them expires. Tests: AG-NEG-11 working copy modified after evaluation, promoted bytes equal the evaluated snapshot; AG-ADV-17 symlink or path swap between check and use under use-time mediation is refused; AG-CON-04 concurrent writer during snapshot creation yields either the old or the new digest, never a mixed snapshot bound to either. Relates to the M3 TOCTOU risk (INV-14) and RM-01.
+
 ## 7. Invalidation and reevaluation
 
 | Trigger | Effect |
@@ -138,7 +148,7 @@ Recovery: reevaluate and request a new record; failed or stale criteria remain v
 
 ## 10. Adversarial resistance
 
-Boundary column: **P** = prevented by Writ's trusted execution boundary in Governed Execution; **D** = detected or labelled, not prevented; **O** = outside Writ's control.
+Boundary column: **P** = designed to be prevented by Writ's trusted execution boundary in Governed Execution; **D** = detected or labelled, not prevented; **O** = outside Writ's control. Every row is at the **Designed** level (section 12a); none is a tested or verified claim yet.
 
 | # | Threat | Control | Boundary | Tests |
 |---|---|---|---|---|
@@ -146,7 +156,7 @@ Boundary column: **P** = prevented by Writ's trusted execution boundary in Gover
 | 2 | Fabricated test results | Only runner attestations count (INV-35) | P | AG-NEG-03 |
 | 3 | Forged human approval | Approval service plus step-up; transcript never a credential (INV-02) | P | AG-NEG-05 |
 | 4 | Agent evidence marked verified | Producer status ignored; trust level from registry (INV-34) | P | AG-NEG-04 |
-| 5 | Artifact replaced after validation | Digest recomputed at use time (INV-33) | P | AG-NEG-01 |
+| 5 | Artifact replaced after validation | Immutable snapshot consumed by digest, or digest-and-use under one handle (section 6a); digest recomputed at use time (INV-33) | P (designed) | AG-NEG-01, AG-NEG-11, AG-ADV-17 |
 | 6 | Approval or evaluation replay | Single-use consume of record and grant | P | AG-CON-02 |
 | 7 | Cross-project or cross-tenant confusion | Scope bindings on record, permit and evidence | P | AG-NEG-02 |
 | 8 | Unknown tools or alternate execution routes | Default deny for governed profile; unmediated routes labelled | P for broker-owned routes; D or O for routes the agent can reach without Writ | AG-ADV-08 |
@@ -166,11 +176,11 @@ Outside Writ's control: host OS compromise; OS, kernel or container escape; agen
 | Group | Tests |
 |---|---|
 | Positive | AG-POS-01 all mandatory criteria pass from trusted evaluators, kernel allows, transition commits once; AG-POS-02 waivable criterion waived by authorized human is recorded `waived` |
-| Negative | AG-NEG-01 artifact digest changed after evaluation; AG-NEG-02 tenant, project or task mismatch on record, evidence or signoff; AG-NEG-03 agent-supplied test result file; AG-NEG-04 producer `verified` evidence; AG-NEG-05 transcript "approved"; AG-NEG-06 model-assisted pass on a mechanical criterion; AG-NEG-07 expired or stale criterion; AG-NEG-08 composite transition plus effect; AG-NEG-09 acceptance policy version changed; AG-NEG-10 record without valid issuer signature |
+| Negative | AG-NEG-11 working copy changed after evaluation, promoted bytes equal the snapshot; AG-NEG-01 artifact digest changed after evaluation; AG-NEG-02 tenant, project or task mismatch on record, evidence or signoff; AG-NEG-03 agent-supplied test result file; AG-NEG-04 producer `verified` evidence; AG-NEG-05 transcript "approved"; AG-NEG-06 model-assisted pass on a mechanical criterion; AG-NEG-07 expired or stale criterion; AG-NEG-08 composite transition plus effect; AG-NEG-09 acceptance policy version changed; AG-NEG-10 record without valid issuer signature |
 | Differential | AG-DIF-01 Rust and Go binding checks agree on every fixture and on generated single-field mutations; AG-DIF-02 identical decisions for `workflow.transition` across hosts and packs |
-| Adversarial | AG-ADV-01 injected policy text; AG-ADV-08 alternate route to state store; AG-ADV-09 pack or agent edits acceptance policy; AG-ADV-10 downgraded bundle; AG-ADV-12 direct state-store write with agent credentials; AG-ADV-15 memory claiming authority; AG-ADV-16 revoked evaluator key |
+| Adversarial | AG-ADV-01 injected policy text; AG-ADV-08 alternate route to state store; AG-ADV-09 pack or agent edits acceptance policy; AG-ADV-10 downgraded bundle; AG-ADV-12 direct state-store write with agent credentials; AG-ADV-15 memory claiming authority; AG-ADV-16 revoked evaluator key; AG-ADV-17 path or symlink swap between check and use |
 | Failure | AG-FAIL-01 evaluator timeout; AG-FAIL-02 malformed output; AG-FAIL-03 acceptance service down; AG-FAIL-04 audit store down; AG-FAIL-05 crash between CAS and receipt |
-| Concurrency | AG-CON-01 16 concurrent promotions on one revision, exactly one commits; AG-CON-02 replay of a consumed record; AG-CON-03 promotion racing an artifact update |
+| Concurrency | AG-CON-01 16 concurrent promotions on one revision, exactly one commits; AG-CON-02 replay of a consumed record; AG-CON-03 promotion racing an artifact update; AG-CON-04 concurrent writer during snapshot creation |
 | Property | AG-PROP-01 any single-field mutation of a bound field refuses; AG-PROP-02 adding untrusted criteria never changes `rejected` or `incomplete` to `accepted` |
 
 Adversarial tests run only in disposable environments (threat model rule).
@@ -185,12 +195,25 @@ Adversarial tests run only in disposable environments (threat model rule).
 | Governed Execution restrictions (sandboxed effect adapters, credential isolation) | **Not implemented** |
 | Host enforcement of any kind | **Not verified** (SR-06) |
 
+## 12a. Guarantee levels and claim discipline
+
+Every defense in this document is tracked at one of four levels. Documentation, the Control Center and release notes must state the level, and may claim only what that level supports.
+
+| Level | Meaning | Allowed claim |
+|---|---|---|
+| **Designed** | Specified here; no running code | "Designed to prevent X" |
+| **Tested (unit or reference)** | Passing tests in the reference harness or a prototype, in-process, simulated adversary | "Tested in the reference harness or prototype against X" |
+| **Tested (integration and threat)** | Passing integration and adversarial tests against real services and storage in a disposable environment | "Tested against X in integration" with the environment named |
+| **Verified (real host)** | Integration and threat tests pass against the real host integration (for example SR-06 class trials for Claude Code) at a named host version, with recorded evidence | "Verified on host H version V for X" |
+
+Current level of every Acceptance Gate defense: **Designed**, except the evaluation behaviors listed in section 12 at **Tested (unit or reference)** in the Python harness. **No adversarial bypass resistance is claimed** for any component until the relevant integration and threat tests (section 11, AG-ADV and AG-CON groups, and SR-06 for hosts) pass at the integration or verified level, and the claim names the level, environment and version.
+
 ## 13. Milestone alignment and sequencing changes
 
 | Milestone | AGI scope |
 |---|---|
 | M1 | Kernel semantics for `workflow.transition`; pure acceptance-binding check in both prototypes; CAS and single-use semantics in the broker scenario; differential and property tests ([M1 parity suite](../implementation/M1-PARITY-SUITE.md)). Not the evaluation platform |
-| M2 | AcceptanceRecord, EvaluationRecord scope fields, evaluator registry entry, runner attestation contracts; workflow state machine with protected states; INV-32..INV-39 as contract tests |
+| M2 | AcceptanceRecord, EvaluationRecord scope fields, evaluator registry entry, runner attestation contracts; workflow state machine with protected states; INV-32..INV-40 as contract tests |
 | M3 | Transition service with CAS, single-use records, use-time recomputation; mechanical runner as a sandboxed broker effect; audit events |
 | M4 | Authenticated signoff provenance; waivers as approvals |
 | M5 | Host adapters; proof of which host operations are mediated; advisory labelling of host-side transitions |

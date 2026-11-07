@@ -1,6 +1,8 @@
 # ADR-0008: Acceptance Gate Integrity
 
-**Status:** PROPOSED (design) · requirement ACCEPTED by owner direction 2026-11-06 ([D-016](../implementation/DECISION-LOG.md)) · 2026-11-06
+**Status:** APPROVED IN PRINCIPLE (owner, 2026-11-07); not ACCEPTED until the conditions below are documented and reviewed · requirement ACCEPTED by owner direction 2026-11-06 ([D-016](../implementation/DECISION-LOG.md))
+
+**Owner conditions for ACCEPTED (2026-11-07):** (a) immutable artifact snapshots or equivalent use-time mediation sufficient to prevent artifact substitution and external TOCTOU races, documented in section 6a of the specification; (b) a clear distinction between designed defenses, tested defenses and verified real-host guarantees, documented in section 12a; (c) no claim of adversarial bypass resistance until the relevant integration and threat tests pass. (a) and (b) are now drafted; review pending.
 
 ## Context
 
@@ -14,7 +16,9 @@ Writ's differentiator is that authorization and acceptance requirements are enfo
 4. Evaluator trust comes only from a human-published registry; mechanical results count only from the Writ-controlled runner; model-assisted results never satisfy mechanical, evidence or human criteria.
 5. Invalidation is enforced at use time by recomputing bindings.
 6. Two labelled modes: Advisory Integration and Governed Execution; advisory transitions are never shown as governed.
-7. Proposed invariants INV-32 to INV-39 and the sequencing changes in section 13 of the specification.
+7. Promotion and downstream effects consume an immutable content-addressed snapshot by digest, or digest-and-use under one mediated handle; mutable-path bindings are invalid in Governed Execution.
+8. Guarantee levels Designed, Tested (unit or reference), Tested (integration and threat) and Verified (real host); claims never exceed the recorded level.
+9. Proposed invariants INV-32 to INV-40 and the sequencing changes in section 13 of the specification.
 
 ## Alternatives rejected
 

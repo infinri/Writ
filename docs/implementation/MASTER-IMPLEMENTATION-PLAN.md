@@ -43,7 +43,7 @@ V2 must be useful as a fast local tool without Neo4j availability on every actio
 | P-21 | Management plane outside the decision path | CC-SEC-01: management service absent or overloaded, decisions and kernel p95 unchanged (INV-27) |
 | P-22 | Every important action explainable | "Why did this happen?" for every decision status and effect state from recorded records only (CC-G06, CC-SEC-11, CC-UX-09) |
 | P-23 | Administrative changes authenticated, authorized, audited and versioned; no bypass of mandatory invariants | CC-SEC-02, 04, 08, 12, 13 (INV-28..INV-30) |
-| P-25 | Acceptance Gate Integrity: no protected workflow transition without kernel authorization and a current, bound AcceptanceRecord from trusted evaluators | AG test plan in [acceptance gate integrity](../architecture/acceptance-gate-integrity.md#11-test-plan-proposed) (INV-32..INV-39, proposed) |
+| P-25 | Acceptance Gate Integrity: no protected workflow transition without kernel authorization and a current, bound AcceptanceRecord from trusted evaluators | AG test plan in [acceptance gate integrity](../architecture/acceptance-gate-integrity.md#11-test-plan-proposed) (INV-32..INV-40, proposed) |
 | P-26 | No self-certification: agents, models and packs cannot produce passing mandatory criteria, signoffs or acceptance records | AG-NEG-03..06, AG-ADV-09 |
 | P-27 | Honest modes: Advisory Integration never presented as Governed Execution | INV-39; Control Center labels |
 | P-24 | Headless operation and CLI parity | Kernel, broker and adapters run without the UI; essential operations available in CLI and API (CC-G13, CC-G14) |

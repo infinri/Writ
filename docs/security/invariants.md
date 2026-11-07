@@ -42,6 +42,7 @@
 | INV-36 | (PROPOSED) Changes to artifact, evidence, acceptance policy, evaluator version or key, scope or state revision make an AcceptanceRecord unusable, enforced at use time | Promotion racing an artifact update (AG-CON-03) |
 | INV-37 | (PROPOSED) Acceptance requirements are versioned policy; agents and packs cannot create, weaken or waive them; invariant-derived criteria are never waivable | Pack or agent edits acceptance policy (AG-ADV-09) |
 | INV-38 | (PROPOSED) In Governed Execution, missing, failed, stale, unverifiable or malformed mandatory evidence, or an unavailable evaluator or acceptance service, refuses the protected transition | Evaluator timeout and malformed output (AG-FAIL-01..03) |
+| INV-40 | (PROPOSED) Promotion and downstream effects use the evaluated immutable snapshot by digest, or digest-and-use under one mediated handle; a record bound to a mutable path is invalid in Governed Execution | Modify working copy after evaluation; path swap between check and use (AG-NEG-11, AG-ADV-17) |
 | INV-39 | (PROPOSED) Advisory Integration never reports a transition or effect as governed or verified; the mode is recorded on every record | Advisory-mode promotion displayed in the Control Center |
 
 ## Verification levels
