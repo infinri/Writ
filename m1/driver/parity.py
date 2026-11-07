@@ -46,7 +46,7 @@ def sha256_file(path: Path) -> str:
 
 def load_cases(path: Path) -> list[dict]:
     cases, seen = [], set()
-    for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    for n, line in enumerate(path.read_text(encoding="utf-8").split("\n"), 1):
         if not line.strip():
             continue
         case = json.loads(line)
@@ -118,7 +118,7 @@ def invoke(proto: list[str], command: str, payload: bytes, timeout: float) -> di
 def parse_responses(stdout: bytes, case_ids: list[str]) -> tuple[dict, list[str]]:
     responses, problems = {}, []
     expected = set(case_ids)
-    for n, raw in enumerate(stdout.decode("utf-8", "replace").splitlines(), 1):
+    for n, raw in enumerate(stdout.decode("utf-8", "replace").split("\n"), 1):
         if not raw.strip():
             continue
         try:

@@ -82,6 +82,11 @@ exit    0 when every line was answered; a refusal or rejection is an output, nev
 | `external-refusal` | `{"internal_code": "<CODE>"}` | `{"external": "<CODE>"}` |
 | `broker-scenario` | `{"initial": {...}, "steps": [...]}` | `{"steps": [...], "final": {...}}` |
 
+**Protocol clarifications (M1-05 findings, proposed by Claude 2026-11-07, pending owner confirmation; no security semantics change).**
+- Envelope: each non-blank line is parsed with the strict rules (so `NaN` anywhere in an envelope is invalid); whitespace-only lines are ignored. It must be an object with a string `id` and exactly one of `input` (any JSON value) or `input_text` (a string). A line that violates this but has a readable string `id` is answered `{"id", "output": {"error": "ENVELOPE_INVALID"}}`; a line without a readable `id` is skipped and the process exits 1 after answering every other line.
+- `transition-scenario` and `broker-scenario`: input that is not structurally usable (missing or non-array `steps`, missing or non-object `initial` or missing required state fields, `count` not a positive integer, unknown `fault` or dependency status, a step that is not an object) returns `{"input_error": "INPUT_MALFORMED"}` for the whole scenario and never crashes; an unknown `op` is refused `OPERATION_UNKNOWN`. `approve` with a `grant_ref` already in use is refused `GRANT_REF_IN_USE` (a label never resets a grant's uses). `present_permit` naming a step that issued no permit is `PERMIT_MISSING`.
+- Object member order never affects any comparison (RFC 8259, D-006); only the fields listed in a command's comparison are fixed by the fixtures.
+
 The driver records the prototype argv and executable digest, manifest and fixture-file digests, repository commit, per-set pass and fail counts, protocol errors (missing, duplicate, unknown or non-JSON lines, crash, timeout) and nondeterminism across `--repeat` runs. It exits 0 only if every selected set passes. Self-tests: `python3 -m unittest discover -s m1/driver/tests`.
 
 Neither prototype may link a model-provider SDK, an AgentRunner, or a pack module into the decision path (INV-21, ADR-0006).

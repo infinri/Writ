@@ -1,0 +1,26 @@
+{
+  "description": "M1-05 regression cases (not part of m1/fixtures)",
+  "sets": [
+    {
+      "name": "m105-acceptance",
+      "command": "check-acceptance",
+      "file": "acceptance.jsonl",
+      "hard_gate": false,
+      "provenance": "M1-05 regressions; expectation from the spec oracle (generated ones cross-checked by one prototype; hand-minimized ones derived from a frozen fixture by a semantics-preserving change); PENDING INDEPENDENT REVIEW"
+    },
+    {
+      "name": "m105-json",
+      "command": "canonical",
+      "file": "json.jsonl",
+      "hard_gate": false,
+      "provenance": "M1-05 regressions; expectation from the spec oracle (generated ones cross-checked by one prototype; hand-minimized ones derived from a frozen fixture by a semantics-preserving change); PENDING INDEPENDENT REVIEW"
+    },
+    {
+      "name": "m105-transition",
+      "command": "transition-scenario",
+      "file": "transition.jsonl",
+      "hard_gate": false,
+      "provenance": "M1-05 regressions; expectation from the spec oracle (generated ones cross-checked by one prototype; hand-minimized ones derived from a frozen fixture by a semantics-preserving change); PENDING INDEPENDENT REVIEW"
+    }
+  ]
+}
