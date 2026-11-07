@@ -1,138 +1,1889 @@
 {
-  "description": "Hand-reasoned transition-scenario cases, m1-draft-2 (D-017), from SCENARIOS.md. PENDING INDEPENDENT REVIEW. A step {\"promote\": spec} expands to a promote operation: request = base_request merged with spec.request_patch; record = acceptance base_record with spec.record (record_patch, criteria_patch, criteria_replace), digest recomputed; permit = {request_fingerprint: D-006 digest of the request, record_digest} computed for the request and record named by spec.permit_for (default: the actual ones), or null when spec.permit is null. Changes from draft 1: m1/fixtures/AMENDMENT-1.md.",
-  "review_status": "PENDING INDEPENDENT REVIEW",
-  "base_initial": {
-    "tenant_id": "t1", "project_id": "p1", "task_id": "task-1", "workflow_id": "wf-1",
-    "state": "verifying", "revision": 7,
-    "artifact_snapshot_id": "snap-1",
-    "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    "acceptance_policy_id": "accept-code-review", "acceptance_policy_version": "3",
-    "policy_bundle_sha": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-    "acceptance_requirements": {
-      "acceptance_policy_id": "accept-code-review", "acceptance_policy_version": "3",
-      "policy_bundle_sha": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-      "criteria": [{"criterion_id": "build", "required_class": "mechanical"}, {"criterion_id": "citations", "required_class": "evidence"}, {"criterion_id": "signoff", "required_class": "human"}]
+ "description": "Hand-reasoned transition-scenario cases, m1-draft-3 (D-017, D-018), from SCENARIOS.md. PENDING INDEPENDENT REVIEW. A step {\"promote\": spec} expands to a promote operation: request = base_request merged with spec.request_patch; record = acceptance base_record with spec.record (record_patch, criteria_patch, criteria_replace), digest recomputed, or null when spec.record is null; permit = {request_fingerprint, record_digest (null when no record), authorization_bundle_sha (state's active one unless spec.permit_authorization_bundle_sha)} computed for the request and record named by spec.permit_for (default: the actual ones), or null when spec.permit is null; spec.fault is copied. A step {\"effect\": spec} expands to an effect operation on base_effect_request merged with spec.request_patch, with a permit computed the same way. initial_patch merges into base_initial. text_edit cases are sent as input_text. Changes: m1/fixtures/AMENDMENT-1.md and AMENDMENT-2.md.",
+ "review_status": "PENDING INDEPENDENT REVIEW",
+ "base_initial": {
+  "tenant_id": "t1",
+  "project_id": "p1",
+  "task_id": "task-1",
+  "workflow_id": "wf-1",
+  "state": "verifying",
+  "revision": 7,
+  "artifact_snapshot_id": "snap-1",
+  "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "acceptance_policy_id": "accept-code-review",
+  "acceptance_policy_version": "3",
+  "acceptance_policy_bundle_sha": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "acceptance_requirements": {
+   "acceptance_policy_id": "accept-code-review",
+   "acceptance_policy_version": "3",
+   "acceptance_policy_bundle_sha": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+   "criteria": [
+    {
+     "criterion_id": "build",
+     "required_class": "mechanical"
     },
-    "now": "2026-11-07T11:00:00Z",
-    "consumed_record_ids": [],
-    "revoked_evaluator_ids": []
-  },
-  "base_request": {
-    "contract_version": "2.0",
-    "request_id": "req-p1",
-    "trace_id": "trace-p1",
-    "tenant_id": "t1",
-    "principal": {"id": "agent:session-1", "verified_by": "writ-host-adapter:fixture", "authn_method": "os_peer_credential", "roles": ["agent"]},
-    "project_id": "p1",
-    "session_id": "session-1",
-    "agent_id": null,
-    "parent_session_id": null,
-    "idempotency_key": "idem-p1",
-    "expected_state_revision": 7,
-    "policy_bundle_sha": null,
-    "deadline_at": null,
-    "action": {
-      "kind": "workflow.transition",
-      "resource": {"uri": "writ-workflow://wf-1", "canonical_resource_id": "workflow:t1/p1/wf-1"},
-      "action_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      "attributes": {"from_state": "verifying", "to_state": "accepted", "acceptance_record_id": "acc-1", "artifact_snapshot_id": "snap-1", "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
-      "requested_capabilities": []
+    {
+     "criterion_id": "citations",
+     "required_class": "evidence"
+    },
+    {
+     "criterion_id": "signoff",
+     "required_class": "human"
     }
+   ]
   },
-  "base_key": "k1",
-  "cases": [
-    {"id": "sc-01-promote", "steps": [{"promote": {}}],
-     "expect": {"steps": [{"result": "committed", "revision": 8}], "final": {"state": "accepted", "revision": 8, "consumed_record_ids": ["acc-1"], "receipts": 1}},
-     "rationale": "valid permit bound to request and record, matching revision, complete trusted record"},
-    {"id": "sc-02-identical-retry", "steps": [{"promote": {}}, {"promote": {}}],
-     "expect": {"steps": [{"result": "committed", "revision": 8}, {"result": "committed", "revision": 8, "replayed": true}], "final": {"state": "accepted", "revision": 8, "consumed_record_ids": ["acc-1"], "receipts": 1}},
-     "rationale": "idempotent retry returns the original receipt and changes nothing"},
-    {"id": "sc-03-same-key-different-request", "steps": [{"promote": {}}, {"promote": {"request_patch": {"action": {"attributes": {"to_state": "deployed"}}}}}],
-     "expect": {"steps": [{"result": "committed", "revision": 8}, {"result": "refused", "code": "IDEMPOTENCY_CONFLICT"}], "final": {"state": "accepted", "revision": 8, "consumed_record_ids": ["acc-1"], "receipts": 1}},
-     "rationale": "key reuse with a different operation"},
-    {"id": "sc-04-record-replay-new-key", "steps": [{"promote": {}}, {"promote": {"idempotency_key": "k2", "request_patch": {"expected_state_revision": 8, "action": {"attributes": {"from_state": "accepted", "to_state": "deployed"}}}}}],
-     "expect": {"steps": [{"result": "committed", "revision": 8}, {"result": "refused", "code": "ACCEPTANCE_REPLAYED"}], "final": {"state": "accepted", "revision": 8, "consumed_record_ids": ["acc-1"], "receipts": 1}},
-     "rationale": "a consumed record cannot authorize a second transition"},
-    {"id": "sc-05-artifact-replaced-before-promotion", "steps": [{"op": "update_artifact", "artifact_snapshot_id": "snap-2", "artifact_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}, {"promote": {"request_patch": {"expected_state_revision": 8}}}],
-     "expect": {"steps": [{"result": "artifact_updated", "revision": 8}, {"result": "refused", "code": "ACCEPTANCE_ARTIFACT_MISMATCH"}], "final": {"state": "verifying", "revision": 8, "consumed_record_ids": [], "receipts": 0}},
-     "rationale": "artifact substituted after evaluation"},
-    {"id": "sc-06-stale-cas", "steps": [{"op": "update_artifact", "artifact_snapshot_id": "snap-2", "artifact_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}, {"promote": {}}],
-     "expect": {"steps": [{"result": "artifact_updated", "revision": 8}, {"result": "refused", "code": "REVISION_CONFLICT"}], "final": {"state": "verifying", "revision": 8, "consumed_record_ids": [], "receipts": 0}},
-     "rationale": "request built on revision 7"},
-    {"id": "sc-07-snapshot-swapped-same-digest", "steps": [{"op": "update_artifact", "artifact_snapshot_id": "snap-9", "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, {"promote": {"request_patch": {"expected_state_revision": 8}}}],
-     "expect": {"steps": [{"result": "artifact_updated", "revision": 8}, {"result": "refused", "code": "ACCEPTANCE_ARTIFACT_MISMATCH"}], "final": {"state": "verifying", "revision": 8, "consumed_record_ids": [], "receipts": 0}},
-     "rationale": "snapshot identity is bound, not only the digest"},
-    {"id": "sc-08-policy-changed", "steps": [{"op": "activate_policy", "acceptance_policy_version": "4", "policy_bundle_sha": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "acceptance_requirements": {"acceptance_policy_id": "accept-code-review", "acceptance_policy_version": "4", "policy_bundle_sha": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "criteria": [{"criterion_id": "build", "required_class": "mechanical"}, {"criterion_id": "citations", "required_class": "evidence"}, {"criterion_id": "signoff", "required_class": "human"}]}}, {"promote": {}}],
-     "expect": {"steps": [{"result": "policy_activated"}, {"result": "refused", "code": "ACCEPTANCE_POLICY_MISMATCH"}], "final": {"state": "verifying", "revision": 7, "consumed_record_ids": [], "receipts": 0}},
-     "rationale": "evaluation under an older acceptance policy"},
-    {"id": "sc-09-kernel-did-not-allow", "steps": [{"promote": {"permit": null}}],
-     "expect": {"steps": [{"result": "refused", "code": "PERMIT_MISSING"}], "final": {"state": "verifying", "revision": 7, "consumed_record_ids": [], "receipts": 0}},
-     "rationale": "CHANGED (D-017): no permit (kernel did not allow); was DECISION_NOT_ALLOW with a decision_status input"},
-    {"id": "sc-10-race-16", "steps": [{"op": "promote_concurrent", "count": 16, "promote": {}}],
-     "expect": {"steps": [{"result": "concurrent", "committed": 1, "refused": {"REVISION_CONFLICT": 15}}], "final": {"state": "accepted", "revision": 8, "consumed_record_ids": ["acc-1"], "receipts": 1}},
-     "rationale": "exactly one of 16 concurrent promotions commits"},
-    {"id": "sc-11-expired", "steps": [{"op": "advance_time", "now": "2026-11-07T12:00:00Z"}, {"promote": {}}],
-     "expect": {"steps": [{"result": "time_advanced"}, {"result": "refused", "code": "ACCEPTANCE_EXPIRED"}], "final": {"state": "verifying", "revision": 7, "consumed_record_ids": [], "receipts": 0}},
-     "rationale": "record expired before use (injected clock)"},
-    {"id": "sc-12-refusal-is-side-effect-free", "steps": [{"promote": {"record": {"criteria_patch": {"build": {"evaluator_trust": "MA"}}}}}, {"promote": {"idempotency_key": "k2"}}],
-     "expect": {"steps": [{"result": "refused", "code": "ACCEPTANCE_UNTRUSTED_EVALUATOR"}, {"result": "committed", "revision": 8}], "final": {"state": "accepted", "revision": 8, "consumed_record_ids": ["acc-1"], "receipts": 1}},
-     "rationale": "a refused attempt consumes neither the record id nor the key"},
-    {"id": "sc-13-refused-key-reusable", "steps": [{"promote": {"permit": null}}, {"promote": {}}],
-     "expect": {"steps": [{"result": "refused", "code": "PERMIT_MISSING"}, {"result": "committed", "revision": 8}], "final": {"state": "accepted", "revision": 8, "consumed_record_ids": ["acc-1"], "receipts": 1}},
-     "rationale": "CHANGED code only (PERMIT_MISSING replaces DECISION_NOT_ALLOW): refusals store no receipt, so the same key may be retried"},
-    {"id": "sc-14-malformed-record", "steps": [{"promote": {"record": {"record_patch": {"criteria": []}}}}],
-     "expect": {"steps": [{"result": "refused", "code": "ACCEPTANCE_RECORD_MALFORMED"}], "final": {"state": "verifying", "revision": 7, "consumed_record_ids": [], "receipts": 0}},
-     "rationale": "malformed record"},
-    {"id": "sc-15-workflow-already-moved", "steps": [{"promote": {}}, {"promote": {"idempotency_key": "k2", "request_patch": {"expected_state_revision": 8}}}],
-     "expect": {"steps": [{"result": "committed", "revision": 8}, {"result": "refused", "code": "REVISION_CONFLICT"}], "final": {"state": "accepted", "revision": 8, "consumed_record_ids": ["acc-1"], "receipts": 1}},
-     "rationale": "from_state verifying no longer matches state accepted"},
-    {"id": "sc-16-cross-project-record", "steps": [{"promote": {"record": {"record_patch": {"project_id": "p2"}}}}],
-     "expect": {"steps": [{"result": "refused", "code": "ACCEPTANCE_SCOPE_MISMATCH"}], "final": {"state": "verifying", "revision": 7, "consumed_record_ids": [], "receipts": 0}},
-     "rationale": "record from another project"},
-    {"id": "sc-17-transition-not-evaluated", "steps": [{"promote": {"request_patch": {"action": {"attributes": {"to_state": "deployed"}}}}}],
-     "expect": {"steps": [{"result": "refused", "code": "ACCEPTANCE_TRANSITION_MISMATCH"}], "final": {"state": "verifying", "revision": 7, "consumed_record_ids": [], "receipts": 0}},
-     "rationale": "record covers verifying to accepted only"},
-
-    {"id": "sc-18-permit-reused-for-other-target", "steps": [{"promote": {"request_patch": {"action": {"attributes": {"to_state": "deployed"}}}, "permit_for": {}}}],
-     "expect": {"steps": [{"result": "refused", "code": "PERMIT_REQUEST_MISMATCH"}], "final": {"state": "verifying", "revision": 7, "consumed_record_ids": [], "receipts": 0}},
-     "rationale": "NEW: permit issued for to_state accepted presented with to_state deployed"},
-    {"id": "sc-19-permit-actor-changed", "steps": [{"promote": {"request_patch": {"principal": {"id": "agent:session-2"}}, "permit_for": {}}}],
-     "expect": {"steps": [{"result": "refused", "code": "PERMIT_REQUEST_MISMATCH"}], "final": {"state": "verifying", "revision": 7, "consumed_record_ids": [], "receipts": 0}},
-     "rationale": "NEW: actor changed after the permit was issued"},
-    {"id": "sc-20-permit-revision-changed", "steps": [{"promote": {"request_patch": {"expected_state_revision": 8}, "permit_for": {}}}],
-     "expect": {"steps": [{"result": "refused", "code": "PERMIT_REQUEST_MISMATCH"}], "final": {"state": "verifying", "revision": 7, "consumed_record_ids": [], "receipts": 0}},
-     "rationale": "NEW: expected revision changed after the permit was issued"},
-    {"id": "sc-21-permit-scope-changed", "steps": [{"promote": {"request_patch": {"project_id": "p2", "action": {"resource": {"canonical_resource_id": "workflow:t1/p2/wf-1"}}}, "permit_for": {}}}],
-     "expect": {"steps": [{"result": "refused", "code": "PERMIT_REQUEST_MISMATCH"}], "final": {"state": "verifying", "revision": 7, "consumed_record_ids": [], "receipts": 0}},
-     "rationale": "NEW: scope changed after the permit was issued"},
-    {"id": "sc-22-permit-snapshot-attribute-changed", "steps": [{"promote": {"request_patch": {"action": {"attributes": {"artifact_snapshot_id": "snap-2"}}}, "permit_for": {}}}],
-     "expect": {"steps": [{"result": "refused", "code": "PERMIT_REQUEST_MISMATCH"}], "final": {"state": "verifying", "revision": 7, "consumed_record_ids": [], "receipts": 0}},
-     "rationale": "NEW: snapshot id changed after the permit was issued"},
-    {"id": "sc-23-permit-digest-attribute-changed", "steps": [{"promote": {"request_patch": {"action": {"attributes": {"artifact_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}}}, "permit_for": {}}}],
-     "expect": {"steps": [{"result": "refused", "code": "PERMIT_REQUEST_MISMATCH"}], "final": {"state": "verifying", "revision": 7, "consumed_record_ids": [], "receipts": 0}},
-     "rationale": "NEW: artifact digest changed after the permit was issued"},
-    {"id": "sc-24-permit-record-id-attribute-changed", "steps": [{"promote": {"request_patch": {"action": {"attributes": {"acceptance_record_id": "acc-2"}}}, "permit_for": {}}}],
-     "expect": {"steps": [{"result": "refused", "code": "PERMIT_REQUEST_MISMATCH"}], "final": {"state": "verifying", "revision": 7, "consumed_record_ids": [], "receipts": 0}},
-     "rationale": "NEW: acceptance record reference changed after the permit was issued"},
-    {"id": "sc-25-record-swapped-under-permit", "steps": [{"promote": {"record": {"criteria_patch": {"build": {"fresh_until": "2026-11-07T11:45:00Z"}}}, "permit_for": {}}}],
-     "expect": {"steps": [{"result": "refused", "code": "PERMIT_BINDING_MISMATCH"}], "final": {"state": "verifying", "revision": 7, "consumed_record_ids": [], "receipts": 0}},
-     "rationale": "NEW: a different record (different digest) presented under a permit bound to the original record"},
-    {"id": "sc-26-attributes-disagree-with-record", "steps": [{"promote": {"record": {"record_patch": {"artifact_snapshot_id": "snap-2"}}}}],
-     "expect": {"steps": [{"result": "refused", "code": "PERMIT_BINDING_MISMATCH"}], "final": {"state": "verifying", "revision": 7, "consumed_record_ids": [], "receipts": 0}},
-     "rationale": "NEW: request names snap-1, record names snap-2 (permit consistent with both as presented)"},
-    {"id": "sc-27-other-workflow", "steps": [{"promote": {"request_patch": {"action": {"resource": {"canonical_resource_id": "workflow:t1/p1/wf-2"}}}}}],
-     "expect": {"steps": [{"result": "refused", "code": "REQUEST_SCOPE_MISMATCH"}], "final": {"state": "verifying", "revision": 7, "consumed_record_ids": [], "receipts": 0}},
-     "rationale": "NEW: permit valid for a request about another workflow"},
-    {"id": "sc-28-composite-at-broker", "steps": [{"promote": {"request_patch": {"action": {"requested_capabilities": ["repository.publish"]}}}}],
-     "expect": {"steps": [{"result": "refused", "code": "COMPOSITE_NOT_SUPPORTED"}], "final": {"state": "verifying", "revision": 7, "consumed_record_ids": [], "receipts": 0}},
-     "rationale": "NEW: broker refuses composite structurally even if a permit exists"},
-    {"id": "sc-29-incomplete-record", "steps": [{"promote": {"record": {"criteria_replace": [
-        {"criterion_id": "build", "mandatory": true, "required_class": "mechanical", "status": "pass", "evaluator_id": "ci-runner", "evaluator_trust": "M", "fresh_until": "2026-11-07T11:30:00Z"},
-        {"criterion_id": "signoff", "mandatory": true, "required_class": "human", "status": "pass", "evaluator_id": "approval-service", "evaluator_trust": "H", "fresh_until": "2026-11-07T11:30:00Z"}]}}}],
-     "expect": {"steps": [{"result": "refused", "code": "ACCEPTANCE_CRITERIA_MISSING"}], "final": {"state": "verifying", "revision": 7, "consumed_record_ids": [], "receipts": 0}},
-     "rationale": "NEW: incomplete record with a valid permit and consistent digest"},
-    {"id": "sc-30-evaluator-revoked", "steps": [{"op": "revoke_evaluator", "evaluator_id": "approval-service"}, {"promote": {}}],
-     "expect": {"steps": [{"result": "evaluator_revoked"}, {"result": "refused", "code": "ACCEPTANCE_EVALUATOR_REVOKED"}], "final": {"state": "verifying", "revision": 7, "consumed_record_ids": [], "receipts": 0}},
-     "rationale": "NEW: evaluator revoked between evaluation and promotion"}
+  "now": "2026-11-07T11:00:00Z",
+  "consumed_record_ids": [],
+  "revoked_evaluator_ids": [],
+  "authorization_bundle_sha": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "protected_to_states": [
+   "accepted",
+   "deployed",
+   "released"
   ]
+ },
+ "base_request": {
+  "contract_version": "2.0",
+  "request_id": "req-p1",
+  "trace_id": "trace-p1",
+  "tenant_id": "t1",
+  "principal": {
+   "id": "agent:session-1",
+   "verified_by": "writ-host-adapter:fixture",
+   "authn_method": "os_peer_credential",
+   "roles": [
+    "agent"
+   ]
+  },
+  "project_id": "p1",
+  "session_id": "session-1",
+  "agent_id": null,
+  "parent_session_id": null,
+  "idempotency_key": "idem-p1",
+  "expected_state_revision": 7,
+  "policy_bundle_sha": null,
+  "deadline_at": null,
+  "action": {
+   "kind": "workflow.transition",
+   "resource": {
+    "uri": "writ-workflow://wf-1",
+    "canonical_resource_id": "workflow:t1/p1/wf-1"
+   },
+   "action_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "attributes": {
+    "from_state": "verifying",
+    "to_state": "accepted",
+    "acceptance_record_id": "acc-1",
+    "artifact_snapshot_id": "snap-1",
+    "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+   },
+   "requested_capabilities": []
+  }
+ },
+ "base_key": "k1",
+ "cases": [
+  {
+   "id": "sc-01-promote",
+   "steps": [
+    {
+     "promote": {}
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "committed",
+      "revision": 8
+     }
+    ],
+    "final": {
+     "state": "accepted",
+     "revision": 8,
+     "consumed_record_ids": [
+      "acc-1"
+     ],
+     "receipts": 1,
+     "refusals": 0,
+     "effects": {}
+    }
+   },
+   "rationale": "valid permit bound to request and record, matching revision, complete trusted record"
+  },
+  {
+   "id": "sc-02-identical-retry",
+   "steps": [
+    {
+     "promote": {}
+    },
+    {
+     "promote": {}
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "committed",
+      "revision": 8
+     },
+     {
+      "result": "committed",
+      "revision": 8,
+      "replayed": true
+     }
+    ],
+    "final": {
+     "state": "accepted",
+     "revision": 8,
+     "consumed_record_ids": [
+      "acc-1"
+     ],
+     "receipts": 1,
+     "refusals": 0,
+     "effects": {}
+    }
+   },
+   "rationale": "idempotent retry returns the original receipt and changes nothing"
+  },
+  {
+   "id": "sc-03-same-key-different-request",
+   "steps": [
+    {
+     "promote": {}
+    },
+    {
+     "promote": {
+      "request_patch": {
+       "action": {
+        "attributes": {
+         "to_state": "deployed"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "committed",
+      "revision": 8
+     },
+     {
+      "result": "refused",
+      "code": "IDEMPOTENCY_CONFLICT"
+     }
+    ],
+    "final": {
+     "state": "accepted",
+     "revision": 8,
+     "consumed_record_ids": [
+      "acc-1"
+     ],
+     "receipts": 1,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "key reuse with a different operation"
+  },
+  {
+   "id": "sc-04-record-replay-new-key",
+   "steps": [
+    {
+     "promote": {}
+    },
+    {
+     "promote": {
+      "idempotency_key": "k2",
+      "request_patch": {
+       "expected_state_revision": 8,
+       "action": {
+        "attributes": {
+         "from_state": "accepted",
+         "to_state": "deployed"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "committed",
+      "revision": 8
+     },
+     {
+      "result": "refused",
+      "code": "ACCEPTANCE_REPLAYED"
+     }
+    ],
+    "final": {
+     "state": "accepted",
+     "revision": 8,
+     "consumed_record_ids": [
+      "acc-1"
+     ],
+     "receipts": 1,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "a consumed record cannot authorize a second transition"
+  },
+  {
+   "id": "sc-05-artifact-replaced-before-promotion",
+   "steps": [
+    {
+     "op": "update_artifact",
+     "artifact_snapshot_id": "snap-2",
+     "artifact_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+     "promote": {
+      "request_patch": {
+       "expected_state_revision": 8
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "artifact_updated",
+      "revision": 8
+     },
+     {
+      "result": "refused",
+      "code": "ACCEPTANCE_ARTIFACT_MISMATCH"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 8,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "artifact substituted after evaluation"
+  },
+  {
+   "id": "sc-06-stale-cas",
+   "steps": [
+    {
+     "op": "update_artifact",
+     "artifact_snapshot_id": "snap-2",
+     "artifact_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+     "promote": {}
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "artifact_updated",
+      "revision": 8
+     },
+     {
+      "result": "refused",
+      "code": "REVISION_CONFLICT"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 8,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "request built on revision 7"
+  },
+  {
+   "id": "sc-07-snapshot-swapped-same-digest",
+   "steps": [
+    {
+     "op": "update_artifact",
+     "artifact_snapshot_id": "snap-9",
+     "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+     "promote": {
+      "request_patch": {
+       "expected_state_revision": 8
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "artifact_updated",
+      "revision": 8
+     },
+     {
+      "result": "refused",
+      "code": "ACCEPTANCE_ARTIFACT_MISMATCH"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 8,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "snapshot identity is bound, not only the digest"
+  },
+  {
+   "id": "sc-08-policy-changed",
+   "steps": [
+    {
+     "op": "activate_policy",
+     "acceptance_policy_version": "4",
+     "acceptance_requirements": {
+      "acceptance_policy_id": "accept-code-review",
+      "acceptance_policy_version": "4",
+      "acceptance_policy_bundle_sha": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "criteria": [
+       {
+        "criterion_id": "build",
+        "required_class": "mechanical"
+       },
+       {
+        "criterion_id": "citations",
+        "required_class": "evidence"
+       },
+       {
+        "criterion_id": "signoff",
+        "required_class": "human"
+       }
+      ]
+     },
+     "acceptance_policy_bundle_sha": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    {
+     "promote": {}
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "policy_activated"
+     },
+     {
+      "result": "refused",
+      "code": "ACCEPTANCE_POLICY_MISMATCH"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "evaluation under an older acceptance policy"
+  },
+  {
+   "id": "sc-09-kernel-did-not-allow",
+   "steps": [
+    {
+     "promote": {
+      "permit": null
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "PERMIT_MISSING"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "CHANGED (D-017): no permit (kernel did not allow); was DECISION_NOT_ALLOW with a decision_status input"
+  },
+  {
+   "id": "sc-10-race-16",
+   "steps": [
+    {
+     "op": "promote_concurrent",
+     "count": 16,
+     "promote": {}
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "concurrent",
+      "committed": 1,
+      "refused": {
+       "REVISION_CONFLICT": 15
+      }
+     }
+    ],
+    "final": {
+     "state": "accepted",
+     "revision": 8,
+     "consumed_record_ids": [
+      "acc-1"
+     ],
+     "receipts": 1,
+     "refusals": 15,
+     "effects": {}
+    }
+   },
+   "rationale": "exactly one of 16 concurrent promotions commits"
+  },
+  {
+   "id": "sc-11-expired",
+   "steps": [
+    {
+     "op": "advance_time",
+     "now": "2026-11-07T12:00:00Z"
+    },
+    {
+     "promote": {}
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "time_advanced"
+     },
+     {
+      "result": "refused",
+      "code": "ACCEPTANCE_EXPIRED"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "record expired before use (injected clock)"
+  },
+  {
+   "id": "sc-12-refusal-is-side-effect-free",
+   "steps": [
+    {
+     "promote": {
+      "record": {
+       "criteria_patch": {
+        "build": {
+         "evaluator_trust": "MA"
+        }
+       }
+      }
+     }
+    },
+    {
+     "promote": {
+      "idempotency_key": "k2"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "ACCEPTANCE_UNTRUSTED_EVALUATOR"
+     },
+     {
+      "result": "committed",
+      "revision": 8
+     }
+    ],
+    "final": {
+     "state": "accepted",
+     "revision": 8,
+     "consumed_record_ids": [
+      "acc-1"
+     ],
+     "receipts": 1,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "a refused attempt consumes neither the record id nor the key"
+  },
+  {
+   "id": "sc-13-refused-key-reusable",
+   "steps": [
+    {
+     "promote": {
+      "permit": null
+     }
+    },
+    {
+     "promote": {}
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "PERMIT_MISSING"
+     },
+     {
+      "result": "committed",
+      "revision": 8
+     }
+    ],
+    "final": {
+     "state": "accepted",
+     "revision": 8,
+     "consumed_record_ids": [
+      "acc-1"
+     ],
+     "receipts": 1,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "CHANGED code only (PERMIT_MISSING replaces DECISION_NOT_ALLOW): refusals store no receipt, so the same key may be retried"
+  },
+  {
+   "id": "sc-14-malformed-record",
+   "steps": [
+    {
+     "promote": {
+      "record": {
+       "record_patch": {
+        "criteria": []
+       }
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "ACCEPTANCE_RECORD_MALFORMED"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "malformed record"
+  },
+  {
+   "id": "sc-15-workflow-already-moved",
+   "steps": [
+    {
+     "promote": {}
+    },
+    {
+     "promote": {
+      "idempotency_key": "k2",
+      "request_patch": {
+       "expected_state_revision": 8
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "committed",
+      "revision": 8
+     },
+     {
+      "result": "refused",
+      "code": "REVISION_CONFLICT"
+     }
+    ],
+    "final": {
+     "state": "accepted",
+     "revision": 8,
+     "consumed_record_ids": [
+      "acc-1"
+     ],
+     "receipts": 1,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "from_state verifying no longer matches state accepted"
+  },
+  {
+   "id": "sc-16-cross-project-record",
+   "steps": [
+    {
+     "promote": {
+      "record": {
+       "record_patch": {
+        "project_id": "p2"
+       }
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "ACCEPTANCE_SCOPE_MISMATCH"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "record from another project"
+  },
+  {
+   "id": "sc-17-transition-not-evaluated",
+   "steps": [
+    {
+     "promote": {
+      "request_patch": {
+       "action": {
+        "attributes": {
+         "to_state": "deployed"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "ACCEPTANCE_TRANSITION_MISMATCH"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "record covers verifying to accepted only"
+  },
+  {
+   "id": "sc-18-permit-reused-for-other-target",
+   "steps": [
+    {
+     "promote": {
+      "request_patch": {
+       "action": {
+        "attributes": {
+         "to_state": "deployed"
+        }
+       }
+      },
+      "permit_for": {}
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "PERMIT_REQUEST_MISMATCH"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "NEW: permit issued for to_state accepted presented with to_state deployed"
+  },
+  {
+   "id": "sc-19-permit-actor-changed",
+   "steps": [
+    {
+     "promote": {
+      "request_patch": {
+       "principal": {
+        "id": "agent:session-2"
+       }
+      },
+      "permit_for": {}
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "PERMIT_REQUEST_MISMATCH"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "NEW: actor changed after the permit was issued"
+  },
+  {
+   "id": "sc-20-permit-revision-changed",
+   "steps": [
+    {
+     "promote": {
+      "request_patch": {
+       "expected_state_revision": 8
+      },
+      "permit_for": {}
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "PERMIT_REQUEST_MISMATCH"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "NEW: expected revision changed after the permit was issued"
+  },
+  {
+   "id": "sc-21-permit-scope-changed",
+   "steps": [
+    {
+     "promote": {
+      "request_patch": {
+       "project_id": "p2",
+       "action": {
+        "resource": {
+         "canonical_resource_id": "workflow:t1/p2/wf-1"
+        }
+       }
+      },
+      "permit_for": {}
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "PERMIT_REQUEST_MISMATCH"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "NEW: scope changed after the permit was issued"
+  },
+  {
+   "id": "sc-22-permit-snapshot-attribute-changed",
+   "steps": [
+    {
+     "promote": {
+      "request_patch": {
+       "action": {
+        "attributes": {
+         "artifact_snapshot_id": "snap-2"
+        }
+       }
+      },
+      "permit_for": {}
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "PERMIT_REQUEST_MISMATCH"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "NEW: snapshot id changed after the permit was issued"
+  },
+  {
+   "id": "sc-23-permit-digest-attribute-changed",
+   "steps": [
+    {
+     "promote": {
+      "request_patch": {
+       "action": {
+        "attributes": {
+         "artifact_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+       }
+      },
+      "permit_for": {}
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "PERMIT_REQUEST_MISMATCH"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "NEW: artifact digest changed after the permit was issued"
+  },
+  {
+   "id": "sc-24-permit-record-id-attribute-changed",
+   "steps": [
+    {
+     "promote": {
+      "request_patch": {
+       "action": {
+        "attributes": {
+         "acceptance_record_id": "acc-2"
+        }
+       }
+      },
+      "permit_for": {}
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "PERMIT_REQUEST_MISMATCH"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "NEW: acceptance record reference changed after the permit was issued"
+  },
+  {
+   "id": "sc-25-record-swapped-under-permit",
+   "steps": [
+    {
+     "promote": {
+      "record": {
+       "criteria_patch": {
+        "build": {
+         "fresh_until": "2026-11-07T11:45:00Z"
+        }
+       }
+      },
+      "permit_for": {}
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "PERMIT_BINDING_MISMATCH"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "NEW: a different record (different digest) presented under a permit bound to the original record"
+  },
+  {
+   "id": "sc-26-attributes-disagree-with-record",
+   "steps": [
+    {
+     "promote": {
+      "record": {
+       "record_patch": {
+        "artifact_snapshot_id": "snap-2"
+       }
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "PERMIT_BINDING_MISMATCH"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "NEW: request names snap-1, record names snap-2 (permit consistent with both as presented)"
+  },
+  {
+   "id": "sc-27-other-workflow",
+   "steps": [
+    {
+     "promote": {
+      "request_patch": {
+       "action": {
+        "resource": {
+         "canonical_resource_id": "workflow:t1/p1/wf-2"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "REQUEST_SCOPE_MISMATCH"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "NEW: permit valid for a request about another workflow"
+  },
+  {
+   "id": "sc-28-composite-at-broker",
+   "steps": [
+    {
+     "promote": {
+      "request_patch": {
+       "action": {
+        "requested_capabilities": [
+         "repository.publish"
+        ]
+       }
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "COMPOSITE_NOT_SUPPORTED"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "NEW: broker refuses composite structurally even if a permit exists"
+  },
+  {
+   "id": "sc-29-incomplete-record",
+   "steps": [
+    {
+     "promote": {
+      "record": {
+       "criteria_replace": [
+        {
+         "criterion_id": "build",
+         "mandatory": true,
+         "required_class": "mechanical",
+         "status": "pass",
+         "evaluator_id": "ci-runner",
+         "evaluator_trust": "M",
+         "fresh_until": "2026-11-07T11:30:00Z"
+        },
+        {
+         "criterion_id": "signoff",
+         "mandatory": true,
+         "required_class": "human",
+         "status": "pass",
+         "evaluator_id": "approval-service",
+         "evaluator_trust": "H",
+         "fresh_until": "2026-11-07T11:30:00Z"
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "ACCEPTANCE_CRITERIA_MISSING"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "NEW: incomplete record with a valid permit and consistent digest"
+  },
+  {
+   "id": "sc-30-evaluator-revoked",
+   "steps": [
+    {
+     "op": "revoke_evaluator",
+     "evaluator_id": "approval-service"
+    },
+    {
+     "promote": {}
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "evaluator_revoked"
+     },
+     {
+      "result": "refused",
+      "code": "ACCEPTANCE_EVALUATOR_REVOKED"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "NEW: evaluator revoked between evaluation and promotion"
+  },
+  {
+   "id": "sc-31-unprotected-without-acceptance",
+   "initial_patch": {
+    "state": "planning"
+   },
+   "steps": [
+    {
+     "promote": {
+      "record": null,
+      "request_patch": {
+       "action": {
+        "attributes": {
+         "acceptance_record_id": null,
+         "artifact_snapshot_id": null,
+         "artifact_digest": null,
+         "from_state": "planning",
+         "to_state": "verifying"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "committed",
+      "revision": 8
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 8,
+     "consumed_record_ids": [],
+     "receipts": 1,
+     "refusals": 0,
+     "effects": {}
+    }
+   },
+   "rationale": "NEW (A2): unprotected transition commits with identity, permit and revision checks only"
+  },
+  {
+   "id": "sc-32-protected-without-acceptance",
+   "steps": [
+    {
+     "promote": {
+      "record": null,
+      "request_patch": {
+       "action": {
+        "attributes": {
+         "acceptance_record_id": null,
+         "artifact_snapshot_id": null,
+         "artifact_digest": null
+        }
+       }
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "ACCEPTANCE_REQUIRED"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "NEW (A2): omitting acceptance attributes cannot downgrade a protected transition (the kernel allowed it, tx-38)"
+  },
+  {
+   "id": "sc-33-alternate-route-to-protected-state",
+   "steps": [
+    {
+     "promote": {
+      "record": null,
+      "request_patch": {
+       "action": {
+        "attributes": {
+         "acceptance_record_id": null,
+         "artifact_snapshot_id": null,
+         "artifact_digest": null,
+         "to_state": "reviewing"
+        }
+       }
+      }
+     }
+    },
+    {
+     "promote": {
+      "idempotency_key": "k2",
+      "record": null,
+      "request_patch": {
+       "expected_state_revision": 8,
+       "action": {
+        "attributes": {
+         "acceptance_record_id": null,
+         "artifact_snapshot_id": null,
+         "artifact_digest": null,
+         "from_state": "reviewing",
+         "to_state": "accepted"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "committed",
+      "revision": 8
+     },
+     {
+      "result": "refused",
+      "code": "ACCEPTANCE_REQUIRED"
+     }
+    ],
+    "final": {
+     "state": "reviewing",
+     "revision": 8,
+     "consumed_record_ids": [],
+     "receipts": 1,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "NEW (A2): protection follows the target state, so an unprotected detour cannot reach a protected state without acceptance"
+  },
+  {
+   "id": "sc-34-alternate-route-with-old-record",
+   "steps": [
+    {
+     "promote": {
+      "record": null,
+      "request_patch": {
+       "action": {
+        "attributes": {
+         "acceptance_record_id": null,
+         "artifact_snapshot_id": null,
+         "artifact_digest": null,
+         "to_state": "reviewing"
+        }
+       }
+      }
+     }
+    },
+    {
+     "promote": {
+      "idempotency_key": "k2",
+      "request_patch": {
+       "expected_state_revision": 8,
+       "action": {
+        "attributes": {
+         "from_state": "reviewing",
+         "to_state": "accepted"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "committed",
+      "revision": 8
+     },
+     {
+      "result": "refused",
+      "code": "ACCEPTANCE_TRANSITION_MISMATCH"
+     }
+    ],
+    "final": {
+     "state": "reviewing",
+     "revision": 8,
+     "consumed_record_ids": [],
+     "receipts": 1,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "NEW (A2): a record evaluated for verifying to accepted does not cover reviewing to accepted"
+  },
+  {
+   "id": "sc-35-unprotected-with-acceptance-binding",
+   "initial_patch": {
+    "state": "planning"
+   },
+   "steps": [
+    {
+     "promote": {
+      "request_patch": {
+       "action": {
+        "attributes": {
+         "from_state": "planning",
+         "to_state": "verifying"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "ACCEPTANCE_BINDING_UNEXPECTED"
+     }
+    ],
+    "final": {
+     "state": "planning",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "NEW (A2): an acceptance binding on an unprotected transition is ambiguous and refused (it would otherwise be silently ignored or consumed)"
+  },
+  {
+   "id": "sc-36-authorization-bundle-changed",
+   "steps": [
+    {
+     "op": "activate_authorization_bundle",
+     "authorization_bundle_sha": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+    },
+    {
+     "promote": {
+      "permit_authorization_bundle_sha": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "authorization_bundle_activated"
+     },
+     {
+      "result": "refused",
+      "code": "PERMIT_POLICY_STALE"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "NEW (A3): a permit issued under a superseded authorization bundle is refused"
+  },
+  {
+   "id": "sc-37-own-kind-in-capabilities",
+   "steps": [
+    {
+     "promote": {
+      "request_patch": {
+       "action": {
+        "requested_capabilities": [
+         "workflow.transition"
+        ]
+       }
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "REQUESTED_CAPABILITIES_INVALID"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "NEW (A4): broker applies the same rule as the kernel"
+  },
+  {
+   "id": "sc-38-repeated-refusals-then-success",
+   "steps": [
+    {
+     "promote": {
+      "permit": null
+     }
+    },
+    {
+     "promote": {
+      "permit": null
+     }
+    },
+    {
+     "promote": {}
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "PERMIT_MISSING"
+     },
+     {
+      "result": "refused",
+      "code": "PERMIT_MISSING"
+     },
+     {
+      "result": "committed",
+      "revision": 8
+     }
+    ],
+    "final": {
+     "state": "accepted",
+     "revision": 8,
+     "consumed_record_ids": [
+      "acc-1"
+     ],
+     "receipts": 1,
+     "refusals": 2,
+     "effects": {}
+    }
+   },
+   "rationale": "NEW (A6): refusals before reservation leave the key reusable; each refusal is audited"
+  },
+  {
+   "id": "sc-39-crash-before-commit-then-retry",
+   "steps": [
+    {
+     "promote": {
+      "fault": "crash_before_commit"
+     }
+    },
+    {
+     "promote": {}
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "crashed"
+     },
+     {
+      "result": "committed",
+      "revision": 8
+     }
+    ],
+    "final": {
+     "state": "accepted",
+     "revision": 8,
+     "consumed_record_ids": [
+      "acc-1"
+     ],
+     "receipts": 1,
+     "refusals": 0,
+     "effects": {}
+    }
+   },
+   "rationale": "NEW (A6): an interrupted promotion transaction persists nothing; the retry commits once"
+  },
+  {
+   "id": "sc-40-effect-retry",
+   "steps": [
+    {
+     "effect": {}
+    },
+    {
+     "effect": {}
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "effect_completed"
+     },
+     {
+      "result": "effect_completed",
+      "replayed": true
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 0,
+     "effects": {
+      "k1": "completed"
+     }
+    }
+   },
+   "rationale": "NEW (A6): completed effect replays its receipt and is not dispatched again"
+  },
+  {
+   "id": "sc-41-interrupted-dispatch-retry",
+   "steps": [
+    {
+     "effect": {
+      "fault": "crash_after_dispatch"
+     }
+    },
+    {
+     "effect": {}
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "crashed"
+     },
+     {
+      "result": "refused",
+      "code": "RECONCILIATION_REQUIRED"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {
+      "k1": "unknown_reconcile"
+     }
+    }
+   },
+   "rationale": "NEW (A6): an uncertain effect is not a harmless refusal; retry is refused until reconciled"
+  },
+  {
+   "id": "sc-42-interrupted-dispatch-other-request",
+   "steps": [
+    {
+     "effect": {
+      "fault": "crash_after_dispatch"
+     }
+    },
+    {
+     "effect": {
+      "request_patch": {
+       "action": {
+        "resource": {
+         "canonical_resource_id": "repository:t1/p1/other"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "crashed"
+     },
+     {
+      "result": "refused",
+      "code": "IDEMPOTENCY_CONFLICT"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {
+      "k1": "unknown_reconcile"
+     }
+    }
+   },
+   "rationale": "NEW (A6): a reserved key stays bound to its request fingerprint"
+  },
+  {
+   "id": "sc-43-reconciled-applied",
+   "steps": [
+    {
+     "effect": {
+      "fault": "crash_after_dispatch"
+     }
+    },
+    {
+     "op": "reconcile",
+     "idempotency_key": "k1",
+     "observed": "applied"
+    },
+    {
+     "effect": {}
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "crashed"
+     },
+     {
+      "result": "reconciled",
+      "outcome": "applied"
+     },
+     {
+      "result": "effect_completed",
+      "replayed": true
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 0,
+     "effects": {
+      "k1": "completed"
+     }
+    }
+   },
+   "rationale": "NEW (A6): after reconciliation as applied, the retry replays instead of dispatching again"
+  },
+  {
+   "id": "sc-44-reconciled-not-applied",
+   "steps": [
+    {
+     "effect": {
+      "fault": "crash_after_dispatch"
+     }
+    },
+    {
+     "op": "reconcile",
+     "idempotency_key": "k1",
+     "observed": "not_applied"
+    },
+    {
+     "effect": {}
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "crashed"
+     },
+     {
+      "result": "reconciled",
+      "outcome": "not_applied"
+     },
+     {
+      "result": "effect_completed"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 0,
+     "effects": {
+      "k1": "completed"
+     }
+    }
+   },
+   "rationale": "NEW (A6): only a confirmed non-application releases the key for a new dispatch"
+  },
+  {
+   "id": "sc-45-crash-before-reserve",
+   "steps": [
+    {
+     "effect": {
+      "fault": "crash_before_reserve"
+     }
+    },
+    {
+     "effect": {
+      "request_patch": {
+       "action": {
+        "resource": {
+         "canonical_resource_id": "repository:t1/p1/other"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "crashed"
+     },
+     {
+      "result": "effect_completed"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 0,
+     "effects": {
+      "k1": "completed"
+     }
+    }
+   },
+   "rationale": "NEW (A6): nothing was reserved, so the key is not bound"
+  },
+  {
+   "id": "sc-46-effect-refused-then-valid",
+   "steps": [
+    {
+     "effect": {
+      "permit": null
+     }
+    },
+    {
+     "effect": {}
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "PERMIT_MISSING"
+     },
+     {
+      "result": "effect_completed"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {
+      "k1": "completed"
+     }
+    }
+   },
+   "rationale": "NEW (A6): pre-reservation refusal is audited and leaves the key reusable"
+  },
+  {
+   "id": "sc-47-reconcile-nothing",
+   "steps": [
+    {
+     "op": "reconcile",
+     "idempotency_key": "k1",
+     "observed": "applied"
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "NOTHING_TO_RECONCILE"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "NEW (A6): reconciliation cannot fabricate a completed effect"
+  },
+  {
+   "id": "sc-48-duplicate-key-input",
+   "text_edit": {
+    "old": "\"state\":\"verifying\"",
+    "new": "\"state\":\"accepted\",\"state\":\"verifying\""
+   },
+   "steps": [
+    {
+     "promote": {}
+    }
+   ],
+   "expect": {
+    "input_error": "INPUT_JSON_INVALID",
+    "json_error": "DUPLICATE_KEY"
+   },
+   "rationale": "NEW (D-018): strict parsing applies to scenario input"
+  },
+  {
+   "id": "sc-49-decimal-revision-input",
+   "text_edit": {
+    "old": "\"revision\":7",
+    "new": "\"revision\":7.0"
+   },
+   "steps": [
+    {
+     "promote": {}
+    }
+   ],
+   "expect": {
+    "input_error": "INPUT_JSON_INVALID",
+    "json_error": "NUMBER_NOT_INTEGER"
+   },
+   "rationale": "NEW (D-018)"
+  }
+ ],
+ "base_effect_request": {
+  "contract_version": "2.0",
+  "request_id": "req-e1",
+  "trace_id": "trace-e1",
+  "tenant_id": "t1",
+  "principal": {
+   "id": "agent:session-1",
+   "verified_by": "writ-host-adapter:fixture",
+   "authn_method": "os_peer_credential",
+   "roles": [
+    "agent"
+   ]
+  },
+  "project_id": "p1",
+  "session_id": "session-1",
+  "agent_id": null,
+  "parent_session_id": null,
+  "idempotency_key": "idem-e1",
+  "expected_state_revision": null,
+  "policy_bundle_sha": null,
+  "deadline_at": null,
+  "action": {
+   "kind": "repository.publish",
+   "resource": {
+    "uri": "writ-artifact://snap-1",
+    "canonical_resource_id": "repository:t1/p1/releases"
+   },
+   "action_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "attributes": {},
+   "requested_capabilities": []
+  }
+ }
 }

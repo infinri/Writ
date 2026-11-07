@@ -157,6 +157,14 @@ SR-06 sandbox facts (preflight PASS, telemetry diagnostic) are recorded in `docs
 - **Cross-check after expectations were frozen (not used to set any expectation):** M0 oracle through the driver: canonical-vector 1/1, golden 26/26, strict-json 5/22, transition-decisions 13/35 with 6 protocol errors (the M0 adapter does not accept input_text). The M0 harness does not implement D-017; in tx-04 it matched the deploy approval rule for a release request.
 - **Test fix during the run:** the integrity test first failed on `cj-15-nan` because Python's `json.loads` accepts `NaN`; the test now rejects non-standard constants. The fixture was not changed.
 
+### E-020: M1-02 amendment 2 (D-018) checks; amendment-1 baseline CI
+
+- **Amendment-1 baseline:** `a97e8f14beef94b0d24aef092405cffab044ec5f` pushed (fast-forward from `4a66364`); CI https://github.com/infinri/Writ/actions/runs/42329531037 success.
+- **Amendment 2 (local, 2026-11-07):** exporter `--check` current, 7 sets, 291 cases. `m0/.venv/bin/python -m unittest discover -s m1/driver/tests`: 24 tests OK (11 driver, 13 fixture integrity, incl. schema validation of 50+ scenario requests, duplicate keys present in every DUPLICATE_KEY case, NaN and Infinity cases rejected by an RFC 8259 parse, no request repeats its kind unless expected invalid, no acceptance or permit detail passes through the external mapping). Same suite with system Python 3.12.3: OK.
+- **Unchanged suites:** M0 `pytest` 281 passed; audit 8 files current; docs check OK (91 Markdown, 17 schemas).
+- **Depth cross-check after freezing:** the 14 depth and width vectors run through the D-006 reference module (`m0/writ_m0/canonical.py`): 14/14 agree, including canonical bytes and digests.
+- **M0 adapter after freezing (divergence record, nothing changed):** canonical-vector 1/1, golden 26/26, strict-json 12/37, transition-decisions 13/45 with 16 protocol errors (adapter lacks input_text support).
+
 ## Not yet executed
 
 - SR-06 live-host experiments (0 of 69; sandbox torn down) and full SR-06 acceptance; rule semantic review (M0-01d); independent human golden review (M0-05a).

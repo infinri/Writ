@@ -27,21 +27,28 @@
       "command": "check-acceptance",
       "file": "sets/acceptance-binding.jsonl",
       "hard_gate": true,
-      "provenance": "m1/fixtures/acceptance/acceptance-binding.cases.json (m1-draft-2, hand-reasoned from SEMANTICS.md, PENDING INDEPENDENT REVIEW)"
+      "provenance": "m1/fixtures/acceptance/acceptance-binding.cases.json (m1-draft-3, hand-reasoned from SEMANTICS.md, PENDING INDEPENDENT REVIEW)"
     },
     {
       "name": "transition-decisions",
       "command": "decide",
       "file": "sets/transition-decisions.jsonl",
       "hard_gate": true,
-      "provenance": "m1/fixtures/transition/transition-decisions.cases.json (m1-draft-2) under m1-transition.bundle.json (hand-reasoned, PENDING INDEPENDENT REVIEW)"
+      "provenance": "m1/fixtures/transition/transition-decisions.cases.json (m1-draft-3) under m1-transition.bundle.json (hand-reasoned, PENDING INDEPENDENT REVIEW)"
     },
     {
       "name": "transition-scenarios",
       "command": "transition-scenario",
       "file": "sets/transition-scenarios.jsonl",
       "hard_gate": true,
-      "provenance": "m1/fixtures/transition/transition-scenarios.cases.json (m1-draft-2, hand-reasoned from SCENARIOS.md, PENDING INDEPENDENT REVIEW)"
+      "provenance": "m1/fixtures/transition/transition-scenarios.cases.json (m1-draft-3, hand-reasoned from SCENARIOS.md, PENDING INDEPENDENT REVIEW)"
+    },
+    {
+      "name": "external-refusal",
+      "command": "external-refusal",
+      "file": "sets/external-refusal.jsonl",
+      "hard_gate": true,
+      "provenance": "m1/fixtures/refusal/external-refusal.cases.json (hand-reasoned, D-018 A7, PENDING INDEPENDENT REVIEW)"
     }
   ]
 }

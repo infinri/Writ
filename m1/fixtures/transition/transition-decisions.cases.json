@@ -1,67 +1,768 @@
 {
-  "description": "Hand-reasoned workflow.transition decisions, m1-draft-2 (D-017), under m1-transition.bundle.json and the kernel transition extension in SCENARIOS.md. Expected values written before any Rust or Go code. PENDING INDEPENDENT REVIEW. Each case applies an RFC 7396 merge patch to base_request; bundle_loaded false passes a null bundle; bundle_variant selects another bundle file; pin_actual_bundle_sha pins the loaded bundle's sha; text_edit sends the input as input_text after replacing the first occurrence of old in the serialized request. Changes from draft 1: m1/fixtures/AMENDMENT-1.md.",
-  "review_status": "PENDING INDEPENDENT REVIEW",
-  "bundle": "m1-transition.bundle.json",
-  "bundle_variants": {"unscoped": "m1-transition-unscoped.bundle.json"},
-  "state_revision": 7,
-  "now": "2026-11-07T11:00:00Z",
-  "base_request": {
-    "contract_version": "2.0",
-    "request_id": "req-t1",
-    "trace_id": "trace-t1",
-    "tenant_id": "fixture-tenant",
-    "principal": {"id": "agent:session-1", "verified_by": "writ-host-adapter:fixture", "authn_method": "os_peer_credential", "roles": ["agent"]},
-    "project_id": "fixture-project",
-    "session_id": "session-1",
-    "agent_id": null,
-    "parent_session_id": null,
-    "idempotency_key": "idem-t1",
-    "expected_state_revision": 7,
-    "policy_bundle_sha": null,
-    "deadline_at": null,
-    "action": {
-      "kind": "workflow.transition",
-      "resource": {"uri": "writ-workflow://wf-1", "canonical_resource_id": "workflow:fixture-tenant/fixture-project/wf-1"},
-      "action_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      "attributes": {"from_state": "verifying", "to_state": "accepted", "acceptance_record_id": "acc-1", "artifact_snapshot_id": "snap-1", "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
-      "requested_capabilities": []
-    }
+ "description": "Hand-reasoned workflow.transition decisions, m1-draft-3 (D-017, D-018), under m1-transition.bundle.json and the kernel transition extension in SCENARIOS.md. Expected values written before any Rust or Go code. PENDING INDEPENDENT REVIEW. Each case applies an RFC 7396 merge patch to base_request; bundle_loaded false passes a null bundle; bundle_variant selects another bundle file; pin_actual_bundle_sha pins the loaded bundle's sha; text_edit sends the input as input_text after replacing the first occurrence of old in the serialized request. Changes: m1/fixtures/AMENDMENT-1.md and AMENDMENT-2.md.",
+ "review_status": "PENDING INDEPENDENT REVIEW",
+ "bundle": "m1-transition.bundle.json",
+ "bundle_variants": {
+  "unscoped": "m1-transition-unscoped.bundle.json"
+ },
+ "state_revision": 7,
+ "now": "2026-11-07T11:00:00Z",
+ "base_request": {
+  "contract_version": "2.0",
+  "request_id": "req-t1",
+  "trace_id": "trace-t1",
+  "tenant_id": "fixture-tenant",
+  "principal": {
+   "id": "agent:session-1",
+   "verified_by": "writ-host-adapter:fixture",
+   "authn_method": "os_peer_credential",
+   "roles": [
+    "agent"
+   ]
   },
-  "cases": [
-    {"id": "tx-01-accept-permitted", "patch": {}, "expected": {"status": "allow", "reason_code": "ACCEPT_TRANSITION_PERMITTED", "matched_rule_ids": ["permit-accept"]}, "rationale": "verifying to accepted is permitted; the acceptance record is a separate broker precondition"},
-    {"id": "tx-02-deploy-needs-approval", "patch": {"action": {"attributes": {"to_state": "deployed"}}}, "expected": {"status": "require_approval", "reason_code": "DEPLOY_TRANSITION_REQUIRES_APPROVAL", "matched_rule_ids": ["approve-deploy"]}, "rationale": "deploy needs a human grant"},
-    {"id": "tx-03-agent-release-forbidden", "patch": {"action": {"attributes": {"to_state": "released"}}}, "expected": {"status": "deny", "reason_code": "AGENT_RELEASE_FORBIDDEN", "matched_rule_ids": ["forbid-release-by-agent"]}, "rationale": "forbid wins over approval"},
-    {"id": "tx-04-release-manager-still-needs-approval", "patch": {"principal": {"id": "human:rm-1", "roles": ["release-manager"]}, "action": {"attributes": {"to_state": "released"}}}, "expected": {"status": "require_approval", "reason_code": "RELEASE_REQUIRES_APPROVAL", "matched_rule_ids": ["approve-release"]}, "rationale": "require_approval stays above permit (D-011 case 08)"},
-    {"id": "tx-05-agent-claiming-release-manager-role", "patch": {"principal": {"roles": ["agent", "release-manager"]}, "action": {"attributes": {"to_state": "released"}}}, "expected": {"status": "deny", "reason_code": "AGENT_RELEASE_FORBIDDEN", "matched_rule_ids": ["forbid-release-by-agent"]}, "rationale": "an extra role cannot cancel a forbid"},
-    {"id": "tx-06-unlisted-target-state", "patch": {"action": {"attributes": {"to_state": "planning"}}}, "expected": {"status": "deny", "reason_code": "DEFAULT_DENY", "matched_rule_ids": []}, "rationale": "no statement lists planning: default deny"},
-    {"id": "tx-07-composite-publish", "patch": {"action": {"requested_capabilities": ["repository.publish"]}}, "expected": {"status": "invalid", "reason_code": "COMPOSITE_NOT_SUPPORTED", "matched_rule_ids": []}, "rationale": "CHANGED (D-017): composite promotion-plus-effect refused structurally by the kernel, not by a policy statement"},
-    {"id": "tx-08-composite-process", "patch": {"action": {"requested_capabilities": ["process.execute"]}}, "expected": {"status": "invalid", "reason_code": "COMPOSITE_NOT_SUPPORTED", "matched_rule_ids": []}, "rationale": "CHANGED (D-017): as tx-07"},
-    {"id": "tx-09-own-kind-only", "patch": {"action": {"requested_capabilities": ["workflow.transition"]}}, "expected": {"status": "allow", "reason_code": "ACCEPT_TRANSITION_PERMITTED", "matched_rule_ids": ["permit-accept"]}, "rationale": "repeating the request's own kind is not composite"},
-    {"id": "tx-10-cross-project", "patch": {"action": {"resource": {"canonical_resource_id": "workflow:fixture-tenant/other-project/wf-1"}}}, "expected": {"status": "deny", "reason_code": "RESOURCE_SCOPE_MISMATCH", "matched_rule_ids": []}, "rationale": "cross-project promotion"},
-    {"id": "tx-11-cross-tenant", "patch": {"action": {"resource": {"canonical_resource_id": "workflow:other-tenant/fixture-project/wf-1"}}}, "expected": {"status": "deny", "reason_code": "RESOURCE_SCOPE_MISMATCH", "matched_rule_ids": []}, "rationale": "cross-tenant promotion"},
-    {"id": "tx-12-stale-revision", "patch": {"expected_state_revision": 6}, "expected": {"status": "invalid", "reason_code": "STATE_REVISION_CONFLICT", "matched_rule_ids": []}, "rationale": "stale workflow revision"},
-    {"id": "tx-13-policy-pin-mismatch", "patch": {"policy_bundle_sha": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}, "expected": {"status": "unavailable", "reason_code": "POLICY_VERSION_MISMATCH", "matched_rule_ids": []}, "rationale": "pinned to another bundle (downgrade or substitution)"},
-    {"id": "tx-14-policy-pin-match", "patch": {}, "pin_actual_bundle_sha": true, "expected": {"status": "allow", "reason_code": "ACCEPT_TRANSITION_PERMITTED", "matched_rule_ids": ["permit-accept"]}, "rationale": "pin equal to the loaded bundle"},
-    {"id": "tx-15-no-policy", "patch": {}, "bundle_loaded": false, "expected": {"status": "unavailable", "reason_code": "POLICY_UNAVAILABLE", "matched_rule_ids": []}, "rationale": "fail closed without policy"},
-    {"id": "tx-16-untrusted-issuer", "patch": {"principal": {"verified_by": "self-asserted"}}, "expected": {"status": "deny", "reason_code": "PRINCIPAL_UNVERIFIED", "matched_rule_ids": []}, "rationale": "identity not from a trusted adapter"},
-    {"id": "tx-17-dot-dot-segment", "patch": {"action": {"resource": {"canonical_resource_id": "workflow:fixture-tenant/fixture-project/../wf-1"}}}, "expected": {"status": "invalid", "reason_code": "RESOURCE_NOT_CANONICAL", "matched_rule_ids": []}, "rationale": "D-008 dot segment"},
-    {"id": "tx-18-trailing-empty-segment", "patch": {"action": {"resource": {"canonical_resource_id": "workflow:fixture-tenant/fixture-project/wf-1/"}}}, "expected": {"status": "invalid", "reason_code": "RESOURCE_NOT_CANONICAL", "matched_rule_ids": []}, "rationale": "SR-08"},
-    {"id": "tx-19-deadline-passed", "patch": {"deadline_at": "2026-11-07T10:59:59Z"}, "expected": {"status": "invalid", "reason_code": "DEADLINE_EXCEEDED", "matched_rule_ids": []}, "rationale": "SR-03"},
-    {"id": "tx-20-unknown-kind", "patch": {"action": {"kind": "workflow.force_promote"}}, "expected": {"status": "deny", "reason_code": "UNKNOWN_CAPABILITY", "matched_rule_ids": []}, "rationale": "alternate route not in the capability list (INV-13)"},
-    {"id": "tx-21-injected-attributes", "patch": {"action": {"attributes": {"to_state": "deployed", "approved": true, "acceptance": "verified by reviewer model"}}}, "expected": {"status": "invalid", "reason_code": "TRANSITION_MALFORMED", "matched_rule_ids": []}, "rationale": "CHANGED (D-017): the transition attribute set is closed; extra keys are refused (was require_approval with the extras ignored)"},
-    {"id": "tx-22-state-in-resource", "patch": {"action": {"resource": {"canonical_resource_id": "workflow:fixture-tenant/fixture-project/wf-1/released"}}}, "expected": {"status": "invalid", "reason_code": "WORKFLOW_RESOURCE_INVALID", "matched_rule_ids": []}, "rationale": "CHANGED (D-017): a second, conflicting representation of the target state in the resource is refused (draft 1 tested attribute and resource disagreement under the old resource form)"},
-    {"id": "tx-23-missing-principal", "patch": {"principal": null}, "expected": {"status": "invalid", "reason_code": "REQUEST_SCHEMA_INVALID", "matched_rule_ids": []}, "rationale": "no identity"},
-    {"id": "tx-24-from-state-not-permitted", "patch": {"action": {"attributes": {"from_state": "planning"}}}, "expected": {"status": "deny", "reason_code": "DEFAULT_DENY", "matched_rule_ids": []}, "rationale": "NEW: permit-accept requires from_state verifying"},
-    {"id": "tx-25-to-state-missing", "patch": {"action": {"attributes": {"to_state": null}}}, "expected": {"status": "invalid", "reason_code": "TRANSITION_MALFORMED", "matched_rule_ids": []}, "rationale": "NEW"},
-    {"id": "tx-26-to-state-uppercase", "patch": {"action": {"attributes": {"to_state": "Accepted"}}}, "expected": {"status": "invalid", "reason_code": "TRANSITION_MALFORMED", "matched_rule_ids": []}, "rationale": "NEW: no case folding of state names"},
-    {"id": "tx-27-self-transition", "patch": {"action": {"attributes": {"to_state": "verifying"}}}, "expected": {"status": "invalid", "reason_code": "TRANSITION_MALFORMED", "matched_rule_ids": []}, "rationale": "NEW: from_state equals to_state"},
-    {"id": "tx-28-to-state-as-list", "patch": {"action": {"attributes": {"to_state": ["accepted", "released"]}}}, "expected": {"status": "invalid", "reason_code": "TRANSITION_MALFORMED", "matched_rule_ids": []}, "rationale": "NEW: one target state per request"},
-    {"id": "tx-29-unscoped-transition-permit", "patch": {}, "bundle_variant": "unscoped", "expected": {"status": "unavailable", "reason_code": "POLICY_BUNDLE_REJECTED", "matched_rule_ids": []}, "rationale": "NEW: a permit covering workflow.transition without to_states is rejected at load"},
-    {"id": "tx-30-workflow-id-uppercase", "patch": {"action": {"resource": {"canonical_resource_id": "workflow:fixture-tenant/fixture-project/WF-1"}}}, "expected": {"status": "invalid", "reason_code": "WORKFLOW_RESOURCE_INVALID", "matched_rule_ids": []}, "rationale": "NEW: restricted lowercase workflow ids"},
-    {"id": "tx-31-duplicate-to-state", "text_edit": {"old": "\"to_state\":\"accepted\"", "new": "\"to_state\":\"accepted\",\"to_state\":\"released\""}, "expected": {"status": "invalid", "reason_code": "REQUEST_JSON_INVALID", "matched_rule_ids": []}, "rationale": "NEW: duplicate transition representation; first-wins allows, last-wins denies"},
-    {"id": "tx-32-duplicate-tenant", "text_edit": {"old": "\"tenant_id\":\"fixture-tenant\"", "new": "\"tenant_id\":\"other-tenant\",\"tenant_id\":\"fixture-tenant\""}, "expected": {"status": "invalid", "reason_code": "REQUEST_JSON_INVALID", "matched_rule_ids": []}, "rationale": "NEW: duplicate scope field"},
-    {"id": "tx-33-revision-as-decimal", "text_edit": {"old": "\"expected_state_revision\":7", "new": "\"expected_state_revision\":7.0"}, "expected": {"status": "invalid", "reason_code": "REQUEST_JSON_INVALID", "matched_rule_ids": []}, "rationale": "NEW: alternate numeric spelling"},
-    {"id": "tx-34-revision-above-range", "text_edit": {"old": "\"expected_state_revision\":7", "new": "\"expected_state_revision\":9007199254740992"}, "expected": {"status": "invalid", "reason_code": "REQUEST_JSON_INVALID", "matched_rule_ids": []}, "rationale": "NEW: 2^53 out of range"},
-    {"id": "tx-35-revision-negative", "patch": {"expected_state_revision": -1}, "expected": {"status": "invalid", "reason_code": "REQUEST_SCHEMA_INVALID", "matched_rule_ids": []}, "rationale": "NEW: ASSUMPTION A-13, a negative revision fails the schema (action-request requires a nonnegative integer or null)"}
-  ]
+  "project_id": "fixture-project",
+  "session_id": "session-1",
+  "agent_id": null,
+  "parent_session_id": null,
+  "idempotency_key": "idem-t1",
+  "expected_state_revision": 7,
+  "policy_bundle_sha": null,
+  "deadline_at": null,
+  "action": {
+   "kind": "workflow.transition",
+   "resource": {
+    "uri": "writ-workflow://wf-1",
+    "canonical_resource_id": "workflow:fixture-tenant/fixture-project/wf-1"
+   },
+   "action_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "attributes": {
+    "from_state": "verifying",
+    "to_state": "accepted",
+    "acceptance_record_id": "acc-1",
+    "artifact_snapshot_id": "snap-1",
+    "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+   },
+   "requested_capabilities": []
+  }
+ },
+ "cases": [
+  {
+   "id": "tx-01-accept-permitted",
+   "patch": {},
+   "expected": {
+    "status": "allow",
+    "reason_code": "ACCEPT_TRANSITION_PERMITTED",
+    "matched_rule_ids": [
+     "permit-accept"
+    ]
+   },
+   "rationale": "verifying to accepted is permitted; the acceptance record is a separate broker precondition"
+  },
+  {
+   "id": "tx-02-deploy-needs-approval",
+   "patch": {
+    "action": {
+     "attributes": {
+      "to_state": "deployed"
+     }
+    }
+   },
+   "expected": {
+    "status": "require_approval",
+    "reason_code": "DEPLOY_TRANSITION_REQUIRES_APPROVAL",
+    "matched_rule_ids": [
+     "approve-deploy"
+    ]
+   },
+   "rationale": "deploy needs a human grant"
+  },
+  {
+   "id": "tx-03-agent-release-forbidden",
+   "patch": {
+    "action": {
+     "attributes": {
+      "to_state": "released"
+     }
+    }
+   },
+   "expected": {
+    "status": "deny",
+    "reason_code": "AGENT_RELEASE_FORBIDDEN",
+    "matched_rule_ids": [
+     "forbid-release-by-agent"
+    ]
+   },
+   "rationale": "forbid wins over approval"
+  },
+  {
+   "id": "tx-04-release-manager-still-needs-approval",
+   "patch": {
+    "principal": {
+     "id": "human:rm-1",
+     "roles": [
+      "release-manager"
+     ]
+    },
+    "action": {
+     "attributes": {
+      "to_state": "released"
+     }
+    }
+   },
+   "expected": {
+    "status": "require_approval",
+    "reason_code": "RELEASE_REQUIRES_APPROVAL",
+    "matched_rule_ids": [
+     "approve-release"
+    ]
+   },
+   "rationale": "require_approval stays above permit (D-011 case 08)"
+  },
+  {
+   "id": "tx-05-agent-claiming-release-manager-role",
+   "patch": {
+    "principal": {
+     "roles": [
+      "agent",
+      "release-manager"
+     ]
+    },
+    "action": {
+     "attributes": {
+      "to_state": "released"
+     }
+    }
+   },
+   "expected": {
+    "status": "deny",
+    "reason_code": "AGENT_RELEASE_FORBIDDEN",
+    "matched_rule_ids": [
+     "forbid-release-by-agent"
+    ]
+   },
+   "rationale": "an extra role cannot cancel a forbid"
+  },
+  {
+   "id": "tx-06-unlisted-target-state",
+   "patch": {
+    "action": {
+     "attributes": {
+      "to_state": "planning"
+     }
+    }
+   },
+   "expected": {
+    "status": "deny",
+    "reason_code": "DEFAULT_DENY",
+    "matched_rule_ids": []
+   },
+   "rationale": "no statement lists planning: default deny"
+  },
+  {
+   "id": "tx-07-composite-publish",
+   "patch": {
+    "action": {
+     "requested_capabilities": [
+      "repository.publish"
+     ]
+    }
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "COMPOSITE_NOT_SUPPORTED",
+    "matched_rule_ids": []
+   },
+   "rationale": "CHANGED (D-017): composite promotion-plus-effect refused structurally by the kernel, not by a policy statement"
+  },
+  {
+   "id": "tx-08-composite-process",
+   "patch": {
+    "action": {
+     "requested_capabilities": [
+      "process.execute"
+     ]
+    }
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "COMPOSITE_NOT_SUPPORTED",
+    "matched_rule_ids": []
+   },
+   "rationale": "CHANGED (D-017): as tx-07"
+  },
+  {
+   "id": "tx-09-own-kind-only",
+   "patch": {
+    "action": {
+     "requested_capabilities": [
+      "workflow.transition"
+     ]
+    }
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "REQUESTED_CAPABILITIES_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "CHANGED (D-018 A4): requested_capabilities lists only additional capabilities; repeating action.kind is a redundant, ambiguous declaration (was allow)"
+  },
+  {
+   "id": "tx-10-cross-project",
+   "patch": {
+    "action": {
+     "resource": {
+      "canonical_resource_id": "workflow:fixture-tenant/other-project/wf-1"
+     }
+    }
+   },
+   "expected": {
+    "status": "deny",
+    "reason_code": "RESOURCE_SCOPE_MISMATCH",
+    "matched_rule_ids": []
+   },
+   "rationale": "cross-project promotion"
+  },
+  {
+   "id": "tx-11-cross-tenant",
+   "patch": {
+    "action": {
+     "resource": {
+      "canonical_resource_id": "workflow:other-tenant/fixture-project/wf-1"
+     }
+    }
+   },
+   "expected": {
+    "status": "deny",
+    "reason_code": "RESOURCE_SCOPE_MISMATCH",
+    "matched_rule_ids": []
+   },
+   "rationale": "cross-tenant promotion"
+  },
+  {
+   "id": "tx-12-stale-revision",
+   "patch": {
+    "expected_state_revision": 6
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "STATE_REVISION_CONFLICT",
+    "matched_rule_ids": []
+   },
+   "rationale": "stale workflow revision"
+  },
+  {
+   "id": "tx-13-policy-pin-mismatch",
+   "patch": {
+    "policy_bundle_sha": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+   },
+   "expected": {
+    "status": "unavailable",
+    "reason_code": "POLICY_VERSION_MISMATCH",
+    "matched_rule_ids": []
+   },
+   "rationale": "pinned to another bundle (downgrade or substitution)"
+  },
+  {
+   "id": "tx-14-policy-pin-match",
+   "patch": {},
+   "pin_actual_bundle_sha": true,
+   "expected": {
+    "status": "allow",
+    "reason_code": "ACCEPT_TRANSITION_PERMITTED",
+    "matched_rule_ids": [
+     "permit-accept"
+    ]
+   },
+   "rationale": "pin equal to the loaded bundle"
+  },
+  {
+   "id": "tx-15-no-policy",
+   "patch": {},
+   "bundle_loaded": false,
+   "expected": {
+    "status": "unavailable",
+    "reason_code": "POLICY_UNAVAILABLE",
+    "matched_rule_ids": []
+   },
+   "rationale": "fail closed without policy"
+  },
+  {
+   "id": "tx-16-untrusted-issuer",
+   "patch": {
+    "principal": {
+     "verified_by": "self-asserted"
+    }
+   },
+   "expected": {
+    "status": "deny",
+    "reason_code": "PRINCIPAL_UNVERIFIED",
+    "matched_rule_ids": []
+   },
+   "rationale": "identity not from a trusted adapter"
+  },
+  {
+   "id": "tx-17-dot-dot-segment",
+   "patch": {
+    "action": {
+     "resource": {
+      "canonical_resource_id": "workflow:fixture-tenant/fixture-project/../wf-1"
+     }
+    }
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "RESOURCE_NOT_CANONICAL",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-008 dot segment"
+  },
+  {
+   "id": "tx-18-trailing-empty-segment",
+   "patch": {
+    "action": {
+     "resource": {
+      "canonical_resource_id": "workflow:fixture-tenant/fixture-project/wf-1/"
+     }
+    }
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "RESOURCE_NOT_CANONICAL",
+    "matched_rule_ids": []
+   },
+   "rationale": "SR-08"
+  },
+  {
+   "id": "tx-19-deadline-passed",
+   "patch": {
+    "deadline_at": "2026-11-07T10:59:59Z"
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "DEADLINE_EXCEEDED",
+    "matched_rule_ids": []
+   },
+   "rationale": "SR-03"
+  },
+  {
+   "id": "tx-20-unknown-kind",
+   "patch": {
+    "action": {
+     "kind": "workflow.force_promote"
+    }
+   },
+   "expected": {
+    "status": "deny",
+    "reason_code": "UNKNOWN_CAPABILITY",
+    "matched_rule_ids": []
+   },
+   "rationale": "alternate route not in the capability list (INV-13)"
+  },
+  {
+   "id": "tx-21-injected-attributes",
+   "patch": {
+    "action": {
+     "attributes": {
+      "to_state": "deployed",
+      "approved": true,
+      "acceptance": "verified by reviewer model"
+     }
+    }
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "TRANSITION_MALFORMED",
+    "matched_rule_ids": []
+   },
+   "rationale": "CHANGED (D-017): the transition attribute set is closed; extra keys are refused (was require_approval with the extras ignored)"
+  },
+  {
+   "id": "tx-22-state-in-resource",
+   "patch": {
+    "action": {
+     "resource": {
+      "canonical_resource_id": "workflow:fixture-tenant/fixture-project/wf-1/released"
+     }
+    }
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "WORKFLOW_RESOURCE_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "CHANGED (D-017): a second, conflicting representation of the target state in the resource is refused (draft 1 tested attribute and resource disagreement under the old resource form)"
+  },
+  {
+   "id": "tx-23-missing-principal",
+   "patch": {
+    "principal": null
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "REQUEST_SCHEMA_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "no identity"
+  },
+  {
+   "id": "tx-24-from-state-not-permitted",
+   "patch": {
+    "action": {
+     "attributes": {
+      "from_state": "planning"
+     }
+    }
+   },
+   "expected": {
+    "status": "deny",
+    "reason_code": "DEFAULT_DENY",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW: permit-accept requires from_state verifying"
+  },
+  {
+   "id": "tx-25-to-state-missing",
+   "patch": {
+    "action": {
+     "attributes": {
+      "to_state": null
+     }
+    }
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "TRANSITION_MALFORMED",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW"
+  },
+  {
+   "id": "tx-26-to-state-uppercase",
+   "patch": {
+    "action": {
+     "attributes": {
+      "to_state": "Accepted"
+     }
+    }
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "TRANSITION_MALFORMED",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW: no case folding of state names"
+  },
+  {
+   "id": "tx-27-self-transition",
+   "patch": {
+    "action": {
+     "attributes": {
+      "to_state": "verifying"
+     }
+    }
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "TRANSITION_MALFORMED",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW: from_state equals to_state"
+  },
+  {
+   "id": "tx-28-to-state-as-list",
+   "patch": {
+    "action": {
+     "attributes": {
+      "to_state": [
+       "accepted",
+       "released"
+      ]
+     }
+    }
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "TRANSITION_MALFORMED",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW: one target state per request"
+  },
+  {
+   "id": "tx-29-unscoped-transition-permit",
+   "patch": {},
+   "bundle_variant": "unscoped",
+   "expected": {
+    "status": "unavailable",
+    "reason_code": "POLICY_BUNDLE_REJECTED",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW: a permit covering workflow.transition without to_states is rejected at load"
+  },
+  {
+   "id": "tx-30-workflow-id-uppercase",
+   "patch": {
+    "action": {
+     "resource": {
+      "canonical_resource_id": "workflow:fixture-tenant/fixture-project/WF-1"
+     }
+    }
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "WORKFLOW_RESOURCE_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW: restricted lowercase workflow ids"
+  },
+  {
+   "id": "tx-31-duplicate-to-state",
+   "text_edit": {
+    "old": "\"to_state\":\"accepted\"",
+    "new": "\"to_state\":\"accepted\",\"to_state\":\"released\""
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "REQUEST_JSON_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW: duplicate transition representation; first-wins allows, last-wins denies"
+  },
+  {
+   "id": "tx-32-duplicate-tenant",
+   "text_edit": {
+    "old": "\"tenant_id\":\"fixture-tenant\"",
+    "new": "\"tenant_id\":\"other-tenant\",\"tenant_id\":\"fixture-tenant\""
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "REQUEST_JSON_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW: duplicate scope field"
+  },
+  {
+   "id": "tx-33-revision-as-decimal",
+   "text_edit": {
+    "old": "\"expected_state_revision\":7",
+    "new": "\"expected_state_revision\":7.0"
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "REQUEST_JSON_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW: alternate numeric spelling"
+  },
+  {
+   "id": "tx-34-revision-above-range",
+   "text_edit": {
+    "old": "\"expected_state_revision\":7",
+    "new": "\"expected_state_revision\":9007199254740992"
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "REQUEST_JSON_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW: 2^53 out of range"
+  },
+  {
+   "id": "tx-35-revision-negative",
+   "patch": {
+    "expected_state_revision": -1
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "REQUEST_SCHEMA_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW: ASSUMPTION A-13, a negative revision fails the schema (action-request requires a nonnegative integer or null)"
+  },
+  {
+   "id": "tx-36-unprotected-without-acceptance",
+   "patch": {
+    "action": {
+     "attributes": {
+      "acceptance_record_id": null,
+      "artifact_snapshot_id": null,
+      "artifact_digest": null,
+      "from_state": "planning",
+      "to_state": "verifying"
+     }
+    }
+   },
+   "expected": {
+    "status": "allow",
+    "reason_code": "START_VERIFICATION_PERMITTED",
+    "matched_rule_ids": [
+     "permit-start-verification"
+    ]
+   },
+   "rationale": "NEW (A2): an unprotected transition needs no acceptance attributes"
+  },
+  {
+   "id": "tx-37-partial-acceptance-binding",
+   "patch": {
+    "action": {
+     "attributes": {
+      "artifact_snapshot_id": null,
+      "artifact_digest": null
+     }
+    }
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "TRANSITION_MALFORMED",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW (A2): acceptance attributes are all present or all absent"
+  },
+  {
+   "id": "tx-38-protected-without-acceptance-kernel",
+   "patch": {
+    "action": {
+     "attributes": {
+      "acceptance_record_id": null,
+      "artifact_snapshot_id": null,
+      "artifact_digest": null
+     }
+    }
+   },
+   "expected": {
+    "status": "allow",
+    "reason_code": "ACCEPT_TRANSITION_PERMITTED",
+    "matched_rule_ids": [
+     "permit-accept"
+    ]
+   },
+   "rationale": "NEW (A2): the kernel authorizes the transition; protection is enforced by the broker from the trusted acceptance policy (scenario sc-32 refuses the same request). ASSUMPTION B-1: single enforcement point for protection"
+  },
+  {
+   "id": "tx-39-policy-prohibition-is-deny",
+   "patch": {
+    "action": {
+     "kind": "network.egress",
+     "resource": {
+      "uri": "https://example.invalid/",
+      "canonical_resource_id": "network:fixture-tenant/fixture-project/example.invalid"
+     },
+     "attributes": null
+    }
+   },
+   "expected": {
+    "status": "deny",
+    "reason_code": "NETWORK_EGRESS_FORBIDDEN",
+    "matched_rule_ids": [
+     "forbid-egress"
+    ]
+   },
+   "rationale": "NEW (A8): a structurally valid action prohibited by policy is DENY"
+  },
+  {
+   "id": "tx-40-non-transition-composite-is-policy",
+   "patch": {
+    "action": {
+     "kind": "file.write",
+     "resource": {
+      "uri": "file:///work/a.txt",
+      "canonical_resource_id": "workspace:fixture-tenant/fixture-project/a.txt"
+     },
+     "attributes": null,
+     "requested_capabilities": [
+      "network.egress"
+     ]
+    }
+   },
+   "expected": {
+    "status": "deny",
+    "reason_code": "NETWORK_EGRESS_FORBIDDEN",
+    "matched_rule_ids": [
+     "forbid-egress"
+    ]
+   },
+   "rationale": "NEW (A8): composite for an ordinary action is decided by policy (DENY), unlike a structurally unsupported promotion composite (INVALID, tx-07)"
+  },
+  {
+   "id": "tx-41-own-kind-non-transition",
+   "patch": {
+    "action": {
+     "kind": "file.write",
+     "resource": {
+      "uri": "file:///work/a.txt",
+      "canonical_resource_id": "workspace:fixture-tenant/fixture-project/a.txt"
+     },
+     "attributes": null,
+     "requested_capabilities": [
+      "file.write"
+     ]
+    }
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "REQUESTED_CAPABILITIES_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW (A4): the redundancy rule applies to every action kind"
+  },
+  {
+   "id": "tx-42-non-transition-control",
+   "patch": {
+    "action": {
+     "kind": "file.write",
+     "resource": {
+      "uri": "file:///work/a.txt",
+      "canonical_resource_id": "workspace:fixture-tenant/fixture-project/a.txt"
+     },
+     "attributes": null
+    }
+   },
+   "expected": {
+    "status": "allow",
+    "reason_code": "WORKSPACE_WRITE_PERMITTED",
+    "matched_rule_ids": [
+     "permit-workspace-write"
+    ]
+   },
+   "rationale": "NEW (A4 control): empty requested_capabilities"
+  },
+  {
+   "id": "tx-43-nan",
+   "text_edit": {
+    "old": "\"expected_state_revision\":7",
+    "new": "\"expected_state_revision\":NaN"
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "REQUEST_JSON_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW (D-018 strict parsing)"
+  },
+  {
+   "id": "tx-44-infinity",
+   "text_edit": {
+    "old": "\"expected_state_revision\":7",
+    "new": "\"expected_state_revision\":Infinity"
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "REQUEST_JSON_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW (D-018 strict parsing)"
+  },
+  {
+   "id": "tx-45-escaped-duplicate-kind",
+   "text_edit": {
+    "old": "\"kind\":\"workflow.transition\"",
+    "new": "\"kind\":\"workflow.transition\",\"\\u006bind\":\"file.write\""
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "REQUEST_JSON_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW (D-018): escape-equivalent duplicate of action.kind"
+  }
+ ]
 }

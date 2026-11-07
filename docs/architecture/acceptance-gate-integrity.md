@@ -61,6 +61,8 @@ Relationship to existing contracts: EvaluationRecord stays the per-evaluator out
 
 **Revocation.** Each criterion names its `evaluator_id`; criteria from a revoked evaluator are refused at use time.
 
+**Protected transitions (D-018).** The trusted workflow and acceptance policy decides which transitions are protected (by target state in M1), so omitting acceptance attributes or detouring through unprotected states cannot reach a protected state without acceptance. Unprotected transitions still need identity, kernel authorization, revision checks and audit. The authorization bundle digest and the acceptance-policy bundle digest are separate, each resolved from trusted state and pinned; a trust label in a record is a claim, never proof of evaluator identity or registration.
+
 **External responses.** Detailed refusal codes go to the access-controlled audit record. Agents and hosts receive `PROMOTION_REFUSED` with an audit reference, so refusals do not reveal other tenants' or projects' records, consumed ids or revocations.
 
 ## 5. Trusted evaluators and evidence verification

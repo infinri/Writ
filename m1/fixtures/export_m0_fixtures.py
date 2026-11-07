@@ -7,7 +7,8 @@ Inputs are committed fixture sources only (no M0 Python code is imported):
 - the canonical-JSON known vector fixed in D-006.
 - m1/fixtures/canonical/strict-json.cases.json: strict parsing and canonical cases (D-017).
 - m1/fixtures/acceptance/acceptance-binding.cases.json: check-acceptance cases (m1-draft-2).
-- m1/fixtures/transition/*.cases.json: workflow.transition decisions and scenarios (m1-draft-2).
+- m1/fixtures/transition/*.cases.json: workflow.transition decisions and scenarios (m1-draft-3).
+- m1/fixtures/refusal/external-refusal.cases.json: internal to external refusal mapping (D-018).
 
 This script only assembles inputs (patches, digests of fixture-construction values,
 raw-text edits). Every expected result is copied verbatim from a source file.
@@ -29,6 +30,16 @@ GOLDEN = ROOT / "docs/contracts/fixtures/decisions/m0-golden.json"
 ACCEPTANCE = HERE / "acceptance/acceptance-binding.cases.json"
 TRANSITION = HERE / "transition"
 STRICT = HERE / "canonical/strict-json.cases.json"
+REFUSAL = HERE / "refusal/external-refusal.cases.json"
+
+
+def nest_text(pattern: str, count: int, leaf: str) -> str:
+    """Wrap leaf in count containers from the inside out (array: [x]; object: {"k":x}; alternate starts with array)."""
+    text = leaf
+    for i in range(count):
+        kind = pattern if pattern != "alternate" else ("array" if i % 2 == 0 else "object")
+        text = f"[{text}]" if kind == "array" else '{"k":' + text + "}"
+    return text
 
 
 def merge_patch(target, patch):
@@ -128,12 +139,18 @@ def strict_json() -> list[str]:
         if "input_text_repeat" in case:
             r = case["input_text_repeat"]
             text = r["open"] * r["count"] + r["close"] * r["count"]
+        elif "nest" in case:
+            n = case["nest"]
+            text = nest_text(n["pattern"], n["count"], n["leaf"])
         else:
             text = case["input_text"]
         if "error" in case:
             expect = {"error": case["error"]}
         else:
-            if "expected_canonical_repeat" in case:
+            if case.get("expected_canonical_nest"):
+                n = case["nest"]
+                canon = nest_text(n["pattern"], n["count"], n["leaf"])
+            elif "expected_canonical_repeat" in case:
                 r = case["expected_canonical_repeat"]
                 canon = r["open"] * r["count"] + r["close"] * r["count"]
             else:
@@ -201,39 +218,75 @@ def transition_scenarios() -> list[str]:
     src = json.loads((TRANSITION / "transition-scenarios.cases.json").read_text(encoding="utf-8"))
     base_record = json.loads(ACCEPTANCE.read_text(encoding="utf-8"))["base_record"]
 
-    def expand(spec: dict, case_id: str) -> dict:
-        request = merge_patch(src["base_request"], spec.get("request_patch", {}))
-        record = build_record(base_record, spec.get("record", {}), case_id)
+    def record_for(spec: dict, case_id: str):
+        if "record" in spec and spec["record"] is None:
+            return None
+        return build_record(base_record, spec.get("record", {}), case_id)
+
+    def permit_for(spec: dict, request: dict, record, auth_sha: str, case_id: str, base_request: dict):
         if "permit" in spec and spec["permit"] is None:
-            permit = None
+            return None
+        basis = spec.get("permit_for")
+        if basis is None:
+            p_request, p_record = request, record
         else:
-            basis = spec.get("permit_for")
-            p_request = request if basis is None else merge_patch(src["base_request"], basis.get("request_patch", {}))
-            p_record = record if basis is None else build_record(base_record, basis.get("record", {}), case_id)
-            permit = {"request_fingerprint": d006_digest(p_request), "record_digest": p_record["record_digest"]}
-        return {"op": "promote", "idempotency_key": spec.get("idempotency_key", src["base_key"]),
-                "request": request, "permit": permit, "record": record}
+            p_request = merge_patch(base_request, basis.get("request_patch", {}))
+            p_record = record_for(basis, case_id)
+        return {"request_fingerprint": d006_digest(p_request),
+                "record_digest": p_record["record_digest"] if p_record else None,
+                "authorization_bundle_sha": spec.get("permit_authorization_bundle_sha", auth_sha)}
+
+    def expand(kind: str, spec: dict, case_id: str, auth_sha: str) -> dict:
+        base_request = src["base_request"] if kind == "promote" else src["base_effect_request"]
+        request = merge_patch(base_request, spec.get("request_patch", {}))
+        op = {"op": kind, "idempotency_key": spec.get("idempotency_key", src["base_key"]), "request": request}
+        if kind == "promote":
+            record = record_for(spec, case_id)
+            op["record"] = record
+        else:
+            record = None
+        op["permit"] = permit_for(spec, request, record if kind == "promote" else None, auth_sha, case_id, base_request)
+        if kind == "effect" and op["permit"] is not None:
+            op["permit"].pop("record_digest")
+        if "fault" in spec:
+            op["fault"] = spec["fault"]
+        return op
 
     out = []
     for case in src["cases"]:
+        initial = merge_patch(src["base_initial"], case.get("initial_patch", {}))
+        auth_sha = initial["authorization_bundle_sha"]
         steps = []
         for step in case["steps"]:
             if "promote" in step and "op" not in step:
-                steps.append(expand(step["promote"], case["id"]))
+                steps.append(expand("promote", step["promote"], case["id"], auth_sha))
+            elif "effect" in step and "op" not in step:
+                steps.append(expand("effect", step["effect"], case["id"], auth_sha))
             elif step.get("op") == "promote_concurrent":
                 steps.append({"op": "promote_concurrent", "count": step["count"],
-                              "promote": expand(step["promote"], case["id"])})
+                              "promote": expand("promote", step["promote"], case["id"], auth_sha)})
             else:
                 steps.append(step)
-        out.append(line({
-            "id": case["id"],
-            "input": {"initial": src["base_initial"], "steps": steps},
-            "expect": case["expect"],
-            "compare": "exact",
-            "meta": {"source": "m1/fixtures/transition/transition-scenarios.cases.json",
-                     "review_status": src["review_status"], "rationale": case["rationale"]},
-        }))
+        value = {"initial": initial, "steps": steps}
+        entry = {"id": case["id"], "expect": case["expect"], "compare": "exact",
+                 "meta": {"source": "m1/fixtures/transition/transition-scenarios.cases.json",
+                          "review_status": src["review_status"], "rationale": case["rationale"]}}
+        if "text_edit" in case:
+            e = case["text_edit"]
+            entry["input_text"] = edit_once(compact(value), e["old"], e["new"], case["id"])
+        else:
+            entry["input"] = value
+        out.append(line(entry))
     return out
+
+
+def external_refusal() -> list[str]:
+    src = json.loads(REFUSAL.read_text(encoding="utf-8"))
+    return [line({"id": c["id"], "input": {"internal_code": c["internal_code"]}, "expect": {"external": c["external"]},
+                  "compare": "exact",
+                  "meta": {"source": "m1/fixtures/refusal/external-refusal.cases.json",
+                           "review_status": src["review_status"], "rationale": c["rationale"]}})
+            for c in src["cases"]]
 
 
 SETS = {
@@ -243,6 +296,7 @@ SETS = {
     "sets/acceptance-binding.jsonl": acceptance_binding,
     "sets/transition-decisions.jsonl": transition_decisions,
     "sets/transition-scenarios.jsonl": transition_scenarios,
+    "sets/external-refusal.jsonl": external_refusal,
 }
 
 

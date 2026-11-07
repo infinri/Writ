@@ -1,28 +1,284 @@
 {
-  "description": "Hand-reasoned strict JSON and canonicalization cases for the canonical command (D-006 as tightened by D-017). Inputs are raw JSON text. expected_canonical is written by hand; the exporter only hashes it. Depth rule: the top-level value is at depth 0 and any value deeper than 64 is rejected (as in the D-006 reference implementation). PENDING INDEPENDENT REVIEW.",
-  "review_status": "PENDING INDEPENDENT REVIEW",
-  "cases": [
-    {"id": "cj-01-duplicate-same-value", "input_text": "{\"a\":1,\"a\":1}", "error": "DUPLICATE_KEY", "rationale": "duplicates rejected even when values agree"},
-    {"id": "cj-02-duplicate-nested", "input_text": "{\"x\":{\"b\":1,\"b\":2}}", "error": "DUPLICATE_KEY", "rationale": "nested duplicate"},
-    {"id": "cj-03-duplicate-escaped", "input_text": "{\"a\":1,\"\\u0061\":2}", "error": "DUPLICATE_KEY", "rationale": "equal after escape decoding"},
-    {"id": "cj-04-duplicate-in-array-object", "input_text": "[{\"k\":1},{\"k\":2,\"k\":3}]", "error": "DUPLICATE_KEY", "rationale": "duplicate inside an array element"},
-    {"id": "cj-05-same-key-different-objects", "input_text": "[{\"k\":1},{\"k\":2}]", "expected_canonical": "[{\"k\":1},{\"k\":2}]", "rationale": "control: equal keys in different objects are fine"},
-    {"id": "cj-06-decimal-integer", "input_text": "1.0", "error": "NUMBER_NOT_INTEGER", "rationale": "alternate spelling"},
-    {"id": "cj-07-exponent", "input_text": "1e3", "error": "NUMBER_NOT_INTEGER", "rationale": "alternate spelling"},
-    {"id": "cj-08-negative-zero", "input_text": "-0", "error": "NUMBER_NEGATIVE_ZERO", "rationale": "alternate spelling of 0 (the M0 reference accepts it; D-017 tightens)"},
-    {"id": "cj-09-max-safe", "input_text": "9007199254740991", "expected_canonical": "9007199254740991", "rationale": "2^53-1 in range"},
-    {"id": "cj-10-min-safe", "input_text": "-9007199254740991", "expected_canonical": "-9007199254740991", "rationale": "-(2^53-1) in range"},
-    {"id": "cj-11-above-safe", "input_text": "9007199254740992", "error": "NUMBER_OUT_OF_RANGE", "rationale": "2^53"},
-    {"id": "cj-12-below-safe", "input_text": "-9007199254740992", "error": "NUMBER_OUT_OF_RANGE", "rationale": "-(2^53)"},
-    {"id": "cj-13-u64-wrap", "input_text": "18446744073709551616", "error": "NUMBER_OUT_OF_RANGE", "rationale": "2^64 would wrap to 0 in a careless u64 parse"},
-    {"id": "cj-14-leading-zero", "input_text": "01", "error": "INVALID_JSON", "rationale": "not JSON"},
-    {"id": "cj-15-nan", "input_text": "NaN", "error": "INVALID_JSON", "rationale": "not JSON"},
-    {"id": "cj-16-trailing-comma", "input_text": "[1,]", "error": "INVALID_JSON", "rationale": "not JSON"},
-    {"id": "cj-17-lone-surrogate", "input_text": "\"\\ud800\"", "error": "LONE_SURROGATE", "rationale": "not representable in UTF-8"},
-    {"id": "cj-18-plus-sign", "input_text": "+1", "error": "INVALID_JSON", "rationale": "not JSON"},
-    {"id": "cj-19-depth-64", "input_text_repeat": {"open": "[", "close": "]", "count": 65}, "expected_canonical_repeat": {"open": "[", "close": "]", "count": 65}, "rationale": "65 nested arrays: deepest value at depth 64, accepted"},
-    {"id": "cj-20-depth-65", "input_text_repeat": {"open": "[", "close": "]", "count": 66}, "error": "DEPTH_EXCEEDED", "rationale": "66 nested arrays: a value at depth 65"},
-    {"id": "cj-21-key-order-and-escapes", "input_text": "{\"b\":\"\\u00e9\",\"a\":\"\\/\",\"\\u00e9\":0}", "expected_canonical": "{\"a\":\"/\",\"b\":\"\u00e9\",\"\u00e9\":0}", "rationale": "sorted by code point, minimal escaping, solidus unescaped"},
-    {"id": "cj-22-trailing-garbage", "input_text": "{} {}", "error": "INVALID_JSON", "rationale": "one value only"}
-  ]
+ "description": "Hand-reasoned strict JSON and canonicalization cases for the canonical command (D-006 as tightened by D-017 and D-018). Inputs are raw JSON text. expected_canonical is written by hand or built by the same structural rule as the input; the exporter only hashes it. Depth rule (D-006, D-018): the root value is at depth 0; every array element, object member name and object member value is at its parent's depth plus 1; any value or member name deeper than 64 is rejected. nest cases wrap a leaf in count containers from the inside out: pattern array wraps as [x], object wraps as {\"k\":x}, alternate starts with array and alternates. PENDING INDEPENDENT REVIEW.",
+ "review_status": "PENDING INDEPENDENT REVIEW",
+ "cases": [
+  {
+   "id": "cj-01-duplicate-same-value",
+   "input_text": "{\"a\":1,\"a\":1}",
+   "error": "DUPLICATE_KEY",
+   "rationale": "duplicates rejected even when values agree"
+  },
+  {
+   "id": "cj-02-duplicate-nested",
+   "input_text": "{\"x\":{\"b\":1,\"b\":2}}",
+   "error": "DUPLICATE_KEY",
+   "rationale": "nested duplicate"
+  },
+  {
+   "id": "cj-03-duplicate-escaped",
+   "input_text": "{\"a\":1,\"\\u0061\":2}",
+   "error": "DUPLICATE_KEY",
+   "rationale": "equal after escape decoding"
+  },
+  {
+   "id": "cj-04-duplicate-in-array-object",
+   "input_text": "[{\"k\":1},{\"k\":2,\"k\":3}]",
+   "error": "DUPLICATE_KEY",
+   "rationale": "duplicate inside an array element"
+  },
+  {
+   "id": "cj-05-same-key-different-objects",
+   "input_text": "[{\"k\":1},{\"k\":2}]",
+   "expected_canonical": "[{\"k\":1},{\"k\":2}]",
+   "rationale": "control: equal keys in different objects are fine"
+  },
+  {
+   "id": "cj-06-decimal-integer",
+   "input_text": "1.0",
+   "error": "NUMBER_NOT_INTEGER",
+   "rationale": "alternate spelling"
+  },
+  {
+   "id": "cj-07-exponent",
+   "input_text": "1e3",
+   "error": "NUMBER_NOT_INTEGER",
+   "rationale": "alternate spelling"
+  },
+  {
+   "id": "cj-08-negative-zero",
+   "input_text": "-0",
+   "error": "NUMBER_NEGATIVE_ZERO",
+   "rationale": "alternate spelling of 0 (the M0 reference accepts it; D-017 tightens)"
+  },
+  {
+   "id": "cj-09-max-safe",
+   "input_text": "9007199254740991",
+   "expected_canonical": "9007199254740991",
+   "rationale": "2^53-1 in range"
+  },
+  {
+   "id": "cj-10-min-safe",
+   "input_text": "-9007199254740991",
+   "expected_canonical": "-9007199254740991",
+   "rationale": "-(2^53-1) in range"
+  },
+  {
+   "id": "cj-11-above-safe",
+   "input_text": "9007199254740992",
+   "error": "NUMBER_OUT_OF_RANGE",
+   "rationale": "2^53"
+  },
+  {
+   "id": "cj-12-below-safe",
+   "input_text": "-9007199254740992",
+   "error": "NUMBER_OUT_OF_RANGE",
+   "rationale": "-(2^53)"
+  },
+  {
+   "id": "cj-13-u64-wrap",
+   "input_text": "18446744073709551616",
+   "error": "NUMBER_OUT_OF_RANGE",
+   "rationale": "2^64 would wrap to 0 in a careless u64 parse"
+  },
+  {
+   "id": "cj-14-leading-zero",
+   "input_text": "01",
+   "error": "INVALID_JSON",
+   "rationale": "not JSON"
+  },
+  {
+   "id": "cj-15-nan",
+   "input_text": "NaN",
+   "error": "INVALID_JSON",
+   "rationale": "not JSON"
+  },
+  {
+   "id": "cj-16-trailing-comma",
+   "input_text": "[1,]",
+   "error": "INVALID_JSON",
+   "rationale": "not JSON"
+  },
+  {
+   "id": "cj-17-lone-surrogate",
+   "input_text": "\"\\ud800\"",
+   "error": "LONE_SURROGATE",
+   "rationale": "not representable in UTF-8"
+  },
+  {
+   "id": "cj-18-plus-sign",
+   "input_text": "+1",
+   "error": "INVALID_JSON",
+   "rationale": "not JSON"
+  },
+  {
+   "id": "cj-19-depth-64",
+   "input_text_repeat": {
+    "open": "[",
+    "close": "]",
+    "count": 65
+   },
+   "expected_canonical_repeat": {
+    "open": "[",
+    "close": "]",
+    "count": 65
+   },
+   "rationale": "65 nested empty arrays: the innermost empty array is the deepest value, at depth 64; accepted (unchanged; does not distinguish node counting from traversal depth, see cj-23..)"
+  },
+  {
+   "id": "cj-20-depth-65",
+   "input_text_repeat": {
+    "open": "[",
+    "close": "]",
+    "count": 66
+   },
+   "error": "DEPTH_EXCEEDED",
+   "rationale": "66 nested empty arrays: innermost at depth 65; rejected (unchanged)"
+  },
+  {
+   "id": "cj-21-key-order-and-escapes",
+   "input_text": "{\"b\":\"\\u00e9\",\"a\":\"\\/\",\"\\u00e9\":0}",
+   "expected_canonical": "{\"a\":\"/\",\"b\":\"é\",\"é\":0}",
+   "rationale": "sorted by code point, minimal escaping, solidus unescaped"
+  },
+  {
+   "id": "cj-22-trailing-garbage",
+   "input_text": "{} {}",
+   "error": "INVALID_JSON",
+   "rationale": "one value only"
+  },
+  {
+   "id": "cj-23-64-arrays-scalar",
+   "nest": {
+    "pattern": "array",
+    "count": 64,
+    "leaf": "0"
+   },
+   "rationale": "NEW (D-018): scalar at depth 64 accepted",
+   "expected_canonical_nest": true
+  },
+  {
+   "id": "cj-24-65-arrays-scalar",
+   "nest": {
+    "pattern": "array",
+    "count": 65,
+    "leaf": "0"
+   },
+   "rationale": "NEW (D-018): scalar at depth 65 rejected; a container-counting rule (65 containers is fine only if leaves are not counted) would disagree with cj-19",
+   "error": "DEPTH_EXCEEDED"
+  },
+  {
+   "id": "cj-25-64-arrays-empty-object",
+   "nest": {
+    "pattern": "array",
+    "count": 64,
+    "leaf": "{}"
+   },
+   "rationale": "NEW (D-018): empty object at depth 64 accepted (no members)",
+   "expected_canonical_nest": true
+  },
+  {
+   "id": "cj-26-64-arrays-object-member",
+   "nest": {
+    "pattern": "array",
+    "count": 64,
+    "leaf": "{\"k\":0}"
+   },
+   "rationale": "NEW (D-018): object at depth 64; its member name and value are at depth 65",
+   "error": "DEPTH_EXCEEDED"
+  },
+  {
+   "id": "cj-27-63-arrays-object-member",
+   "nest": {
+    "pattern": "array",
+    "count": 63,
+    "leaf": "{\"k\":0}"
+   },
+   "rationale": "NEW (D-018): object at depth 63; member at depth 64",
+   "expected_canonical_nest": true
+  },
+  {
+   "id": "cj-28-63-arrays-object-empty-array",
+   "nest": {
+    "pattern": "array",
+    "count": 63,
+    "leaf": "{\"k\":[]}"
+   },
+   "rationale": "NEW (D-018): empty array as member value at depth 64",
+   "expected_canonical_nest": true
+  },
+  {
+   "id": "cj-29-63-arrays-object-array-scalar",
+   "nest": {
+    "pattern": "array",
+    "count": 63,
+    "leaf": "{\"k\":[0]}"
+   },
+   "rationale": "NEW (D-018): scalar at depth 65 inside a member value",
+   "error": "DEPTH_EXCEEDED"
+  },
+  {
+   "id": "cj-30-64-objects-scalar",
+   "nest": {
+    "pattern": "object",
+    "count": 64,
+    "leaf": "0"
+   },
+   "rationale": "NEW (D-018): 64 nested objects: innermost member value at depth 64",
+   "expected_canonical_nest": true
+  },
+  {
+   "id": "cj-31-65-objects-scalar",
+   "nest": {
+    "pattern": "object",
+    "count": 65,
+    "leaf": "0"
+   },
+   "rationale": "NEW (D-018): innermost member at depth 65",
+   "error": "DEPTH_EXCEEDED"
+  },
+  {
+   "id": "cj-32-64-mixed-scalar",
+   "nest": {
+    "pattern": "alternate",
+    "count": 64,
+    "leaf": "0"
+   },
+   "rationale": "NEW (D-018): alternating arrays and objects, scalar at depth 64",
+   "expected_canonical_nest": true
+  },
+  {
+   "id": "cj-33-65-mixed-scalar",
+   "nest": {
+    "pattern": "alternate",
+    "count": 65,
+    "leaf": "0"
+   },
+   "rationale": "NEW (D-018): alternating, scalar at depth 65",
+   "error": "DEPTH_EXCEEDED"
+  },
+  {
+   "id": "cj-34-wide-shallow",
+   "input_text": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]",
+   "expected_canonical": "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]",
+   "rationale": "NEW (D-018): width is not depth"
+  },
+  {
+   "id": "cj-35-infinity",
+   "input_text": "Infinity",
+   "error": "INVALID_JSON",
+   "rationale": "NEW (D-018)"
+  },
+  {
+   "id": "cj-36-negative-infinity",
+   "input_text": "[-Infinity]",
+   "error": "INVALID_JSON",
+   "rationale": "NEW (D-018)"
+  },
+  {
+   "id": "cj-37-nan-in-object",
+   "input_text": "{\"a\":NaN}",
+   "error": "INVALID_JSON",
+   "rationale": "NEW (D-018)"
+  }
+ ]
 }

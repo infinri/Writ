@@ -21,7 +21,7 @@ Both prototypes consume the **same language-neutral fixtures** and must reproduc
 
 A prototype that is faster but fails any row does not pass (testing doc, "A faster unsafe run does not pass").
 
-## Acceptance Gate Integrity readiness (ADR-0008 approved in principle; semantics m1-draft-2, D-017)
+## Acceptance Gate Integrity readiness (ADR-0008 approved in principle; semantics m1-draft-3, D-017, D-018)
 
 M1 must show that each prototype can carry the [Acceptance Gate Integrity](../architecture/acceptance-gate-integrity.md) boundaries without building the evaluation platform. The sets below have **hand-reasoned expectations written before either prototype exists**, are PENDING INDEPENDENT REVIEW, and are specified in `m1/fixtures/` ([review package](M1-02-FIXTURE-REVIEW.md), [amendment 1](../../m1/fixtures/AMENDMENT-1.md)):
 
@@ -30,13 +30,14 @@ M1 must show that each prototype can carry the [Acceptance Gate Integrity](../ar
 | strict-json | `canonical` | Duplicate keys (nested, escaped), alternate and out-of-range numbers, invalid JSON, surrogates, depth | Identical canonical bytes or identical error code |
 | transition-decisions | `decide` | Exact-transition authorization: `workflow:<tenant>/<project>/<workflow_id>` resource, typed `from_state` and `to_state`, closed attribute set, structural composite refusal, unscoped transition permits rejected at bundle load, strict parsing of requests | Same status, reason code and matched rules |
 | acceptance-binding | `check-acceptance` | Pure check of a record against a trusted, version-bound requirement set and broker state: completeness, trust class, revocation, freshness, scope, artifact and snapshot, policy, revision, expiry, replay, strict parsing | Identical `ok` or refusal code (and `json_error`) |
-| transition-scenarios | `transition-scenario` | Promotion transactions: permit bound to full request fingerprint and record, compare-and-set, single-use records, idempotency, 16-way race, refusal without side effects | Identical step results and final state |
+| transition-scenarios | `transition-scenario` | Promotion transactions: permit bound to full request fingerprint, record and authorization bundle; protected versus unprotected transitions; compare-and-set; single-use records; idempotency; 16-way race; refusal without side effects; simulated effects with interrupted dispatch and reconciliation | Identical step results and final state |
+| external-refusal | `external-refusal` | Internal refusal code to agent-facing response (D-018 A7) | Identical mapping for every code, including unknown codes |
 
 Additional properties for M1-05 (not fixture values): any single-field mutation of a bound field refuses (at least 1,000 generated examples per prototype); approval request ids differ when `to_state` differs; generated duplicate-key and number-spelling inputs are rejected identically by both parsers.
 
 What these sets do **not** test: authentic evaluators, record issuance and signatures (boundary 2), and governed execution and artifact immutability (boundary 4). See the boundary table in `m1/fixtures/transition/SCENARIOS.md`.
 
-The M0 Python harness is a driver participant only for `canonical-vector` and `golden-decisions`; it does not implement D-017 (strict-json 5/22, transition-decisions 13/35 when run after the expectations were frozen).
+The M0 Python harness is a driver participant only for `canonical-vector` and `golden-decisions`; it does not implement D-017 (after freezing draft 3: strict-json 12/37; transition-decisions 13/45 with protocol errors because the adapter does not accept input_text).
 
 ## Evaluation dimensions (owner list, 2026-11-06)
 
@@ -76,7 +77,8 @@ exit    0 when every line was answered; a refusal or rejection is an output, nev
 | `decide-batch` | same as `decide`, many lines (workload A) | Decisions |
 | `broker-scenario` | scenario JSON | receipts and refusal codes |
 | `check-acceptance` | `{"record": {...}, "current": {...}, "requirements": {...}}` | `{"ok": true}`, `{"refusal": "<CODE>"}` or `{"refusal": "INPUT_JSON_INVALID", "json_error": "<CODE>"}` |
-| `transition-scenario` | `{"initial": {...}, "steps": [...]}` | `{"steps": [...], "final": {...}}` |
+| `transition-scenario` | `{"initial": {...}, "steps": [...]}` | `{"steps": [...], "final": {...}}` or `{"input_error": "INPUT_JSON_INVALID", "json_error": "<CODE>"}` |
+| `external-refusal` | `{"internal_code": "<CODE>"}` | `{"external": "<CODE>"}` |
 
 The driver records the prototype argv and executable digest, manifest and fixture-file digests, repository commit, per-set pass and fail counts, protocol errors (missing, duplicate, unknown or non-JSON lines, crash, timeout) and nondeterminism across `--repeat` runs. It exits 0 only if every selected set passes. Self-tests: `python3 -m unittest discover -s m1/driver/tests`.
 

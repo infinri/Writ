@@ -1,0 +1,222 @@
+{
+ "description": "Hand-reasoned mapping from internal refusal codes to the response an agent or host receives (D-018 A7). Command external-refusal: input {\"internal_code\": CODE}, output {\"external\": CODE}. Internal codes remain in audit records and test harnesses. PENDING INDEPENDENT REVIEW.",
+ "review_status": "PENDING INDEPENDENT REVIEW",
+ "cases": [
+  {
+   "id": "ext-input-json-invalid",
+   "internal_code": "INPUT_JSON_INVALID",
+   "external": "INPUT_JSON_INVALID",
+   "rationale": "describes only the caller's own input or its own idempotency key and expected revision; no other scope's data"
+  },
+  {
+   "id": "ext-request-json-invalid",
+   "internal_code": "REQUEST_JSON_INVALID",
+   "external": "REQUEST_JSON_INVALID",
+   "rationale": "describes only the caller's own input or its own idempotency key and expected revision; no other scope's data"
+  },
+  {
+   "id": "ext-acceptance-record-malformed",
+   "internal_code": "ACCEPTANCE_RECORD_MALFORMED",
+   "external": "ACCEPTANCE_RECORD_MALFORMED",
+   "rationale": "describes only the caller's own input or its own idempotency key and expected revision; no other scope's data"
+  },
+  {
+   "id": "ext-transition-malformed",
+   "internal_code": "TRANSITION_MALFORMED",
+   "external": "TRANSITION_MALFORMED",
+   "rationale": "describes only the caller's own input or its own idempotency key and expected revision; no other scope's data"
+  },
+  {
+   "id": "ext-workflow-resource-invalid",
+   "internal_code": "WORKFLOW_RESOURCE_INVALID",
+   "external": "WORKFLOW_RESOURCE_INVALID",
+   "rationale": "describes only the caller's own input or its own idempotency key and expected revision; no other scope's data"
+  },
+  {
+   "id": "ext-requested-capabilities-invalid",
+   "internal_code": "REQUESTED_CAPABILITIES_INVALID",
+   "external": "REQUESTED_CAPABILITIES_INVALID",
+   "rationale": "describes only the caller's own input or its own idempotency key and expected revision; no other scope's data"
+  },
+  {
+   "id": "ext-composite-not-supported",
+   "internal_code": "COMPOSITE_NOT_SUPPORTED",
+   "external": "COMPOSITE_NOT_SUPPORTED",
+   "rationale": "describes only the caller's own input or its own idempotency key and expected revision; no other scope's data"
+  },
+  {
+   "id": "ext-idempotency-conflict",
+   "internal_code": "IDEMPOTENCY_CONFLICT",
+   "external": "IDEMPOTENCY_CONFLICT",
+   "rationale": "describes only the caller's own input or its own idempotency key and expected revision; no other scope's data"
+  },
+  {
+   "id": "ext-revision-conflict",
+   "internal_code": "REVISION_CONFLICT",
+   "external": "REVISION_CONFLICT",
+   "rationale": "describes only the caller's own input or its own idempotency key and expected revision; no other scope's data"
+  },
+  {
+   "id": "ext-reconciliation-required",
+   "internal_code": "RECONCILIATION_REQUIRED",
+   "external": "RECONCILIATION_REQUIRED",
+   "rationale": "describes only the caller's own input or its own idempotency key and expected revision; no other scope's data"
+  },
+  {
+   "id": "ext-current-state-malformed",
+   "internal_code": "CURRENT_STATE_MALFORMED",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "internal trusted-state fault; not disclosed"
+  },
+  {
+   "id": "ext-requirements-malformed",
+   "internal_code": "REQUIREMENTS_MALFORMED",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "internal trusted-state fault; not disclosed"
+  },
+  {
+   "id": "ext-requirements-policy-mismatch",
+   "internal_code": "REQUIREMENTS_POLICY_MISMATCH",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "internal trusted-state fault; not disclosed"
+  },
+  {
+   "id": "ext-acceptance-record-invalid",
+   "internal_code": "ACCEPTANCE_RECORD_INVALID",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "security-relevant acceptance or authorization detail stays in the access-controlled audit record"
+  },
+  {
+   "id": "ext-acceptance-replayed",
+   "internal_code": "ACCEPTANCE_REPLAYED",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "security-relevant acceptance or authorization detail stays in the access-controlled audit record"
+  },
+  {
+   "id": "ext-acceptance-scope-mismatch",
+   "internal_code": "ACCEPTANCE_SCOPE_MISMATCH",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "security-relevant acceptance or authorization detail stays in the access-controlled audit record"
+  },
+  {
+   "id": "ext-acceptance-transition-mismatch",
+   "internal_code": "ACCEPTANCE_TRANSITION_MISMATCH",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "security-relevant acceptance or authorization detail stays in the access-controlled audit record"
+  },
+  {
+   "id": "ext-acceptance-artifact-mismatch",
+   "internal_code": "ACCEPTANCE_ARTIFACT_MISMATCH",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "security-relevant acceptance or authorization detail stays in the access-controlled audit record"
+  },
+  {
+   "id": "ext-acceptance-policy-mismatch",
+   "internal_code": "ACCEPTANCE_POLICY_MISMATCH",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "security-relevant acceptance or authorization detail stays in the access-controlled audit record"
+  },
+  {
+   "id": "ext-acceptance-revision-mismatch",
+   "internal_code": "ACCEPTANCE_REVISION_MISMATCH",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "security-relevant acceptance or authorization detail stays in the access-controlled audit record"
+  },
+  {
+   "id": "ext-acceptance-expired",
+   "internal_code": "ACCEPTANCE_EXPIRED",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "security-relevant acceptance or authorization detail stays in the access-controlled audit record"
+  },
+  {
+   "id": "ext-acceptance-criteria-missing",
+   "internal_code": "ACCEPTANCE_CRITERIA_MISSING",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "security-relevant acceptance or authorization detail stays in the access-controlled audit record"
+  },
+  {
+   "id": "ext-acceptance-criteria-mismatch",
+   "internal_code": "ACCEPTANCE_CRITERIA_MISMATCH",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "security-relevant acceptance or authorization detail stays in the access-controlled audit record"
+  },
+  {
+   "id": "ext-acceptance-untrusted-evaluator",
+   "internal_code": "ACCEPTANCE_UNTRUSTED_EVALUATOR",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "security-relevant acceptance or authorization detail stays in the access-controlled audit record"
+  },
+  {
+   "id": "ext-acceptance-evaluator-revoked",
+   "internal_code": "ACCEPTANCE_EVALUATOR_REVOKED",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "security-relevant acceptance or authorization detail stays in the access-controlled audit record"
+  },
+  {
+   "id": "ext-acceptance-stale",
+   "internal_code": "ACCEPTANCE_STALE",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "security-relevant acceptance or authorization detail stays in the access-controlled audit record"
+  },
+  {
+   "id": "ext-acceptance-incomplete",
+   "internal_code": "ACCEPTANCE_INCOMPLETE",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "security-relevant acceptance or authorization detail stays in the access-controlled audit record"
+  },
+  {
+   "id": "ext-acceptance-required",
+   "internal_code": "ACCEPTANCE_REQUIRED",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "security-relevant acceptance or authorization detail stays in the access-controlled audit record"
+  },
+  {
+   "id": "ext-acceptance-binding-unexpected",
+   "internal_code": "ACCEPTANCE_BINDING_UNEXPECTED",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "security-relevant acceptance or authorization detail stays in the access-controlled audit record"
+  },
+  {
+   "id": "ext-permit-missing",
+   "internal_code": "PERMIT_MISSING",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "security-relevant acceptance or authorization detail stays in the access-controlled audit record"
+  },
+  {
+   "id": "ext-permit-request-mismatch",
+   "internal_code": "PERMIT_REQUEST_MISMATCH",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "security-relevant acceptance or authorization detail stays in the access-controlled audit record"
+  },
+  {
+   "id": "ext-permit-binding-mismatch",
+   "internal_code": "PERMIT_BINDING_MISMATCH",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "security-relevant acceptance or authorization detail stays in the access-controlled audit record"
+  },
+  {
+   "id": "ext-permit-policy-stale",
+   "internal_code": "PERMIT_POLICY_STALE",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "security-relevant acceptance or authorization detail stays in the access-controlled audit record"
+  },
+  {
+   "id": "ext-request-scope-mismatch",
+   "internal_code": "REQUEST_SCOPE_MISMATCH",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "security-relevant acceptance or authorization detail stays in the access-controlled audit record"
+  },
+  {
+   "id": "ext-nothing-to-reconcile",
+   "internal_code": "NOTHING_TO_RECONCILE",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "security-relevant acceptance or authorization detail stays in the access-controlled audit record"
+  },
+  {
+   "id": "ext-some-future-code",
+   "internal_code": "SOME_FUTURE_CODE",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "unknown codes default to the generic response (fail closed on disclosure)"
+  }
+ ]
+}

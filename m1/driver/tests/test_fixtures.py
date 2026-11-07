@@ -46,12 +46,13 @@ def has_duplicate_key(text: str) -> bool:
 class SourceFormatTests(unittest.TestCase):
     def test_every_case_is_pending_independent_review(self):
         for src in ["acceptance/acceptance-binding.cases.json", "transition/transition-decisions.cases.json",
-                    "transition/transition-scenarios.cases.json", "canonical/strict-json.cases.json"]:
+                    "transition/transition-scenarios.cases.json", "canonical/strict-json.cases.json",
+                    "refusal/external-refusal.cases.json"]:
             data = json.loads((FIX / src).read_text(encoding="utf-8"))
             self.assertEqual(data["review_status"], "PENDING INDEPENDENT REVIEW", src)
 
     def test_case_ids_unique_and_restricted(self):
-        for name in ["strict-json", "acceptance-binding", "transition-decisions", "transition-scenarios"]:
+        for name in ["strict-json", "acceptance-binding", "transition-decisions", "transition-scenarios", "external-refusal"]:
             ids = [c["id"] for c in load_set(name)]
             self.assertEqual(len(ids), len(set(ids)), name)
             for cid in ids:
@@ -68,7 +69,7 @@ class RawTextCaseTests(unittest.TestCase):
     """Raw-text cases must contain exactly the defect their expected error names."""
 
     def raw_cases(self):
-        for name in ["strict-json", "acceptance-binding", "transition-decisions"]:
+        for name in ["strict-json", "acceptance-binding", "transition-decisions", "transition-scenarios"]:
             for case in load_set(name):
                 if "input_text" in case:
                     yield name, case
@@ -77,7 +78,7 @@ class RawTextCaseTests(unittest.TestCase):
         e = case["expect"]
         if name == "strict-json":
             return e.get("error")
-        if name == "acceptance-binding":
+        if name in ("acceptance-binding", "transition-scenarios"):
             return e.get("json_error")
         return "REQUEST_JSON_INVALID" if e.get("reason_code") == "REQUEST_JSON_INVALID" else None
 
@@ -128,16 +129,40 @@ class SchemaTests(unittest.TestCase):
 
     def test_scenario_requests_validate(self):
         validator = jsonschema.Draft202012Validator(self.schema("action-request"))
+        checked = 0
         for case in load_set("transition-scenarios"):
+            if "input" not in case:
+                continue
             for step in case["input"]["steps"]:
                 op = step.get("promote", step) if step.get("op") == "promote_concurrent" else step
-                if op.get("op") == "promote":
+                if op.get("op") in ("promote", "effect"):
                     self.assertFalse(list(validator.iter_errors(op["request"])), case["id"])
+                    checked += 1
+        self.assertGreater(checked, 50)
 
     def test_revision_bounds_in_schemas(self):
         for name, key in [("action-request", "expected_state_revision"), ("decision", "state_revision")]:
             prop = self.schema(name)["properties"][key]
             self.assertEqual((prop["minimum"], prop["maximum"]), (0, 9007199254740991), name)
+
+
+class SemanticRuleTests(unittest.TestCase):
+    """Structural rules from D-018 that every fixture input must already respect."""
+
+    def test_no_request_repeats_its_kind_unless_expected_invalid(self):
+        for name in ["transition-decisions"]:
+            for case in load_set(name):
+                if "input" not in case:
+                    continue
+                action = case["input"]["request"].get("action", {})
+                if action.get("kind") in action.get("requested_capabilities", []):
+                    self.assertEqual(case["expect"]["reason_code"], "REQUESTED_CAPABILITIES_INVALID", case["id"])
+
+    def test_external_mapping_never_passes_through_acceptance_detail(self):
+        for case in load_set("external-refusal"):
+            code = case["input"]["internal_code"]
+            if code.startswith(("ACCEPTANCE_", "PERMIT_", "REQUIREMENTS_")) and code != "ACCEPTANCE_RECORD_MALFORMED":
+                self.assertEqual(case["expect"]["external"], "PROMOTION_REFUSED", case["id"])
 
 
 class CountTests(unittest.TestCase):

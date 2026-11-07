@@ -1,7 +1,7 @@
 {
   "contract_version": "2.0",
   "bundle_id": "m1-transition-unscoped",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "writ-v2-design-fixture",
   "description": "Invalid variant: a permit statement covering workflow.transition without to_states. Must be rejected at load (D-017).",
   "known_capabilities": [
@@ -18,6 +18,17 @@
     "writ-host-adapter:fixture"
   ],
   "statements": [
+    {
+      "statement_id": "forbid-egress",
+      "effect": "forbid",
+      "tenants": [
+        "fixture-tenant"
+      ],
+      "action_kinds": [
+        "network.egress"
+      ],
+      "reason_code": "NETWORK_EGRESS_FORBIDDEN"
+    },
     {
       "statement_id": "forbid-release-by-agent",
       "effect": "forbid",
@@ -96,6 +107,34 @@
         "released"
       ],
       "reason_code": "RELEASE_TRANSITION_PERMITTED"
+    },
+    {
+      "statement_id": "permit-start-verification",
+      "effect": "permit",
+      "action_kinds": [
+        "workflow.transition"
+      ],
+      "resource_prefixes": [
+        "workflow:fixture-tenant/fixture-project/"
+      ],
+      "from_states": [
+        "planning"
+      ],
+      "to_states": [
+        "verifying"
+      ],
+      "reason_code": "START_VERIFICATION_PERMITTED"
+    },
+    {
+      "statement_id": "permit-workspace-write",
+      "effect": "permit",
+      "action_kinds": [
+        "file.write"
+      ],
+      "resource_prefixes": [
+        "workspace:fixture-tenant/fixture-project/"
+      ],
+      "reason_code": "WORKSPACE_WRITE_PERMITTED"
     },
     {
       "statement_id": "permit-any-transition",
