@@ -63,34 +63,83 @@ func main() {
 	}
 }
 
+// isBlank reports whether a line holds only JSON whitespace.
+func isBlank(line string) bool {
+	for i := 0; i < len(line); i++ {
+		switch line[i] {
+		case ' ', '\t', '\r', '\n':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // handleLine answers one envelope; it returns false if the line could not be
-// answered (no id).
+// answered (no readable id). Blank lines are ignored.
 func handleLine(h handler, line string, out *bufio.Writer) bool {
 	for len(line) > 0 && (line[len(line)-1] == '\n' || line[len(line)-1] == '\r') {
 		line = line[:len(line)-1]
 	}
-	if line == "" {
+	if isBlank(line) {
 		return true
 	}
-	env, perr := sjson.ParseUnlimited(line)
-	m, ok := sjson.Obj(env)
-	id, okID := sjson.Str(m, "id")
-	if perr != nil || !ok || !okID {
+	id, output, ok := answer(h, line)
+	if !ok {
 		fmt.Fprintln(os.Stderr, "unreadable envelope line")
 		return false
 	}
+	out.Write(sjson.Encode(map[string]any{"id": id, "output": output}))
+	out.WriteByte('\n')
+	return true
+}
+
+// envelopeInvalid is the answer to a line that is not a valid envelope but
+// has a readable id (M1-PARITY-SUITE, protocol clarifications).
+var envelopeInvalid = map[string]any{"error": "ENVELOPE_INVALID"}
+
+// answer parses and validates one envelope line strictly and runs the
+// handler. A valid envelope has exactly two members: `id` and one of `input`
+// or `input_text`. ok is false only when the line has no readable string id.
+func answer(h handler, line string) (id string, output map[string]any, ok bool) {
+	env, perr := sjson.ParseUnlimited(line)
+	m, isObj := sjson.Obj(env)
+	if perr != nil || !isObj {
+		id, ok = sjson.ReadID(line)
+		return id, envelopeInvalid, ok
+	}
+	id, ok = sjson.Str(m, "id")
+	if !ok {
+		return "", nil, false
+	}
+	_, hasInput := m["input"]
+	textV, hasText := m["input_text"]
+	text, textIsStr := textV.(string)
+	if hasInput == hasText || (hasText && !textIsStr) || len(m) != 2 {
+		return id, envelopeInvalid, true
+	}
 	var input any
 	var jerr *sjson.Error
-	if text, isText := sjson.Str(m, "input_text"); isText {
+	if hasText {
 		input, jerr = sjson.Parse(text)
 	} else {
 		input = m["input"]
 		jerr = sjson.CheckDepth(input)
 	}
-	output := h(input, jerr)
-	out.Write(sjson.Encode(map[string]any{"id": id, "output": output}))
-	out.WriteByte('\n')
-	return true
+	return id, run(h, input, jerr), true
+}
+
+// run calls the handler behind a recover boundary: no input may crash the
+// process. A recovered panic is a prototype defect, answered INTERNAL_ERROR
+// and reported on stderr.
+func run(h handler, input any, jerr *sjson.Error) (output map[string]any) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintln(os.Stderr, "internal error:", r)
+			output = map[string]any{"error": "INTERNAL_ERROR"}
+		}
+	}()
+	return h(input, jerr)
 }
 
 func canonical(input any, jerr *sjson.Error) map[string]any {

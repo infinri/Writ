@@ -190,6 +190,14 @@ SR-06 sandbox facts (preflight PASS, telemetry diagnostic) are recorded in `docs
 - **After** (separate agents per codebase, each blind to the other; re-verified in this session): Rust `cargo test --release --locked` 19 passed, driver 398/398 `--repeat 2`; Go `go vet` clean, `go test -race -count=1` ok (broker, kernel, refusal, sjson, transition), driver 398/398 `--repeat 2`.
 - **Spec gap closed:** both implementations independently persisted the refusal count and permit id sequence across `restart_broker`; BROKER.md now states it.
 
+### E-024: M1-05 property and differential testing; defect fixes in both prototypes
+
+- **Harness** (`m1/props/`, commit `2bf136f`): seeded generators, spec-derived oracles independent of both prototypes, Rust/Go differential runner, minimizer, mutation smoke test (8 mutants, each caught by at least one oracle on both prototypes). Agent campaigns: seeds 20261107 (3,000 cases per family) and 2 (2,500), concurrency groups of 16/32/64 repeated 10 times; every observed concurrent outcome matched a serial order; `promote_concurrent` always committed exactly once.
+- **Defects found:** Rust compared JSON objects order-sensitively (false refusals, fail closed); Go returned `NUMBER_NEGATIVE_ZERO` for `-00`/`-01` instead of `INVALID_JSON`; Go panicked on `promote_concurrent` count -1. Plus protocol gaps (envelopes, malformed scenarios, unknown op spelling, grant label reuse silently resetting uses, permit lookups), now clarified in M1-PARITY-SUITE (proposed, pending owner confirmation). Driver line splitting fixed (U+2028).
+- **After fixes (separate agents per codebase; re-verified in this session):** Rust `cargo test` 31 passed; Go `go vet` clean, `go test -race` ok (6 packages); both: fixtures 398/398 `--repeat 2`, regressions 11/11; property campaigns seed 20261107 with 1,000 cases per family: decide, acceptance, refusal, transition, broker 0 failed checks and 0 mismatches; json campaign 0 invariant failures, 250 differential mismatches, all in one cluster: `decide` output shape after a strict-parse failure (Rust returns the three compared fields; Go a full Decision; both `invalid`/`REQUEST_JSON_INVALID`). Owner decision pending.
+- **Independence note:** for two points the clarifications leave open (extra envelope members, unknown dependency names), the Go agent aligned its choice with the observed Rust binary; agreement there is not independent evidence.
+- **Not tested:** persistent storage, process isolation, crash recovery of a real store, real signatures and key management, real host enforcement; benchmarks.
+
 ## Not yet executed
 
 - SR-06 live-host experiments (0 of 69; sandbox torn down) and full SR-06 acceptance; rule semantic review (M0-01d); independent human golden review (M0-05a).

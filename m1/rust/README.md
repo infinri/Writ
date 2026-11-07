@@ -7,12 +7,12 @@ Bake-off prototype for ADR-0002, not the production kernel. It implements the JS
 ```sh
 source m1/tools/env.sh                      # pinned Rust 1.99.1 (user space)
 cd m1/rust && cargo build --release --locked
-cargo test --release --locked               # parser, canonical form, time and D-020 regression tests
+cargo test --release --locked               # parser, canonical form, time, envelope, D-020 and M1-05 regression tests
 cd ../.. && python3 m1/driver/parity.py --proto "$PWD/m1/rust/target/release/proto" \
     --manifest m1/fixtures/manifest.json --repeat 2 --out /tmp/rust-result.json
 ```
 
-Commands: `proto canonical | decide | check-acceptance | external-refusal | transition-scenario | broker-scenario`. stdin carries one `{"id", "input"}` or `{"id", "input_text"}` per line; stdout carries one `{"id", "output"}` per line, in input order. The exit status is 0 when every line was answered. A line without a parseable envelope or id cannot be answered: it is reported on stderr and the exit status becomes 1.
+Commands: `proto canonical | decide | check-acceptance | external-refusal | transition-scenario | broker-scenario`. stdin carries one `{"id", "input"}` or `{"id", "input_text"}` per line; stdout carries one `{"id", "output"}` per line, in input order. Whitespace-only lines are ignored. The envelope is parsed with the strict rules and must be an object with a string `id` and exactly one of `input` or `input_text` (a string), with no other member. A line that violates this but has a readable string `id` (recovered by a best-effort scan; a repeated or non-string `id` is not readable) is answered `{"id", "output": {"error": "ENVELOPE_INVALID"}}`. A line with no readable id is reported on stderr and not answered; the other lines are still answered and the exit status becomes 1. Otherwise the exit status is 0.
 
 ## Dependencies
 
@@ -41,7 +41,11 @@ The kernel and the acceptance check are separate. The broker modules call `kerne
 
 ### Input path
 
-Every command parses its input with `json::parse`. For an `input` member, the envelope parser records the raw bytes of that member without interpreting them and then parses them as an independent document. As a result, `input` and `input_text` follow identical strict rules, and depth is counted from the input root. When several problems are present, the first one met reading left to right is reported (for example, a depth violation is reported when the parser reaches the too-deep value).
+Every command parses its input with `json::parse`. For an `input` member, the envelope parser records the raw bytes of that member without interpreting them and then parses them as an independent document. Depth is counted from the input root for both `input` and `input_text`. When several problems are present, the first one met reading left to right is reported (for example, a depth violation is reported when the parser reaches the too-deep value). A strict failure inside `input_text` is the command's own error (`INPUT_JSON_INVALID`, `REQUEST_JSON_INVALID`, ...). Inside `input` the envelope line itself is not strict JSON, so any strict failure there is `ENVELOPE_INVALID`, except a depth violation, which stays the command's `DEPTH_EXCEEDED` so that `input` and `input_text` agree on deep documents (our reading; the clarification does not say how depth inside `input` is counted).
+
+### JSON equality
+
+`Value` implements `PartialEq` by hand: objects compare as unordered maps (RFC 8259, D-006), arrays stay ordered. Every `==` on JSON values (acceptance `same()` over transition objects and policy fields, record attributes against request attributes, grant bindings, uniqueness checks in schema validation, replay fingerprints) therefore ignores member order. Fingerprints and MACs are computed over the D-006 canonical form, which sorts members.
 
 ### Concurrency
 
@@ -65,3 +69,12 @@ Every command parses its input with `json::parse`. For an `input` member, the en
 
 - In promotion, the permit's `record_digest` is compared with the presented record's own `record_digest` member. The recomputed digest is then checked by `check_acceptance`.
 - The broker issues each permit an opaque id (`permit-<n>`) inside its MAC-covered body. A tampered expiry therefore fails the MAC check.
+
+## M1-05 protocol clarifications
+
+Implemented from `docs/implementation/M1-PARITY-SUITE.md`, "Protocol clarifications (M1-05 findings ...)":
+
+- **Scenario input.** `transition-scenario` and `broker-scenario` return `{"input_error": "INPUT_MALFORMED"}` for the whole scenario when the input is not structurally usable: `steps` missing or not an array; `initial` missing, not an object or missing a required state field (transition: every field in the SCENARIOS.md State list except `protection`, whose absence fails closed as `PROTECTION_UNAVAILABLE`; broker: every field in the BROKER.md State list); a step that is not an object; a `fault` that is not one of that command's named faults (transition: `crash_before_commit`, `crash_before_reserve`, `crash_after_dispatch`; broker: `crash_before_reserve`, `crash_after_reserve`, `crash_after_dispatch`, `effect_fails`); a dependency status (in `initial.dependencies` or `set_dependency`) other than `up` or `down`; `promote_concurrent` with `count` not a positive integer. Our readings where the text is silent: the operations of a `concurrent` group are steps (so `operations` must be an array of usable steps), the `promote` template of `promote_concurrent` must be an object, a known fault on an operation it does not apply to is not malformed (it has no effect), and only presence of required state fields is checked, not their types.
+- **Unknown operation** is refused `OPERATION_UNKNOWN` (was `UNKNOWN_OPERATION`) in both scenario commands and counted as a refusal.
+- **`approve`** with a `grant_ref` already naming a grant is refused `GRANT_REF_IN_USE` and the existing grant is unchanged (a label never resets a grant's uses). The check runs after channel authentication, approvability and self-approval, just before the grant would be issued.
+- **`present_permit`** naming a step that issued no permit (including a non-integer, negative or out-of-range `of_step`) is `PERMIT_MISSING`.

@@ -205,6 +205,11 @@ func (p *parser) number() (any, *Error) {
 	intStart := p.i
 	if p.s[p.i] == '0' {
 		p.i++
+		// A leading zero followed by a digit (`01`, `-00`, `-01`) is not
+		// JSON number syntax at all, so it is INVALID_JSON, never -0.
+		if p.i < len(p.s) && isDigit(p.s[p.i]) {
+			return nil, &Error{ErrInvalidJSON}
+		}
 	} else {
 		for p.i < len(p.s) && isDigit(p.s[p.i]) {
 			p.i++

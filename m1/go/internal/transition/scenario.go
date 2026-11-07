@@ -452,18 +452,18 @@ func (b *Broker) concurrent(op map[string]any) map[string]any {
 	ops, _ := sjson.Arr(op["operations"])
 	results := make([]any, len(ops))
 	var wg sync.WaitGroup
+	var panics goPanic
 	for i, o := range ops {
-		m, ok := sjson.Obj(o)
-		if !ok {
-			m = map[string]any{}
-		}
+		m, _ := sjson.Obj(o)
 		wg.Add(1)
 		go func(i int, m map[string]any) {
 			defer wg.Done()
+			defer panics.capture()
 			results[i] = b.apply(m)
 		}(i, m)
 	}
 	wg.Wait()
+	panics.rethrow()
 	return map[string]any{"result": "concurrent", "results": results}
 }
 
@@ -473,16 +473,19 @@ func (b *Broker) promoteConcurrent(op map[string]any) map[string]any {
 	key := sjson.StrOr(tmpl, "idempotency_key")
 	results := make([]map[string]any, count)
 	var wg sync.WaitGroup
+	var panics goPanic
 	for i := int64(0); i < count; i++ {
 		p := sjson.Without(tmpl)
 		p["idempotency_key"] = fmt.Sprintf("%s-%d", key, i+1)
 		wg.Add(1)
 		go func(i int64, p map[string]any) {
 			defer wg.Done()
+			defer panics.capture()
 			results[i] = b.promote(p)
 		}(i, p)
 	}
 	wg.Wait()
+	panics.rethrow()
 	committed := int64(0)
 	refused := map[string]any{}
 	for _, r := range results {
@@ -520,16 +523,13 @@ func Run(input any) map[string]any {
 	in, ok := sjson.Obj(input)
 	initial, okI := sjson.Obj(in["initial"])
 	steps, okS := sjson.Arr(in["steps"])
-	if !ok || !okI || !okS {
+	if !ok || !okI || !okS || !wellFormed(initial, steps) {
 		return map[string]any{"input_error": "INPUT_MALFORMED"}
 	}
 	b := newBroker(initial)
 	results := make([]any, 0, len(steps))
 	for _, s := range steps {
-		op, ok := sjson.Obj(s)
-		if !ok {
-			op = map[string]any{}
-		}
+		op, _ := sjson.Obj(s)
 		results = append(results, b.apply(op))
 	}
 	return map[string]any{"steps": results, "final": b.final()}

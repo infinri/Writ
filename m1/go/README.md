@@ -44,6 +44,17 @@ Kernel, broker and acceptance are separate packages; the brokers depend on the k
 
 Regression tests: `internal/kernel/support_test.go`, `internal/refusal/refusal_test.go`, `internal/broker/restart_test.go`.
 
+## M1-05 fixes and protocol clarifications
+
+Defects found by the M1-05 property harness (`m1/props/`) and the protocol clarifications in M1-PARITY-SUITE ("Protocol clarifications (M1-05 findings ...)"):
+
+- **Numbers.** A leading zero followed by a digit (`01`, `-00`, `-01`) is `INVALID_JSON` in every command; only `-0` itself is `NUMBER_NEGATIVE_ZERO`.
+- **No crash.** Each line runs behind a recover boundary (`cmd/proto`, answered `{"error": "INTERNAL_ERROR"}` and logged to stderr); panics in `concurrent`/`promote_concurrent` worker goroutines are carried back to it. Inputs are validated first, so `promote_concurrent` with `count` -1 (previously a panic, exit 2) is `INPUT_MALFORMED`.
+- **Envelope.** Each non-blank line is parsed strictly (`NaN` anywhere is invalid); whitespace-only lines are ignored. A valid envelope is an object with a string `id` and exactly one of `input` or `input_text` (a string). Otherwise, if the `id` is readable (`sjson.ReadID`: exactly one top-level `id` member, decoded strictly, whose value is a well-formed string; other values skipped tolerantly) the line is answered `{"error": "ENVELOPE_INVALID"}`; if not, it is skipped and the process exits 1 after answering every other line.
+- **Scenarios.** `INPUT_MALFORMED` for the whole scenario, checked before anything runs: missing or non-array `steps`; missing or non-object `initial`; a missing or mistyped required state field (transition: the identity strings, `state`, `revision` (integer >= 0), snapshot and digest, acceptance policy id, version and bundle sha, `acceptance_requirements` present, `authorization_bundle_sha`, `now`; optional `consumed_record_ids`/`revoked_evaluator_ids` string arrays, `effect_prerequisites` object, `last_promotion` object or null, `protection` free since absent protection is `PROTECTION_UNAVAILABLE`; broker: valid `now`, `state_revision` (integer >= 0), `bundle` present, `permit_key` string, `ingress_keys` and `channels` objects, optional `dependencies` with statuses `up`/`down`); `count` not a positive integer; a non-object `promote` template; an unknown fault or dependency status; a step or nested `concurrent` operation that is not an object. An unknown `op` is refused `OPERATION_UNKNOWN`; `approve` with a `grant_ref` already in use is refused `GRANT_REF_IN_USE` (uses never reset); `present_permit` naming a step that issued no permit is `PERMIT_MISSING`.
+
+Regression tests: `internal/sjson/sjson_test.go` (numbers, `ReadID`), `cmd/proto/main_test.go` (envelope, recover boundary, negative count), `internal/transition/validate_test.go`, `internal/broker/validate_test.go`.
+
 ## Concurrency
 
 `concurrent` and `promote_concurrent` run each operation on its own goroutine; operations take the scenario mutex for their whole duration, so the outcome equals some serialization. Where the spec allows several serializations (`sc-64`, compare mode `one_of`), either may occur from run to run.
@@ -51,8 +62,13 @@ Regression tests: `internal/kernel/support_test.go`, `internal/refusal/refusal_t
 ## Choices where the documents are silent
 
 - Envelope lines are parsed with the same strict parser without a depth limit; the payload's depth is then checked from its own root, so `input` and `input_text` are equivalent.
+- An envelope with members other than `id` and one of `input`/`input_text` is `ENVELOPE_INVALID` (read of "exactly one of" in the protocol clarifications).
+- `promote_concurrent` `count` above 65536 is `INPUT_MALFORMED` (implementation limit, so a huge count cannot exhaust memory).
+- `transition-scenario`: a `fault` on `promote` or `effect` must be a name from the SCENARIOS.md vocabulary (`crash_before_commit`, `crash_before_reserve`, `crash_after_dispatch`); a known name at a point the operation does not have (for example `crash_after_dispatch` on `promote`) never fires. `broker-scenario`: an `execute` fault must be one of the four BROKER.md names. A `fault` on any other operation is ignored.
+- `set_dependency` (and `initial.dependencies`) check only the status (`up`/`down`); an unknown dependency name is accepted and has no effect.
+- `approve` checks `GRANT_REF_IN_USE` last, after `HUMAN_UNAUTHENTICATED`, `NOT_APPROVABLE` and `SELF_APPROVAL_FORBIDDEN`, at the point the grant would be issued. `present_permit` with a missing or non-integer `of_step` is `PERMIT_MISSING`.
 - `decide` with a missing or malformed `now` or `state_revision` returns `invalid` / `REQUEST_SCHEMA_INVALID`.
-- Strict-parse failures of `broker-scenario` input return `{"input_error": "INPUT_JSON_INVALID", "json_error": ...}` as for `transition-scenario`; structurally unusable scenario input returns `{"input_error": "INPUT_MALFORMED"}`. An unknown operation is a refusal `OPERATION_UNKNOWN`.
+- Strict-parse failures of `broker-scenario` input return `{"input_error": "INPUT_JSON_INVALID", "json_error": ...}` as for `transition-scenario`.
 - Permit and grant expiry are exclusive (`now` at or after expiry refuses), like record expiry.
 - The broker permit MAC covers `{permit_id, request_fingerprint, policy_bundle_sha, expires_at}` in canonical form; `tamper: "mac"` flips one hex digit, `tamper: "expiry"` adds one hour without re-signing.
 - For transitions the approval request id also binds `from_state` and `to_state` (SCENARIOS.md "Approval binding").

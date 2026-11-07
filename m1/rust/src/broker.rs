@@ -286,8 +286,13 @@ impl Broker {
         if Some(human) == principal || Some(human) == req.str_at("agent_id") {
             return refused("SELF_APPROVAL_FORBIDDEN");
         }
-        let ttl = op.get("ttl_seconds").and_then(Value::as_int).unwrap_or(DEFAULT_GRANT_TTL_SECONDS);
         let label = op.str_at("grant_ref").unwrap_or("").to_string();
+        // A label names one grant for its whole life; reusing it would reset
+        // the grant's uses.
+        if self.grants.contains_key(&label) {
+            return refused("GRANT_REF_IN_USE");
+        }
+        let ttl = op.get("ttl_seconds").and_then(Value::as_int).unwrap_or(DEFAULT_GRANT_TTL_SECONDS);
         let verdict = op.str_at("verdict").unwrap_or("");
         self.grants.insert(
             label,
@@ -391,7 +396,7 @@ impl Broker {
                 }
                 obj(vec![("result", s("reconciled")), ("count", Value::Int(n))])
             }
-            _ => refused("UNKNOWN_OPERATION"),
+            _ => refused("OPERATION_UNKNOWN"),
         };
         if out.str_at("result") == Some("refused") {
             self.refusals += 1;
@@ -441,7 +446,43 @@ fn apply(ledger: &Mutex<Broker>, op: &Value, step: usize) -> Value {
     b.apply_locked(op, step)
 }
 
+/// State fields every scenario must provide (BROKER.md "State").
+const REQUIRED_STATE: [&str; 7] = ["now", "state_revision", "bundle", "ingress_keys", "permit_key", "channels", "dependencies"];
+const FAULTS: [&str; 4] = ["crash_before_reserve", "crash_after_reserve", "crash_after_dispatch", "effect_fails"];
+
+fn dependency_status(v: &Value) -> bool {
+    matches!(v.as_str(), Some("up" | "down"))
+}
+
+/// Structural check of one step (M1-PARITY-SUITE protocol clarifications):
+/// an object; a known `fault` if any; a known dependency status;
+/// `concurrent` carries an array of such steps. Unknown operations are not
+/// malformed (OPERATION_UNKNOWN).
+fn step_usable(op: &Value) -> bool {
+    if op.as_obj().is_none() || op.get("fault").is_some_and(|f| !f.as_str().is_some_and(|f| FAULTS.contains(&f))) {
+        return false;
+    }
+    match op.str_at("op") {
+        Some("concurrent") => op.get("operations").and_then(Value::as_arr).is_some_and(|ops| ops.iter().all(step_usable)),
+        Some("set_dependency") => op.get("status").is_some_and(dependency_status),
+        _ => true,
+    }
+}
+
+fn input_usable(input: &Value) -> bool {
+    let initial_ok = input.get("initial").is_some_and(|i| {
+        i.as_obj().is_some()
+            && REQUIRED_STATE.iter().all(|k| i.get(k).is_some())
+            && i.get("dependencies").and_then(Value::as_obj).is_some_and(|d| d.iter().all(|(_, v)| dependency_status(v)))
+    });
+    let steps_ok = input.get("steps").and_then(Value::as_arr).is_some_and(|ops| ops.iter().all(step_usable));
+    initial_ok && steps_ok
+}
+
 pub fn run(input: &Value) -> Value {
+    if !input_usable(input) {
+        return obj(vec![("input_error", s("INPUT_MALFORMED"))]);
+    }
     let init = input.get("initial").cloned().unwrap_or(Value::Obj(vec![]));
     let deps = init.get("dependencies");
     let broker = Broker {
@@ -529,6 +570,7 @@ mod tests {
             ("ingress_keys", obj(vec![("writ-host-adapter:fixture", s(INGRESS_KEY))])),
             ("permit_key", s(PERMIT_KEY)),
             ("channels", obj(vec![])),
+            ("dependencies", obj(vec![("policy", s("up")), ("ledger", s("up"))])),
         ]);
         run(&obj(vec![("initial", initial), ("steps", Value::Arr(steps))]))
     }
@@ -569,5 +611,64 @@ mod tests {
         let out = scenario(vec![execute("idem-1", None), restart(), execute("idem-2", None)]);
         assert_eq!(step_results(&out)[2], r#"{"result":"effect_completed"}"#);
         assert_eq!((final_int(&out, "effects_applied"), final_int(&out, "consumed_permits")), (2, 2));
+    }
+
+    /// An approvable (initial, approve step) pair taken from the frozen
+    /// broker fixture set: the first case whose first step issues a grant.
+    fn approvable() -> (Value, Value) {
+        include_str!("../../fixtures/sets/broker-scenarios.jsonl")
+            .lines()
+            .filter_map(|l| json::parse(l.as_bytes()).ok())
+            .find_map(|c| {
+                let first = c.get("input")?.get("steps")?.as_arr()?.first()?.clone();
+                let issued = c.get("expect")?.get("steps")?.as_arr()?.first()?.str_at("result") == Some("grant_issued");
+                (first.str_at("op") == Some("approve") && issued).then(|| (c.get("input").unwrap().get("initial").unwrap().clone(), first))
+            })
+            .expect("fixture set has an approvable request")
+    }
+
+    fn with_label(op: &Value, label: &str) -> Value {
+        let mut m = op.as_obj().unwrap().clone();
+        m.retain(|(k, _)| k != "grant_ref");
+        m.push(("grant_ref".into(), s(label)));
+        Value::Obj(m)
+    }
+
+    #[test]
+    fn grant_ref_in_use_is_refused() {
+        let (initial, approve) = approvable();
+        let steps = vec![with_label(&approve, "g1"), with_label(&approve, "g1"), with_label(&approve, "g2")];
+        let out = run(&obj(vec![("initial", initial), ("steps", Value::Arr(steps))]));
+        assert_eq!(
+            step_results(&out),
+            [r#"{"result":"grant_issued"}"#, r#"{"code":"GRANT_REF_IN_USE","result":"refused"}"#, r#"{"result":"grant_issued"}"#]
+        );
+        assert_eq!(final_int(&out, "refusals"), 1);
+    }
+
+    #[test]
+    fn present_permit_without_issued_permit_is_missing() {
+        let present = |i: i64| obj(vec![("op", s("present_permit")), ("of_step", Value::Int(i)), ("request", request("idem-1"))]);
+        let out = scenario(vec![restart(), present(0), present(7), present(-1)]);
+        assert_eq!(step_results(&out)[1..], [r#"{"code":"PERMIT_MISSING","result":"refused"}"#; 3]);
+    }
+
+    #[test]
+    fn unknown_operation_and_malformed_scenarios() {
+        let out = scenario(vec![obj(vec![("op", s("zz_unknown_operation"))])]);
+        assert_eq!(step_results(&out), [r#"{"code":"OPERATION_UNKNOWN","result":"refused"}"#]);
+        let malformed = r#"{"input_error":"INPUT_MALFORMED"}"#;
+        for steps in [
+            vec![execute("idem-1", Some("zz_fault"))],
+            vec![obj(vec![("op", s("set_dependency")), ("name", s("ledger")), ("status", s("sideways"))])],
+            vec![Value::Int(1)],
+            vec![obj(vec![("op", s("concurrent")), ("operations", Value::Int(1))])],
+        ] {
+            assert_eq!(json::to_text(&scenario(steps)), malformed);
+        }
+        assert_eq!(json::to_text(&run(&obj(vec![("initial", obj(vec![])), ("steps", Value::Arr(vec![]))]))), malformed);
+        assert_eq!(json::to_text(&run(&obj(vec![("steps", Value::Arr(vec![]))]))), malformed);
+        let no_steps = scenario(vec![]);
+        assert!(no_steps.get("final").is_some());
     }
 }

@@ -239,3 +239,17 @@ pub fn check(record: Option<&Value>, current: Option<&Value>, requirements: Opti
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_ignores_member_order_of_compared_objects() {
+        let a = json::parse(br#"{"transition":{"from_state":"a","to_state":"b"},"x":1}"#).unwrap();
+        let b = json::parse(br#"{"x":1,"transition":{"to_state":"b","from_state":"a"}}"#).unwrap();
+        assert!(same(&a, &b, &["transition", "x"]));
+        let c = json::parse(br#"{"x":1,"transition":{"to_state":"c","from_state":"a"}}"#).unwrap();
+        assert!(!same(&a, &c, &["transition"]));
+    }
+}

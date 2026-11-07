@@ -368,7 +368,13 @@ func (b *Broker) approve(op map[string]any) map[string]any {
 	if t, ok := sjson.Int(op, "ttl_seconds"); ok {
 		ttl = t
 	}
-	b.grants[sjson.StrOr(op, "grant_ref")] = &grant{
+	// A label names one grant for the whole scenario: re-approving it would
+	// reset its uses, so it is refused (protocol clarifications, M1-05).
+	ref := sjson.StrOr(op, "grant_ref")
+	if _, inUse := b.grants[ref]; inUse {
+		return b.refuse("GRANT_REF_IN_USE")
+	}
+	b.grants[ref] = &grant{
 		verdict: sjson.StrOr(op, "verdict"),
 		binding: b.grantBinding(request),
 		expires: b.now.Add(time.Duration(ttl) * time.Second),
@@ -380,9 +386,9 @@ func (b *Broker) approve(op map[string]any) map[string]any {
 func (b *Broker) presentPermit(op map[string]any) map[string]any {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	of, _ := sjson.Int(op, "of_step")
+	of, okOf := sjson.Int(op, "of_step")
 	orig, ok := b.permits[int(of)]
-	if !ok {
+	if !okOf || !ok {
 		return b.refuse("PERMIT_MISSING")
 	}
 	p := *orig
@@ -470,18 +476,18 @@ func (b *Broker) concurrent(op map[string]any) map[string]any {
 	ops, _ := sjson.Arr(op["operations"])
 	results := make([]map[string]any, len(ops))
 	var wg sync.WaitGroup
+	var panics goPanic
 	for i, o := range ops {
-		m, ok := sjson.Obj(o)
-		if !ok {
-			m = map[string]any{}
-		}
+		m, _ := sjson.Obj(o)
 		wg.Add(1)
 		go func(i int, m map[string]any) {
 			defer wg.Done()
+			defer panics.capture()
 			results[i] = b.apply(m, -1)
 		}(i, m)
 	}
 	wg.Wait()
+	panics.rethrow()
 	outcomes := map[string]any{}
 	for _, r := range results {
 		label, _ := r["result"].(string)
@@ -527,16 +533,13 @@ func Run(input any) map[string]any {
 	in, ok := sjson.Obj(input)
 	initial, okI := sjson.Obj(in["initial"])
 	steps, okS := sjson.Arr(in["steps"])
-	if !ok || !okI || !okS {
+	if !ok || !okI || !okS || !wellFormed(initial, steps) {
 		return map[string]any{"input_error": "INPUT_MALFORMED"}
 	}
 	b := newBroker(initial)
 	results := make([]any, 0, len(steps))
 	for i, s := range steps {
-		op, ok := sjson.Obj(s)
-		if !ok {
-			op = map[string]any{}
-		}
+		op, _ := sjson.Obj(s)
 		results = append(results, b.apply(op, i))
 	}
 	return map[string]any{"steps": results, "final": b.final()}

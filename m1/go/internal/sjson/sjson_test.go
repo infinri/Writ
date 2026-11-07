@@ -18,6 +18,11 @@ func TestParseErrors(t *testing.T) {
 		`-9007199254740992`:    ErrOutOfRange,
 		`18446744073709551616`: ErrOutOfRange,
 		`01`:                   ErrInvalidJSON,
+		`-00`:                  ErrInvalidJSON,
+		`-01`:                  ErrInvalidJSON,
+		`[1,-00]`:              ErrInvalidJSON,
+		`{"a":-01}`:            ErrInvalidJSON,
+		`-0x`:                  ErrNegativeZero,
 		`+1`:                   ErrInvalidJSON,
 		`1.`:                   ErrInvalidJSON,
 		`NaN`:                  ErrInvalidJSON,
@@ -91,6 +96,33 @@ func TestCheckDepthMatchesParser(t *testing.T) {
 		}
 		if (strict == nil) != (CheckDepth(v) == nil) {
 			t.Errorf("depth disagreement for %.70q", in)
+		}
+	}
+}
+
+func TestReadID(t *testing.T) {
+	cases := []struct {
+		line string
+		id   string
+		ok   bool
+	}{
+		{`{"id":"e","input":NaN}`, "e", true},
+		{`{"input":[1,{"id":"x"}],"id":"e"}`, "e", true},
+		{`{"id":"e","input_text":"\ud800"}`, "e", true},
+		{`{"id":"e"`, "e", true},
+		{"{\"id\":\"e\",\"input_text\":\"\xff\"}", "e", true},
+		{`{"id":"e","id":"f"}`, "", false},
+		{`{"id":7}`, "", false},
+		{`{"id":"\ud800"}`, "", false},
+		{"{\"id\":\"\xff\"}", "", false},
+		{`[1,2]`, "", false},
+		{`this is not json`, "", false},
+		{`{"input_text":"1"}`, "", false},
+	}
+	for _, c := range cases {
+		id, ok := ReadID(c.line)
+		if id != c.id && c.ok || ok != c.ok {
+			t.Errorf("ReadID(%q) = %q, %v; want %q, %v", c.line, id, ok, c.id, c.ok)
 		}
 	}
 }

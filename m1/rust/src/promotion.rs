@@ -336,7 +336,7 @@ fn apply_locked(st: &mut State, op: &Value) -> Value {
             st.set("now", op.get("now").cloned().unwrap_or(Value::Null));
             result("time_advanced")
         }
-        _ => refused("UNKNOWN_OPERATION"),
+        _ => refused("OPERATION_UNKNOWN"),
     };
     if out.str_at("result") == Some("refused") {
         st.refusals += 1;
@@ -404,7 +404,58 @@ fn apply(ledger: &Mutex<State>, op: &Value) -> Value {
     }
 }
 
+/// State fields every scenario must provide (SCENARIOS.md "State");
+/// `protection` may be absent (it then fails closed as PROTECTION_UNAVAILABLE).
+const REQUIRED_STATE: [&str; 18] = [
+    "tenant_id",
+    "project_id",
+    "task_id",
+    "workflow_id",
+    "state",
+    "revision",
+    "artifact_snapshot_id",
+    "artifact_digest",
+    "acceptance_policy_id",
+    "acceptance_policy_version",
+    "acceptance_policy_bundle_sha",
+    "acceptance_requirements",
+    "authorization_bundle_sha",
+    "effect_prerequisites",
+    "last_promotion",
+    "now",
+    "consumed_record_ids",
+    "revoked_evaluator_ids",
+];
+
+const FAULTS: [&str; 3] = ["crash_before_commit", "crash_before_reserve", "crash_after_dispatch"];
+
+/// Structural check of one step (M1-PARITY-SUITE protocol clarifications):
+/// an object; a known `fault` if any; `concurrent` carries an array of such
+/// steps; `promote_concurrent` a positive integer `count` and an object
+/// `promote`. Unknown operations are not malformed (OPERATION_UNKNOWN).
+fn step_usable(op: &Value) -> bool {
+    if op.as_obj().is_none() || op.get("fault").is_some_and(|f| !f.as_str().is_some_and(|f| FAULTS.contains(&f))) {
+        return false;
+    }
+    match op.str_at("op") {
+        Some("concurrent") => op.get("operations").and_then(Value::as_arr).is_some_and(|ops| ops.iter().all(step_usable)),
+        Some("promote_concurrent") => {
+            op.get("count").and_then(Value::as_int).is_some_and(|n| n > 0) && op.get("promote").is_some_and(step_usable)
+        }
+        _ => true,
+    }
+}
+
+fn input_usable(input: &Value) -> bool {
+    let initial_ok = input.get("initial").is_some_and(|i| i.as_obj().is_some() && REQUIRED_STATE.iter().all(|k| i.get(k).is_some()));
+    let steps_ok = input.get("steps").and_then(Value::as_arr).is_some_and(|ops| ops.iter().all(step_usable));
+    initial_ok && steps_ok
+}
+
 pub fn run(input: &Value) -> Value {
+    if !input_usable(input) {
+        return obj(vec![("input_error", s("INPUT_MALFORMED"))]);
+    }
     let initial = input.get("initial").cloned().unwrap_or(Value::Obj(vec![]));
     let state = State {
         revision: initial.get("revision").and_then(Value::as_int).unwrap_or(0),
@@ -445,4 +496,54 @@ pub fn run(input: &Value) -> Value {
             ]),
         ),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn initial() -> Value {
+        Value::Obj(REQUIRED_STATE.iter().map(|k| (k.to_string(), Value::Null)).collect())
+    }
+
+    fn run_text(steps: &str, initial: Value) -> String {
+        let steps = json::parse(steps.as_bytes()).unwrap();
+        json::to_text(&run(&obj(vec![("initial", initial), ("steps", steps)])))
+    }
+
+    const MALFORMED: &str = r#"{"input_error":"INPUT_MALFORMED"}"#;
+
+    #[test]
+    fn structurally_unusable_scenarios_are_malformed() {
+        for steps in [
+            r#"[1]"#,
+            r#"[{"op":"promote","fault":"zz_fault"}]"#,
+            r#"[{"op":"promote","fault":null}]"#,
+            r#"[{"op":"promote_concurrent","count":0,"promote":{}}]"#,
+            r#"[{"op":"promote_concurrent","count":-1,"promote":{}}]"#,
+            r#"[{"op":"promote_concurrent","count":"2","promote":{}}]"#,
+            r#"[{"op":"promote_concurrent","count":2,"promote":[]}]"#,
+            r#"[{"op":"concurrent","operations":[{"op":"effect","fault":"x"}]}]"#,
+            r#"[{"op":"concurrent"}]"#,
+            r#"{}"#,
+        ] {
+            assert_eq!(run_text(steps, initial()), MALFORMED, "{steps}");
+        }
+        assert_eq!(run_text("[]", Value::Obj(vec![])), MALFORMED);
+        assert_eq!(run_text("[]", initial().without("now")), MALFORMED);
+        assert_eq!(run_text("[]", Value::Arr(vec![])), MALFORMED);
+        assert_eq!(json::to_text(&run(&obj(vec![("initial", initial())]))), MALFORMED);
+        assert_eq!(json::to_text(&run(&Value::Int(1))), MALFORMED);
+    }
+
+    #[test]
+    fn usable_scenarios_run() {
+        let out = run_text(r#"[{"op":"zz_unknown_operation"},{"op":"concurrent","operations":[]}]"#, initial());
+        assert!(out.starts_with(r#"{"final":"#), "{out}");
+        assert!(out.contains(r#"{"code":"OPERATION_UNKNOWN","result":"refused"}"#), "{out}");
+        // A known fault on another operation kind is not malformed (it does not apply).
+        assert!(!run_text(r#"[{"op":"promote","fault":"crash_after_dispatch"}]"#, initial()).contains("INPUT_MALFORMED"));
+        // Protection may be absent.
+        assert!(!run_text("[]", initial().without("protection")).contains("INPUT_MALFORMED"));
+    }
 }
