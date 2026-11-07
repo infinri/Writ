@@ -9,9 +9,13 @@ var executeFaults = map[string]bool{
 	"crash_before_reserve": true, "crash_after_reserve": true, "crash_after_dispatch": true, "effect_fails": true,
 }
 
-// Dependency names other than policy and ledger are accepted and have no
-// effect; only the status vocabulary is checked.
-var dependencyStatus = map[string]bool{"up": true, "down": true}
+// The broker's declared dependencies are exactly policy and ledger (D-021):
+// any other name, in initial.dependencies or set_dependency, is
+// INPUT_MALFORMED, as is a status other than up or down.
+var (
+	dependencyNames  = map[string]bool{"policy": true, "ledger": true}
+	dependencyStatus = map[string]bool{"up": true, "down": true}
+)
 
 // wellFormed reports whether a scenario is structurally usable
 // (M1-PARITY-SUITE, protocol clarifications): otherwise the whole scenario is
@@ -39,8 +43,8 @@ func wellFormed(initial map[string]any, steps []any) bool {
 		if !ok {
 			return false
 		}
-		for _, s := range deps {
-			if st, ok := s.(string); !ok || !dependencyStatus[st] {
+		for name, s := range deps {
+			if st, ok := s.(string); !ok || !dependencyNames[name] || !dependencyStatus[st] {
 				return false
 			}
 		}
@@ -70,9 +74,9 @@ func opWellFormed(op map[string]any) bool {
 		ops, ok := sjson.Arr(op["operations"])
 		return ok && opsWellFormed(ops)
 	case "set_dependency":
-		_, okN := sjson.Str(op, "name")
+		n, okN := sjson.Str(op, "name")
 		s, okS := sjson.Str(op, "status")
-		return okN && okS && dependencyStatus[s]
+		return okN && okS && dependencyNames[n] && dependencyStatus[s]
 	}
 	return true
 }

@@ -1,0 +1,371 @@
+{
+ "description": "Hand-reasoned cases for D-021 protocol semantics. Inputs are derived from existing fixture cases by the listed structural edits; expectations are written from D-021, not from any implementation. Envelope-level rules are tested by m1/props (the driver only sends valid envelopes). PENDING INDEPENDENT REVIEW.",
+ "review_status": "PENDING INDEPENDENT REVIEW",
+ "cases": [
+  {
+   "id": "p-01-decide-invalid-json",
+   "build": {
+    "command": "decide",
+    "input_text": "{"
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_JSON_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-021 (1): exactly three fields, no placeholders"
+  },
+  {
+   "id": "p-02-decide-duplicate-key",
+   "build": {
+    "command": "decide",
+    "from_case": [
+     "transition-decisions",
+     "tx-32-duplicate-tenant"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_JSON_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-021 (1) on a strict-parse failure inside a well-formed envelope"
+  },
+  {
+   "id": "p-03-decide-nan",
+   "build": {
+    "command": "decide",
+    "from_case": [
+     "transition-decisions",
+     "tx-43-nan"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_JSON_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-021 (1)"
+  },
+  {
+   "id": "p-04-transition-missing-steps",
+   "build": {
+    "command": "transition-scenario",
+    "from_case": [
+     "transition-scenarios",
+     "sc-01-promote"
+    ],
+    "drop": [
+     "steps"
+    ]
+   },
+   "expect": {
+    "input_error": "INPUT_MALFORMED"
+   },
+   "rationale": "D-021 (3)"
+  },
+  {
+   "id": "p-05-transition-initial-missing-state",
+   "build": {
+    "command": "transition-scenario",
+    "from_case": [
+     "transition-scenarios",
+     "sc-01-promote"
+    ],
+    "drop_initial": [
+     "state"
+    ]
+   },
+   "expect": {
+    "input_error": "INPUT_MALFORMED"
+   },
+   "rationale": "D-021 (3)"
+  },
+  {
+   "id": "p-06-transition-count-zero",
+   "build": {
+    "command": "transition-scenario",
+    "from_case": [
+     "transition-scenarios",
+     "sc-10-race-16"
+    ],
+    "set_step": [
+     0,
+     "count",
+     0
+    ]
+   },
+   "expect": {
+    "input_error": "INPUT_MALFORMED"
+   },
+   "rationale": "D-021 (3): count must be a positive integer"
+  },
+  {
+   "id": "p-07-transition-unknown-fault",
+   "build": {
+    "command": "transition-scenario",
+    "from_case": [
+     "transition-scenarios",
+     "sc-01-promote"
+    ],
+    "set_step": [
+     0,
+     "fault",
+     "crash_sometime"
+    ]
+   },
+   "expect": {
+    "input_error": "INPUT_MALFORMED"
+   },
+   "rationale": "D-021 (3): unknown fault"
+  },
+  {
+   "id": "p-08-transition-unknown-op",
+   "build": {
+    "command": "transition-scenario",
+    "from_case": [
+     "transition-scenarios",
+     "sc-01-promote"
+    ],
+    "replace_steps": [
+     {
+      "op": "teleport"
+     }
+    ]
+   },
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "OPERATION_UNKNOWN"
+     }
+    ],
+    "final": {
+     "state": "verifying",
+     "revision": 7,
+     "consumed_record_ids": [],
+     "receipts": 0,
+     "refusals": 1,
+     "effects": {}
+    }
+   },
+   "rationale": "D-021 (4)"
+  },
+  {
+   "id": "p-09-broker-unknown-op",
+   "build": {
+    "command": "broker-scenario",
+    "from_case": [
+     "broker-scenarios",
+     "b-01-allow-path"
+    ],
+    "replace_steps": [
+     {
+      "op": "teleport"
+     }
+    ]
+   },
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "OPERATION_UNKNOWN"
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {},
+     "receipts": {},
+     "consumed_permits": 0,
+     "refusals": 1
+    }
+   },
+   "rationale": "D-021 (4)"
+  },
+  {
+   "id": "p-10-broker-grant-ref-reuse",
+   "build": {
+    "command": "broker-scenario",
+    "from_case": [
+     "broker-scenarios",
+     "b-15-grant-single-use"
+    ],
+    "insert_step_copy": [
+     2,
+     0
+    ]
+   },
+   "expect": {
+    "steps": [
+     {
+      "result": "grant_issued"
+     },
+     {
+      "result": "effect_completed"
+     },
+     {
+      "result": "refused",
+      "code": "GRANT_REF_IN_USE"
+     },
+     {
+      "result": "refused",
+      "code": "GRANT_EXHAUSTED"
+     }
+    ],
+    "final": {
+     "effects_applied": 1,
+     "grant_uses": {
+      "g1": 1
+     },
+     "receipts": {
+      "observed_success": 1
+     },
+     "consumed_permits": 1,
+     "refusals": 2
+    }
+   },
+   "rationale": "D-021 (5): re-approval under a used label is refused and never replenishes the grant, so the next use is still exhausted"
+  },
+  {
+   "id": "p-11-broker-permit-never-issued",
+   "build": {
+    "command": "broker-scenario",
+    "from_case": [
+     "broker-scenarios",
+     "b-15-grant-single-use"
+    ],
+    "replace_steps_from": [
+     0,
+     1
+    ],
+    "append_step": {
+     "op": "present_permit",
+     "of_step": 0,
+     "request_from_step": 0
+    }
+   },
+   "expect": {
+    "steps": [
+     {
+      "result": "grant_issued"
+     },
+     {
+      "result": "refused",
+      "code": "PERMIT_MISSING"
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {
+      "g1": 0
+     },
+     "receipts": {},
+     "consumed_permits": 0,
+     "refusals": 1
+    }
+   },
+   "rationale": "D-021 (6): step 0 is an approval, it issued no permit"
+  },
+  {
+   "id": "p-12-broker-unknown-dependency-name",
+   "build": {
+    "command": "broker-scenario",
+    "from_case": [
+     "broker-scenarios",
+     "b-39-policy-down"
+    ],
+    "set_step": [
+     0,
+     "name",
+     "cache"
+    ]
+   },
+   "expect": {
+    "input_error": "INPUT_MALFORMED"
+   },
+   "rationale": "D-021 (9): undeclared dependency in set_dependency"
+  },
+  {
+   "id": "p-13-broker-extra-dependency",
+   "build": {
+    "command": "broker-scenario",
+    "from_case": [
+     "broker-scenarios",
+     "b-01-allow-path"
+    ],
+    "initial_dependencies_add": [
+     "cache",
+     "up"
+    ]
+   },
+   "expect": {
+    "input_error": "INPUT_MALFORMED"
+   },
+   "rationale": "D-021 (9): undeclared dependency in initial state"
+  },
+  {
+   "id": "p-14-broker-unknown-fault",
+   "build": {
+    "command": "broker-scenario",
+    "from_case": [
+     "broker-scenarios",
+     "b-01-allow-path"
+    ],
+    "set_step": [
+     0,
+     "fault",
+     "crash_sometime"
+    ]
+   },
+   "expect": {
+    "input_error": "INPUT_MALFORMED"
+   },
+   "rationale": "D-021 (3)"
+  },
+  {
+   "id": "p-15-acceptance-member-order",
+   "build": {
+    "command": "check-acceptance",
+    "from_case": [
+     "acceptance-binding",
+     "pos-01-valid"
+    ],
+    "reverse_record_transition": true
+   },
+   "expect": {
+    "ok": true
+   },
+   "rationale": "D-021 (7): member order is not significant"
+  },
+  {
+   "id": "p-16-scenario-member-order",
+   "build": {
+    "command": "transition-scenario",
+    "from_case": [
+     "transition-scenarios",
+     "sc-01-promote"
+    ],
+    "reverse_record_transition": true
+   },
+   "expect": {
+    "steps": [
+     {
+      "result": "committed",
+      "revision": 8
+     }
+    ],
+    "final": {
+     "state": "accepted",
+     "revision": 8,
+     "consumed_record_ids": [
+      "acc-1"
+     ],
+     "receipts": 1,
+     "refusals": 0,
+     "effects": {}
+    }
+   },
+   "rationale": "D-021 (7)"
+  }
+ ]
+}

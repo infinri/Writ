@@ -365,6 +365,19 @@ ENVELOPES = [
 ]
 
 
+# D-021 expected answer per malformed probe, written by hand from the rule: the id is
+# preserved only when the line parses strictly as JSON (duplicate keys, NaN, invalid
+# UTF-8 and lone surrogates fail) and has exactly one string "id"; otherwise null.
+# "ignored": blank lines get no answer. Probes not listed are valid envelopes.
+D021_ENVELOPE = {
+    "not_json": None, "array": None, "missing_id": None, "numeric_id": None,
+    "both_inputs": "e", "neither_input": "e", "input_text_not_string": "e",
+    "duplicate_id_key": None, "extra_member": "e", "nan_in_envelope": None,
+    "invalid_utf8": None, "raw_invalid_utf8": None, "lone_surrogate_in_envelope": None,
+    "empty_line": "ignored", "whitespace_line": "ignored",
+}
+
+
 def run_envelopes(protos, res: Results):
     """Malformed and large envelopes between two well-formed lines (unspecified:
     differential, plus: the well-formed neighbours are still answered correctly)."""
@@ -379,8 +392,15 @@ def run_envelopes(protos, res: Results):
             o, probs = p.run_raw("canonical", payload, ["good-1", "good-2"])
             ok = all(o.get(f"good-{i}") == {"canonical": "[1]", "digest": text_digest("[1]")} for i in (1, 2))
             res.check("json.envelope_neighbours_still_answered", p.name, ok, name, {"outputs": o, "problems": probs[:3]})
-            per[p.name] = {"answers": {k: v for k, v in o.items() if not str(k).startswith("good-")},
-                           "problems": [x for x in probs if "unanswered" not in x]}
+            answers = {k: v for k, v in o.items() if not str(k).startswith("good-")}
+            per[p.name] = {"answers": answers,
+                           "problems": [x for x in probs if "unanswered" not in x and "unknown ids" not in x]}
+            if name in D021_ENVELOPE:
+                want = D021_ENVELOPE[name]
+                expected = {} if want == "ignored" else {want: {"error": "ENVELOPE_INVALID"}}
+                exit_ok = not any(x.startswith("exit status") for x in probs)
+                res.check("json.d021_envelope_correlation", p.name, answers == expected and exit_ok, name,
+                          {"got": answers, "want": expected, "problems": probs[:3]})
         obs[name] = per
         vals = list(per.values())
         if len(vals) == 2:

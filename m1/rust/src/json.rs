@@ -114,48 +114,6 @@ pub fn parse_envelope<'a>(bytes: &'a [u8], member: &'a str) -> R<(Value, Option<
     Ok((v, raw))
 }
 
-/// Best-effort reading of a root object's string member `name` from a line
-/// that failed strict envelope parsing. Member names and the value of `name`
-/// are read strictly; other values are skipped structurally. Returns `None`
-/// when the root is not an object, the member is absent, not a string, or
-/// present more than once.
-pub fn recover_string_member(bytes: &[u8], name: &str) -> Option<String> {
-    let mut p = Parser { b: bytes, i: 0, max_depth: MAX_DEPTH, skip_member: None, skipped: None };
-    let mut found: Option<String> = None;
-    p.ws();
-    if p.peek() != Some(b'{') {
-        return None;
-    }
-    p.i += 1;
-    loop {
-        p.ws();
-        if p.peek() != Some(b'"') {
-            break;
-        }
-        let Ok(key) = p.string() else { break };
-        p.ws();
-        if p.peek() != Some(b':') {
-            break;
-        }
-        p.i += 1;
-        p.ws();
-        if key == name {
-            if found.is_some() || p.peek() != Some(b'"') {
-                return None;
-            }
-            found = Some(p.string().ok()?);
-        } else if p.skip_value().is_err() {
-            break;
-        }
-        p.ws();
-        if p.peek() != Some(b',') {
-            break;
-        }
-        p.i += 1;
-    }
-    found
-}
-
 impl<'a> Parser<'a> {
     fn ws(&mut self) {
         while self.i < self.b.len() && matches!(self.b[self.i], b' ' | b'\t' | b'\n' | b'\r') {
@@ -722,15 +680,5 @@ mod tests {
         assert_ne!(a, parse(br#"{"a":1}"#).unwrap());
         assert_ne!(parse(br#"{"a":1}"#).unwrap(), parse(br#"{"a":1,"b":2}"#).unwrap());
         assert_ne!(parse(br#"{"a":1}"#).unwrap(), parse(br#"{"b":1}"#).unwrap());
-    }
-
-    #[test]
-    fn recover_id_from_invalid_envelopes() {
-        assert_eq!(recover_string_member(br#"{"id":"e","input":NaN}"#, "id").as_deref(), Some("e"));
-        assert_eq!(recover_string_member(br#"{"x":[1,{"a":"}"}],"id":"e"}"#, "id").as_deref(), Some("e"));
-        assert_eq!(recover_string_member(br#"{"id":"e","id":"f"}"#, "id"), None);
-        assert_eq!(recover_string_member(br#"{"id":7}"#, "id"), None);
-        assert_eq!(recover_string_member(br#"[{"id":"e"}]"#, "id"), None);
-        assert_eq!(recover_string_member(b"not json", "id"), None);
     }
 }

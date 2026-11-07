@@ -51,39 +51,47 @@ fn run_command(command: &str, input: &Value) -> Value {
     }
 }
 
-fn envelope_invalid(id: &str) -> Value {
-    obj(vec![("id", s(id)), ("output", obj(vec![("error", s("ENVELOPE_INVALID"))]))])
+/// `id` is `Some` only when the line parsed strictly with exactly one
+/// string `id` member; otherwise it is `null` (D-021: never recovered or
+/// fabricated).
+fn envelope_invalid(id: Option<&str>) -> Value {
+    obj(vec![("id", id.map_or(Value::Null, s)), ("output", obj(vec![("error", s("ENVELOPE_INVALID"))]))])
 }
 
-/// Answer one envelope line; `None` when the line has no readable id.
+/// Answer one envelope line (D-021). Every line gets exactly one answer.
 ///
-/// The envelope is parsed with the strict rules. It must be an object with
-/// a string `id` and exactly one of `input` (any JSON value) or `input_text`
-/// (a string), and nothing else; otherwise, if a string `id` can still be
-/// read, the answer is `ENVELOPE_INVALID`. The `input` value is parsed as its
-/// own document, so its depth is counted from its own root exactly as for
-/// `input_text`: a depth violation there is the command's `DEPTH_EXCEEDED`
-/// (the first problem met reading left to right); any other strict failure
-/// inside `input` makes the envelope invalid.
-fn answer(command: &str, line: &[u8]) -> Option<Value> {
+/// The line is parsed with the strict rules; the raw bytes of a root `input`
+/// member are then parsed as their own document, so its depth is counted from
+/// its own root exactly as for `input_text`: a depth violation there is the
+/// command's `DEPTH_EXCEEDED`, and any other strict failure inside `input`
+/// means the line is not strict JSON. A line that is not strict JSON, or
+/// whose root is not an object with one string `id`, is answered with a
+/// `null` id. A strict line with a string `id` that is not a closed envelope
+/// (other members, both or neither payload member, non-string `input_text`)
+/// is `ENVELOPE_INVALID` under that id. No command runs for an invalid
+/// envelope.
+fn answer(command: &str, line: &[u8]) -> Value {
     let Ok((env, raw)) = json::parse_envelope(line, "input") else {
-        return json::recover_string_member(line, "id").map(|id| envelope_invalid(&id));
+        return envelope_invalid(None);
     };
-    let id = env.str_at("id")?.to_string();
-    let well_formed = env.as_obj().is_some_and(|m| m.iter().all(|(k, _)| matches!(k.as_str(), "id" | "input" | "input_text")));
-    let parsed = match (raw, env.get("input_text")) {
-        (Some(raw), None) if well_formed => match json::parse(raw) {
-            Err(e) if e != JsonError::DepthExceeded => return Some(envelope_invalid(&id)),
-            r => r,
-        },
-        (None, Some(Value::Str(text))) if well_formed => json::parse(text.as_bytes()),
-        _ => return Some(envelope_invalid(&id)),
+    let parsed_input = raw.map(json::parse);
+    if matches!(parsed_input, Some(Err(e)) if e != JsonError::DepthExceeded) {
+        return envelope_invalid(None);
+    }
+    let Some(id) = env.str_at("id") else {
+        return envelope_invalid(None);
+    };
+    let closed = env.as_obj().is_some_and(|m| m.iter().all(|(k, _)| matches!(k.as_str(), "id" | "input" | "input_text")));
+    let parsed = match (parsed_input, env.get("input_text")) {
+        (Some(r), None) if closed => r,
+        (None, Some(Value::Str(text))) if closed => json::parse(text.as_bytes()),
+        _ => return envelope_invalid(Some(id)),
     };
     let output = match parsed {
         Ok(input) => run_command(command, &input),
         Err(e) => strict_failure(command, e),
     };
-    Some(obj(vec![("id", s(&id)), ("output", output)]))
+    obj(vec![("id", s(id)), ("output", output)])
 }
 
 /// Whitespace-only lines (JSON whitespace) are ignored.
@@ -100,11 +108,9 @@ fn main() -> ExitCode {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());
-    let mut all_answered = true;
-    for (n, line) in stdin.lock().split(b'\n').enumerate() {
+    for line in stdin.lock().split(b'\n') {
         let Ok(mut line) = line else {
-            all_answered = false;
-            break;
+            return ExitCode::from(1);
         };
         if line.last() == Some(&b'\r') {
             line.pop();
@@ -112,62 +118,82 @@ fn main() -> ExitCode {
         if is_blank(&line) {
             continue;
         }
-        match answer(command, &line) {
-            Some(v) => {
-                if writeln!(out, "{}", json::to_text(&v)).is_err() {
-                    return ExitCode::from(1);
-                }
-            }
-            None => {
-                eprintln!("line {}: no readable id; not answered", n + 1);
-                all_answered = false;
-            }
+        if writeln!(out, "{}", json::to_text(&answer(command, &line))).is_err() {
+            return ExitCode::from(1);
         }
     }
     if out.flush().is_err() {
         return ExitCode::from(1);
     }
-    if all_answered { ExitCode::SUCCESS } else { ExitCode::from(1) }
+    ExitCode::SUCCESS
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn out(command: &str, line: &[u8]) -> Option<String> {
-        answer(command, line).map(|v| json::to_text(&v))
+    fn out(command: &str, line: &[u8]) -> String {
+        json::to_text(&answer(command, line))
     }
 
     #[test]
-    fn envelope_invalid_when_id_is_readable() {
-        let invalid = Some(r#"{"id":"e","output":{"error":"ENVELOPE_INVALID"}}"#.to_string());
+    fn strict_envelope_with_string_id_keeps_id() {
+        let invalid = r#"{"id":"e","output":{"error":"ENVELOPE_INVALID"}}"#;
         for line in [
-            &br#"{"id":"e","input":NaN}"#[..],
-            br#"{"id":"e","input":{"a":1,"a":2}}"#,
-            br#"{"id":"e","input":1,"input_text":"1"}"#,
+            &br#"{"id":"e","input":1,"input_text":"1"}"#[..],
             br#"{"id":"e"}"#,
             br#"{"id":"e","input_text":1}"#,
             br#"{"id":"e","input_text":"1","x":1}"#,
-            br#"{"id":"e","input_text":"\ud800"}"#,
-            b"{\"id\":\"e\",\"input_text\":\"\xff\xfe\"}",
+            br#"{"x":null,"input":1,"id":"e"}"#,
+            br#"{"id":"e","input_text":{"a":1}}"#,
         ] {
             assert_eq!(out("canonical", line), invalid, "{}", String::from_utf8_lossy(line));
         }
     }
 
     #[test]
-    fn envelope_without_readable_id_is_not_answered() {
-        for line in [&b"[1,2]"[..], b"not json", br#"{"input_text":"1"}"#, br#"{"id":7,"input_text":"1"}"#, br#"{"id":"e","id":"f","input_text":"1"}"#] {
-            assert_eq!(out("canonical", line), None, "{}", String::from_utf8_lossy(line));
+    fn untrusted_identity_is_null() {
+        // D-021: no id is recovered from a line that is not strict JSON, and
+        // none is fabricated when the strict root has no single string `id`.
+        let invalid = r#"{"id":null,"output":{"error":"ENVELOPE_INVALID"}}"#;
+        for line in [
+            &br#"{"id":"e","input":NaN}"#[..],
+            br#"{"id":"e","input":{"a":1,"a":2}}"#,
+            br#"{"id":"e","input":[1}"#,
+            br#"{"id":"e","input":1,"input":2}"#,
+            br#"{"id":"e","input_text":"\ud800"}"#,
+            b"{\"id\":\"e\",\"input_text\":\"\xff\xfe\"}",
+            br#"{"id":"e","id":"f","input_text":"1"}"#,
+            br#"{"id":"e","input_text":"1"} x"#,
+            br#"{"id":"e","input_text":"1""#,
+            br#"[1,2]"#,
+            b"not json",
+            br#"{"input_text":"1"}"#,
+            br#"{"id":7,"input_text":"1"}"#,
+            br#"{"id":null,"input_text":"1"}"#,
+            br#""e""#,
+        ] {
+            assert_eq!(out("canonical", line), invalid, "{}", String::from_utf8_lossy(line));
+            assert_eq!(out("decide", line), invalid, "no command runs: {}", String::from_utf8_lossy(line));
+        }
+    }
+
+    #[test]
+    fn decide_strict_failure_has_exactly_three_members() {
+        for line in [&br#"{"id":"d","input_text":"{"}"#[..], br#"{"id":"d","input_text":"{\"a\":1,\"a\":1}"}"#] {
+            assert_eq!(
+                out("decide", line),
+                r#"{"id":"d","output":{"matched_rule_ids":[],"reason_code":"REQUEST_JSON_INVALID","status":"invalid"}}"#
+            );
         }
     }
 
     #[test]
     fn input_strict_failures_stay_command_level() {
-        assert_eq!(out("canonical", br#"{"id":"e","input_text":"[1.0]"}"#).unwrap(), r#"{"id":"e","output":{"error":"NUMBER_NOT_INTEGER"}}"#);
+        assert_eq!(out("canonical", br#"{"id":"e","input_text":"[1.0]"}"#), r#"{"id":"e","output":{"error":"NUMBER_NOT_INTEGER"}}"#);
         let deep = format!(r#"{{"id":"e","input":{}{}}}"#, "[".repeat(66), "]".repeat(66));
-        assert_eq!(out("canonical", deep.as_bytes()).unwrap(), r#"{"id":"e","output":{"error":"DEPTH_EXCEEDED"}}"#);
-        let a = answer("canonical", br#"{"input":{"b":1,"a":2},"id":"e"}"#).unwrap();
+        assert_eq!(out("canonical", deep.as_bytes()), r#"{"id":"e","output":{"error":"DEPTH_EXCEEDED"}}"#);
+        let a = answer("canonical", br#"{"input":{"b":1,"a":2},"id":"e"}"#);
         assert_eq!(a.get("output").and_then(|o| o.str_at("canonical")), Some(r#"{"a":2,"b":1}"#));
     }
 

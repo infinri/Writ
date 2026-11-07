@@ -378,6 +378,65 @@ def external_refusal() -> list[str]:
             for c in src["cases"]]
 
 
+PROTOCOL = HERE / "protocol/protocol-semantics.cases.json"
+_BUILDERS = {}
+
+
+def protocol_semantics() -> list[str]:
+    src = json.loads(PROTOCOL.read_text(encoding="utf-8"))
+    built = {name: {json.loads(l)["id"]: json.loads(l) for l in _BUILDERS[name]()}
+             for name in ("transition-decisions", "transition-scenarios", "broker-scenarios", "acceptance-binding")}
+    fwd = '"transition":{"from_state":"verifying","to_state":"accepted"}'
+    rev = '"transition":{"to_state":"accepted","from_state":"verifying"}'
+    out = []
+    for case in src["cases"]:
+        b = case["build"]
+        entry = {"id": case["id"], "expect": case["expect"], "compare": "exact",
+                 "meta": {"source": "m1/fixtures/protocol/protocol-semantics.cases.json", "command": b["command"],
+                          "review_status": src["review_status"], "rationale": case["rationale"]}}
+        if "input_text" in b:
+            entry["input_text"] = b["input_text"]
+        else:
+            base = built[b["from_case"][0]][b["from_case"][1]]
+            if "input_text" in base:
+                entry["input_text"] = base["input_text"]
+            else:
+                value = copy.deepcopy(base["input"])
+                for k in b.get("drop", []):
+                    value.pop(k)
+                for k in b.get("drop_initial", []):
+                    value["initial"].pop(k)
+                if "set_step" in b:
+                    i, k, v = b["set_step"]
+                    value["steps"][i][k] = v
+                if "replace_steps" in b:
+                    value["steps"] = b["replace_steps"]
+                if "insert_step_copy" in b:
+                    at, src_i = b["insert_step_copy"]
+                    value["steps"].insert(at, copy.deepcopy(value["steps"][src_i]))
+                if "replace_steps_from" in b:
+                    lo, hi = b["replace_steps_from"]
+                    value["steps"] = value["steps"][lo:hi]
+                if "append_step" in b:
+                    st = dict(b["append_step"])
+                    st["request"] = value["steps"][st.pop("request_from_step")]["for_request"]
+                    value["steps"].append(st)
+                if "initial_dependencies_add" in b:
+                    k, v = b["initial_dependencies_add"]
+                    value["initial"]["dependencies"][k] = v
+                if b.get("reverse_record_transition"):
+                    if b["command"] == "check-acceptance":
+                        parts = {k: compact(v) for k, v in value.items()}
+                        parts["record"] = edit_once(parts["record"], fwd, rev, case["id"])
+                        entry["input_text"] = object_text(parts)
+                    else:
+                        entry["input_text"] = edit_once(compact(value), fwd, rev, case["id"])
+                else:
+                    entry["input"] = value
+        out.append(line(entry))
+    return out
+
+
 SETS = {
     "sets/canonical-vector.jsonl": canonical_vector,
     "sets/strict-json.jsonl": strict_json,
@@ -387,7 +446,17 @@ SETS = {
     "sets/transition-scenarios.jsonl": transition_scenarios,
     "sets/external-refusal.jsonl": external_refusal,
     "sets/broker-scenarios.jsonl": broker_scenarios,
+    "sets/protocol-decide.jsonl": lambda: _protocol_for("decide"),
+    "sets/protocol-acceptance.jsonl": lambda: _protocol_for("check-acceptance"),
+    "sets/protocol-transition.jsonl": lambda: _protocol_for("transition-scenario"),
+    "sets/protocol-broker.jsonl": lambda: _protocol_for("broker-scenario"),
 }
+
+
+def _protocol_for(command: str) -> list[str]:
+    return [l for l in protocol_semantics() if json.loads(l)["meta"]["command"] == command]
+_BUILDERS.update({"transition-decisions": transition_decisions, "transition-scenarios": transition_scenarios,
+                  "broker-scenarios": broker_scenarios, "acceptance-binding": acceptance_binding})
 
 
 def main() -> int:

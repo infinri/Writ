@@ -127,7 +127,9 @@ def parse_responses(stdout: bytes, case_ids: list[str]) -> tuple[dict, list[str]
             problems.append(f"line {n}: not JSON")
             continue
         rid = msg.get("id") if isinstance(msg, dict) else None
-        if rid not in expected:
+        if isinstance(msg, dict) and "id" in msg and rid is None:
+            problems.append(f"line {n}: envelope rejected without id (D-021): {json.dumps(msg.get('output'))[:120]}")
+        elif rid not in expected:
             problems.append(f"line {n}: unknown id {rid!r}")
         elif rid in responses:
             problems.append(f"line {n}: duplicate id {rid!r}")

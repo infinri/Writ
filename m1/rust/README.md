@@ -7,12 +7,12 @@ Bake-off prototype for ADR-0002, not the production kernel. It implements the JS
 ```sh
 source m1/tools/env.sh                      # pinned Rust 1.99.1 (user space)
 cd m1/rust && cargo build --release --locked
-cargo test --release --locked               # parser, canonical form, time, envelope, D-020 and M1-05 regression tests
+cargo test --release --locked               # parser, canonical form, time, envelope, D-020, M1-05 and D-021 regression tests
 cd ../.. && python3 m1/driver/parity.py --proto "$PWD/m1/rust/target/release/proto" \
     --manifest m1/fixtures/manifest.json --repeat 2 --out /tmp/rust-result.json
 ```
 
-Commands: `proto canonical | decide | check-acceptance | external-refusal | transition-scenario | broker-scenario`. stdin carries one `{"id", "input"}` or `{"id", "input_text"}` per line; stdout carries one `{"id", "output"}` per line, in input order. Whitespace-only lines are ignored. The envelope is parsed with the strict rules and must be an object with a string `id` and exactly one of `input` or `input_text` (a string), with no other member. A line that violates this but has a readable string `id` (recovered by a best-effort scan; a repeated or non-string `id` is not readable) is answered `{"id", "output": {"error": "ENVELOPE_INVALID"}}`. A line with no readable id is reported on stderr and not answered; the other lines are still answered and the exit status becomes 1. Otherwise the exit status is 0.
+Commands: `proto canonical | decide | check-acceptance | external-refusal | transition-scenario | broker-scenario`. stdin carries one `{"id", "input"}` or `{"id", "input_text"}` per line; stdout carries one `{"id", "output"}` per line, in input order. Whitespace-only lines are ignored. The envelope is parsed with the strict rules and must be an object with a string `id` and exactly one of `input` or `input_text` (a string), with no other member (D-021, closed structure). A strictly parsed line with exactly one string `id` that breaks this is answered `{"id": "<id>", "output": {"error": "ENVELOPE_INVALID"}}`. Any other line (not strict JSON, including a strict failure inside `input` other than depth; root not an object; `id` missing, repeated or not a string) is answered `{"id": null, "output": {"error": "ENVELOPE_INVALID"}}`: no id is recovered by a non-strict scan or fabricated. No command runs for an invalid envelope. Every non-blank line is answered, processing continues, and the exit status is 0 when stdin was read to the end (1 only on a read or write failure).
 
 ## Dependencies
 
@@ -41,7 +41,7 @@ The kernel and the acceptance check are separate. The broker modules call `kerne
 
 ### Input path
 
-Every command parses its input with `json::parse`. For an `input` member, the envelope parser records the raw bytes of that member without interpreting them and then parses them as an independent document. Depth is counted from the input root for both `input` and `input_text`. When several problems are present, the first one met reading left to right is reported (for example, a depth violation is reported when the parser reaches the too-deep value). A strict failure inside `input_text` is the command's own error (`INPUT_JSON_INVALID`, `REQUEST_JSON_INVALID`, ...). Inside `input` the envelope line itself is not strict JSON, so any strict failure there is `ENVELOPE_INVALID`, except a depth violation, which stays the command's `DEPTH_EXCEEDED` so that `input` and `input_text` agree on deep documents (our reading; the clarification does not say how depth inside `input` is counted).
+Every command parses its input with `json::parse`. For an `input` member, the envelope parser records the raw bytes of that member without interpreting them and then parses them as an independent document. Depth is counted from the input root for both `input` and `input_text`. When several problems are present, the first one met reading left to right is reported (for example, a depth violation is reported when the parser reaches the too-deep value). A strict failure inside `input_text` is the command's own error (`INPUT_JSON_INVALID`, `REQUEST_JSON_INVALID`, ...). Inside `input` the envelope line itself is not strict JSON, so any strict failure there is `ENVELOPE_INVALID` with a `null` id (D-021), except a depth violation, which stays the command's `DEPTH_EXCEEDED` because D-021 measures depth with `input` as the root.
 
 ### JSON equality
 
@@ -78,3 +78,11 @@ Implemented from `docs/implementation/M1-PARITY-SUITE.md`, "Protocol clarificati
 - **Unknown operation** is refused `OPERATION_UNKNOWN` (was `UNKNOWN_OPERATION`) in both scenario commands and counted as a refusal.
 - **`approve`** with a `grant_ref` already naming a grant is refused `GRANT_REF_IN_USE` and the existing grant is unchanged (a label never resets a grant's uses). The check runs after channel authentication, approvability and self-approval, just before the grant would be issued.
 - **`present_permit`** naming a step that issued no permit (including a non-integer, negative or out-of-range `of_step`) is `PERMIT_MISSING`.
+
+## D-021 protocol semantics
+
+Conformance to `docs/implementation/M1-PARITY-SUITE.md`, "Protocol semantics (D-021)", and DECISION-LOG D-021. Changes from the M1-05 behavior above:
+
+- **Correlation.** The id is kept only from a strictly parsed line with exactly one string `id`; every other invalid line is answered with `"id": null` (previously a best-effort scan recovered an id, and lines without one were left unanswered with exit status 1). The scan (`json::recover_string_member`) is removed.
+- **Broker dependencies.** The declared dependencies are exactly `policy` and `ledger`. Any other name as a key of `initial.dependencies`, or a `set_dependency` (including inside `concurrent`) whose `name` is missing or not one of them, makes the whole scenario `{"input_error": "INPUT_MALFORMED"}` before any step runs. Absence of a declared dependency in `initial.dependencies` is not malformed; it starts `up` (our reading: D-021 restricts names, it does not require both).
+- **Unchanged and checked against D-021:** the decide strict-parse failure has exactly `status`, `reason_code` and `matched_rule_ids`; `OPERATION_UNKNOWN`, `GRANT_REF_IN_USE` (the existing grant is never reset), `PERMIT_MISSING` and structural `INPUT_MALFORMED` are as described under M1-05; JSON equality ignores member order. Transition scenarios have no dependency model, so the dependency-name rule applies to broker scenarios only.

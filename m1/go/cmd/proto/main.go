@@ -40,13 +40,10 @@ func main() {
 	in := bufio.NewReaderSize(os.Stdin, 1<<20)
 	out := bufio.NewWriter(os.Stdout)
 	defer out.Flush()
-	failed := false
 	for {
 		line, err := in.ReadString('\n')
 		if len(line) > 0 {
-			if !handleLine(h, line, out) {
-				failed = true
-			}
+			handleLine(h, line, out)
 		}
 		if err == io.EOF {
 			break
@@ -56,10 +53,6 @@ func main() {
 			out.Flush()
 			os.Exit(1)
 		}
-	}
-	out.Flush()
-	if failed {
-		os.Exit(1)
 	}
 }
 
@@ -75,48 +68,44 @@ func isBlank(line string) bool {
 	return true
 }
 
-// handleLine answers one envelope; it returns false if the line could not be
-// answered (no readable id). Blank lines are ignored.
-func handleLine(h handler, line string, out *bufio.Writer) bool {
+// handleLine answers one envelope line (D-021): every non-blank line gets
+// exactly one answer. Blank lines are ignored.
+func handleLine(h handler, line string, out *bufio.Writer) {
 	for len(line) > 0 && (line[len(line)-1] == '\n' || line[len(line)-1] == '\r') {
 		line = line[:len(line)-1]
 	}
 	if isBlank(line) {
-		return true
+		return
 	}
-	id, output, ok := answer(h, line)
-	if !ok {
-		fmt.Fprintln(os.Stderr, "unreadable envelope line")
-		return false
-	}
+	id, output := answer(h, line)
 	out.Write(sjson.Encode(map[string]any{"id": id, "output": output}))
 	out.WriteByte('\n')
-	return true
 }
 
-// envelopeInvalid is the answer to a line that is not a valid envelope but
-// has a readable id (M1-PARITY-SUITE, protocol clarifications).
+// envelopeInvalid is the answer to a line that is not a valid envelope (D-021).
 var envelopeInvalid = map[string]any{"error": "ENVELOPE_INVALID"}
 
 // answer parses and validates one envelope line strictly and runs the
-// handler. A valid envelope has exactly two members: `id` and one of `input`
-// or `input_text`. ok is false only when the line has no readable string id.
-func answer(h handler, line string) (id string, output map[string]any, ok bool) {
+// handler. A valid envelope is closed: exactly `id` (string) and one of
+// `input` or `input_text` (string). The returned id is the envelope's string
+// id only when the line parsed strictly as a JSON object with exactly one
+// string `id` member (the strict parser rejects duplicate members); otherwise
+// it is nil, never an id recovered from a line that is not valid JSON.
+func answer(h handler, line string) (id any, output map[string]any) {
 	env, perr := sjson.ParseUnlimited(line)
 	m, isObj := sjson.Obj(env)
 	if perr != nil || !isObj {
-		id, ok = sjson.ReadID(line)
-		return id, envelopeInvalid, ok
+		return nil, envelopeInvalid
 	}
-	id, ok = sjson.Str(m, "id")
+	sid, ok := m["id"].(string)
 	if !ok {
-		return "", nil, false
+		return nil, envelopeInvalid
 	}
 	_, hasInput := m["input"]
 	textV, hasText := m["input_text"]
 	text, textIsStr := textV.(string)
 	if hasInput == hasText || (hasText && !textIsStr) || len(m) != 2 {
-		return id, envelopeInvalid, true
+		return sid, envelopeInvalid
 	}
 	var input any
 	var jerr *sjson.Error
@@ -126,7 +115,7 @@ func answer(h handler, line string) (id string, output map[string]any, ok bool) 
 		input = m["input"]
 		jerr = sjson.CheckDepth(input)
 	}
-	return id, run(h, input, jerr), true
+	return sid, run(h, input, jerr)
 }
 
 // run calls the handler behind a recover boundary: no input may crash the
@@ -159,9 +148,8 @@ func canonical(input any, jerr *sjson.Error) map[string]any {
 
 func decide(input any, jerr *sjson.Error) map[string]any {
 	if jerr != nil {
-		d := &kernel.Decision{RequestID: "unknown", Status: "invalid", ReasonCode: "REQUEST_JSON_INVALID",
-			MatchedRuleIDs: []string{}, PolicySha: kernel.NoPolicySha}
-		return d.JSON()
+		// D-021 (1): a protocol refusal with exactly these three members.
+		return map[string]any{"status": "invalid", "reason_code": "REQUEST_JSON_INVALID", "matched_rule_ids": []any{}}
 	}
 	env, _ := sjson.Obj(input)
 	rev, okRev := sjson.Int(env, "state_revision")

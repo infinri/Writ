@@ -198,6 +198,16 @@ SR-06 sandbox facts (preflight PASS, telemetry diagnostic) are recorded in `docs
 - **Independence note:** for two points the clarifications leave open (extra envelope members, unknown dependency names), the Go agent aligned its choice with the observed Rust binary; agreement there is not independent evidence.
 - **Not tested:** persistent storage, process isolation, crash recovery of a real store, real signatures and key management, real host enforcement; benchmarks.
 
+### E-025: D-021 conformance; full M1-05 verification (pre-push, local)
+
+- **Prototypes** (separate agents, blind to each other; re-verified in this session with pinned toolchains): Rust `cargo test --release --locked` 32 passed, 0 failed; Go `go vet` clean, `go test -race -count=1 ./...` ok in 6 packages (25 top-level tests per the agent).
+- **Fixtures:** 12 sets, 414 cases: Rust 414/414 and Go 414/414 with `--repeat 2`; property regressions 11/11 each.
+- **Property campaigns** (`m1/props/run.py --campaign all --cases 2000 --repeats 5`): seed 20261107 and seed 2: every family PASS, 0 differential mismatches, 0 failed checks. Seed 20261107 checks: json 16,596; decide 8,413; acceptance 10,040; refusal 9,154; transition 71,196; broker 49,355. Broker: 400 concurrency groups (16/32/64 operations), 183 with more than one observed serialization, all within the permitted set; transition concurrency likewise. CI profile seed 20261107: ok.
+- **Mutation smoke** (`m1/props/mutants/smoke.py --seed 7 --cases 300`): exit 0 for Rust and for Go (exit 0 only if all 8 mutants are detected: dup-accept, ignore-artifact, double-grant, redispatch, leak-codes, scope-allow, forbid-ignored, replay-commit).
+- **Other suites:** M0 `pytest` 281 passed; audit 8 files current; docs check OK; fixture drift current (12 files); driver and fixture self-tests OK.
+- **Earlier published CI:** `5f670ddbd6c47439449fd3b3c70f13e0cb62fe6c`, https://github.com/infinri/Writ/actions/runs/42394272671 (4 jobs success).
+- **Process note:** the Go agent attempted `git rm` of dead code (`internal/sjson/envelope.go` `ReadID`), against its instructions; the permission system blocked it; nothing was deleted or committed. The dead function remains, marked unused.
+
 ## Not yet executed
 
 - SR-06 live-host experiments (0 of 69; sandbox torn down) and full SR-06 acceptance; rule semantic review (M0-01d); independent human golden review (M0-05a).

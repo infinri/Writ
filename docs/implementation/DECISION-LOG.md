@@ -185,3 +185,10 @@ Implementation-level decisions. Architectural decisions belong in [ADRs](../deci
 - **Also:** the broker model gains `restart_broker` (ledger persists across a simulated restart) to test replay after restart.
 - **M1-05 authorized:** property, metamorphic, concurrency and differential testing with recorded seeds; no oracle built from either prototype.
 
+## D-021: Strict protocol response semantics
+
+- **Date:** 2026-11-07. **Decided by:** project owner (instruction in session 2026-11-07); recorded by Claude. Normative text: `docs/implementation/M1-PARITY-SUITE.md`, "Protocol semantics (D-021)"; fixtures: `protocol-semantics` set.
+- **Decisions:** (1) a decide strict-parse failure returns exactly `status` invalid, `reason_code` REQUEST_JSON_INVALID, `matched_rule_ids` [], with no placeholder fields; (2) malformed envelopes return `ENVELOPE_INVALID`, preserving the id only when recovered from a strictly parsed envelope with exactly one string `id`, otherwise `id` null; never a fabricated identity; (3) unusable scenario input returns `INPUT_MALFORMED` with no state change, grant use or effect, never a crash; (4) unknown operations return `OPERATION_UNKNOWN`; (5) reused grant references return `GRANT_REF_IN_USE` and never reset or replenish the grant; (6) never-issued permits return `PERMIT_MISSING`; (7) JSON member order is never significant; (8) envelopes are closed structures, unexpected fields are `ENVELOPE_INVALID`; (9) unknown or undeclared dependency names are `INPUT_MALFORMED`.
+- **Conflict recorded and resolved:** the three-field failed-parse response is not a `decision.schema.json` instance; it is defined as a protocol refusal. Valid-input decisions keep the Decision contract.
+- **Independence:** the Go prototype's earlier alignment with Rust on items 8 and 9 counts as agreement only; tests derive from this decision.
+

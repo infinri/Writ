@@ -56,6 +56,34 @@
       "file": "sets/broker-scenarios.jsonl",
       "hard_gate": true,
       "provenance": "m1/fixtures/broker/broker-scenarios.cases.json (hand-reasoned from BROKER.md, D-019 N-2, PENDING INDEPENDENT REVIEW)"
+    },
+    {
+      "name": "protocol-decide",
+      "command": "decide",
+      "file": "sets/protocol-decide.jsonl",
+      "hard_gate": true,
+      "provenance": "m1/fixtures/protocol/protocol-semantics.cases.json (D-021, PENDING INDEPENDENT REVIEW)"
+    },
+    {
+      "name": "protocol-acceptance",
+      "command": "check-acceptance",
+      "file": "sets/protocol-acceptance.jsonl",
+      "hard_gate": true,
+      "provenance": "m1/fixtures/protocol/protocol-semantics.cases.json (D-021, PENDING INDEPENDENT REVIEW)"
+    },
+    {
+      "name": "protocol-transition",
+      "command": "transition-scenario",
+      "file": "sets/protocol-transition.jsonl",
+      "hard_gate": true,
+      "provenance": "m1/fixtures/protocol/protocol-semantics.cases.json (D-021, PENDING INDEPENDENT REVIEW)"
+    },
+    {
+      "name": "protocol-broker",
+      "command": "broker-scenario",
+      "file": "sets/protocol-broker.jsonl",
+      "hard_gate": true,
+      "provenance": "m1/fixtures/protocol/protocol-semantics.cases.json (D-021, PENDING INDEPENDENT REVIEW)"
     }
   ]
 }

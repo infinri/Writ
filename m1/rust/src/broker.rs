@@ -450,12 +450,20 @@ fn apply(ledger: &Mutex<Broker>, op: &Value, step: usize) -> Value {
 const REQUIRED_STATE: [&str; 7] = ["now", "state_revision", "bundle", "ingress_keys", "permit_key", "channels", "dependencies"];
 const FAULTS: [&str; 4] = ["crash_before_reserve", "crash_after_reserve", "crash_after_dispatch", "effect_fails"];
 
+/// The broker's declared dependencies (D-021): any other name is malformed.
+const DEPENDENCIES: [&str; 2] = ["policy", "ledger"];
+
 fn dependency_status(v: &Value) -> bool {
     matches!(v.as_str(), Some("up" | "down"))
 }
 
+fn dependency_declared(name: &str) -> bool {
+    DEPENDENCIES.contains(&name)
+}
+
 /// Structural check of one step (M1-PARITY-SUITE protocol clarifications):
-/// an object; a known `fault` if any; a known dependency status;
+/// an object; a known `fault` if any; a declared dependency name and a known
+/// status;
 /// `concurrent` carries an array of such steps. Unknown operations are not
 /// malformed (OPERATION_UNKNOWN).
 fn step_usable(op: &Value) -> bool {
@@ -464,7 +472,7 @@ fn step_usable(op: &Value) -> bool {
     }
     match op.str_at("op") {
         Some("concurrent") => op.get("operations").and_then(Value::as_arr).is_some_and(|ops| ops.iter().all(step_usable)),
-        Some("set_dependency") => op.get("status").is_some_and(dependency_status),
+        Some("set_dependency") => op.str_at("name").is_some_and(dependency_declared) && op.get("status").is_some_and(dependency_status),
         _ => true,
     }
 }
@@ -473,7 +481,7 @@ fn input_usable(input: &Value) -> bool {
     let initial_ok = input.get("initial").is_some_and(|i| {
         i.as_obj().is_some()
             && REQUIRED_STATE.iter().all(|k| i.get(k).is_some())
-            && i.get("dependencies").and_then(Value::as_obj).is_some_and(|d| d.iter().all(|(_, v)| dependency_status(v)))
+            && i.get("dependencies").and_then(Value::as_obj).is_some_and(|d| d.iter().all(|(k, v)| dependency_declared(k) && dependency_status(v)))
     });
     let steps_ok = input.get("steps").and_then(Value::as_arr).is_some_and(|ops| ops.iter().all(step_usable));
     initial_ok && steps_ok
@@ -563,6 +571,10 @@ mod tests {
     }
 
     fn scenario(steps: Vec<Value>) -> Value {
+        scenario_with_deps(obj(vec![("policy", s("up")), ("ledger", s("up"))]), steps)
+    }
+
+    fn scenario_with_deps(dependencies: Value, steps: Vec<Value>) -> Value {
         let initial = obj(vec![
             ("now", s("2026-11-07T11:00:00Z")),
             ("state_revision", Value::Int(7)),
@@ -570,7 +582,7 @@ mod tests {
             ("ingress_keys", obj(vec![("writ-host-adapter:fixture", s(INGRESS_KEY))])),
             ("permit_key", s(PERMIT_KEY)),
             ("channels", obj(vec![])),
-            ("dependencies", obj(vec![("policy", s("up")), ("ledger", s("up"))])),
+            ("dependencies", dependencies),
         ]);
         run(&obj(vec![("initial", initial), ("steps", Value::Arr(steps))]))
     }
@@ -670,5 +682,36 @@ mod tests {
         assert_eq!(json::to_text(&run(&obj(vec![("steps", Value::Arr(vec![]))]))), malformed);
         let no_steps = scenario(vec![]);
         assert!(no_steps.get("final").is_some());
+    }
+
+    #[test]
+    fn undeclared_dependency_names_are_malformed() {
+        // D-021: the broker's declared dependencies are exactly `policy` and
+        // `ledger`; any other name makes the whole scenario INPUT_MALFORMED,
+        // with no step executed.
+        let malformed = r#"{"input_error":"INPUT_MALFORMED"}"#;
+        let set = |name: Option<&str>| {
+            let mut m = vec![("op", s("set_dependency")), ("status", s("down"))];
+            if let Some(n) = name {
+                m.push(("name", s(n)));
+            }
+            obj(m)
+        };
+        for steps in [
+            vec![execute("idem-1", None), set(Some("cache"))],
+            vec![set(None)],
+            vec![set(Some("Policy"))],
+            vec![obj(vec![("op", s("concurrent")), ("operations", Value::Arr(vec![set(Some("ledger")), set(Some("cache"))]))])],
+        ] {
+            assert_eq!(json::to_text(&scenario(steps)), malformed);
+        }
+        for deps in [
+            obj(vec![("policy", s("up")), ("ledger", s("up")), ("cache", s("up"))]),
+            obj(vec![("cache", s("down"))]),
+        ] {
+            assert_eq!(json::to_text(&scenario_with_deps(deps, vec![execute("idem-1", None)])), malformed);
+        }
+        let out = scenario(vec![set(Some("policy")), set(Some("ledger"))]);
+        assert_eq!(step_results(&out), [r#"{"result":"dependency_set"}"#; 2]);
     }
 }

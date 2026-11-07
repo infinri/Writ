@@ -68,7 +68,7 @@ func TestInputMalformed(t *testing.T) {
 		"channels not obj":       func(in map[string]any) { ini(in)["channels"] = []any{} },
 		"unknown dep status":     func(in map[string]any) { ini(in)["dependencies"] = map[string]any{"ledger": "sideways"} },
 		"step not object":        func(in map[string]any) { in["steps"] = append(in["steps"].([]any), "x") },
-		"unknown dep in initial": func(in map[string]any) { ini(in)["dependencies"] = map[string]any{"graph": "sideways"} },
+		"unknown dep in initial": func(in map[string]any) { ini(in)["dependencies"] = map[string]any{"graph": "up"} },
 		"set_dependency bad status": func(in map[string]any) {
 			in["steps"] = []any{map[string]any{"op": "set_dependency", "name": "ledger", "status": "sideways"}}
 		},
@@ -133,17 +133,42 @@ func TestPermitMissingAndUnknownOp(t *testing.T) {
 	}
 }
 
-// An unknown dependency name with a known status is accepted and inert.
-func TestUnknownDependencyNameInert(t *testing.T) {
-	in, _ := approvalCase(t)
-	steps := in["steps"].([]any)
-	plain := Run(sjson.Clone(in))
-	in["steps"] = append([]any{map[string]any{"op": "set_dependency", "name": "graph", "status": "down"}}, sjson.Clone(steps).([]any)...)
-	out := Run(in)
-	got := out["steps"].([]any)
-	if string(sjson.Encode(got[0])) != `{"result":"dependency_set"}` ||
-		string(sjson.Encode(got[1:])) != string(sjson.Encode(plain["steps"])) ||
-		string(sjson.Encode(out["final"])) != string(sjson.Encode(plain["final"])) {
-		t.Fatalf("got %s", sjson.Encode(out))
+// D-021 (9): the declared broker dependencies are exactly policy and ledger;
+// any other name, even with a valid status, makes the whole scenario
+// INPUT_MALFORMED with no step run. Declared names stay accepted.
+func TestUndeclaredDependencyName(t *testing.T) {
+	base, _ := approvalCase(t)
+	steps := base["steps"].([]any)
+	for name, mut := range map[string]func(in map[string]any){
+		"set_dependency unknown name": func(in map[string]any) {
+			in["steps"] = append([]any{map[string]any{"op": "set_dependency", "name": "graph", "status": "down"}}, sjson.Clone(steps).([]any)...)
+		},
+		"set_dependency name not string": func(in map[string]any) {
+			in["steps"] = append(sjson.Clone(steps).([]any), map[string]any{"op": "set_dependency", "name": int64(1), "status": "up"})
+		},
+		"nested set_dependency unknown name": func(in map[string]any) {
+			in["steps"] = append(sjson.Clone(steps).([]any), map[string]any{"op": "concurrent", "operations": []any{
+				map[string]any{"op": "set_dependency", "name": "cache", "status": "up"}}})
+		},
+		"initial extra dependency": func(in map[string]any) {
+			in["initial"].(map[string]any)["dependencies"] = map[string]any{"policy": "up", "ledger": "up", "cache": "up"}
+		},
+		"initial dependency case differs": func(in map[string]any) {
+			in["initial"].(map[string]any)["dependencies"] = map[string]any{"Policy": "up"}
+		},
+	} {
+		in := sjson.Clone(base).(map[string]any)
+		mut(in)
+		if out := Run(in); !malformed(out) {
+			t.Errorf("%s: got %s", name, sjson.Encode(out))
+		}
+	}
+	for _, dep := range []string{"policy", "ledger"} {
+		in := sjson.Clone(base).(map[string]any)
+		in["initial"].(map[string]any)["dependencies"] = map[string]any{dep: "up"}
+		in["steps"] = append(sjson.Clone(steps).([]any), map[string]any{"op": "set_dependency", "name": dep, "status": "up"})
+		if out := Run(in); malformed(out) {
+			t.Errorf("declared %s rejected", dep)
+		}
 	}
 }

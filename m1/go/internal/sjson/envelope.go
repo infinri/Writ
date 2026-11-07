@@ -2,8 +2,12 @@ package sjson
 
 import "unicode/utf8"
 
+// ReadID is no longer used by the protocol: since D-021 an id is preserved
+// only from a strictly parsed envelope (cmd/proto), never recovered from a
+// line that failed strict parsing. Kept pending removal.
+//
 // ReadID recovers the `id` of a protocol envelope line that failed strict
-// parsing or validation, so the line can still be answered ENVELOPE_INVALID.
+// parsing or validation.
 // It scans only the top-level object: member names are decoded strictly,
 // other member values are skipped tolerantly. The id is readable only when
 // exactly one top-level member is named "id" (after escape decoding) and its
