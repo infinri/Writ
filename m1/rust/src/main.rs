@@ -16,8 +16,18 @@ mod time;
 use json::{obj, s, JsonError, Value};
 use std::io::{self, BufRead, Write};
 use std::process::ExitCode;
+use std::time::Instant;
 
-const COMMANDS: [&str; 6] = ["canonical", "decide", "check-acceptance", "external-refusal", "transition-scenario", "broker-scenario"];
+const COMMANDS: [&str; 8] = [
+    "canonical",
+    "decide",
+    "decide-batch",
+    "bench-decide",
+    "check-acceptance",
+    "external-refusal",
+    "transition-scenario",
+    "broker-scenario",
+];
 
 fn strict_failure(command: &str, e: JsonError) -> Value {
     let code = s(e.code());
@@ -87,11 +97,31 @@ fn answer(command: &str, line: &[u8]) -> Value {
         (None, Some(Value::Str(text))) if closed => json::parse(text.as_bytes()),
         _ => return envelope_invalid(Some(id)),
     };
-    let output = match parsed {
-        Ok(input) => run_command(command, &input),
-        Err(e) => strict_failure(command, e),
+    obj(vec![("id", s(id)), ("output", execute(command, parsed))])
+}
+
+/// `decide-batch` is `decide` (workload A). `bench-decide` (M1-06a) answers
+/// `{"decision": <the decide output>, "kernel_ns": n}`, where `n` is the
+/// monotonic time spent producing the decision from the already parsed input,
+/// excluding envelope and input parsing, output serialization and I/O.
+fn execute(command: &str, parsed: Result<Value, JsonError>) -> Value {
+    let decide = |parsed: Result<Value, JsonError>| match parsed {
+        Ok(input) => run_command("decide", &input),
+        Err(e) => strict_failure("decide", e),
     };
-    obj(vec![("id", s(id)), ("output", output)])
+    match command {
+        "decide-batch" => decide(parsed),
+        "bench-decide" => {
+            let started = Instant::now();
+            let decision = decide(parsed);
+            let ns = i64::try_from(started.elapsed().as_nanos()).unwrap_or(i64::MAX);
+            obj(vec![("decision", decision), ("kernel_ns", Value::Int(ns))])
+        }
+        _ => match parsed {
+            Ok(input) => run_command(command, &input),
+            Err(e) => strict_failure(command, e),
+        },
+    }
 }
 
 /// Whitespace-only lines (JSON whitespace) are ignored.
@@ -186,6 +216,24 @@ mod tests {
                 r#"{"id":"d","output":{"matched_rule_ids":[],"reason_code":"REQUEST_JSON_INVALID","status":"invalid"}}"#
             );
         }
+    }
+
+    #[test]
+    fn decide_batch_and_bench_decide_return_the_decide_output() {
+        for line in [
+            &br#"{"id":"d","input_text":"{"}"#[..],
+            br#"{"id":"d","input":{"bundle":null,"state_revision":0,"now":"2026-01-01T00:00:00Z","request":{}}}"#,
+        ] {
+            let plain = answer("decide", line);
+            assert_eq!(json::to_text(&answer("decide-batch", line)), json::to_text(&plain));
+            let timed = answer("bench-decide", line);
+            let out = timed.get("output").unwrap();
+            assert_eq!(json::to_text(out.get("decision").unwrap()), json::to_text(plain.get("output").unwrap()));
+            assert!(matches!(out.get("kernel_ns"), Some(Value::Int(n)) if *n >= 0));
+            assert_eq!(out.as_obj().unwrap().len(), 2);
+        }
+        let invalid = r#"{"id":"d","output":{"error":"ENVELOPE_INVALID"}}"#;
+        assert_eq!(out("bench-decide", br#"{"id":"d"}"#), invalid);
     }
 
     #[test]

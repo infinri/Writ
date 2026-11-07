@@ -79,6 +79,36 @@ func TestDecideParseFailure(t *testing.T) {
 	}
 }
 
+// bench-decide wraps exactly the decide output with a non-negative kernel_ns.
+func TestBenchDecideWrapsDecide(t *testing.T) {
+	for _, line := range []string{
+		`{"id":"d","input_text":"{"}`,
+		`{"id":"d","input":{"bundle":null,"state_revision":0,"now":"2026-01-01T00:00:00Z","request":{}}}`,
+	} {
+		plain := mustDecode(t, answerLine(commands["decide"], line))
+		timed, _ := sjson.Obj(mustDecode(t, answerLine(commands["bench-decide"], line))["output"])
+		if got, want := string(sjson.Encode(timed["decision"])), string(sjson.Encode(plain["output"])); got != want {
+			t.Errorf("%s: decision %s, want %s", line, got, want)
+		}
+		if ns, ok := sjson.Int(timed, "kernel_ns"); !ok || ns < 0 || len(timed) != 2 {
+			t.Errorf("%s: kernel_ns %v, members %d", line, timed["kernel_ns"], len(timed))
+		}
+	}
+	if got := strings.TrimSpace(answerLine(commands["bench-decide"], `{"id":"d"}`)); got != `{"id":"d","output":{"error":"ENVELOPE_INVALID"}}` {
+		t.Errorf("got %s", got)
+	}
+}
+
+func mustDecode(t *testing.T, s string) map[string]any {
+	t.Helper()
+	v, err := sjson.Parse(strings.TrimSpace(s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ := sjson.Obj(v)
+	return m
+}
+
 // No input may crash the process: a handler panic is answered INTERNAL_ERROR.
 func TestRecoverBoundary(t *testing.T) {
 	boom := func(any, *sjson.Error) map[string]any { panic("boom") }

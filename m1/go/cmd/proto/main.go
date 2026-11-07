@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"writ.dev/m1/proto/internal/acceptance"
 	"writ.dev/m1/proto/internal/broker"
@@ -25,6 +26,7 @@ var commands = map[string]handler{
 	"canonical":           canonical,
 	"decide":              decide,
 	"decide-batch":        decide,
+	"bench-decide":        benchDecide,
 	"check-acceptance":    checkAcceptance,
 	"external-refusal":    externalRefusal,
 	"transition-scenario": transitionScenario,
@@ -33,7 +35,7 @@ var commands = map[string]handler{
 
 func main() {
 	if len(os.Args) != 2 || commands[os.Args[1]] == nil {
-		fmt.Fprintln(os.Stderr, "usage: proto canonical|decide|decide-batch|check-acceptance|external-refusal|transition-scenario|broker-scenario")
+		fmt.Fprintln(os.Stderr, "usage: proto canonical|decide|decide-batch|bench-decide|check-acceptance|external-refusal|transition-scenario|broker-scenario")
 		os.Exit(2)
 	}
 	h := commands[os.Args[1]]
@@ -161,6 +163,15 @@ func decide(input any, jerr *sjson.Error) map[string]any {
 		return d.JSON()
 	}
 	return kernel.Decide(env["request"], kernel.LoadPolicy(env["bundle"]), rev, now).JSON()
+}
+
+// benchDecide (M1-06a) answers {"decision": <the decide output>, "kernel_ns": n},
+// where n is the monotonic time spent producing the decision from the already
+// parsed input, excluding envelope and input parsing, output encoding and I/O.
+func benchDecide(input any, jerr *sjson.Error) map[string]any {
+	started := time.Now()
+	d := decide(input, jerr)
+	return map[string]any{"decision": d, "kernel_ns": time.Since(started).Nanoseconds()}
 }
 
 func checkAcceptance(input any, jerr *sjson.Error) map[string]any {

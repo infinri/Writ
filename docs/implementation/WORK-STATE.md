@@ -1,12 +1,13 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-07 (end of M1-05) · **Branch:** v2/architecture-rebuild · **Milestone:** M1 active (development only, D-014); M1-00..M1-05 DONE; M1-06 blocked by environment. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md).
+**Last updated:** 2026-11-07 (M1-06a done) · **Branch:** v2/architecture-rebuild · **Milestone:** M1 active (development only, D-014); M1-00..M1-05 and M1-06a DONE; M1-06 blocked by environment and an owner decision. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md).
 
 ## Current
 
 - **Code and CI:** `fe7de57a430355a529bc39088e659b5f5f915f39`, CI https://github.com/infinri/Writ/actions/runs/42394888125 (5 jobs success, including the required property job).
 - **Prototypes:** Rust `m1/rust/`, Go `m1/go/`: both 414/414 fixtures, 11/11 property regressions, 0 property mismatches (E-025).
-- **Next:** M1-06a benchmark harness without measurements; M1-06 measurements after the owner provides mains power and a fixed governor.
+- **Benchmark harness:** `m1/bench/` (M1-06a, E-026): dry run passes; the guard refuses measurement in the current environment. No measurement taken.
+- **Next:** M1-06 measurements, after the owner sets the `performance` governor and decides the workload B ledger question (SESSION-HANDOFF section F). M1-07 build and packaging assessment can proceed without measurements.
 
 ## Security findings
 
@@ -36,7 +37,6 @@ SANDBOX PREPARED / LIVE VERIFICATION NOT EXECUTED; sandbox **torn down** 2026-11
 ## Known blockers
 
 - Gates G1-G3 need human reviewers or a credential and live trials; PROPOSED D-014 would replace or defer them for M1 development only.
-- Rust and Go toolchains absent; M1 blocked by instruction.
 - Pages deploy blocked by repository environment protection (pre-existing).
 
 ## Last tests
@@ -45,4 +45,4 @@ CI E-013: run [42309913797](https://github.com/infinri/Writ/actions/runs/4230991
 
 ## Next exact action
 
-M1-06a: write `m1/bench/` (no measurements) per SESSION-HANDOFF section F. M1-06 runs are blocked: on battery, governor `powersave`.
+See SESSION-HANDOFF section F. M1-06 runs are blocked: governor `powersave`; workload B ledger decision pending.

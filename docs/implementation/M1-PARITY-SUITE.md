@@ -76,6 +76,7 @@ exit    0 when every line was answered; a refusal or rejection is an output, nev
 | `canonical` | `input_text`: raw JSON (parsing is part of the test) | `{"canonical": "<utf8>", "digest": "sha256:..."}` or `{"error": "<CODE>"}` |
 | `decide` | `{"bundle": {...} \| null, "state_revision": N, "now": "<rfc3339>", "request": {...}}` | Decision JSON (`status`, `reason_code`, `matched_rule_ids`, ...); strict-parse failure is `invalid` / `REQUEST_JSON_INVALID`; a bundle rejected at load is `unavailable` / `POLICY_BUNDLE_REJECTED` |
 | `decide-batch` | same as `decide`, many lines (workload A) | Decisions |
+| `bench-decide` (M1-06a) | same as `decide` | `{"decision": <exactly the decide output>, "kernel_ns": n}`: `n` is the monotonic time to produce the decision from the already parsed input, excluding JSON parsing, encoding and I/O; invalid envelopes are answered as for every command |
 | `broker-scenario` | scenario JSON | receipts and refusal codes |
 | `check-acceptance` | `{"record": {...}, "current": {...}, "requirements": {...}}` | `{"ok": true}`, `{"refusal": "<CODE>"}` or `{"refusal": "INPUT_JSON_INVALID", "json_error": "<CODE>"}` |
 | `transition-scenario` | `{"initial": {...}, "steps": [...]}` | `{"steps": [...], "final": {...}}` or `{"input_error": "INPUT_JSON_INVALID", "json_error": "<CODE>"}` |
@@ -117,6 +118,7 @@ Neither prototype may link a model-provider SDK, an AgentRunner, or a pack modul
 - Concurrency at 1, 10, 100, 1,000 simulated sessions.
 - Report kernel decision latency separately from IPC and ledger latency. No model or network time is part of this benchmark.
 - Results use the evidence format in the testing doc; `null` until measured.
+- Harness: [`m1/bench/`](../../m1/bench/README.md) (M1-06a). It refuses to measure unless on mains power with the `performance` governor on every policy, a quiet and cool machine and a clean `m1/` tree; a `--dry-run` checks plumbing and correctness and records no timing or memory values (`not_a_benchmark: true`). Every run re-checks correctness (Rust equals Go; concurrency outcomes are permitted serializations) and is invalid for comparison if any check fails.
 
 ## Selection
 

@@ -208,7 +208,18 @@ SR-06 sandbox facts (preflight PASS, telemetry diagnostic) are recorded in `docs
 - **Earlier published CI:** `5f670ddbd6c47439449fd3b3c70f13e0cb62fe6c`, https://github.com/infinri/Writ/actions/runs/42394272671 (4 jobs success).
 - **Process note:** the Go agent attempted `git rm` of dead code (`internal/sjson/envelope.go` `ReadID`), against its instructions; the permission system blocked it; nothing was deleted or committed. The dead function remains, marked unused.
 
+### E-026: M1-06a benchmark harness (no measurements)
+
+- **Harness** `m1/bench/` (standard library only): workload generators A, B, G, H with recorded seeds and input digests; cold start; concurrency at 1/10/100/1000 processes; peak RSS via `/usr/bin/time -v`; nearest-rank percentiles, mean, stdev, run-to-run variance; environment capture (power, every cpufreq policy, boost, EPP, platform profile, thermals at start and end, load, hardware, toolchains, Go build info, Cargo release profile, commit, binary digests); result format `writ-m1-bench/1` with schema and evidence-format records. Correctness re-checked inside every run (Rust equals Go; `bench-decide` equals `decide`; workload B groups are permitted serializations).
+- **Prototype additions:** `bench-decide` in both (decision plus in-process `kernel_ns`), `decide-batch` alias in Rust (Go already had it). Rust `cargo test --release --locked` 33 passed; Go `go vet` clean, `go test -race -count=1 ./...` ok (6 packages).
+- **Guard verified to refuse in this environment** (2026-11-07): exit 3, no file written; reasons: governor `powersave` on all 16 policies, uncommitted `m1/` changes, and at other moments load above 1.0 and CPU 65.75 to 71.6 C. Mains adapter was online at the time (it was offline earlier the same day; the guard reads it live). With the toolchains removed from PATH it also refused for unpinned `rustc`/`go`.
+- **Dry run** (`--dry-run --seed 20261107`): exit 0, 0 correctness failures over 13 check kinds, `not_a_benchmark: true`, every timing and memory field `null`, schema-valid (jsonschema 4.23.0 from the m0 venv). Negative control: a Go wrapper rewriting one reason code was caught (5 differential failures, exit 4, `valid_for_comparison: false`).
+- **Self-tests:** `python3 -m unittest discover -s m1/bench/tests` 15 tests OK (system Python and m0 venv, dry run included).
+- **Regression after the prototype change:** both 414/414 fixtures `--repeat 2`; regressions 11/11; property CI profile seeds 20261107 and 1 `ok: true`; mutation smoke 8/8 detected for each; M0 281 passed; driver self-tests OK; fixture drift current; docs check OK.
+- **No benchmark measurement was taken or reported.**
+- **Found while probing (not fixed; owner decision):** a `decide` input whose harness fields are malformed (missing `now`, or a non-integer `state_revision`) is answered differently: Rust returns the three-field `invalid`/`REQUEST_SCHEMA_INVALID`; Go returns a full Decision with `decided_at` `0001-01-01T00:00:00Z`. Both accept `state_revision: -1`. No fixture covers this; D-021 settles only strict-parse failures.
+
 ## Not yet executed
 
 - SR-06 live-host experiments (0 of 69; sandbox torn down) and full SR-06 acceptance; rule semantic review (M0-01d); independent human golden review (M0-05a).
-- Any Rust or Go prototype build, and any performance benchmark (toolchain smoke builds only, E-016).
+- Any performance benchmark (M1-06 harness exists, E-026; no measurement taken).

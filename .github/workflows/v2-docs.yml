@@ -101,6 +101,13 @@ jobs:
         run: |
           python3 m1/props/mutants/smoke.py --real "$GITHUB_WORKSPACE/m1/rust/target/release/proto" --seed 7 --cases 300 --out props-smoke-rust.json
           python3 m1/props/mutants/smoke.py --real "$GITHUB_WORKSPACE/m1/go/proto" --seed 7 --cases 300 --out props-smoke-go.json
+      - name: Benchmark harness self-tests and dry run (M1-06a; no measurements)
+        env:
+          WRIT_BENCH_RUST: ${{ github.workspace }}/m1/rust/target/release/proto
+          WRIT_BENCH_GO: ${{ github.workspace }}/m1/go/proto
+        run: |
+          python3 -m unittest discover -s m1/bench/tests
+          python3 m1/bench/bench.py --dry-run --seed 20261107 --rust "$WRIT_BENCH_RUST" --go "$WRIT_BENCH_GO" --out bench-dry-run.json
       - name: Upload property reports (reproduction evidence)
         if: always()
         uses: actions/upload-artifact@v4
@@ -109,4 +116,5 @@ jobs:
           path: |
             props-ci-*.json
             props-smoke-*.json
+            bench-dry-run.json
           if-no-files-found: warn

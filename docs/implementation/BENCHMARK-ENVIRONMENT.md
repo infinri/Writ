@@ -1,6 +1,6 @@
 # Benchmark environment record (M0-04b)
 
-**No benchmark has been run.** This file records the candidate reference machine so M1 results can cite it.
+**No benchmark has been run.** This file records the candidate reference machine so M1 results can cite it. The M1-06 harness ([`m1/bench/`](../../m1/bench/README.md)) captures all per-run fields below automatically and refuses to measure unless on mains power with the `performance` governor, a quiet and cool machine, a clean `m1/` tree and the pinned toolchains.
 
 ## Workstation recorded 2026-11-05
 
