@@ -394,8 +394,12 @@ def protocol_semantics() -> list[str]:
         entry = {"id": case["id"], "expect": case["expect"], "compare": "exact",
                  "meta": {"source": "m1/fixtures/protocol/protocol-semantics.cases.json", "command": b["command"],
                           "review_status": src["review_status"], "rationale": case["rationale"]}}
+        if "compare_fields" in case:
+            entry["compare"], entry["fields"] = "fields", case["compare_fields"]
         if "input_text" in b:
             entry["input_text"] = b["input_text"]
+        elif "input_literal" in b:
+            entry["input"] = b["input_literal"]
         else:
             base = built[b["from_case"][0]][b["from_case"][1]]
             if "input_text" in base:
@@ -424,7 +428,13 @@ def protocol_semantics() -> list[str]:
                 if "initial_dependencies_add" in b:
                     k, v = b["initial_dependencies_add"]
                     value["initial"]["dependencies"][k] = v
-                if b.get("reverse_record_transition"):
+                for k, v in b.get("set_input", {}).items():
+                    value[k] = v
+                for k, v in b.get("set_request", {}).items():
+                    value["request"][k] = v
+                if "edit_text" in b:
+                    entry["input_text"] = edit_once(compact(value), *b["edit_text"], case["id"])
+                elif b.get("reverse_record_transition"):
                     if b["command"] == "check-acceptance":
                         parts = {k: compact(v) for k, v in value.items()}
                         parts["record"] = edit_once(parts["record"], fwd, rev, case["id"])

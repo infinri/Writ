@@ -1,5 +1,5 @@
 {
- "description": "Hand-reasoned cases for D-021 protocol semantics. Inputs are derived from existing fixture cases by the listed structural edits; expectations are written from D-021, not from any implementation. Envelope-level rules are tested by m1/props (the driver only sends valid envelopes). PENDING INDEPENDENT REVIEW.",
+ "description": "Hand-reasoned cases for D-021 protocol semantics and D-022 decide input validation. Inputs are derived from existing fixture cases by the listed structural edits; expectations are written from D-021, not from any implementation. Envelope-level rules are tested by m1/props (the driver only sends valid envelopes). PENDING INDEPENDENT REVIEW.",
  "review_status": "PENDING INDEPENDENT REVIEW",
  "cases": [
   {
@@ -366,6 +366,596 @@
     }
    },
    "rationale": "D-021 (7)"
+  },
+  {
+   "id": "p22-01-now-missing",
+   "build": {
+    "command": "decide",
+    "drop": [
+     "now"
+    ],
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_SCHEMA_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: required now absent; three fields, no decided_at"
+  },
+  {
+   "id": "p22-02-now-number",
+   "build": {
+    "command": "decide",
+    "set_input": {
+     "now": 1793962800
+    },
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_SCHEMA_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: now is not a string"
+  },
+  {
+   "id": "p22-03-now-null",
+   "build": {
+    "command": "decide",
+    "set_input": {
+     "now": null
+    },
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_SCHEMA_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: now null"
+  },
+  {
+   "id": "p22-04-now-empty",
+   "build": {
+    "command": "decide",
+    "set_input": {
+     "now": ""
+    },
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_SCHEMA_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: empty now"
+  },
+  {
+   "id": "p22-05-now-feb-30",
+   "build": {
+    "command": "decide",
+    "set_input": {
+     "now": "2026-02-30T11:00:00Z"
+    },
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_SCHEMA_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: invalid calendar date"
+  },
+  {
+   "id": "p22-06-now-feb-29-non-leap",
+   "build": {
+    "command": "decide",
+    "set_input": {
+     "now": "2025-02-29T11:00:00Z"
+    },
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_SCHEMA_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: Feb 29 in a non-leap year"
+  },
+  {
+   "id": "p22-07-now-leap-second",
+   "build": {
+    "command": "decide",
+    "set_input": {
+     "now": "2026-12-31T23:59:60Z"
+    },
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_SCHEMA_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: second 60 is not accepted"
+  },
+  {
+   "id": "p22-08-now-hour-24",
+   "build": {
+    "command": "decide",
+    "set_input": {
+     "now": "2026-11-07T24:00:00Z"
+    },
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_SCHEMA_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: hour 24"
+  },
+  {
+   "id": "p22-09-now-zero-date",
+   "build": {
+    "command": "decide",
+    "set_input": {
+     "now": "0000-00-00T00:00:00Z"
+    },
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_SCHEMA_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: zero date"
+  },
+  {
+   "id": "p22-10-now-offset",
+   "build": {
+    "command": "decide",
+    "set_input": {
+     "now": "2026-11-07T12:00:00+01:00"
+    },
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_SCHEMA_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: numeric offset not allowed: strict YYYY-MM-DDTHH:MM:SSZ"
+  },
+  {
+   "id": "p22-11-now-fraction",
+   "build": {
+    "command": "decide",
+    "set_input": {
+     "now": "2026-11-07T11:00:00.5Z"
+    },
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_SCHEMA_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: fractional seconds not allowed"
+  },
+  {
+   "id": "p22-12-now-lowercase",
+   "build": {
+    "command": "decide",
+    "set_input": {
+     "now": "2026-11-07t11:00:00z"
+    },
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_SCHEMA_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: lowercase t and z not allowed"
+  },
+  {
+   "id": "p22-13-now-date-only",
+   "build": {
+    "command": "decide",
+    "set_input": {
+     "now": "2026-11-07"
+    },
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_SCHEMA_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: date without time"
+  },
+  {
+   "id": "p22-14-now-leap-day-valid",
+   "build": {
+    "command": "decide",
+    "set_input": {
+     "now": "2024-02-29T23:59:59Z"
+    },
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "matched_rule_ids": [
+     "permit-accept"
+    ],
+    "reason_code": "ACCEPT_TRANSITION_PERMITTED",
+    "status": "allow"
+   },
+   "rationale": "D-022: valid leap day: validation passes and a full Decision follows",
+   "compare_fields": [
+    "status",
+    "reason_code",
+    "matched_rule_ids"
+   ]
+  },
+  {
+   "id": "p22-15-revision-negative-one",
+   "build": {
+    "command": "decide",
+    "set_input": {
+     "state_revision": -1
+    },
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_SCHEMA_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: negative revision rejected (0 through 2^53-1)"
+  },
+  {
+   "id": "p22-16-revision-min-safe",
+   "build": {
+    "command": "decide",
+    "set_input": {
+     "state_revision": -9007199254740991
+    },
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_SCHEMA_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: most negative safe integer rejected"
+  },
+  {
+   "id": "p22-17-revision-missing",
+   "build": {
+    "command": "decide",
+    "drop": [
+     "state_revision"
+    ],
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_SCHEMA_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: required state_revision absent"
+  },
+  {
+   "id": "p22-18-revision-string",
+   "build": {
+    "command": "decide",
+    "set_input": {
+     "state_revision": "7"
+    },
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_SCHEMA_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: numeric string is not an integer"
+  },
+  {
+   "id": "p22-19-revision-null",
+   "build": {
+    "command": "decide",
+    "set_input": {
+     "state_revision": null
+    },
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_SCHEMA_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: null revision"
+  },
+  {
+   "id": "p22-20-revision-bool",
+   "build": {
+    "command": "decide",
+    "set_input": {
+     "state_revision": true
+    },
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_SCHEMA_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: boolean revision"
+  },
+  {
+   "id": "p22-21-revision-zero-valid",
+   "build": {
+    "command": "decide",
+    "set_input": {
+     "state_revision": 0
+    },
+    "set_request": {
+     "expected_state_revision": 0
+    },
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "matched_rule_ids": [
+     "permit-accept"
+    ],
+    "reason_code": "ACCEPT_TRANSITION_PERMITTED",
+    "status": "allow"
+   },
+   "rationale": "D-022: 0 is the lowest valid revision",
+   "compare_fields": [
+    "status",
+    "reason_code",
+    "matched_rule_ids"
+   ]
+  },
+  {
+   "id": "p22-22-revision-max-valid",
+   "build": {
+    "command": "decide",
+    "set_input": {
+     "state_revision": 9007199254740991
+    },
+    "set_request": {
+     "expected_state_revision": 9007199254740991
+    },
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "matched_rule_ids": [
+     "permit-accept"
+    ],
+    "reason_code": "ACCEPT_TRANSITION_PERMITTED",
+    "status": "allow"
+   },
+   "rationale": "D-022: 2^53-1 is the highest valid revision",
+   "compare_fields": [
+    "status",
+    "reason_code",
+    "matched_rule_ids"
+   ]
+  },
+  {
+   "id": "p22-23-revision-unsafe",
+   "build": {
+    "command": "decide",
+    "edit_text": [
+     "\"state_revision\":7",
+     "\"state_revision\":9007199254740992"
+    ],
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_JSON_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: 2^53 fails D-017 strict parsing (NUMBER_OUT_OF_RANGE), so REQUEST_JSON_INVALID"
+  },
+  {
+   "id": "p22-24-revision-fraction",
+   "build": {
+    "command": "decide",
+    "edit_text": [
+     "\"state_revision\":7",
+     "\"state_revision\":7.0"
+    ],
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_JSON_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: 7.0 fails D-017 strict parsing"
+  },
+  {
+   "id": "p22-25-revision-exponent",
+   "build": {
+    "command": "decide",
+    "edit_text": [
+     "\"state_revision\":7",
+     "\"state_revision\":7e0"
+    ],
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_JSON_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: 7e0 fails D-017 strict parsing"
+  },
+  {
+   "id": "p22-26-revision-leading-zero",
+   "build": {
+    "command": "decide",
+    "edit_text": [
+     "\"state_revision\":7",
+     "\"state_revision\":07"
+    ],
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_JSON_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: 07 fails D-017 strict parsing"
+  },
+  {
+   "id": "p22-27-revision-negative-zero",
+   "build": {
+    "command": "decide",
+    "edit_text": [
+     "\"state_revision\":7",
+     "\"state_revision\":-0"
+    ],
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_JSON_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: -0 fails D-017 strict parsing"
+  },
+  {
+   "id": "p22-28-request-missing",
+   "build": {
+    "command": "decide",
+    "drop": [
+     "request"
+    ],
+    "from_case": [
+     "transition-decisions",
+     "tx-01-accept-permitted"
+    ]
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_SCHEMA_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: no request: no Decision can be formed without inventing a request id"
+  },
+  {
+   "id": "p22-29-input-array",
+   "build": {
+    "command": "decide",
+    "input_literal": []
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_SCHEMA_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: decide input is not an object"
+  },
+  {
+   "id": "p22-30-input-number",
+   "build": {
+    "command": "decide",
+    "input_literal": 5
+   },
+   "expect": {
+    "status": "invalid",
+    "reason_code": "REQUEST_SCHEMA_INVALID",
+    "matched_rule_ids": []
+   },
+   "rationale": "D-022: decide input is not an object"
   }
  ]
 }

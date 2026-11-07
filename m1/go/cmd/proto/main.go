@@ -153,14 +153,18 @@ func decide(input any, jerr *sjson.Error) map[string]any {
 		// D-021 (1): a protocol refusal with exactly these three members.
 		return map[string]any{"status": "invalid", "reason_code": "REQUEST_JSON_INVALID", "matched_rule_ids": []any{}}
 	}
-	env, _ := sjson.Obj(input)
+	// D-022: the harness-supplied clock and revision are validated before any
+	// decision. A failure is a three-field refusal, never a Decision with
+	// placeholder metadata: `now` must be the strict YYYY-MM-DDTHH:MM:SSZ form
+	// with a valid calendar time, `state_revision` an integer from 0 to 2^53-1
+	// (the strict parser bounds the magnitude), and `request` present.
+	env, isObj := sjson.Obj(input)
 	rev, okRev := sjson.Int(env, "state_revision")
-	nowS, _ := sjson.Str(env, "now")
-	now, okNow := kernel.ParseTime(nowS)
-	if !okRev || !okNow {
-		d := &kernel.Decision{RequestID: "unknown", Status: "invalid", ReasonCode: "REQUEST_SCHEMA_INVALID",
-			MatchedRuleIDs: []string{}, PolicySha: kernel.NoPolicySha, StateRevision: rev, DecidedAt: now}
-		return d.JSON()
+	nowS, okS := sjson.Str(env, "now")
+	now, okNow := acceptance.ParseTimestamp(nowS)
+	_, hasReq := env["request"]
+	if !isObj || !okRev || rev < 0 || !okS || !okNow || !hasReq {
+		return map[string]any{"status": "invalid", "reason_code": "REQUEST_SCHEMA_INVALID", "matched_rule_ids": []any{}}
 	}
 	return kernel.Decide(env["request"], kernel.LoadPolicy(env["bundle"]), rev, now).JSON()
 }

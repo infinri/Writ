@@ -682,9 +682,14 @@ pub fn decide_command(input: &Value) -> Value {
     let invalid = |reason: &str| {
         obj(vec![("status", s("invalid")), ("reason_code", s(reason)), ("matched_rule_ids", Value::Arr(vec![]))])
     };
+    // D-022: the harness-supplied clock and revision are validated before any
+    // decision; a failure is a three-field refusal, never a Decision with
+    // placeholder metadata. `now` is the strict `YYYY-MM-DDTHH:MM:SSZ` form;
+    // `state_revision` is an integer from 0 to 2^53-1 (the strict parser
+    // already bounds the magnitude and rejects other spellings).
     let (Some(now), Some(rev), Some(req)) = (
-        input.str_at("now").and_then(time::parse_rfc3339),
-        input.get("state_revision").and_then(Value::as_int),
+        input.str_at("now").and_then(time::parse_strict_z).map(|secs| (secs, 0)),
+        input.get("state_revision").and_then(Value::as_int).filter(|r| *r >= 0),
         input.get("request"),
     ) else {
         return invalid("REQUEST_SCHEMA_INVALID");

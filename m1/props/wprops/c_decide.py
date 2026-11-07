@@ -12,6 +12,12 @@ Two oracle families, both stated in SCENARIOS.md "Kernel: decisions" and D-008:
    capability knowledge; canonical form; scope; transition support; resource
    shape; attributes; composite; protection. Pre-statement decisions match no rules.
 
+D-022: about 15% of generated inputs have a malformed, out-of-range or absent
+`now`, `state_revision` or `request` (mutated strings, wrong types, negative
+revisions, calendar edge cases). Oracle `strict_now_ok` plus the revision
+range: an invalid input gives exactly the three-field REQUEST_SCHEMA_INVALID
+refusal; a valid one gives a full Decision.
+
 2. Metamorphic relations on clean requests that reach the statements:
    adding a matching forbid never yields allow or require_approval; removing
    every statement that mentions the request's capabilities yields
@@ -585,11 +591,83 @@ def gen_approval_pair(rng, idx):
     return pairs
 
 
+# ------------------------------------------------- D-022 harness fields
+
+D022_REFUSAL = {"status": "invalid", "reason_code": "REQUEST_SCHEMA_INVALID", "matched_rule_ids": []}
+MAX_SAFE = 2**53 - 1
+
+
+def strict_now_ok(v) -> bool:
+    """D-022 oracle for `now`: exactly YYYY-MM-DDTHH:MM:SSZ, year 0000-9999,
+    proleptic Gregorian calendar date, hour <= 23, minute and second <= 59."""
+    if not isinstance(v, str) or len(v) != 20 or v[4] != "-" or v[7] != "-" or v[10] != "T" \
+            or v[13] != ":" or v[16] != ":" or v[19] != "Z":
+        return False
+    parts = (v[0:4], v[5:7], v[8:10], v[11:13], v[14:16], v[17:19])
+    if not all(len(x) == len(x.encode()) and x.isdigit() for x in parts):
+        return False
+    y, mo, d, h, mi, s = map(int, parts)
+    leap = (y % 4 == 0 and y % 100 != 0) or y % 400 == 0
+    dim = [31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    return 1 <= mo <= 12 and 1 <= d <= dim[mo - 1] and h <= 23 and mi <= 59 and s <= 59
+
+
+def _rand_now(rng) -> str:
+    y = rng.choice([0, 1, 1900, 2000, 2024, 2025, 2026, 2100, 9999, rng.randrange(10000)])
+    return "%04d-%02d-%02dT%02d:%02d:%02dZ" % (y, rng.randint(1, 12), rng.randint(28, 31) if rng.random() < 0.4
+                                               else rng.randint(1, 28), rng.randint(0, 24), rng.randint(0, 60),
+                                               rng.randint(0, 60))
+
+
+def _mutate_now(rng):
+    s = _rand_now(rng)
+    k = rng.randrange(9)
+    if k == 0:
+        return s
+    if k == 1:
+        i = rng.randrange(len(s))
+        return s[:i] + rng.choice("0123456789-:TZtz+. /\u0660") + s[i + 1:]
+    if k == 2:
+        i = rng.randrange(len(s))
+        return s[:i] + s[i + 1:]
+    if k == 3:
+        return s[:-1] + rng.choice(["+00:00", "-05:30", ".5Z", ".000Z", "z", "", " ", "ZZ"])
+    if k == 4:
+        return s.replace("T", rng.choice(["t", " ", "_"]))
+    if k == 5:
+        return rng.choice([None, 0, 1793962800, True, [], {}, "", "now"])
+    return s
+
+
+def gen_harness_case(rng, idx):
+    """A generated decide input whose `now`, `state_revision` or `request`
+    member may be malformed or absent (D-022)."""
+    base = gen_fault_case(rng, idx)
+    if base is None:
+        return None
+    inp = base["input"]
+    if rng.random() < 0.6:
+        inp["now"] = _mutate_now(rng)
+    if rng.random() < 0.5:
+        inp["state_revision"] = rng.choice([0, 1, 7, MAX_SAFE, rng.randrange(MAX_SAFE), -1, -MAX_SAFE,
+                                            -rng.randrange(1, MAX_SAFE), "7", None, True, False, [7], {"n": 7}])
+    for k in ("now", "state_revision", "request"):
+        if rng.random() < 0.05:
+            inp.pop(k)
+    valid = strict_now_ok(inp.get("now")) and "request" in inp and \
+        type(inp.get("state_revision")) is int and 0 <= inp["state_revision"] <= MAX_SAFE
+    return {"id": f"d22-{idx:06d}", "command": "decide", "input": inp, "meta": {"d022_valid": valid}}
+
+
 def gen_cases(rng, n):
     cases, i = [], 0
     while len(cases) < n:
         i += 1
-        if rng.random() < 0.05:
+        if rng.random() < 0.15:
+            c = gen_harness_case(rng, i)
+            if c:
+                cases.append(c)
+        elif rng.random() < 0.05:
             cases.extend(gen_approval_pair(rng, i))
         elif rng.random() < 0.9:
             c = gen_fault_case(rng, i)
@@ -628,6 +706,12 @@ def run(protos, rng, n, res: Results):
         for c in cases:
             out = o.get(c["id"])
             m = c["meta"]
+            if "d022_valid" in m:
+                ok = (out != D022_REFUSAL and isinstance(out, dict) and "decision_id" in out) if m["d022_valid"] \
+                    else out == D022_REFUSAL
+                res.check("decide.d022_harness_fields_validated_before_decision", p.name, ok, c["id"],
+                          {"got": out if not ok else None, "valid": m["d022_valid"]}, case=None if ok else c)
+                continue
             if "expect" in m:
                 if m["expect"] is not None:
                     ok = isinstance(out, dict) and sig(out) == (m["expect"]["status"], m["expect"]["reason_code"])

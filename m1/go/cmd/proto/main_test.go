@@ -79,6 +79,30 @@ func TestDecideParseFailure(t *testing.T) {
 	}
 }
 
+// D-022: malformed `now`, `state_revision` or a missing `request` is refused
+// before any decision, with exactly three members and no placeholder metadata.
+func TestDecideHarnessFieldsRefuse(t *testing.T) {
+	const refusal = `{"id":"d","output":{"matched_rule_ids":[],"reason_code":"REQUEST_SCHEMA_INVALID","status":"invalid"}}`
+	for _, input := range []string{
+		`{"bundle":null,"state_revision":1,"request":{}}`,
+		`{"bundle":null,"state_revision":1,"now":"2026-02-30T00:00:00Z","request":{}}`,
+		`{"bundle":null,"state_revision":1,"now":"2026-01-01T00:00:00+00:00","request":{}}`,
+		`{"bundle":null,"state_revision":1,"now":"2026-01-01T00:00:00.1Z","request":{}}`,
+		`{"bundle":null,"state_revision":-1,"now":"2026-01-01T00:00:00Z","request":{}}`,
+		`{"bundle":null,"state_revision":"1","now":"2026-01-01T00:00:00Z","request":{}}`,
+		`{"bundle":null,"state_revision":1,"now":"2026-01-01T00:00:00Z"}`,
+		`[]`,
+	} {
+		if got := strings.TrimSpace(answerLine(commands["decide"], `{"id":"d","input":`+input+`}`)); got != refusal {
+			t.Errorf("%s: got %s", input, got)
+		}
+	}
+	ok := answerLine(commands["decide"], `{"id":"d","input":{"bundle":null,"state_revision":9007199254740991,"now":"2024-02-29T23:59:59Z","request":{}}}`)
+	if !strings.Contains(ok, `"decided_at":"2024-02-29T23:59:59Z"`) {
+		t.Errorf("valid boundary input: %s", ok)
+	}
+}
+
 // bench-decide wraps exactly the decide output with a non-negative kernel_ns.
 func TestBenchDecideWrapsDecide(t *testing.T) {
 	for _, line := range []string{

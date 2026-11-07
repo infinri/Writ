@@ -219,6 +219,28 @@ mod tests {
     }
 
     #[test]
+    fn decide_harness_fields_refuse_with_three_members() {
+        // D-022: malformed `now`, `state_revision` or a missing `request` is
+        // refused before any decision, with no placeholder metadata.
+        let refusal = r#"{"id":"d","output":{"matched_rule_ids":[],"reason_code":"REQUEST_SCHEMA_INVALID","status":"invalid"}}"#;
+        for input in [
+            r#"{"bundle":null,"state_revision":1,"request":{}}"#,
+            r#"{"bundle":null,"state_revision":1,"now":"2026-02-30T00:00:00Z","request":{}}"#,
+            r#"{"bundle":null,"state_revision":1,"now":"2026-01-01T00:00:00+00:00","request":{}}"#,
+            r#"{"bundle":null,"state_revision":1,"now":"2026-01-01T00:00:00.1Z","request":{}}"#,
+            r#"{"bundle":null,"state_revision":-1,"now":"2026-01-01T00:00:00Z","request":{}}"#,
+            r#"{"bundle":null,"state_revision":"1","now":"2026-01-01T00:00:00Z","request":{}}"#,
+            r#"{"bundle":null,"state_revision":1,"now":"2026-01-01T00:00:00Z"}"#,
+            r#"[]"#,
+        ] {
+            let line = format!(r#"{{"id":"d","input":{input}}}"#);
+            assert_eq!(out("decide", line.as_bytes()), refusal, "{input}");
+        }
+        let ok = out("decide", br#"{"id":"d","input":{"bundle":null,"state_revision":9007199254740991,"now":"2024-02-29T23:59:59Z","request":{}}}"#);
+        assert!(ok.contains(r#""decided_at":"2024-02-29T23:59:59Z""#), "{ok}");
+    }
+
+    #[test]
     fn decide_batch_and_bench_decide_return_the_decide_output() {
         for line in [
             &br#"{"id":"d","input_text":"{"}"#[..],
