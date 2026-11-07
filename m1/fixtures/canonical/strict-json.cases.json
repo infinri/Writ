@@ -1,0 +1,28 @@
+{
+  "description": "Hand-reasoned strict JSON and canonicalization cases for the canonical command (D-006 as tightened by D-017). Inputs are raw JSON text. expected_canonical is written by hand; the exporter only hashes it. Depth rule: the top-level value is at depth 0 and any value deeper than 64 is rejected (as in the D-006 reference implementation). PENDING INDEPENDENT REVIEW.",
+  "review_status": "PENDING INDEPENDENT REVIEW",
+  "cases": [
+    {"id": "cj-01-duplicate-same-value", "input_text": "{\"a\":1,\"a\":1}", "error": "DUPLICATE_KEY", "rationale": "duplicates rejected even when values agree"},
+    {"id": "cj-02-duplicate-nested", "input_text": "{\"x\":{\"b\":1,\"b\":2}}", "error": "DUPLICATE_KEY", "rationale": "nested duplicate"},
+    {"id": "cj-03-duplicate-escaped", "input_text": "{\"a\":1,\"\\u0061\":2}", "error": "DUPLICATE_KEY", "rationale": "equal after escape decoding"},
+    {"id": "cj-04-duplicate-in-array-object", "input_text": "[{\"k\":1},{\"k\":2,\"k\":3}]", "error": "DUPLICATE_KEY", "rationale": "duplicate inside an array element"},
+    {"id": "cj-05-same-key-different-objects", "input_text": "[{\"k\":1},{\"k\":2}]", "expected_canonical": "[{\"k\":1},{\"k\":2}]", "rationale": "control: equal keys in different objects are fine"},
+    {"id": "cj-06-decimal-integer", "input_text": "1.0", "error": "NUMBER_NOT_INTEGER", "rationale": "alternate spelling"},
+    {"id": "cj-07-exponent", "input_text": "1e3", "error": "NUMBER_NOT_INTEGER", "rationale": "alternate spelling"},
+    {"id": "cj-08-negative-zero", "input_text": "-0", "error": "NUMBER_NEGATIVE_ZERO", "rationale": "alternate spelling of 0 (the M0 reference accepts it; D-017 tightens)"},
+    {"id": "cj-09-max-safe", "input_text": "9007199254740991", "expected_canonical": "9007199254740991", "rationale": "2^53-1 in range"},
+    {"id": "cj-10-min-safe", "input_text": "-9007199254740991", "expected_canonical": "-9007199254740991", "rationale": "-(2^53-1) in range"},
+    {"id": "cj-11-above-safe", "input_text": "9007199254740992", "error": "NUMBER_OUT_OF_RANGE", "rationale": "2^53"},
+    {"id": "cj-12-below-safe", "input_text": "-9007199254740992", "error": "NUMBER_OUT_OF_RANGE", "rationale": "-(2^53)"},
+    {"id": "cj-13-u64-wrap", "input_text": "18446744073709551616", "error": "NUMBER_OUT_OF_RANGE", "rationale": "2^64 would wrap to 0 in a careless u64 parse"},
+    {"id": "cj-14-leading-zero", "input_text": "01", "error": "INVALID_JSON", "rationale": "not JSON"},
+    {"id": "cj-15-nan", "input_text": "NaN", "error": "INVALID_JSON", "rationale": "not JSON"},
+    {"id": "cj-16-trailing-comma", "input_text": "[1,]", "error": "INVALID_JSON", "rationale": "not JSON"},
+    {"id": "cj-17-lone-surrogate", "input_text": "\"\\ud800\"", "error": "LONE_SURROGATE", "rationale": "not representable in UTF-8"},
+    {"id": "cj-18-plus-sign", "input_text": "+1", "error": "INVALID_JSON", "rationale": "not JSON"},
+    {"id": "cj-19-depth-64", "input_text_repeat": {"open": "[", "close": "]", "count": 65}, "expected_canonical_repeat": {"open": "[", "close": "]", "count": 65}, "rationale": "65 nested arrays: deepest value at depth 64, accepted"},
+    {"id": "cj-20-depth-65", "input_text_repeat": {"open": "[", "close": "]", "count": 66}, "error": "DEPTH_EXCEEDED", "rationale": "66 nested arrays: a value at depth 65"},
+    {"id": "cj-21-key-order-and-escapes", "input_text": "{\"b\":\"\\u00e9\",\"a\":\"\\/\",\"\\u00e9\":0}", "expected_canonical": "{\"a\":\"/\",\"b\":\"\u00e9\",\"\u00e9\":0}", "rationale": "sorted by code point, minimal escaping, solidus unescaped"},
+    {"id": "cj-22-trailing-garbage", "input_text": "{} {}", "error": "INVALID_JSON", "rationale": "one value only"}
+  ]
+}

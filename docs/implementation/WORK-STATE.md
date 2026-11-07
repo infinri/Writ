@@ -46,4 +46,4 @@ CI E-013: run [42309913797](https://github.com/infinri/Writ/actions/runs/4230991
 
 ## Next exact action
 
-Stop for owner review of M1-02 (`docs/implementation/M1-02-FIXTURE-REVIEW.md`), including the open semantics (duplicate JSON keys, normalization, attribute and resource agreement, permit binding for transitions). After review: M1-03 and M1-04 prototypes against identical sets. No comparative benchmarks while on battery or with an uncontrolled governor.
+Owner review of M1-02 revision 2 (`docs/implementation/M1-02-FIXTURE-REVIEW.md`, `m1/fixtures/AMENDMENT-1.md`), including the eight remaining assumptions; authorization to push the amendment commit. M1-03 and M1-04 do not start before that review. No comparative benchmarks on battery or with an uncontrolled governor.

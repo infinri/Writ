@@ -1,80 +1,79 @@
 # M1-02 fixture review package
 
-**Status: PENDING INDEPENDENT REVIEW.** Prepared 2026-11-07 by Claude, who also wrote every expectation. No Rust or Go code exists. Expectations must not be changed to make a prototype pass; a disagreement is resolved by a recorded review decision.
+**Status: PENDING INDEPENDENT REVIEW.** Revision 2 (2026-11-07), after owner decisions [D-017](DECISION-LOG.md). Prepared by Claude, who also wrote every expectation. No Rust or Go code exists. Expectations must not be changed to make a prototype pass; a disagreement is resolved by a recorded review decision. Revision 1 is at commit `4a66364`; changes are listed in [amendment 1](../../m1/fixtures/AMENDMENT-1.md).
 
 ## Files
 
 | Path | Content |
 |---|---|
-| [`m1/fixtures/acceptance/SEMANTICS.md`](../../m1/fixtures/acceptance/SEMANTICS.md) | Pure `check-acceptance` semantics: record and current shapes, check order, refusal codes |
-| [`m1/fixtures/acceptance/acceptance-binding.cases.json`](../../m1/fixtures/acceptance/acceptance-binding.cases.json) | 50 hand-reasoned cases (source) |
-| [`m1/fixtures/transition/SCENARIOS.md`](../../m1/fixtures/transition/SCENARIOS.md) | Boundary coverage table, transition decision assumptions, `transition-scenario` semantics |
-| [`m1/fixtures/transition/m1-transition.bundle.json`](../../m1/fixtures/transition/m1-transition.bundle.json) | Fixture policy for `workflow.transition` (validates against `policy-bundle.schema.json`) |
-| [`m1/fixtures/transition/transition-decisions.cases.json`](../../m1/fixtures/transition/transition-decisions.cases.json) | 23 hand-reasoned kernel decisions (source) |
-| [`m1/fixtures/transition/transition-scenarios.cases.json`](../../m1/fixtures/transition/transition-scenarios.cases.json) | 17 hand-reasoned promotion scenarios (source) |
-| [`m1/fixtures/export_m0_fixtures.py`](../../m1/fixtures/export_m0_fixtures.py) | Builds the JSON Lines sets (patches, record digests); `--check` detects drift |
-| [`m1/fixtures/manifest.json`](../../m1/fixtures/manifest.json), `m1/fixtures/sets/*.jsonl` | Driver inputs: 5 sets, 117 cases |
+| [`m1/fixtures/acceptance/SEMANTICS.md`](../../m1/fixtures/acceptance/SEMANTICS.md) | `check-acceptance` m1-draft-2: input trust, strict JSON, identifier rules, check order, internal versus external codes |
+| [`m1/fixtures/acceptance/acceptance-binding.cases.json`](../../m1/fixtures/acceptance/acceptance-binding.cases.json) | 94 cases (source) |
+| [`m1/fixtures/transition/SCENARIOS.md`](../../m1/fixtures/transition/SCENARIOS.md) | Boundary table, promotion versus effect, kernel transition extension, broker promotion semantics |
+| [`m1/fixtures/transition/m1-transition.bundle.json`](../../m1/fixtures/transition/m1-transition.bundle.json), [`m1-transition-unscoped.bundle.json`](../../m1/fixtures/transition/m1-transition-unscoped.bundle.json) | Transition policy fixtures (both validate against `policy-bundle.schema.json`; the second must be rejected at load) |
+| [`m1/fixtures/transition/transition-decisions.cases.json`](../../m1/fixtures/transition/transition-decisions.cases.json) | 35 decisions (source) |
+| [`m1/fixtures/transition/transition-scenarios.cases.json`](../../m1/fixtures/transition/transition-scenarios.cases.json) | 30 scenarios (source) |
+| [`m1/fixtures/canonical/strict-json.cases.json`](../../m1/fixtures/canonical/strict-json.cases.json) | 22 strict parsing and canonical cases (source) |
+| [`m1/fixtures/AMENDMENT-1.md`](../../m1/fixtures/AMENDMENT-1.md) | Changed expected results with reasons; added cases; contract changes |
+| [`m1/fixtures/export_m0_fixtures.py`](../../m1/fixtures/export_m0_fixtures.py), [`manifest.json`](../../m1/fixtures/manifest.json), `m1/fixtures/sets/*.jsonl` | Builder (assembles inputs only), manifest, 6 sets, 208 cases |
+| [`m1/driver/tests/test_fixtures.py`](../../m1/driver/tests/test_fixtures.py) | Fixture integrity tests (schema validity, raw-text defects present as claimed, review status, drift) |
 
-## Counts
+## Counts by category
 
-| Set | Command | Cases | Categories |
-|---|---|---|---|
-| canonical-vector | `canonical` | 1 | D-006 known vector |
-| golden-decisions | `decide` | 26 | M0 golden (provisional oracle, unchanged) |
-| acceptance-binding | `check-acceptance` | 50 | valid 4, malformed 12, integrity 4, replay 1, scope 4, transition 2, artifact and snapshot 2, policy 3, revision 1, expiry 1, criteria trust, freshness and status 12, check order 4 |
-| transition-decisions | `decide` | 23 | precedence and roles 6, composite 3, cross-project and cross-tenant 2, stale revision and policy pin or absence 4, identity 2, non-canonical paths 2, deadline 1, unknown capability 1, injected attributes 1, attribute and resource disagreement 1 |
-| transition-scenarios | `transition-scenario` | 17 | commit 1, idempotency 3, record replay 1, artifact or snapshot substitution 2, stale state 2, policy change 1, kernel not allow 1, 16-way race 1, expiry 1, refusal side-effect freedom 1, malformed 1, cross-project 1, transition not evaluated 1 |
-
-## Category to invariant map
-
-| Category | Cases | Invariants (INV-32..INV-40 are PROPOSED, ADR-0008) |
+| Set | Cases | Categories |
 |---|---|---|
-| Kernel authorization of transitions | tx-01..06, tx-09, tx-14 | INV-03 (deny never becomes allow), INV-04, INV-32 |
-| Composite sub-effects | tx-07, tx-08, tx-09 | RM-01, INV-23 |
-| Isolation | scope-01..04, tx-10, tx-11, sc-16 | INV-10, INV-33 |
-| Stale state and revisions | rev-01, tx-12, sc-06, sc-15 | INV-17, INV-36 |
-| Policy version and downgrade | pol-01..03, tx-13, tx-15, sc-08 | INV-05, INV-12, INV-36, INV-37 |
-| Replay and idempotency | rep-01, sc-02, sc-03, sc-04, sc-13 | INV-06, INV-07, INV-09 |
-| Concurrent races | sc-10 | INV-07, INV-17 |
-| Artifact and snapshot substitution | art-01, art-02, int-01, sc-05, sc-07 | INV-33, INV-40 (identity binding only) |
-| Untrusted evaluation | crit-01..03, crit-10, crit-11, sc-12 | INV-25, INV-34, INV-35 (as a field only) |
-| Incomplete, stale, expired | crit-04..09, exp-01, ord-04, sc-11 | INV-36, INV-38 |
-| Malformed input | mal-01..12, sc-14, tx-23 | INV-18, INV-38 |
-| Injection and alternate routes | mal-02, tx-17, tx-20, tx-21 | INV-02, INV-11, INV-13, INV-14 |
-| Kernel decision required for promotion | sc-09 | INV-32 |
+| canonical-vector | 1 | D-006 known vector |
+| strict-json | 22 | duplicate keys 4 (plus 1 control), numbers 8, invalid JSON 5, surrogate 1, depth 2, ordering and escapes 1 |
+| golden-decisions | 26 | M0 golden, unchanged |
+| acceptance-binding | 94 | pos-prefixed 6 (one now a refusal), malformed 14, identifiers 4, requirement set 5, completeness 7, model-assisted 6, integrity and time 7, replay 1, scope 4, transition 2, artifact and snapshot 2, policy 3, revision 1, expiry 1, per-criterion trust, revocation, freshness and status 16, order 5, strict JSON 10 |
+| transition-decisions | 35 | precedence and roles 6, from-state 1, composite 3, isolation 2, stale revision and policy 4, identity 2, non-canonical path 2, deadline 1, unknown kind 1, attribute and resource shape 7, bundle rejection 1, strict JSON 4, negative revision 1 |
+| transition-scenarios | 30 | commit 1, idempotency 2, record replay 1, artifact and snapshot 2, stale state 2, policy change 1, permit missing 2, permit bound to request 7, permit bound to record 2, other workflow 1, composite at broker 1, race 1, expiry 1, side-effect freedom 1, malformed 1, cross-project 1, transition not evaluated 1, incomplete record 1, revoked evaluator 1 |
 
-## Not covered by these fixtures
+## Category to invariant map (INV-32..INV-42 PROPOSED)
 
-Pure fixtures cannot establish boundary 2 (authentic evaluators and record signatures) or boundary 4 (governed execution and artifact immutability). Trust levels and snapshot ids are plain fields here. Boundary 3 (transactional promotion) is specified, but only a prototype's own concurrency and crash tests (M1-05) can exercise real locking; the race scenario checks the aggregate outcome only.
-
-## Expectations resting on assumptions, not established specifications
-
-| Id | Assumption | Cases affected |
+| Category | Cases | Invariants |
 |---|---|---|
-| A-1 | Target state encoded in the resource id (`workflow:<t>/<p>/transition/<to_state>/<wf>`) | all tx |
-| A-2 | Composite transitions refused by a bundle forbid, not a kernel rule | tx-07..09 |
-| A-3 | Kernel ignores the `to_state` attribute; broker must refuse attribute and resource disagreement (not yet in any scenario) | tx-22 |
-| A-4 | The check order and refusal codes in SEMANTICS and SCENARIOS | all acceptance and scenario cases, especially ord-* |
-| A-5 | Trust must match the class exactly (human trust does not satisfy a mechanical criterion) | crit-03 |
-| A-6 | Expiry and freshness limits are exclusive; no clock-skew tolerance; `issued_at` after `now` is invalid | exp-01, crit-06, int-02, pos-03 |
-| A-7 | A record whose status contradicts its criteria is refused rather than recomputed | int-03 |
-| A-8 | No mandatory criterion means incomplete; waivers unsupported in M1 | crit-08, crit-09 |
-| A-9 | Refusals store no receipt, so a refused idempotency key can be reused | sc-13 |
-| A-10 | Compare-and-set precedes the acceptance check, so race losers report `REVISION_CONFLICT` | sc-10, sc-15 |
-| A-11 | Artifact updates bump the workflow revision; policy activation does not | sc-05..08 |
-| A-12 | One timestamp spelling (`YYYY-MM-DDTHH:MM:SSZ`) and lowercase hex digests | mal-06, mal-07 |
+| Strict parsing | cj-*, js-*, tx-31..34 | INV-41, INV-18 |
+| Exact transition authorization | tx-01..06, tx-24..30 | INV-42, INV-03, INV-04 |
+| Composite sub-effects | tx-07..09, sc-28 | INV-42, RM-01 |
+| Permit binding | sc-09, sc-13, sc-18..26 | INV-42, INV-01, D-012 |
+| Requirement completeness | pos-02, pos-02b, req-*, cmp-*, ma-04, ma-05, crit-09, sc-29 | INV-33, INV-37, INV-38 |
+| Model-assisted is advisory | ma-01..03, crit-01, crit-12 | INV-34, INV-25 |
+| Revoked and stale evaluators | crit-06, crit-07, crit-13..16, sc-30 | INV-36, INV-38 |
+| Isolation | scope-*, tx-10, tx-11, sc-16, sc-21, sc-27 | INV-10, INV-33 |
+| Stale state and revisions | rev-01, tx-12, sc-06, sc-15, sc-20 | INV-17, INV-36 |
+| Policy version and downgrade | pol-*, ord-05, tx-13..15, tx-29, sc-08 | INV-05, INV-12, INV-36, INV-37 |
+| Replay, idempotency, races | rep-01, sc-02..04, sc-10, sc-13 | INV-06, INV-07, INV-09 |
+| Artifact and snapshot | art-*, int-01, sc-05, sc-07, sc-22, sc-23, sc-26 | INV-33, INV-40 (identity binding only) |
+| Time and integrity | int-02..07, exp-01, ord-04, sc-11 | INV-36, INV-38 |
+| Injection and alternate routes | mal-02, tx-20..22 | INV-02, INV-11, INV-13, INV-14 |
 
-## Open semantics to decide before M1-03 and M1-04
+## Can the revised requirements be enforced independently of the AI?
 
-1. **Duplicate JSON object keys** in any input: unspecified. Parsers differ (first wins, last wins, reject), which allows field smuggling. Recommendation: reject as malformed in every command; add cases once decided.
-2. **Unicode normalization and case** of ids and states: byte-exact comparison assumed; not stated in the contracts.
-3. **Attribute and resource agreement (A-3):** the broker check is unspecified; a scenario op carries `to_state` without a resource id.
-4. **Binding the kernel permit to the promote operation:** scenarios take `decision_status` as an input; fingerprint binding of a transition permit (D-012 style) is not yet specified for transitions.
-5. **Trusted time:** `now` is an input everywhere; clock trust is risk 14 (M3).
-6. **Large integers** in `decide` requests (`expected_state_revision` above 2^53-1): handled by schema and D-006 in M0; worth an explicit case.
+By design, yes, and only at the **Designed** level today. Every input that decides the outcome comes from a trusted side: the requirement set from the policy registry, `current` (including `now` and revocations) from the broker's own state and injected clock, the permit from the kernel and broker. The agent contributes only the request and the record, both fully checked. Enforcement independent of the AI additionally requires boundaries the fixtures do not cover: authentic record issuance and evaluator attestation (boundary 2), the agent lacking credentials to write workflow state or perform effects directly, and immutable snapshots (boundary 4). Until those are built and tested (M3 to M6) and SR-06 shows what the host mediates (M5), no enforcement or bypass-resistance claim is made.
 
-## Evidence so far
+## Contradictions found and how they were resolved
 
-- Bundle validates against `policy-bundle.schema.json`; 22 of 23 transition requests validate against `action-request.schema.json` (tx-23 omits the principal on purpose).
-- After the expectations were written, the M0 reference oracle was run through the driver as a consistency check: canonical 1/1, golden 26/26, transition-decisions 23/23. Agreement with the M0 oracle shows consistency with M0 semantics, not correctness (R-ORACLE). The M0 harness has no acceptance or scenario logic, so 67 cases have no implementation at all yet.
-- Driver self-tests: 11 of 11 pass with all five sets in the manifest; exported sets current.
+| # | Finding | Resolution |
+|---|---|---|
+| C-1 | Draft 1 encoded the target state in the resource id, contradicting ADR-0008 section 2 (`workflow:<tenant>/<project>/<workflow_id>` with attributes) | D-017: resource names the workflow; states are typed attributes |
+| C-2 | ADR-0008 trust table let model-assisted evaluators satisfy mandatory `model_assisted` criteria, in tension with AGI-3 | D-017: model-assisted is advisory only; table and INV-34 amended |
+| C-3 | The D-006 reference implementation (M0 Python) keeps the last duplicate key and accepts `-0` | D-017 tightens parsing; M0 harness unchanged and non-normative; M0 is no longer a driver participant for strict-json |
+| C-4 | D-008 approval request ids do not include transition attributes; with the new resource form, an approval for one target state would bind identically to another | SCENARIOS.md requires `from_state` and `to_state` in the transition approval binding; M1-05 property test. The M0 oracle demonstrates the underlying flaw: in `tx-04` it matched the deploy approval rule for a release request |
+| C-5 | Draft 1 could be read as representing promotion and external effects in one transaction | SCENARIOS.md and ADR-0008: promotion is atomic for workflow state only; effects keep receipts and reconciliation (INV-08) |
+
+No contradiction found with D-010 (scenario requests are unsealed by design: ingress sealing is outside the pure fixtures) or D-012 (the permit fingerprint is the D-012 full-request fingerprint).
+
+## Remaining assumptions needing owner decisions
+
+1. **Depth limit counting:** a top-level value is depth 0 and depth above 64 is rejected (65 nested arrays accepted, 66 rejected), matching the D-006 reference implementation (cj-19, cj-20).
+2. **Transition attributes always include acceptance bindings:** every `workflow.transition` must carry `acceptance_record_id`, `artifact_snapshot_id` and `artifact_digest`, including transitions that may not need acceptance (for example `planning` to `verifying`). Alternative: per-transition required attributes in policy.
+3. **Two bundle digests:** the authorization bundle (`policy_bundle_sha` on requests) and the acceptance policy's bundle digest (on records and requirements) are treated as separate values; M2 should decide whether acceptance policies live in the same signed bundle.
+4. **Composite allowance for the request's own kind:** `requested_capabilities: ["workflow.transition"]` is accepted (tx-09); the stricter rule "must be empty" is equally defensible.
+5. **Exact trust match** (no hierarchy), **exclusive expiry and freshness with no clock-skew tolerance**, **`issued_at` equal to `now` accepted** (A-5, A-6).
+6. **Refused idempotency keys are reusable** (sc-13) and **compare-and-set precedes the acceptance check** (race losers report `REVISION_CONFLICT`).
+7. **Which refusal codes may be returned externally in detail:** draft says only malformed-input codes; all acceptance refusals become `PROMOTION_REFUSED`.
+8. **Decide-command composite refusal status:** `invalid` (structural) rather than `deny`.
+
+## Evidence
+
+Recorded in [TEST-EVIDENCE](TEST-EVIDENCE.md) E-019 (amendment checks). No implementation of `check-acceptance`, `transition-scenario`, strict parsing or the transition extension exists yet.

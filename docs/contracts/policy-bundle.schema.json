@@ -115,6 +115,26 @@
           "reason_code": {
             "type": "string",
             "pattern": "^[A-Z][A-Z0-9_]*$"
+          },
+          "from_states": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            },
+            "description": "workflow.transition only: request attribute from_state must be listed; omitted means any. M1 draft (D-017)"
+          },
+          "to_states": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            },
+            "description": "workflow.transition only: request attribute to_state must be listed. Required on permit and require_approval statements that cover workflow.transition (D-017)"
           }
         }
       }

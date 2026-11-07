@@ -149,6 +149,14 @@ SR-06 sandbox facts (preflight PASS, telemetry diagnostic) are recorded in `docs
 - **Driver self-tests** with all five sets: 11 of 11 OK.
 - **Not executed:** any implementation of `check-acceptance` or `transition-scenario` (67 cases have no implementation yet); any Rust or Go code; any benchmark.
 
+### E-019: M1-02 amendment 1 (D-017) checks; review baseline CI
+
+- **Review baseline:** `4a66364b355569ab7cb595417c957ef2f98b8b2d` pushed (fast-forward from `9d3296b`); CI https://github.com/infinri/Writ/actions/runs/42327533200 success.
+- **Amendment (local, 2026-11-07):** `python3 m1/fixtures/export_m0_fixtures.py --check`: 6 sets current, 208 cases (canonical-vector 1, strict-json 22, golden 26, acceptance-binding 94, transition-decisions 35, transition-scenarios 30). `m0/.venv/bin/python -m unittest discover -s m1/driver/tests`: 22 tests OK, 0 skipped (11 driver, 11 fixture integrity incl. schema validation of both transition bundles and every non-negative transition request, duplicate keys present in every DUPLICATE_KEY case, INVALID_JSON cases rejected by an RFC 8259 parse).
+- **Unchanged suites after the schema edits:** M0 `pytest` 281 passed; audit 8 files current; docs check OK (91 Markdown, 17 schemas).
+- **Cross-check after expectations were frozen (not used to set any expectation):** M0 oracle through the driver: canonical-vector 1/1, golden 26/26, strict-json 5/22, transition-decisions 13/35 with 6 protocol errors (the M0 adapter does not accept input_text). The M0 harness does not implement D-017; in tx-04 it matched the deploy approval rule for a release request.
+- **Test fix during the run:** the integrity test first failed on `cj-15-nan` because Python's `json.loads` accepts `NaN`; the test now rejects non-standard constants. The fixture was not changed.
+
 ## Not yet executed
 
 - SR-06 live-host experiments (0 of 69; sandbox torn down) and full SR-06 acceptance; rule semantic review (M0-01d); independent human golden review (M0-05a).

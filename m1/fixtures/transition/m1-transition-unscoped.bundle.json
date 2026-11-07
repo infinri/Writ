@@ -1,0 +1,113 @@
+{
+  "contract_version": "2.0",
+  "bundle_id": "m1-transition-unscoped",
+  "version": "0.2.0",
+  "publisher": "writ-v2-design-fixture",
+  "description": "Invalid variant: a permit statement covering workflow.transition without to_states. Must be rejected at load (D-017).",
+  "known_capabilities": [
+    "agent.dispatch",
+    "file.read",
+    "file.write",
+    "memory.write",
+    "network.egress",
+    "process.execute",
+    "repository.publish",
+    "workflow.transition"
+  ],
+  "trusted_principal_issuers": [
+    "writ-host-adapter:fixture"
+  ],
+  "statements": [
+    {
+      "statement_id": "forbid-release-by-agent",
+      "effect": "forbid",
+      "principal_roles": [
+        "agent"
+      ],
+      "action_kinds": [
+        "workflow.transition"
+      ],
+      "resource_prefixes": [
+        "workflow:fixture-tenant/fixture-project/"
+      ],
+      "to_states": [
+        "released"
+      ],
+      "reason_code": "AGENT_RELEASE_FORBIDDEN"
+    },
+    {
+      "statement_id": "approve-deploy",
+      "effect": "require_approval",
+      "action_kinds": [
+        "workflow.transition"
+      ],
+      "resource_prefixes": [
+        "workflow:fixture-tenant/fixture-project/"
+      ],
+      "to_states": [
+        "deployed"
+      ],
+      "reason_code": "DEPLOY_TRANSITION_REQUIRES_APPROVAL"
+    },
+    {
+      "statement_id": "approve-release",
+      "effect": "require_approval",
+      "action_kinds": [
+        "workflow.transition"
+      ],
+      "resource_prefixes": [
+        "workflow:fixture-tenant/fixture-project/"
+      ],
+      "to_states": [
+        "released"
+      ],
+      "reason_code": "RELEASE_REQUIRES_APPROVAL"
+    },
+    {
+      "statement_id": "permit-accept",
+      "effect": "permit",
+      "action_kinds": [
+        "workflow.transition"
+      ],
+      "resource_prefixes": [
+        "workflow:fixture-tenant/fixture-project/"
+      ],
+      "from_states": [
+        "verifying"
+      ],
+      "to_states": [
+        "accepted"
+      ],
+      "reason_code": "ACCEPT_TRANSITION_PERMITTED"
+    },
+    {
+      "statement_id": "permit-release-for-release-managers",
+      "effect": "permit",
+      "principal_roles": [
+        "release-manager"
+      ],
+      "action_kinds": [
+        "workflow.transition"
+      ],
+      "resource_prefixes": [
+        "workflow:fixture-tenant/fixture-project/"
+      ],
+      "to_states": [
+        "released"
+      ],
+      "reason_code": "RELEASE_TRANSITION_PERMITTED"
+    },
+    {
+      "statement_id": "permit-any-transition",
+      "effect": "permit",
+      "action_kinds": [
+        "workflow.transition"
+      ],
+      "resource_prefixes": [
+        "workflow:fixture-tenant/fixture-project/"
+      ],
+      "reason_code": "ANY_TRANSITION_PERMITTED"
+    }
+  ],
+  "publisher_signature": null
+}

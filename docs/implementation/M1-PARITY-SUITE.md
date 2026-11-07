@@ -21,18 +21,22 @@ Both prototypes consume the **same language-neutral fixtures** and must reproduc
 
 A prototype that is faster but fails any row does not pass (testing doc, "A faster unsafe run does not pass").
 
-## Acceptance Gate Integrity readiness (added 2026-11-06, ADR-0008 proposed)
+## Acceptance Gate Integrity readiness (ADR-0008 approved in principle; semantics m1-draft-2, D-017)
 
-M1 must show that each prototype can carry the [Acceptance Gate Integrity](../architecture/acceptance-gate-integrity.md) boundaries without building the evaluation platform. Added hard-gate sets, all with **hand-reasoned expectations written before either prototype exists** (not derived from the Python oracle, which has no transition or acceptance-record logic yet; mitigates R-ORACLE):
+M1 must show that each prototype can carry the [Acceptance Gate Integrity](../architecture/acceptance-gate-integrity.md) boundaries without building the evaluation platform. The sets below have **hand-reasoned expectations written before either prototype exists**, are PENDING INDEPENDENT REVIEW, and are specified in `m1/fixtures/` ([review package](M1-02-FIXTURE-REVIEW.md), [amendment 1](../../m1/fixtures/AMENDMENT-1.md)):
 
-| Set | Content | Pass condition |
-|---|---|---|
-| Transition decisions | `workflow.transition` requests on `workflow:<tenant>/<project>/<id>` resources: permitted, denied, approval-required, unknown transition, missing policy, cross-tenant and cross-project | Same Decision status and reason code as the expectations; deny precedence and default deny hold |
-| Acceptance binding | Pure function `check_acceptance(record, current)` over fixture records: valid record; each bound field mutated (artifact digest, tenant, project, task, workflow, transition, policy version, bundle sha, state revision); expired; stale criterion; mandatory criterion `unknown` or `fail`; model-assisted pass on a mechanical criterion; producer-claimed status; bad record digest | Identical accept or refusal code; generated single-field mutations always refuse (property test, at least 1,000 examples per prototype) |
-| Record canonicalization | AcceptanceRecord canonical form and digest | Byte-identical with D-006 rules |
-| Transition broker scenarios | Compare-and-set on state revision; 16 concurrent promotions on one revision; replay of a consumed record; promotion racing an artifact update; composite transition plus effect | Exactly one commit; replay refused; race refused; composite refused (RM-01 prohibit) |
+| Set | Command | Content | Pass condition |
+|---|---|---|---|
+| strict-json | `canonical` | Duplicate keys (nested, escaped), alternate and out-of-range numbers, invalid JSON, surrogates, depth | Identical canonical bytes or identical error code |
+| transition-decisions | `decide` | Exact-transition authorization: `workflow:<tenant>/<project>/<workflow_id>` resource, typed `from_state` and `to_state`, closed attribute set, structural composite refusal, unscoped transition permits rejected at bundle load, strict parsing of requests | Same status, reason code and matched rules |
+| acceptance-binding | `check-acceptance` | Pure check of a record against a trusted, version-bound requirement set and broker state: completeness, trust class, revocation, freshness, scope, artifact and snapshot, policy, revision, expiry, replay, strict parsing | Identical `ok` or refusal code (and `json_error`) |
+| transition-scenarios | `transition-scenario` | Promotion transactions: permit bound to full request fingerprint and record, compare-and-set, single-use records, idempotency, 16-way race, refusal without side effects | Identical step results and final state |
 
-Contracts for these fixtures are M1 drafts under `docs/contracts/fixtures/acceptance/` and are superseded by the M2 production contracts. The Python reference harness may gain the same pure check only as a third differential implementation, after owner authorization; it remains non-normative.
+Additional properties for M1-05 (not fixture values): any single-field mutation of a bound field refuses (at least 1,000 generated examples per prototype); approval request ids differ when `to_state` differs; generated duplicate-key and number-spelling inputs are rejected identically by both parsers.
+
+What these sets do **not** test: authentic evaluators, record issuance and signatures (boundary 2), and governed execution and artifact immutability (boundary 4). See the boundary table in `m1/fixtures/transition/SCENARIOS.md`.
+
+The M0 Python harness is a driver participant only for `canonical-vector` and `golden-decisions`; it does not implement D-017 (strict-json 5/22, transition-decisions 13/35 when run after the expectations were frozen).
 
 ## Evaluation dimensions (owner list, 2026-11-06)
 
@@ -60,6 +64,7 @@ Each prototype ships one binary, `proto <command>`, driven by the language-neutr
 ```text
 stdin   one object per line: {"id": "<case id>", "input": <JSON value>}
                           or {"id": "<case id>", "input_text": "<raw JSON text the prototype must parse itself>"}
+        any command may receive input_text; it is parsed with the strict rules (D-017) and is otherwise equivalent to input
 stdout  exactly one object per input line, any order: {"id": "<case id>", "output": {...}}
 exit    0 when every line was answered; a refusal or rejection is an output, never a crash
 ```
@@ -67,10 +72,11 @@ exit    0 when every line was answered; a refusal or rejection is an output, nev
 | Command | `input` / `input_text` | `output` |
 |---|---|---|
 | `canonical` | `input_text`: raw JSON (parsing is part of the test) | `{"canonical": "<utf8>", "digest": "sha256:..."}` or `{"error": "<CODE>"}` |
-| `decide` | `{"bundle": {...} \| null, "state_revision": N, "now": "<rfc3339>", "request": {...}}` | Decision JSON (`status`, `reason_code`, `matched_rule_ids`, ...) |
+| `decide` | `{"bundle": {...} \| null, "state_revision": N, "now": "<rfc3339>", "request": {...}}` | Decision JSON (`status`, `reason_code`, `matched_rule_ids`, ...); strict-parse failure is `invalid` / `REQUEST_JSON_INVALID`; a bundle rejected at load is `unavailable` / `POLICY_BUNDLE_REJECTED` |
 | `decide-batch` | same as `decide`, many lines (workload A) | Decisions |
 | `broker-scenario` | scenario JSON | receipts and refusal codes |
-| `check-acceptance` | `{"record": {...}, "current": {...}}` | `{"ok": true}` or `{"refusal": "<CODE>"}` |
+| `check-acceptance` | `{"record": {...}, "current": {...}, "requirements": {...}}` | `{"ok": true}`, `{"refusal": "<CODE>"}` or `{"refusal": "INPUT_JSON_INVALID", "json_error": "<CODE>"}` |
+| `transition-scenario` | `{"initial": {...}, "steps": [...]}` | `{"steps": [...], "final": {...}}` |
 
 The driver records the prototype argv and executable digest, manifest and fixture-file digests, repository commit, per-set pass and fail counts, protocol errors (missing, duplicate, unknown or non-JSON lines, crash, timeout) and nondeterminism across `--repeat` runs. It exits 0 only if every selected set passes. Self-tests: `python3 -m unittest discover -s m1/driver/tests`.
 

@@ -14,6 +14,8 @@ Acceptance Gate Integrity (AGI) is a security and correctness requirement of the
 
 A valid AcceptanceRecord never authorizes execution by itself; it is a precondition checked together with a kernel decision, exactly as an ApprovalGrant is.
 
+**Promotion is not the downstream effect.** A committed promotion changes only Writ's workflow state, atomically in the ledger. A later publish or deploy is a separate governed effect with its own decision, permit, intent, receipt and reconciliation; it is never represented as atomic with the promotion transaction (D-017).
+
 ## 2. Three distinct concepts, three owners
 
 | Concept | Question | Owner | Output | Not allowed to |
@@ -48,12 +50,18 @@ Issued only by the acceptance service; MAC or signature over the canonical diges
 | `acceptance_policy_id`, `acceptance_policy_version`, `policy_bundle_sha` | Versioned criteria applied |
 | `state_revision` | Workflow revision the evaluation observed |
 | `criteria[]` | Per criterion: `criterion_id`, `mandatory`, `required_class` (mechanical, evidence, model_assisted, human), `status` (pass, fail, unknown, stale, waived), `evaluator_id`, `evaluator_version`, `evaluator_trust`, `evaluation_ref`, `evidence_refs[]` with digests, `attestation_ref` (runner attestation or signoff grant id), `observed_at`, `fresh_until` |
-| `status` | `accepted` only if every mandatory criterion is `pass`; else `rejected`, `incomplete` or `needs_human_review` |
+| `status` | `accepted` only if every criterion in the trusted requirement set is present, mandatory, correctly classed and `pass`; else `rejected`, `incomplete` or `needs_human_review` |
 | `issued_at`, `expires_at`, `issuer` | Lifetime and issuing service identity |
 | `mode` | `governed` or `advisory` |
 | `supersedes` | Previous record for the same artifact lineage |
 
 Relationship to existing contracts: EvaluationRecord stays the per-evaluator output. It currently lacks `tenant_id`, `project_id` and `artifact_digest` (M0 binds scope inside `evaluate()` instead, D-013); M2 must add them so each EvaluationRecord is independently bindable. SignoffGrant (D-013) becomes an approval-service artifact (M4) referenced by `attestation_ref`.
+
+**Trusted requirement set (D-017).** Completeness is judged against the active acceptance policy's requirement set, supplied by the policy registry and bound to its policy id, version and bundle digest, never against criteria listed in the record or supplied by the agent. A record that omits a required criterion, downgrades it to non-mandatory, changes its required class, substitutes another id, or adds an undefined mandatory criterion is refused, even when every criterion it does contain passes and its unkeyed digest is internally consistent. A record digest is a consistency check, not proof of issuance; issuance and signature verification remain acceptance-service responsibilities (boundary 2).
+
+**Revocation.** Each criterion names its `evaluator_id`; criteria from a revoked evaluator are refused at use time.
+
+**External responses.** Detailed refusal codes go to the access-controlled audit record. Agents and hosts receive `PROMOTION_REFUSED` with an audit reference, so refusals do not reveal other tenants' or projects' records, consumed ids or revocations.
 
 ## 5. Trusted evaluators and evidence verification
 
@@ -64,7 +72,7 @@ Relationship to existing contracts: EvaluationRecord stays the per-evaluator out
 | Level | Source | Can satisfy a mandatory criterion of class |
 |---|---|---|
 | U (untrusted) | Agent or model output, producer-claimed `verification_status`, unregistered tools, agent-run commands | none |
-| MA (model-assisted) | Registered model-assisted evaluator | only `model_assisted` criteria; never mechanical, evidence or human |
+| MA (model-assisted) | Registered model-assisted evaluator | none: advisory only. It may inform an assessment or trigger human review but never establishes a mandatory pass (D-017) |
 | M (mechanical) | Registered check executed by the Writ-controlled runner | `mechanical` |
 | E (evidence engine) | Provenance-verified source resolution (digest, excerpt, scope, freshness) | `evidence` |
 | H (human) | Signoff created by the approval service from an authenticated human step-up, bound to tenant, project, task and artifact digest | `human` |
@@ -230,7 +238,7 @@ Current level of every Acceptance Gate defense: **Designed**, except the evaluat
 
 | Milestone | AGI scope |
 |---|---|
-| M1 | Kernel semantics for `workflow.transition`; pure acceptance-binding check in both prototypes; CAS and single-use semantics in the broker scenario; differential and property tests ([M1 parity suite](../implementation/M1-PARITY-SUITE.md)). Not the evaluation platform |
+| M1 | Kernel semantics for `workflow.transition` (exact transition, D-017); pure acceptance-binding check against a trusted requirement set in both prototypes; strict JSON parsing; CAS and single-use semantics in the broker scenario; differential and property tests ([M1 parity suite](../implementation/M1-PARITY-SUITE.md)). Not the evaluation platform |
 | M2 | AcceptanceRecord, EvaluationRecord scope fields, evaluator registry entry, runner attestation contracts; workflow state machine with protected states; INV-32..INV-40 as contract tests |
 | M3 | Transition service with CAS, single-use records, use-time recomputation; mechanical runner as a sandboxed broker effect; audit events |
 | M4 | Authenticated signoff provenance; waivers as approvals |
