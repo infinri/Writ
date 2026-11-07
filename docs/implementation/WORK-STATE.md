@@ -46,4 +46,4 @@ CI E-013: run [42309913797](https://github.com/infinri/Writ/actions/runs/4230991
 
 ## Next exact action
 
-Owner technical review of M1-02 revision 3 (`docs/implementation/M1-02-FIXTURE-REVIEW.md`, `m1/fixtures/AMENDMENT-2.md`), including findings N-1 to N-4 (notably N-2: export the broker grant scenarios as language-neutral fixtures before M1-03); authorization to push the amendment-2 commit. M1-03 and M1-04 do not start before that review. No comparative benchmarks on battery or with an uncontrolled governor.
+M1-03 (Rust) and M1-04 (Go) prototypes against the identical 382-case fixture sets (D-019 authorizes the start). Push of the amendment-3 commit awaits owner authorization. No comparative benchmarks on battery or with an uncontrolled governor.

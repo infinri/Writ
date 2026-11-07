@@ -7,7 +7,7 @@ Inputs are committed fixture sources only (no M0 Python code is imported):
 - the canonical-JSON known vector fixed in D-006.
 - m1/fixtures/canonical/strict-json.cases.json: strict parsing and canonical cases (D-017).
 - m1/fixtures/acceptance/acceptance-binding.cases.json: check-acceptance cases (m1-draft-2).
-- m1/fixtures/transition/*.cases.json: workflow.transition decisions and scenarios (m1-draft-3).
+- m1/fixtures/transition/*.cases.json: workflow.transition decisions and scenarios (m1-draft-4).
 - m1/fixtures/refusal/external-refusal.cases.json: internal to external refusal mapping (D-018).
 
 This script only assembles inputs (patches, digests of fixture-construction values,
@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import hmac
 import json
 import sys
 from pathlib import Path
@@ -31,6 +32,8 @@ ACCEPTANCE = HERE / "acceptance/acceptance-binding.cases.json"
 TRANSITION = HERE / "transition"
 STRICT = HERE / "canonical/strict-json.cases.json"
 REFUSAL = HERE / "refusal/external-refusal.cases.json"
+BROKER = HERE / "broker/broker-scenarios.cases.json"
+M0_BUNDLE = ROOT / "docs/contracts/fixtures/policy/m0-reference.bundle.json"
 
 
 def nest_text(pattern: str, count: int, leaf: str) -> str:
@@ -265,10 +268,20 @@ def transition_scenarios() -> list[str]:
             elif step.get("op") == "promote_concurrent":
                 steps.append({"op": "promote_concurrent", "count": step["count"],
                               "promote": expand("promote", step["promote"], case["id"], auth_sha)})
+            elif step.get("op") == "concurrent":
+                ops = []
+                for sub in step["operations"]:
+                    if "effect" in sub and "op" not in sub:
+                        ops.append(expand("effect", sub["effect"], case["id"], auth_sha))
+                    elif "promote" in sub and "op" not in sub:
+                        ops.append(expand("promote", sub["promote"], case["id"], auth_sha))
+                    else:
+                        ops.append(sub)
+                steps.append({"op": "concurrent", "operations": ops})
             else:
                 steps.append(step)
         value = {"initial": initial, "steps": steps}
-        entry = {"id": case["id"], "expect": case["expect"], "compare": "exact",
+        entry = {"id": case["id"], "expect": case["expect"], "compare": case.get("compare", "exact"),
                  "meta": {"source": "m1/fixtures/transition/transition-scenarios.cases.json",
                           "review_status": src["review_status"], "rationale": case["rationale"]}}
         if "text_edit" in case:
@@ -277,6 +290,80 @@ def transition_scenarios() -> list[str]:
         else:
             entry["input"] = value
         out.append(line(entry))
+    return out
+
+
+def broker_scenarios() -> list[str]:
+    from datetime import datetime, timedelta
+    src = json.loads(BROKER.read_text(encoding="utf-8"))
+    golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
+    bundle = json.loads(M0_BUNDLE.read_text(encoding="utf-8"))
+    keys = dict(src["ingress_keys"])
+    all_keys = dict(keys, **src["unregistered_key"])
+
+    def mac(key_hex: str, request: dict) -> str:  # simulated ingress seal (BROKER.md)
+        return hmac.new(bytes.fromhex(key_hex), compact(request).encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def seal(kind, request: dict, base: dict):
+        if kind == "none":
+            return None
+        if kind == "forged":
+            return {"adapter_id": "writ-host-adapter:fixture", "mac": "0" * 64}
+        if kind == "unregistered":
+            return {"adapter_id": "writ-host-adapter:rogue", "mac": mac(all_keys["writ-host-adapter:rogue"], request)}
+        if kind == "other_adapter":
+            return {"adapter_id": "writ-host-adapter:other", "mac": mac(keys["writ-host-adapter:other"], request)}
+        target = base if kind == "for_base" else request
+        return {"adapter_id": "writ-host-adapter:fixture", "mac": mac(keys["writ-host-adapter:fixture"], target)}
+
+    def build(op: dict, now: datetime) -> tuple[dict, datetime]:
+        (name, spec), = op.items()
+        if name == "concurrent":
+            return {"op": "concurrent", "operations": [build(sub, now)[0] for sub in spec]}, now
+        base = golden["base_request"]
+        request = merge_patch(base, spec.get("request_patch", {}))
+        if name == "execute":
+            out = {"op": "execute", "request": request, "seal": seal(spec.get("seal", "valid"), request, base)}
+            for k in ("grant_ref", "fault"):
+                if k in spec:
+                    out[k] = spec[k]
+            return out, now
+        if name == "approve":
+            out = {"op": "approve", "for_request": request}
+            out.update({k: v for k, v in spec.items() if k != "request_patch"})
+            return out, now
+        if name == "present_permit":
+            out = {"op": "present_permit", "of_step": spec["of_step"], "request": request}
+            if "tamper" in spec:
+                out["tamper"] = spec["tamper"]
+            return out, now
+        if name == "apply_without_permit":
+            return {"op": "apply_without_permit", "request": request}, now
+        if name == "advance_time":
+            now = now + timedelta(seconds=spec["seconds"])
+            return {"op": "advance_time", "now": now.strftime("%Y-%m-%dT%H:%M:%SZ")}, now
+        if name == "activate_bundle":
+            return {"op": "activate_bundle", "bundle": merge_patch(bundle, spec["bundle_patch"])}, now
+        if name == "set_dependency":
+            return dict({"op": "set_dependency"}, **spec), now
+        if name == "reconcile":
+            return {"op": "reconcile"}, now
+        raise SystemExit(f"unknown broker op {name}")
+
+    out = []
+    for case in src["cases"]:
+        now = datetime.fromisoformat(src["now"].replace("Z", "+00:00"))
+        steps = []
+        for op in case["steps"]:
+            built, now = build(op, now)
+            steps.append(built)
+        initial = {"now": src["now"], "state_revision": src["state_revision"], "bundle": bundle,
+                   "ingress_keys": keys, "permit_key": src["permit_key"], "channels": src["channels"],
+                   "dependencies": {"policy": "up", "ledger": "up"}}
+        out.append(line({"id": case["id"], "input": {"initial": initial, "steps": steps}, "expect": case["expect"],
+                         "compare": "exact",
+                         "meta": {"source": "m1/fixtures/broker/broker-scenarios.cases.json",
+                                  "review_status": src["review_status"], "rationale": case["rationale"]}}))
     return out
 
 
@@ -297,6 +384,7 @@ SETS = {
     "sets/transition-decisions.jsonl": transition_decisions,
     "sets/transition-scenarios.jsonl": transition_scenarios,
     "sets/external-refusal.jsonl": external_refusal,
+    "sets/broker-scenarios.jsonl": broker_scenarios,
 }
 
 

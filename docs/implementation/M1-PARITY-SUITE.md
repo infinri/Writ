@@ -14,14 +14,14 @@ Both prototypes consume the **same language-neutral fixtures** and must reproduc
 | Contract validation | `docs/contracts/*.schema.json`, positive and negative fixtures | Same accept/reject per fixture, strict RFC 3339 date-time |
 | Golden decisions | `docs/contracts/fixtures/decisions/m0-golden.json` (26 cases, RFC 7396 patches; all pending independent review) | Identical `status`, `reason_code`, `matched_rule_ids` |
 | Bundle loading | `docs/contracts/fixtures/policy/m0-reference.bundle.json` and damaged variants from `test_decision.py::TestBundleLoading` | Same bundle sha; same rejections |
-| Broker semantics | scenarios in `m0/tests/test_broker.py` | Sealed-ingress refusal (D-010); deadline at use time; capability-set binding; single-use permits; single-use grant under 16-way race; no double dispatch; IDEMPOTENCY_CONFLICT; crash leaves `dispatched`, reconcile yields `unknown_reconcile`; policy change invalidates grants |
+| Broker semantics | language-neutral `broker-scenarios` set (D-019 N-2), derived from the behaviors in `m0/tests/test_broker.py` | Sealed-ingress refusal (D-010); deadline at use time; capability-set binding; single-use permits; single-use grant under 16-way race; no double dispatch; IDEMPOTENCY_CONFLICT; crash leaves `dispatched`, reconcile yields `unknown_reconcile`; policy change invalidates grants |
 | Host normalization | scenarios in `m0/tests/test_independence.py::TestHostNormalization` | Same canonical resource id and action digest for both host extractors; symlink escapes refused |
 | Cross-domain evaluation | `docs/contracts/fixtures/domains/` | Same EvaluationRecord status per task and negative case |
 | Property tests | Hypothesis properties in `test_contracts.py`, `test_decision.py` | Ported as property tests with at least the same example counts |
 
 A prototype that is faster but fails any row does not pass (testing doc, "A faster unsafe run does not pass").
 
-## Acceptance Gate Integrity readiness (ADR-0008 approved in principle; semantics m1-draft-3, D-017, D-018)
+## Acceptance Gate Integrity readiness (ADR-0008 approved in principle; semantics m1-draft-4, D-017..D-019)
 
 M1 must show that each prototype can carry the [Acceptance Gate Integrity](../architecture/acceptance-gate-integrity.md) boundaries without building the evaluation platform. The sets below have **hand-reasoned expectations written before either prototype exists**, are PENDING INDEPENDENT REVIEW, and are specified in `m1/fixtures/` ([review package](M1-02-FIXTURE-REVIEW.md), [amendment 1](../../m1/fixtures/AMENDMENT-1.md)):
 
@@ -31,7 +31,8 @@ M1 must show that each prototype can carry the [Acceptance Gate Integrity](../ar
 | transition-decisions | `decide` | Exact-transition authorization: `workflow:<tenant>/<project>/<workflow_id>` resource, typed `from_state` and `to_state`, closed attribute set, structural composite refusal, unscoped transition permits rejected at bundle load, strict parsing of requests | Same status, reason code and matched rules |
 | acceptance-binding | `check-acceptance` | Pure check of a record against a trusted, version-bound requirement set and broker state: completeness, trust class, revocation, freshness, scope, artifact and snapshot, policy, revision, expiry, replay, strict parsing | Identical `ok` or refusal code (and `json_error`) |
 | transition-scenarios | `transition-scenario` | Promotion transactions: permit bound to full request fingerprint, record and authorization bundle; protected versus unprotected transitions; compare-and-set; single-use records; idempotency; 16-way race; refusal without side effects; simulated effects with interrupted dispatch and reconciliation | Identical step results and final state |
-| external-refusal | `external-refusal` | Internal refusal code to agent-facing response (D-018 A7) | Identical mapping for every code, including unknown codes |
+| external-refusal | `external-refusal` | Internal refusal code to agent-facing response (D-018 A7, D-019) | Identical mapping for every code, including unknown codes |
+| broker-scenarios | `broker-scenario` | Sealed ingress, permits, approval grants, idempotency, crashes and reconciliation (BROKER.md, D-019 N-2; signatures and storage simulated) | Identical step results and final counters |
 
 Additional properties for M1-05 (not fixture values): any single-field mutation of a bound field refuses (at least 1,000 generated examples per prototype); approval request ids differ when `to_state` differs; generated duplicate-key and number-spelling inputs are rejected identically by both parsers.
 
@@ -79,6 +80,7 @@ exit    0 when every line was answered; a refusal or rejection is an output, nev
 | `check-acceptance` | `{"record": {...}, "current": {...}, "requirements": {...}}` | `{"ok": true}`, `{"refusal": "<CODE>"}` or `{"refusal": "INPUT_JSON_INVALID", "json_error": "<CODE>"}` |
 | `transition-scenario` | `{"initial": {...}, "steps": [...]}` | `{"steps": [...], "final": {...}}` or `{"input_error": "INPUT_JSON_INVALID", "json_error": "<CODE>"}` |
 | `external-refusal` | `{"internal_code": "<CODE>"}` | `{"external": "<CODE>"}` |
+| `broker-scenario` | `{"initial": {...}, "steps": [...]}` | `{"steps": [...], "final": {...}}` |
 
 The driver records the prototype argv and executable digest, manifest and fixture-file digests, repository commit, per-set pass and fail counts, protocol errors (missing, duplicate, unknown or non-JSON lines, crash, timeout) and nondeterminism across `--repeat` runs. It exits 0 only if every selected set passes. Self-tests: `python3 -m unittest discover -s m1/driver/tests`.
 

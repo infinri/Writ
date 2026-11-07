@@ -1,9 +1,9 @@
 {
   "contract_version": "2.0",
   "bundle_id": "m1-transition",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "writ-v2-design-fixture",
-  "description": "M1 bake-off fixture for workflow.transition decisions (m1-draft-3, D-017, D-018). Not a production policy and not signed. The resource is the workflow (workflow:<tenant>/<project>/<workflow_id>); target and source states are typed attributes matched by to_states and from_states. Composite promotion-plus-effect requests are refused structurally by the kernel, not by a statement. Which transitions are protected by acceptance is decided by the trusted acceptance policy held by the broker, not by this authorization bundle.",
+  "description": "M1 bake-off fixture for workflow.transition decisions (m1-draft-4, D-017..D-019). Not a production policy and not signed. The resource is the workflow (workflow:<tenant>/<project>/<workflow_id>); target and source states are typed attributes matched by to_states and from_states. Composite promotion-plus-effect requests are refused structurally by the kernel, not by a statement. workflow_protection is the authoritative protection classification used by both the kernel and the broker (D-019 N-1, N-4).",
   "known_capabilities": [
     "agent.dispatch",
     "file.read",
@@ -118,6 +118,7 @@
         "workflow:fixture-tenant/fixture-project/"
       ],
       "from_states": [
+        "draft",
         "planning"
       ],
       "to_states": [
@@ -137,5 +138,19 @@
       "reason_code": "WORKSPACE_WRITE_PERMITTED"
     }
   ],
-  "publisher_signature": null
+  "publisher_signature": null,
+  "workflow_protection": {
+    "acceptance_policy_bundle_sha": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "protected_to_states": [
+      "accepted",
+      "deployed",
+      "released"
+    ],
+    "protected_transitions": [
+      {
+        "from_state": "draft",
+        "to_state": "verifying"
+      }
+    ]
+  }
 }

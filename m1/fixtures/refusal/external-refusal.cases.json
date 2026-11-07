@@ -1,5 +1,5 @@
 {
- "description": "Hand-reasoned mapping from internal refusal codes to the response an agent or host receives (D-018 A7). Command external-refusal: input {\"internal_code\": CODE}, output {\"external\": CODE}. Internal codes remain in audit records and test harnesses. PENDING INDEPENDENT REVIEW.",
+ "description": "Hand-reasoned mapping from internal refusal codes to the response an agent or host receives (D-018 A7, D-019). Command external-refusal: input {\"internal_code\": CODE}, output {\"external\": CODE}. Internal codes remain in audit records and test harnesses. PENDING INDEPENDENT REVIEW. One generic code, PROMOTION_REFUSED, is used for every non-validation security refusal, including effect and broker refusals.",
  "review_status": "PENDING INDEPENDENT REVIEW",
  "cases": [
   {
@@ -217,6 +217,126 @@
    "internal_code": "SOME_FUTURE_CODE",
    "external": "PROMOTION_REFUSED",
    "rationale": "unknown codes default to the generic response (fail closed on disclosure)"
+  },
+  {
+   "id": "ext-protection-unavailable",
+   "internal_code": "PROTECTION_UNAVAILABLE",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "NEW (D-019): reveals protection classification, policy dependencies or promotion state; detail stays in audit"
+  },
+  {
+   "id": "ext-policy-dependency-mismatch",
+   "internal_code": "POLICY_DEPENDENCY_MISMATCH",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "NEW (D-019): reveals protection classification, policy dependencies or promotion state; detail stays in audit"
+  },
+  {
+   "id": "ext-acceptance-binding-required",
+   "internal_code": "ACCEPTANCE_BINDING_REQUIRED",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "NEW (D-019): reveals protection classification, policy dependencies or promotion state; detail stays in audit"
+  },
+  {
+   "id": "ext-effect-prerequisite-unmet",
+   "internal_code": "EFFECT_PREREQUISITE_UNMET",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "NEW (D-019): reveals protection classification, policy dependencies or promotion state; detail stays in audit"
+  },
+  {
+   "id": "ext-promotion-receipt-invalid",
+   "internal_code": "PROMOTION_RECEIPT_INVALID",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "NEW (D-019): reveals protection classification, policy dependencies or promotion state; detail stays in audit"
+  },
+  {
+   "id": "ext-effect-artifact-mismatch",
+   "internal_code": "EFFECT_ARTIFACT_MISMATCH",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "NEW (D-019): reveals protection classification, policy dependencies or promotion state; detail stays in audit"
+  },
+  {
+   "id": "ext-promotion-stale",
+   "internal_code": "PROMOTION_STALE",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "NEW (D-019): reveals protection classification, policy dependencies or promotion state; detail stays in audit"
+  },
+  {
+   "id": "ext-ingress-unauthenticated",
+   "internal_code": "INGRESS_UNAUTHENTICATED",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "NEW (D-019): broker, grant, ingress or approval detail stays in audit; one generic code for every governed refusal"
+  },
+  {
+   "id": "ext-grant-unknown",
+   "internal_code": "GRANT_UNKNOWN",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "NEW (D-019): broker, grant, ingress or approval detail stays in audit; one generic code for every governed refusal"
+  },
+  {
+   "id": "ext-grant-mismatch",
+   "internal_code": "GRANT_MISMATCH",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "NEW (D-019): broker, grant, ingress or approval detail stays in audit; one generic code for every governed refusal"
+  },
+  {
+   "id": "ext-grant-expired",
+   "internal_code": "GRANT_EXPIRED",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "NEW (D-019): broker, grant, ingress or approval detail stays in audit; one generic code for every governed refusal"
+  },
+  {
+   "id": "ext-grant-exhausted",
+   "internal_code": "GRANT_EXHAUSTED",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "NEW (D-019): broker, grant, ingress or approval detail stays in audit; one generic code for every governed refusal"
+  },
+  {
+   "id": "ext-permit-invalid",
+   "internal_code": "PERMIT_INVALID",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "NEW (D-019): broker, grant, ingress or approval detail stays in audit; one generic code for every governed refusal"
+  },
+  {
+   "id": "ext-permit-expired",
+   "internal_code": "PERMIT_EXPIRED",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "NEW (D-019): broker, grant, ingress or approval detail stays in audit; one generic code for every governed refusal"
+  },
+  {
+   "id": "ext-permit-replayed",
+   "internal_code": "PERMIT_REPLAYED",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "NEW (D-019): broker, grant, ingress or approval detail stays in audit; one generic code for every governed refusal"
+  },
+  {
+   "id": "ext-ledger-unavailable",
+   "internal_code": "LEDGER_UNAVAILABLE",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "NEW (D-019): broker, grant, ingress or approval detail stays in audit; one generic code for every governed refusal"
+  },
+  {
+   "id": "ext-not-approvable",
+   "internal_code": "NOT_APPROVABLE",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "NEW (D-019): broker, grant, ingress or approval detail stays in audit; one generic code for every governed refusal"
+  },
+  {
+   "id": "ext-self-approval-forbidden",
+   "internal_code": "SELF_APPROVAL_FORBIDDEN",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "NEW (D-019): broker, grant, ingress or approval detail stays in audit; one generic code for every governed refusal"
+  },
+  {
+   "id": "ext-human-unauthenticated",
+   "internal_code": "HUMAN_UNAUTHENTICATED",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "NEW (D-019): broker, grant, ingress or approval detail stays in audit; one generic code for every governed refusal"
+  },
+  {
+   "id": "ext-approval-required",
+   "internal_code": "APPROVAL_REQUIRED",
+   "external": "APPROVAL_REQUIRED",
+   "rationale": "NEW (D-019): the caller needs to know to request human approval; the decision status is already returned to the host"
   }
  ]
 }

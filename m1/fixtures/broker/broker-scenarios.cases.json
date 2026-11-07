@@ -1,0 +1,2268 @@
+{
+ "description": "Hand-reasoned broker-scenario cases (M1-02 N-2, D-019) from BROKER.md, written before any Rust or Go code and before comparison with the M0 broker. Requests are the M0 golden base_request merged with request_patch; seals and permits are computed by the exporter with simulated HMAC keys. PENDING INDEPENDENT REVIEW.",
+ "review_status": "PENDING INDEPENDENT REVIEW",
+ "now": "2026-11-05T12:00:00Z",
+ "state_revision": 5,
+ "ingress_keys": {
+  "writ-host-adapter:fixture": "1111111111111111111111111111111111111111111111111111111111111111",
+  "writ-host-adapter:other": "2222222222222222222222222222222222222222222222222222222222222222"
+ },
+ "unregistered_key": {
+  "writ-host-adapter:rogue": "3333333333333333333333333333333333333333333333333333333333333333"
+ },
+ "permit_key": "4444444444444444444444444444444444444444444444444444444444444444",
+ "channels": {
+  "approval-ui": {
+   "human:alice": "cred-alice",
+   "agent:claude-session-1": "cred-agent"
+  }
+ },
+ "cases": [
+  {
+   "id": "b-01-allow-path",
+   "steps": [
+    {
+     "execute": {}
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "effect_completed"
+     }
+    ],
+    "final": {
+     "effects_applied": 1,
+     "grant_uses": {},
+     "receipts": {
+      "observed_success": 1
+     },
+     "consumed_permits": 1,
+     "refusals": 0
+    }
+   },
+   "rationale": "sealed allowed request executes once with a receipt"
+  },
+  {
+   "id": "b-02-deny-never-reaches-adapter",
+   "steps": [
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "resource": {
+         "canonical_resource_id": "workspace:fixture-tenant/fixture-project/secrets/key.txt"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "SECRETS_PATH_FORBIDDEN"
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {},
+     "receipts": {},
+     "consumed_permits": 0,
+     "refusals": 1
+    }
+   },
+   "rationale": "hard deny: no reservation, no permit, no effect"
+  },
+  {
+   "id": "b-03-unsealed",
+   "steps": [
+    {
+     "execute": {
+      "seal": "none"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "INGRESS_UNAUTHENTICATED"
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {},
+     "receipts": {},
+     "consumed_permits": 0,
+     "refusals": 1
+    }
+   },
+   "rationale": "SR-01: unsealed request with a trusted issuer string is refused"
+  },
+  {
+   "id": "b-04-forged-seal",
+   "steps": [
+    {
+     "execute": {
+      "seal": "forged"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "INGRESS_UNAUTHENTICATED"
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {},
+     "receipts": {},
+     "consumed_permits": 0,
+     "refusals": 1
+    }
+   },
+   "rationale": "MAC does not verify"
+  },
+  {
+   "id": "b-05-unregistered-adapter",
+   "steps": [
+    {
+     "execute": {
+      "seal": "unregistered"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "INGRESS_UNAUTHENTICATED"
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {},
+     "receipts": {},
+     "consumed_permits": 0,
+     "refusals": 1
+    }
+   },
+   "rationale": "seal key not registered"
+  },
+  {
+   "id": "b-06-adapter-vouches-for-other-issuer",
+   "steps": [
+    {
+     "execute": {
+      "seal": "other_adapter"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "INGRESS_UNAUTHENTICATED"
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {},
+     "receipts": {},
+     "consumed_permits": 0,
+     "refusals": 1
+    }
+   },
+   "rationale": "registered adapter sealing a principal verified by another issuer"
+  },
+  {
+   "id": "b-07-altered-after-sealing",
+   "steps": [
+    {
+     "execute": {
+      "seal": "for_base",
+      "request_patch": {
+       "action": {
+        "resource": {
+         "canonical_resource_id": "workspace:fixture-tenant/fixture-project/src/other.py"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "INGRESS_UNAUTHENTICATED"
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {},
+     "receipts": {},
+     "consumed_permits": 0,
+     "refusals": 1
+    }
+   },
+   "rationale": "any change after sealing"
+  },
+  {
+   "id": "b-08-apply-without-permit",
+   "steps": [
+    {
+     "apply_without_permit": {}
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "PERMIT_MISSING"
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {},
+     "receipts": {},
+     "consumed_permits": 0,
+     "refusals": 1
+    }
+   },
+   "rationale": "direct adapter call without a permit"
+  },
+  {
+   "id": "b-09-forged-permit",
+   "steps": [
+    {
+     "execute": {}
+    },
+    {
+     "present_permit": {
+      "of_step": 0,
+      "tamper": "mac"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "effect_completed"
+     },
+     {
+      "result": "refused",
+      "code": "PERMIT_INVALID"
+     }
+    ],
+    "final": {
+     "effects_applied": 1,
+     "grant_uses": {},
+     "receipts": {
+      "observed_success": 1
+     },
+     "consumed_permits": 1,
+     "refusals": 1
+    }
+   },
+   "rationale": "permit MAC altered"
+  },
+  {
+   "id": "b-10-permit-replay",
+   "steps": [
+    {
+     "execute": {}
+    },
+    {
+     "present_permit": {
+      "of_step": 0
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "effect_completed"
+     },
+     {
+      "result": "refused",
+      "code": "PERMIT_REPLAYED"
+     }
+    ],
+    "final": {
+     "effects_applied": 1,
+     "grant_uses": {},
+     "receipts": {
+      "observed_success": 1
+     },
+     "consumed_permits": 1,
+     "refusals": 1
+    }
+   },
+   "rationale": "SR-07: second presentation of a consumed permit"
+  },
+  {
+   "id": "b-11-permit-for-other-operation",
+   "steps": [
+    {
+     "execute": {}
+    },
+    {
+     "present_permit": {
+      "of_step": 0,
+      "request_patch": {
+       "action": {
+        "resource": {
+         "canonical_resource_id": "workspace:fixture-tenant/fixture-project/src/other.py"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "effect_completed"
+     },
+     {
+      "result": "refused",
+      "code": "PERMIT_REQUEST_MISMATCH"
+     }
+    ],
+    "final": {
+     "effects_applied": 1,
+     "grant_uses": {},
+     "receipts": {
+      "observed_success": 1
+     },
+     "consumed_permits": 1,
+     "refusals": 1
+    }
+   },
+   "rationale": "SR-10: permit bound to the whole request"
+  },
+  {
+   "id": "b-12-expired-permit",
+   "steps": [
+    {
+     "execute": {}
+    },
+    {
+     "advance_time": {
+      "seconds": 31
+     }
+    },
+    {
+     "present_permit": {
+      "of_step": 0
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "effect_completed"
+     },
+     {
+      "result": "time_advanced"
+     },
+     {
+      "result": "refused",
+      "code": "PERMIT_EXPIRED"
+     }
+    ],
+    "final": {
+     "effects_applied": 1,
+     "grant_uses": {},
+     "receipts": {
+      "observed_success": 1
+     },
+     "consumed_permits": 1,
+     "refusals": 1
+    }
+   },
+   "rationale": "permit TTL 30 s; expiry checked before consumption"
+  },
+  {
+   "id": "b-13-extended-expiry-without-resign",
+   "steps": [
+    {
+     "execute": {}
+    },
+    {
+     "present_permit": {
+      "of_step": 0,
+      "tamper": "expiry"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "effect_completed"
+     },
+     {
+      "result": "refused",
+      "code": "PERMIT_INVALID"
+     }
+    ],
+    "final": {
+     "effects_applied": 1,
+     "grant_uses": {},
+     "receipts": {
+      "observed_success": 1
+     },
+     "consumed_permits": 1,
+     "refusals": 1
+    }
+   },
+   "rationale": "extending expiry breaks the MAC"
+  },
+  {
+   "id": "b-14-approval-required-without-grant",
+   "steps": [
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "APPROVAL_REQUIRED"
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {},
+     "receipts": {},
+     "consumed_permits": 0,
+     "refusals": 1
+    }
+   },
+   "rationale": "require_approval needs a grant"
+  },
+  {
+   "id": "b-15-grant-single-use",
+   "steps": [
+    {
+     "approve": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1",
+      "channel": "approval-ui",
+      "human": "human:alice",
+      "credential": "cred-alice",
+      "verdict": "approved"
+     }
+    },
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1"
+     }
+    },
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       },
+       "idempotency_key": "idem-2"
+      },
+      "grant_ref": "g1"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "grant_issued"
+     },
+     {
+      "result": "effect_completed"
+     },
+     {
+      "result": "refused",
+      "code": "GRANT_EXHAUSTED"
+     }
+    ],
+    "final": {
+     "effects_applied": 1,
+     "grant_uses": {
+      "g1": 1
+     },
+     "receipts": {
+      "observed_success": 1
+     },
+     "consumed_permits": 1,
+     "refusals": 1
+    }
+   },
+   "rationale": "grant consumed exactly once"
+  },
+  {
+   "id": "b-16-grant-bound-to-resource",
+   "steps": [
+    {
+     "approve": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1",
+      "channel": "approval-ui",
+      "human": "human:alice",
+      "credential": "cred-alice",
+      "verdict": "approved"
+     }
+    },
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://other",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/other"
+        }
+       }
+      },
+      "grant_ref": "g1"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "grant_issued"
+     },
+     {
+      "result": "refused",
+      "code": "GRANT_MISMATCH"
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {
+      "g1": 0
+     },
+     "receipts": {},
+     "consumed_permits": 0,
+     "refusals": 1
+    }
+   },
+   "rationale": "grant for main used for other"
+  },
+  {
+   "id": "b-17-grant-bound-to-capabilities",
+   "steps": [
+    {
+     "approve": {
+      "request_patch": {
+       "action": {
+        "requested_capabilities": [
+         "repository.publish"
+        ]
+       }
+      },
+      "grant_ref": "g1",
+      "channel": "approval-ui",
+      "human": "human:alice",
+      "credential": "cred-alice",
+      "verdict": "approved"
+     }
+    },
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "requested_capabilities": [
+         "process.execute"
+        ]
+       }
+      },
+      "grant_ref": "g1"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "grant_issued"
+     },
+     {
+      "result": "refused",
+      "code": "GRANT_MISMATCH"
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {
+      "g1": 0
+     },
+     "receipts": {},
+     "consumed_permits": 0,
+     "refusals": 1
+    }
+   },
+   "rationale": "SR-02: capability set substitution under one grant"
+  },
+  {
+   "id": "b-18-no-subagent-inheritance",
+   "steps": [
+    {
+     "approve": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1",
+      "channel": "approval-ui",
+      "human": "human:alice",
+      "credential": "cred-alice",
+      "verdict": "approved"
+     }
+    },
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       },
+       "principal": {
+        "id": "agent:subagent-1"
+       },
+       "agent_id": "subagent-1",
+       "parent_session_id": "session-1"
+      },
+      "grant_ref": "g1"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "grant_issued"
+     },
+     {
+      "result": "refused",
+      "code": "GRANT_MISMATCH"
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {
+      "g1": 0
+     },
+     "receipts": {},
+     "consumed_permits": 0,
+     "refusals": 1
+    }
+   },
+   "rationale": "D-009, D-011: a subagent does not inherit the parent's grant"
+  },
+  {
+   "id": "b-19-policy-change-invalidates-grant",
+   "steps": [
+    {
+     "approve": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1",
+      "channel": "approval-ui",
+      "human": "human:alice",
+      "credential": "cred-alice",
+      "verdict": "approved"
+     }
+    },
+    {
+     "activate_bundle": {
+      "bundle_patch": {
+       "version": "0.1.1"
+      }
+     }
+    },
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "grant_issued"
+     },
+     {
+      "result": "bundle_activated"
+     },
+     {
+      "result": "refused",
+      "code": "GRANT_MISMATCH"
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {
+      "g1": 0
+     },
+     "receipts": {},
+     "consumed_permits": 0,
+     "refusals": 1
+    }
+   },
+   "rationale": "grant bound to the bundle sha at approval"
+  },
+  {
+   "id": "b-20-expired-grant",
+   "steps": [
+    {
+     "approve": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1",
+      "channel": "approval-ui",
+      "human": "human:alice",
+      "credential": "cred-alice",
+      "verdict": "approved"
+     }
+    },
+    {
+     "advance_time": {
+      "seconds": 600
+     }
+    },
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "grant_issued"
+     },
+     {
+      "result": "time_advanced"
+     },
+     {
+      "result": "refused",
+      "code": "GRANT_EXPIRED"
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {
+      "g1": 0
+     },
+     "receipts": {},
+     "consumed_permits": 0,
+     "refusals": 1
+    }
+   },
+   "rationale": "grant expiry exclusive"
+  },
+  {
+   "id": "b-21-denied-verdict",
+   "steps": [
+    {
+     "approve": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1",
+      "channel": "approval-ui",
+      "human": "human:alice",
+      "credential": "cred-alice",
+      "verdict": "denied"
+     }
+    },
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "grant_issued"
+     },
+     {
+      "result": "refused",
+      "code": "GRANT_MISMATCH"
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {
+      "g1": 0
+     },
+     "receipts": {},
+     "consumed_permits": 0,
+     "refusals": 1
+    }
+   },
+   "rationale": "a denial is recorded as a grant that never matches"
+  },
+  {
+   "id": "b-22-forbid-not-approvable",
+   "steps": [
+    {
+     "approve": {
+      "request_patch": {
+       "action": {
+        "resource": {
+         "canonical_resource_id": "workspace:fixture-tenant/fixture-project/secrets/key.txt"
+        }
+       }
+      },
+      "grant_ref": "g1",
+      "channel": "approval-ui",
+      "human": "human:alice",
+      "credential": "cred-alice",
+      "verdict": "approved"
+     }
+    },
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "resource": {
+         "canonical_resource_id": "workspace:fixture-tenant/fixture-project/secrets/key.txt"
+        }
+       }
+      },
+      "grant_ref": "g1"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "NOT_APPROVABLE"
+     },
+     {
+      "result": "refused",
+      "code": "SECRETS_PATH_FORBIDDEN"
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {},
+     "receipts": {},
+     "consumed_permits": 0,
+     "refusals": 2
+    }
+   },
+   "rationale": "hard deny cannot be turned into approval"
+  },
+  {
+   "id": "b-23-unknown-grant",
+   "steps": [
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g-forged"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "GRANT_UNKNOWN"
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {},
+     "receipts": {},
+     "consumed_permits": 0,
+     "refusals": 1
+    }
+   },
+   "rationale": "forged grant reference"
+  },
+  {
+   "id": "b-24-wrong-credential",
+   "steps": [
+    {
+     "approve": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1",
+      "channel": "approval-ui",
+      "human": "human:alice",
+      "credential": "guess",
+      "verdict": "approved"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "HUMAN_UNAUTHENTICATED"
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {},
+     "receipts": {},
+     "consumed_permits": 0,
+     "refusals": 1
+    }
+   },
+   "rationale": "credential mismatch"
+  },
+  {
+   "id": "b-25-untrusted-channel",
+   "steps": [
+    {
+     "approve": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1",
+      "channel": "chat",
+      "human": "human:alice",
+      "credential": "cred-alice",
+      "verdict": "approved"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "HUMAN_UNAUTHENTICATED"
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {},
+     "receipts": {},
+     "consumed_permits": 0,
+     "refusals": 1
+    }
+   },
+   "rationale": "approval from a channel that is not trusted"
+  },
+  {
+   "id": "b-26-self-approval",
+   "steps": [
+    {
+     "approve": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1",
+      "channel": "approval-ui",
+      "human": "agent:claude-session-1",
+      "credential": "cred-agent",
+      "verdict": "approved"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "SELF_APPROVAL_FORBIDDEN"
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {},
+     "receipts": {},
+     "consumed_permits": 0,
+     "refusals": 1
+    }
+   },
+   "rationale": "requester cannot approve its own action"
+  },
+  {
+   "id": "b-27-grant-race-16",
+   "steps": [
+    {
+     "approve": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1",
+      "channel": "approval-ui",
+      "human": "human:alice",
+      "credential": "cred-alice",
+      "verdict": "approved"
+     }
+    },
+    {
+     "concurrent": [
+      {
+       "execute": {
+        "request_patch": {
+         "action": {
+          "kind": "repository.publish",
+          "resource": {
+           "uri": "git://main",
+           "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+          }
+         },
+         "idempotency_key": "idem-c1"
+        },
+        "grant_ref": "g1"
+       }
+      },
+      {
+       "execute": {
+        "request_patch": {
+         "action": {
+          "kind": "repository.publish",
+          "resource": {
+           "uri": "git://main",
+           "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+          }
+         },
+         "idempotency_key": "idem-c2"
+        },
+        "grant_ref": "g1"
+       }
+      },
+      {
+       "execute": {
+        "request_patch": {
+         "action": {
+          "kind": "repository.publish",
+          "resource": {
+           "uri": "git://main",
+           "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+          }
+         },
+         "idempotency_key": "idem-c3"
+        },
+        "grant_ref": "g1"
+       }
+      },
+      {
+       "execute": {
+        "request_patch": {
+         "action": {
+          "kind": "repository.publish",
+          "resource": {
+           "uri": "git://main",
+           "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+          }
+         },
+         "idempotency_key": "idem-c4"
+        },
+        "grant_ref": "g1"
+       }
+      },
+      {
+       "execute": {
+        "request_patch": {
+         "action": {
+          "kind": "repository.publish",
+          "resource": {
+           "uri": "git://main",
+           "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+          }
+         },
+         "idempotency_key": "idem-c5"
+        },
+        "grant_ref": "g1"
+       }
+      },
+      {
+       "execute": {
+        "request_patch": {
+         "action": {
+          "kind": "repository.publish",
+          "resource": {
+           "uri": "git://main",
+           "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+          }
+         },
+         "idempotency_key": "idem-c6"
+        },
+        "grant_ref": "g1"
+       }
+      },
+      {
+       "execute": {
+        "request_patch": {
+         "action": {
+          "kind": "repository.publish",
+          "resource": {
+           "uri": "git://main",
+           "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+          }
+         },
+         "idempotency_key": "idem-c7"
+        },
+        "grant_ref": "g1"
+       }
+      },
+      {
+       "execute": {
+        "request_patch": {
+         "action": {
+          "kind": "repository.publish",
+          "resource": {
+           "uri": "git://main",
+           "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+          }
+         },
+         "idempotency_key": "idem-c8"
+        },
+        "grant_ref": "g1"
+       }
+      },
+      {
+       "execute": {
+        "request_patch": {
+         "action": {
+          "kind": "repository.publish",
+          "resource": {
+           "uri": "git://main",
+           "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+          }
+         },
+         "idempotency_key": "idem-c9"
+        },
+        "grant_ref": "g1"
+       }
+      },
+      {
+       "execute": {
+        "request_patch": {
+         "action": {
+          "kind": "repository.publish",
+          "resource": {
+           "uri": "git://main",
+           "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+          }
+         },
+         "idempotency_key": "idem-c10"
+        },
+        "grant_ref": "g1"
+       }
+      },
+      {
+       "execute": {
+        "request_patch": {
+         "action": {
+          "kind": "repository.publish",
+          "resource": {
+           "uri": "git://main",
+           "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+          }
+         },
+         "idempotency_key": "idem-c11"
+        },
+        "grant_ref": "g1"
+       }
+      },
+      {
+       "execute": {
+        "request_patch": {
+         "action": {
+          "kind": "repository.publish",
+          "resource": {
+           "uri": "git://main",
+           "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+          }
+         },
+         "idempotency_key": "idem-c12"
+        },
+        "grant_ref": "g1"
+       }
+      },
+      {
+       "execute": {
+        "request_patch": {
+         "action": {
+          "kind": "repository.publish",
+          "resource": {
+           "uri": "git://main",
+           "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+          }
+         },
+         "idempotency_key": "idem-c13"
+        },
+        "grant_ref": "g1"
+       }
+      },
+      {
+       "execute": {
+        "request_patch": {
+         "action": {
+          "kind": "repository.publish",
+          "resource": {
+           "uri": "git://main",
+           "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+          }
+         },
+         "idempotency_key": "idem-c14"
+        },
+        "grant_ref": "g1"
+       }
+      },
+      {
+       "execute": {
+        "request_patch": {
+         "action": {
+          "kind": "repository.publish",
+          "resource": {
+           "uri": "git://main",
+           "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+          }
+         },
+         "idempotency_key": "idem-c15"
+        },
+        "grant_ref": "g1"
+       }
+      },
+      {
+       "execute": {
+        "request_patch": {
+         "action": {
+          "kind": "repository.publish",
+          "resource": {
+           "uri": "git://main",
+           "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+          }
+         },
+         "idempotency_key": "idem-c16"
+        },
+        "grant_ref": "g1"
+       }
+      }
+     ]
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "grant_issued"
+     },
+     {
+      "result": "concurrent",
+      "outcomes": {
+       "effect_completed": 1,
+       "GRANT_EXHAUSTED": 15
+      }
+     }
+    ],
+    "final": {
+     "effects_applied": 1,
+     "grant_uses": {
+      "g1": 1
+     },
+     "receipts": {
+      "observed_success": 1
+     },
+     "consumed_permits": 1,
+     "refusals": 15
+    }
+   },
+   "rationale": "16 concurrent consumers of one single-use grant"
+  },
+  {
+   "id": "b-28-refusal-before-reservation-keeps-grant",
+   "steps": [
+    {
+     "approve": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1",
+      "channel": "approval-ui",
+      "human": "human:alice",
+      "credential": "cred-alice",
+      "verdict": "approved"
+     }
+    },
+    {
+     "set_dependency": {
+      "name": "ledger",
+      "status": "down"
+     }
+    },
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1"
+     }
+    },
+    {
+     "set_dependency": {
+      "name": "ledger",
+      "status": "up"
+     }
+    },
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "grant_issued"
+     },
+     {
+      "result": "dependency_set"
+     },
+     {
+      "result": "refused",
+      "code": "LEDGER_UNAVAILABLE"
+     },
+     {
+      "result": "dependency_set"
+     },
+     {
+      "result": "effect_completed"
+     }
+    ],
+    "final": {
+     "effects_applied": 1,
+     "grant_uses": {
+      "g1": 1
+     },
+     "receipts": {
+      "observed_success": 1
+     },
+     "consumed_permits": 1,
+     "refusals": 1
+    }
+   },
+   "rationale": "refusal before reservation does not consume the grant"
+  },
+  {
+   "id": "b-29-crash-before-reserve",
+   "steps": [
+    {
+     "approve": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1",
+      "channel": "approval-ui",
+      "human": "human:alice",
+      "credential": "cred-alice",
+      "verdict": "approved"
+     }
+    },
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1",
+      "fault": "crash_before_reserve"
+     }
+    },
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "grant_issued"
+     },
+     {
+      "result": "crashed"
+     },
+     {
+      "result": "effect_completed"
+     }
+    ],
+    "final": {
+     "effects_applied": 1,
+     "grant_uses": {
+      "g1": 1
+     },
+     "receipts": {
+      "observed_success": 1
+     },
+     "consumed_permits": 1,
+     "refusals": 0
+    }
+   },
+   "rationale": "nothing persisted before reservation"
+  },
+  {
+   "id": "b-30-idempotent-retry",
+   "steps": [
+    {
+     "execute": {}
+    },
+    {
+     "execute": {}
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "effect_completed"
+     },
+     {
+      "result": "effect_completed",
+      "replayed": true
+     }
+    ],
+    "final": {
+     "effects_applied": 1,
+     "grant_uses": {},
+     "receipts": {
+      "observed_success": 1
+     },
+     "consumed_permits": 1,
+     "refusals": 0
+    }
+   },
+   "rationale": "identical retry returns the original outcome without a second effect"
+  },
+  {
+   "id": "b-31-same-key-different-request",
+   "steps": [
+    {
+     "execute": {}
+    },
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "resource": {
+         "canonical_resource_id": "workspace:fixture-tenant/fixture-project/src/other.py"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "effect_completed"
+     },
+     {
+      "result": "refused",
+      "code": "IDEMPOTENCY_CONFLICT"
+     }
+    ],
+    "final": {
+     "effects_applied": 1,
+     "grant_uses": {},
+     "receipts": {
+      "observed_success": 1
+     },
+     "consumed_permits": 1,
+     "refusals": 1
+    }
+   },
+   "rationale": "key bound to the request fingerprint"
+  },
+  {
+   "id": "b-32-same-key-other-grant",
+   "steps": [
+    {
+     "approve": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1",
+      "channel": "approval-ui",
+      "human": "human:alice",
+      "credential": "cred-alice",
+      "verdict": "approved"
+     }
+    },
+    {
+     "approve": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g2",
+      "channel": "approval-ui",
+      "human": "human:alice",
+      "credential": "cred-alice",
+      "verdict": "approved"
+     }
+    },
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1"
+     }
+    },
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g2"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "grant_issued"
+     },
+     {
+      "result": "grant_issued"
+     },
+     {
+      "result": "effect_completed"
+     },
+     {
+      "result": "refused",
+      "code": "IDEMPOTENCY_CONFLICT"
+     }
+    ],
+    "final": {
+     "effects_applied": 1,
+     "grant_uses": {
+      "g1": 1,
+      "g2": 0
+     },
+     "receipts": {
+      "observed_success": 1
+     },
+     "consumed_permits": 1,
+     "refusals": 1
+    }
+   },
+   "rationale": "SR-11: duplicate with an unrelated grant"
+  },
+  {
+   "id": "b-33-same-key-same-grant",
+   "steps": [
+    {
+     "approve": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1",
+      "channel": "approval-ui",
+      "human": "human:alice",
+      "credential": "cred-alice",
+      "verdict": "approved"
+     }
+    },
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1"
+     }
+    },
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "grant_issued"
+     },
+     {
+      "result": "effect_completed"
+     },
+     {
+      "result": "effect_completed",
+      "replayed": true
+     }
+    ],
+    "final": {
+     "effects_applied": 1,
+     "grant_uses": {
+      "g1": 1
+     },
+     "receipts": {
+      "observed_success": 1
+     },
+     "consumed_permits": 1,
+     "refusals": 0
+    }
+   },
+   "rationale": "retry does not use the grant again"
+  },
+  {
+   "id": "b-34-concurrent-duplicates",
+   "steps": [
+    {
+     "concurrent": [
+      {
+       "execute": {}
+      },
+      {
+       "execute": {}
+      },
+      {
+       "execute": {}
+      },
+      {
+       "execute": {}
+      },
+      {
+       "execute": {}
+      },
+      {
+       "execute": {}
+      },
+      {
+       "execute": {}
+      },
+      {
+       "execute": {}
+      }
+     ]
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "concurrent",
+      "outcomes": {
+       "effect_completed": 1,
+       "replayed": 7
+      }
+     }
+    ],
+    "final": {
+     "effects_applied": 1,
+     "grant_uses": {},
+     "receipts": {
+      "observed_success": 1
+     },
+     "consumed_permits": 1,
+     "refusals": 0
+    }
+   },
+   "rationale": "8 concurrent identical requests dispatch once"
+  },
+  {
+   "id": "b-35-crash-after-reserve-resumes",
+   "steps": [
+    {
+     "approve": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1",
+      "channel": "approval-ui",
+      "human": "human:alice",
+      "credential": "cred-alice",
+      "verdict": "approved"
+     }
+    },
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1",
+      "fault": "crash_after_reserve"
+     }
+    },
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "grant_issued"
+     },
+     {
+      "result": "crashed"
+     },
+     {
+      "result": "effect_completed"
+     }
+    ],
+    "final": {
+     "effects_applied": 1,
+     "grant_uses": {
+      "g1": 1
+     },
+     "receipts": {
+      "observed_success": 1
+     },
+     "consumed_permits": 1,
+     "refusals": 0
+    }
+   },
+   "rationale": "reserved but not dispatched: the retry resumes without consuming the grant again"
+  },
+  {
+   "id": "b-36-crash-after-dispatch-reconcile",
+   "steps": [
+    {
+     "execute": {
+      "fault": "crash_after_dispatch"
+     }
+    },
+    {
+     "reconcile": {}
+    },
+    {
+     "execute": {}
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "crashed"
+     },
+     {
+      "result": "reconciled",
+      "count": 1
+     },
+     {
+      "result": "refused",
+      "code": "RECONCILIATION_REQUIRED"
+     }
+    ],
+    "final": {
+     "effects_applied": 1,
+     "grant_uses": {},
+     "receipts": {
+      "unknown_reconcile": 1
+     },
+     "consumed_permits": 1,
+     "refusals": 1
+    }
+   },
+   "rationale": "uncertain effect is never re-dispatched"
+  },
+  {
+   "id": "b-37-crash-after-dispatch-retry",
+   "steps": [
+    {
+     "execute": {
+      "fault": "crash_after_dispatch"
+     }
+    },
+    {
+     "execute": {}
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "crashed"
+     },
+     {
+      "result": "refused",
+      "code": "RECONCILIATION_REQUIRED"
+     }
+    ],
+    "final": {
+     "effects_applied": 1,
+     "grant_uses": {},
+     "receipts": {
+      "dispatched": 1
+     },
+     "consumed_permits": 1,
+     "refusals": 1
+    }
+   },
+   "rationale": "retry before reconciliation also refused"
+  },
+  {
+   "id": "b-38-effect-failure-recorded",
+   "steps": [
+    {
+     "execute": {
+      "fault": "effect_fails"
+     }
+    },
+    {
+     "execute": {}
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "effect_failed"
+     },
+     {
+      "result": "effect_failed",
+      "replayed": true
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {},
+     "receipts": {
+      "observed_failure": 1
+     },
+     "consumed_permits": 1,
+     "refusals": 0
+    }
+   },
+   "rationale": "failure is recorded, not swallowed or retried as new"
+  },
+  {
+   "id": "b-39-policy-down",
+   "steps": [
+    {
+     "set_dependency": {
+      "name": "policy",
+      "status": "down"
+     }
+    },
+    {
+     "execute": {}
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "dependency_set"
+     },
+     {
+      "result": "refused",
+      "code": "POLICY_UNAVAILABLE"
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {},
+     "receipts": {},
+     "consumed_permits": 0,
+     "refusals": 1
+    }
+   },
+   "rationale": "trusted dependency failure: no unauthorized execution"
+  },
+  {
+   "id": "b-40-reconcile-nothing",
+   "steps": [
+    {
+     "reconcile": {}
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "reconciled",
+      "count": 0
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {},
+     "receipts": {},
+     "consumed_permits": 0,
+     "refusals": 0
+    }
+   },
+   "rationale": "reconciliation never fabricates receipts"
+  },
+  {
+   "id": "b-41-grant-after-deadline",
+   "steps": [
+    {
+     "approve": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       },
+       "deadline_at": "2026-11-05T12:01:00Z"
+      },
+      "grant_ref": "g1",
+      "channel": "approval-ui",
+      "human": "human:alice",
+      "credential": "cred-alice",
+      "verdict": "approved"
+     }
+    },
+    {
+     "advance_time": {
+      "seconds": 61
+     }
+    },
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       },
+       "deadline_at": "2026-11-05T12:01:00Z"
+      },
+      "grant_ref": "g1"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "grant_issued"
+     },
+     {
+      "result": "time_advanced"
+     },
+     {
+      "result": "refused",
+      "code": "DEADLINE_EXCEEDED"
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {
+      "g1": 0
+     },
+     "receipts": {},
+     "consumed_permits": 0,
+     "refusals": 1
+    }
+   },
+   "rationale": "SR-03: valid grant cannot execute after the deadline"
+  },
+  {
+   "id": "b-42-permit-bounded-by-deadline",
+   "steps": [
+    {
+     "execute": {
+      "request_patch": {
+       "deadline_at": "2026-11-05T12:00:10Z"
+      }
+     }
+    },
+    {
+     "advance_time": {
+      "seconds": 11
+     }
+    },
+    {
+     "present_permit": {
+      "of_step": 0,
+      "request_patch": {
+       "deadline_at": "2026-11-05T12:00:10Z"
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "effect_completed"
+     },
+     {
+      "result": "time_advanced"
+     },
+     {
+      "result": "refused",
+      "code": "PERMIT_EXPIRED"
+     }
+    ],
+    "final": {
+     "effects_applied": 1,
+     "grant_uses": {},
+     "receipts": {
+      "observed_success": 1
+     },
+     "consumed_permits": 1,
+     "refusals": 1
+    }
+   },
+   "rationale": "permit never outlives the request deadline"
+  },
+  {
+   "id": "b-43-unknown-capability",
+   "steps": [
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "kind": "shell.raw"
+       }
+      }
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "refused",
+      "code": "UNKNOWN_CAPABILITY"
+     }
+    ],
+    "final": {
+     "effects_applied": 0,
+     "grant_uses": {},
+     "receipts": {},
+     "consumed_permits": 0,
+     "refusals": 1
+    }
+   },
+   "rationale": "INV-13"
+  }
+ ]
+}

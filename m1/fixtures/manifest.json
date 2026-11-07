@@ -49,6 +49,13 @@
       "file": "sets/external-refusal.jsonl",
       "hard_gate": true,
       "provenance": "m1/fixtures/refusal/external-refusal.cases.json (hand-reasoned, D-018 A7, PENDING INDEPENDENT REVIEW)"
+    },
+    {
+      "name": "broker-scenarios",
+      "command": "broker-scenario",
+      "file": "sets/broker-scenarios.jsonl",
+      "hard_gate": true,
+      "provenance": "m1/fixtures/broker/broker-scenarios.cases.json (hand-reasoned from BROKER.md, D-019 N-2, PENDING INDEPENDENT REVIEW)"
     }
   ]
 }

@@ -20,6 +20,8 @@ if mode == "hang":
 out = []
 for i, msg in enumerate(lines):
     output = json.loads(json.dumps(answers[msg["id"]]))
+    if isinstance(output, dict) and list(output) == ["one_of"]:
+        output = output["one_of"][0]
     if mode == "wrong-field" and i == 0:
         key = sorted(output)[0]
         output[key] = "TAMPERED"

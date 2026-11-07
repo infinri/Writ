@@ -108,6 +108,15 @@ class DriverTests(unittest.TestCase):
         self.assertEqual(report["summary"]["passed"], 27)
 
 
+class CompareModeTests(unittest.TestCase):
+    def test_one_of_accepts_any_listed_output_and_rejects_others(self):
+        sys.path.insert(0, str(DRIVER.parent))
+        import parity
+        case = {"compare": "one_of", "expect": {"one_of": [{"a": 1}, {"a": 2}]}}
+        self.assertEqual(parity.compare(case, {"a": 2}), [])
+        self.assertTrue(parity.compare(case, {"a": 3}))
+
+
 class FixtureExportTests(unittest.TestCase):
     def test_exported_sets_are_current(self):
         proc = subprocess.run([sys.executable, str(ROOT / "m1/fixtures/export_m0_fixtures.py"), "--check"],

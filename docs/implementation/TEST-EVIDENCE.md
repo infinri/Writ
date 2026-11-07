@@ -165,6 +165,13 @@ SR-06 sandbox facts (preflight PASS, telemetry diagnostic) are recorded in `docs
 - **Depth cross-check after freezing:** the 14 depth and width vectors run through the D-006 reference module (`m0/writ_m0/canonical.py`): 14/14 agree, including canonical bytes and digests.
 - **M0 adapter after freezing (divergence record, nothing changed):** canonical-vector 1/1, golden 26/26, strict-json 12/37, transition-decisions 13/45 with 16 protocol errors (adapter lacks input_text support).
 
+### E-021: M1-02 amendment 3 (D-019) checks; revision-3 CI
+
+- **Revision 3:** `226e4d2af7637f2bbb2cc06ca6faf8175819cd63` pushed (fast-forward from `a97e8f1`); CI https://github.com/infinri/Writ/actions/runs/42330526265 success.
+- **Amendment 3 (local, 2026-11-07):** 8 sets, 382 cases; exporter `--check` current; two consecutive exports byte-identical (combined digest `3aade516...a1764c4`). `unittest discover -s m1/driver/tests`: 26 tests OK with `m0/.venv` (jsonschema present: all 6 transition bundles schema-valid, 50+ scenario and effect requests valid, broker seals verify exactly when ingress is expected to accept) and OK with system Python. M0 `pytest` 281 passed; audit 8 files current; docs check OK.
+- **Test fixes during the run:** the external-mapping rule test failed when broker codes used a second generic code (`EFFECT_REFUSED`); resolved by using one generic code `PROMOTION_REFUSED` (assumption C-1), not by weakening the test.
+- **Not executed:** any implementation of `broker-scenario`, `transition-scenario`, `check-acceptance`, `external-refusal` or the D-017..D-019 kernel extension; an executing M0 comparison for broker scenarios.
+
 ## Not yet executed
 
 - SR-06 live-host experiments (0 of 69; sandbox torn down) and full SR-06 acceptance; rule semantic review (M0-01d); independent human golden review (M0-05a).

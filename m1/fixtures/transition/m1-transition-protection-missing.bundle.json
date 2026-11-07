@@ -1,0 +1,142 @@
+{
+  "contract_version": "2.0",
+  "bundle_id": "m1-transition-protection-missing",
+  "version": "0.4.0",
+  "publisher": "writ-v2-design-fixture",
+  "description": "Invalid variant: transition statements without workflow_protection (D-019 N-1: classification missing).",
+  "known_capabilities": [
+    "agent.dispatch",
+    "file.read",
+    "file.write",
+    "memory.write",
+    "network.egress",
+    "process.execute",
+    "repository.publish",
+    "workflow.transition"
+  ],
+  "trusted_principal_issuers": [
+    "writ-host-adapter:fixture"
+  ],
+  "statements": [
+    {
+      "statement_id": "forbid-egress",
+      "effect": "forbid",
+      "tenants": [
+        "fixture-tenant"
+      ],
+      "action_kinds": [
+        "network.egress"
+      ],
+      "reason_code": "NETWORK_EGRESS_FORBIDDEN"
+    },
+    {
+      "statement_id": "forbid-release-by-agent",
+      "effect": "forbid",
+      "principal_roles": [
+        "agent"
+      ],
+      "action_kinds": [
+        "workflow.transition"
+      ],
+      "resource_prefixes": [
+        "workflow:fixture-tenant/fixture-project/"
+      ],
+      "to_states": [
+        "released"
+      ],
+      "reason_code": "AGENT_RELEASE_FORBIDDEN"
+    },
+    {
+      "statement_id": "approve-deploy",
+      "effect": "require_approval",
+      "action_kinds": [
+        "workflow.transition"
+      ],
+      "resource_prefixes": [
+        "workflow:fixture-tenant/fixture-project/"
+      ],
+      "to_states": [
+        "deployed"
+      ],
+      "reason_code": "DEPLOY_TRANSITION_REQUIRES_APPROVAL"
+    },
+    {
+      "statement_id": "approve-release",
+      "effect": "require_approval",
+      "action_kinds": [
+        "workflow.transition"
+      ],
+      "resource_prefixes": [
+        "workflow:fixture-tenant/fixture-project/"
+      ],
+      "to_states": [
+        "released"
+      ],
+      "reason_code": "RELEASE_REQUIRES_APPROVAL"
+    },
+    {
+      "statement_id": "permit-accept",
+      "effect": "permit",
+      "action_kinds": [
+        "workflow.transition"
+      ],
+      "resource_prefixes": [
+        "workflow:fixture-tenant/fixture-project/"
+      ],
+      "from_states": [
+        "verifying"
+      ],
+      "to_states": [
+        "accepted"
+      ],
+      "reason_code": "ACCEPT_TRANSITION_PERMITTED"
+    },
+    {
+      "statement_id": "permit-release-for-release-managers",
+      "effect": "permit",
+      "principal_roles": [
+        "release-manager"
+      ],
+      "action_kinds": [
+        "workflow.transition"
+      ],
+      "resource_prefixes": [
+        "workflow:fixture-tenant/fixture-project/"
+      ],
+      "to_states": [
+        "released"
+      ],
+      "reason_code": "RELEASE_TRANSITION_PERMITTED"
+    },
+    {
+      "statement_id": "permit-start-verification",
+      "effect": "permit",
+      "action_kinds": [
+        "workflow.transition"
+      ],
+      "resource_prefixes": [
+        "workflow:fixture-tenant/fixture-project/"
+      ],
+      "from_states": [
+        "draft",
+        "planning"
+      ],
+      "to_states": [
+        "verifying"
+      ],
+      "reason_code": "START_VERIFICATION_PERMITTED"
+    },
+    {
+      "statement_id": "permit-workspace-write",
+      "effect": "permit",
+      "action_kinds": [
+        "file.write"
+      ],
+      "resource_prefixes": [
+        "workspace:fixture-tenant/fixture-project/"
+      ],
+      "reason_code": "WORKSPACE_WRITE_PERMITTED"
+    }
+  ],
+  "publisher_signature": null
+}

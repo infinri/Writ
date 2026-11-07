@@ -1,9 +1,13 @@
 {
- "description": "Hand-reasoned workflow.transition decisions, m1-draft-3 (D-017, D-018), under m1-transition.bundle.json and the kernel transition extension in SCENARIOS.md. Expected values written before any Rust or Go code. PENDING INDEPENDENT REVIEW. Each case applies an RFC 7396 merge patch to base_request; bundle_loaded false passes a null bundle; bundle_variant selects another bundle file; pin_actual_bundle_sha pins the loaded bundle's sha; text_edit sends the input as input_text after replacing the first occurrence of old in the serialized request. Changes: m1/fixtures/AMENDMENT-1.md and AMENDMENT-2.md.",
+ "description": "Hand-reasoned workflow.transition decisions, m1-draft-4 (D-017..D-019), under m1-transition.bundle.json and the kernel transition extension in SCENARIOS.md. Expected values written before any Rust or Go code. PENDING INDEPENDENT REVIEW. Each case applies an RFC 7396 merge patch to base_request; bundle_loaded false passes a null bundle; bundle_variant selects another bundle file; pin_actual_bundle_sha pins the loaded bundle's sha; text_edit sends the input as input_text after replacing the first occurrence of old in the serialized request. Changes: m1/fixtures/AMENDMENT-1.md, AMENDMENT-2.md and AMENDMENT-3.md.",
  "review_status": "PENDING INDEPENDENT REVIEW",
  "bundle": "m1-transition.bundle.json",
  "bundle_variants": {
-  "unscoped": "m1-transition-unscoped.bundle.json"
+  "unscoped": "m1-transition-unscoped.bundle.json",
+  "protection-missing": "m1-transition-protection-missing.bundle.json",
+  "protection-duplicate": "m1-transition-protection-duplicate.bundle.json",
+  "protection-self-edge": "m1-transition-protection-self-edge.bundle.json",
+  "bypassable": "m1-transition-bypassable.bundle.json"
  },
  "state_revision": 7,
  "now": "2026-11-07T11:00:00Z",
@@ -152,11 +156,30 @@
     }
    },
    "expected": {
+    "status": "invalid",
+    "reason_code": "ACCEPTANCE_BINDING_UNEXPECTED",
+    "matched_rule_ids": []
+   },
+   "rationale": "CHANGED (D-019 N-1): the kernel now classifies protection; verifying to planning is unprotected, so carrying an acceptance binding is structurally invalid (was DEFAULT_DENY; the default-deny intent moves to tx-06b)"
+  },
+  {
+   "id": "tx-06b-unlisted-target-state-unbound",
+   "patch": {
+    "action": {
+     "attributes": {
+      "acceptance_record_id": null,
+      "artifact_snapshot_id": null,
+      "artifact_digest": null,
+      "to_state": "planning"
+     }
+    }
+   },
+   "expected": {
     "status": "deny",
     "reason_code": "DEFAULT_DENY",
     "matched_rule_ids": []
    },
-   "rationale": "no statement lists planning: default deny"
+   "rationale": "NEW (preserves tx-06 intent): unprotected, structurally valid, no statement: default deny"
   },
   {
    "id": "tx-07-composite-publish",
@@ -629,13 +652,11 @@
     }
    },
    "expected": {
-    "status": "allow",
-    "reason_code": "ACCEPT_TRANSITION_PERMITTED",
-    "matched_rule_ids": [
-     "permit-accept"
-    ]
+    "status": "invalid",
+    "reason_code": "ACCEPTANCE_BINDING_REQUIRED",
+    "matched_rule_ids": []
    },
-   "rationale": "NEW (A2): the kernel authorizes the transition; protection is enforced by the broker from the trusted acceptance policy (scenario sc-32 refuses the same request). ASSUMPTION B-1: single enforcement point for protection"
+   "rationale": "CHANGED (D-019 N-1): a protected transition without acceptance attributes is structurally invalid at the kernel and never receives ALLOW (was allow, with protection enforced by the broker only)"
   },
   {
    "id": "tx-39-policy-prohibition-is-deny",
@@ -763,6 +784,157 @@
     "matched_rule_ids": []
    },
    "rationale": "NEW (D-018): escape-equivalent duplicate of action.kind"
+  },
+  {
+   "id": "tx-46-protected-edge-without-acceptance",
+   "patch": {
+    "action": {
+     "attributes": {
+      "acceptance_record_id": null,
+      "artifact_snapshot_id": null,
+      "artifact_digest": null,
+      "from_state": "draft",
+      "to_state": "verifying"
+     }
+    }
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "ACCEPTANCE_BINDING_REQUIRED",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW (N-4): draft to verifying is a protected edge although verifying is not a protected state"
+  },
+  {
+   "id": "tx-47-protected-edge-with-acceptance",
+   "patch": {
+    "action": {
+     "attributes": {
+      "from_state": "draft",
+      "to_state": "verifying"
+     }
+    }
+   },
+   "expected": {
+    "status": "allow",
+    "reason_code": "START_VERIFICATION_PERMITTED",
+    "matched_rule_ids": [
+     "permit-start-verification"
+    ]
+   },
+   "rationale": "NEW (N-4): with the binding present the kernel authorizes; the broker validates the record"
+  },
+  {
+   "id": "tx-48-destination-protected-from-any-source",
+   "patch": {
+    "action": {
+     "attributes": {
+      "acceptance_record_id": null,
+      "artifact_snapshot_id": null,
+      "artifact_digest": null,
+      "from_state": "reviewing"
+     }
+    }
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "ACCEPTANCE_BINDING_REQUIRED",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW (N-4): destination protection applies regardless of source state"
+  },
+  {
+   "id": "tx-49-unprotected-with-binding",
+   "patch": {
+    "action": {
+     "attributes": {
+      "from_state": "planning",
+      "to_state": "verifying"
+     }
+    }
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "ACCEPTANCE_BINDING_UNEXPECTED",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW (N-1): a binding on an unprotected transition is ambiguous"
+  },
+  {
+   "id": "tx-50-protection-classification-missing",
+   "patch": {},
+   "bundle_variant": "protection-missing",
+   "expected": {
+    "status": "unavailable",
+    "reason_code": "POLICY_BUNDLE_REJECTED",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW (N-1): missing classification fails closed at load"
+  },
+  {
+   "id": "tx-51-protection-duplicate-edge",
+   "patch": {},
+   "bundle_variant": "protection-duplicate",
+   "expected": {
+    "status": "unavailable",
+    "reason_code": "POLICY_BUNDLE_REJECTED",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW (N-4): ambiguous definition rejected"
+  },
+  {
+   "id": "tx-52-protection-self-edge",
+   "patch": {},
+   "bundle_variant": "protection-self-edge",
+   "expected": {
+    "status": "unavailable",
+    "reason_code": "POLICY_BUNDLE_REJECTED",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW (N-4): a self edge is not a transition"
+  },
+  {
+   "id": "tx-53-protection-bypassable",
+   "patch": {},
+   "bundle_variant": "bypassable",
+   "expected": {
+    "status": "unavailable",
+    "reason_code": "POLICY_BUNDLE_REJECTED",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW (N-4): a protected edge reachable by an unprotected permitted route is rejected at load"
+  },
+  {
+   "id": "tx-54-state-with-trailing-space",
+   "patch": {
+    "action": {
+     "attributes": {
+      "to_state": "accepted "
+     }
+    }
+   },
+   "expected": {
+    "status": "invalid",
+    "reason_code": "TRANSITION_MALFORMED",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW (N-4): alternate spelling of a protected state"
+  },
+  {
+   "id": "tx-55-intermediate-route-not-permitted",
+   "patch": {
+    "action": {
+     "attributes": {
+      "from_state": "reviewing"
+     }
+    }
+   },
+   "expected": {
+    "status": "deny",
+    "reason_code": "DEFAULT_DENY",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW (N-4): with the binding present, reviewing to accepted is still not permitted by any statement"
   }
  ]
 }

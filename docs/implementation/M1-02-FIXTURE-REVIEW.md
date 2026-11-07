@@ -1,6 +1,26 @@
 # M1-02 fixture review package
 
-**Status: PENDING INDEPENDENT REVIEW.** Revision 3 (2026-11-07), after owner decisions [D-017](DECISION-LOG.md) and [D-018](DECISION-LOG.md). Prepared by Claude, who also wrote every expectation. No Rust or Go code exists. Expectations must not be changed to make a prototype pass; a disagreement is resolved by a recorded review decision. Earlier revisions: `4a66364` (draft 1), `a97e8f1` (amendment 1). Change logs: [amendment 1](../../m1/fixtures/AMENDMENT-1.md), [amendment 2](../../m1/fixtures/AMENDMENT-2.md).
+**Status: PENDING INDEPENDENT REVIEW.** Revision 4 (2026-11-07), after owner decisions [D-017, D-018 and D-019](DECISION-LOG.md). Prepared by Claude, who also wrote every expectation. Expectations must not be changed to make a prototype pass; a disagreement is resolved by a recorded review decision. Earlier revisions: `4a66364`, `a97e8f1`, `226e4d2`. Change logs: [amendment 1](../../m1/fixtures/AMENDMENT-1.md), [amendment 2](../../m1/fixtures/AMENDMENT-2.md), [amendment 3](../../m1/fixtures/AMENDMENT-3.md).
+
+## Revision 4 summary
+
+| Set | Cases | Added in amendment 3 | Expected values changed in amendment 3 |
+|---|---|---|---|
+| canonical-vector | 1 | 0 | 0 |
+| strict-json | 37 | 0 | 0 |
+| golden-decisions | 26 | 0 | 0 |
+| acceptance-binding | 97 | 0 | 0 |
+| transition-decisions | 56 | 11 | 2 (`tx-06`, `tx-38`) |
+| transition-scenarios | 66 | 17 | 1 (`sc-08`); 7 effect cases restart from a promoted workflow (inputs and final state only) |
+| external-refusal | 56 | 20 | 0 |
+| broker-scenarios (new) | 43 | 43 | n/a |
+| **Total** | **382** | **91** | **3** |
+
+Findings from revision 3: **N-1** resolved (kernel and broker both enforce protection from one pinned classification); **N-2** resolved (43 language-neutral broker cases, BROKER.md); **N-3** resolved (effect prerequisites and promotion receipts, sc-55..sc-65); **N-4** resolved (protected edges, union semantics, bypassable definitions rejected at load).
+
+Remaining assumptions needing owner attention: (C-1) one generic external code `PROMOTION_REFUSED` for all non-validation security refusals, including broker and effect refusals, and `ACCEPTANCE_BINDING_REQUIRED` hidden externally although it tells the caller what to supply; (C-2) protected-edge bypass analysis treats a statement without `from_states` as permitting any named state; (C-3) a crash after reservation resumes on retry (differs from M0); (C-4) malformed stored grants (`GRANT_MALFORMED`) are not reachable through the fixture `approve` operation; (C-5) the broker comparison with M0 is by test correspondence, not execution (M1-05); (C-6) concurrency in fixtures is checked as a serial-equivalent outcome only.
+
+The sections below describe revision 3 and remain accurate except where the summary above supersedes them.
 
 ## Files
 

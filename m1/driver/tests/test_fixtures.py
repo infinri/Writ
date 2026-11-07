@@ -165,6 +165,30 @@ class SemanticRuleTests(unittest.TestCase):
                 self.assertEqual(case["expect"]["external"], "PROMOTION_REFUSED", case["id"])
 
 
+class BrokerConstructionTests(unittest.TestCase):
+    """Seals are built as BROKER.md says: valid seals verify, refused-at-ingress cases do not."""
+
+    def test_seals_match_their_expected_ingress_outcome(self):
+        import hashlib, hmac
+        checked = 0
+        for case in load_set("broker-scenarios"):
+            init = case["input"]["initial"]
+            results = case["expect"]["steps"]
+            for step, result in zip(case["input"]["steps"], results):
+                if step["op"] != "execute":
+                    continue
+                seal, req = step["seal"], step["request"]
+                ok = False
+                if seal and seal["adapter_id"] in init["ingress_keys"] and seal["adapter_id"] == req["principal"]["verified_by"]:
+                    text = json.dumps(req, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+                    mac = hmac.new(bytes.fromhex(init["ingress_keys"][seal["adapter_id"]]), text, hashlib.sha256).hexdigest()
+                    ok = hmac.compare_digest(mac, seal["mac"])
+                refused_at_ingress = result.get("code") == "INGRESS_UNAUTHENTICATED"
+                self.assertEqual(ok, not refused_at_ingress, case["id"])
+                checked += 1
+        self.assertGreater(checked, 40)
+
+
 class CountTests(unittest.TestCase):
     def test_counts_by_set(self):
         counts = {name: len(load_set(name)) for name in

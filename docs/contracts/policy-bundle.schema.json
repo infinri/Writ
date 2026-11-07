@@ -144,6 +144,50 @@
         "string",
         "null"
       ]
+    },
+    "workflow_protection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "acceptance_policy_bundle_sha",
+        "protected_to_states",
+        "protected_transitions"
+      ],
+      "description": "M1 draft (D-019): authoritative classification of protected workflow states and edges, and the acceptance-policy bundle this authorization bundle is compatible with. Required when any statement covers workflow.transition.",
+      "properties": {
+        "acceptance_policy_bundle_sha": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "protected_to_states": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+          }
+        },
+        "protected_transitions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "from_state",
+              "to_state"
+            ],
+            "properties": {
+              "from_state": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+              },
+              "to_state": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

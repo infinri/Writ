@@ -14,7 +14,8 @@ Protocol (see docs/implementation/M1-PARITY-SUITE.md, "Prototype interface"):
   exit status  0 when every line was answered (a refusal is an output, not a crash)
 
 Fixture set file (JSON Lines): {"id", "input" | "input_text", "expect": object,
-  "compare": "exact" | "fields", "fields": [..] (for "fields"), "meta": {...}}.
+  "compare": "exact" | "fields" | "one_of", "fields": [..] (for "fields"), "meta": {...}}.
+  one_of: expect is {"one_of": [output, ...]}; any listed output passes (serialization orders).
 """
 from __future__ import annotations
 
@@ -54,12 +55,15 @@ def load_cases(path: Path) -> list[dict]:
             raise FixtureError(f"{path}:{n}: missing or duplicate id {cid!r}")
         if ("input" in case) == ("input_text" in case):
             raise FixtureError(f"{path}:{n}: exactly one of input, input_text required")
-        if case.get("compare", "exact") not in ("exact", "fields"):
+        if case.get("compare", "exact") not in ("exact", "fields", "one_of"):
             raise FixtureError(f"{path}:{n}: unknown compare mode")
         if case.get("compare") == "fields" and not case.get("fields"):
             raise FixtureError(f"{path}:{n}: fields compare needs a non-empty fields list")
         if not isinstance(case.get("expect"), dict):
             raise FixtureError(f"{path}:{n}: expect must be an object")
+        if case.get("compare") == "one_of" and not (isinstance(case["expect"].get("one_of"), list)
+                                                    and case["expect"]["one_of"]):
+            raise FixtureError(f"{path}:{n}: one_of compare needs a non-empty expect.one_of list")
         seen.add(cid)
         cases.append(case)
     if not cases:
@@ -85,6 +89,8 @@ def compare(case: dict, output) -> list[str]:
         return ["output is not an object"]
     if case.get("compare", "exact") == "exact":
         return [] if output == expect else ["output differs from expect"]
+    if case["compare"] == "one_of":
+        return [] if any(output == alt for alt in expect["one_of"]) else ["output matches none of the acceptable outputs"]
     diffs = []
     for field in case["fields"]:
         got, want = output.get(field, _MISSING), expect.get(field, _MISSING)

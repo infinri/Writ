@@ -1,9 +1,9 @@
 {
   "contract_version": "2.0",
   "bundle_id": "m1-transition-unscoped",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "writ-v2-design-fixture",
-  "description": "Invalid variant: a permit statement covering workflow.transition without to_states. Must be rejected at load (D-017).",
+  "description": "Invalid variant: a permit covering workflow.transition without to_states (D-017).",
   "known_capabilities": [
     "agent.dispatch",
     "file.read",
@@ -118,6 +118,7 @@
         "workflow:fixture-tenant/fixture-project/"
       ],
       "from_states": [
+        "draft",
         "planning"
       ],
       "to_states": [
@@ -148,5 +149,19 @@
       "reason_code": "ANY_TRANSITION_PERMITTED"
     }
   ],
-  "publisher_signature": null
+  "publisher_signature": null,
+  "workflow_protection": {
+    "acceptance_policy_bundle_sha": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "protected_to_states": [
+      "accepted",
+      "deployed",
+      "released"
+    ],
+    "protected_transitions": [
+      {
+        "from_state": "draft",
+        "to_state": "verifying"
+      }
+    ]
+  }
 }
