@@ -1,13 +1,12 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-07 (acceptance commit) · **Branch:** v2/architecture-rebuild · **Milestone:** **M1 active** (development only). M0 closed for development only under D-014 (ACCEPTED 2026-11-07); release and production NO-GO; 16 risks open.
+**Last updated:** 2026-11-07 (end of M1-05) · **Branch:** v2/architecture-rebuild · **Milestone:** M1 active (development only, D-014); M1-00..M1-05 DONE; M1-06 blocked by environment. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md).
 
 ## Current
 
-- **M0 gate:** decision commit `38e2d1f` (CI 42319056546, E-014); owner attestation by Lucio Saldivar ([comment](https://github.com/infinri/Writ/commit/38e2d1f31fb11a145cb7a109934e85b018dd1d60#commitcomment-208565071)) verified read-only (E-015); D-014 ACCEPTED.
-- **Pushed docs:** `ae7944f` Control Center (D-015), `606ab5c` Acceptance Gate Integrity proposal (D-016, ADR-0008 PROPOSED), CI 42320181315 success.
-- **Still open, unchanged by the GO:** 26 golden cases PENDING INDEPENDENT REVIEW (REL-01); 288 rules unreviewed (M6-RULES); SR-06 NOT VERIFIED (M5-SR06); 16 risks open; `hook-audit/` unpublished.
-- **Active milestone:** M1 bake-off per ADR-0002 and [M1-PARITY-SUITE](M1-PARITY-SUITE.md); tasks M1-00..M1-08 and AG-M1 in [TASKS](TASKS.md). No winner before measurements.
+- **Code and CI:** `fe7de57a430355a529bc39088e659b5f5f915f39`, CI https://github.com/infinri/Writ/actions/runs/42394888125 (5 jobs success, including the required property job).
+- **Prototypes:** Rust `m1/rust/`, Go `m1/go/`: both 414/414 fixtures, 11/11 property regressions, 0 property mismatches (E-025).
+- **Next:** M1-06a benchmark harness without measurements; M1-06 measurements after the owner provides mains power and a fixed governor.
 
 ## Security findings
 
@@ -46,4 +45,4 @@ CI E-013: run [42309913797](https://github.com/infinri/Writ/actions/runs/4230991
 
 ## Next exact action
 
-M1-03 (Rust) and M1-04 (Go) prototypes against the identical 382-case fixture sets (D-019 authorizes the start). Push of the amendment-3 commit awaits owner authorization. No comparative benchmarks on battery or with an uncontrolled governor.
+M1-06a: write `m1/bench/` (no measurements) per SESSION-HANDOFF section F. M1-06 runs are blocked: on battery, governor `powersave`.
