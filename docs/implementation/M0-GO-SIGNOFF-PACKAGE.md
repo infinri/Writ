@@ -1,6 +1,6 @@
 # M0 development-GO signoff package
 
-**Status (2026-11-06): decision RECORDED per owner instruction, PENDING OWNER ATTESTATION.** Prepared by Claude on 2026-11-06. The owner instructed adoption of A-1 on 2026-11-06; the decision commit records that instruction in [M0-GO-NO-GO](M0-GO-NO-GO.md). Claude does not sign, impersonate the owner, invent verdicts or mark D-014 ACCEPTED before the attestation exists.
+**Status (2026-11-07): SIGNED.** Decision commit `38e2d1f` (CI 42319056546); owner attestation by Lucio Saldivar ([comment](https://github.com/infinri/Writ/commit/38e2d1f31fb11a145cb7a109934e85b018dd1d60#commitcomment-208565071)), verified read-only; acceptance commit records D-014 ACCEPTED. Prepared by Claude on 2026-11-06; Claude did not sign or post the attestation.
 
 | Input | Value |
 |---|---|

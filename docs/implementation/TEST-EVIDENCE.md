@@ -122,6 +122,13 @@ SR-06 sandbox facts (preflight PASS, telemetry diagnostic) are recorded in `docs
 - **Unrelated:** Pages publish run 42319056484 failed: `Branch "v2/architecture-rebuild" is not allowed to deploy to github-pages due to environment protection rules.` Same pre-existing cause as E-003.
 - **Gate meaning:** criterion 1 of amendment A-1 holds for the decision commit. The owner attestation (criterion 5) is still required; D-014 remains PROPOSED.
 
+### E-015: Owner attestation verification (read-only) and docs CI
+
+- **Attestation:** https://github.com/infinri/Writ/commit/38e2d1f31fb11a145cb7a109934e85b018dd1d60#commitcomment-208565071. Read via `gh api repos/infinri/Writ/commits/38e2d1f.../comments`: author `infinri`, `author_association` OWNER, created and last updated 2026-11-07T00:44:26Z; decision CI run 42319056546 completed 2026-11-07T00:34:59Z (head SHA `38e2d1f31fb11a145cb7a109934e85b018dd1d60`, success). Body names the decision SHA and the run URL; scope text matches the signoff-package template. The owner stated in session that it was posted personally.
+- **Defects noted, not blocking:** date placeholder `(date)` left unfilled (GitHub's timestamp is the date of record); "AIsession" missing a space.
+- **Limitation:** a web UI comment cannot be cryptographically distinguished from an API comment by the same account; Claude posted no comment.
+- **Docs commits:** `ae7944f`, `606ab5c` pushed (origin `38e2d1f..606ab5c`, no force); CI run https://github.com/infinri/Writ/actions/runs/42320181315 success on `606ab5c`.
+
 ## Not yet executed
 
 - SR-06 live-host experiments (0 of 69; sandbox torn down) and full SR-06 acceptance; rule semantic review (M0-01d); independent human golden review (M0-05a).

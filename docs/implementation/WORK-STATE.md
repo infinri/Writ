@@ -1,14 +1,13 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-06 (decision commit) · **Branch:** v2/architecture-rebuild · **Milestone:** M0 NOT closed. Development GO **RECORDED, PENDING OWNER ATTESTATION** (owner instruction 2026-11-06); D-014 PROPOSED; release and production NO-GO. M1 implementation has not started.
+**Last updated:** 2026-11-07 (acceptance commit) · **Branch:** v2/architecture-rebuild · **Milestone:** **M1 active** (development only). M0 closed for development only under D-014 (ACCEPTED 2026-11-07); release and production NO-GO; 16 risks open.
 
 ## Current
 
-- **Phase:** M0 development-GO signoff. The decision commit records the owner's instruction of 2026-11-06 in [M0-GO-NO-GO](M0-GO-NO-GO.md); the [signoff package](M0-GO-SIGNOFF-PACKAGE.md) section 3 defines the remaining steps.
-- **Decision commit pushed:** `38e2d1f`, CI run 42319056546 success (E-014).
-- **Architecture proposal (local, not pushed):** Acceptance Gate Integrity (D-016, ADR-0008 PROPOSED, AG-00 IN REVIEW).
-- **Active task:** M0-06 IN REVIEW. Remaining: the owner posts the attestation personally in the GitHub web UI; Claude verifies it read-only; acceptance commit (D-014 ACCEPTED, M0 closed for development only).
-- **Writ Control Center (D-015, ADR-0007):** specification and roadmap integration committed separately from the decision commit (CC-00 DONE, documentation only). Implementation tasks CC-M2..CC-E start with their milestones; none before M2.
+- **M0 gate:** decision commit `38e2d1f` (CI 42319056546, E-014); owner attestation by Lucio Saldivar ([comment](https://github.com/infinri/Writ/commit/38e2d1f31fb11a145cb7a109934e85b018dd1d60#commitcomment-208565071)) verified read-only (E-015); D-014 ACCEPTED.
+- **Pushed docs:** `ae7944f` Control Center (D-015), `606ab5c` Acceptance Gate Integrity proposal (D-016, ADR-0008 PROPOSED), CI 42320181315 success.
+- **Still open, unchanged by the GO:** 26 golden cases PENDING INDEPENDENT REVIEW (REL-01); 288 rules unreviewed (M6-RULES); SR-06 NOT VERIFIED (M5-SR06); 16 risks open; `hook-audit/` unpublished.
+- **Active milestone:** M1 bake-off per ADR-0002 and [M1-PARITY-SUITE](M1-PARITY-SUITE.md); tasks M1-00..M1-08 and AG-M1 in [TASKS](TASKS.md). No winner before measurements.
 
 ## Security findings
 
@@ -47,4 +46,4 @@ CI E-013: run [42309913797](https://github.com/infinri/Writ/actions/runs/4230991
 
 ## Next exact action
 
-The owner posts the attestation on commit `38e2d1f` (signoff package section 3); Claude verifies it read-only, then prepares the acceptance commit. Pushing `ae7944f` (Control Center) and the Acceptance Gate commit needs separate authorization. Do not start M1 implementation before the acceptance commit.
+M1-00: install pinned Rust and Go toolchains in user space and record versions (owner confirmation of the install requested first). Then M1-01 (parity driver) and M1-02 (hand-reasoned acceptance fixtures).
