@@ -33,12 +33,24 @@ var commands = map[string]handler{
 	"broker-scenario":     brokerScenario,
 }
 
+const usage = "usage: proto canonical|decide|decide-batch|bench-decide|check-acceptance|external-refusal|transition-scenario|sqlite-info\n" +
+	"       proto broker-scenario [--ledger sqlite (--ledger-dir DIR | --ledger-db PATH)]"
+
 func main() {
-	if len(os.Args) != 2 || commands[os.Args[1]] == nil {
-		fmt.Fprintln(os.Stderr, "usage: proto canonical|decide|decide-batch|bench-decide|check-acceptance|external-refusal|transition-scenario|broker-scenario")
+	if len(os.Args) == 2 && os.Args[1] == "sqlite-info" {
+		info, err := broker.Info()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "sqlite-info:", err)
+			os.Exit(1)
+		}
+		os.Stdout.Write(append(sjson.Encode(info), '\n'))
+		return
+	}
+	h, ok := parseArgs(os.Args[1:])
+	if !ok {
+		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	}
-	h := commands[os.Args[1]]
 	in := bufio.NewReaderSize(os.Stdin, 1<<20)
 	out := bufio.NewWriter(os.Stdout)
 	defer out.Flush()
@@ -56,6 +68,50 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
+
+// parseArgs selects the handler for `<command> [options]`. Only
+// broker-scenario takes options: `--ledger sqlite` with exactly one of
+// `--ledger-dir DIR` (an existing directory) or `--ledger-db PATH`.
+func parseArgs(args []string) (handler, bool) {
+	if len(args) == 0 || commands[args[0]] == nil {
+		return nil, false
+	}
+	if len(args) == 1 {
+		return commands[args[0]], true
+	}
+	if args[0] != "broker-scenario" {
+		return nil, false
+	}
+	opts := map[string]string{}
+	for rest := args[1:]; len(rest) > 0; rest = rest[2:] {
+		switch rest[0] {
+		case "--ledger", "--ledger-dir", "--ledger-db":
+		default:
+			return nil, false
+		}
+		if _, dup := opts[rest[0]]; dup || len(rest) < 2 || rest[1] == "" {
+			return nil, false
+		}
+		opts[rest[0]] = rest[1]
+	}
+	dir, hasDir := opts["--ledger-dir"]
+	db, hasDB := opts["--ledger-db"]
+	if opts["--ledger"] != "sqlite" || hasDir == hasDB {
+		return nil, false
+	}
+	if hasDir {
+		if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+			return nil, false
+		}
+	}
+	store := &broker.SQLite{Dir: dir, DB: db}
+	return func(input any, jerr *sjson.Error) map[string]any {
+		if jerr != nil {
+			return map[string]any{"input_error": "INPUT_JSON_INVALID", "json_error": jerr.Code}
+		}
+		return broker.RunWith(input, store)
+	}, true
 }
 
 // isBlank reports whether a line holds only JSON whitespace.

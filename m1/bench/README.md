@@ -18,9 +18,10 @@ Exit codes: 0 done and every correctness check passed; 2 usage or missing binary
 | Name | Command | Protocol profile | Correctness gate during the run |
 |---|---|---|---|
 | A: policy decisions | `decide-batch`, `bench-decide` | 1,000 warm-up + 10,000 decisions per process, 10 runs; generated from the 26 golden cases varying request ids, idempotency keys, tenant (20%) and resource (50%) | Rust output equals Go output per case; every `bench-decide` decision equals the same prototype's `decide` output |
-| B: approval races | `broker-scenario` | 100 sessions, each one concurrent group of 10 executes with shared grants and shared or conflicting keys, 10 runs | every observed group equals a permitted serialization (M1-05 model) and broker run invariants hold |
+| B-mem, H-mem | as B and H with the in-memory ledger | same | same; labelled simulated, never a substitute for B or H |
+| B: approval races | `broker-scenario --ledger sqlite` (fresh database directory per process, D-023) | 100 sessions, each one concurrent group of 10 executes with shared grants and shared or conflicting keys, 10 runs | every observed group equals a permitted serialization (M1-05 model) and broker run invariants hold |
 | G: hostile input | `decide-batch` | 1,000 lines, 5 runs: symlink paths (created in a disposable directory), invalid UTF-8, lone surrogates, 1 MiB content and resource, shell composition, unknown kind and capability | exact Rust and Go equality, identical across repeats |
-| H: duplicates and uncertain receipts | `broker-scenario` | 1,000 scenarios, 5 runs, 7 templates (duplicate after effect, after reserve crash, before reserve crash, after failure, uncertain receipt and reconcile, granted duplicate then exhausted, restart between) | exact Rust and Go equality, identical across repeats |
+| H: duplicates and uncertain receipts | `broker-scenario --ledger sqlite` | 1,000 scenarios, 5 runs, 7 templates (duplicate after effect, after reserve crash, before reserve crash, after failure, uncertain receipt and reconcile, granted duplicate then exhausted, restart between) | exact Rust and Go equality, identical across repeats |
 | Cold start | `decide` | 30 launches per prototype to first answered line | answers identical |
 | Concurrency | `decide-batch` | 10,000 decisions split across 1, 10, 100, 1,000 simultaneously started processes | all answered, Rust equals Go |
 
@@ -31,7 +32,8 @@ Runs alternate which prototype goes first. Peak RSS is a separate full run of ea
 ## Not covered (recorded in every result under `not_measured`)
 
 - Workload E (chaos): not implemented.
-- Workload B uses the prototypes' in-memory ledger model; the SQLite/WAL ledger named in the workload mapping and ADR-0002 is not implemented in either prototype (owner decision needed before M1-06, see SESSION-HANDOFF).
+- Every run first checks that both prototypes report the identical SQLite engine (3.54.1, source id, compile options) and the D-023 settings (`proto sqlite-info`); a difference fails the run.
+- Per-operation broker authorization and transaction latency needs in-process instrumentation (not yet implemented); B and H report batch wall time only.
 - G symlinks: M1 kernels do no filesystem access, so symlink paths exercise string handling only.
 
 ## Result format

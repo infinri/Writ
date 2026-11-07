@@ -4,15 +4,15 @@ The Go side of the M1 language bake-off (ADR-0002). It implements the JSON Lines
 
 ## Build and run
 
-Toolchain: Go 1.27.3 (pinned, user space, `GOTOOLCHAIN=local`). Standard library only; no third-party modules.
+Toolchain: Go 1.27.3 (pinned, user space, `GOTOOLCHAIN=local`). One third-party module: `github.com/mattn/go-sqlite3 v1.14.52` (cgo), always built with the tags `libsqlite3 sqlite_omit_load_extension` so it links the pinned SQLite 3.54.1 from `m1/tools/install-sqlite.sh` (via `CGO_CFLAGS`/`CGO_LDFLAGS` in `m1/tools/env.sh`) instead of its bundled copy. A build without both tags fails (`internal/broker/requiretags.go`).
 
 ```sh
 source m1/tools/env.sh
-cd m1/go && go build -o proto ./cmd/proto && cd ../..
+cd m1/go && go build -tags "libsqlite3 sqlite_omit_load_extension" -o proto ./cmd/proto && cd ../..
 python3 m1/driver/parity.py --proto "$PWD/m1/go/proto" --manifest m1/fixtures/manifest.json --repeat 2
 ```
 
-Checks: `cd m1/go && go vet ./... && go test -race -count=1 ./...`. The binary `m1/go/proto` is gitignored.
+Checks: `cd m1/go && go vet -tags "libsqlite3 sqlite_omit_load_extension" ./... && go test -race -count=1 -tags "libsqlite3 sqlite_omit_load_extension" ./...`. The binary `m1/go/proto` is gitignored.
 
 ## Layout
 
@@ -23,8 +23,8 @@ Checks: `cd m1/go && go vet ./... && go test -race -count=1 ./...`. The binary `
 | `internal/acceptance` | Pure `check_acceptance` in the normative order of SEMANTICS.md. | none |
 | `internal/refusal` | Internal code to agent-facing code mapping (D-018 A7, D-020). | none |
 | `internal/transition` | `transition-scenario` broker: promotion transaction, effects, reconciliation, concurrency. Calls `acceptance.Check`. | in-memory only |
-| `internal/broker` | `broker-scenario` broker: sealed ingress, use-time `kernel.Decide`, approval grants, permits and adapter, idempotent receipts, faults, reconciliation. | in-memory only |
-| `cmd/proto` | Envelope handling and command dispatch. | stdin, stdout |
+| `internal/broker` | `broker-scenario` broker: sealed ingress, use-time `kernel.Decide`, approval grants, permits and adapter, idempotent receipts, faults, reconciliation. The ledger is in-memory (default) or SQLite (`sqlite.go`, D-023). | in-memory, or SQLite files |
+| `cmd/proto` | Envelope handling, command dispatch, ledger options, `sqlite-info`. | stdin, stdout |
 
 Kernel, broker and acceptance are separate packages; the brokers depend on the kernel and acceptance checker, never the reverse.
 
@@ -57,9 +57,13 @@ Defects found by the M1-05 property harness (`m1/props/`) and the protocol clari
 
 Regression tests: `internal/sjson/sjson_test.go` (numbers, `ReadID`), `cmd/proto/main_test.go` (envelope and null-id correlation, decide parse failure, recover boundary, negative count), `internal/transition/validate_test.go`, `internal/broker/validate_test.go`.
 
+## SQLite ledger (D-023)
+
+`proto broker-scenario --ledger sqlite --ledger-dir DIR` gives every scenario line a new database file `DIR/<pid>-<n>.db` (created exclusively, schema applied in one transaction); `--ledger-db PATH` uses one file for the whole process, created if absent and never reset, so a second process continues from it. `proto sqlite-info` prints the engine version, source id, compile options, the connection settings read back, the schema version and the driver. The logical transactions, settings and restart follow [LEDGER-SQLITE.md](../fixtures/broker/LEDGER-SQLITE.md); outputs are the same as with the in-memory ledger. Each connection is a dedicated `*sql.Conn` on its own `*sql.DB` (at most one connection), with `_txlock=immediate` so every transaction is `BEGIN IMMEDIATE`. A `concurrent` group opens one connection per operation and starts them together. A ledger error answers `LEDGER_UNAVAILABLE` for that operation and is reported on stderr. Tests: `internal/broker/sqlite_test.go`, `cmd/proto/main_test.go` (options, second process, `sqlite-info`).
+
 ## Concurrency
 
-`concurrent` and `promote_concurrent` run each operation on its own goroutine; operations take the scenario mutex for their whole duration, so the outcome equals some serialization. Where the spec allows several serializations (`sc-64`, compare mode `one_of`), either may occur from run to run.
+`concurrent` and `promote_concurrent` run each operation on its own goroutine; with the in-memory ledgers operations take the scenario mutex for their whole duration, and with the SQLite broker ledger they hold the in-process key lock and run `BEGIN IMMEDIATE` transactions, so the outcome equals some serialization. Where the spec allows several serializations (`sc-64`, compare mode `one_of`), either may occur from run to run.
 
 ## Choices where the documents are silent
 

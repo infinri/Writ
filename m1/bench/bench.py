@@ -146,16 +146,36 @@ def workload_a(protos, prof, seed, tmp: Path, check: Check, samples: dict) -> di
                       "parsing, encoding and I/O; batch wall: process launch to exit over warm-up plus measured lines"}
 
 
-def workload_b(protos, prof, seed, tmp: Path, check: Check, samples: dict) -> dict:
+class Ledger:
+    """Command line per invocation: the in-memory ledger, or a fresh SQLite
+    database directory for every single prototype process (D-023)."""
+
+    def __init__(self, kind: str | None, tmp: Path, name: str):
+        self.kind, self.root, self.n = kind, tmp / "ledgers" / name, 0
+
+    def cmd(self, base: str, proto) -> str:
+        if self.kind != "sqlite":
+            return base
+        self.n += 1
+        d = self.root / f"{proto.name}-{self.n}"
+        d.mkdir(parents=True)
+        return f"{base} --ledger sqlite --ledger-dir {d}"
+
+
+def workload_b(protos, prof, seed, tmp: Path, check: Check, samples: dict, ledger: str | None = "sqlite",
+               name: str = "B") -> dict:
     command, lines, meta, cases = wl.gen_b(seed, prof["b_sessions"])
-    path = tmp / "b.jsonl"
+    led = Ledger(ledger, tmp, name)
+    meta = dict(meta, ledger="sqlite (file-backed, D-023)" if ledger == "sqlite" else
+                "in-memory model (simulated; not a substitute for the SQLite workload)")
+    path = tmp / f"{name.lower()}.jsonl"
     wl.write_lines(path, lines)
     ids, nulls = ids_of(lines)
     res = Results("bench-B")
     walls = {p.name: [] for p in protos}
     for run in range(prof["b_runs"]):
         for p in order(protos, run):
-            r = outputs_of(p, command, path, check, ids, nulls)
+            r = outputs_of(p, led.cmd(command, p), path, check, ids, nulls)
             walls[p.name].append(r["wall_s"])
             for c in cases:
                 out = r["out"].get(c["id"])
@@ -164,37 +184,40 @@ def workload_b(protos, prof, seed, tmp: Path, check: Check, samples: dict) -> di
                 ok = isinstance(grp, dict) and grp.get("result") == "concurrent" and \
                     c_broker.serializable(c, grp.get("outcomes") or {}, out.get("final") or {})
                 if not ok:
-                    check.fail("B.concurrent_group_equals_a_serialization", {"proto": p.name, "id": c["id"], "ok": ok})
-    check.ok("B.concurrent_group_equals_a_serialization")
+                    check.fail(f"{name}.concurrent_group_equals_a_serialization", {"proto": p.name, "id": c["id"], "ok": ok})
+    check.ok(f"{name}.concurrent_group_equals_a_serialization")
     for inv, per in res.counts.items():
-        check.ok(f"B.{inv}")
+        check.ok(f"{name}.{inv}")
         for pname, v in per.items():
             if v["fail"]:
-                check.fail(f"B.{inv}", {"proto": pname, "fails": v["fail"]})
+                check.fail(f"{name}.{inv}", {"proto": pname, "fails": v["fail"]})
     meas = {}
     for p in protos:
-        samples[f"B.{p.name}"] = walls[p.name]
+        samples[f"{name}.{p.name}"] = walls[p.name]
         meas[p.name] = {"batch_wall_s": stats.summarize(walls[p.name]),
                         "sessions_per_sec": (len(lines) * len(walls[p.name]) / sum(walls[p.name])) if walls[p.name] else None,
-                        "peak_rss_kb": runner.peak_rss(p, command, path, tmp)["kb"]}
+                        "peak_rss_kb": runner.peak_rss(p, led.cmd(command, p), path, tmp)["kb"]}
     return {"command": command, "seed": seed, "runs": prof["b_runs"], "digest": wl.digest_lines(lines), "meta": meta,
             "measurements": meas,
             "method": "one broker-scenario per session, each ending in one concurrent group of 10 executes "
                       "(in-process threads); checked against every permitted serialization"}
 
 
-def workload_plain(name, gen, protos, runs, tmp: Path, check: Check, samples: dict) -> dict:
+def workload_plain(name, gen, protos, runs, tmp: Path, check: Check, samples: dict, ledger: str | None = None) -> dict:
     """G and H: deterministic outputs; exact differential, then timed batches."""
     command, lines, meta = gen
+    led = Ledger(ledger, tmp, name)
+    if command == "broker-scenario":
+        meta = dict(meta, ledger="sqlite (file-backed, D-023)" if ledger == "sqlite" else "in-memory model (simulated)")
     path = tmp / f"{name.lower()}.jsonl"
     wl.write_lines(path, lines)
     ids, nulls = ids_of(lines)
-    ref = {p.name: outputs_of(p, command, path, check, ids, nulls)["out"] for p in protos}
+    ref = {p.name: outputs_of(p, led.cmd(command, p), path, check, ids, nulls)["out"] for p in protos}
     differential(name, *ref.values(), check)
     walls = {p.name: [] for p in protos}
     for run in range(runs):
         for p in order(protos, run):
-            r = outputs_of(p, command, path, check, ids, nulls)
+            r = outputs_of(p, led.cmd(command, p), path, check, ids, nulls)
             walls[p.name].append(r["wall_s"])
             if r["out"] != ref[p.name]:
                 check.fail(f"{name}.repeat_identical", {"proto": p.name, "run": run})
@@ -204,7 +227,7 @@ def workload_plain(name, gen, protos, runs, tmp: Path, check: Check, samples: di
         samples[f"{name}.{p.name}"] = walls[p.name]
         meas[p.name] = {"batch_wall_s": stats.summarize(walls[p.name]),
                         "lines_per_sec": (len(lines) * runs / sum(walls[p.name])) if walls[p.name] else None,
-                        "peak_rss_kb": runner.peak_rss(p, command, path, tmp)["kb"]}
+                        "peak_rss_kb": runner.peak_rss(p, led.cmd(command, p), path, tmp)["kb"]}
     return {"command": command, "runs": runs, "lines": len(lines), "digest": wl.digest_lines(lines), "meta": meta,
             "measurements": meas}
 
@@ -255,6 +278,38 @@ def concurrency(protos, prof, seed, tmp: Path, check: Check, samples: dict) -> d
     return {"seed": seed + 2, "digest": wl.digest_lines(lines), "levels": levels,
             "method": "decisions split across k simultaneously started single-threaded prototype processes "
                       "(one per simulated session); wall time until all exit"}
+
+
+REQUIRED_SQLITE = {"sqlite_version": "3.54.1", "journal_mode": "wal", "synchronous": 2, "busy_timeout": 5000,
+                   "foreign_keys": 1, "trusted_schema": 0}
+
+
+def engine_check(protos, check: Check) -> dict:
+    """Both prototypes must report the identical SQLite engine and settings (D-023)."""
+    info = {}
+    for p in protos:
+        r = runner.subprocess.run(p.argv("sqlite-info"), capture_output=True, timeout=60)
+        try:
+            info[p.name] = json.loads(r.stdout)
+        except ValueError:
+            info[p.name] = None
+            check.fail("sqlite.info_available", {"proto": p.name, "stderr": r.stderr[-300:].decode("utf-8", "replace")})
+    check.ok("sqlite.info_available")
+    vals = [v for v in info.values() if isinstance(v, dict)]
+    same = len(vals) == len(protos) and all(
+        (v.get("sqlite_version"), v.get("source_id"), v.get("compile_options"), v.get("settings"))
+        == (vals[0].get("sqlite_version"), vals[0].get("source_id"), vals[0].get("compile_options"), vals[0].get("settings"))
+        for v in vals)
+    if not same:
+        check.fail("sqlite.engine_and_settings_identical", {"info": info})
+    check.ok("sqlite.engine_and_settings_identical")
+    for v in vals:
+        flat = dict(v.get("settings") or {}, sqlite_version=v.get("sqlite_version"))
+        for k, want in REQUIRED_SQLITE.items():
+            if str(flat.get(k)).lower() != str(want).lower():
+                check.fail("sqlite.required_settings", {"key": k, "got": flat.get(k), "want": want})
+    check.ok("sqlite.required_settings")
+    return info
 
 
 # ------------------------------------------------------------------- report
@@ -321,12 +376,15 @@ def main(argv=None) -> int:
     check, samples = Check(), {}
     tmp = Path(tempfile.mkdtemp(prefix="writ-m1-bench-"))
     try:
+        sqlite_info = engine_check(protos, check)
         result_w = {"A": workload_a(protos, prof, a.seed, tmp, check, samples),
-                    "B": workload_b(protos, prof, a.seed, tmp, check, samples)}
+                    "B": workload_b(protos, prof, a.seed, tmp, check, samples, "sqlite", "B"),
+                    "B-mem": workload_b(protos, prof, a.seed, tmp, check, samples, None, "B-mem")}
         gdir = tmp / "g-symlinks"
         gdir.mkdir()
         result_w["G"] = workload_plain("G", wl.gen_g(a.seed, prof["g_n"], str(gdir)), protos, prof["g_runs"], tmp, check, samples)
-        result_w["H"] = workload_plain("H", wl.gen_h(a.seed, prof["h_n"]), protos, prof["h_runs"], tmp, check, samples)
+        result_w["H"] = workload_plain("H", wl.gen_h(a.seed, prof["h_n"]), protos, prof["h_runs"], tmp, check, samples, "sqlite")
+        result_w["H-mem"] = workload_plain("H-mem", wl.gen_h(a.seed, prof["h_n"]), protos, prof["h_runs"], tmp, check, samples)
         cold_r = cold(protos, prof, check, samples)
         conc_r = concurrency(protos, prof, a.seed, tmp, check, samples)
     finally:
@@ -358,11 +416,13 @@ def main(argv=None) -> int:
         "guard": {"enforced": not a.dry_run, "passed": not reasons, "reasons": reasons,
                   "max_load": a.max_load, "max_start_temp_c": a.max_start_temp_c},
         "correctness": {"failed": check.failed(), "checks": dict(check.counts), "examples": check.examples},
-        "workloads": result_w, "cold_start": cold_r, "concurrency": conc_r,
+        "workloads": result_w, "cold_start": cold_r, "concurrency": conc_r, "sqlite": sqlite_info,
         "not_measured": {
             "E": "chaos (ledger and broker kill) not implemented in M1-06a",
-            "workload_B_ledger": "prototypes use an in-memory ledger model; the SQLite/WAL ledger in the "
-                                 "workload mapping is not implemented",
+            "ledgers": "B and H use the file-backed SQLite ledger (D-023, fresh database per process); B-mem and "
+                       "H-mem use the in-memory model and are not substitutes for the SQLite results",
+            "broker_transaction_latency": "per-operation broker authorization and transaction latency needs "
+                                          "in-process instrumentation (not yet implemented); only batch wall time",
             "G_symlinks": "M1 kernels perform no filesystem access; symlink paths exercise string handling only",
         },
         "samples_file": None,

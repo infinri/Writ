@@ -11,11 +11,14 @@ mod json;
 mod kernel;
 mod promotion;
 mod refusal;
+mod sqlite;
 mod time;
 
 use json::{obj, s, JsonError, Value};
 use std::io::{self, BufRead, Write};
+use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 const COMMANDS: [&str; 8] = [
@@ -28,6 +31,34 @@ const COMMANDS: [&str; 8] = [
     "transition-scenario",
     "broker-scenario",
 ];
+
+/// The `broker-scenario` ledger, chosen once from the command line.
+static LEDGER: OnceLock<broker::LedgerChoice> = OnceLock::new();
+
+/// `broker-scenario` options (LEDGER-SQLITE.md "Selecting the ledger"): none,
+/// or `--ledger sqlite` with exactly one of `--ledger-dir DIR` and
+/// `--ledger-db PATH`, each at most once, in any order.
+fn ledger_choice(options: &[String]) -> Option<broker::LedgerChoice> {
+    let (mut ledger, mut dir, mut db) = (None, None, None);
+    for pair in options.chunks(2) {
+        let [name, value] = pair else { return None };
+        let slot = match name.as_str() {
+            "--ledger" => &mut ledger,
+            "--ledger-dir" => &mut dir,
+            "--ledger-db" => &mut db,
+            _ => return None,
+        };
+        if slot.replace(value.clone()).is_some() {
+            return None;
+        }
+    }
+    match (ledger.as_deref(), dir, db) {
+        (None, None, None) => Some(broker::LedgerChoice::Memory),
+        (Some("sqlite"), Some(d), None) => Some(broker::LedgerChoice::SqliteDir(PathBuf::from(d))),
+        (Some("sqlite"), None, Some(p)) => Some(broker::LedgerChoice::SqliteDb(PathBuf::from(p))),
+        _ => None,
+    }
+}
 
 fn strict_failure(command: &str, e: JsonError) -> Value {
     let code = s(e.code());
@@ -56,7 +87,7 @@ fn run_command(command: &str, input: &Value) -> Value {
         },
         "external-refusal" => obj(vec![("external", s(refusal::external(input.str_at("internal_code").unwrap_or(""))))]),
         "transition-scenario" => promotion::run(input),
-        "broker-scenario" => broker::run(input),
+        "broker-scenario" => broker::run_with(input, LEDGER.get().unwrap_or(&broker::LedgerChoice::Memory)),
         _ => unreachable!(),
     }
 }
@@ -131,10 +162,31 @@ fn is_blank(line: &[u8]) -> bool {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
-    let Some(command) = args.get(1).filter(|c| COMMANDS.contains(&c.as_str())) else {
-        eprintln!("usage: proto <{}>", COMMANDS.join("|"));
-        return ExitCode::from(2);
+    let usage = || {
+        eprintln!("usage: proto <{}> | proto broker-scenario [--ledger sqlite (--ledger-dir DIR | --ledger-db PATH)] | proto sqlite-info", COMMANDS.join("|"));
+        ExitCode::from(2)
     };
+    let options = args.get(2..).unwrap_or_default();
+    if args.get(1).map(String::as_str) == Some("sqlite-info") && options.is_empty() {
+        return match sqlite::info() {
+            Ok(info) => {
+                println!("{}", json::to_text(&info));
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("proto: sqlite-info: {}", e.0);
+                ExitCode::from(1)
+            }
+        };
+    }
+    let Some(command) = args.get(1).filter(|c| COMMANDS.contains(&c.as_str())) else {
+        return usage();
+    };
+    let choice = if command == "broker-scenario" { ledger_choice(options) } else { options.is_empty().then_some(broker::LedgerChoice::Memory) };
+    let Some(choice) = choice else {
+        return usage();
+    };
+    let _ = LEDGER.set(choice);
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());

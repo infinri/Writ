@@ -3,6 +3,12 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -146,5 +152,158 @@ func TestPromoteConcurrentNegativeCount(t *testing.T) {
 	line := `{"id":"n","input":{"initial":{},"steps":[{"op":"promote_concurrent","count":-1,"promote":{}}]}}`
 	if got := strings.TrimSpace(answerLine(transitionScenario, line)); got != `{"id":"n","output":{"input_error":"INPUT_MALFORMED"}}` {
 		t.Fatalf("got %s", got)
+	}
+}
+
+// TestMain lets a test run this binary's main in a child process.
+func TestMain(m *testing.M) {
+	if args := os.Getenv("PROTO_TEST_ARGS"); args != "" {
+		os.Args = append([]string{"proto"}, strings.Split(args, "\x1f")...)
+		main()
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+func runProto(t *testing.T, stdin string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = append(os.Environ(), "PROTO_TEST_ARGS="+strings.Join(args, "\x1f"))
+	cmd.Stdin = strings.NewReader(stdin)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("%v: %v: %s", args, err, stderr.String())
+	}
+	return string(out)
+}
+
+// Only broker-scenario takes ledger options, in exactly one form.
+func TestLedgerOptions(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "f")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"broker-scenario"},
+		{"broker-scenario", "--ledger", "sqlite", "--ledger-dir", dir},
+		{"broker-scenario", "--ledger-dir", dir, "--ledger", "sqlite"},
+		{"broker-scenario", "--ledger", "sqlite", "--ledger-db", filepath.Join(dir, "x.db")},
+	} {
+		if _, ok := parseArgs(args); !ok {
+			t.Errorf("%v rejected", args)
+		}
+	}
+	for _, args := range [][]string{
+		{},
+		{"nope"},
+		{"decide", "--ledger", "sqlite", "--ledger-dir", dir},
+		{"transition-scenario", "--ledger", "sqlite", "--ledger-db", "x.db"},
+		{"sqlite-info", "--ledger", "sqlite"},
+		{"broker-scenario", "--ledger", "sqlite"},
+		{"broker-scenario", "--ledger", "memory", "--ledger-dir", dir},
+		{"broker-scenario", "--ledger-dir", dir},
+		{"broker-scenario", "--ledger", "sqlite", "--ledger-dir", dir, "--ledger-db", "x.db"},
+		{"broker-scenario", "--ledger", "sqlite", "--ledger", "sqlite", "--ledger-dir", dir},
+		{"broker-scenario", "--ledger", "sqlite", "--ledger-dir"},
+		{"broker-scenario", "--ledger", "sqlite", "--ledger-dir", ""},
+		{"broker-scenario", "--ledger", "sqlite", "--ledger-dir", file},
+		{"broker-scenario", "--ledger", "sqlite", "--ledger-dir", filepath.Join(dir, "missing")},
+		{"broker-scenario", "--ledger", "sqlite", "--ledger-db", "x.db", "extra"},
+	} {
+		if _, ok := parseArgs(args); ok {
+			t.Errorf("%v accepted", args)
+		}
+	}
+}
+
+func fixtureInput(t *testing.T, id string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile("../../../fixtures/sets/broker-scenarios.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		v, perr := sjson.ParseUnlimited(line)
+		if perr != nil {
+			t.Fatal(perr)
+		}
+		if c := v.(map[string]any); c["id"] == id {
+			return c["input"].(map[string]any)
+		}
+	}
+	t.Fatalf("fixture %s not found", id)
+	return nil
+}
+
+// LEDGER-SQLITE.md required test 3: a second process opening the same
+// --ledger-db file continues from the ledger the first one left.
+func TestSecondProcessContinuesLedger(t *testing.T) {
+	race, dup := fixtureInput(t, "b-27-grant-race-16"), fixtureInput(t, "b-34-concurrent-duplicates")
+	initial := race["initial"].(map[string]any)
+	approve := race["steps"].([]any)[0]
+	approval := race["steps"].([]any)[1].(map[string]any)["operations"].([]any)[0].(map[string]any)
+	allow := dup["steps"].([]any)[0].(map[string]any)["operations"].([]any)[0].(map[string]any)
+	ingress, _ := hex.DecodeString(initial["ingress_keys"].(map[string]any)["writ-host-adapter:fixture"].(string))
+	execute := func(op map[string]any, key, fault string) map[string]any {
+		o := sjson.Clone(op).(map[string]any)
+		req := o["request"].(map[string]any)
+		req["idempotency_key"] = key
+		h := hmac.New(sha256.New, ingress)
+		h.Write(sjson.MustCanonical(req))
+		o["seal"].(map[string]any)["mac"] = hex.EncodeToString(h.Sum(nil))
+		if fault != "" {
+			o["fault"] = fault
+		}
+		return o
+	}
+	line := func(steps ...any) string {
+		return string(sjson.Encode(map[string]any{"id": "s", "input": map[string]any{"initial": initial, "steps": steps}})) + "\n"
+	}
+	db := filepath.Join(t.TempDir(), "ledger.db")
+	args := []string{"broker-scenario", "--ledger", "sqlite", "--ledger-db", db}
+
+	first := runProto(t, line(
+		approve,
+		execute(approval, "p-a", "crash_after_reserve"),
+		execute(allow, "p-b", "crash_after_dispatch"),
+		execute(allow, "p-c", ""),
+		map[string]any{"op": "apply_without_permit"},
+	), args...)
+	want := `{"id":"s","output":{"final":{"consumed_permits":2,"effects_applied":2,"grant_uses":{"g1":1},` +
+		`"receipts":{"dispatched":1,"observed_success":1,"reserved":1},"refusals":1},"steps":[{"result":"grant_issued"},` +
+		`{"result":"crashed"},{"result":"crashed"},{"result":"effect_completed"},{"code":"PERMIT_MISSING","result":"refused"}]}}` + "\n"
+	if first != want {
+		t.Fatalf("first process:\n%s\nwant\n%s", first, want)
+	}
+
+	second := runProto(t, line(
+		execute(approval, "p-a", ""),
+		execute(allow, "p-b", ""),
+		execute(allow, "p-c", ""),
+		approve,
+		execute(allow, "p-d", ""),
+	), args...)
+	// p-a resumes without a second grant use; p-b stays uncertain and its
+	// effect is not applied again; p-c replays; g1 persists; permit ids
+	// continue from the persisted next_permit (a reset would replay permit-1).
+	want = `{"id":"s","output":{"final":{"consumed_permits":4,"effects_applied":4,"grant_uses":{"g1":1},` +
+		`"receipts":{"dispatched":1,"observed_success":3},"refusals":3},"steps":[{"result":"effect_completed"},` +
+		`{"code":"RECONCILIATION_REQUIRED","result":"refused"},{"replayed":true,"result":"effect_completed"},` +
+		`{"code":"GRANT_REF_IN_USE","result":"refused"},{"result":"effect_completed"}]}}` + "\n"
+	if second != want {
+		t.Fatalf("second process:\n%s\nwant\n%s", second, want)
+	}
+}
+
+func TestSQLiteInfoCommand(t *testing.T) {
+	out := runProto(t, "", "sqlite-info")
+	for _, want := range []string{`"sqlite_version":"3.54.1"`, `"journal_mode":"wal"`, `"synchronous":2`, `"busy_timeout":5000`,
+		`"foreign_keys":1`, `"trusted_schema":0`, `"driver":"github.com/mattn/go-sqlite3 v1.14.52"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("sqlite-info lacks %s: %s", want, out)
+		}
 	}
 }

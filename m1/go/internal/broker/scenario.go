@@ -5,11 +5,13 @@
 // SIMULATED, not verified:
 //   - Ingress seals and permit MACs are HMAC-SHA256 under fixture keys held in
 //     scenario state (no key management, rotation or registration).
-//   - The ledger (grants, receipts, permits) is an in-memory model guarded by
-//     one mutex; every operation is one serializable transaction. "fault"
-//     injects a crash at a named point; nothing is durable.
+//   - The default ledger (grants, receipts, permits) is an in-memory model
+//     guarded by one mutex; every operation is one serializable transaction.
+//     The SQLite ledger (LEDGER-SQLITE.md, D-023) is file-backed; with either,
+//     "fault" injects a crash at a named point and nothing is killed.
 //   - An "authenticated human" is a credential match on a fixture channel.
-//   - Effect "dispatch" increments a counter; no real side effect occurs.
+//   - Effect "dispatch" records an effect row or counter; no real side effect
+//     occurs.
 package broker
 
 import (
@@ -17,7 +19,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"sort"
+	"os"
 	"sync"
 	"time"
 
@@ -31,20 +33,6 @@ const (
 	timeLayout      = "2006-01-02T15:04:05Z"
 )
 
-type grant struct {
-	verdict string
-	binding map[string]any // approval request id, tenant, principal, kind, resource, digest, capability set, bundle sha
-	expires time.Time
-	maxUses int
-	uses    int
-}
-
-type receipt struct {
-	fingerprint string
-	grantLabel  string // "" for allow
-	status      string // reserved | dispatched | observed_success | observed_failure | unknown_reconcile
-}
-
 type permit struct {
 	id          string
 	fingerprint string
@@ -53,9 +41,10 @@ type permit struct {
 	mac         string
 }
 
-// Broker is the simulated broker and ledger for one scenario.
+// Broker is the simulated broker for one scenario: trusted configuration and
+// client-held permits in process, durable state in its ledger.
 type Broker struct {
-	mu sync.Mutex
+	mu sync.Mutex // configuration and client-held permits
 
 	now           time.Time
 	stateRevision int64
@@ -65,14 +54,19 @@ type Broker struct {
 	permitKey     []byte
 	channels      map[string]map[string]string
 	deps          map[string]string
+	permits       map[int]*permit // client-held, by top-level step index
 
-	grants         map[string]*grant
-	receipts       map[string]*receipt // tenant + "\x00" + idempotency key
-	permits        map[int]*permit     // by top-level step index
-	consumed       map[string]bool
-	permitSeq      int
-	effectsApplied int
-	refusals       int
+	led  ledger
+	keys keyLocks
+}
+
+// view is the configuration one operation runs against.
+type view struct {
+	now      time.Time
+	rev      int64
+	policy   *kernel.Policy
+	policyUp bool
+	ledgerUp bool
 }
 
 func hexKey(s string) []byte {
@@ -86,7 +80,7 @@ func hexKey(s string) []byte {
 func newBroker(initial map[string]any) *Broker {
 	b := &Broker{
 		ingressKeys: map[string][]byte{}, channels: map[string]map[string]string{}, deps: map[string]string{},
-		grants: map[string]*grant{}, receipts: map[string]*receipt{}, permits: map[int]*permit{}, consumed: map[string]bool{},
+		permits: map[int]*permit{}, led: newMemLedger(),
 	}
 	b.now, _ = kernel.ParseTime(sjson.StrOr(initial, "now"))
 	b.stateRevision, _ = sjson.Int(initial, "state_revision")
@@ -126,9 +120,30 @@ func newBroker(initial map[string]any) *Broker {
 	return b
 }
 
-func (b *Broker) refuse(code string) map[string]any {
-	b.refusals++
+func (b *Broker) view() view {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return view{now: b.now, rev: b.stateRevision, policy: b.policy, policyUp: b.deps["policy"] == "up", ledgerUp: b.deps["ledger"] == "up"}
+}
+
+func refused(code string) map[string]any {
 	return map[string]any{"result": "refused", "code": code}
+}
+
+// refuse audits a refusal in the ledger and returns it.
+func (b *Broker) refuse(led ledger, code string) map[string]any {
+	if err := led.audit(code); err != nil {
+		fmt.Fprintln(os.Stderr, "ledger error:", err)
+		return refused("LEDGER_UNAVAILABLE")
+	}
+	return refused(code)
+}
+
+// ledgerFailed answers a ledger error (a busy timeout or a defect) with
+// LEDGER_UNAVAILABLE, never a success.
+func (b *Broker) ledgerFailed(led ledger, err error) map[string]any {
+	fmt.Fprintln(os.Stderr, "ledger error:", err)
+	return b.refuse(led, "LEDGER_UNAVAILABLE")
 }
 
 func mac(key, msg []byte) string {
@@ -161,26 +176,24 @@ func (b *Broker) sealValid(request any, sealV any) bool {
 	return sjson.StrOr(principal, "verified_by") == adapter
 }
 
-func (b *Broker) activePolicy() *kernel.Policy {
-	if b.deps["policy"] != "up" {
-		return nil
+func (v view) decide(request any) *kernel.Decision {
+	var p *kernel.Policy
+	if v.policyUp {
+		p = v.policy
 	}
-	return b.policy
+	return kernel.Decide(request, p, v.rev, v.now)
 }
 
-func (b *Broker) decide(request any) *kernel.Decision {
-	return kernel.Decide(request, b.activePolicy(), b.stateRevision, b.now)
-}
-
-func (b *Broker) bundleSha() string {
-	if b.policy == nil || b.policy.Bundle == nil {
+func (v view) bundleSha() string {
+	if v.policy == nil || v.policy.Bundle == nil {
 		return kernel.NoPolicySha
 	}
-	return b.policy.Bundle.Sha
+	return v.policy.Bundle.Sha
 }
 
-// grantBinding is every field a grant binds (BROKER.md execute step 5.3).
-func (b *Broker) grantBinding(request any) map[string]any {
+// grantBinding is the D-006 canonical JSON of every field a grant binds,
+// including its verdict (BROKER.md execute step 5.3).
+func (v view) grantBinding(request any, verdict string) string {
 	req, _ := sjson.Obj(request)
 	action, _ := sjson.Obj(req["action"])
 	principal, _ := sjson.Obj(req["principal"])
@@ -190,16 +203,17 @@ func (b *Broker) grantBinding(request any) map[string]any {
 	for i, c := range caps {
 		capsAny[i] = c
 	}
-	return map[string]any{
-		"approval_request_id":    kernel.ApprovalRequestID(req, b.bundleSha()),
+	return string(sjson.MustCanonical(map[string]any{
+		"verdict":                verdict,
+		"approval_request_id":    kernel.ApprovalRequestID(req, v.bundleSha()),
 		"tenant_id":              req["tenant_id"],
 		"principal_id":           principal["id"],
 		"action_kind":            action["kind"],
 		"canonical_resource_id":  resource["canonical_resource_id"],
 		"action_digest":          action["action_digest"],
 		"requested_capabilities": capsAny,
-		"policy_bundle_sha":      b.bundleSha(),
-	}
+		"policy_bundle_sha":      v.bundleSha(),
+	}))
 }
 
 func permitBody(p *permit) []byte {
@@ -221,102 +235,99 @@ func requestFingerprint(request any) string {
 
 // adapterApply is the simulated effect adapter: it verifies the permit in a
 // fixed order, records it as consumed, then applies (or fails) the effect.
-func (b *Broker) adapterApply(p *permit, request any, fail bool) string {
+func (b *Broker) adapterApply(led ledger, v view, p *permit, request any, fail bool) (string, error) {
 	if requestFingerprint(request) != p.fingerprint {
-		return "PERMIT_REQUEST_MISMATCH"
+		return "PERMIT_REQUEST_MISMATCH", nil
 	}
 	if !hmac.Equal([]byte(mac(b.permitKey, permitBody(p))), []byte(p.mac)) {
-		return "PERMIT_INVALID"
+		return "PERMIT_INVALID", nil
 	}
-	if !b.now.Before(p.expires) {
-		return "PERMIT_EXPIRED"
+	if !v.now.Before(p.expires) {
+		return "PERMIT_EXPIRED", nil
 	}
-	if b.consumed[p.id] {
-		return "PERMIT_REPLAYED"
+	replayed, err := led.consume(p.id, !fail)
+	if err != nil {
+		return "", err
 	}
-	b.consumed[p.id] = true
-	if !fail {
-		b.effectsApplied++
+	if replayed {
+		return "PERMIT_REPLAYED", nil
 	}
-	return ""
+	return "", nil
 }
 
-func (b *Broker) execute(op map[string]any, step int) map[string]any {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+func (b *Broker) execute(led ledger, op map[string]any, step int) map[string]any {
+	v := b.view()
 	request := op["request"]
 	fault := sjson.StrOr(op, "fault")
 	// 1. sealed ingress
 	if !b.sealValid(request, op["seal"]) {
-		return b.refuse("INGRESS_UNAUTHENTICATED")
+		return b.refuse(led, "INGRESS_UNAUTHENTICATED")
 	}
 	// 2. ledger availability, before any decision side effect
-	if b.deps["ledger"] != "up" {
-		return b.refuse("LEDGER_UNAVAILABLE")
+	if !v.ledgerUp {
+		return b.refuse(led, "LEDGER_UNAVAILABLE")
 	}
 	// 3. use-time kernel decision
-	d := b.decide(request)
+	d := v.decide(request)
 	if d.Status != "allow" && d.Status != "require_approval" {
-		return b.refuse(d.ReasonCode)
+		return b.refuse(led, d.ReasonCode)
 	}
 	grantRef, hasGrant := sjson.Str(op, "grant_ref")
 	// 4. approval required
 	if d.Status == "require_approval" && !hasGrant {
-		return b.refuse("APPROVAL_REQUIRED")
+		return b.refuse(led, "APPROVAL_REQUIRED")
 	}
 	effective := ""
 	if d.Status == "require_approval" {
 		effective = grantRef
 	}
 	req, _ := sjson.Obj(request)
-	rkey := sjson.StrOr(req, "tenant_id") + "\x00" + sjson.StrOr(req, "idempotency_key")
+	tenant, key := sjson.StrOr(req, "tenant_id"), sjson.StrOr(req, "idempotency_key")
 	fp := requestFingerprint(request)
-	// 5. transaction
-	r, exists := b.receipts[rkey]
-	if exists {
-		if r.fingerprint != fp || r.grantLabel != effective {
-			return b.refuse("IDEMPOTENCY_CONFLICT")
-		}
-		switch r.status {
-		case "observed_success":
-			return map[string]any{"result": "effect_completed", "replayed": true}
-		case "observed_failure":
-			return map[string]any{"result": "effect_failed", "replayed": true}
-		case "dispatched", "unknown_reconcile":
-			return b.refuse("RECONCILIATION_REQUIRED")
-		}
-		// reserved: resume at step 6 without consuming the grant again
-	} else {
-		if fault == "crash_before_reserve" {
-			return map[string]any{"result": "crashed"}
-		}
-		if d.Status == "require_approval" {
-			g, ok := b.grants[grantRef]
-			if !ok {
-				return b.refuse("GRANT_UNKNOWN")
+	defer b.keys.lock(tenant + "\x00" + key)()
+	// 5. T-reserve
+	outcome, err := led.reserve(reservation{
+		tenant: tenant, key: key, fingerprint: fp, grantLabel: effective,
+		approval:    d.Status == "require_approval",
+		crashBefore: fault == "crash_before_reserve",
+		check: func(g *grant) string {
+			switch {
+			case g == nil:
+				return "GRANT_UNKNOWN"
+			case g.binding != v.grantBinding(request, "approved"):
+				return "GRANT_MISMATCH"
+			case !v.now.Before(g.expires):
+				return "GRANT_EXPIRED"
+			case g.uses >= g.maxUses:
+				return "GRANT_EXHAUSTED"
 			}
-			bind := b.grantBinding(request)
-			if g.verdict != "approved" || string(sjson.MustCanonical(g.binding)) != string(sjson.MustCanonical(bind)) {
-				return b.refuse("GRANT_MISMATCH")
-			}
-			if !b.now.Before(g.expires) {
-				return b.refuse("GRANT_EXPIRED")
-			}
-			if g.uses >= g.maxUses {
-				return b.refuse("GRANT_EXHAUSTED")
-			}
-			g.uses++
-		}
-		r = &receipt{fingerprint: fp, grantLabel: effective, status: "reserved"}
-		b.receipts[rkey] = r
+			return ""
+		},
+	})
+	if err != nil {
+		return b.ledgerFailed(led, err)
+	}
+	switch outcome {
+	case "":
+	case outcomeCrashed:
+		return map[string]any{"result": "crashed"}
+	case "observed_success":
+		return map[string]any{"result": "effect_completed", "replayed": true}
+	case "observed_failure":
+		return map[string]any{"result": "effect_failed", "replayed": true}
+	default:
+		return b.refuse(led, outcome)
 	}
 	// 6. crash after reservation: the reservation and grant use persist
 	if fault == "crash_after_reserve" {
 		return map[string]any{"result": "crashed"}
 	}
-	// 7. issue a permit, mark dispatched, call the adapter
-	b.permitSeq++
-	p := &permit{id: fmt.Sprintf("permit-%d", b.permitSeq), fingerprint: fp, bundleSha: b.bundleSha(), expires: b.now.Add(permitTTL)}
+	// 7. T-dispatch: issue a permit and mark the receipt dispatched
+	seq, err := led.dispatch(tenant, key)
+	if err != nil {
+		return b.ledgerFailed(led, err)
+	}
+	p := &permit{id: fmt.Sprintf("permit-%d", seq), fingerprint: fp, bundleSha: v.bundleSha(), expires: v.now.Add(permitTTL)}
 	if s, ok := req["deadline_at"].(string); ok {
 		if dl, ok := kernel.ParseTime(s); ok && dl.Before(p.expires) {
 			p.expires = dl
@@ -324,45 +335,52 @@ func (b *Broker) execute(op map[string]any, step int) map[string]any {
 	}
 	p.mac = mac(b.permitKey, permitBody(p))
 	if step >= 0 {
+		b.mu.Lock()
 		b.permits[step] = p
+		b.mu.Unlock()
 	}
-	r.status = "dispatched"
-	if code := b.adapterApply(p, request, fault == "effect_fails"); code != "" {
+	// T-adapter
+	code, err := b.adapterApply(led, v, p, request, fault == "effect_fails")
+	if err != nil {
+		return b.ledgerFailed(led, err)
+	}
+	if code != "" {
 		// Unreachable for a freshly issued permit; fail closed and leave the
 		// receipt dispatched so it needs reconciliation.
-		return b.refuse(code)
+		return b.refuse(led, code)
 	}
 	// 8. injected faults
 	if fault == "crash_after_dispatch" {
 		return map[string]any{"result": "crashed"}
 	}
+	// T-observe
+	status, result := "observed_success", "effect_completed"
 	if fault == "effect_fails" {
-		r.status = "observed_failure"
-		return map[string]any{"result": "effect_failed"}
+		status, result = "observed_failure", "effect_failed"
 	}
-	// 9. success
-	r.status = "observed_success"
-	return map[string]any{"result": "effect_completed"}
+	if err := led.observe(tenant, key, status); err != nil {
+		return b.ledgerFailed(led, err)
+	}
+	return map[string]any{"result": result}
 }
 
-func (b *Broker) approve(op map[string]any) map[string]any {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+func (b *Broker) approve(led ledger, op map[string]any) map[string]any {
+	v := b.view()
 	creds, known := b.channels[sjson.StrOr(op, "channel")]
 	human := sjson.StrOr(op, "human")
 	cred, okC := sjson.Str(op, "credential")
 	stored, okH := creds[human]
 	if !known || !okC || !okH || !hmac.Equal([]byte(stored), []byte(cred)) {
-		return b.refuse("HUMAN_UNAUTHENTICATED")
+		return b.refuse(led, "HUMAN_UNAUTHENTICATED")
 	}
 	request := op["for_request"]
-	if b.decide(request).Status != "require_approval" {
-		return b.refuse("NOT_APPROVABLE")
+	if v.decide(request).Status != "require_approval" {
+		return b.refuse(led, "NOT_APPROVABLE")
 	}
 	req, _ := sjson.Obj(request)
 	principal, _ := sjson.Obj(req["principal"])
 	if agent, ok := req["agent_id"].(string); human == sjson.StrOr(principal, "id") || (ok && human == agent) {
-		return b.refuse("SELF_APPROVAL_FORBIDDEN")
+		return b.refuse(led, "SELF_APPROVAL_FORBIDDEN")
 	}
 	ttl := int64(defaultGrantTTL)
 	if t, ok := sjson.Int(op, "ttl_seconds"); ok {
@@ -370,26 +388,28 @@ func (b *Broker) approve(op map[string]any) map[string]any {
 	}
 	// A label names one grant for the whole scenario: re-approving it would
 	// reset its uses, so it is refused (protocol clarifications, M1-05).
-	ref := sjson.StrOr(op, "grant_ref")
-	if _, inUse := b.grants[ref]; inUse {
-		return b.refuse("GRANT_REF_IN_USE")
-	}
-	b.grants[ref] = &grant{
-		verdict: sjson.StrOr(op, "verdict"),
-		binding: b.grantBinding(request),
-		expires: b.now.Add(time.Duration(ttl) * time.Second),
+	inUse, err := led.addGrant(sjson.StrOr(op, "grant_ref"), grant{
+		binding: v.grantBinding(request, sjson.StrOr(op, "verdict")),
+		expires: v.now.Add(time.Duration(ttl) * time.Second),
 		maxUses: 1,
+	})
+	if err != nil {
+		return b.ledgerFailed(led, err)
+	}
+	if inUse {
+		return b.refuse(led, "GRANT_REF_IN_USE")
 	}
 	return map[string]any{"result": "grant_issued"}
 }
 
-func (b *Broker) presentPermit(op map[string]any) map[string]any {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+func (b *Broker) presentPermit(led ledger, op map[string]any) map[string]any {
+	v := b.view()
 	of, okOf := sjson.Int(op, "of_step")
+	b.mu.Lock()
 	orig, ok := b.permits[int(of)]
+	b.mu.Unlock()
 	if !okOf || !ok {
-		return b.refuse("PERMIT_MISSING")
+		return b.refuse(led, "PERMIT_MISSING")
 	}
 	p := *orig
 	switch sjson.StrOr(op, "tamper") {
@@ -404,77 +424,107 @@ func (b *Broker) presentPermit(op map[string]any) map[string]any {
 	case "expiry":
 		p.expires = p.expires.Add(time.Hour) // extended without re-signing
 	}
-	if code := b.adapterApply(&p, op["request"], false); code != "" {
-		return b.refuse(code)
+	code, err := b.adapterApply(led, v, &p, op["request"], false)
+	if err != nil {
+		return b.ledgerFailed(led, err)
+	}
+	if code != "" {
+		return b.refuse(led, code)
 	}
 	return map[string]any{"result": "effect_applied"}
 }
 
-func (b *Broker) simple(op map[string]any) map[string]any {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+func (b *Broker) simple(led ledger, op map[string]any) map[string]any {
 	switch sjson.StrOr(op, "op") {
 	case "apply_without_permit":
-		return b.refuse("PERMIT_MISSING")
+		return b.refuse(led, "PERMIT_MISSING")
 	case "activate_bundle":
+		b.mu.Lock()
 		b.bundleDoc = op["bundle"]
 		b.policy = kernel.LoadPolicy(b.bundleDoc)
+		b.mu.Unlock()
 		return map[string]any{"result": "bundle_activated"}
 	case "restart_broker":
-		b.restart()
+		if err := b.restart(led); err != nil {
+			return b.ledgerFailed(led, err)
+		}
 		return map[string]any{"result": "restarted"}
 	case "advance_time":
 		if t, ok := kernel.ParseTime(sjson.StrOr(op, "now")); ok {
+			b.mu.Lock()
 			b.now = t
+			b.mu.Unlock()
 		}
 		return map[string]any{"result": "time_advanced"}
 	case "set_dependency":
+		b.mu.Lock()
 		b.deps[sjson.StrOr(op, "name")] = sjson.StrOr(op, "status")
+		b.mu.Unlock()
 		return map[string]any{"result": "dependency_set"}
 	case "reconcile":
-		n := int64(0)
-		for _, r := range b.receipts {
-			if r.status == "dispatched" {
-				r.status = "unknown_reconcile"
-				n++
-			}
+		n, err := led.reconcile()
+		if err != nil {
+			return b.ledgerFailed(led, err)
 		}
 		return map[string]any{"result": "reconciled", "count": n}
 	}
-	return b.refuse("OPERATION_UNKNOWN")
+	return b.refuse(led, "OPERATION_UNKNOWN")
 }
 
-// restart simulates a broker process restart (D-020). Caller holds b.mu.
-// Volatile state is dropped: the loaded policy cache is discarded and
-// reloaded from the active bundle document. The ledger persists: grants and
-// their uses, receipts and their status, consumed permit ids, the permit
-// sequence (so a new permit id never reuses a consumed one) and the audit
-// refusal count. Permits already handed to the client (b.permits) remain
-// presentable; trusted configuration (keys, channels, dependencies, clock)
-// is external to the process and unchanged.
-func (b *Broker) restart() {
+// restart simulates a broker process restart (D-020). Volatile state is
+// dropped: the loaded policy cache is discarded and reloaded from the active
+// bundle document, and the ledger closes and reopens its connection (key
+// locks are released as each operation returns, so none is held here). The
+// ledger persists: grants and their uses, receipts and their status, consumed
+// permit ids, the permit sequence (so a new permit id never reuses a consumed
+// one) and the audit refusal count. Permits already handed to the client
+// (b.permits) remain presentable; trusted configuration (keys, channels,
+// dependencies, clock) is external to the process and unchanged.
+func (b *Broker) restart(led ledger) error {
+	b.mu.Lock()
 	b.policy = kernel.LoadPolicy(b.bundleDoc)
+	b.mu.Unlock()
+	return led.restart()
 }
 
 func (b *Broker) apply(op map[string]any, step int) map[string]any {
-	switch sjson.StrOr(op, "op") {
-	case "execute":
-		return b.execute(op, step)
-	case "approve":
-		return b.approve(op)
-	case "present_permit":
-		return b.presentPermit(op)
-	case "concurrent":
-		return b.concurrent(op)
-	}
-	return b.simple(op)
+	return b.applyOn(b.led, op, step)
 }
 
-// concurrent submits operations on real goroutines; each is one atomic
-// transaction, so the outcome equals some serial order.
-func (b *Broker) concurrent(op map[string]any) map[string]any {
+func (b *Broker) applyOn(led ledger, op map[string]any, step int) map[string]any {
+	name := sjson.StrOr(op, "op")
+	if name == "concurrent" {
+		return b.concurrent(led, op)
+	}
+	defer led.serialize()()
+	switch name {
+	case "execute":
+		return b.execute(led, op, step)
+	case "approve":
+		return b.approve(led, op)
+	case "present_permit":
+		return b.presentPermit(led, op)
+	}
+	return b.simple(led, op)
+}
+
+// concurrent submits operations on real goroutines, each with its own ledger
+// connection opened for the group and closed afterwards; all start together.
+// The ledger's transactions and key locks make the outcome equal some serial
+// order.
+func (b *Broker) concurrent(led ledger, op map[string]any) map[string]any {
 	ops, _ := sjson.Arr(op["operations"])
 	results := make([]map[string]any, len(ops))
+	workers := make([]ledger, len(ops))
+	for i := range ops {
+		w, err := led.fork()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "ledger error:", err)
+			continue
+		}
+		workers[i] = w
+	}
+	start := make(chan struct{})
 	var wg sync.WaitGroup
 	var panics goPanic
 	for i, o := range ops {
@@ -483,10 +533,21 @@ func (b *Broker) concurrent(op map[string]any) map[string]any {
 		go func(i int, m map[string]any) {
 			defer wg.Done()
 			defer panics.capture()
-			results[i] = b.apply(m, -1)
+			<-start
+			if workers[i] == nil {
+				results[i] = refused("LEDGER_UNAVAILABLE")
+				return
+			}
+			results[i] = b.applyOn(workers[i], m, -1)
 		}(i, m)
 	}
+	close(start)
 	wg.Wait()
+	for _, w := range workers {
+		if w != nil && w != led {
+			w.close()
+		}
+	}
 	panics.rethrow()
 	outcomes := map[string]any{}
 	for _, r := range results {
@@ -503,33 +564,23 @@ func (b *Broker) concurrent(op map[string]any) map[string]any {
 }
 
 func (b *Broker) final() map[string]any {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	uses := map[string]any{}
-	labels := make([]string, 0, len(b.grants))
-	for l := range b.grants {
-		labels = append(labels, l)
+	defer b.led.serialize()()
+	f, err := b.led.final()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ledger error:", err)
+		return map[string]any{"error": "LEDGER_UNAVAILABLE"}
 	}
-	sort.Strings(labels)
-	for _, l := range labels {
-		uses[l] = int64(b.grants[l].uses)
-	}
-	receipts := map[string]any{}
-	for _, r := range b.receipts {
-		n, _ := receipts[r.status].(int64)
-		receipts[r.status] = n + 1
-	}
-	return map[string]any{
-		"effects_applied":  int64(b.effectsApplied),
-		"grant_uses":       uses,
-		"receipts":         receipts,
-		"consumed_permits": int64(len(b.consumed)),
-		"refusals":         int64(b.refusals),
-	}
+	return f
 }
 
-// Run executes one broker scenario.
+// Run executes one broker scenario on the in-memory ledger.
 func Run(input any) map[string]any {
+	return RunWith(input, nil)
+}
+
+// RunWith executes one broker scenario on the SQLite ledger store selects, or
+// on the in-memory ledger when store is nil.
+func RunWith(input any, store *SQLite) map[string]any {
 	in, ok := sjson.Obj(input)
 	initial, okI := sjson.Obj(in["initial"])
 	steps, okS := sjson.Arr(in["steps"])
@@ -537,6 +588,15 @@ func Run(input any) map[string]any {
 		return map[string]any{"input_error": "INPUT_MALFORMED"}
 	}
 	b := newBroker(initial)
+	if store != nil {
+		led, err := store.open()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "ledger error:", err)
+			return map[string]any{"error": "LEDGER_UNAVAILABLE"}
+		}
+		b.led = led
+	}
+	defer b.led.close()
 	results := make([]any, 0, len(steps))
 	for i, s := range steps {
 		op, _ := sjson.Obj(s)

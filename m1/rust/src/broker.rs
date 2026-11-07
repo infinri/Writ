@@ -2,24 +2,34 @@
 //! sealed ingress, use-time re-decision, approval grants, idempotent
 //! receipts, permits verified by the effect adapter, crashes, reconciliation.
 //!
+//! Two ledgers give byte-identical outputs: the in-memory model (default;
+//! every operation holds the configuration lock exclusively, so it is one
+//! serializable transaction) and SQLite (`--ledger sqlite`,
+//! LEDGER-SQLITE.md: one `BEGIN IMMEDIATE` transaction per logical step,
+//! in-process key locks, one connection per concurrent operation).
+//!
 //! SIMULATED, not verified:
 //! - ingress seals and permit MACs are HMAC-SHA256 under fixture keys held in
 //!   scenario state (no key management, rotation or registration);
-//! - the ledger is an in-memory model behind one mutex (each operation is one
-//!   serializable transaction); `fault` injects a crash at a named point;
+//! - `fault` injects a crash at a named point (nothing is killed);
 //! - an "authenticated human" is a credential match on a fixture channel;
-//! - the effect adapter only increments a counter.
+//! - the effect adapter only records consumed permits and counts effects.
 
 use crate::json::{self, obj, s, Value};
 use crate::kernel::{self, Bundle, Decision, Policy};
+use crate::sqlite::{self, DbError};
 use crate::time::{self, Instant};
 use hmac::{Hmac, Mac};
+use rusqlite::Connection;
 use sha2::Sha256;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::{Barrier, Mutex};
+use std::path::PathBuf;
+use std::sync::{Arc, Barrier, Mutex, MutexGuard, RwLock};
 use std::thread;
 
 type HmacSha256 = Hmac<Sha256>;
+type Key = (String, String);
+type R<T> = Result<T, DbError>;
 const PERMIT_TTL_SECONDS: i64 = 30;
 const DEFAULT_GRANT_TTL_SECONDS: i64 = 600;
 
@@ -41,6 +51,10 @@ fn mac_verify(key: &[u8], msg: &[u8], tag_hex: &str) -> bool {
     let mut m = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
     m.update(msg);
     m.verify_slice(&tag).is_ok()
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -84,7 +98,8 @@ struct Permit {
     mac: String,
 }
 
-struct Broker {
+/// Trusted configuration: never stored in a ledger, survives a restart.
+struct Config {
     now: Instant,
     state_revision: i64,
     bundle: Result<Bundle, ()>,
@@ -93,24 +108,71 @@ struct Broker {
     channels: Value,
     policy_up: bool,
     ledger_up: bool,
+}
+
+/// In-memory ledger (the default).
+#[derive(Default)]
+struct MemLedger {
     grants: BTreeMap<String, Grant>,
-    receipts: HashMap<(String, String), Receipt>,
-    permits: HashMap<usize, Permit>,
+    receipts: HashMap<Key, Receipt>,
     consumed_permits: HashSet<String>,
     next_permit: u64,
     effects_applied: i64,
     refusals: i64,
 }
 
-fn refused(code: &str) -> Value {
+/// SQLite ledger: the file, the connection used outside concurrent groups and
+/// the volatile per-key locks.
+struct SqlLedger {
+    path: Option<PathBuf>,
+    main: Mutex<Option<Connection>>,
+    key_locks: Mutex<HashMap<Key, Arc<Mutex<()>>>>,
+}
+
+impl SqlLedger {
+    fn connect(&self) -> R<Connection> {
+        sqlite::open(self.path.as_ref().ok_or_else(|| DbError("no ledger file".into()))?)
+    }
+}
+
+enum Ledger {
+    Memory(Mutex<MemLedger>),
+    Sqlite(SqlLedger),
+}
+
+/// `broker-scenario` ledger selection (LEDGER-SQLITE.md "Selecting the ledger").
+pub enum LedgerChoice {
+    Memory,
+    SqliteDir(PathBuf),
+    SqliteDb(PathBuf),
+}
+
+struct Broker {
+    config: RwLock<Config>,
+    permits: Mutex<HashMap<usize, Permit>>,
+    ledger: Ledger,
+}
+
+/// The ledger as one operation sees it: the in-memory model, or the SQLite
+/// connection of that operation (`None` if it could not be opened).
+enum Store<'a> {
+    Memory(&'a Mutex<MemLedger>),
+    Sqlite(Option<&'a Connection>),
+}
+
+fn report(e: &DbError) {
+    eprintln!("proto: ledger error: {}", e.0);
+}
+
+pub(crate) fn refused(code: &str) -> Value {
     obj(vec![("result", s("refused")), ("code", s(code))])
 }
 
-fn result(r: &str) -> Value {
+pub(crate) fn result(r: &str) -> Value {
     obj(vec![("result", s(r))])
 }
 
-fn replayed(r: &str) -> Value {
+pub(crate) fn replayed(r: &str) -> Value {
     obj(vec![("result", s(r)), ("replayed", Value::Bool(true))])
 }
 
@@ -134,7 +196,7 @@ fn grant_binding(req: &Value, d: &Decision, verdict: &str) -> Value {
     ])
 }
 
-impl Broker {
+impl Config {
     fn decide(&self, req: &Value) -> Decision {
         let policy = match (&self.bundle, self.policy_up) {
             (_, false) => Policy::Absent,
@@ -158,8 +220,9 @@ impl Broker {
         mac_hex(&self.permit_key, json::canonical(body).unwrap_or_default().as_bytes())
     }
 
-    /// Effect adapter (simulated): fingerprint, MAC, expiry, single use; then apply.
-    fn adapter(&mut self, permit: &Permit, req: &Value, fails: bool) -> Result<bool, &'static str> {
+    /// Effect adapter permit verification (simulated): fingerprint, MAC,
+    /// expiry. The permit id on success.
+    fn permit_check(&self, permit: &Permit, req: &Value) -> Result<String, &'static str> {
         let fp = json::digest(req).ok();
         if permit.body.str_at("request_fingerprint") != fp.as_deref() {
             return Err("PERMIT_REQUEST_MISMATCH");
@@ -172,139 +235,280 @@ impl Broker {
         if !expires.is_some_and(|e| self.now < e) {
             return Err("PERMIT_EXPIRED");
         }
-        let id = permit.body.str_at("permit_id").unwrap_or("").to_string();
-        if !self.consumed_permits.insert(id) {
-            return Err("PERMIT_REPLAYED");
-        }
-        if fails {
-            return Ok(false);
-        }
-        self.effects_applied += 1;
-        Ok(true)
+        Ok(permit.body.str_at("permit_id").unwrap_or("").to_string())
     }
+}
 
-    fn execute(&mut self, op: &Value, step: usize) -> Value {
-        let req = op.get("request").cloned().unwrap_or(Value::Null);
-        if !self.seal_valid(&req, op.get("seal")) {
-            return refused("INGRESS_UNAUTHENTICATED");
-        }
-        if !self.ledger_up {
-            return refused("LEDGER_UNAVAILABLE");
-        }
-        let d = self.decide(&req);
-        if !matches!(d.status, "allow" | "require_approval") {
-            return refused(&d.reason);
-        }
-        let grant_ref = op.str_at("grant_ref");
-        if d.status == "require_approval" && grant_ref.is_none() {
-            return refused("APPROVAL_REQUIRED");
-        }
-        let fault = op.str_at("fault").unwrap_or("");
-        let effective_grant = if d.status == "require_approval" { grant_ref.map(str::to_string) } else { None };
-        let fingerprint = json::digest(&req).unwrap_or_default();
-        let rkey = (req.str_at("tenant_id").unwrap_or("").to_string(), req.str_at("idempotency_key").unwrap_or("").to_string());
+fn conn(c: Option<&Connection>) -> R<&Connection> {
+    c.ok_or_else(|| DbError("ledger connection unavailable".into()))
+}
 
-        let resume = match self.receipts.get(&rkey) {
-            Some(r) if r.fingerprint != fingerprint || r.grant != effective_grant => return refused("IDEMPOTENCY_CONFLICT"),
+impl Store<'_> {
+    /// Receipt lookup, grant checks and use, reservation. `None`: continue
+    /// with dispatch (new or resumed reservation); `Some`: the result.
+    fn reserve(&self, key: &Key, fingerprint: &str, grant: Option<&str>, expected: &Value, now: Instant, crash_before: bool) -> R<Option<Value>> {
+        let m = match self {
+            Store::Sqlite(c) => {
+                let binding = json::canonical(expected).unwrap_or_default();
+                return sqlite::reserve(conn(*c)?, key, fingerprint, grant, &binding, now, crash_before);
+            }
+            Store::Memory(m) => m,
+        };
+        let mut l = lock(m);
+        let resume = match l.receipts.get(key) {
+            Some(r) if r.fingerprint != fingerprint || r.grant.as_deref() != grant => return Ok(Some(refused("IDEMPOTENCY_CONFLICT"))),
             Some(r) => match r.status {
-                ReceiptStatus::ObservedSuccess => return replayed("effect_completed"),
-                ReceiptStatus::ObservedFailure => return replayed("effect_failed"),
-                ReceiptStatus::Dispatched | ReceiptStatus::UnknownReconcile => return refused("RECONCILIATION_REQUIRED"),
+                ReceiptStatus::ObservedSuccess => return Ok(Some(replayed("effect_completed"))),
+                ReceiptStatus::ObservedFailure => return Ok(Some(replayed("effect_failed"))),
+                ReceiptStatus::Dispatched | ReceiptStatus::UnknownReconcile => return Ok(Some(refused("RECONCILIATION_REQUIRED"))),
                 ReceiptStatus::Reserved => true,
             },
             None => false,
         };
         if !resume {
-            if fault == "crash_before_reserve" {
-                return result("crashed");
+            if crash_before {
+                return Ok(Some(result("crashed")));
             }
-            if let Some(label) = &effective_grant {
-                let Some(g) = self.grants.get_mut(label) else { return refused("GRANT_UNKNOWN") };
-                if g.binding != grant_binding(&req, &d, "approved") {
-                    return refused("GRANT_MISMATCH");
+            if let Some(label) = grant {
+                let Some(g) = l.grants.get_mut(label) else { return Ok(Some(refused("GRANT_UNKNOWN"))) };
+                if g.binding != *expected {
+                    return Ok(Some(refused("GRANT_MISMATCH")));
                 }
-                if self.now >= g.expires {
-                    return refused("GRANT_EXPIRED");
+                if now >= g.expires {
+                    return Ok(Some(refused("GRANT_EXPIRED")));
                 }
                 if g.uses >= g.max_uses {
-                    return refused("GRANT_EXHAUSTED");
+                    return Ok(Some(refused("GRANT_EXHAUSTED")));
                 }
                 g.uses += 1;
             }
-            self.receipts.insert(rkey.clone(), Receipt { fingerprint: fingerprint.clone(), grant: effective_grant, status: ReceiptStatus::Reserved });
+            let receipt = Receipt { fingerprint: fingerprint.to_string(), grant: grant.map(str::to_string), status: ReceiptStatus::Reserved };
+            l.receipts.insert(key.clone(), receipt);
+        }
+        Ok(None)
+    }
+
+    /// Next permit number; the receipt becomes `dispatched`.
+    fn dispatch(&self, key: &Key) -> R<u64> {
+        match self {
+            Store::Sqlite(c) => sqlite::dispatch(conn(*c)?, key),
+            Store::Memory(m) => {
+                let mut l = lock(m);
+                l.next_permit += 1;
+                let n = l.next_permit;
+                if let Some(r) = l.receipts.get_mut(key) {
+                    r.status = ReceiptStatus::Dispatched;
+                }
+                Ok(n)
+            }
+        }
+    }
+
+    /// Effect adapter (simulated): verification, single use, then apply.
+    fn adapter(&self, check: impl FnOnce() -> Result<String, &'static str>, fails: bool) -> R<Result<bool, &'static str>> {
+        let m = match self {
+            Store::Sqlite(c) => return sqlite::adapter(conn(*c)?, check, fails),
+            Store::Memory(m) => m,
+        };
+        let id = match check() {
+            Ok(id) => id,
+            Err(code) => return Ok(Err(code)),
+        };
+        let mut l = lock(m);
+        if !l.consumed_permits.insert(id) {
+            return Ok(Err("PERMIT_REPLAYED"));
+        }
+        if fails {
+            return Ok(Ok(false));
+        }
+        l.effects_applied += 1;
+        Ok(Ok(true))
+    }
+
+    fn observe(&self, key: &Key, success: bool) -> R<()> {
+        match self {
+            Store::Sqlite(c) => sqlite::observe(conn(*c)?, key, success),
+            Store::Memory(m) => {
+                if let Some(r) = lock(m).receipts.get_mut(key) {
+                    r.status = if success { ReceiptStatus::ObservedSuccess } else { ReceiptStatus::ObservedFailure };
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// `false` if the label already names a grant (never reset).
+    fn insert_grant(&self, label: &str, binding: Value, expires: Instant) -> R<bool> {
+        match self {
+            Store::Sqlite(c) => sqlite::insert_grant(conn(*c)?, label, &json::canonical(&binding).unwrap_or_default(), expires),
+            Store::Memory(m) => {
+                let mut l = lock(m);
+                if l.grants.contains_key(label) {
+                    return Ok(false);
+                }
+                l.grants.insert(label.to_string(), Grant { binding, expires, max_uses: 1, uses: 0 });
+                Ok(true)
+            }
+        }
+    }
+
+    fn reconcile(&self) -> R<i64> {
+        match self {
+            Store::Sqlite(c) => sqlite::reconcile(conn(*c)?),
+            Store::Memory(m) => {
+                let mut n = 0;
+                for r in lock(m).receipts.values_mut().filter(|r| r.status == ReceiptStatus::Dispatched) {
+                    r.status = ReceiptStatus::UnknownReconcile;
+                    n += 1;
+                }
+                Ok(n)
+            }
+        }
+    }
+
+    fn refuse(&self, code: &str) -> R<()> {
+        match self {
+            Store::Sqlite(c) => sqlite::refuse(conn(*c)?, code),
+            Store::Memory(m) => {
+                lock(m).refusals += 1;
+                Ok(())
+            }
+        }
+    }
+
+    fn final_state(&self) -> R<Value> {
+        let m = match self {
+            Store::Sqlite(c) => return sqlite::final_state(conn(*c)?),
+            Store::Memory(m) => m,
+        };
+        let l = lock(m);
+        let mut receipts: BTreeMap<&str, i64> = BTreeMap::new();
+        for r in l.receipts.values() {
+            *receipts.entry(r.status.name()).or_default() += 1;
+        }
+        Ok(obj(vec![
+            ("effects_applied", Value::Int(l.effects_applied)),
+            ("grant_uses", Value::Obj(l.grants.iter().map(|(k, g)| (k.clone(), Value::Int(g.uses))).collect())),
+            ("receipts", Value::Obj(receipts.into_iter().map(|(k, n)| (k.to_string(), Value::Int(n))).collect())),
+            ("consumed_permits", Value::Int(l.consumed_permits.len() as i64)),
+            ("refusals", Value::Int(l.refusals)),
+        ]))
+    }
+}
+
+impl Broker {
+    fn new(init: &Value, ledger: Ledger) -> Broker {
+        let deps = init.get("dependencies");
+        let config = Config {
+            now: init.str_at("now").and_then(time::parse_rfc3339).unwrap_or((0, 0)),
+            state_revision: init.get("state_revision").and_then(Value::as_int).unwrap_or(0),
+            bundle: load(init.get("bundle")),
+            ingress_keys: init.get("ingress_keys").cloned().unwrap_or(Value::Obj(vec![])),
+            permit_key: init.str_at("permit_key").and_then(unhex).unwrap_or_default(),
+            channels: init.get("channels").cloned().unwrap_or(Value::Obj(vec![])),
+            policy_up: deps.and_then(|d| d.str_at("policy")) != Some("down"),
+            ledger_up: deps.and_then(|d| d.str_at("ledger")) != Some("down"),
+        };
+        Broker { config: RwLock::new(config), permits: Mutex::new(HashMap::new()), ledger }
+    }
+
+    /// The in-process lock of one (tenant, idempotency key); SQLite only (the
+    /// in-memory ledger runs every operation exclusively).
+    fn key_lock(&self, key: &Key) -> Option<Arc<Mutex<()>>> {
+        match &self.ledger {
+            Ledger::Sqlite(l) => Some(lock(&l.key_locks).entry(key.clone()).or_default().clone()),
+            Ledger::Memory(_) => None,
+        }
+    }
+
+    fn execute(&self, cfg: &Config, store: &Store, op: &Value, step: usize) -> R<Value> {
+        let req = op.get("request").cloned().unwrap_or(Value::Null);
+        if !cfg.seal_valid(&req, op.get("seal")) {
+            return Ok(refused("INGRESS_UNAUTHENTICATED"));
+        }
+        if !cfg.ledger_up {
+            return Ok(refused("LEDGER_UNAVAILABLE"));
+        }
+        let d = cfg.decide(&req);
+        if !matches!(d.status, "allow" | "require_approval") {
+            return Ok(refused(&d.reason));
+        }
+        let grant_ref = op.str_at("grant_ref");
+        if d.status == "require_approval" && grant_ref.is_none() {
+            return Ok(refused("APPROVAL_REQUIRED"));
+        }
+        let fault = op.str_at("fault").unwrap_or("");
+        let effective_grant = if d.status == "require_approval" { grant_ref } else { None };
+        let fingerprint = json::digest(&req).unwrap_or_default();
+        let key = (req.str_at("tenant_id").unwrap_or("").to_string(), req.str_at("idempotency_key").unwrap_or("").to_string());
+        let key_lock = self.key_lock(&key);
+        let _held = key_lock.as_deref().map(lock);
+
+        let expected = grant_binding(&req, &d, "approved");
+        if let Some(done) = store.reserve(&key, &fingerprint, effective_grant, &expected, cfg.now, fault == "crash_before_reserve")? {
+            return Ok(done);
         }
         if fault == "crash_after_reserve" {
-            return result("crashed");
+            return Ok(result("crashed"));
         }
 
         // Permit bound to the whole request, the bundle and min(now + 30 s, deadline).
-        self.next_permit += 1;
-        let mut expires = time::add_seconds(self.now, PERMIT_TTL_SECONDS);
+        let n = store.dispatch(&key)?;
+        let mut expires = time::add_seconds(cfg.now, PERMIT_TTL_SECONDS);
         if let Some(dl) = req.str_at("deadline_at").and_then(time::parse_rfc3339) {
             expires = expires.min(dl);
         }
         let body = obj(vec![
-            ("permit_id", s(&format!("permit-{}", self.next_permit))),
+            ("permit_id", s(&format!("permit-{n}"))),
             ("request_fingerprint", s(&fingerprint)),
             ("policy_bundle_sha", s(&d.policy_sha)),
             ("expires_at", s(&time::format(expires))),
         ]);
-        let permit = Permit { mac: self.sign_permit(&body), body };
-        self.permits.insert(step, permit.clone());
-        self.receipts.get_mut(&rkey).unwrap().status = ReceiptStatus::Dispatched;
-        let applied = match self.adapter(&permit, &req, fault == "effect_fails") {
+        let permit = Permit { mac: cfg.sign_permit(&body), body };
+        lock(&self.permits).insert(step, permit.clone());
+        let applied = match store.adapter(|| cfg.permit_check(&permit, &req), fault == "effect_fails")? {
             Ok(applied) => applied,
-            Err(code) => return refused(code),
+            Err(code) => return Ok(refused(code)),
         };
         if fault == "crash_after_dispatch" {
-            return result("crashed");
+            return Ok(result("crashed"));
         }
-        let receipt = self.receipts.get_mut(&rkey).unwrap();
-        if applied {
-            receipt.status = ReceiptStatus::ObservedSuccess;
-            result("effect_completed")
-        } else {
-            receipt.status = ReceiptStatus::ObservedFailure;
-            result("effect_failed")
-        }
+        store.observe(&key, applied)?;
+        Ok(result(if applied { "effect_completed" } else { "effect_failed" }))
     }
 
     /// Separate trusted approval channel (simulated credential match).
-    fn approve(&mut self, op: &Value) -> Value {
-        let channel = op.str_at("channel").and_then(|c| self.channels.get(c));
+    fn approve(&self, cfg: &Config, store: &Store, op: &Value) -> R<Value> {
+        let channel = op.str_at("channel").and_then(|c| cfg.channels.get(c));
         let human = op.str_at("human").unwrap_or("");
         let credential = op.str_at("credential");
         if credential.is_none() || channel.and_then(|c| c.str_at(human)) != credential {
-            return refused("HUMAN_UNAUTHENTICATED");
+            return Ok(refused("HUMAN_UNAUTHENTICATED"));
         }
         let req = op.get("for_request").cloned().unwrap_or(Value::Null);
-        let d = self.decide(&req);
+        let d = cfg.decide(&req);
         if d.status != "require_approval" {
-            return refused("NOT_APPROVABLE");
+            return Ok(refused("NOT_APPROVABLE"));
         }
         let principal = req.get("principal").and_then(|p| p.str_at("id"));
         if Some(human) == principal || Some(human) == req.str_at("agent_id") {
-            return refused("SELF_APPROVAL_FORBIDDEN");
+            return Ok(refused("SELF_APPROVAL_FORBIDDEN"));
         }
-        let label = op.str_at("grant_ref").unwrap_or("").to_string();
-        // A label names one grant for its whole life; reusing it would reset
-        // the grant's uses.
-        if self.grants.contains_key(&label) {
-            return refused("GRANT_REF_IN_USE");
-        }
+        let label = op.str_at("grant_ref").unwrap_or("");
         let ttl = op.get("ttl_seconds").and_then(Value::as_int).unwrap_or(DEFAULT_GRANT_TTL_SECONDS);
         let verdict = op.str_at("verdict").unwrap_or("");
-        self.grants.insert(
-            label,
-            Grant { binding: grant_binding(&req, &d, verdict), expires: time::add_seconds(self.now, ttl), max_uses: 1, uses: 0 },
-        );
-        result("grant_issued")
+        // A label names one grant for its whole life; reusing it would reset
+        // the grant's uses.
+        if !store.insert_grant(label, grant_binding(&req, &d, verdict), time::add_seconds(cfg.now, ttl))? {
+            return Ok(refused("GRANT_REF_IN_USE"));
+        }
+        Ok(result("grant_issued"))
     }
 
-    fn present_permit(&mut self, op: &Value) -> Value {
+    fn present_permit(&self, cfg: &Config, store: &Store, op: &Value) -> R<Value> {
         let step = op.get("of_step").and_then(Value::as_int).unwrap_or(-1);
-        let Some(mut permit) = usize::try_from(step).ok().and_then(|i| self.permits.get(&i)).cloned() else {
-            return refused("PERMIT_MISSING");
+        let Some(mut permit) = usize::try_from(step).ok().and_then(|i| lock(&self.permits).get(&i).cloned()) else {
+            return Ok(refused("PERMIT_MISSING"));
         };
         match op.str_at("tamper") {
             Some("mac") => {
@@ -322,86 +526,165 @@ impl Broker {
             _ => {}
         }
         let req = op.get("request").cloned().unwrap_or(Value::Null);
-        match self.adapter(&permit, &req, false) {
+        Ok(match store.adapter(|| cfg.permit_check(&permit, &req), false)? {
             Ok(_) => result("effect_applied"),
             Err(code) => refused(code),
+        })
+    }
+
+    /// `restart_broker` (D-020). Trusted configuration and client-held
+    /// permits survive. In memory the whole ledger survives: the exhaustive
+    /// pattern forces every field to be classified (grants and their uses,
+    /// receipts, consumed permit ids, the permit id counter and the counters
+    /// reported in `final`); volatile state exists only on the stack of an
+    /// operation. With SQLite every connection is closed, the key locks are
+    /// dropped and a new connection is opened to the same file.
+    fn restart(&self) -> R<()> {
+        match &self.ledger {
+            Ledger::Memory(m) => {
+                let MemLedger { grants: _, receipts: _, consumed_permits: _, next_permit: _, effects_applied: _, refusals: _ } = &*lock(m);
+                Ok(())
+            }
+            Ledger::Sqlite(l) => {
+                lock(&l.key_locks).clear();
+                let mut main = lock(&l.main);
+                if let Some(c) = main.take() {
+                    c.close().map_err(|(_, e)| DbError::from(e))?;
+                }
+                *main = Some(l.connect()?);
+                Ok(())
+            }
         }
     }
 
-    /// `restart_broker` (D-020): simulated process restart. The exhaustive
-    /// pattern forces every broker field to be classified as surviving a
-    /// restart. Ledger: grants and their uses, receipts and their status,
-    /// consumed permit ids, the permit id counter (new ids never collide with
-    /// consumed ones) and the counters reported in `final`. Trusted
-    /// configuration reloaded at start: clock, kernel state, active bundle,
-    /// keys, channels, dependency status. Issued permits are client-held, so
-    /// they stay presentable. Volatile state (the lock, in-flight transaction
-    /// values) exists only on the stack of `apply` and is gone once an
-    /// operation returns, so nothing in this struct is dropped.
-    fn restart(&mut self) {
-        let Broker {
-            now: _,
-            state_revision: _,
-            bundle: _,
-            ingress_keys: _,
-            permit_key: _,
-            channels: _,
-            policy_up: _,
-            ledger_up: _,
-            grants: _,
-            receipts: _,
-            permits: _,
-            consumed_permits: _,
-            next_permit: _,
-            effects_applied: _,
-            refusals: _,
-        } = self;
-    }
-
-    fn apply_locked(&mut self, op: &Value, step: usize) -> Value {
-        let out = match op.str_at("op").unwrap_or("") {
-            "execute" => self.execute(op, step),
-            "approve" => self.approve(op),
-            "present_permit" => self.present_permit(op),
-            "apply_without_permit" => refused("PERMIT_MISSING"),
+    /// Operations that change trusted configuration or restart the broker:
+    /// they run alone.
+    fn configure(&self, cfg: &mut Config, op: &Value) -> R<Value> {
+        Ok(match op.str_at("op").unwrap_or("") {
             "restart_broker" => {
-                self.restart();
+                self.restart()?;
                 result("restarted")
             }
             "activate_bundle" => {
-                self.bundle = load(op.get("bundle"));
+                cfg.bundle = load(op.get("bundle"));
                 result("bundle_activated")
             }
             "advance_time" => match op.str_at("now").and_then(time::parse_rfc3339) {
                 Some(t) => {
-                    self.now = t;
+                    cfg.now = t;
                     result("time_advanced")
                 }
                 None => refused("TIME_INVALID"),
             },
-            "set_dependency" => {
+            _ => {
                 let up = op.str_at("status") == Some("up");
                 match op.str_at("name") {
-                    Some("policy") => self.policy_up = up,
-                    Some("ledger") => self.ledger_up = up,
+                    Some("policy") => cfg.policy_up = up,
+                    Some("ledger") => cfg.ledger_up = up,
                     _ => {}
                 }
                 result("dependency_set")
             }
-            "reconcile" => {
-                let mut n = 0;
-                for r in self.receipts.values_mut().filter(|r| r.status == ReceiptStatus::Dispatched) {
-                    r.status = ReceiptStatus::UnknownReconcile;
-                    n += 1;
-                }
-                obj(vec![("result", s("reconciled")), ("count", Value::Int(n))])
+        })
+    }
+
+    fn operate(&self, cfg: &Config, store: &Store, op: &Value, step: usize) -> R<Value> {
+        match op.str_at("op").unwrap_or("") {
+            "execute" => self.execute(cfg, store, op, step),
+            "approve" => self.approve(cfg, store, op),
+            "present_permit" => self.present_permit(cfg, store, op),
+            "apply_without_permit" => Ok(refused("PERMIT_MISSING")),
+            "reconcile" => Ok(obj(vec![("result", s("reconciled")), ("count", Value::Int(store.reconcile()?))])),
+            _ => Ok(refused("OPERATION_UNKNOWN")),
+        }
+    }
+
+    /// Run `f` with the ledger of one operation: `own` is the connection of
+    /// an operation in a concurrent group; otherwise the main connection.
+    fn with_store<T>(&self, own: Option<&R<Connection>>, f: impl FnOnce(&Store) -> T) -> T {
+        match (&self.ledger, own) {
+            (Ledger::Memory(m), _) => f(&Store::Memory(m)),
+            (Ledger::Sqlite(_), Some(c)) => f(&Store::Sqlite(c.as_ref().ok())),
+            (Ledger::Sqlite(l), None) => {
+                let main = lock(&l.main);
+                f(&Store::Sqlite(main.as_ref()))
             }
-            _ => refused("OPERATION_UNKNOWN"),
+        }
+    }
+
+    fn apply_one(&self, op: &Value, step: usize, own: Option<&R<Connection>>) -> Value {
+        let configures = matches!(op.str_at("op"), Some("restart_broker" | "activate_bundle" | "advance_time" | "set_dependency"));
+        let attempt = if configures {
+            let mut cfg = self.config.write().unwrap_or_else(|e| e.into_inner());
+            self.configure(&mut cfg, op)
+        } else if matches!(self.ledger, Ledger::Memory(_)) {
+            let cfg = self.config.write().unwrap_or_else(|e| e.into_inner());
+            self.with_store(own, |st| self.operate(&cfg, st, op, step))
+        } else {
+            let cfg = self.config.read().unwrap_or_else(|e| e.into_inner());
+            self.with_store(own, |st| self.operate(&cfg, st, op, step))
         };
+        let out = attempt.unwrap_or_else(|e| {
+            report(&e);
+            refused("LEDGER_UNAVAILABLE")
+        });
         if out.str_at("result") == Some("refused") {
-            self.refusals += 1;
+            if let Err(e) = self.with_store(own, |st| st.refuse(out.str_at("code").unwrap_or(""))) {
+                report(&e);
+            }
         }
         out
+    }
+
+    /// A connection for one operation of a concurrent group (SQLite only).
+    fn group_connection(&self) -> Option<R<Connection>> {
+        match &self.ledger {
+            Ledger::Memory(_) => None,
+            Ledger::Sqlite(l) => Some(l.connect().inspect_err(report)),
+        }
+    }
+
+    fn apply(&self, op: &Value, step: usize, own: Option<&R<Connection>>) -> Value {
+        if op.str_at("op") != Some("concurrent") {
+            return self.apply_one(op, step, own);
+        }
+        let ops = op.get("operations").and_then(Value::as_arr).cloned().unwrap_or_default();
+        let barrier = Barrier::new(ops.len());
+        let results: Vec<Value> = thread::scope(|scope| {
+            let handles: Vec<_> = ops
+                .iter()
+                .map(|o| {
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        let conn = self.group_connection();
+                        barrier.wait();
+                        self.apply(o, step, conn.as_ref())
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap_or_else(|_| refused("INTERNAL_ERROR"))).collect()
+        });
+        let mut outcomes: BTreeMap<String, i64> = BTreeMap::new();
+        for r in &results {
+            *outcomes.entry(outcome_key(r)).or_default() += 1;
+        }
+        obj(vec![
+            ("result", s("concurrent")),
+            ("outcomes", Value::Obj(outcomes.into_iter().map(|(k, n)| (k, Value::Int(n))).collect())),
+        ])
+    }
+
+    fn run_steps(&self, input: &Value) -> Value {
+        let steps: Vec<Value> = input
+            .get("steps")
+            .and_then(Value::as_arr)
+            .map(|ops| ops.iter().enumerate().map(|(i, op)| self.apply(op, i, None)).collect())
+            .unwrap_or_default();
+        let fin = self.with_store(None, |st| st.final_state()).unwrap_or_else(|e| {
+            report(&e);
+            obj(vec![("error", s("LEDGER_UNAVAILABLE"))])
+        });
+        obj(vec![("steps", Value::Arr(steps)), ("final", fin)])
     }
 }
 
@@ -414,36 +697,6 @@ fn outcome_key(v: &Value) -> String {
         Some(r) => r.to_string(),
         None => String::new(),
     }
-}
-
-fn apply(ledger: &Mutex<Broker>, op: &Value, step: usize) -> Value {
-    if op.str_at("op") == Some("concurrent") {
-        let ops = op.get("operations").and_then(Value::as_arr).cloned().unwrap_or_default();
-        let barrier = Barrier::new(ops.len());
-        let results: Vec<Value> = thread::scope(|scope| {
-            let handles: Vec<_> = ops
-                .iter()
-                .map(|o| {
-                    let barrier = &barrier;
-                    scope.spawn(move || {
-                        barrier.wait();
-                        apply(ledger, o, step)
-                    })
-                })
-                .collect();
-            handles.into_iter().map(|h| h.join().unwrap_or_else(|_| refused("INTERNAL_ERROR"))).collect()
-        });
-        let mut outcomes: BTreeMap<String, i64> = BTreeMap::new();
-        for r in &results {
-            *outcomes.entry(outcome_key(r)).or_default() += 1;
-        }
-        return obj(vec![
-            ("result", s("concurrent")),
-            ("outcomes", Value::Obj(outcomes.into_iter().map(|(k, n)| (k, Value::Int(n))).collect())),
-        ]);
-    }
-    let mut b = ledger.lock().unwrap_or_else(|e| e.into_inner());
-    b.apply_locked(op, step)
 }
 
 /// State fields every scenario must provide (BROKER.md "State").
@@ -487,53 +740,35 @@ fn input_usable(input: &Value) -> bool {
     initial_ok && steps_ok
 }
 
-pub fn run(input: &Value) -> Value {
+/// An SQLite ledger on `path`, schema created if absent. A file that cannot
+/// be created or opened leaves no connection: every operation that needs the
+/// ledger answers LEDGER_UNAVAILABLE.
+fn sqlite_ledger(path: R<PathBuf>) -> Ledger {
+    let path = path.inspect_err(report).ok();
+    let ledger = SqlLedger { path, main: Mutex::new(None), key_locks: Mutex::new(HashMap::new()) };
+    match ledger.connect().and_then(|c| sqlite::ensure_schema(&c).map(|()| c)) {
+        Ok(c) => *lock(&ledger.main) = Some(c),
+        Err(e) => report(&e),
+    }
+    Ledger::Sqlite(ledger)
+}
+
+#[cfg(test)]
+fn run(input: &Value) -> Value {
+    run_with(input, &LedgerChoice::Memory)
+}
+
+pub fn run_with(input: &Value, choice: &LedgerChoice) -> Value {
     if !input_usable(input) {
         return obj(vec![("input_error", s("INPUT_MALFORMED"))]);
     }
-    let init = input.get("initial").cloned().unwrap_or(Value::Obj(vec![]));
-    let deps = init.get("dependencies");
-    let broker = Broker {
-        now: init.str_at("now").and_then(time::parse_rfc3339).unwrap_or((0, 0)),
-        state_revision: init.get("state_revision").and_then(Value::as_int).unwrap_or(0),
-        bundle: load(init.get("bundle")),
-        ingress_keys: init.get("ingress_keys").cloned().unwrap_or(Value::Obj(vec![])),
-        permit_key: init.str_at("permit_key").and_then(unhex).unwrap_or_default(),
-        channels: init.get("channels").cloned().unwrap_or(Value::Obj(vec![])),
-        policy_up: deps.and_then(|d| d.str_at("policy")) != Some("down"),
-        ledger_up: deps.and_then(|d| d.str_at("ledger")) != Some("down"),
-        grants: BTreeMap::new(),
-        receipts: HashMap::new(),
-        permits: HashMap::new(),
-        consumed_permits: HashSet::new(),
-        next_permit: 0,
-        effects_applied: 0,
-        refusals: 0,
+    let ledger = match choice {
+        LedgerChoice::Memory => Ledger::Memory(Mutex::new(MemLedger::default())),
+        LedgerChoice::SqliteDir(dir) => sqlite_ledger(sqlite::new_db_in(dir)),
+        LedgerChoice::SqliteDb(path) => sqlite_ledger(Ok(path.clone())),
     };
-    let ledger = Mutex::new(broker);
-    let steps: Vec<Value> = input
-        .get("steps")
-        .and_then(Value::as_arr)
-        .map(|ops| ops.iter().enumerate().map(|(i, op)| apply(&ledger, op, i)).collect())
-        .unwrap_or_default();
-    let b = ledger.into_inner().unwrap_or_else(|e| e.into_inner());
-    let mut receipts: BTreeMap<&str, i64> = BTreeMap::new();
-    for r in b.receipts.values() {
-        *receipts.entry(r.status.name()).or_default() += 1;
-    }
-    obj(vec![
-        ("steps", Value::Arr(steps)),
-        (
-            "final",
-            obj(vec![
-                ("effects_applied", Value::Int(b.effects_applied)),
-                ("grant_uses", Value::Obj(b.grants.iter().map(|(k, g)| (k.clone(), Value::Int(g.uses))).collect())),
-                ("receipts", Value::Obj(receipts.into_iter().map(|(k, n)| (k.to_string(), Value::Int(n))).collect())),
-                ("consumed_permits", Value::Int(b.consumed_permits.len() as i64)),
-                ("refusals", Value::Int(b.refusals)),
-            ]),
-        ),
-    ])
+    let init = input.get("initial").cloned().unwrap_or(Value::Obj(vec![]));
+    Broker::new(&init, ledger).run_steps(input)
 }
 
 #[cfg(test)]
@@ -713,5 +948,159 @@ mod tests {
         }
         let out = scenario(vec![set(Some("policy")), set(Some("ledger"))]);
         assert_eq!(step_results(&out), [r#"{"result":"dependency_set"}"#; 2]);
+    }
+
+    // ------------------------------------------------ SQLite ledger (D-023)
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("writ-proto-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn sqlite_broker(initial: &Value, dir: &std::path::Path) -> Broker {
+        Broker::new(initial, sqlite_ledger(sqlite::new_db_in(dir)))
+    }
+
+    fn main_conn<T>(b: &Broker, f: impl FnOnce(&Connection) -> T) -> T {
+        let Ledger::Sqlite(l) = &b.ledger else { panic!("not sqlite") };
+        f(lock(&l.main).as_ref().unwrap())
+    }
+
+    fn count(b: &Broker, sql: &str) -> i64 {
+        main_conn(b, |c| c.query_row(sql, [], |r| r.get(0)).unwrap())
+    }
+
+    fn with_member(v: &Value, key: &str, value: Value) -> Value {
+        let mut m = v.as_obj().unwrap().clone();
+        m.retain(|(k, _)| k != key);
+        m.push((key.into(), value));
+        Value::Obj(m)
+    }
+
+    /// A sealed execute of `req` under the scenario's ingress key.
+    fn sealed(initial: &Value, req: &Value, grant: Option<&str>) -> Value {
+        let adapter = req.get("principal").and_then(|p| p.str_at("verified_by")).unwrap();
+        let key = unhex(initial.get("ingress_keys").and_then(|k| k.str_at(adapter)).unwrap()).unwrap();
+        let mac = mac_hex(&key, json::canonical(req).unwrap().as_bytes());
+        let mut members = vec![("op", s("execute")), ("request", req.clone()), ("seal", obj(vec![("adapter_id", s(adapter)), ("mac", s(&mac))]))];
+        if let Some(g) = grant {
+            members.push(("grant_ref", s(g)));
+        }
+        obj(members)
+    }
+
+    /// The approvable request with another idempotency key, and an allowed
+    /// file write from the same principal.
+    fn requests(approve: &Value, idem: &str) -> (Value, Value) {
+        let publish = with_member(approve.get("for_request").unwrap(), "idempotency_key", s(idem));
+        let resource = obj(vec![("canonical_resource_id", s("workspace:fixture-tenant/fixture-project/a.txt")), ("uri", s("file:///work/a.txt"))]);
+        let action = with_member(&with_member(publish.get("action").unwrap(), "kind", s("file.write")), "resource", resource);
+        let write = with_member(&publish, "action", action);
+        (publish, write)
+    }
+
+    fn concurrent(ops: Vec<Value>) -> Value {
+        obj(vec![("op", s("concurrent")), ("operations", Value::Arr(ops))])
+    }
+
+    #[test]
+    fn schema_is_byte_identical_to_the_fixture() {
+        let fixture = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../fixtures/broker/ledger.sql")).unwrap();
+        assert_eq!(sqlite::SCHEMA.as_bytes(), fixture.as_slice());
+    }
+
+    #[test]
+    fn failing_statement_in_t_reserve_leaves_nothing() {
+        let dir = temp_dir("atomicity");
+        let (initial, approve) = approvable();
+        let (publish, _) = requests(&approve, "idem-atomic");
+        let b = sqlite_broker(&initial, &dir);
+        assert_eq!(json::to_text(&b.apply(&with_label(&approve, "g1"), 0, None)), r#"{"result":"grant_issued"}"#);
+        // The last statement of T-reserve fails after the grant use, the
+        // grant_uses row and the receipt were written.
+        main_conn(&b, |c| c.execute_batch("CREATE TEMP TRIGGER fail_reserve BEFORE INSERT ON receipt_events BEGIN SELECT RAISE(ABORT, 'injected'); END").unwrap());
+        let out = b.apply(&sealed(&initial, &publish, Some("g1")), 1, None);
+        assert_eq!(json::to_text(&out), r#"{"code":"LEDGER_UNAVAILABLE","result":"refused"}"#);
+        assert_eq!(count(&b, "SELECT count(*) FROM receipts"), 0);
+        assert_eq!(count(&b, "SELECT count(*) FROM receipt_events"), 0);
+        assert_eq!(count(&b, "SELECT count(*) FROM grant_uses"), 0);
+        assert_eq!(count(&b, "SELECT uses FROM grants WHERE label = 'g1'"), 0);
+        assert_eq!(count(&b, "SELECT count(*) FROM audit_refusals WHERE code = 'LEDGER_UNAVAILABLE'"), 1);
+        main_conn(&b, |c| c.execute_batch("DROP TRIGGER fail_reserve").unwrap());
+        let out = b.apply(&sealed(&initial, &publish, Some("g1")), 2, None);
+        assert_eq!(json::to_text(&out), r#"{"result":"effect_completed"}"#);
+        assert_eq!(count(&b, "SELECT uses FROM grants WHERE label = 'g1'"), 1);
+        drop(b);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn restart_reopens_the_same_file_and_matches_memory() {
+        let dir = temp_dir("restart");
+        let (initial, approve) = approvable();
+        let (p, _) = requests(&approve, "idem-p");
+        let (_, w1) = requests(&approve, "idem-w1");
+        let (_, w2) = requests(&approve, "idem-w2");
+        let crash = |req: &Value, grant, fault: &str| with_member(&sealed(&initial, req, grant), "fault", s(fault));
+        let steps = vec![
+            with_label(&approve, "g1"),
+            crash(&p, Some("g1"), "crash_after_reserve"),
+            sealed(&initial, &w1, None),
+            crash(&w2, None, "crash_after_dispatch"),
+            restart(),
+            sealed(&initial, &p, Some("g1")),
+            sealed(&initial, &w1, None),
+            sealed(&initial, &w2, None),
+            obj(vec![("op", s("present_permit")), ("of_step", Value::Int(2)), ("request", w1.clone())]),
+            restart(),
+            obj(vec![("op", s("reconcile"))]),
+        ];
+        let input = obj(vec![("initial", initial.clone()), ("steps", Value::Arr(steps))]);
+        let sqlite_out = run_with(&input, &LedgerChoice::SqliteDir(dir.clone()));
+        assert_eq!(json::to_text(&sqlite_out), json::to_text(&run(&input)));
+        assert_eq!(
+            step_results(&sqlite_out)[5..],
+            [
+                r#"{"result":"effect_completed"}"#,
+                r#"{"replayed":true,"result":"effect_completed"}"#,
+                r#"{"code":"RECONCILIATION_REQUIRED","result":"refused"}"#,
+                r#"{"code":"PERMIT_REPLAYED","result":"refused"}"#,
+                r#"{"result":"restarted"}"#,
+                r#"{"count":1,"result":"reconciled"}"#,
+            ]
+        );
+        assert_eq!(
+            json::to_text(sqlite_out.get("final").unwrap()),
+            r#"{"consumed_permits":3,"effects_applied":3,"grant_uses":{"g1":1},"receipts":{"observed_success":2,"unknown_reconcile":1},"refusals":2}"#
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn contention_on_one_grant_and_one_key() {
+        let (initial, approve) = approvable();
+        for rep in 0..20 {
+            let dir = temp_dir(&format!("contention-{rep}"));
+            let b = sqlite_broker(&initial, &dir);
+            assert_eq!(json::to_text(&b.apply(&with_label(&approve, "g1"), 0, None)), r#"{"result":"grant_issued"}"#);
+            let ops = (0..64).map(|i| sealed(&initial, &requests(&approve, &format!("k{i}")).0, Some("g1"))).collect();
+            let out = b.apply(&concurrent(ops), 1, None);
+            assert_eq!(json::to_text(&out), r#"{"outcomes":{"GRANT_EXHAUSTED":63,"effect_completed":1},"result":"concurrent"}"#, "rep {rep}");
+            assert_eq!(count(&b, "SELECT count(*) FROM receipts"), 1);
+            assert_eq!(count(&b, "SELECT count(*) FROM receipt_events WHERE cause = 'reserve'"), 1);
+            assert_eq!(count(&b, "SELECT count(*) FROM grant_uses"), 1);
+            assert_eq!(count(&b, "SELECT uses FROM grants WHERE label = 'g1'"), 1);
+
+            let write = requests(&approve, "same").1;
+            let out = b.apply(&concurrent((0..64).map(|_| sealed(&initial, &write, None)).collect()), 2, None);
+            assert_eq!(json::to_text(&out), r#"{"outcomes":{"effect_completed":1,"replayed":63},"result":"concurrent"}"#, "rep {rep}");
+            assert_eq!(count(&b, "SELECT count(*) FROM receipt_events WHERE idempotency_key = 'same' AND cause = 'dispatch'"), 1);
+            assert_eq!(count(&b, "SELECT count(*) FROM adapter_effects"), 2);
+            assert_eq!(count(&b, "SELECT count(*) FROM audit_refusals"), 63);
+            drop(b);
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
     }
 }

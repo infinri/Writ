@@ -12,7 +12,7 @@ cd ../.. && python3 m1/driver/parity.py --proto "$PWD/m1/rust/target/release/pro
     --manifest m1/fixtures/manifest.json --repeat 2 --out /tmp/rust-result.json
 ```
 
-Commands: `proto canonical | decide | check-acceptance | external-refusal | transition-scenario | broker-scenario`. stdin carries one `{"id", "input"}` or `{"id", "input_text"}` per line; stdout carries one `{"id", "output"}` per line, in input order. Whitespace-only lines are ignored. The envelope is parsed with the strict rules and must be an object with a string `id` and exactly one of `input` or `input_text` (a string), with no other member (D-021, closed structure). A strictly parsed line with exactly one string `id` that breaks this is answered `{"id": "<id>", "output": {"error": "ENVELOPE_INVALID"}}`. Any other line (not strict JSON, including a strict failure inside `input` other than depth; root not an object; `id` missing, repeated or not a string) is answered `{"id": null, "output": {"error": "ENVELOPE_INVALID"}}`: no id is recovered by a non-strict scan or fabricated. No command runs for an invalid envelope. Every non-blank line is answered, processing continues, and the exit status is 0 when stdin was read to the end (1 only on a read or write failure).
+Commands: `proto canonical | decide | check-acceptance | external-refusal | transition-scenario | broker-scenario`. `proto broker-scenario --ledger sqlite --ledger-dir DIR` uses a new SQLite file in `DIR` per scenario line, `--ledger-db PATH` one file for the whole process (created if absent, never reset); other commands reject these flags (exit 2). `proto sqlite-info` (no stdin) prints the engine version, source id, compile options and connection settings read back from a new temporary database. stdin carries one `{"id", "input"}` or `{"id", "input_text"}` per line; stdout carries one `{"id", "output"}` per line, in input order. Whitespace-only lines are ignored. The envelope is parsed with the strict rules and must be an object with a string `id` and exactly one of `input` or `input_text` (a string), with no other member (D-021, closed structure). A strictly parsed line with exactly one string `id` that breaks this is answered `{"id": "<id>", "output": {"error": "ENVELOPE_INVALID"}}`. Any other line (not strict JSON, including a strict failure inside `input` other than depth; root not an object; `id` missing, repeated or not a string) is answered `{"id": null, "output": {"error": "ENVELOPE_INVALID"}}`: no id is recovered by a non-strict scan or fabricated. No command runs for an invalid envelope. Every non-blank line is answered, processing continues, and the exit status is 0 when stdin was read to the end (1 only on a read or write failure).
 
 ## Dependencies
 
@@ -20,8 +20,9 @@ Commands: `proto canonical | decide | check-acceptance | external-refusal | tran
 |---|---|---|
 | `sha2` (RustCrypto) | =0.10.8 | SHA-256 digests (D-006) |
 | `hmac` (RustCrypto) | =0.12.1 | simulated ingress seals and permit MACs |
+| `rusqlite` | =0.40.2, `default-features = false` | SQLite broker ledger (D-023); links the pinned static SQLite 3.54.1 from `m1/tools/install-sqlite.sh` through `libsqlite3-sys` 0.38.2 (`SQLITE3_LIB_DIR`, `SQLITE3_INCLUDE_DIR`, `SQLITE3_STATIC=1` from `m1/tools/env.sh`); no bundled copy |
 
-Their transitive dependencies are pinned in `Cargo.lock`: `digest` 0.10.7, `block-buffer` 0.10.4, `crypto-common` 0.1.7, `generic-array` 0.14.7, `typenum` 1.20.1, `version_check` 0.9.5, `subtle` 2.6.1, `cfg-if` 1.0.5 and `cpufeatures` 0.2.17. There is no serde. The JSON parser and serializer are our own code.
+Their transitive dependencies are pinned in `Cargo.lock`: `digest` 0.10.7, `block-buffer` 0.10.4, `crypto-common` 0.1.7, `generic-array` 0.14.7, `typenum` 1.20.1, `version_check` 0.9.5, `subtle` 2.6.1, `cfg-if` 1.0.5 and `cpufeatures` 0.2.17. `rusqlite` adds `bitflags` 2.13.2, `fallible-iterator` 0.3.0, `fallible-streaming-iterator` 0.1.9, `smallvec` 1.16.5 and `libsqlite3-sys` 0.38.2 (build-time `pkg-config` 0.3.34 and `vcpkg` 0.2.15). There is no serde. The JSON parser and serializer are our own code.
 
 ## Architecture
 
@@ -34,7 +35,8 @@ Their transitive dependencies are pinned in `Cargo.lock`: `digest` 0.10.7, `bloc
 | `acceptance.rs` | `check_acceptance(record, current, requirements)` in the SEMANTICS order | pure |
 | `refusal.rs` | Internal-to-external refusal mapping (D-018 A7) | pure |
 | `promotion.rs` | Broker side of promotion and governed effects (`transition-scenario`) | stateful, simulated ledger |
-| `broker.rs` | Sealed ingress, use-time re-decision, grants, receipts, permits, adapter (`broker-scenario`) | stateful, simulated ledger and keys |
+| `broker.rs` | Sealed ingress, use-time re-decision, grants, receipts, permits, adapter (`broker-scenario`); in-memory ledger | stateful, simulated keys |
+| `sqlite.rs` | SQLite ledger (`m1/fixtures/broker/LEDGER-SQLITE.md`): connection settings, embedded `ledger.sql`, one function per logical transaction, `sqlite-info` | file I/O |
 | `main.rs` | Protocol envelope and command dispatch | I/O only here |
 
 The kernel and the acceptance check are separate. The broker modules call `kernel::decide` and `acceptance::check` as pure functions and never trust a decision or protection flag supplied by the client. The kernel is key-free (D-010). Seals and permits are verified only in `broker.rs`.
@@ -49,12 +51,12 @@ Every command parses its input with `json::parse`. For an `input` member, the en
 
 ### Concurrency
 
-`concurrent` and `promote_concurrent` (transition scenarios), and `concurrent` (broker scenarios), run each operation on its own OS thread (`std::thread::scope`). All threads are released together by a `Barrier`. Each operation holds the single ledger `Mutex` for its whole transaction, so every outcome equals some serial order. Results come back in submission order. When several serial orders are valid, the observed result can vary between runs. `sc-64` is such a case: both outputs it allows were observed.
+`concurrent` and `promote_concurrent` (transition scenarios), and `concurrent` (broker scenarios), run each operation on its own OS thread (`std::thread::scope`). All threads are released together by a `Barrier`. With the in-memory ledger each operation holds the configuration lock exclusively for its whole run, so every outcome equals some serial order. With SQLite each operation of a group opens its own connection; operations on one (tenant, idempotency key) are serialized by an in-process key lock, and different keys contend only in SQLite (`BEGIN IMMEDIATE`, `busy_timeout` 5000 ms). Operations that change trusted configuration or restart the broker run alone. Results come back in submission order. When several serial orders are valid, the observed result can vary between runs. `sc-64` is such a case: both outputs it allows were observed.
 
 ## Simulated, not verified
 
 - **Signatures:** ingress seals and permit MACs are HMAC-SHA256 under fixture keys held in scenario state. There is no key management, rotation or adapter registration.
-- **Storage and crashes:** the ledger is an in-memory model. `fault` injects a crash at a named point. There is no durability, crash recovery or multi-process locking.
+- **Storage and crashes:** the default ledger is an in-memory model; `--ledger sqlite` is a real file-backed SQLite ledger (WAL, `synchronous=FULL`), tested for atomicity, restart, a second process and contention in `src/broker.rs` and `tests/ledger_persistence.rs`. `fault` injects a crash at a named point (nothing is killed); power-loss durability is not tested. The SQLite effect adapter (consumed permits, effect count) is still simulated in the same file.
 - **Humans:** an "authenticated human" is a credential match on a fixture channel.
 - **Effects:** "dispatch" increments a counter or records a state. No external side effect occurs.
 - **Acceptance records:** `record_digest` is an unkeyed consistency check. Trust labels are claims, not evaluator identity (boundary 2 is not covered).

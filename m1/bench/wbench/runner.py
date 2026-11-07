@@ -17,7 +17,7 @@ class Proto:
         self.prefix = ["taskset", "-c", cpu_list] if cpu_list else []
 
     def argv(self, command: str) -> list[str]:
-        return [*self.prefix, self.binary, command]
+        return [*self.prefix, self.binary, *command.split(" ")]
 
 
 def parse(stdout: bytes) -> tuple[dict, int, list[str]]:
