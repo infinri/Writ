@@ -39,3 +39,35 @@ jobs:
         env:
           WRIT_M0_PYTHON: ${{ env.pythonLocation }}/bin/python
         run: python -m unittest discover -s m1/driver/tests -v
+  m1-rust:
+    name: M1 Rust prototype parity (functional, no benchmarks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust 1.99.1
+        run: rustup toolchain install 1.99.1 --profile minimal --no-self-update
+      - name: Build and test
+        working-directory: m1/rust
+        run: |
+          cargo +1.99.1 build --release --locked
+          cargo +1.99.1 test --release --locked
+      - name: Parity driver, all fixture sets
+        run: python3 m1/driver/parity.py --proto "$GITHUB_WORKSPACE/m1/rust/target/release/proto" --manifest m1/fixtures/manifest.json --repeat 2
+  m1-go:
+    name: M1 Go prototype parity (functional, no benchmarks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+      - name: Vet, build and race tests
+        working-directory: m1/go
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          go vet ./...
+          go build -o proto ./cmd/proto
+          go test -race -count=1 ./...
+      - name: Parity driver, all fixture sets
+        run: python3 m1/driver/parity.py --proto "$GITHUB_WORKSPACE/m1/go/proto" --manifest m1/fixtures/manifest.json --repeat 2
