@@ -1,13 +1,13 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-07 (M1-06a done) · **Branch:** v2/architecture-rebuild · **Milestone:** M1 active (development only, D-014); M1-00..M1-05 and M1-06a DONE; M1-06 blocked by environment and an owner decision. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md).
+**Last updated:** 2026-11-07 (D-022, D-023 done; M1-07 in progress) · **Branch:** v2/architecture-rebuild · **Milestone:** M1 active (development only, D-014); M1-00..M1-05, M1-06a, D-022 and D-023 DONE; M1-07 in progress; M1-06 measurements blocked by environment. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md).
 
 ## Current
 
-- **Code and CI:** `fe7de57a430355a529bc39088e659b5f5f915f39`, CI https://github.com/infinri/Writ/actions/runs/42394888125 (5 jobs success, including the required property job).
-- **Prototypes:** Rust `m1/rust/`, Go `m1/go/`: both 414/414 fixtures, 11/11 property regressions, 0 property mismatches (E-025).
-- **Benchmark harness:** `m1/bench/` (M1-06a, E-026): dry run passes; the guard refuses measurement in the current environment. No measurement taken.
-- **Next:** M1-06 measurements, after the owner sets the `performance` governor and decides the workload B ledger question (SESSION-HANDOFF section F). M1-07 build and packaging assessment can proceed without measurements.
+- **Published:** `9e6f9f1` (M1-06a), CI run 42396690120 green. **Local, unpushed:** `a44c9cc` (D-022), `935e4e3` (D-023 SQLite ledger), plus the docs commit with this file.
+- **Prototypes:** both 444/444 fixtures with the in-memory and the SQLite ledger; Rust SQLite vs Go SQLite broker campaign 0 mismatches (E-027, E-028).
+- **M1-07:** [report](M1-07-BUILD-ASSESSMENT.md) with measured facts; build times deferred (guarded).
+- **Next:** push after confirmation; M1-06d broker latency instrumentation; M1-06 measurements after the owner sets the `performance` governor.
 
 ## Security findings
 
@@ -45,4 +45,4 @@ CI E-013: run [42309913797](https://github.com/infinri/Writ/actions/runs/4230991
 
 ## Next exact action
 
-See SESSION-HANDOFF section F. M1-06 runs are blocked: governor `powersave`; workload B ledger decision pending.
+See SESSION-HANDOFF section F. M1-06 runs are blocked: governor `powersave`.

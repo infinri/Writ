@@ -219,6 +219,22 @@ SR-06 sandbox facts (preflight PASS, telemetry diagnostic) are recorded in `docs
 - **No benchmark measurement was taken or reported.**
 - **Found while probing (not fixed; owner decision):** a `decide` input whose harness fields are malformed (missing `now`, or a non-integer `state_revision`) is answered differently: Rust returns the three-field `invalid`/`REQUEST_SCHEMA_INVALID`; Go returns a full Decision with `decided_at` `0001-01-01T00:00:00Z`. Both accept `state_revision: -1`. No fixture covers this; D-021 settles only strict-parse failures.
 
+### E-027: D-022 decide input validation
+
+- **Commit** `a44c9cc`. 30 new fixtures (`protocol-decide` `p22-*`, AMENDMENT-6); no earlier expectation changed; 12 sets, 444 cases.
+- **Before the fix:** Rust 28/33 in `protocol-decide` (5 failures: offset, fraction, lowercase `now`; revisions -1 and -(2^53-1)); Go 11/33 (22 failures: full Decisions with fabricated metadata, `decided_at` `0001-01-01T00:00:00Z`).
+- **After:** both 444/444 `--repeat 2`; Rust 34 tests, Go race ok; property CI profile seeds 20261107 and 1 all PASS; new invariant `decide.d022_harness_fields_validated_before_decision` 247/247 per prototype at seed 20261107, 3,000 cases (generator balance 1,040 valid / 1,682 invalid per 3,000 draws, including 60 valid year-0000 timestamps); regressions 11/11; mutation smoke 8/8 each.
+
+### E-028: D-023 SQLite ledger in both prototypes (correctness only, no measurements)
+
+- **Commit** `935e4e3`. Shared SQLite 3.54.1 built by `m1/tools/install-sqlite.sh` (archive and `sqlite3.c` SHA3-256 verified, source id checked), revision 2 with `HAVE_USLEEP`. Both `proto sqlite-info`: 3.54.1, identical source id and compile options, settings `journal_mode=wal`, `synchronous=2`, `busy_timeout=5000`, `foreign_keys=1`, `trusted_schema=0`; no dynamic `libsqlite3` (`ldd`); Rust links the `-r2` library (build output), Go build info shows the `-r2` `CGO_LDFLAGS` and tags.
+- **Re-verified in this session after the rebuild:** Rust `cargo test` 38 unit + 3 integration passed (includes T-reserve atomicity via injected trigger failure, restart persistence, second-process `--ledger-db` continuation, 20 x 64-thread contention on one grant and one key, schema drift, sqlite-info); Go vet clean, `go test -race` ok in 6 packages (broker package 75.9 s: SQLite fixtures, settings, real `BEGIN IMMEDIATE` busy check, atomicity, restart, 64-goroutine contention x 20, second-process test).
+- **Fixtures:** in-memory 444/444 and SQLite ledger 444/444 (`m1/tools/sqlite-ledger-proto.sh`), both prototypes, `--repeat 2`.
+- **Differential, SQLite against SQLite:** `m1/props/run.py --campaign broker --seed 20261107 --cases 1000 --repeats 3`, Rust SQLite versus Go SQLite: PASS, 1,119 cases, 23,089 checks, 0 mismatches, 0 failed checks (includes 300 concurrent groups checked against permitted serializations and restart transparency).
+- **Other:** memory property CI profile seeds 20261107 and 1: 6/6 campaigns PASS each; regressions 11/11; mutation smoke exit 0 each; harness self-tests 15 OK; dry run 0 correctness failures over 22 check kinds including identical-engine check; M0 281 passed; drift, driver and docs checks OK.
+- **Uncertain-effect rule:** in both prototypes' own tests a `crash_after_dispatch` receipt answers `RECONCILIATION_REQUIRED` after restart and in a second process, and the effect count does not grow.
+- **Simulated, not verified:** effect adapter (consumed permits and effect rows in the same file; no real external exactly-once execution), HMAC fixture keys, crashes (early returns, no process kill), power-loss durability (not tested).
+
 ## Not yet executed
 
 - SR-06 live-host experiments (0 of 69; sandbox torn down) and full SR-06 acceptance; rule semantic review (M0-01d); independent human golden review (M0-05a).
