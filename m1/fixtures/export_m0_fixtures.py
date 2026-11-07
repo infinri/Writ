@@ -348,6 +348,8 @@ def broker_scenarios() -> list[str]:
             return dict({"op": "set_dependency"}, **spec), now
         if name == "reconcile":
             return {"op": "reconcile"}, now
+        if name == "restart_broker":
+            return {"op": "restart_broker"}, now
         raise SystemExit(f"unknown broker op {name}")
 
     out = []

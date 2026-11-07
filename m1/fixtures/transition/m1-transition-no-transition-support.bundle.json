@@ -1,0 +1,44 @@
+{
+  "contract_version": "2.0",
+  "bundle_id": "m1-transition-no-transition-support",
+  "version": "0.4.0",
+  "publisher": "writ-v2-design-fixture",
+  "description": "Valid variant: no workflow.transition capability, statements or protection (D-020). Other capabilities remain usable.",
+  "known_capabilities": [
+    "agent.dispatch",
+    "file.read",
+    "file.write",
+    "memory.write",
+    "network.egress",
+    "process.execute",
+    "repository.publish"
+  ],
+  "trusted_principal_issuers": [
+    "writ-host-adapter:fixture"
+  ],
+  "statements": [
+    {
+      "statement_id": "forbid-egress",
+      "effect": "forbid",
+      "tenants": [
+        "fixture-tenant"
+      ],
+      "action_kinds": [
+        "network.egress"
+      ],
+      "reason_code": "NETWORK_EGRESS_FORBIDDEN"
+    },
+    {
+      "statement_id": "permit-workspace-write",
+      "effect": "permit",
+      "action_kinds": [
+        "file.write"
+      ],
+      "resource_prefixes": [
+        "workspace:fixture-tenant/fixture-project/"
+      ],
+      "reason_code": "WORKSPACE_WRITE_PERMITTED"
+    }
+  ],
+  "publisher_signature": null
+}

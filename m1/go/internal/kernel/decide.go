@@ -328,6 +328,11 @@ func Decide(request any, policy *Policy, stateRevision int64, now time.Time) *De
 
 	var from, to string
 	if kind == TransitionKind {
+		// Known but not supported by this bundle (D-020); an unknown
+		// capability was already denied above.
+		if !b.TransitionSupported {
+			return result("deny", "UNSUPPORTED_CAPABILITY", nil, "")
+		}
 		scheme, rest, _ := strings.Cut(rid, ":")
 		segs := strings.Split(rest, "/")
 		if scheme != "workflow" || len(segs) != 3 || !StatePattern.MatchString(segs[2]) {
@@ -340,11 +345,6 @@ func Decide(request any, policy *Policy, stateRevision int64, now time.Time) *De
 		}
 		if len(caps) != 0 {
 			return result("invalid", "COMPOSITE_NOT_SUPPORTED", nil, "")
-		}
-		if b.Protection == nil {
-			// No classification: fail closed (D-019 N-1). Unreachable for a
-			// bundle with transition statements, which load rejects.
-			return result("unavailable", "POLICY_BUNDLE_REJECTED", nil, "")
 		}
 		protected := b.Protection.IsProtected(from, to)
 		if protected && !bound {

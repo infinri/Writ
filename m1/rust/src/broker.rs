@@ -323,12 +323,46 @@ impl Broker {
         }
     }
 
+    /// `restart_broker` (D-020): simulated process restart. The exhaustive
+    /// pattern forces every broker field to be classified as surviving a
+    /// restart. Ledger: grants and their uses, receipts and their status,
+    /// consumed permit ids, the permit id counter (new ids never collide with
+    /// consumed ones) and the counters reported in `final`. Trusted
+    /// configuration reloaded at start: clock, kernel state, active bundle,
+    /// keys, channels, dependency status. Issued permits are client-held, so
+    /// they stay presentable. Volatile state (the lock, in-flight transaction
+    /// values) exists only on the stack of `apply` and is gone once an
+    /// operation returns, so nothing in this struct is dropped.
+    fn restart(&mut self) {
+        let Broker {
+            now: _,
+            state_revision: _,
+            bundle: _,
+            ingress_keys: _,
+            permit_key: _,
+            channels: _,
+            policy_up: _,
+            ledger_up: _,
+            grants: _,
+            receipts: _,
+            permits: _,
+            consumed_permits: _,
+            next_permit: _,
+            effects_applied: _,
+            refusals: _,
+        } = self;
+    }
+
     fn apply_locked(&mut self, op: &Value, step: usize) -> Value {
         let out = match op.str_at("op").unwrap_or("") {
             "execute" => self.execute(op, step),
             "approve" => self.approve(op),
             "present_permit" => self.present_permit(op),
             "apply_without_permit" => refused("PERMIT_MISSING"),
+            "restart_broker" => {
+                self.restart();
+                result("restarted")
+            }
             "activate_bundle" => {
                 self.bundle = load(op.get("bundle"));
                 result("bundle_activated")
@@ -451,4 +485,89 @@ pub fn run(input: &Value) -> Value {
             ]),
         ),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BUNDLE: &str = include_str!("../../fixtures/transition/m1-transition-transition-known-unsupported.bundle.json");
+    const INGRESS_KEY: &str = "0101010101010101010101010101010101010101010101010101010101010101";
+    const PERMIT_KEY: &str = "0202020202020202020202020202020202020202020202020202020202020202";
+
+    fn request(idem: &str) -> Value {
+        let text = format!(
+            r#"{{"contract_version":"2.0","request_id":"req-b1","trace_id":"trace-b1","tenant_id":"fixture-tenant",
+            "principal":{{"id":"agent:session-1","verified_by":"writ-host-adapter:fixture","authn_method":"os_peer_credential","roles":["agent"]}},
+            "project_id":"fixture-project","session_id":"session-1","agent_id":null,"parent_session_id":null,"idempotency_key":"{idem}",
+            "expected_state_revision":7,"policy_bundle_sha":null,"deadline_at":null,
+            "action":{{"kind":"file.write","resource":{{"uri":"file:///work/a.txt","canonical_resource_id":"workspace:fixture-tenant/fixture-project/a.txt"}},
+            "action_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","requested_capabilities":[]}}}}"#
+        );
+        json::parse(text.as_bytes()).unwrap()
+    }
+
+    fn execute(idem: &str, fault: Option<&str>) -> Value {
+        let req = request(idem);
+        let mac = mac_hex(&unhex(INGRESS_KEY).unwrap(), json::canonical(&req).unwrap().as_bytes());
+        let mut members = vec![
+            ("op", s("execute")),
+            ("request", req),
+            ("seal", obj(vec![("adapter_id", s("writ-host-adapter:fixture")), ("mac", s(&mac))])),
+        ];
+        if let Some(f) = fault {
+            members.push(("fault", s(f)));
+        }
+        obj(members)
+    }
+
+    fn scenario(steps: Vec<Value>) -> Value {
+        let initial = obj(vec![
+            ("now", s("2026-11-07T11:00:00Z")),
+            ("state_revision", Value::Int(7)),
+            ("bundle", json::parse(BUNDLE.as_bytes()).unwrap()),
+            ("ingress_keys", obj(vec![("writ-host-adapter:fixture", s(INGRESS_KEY))])),
+            ("permit_key", s(PERMIT_KEY)),
+            ("channels", obj(vec![])),
+        ]);
+        run(&obj(vec![("initial", initial), ("steps", Value::Arr(steps))]))
+    }
+
+    fn restart() -> Value {
+        obj(vec![("op", s("restart_broker"))])
+    }
+
+    fn step_results(out: &Value) -> Vec<String> {
+        out.get("steps").and_then(Value::as_arr).unwrap().iter().map(json::to_text).collect()
+    }
+
+    fn final_int(out: &Value, key: &str) -> i64 {
+        out.get("final").and_then(|f| f.get(key)).and_then(Value::as_int).unwrap()
+    }
+
+    #[test]
+    fn d020_consumed_permit_stays_consumed_after_restart() {
+        let present = obj(vec![("op", s("present_permit")), ("of_step", Value::Int(0)), ("request", request("idem-1"))]);
+        let out = scenario(vec![execute("idem-1", None), restart(), present]);
+        assert_eq!(
+            step_results(&out),
+            [r#"{"result":"effect_completed"}"#, r#"{"result":"restarted"}"#, r#"{"code":"PERMIT_REPLAYED","result":"refused"}"#]
+        );
+        assert_eq!((final_int(&out, "effects_applied"), final_int(&out, "consumed_permits")), (1, 1));
+    }
+
+    #[test]
+    fn d020_receipts_survive_restart() {
+        let out = scenario(vec![execute("idem-1", None), restart(), execute("idem-1", None)]);
+        assert_eq!(step_results(&out)[2], r#"{"replayed":true,"result":"effect_completed"}"#);
+        let out = scenario(vec![execute("idem-1", Some("crash_after_dispatch")), restart(), execute("idem-1", None)]);
+        assert_eq!(step_results(&out)[2], r#"{"code":"RECONCILIATION_REQUIRED","result":"refused"}"#);
+    }
+
+    #[test]
+    fn d020_new_permits_after_restart_do_not_collide_with_consumed_ids() {
+        let out = scenario(vec![execute("idem-1", None), restart(), execute("idem-2", None)]);
+        assert_eq!(step_results(&out)[2], r#"{"result":"effect_completed"}"#);
+        assert_eq!((final_int(&out, "effects_applied"), final_int(&out, "consumed_permits")), (2, 2));
+    }
 }

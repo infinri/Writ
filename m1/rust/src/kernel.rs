@@ -238,6 +238,14 @@ pub struct Bundle {
     pub protection: Option<Protection>,
 }
 
+impl Bundle {
+    /// D-020: support is declared by a statement covering transitions or by
+    /// `workflow_protection`; a loaded declaring bundle always has protection.
+    pub fn supports_transitions(&self) -> bool {
+        self.protection.is_some() || self.statements.iter().any(|st| st.kinds.iter().any(|k| k == TRANSITION))
+    }
+}
+
 fn strings(v: Option<&Value>) -> Option<Vec<String>> {
     v.and_then(Value::as_arr).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
 }
@@ -304,6 +312,9 @@ pub fn load_bundle(doc: &Value) -> Result<Bundle, ()> {
             Some(Protection { to_states, edges, acceptance_policy_bundle_sha: p.str_at("acceptance_policy_bundle_sha").unwrap().to_string() })
         }
     };
+    // Transition support (D-020) is declared by any statement covering
+    // transitions or by the presence of `workflow_protection`; a declaring
+    // bundle needs a schema-valid protection (schema checked above).
     if statements.iter().any(covers_transition) {
         match &protection {
             None => return Err(()),
@@ -613,6 +624,11 @@ pub fn decide(req: &Value, policy: Policy<'_>, state_revision: i64, now: Instant
 
     let mut transition: Option<(&str, &str)> = None;
     if kind == TRANSITION {
+        // D-020: known but not supported (no transition statement and no
+        // `workflow_protection`, the only way such a bundle loads).
+        if !bundle.supports_transitions() {
+            return mk("deny", "UNSUPPORTED_CAPABILITY", none(), None, deadline);
+        }
         if !workflow_resource_valid(rid, tenant, project) {
             return mk("invalid", "WORKFLOW_RESOURCE_INVALID", none(), None, deadline);
         }
@@ -622,8 +638,8 @@ pub fn decide(req: &Value, policy: Policy<'_>, state_revision: i64, now: Instant
         if !caps.is_empty() {
             return mk("invalid", "COMPOSITE_NOT_SUPPORTED", none(), None, deadline);
         }
-        // Missing classification fails closed (D-019 N-1). Unreachable for a
-        // bundle with transition statements, which is rejected at load.
+        // Missing classification fails closed (D-019 N-1). Unreachable: a
+        // bundle declaring support without protection is rejected at load.
         let Some(p) = &bundle.protection else {
             return mk("unavailable", "PROTECTION_UNAVAILABLE", none(), None, deadline);
         };
@@ -685,4 +701,82 @@ pub fn decide_command(input: &Value) -> Value {
         },
     };
     decide(req, policy, rev, now).to_value()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FULL: &str = include_str!("../../fixtures/transition/m1-transition.bundle.json");
+    const KNOWN_UNSUPPORTED: &str = include_str!("../../fixtures/transition/m1-transition-transition-known-unsupported.bundle.json");
+    const NO_SUPPORT: &str = include_str!("../../fixtures/transition/m1-transition-no-transition-support.bundle.json");
+    const INCOMPLETE: &str = include_str!("../../fixtures/transition/m1-transition-protection-incomplete.bundle.json");
+
+    fn request(kind: &str, rid: &str, attributes: &str) -> Value {
+        let text = format!(
+            r#"{{"contract_version":"2.0","request_id":"req-t1","trace_id":"trace-t1","tenant_id":"fixture-tenant",
+            "principal":{{"id":"agent:session-1","verified_by":"writ-host-adapter:fixture","authn_method":"os_peer_credential","roles":["agent"]}},
+            "project_id":"fixture-project","session_id":"session-1","agent_id":null,"parent_session_id":null,"idempotency_key":"idem-t1",
+            "expected_state_revision":7,"policy_bundle_sha":null,"deadline_at":null,
+            "action":{{"kind":"{kind}","resource":{{"uri":"writ-workflow://wf-1","canonical_resource_id":"{rid}"}},
+            "action_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"{attributes},"requested_capabilities":[]}}}}"#
+        );
+        json::parse(text.as_bytes()).unwrap()
+    }
+
+    const UNBOUND: &str = r#","attributes":{"from_state":"verifying","to_state":"planning"}"#;
+
+    fn run(bundle: &str, req: &Value) -> (String, String) {
+        let b = load_bundle(&json::parse(bundle.as_bytes()).unwrap()).expect("bundle loads");
+        let d = decide(req, Policy::Loaded(&b), 7, time::parse_rfc3339("2026-11-07T11:00:00Z").unwrap());
+        (d.status.to_string(), d.reason)
+    }
+
+    fn pair(a: &str, b: &str) -> (String, String) {
+        (a.to_string(), b.to_string())
+    }
+
+    #[test]
+    fn d020_known_but_unsupported_transition_is_denied_as_unsupported() {
+        let req = request("workflow.transition", "workflow:fixture-tenant/fixture-project/wf-1", UNBOUND);
+        assert_eq!(run(KNOWN_UNSUPPORTED, &req), pair("deny", "UNSUPPORTED_CAPABILITY"));
+    }
+
+    #[test]
+    fn d020_unsupported_comes_after_scope_and_before_resource_shape() {
+        let other_tenant = request("workflow.transition", "workflow:other-tenant/fixture-project/wf-1", UNBOUND);
+        assert_eq!(run(KNOWN_UNSUPPORTED, &other_tenant), pair("deny", "RESOURCE_SCOPE_MISMATCH"));
+        let bad_shape = request("workflow.transition", "workflow:fixture-tenant/fixture-project/wf-1/extra", "");
+        assert_eq!(run(KNOWN_UNSUPPORTED, &bad_shape), pair("deny", "UNSUPPORTED_CAPABILITY"));
+        assert_eq!(run(FULL, &bad_shape).1, "WORKFLOW_RESOURCE_INVALID");
+    }
+
+    #[test]
+    fn d020_unsupported_bundle_still_serves_other_capabilities() {
+        let req = request("file.write", "workspace:fixture-tenant/fixture-project/a.txt", "");
+        assert_eq!(run(KNOWN_UNSUPPORTED, &req), pair("allow", "WORKSPACE_WRITE_PERMITTED"));
+        assert_eq!(run(NO_SUPPORT, &req), pair("allow", "WORKSPACE_WRITE_PERMITTED"));
+    }
+
+    #[test]
+    fn d020_unknown_transition_capability_stays_unknown() {
+        let req = request("workflow.transition", "workflow:fixture-tenant/fixture-project/wf-1", UNBOUND);
+        assert_eq!(run(NO_SUPPORT, &req), pair("deny", "UNKNOWN_CAPABILITY"));
+    }
+
+    #[test]
+    fn d020_declared_support_requires_valid_protection() {
+        assert!(load_bundle(&json::parse(INCOMPLETE.as_bytes()).unwrap()).is_err());
+        // Protection alone declares support and needs no transition statement.
+        let mut doc = json::parse(KNOWN_UNSUPPORTED.as_bytes()).unwrap();
+        let p = json::parse(br#"{"protected_to_states":["accepted"],"protected_transitions":[],"acceptance_policy_bundle_sha":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#).unwrap();
+        if let Value::Obj(m) = &mut doc {
+            m.push(("workflow_protection".to_string(), p));
+        }
+        let b = load_bundle(&doc).expect("protection without transition statements loads");
+        assert!(b.supports_transitions());
+        let req = request("workflow.transition", "workflow:fixture-tenant/fixture-project/wf-1", UNBOUND);
+        let d = decide(&req, Policy::Loaded(&b), 7, time::parse_rfc3339("2026-11-07T11:00:00Z").unwrap());
+        assert_eq!((d.status, d.reason.as_str()), ("deny", "DEFAULT_DENY"));
+    }
 }

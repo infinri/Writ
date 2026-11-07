@@ -1,13 +1,13 @@
 # Writ V2 M1 Rust prototype (`proto`, M1-03)
 
-Bake-off prototype for ADR-0002, not the production kernel. It implements the JSON Lines protocol in `docs/implementation/M1-PARITY-SUITE.md` ("Prototype interface"). It was written from the M1 fixture specifications (`m1/fixtures/acceptance/SEMANTICS.md`, `m1/fixtures/transition/SCENARIOS.md`, `m1/fixtures/broker/BROKER.md`, AMENDMENT-1..3, DECISION-LOG D-006, D-008..D-012, D-017..D-019, `docs/contracts/*.schema.json`). Only `m0/writ_m0/decision.py` and `canonical.py` were consulted, as a reference for D-008 and D-006.
+Bake-off prototype for ADR-0002, not the production kernel. It implements the JSON Lines protocol in `docs/implementation/M1-PARITY-SUITE.md` ("Prototype interface"). It was written from the M1 fixture specifications (`m1/fixtures/acceptance/SEMANTICS.md`, `m1/fixtures/transition/SCENARIOS.md`, `m1/fixtures/broker/BROKER.md`, AMENDMENT-1..4, DECISION-LOG D-006, D-008..D-012, D-017..D-020, `docs/contracts/*.schema.json`). Only `m0/writ_m0/decision.py` and `canonical.py` were consulted, as a reference for D-008 and D-006.
 
 ## Build and run
 
 ```sh
 source m1/tools/env.sh                      # pinned Rust 1.99.1 (user space)
 cd m1/rust && cargo build --release --locked
-cargo test --release --locked               # parser, canonical form and time unit tests
+cargo test --release --locked               # parser, canonical form, time and D-020 regression tests
 cd ../.. && python3 m1/driver/parity.py --proto "$PWD/m1/rust/target/release/proto" \
     --manifest m1/fixtures/manifest.json --repeat 2 --out /tmp/rust-result.json
 ```
@@ -55,10 +55,13 @@ Every command parses its input with `json::parse`. For an `input` member, the en
 - **Effects:** "dispatch" increments a counter or records a state. No external side effect occurs.
 - **Acceptance records:** `record_digest` is an unkeyed consistency check. Trust labels are claims, not evaluator identity (boundary 2 is not covered).
 
+## D-020 behavior
+
+- **Transition support.** A bundle declares support when any statement covers `workflow.transition` or it carries `workflow_protection`. A declaring bundle without a schema-valid `workflow_protection` is rejected at load (`unavailable` / `POLICY_BUNDLE_REJECTED`). A transition request against a loaded bundle that lists `workflow.transition` as known but declares no support is `deny` / `UNSUPPORTED_CAPABILITY`, checked after scope and before resource shape; if the capability is not known, `UNKNOWN_CAPABILITY` applies as before. Other capabilities of such a bundle are unaffected. `PROTECTION_UNAVAILABLE` in `decide` is now unreachable (fail-closed guard only).
+- **External refusal.** The pass-through list is exactly the one in `m1/fixtures/acceptance/SEMANTICS.md` (12 codes, including `REQUEST_SCHEMA_INVALID` and `DEADLINE_EXCEEDED`). `REVISION_CONFLICT`, `STATE_REVISION_CONFLICT` and unknown codes map to `PROMOTION_REFUSED`.
+- **`restart_broker`** (broker scenarios) returns `{"result": "restarted"}`. Grants and uses, receipts and status, consumed permit ids and the permit id counter persist; issued permits stay presentable. The model holds no other volatile state (locks and in-flight values exist only for the duration of one operation), so the restart drops nothing from the broker struct; an exhaustive pattern in `Broker::restart` makes any new field require an explicit classification.
+
 ## Choices where the documents are silent
 
-- A `workflow.transition` request under a bundle without `workflow_protection` returns `unavailable` / `PROTECTION_UNAVAILABLE`, which fails closed. Such a bundle loads only if no statement covers transitions.
-- The external mapping also passes through `REQUEST_SCHEMA_INVALID`, `DEADLINE_EXCEEDED` and `STATE_REVISION_CONFLICT`, because they describe the caller's own input, deadline or expected revision. Every other unknown code maps to `PROMOTION_REFUSED`.
-- `final.receipts` in broker scenarios counts receipts per status (`{"observed_success": 1}`), as every fixture expects. BROKER.md says `{key: status}`.
 - In promotion, the permit's `record_digest` is compared with the presented record's own `record_digest` member. The recomputed digest is then checked by `check_acceptance`.
 - The broker issues each permit an opaque id (`permit-<n>`) inside its MAC-covered body. A tampered expiry therefore fails the MAC check.

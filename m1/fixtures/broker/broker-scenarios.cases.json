@@ -2263,6 +2263,169 @@
     }
    },
    "rationale": "INV-13"
+  },
+  {
+   "id": "b-44-permit-replay-after-restart",
+   "steps": [
+    {
+     "execute": {}
+    },
+    {
+     "restart_broker": {}
+    },
+    {
+     "present_permit": {
+      "of_step": 0
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "effect_completed"
+     },
+     {
+      "result": "restarted"
+     },
+     {
+      "result": "refused",
+      "code": "PERMIT_REPLAYED"
+     }
+    ],
+    "final": {
+     "effects_applied": 1,
+     "grant_uses": {},
+     "receipts": {
+      "observed_success": 1
+     },
+     "consumed_permits": 1,
+     "refusals": 1
+    }
+   },
+   "rationale": "NEW (D-020, M1-05 request): consumed permit ids survive a simulated broker restart"
+  },
+  {
+   "id": "b-45-retry-after-restart",
+   "steps": [
+    {
+     "approve": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1",
+      "channel": "approval-ui",
+      "human": "human:alice",
+      "credential": "cred-alice",
+      "verdict": "approved"
+     }
+    },
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1"
+     }
+    },
+    {
+     "restart_broker": {}
+    },
+    {
+     "execute": {
+      "request_patch": {
+       "action": {
+        "kind": "repository.publish",
+        "resource": {
+         "uri": "git://main",
+         "canonical_resource_id": "repository:fixture-tenant/fixture-project/main"
+        }
+       }
+      },
+      "grant_ref": "g1"
+     }
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "grant_issued"
+     },
+     {
+      "result": "effect_completed"
+     },
+     {
+      "result": "restarted"
+     },
+     {
+      "result": "effect_completed",
+      "replayed": true
+     }
+    ],
+    "final": {
+     "effects_applied": 1,
+     "grant_uses": {
+      "g1": 1
+     },
+     "receipts": {
+      "observed_success": 1
+     },
+     "consumed_permits": 1,
+     "refusals": 0
+    }
+   },
+   "rationale": "NEW (D-020): receipts and grant uses survive a restart; no second effect or grant use"
+  },
+  {
+   "id": "b-46-reconcile-after-restart",
+   "steps": [
+    {
+     "execute": {
+      "fault": "crash_after_dispatch"
+     }
+    },
+    {
+     "restart_broker": {}
+    },
+    {
+     "execute": {}
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "result": "crashed"
+     },
+     {
+      "result": "restarted"
+     },
+     {
+      "result": "refused",
+      "code": "RECONCILIATION_REQUIRED"
+     }
+    ],
+    "final": {
+     "effects_applied": 1,
+     "grant_uses": {},
+     "receipts": {
+      "dispatched": 1
+     },
+     "consumed_permits": 1,
+     "refusals": 1
+    }
+   },
+   "rationale": "NEW (D-020): an uncertain effect stays uncertain across a restart"
   }
  ]
 }

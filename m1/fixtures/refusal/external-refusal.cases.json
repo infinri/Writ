@@ -1,5 +1,5 @@
 {
- "description": "Hand-reasoned mapping from internal refusal codes to the response an agent or host receives (D-018 A7, D-019). Command external-refusal: input {\"internal_code\": CODE}, output {\"external\": CODE}. Internal codes remain in audit records and test harnesses. PENDING INDEPENDENT REVIEW. One generic code, PROMOTION_REFUSED, is used for every non-validation security refusal, including effect and broker refusals.",
+ "description": "Hand-reasoned mapping from internal refusal codes to the response an agent or host receives (D-018 A7, D-019, D-020). Command external-refusal: input {\"internal_code\": CODE}, output {\"external\": CODE}. Internal codes remain in audit records and test harnesses. PENDING INDEPENDENT REVIEW. One generic code, PROMOTION_REFUSED, is used for every non-validation security refusal, including effect and broker refusals.",
  "review_status": "PENDING INDEPENDENT REVIEW",
  "cases": [
   {
@@ -53,8 +53,8 @@
   {
    "id": "ext-revision-conflict",
    "internal_code": "REVISION_CONFLICT",
-   "external": "REVISION_CONFLICT",
-   "rationale": "describes only the caller's own input or its own idempotency key and expected revision; no other scope's data"
+   "external": "PROMOTION_REFUSED",
+   "rationale": "CHANGED (D-020): a trusted-state revision conflict can reveal protected workflow state; consistent with STATE_REVISION_CONFLICT (was passed through)"
   },
   {
    "id": "ext-reconciliation-required",
@@ -337,6 +337,48 @@
    "internal_code": "APPROVAL_REQUIRED",
    "external": "APPROVAL_REQUIRED",
    "rationale": "NEW (D-019): the caller needs to know to request human approval; the decision status is already returned to the host"
+  },
+  {
+   "id": "ext-request-schema-invalid",
+   "internal_code": "REQUEST_SCHEMA_INVALID",
+   "external": "REQUEST_SCHEMA_INVALID",
+   "rationale": "NEW (D-020): safe diagnostic about the caller's own request"
+  },
+  {
+   "id": "ext-deadline-exceeded",
+   "internal_code": "DEADLINE_EXCEEDED",
+   "external": "DEADLINE_EXCEEDED",
+   "rationale": "NEW (D-020): safe diagnostic about the caller's own request"
+  },
+  {
+   "id": "ext-state-revision-conflict",
+   "internal_code": "STATE_REVISION_CONFLICT",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "NEW (D-020): must not reveal trusted state revisions or resource existence"
+  },
+  {
+   "id": "ext-resource-scope-mismatch",
+   "internal_code": "RESOURCE_SCOPE_MISMATCH",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "NEW (D-020): negative disclosure test: cross-tenant or cross-project targets are indistinguishable from other refusals"
+  },
+  {
+   "id": "ext-principal-unverified",
+   "internal_code": "PRINCIPAL_UNVERIFIED",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "NEW (D-020): negative disclosure test: identity failures reveal no trusted issuer list"
+  },
+  {
+   "id": "ext-unsupported-capability",
+   "internal_code": "UNSUPPORTED_CAPABILITY",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "NEW (D-020): negative disclosure test: does not reveal which capabilities a bundle supports"
+  },
+  {
+   "id": "ext-unknown-capability",
+   "internal_code": "UNKNOWN_CAPABILITY",
+   "external": "PROMOTION_REFUSED",
+   "rationale": "NEW (D-020): negative disclosure test: does not reveal the capability list"
   }
  ]
 }

@@ -183,6 +183,13 @@ SR-06 sandbox facts (preflight PASS, telemetry diagnostic) are recorded in `docs
 - **Differential finding (spec gap, not covered by fixtures):** `external-refusal` for `REQUEST_SCHEMA_INVALID`, `DEADLINE_EXCEEDED`, `STATE_REVISION_CONFLICT`: Rust passes them through, Go maps them to `PROMOTION_REFUSED`. Second gap reported by the agents: a transition under a bundle without `workflow_protection` and with no transition statements (unreachable by fixtures): Rust `unavailable` / `PROTECTION_UNAVAILABLE`, Go `unavailable` / `POLICY_BUNDLE_REJECTED`. Both need an owner decision and new cases; neither prototype was changed.
 - **Not executed:** decide-batch workload A; property and differential generators (M1-05); any benchmark (on battery, uncontrolled governor).
 
+### E-023: D-020 corrections in both prototypes; published M1 baseline CI
+
+- **Published:** `a459d4b7a9044a251491240f79d476ee4f76095e` (fast-forward from `226e4d2`, containing `311561a`, `fd9d3bb` and a CI commit); CI https://github.com/infinri/Writ/actions/runs/42388252282: all four jobs success; new jobs build Rust 1.99.1 and Go 1.27.3 independently and each passes the parity driver 382/382 with `--repeat 2`.
+- **Before the D-020 fixes** (398 cases): Rust failed exactly tx-58, ext-revision-conflict, ext-state-revision-conflict, b-44..b-46; Go failed exactly tx-58, ext-revision-conflict, ext-request-schema-invalid, ext-deadline-exceeded, b-44..b-46. No other case changed outcome.
+- **After** (separate agents per codebase, each blind to the other; re-verified in this session): Rust `cargo test --release --locked` 19 passed, driver 398/398 `--repeat 2`; Go `go vet` clean, `go test -race -count=1` ok (broker, kernel, refusal, sjson, transition), driver 398/398 `--repeat 2`.
+- **Spec gap closed:** both implementations independently persisted the refusal count and permit id sequence across `restart_broker`; BROKER.md now states it.
+
 ## Not yet executed
 
 - SR-06 live-host experiments (0 of 69; sandbox torn down) and full SR-06 acceptance; rule semantic review (M0-01d); independent human golden review (M0-05a).

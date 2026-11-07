@@ -1,6 +1,6 @@
 # M1 draft: broker, ingress, approval grants and effects (`broker-scenario`, M1-02 N-2)
 
-**Version:** `m1-draft-3` (2026-11-07), per owner decision [D-019](../../../docs/implementation/DECISION-LOG.md) (N-2). Written by Claude from the normative decisions D-008 to D-012, SR-01..SR-11 and D-018 A6 **before** any Rust or Go code and before comparing with the M0 broker; expected results are **PENDING INDEPENDENT REVIEW**. Disagreements with the M0 harness, found only after freezing, are recorded in [AMENDMENT-3](../AMENDMENT-3.md).
+**Version:** `m1-draft-3` (2026-11-07), per owner decisions [D-019](../../../docs/implementation/DECISION-LOG.md) (N-2) and D-020 (restart). Written by Claude from the normative decisions D-008 to D-012, SR-01..SR-11 and D-018 A6 **before** any Rust or Go code and before comparing with the M0 broker; expected results are **PENDING INDEPENDENT REVIEW**. Disagreements with the M0 harness, found only after freezing, are recorded in [AMENDMENT-3](../AMENDMENT-3.md).
 
 ## Simulated, not verified
 
@@ -40,6 +40,8 @@
 **`apply_without_permit`** `{request}`: `PERMIT_MISSING`; nothing applied.
 
 **`concurrent`** `{operations: [...]}`: submitted concurrently; outcomes equal some serial order of atomic operations. Result `{"result": "concurrent", "outcomes": {"<result or refusal code>": n}}` (replays count as `replayed`).
+
+**`restart_broker`** `{}` (D-020): simulates a broker process restart: volatile state is dropped; the ledger (grants and their uses, receipts and their status, consumed permit ids) persists, and permits already handed to a client remain presentable. The audited refusal count and the permit id sequence also persist (a new permit never reuses a consumed id); keys, channels, dependency status and the clock are configuration outside the broker process. `{"result": "restarted"}`. This is an in-memory simulation, not a persistence test (M3).
 
 **`activate_bundle`** `{bundle}`; **`advance_time`** `{now}`; **`set_dependency`** `{name, status}`; **`reconcile`** `{}`: every `dispatched` receipt becomes `unknown_reconcile`; `{"result": "reconciled", "count": n}`. Reconciliation never creates a receipt or marks an effect completed.
 

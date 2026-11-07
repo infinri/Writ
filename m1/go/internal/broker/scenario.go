@@ -59,7 +59,8 @@ type Broker struct {
 
 	now           time.Time
 	stateRevision int64
-	policy        *kernel.Policy // loaded active bundle
+	bundleDoc     any            // active bundle document (persisted configuration)
+	policy        *kernel.Policy // loaded active bundle (volatile cache, reloaded on restart)
 	ingressKeys   map[string][]byte
 	permitKey     []byte
 	channels      map[string]map[string]string
@@ -89,7 +90,8 @@ func newBroker(initial map[string]any) *Broker {
 	}
 	b.now, _ = kernel.ParseTime(sjson.StrOr(initial, "now"))
 	b.stateRevision, _ = sjson.Int(initial, "state_revision")
-	b.policy = kernel.LoadPolicy(initial["bundle"])
+	b.bundleDoc = initial["bundle"]
+	b.policy = kernel.LoadPolicy(b.bundleDoc)
 	if keys, ok := sjson.Obj(initial["ingress_keys"]); ok {
 		for id, v := range keys {
 			if s, ok := v.(string); ok {
@@ -409,8 +411,12 @@ func (b *Broker) simple(op map[string]any) map[string]any {
 	case "apply_without_permit":
 		return b.refuse("PERMIT_MISSING")
 	case "activate_bundle":
-		b.policy = kernel.LoadPolicy(op["bundle"])
+		b.bundleDoc = op["bundle"]
+		b.policy = kernel.LoadPolicy(b.bundleDoc)
 		return map[string]any{"result": "bundle_activated"}
+	case "restart_broker":
+		b.restart()
+		return map[string]any{"result": "restarted"}
 	case "advance_time":
 		if t, ok := kernel.ParseTime(sjson.StrOr(op, "now")); ok {
 			b.now = t
@@ -430,6 +436,18 @@ func (b *Broker) simple(op map[string]any) map[string]any {
 		return map[string]any{"result": "reconciled", "count": n}
 	}
 	return b.refuse("OPERATION_UNKNOWN")
+}
+
+// restart simulates a broker process restart (D-020). Caller holds b.mu.
+// Volatile state is dropped: the loaded policy cache is discarded and
+// reloaded from the active bundle document. The ledger persists: grants and
+// their uses, receipts and their status, consumed permit ids, the permit
+// sequence (so a new permit id never reuses a consumed one) and the audit
+// refusal count. Permits already handed to the client (b.permits) remain
+// presentable; trusted configuration (keys, channels, dependencies, clock)
+// is external to the process and unchanged.
+func (b *Broker) restart() {
+	b.policy = kernel.LoadPolicy(b.bundleDoc)
 }
 
 func (b *Broker) apply(op map[string]any, step int) map[string]any {

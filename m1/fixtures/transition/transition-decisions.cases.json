@@ -1,5 +1,5 @@
 {
- "description": "Hand-reasoned workflow.transition decisions, m1-draft-4 (D-017..D-019), under m1-transition.bundle.json and the kernel transition extension in SCENARIOS.md. Expected values written before any Rust or Go code. PENDING INDEPENDENT REVIEW. Each case applies an RFC 7396 merge patch to base_request; bundle_loaded false passes a null bundle; bundle_variant selects another bundle file; pin_actual_bundle_sha pins the loaded bundle's sha; text_edit sends the input as input_text after replacing the first occurrence of old in the serialized request. Changes: m1/fixtures/AMENDMENT-1.md, AMENDMENT-2.md and AMENDMENT-3.md.",
+ "description": "Hand-reasoned workflow.transition decisions, m1-draft-5 (D-017..D-020), under m1-transition.bundle.json and the kernel transition extension in SCENARIOS.md. Expected values written before any Rust or Go code. PENDING INDEPENDENT REVIEW. Each case applies an RFC 7396 merge patch to base_request; bundle_loaded false passes a null bundle; bundle_variant selects another bundle file; pin_actual_bundle_sha pins the loaded bundle's sha; text_edit sends the input as input_text after replacing the first occurrence of old in the serialized request. Changes: m1/fixtures/AMENDMENT-1.md, AMENDMENT-2.md, AMENDMENT-3.md and AMENDMENT-4.md.",
  "review_status": "PENDING INDEPENDENT REVIEW",
  "bundle": "m1-transition.bundle.json",
  "bundle_variants": {
@@ -7,7 +7,10 @@
   "protection-missing": "m1-transition-protection-missing.bundle.json",
   "protection-duplicate": "m1-transition-protection-duplicate.bundle.json",
   "protection-self-edge": "m1-transition-protection-self-edge.bundle.json",
-  "bypassable": "m1-transition-bypassable.bundle.json"
+  "bypassable": "m1-transition-bypassable.bundle.json",
+  "no-transition-support": "m1-transition-no-transition-support.bundle.json",
+  "transition-known-unsupported": "m1-transition-transition-known-unsupported.bundle.json",
+  "protection-incomplete": "m1-transition-protection-incomplete.bundle.json"
  },
  "state_revision": 7,
  "now": "2026-11-07T11:00:00Z",
@@ -935,6 +938,102 @@
     "matched_rule_ids": []
    },
    "rationale": "NEW (N-4): with the binding present, reviewing to accepted is still not permitted by any statement"
+  },
+  {
+   "id": "tx-56-no-transition-support",
+   "patch": {},
+   "bundle_variant": "no-transition-support",
+   "expected": {
+    "status": "deny",
+    "reason_code": "UNKNOWN_CAPABILITY",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW (D-020): bundle without transition support; a transition request is an unsupported (unknown) capability"
+  },
+  {
+   "id": "tx-57-no-transition-support-other-capability",
+   "patch": {
+    "action": {
+     "kind": "file.write",
+     "resource": {
+      "uri": "file:///work/a.txt",
+      "canonical_resource_id": "workspace:fixture-tenant/fixture-project/a.txt"
+     },
+     "attributes": null
+    }
+   },
+   "bundle_variant": "no-transition-support",
+   "expected": {
+    "status": "allow",
+    "reason_code": "WORKSPACE_WRITE_PERMITTED",
+    "matched_rule_ids": [
+     "permit-workspace-write"
+    ]
+   },
+   "rationale": "NEW (D-020): the bundle stays valid for its other capabilities"
+  },
+  {
+   "id": "tx-58-known-but-unsupported",
+   "patch": {},
+   "bundle_variant": "transition-known-unsupported",
+   "expected": {
+    "status": "deny",
+    "reason_code": "UNSUPPORTED_CAPABILITY",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW (D-020): listed as known but no transition rules and no protection metadata: denied as unsupported, not treated as malformed policy (keeps the M0 reference bundle and its golden cases valid)"
+  },
+  {
+   "id": "tx-59-known-but-unsupported-other-capability",
+   "patch": {
+    "action": {
+     "kind": "file.write",
+     "resource": {
+      "uri": "file:///work/a.txt",
+      "canonical_resource_id": "workspace:fixture-tenant/fixture-project/a.txt"
+     },
+     "attributes": null
+    }
+   },
+   "bundle_variant": "transition-known-unsupported",
+   "expected": {
+    "status": "allow",
+    "reason_code": "WORKSPACE_WRITE_PERMITTED",
+    "matched_rule_ids": [
+     "permit-workspace-write"
+    ]
+   },
+   "rationale": "NEW (D-020): other capabilities unaffected"
+  },
+  {
+   "id": "tx-60-protection-incomplete",
+   "patch": {},
+   "bundle_variant": "protection-incomplete",
+   "expected": {
+    "status": "unavailable",
+    "reason_code": "POLICY_BUNDLE_REJECTED",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW (D-020): transition support declared with invalid protection configuration is rejected at load"
+  },
+  {
+   "id": "tx-61-valid-protection-no-rule",
+   "patch": {
+    "action": {
+     "attributes": {
+      "acceptance_record_id": null,
+      "artifact_snapshot_id": null,
+      "artifact_digest": null,
+      "to_state": "planning"
+     }
+    }
+   },
+   "expected": {
+    "status": "deny",
+    "reason_code": "DEFAULT_DENY",
+    "matched_rule_ids": []
+   },
+   "rationale": "NEW (D-020): valid support and protection, no rule for the transition: ordinary default deny, not a configuration error (same input as tx-06b, kept for the owner's distinction list)"
   }
  ]
 }

@@ -47,6 +47,10 @@ type Bundle struct {
 	Issuers    map[string]bool
 	Statements []Statement // sorted by statement id
 	Protection *Protection // nil when the bundle has no workflow_protection
+	// TransitionSupported: some statement covers workflow.transition or the
+	// bundle carries workflow_protection (D-020). When true, Protection is
+	// non-nil (load rejects the bundle otherwise).
+	TransitionSupported bool
 }
 
 // BundleSha is the digest of the bundle content without publisher_signature.
@@ -129,7 +133,9 @@ func LoadBundle(v any) *Bundle {
 			return nil
 		}
 	}
-	if wv, ok := doc["workflow_protection"]; ok {
+	wv, hasProtection := doc["workflow_protection"]
+	b.TransitionSupported = anyTransition || hasProtection
+	if hasProtection {
 		w := wv.(map[string]any)
 		p := &Protection{
 			AcceptancePolicyBundleSha: w["acceptance_policy_bundle_sha"].(string),
@@ -153,8 +159,8 @@ func LoadBundle(v any) *Bundle {
 			p.ProtectedEdges[edge] = true
 		}
 		b.Protection = p
-	} else if anyTransition {
-		return nil // classification missing (D-019 N-1)
+	} else if b.TransitionSupported {
+		return nil // support declared without a classification (D-019 N-1, D-020)
 	}
 	if b.Protection != nil && bypassable(b) {
 		return nil
