@@ -1,0 +1,454 @@
+//! Broker scenarios (`broker-scenario`, m1/fixtures/broker/BROKER.md):
+//! sealed ingress, use-time re-decision, approval grants, idempotent
+//! receipts, permits verified by the effect adapter, crashes, reconciliation.
+//!
+//! SIMULATED, not verified:
+//! - ingress seals and permit MACs are HMAC-SHA256 under fixture keys held in
+//!   scenario state (no key management, rotation or registration);
+//! - the ledger is an in-memory model behind one mutex (each operation is one
+//!   serializable transaction); `fault` injects a crash at a named point;
+//! - an "authenticated human" is a credential match on a fixture channel;
+//! - the effect adapter only increments a counter.
+
+use crate::json::{self, obj, s, Value};
+use crate::kernel::{self, Bundle, Decision, Policy};
+use crate::time::{self, Instant};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{Barrier, Mutex};
+use std::thread;
+
+type HmacSha256 = Hmac<Sha256>;
+const PERMIT_TTL_SECONDS: i64 = 30;
+const DEFAULT_GRANT_TTL_SECONDS: i64 = 600;
+
+fn unhex(h: &str) -> Option<Vec<u8>> {
+    if h.len() % 2 != 0 {
+        return None;
+    }
+    (0..h.len()).step_by(2).map(|i| u8::from_str_radix(h.get(i..i + 2)?, 16).ok()).collect()
+}
+
+fn mac_hex(key: &[u8], msg: &[u8]) -> String {
+    let mut m = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
+    m.update(msg);
+    json::hex(&m.finalize().into_bytes())
+}
+
+fn mac_verify(key: &[u8], msg: &[u8], tag_hex: &str) -> bool {
+    let Some(tag) = unhex(tag_hex) else { return false };
+    let mut m = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
+    m.update(msg);
+    m.verify_slice(&tag).is_ok()
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum ReceiptStatus {
+    Reserved,
+    Dispatched,
+    UnknownReconcile,
+    ObservedSuccess,
+    ObservedFailure,
+}
+
+impl ReceiptStatus {
+    fn name(self) -> &'static str {
+        match self {
+            ReceiptStatus::Reserved => "reserved",
+            ReceiptStatus::Dispatched => "dispatched",
+            ReceiptStatus::UnknownReconcile => "unknown_reconcile",
+            ReceiptStatus::ObservedSuccess => "observed_success",
+            ReceiptStatus::ObservedFailure => "observed_failure",
+        }
+    }
+}
+
+struct Receipt {
+    fingerprint: String,
+    grant: Option<String>,
+    status: ReceiptStatus,
+}
+
+/// Approval grant: bindings fixed at approval time.
+struct Grant {
+    binding: Value,
+    expires: Instant,
+    max_uses: i64,
+    uses: i64,
+}
+
+#[derive(Clone)]
+struct Permit {
+    body: Value,
+    mac: String,
+}
+
+struct Broker {
+    now: Instant,
+    state_revision: i64,
+    bundle: Result<Bundle, ()>,
+    ingress_keys: Value,
+    permit_key: Vec<u8>,
+    channels: Value,
+    policy_up: bool,
+    ledger_up: bool,
+    grants: BTreeMap<String, Grant>,
+    receipts: HashMap<(String, String), Receipt>,
+    permits: HashMap<usize, Permit>,
+    consumed_permits: HashSet<String>,
+    next_permit: u64,
+    effects_applied: i64,
+    refusals: i64,
+}
+
+fn refused(code: &str) -> Value {
+    obj(vec![("result", s("refused")), ("code", s(code))])
+}
+
+fn result(r: &str) -> Value {
+    obj(vec![("result", s(r))])
+}
+
+fn replayed(r: &str) -> Value {
+    obj(vec![("result", s(r)), ("replayed", Value::Bool(true))])
+}
+
+fn load(doc: Option<&Value>) -> Result<Bundle, ()> {
+    doc.filter(|d| !d.is_null()).ok_or(()).and_then(kernel::load_bundle)
+}
+
+/// Grant binding derived from a request and its use-time decision.
+fn grant_binding(req: &Value, d: &Decision, verdict: &str) -> Value {
+    let action = req.get("action").cloned().unwrap_or(Value::Null);
+    obj(vec![
+        ("verdict", s(verdict)),
+        ("approval_request_id", d.approval_request_id.as_deref().map(s).unwrap_or(Value::Null)),
+        ("tenant_id", req.get("tenant_id").cloned().unwrap_or(Value::Null)),
+        ("principal_id", req.get("principal").and_then(|p| p.get("id")).cloned().unwrap_or(Value::Null)),
+        ("action_kind", action.get("kind").cloned().unwrap_or(Value::Null)),
+        ("canonical_resource_id", action.get("resource").and_then(|r| r.get("canonical_resource_id")).cloned().unwrap_or(Value::Null)),
+        ("action_digest", action.get("action_digest").cloned().unwrap_or(Value::Null)),
+        ("requested_capabilities", Value::Arr(kernel::capability_set(req).iter().map(|x| s(x)).collect())),
+        ("policy_bundle_sha", s(&d.policy_sha)),
+    ])
+}
+
+impl Broker {
+    fn decide(&self, req: &Value) -> Decision {
+        let policy = match (&self.bundle, self.policy_up) {
+            (_, false) => Policy::Absent,
+            (Err(()), true) => Policy::Rejected,
+            (Ok(b), true) => Policy::Loaded(b),
+        };
+        kernel::decide(req, policy, self.state_revision, self.now)
+    }
+
+    /// Sealed ingress (D-010): registered adapter, MAC over the canonical
+    /// request, adapter id equal to `principal.verified_by`.
+    fn seal_valid(&self, req: &Value, seal: Option<&Value>) -> bool {
+        let Some(seal) = seal.filter(|x| x.as_obj().is_some()) else { return false };
+        let (Some(adapter), Some(mac)) = (seal.str_at("adapter_id"), seal.str_at("mac")) else { return false };
+        let Some(key) = self.ingress_keys.str_at(adapter).and_then(unhex) else { return false };
+        let Ok(bytes) = json::canonical(req) else { return false };
+        mac_verify(&key, bytes.as_bytes(), mac) && req.get("principal").and_then(|p| p.str_at("verified_by")) == Some(adapter)
+    }
+
+    fn sign_permit(&self, body: &Value) -> String {
+        mac_hex(&self.permit_key, json::canonical(body).unwrap_or_default().as_bytes())
+    }
+
+    /// Effect adapter (simulated): fingerprint, MAC, expiry, single use; then apply.
+    fn adapter(&mut self, permit: &Permit, req: &Value, fails: bool) -> Result<bool, &'static str> {
+        let fp = json::digest(req).ok();
+        if permit.body.str_at("request_fingerprint") != fp.as_deref() {
+            return Err("PERMIT_REQUEST_MISMATCH");
+        }
+        let signed = json::canonical(&permit.body).unwrap_or_default();
+        if !mac_verify(&self.permit_key, signed.as_bytes(), &permit.mac) {
+            return Err("PERMIT_INVALID");
+        }
+        let expires = permit.body.str_at("expires_at").and_then(time::parse_rfc3339);
+        if !expires.is_some_and(|e| self.now < e) {
+            return Err("PERMIT_EXPIRED");
+        }
+        let id = permit.body.str_at("permit_id").unwrap_or("").to_string();
+        if !self.consumed_permits.insert(id) {
+            return Err("PERMIT_REPLAYED");
+        }
+        if fails {
+            return Ok(false);
+        }
+        self.effects_applied += 1;
+        Ok(true)
+    }
+
+    fn execute(&mut self, op: &Value, step: usize) -> Value {
+        let req = op.get("request").cloned().unwrap_or(Value::Null);
+        if !self.seal_valid(&req, op.get("seal")) {
+            return refused("INGRESS_UNAUTHENTICATED");
+        }
+        if !self.ledger_up {
+            return refused("LEDGER_UNAVAILABLE");
+        }
+        let d = self.decide(&req);
+        if !matches!(d.status, "allow" | "require_approval") {
+            return refused(&d.reason);
+        }
+        let grant_ref = op.str_at("grant_ref");
+        if d.status == "require_approval" && grant_ref.is_none() {
+            return refused("APPROVAL_REQUIRED");
+        }
+        let fault = op.str_at("fault").unwrap_or("");
+        let effective_grant = if d.status == "require_approval" { grant_ref.map(str::to_string) } else { None };
+        let fingerprint = json::digest(&req).unwrap_or_default();
+        let rkey = (req.str_at("tenant_id").unwrap_or("").to_string(), req.str_at("idempotency_key").unwrap_or("").to_string());
+
+        let resume = match self.receipts.get(&rkey) {
+            Some(r) if r.fingerprint != fingerprint || r.grant != effective_grant => return refused("IDEMPOTENCY_CONFLICT"),
+            Some(r) => match r.status {
+                ReceiptStatus::ObservedSuccess => return replayed("effect_completed"),
+                ReceiptStatus::ObservedFailure => return replayed("effect_failed"),
+                ReceiptStatus::Dispatched | ReceiptStatus::UnknownReconcile => return refused("RECONCILIATION_REQUIRED"),
+                ReceiptStatus::Reserved => true,
+            },
+            None => false,
+        };
+        if !resume {
+            if fault == "crash_before_reserve" {
+                return result("crashed");
+            }
+            if let Some(label) = &effective_grant {
+                let Some(g) = self.grants.get_mut(label) else { return refused("GRANT_UNKNOWN") };
+                if g.binding != grant_binding(&req, &d, "approved") {
+                    return refused("GRANT_MISMATCH");
+                }
+                if self.now >= g.expires {
+                    return refused("GRANT_EXPIRED");
+                }
+                if g.uses >= g.max_uses {
+                    return refused("GRANT_EXHAUSTED");
+                }
+                g.uses += 1;
+            }
+            self.receipts.insert(rkey.clone(), Receipt { fingerprint: fingerprint.clone(), grant: effective_grant, status: ReceiptStatus::Reserved });
+        }
+        if fault == "crash_after_reserve" {
+            return result("crashed");
+        }
+
+        // Permit bound to the whole request, the bundle and min(now + 30 s, deadline).
+        self.next_permit += 1;
+        let mut expires = time::add_seconds(self.now, PERMIT_TTL_SECONDS);
+        if let Some(dl) = req.str_at("deadline_at").and_then(time::parse_rfc3339) {
+            expires = expires.min(dl);
+        }
+        let body = obj(vec![
+            ("permit_id", s(&format!("permit-{}", self.next_permit))),
+            ("request_fingerprint", s(&fingerprint)),
+            ("policy_bundle_sha", s(&d.policy_sha)),
+            ("expires_at", s(&time::format(expires))),
+        ]);
+        let permit = Permit { mac: self.sign_permit(&body), body };
+        self.permits.insert(step, permit.clone());
+        self.receipts.get_mut(&rkey).unwrap().status = ReceiptStatus::Dispatched;
+        let applied = match self.adapter(&permit, &req, fault == "effect_fails") {
+            Ok(applied) => applied,
+            Err(code) => return refused(code),
+        };
+        if fault == "crash_after_dispatch" {
+            return result("crashed");
+        }
+        let receipt = self.receipts.get_mut(&rkey).unwrap();
+        if applied {
+            receipt.status = ReceiptStatus::ObservedSuccess;
+            result("effect_completed")
+        } else {
+            receipt.status = ReceiptStatus::ObservedFailure;
+            result("effect_failed")
+        }
+    }
+
+    /// Separate trusted approval channel (simulated credential match).
+    fn approve(&mut self, op: &Value) -> Value {
+        let channel = op.str_at("channel").and_then(|c| self.channels.get(c));
+        let human = op.str_at("human").unwrap_or("");
+        let credential = op.str_at("credential");
+        if credential.is_none() || channel.and_then(|c| c.str_at(human)) != credential {
+            return refused("HUMAN_UNAUTHENTICATED");
+        }
+        let req = op.get("for_request").cloned().unwrap_or(Value::Null);
+        let d = self.decide(&req);
+        if d.status != "require_approval" {
+            return refused("NOT_APPROVABLE");
+        }
+        let principal = req.get("principal").and_then(|p| p.str_at("id"));
+        if Some(human) == principal || Some(human) == req.str_at("agent_id") {
+            return refused("SELF_APPROVAL_FORBIDDEN");
+        }
+        let ttl = op.get("ttl_seconds").and_then(Value::as_int).unwrap_or(DEFAULT_GRANT_TTL_SECONDS);
+        let label = op.str_at("grant_ref").unwrap_or("").to_string();
+        let verdict = op.str_at("verdict").unwrap_or("");
+        self.grants.insert(
+            label,
+            Grant { binding: grant_binding(&req, &d, verdict), expires: time::add_seconds(self.now, ttl), max_uses: 1, uses: 0 },
+        );
+        result("grant_issued")
+    }
+
+    fn present_permit(&mut self, op: &Value) -> Value {
+        let step = op.get("of_step").and_then(Value::as_int).unwrap_or(-1);
+        let Some(mut permit) = usize::try_from(step).ok().and_then(|i| self.permits.get(&i)).cloned() else {
+            return refused("PERMIT_MISSING");
+        };
+        match op.str_at("tamper") {
+            Some("mac") => {
+                let flipped = if permit.mac.starts_with('0') { "1" } else { "0" };
+                permit.mac.replace_range(0..1, flipped);
+            }
+            Some("expiry") => {
+                let later = permit.body.str_at("expires_at").and_then(time::parse_rfc3339).map(|t| time::add_seconds(t, 3600));
+                if let (Some(t), Value::Obj(m)) = (later, &mut permit.body) {
+                    if let Some(slot) = m.iter_mut().find(|(k, _)| k == "expires_at") {
+                        slot.1 = s(&time::format(t));
+                    }
+                }
+            }
+            _ => {}
+        }
+        let req = op.get("request").cloned().unwrap_or(Value::Null);
+        match self.adapter(&permit, &req, false) {
+            Ok(_) => result("effect_applied"),
+            Err(code) => refused(code),
+        }
+    }
+
+    fn apply_locked(&mut self, op: &Value, step: usize) -> Value {
+        let out = match op.str_at("op").unwrap_or("") {
+            "execute" => self.execute(op, step),
+            "approve" => self.approve(op),
+            "present_permit" => self.present_permit(op),
+            "apply_without_permit" => refused("PERMIT_MISSING"),
+            "activate_bundle" => {
+                self.bundle = load(op.get("bundle"));
+                result("bundle_activated")
+            }
+            "advance_time" => match op.str_at("now").and_then(time::parse_rfc3339) {
+                Some(t) => {
+                    self.now = t;
+                    result("time_advanced")
+                }
+                None => refused("TIME_INVALID"),
+            },
+            "set_dependency" => {
+                let up = op.str_at("status") == Some("up");
+                match op.str_at("name") {
+                    Some("policy") => self.policy_up = up,
+                    Some("ledger") => self.ledger_up = up,
+                    _ => {}
+                }
+                result("dependency_set")
+            }
+            "reconcile" => {
+                let mut n = 0;
+                for r in self.receipts.values_mut().filter(|r| r.status == ReceiptStatus::Dispatched) {
+                    r.status = ReceiptStatus::UnknownReconcile;
+                    n += 1;
+                }
+                obj(vec![("result", s("reconciled")), ("count", Value::Int(n))])
+            }
+            _ => refused("UNKNOWN_OPERATION"),
+        };
+        if out.str_at("result") == Some("refused") {
+            self.refusals += 1;
+        }
+        out
+    }
+}
+
+fn outcome_key(v: &Value) -> String {
+    if v.get("replayed") == Some(&Value::Bool(true)) {
+        return "replayed".into();
+    }
+    match v.str_at("result") {
+        Some("refused") => v.str_at("code").unwrap_or("").to_string(),
+        Some(r) => r.to_string(),
+        None => String::new(),
+    }
+}
+
+fn apply(ledger: &Mutex<Broker>, op: &Value, step: usize) -> Value {
+    if op.str_at("op") == Some("concurrent") {
+        let ops = op.get("operations").and_then(Value::as_arr).cloned().unwrap_or_default();
+        let barrier = Barrier::new(ops.len());
+        let results: Vec<Value> = thread::scope(|scope| {
+            let handles: Vec<_> = ops
+                .iter()
+                .map(|o| {
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        apply(ledger, o, step)
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap_or_else(|_| refused("INTERNAL_ERROR"))).collect()
+        });
+        let mut outcomes: BTreeMap<String, i64> = BTreeMap::new();
+        for r in &results {
+            *outcomes.entry(outcome_key(r)).or_default() += 1;
+        }
+        return obj(vec![
+            ("result", s("concurrent")),
+            ("outcomes", Value::Obj(outcomes.into_iter().map(|(k, n)| (k, Value::Int(n))).collect())),
+        ]);
+    }
+    let mut b = ledger.lock().unwrap_or_else(|e| e.into_inner());
+    b.apply_locked(op, step)
+}
+
+pub fn run(input: &Value) -> Value {
+    let init = input.get("initial").cloned().unwrap_or(Value::Obj(vec![]));
+    let deps = init.get("dependencies");
+    let broker = Broker {
+        now: init.str_at("now").and_then(time::parse_rfc3339).unwrap_or((0, 0)),
+        state_revision: init.get("state_revision").and_then(Value::as_int).unwrap_or(0),
+        bundle: load(init.get("bundle")),
+        ingress_keys: init.get("ingress_keys").cloned().unwrap_or(Value::Obj(vec![])),
+        permit_key: init.str_at("permit_key").and_then(unhex).unwrap_or_default(),
+        channels: init.get("channels").cloned().unwrap_or(Value::Obj(vec![])),
+        policy_up: deps.and_then(|d| d.str_at("policy")) != Some("down"),
+        ledger_up: deps.and_then(|d| d.str_at("ledger")) != Some("down"),
+        grants: BTreeMap::new(),
+        receipts: HashMap::new(),
+        permits: HashMap::new(),
+        consumed_permits: HashSet::new(),
+        next_permit: 0,
+        effects_applied: 0,
+        refusals: 0,
+    };
+    let ledger = Mutex::new(broker);
+    let steps: Vec<Value> = input
+        .get("steps")
+        .and_then(Value::as_arr)
+        .map(|ops| ops.iter().enumerate().map(|(i, op)| apply(&ledger, op, i)).collect())
+        .unwrap_or_default();
+    let b = ledger.into_inner().unwrap_or_else(|e| e.into_inner());
+    let mut receipts: BTreeMap<&str, i64> = BTreeMap::new();
+    for r in b.receipts.values() {
+        *receipts.entry(r.status.name()).or_default() += 1;
+    }
+    obj(vec![
+        ("steps", Value::Arr(steps)),
+        (
+            "final",
+            obj(vec![
+                ("effects_applied", Value::Int(b.effects_applied)),
+                ("grant_uses", Value::Obj(b.grants.iter().map(|(k, g)| (k.clone(), Value::Int(g.uses))).collect())),
+                ("receipts", Value::Obj(receipts.into_iter().map(|(k, n)| (k.to_string(), Value::Int(n))).collect())),
+                ("consumed_permits", Value::Int(b.consumed_permits.len() as i64)),
+                ("refusals", Value::Int(b.refusals)),
+            ]),
+        ),
+    ])
+}

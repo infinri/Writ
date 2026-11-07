@@ -172,6 +172,17 @@ SR-06 sandbox facts (preflight PASS, telemetry diagnostic) are recorded in `docs
 - **Test fixes during the run:** the external-mapping rule test failed when broker codes used a second generic code (`EFFECT_REFUSED`); resolved by using one generic code `PROMOTION_REFUSED` (assumption C-1), not by weakening the test.
 - **Not executed:** any implementation of `broker-scenario`, `transition-scenario`, `check-acceptance`, `external-refusal` or the D-017..D-019 kernel extension; an executing M0 comparison for broker scenarios.
 
+### E-022: M1-03 Rust and M1-04 Go prototypes, functional parity (no benchmarks)
+
+- **Built independently** by two agents from the M1 specifications, each without access to the other's code; verified by re-running in this session at commit `311561a` plus working tree.
+- **Rust 1.99.1:** `cargo build --release --locked` clean; `cargo test --release --locked` 8 passed; deps `sha2 =0.10.8`, `hmac =0.12.1` (+9 transitive, `Cargo.lock`); 2,811 lines in `src/`.
+- **Go 1.27.3:** `go vet` clean; `go test -count=1 ./...` ok (sjson, transition, broker; the agent also ran `-race`); standard library only; 3,138 non-test lines.
+- **Parity driver, all 8 sets:** Rust 382/382, Go 382/382, ok and hard gates ok. `--repeat 5` on transition-scenarios and broker-scenarios: both 109/109 ok after the driver fix below.
+- **Driver fix:** `--repeat` compared raw stdout, so `sc-64` (compare `one_of`, two valid serializations, both observed in 200 to 300 isolated runs by each prototype) could be flagged nondeterministic. Now per case: exact equality for ordinary cases, membership in `one_of` for varying cases. Driver self-tests OK.
+- **Doc fix:** BROKER.md said `receipts: {key: status}`; all 43 fixtures use counts per status (reported by the Rust agent); wording corrected, fixtures unchanged.
+- **Differential finding (spec gap, not covered by fixtures):** `external-refusal` for `REQUEST_SCHEMA_INVALID`, `DEADLINE_EXCEEDED`, `STATE_REVISION_CONFLICT`: Rust passes them through, Go maps them to `PROMOTION_REFUSED`. Second gap reported by the agents: a transition under a bundle without `workflow_protection` and with no transition statements (unreachable by fixtures): Rust `unavailable` / `PROTECTION_UNAVAILABLE`, Go `unavailable` / `POLICY_BUNDLE_REJECTED`. Both need an owner decision and new cases; neither prototype was changed.
+- **Not executed:** decide-batch workload A; property and differential generators (M1-05); any benchmark (on battery, uncontrolled governor).
+
 ## Not yet executed
 
 - SR-06 live-host experiments (0 of 69; sandbox torn down) and full SR-06 acceptance; rule semantic review (M0-01d); independent human golden review (M0-05a).

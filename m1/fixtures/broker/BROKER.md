@@ -45,4 +45,4 @@
 
 Results of refusals: `{"result": "refused", "code": "<CODE>"}`. Every refusal is audited.
 
-**Final:** `{"effects_applied": n, "grant_uses": {label: uses}, "receipts": {key: status}, "consumed_permits": n, "refusals": n}`.
+**Final:** `{"effects_applied": n, "grant_uses": {label: uses}, "receipts": {status: count}, "consumed_permits": n, "refusals": n}` (receipts are counted per status because concurrent cases make the winning key nondeterministic; corrected wording 2026-11-07, the fixtures always used counts).

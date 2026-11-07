@@ -155,9 +155,23 @@ def run_set(proto: list[str], spec: dict, base: Path, timeout: float, repeat: in
               "mismatches": []}
     if first["error"]:
         result["protocol_errors"].append(first["error"])
-    if repeat > 1 and any(r["stdout"] != first["stdout"] or r["error"] != first["error"] for r in runs[1:]):
-        result["nondeterministic"] = True
     responses, problems = parse_responses(first["stdout"], ids)
+    if repeat > 1:
+        # Compare per case. one_of cases legitimately vary between runs (several valid
+        # serializations), so for them every run must match some listed output instead.
+        varying = {c["id"] for c in cases if c.get("compare") == "one_of"}
+        for r in runs[1:]:
+            if r["error"] != first["error"]:
+                result["nondeterministic"] = True
+                continue
+            other, _ = parse_responses(r["stdout"], ids)
+            for case in cases:
+                cid = case["id"]
+                if cid in varying:
+                    if cid in other and compare(case, other[cid]):
+                        result["nondeterministic"] = True
+                elif other.get(cid) != responses.get(cid):
+                    result["nondeterministic"] = True
     result["protocol_errors"].extend(problems)
     for case in cases:
         if case["id"] not in responses:

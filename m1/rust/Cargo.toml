@@ -1,0 +1,17 @@
+[package]
+name = "writ-m1-proto"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Writ V2 M1 Rust prototype (bake-off, M1-03). Not production."
+
+[[bin]]
+name = "proto"
+path = "src/main.rs"
+
+[dependencies]
+sha2 = "=0.10.8"
+hmac = "=0.12.1"
+
+[profile.release]
+debug = false
