@@ -95,15 +95,33 @@ The workflow state store accepts writes only from the transition service identit
 
 Composite transitions (promote and deploy in one request) are prohibited until RM-01 is resolved; each effect is a separate governed request.
 
-## 6a. Immutable artifact snapshots and use-time mediation
+## 6a. Immutable artifact snapshots
 
-Recomputing a digest at promotion time is not enough if the artifact lives in a location the agent or another process can change between evaluation, promotion and the downstream effect (publish, deploy). Governed Execution therefore requires one of these, per artifact class, declared in the acceptance policy:
+Recomputing a digest at promotion time is not enough if the artifact lives where the agent or another process can change it between evaluation, promotion and the downstream effect (publish, deploy). An open file descriptor, a file lock or a single digest comparison does **not** guarantee immutability: another process can modify the underlying contents through a different descriptor or path, and advisory locks bind only cooperating processes. None of these is represented as a guarantee.
 
-1. **Content-addressed snapshot (default).** At evaluation request time the artifact service copies the artifact into a content-addressed store keyed by its digest. The store is writable only by the artifact service and readable by evaluators, the mechanical runner, the transition service and effect adapters. Evaluators and the runner receive the snapshot (read-only mount or byte stream), never the agent's working copy. The transition and every downstream effect (publish, deploy, release) consume **the snapshot by digest**, not a path. Changing the working copy after evaluation cannot change what was evaluated or what is promoted; it only creates a new artifact needing its own record.
-2. **Use-time mediation (when a snapshot is impractical, for example a large repository).** The effect adapter resolves the artifact at use time through a mediated, non-following path (no symlink traversal outside the canonical root, open-by-handle, then hash the opened content) and compares the digest under the same handle it then uses for the effect. Only digest-and-use under one handle counts; check-then-reopen does not.
-3. **External systems** (registries, deployment targets) are trusted only if they accept an immutable digest reference (for example an image digest) and the adapter verifies the digest the target reports after the effect; otherwise the step is labelled UNVERIFIED.
+Governed Execution therefore requires, per artifact class declared in the acceptance policy:
 
-Rules: the AcceptanceRecord binds the snapshot digest (`artifact_digest`) and snapshot id; a record bound to a mutable path is invalid in Governed Execution; snapshots are retained at least until every record and receipt referencing them expires. Tests: AG-NEG-11 working copy modified after evaluation, promoted bytes equal the evaluated snapshot; AG-ADV-17 symlink or path swap between check and use under use-time mediation is refused; AG-CON-04 concurrent writer during snapshot creation yields either the old or the new digest, never a mixed snapshot bound to either. Relates to the M3 TOCTOU risk (INV-14) and RM-01.
+1. **Content-addressed immutable snapshot (required default).**
+   - When evaluation is requested, the artifact service reads the artifact, computes its digest over the exact bytes it copies, and writes those bytes into a content-addressed store keyed by the digest. The store is writable only by the artifact service and is not writable, renamable or deletable by any agent-realm principal or agent-controlled process (separate OS user or storage service; agent credentials have no write access).
+   - The digest is recomputed when the snapshot is written (bytes stored equal bytes hashed) and **again on every consumption** (evaluator input, mechanical runner input, approval display, transition check, publish, deploy). A mismatch refuses the operation and raises `artifact.snapshot_corrupt`.
+   - Evaluators, the mechanical runner and the approval service receive the snapshot (byte stream or read-only copy), never the agent's working copy or a pathname into it.
+   - The transition and every downstream effect consume **the validated snapshot by snapshot id and digest**; no step reopens a mutable pathname. Changing the working copy after evaluation creates a new artifact that needs its own evaluation and record.
+2. **Equivalent mechanism (exception, not default).** Where snapshotting is unavailable for an artifact class (for example a very large repository), an alternative is allowed only if an ADR independently justifies that it prevents concurrent mutation for the whole interval from validation through consumption (for example a filesystem snapshot or copy-on-write clone owned by a service the agent cannot write to, or an immutable object-store version). The justification must name the threat model, the residual risks and the tests below; it is never satisfied by a descriptor, lock or one-off digest comparison.
+3. **Fail closed.** If neither 1 nor an approved 2 can be established for an artifact, protected transitions for it are refused (`ARTIFACT_INTEGRITY_UNAVAILABLE`).
+4. **External systems** (registries, deployment targets) count only if they accept an immutable digest reference (for example an image digest) and the adapter verifies the digest the target reports after the effect; otherwise the step is labelled UNVERIFIED and cannot complete a protected transition.
+
+**Bindings.** The AcceptanceRecord, every EvaluationRecord, the mechanical-runner attestation, the approval or signoff grant, the transition permit and the downstream effect permit all carry the same `artifact_snapshot_id` and `artifact_digest`, and the effect target identifier (canonical resource id, D-008). A mismatch anywhere refuses. A record bound to a mutable path is invalid in Governed Execution. Snapshots are retained at least until every record, grant and receipt referencing them expires.
+
+**Tests** (all at the Designed level until run):
+
+- AG-NEG-11: working copy modified after evaluation; promoted and published bytes equal the evaluated snapshot.
+- AG-ADV-17: a separate process mutates the artifact **during** snapshot creation, evaluation, approval display, promotion and publication (five runs, one per phase); outcome is either the original snapshot used throughout or a refusal, never a mixture or the mutated bytes.
+- AG-ADV-18: the agent attempts to write, rename or delete inside the snapshot store with its own credentials; refused at the OS or storage layer.
+- AG-ADV-19: snapshot bytes corrupted at rest; the consumption-time digest check refuses.
+- AG-CON-04: concurrent writer during snapshot creation yields a snapshot whose stored bytes match its digest (old or new content), never a mixed snapshot bound to either digest.
+- AG-NEG-12: binding mismatch between any two of record, evaluation, attestation, grant, transition permit and effect permit (snapshot id, digest or target) refuses.
+
+Relates to the M3 TOCTOU risk (INV-14) and RM-01.
 
 ## 7. Invalidation and reevaluation
 
@@ -156,7 +174,7 @@ Boundary column: **P** = designed to be prevented by Writ's trusted execution bo
 | 2 | Fabricated test results | Only runner attestations count (INV-35) | P | AG-NEG-03 |
 | 3 | Forged human approval | Approval service plus step-up; transcript never a credential (INV-02) | P | AG-NEG-05 |
 | 4 | Agent evidence marked verified | Producer status ignored; trust level from registry (INV-34) | P | AG-NEG-04 |
-| 5 | Artifact replaced after validation | Immutable snapshot consumed by digest, or digest-and-use under one handle (section 6a); digest recomputed at use time (INV-33) | P (designed) | AG-NEG-01, AG-NEG-11, AG-ADV-17 |
+| 5 | Artifact replaced after validation | Content-addressed immutable snapshot in agent-unwritable storage, digest verified at creation and every consumption, all records bound to snapshot id and digest (section 6a); fail closed if unavailable | P (designed) | AG-NEG-01, AG-NEG-11, AG-NEG-12, AG-ADV-17..19, AG-CON-04 |
 | 6 | Approval or evaluation replay | Single-use consume of record and grant | P | AG-CON-02 |
 | 7 | Cross-project or cross-tenant confusion | Scope bindings on record, permit and evidence | P | AG-NEG-02 |
 | 8 | Unknown tools or alternate execution routes | Default deny for governed profile; unmediated routes labelled | P for broker-owned routes; D or O for routes the agent can reach without Writ | AG-ADV-08 |
@@ -176,9 +194,9 @@ Outside Writ's control: host OS compromise; OS, kernel or container escape; agen
 | Group | Tests |
 |---|---|
 | Positive | AG-POS-01 all mandatory criteria pass from trusted evaluators, kernel allows, transition commits once; AG-POS-02 waivable criterion waived by authorized human is recorded `waived` |
-| Negative | AG-NEG-11 working copy changed after evaluation, promoted bytes equal the snapshot; AG-NEG-01 artifact digest changed after evaluation; AG-NEG-02 tenant, project or task mismatch on record, evidence or signoff; AG-NEG-03 agent-supplied test result file; AG-NEG-04 producer `verified` evidence; AG-NEG-05 transcript "approved"; AG-NEG-06 model-assisted pass on a mechanical criterion; AG-NEG-07 expired or stale criterion; AG-NEG-08 composite transition plus effect; AG-NEG-09 acceptance policy version changed; AG-NEG-10 record without valid issuer signature |
+| Negative | AG-NEG-11 working copy changed after evaluation, promoted bytes equal the snapshot; AG-NEG-12 snapshot binding mismatch across records; AG-NEG-01 artifact digest changed after evaluation; AG-NEG-02 tenant, project or task mismatch on record, evidence or signoff; AG-NEG-03 agent-supplied test result file; AG-NEG-04 producer `verified` evidence; AG-NEG-05 transcript "approved"; AG-NEG-06 model-assisted pass on a mechanical criterion; AG-NEG-07 expired or stale criterion; AG-NEG-08 composite transition plus effect; AG-NEG-09 acceptance policy version changed; AG-NEG-10 record without valid issuer signature |
 | Differential | AG-DIF-01 Rust and Go binding checks agree on every fixture and on generated single-field mutations; AG-DIF-02 identical decisions for `workflow.transition` across hosts and packs |
-| Adversarial | AG-ADV-01 injected policy text; AG-ADV-08 alternate route to state store; AG-ADV-09 pack or agent edits acceptance policy; AG-ADV-10 downgraded bundle; AG-ADV-12 direct state-store write with agent credentials; AG-ADV-15 memory claiming authority; AG-ADV-16 revoked evaluator key; AG-ADV-17 path or symlink swap between check and use |
+| Adversarial | AG-ADV-01 injected policy text; AG-ADV-08 alternate route to state store; AG-ADV-09 pack or agent edits acceptance policy; AG-ADV-10 downgraded bundle; AG-ADV-12 direct state-store write with agent credentials; AG-ADV-15 memory claiming authority; AG-ADV-16 revoked evaluator key; AG-ADV-17 separate process mutates the artifact during snapshot, evaluation, approval, promotion or publication; AG-ADV-18 agent writes into the snapshot store; AG-ADV-19 snapshot corrupted at rest |
 | Failure | AG-FAIL-01 evaluator timeout; AG-FAIL-02 malformed output; AG-FAIL-03 acceptance service down; AG-FAIL-04 audit store down; AG-FAIL-05 crash between CAS and receipt |
 | Concurrency | AG-CON-01 16 concurrent promotions on one revision, exactly one commits; AG-CON-02 replay of a consumed record; AG-CON-03 promotion racing an artifact update; AG-CON-04 concurrent writer during snapshot creation |
 | Property | AG-PROP-01 any single-field mutation of a bound field refuses; AG-PROP-02 adding untrusted criteria never changes `rejected` or `incomplete` to `accepted` |
