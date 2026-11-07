@@ -35,6 +35,14 @@
 | INV-29 | No management action can disable, weaken or reorder a mandatory policy or edit a core security contract | Crafted bundle omitting a mandatory policy sent directly to the registry (CC-SEC-04, CC-SEC-13) |
 | INV-30 | Administrative mutations are audited before they take effect; knowledge and memory deletion never removes security audit records | Audit store down during a mutation; delete content referenced by decisions (CC-SEC-08, CC-SEC-09) |
 | INV-31 | No management API, export or diagnostics bundle returns a secret value | Canary secrets planted in keys, settings and logs (CC-SEC-05) |
+| INV-32 | (PROPOSED, ADR-0008) No protected workflow transition without a kernel ALLOW for `workflow.transition` and a current acceptance-service AcceptanceRecord; agents cannot write workflow state | Direct state-store write; promotion with no record (AG-ADV-12, AG-NEG-10) |
+| INV-33 | (PROPOSED) An AcceptanceRecord binds tenant, project, task, workflow, transition, artifact digest, acceptance-policy version, evaluator identities, evidence digests and state revision; any mismatch at use time refuses | Swap artifact after evaluation; change policy version (AG-NEG-01, AG-NEG-09, AG-PROP-01) |
+| INV-34 | (PROPOSED) Only registered evaluators of sufficient trust satisfy mandatory criteria; producer, agent and model-assisted claims never satisfy mechanical, evidence or human criteria | Producer "verified" evidence; model pass on a mechanical criterion (AG-NEG-04, AG-NEG-06) |
+| INV-35 | (PROPOSED) Mechanical results count only when executed by the Writ-controlled runner on digest-identified inputs and attested | Agent-supplied test result file (AG-NEG-03) |
+| INV-36 | (PROPOSED) Changes to artifact, evidence, acceptance policy, evaluator version or key, scope or state revision make an AcceptanceRecord unusable, enforced at use time | Promotion racing an artifact update (AG-CON-03) |
+| INV-37 | (PROPOSED) Acceptance requirements are versioned policy; agents and packs cannot create, weaken or waive them; invariant-derived criteria are never waivable | Pack or agent edits acceptance policy (AG-ADV-09) |
+| INV-38 | (PROPOSED) In Governed Execution, missing, failed, stale, unverifiable or malformed mandatory evidence, or an unavailable evaluator or acceptance service, refuses the protected transition | Evaluator timeout and malformed output (AG-FAIL-01..03) |
+| INV-39 | (PROPOSED) Advisory Integration never reports a transition or effect as governed or verified; the mode is recorded on every record | Advisory-mode promotion displayed in the Control Center |
 
 ## Verification levels
 

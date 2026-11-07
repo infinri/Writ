@@ -43,6 +43,9 @@ V2 must be useful as a fast local tool without Neo4j availability on every actio
 | P-21 | Management plane outside the decision path | CC-SEC-01: management service absent or overloaded, decisions and kernel p95 unchanged (INV-27) |
 | P-22 | Every important action explainable | "Why did this happen?" for every decision status and effect state from recorded records only (CC-G06, CC-SEC-11, CC-UX-09) |
 | P-23 | Administrative changes authenticated, authorized, audited and versioned; no bypass of mandatory invariants | CC-SEC-02, 04, 08, 12, 13 (INV-28..INV-30) |
+| P-25 | Acceptance Gate Integrity: no protected workflow transition without kernel authorization and a current, bound AcceptanceRecord from trusted evaluators | AG test plan in [acceptance gate integrity](../architecture/acceptance-gate-integrity.md#11-test-plan-proposed) (INV-32..INV-39, proposed) |
+| P-26 | No self-certification: agents, models and packs cannot produce passing mandatory criteria, signoffs or acceptance records | AG-NEG-03..06, AG-ADV-09 |
+| P-27 | Honest modes: Advisory Integration never presented as Governed Execution | INV-39; Control Center labels |
 | P-24 | Headless operation and CLI parity | Kernel, broker and adapters run without the UI; essential operations available in CLI and API (CC-G13, CC-G14) |
 
 ### Performance and operability objectives
@@ -230,3 +233,21 @@ Architecture is complete only when each module has: an API contract, caller, tru
 | M10+ | Enterprise features where justified |
 
 Details and gates: [implementation plan](../control-center/implementation-plan.md). Status: planned; no Control Center code exists.
+
+## 18. Acceptance Gate Integrity (normative requirement; design proposed)
+
+Owner direction 2026-11-06 ([D-016](DECISION-LOG.md)): Writ makes authorization **and acceptance** requirements enforceable outside the model's reasoning. Two mandatory boundaries in Governed Execution mode: the Action Authorization Gate (kernel plus broker, existing design) and the Acceptance and Promotion Gate (acceptance service plus transition service). The kernel stays the only permission authority. Specification and proposed design: [acceptance gate integrity](../architecture/acceptance-gate-integrity.md), [ADR-0008](../decisions/ADR-0008-acceptance-gate-integrity.md).
+
+| Milestone | Added scope |
+|---|---|
+| M1 | Transition decisions, pure acceptance-binding check, CAS and single-use transition scenarios in both prototypes ([parity suite](M1-PARITY-SUITE.md)) |
+| M2 | AcceptanceRecord, evaluator registry and runner attestation contracts; protected workflow states |
+| M3 | Transition service; mechanical runner as sandboxed broker effect (moved from later milestones) |
+| M4 | Signoff provenance; waivers as approvals |
+| M5 | Mediated host operations proven; host-side transitions advisory |
+| M6 | Signed acceptance policies; evaluator registry publication |
+| M7, M8 | Evidence provenance and freshness; retrieval and memory never authoritative |
+| M9 | Control Center acceptance traceability |
+| M12 | Adversarial, integration and failure testing before production enforcement claims |
+
+Sequencing changes are listed in section 13 of the specification. Nothing in this section is implemented.

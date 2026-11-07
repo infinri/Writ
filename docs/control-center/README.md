@@ -101,6 +101,8 @@ Tier: **B** = minimum usable Control Center for the first local V2 beta; **E** =
 | CC-A04 | Attempted versus executed effects | Effect states INTENT, DISPATCHED, COMPLETED, FAILED, UNKNOWN_RECONCILE shown distinctly; crash fixture shows DISPATCHED without receipt as UNKNOWN_RECONCILE, never as COMPLETED | M3 | B |
 | CC-A05 | Unmediated operations | Host coverage data lists UNMEDIATED capabilities per integration; observed unmediated activity (where a host reports it) is labelled and never counted as governed | M5 | B |
 | CC-A06 | Audit export with integrity proof | Export of a filtered range includes chain verification data; an offline verifier detects a modified, removed or reordered record | M9 | B |
+| CC-A08 | Acceptance traceability for each workflow transition: what was attempted, whether it was authorized, which acceptance requirements applied, which passed or failed, which evidence was actually verified and at what trust level, whether human approval was required and obtained, and why the transition was blocked or promoted | One view per transition built from the AcceptanceRecord, decision, grants and receipt; model-assisted results never displayed as verified; fixture set from AG tests renders correctly | M3 (service), M9 (UI) | B |
+| CC-A09 | Incomplete guarantees visible | Each workflow and integration shows its mode (Governed Execution or Advisory Integration) and any UNMEDIATED paths that could reach the same effect or state | M5/M9 | B |
 | CC-A07 | SIEM streaming, legal hold, long-term archive | Configurable export targets; legal hold blocks retention expiry for selected scopes | M10 | E |
 
 ### 3. Rules & Policies (including Contracts)
@@ -112,6 +114,8 @@ Tier: **B** = minimum usable Control Center for the first local V2 beta; **E** =
 | CC-R03 | No toggle bypasses mandatory invariants | Deactivating, editing or reordering a mandatory policy is refused by the management service and the policy registry, not merely hidden in the UI (CC-SEC-04) | M6 | B |
 | CC-R04 | Simulation | A draft is evaluated against recorded or sample requests; output lists every decision that would change versus the active bundle; no effect executes | M6 | B |
 | CC-R05 | Publish controls | Publishing requires an authenticated publisher role, passing tests, conflict analysis and a signed bundle (M6 signing); single-user local installs record an explicit self-publish acknowledgment | M6 | B |
+| CC-R07 | Acceptance requirements: create, edit, clone, simulate, publish, retire | Same lifecycle and publisher controls as policies; simulation shows which recent transitions would change outcome; criteria bind only to registered evaluators | M6 | B |
+| CC-R08 | Safeguards against weakening acceptance | Removing a mandatory criterion, lowering a required trust level or marking an invariant-derived criterion waivable is refused by the registry (INV-37); weakening changes need step-up and are highlighted in the diff | M6 | B |
 | CC-R06 | Staged rollout, shadow comparison, separation of duties | Author and publisher must differ; shadow mode reports divergence before activation | M10 | E |
 | CC-C01 | Browse contracts, inspect fields and versions | Every schema in the contract registry browsable with field docs and version history | M6 | B |
 | CC-C02 | Validate example requests | User pastes or uploads an example; validation result lists each error with JSON pointer | M6 | B |

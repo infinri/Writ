@@ -114,6 +114,14 @@ Only results actually executed are recorded under **Executed**. Planned verifica
 
 SR-06 sandbox facts (preflight PASS, telemetry diagnostic) are recorded in `docs/audit/m0/live-host/2026-11-06-sandbox-readiness/`; none is an SR-06 trial result. Plan corrections (600 s default timeout, `{not json}` probe) are plan revisions, not test evidence.
 
+### E-014: CI on the M0 development-GO decision commit
+
+- **Revision:** `38e2d1f31fb11a145cb7a109934e85b018dd1d60` (pushed alone, with its parent `df87cf4`; origin moved `e8aa771..38e2d1f`, no force)
+- **Run:** https://github.com/infinri/Writ/actions/runs/42319056546 (head SHA verified equal to the decision commit)
+- **Result:** both jobs success. M0 reference harness and audit drift: 281 passed, audit 8 files current. V2 documentation and schemas: docs check OK (74 Markdown in CI; local counts include untracked files), link and schema checks passed.
+- **Unrelated:** Pages publish run 42319056484 failed: `Branch "v2/architecture-rebuild" is not allowed to deploy to github-pages due to environment protection rules.` Same pre-existing cause as E-003.
+- **Gate meaning:** criterion 1 of amendment A-1 holds for the decision commit. The owner attestation (criterion 5) is still required; D-014 remains PROPOSED.
+
 ## Not yet executed
 
 - SR-06 live-host experiments (0 of 69; sandbox torn down) and full SR-06 acceptance; rule semantic review (M0-01d); independent human golden review (M0-05a).

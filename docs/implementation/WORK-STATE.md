@@ -5,7 +5,9 @@
 ## Current
 
 - **Phase:** M0 development-GO signoff. The decision commit records the owner's instruction of 2026-11-06 in [M0-GO-NO-GO](M0-GO-NO-GO.md); the [signoff package](M0-GO-SIGNOFF-PACKAGE.md) section 3 defines the remaining steps.
-- **Active task:** M0-06 IN REVIEW. Remaining: push the decision commit alone; CI green on it; the owner posts the attestation personally in the GitHub web UI; Claude verifies it read-only; acceptance commit (D-014 ACCEPTED, M0 closed for development only).
+- **Decision commit pushed:** `38e2d1f`, CI run 42319056546 success (E-014).
+- **Architecture proposal (local, not pushed):** Acceptance Gate Integrity (D-016, ADR-0008 PROPOSED, AG-00 IN REVIEW).
+- **Active task:** M0-06 IN REVIEW. Remaining: the owner posts the attestation personally in the GitHub web UI; Claude verifies it read-only; acceptance commit (D-014 ACCEPTED, M0 closed for development only).
 - **Writ Control Center (D-015, ADR-0007):** specification and roadmap integration committed separately from the decision commit (CC-00 DONE, documentation only). Implementation tasks CC-M2..CC-E start with their milestones; none before M2.
 
 ## Security findings
@@ -45,4 +47,4 @@ CI E-013: run [42309913797](https://github.com/infinri/Writ/actions/runs/4230991
 
 ## Next exact action
 
-Push the decision commit alone (owner confirmation required), confirm its CI, then the owner posts the attestation (signoff package section 3). Do not start M1 implementation before the acceptance commit.
+The owner posts the attestation on commit `38e2d1f` (signoff package section 3); Claude verifies it read-only, then prepares the acceptance commit. Pushing `ae7944f` (Control Center) and the Acceptance Gate commit needs separate authorization. Do not start M1 implementation before the acceptance commit.

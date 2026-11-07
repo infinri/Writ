@@ -128,3 +128,10 @@ Implementation-level decisions. Architectural decisions belong in [ADRs](../deci
 - **Selected:** add Writ Control Center ([specification](../control-center/README.md), [ADR-0007](../decisions/ADR-0007-control-center-management-plane.md)): navigation Overview, Activity & Audit, Rules & Policies, Knowledge & Memory, Integrations, Administration; separate management service with versioned authenticated APIs outside the decision path; work distributed across M2 to M10+; minimum usable Control Center for the first local beta; enterprise set separately justified; not a prerequisite for M1.
 - **Consequences:** invariants INV-27 to INV-31; product requirements P-20 to P-24; CC tasks in TASKS. Status of every Control Center requirement: planned.
 
+## D-016: Acceptance Gate Integrity is a core requirement (design proposed)
+
+- **Date:** 2026-11-06. **Decided by:** project owner (direction in session 2026-11-06); recorded by Claude. Independent of D-014 and D-015.
+- **Decision (requirement, accepted):** Writ must make authorization and acceptance requirements enforceable outside the model's reasoning, with two mandatory boundaries in Governed Execution: the Action Authorization Gate and the Acceptance and Promotion Gate. Advisory Integration and Governed Execution are distinct, labelled modes; hook behavior is never advertised as complete containment.
+- **Design:** [ADR-0008](../decisions/ADR-0008-acceptance-gate-integrity.md) PROPOSED; [specification](../architecture/acceptance-gate-integrity.md). Invariants INV-32..INV-39 PROPOSED.
+- **Constraint:** the decision kernel remains the only permission authority; evaluators establish satisfaction; the transition service enforces promotion. Capability Packs may define rubrics and requirements but cannot mint trusted verification.
+

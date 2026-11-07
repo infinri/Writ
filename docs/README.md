@@ -13,6 +13,7 @@ This documentation replaces the prior V1 docs (including old ADRs, reference pag
 1. [M0 start checklist](implementation/M0-START-HERE.md) and [Master implementation specification](implementation/MASTER-IMPLEMENTATION-PLAN.md) — complete build and release program.
 2. [System architecture](architecture/architecture.md) and [repository layout](architecture/repository-layout.md).
 3. [Execution & state](architecture/execution-and-state.md) and [authorization & approvals](architecture/authorization-and-approvals.md).
+3a. [Acceptance Gate Integrity](architecture/acceptance-gate-integrity.md): action authorization, artifact evaluation and protected workflow promotion (requirement accepted, design proposed; [ADR-0008](decisions/ADR-0008-acceptance-gate-integrity.md)).
 4. [Retrieval & memory](architecture/retrieval-and-memory.md), [data contracts](architecture/data-model.md), and [host adapters](architecture/host-adapters.md).
 5. [Model-agnostic runtime](architecture/model-agnostic-runtime.md), [Capability Packs](architecture/capability-packs.md), and [Agent orchestration](architecture/agent-orchestration.md).
 6. [Pack examples](packs/README.md) and [model/domain contracts](contracts/README.md).

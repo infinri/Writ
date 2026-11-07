@@ -111,3 +111,14 @@ Not a prerequisite for M1. Each task starts with its milestone; acceptance tests
 | CC-M9 | Unified local Control Center (minimum usable beta scope) | P0 (M9) | CC-M3..CC-M8 | NOT STARTED | All tier B requirements | P-20..P-24 | all beta CC-SEC; CC-UX-01..09 | |
 | CC-E | Enterprise feature set, each with its own ADR | P2 (M10+) | CC-M9 | NOT STARTED | Tier E requirements justified by recorded workload | P-20 | per feature | |
 
+## Acceptance Gate Integrity (D-016, ADR-0008 proposed)
+
+| ID | Task | Pri | Deps | Status | Acceptance criteria | Refs | Tests | Evidence |
+|---|---|---|---|---|---|---|---|---|
+| AG-00 | Acceptance Gate Integrity architecture proposal, invariants, threats, parity-suite additions, HTML projection | P0 | D-016 | IN REVIEW | Specification, ADR-0008, INV-32..39, threat rows, M1 parity additions, Control Center rows, HTML sections; docs check passes; owner accepts or amends ADR-0008 | D-016 | docs check | `docs/architecture/acceptance-gate-integrity.md`; documentation only |
+| AG-M1 | Transition and acceptance-binding fixtures with hand-reasoned expectations; both prototypes pass them | P0 (M1) | M0-06 accepted, AG-00 | NOT STARTED | Parity suite "Acceptance Gate Integrity readiness" sets pass in Rust and Go | INV-32..INV-36 | AG-DIF-01, AG-PROP-01, AG-CON-01, AG-CON-02 | |
+| AG-M2 | Production contracts: AcceptanceRecord, EvaluationRecord scope fields, evaluator registry entry, runner attestation, protected workflow states | P0 (M2) | AG-M1, ADR-0002 | NOT STARTED | Schemas, fixtures and contract tests | INV-32..INV-39 | contract tests | |
+| AG-M3 | Transition service with CAS, single-use records, use-time recomputation; sandboxed mechanical runner; audit events | P0 (M3) | AG-M2 | NOT STARTED | AG positive, negative, failure and concurrency tests pass | INV-32..INV-38 | AG-POS, AG-NEG, AG-FAIL, AG-CON | |
+| AG-M4 | Authenticated signoff provenance; waivers as approvals | P0 (M4) | AG-M3 | NOT STARTED | AG-NEG-05; forged signoff refused | INV-06, INV-34 | AG-NEG-05 | |
+| AG-M6 | Signed acceptance policies; evaluator registry publication; pack rubrics bound to registered evaluators | P0 (M6) | AG-M3, M6 | NOT STARTED | AG-ADV-09, AG-ADV-10, AG-ADV-16 | INV-37 | adversarial tests | |
+| AG-M12 | Adversarial, integration and failure campaign before any production enforcement claim | P0 (M12) | all AG | NOT STARTED | Full AG suite in a disposable environment; results recorded | INV-32..INV-39 | full suite | |

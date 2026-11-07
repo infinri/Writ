@@ -28,6 +28,7 @@ Authority to perform tool effects; user/organization approvals; source code and 
 | Local state | Symlink tampering, cached session confusion | Secure directories, scoped keys, revisioned storage |
 | Extension | Code execution, data egress | Optional WASM with explicit capabilities/fuel/limits; host OS isolation where needed |
 | Audit pipeline | Lost/forged history | Append-only durable linkage, integrity verification, independent permissions |
+| Workflow promotion / acceptance | Fabricated results, artifact swap, self-edited requirements, transition bypass, evaluator compromise | Acceptance Gate Integrity: signed AcceptanceRecord checked at use time with CAS, registered evaluators, Writ-controlled mechanical runner, human signoff via approval service ([specification](../architecture/acceptance-gate-integrity.md), INV-32..INV-39, proposed) |
 | Control Center / management API | Agent reaches admin functions; CSRF; stored XSS; toggles weaken enforcement; outage blocks decisions | Separate management realm, step-up for high-risk actions, registry-side invariant checks, untrusted rendering, plane outside the hot path ([trust and authorization](../control-center/trust-and-authorization.md), INV-27..INV-31) |
 
 ## Enforcement profiles
@@ -38,7 +39,7 @@ Authority to perform tool effects; user/organization approvals; source code and 
 
 ## Abuse-case tests
 
-T-01 forged 'approved' transcript; T-02 state-file tamper; T-03 symlink/reparse point; T-04 URI/path normalization; T-05 shell indirection; T-06 Bash wrapper; T-07 pre-/post-effect race; T-08 replayed approvals; T-09 policy downgrade; T-10 foreign graph neighbor; T-11 evidence poisoning; T-12 giant payload over argv limits; T-13 missing interpreter; T-14 concurrent session cross-contamination; T-15 audit failure; T-16 crash at each effect stage; T-17 unsupported host tool.
+T-01 forged 'approved' transcript; T-02 state-file tamper; T-03 symlink/reparse point; T-04 URI/path normalization; T-05 shell indirection; T-06 Bash wrapper; T-07 pre-/post-effect race; T-08 replayed approvals; T-09 policy downgrade; T-10 foreign graph neighbor; T-11 evidence poisoning; T-12 giant payload over argv limits; T-13 missing interpreter; T-14 concurrent session cross-contamination; T-15 audit failure; T-16 crash at each effect stage; T-17 unsupported host tool; T-18 fabricated test results; T-19 artifact replaced after validation; T-20 agent edits its own acceptance requirements; T-21 transition endpoint bypass; T-22 concurrent or stale promotion; T-23 compromised or unregistered evaluator (acceptance threats 1 to 16 in [Acceptance Gate Integrity](../architecture/acceptance-gate-integrity.md#10-adversarial-resistance)).
 
 Threat tests must be executed in an isolated, disposable environment; do not run payloads against unrelated repositories or production hosts.
 

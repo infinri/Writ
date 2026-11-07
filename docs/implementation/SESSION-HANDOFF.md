@@ -9,7 +9,7 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 | Item | State |
 |---|---|
 | Project | Writ V2, `infinri/Writ`, branch `v2/architecture-rebuild` (never `main`) |
-| Last pushed and CI-verified | `e8aa771` (signoff package), run 42309913797. Local commits after it: checkpoint `df87cf4`, then this decision commit |
+| Last pushed and CI-verified | Decision commit `38e2d1f`, run 42319056546 success (E-014). Local, not pushed: `ae7944f` Control Center docs; Acceptance Gate Integrity proposal (D-016, ADR-0008 PROPOSED) |
 | Evidence baseline cited by the decision | `6007d09`, run 42308217716 |
 | Milestone | M0 NOT closed. Development GO **RECORDED, PENDING OWNER ATTESTATION** (owner instruction 2026-11-06). D-014 PROPOSED. Release and production NO-GO. M1 not started |
 | Control Center | D-015 ACCEPTED (owner direction 2026-11-06); spec in `docs/control-center/`, ADR-0007, INV-27..31, P-20..24, tasks CC-00 (DONE, docs) and CC-M2..CC-E (NOT STARTED). Not a prerequisite for M1 |
@@ -17,8 +17,8 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 
 ### Remaining signoff sequence ([signoff package](M0-GO-SIGNOFF-PACKAGE.md) section 3)
 
-1. Push the decision commit alone (owner confirms the push), so CI runs on exactly that commit.
-2. CI green on the decision commit.
+1. DONE: decision commit `38e2d1f` pushed alone.
+2. DONE: CI run 42319056546 green on it.
 3. The owner posts the attestation personally (GitHub web UI comment on the decision commit, or an owner-signed tag). Claude never posts it.
 4. Claude verifies the attestation read-only (author `infinri`, after CI, names the SHA and the CI run, scope matches).
 5. Acceptance commit: D-014 ACCEPTED; M0-05c, M0-06 DONE; M0 closed for development only; M1 and deferred risk tasks active.
