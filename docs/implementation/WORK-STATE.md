@@ -1,13 +1,13 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-10 (M1-06d published, D-025 local) · **Branch:** v2/architecture-rebuild · **Milestone:** M1 active (development only, D-014); M1-00..M1-05, M1-06a, D-022 and D-023 DONE; M1-07 in progress; M1-06 measurements blocked by environment. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md).
+**Last updated:** 2026-11-10 (D-025 published) · **Branch:** v2/architecture-rebuild · **Milestone:** M1 active (development only, D-014); M1-00..M1-05, M1-06a, D-022 and D-023 DONE; M1-07 in progress; M1-06 measurements blocked by environment. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md).
 
 ## Current
 
-- **Published:** `6b7eab1` (M1-06d broker timing), CI run 42857245639 green, all 5 jobs (E-031). **Local, unpushed:** D-025 commit.
+- **Published:** `68f4593` (D-025), CI run 42887453309 green, all 5 jobs (E-032).
 - **Prototypes:** both 447/447 with both ledgers; 30 language-neutral ledger tests each; Rust-SQLite vs Go-SQLite 0 mismatches.
-- **Benchmark readiness:** instrumentation verified; environment not ready ([M1-06-READINESS](M1-06-READINESS.md)).
-- **Next:** push after confirmation; M1-06 measurements when every guard passes; M1-07 build timings with them.
+- **Benchmark readiness:** instrumentation verified; guard refuses (governor `powersave`, load 1.81) ([M1-06-READINESS](M1-06-READINESS.md)).
+- **Next:** owner sets the `performance` governor and quiets the machine; then M1-06 measurements and M1-07 build timings.
 
 ## Security findings
 

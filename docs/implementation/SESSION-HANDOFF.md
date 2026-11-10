@@ -2,7 +2,7 @@
 
 Read this first after compaction or in a new session, then [WORK-STATE](WORK-STATE.md).
 
-## Current checkpoint (2026-11-10, M1-06d published and green; D-025 corrections done locally)
+## Current checkpoint (2026-11-10, D-025 published and green; M1-06 waiting for the benchmark environment)
 
 **This is the authoritative recovery entry point. It is not authorization to do anything; re-establish authorizations from the owner's newest message.**
 
@@ -14,16 +14,16 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 | Why kernel and broker are separate | The kernel is pure and key-free (no I/O, injected time) so decisions are deterministic and testable; the broker holds keys and the ledger, re-decides at use time and binds every effect to the exact request (D-008, D-010, D-012) |
 | Acceptance Gate Integrity | Protected workflow transitions need a trusted, version-bound acceptance record checked by the broker plus kernel structure checks; promotion separate from publish or deploy ([spec](../architecture/acceptance-gate-integrity.md), ADR-0008 **APPROVED IN PRINCIPLE**) |
 | Branch | `v2/architecture-rebuild` (never `main`) |
-| Published HEAD | `6b7eab12a35a82d52e11493c9531268aaf697530` (M1-06d broker timing), CI https://github.com/infinri/Writ/actions/runs/42857245639 **green, all 5 jobs** (E-031). Previous: `3012940` run 42851712662 green; `e1dc2e1` run 42836769090 failed (fixed) |
-| Local commit not yet pushed (verify with `git log origin/v2/architecture-rebuild..HEAD`) | the D-025 commit (DEP-1, C-4, adapter precedence and resume tests, S-1, S-2, stderr sanitization, readiness checklist). Push needs owner confirmation |
+| Published code HEAD | `68f4593a513b0ab7b6ac206ef00c8f9d067d7660` (D-025), CI https://github.com/infinri/Writ/actions/runs/42887453309 **green, all 5 jobs** (E-032). Previous: `6b7eab1` run 42857245639 green; `3012940` run 42851712662 green |
+| Local commits not yet pushed (verify with `git log origin/v2/architecture-rebuild..HEAD`) | a docs-only commit recording E-032 and this checkpoint. Push needs owner confirmation |
 | Working tree | Only untracked `docs/audit/m0/hook-audit/` (never stage or publish) |
-| Milestone | **M1** under D-014 (development only). Done: M1-00..M1-05, M1-06a harness, M1-06b (D-022), M1-06c (D-023 SQLite ledger), M1-06e (D-024), M1-06d broker timing (published, CI green), M1-06f D-025 corrections (local). **M1-07 in progress** (facts collected; build times deferred). **M1-06 measurements blocked** (environment). M1-08 not started. M0 closed for development only; release and production NO-GO |
+| Milestone | **M1** under D-014 (development only). Done: M1-00..M1-05, M1-06a harness, M1-06b (D-022), M1-06c (D-023 SQLite ledger), M1-06e (D-024), M1-06d broker timing (published, CI green), M1-06f D-025 corrections (published, CI green). **M1-07 in progress** (facts collected; build times deferred). **M1-06 measurements blocked** (environment). M1-08 not started. M0 closed for development only; release and production NO-GO |
 
 ### B. Owner decisions in force
 
 D-001..D-013; **D-014** M0 development GO (16 risks open); D-015 Control Center; D-016 Acceptance Gate Integrity (ADR-0008 APPROVED IN PRINCIPLE, not ACCEPTED); **D-017..D-021** M1 semantics; **D-022** decide input validation (three-field `REQUEST_SCHEMA_INVALID` for malformed `now`, `state_revision` (0..2^53-1) or absent `request`; strict `YYYY-MM-DDTHH:MM:SSZ`; D-017 spelling failures stay `REQUEST_JSON_INVALID`); **D-023** SQLite-backed ledger required for official workload B (same schema, transactions, engine and settings in both; in-memory kept but never a substitute); **D-024** (2026-11-10) D-022 approved; Go `-trimpath`; M1 is Linux x86_64 only; storage failures fail closed with one sanitized response; `ReadID` removed; DEP-1 and C-1..C-6 stay open ([M1-OPEN-ASSUMPTIONS](M1-OPEN-ASSUMPTIONS.md)); independent fixture review preserved. ADR-0002 Rust vs Go: **OPEN** until M1-08. Fixture amendments 1..6.
 
-**D-025** (2026-11-10): resumed-retry `COMMIT` and adapter-transaction precedence approved; DEP-1 adopted; C-1..C-6 resolved; S-1, S-2, stderr sanitization required ([M1-OPEN-ASSUMPTIONS](M1-OPEN-ASSUMPTIONS.md) marked resolved). Pending owner input: (1) independent human review of all fixtures (PENDING INDEPENDENT REVIEW); (2) push of the local D-025 commit; (3) benchmark environment (owner actions in [M1-06-READINESS](M1-06-READINESS.md)).
+**D-025** (2026-11-10): resumed-retry `COMMIT` and adapter-transaction precedence approved; DEP-1 adopted; C-1..C-6 resolved; S-1, S-2, stderr sanitization required ([M1-OPEN-ASSUMPTIONS](M1-OPEN-ASSUMPTIONS.md) marked resolved). Pending owner input: (1) independent human review of all fixtures (PENDING INDEPENDENT REVIEW); (2) benchmark environment (owner actions in [M1-06-READINESS](M1-06-READINESS.md)).
 
 ### C. Current implementation
 
@@ -43,6 +43,7 @@ D-001..D-013; **D-014** M0 development GO (16 risks open); D-015 Control Center;
 
 ### D. Verified evidence ([TEST-EVIDENCE](TEST-EVIDENCE.md) E-016..E-028)
 
+- E-032: CI of `68f4593` green: engine 3.54.1 asserted in both jobs; 447/447 in memory and on SQLite for both; 30 ledger tests; Rust-vs-Go SQLite 0 mismatches over 6,780 checks; Rust 54 + 3 tests; dry run 0 failures.
 - E-031: CI of `6b7eab1` green (444/444 both ledgers, 16 ledger tests, 0 mismatches); timing changed no governed output (982 outputs byte-identical against `3012940`). D-025 done locally: 447/447 both ledgers, 30 ledger tests, 0 mismatches over 23,089 checks.
 - E-030: CI of `3012940` green (engine 3.54.1 asserted in both jobs, 444/444 both ledgers, 13 storage tests, Rust-vs-Go SQLite 0 mismatches). M1-06d done locally: 16 language-neutral ledger tests, 0 mismatches over 23,089 SQLite differential checks, dry run 0 failures over 28 check kinds.
 - E-029: CI of `e1dc2e1` failed (system SQLite linked by Rust on the runner); fix local. D-024: before Rust 7 and Go 3 of 13 storage tests failed (Rust executed an effect on a schema-version-2 ledger); after 13/13 each; full re-verification green locally.
@@ -55,8 +56,8 @@ Independent human review of the 26 golden cases and all M1 fixtures (REL-01); 28
 
 ### F. Next tasks
 
-1. **Push** the local D-025 commit after owner confirmation; verify CI on the exact SHA (447/447 both ledgers, 30 ledger tests in the `m1/ledger_tests` step).
-2. **M1-06 measurements** only when every guard passes ([M1-06-READINESS](M1-06-READINESS.md): governor `powersave` and load above 1.0 on 2026-11-10).
+1. **M1-06 measurements** only after the owner configures the governor and every guard passes (guard refused 2026-11-10 at `68f4593`: governor `powersave` 16/16, 1-minute load 1.81; mains, temperature 51 C, clean tree and toolchains passed). Then rebuild both from the clean tree and run `m1/bench/bench.py` with a new recorded seed, followed by `m1/assess/collect.py build-times` (M1-07)
+2. Remaining M0 and security obligations unchanged (section E); fixture review pending ([M1-06-READINESS](M1-06-READINESS.md): governor `powersave` and load above 1.0 on 2026-11-10).
 3. **M1-07 remaining:** build timings when the guard passes; cross-target decision (pending owner input 5).
 4. **M1-06 measurements: BLOCKED.** Governor `powersave` (verified 2026-11-07; mains online). Owner: `sudo cpupower frequency-set -g performance`, idle and cool machine, then from a clean tree with pinned toolchains and SQLite: rebuild both, `python3 m1/bench/bench.py --seed <new recorded seed> --rust ... --go ... --out m1/bench/results/<date>.json` (guard must pass; exit 4 invalidates).
 5. M1-08 scorecard and ADR-0002 recommendation after M1-06 and M1-07 (owner decides).

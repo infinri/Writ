@@ -11,7 +11,7 @@
 | Equivalent engine settings | met | identical SQLite 3.54.1 static library, source id, compile options and settings read back by `proto sqlite-info` in both (CI engine assertion; harness `sqlite.engine_and_settings_identical` check) |
 | Timing does not change security or transactional behaviour | met | 982 deterministic case outputs byte-identical between `3012940` and `6b7eab1` builds for both prototypes, both ledgers, every command; timing-integrity scenario equality on every broker fixture; fixtures 444/444 both ledgers |
 | Harness refuses unsuitable power, governor, load and thermal conditions | met | guard (`m1/bench/wbench/envinfo.py`) self-tests on fake sysfs trees (battery, powersave, mixed governors, load, temperature, unreadable boost, dirty tree, unpinned toolchains, Go without `-trimpath`); live refusal 2026-11-10 exit 3, nothing written |
-| Environment passes every guard | **not met** | 2026-11-10: mains online, CPU 51 C, boost 1; **governor `powersave` on 16 of 16 policies**; **1-minute load 1.57** (limit 1.0); uncommitted `m1/` changes during development |
+| Environment passes every guard | **not met** | 2026-11-10 at clean `68f4593`: mains online, CPU 51 C, boost 1, clean tree, pinned toolchains; **governor `powersave` on 16 of 16 policies**; **1-minute load 1.81** (limit 1.0) |
 
 ## Owner actions before M1-06
 
