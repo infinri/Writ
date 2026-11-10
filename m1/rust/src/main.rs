@@ -192,7 +192,7 @@ fn main() -> ExitCode {
                 ExitCode::SUCCESS
             }
             Err(e) => {
-                eprintln!("proto: sqlite-info: {}", e.0);
+                eprintln!("proto: sqlite-info: {}", e.diagnostic());
                 ExitCode::from(1)
             }
         };

@@ -425,6 +425,8 @@ def protocol_semantics() -> list[str]:
                     st = dict(b["append_step"])
                     st["request"] = value["steps"][st.pop("request_from_step")]["for_request"]
                     value["steps"].append(st)
+                for k in b.get("initial_dependencies_drop", []):
+                    value["initial"]["dependencies"].pop(k)
                 if "initial_dependencies_add" in b:
                     k, v = b["initial_dependencies_add"]
                     value["initial"]["dependencies"][k] = v

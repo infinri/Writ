@@ -20,14 +20,101 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub const SCHEMA: &str = include_str!("../../fixtures/broker/ledger.sql");
 pub const DRIVER: &str = "rusqlite 0.40.2";
 
-#[derive(Debug)]
-pub struct DbError(pub String);
+/// Where a ledger error happened (LEDGER-SQLITE.md "Storage failures"
+/// rule 4): the only context a diagnostic carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Category {
+    Open,
+    Initialize,
+    Transaction(&'static str),
+    Final,
+}
+
+/// A ledger error: its category (set where it is first known) and an SQLite
+/// primary result code name or `io`. It never holds a path, file name,
+/// SQLite or OS message text, credential or key (rule 4, D-025).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DbError {
+    pub category: Option<Category>,
+    pub code: &'static str,
+}
+
+impl DbError {
+    pub fn new(code: &'static str) -> DbError {
+        DbError { category: None, code }
+    }
+
+    pub fn io() -> DbError {
+        DbError::new("io")
+    }
+
+    /// Set the category unless an inner step already set one.
+    pub fn within(mut self, category: Category) -> DbError {
+        self.category.get_or_insert(category);
+        self
+    }
+
+    /// The sanitized stderr diagnostic.
+    pub fn diagnostic(&self) -> String {
+        let category = match self.category {
+            Some(Category::Open) | None => "open".to_string(),
+            Some(Category::Initialize) => "initialize".to_string(),
+            Some(Category::Transaction(name)) => format!("transaction {name}"),
+            Some(Category::Final) => "final".to_string(),
+        };
+        format!("{category}: {}", self.code)
+    }
+}
+
+/// The name of an SQLite primary result code.
+pub fn primary_code_name(code: i32) -> &'static str {
+    match code & 0xff {
+        1 => "SQLITE_ERROR",
+        2 => "SQLITE_INTERNAL",
+        3 => "SQLITE_PERM",
+        4 => "SQLITE_ABORT",
+        5 => "SQLITE_BUSY",
+        6 => "SQLITE_LOCKED",
+        7 => "SQLITE_NOMEM",
+        8 => "SQLITE_READONLY",
+        9 => "SQLITE_INTERRUPT",
+        10 => "SQLITE_IOERR",
+        11 => "SQLITE_CORRUPT",
+        12 => "SQLITE_NOTFOUND",
+        13 => "SQLITE_FULL",
+        14 => "SQLITE_CANTOPEN",
+        15 => "SQLITE_PROTOCOL",
+        16 => "SQLITE_EMPTY",
+        17 => "SQLITE_SCHEMA",
+        18 => "SQLITE_TOOBIG",
+        19 => "SQLITE_CONSTRAINT",
+        20 => "SQLITE_MISMATCH",
+        21 => "SQLITE_MISUSE",
+        22 => "SQLITE_NOLFS",
+        23 => "SQLITE_AUTH",
+        24 => "SQLITE_FORMAT",
+        25 => "SQLITE_RANGE",
+        26 => "SQLITE_NOTADB",
+        27 => "SQLITE_NOTICE",
+        28 => "SQLITE_WARNING",
+        _ => "SQLITE_ERROR",
+    }
+}
 
 impl From<rusqlite::Error> for DbError {
     fn from(e: rusqlite::Error) -> Self {
-        DbError(e.to_string())
+        DbError::new(match &e {
+            rusqlite::Error::SqliteFailure(f, _) => primary_code_name(f.extended_code),
+            rusqlite::Error::QueryReturnedNoRows => "SQLITE_NOTFOUND",
+            _ => "SQLITE_MISMATCH",
+        })
     }
 }
+
+/// A ledger that is not this schema (verification failure).
+const NOT_LEDGER: &str = "SQLITE_NOTADB";
+/// Stored content that violates the ledger's own invariants (C-4).
+const CORRUPT: &str = "SQLITE_CORRUPT";
 
 type R<T> = Result<T, DbError>;
 type Key = (String, String);
@@ -40,16 +127,32 @@ fn pragma(c: &Connection, sql: &str) -> R<()> {
     Ok(())
 }
 
-/// Open a connection and apply the settings in the specified order.
-pub fn open(path: &Path) -> R<Connection> {
-    let c = Connection::open(path)?;
+/// Connection-only settings (not persisted in the file), in the specified
+/// order.
+fn connection_settings(c: &Connection) -> R<()> {
+    for sql in ["PRAGMA busy_timeout = 5000", "PRAGMA foreign_keys = ON", "PRAGMA trusted_schema = OFF"] {
+        pragma(c, sql)?;
+    }
+    Ok(())
+}
+
+/// Persistent settings: `journal_mode=WAL` (must read back `wal`), then
+/// `synchronous=FULL`. Applied only to a verified ledger (S-1).
+fn persistent_settings(c: &Connection) -> R<()> {
     let mode: String = c.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
     if mode != "wal" {
-        return Err(DbError(format!("journal_mode is {mode}, not wal")));
+        return Err(DbError::new("SQLITE_ERROR"));
     }
-    for sql in ["PRAGMA synchronous = FULL", "PRAGMA busy_timeout = 5000", "PRAGMA foreign_keys = ON", "PRAGMA trusted_schema = OFF"] {
-        pragma(&c, sql)?;
-    }
+    pragma(c, "PRAGMA synchronous = FULL")
+}
+
+/// A connection to an already initialized ledger (after `restart_broker`, or
+/// for a `concurrent` worker): connection-only settings, then the persistent
+/// ones (already in effect for the file). Initialization is not re-run.
+pub fn open(path: &Path) -> R<Connection> {
+    let c = Connection::open(path).map_err(|e| DbError::from(e).within(Category::Open))?;
+    connection_settings(&c).map_err(|e| e.within(Category::Open))?;
+    persistent_settings(&c).map_err(|e| e.within(Category::Open))?;
     Ok(c)
 }
 
@@ -67,7 +170,8 @@ enum End<T> {
 /// One logical transaction named `name`, timed into `t` (LEDGER-SQLITE.md
 /// "Per-operation timing"): `begin_ns` brackets `BEGIN IMMEDIATE`, `body_ns`
 /// the body, `end_ns` `COMMIT` or `ROLLBACK`. A body error rolls back and is
-/// returned; a failed `BEGIN` is recorded with a zero body and end.
+/// returned; a failed `BEGIN` is recorded with a zero body and end. Every
+/// error is categorized as `transaction <name>`.
 fn transact<T>(c: &Connection, t: &mut StepTiming, name: &'static str, body: impl FnOnce(&Transaction) -> R<End<T>>) -> R<T> {
     let started = std::time::Instant::now();
     let tx = begin(c);
@@ -76,7 +180,7 @@ fn transact<T>(c: &Connection, t: &mut StepTiming, name: &'static str, body: imp
         Ok(tx) => tx,
         Err(e) => {
             t.tx.push((name, TxTime { begin_ns, body_ns: 0, end_ns: Some(0), commit: false }));
-            return Err(e);
+            return Err(e.within(Category::Transaction(name)));
         }
     };
     let started = std::time::Instant::now();
@@ -98,7 +202,7 @@ fn transact<T>(c: &Connection, t: &mut StepTiming, name: &'static str, body: imp
         }
     };
     t.tx.push((name, TxTime { begin_ns, body_ns, end_ns: Some(since(started)), commit }));
-    out
+    out.map_err(|e| e.within(Category::Transaction(name)))
 }
 
 /// The tables ledger.sql creates, in schema order.
@@ -106,29 +210,33 @@ pub fn schema_tables() -> Vec<&'static str> {
     SCHEMA.lines().filter_map(|l| l.strip_prefix("CREATE TABLE ")).filter_map(|r| r.split_whitespace().next()).collect()
 }
 
-/// Initialization (LEDGER-SQLITE.md "Storage failures" rule 1): one
-/// `BEGIN IMMEDIATE` transaction that creates the schema in a new, empty
+/// Initialization transaction (LEDGER-SQLITE.md "Storage failures" rule 1):
+/// one `BEGIN IMMEDIATE` transaction that creates the schema in a new, empty
 /// database, or verifies `meta.schema_version = '1'` and that every table of
 /// ledger.sql exists (extra objects are not checked). Any error rolls back,
 /// so an existing file is not modified; a read-only connection is refused
 /// before the transaction.
-pub fn initialize(c: &Connection) -> R<()> {
+fn initialize(c: &Connection) -> R<()> {
     if c.is_readonly("main")? {
-        return Err(DbError("ledger opened read-only".into()));
+        return Err(DbError::new("SQLITE_READONLY"));
     }
     let tx = begin(c)?;
     let objects: i64 = tx.query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0))?;
     if objects == 0 {
         tx.execute_batch(SCHEMA)?;
     } else {
-        let version: String = tx.query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |r| r.get(0))?;
-        if version != "1" {
-            return Err(DbError(format!("schema_version is {version:?}, not \"1\"")));
+        let has_meta: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'meta')", [], |r| r.get(0))?;
+        if !has_meta {
+            return Err(DbError::new(NOT_LEDGER));
+        }
+        let version: Option<rusqlite::types::Value> = tx.query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |r| r.get(0)).optional()?;
+        if version != Some(rusqlite::types::Value::Text("1".into())) {
+            return Err(DbError::new(NOT_LEDGER));
         }
         for table in schema_tables() {
             let present: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1)", [table], |r| r.get(0))?;
             if !present {
-                return Err(DbError(format!("table {table} missing")));
+                return Err(DbError::new(NOT_LEDGER));
             }
         }
     }
@@ -136,18 +244,138 @@ pub fn initialize(c: &Connection) -> R<()> {
     Ok(())
 }
 
-static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const SIDECARS: [&str; 3] = ["-journal", "-wal", "-shm"];
 
-/// A new, previously nonexistent file `<pid>-<sequence>.db` in `dir`.
-pub fn new_db_in(dir: &Path) -> R<PathBuf> {
-    loop {
-        let path = dir.join(format!("{}-{}.db", std::process::id(), SEQUENCE.fetch_add(1, Ordering::Relaxed)));
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(_) => return Ok(path),
-            Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(DbError(format!("{}: {e}", path.display()))),
+fn sidecar(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+/// What this run created (exclusive create), so that a failed
+/// initialization removes exactly that (S-2): the database file (identified
+/// by device and inode) and the sidecar names that did not exist before.
+struct Created {
+    file: (u64, u64),
+    absent_sidecars: Vec<PathBuf>,
+}
+
+impl Created {
+    /// Remove the created file if it is still the one created, and every
+    /// sidecar that did not exist before and is now a regular file. Nothing
+    /// else is touched; errors are ignored (the scenario already fails).
+    fn remove(&self, path: &Path) {
+        use std::os::unix::fs::MetadataExt;
+        if std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && (m.dev(), m.ino()) == self.file) {
+            let _ = std::fs::remove_file(path);
+        }
+        for p in &self.absent_sidecars {
+            if std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file()) {
+                let _ = std::fs::remove_file(p);
+            }
         }
     }
+}
+
+/// Create `path` exclusively. `Ok(Some)`: this run created it; `Ok(None)`:
+/// it already existed; `Err`: it could not be created (an open failure).
+fn create_exclusive(path: &Path) -> std::io::Result<Option<Created>> {
+    use std::os::unix::fs::MetadataExt;
+    let absent_sidecars = SIDECARS.iter().map(|x| sidecar(path, x)).filter(|p| std::fs::symlink_metadata(p).is_err()).collect();
+    match OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(f) => {
+            let m = f.metadata()?;
+            Ok(Some(Created { file: (m.dev(), m.ino()), absent_sidecars }))
+        }
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Where a scenario's ledger lives (LEDGER-SQLITE.md "Selecting the ledger").
+pub enum Target<'a> {
+    /// A new file `<pid>-<sequence>.db` in this directory.
+    Dir(&'a Path),
+    /// This file, created if absent, never reset.
+    Db(&'a Path),
+}
+
+static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Open and initialize the scenario's ledger before any step (rule 1, S-1,
+/// S-2): open or create the file; connection-only settings; the
+/// initialization transaction; only then the persistent settings. A file
+/// this run created is removed again if any of this fails.
+pub fn open_ledger(target: Target) -> R<(PathBuf, Connection)> {
+    let (path, created) = match target {
+        Target::Dir(dir) => loop {
+            let path = dir.join(format!("{}-{}.db", std::process::id(), SEQUENCE.fetch_add(1, Ordering::Relaxed)));
+            match create_exclusive(&path) {
+                Ok(Some(c)) => break (path, Some(c)),
+                Ok(None) => continue,
+                Err(_) => return Err(DbError::io().within(Category::Open)),
+            }
+        },
+        Target::Db(path) => match create_exclusive(path) {
+            Ok(created) => (path.to_path_buf(), created),
+            Err(_) => return Err(DbError::io().within(Category::Open)),
+        },
+    };
+    match initialize_at(&path, created.is_none()) {
+        Ok(c) => Ok((path, c)),
+        Err(e) => {
+            if let Some(created) = &created {
+                created.remove(&path);
+            }
+            Err(e)
+        }
+    }
+}
+
+/// The connection is dropped (closed) before any cleanup on failure.
+fn initialize_at(path: &Path, existing: bool) -> R<Connection> {
+    // SQLite opens a write-protected file read-only: check write access of
+    // an existing file first (opening it for read and write changes nothing).
+    if existing && OpenOptions::new().read(true).write(true).open(path).is_err() {
+        return Err(DbError::io().within(Category::Open));
+    }
+    let c = Connection::open(path).map_err(|e| DbError::from(e).within(Category::Open))?;
+    connection_settings(&c).map_err(|e| e.within(Category::Open))?;
+    initialize(&c).map_err(|e| e.within(Category::Initialize))?;
+    persistent_settings(&c).map_err(|e| e.within(Category::Initialize))?;
+    Ok(c)
+}
+
+/// The members of a stored grant binding, all strings except
+/// `requested_capabilities` (an array of strings).
+const BINDING_MEMBERS: [&str; 9] = [
+    "action_digest",
+    "action_kind",
+    "approval_request_id",
+    "canonical_resource_id",
+    "policy_bundle_sha",
+    "principal_id",
+    "requested_capabilities",
+    "tenant_id",
+    "verdict",
+];
+
+/// Stored-grant integrity (LEDGER-SQLITE.md "Storage failures" rule 5, C-4):
+/// strict JSON (D-017), exactly its own D-006 canonical text, an object with
+/// exactly the binding members and their types. `false` is a ledger-integrity
+/// failure, never a mismatch.
+fn binding_intact(text: &str) -> bool {
+    let Ok(v) = crate::json::parse(text.as_bytes()) else { return false };
+    if crate::json::canonical(&v).ok().as_deref() != Some(text) {
+        return false;
+    }
+    let Value::Obj(members) = &v else { return false };
+    members.len() == BINDING_MEMBERS.len()
+        && BINDING_MEMBERS.iter().all(|name| match v.get(name) {
+            Some(Value::Arr(items)) if *name == "requested_capabilities" => items.iter().all(|x| matches!(x, Value::Str(_))),
+            Some(Value::Str(_)) => *name != "requested_capabilities",
+            _ => false,
+        })
 }
 
 /// Grant row as read in T-reserve.
@@ -179,7 +407,7 @@ pub fn reserve(c: &Connection, t: &mut StepTiming, key: &Key, fingerprint: &str,
                 "observed_failure" => Ok(End::Rollback(Some(replayed("effect_failed")))),
                 "dispatched" | "unknown_reconcile" => Ok(End::Rollback(Some(refused("RECONCILIATION_REQUIRED")))),
                 "reserved" => Ok(End::Commit(None)),
-                other => Err(DbError(format!("unknown receipt status {other}"))),
+                _ => Err(DbError::new(CORRUPT)),
             };
         }
         if crash_before {
@@ -192,6 +420,9 @@ pub fn reserve(c: &Connection, t: &mut StepTiming, key: &Key, fingerprint: &str,
                 })
                 .optional()?;
             let Some(g) = row else { return Ok(End::Rollback(Some(refused("GRANT_UNKNOWN")))) };
+            if !binding_intact(&g.binding) {
+                return Err(DbError::new(CORRUPT));
+            }
             if g.binding != binding {
                 return Ok(End::Rollback(Some(refused("GRANT_MISMATCH"))));
             }
@@ -219,7 +450,7 @@ fn transition(tx: &Transaction, key: &Key, from: &str, to: &str, cause: &str) ->
         (&key.0, &key.1, to, from),
     )?;
     if n != 1 {
-        return Err(DbError(format!("receipt not {from}")));
+        return Err(DbError::new(CORRUPT));
     }
     tx.execute("INSERT INTO receipt_events (tenant_id, idempotency_key, status, cause) VALUES (?1, ?2, ?3, ?4)", (&key.0, &key.1, to, cause))?;
     Ok(())
@@ -229,13 +460,13 @@ fn transition(tx: &Transaction, key: &Key, from: &str, to: &str, cause: &str) ->
 pub fn dispatch(c: &Connection, t: &mut StepTiming, key: &Key) -> R<u64> {
     let n = transact(c, t, "dispatch", |tx| {
         if tx.execute("UPDATE counters SET value = value + 1 WHERE name = 'next_permit'", [])? != 1 {
-            return Err(DbError("next_permit counter missing".into()));
+            return Err(DbError::new(CORRUPT));
         }
         let n: i64 = tx.query_row("SELECT value FROM counters WHERE name = 'next_permit'", [], |r| r.get(0))?;
         transition(tx, key, "reserved", "dispatched", "dispatch")?;
         Ok(End::Commit(n))
     })?;
-    u64::try_from(n).map_err(|_| DbError(format!("next_permit {n}")))
+    u64::try_from(n).map_err(|_| DbError::new(CORRUPT).within(Category::Transaction("dispatch")))
 }
 
 /// T-adapter (simulated): `check` is the permit verification (fingerprint,
@@ -315,6 +546,10 @@ fn pairs(c: &Connection, sql: &str) -> R<Vec<(String, Value)>> {
 
 /// `final` read from the database in one read transaction.
 pub fn final_state(c: &Connection) -> R<Value> {
+    final_read(c).map_err(|e| e.within(Category::Final))
+}
+
+fn final_read(c: &Connection) -> R<Value> {
     let tx = Transaction::new_unchecked(c, TransactionBehavior::Deferred)?;
     let v = obj(vec![
         ("effects_applied", Value::Int(count(&tx, "adapter_effects")?)),
@@ -330,14 +565,14 @@ pub fn final_state(c: &Connection) -> R<Value> {
 /// `proto sqlite-info`: engine identity and the settings read back from a
 /// fresh connection to a new temporary database (removed afterwards).
 pub fn info() -> R<Value> {
-    let path = new_db_in(&std::env::temp_dir())?;
+    let (path, c) = open_ledger(Target::Dir(&std::env::temp_dir()))?;
+    drop(c);
     let out = info_at(&path);
     let _ = std::fs::remove_file(&path);
     out
 }
 
 fn info_at(path: &Path) -> R<Value> {
-    initialize(&open(path)?)?;
     let c = open(path)?;
     let text = |sql: &str| -> R<String> { Ok(c.query_row(sql, [], |r| r.get(0))?) };
     let int = |sql: &str| -> R<Value> { Ok(Value::Int(c.query_row(sql, [], |r| r.get(0))?)) };

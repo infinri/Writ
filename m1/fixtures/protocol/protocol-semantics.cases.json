@@ -1,5 +1,5 @@
 {
- "description": "Hand-reasoned cases for D-021 protocol semantics and D-022 decide input validation. Inputs are derived from existing fixture cases by the listed structural edits; expectations are written from D-021, not from any implementation. Envelope-level rules are tested by m1/props (the driver only sends valid envelopes). PENDING INDEPENDENT REVIEW.",
+ "description": "Hand-reasoned cases for D-021 protocol semantics D-022 decide input validation and D-025 DEP-1 (declared dependencies required). Inputs are derived from existing fixture cases by the listed structural edits; expectations are written from D-021, not from any implementation. Envelope-level rules are tested by m1/props (the driver only sends valid envelopes). PENDING INDEPENDENT REVIEW.",
  "review_status": "PENDING INDEPENDENT REVIEW",
  "cases": [
   {
@@ -956,6 +956,58 @@
     "matched_rule_ids": []
    },
    "rationale": "D-022: decide input is not an object"
+  },
+  {
+   "id": "p25-01-broker-dependency-policy-missing",
+   "build": {
+    "command": "broker-scenario",
+    "from_case": [
+     "broker-scenarios",
+     "b-01-allow-path"
+    ],
+    "initial_dependencies_drop": [
+     "policy"
+    ]
+   },
+   "expect": {
+    "input_error": "INPUT_MALFORMED"
+   },
+   "rationale": "D-025 DEP-1: every declared broker dependency (policy, ledger) must be listed in initial.dependencies; an omitted one is missing trusted configuration and must never default to available"
+  },
+  {
+   "id": "p25-02-broker-dependency-ledger-missing",
+   "build": {
+    "command": "broker-scenario",
+    "from_case": [
+     "broker-scenarios",
+     "b-01-allow-path"
+    ],
+    "initial_dependencies_drop": [
+     "ledger"
+    ]
+   },
+   "expect": {
+    "input_error": "INPUT_MALFORMED"
+   },
+   "rationale": "D-025 DEP-1: every declared broker dependency (policy, ledger) must be listed in initial.dependencies; an omitted one is missing trusted configuration and must never default to available"
+  },
+  {
+   "id": "p25-03-broker-dependency-both-missing",
+   "build": {
+    "command": "broker-scenario",
+    "from_case": [
+     "broker-scenarios",
+     "b-01-allow-path"
+    ],
+    "initial_dependencies_drop": [
+     "ledger",
+     "policy"
+    ]
+   },
+   "expect": {
+    "input_error": "INPUT_MALFORMED"
+   },
+   "rationale": "D-025 DEP-1: every declared broker dependency (policy, ledger) must be listed in initial.dependencies; an omitted one is missing trusted configuration and must never default to available"
   }
  ]
 }

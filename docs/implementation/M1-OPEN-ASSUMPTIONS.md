@@ -1,12 +1,12 @@
 # M1 open assumptions: exact wording and proposed resolutions
 
-**Status:** all **OPEN** (owner instruction 2026-11-10, D-024 item 6). Prepared by Claude for owner decision; nothing here changes behaviour, fixtures or expectations until the owner decides. Every fixture stays **PENDING INDEPENDENT REVIEW** (D-024 item 7, REL-01).
+**Status:** DEP-1, C-1..C-6, S-1 and S-2 **RESOLVED by owner decision [D-025](DECISION-LOG.md)** (2026-11-10); S-3 resolved (busy timeout stays 5 s); S-5 resolved more strictly than proposed (stderr must not reveal paths or credentials); S-4, S-6, S-7 remain documented limitations. Originally prepared under D-024 item 6. Prepared by Claude for owner decision; nothing here changes behaviour, fixtures or expectations until the owner decides. Every fixture stays **PENDING INDEPENDENT REVIEW** (D-024 item 7, REL-01).
 
 Each item: the assumption as it stands, current behaviour with evidence, a proposed resolution, and what accepting it would change.
 
 ## Owner decision table (compact)
 
-All OPEN. "Proposed" is Claude's recommendation, not a decision.
+"Proposed" was Claude's recommendation; the owner's decision is D-025 (summary: DEP-1 adopted; C-1, C-2, C-5, C-6 confirmed; C-3 confirmed with the dispatched-before-adapter rule; C-4 adopted with direct corruption tests; S-1, S-2 implemented; stderr sanitized; S-4, S-6, S-7 documented limits).
 
 | ID | Exact assumption (short) | Proposed | Alternatives | Security implication | Tests affected |
 |---|---|---|---|---|---|

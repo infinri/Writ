@@ -165,10 +165,40 @@ func TestUndeclaredDependencyName(t *testing.T) {
 	}
 	for _, dep := range []string{"policy", "ledger"} {
 		in := sjson.Clone(base).(map[string]any)
-		in["initial"].(map[string]any)["dependencies"] = map[string]any{dep: "up"}
+		in["initial"].(map[string]any)["dependencies"] = map[string]any{"policy": "up", "ledger": "down"}
 		in["steps"] = append(sjson.Clone(steps).([]any), map[string]any{"op": "set_dependency", "name": dep, "status": "up"})
 		if out := Run(in); malformed(out) {
 			t.Errorf("declared %s rejected", dep)
+		}
+	}
+}
+
+// D-025 DEP-1: every declared dependency must be listed; a missing one is
+// INPUT_MALFORMED, never a default of up.
+func TestMissingDependencyIsMalformed(t *testing.T) {
+	base, _ := approvalCase(t)
+	for name, deps := range map[string]any{
+		"lacks policy": map[string]any{"ledger": "up"},
+		"lacks ledger": map[string]any{"policy": "up"},
+		"lacks both":   map[string]any{},
+		"absent":       nil,
+	} {
+		in := sjson.Clone(base).(map[string]any)
+		initial := in["initial"].(map[string]any)
+		if deps == nil {
+			delete(initial, "dependencies")
+		} else {
+			initial["dependencies"] = deps
+		}
+		if out := Run(in); !malformed(out) {
+			t.Errorf("%s: got %s", name, sjson.Encode(out))
+		}
+		dir := t.TempDir()
+		if out := RunWith(sjson.Clone(in), &SQLite{Dir: dir}); !malformed(out) {
+			t.Errorf("%s (sqlite): got %s", name, sjson.Encode(out))
+		}
+		if files, _ := os.ReadDir(dir); len(files) != 0 {
+			t.Errorf("%s: %d files created", name, len(files))
 		}
 	}
 }

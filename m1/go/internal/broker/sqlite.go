@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/mattn/go-sqlite3"
+
+	"writ.dev/m1/proto/internal/sjson"
 )
 
 // Schema is m1/fixtures/broker/ledger.sql, byte for byte (checked by a test).
@@ -24,11 +26,14 @@ var Schema string
 
 const driverName = "writ-sqlite3"
 
-// settings are applied to every connection right after open, in this order
-// (LEDGER-SQLITE.md "Connection settings").
-var settings = []string{
-	"PRAGMA journal_mode = WAL",
-	"PRAGMA synchronous = FULL",
+// connSettings are the connection-only settings (LEDGER-SQLITE.md
+// "Connection settings"), applied by the connect hook right after open. They
+// change nothing in the file. journal_mode=WAL (persistent) and
+// synchronous=FULL follow in settle: on the first connection only after
+// initialization has verified the file (S-1, D-025). The driver itself runs
+// busy_timeout, locking_mode=NORMAL and synchronous=NORMAL before the hook;
+// none of them is persistent.
+var connSettings = []string{
 	"PRAGMA busy_timeout = 5000",
 	"PRAGMA foreign_keys = ON",
 	"PRAGMA trusted_schema = OFF",
@@ -36,9 +41,9 @@ var settings = []string{
 
 func init() {
 	sql.Register(driverName, &sqlite3.SQLiteDriver{ConnectHook: func(c *sqlite3.SQLiteConn) error {
-		for _, s := range settings {
+		for _, s := range connSettings {
 			if _, err := c.Exec(s, nil); err != nil {
-				return fmt.Errorf("%s: %w", s, err)
+				return err
 			}
 		}
 		return nil
@@ -93,24 +98,72 @@ func exists(p string) bool {
 	return err == nil
 }
 
-func (s *SQLite) open() (*sqlLedger, error) {
-	path := s.DB
-	if s.Dir != "" {
-		var err error
-		if path, err = newFile(s.Dir); err != nil {
-			return nil, err
+// createIfAbsent creates path exclusively; created is false if it already
+// existed (made by an earlier run or another process).
+func createIfAbsent(path string) (created bool, err error) {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, fs.ErrExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, f.Close()
+}
+
+var sidecarSuffixes = []string{"-journal", "-wal", "-shm"}
+
+// removeCreated removes a database file this run created and the sidecar
+// files in absent (paths that did not exist before this run opened the
+// database), when they are regular files (S-2, D-025).
+func removeCreated(path string, absent []string) {
+	for _, p := range absent {
+		if st, err := os.Lstat(p); err == nil && st.Mode().IsRegular() {
+			os.Remove(p)
 		}
 	}
-	if err := writable(path); err != nil {
-		return nil, err
+	os.Remove(path)
+}
+
+// open opens and initializes the ledger (LEDGER-SQLITE.md "Storage failures"
+// rule 1, S-1 and S-2): create or open the file, connection-only settings,
+// one transaction creating or verifying the schema, then journal_mode=WAL and
+// synchronous=FULL. If the run created the file and initialization fails,
+// the file and the sidecars it created are removed.
+func (s *SQLite) open() (l *sqlLedger, err error) {
+	path, created := s.DB, false
+	if s.Dir != "" {
+		if path, err = newFile(s.Dir); err != nil {
+			return nil, tagged("open", err)
+		}
+		created = true
+	} else if created, err = createIfAbsent(path); err != nil {
+		return nil, tagged("open", err)
 	}
-	l, err := openSQLLedger(path)
+	if created {
+		var absent []string
+		for _, x := range sidecarSuffixes {
+			if !exists(path + x) {
+				absent = append(absent, path+x)
+			}
+		}
+		defer func() {
+			if err != nil {
+				removeCreated(path, absent)
+			}
+		}()
+	} else if err := writable(path); err != nil {
+		return nil, tagged("open", err)
+	}
+	if l, err = openSQLLedger(path); err != nil {
+		return nil, tagged("open", err)
+	}
+	if err = l.init(); err == nil {
+		err = l.settle()
+	}
 	if err != nil {
-		return nil, err
-	}
-	if err := l.init(); err != nil {
 		l.close()
-		return nil, err
+		return nil, tagged("initialize", err)
 	}
 	return l, nil
 }
@@ -127,6 +180,38 @@ var ctx = context.Background()
 func openSQLLedger(path string) (*sqlLedger, error) {
 	l := &sqlLedger{path: path}
 	return l, l.connect()
+}
+
+// settle applies the persistent and durability settings after the
+// connection-only ones: journal_mode=WAL (must read back wal), then
+// synchronous=FULL.
+func (l *sqlLedger) settle() error {
+	var mode string
+	if err := l.conn.QueryRowContext(ctx, `PRAGMA journal_mode = WAL`).Scan(&mode); err != nil {
+		return err
+	}
+	if mode != "wal" {
+		return errNotWAL
+	}
+	_, err := l.conn.ExecContext(ctx, `PRAGMA synchronous = FULL`)
+	return err
+}
+
+var errNotWAL = errors.New("journal mode is not wal")
+
+// reopen is a later connection (restart_broker, a concurrent worker): no
+// initialization; a failure is an operation failure (rule 2).
+func reopen(path string) (*sqlLedger, error) {
+	l, err := openSQLLedger(path)
+	if err == nil {
+		if err = l.settle(); err != nil {
+			l.close()
+		}
+	}
+	if err != nil {
+		return nil, tagged("open", err)
+	}
+	return l, nil
 }
 
 // connect opens a new connection; _txlock=immediate makes every BeginTx a
@@ -173,7 +258,7 @@ func (l *sqlLedger) init() error {
 			return err
 		}
 		if v != "1" {
-			return fmt.Errorf("unsupported ledger schema version %q", v)
+			return errSchema
 		}
 		for _, t := range tables {
 			var n int64
@@ -181,14 +266,17 @@ func (l *sqlLedger) init() error {
 				return err
 			}
 			if n != 1 {
-				return fmt.Errorf("ledger table %s missing", t)
+				return errSchema
 			}
 		}
 		return nil
 	})
 }
 
-var errRollback = errors.New("rollback")
+var (
+	errRollback = errors.New("rollback")
+	errSchema   = errors.New("ledger schema version or table wrong")
+)
 
 // tx runs f in one BEGIN IMMEDIATE transaction: committed if f returns nil,
 // rolled back otherwise (errRollback is a rollback without error). Its
@@ -202,7 +290,7 @@ func (l *sqlLedger) tx(t *opTiming, name string, f func(*sql.Tx) error) error {
 	t1 := time.Now()
 	if err != nil {
 		t.addTx(name, txTiming{sql: true, begin: t1.Sub(t0)})
-		return err
+		return txErr(name, err)
 	}
 	err = f(tx)
 	t2 := time.Now()
@@ -212,11 +300,20 @@ func (l *sqlLedger) tx(t *opTiming, name string, f func(*sql.Tx) error) error {
 		if err == errRollback {
 			return nil
 		}
-		return err
+		return txErr(name, err)
 	}
 	err = tx.Commit()
 	t.addTx(name, txTiming{sql: true, begin: t1.Sub(t0), body: t2.Sub(t1), end: time.Since(t2), commit: err == nil})
-	return err
+	return txErr(name, err)
+}
+
+// txErr tags a failure of a named logical transaction ("" is initialization
+// or final, tagged by the caller).
+func txErr(name string, err error) error {
+	if name == "" {
+		return err
+	}
+	return tagged("transaction "+name, err)
 }
 
 func one(res sql.Result, err error, what string) error {
@@ -311,8 +408,48 @@ func grantRow(tx *sql.Tx, label string) (*grant, error) {
 	if err != nil {
 		return nil, err
 	}
+	if !bindingValid(g.binding) {
+		return nil, errGrantIntegrity
+	}
 	g.expires = time.Unix(s, ns).UTC()
 	return &g, nil
+}
+
+var errGrantIntegrity = errors.New("stored grant binding fails integrity")
+
+// bindingStrings are the string members of a stored grant binding; the only
+// other member is requested_capabilities (array of strings).
+var bindingStrings = []string{"action_digest", "action_kind", "approval_request_id", "canonical_resource_id",
+	"policy_bundle_sha", "principal_id", "tenant_id", "verdict"}
+
+// bindingValid is stored-grant integrity (LEDGER-SQLITE.md "Storage
+// failures" rule 5, C-4): strict JSON, exactly its own D-006 canonical text,
+// and an object with exactly the binding members and their types.
+func bindingValid(text string) bool {
+	v, perr := sjson.Parse(text)
+	if perr != nil {
+		return false
+	}
+	m, ok := v.(map[string]any)
+	if !ok || len(m) != len(bindingStrings)+1 {
+		return false
+	}
+	for _, k := range bindingStrings {
+		if _, ok := m[k].(string); !ok {
+			return false
+		}
+	}
+	caps, ok := m["requested_capabilities"].([]any)
+	if !ok {
+		return false
+	}
+	for _, c := range caps {
+		if _, ok := c.(string); !ok {
+			return false
+		}
+	}
+	c, err := sjson.Canonical(v)
+	return err == nil && string(c) == text
 }
 
 func (l *sqlLedger) dispatch(t *opTiming, tenant, key string) (seq int64, err error) {
@@ -415,6 +552,7 @@ func (l *sqlLedger) audit(t *opTiming, code string) error {
 }
 
 func (l *sqlLedger) final() (f map[string]any, err error) {
+	defer func() { err = tagged("final", err) }()
 	err = l.tx(nil, "", func(tx *sql.Tx) error {
 		count := func(table string) (int64, error) {
 			var n int64
@@ -471,7 +609,7 @@ func pairs(tx *sql.Tx, query string) (map[string]any, error) {
 }
 
 func (l *sqlLedger) fork() (ledger, error) {
-	w, err := openSQLLedger(l.path)
+	w, err := reopen(l.path)
 	if err != nil {
 		return nil, err
 	}
@@ -481,7 +619,12 @@ func (l *sqlLedger) fork() (ledger, error) {
 // restart closes the connection and opens a new one to the same file.
 func (l *sqlLedger) restart() error {
 	l.close()
-	return l.connect()
+	n, err := reopen(l.path)
+	if err != nil {
+		return err
+	}
+	l.db, l.conn = n.db, n.conn
+	return nil
 }
 
 func (l *sqlLedger) close() {
@@ -499,7 +642,7 @@ func (l *sqlLedger) close() {
 func Info() (map[string]any, error) {
 	dir, err := os.MkdirTemp("", "writ-sqlite-info-")
 	if err != nil {
-		return nil, err
+		return nil, tagged("open", err)
 	}
 	defer os.RemoveAll(dir)
 	l, err := (&SQLite{Dir: dir}).open()
@@ -523,24 +666,24 @@ func Info() (map[string]any, error) {
 		{`SELECT value FROM meta WHERE key = 'schema_version'`, &schemaVersion},
 	} {
 		if err := l.conn.QueryRowContext(ctx, q.query).Scan(q.dest); err != nil {
-			return nil, fmt.Errorf("%s: %w", q.query, err)
+			return nil, tagged("final", err)
 		}
 	}
 	rows, err := l.conn.QueryContext(ctx, `PRAGMA compile_options`)
 	if err != nil {
-		return nil, err
+		return nil, tagged("final", err)
 	}
 	defer rows.Close()
 	options := []any{}
 	for rows.Next() {
 		var o string
 		if err := rows.Scan(&o); err != nil {
-			return nil, err
+			return nil, tagged("final", err)
 		}
 		options = append(options, o)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, tagged("final", err)
 	}
 	return map[string]any{
 		"sqlite_version":  version,

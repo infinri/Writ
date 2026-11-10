@@ -17,7 +17,7 @@
 
 use crate::json::{self, obj, s, Value};
 use crate::kernel::{self, Bundle, Decision, Policy};
-use crate::sqlite::{self, DbError};
+use crate::sqlite::{self, Category, DbError};
 use crate::time::{self, Instant};
 use crate::timing::{since, ScenarioTiming, StepTiming};
 use hmac::{Hmac, Mac};
@@ -133,7 +133,7 @@ struct SqlLedger {
 
 impl SqlLedger {
     fn connect(&self) -> R<Connection> {
-        sqlite::open(self.path.as_ref().ok_or_else(|| DbError("no ledger file".into()))?)
+        sqlite::open(self.path.as_ref().ok_or_else(|| DbError::new("SQLITE_CANTOPEN").within(Category::Open))?)
     }
 }
 
@@ -162,8 +162,11 @@ enum Store<'a> {
     Sqlite(Option<&'a Connection>),
 }
 
+/// Operator diagnostic (LEDGER-SQLITE.md "Storage failures" rule 4): a fixed
+/// category and an SQLite primary result code name or `io`; never a path,
+/// message text, credential, key or seal.
 fn report(e: &DbError) {
-    eprintln!("proto: ledger error: {}", e.0);
+    eprintln!("proto: ledger error: {}", e.diagnostic());
 }
 
 pub(crate) fn refused(code: &str) -> Value {
@@ -242,7 +245,7 @@ impl Config {
 }
 
 fn conn(c: Option<&Connection>) -> R<&Connection> {
-    c.ok_or_else(|| DbError("ledger connection unavailable".into()))
+    c.ok_or_else(|| DbError::new("SQLITE_CANTOPEN").within(Category::Open))
 }
 
 impl Store<'_> {
@@ -572,7 +575,7 @@ impl Broker {
                 lock(&l.key_locks).clear();
                 let mut main = lock(&l.main);
                 if let Some(c) = main.take() {
-                    c.close().map_err(|(_, e)| DbError::from(e))?;
+                    c.close().map_err(|(_, e)| DbError::from(e).within(Category::Open))?;
                 }
                 *main = Some(l.connect()?);
                 Ok(())
@@ -782,21 +785,20 @@ fn input_usable(input: &Value) -> bool {
     let initial_ok = input.get("initial").is_some_and(|i| {
         i.as_obj().is_some()
             && REQUIRED_STATE.iter().all(|k| i.get(k).is_some())
-            && i.get("dependencies").and_then(Value::as_obj).is_some_and(|d| d.iter().all(|(k, v)| dependency_declared(k) && dependency_status(v)))
+            && i.get("dependencies").and_then(Value::as_obj).is_some_and(|d| {
+                d.iter().all(|(k, v)| dependency_declared(k) && dependency_status(v)) && DEPENDENCIES.iter().all(|n| d.iter().any(|(k, _)| k == n))
+            })
     });
     let steps_ok = input.get("steps").and_then(Value::as_arr).is_some_and(|ops| ops.iter().all(step_usable));
     initial_ok && steps_ok
 }
 
-/// An SQLite ledger on `path`, opened and initialized before any step
-/// (LEDGER-SQLITE.md "Storage failures" rule 1). `Err` (reported on stderr
-/// only): the scenario answers `{"error": "LEDGER_UNAVAILABLE"}`.
-fn sqlite_ledger(path: R<PathBuf>) -> R<Ledger> {
-    let ledger = SqlLedger { path: Some(path?), main: Mutex::new(None), key_locks: Mutex::new(HashMap::new()) };
-    let c = ledger.connect()?;
-    sqlite::initialize(&c)?;
-    *lock(&ledger.main) = Some(c);
-    Ok(Ledger::Sqlite(ledger))
+/// An SQLite ledger, opened and initialized before any step (LEDGER-SQLITE.md
+/// "Storage failures" rule 1). `Err` (reported on stderr only): the scenario
+/// answers `{"error": "LEDGER_UNAVAILABLE"}`.
+fn sqlite_ledger(target: sqlite::Target) -> R<Ledger> {
+    let (path, c) = sqlite::open_ledger(target)?;
+    Ok(Ledger::Sqlite(SqlLedger { path: Some(path), main: Mutex::new(Some(c)), key_locks: Mutex::new(HashMap::new()) }))
 }
 
 #[cfg(test)]
@@ -820,8 +822,8 @@ pub fn run_timed(input: &Value, choice: &LedgerChoice) -> (Value, ScenarioTiming
     let started = Clock::now();
     let ledger = match choice {
         LedgerChoice::Memory => Ok(Ledger::Memory(Mutex::new(MemLedger::default()))),
-        LedgerChoice::SqliteDir(dir) => sqlite_ledger(sqlite::new_db_in(dir)),
-        LedgerChoice::SqliteDb(path) => sqlite_ledger(Ok(path.clone())),
+        LedgerChoice::SqliteDir(dir) => sqlite_ledger(sqlite::Target::Dir(dir)),
+        LedgerChoice::SqliteDb(path) => sqlite_ledger(sqlite::Target::Db(path)),
     };
     if !matches!(choice, LedgerChoice::Memory) {
         timing.open_ns = Some(since(started));
@@ -1027,7 +1029,7 @@ mod tests {
     }
 
     fn sqlite_broker(initial: &Value, dir: &std::path::Path) -> Broker {
-        Broker::new(initial, sqlite_ledger(sqlite::new_db_in(dir)).unwrap())
+        Broker::new(initial, sqlite_ledger(sqlite::Target::Dir(dir)).unwrap())
     }
 
     fn main_conn<T>(b: &Broker, f: impl FnOnce(&Connection) -> T) -> T {
@@ -1148,8 +1150,7 @@ mod tests {
     /// A valid ledger file created by this prototype, closed (WAL checkpointed).
     fn valid_ledger(dir: &std::path::Path) -> PathBuf {
         let path = dir.join("l.db");
-        let c = sqlite::open(&path).unwrap();
-        sqlite::initialize(&c).unwrap();
+        let (_, c) = sqlite::open_ledger(sqlite::Target::Db(&path)).unwrap();
         c.close().unwrap();
         path
     }
@@ -1334,6 +1335,323 @@ mod tests {
         let (out, t) = run_timed(&obj(vec![("steps", Value::Arr(vec![]))]), &LedgerChoice::Memory);
         assert_eq!(json::to_text(&out), r#"{"input_error":"INPUT_MALFORMED"}"#);
         assert_eq!(json::to_text(&t.to_value(0, 0)), r#"{"final_ns":null,"open_ns":null,"parse_ns":0,"run_ns":0,"steps":[]}"#);
+    }
+
+    // ------------------------------------------------------------- D-025
+
+    const LEDGER_REFUSED: &str = r#"{"code":"LEDGER_UNAVAILABLE","result":"refused"}"#;
+
+    fn ledger_path(b: &Broker) -> PathBuf {
+        let Ledger::Sqlite(l) = &b.ledger else { panic!("not sqlite") };
+        l.path.clone().unwrap()
+    }
+
+    /// Every row of every ledger table, in a stable order.
+    fn dump(c: &Connection) -> Vec<String> {
+        let mut out = vec![];
+        for table in sqlite::schema_tables() {
+            let mut st = c.prepare(&format!("SELECT * FROM {table} ORDER BY 1")).unwrap();
+            let n = st.column_count();
+            let rows = st.query_map([], |r| (0..n).map(|i| r.get::<_, rusqlite::types::Value>(i)).collect::<Result<Vec<_>, _>>()).unwrap();
+            for row in rows {
+                out.push(format!("{table}: {:?}", row.unwrap()));
+            }
+        }
+        out
+    }
+
+    fn present(req: &Value, tamper: Option<&str>) -> Value {
+        let mut m = vec![("op", s("present_permit")), ("of_step", Value::Int(0)), ("request", req.clone())];
+        if let Some(x) = tamper {
+            m.push(("tamper", s(x)));
+        }
+        obj(m)
+    }
+
+    #[test]
+    fn dep1_missing_declared_dependency_is_malformed_and_creates_no_file() {
+        let malformed = r#"{"input_error":"INPUT_MALFORMED"}"#;
+        let dir = temp_dir("dep1");
+        for deps in [obj(vec![("policy", s("up"))]), obj(vec![("ledger", s("up"))]), obj(vec![]), obj(vec![("ledger", s("down"))])] {
+            assert_eq!(json::to_text(&scenario_with_deps(deps.clone(), vec![execute("idem-1", None)])), malformed);
+            let (initial, _) = approvable();
+            let input = obj(vec![("initial", with_member(&initial, "dependencies", deps)), ("steps", Value::Arr(vec![]))]);
+            for choice in [LedgerChoice::SqliteDir(dir.clone()), LedgerChoice::SqliteDb(dir.join("l.db"))] {
+                let (out, t) = run_timed(&input, &choice);
+                assert_eq!(json::to_text(&out), malformed);
+                assert!(t.open_ns.is_none());
+            }
+        }
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        let down = scenario_with_deps(obj(vec![("policy", s("down")), ("ledger", s("down"))]), vec![execute("idem-1", None)]);
+        assert_eq!(step_results(&down), [r#"{"code":"LEDGER_UNAVAILABLE","result":"refused"}"#]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// S-1: verification precedes every persistent setting.
+    #[test]
+    fn s1_rejected_non_wal_file_is_unchanged_and_valid_one_switches_to_wal() {
+        let dir = temp_dir("s1");
+        for (name, version) in [("rejected.db", "2"), ("valid.db", "1")] {
+            let path = dir.join(name);
+            let c = Connection::open(&path).unwrap();
+            c.query_row("PRAGMA journal_mode = DELETE", [], |r| r.get::<_, String>(0)).unwrap();
+            c.execute_batch(&format!("BEGIN IMMEDIATE; {} UPDATE meta SET value = '{version}' WHERE key = 'schema_version'; COMMIT;", sqlite::SCHEMA)).unwrap();
+            c.close().unwrap();
+        }
+        assert_unavailable_unmodified(&dir.join("rejected.db"));
+        let out = run_with(&one_write(), &LedgerChoice::SqliteDb(dir.join("valid.db")));
+        assert_eq!(step_results(&out), [r#"{"result":"effect_completed"}"#]);
+        let mut names: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        names.sort();
+        assert_eq!(names, ["rejected.db", "valid.db"]);
+        let c = Connection::open(dir.join("valid.db")).unwrap();
+        assert_eq!(c.query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0)).unwrap(), "wal");
+        drop(c);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// S-2: a file this run created is removed when initialization fails; a
+    /// pre-existing path is never touched.
+    #[test]
+    fn s2_created_file_removed_pre_existing_kept() {
+        let dir = temp_dir("s2");
+        std::fs::create_dir(dir.join("new.db-wal")).unwrap();
+        let out = run_with(&one_write(), &LedgerChoice::SqliteDb(dir.join("new.db")));
+        assert_eq!(json::to_text(&out), r#"{"error":"LEDGER_UNAVAILABLE"}"#);
+        let names: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        assert_eq!(names, ["new.db-wal"]);
+        assert!(dir.join("new.db-wal").is_dir());
+        let garbage = dir.join("garbage.db");
+        std::fs::write(&garbage, b"x".repeat(4096)).unwrap();
+        assert_unavailable_unmodified(&garbage);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Rule 4: a diagnostic is a fixed category and a result code name.
+    #[test]
+    fn diagnostics_carry_no_path() {
+        let dir = temp_dir("diag-secret-dir");
+        let missing = dir.join("secret-sub").join("l.db");
+        let e = sqlite::open_ledger(sqlite::Target::Db(&missing)).unwrap_err();
+        assert_eq!(e.diagnostic(), "open: io");
+        let e = sqlite::open_ledger(sqlite::Target::Dir(&dir.join("secret-sub"))).unwrap_err();
+        assert_eq!(e.diagnostic(), "open: io");
+
+        let path = valid_ledger(&dir);
+        let c = Connection::open(&path).unwrap();
+        c.execute_batch("UPDATE meta SET value = '2' WHERE key = 'schema_version'").unwrap();
+        c.close().unwrap();
+        assert_eq!(sqlite::open_ledger(sqlite::Target::Db(&path)).unwrap_err().diagnostic(), "initialize: SQLITE_NOTADB");
+        let garbage = dir.join("garbage.db");
+        std::fs::write(&garbage, b"not a database ".repeat(300)).unwrap();
+        assert_eq!(sqlite::open_ledger(sqlite::Target::Db(&garbage)).unwrap_err().diagnostic(), "initialize: SQLITE_NOTADB");
+
+        let sub = dir.join("locked");
+        std::fs::create_dir(&sub).unwrap();
+        let path = valid_ledger(&sub);
+        let holder = Connection::open(&path).unwrap();
+        holder.execute_batch("PRAGMA journal_mode = WAL; BEGIN EXCLUSIVE").unwrap();
+        assert_eq!(sqlite::open_ledger(sqlite::Target::Db(&path)).unwrap_err().diagnostic(), "initialize: SQLITE_BUSY");
+        holder.execute_batch("ROLLBACK").unwrap();
+        drop(holder);
+
+        let mut t = StepTiming::new(Some("execute"));
+        let (_, c) = sqlite::open_ledger(sqlite::Target::Db(&path)).unwrap();
+        c.execute_batch("CREATE TEMP TRIGGER fail_audit BEFORE INSERT ON audit_refusals BEGIN SELECT RAISE(ABORT, 'secret text'); END").unwrap();
+        assert_eq!(sqlite::refuse(&c, &mut t, "X").unwrap_err().diagnostic(), "transaction audit: SQLITE_CONSTRAINT");
+        drop(c);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// C-4: a corrupted stored grant is a ledger-integrity failure (refused
+    /// LEDGER_UNAVAILABLE, rolled back: no use, no receipt); a well-formed
+    /// but different binding stays GRANT_MISMATCH.
+    #[test]
+    fn c4_stored_grant_integrity() {
+        let (initial, approve) = approvable();
+        let (publish, _) = requests(&approve, "idem-c4");
+        let corrupt = |b: &str| -> Vec<String> {
+            let v = json::parse(b.as_bytes()).unwrap();
+            let without = |k: &str| {
+                let mut m = v.as_obj().unwrap().clone();
+                m.retain(|(n, _)| n != k);
+                json::canonical(&Value::Obj(m)).unwrap()
+            };
+            vec![
+                b[..b.len() - 5].to_string(),
+                format!("{},\"zz\":\"x\"}}", &b[..b.len() - 1]),
+                format!("{},\"verdict\":\"approved\"}}", &b[..b.len() - 1]),
+                b.replacen("\",\"", "\", \"", 1),
+                format!(" {b}"),
+                json::canonical(&with_member(&v, "requested_capabilities", s("none"))).unwrap(),
+                json::canonical(&with_member(&v, "requested_capabilities", Value::Arr(vec![Value::Int(1)]))).unwrap(),
+                json::canonical(&with_member(&v, "verdict", Value::Null)).unwrap(),
+                without("policy_bundle_sha"),
+                r#"{"verdict":"approved"}"#.to_string(),
+                "[]".to_string(),
+                "null".to_string(),
+                String::new(),
+            ]
+        };
+        let dir = temp_dir("c4");
+        let b = sqlite_broker(&initial, &dir);
+        assert_eq!(json::to_text(&b.apply(&with_label(&approve, "g1"), 0, None).0), r#"{"result":"grant_issued"}"#);
+        let stored: String = main_conn(&b, |c| c.query_row("SELECT binding FROM grants WHERE label = 'g1'", [], |r| r.get(0)).unwrap());
+        let set = |text: &str| main_conn(&b, |c| c.execute("UPDATE grants SET binding = ?1 WHERE label = 'g1'", [text]).unwrap());
+        for (i, bad) in corrupt(&stored).iter().enumerate() {
+            set(bad);
+            let (out, t) = b.apply(&sealed(&initial, &publish, Some("g1")), 1, None);
+            assert_eq!(json::to_text(&out), LEDGER_REFUSED, "corruption {i}: {bad}");
+            assert_eq!(tx_outcomes(&ScenarioTiming { steps: vec![t], ..Default::default() })[0].1, [("reserve", "rollback"), ("audit", "commit")]);
+            for sql in ["SELECT uses FROM grants", "SELECT count(*) FROM grant_uses", "SELECT count(*) FROM receipts", "SELECT count(*) FROM receipt_events", "SELECT count(*) FROM adapter_effects"] {
+                assert_eq!(count(&b, sql), 0, "corruption {i}: {sql}");
+            }
+        }
+        let other = with_member(&json::parse(stored.as_bytes()).unwrap(), "tenant_id", s("other-tenant"));
+        set(&json::canonical(&other).unwrap());
+        assert_eq!(json::to_text(&b.apply(&sealed(&initial, &publish, Some("g1")), 2, None).0), r#"{"code":"GRANT_MISMATCH","result":"refused"}"#);
+        set(&stored);
+        assert_eq!(json::to_text(&b.apply(&sealed(&initial, &publish, Some("g1")), 3, None).0), r#"{"result":"effect_completed"}"#);
+        assert_eq!(count(&b, "SELECT uses FROM grants"), 1);
+        drop(b);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// D-025 A and C-3: T-reserve on a `reserved` receipt commits without
+    /// writing anything and uses no second grant.
+    #[test]
+    fn resumed_reservation_changes_no_durable_state() {
+        let dir = temp_dir("resume");
+        let (initial, approve) = approvable();
+        let (publish, _) = requests(&approve, "idem-resume");
+        let b = sqlite_broker(&initial, &dir);
+        assert_eq!(json::to_text(&b.apply(&with_label(&approve, "g1"), 0, None).0), r#"{"result":"grant_issued"}"#);
+        let crash = with_member(&sealed(&initial, &publish, Some("g1")), "fault", s("crash_after_reserve"));
+        assert_eq!(json::to_text(&b.apply(&crash, 1, None).0), r#"{"result":"crashed"}"#);
+        let before = main_conn(&b, dump);
+        let changes = |b: &Broker| main_conn(b, |c| c.query_row("SELECT total_changes()", [], |r| r.get::<_, i64>(0)).unwrap());
+        let changes_before = changes(&b);
+        let key = (publish.str_at("tenant_id").unwrap().to_string(), "idem-resume".to_string());
+        let fingerprint = json::digest(&publish).unwrap();
+        let mut t = StepTiming::new(Some("execute"));
+        let r = main_conn(&b, |c| sqlite::reserve(c, &mut t, &key, &fingerprint, Some("g1"), "", (0, 0), false)).unwrap();
+        assert!(r.is_none(), "resumes");
+        assert_eq!(t.tx.iter().map(|(n, x)| (*n, x.commit)).collect::<Vec<_>>(), [("reserve", true)]);
+        assert_eq!(main_conn(&b, dump), before);
+        assert_eq!(changes(&b), changes_before);
+        assert_eq!(json::to_text(&b.apply(&sealed(&initial, &publish, Some("g1")), 2, None).0), r#"{"result":"effect_completed"}"#);
+        assert_eq!(count(&b, "SELECT uses FROM grants WHERE label = 'g1'"), 1);
+        assert_eq!(count(&b, "SELECT count(*) FROM grant_uses"), 1);
+        assert_eq!(count(&b, "SELECT count(*) FROM receipt_events WHERE cause = 'reserve'"), 1);
+        drop(b);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// D-025 B: T-adapter cannot begin (write lock held by another
+    /// connection beyond a short busy timeout): LEDGER_UNAVAILABLE takes
+    /// precedence over any permit defect, and nothing is consumed or applied.
+    #[test]
+    fn adapter_that_cannot_begin_is_unavailable_before_permit_checks() {
+        let dir = temp_dir("adapter-begin");
+        let (initial, approve) = approvable();
+        let (_, w) = requests(&approve, "idem-ab");
+        let (_, other) = requests(&approve, "idem-ab-other");
+        let b = sqlite_broker(&initial, &dir);
+        assert_eq!(json::to_text(&b.apply(&sealed(&initial, &w, None), 0, None).0), r#"{"result":"effect_completed"}"#);
+        main_conn(&b, |c| c.execute_batch("PRAGMA busy_timeout = 50").unwrap());
+        let holder = Connection::open(ledger_path(&b)).unwrap();
+        holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+        for (req, tamper) in [(&w, Some("mac")), (&w, Some("expiry")), (&other, None), (&w, None)] {
+            let (out, t) = b.apply(&present(req, tamper), 1, None);
+            assert_eq!(json::to_text(&out), LEDGER_REFUSED, "{tamper:?}");
+            let (name, x) = &t.tx[0];
+            assert_eq!((*name, x.commit, x.body_ns), ("adapter", false, 0));
+        }
+        holder.execute_batch("ROLLBACK").unwrap();
+        drop(holder);
+        assert_eq!(count(&b, "SELECT count(*) FROM adapter_consumed_permits"), 1);
+        assert_eq!(count(&b, "SELECT count(*) FROM adapter_effects"), 1);
+        drop(b);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// D-025 B: inside T-adapter the order is fingerprint, MAC, expiry,
+    /// replay; every refusal rolls back.
+    #[test]
+    fn adapter_checks_in_order_inside_the_transaction() {
+        let dir = temp_dir("adapter-order");
+        let (initial, approve) = approvable();
+        let (_, w) = requests(&approve, "idem-ao");
+        let (_, other) = requests(&approve, "idem-ao-other");
+        let later = time::format(time::add_seconds(initial.str_at("now").and_then(time::parse_rfc3339).unwrap(), 3600));
+        let advance = obj(vec![("op", s("advance_time")), ("now", s(&later))]);
+        let refusal = |c: &str| format!(r#"{{"code":"{c}","result":"refused"}}"#);
+        for choice in [LedgerChoice::Memory, LedgerChoice::SqliteDir(dir.clone())] {
+            let steps = vec![
+                sealed(&initial, &w, None),
+                present(&other, Some("mac")),
+                present(&w, Some("mac")),
+                present(&w, Some("expiry")),
+                present(&w, None),
+                advance.clone(),
+                present(&other, Some("mac")),
+                present(&w, Some("mac")),
+                present(&w, None),
+            ];
+            let input = obj(vec![("initial", initial.clone()), ("steps", Value::Arr(steps))]);
+            let (out, t) = run_timed(&input, &choice);
+            assert_eq!(
+                step_results(&out),
+                [
+                    r#"{"result":"effect_completed"}"#.to_string(),
+                    refusal("PERMIT_REQUEST_MISMATCH"),
+                    refusal("PERMIT_INVALID"),
+                    refusal("PERMIT_INVALID"),
+                    refusal("PERMIT_REPLAYED"),
+                    r#"{"result":"time_advanced"}"#.to_string(),
+                    refusal("PERMIT_REQUEST_MISMATCH"),
+                    refusal("PERMIT_INVALID"),
+                    refusal("PERMIT_EXPIRED"),
+                ]
+            );
+            for (op, tx) in tx_outcomes(&t).iter().filter(|(op, _)| op == "present_permit") {
+                assert_eq!(tx, &[("adapter", "rollback"), ("audit", "commit")], "{op}");
+            }
+            assert_eq!((final_int(&out, "consumed_permits"), final_int(&out, "effects_applied")), (1, 1));
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// D-025 B: a failing COMMIT of T-adapter (a deferred foreign key
+    /// violation injected by a temporary trigger) is LEDGER_UNAVAILABLE and
+    /// leaves neither the consumed id nor the effect.
+    #[test]
+    fn failing_adapter_commit_leaves_no_consumed_id_or_effect() {
+        let dir = temp_dir("adapter-commit");
+        let (initial, approve) = approvable();
+        let (_, w) = requests(&approve, "idem-ac");
+        let b = sqlite_broker(&initial, &dir);
+        main_conn(&b, |c| {
+            c.execute_batch(
+                "CREATE TEMP TABLE fk_parent (id TEXT PRIMARY KEY);
+                 CREATE TEMP TABLE fk_child (id TEXT REFERENCES fk_parent (id) DEFERRABLE INITIALLY DEFERRED);
+                 CREATE TEMP TRIGGER fail_commit AFTER INSERT ON adapter_effects BEGIN INSERT INTO fk_child VALUES (NEW.permit_id); END",
+            )
+            .unwrap()
+        });
+        let (out, t) = b.apply(&sealed(&initial, &w, None), 0, None);
+        assert_eq!(json::to_text(&out), LEDGER_REFUSED);
+        assert_eq!(
+            tx_outcomes(&ScenarioTiming { steps: vec![t], ..Default::default() })[0].1,
+            [("reserve", "commit"), ("dispatch", "commit"), ("adapter", "rollback"), ("audit", "commit")]
+        );
+        assert_eq!(count(&b, "SELECT count(*) FROM adapter_consumed_permits"), 0);
+        assert_eq!(count(&b, "SELECT count(*) FROM adapter_effects"), 0);
+        assert_eq!(count(&b, "SELECT count(*) FROM receipts WHERE status = 'dispatched'"), 1);
+        assert_eq!(json::to_text(&b.apply(&sealed(&initial, &w, None), 1, None).0), r#"{"code":"RECONCILIATION_REQUIRED","result":"refused"}"#);
+        drop(b);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

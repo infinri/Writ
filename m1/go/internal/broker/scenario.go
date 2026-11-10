@@ -19,7 +19,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"os"
 	"sync"
 	"time"
 
@@ -109,7 +108,6 @@ func newBroker(initial map[string]any) *Broker {
 			b.channels[name] = creds
 		}
 	}
-	b.deps["policy"], b.deps["ledger"] = "up", "up"
 	if d, ok := sjson.Obj(initial["dependencies"]); ok {
 		for k, v := range d {
 			if s, ok := v.(string); ok {
@@ -135,7 +133,7 @@ func refused(code string) map[string]any {
 // (LEDGER-SQLITE.md "Storage failures" rule 2).
 func (b *Broker) refuse(led ledger, t *opTiming, code string) map[string]any {
 	if err := led.audit(t, code); err != nil {
-		fmt.Fprintln(os.Stderr, "ledger error:", err)
+		diagnose(err)
 	}
 	return refused(code)
 }
@@ -143,7 +141,7 @@ func (b *Broker) refuse(led ledger, t *opTiming, code string) map[string]any {
 // ledgerFailed answers a ledger error (a busy timeout or a defect) with
 // LEDGER_UNAVAILABLE, never a success.
 func (b *Broker) ledgerFailed(led ledger, t *opTiming, err error) map[string]any {
-	fmt.Fprintln(os.Stderr, "ledger error:", err)
+	diagnose(err)
 	return b.refuse(led, t, "LEDGER_UNAVAILABLE")
 }
 
@@ -550,7 +548,7 @@ func (b *Broker) concurrent(led ledger, t *opTiming, op map[string]any) map[stri
 		w, err := led.fork()
 		setups[i] = time.Since(opening)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "ledger error:", err)
+			diagnose(err)
 			continue
 		}
 		workers[i] = w
@@ -601,7 +599,7 @@ func (b *Broker) final() map[string]any {
 	defer b.led.serialize()()
 	f, err := b.led.final()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "ledger error:", err)
+		diagnose(err)
 		return map[string]any{"error": "LEDGER_UNAVAILABLE"}
 	}
 	return f
@@ -637,7 +635,7 @@ func RunTimed(input any, store *SQLite, tm *Timing) map[string]any {
 			tm.open = since(opening)
 		}
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "ledger error:", err)
+			diagnose(err)
 			tm.Done()
 			return map[string]any{"error": "LEDGER_UNAVAILABLE"}
 		}

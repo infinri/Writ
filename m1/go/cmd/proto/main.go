@@ -48,7 +48,7 @@ func main() {
 	if len(os.Args) == 2 && os.Args[1] == "sqlite-info" {
 		info, err := broker.Info()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "sqlite-info:", err)
+			fmt.Fprintln(os.Stderr, "sqlite-info:", broker.Diagnostic(err))
 			os.Exit(1)
 		}
 		os.Stdout.Write(append(sjson.Encode(info), '\n'))

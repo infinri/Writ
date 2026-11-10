@@ -1,13 +1,13 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-10 (D-024 published, M1-06d local) · **Branch:** v2/architecture-rebuild · **Milestone:** M1 active (development only, D-014); M1-00..M1-05, M1-06a, D-022 and D-023 DONE; M1-07 in progress; M1-06 measurements blocked by environment. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md).
+**Last updated:** 2026-11-10 (M1-06d published, D-025 local) · **Branch:** v2/architecture-rebuild · **Milestone:** M1 active (development only, D-014); M1-00..M1-05, M1-06a, D-022 and D-023 DONE; M1-07 in progress; M1-06 measurements blocked by environment. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md).
 
 ## Current
 
-- **Published:** `3012940` (D-024), CI run 42851712662 green, all 5 jobs (E-030). **Local, unpushed:** M1-06d commit (broker timing in both prototypes).
-- **Prototypes:** both 444/444 with both ledgers; 16 language-neutral ledger tests each; Rust-SQLite vs Go-SQLite 0 mismatches.
-- **M1-07:** [report](M1-07-BUILD-ASSESSMENT.md); build timings deferred behind the guard.
-- **Next:** push after confirmation; owner decision table ([M1-OPEN-ASSUMPTIONS](M1-OPEN-ASSUMPTIONS.md)); M1-06 measurements when the guard passes.
+- **Published:** `6b7eab1` (M1-06d broker timing), CI run 42857245639 green, all 5 jobs (E-031). **Local, unpushed:** D-025 commit.
+- **Prototypes:** both 447/447 with both ledgers; 30 language-neutral ledger tests each; Rust-SQLite vs Go-SQLite 0 mismatches.
+- **Benchmark readiness:** instrumentation verified; environment not ready ([M1-06-READINESS](M1-06-READINESS.md)).
+- **Next:** push after confirmation; M1-06 measurements when every guard passes; M1-07 build timings with them.
 
 ## Security findings
 

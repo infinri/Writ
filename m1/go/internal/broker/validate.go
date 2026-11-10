@@ -11,7 +11,8 @@ var executeFaults = map[string]bool{
 
 // The broker's declared dependencies are exactly policy and ledger (D-021):
 // any other name, in initial.dependencies or set_dependency, is
-// INPUT_MALFORMED, as is a status other than up or down.
+// INPUT_MALFORMED, as is a status other than up or down, and so is
+// initial.dependencies without both (D-025 DEP-1).
 var (
 	dependencyNames  = map[string]bool{"policy": true, "ledger": true}
 	dependencyStatus = map[string]bool{"up": true, "down": true}
@@ -38,15 +39,15 @@ func wellFormed(initial map[string]any, steps []any) bool {
 			return false
 		}
 	}
-	if v, present := initial["dependencies"]; present {
-		deps, ok := sjson.Obj(v)
-		if !ok {
+	// Every declared dependency must be listed (D-025 DEP-1): a missing
+	// status is missing trusted configuration, never a default of up.
+	deps, ok := sjson.Obj(initial["dependencies"])
+	if !ok || len(deps) != len(dependencyNames) {
+		return false
+	}
+	for name, s := range deps {
+		if st, ok := s.(string); !ok || !dependencyNames[name] || !dependencyStatus[st] {
 			return false
-		}
-		for name, s := range deps {
-			if st, ok := s.(string); !ok || !dependencyNames[name] || !dependencyStatus[st] {
-				return false
-			}
 		}
 	}
 	return opsWellFormed(steps)

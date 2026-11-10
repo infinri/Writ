@@ -25,7 +25,7 @@ func rtParse(t *testing.T, s string) map[string]any {
 }
 
 func rtBroker(t *testing.T) *Broker {
-	return newBroker(rtParse(t, `{"now":"2026-11-07T11:00:00Z","state_revision":7,
+	return newBroker(rtParse(t, `{"now":"2026-11-07T11:00:00Z","state_revision":7,"dependencies":{"policy":"up","ledger":"up"},
 		"ingress_keys":{"iss":"`+rtKeyHex+`"},"permit_key":"ffeeddccbbaa99887766554433221100",
 		"bundle":{"contract_version":"2.0","bundle_id":"b","version":"1","publisher":"p",
 		"known_capabilities":["file.write"],"trusted_principal_issuers":["iss"],

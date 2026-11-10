@@ -91,7 +91,7 @@ func TestSQLiteFixtures(t *testing.T) {
 		}
 	}
 	files, _ := filepath.Glob(filepath.Join(dir, "*.db"))
-	if n != 52 || len(files) != 49 { // 3 protocol-broker cases are INPUT_MALFORMED: nothing runs
+	if n != 55 || len(files) != 49 { // 6 protocol-broker cases are INPUT_MALFORMED: nothing runs
 		t.Fatalf("%d cases, %d database files", n, len(files))
 	}
 }

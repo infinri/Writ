@@ -17,6 +17,8 @@
 
 ## Operations
 
+**Dependencies (D-025 DEP-1):** `initial.dependencies` must list every declared dependency (`policy` and `ledger`) with `up` or `down`; a missing one is `INPUT_MALFORMED` (with an undeclared name, D-021).
+
 **`execute`** `{request, seal, grant_ref?, fault?}`. In order:
 
 1. Seal invalid or absent: `INGRESS_UNAUTHENTICATED`.
