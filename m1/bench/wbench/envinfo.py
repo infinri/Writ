@@ -32,14 +32,18 @@ def _cmd(argv: list[str], cwd: Path | None = None) -> str | None:
 
 def power(root: str = "/") -> dict:
     mains, batteries = [], []
+    usb = []
     for d in sorted(glob.glob(os.path.join(root, "sys/class/power_supply/*"))):
         kind = _read(os.path.join(d, "type"))
+        if kind == "USB" and _read(os.path.join(d, "online")) == "1":
+            usb.append({"name": os.path.basename(d), "voltage_max_uv": _read(os.path.join(d, "voltage_max")),
+                        "current_max_ua": _read(os.path.join(d, "current_max"))})
         if kind == "Mains":
             mains.append({"name": os.path.basename(d), "online": _read(os.path.join(d, "online")) == "1"})
         elif kind == "Battery":
             batteries.append({"name": os.path.basename(d), "status": _read(os.path.join(d, "status")),
                               "capacity_percent": _read(os.path.join(d, "capacity"))})
-    return {"mains": mains, "on_mains": any(m["online"] for m in mains), "batteries": batteries}
+    return {"mains": mains, "on_mains": any(m["online"] for m in mains), "batteries": batteries, "usb_sources_online": usb}
 
 
 def cpufreq(root: str = "/") -> dict:
@@ -176,6 +180,10 @@ def guard(env: dict, repo: dict, max_load: float, max_start_temp_c: float) -> li
         reasons.append("no mains power supply found in sysfs")
     elif not p["on_mains"]:
         reasons.append("on battery: mains adapter offline")
+    for b in p["batteries"]:
+        if b["status"] == "Discharging":
+            reasons.append(f"battery {b['name']} is discharging although a supply reports online "
+                           "(supply too weak for the load; use the full-power adapter)")
     if f["policies"] == 0:
         reasons.append("no cpufreq policies readable")
     elif f["governors"] != ["performance"]:

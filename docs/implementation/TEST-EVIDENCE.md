@@ -266,6 +266,11 @@ SR-06 sandbox facts (preflight PASS, telemetry diagnostic) are recorded in `docs
 - **CI run https://github.com/infinri/Writ/actions/runs/42887453309 on `68f4593a513b0ab7b6ac206ef00c8f9d067d7660`: SUCCESS, all 5 jobs.** Logs: engine assertion `3.54.1 2026-10-16 14:45:20 555e07ef...` in both build jobs; Rust 54 + 3 tests; fixtures 447/447 in memory and on SQLite for each prototype; `m1/ledger_tests` 30 tests OK; Rust-SQLite versus Go-SQLite PASS 348 cases, 6,780 checks, 0 mismatches; driver self-tests 26 OK; harness self-tests 16 and dry run 0 correctness failures.
 - **Benchmark guard (2026-11-10, clean tree at `68f4593`):** REFUSED, exit 3, nothing run: governor `powersave` on 16 of 16 policies; 1-minute load 1.81. Passed: mains online, boost 1 (recorded), CPU 51 C, clean `m1/` tree, pinned toolchains, Go `-trimpath` and tags.
 
+### E-033: M1-06 readiness after the governor change (no measurement)
+
+- **Readiness run 2026-11-10 at `8d1915c`:** governor `performance` 16/16; correctness re-verified (fixtures 447/447 in memory and on SQLite for both prototypes, `m1/ledger_tests` 30 OK, dry run 0 correctness failures).
+- **Guard REFUSED** (exit 3, nothing run) for `bench.py` and for `collect.py build-times`: 1-minute load 1.51 to 1.65; CPU 67.25 to 68.6 C. Found: battery discharging while the online supply is USB-C 5 V / 3 A; the guard only checked the mains flag, so it now also refuses a discharging battery (2 new self-tests; harness self-tests 18 OK). No benchmark or build-time measurement was taken.
+
 ## Not yet executed
 
 - SR-06 live-host experiments (0 of 69; sandbox torn down) and full SR-06 acceptance; rule semantic review (M0-01d); independent human golden review (M0-05a).

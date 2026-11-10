@@ -20,7 +20,7 @@ from wbench import envinfo, stats, workloads as wl  # noqa: E402
 
 
 def fake_sysfs(root: Path, *, mains_online: str, governor: str, temp_mc: str = "45000", load: str = "0.10",
-               boost: str | None = "1"):
+               boost: str | None = "1", battery: str | None = None):
     def w(rel, text):
         p = root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -28,7 +28,7 @@ def fake_sysfs(root: Path, *, mains_online: str, governor: str, temp_mc: str = "
     w("sys/class/power_supply/ACAD/type", "Mains")
     w("sys/class/power_supply/ACAD/online", mains_online)
     w("sys/class/power_supply/BAT1/type", "Battery")
-    w("sys/class/power_supply/BAT1/status", "Discharging" if mains_online == "0" else "Full")
+    w("sys/class/power_supply/BAT1/status", battery or ("Discharging" if mains_online == "0" else "Full"))
     for i in range(4):
         w(f"sys/devices/system/cpu/cpufreq/policy{i}/scaling_governor", governor)
         w(f"sys/devices/system/cpu/cpufreq/policy{i}/scaling_driver", "amd-pstate-epp")
@@ -86,6 +86,14 @@ class Guard(unittest.TestCase):
             fake_sysfs(Path(d), mains_online="1", governor="performance")
             dirty = envinfo.guard(envinfo.capture(d), {"commit": "c", "m1_tree_clean": False}, 1.0, 60)
             self.assertEqual(len(dirty), 1)
+
+    def test_refuses_discharging_battery_on_weak_supply(self):
+        reasons = self.guard(mains_online="1", governor="performance", battery="Discharging")
+        self.assertEqual(len(reasons), 1, reasons)
+        self.assertIn("discharging", reasons[0])
+
+    def test_allows_charging_battery_on_mains(self):
+        self.assertEqual(self.guard(mains_online="1", governor="performance", battery="Charging"), [])
 
     def test_allows_controlled_environment(self):
         self.assertEqual(self.guard(mains_online="1", governor="performance"), [])

@@ -15,7 +15,7 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 | Acceptance Gate Integrity | Protected workflow transitions need a trusted, version-bound acceptance record checked by the broker plus kernel structure checks; promotion separate from publish or deploy ([spec](../architecture/acceptance-gate-integrity.md), ADR-0008 **APPROVED IN PRINCIPLE**) |
 | Branch | `v2/architecture-rebuild` (never `main`) |
 | Published code HEAD | `68f4593a513b0ab7b6ac206ef00c8f9d067d7660` (D-025), CI https://github.com/infinri/Writ/actions/runs/42887453309 **green, all 5 jobs** (E-032). Previous: `6b7eab1` run 42857245639 green; `3012940` run 42851712662 green |
-| Local commits not yet pushed (verify with `git log origin/v2/architecture-rebuild..HEAD`) | a docs-only commit recording E-032 and this checkpoint. Push needs owner confirmation |
+| Local commits not yet pushed (verify with `git log origin/v2/architecture-rebuild..HEAD`) | `8d1915c` (docs, E-032) and the guard commit (discharging-battery refusal, E-033). Push needs owner confirmation |
 | Working tree | Only untracked `docs/audit/m0/hook-audit/` (never stage or publish) |
 | Milestone | **M1** under D-014 (development only). Done: M1-00..M1-05, M1-06a harness, M1-06b (D-022), M1-06c (D-023 SQLite ledger), M1-06e (D-024), M1-06d broker timing (published, CI green), M1-06f D-025 corrections (published, CI green). **M1-07 in progress** (facts collected; build times deferred). **M1-06 measurements blocked** (environment). M1-08 not started. M0 closed for development only; release and production NO-GO |
 
@@ -56,7 +56,7 @@ Independent human review of the 26 golden cases and all M1 fixtures (REL-01); 28
 
 ### F. Next tasks
 
-1. **M1-06 measurements** only after the owner configures the governor and every guard passes (guard refused 2026-11-10 at `68f4593`: governor `powersave` 16/16, 1-minute load 1.81; mains, temperature 51 C, clean tree and toolchains passed). Then rebuild both from the clean tree and run `m1/bench/bench.py` with a new recorded seed, followed by `m1/assess/collect.py build-times` (M1-07)
+1. **M1-06 measurements** only after every guard passes. 2026-11-10 (E-033): governor now `performance`; still refused: battery discharging on a 15 W USB-C supply (connect the full-power adapter), load 1.5 to 1.7 (owner's `java` and `clickhouse-server` processes), CPU 67 to 69 C. Owner actions in [M1-06-READINESS](M1-06-READINESS.md). Then rebuild both from the clean tree and run `m1/bench/bench.py` with a new recorded seed, followed by `m1/assess/collect.py build-times` (M1-07)
 2. Remaining M0 and security obligations unchanged (section E); fixture review pending ([M1-06-READINESS](M1-06-READINESS.md): governor `powersave` and load above 1.0 on 2026-11-10).
 3. **M1-07 remaining:** build timings when the guard passes; cross-target decision (pending owner input 5).
 4. **M1-06 measurements: BLOCKED.** Governor `powersave` (verified 2026-11-07; mains online). Owner: `sudo cpupower frequency-set -g performance`, idle and cool machine, then from a clean tree with pinned toolchains and SQLite: rebuild both, `python3 m1/bench/bench.py --seed <new recorded seed> --rust ... --go ... --out m1/bench/results/<date>.json` (guard must pass; exit 4 invalidates).
