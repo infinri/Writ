@@ -13,6 +13,7 @@ mod promotion;
 mod refusal;
 mod sqlite;
 mod time;
+mod timing;
 
 use json::{obj, s, JsonError, Value};
 use std::io::{self, BufRead, Write};
@@ -21,7 +22,7 @@ use std::process::ExitCode;
 use std::sync::OnceLock;
 use std::time::Instant;
 
-const COMMANDS: [&str; 8] = [
+const COMMANDS: [&str; 9] = [
     "canonical",
     "decide",
     "decide-batch",
@@ -30,9 +31,11 @@ const COMMANDS: [&str; 8] = [
     "external-refusal",
     "transition-scenario",
     "broker-scenario",
+    "bench-broker-scenario",
 ];
 
-/// The `broker-scenario` ledger, chosen once from the command line.
+/// The `broker-scenario` and `bench-broker-scenario` ledger, chosen once
+/// from the command line.
 static LEDGER: OnceLock<broker::LedgerChoice> = OnceLock::new();
 
 /// `broker-scenario` options (LEDGER-SQLITE.md "Selecting the ledger"): none,
@@ -112,6 +115,7 @@ fn envelope_invalid(id: Option<&str>) -> Value {
 /// is `ENVELOPE_INVALID` under that id. No command runs for an invalid
 /// envelope.
 fn answer(command: &str, line: &[u8]) -> Value {
+    let started = Instant::now();
     let Ok((env, raw)) = json::parse_envelope(line, "input") else {
         return envelope_invalid(None);
     };
@@ -128,14 +132,19 @@ fn answer(command: &str, line: &[u8]) -> Value {
         (None, Some(Value::Str(text))) if closed => json::parse(text.as_bytes()),
         _ => return envelope_invalid(Some(id)),
     };
-    obj(vec![("id", s(id)), ("output", execute(command, parsed))])
+    let parse_ns = timing::since(started);
+    obj(vec![("id", s(id)), ("output", execute(command, parsed, parse_ns))])
 }
 
 /// `decide-batch` is `decide` (workload A). `bench-decide` (M1-06a) answers
 /// `{"decision": <the decide output>, "kernel_ns": n}`, where `n` is the
 /// monotonic time spent producing the decision from the already parsed input,
 /// excluding envelope and input parsing, output serialization and I/O.
-fn execute(command: &str, parsed: Result<Value, JsonError>) -> Value {
+/// `bench-broker-scenario` (M1-06d) answers `{"scenario": S, "timing": T}`
+/// (LEDGER-SQLITE.md "Per-operation timing"): `parse_ns` is the strict
+/// parsing of the line, `run_ns` runs from just after parsing until `S` is
+/// complete.
+fn execute(command: &str, parsed: Result<Value, JsonError>, parse_ns: i64) -> Value {
     let decide = |parsed: Result<Value, JsonError>| match parsed {
         Ok(input) => run_command("decide", &input),
         Err(e) => strict_failure("decide", e),
@@ -147,6 +156,15 @@ fn execute(command: &str, parsed: Result<Value, JsonError>) -> Value {
             let decision = decide(parsed);
             let ns = i64::try_from(started.elapsed().as_nanos()).unwrap_or(i64::MAX);
             obj(vec![("decision", decision), ("kernel_ns", Value::Int(ns))])
+        }
+        "bench-broker-scenario" => {
+            let started = Instant::now();
+            let (scenario, t) = match parsed {
+                Ok(input) => broker::run_timed(&input, LEDGER.get().unwrap_or(&broker::LedgerChoice::Memory)),
+                Err(e) => (strict_failure("broker-scenario", e), timing::ScenarioTiming::default()),
+            };
+            let run_ns = timing::since(started);
+            obj(vec![("scenario", scenario), ("timing", t.to_value(parse_ns, run_ns))])
         }
         _ => match parsed {
             Ok(input) => run_command(command, &input),
@@ -163,7 +181,7 @@ fn is_blank(line: &[u8]) -> bool {
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     let usage = || {
-        eprintln!("usage: proto <{}> | proto broker-scenario [--ledger sqlite (--ledger-dir DIR | --ledger-db PATH)] | proto sqlite-info", COMMANDS.join("|"));
+        eprintln!("usage: proto <{}> | proto (broker-scenario|bench-broker-scenario) [--ledger sqlite (--ledger-dir DIR | --ledger-db PATH)] | proto sqlite-info", COMMANDS.join("|"));
         ExitCode::from(2)
     };
     let options = args.get(2..).unwrap_or_default();
@@ -182,7 +200,7 @@ fn main() -> ExitCode {
     let Some(command) = args.get(1).filter(|c| COMMANDS.contains(&c.as_str())) else {
         return usage();
     };
-    let choice = if command == "broker-scenario" { ledger_choice(options) } else { options.is_empty().then_some(broker::LedgerChoice::Memory) };
+    let choice = if matches!(command.as_str(), "broker-scenario" | "bench-broker-scenario") { ledger_choice(options) } else { options.is_empty().then_some(broker::LedgerChoice::Memory) };
     let Some(choice) = choice else {
         return usage();
     };
@@ -308,6 +326,21 @@ mod tests {
         }
         let invalid = r#"{"id":"d","output":{"error":"ENVELOPE_INVALID"}}"#;
         assert_eq!(out("bench-decide", br#"{"id":"d"}"#), invalid);
+    }
+
+    #[test]
+    fn bench_broker_scenario_wraps_the_broker_scenario_output() {
+        for line in [&br#"{"id":"b","input_text":"{"}"#[..], br#"{"id":"b","input":{"steps":[]}}"#] {
+            let plain = answer("broker-scenario", line);
+            let timed = answer("bench-broker-scenario", line);
+            let out = timed.get("output").unwrap();
+            assert_eq!(json::to_text(out.get("scenario").unwrap()), json::to_text(plain.get("output").unwrap()));
+            let t = out.get("timing").unwrap();
+            assert_eq!(t.as_obj().unwrap().len(), 5);
+            assert!(matches!((t.get("parse_ns"), t.get("run_ns")), (Some(Value::Int(p)), Some(Value::Int(r))) if *p >= 0 && *r >= 0));
+            assert_eq!(json::to_text(t.get("steps").unwrap()), "[]");
+            assert!(t.get("final_ns").unwrap().is_null() && t.get("open_ns").unwrap().is_null());
+        }
     }
 
     #[test]

@@ -44,7 +44,7 @@ Every refusal, from any operation, appends one `audit_refusals` row in its own `
 
 1. Seal, `LEDGER_UNAVAILABLE` if `dependencies.ledger` is down, use-time decision, `APPROVAL_REQUIRED`.
 2. Acquire the in-process **key lock** for (tenant, idempotency key) (volatile; held until the operation returns). Operations on the same key therefore never interleave inside one process; different keys run in parallel and contend only in SQLite.
-3. **T-reserve** (`BEGIN IMMEDIATE`): read the receipt. Exists with a different fingerprint or effective grant: rollback, `IDEMPOTENCY_CONFLICT`. `observed_success` / `observed_failure`: rollback, replay result. `dispatched` / `unknown_reconcile`: rollback, `RECONCILIATION_REQUIRED`. `reserved`: commit nothing, resume at step 5 (no second grant use). Absent: `crash_before_reserve` rolls back and returns `crashed`; with a grant, `GRANT_UNKNOWN`, `GRANT_MISMATCH` (binding compared as D-006 canonical JSON), `GRANT_EXPIRED`, `GRANT_EXHAUSTED` roll back; otherwise `UPDATE grants SET uses = uses + 1 WHERE label = ? AND uses < max_uses` (exactly one row, else `GRANT_EXHAUSTED`) and insert one `grant_uses` row; insert the receipt `reserved` and a `reserve` event; commit.
+3. **T-reserve** (`BEGIN IMMEDIATE`): read the receipt. Exists with a different fingerprint or effective grant: rollback, `IDEMPOTENCY_CONFLICT`. `observed_success` / `observed_failure`: rollback, replay result. `dispatched` / `unknown_reconcile`: rollback, `RECONCILIATION_REQUIRED`. `reserved`: commit the transaction without writing anything (outcome `commit`), resume at step 5 (no second grant use). Absent: `crash_before_reserve` rolls back and returns `crashed`; with a grant, `GRANT_UNKNOWN`, `GRANT_MISMATCH` (binding compared as D-006 canonical JSON), `GRANT_EXPIRED`, `GRANT_EXHAUSTED` roll back; otherwise `UPDATE grants SET uses = uses + 1 WHERE label = ? AND uses < max_uses` (exactly one row, else `GRANT_EXHAUSTED`) and insert one `grant_uses` row; insert the receipt `reserved` and a `reserve` event; commit.
 4. `crash_after_reserve`: return `crashed` (the reservation and grant use are committed).
 5. **T-dispatch** (`BEGIN IMMEDIATE`): increment `next_permit` and read it; `UPDATE receipts SET status = 'dispatched' WHERE ... AND status = 'reserved'` (exactly one row); insert a `dispatch` event; commit. Then sign the permit (`permit-<n>`, fingerprint, bundle sha, expiry `min(now + 30 s, deadline)`) and keep it client-side for `present_permit`.
 6. **T-adapter** (`BEGIN IMMEDIATE`, simulated adapter): fingerprint differs `PERMIT_REQUEST_MISMATCH`, MAC invalid `PERMIT_INVALID`, expired `PERMIT_EXPIRED`, id in `adapter_consumed_permits` `PERMIT_REPLAYED` (each rolls back); otherwise insert the consumed id and, unless `effect_fails`, one `adapter_effects` row; commit. An adapter refusal returns that code and leaves the receipt `dispatched`.
@@ -76,20 +76,34 @@ Language-neutral tests: `m1/ledger_tests/test_storage_failures.py` (Python stand
 
 ## Per-operation timing (M1-06d, `bench-broker-scenario`)
 
-`proto bench-broker-scenario [--ledger sqlite (--ledger-dir DIR | --ledger-db PATH)]` takes the same input as `broker-scenario` and answers `{"scenario": S, "timing": T}` where `S` is **exactly** the `broker-scenario` output for the same input and ledger (the harness checks byte equality of `S` against a plain run). Timing never changes behaviour. All times are integers in nanoseconds from a monotonic clock, measured in-process; JSON parsing of the scenario line and output serialization are excluded.
+`proto bench-broker-scenario [--ledger sqlite (--ledger-dir DIR | --ledger-db PATH)]` takes the same input as `broker-scenario` and answers `{"scenario": S, "timing": T}` where `S` is **exactly** the `broker-scenario` output for the same input and ledger (the harness checks byte equality against a plain run). Timing never changes behaviour, authorization or durability settings. All times are integers in nanoseconds from a monotonic clock, measured in-process; instrumentation must be equivalent in both prototypes (same start and stop points as defined here).
 
-`T = {"open_ns": n | null, "steps": [step...], "final_ns": n | null}`: `open_ns` covers ledger open and initialization (rule 1 of "Storage failures"; `null` for the in-memory ledger); `final_ns` covers computing `final`. When `S` is an `input_error` or the open failed, `steps` is `[]` and `final_ns` is `null`.
+`T = {"parse_ns": n, "open_ns": n | null, "steps": [step...], "final_ns": n | null, "run_ns": n}`:
 
-`step = {"op": <the op string, or "unknown">, "total_ns": n, "decide_ns": n | null, "key_lock_wait_ns": n | null, "tx_ns": {...}}`:
+| Field | Start and stop |
+|---|---|
+| `parse_ns` | strict parsing of this line's envelope and scenario input (protocol overhead inside the process; output serialization cannot be measured in its own output, so the harness derives the remaining protocol and process overhead as process wall time minus the sum of `parse_ns + run_ns`) |
+| `open_ns` | ledger open and initialization (Storage failures rule 1); `null` for the in-memory ledger |
+| `run_ns` | from just after parsing to the scenario output value being complete (includes `open_ns`, all steps and `final_ns`) |
+| `final_ns` | computing `final`; `null` when `S` is an `input_error` or the open failed (then `steps` is `[]`) |
+
+`step = {"op": <the op string, or "unknown">, "total_ns": n, "validate_ns": n | null, "decide_ns": n | null, "key_lock_wait_ns": n | null, "tx": {name: tx, ...}}`:
 
 | Field | Meaning |
 |---|---|
-| `total_ns` | the whole operation, from dispatch of the parsed step to its result value |
-| `decide_ns` | the use-time kernel decision inside `execute` or `approve`; `null` when not reached (for example an unsealed request) |
+| `total_ns` | end-to-end operation: from dispatch of the parsed step to its result value |
+| `validate_ns` | broker request validation before the decision: `execute` seal verification and the ledger-availability check; `approve` channel and credential check; `null` for other operations |
+| `decide_ns` | the use-time kernel decision inside `execute` or `approve`; `null` when not reached |
 | `key_lock_wait_ns` | waiting for the per-key lock (SQLite `execute` only); `null` otherwise |
-| `tx_ns` | one member per logical transaction that ran, named `reserve`, `dispatch`, `adapter`, `observe`, `approve`, `reconcile`, `audit`: from just before `BEGIN IMMEDIATE` to just after `COMMIT` or `ROLLBACK` returns (busy waits included). With the in-memory ledger the same names time the corresponding in-memory sections. Operations with no transaction have `{}` |
+| `tx` | one member per logical transaction that ran, named `reserve`, `dispatch`, `adapter`, `observe`, `approve`, `reconcile`, `audit`; `{}` if none |
 
-A `concurrent` step is `{"op": "concurrent", "total_ns": n, "decide_ns": null, "key_lock_wait_ns": null, "tx_ns": {}, "operations": [step, ...]}` with one entry per operation in input order (including per-worker connection setup inside that operation's `total_ns`).
+`tx = {"begin_ns": n | null, "body_ns": n, "end_ns": n | null, "outcome": "commit" | "rollback"}`: SQLite: `begin_ns` is `BEGIN IMMEDIATE` returning (lock acquisition, including busy waits), `body_ns` the statements and in-process checks between begin and end, `end_ns` `COMMIT` or `ROLLBACK` returning. In-memory ledger: `begin_ns` and `end_ns` are `null` and `body_ns` times the corresponding in-memory section.
+
+A failed `BEGIN IMMEDIATE` (busy timeout or error) is still recorded as that transaction with outcome `rollback`, the measured `begin_ns`, and `body_ns` and `end_ns` 0; a failed `COMMIT` is recorded as `rollback`. `open_ns` is a number whenever an open was attempted (also when it failed) and `null` when none was (input error). For a `concurrent` worker, `total_ns` is its connection setup plus its operation (the start-barrier wait is excluded).
+
+A `concurrent` step is `{"op": "concurrent", "total_ns": n, "validate_ns": null, "decide_ns": null, "key_lock_wait_ns": null, "tx": {}, "operations": [step, ...]}` with one entry per operation in input order (per-worker connection setup is inside that operation's `total_ns`).
+
+**Integrity rules** (checked by `m1/ledger_tests/test_timing_integrity.py`): every value is a non-negative integer or `null` exactly as specified; for each step `validate_ns + decide_ns + key_lock_wait_ns + sum(begin_ns + body_ns + end_ns)` (nulls as 0) is at most `total_ns`; the sum of top-level step `total_ns` plus `open_ns` and `final_ns` is at most `run_ns`; `tx` names and outcomes match the specification for the operation's result (for example a successful allow `execute` has exactly `reserve`, `dispatch`, `adapter`, `observe`, all `commit`; a refused operation adds `audit`; `GRANT_EXHAUSTED` has `reserve` with `rollback`).
 
 ## Required tests (each prototype, own code)
 
@@ -100,7 +114,7 @@ A `concurrent` step is `{"op": "concurrent", "total_ns": n, "decide_ns": null, "
 5. Schema drift: the embedded schema is byte-identical to `m1/fixtures/broker/ledger.sql`.
 6. `proto sqlite-info` reports 3.54.1 and the settings above.
 7. `m1/ledger_tests` (language-neutral, D-024) all pass.
-8. `bench-broker-scenario`: `scenario` equals `broker-scenario` output for every broker fixture with both ledgers; every timing value is a non-negative integer or `null` as specified; `tx_ns` names match the transactions the specification says ran (for example a successful allow `execute` has exactly `reserve`, `dispatch`, `adapter`, `observe`).
+8. `bench-broker-scenario`: `m1/ledger_tests/test_timing_integrity.py` passes (scenario equality on every broker fixture with both ledgers, the integrity rules above).
 
 ## Implementation notes (recorded 2026-11-07 after both implementations; no semantic change)
 

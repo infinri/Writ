@@ -22,6 +22,14 @@ import (
 
 type handler func(input any, jsonErr *sjson.Error) map[string]any
 
+// lineHandler is a handler that also receives the time strict parsing of the
+// line's envelope and input took (used only by bench-broker-scenario).
+type lineHandler func(input any, jsonErr *sjson.Error, parse time.Duration) map[string]any
+
+func plain(h handler) lineHandler {
+	return func(input any, jsonErr *sjson.Error, _ time.Duration) map[string]any { return h(input, jsonErr) }
+}
+
 var commands = map[string]handler{
 	"canonical":           canonical,
 	"decide":              decide,
@@ -34,7 +42,7 @@ var commands = map[string]handler{
 }
 
 const usage = "usage: proto canonical|decide|decide-batch|bench-decide|check-acceptance|external-refusal|transition-scenario|sqlite-info\n" +
-	"       proto broker-scenario [--ledger sqlite (--ledger-dir DIR | --ledger-db PATH)]"
+	"       proto broker-scenario|bench-broker-scenario [--ledger sqlite (--ledger-dir DIR | --ledger-db PATH)]"
 
 func main() {
 	if len(os.Args) == 2 && os.Args[1] == "sqlite-info" {
@@ -71,16 +79,24 @@ func main() {
 }
 
 // parseArgs selects the handler for `<command> [options]`. Only
-// broker-scenario takes options: `--ledger sqlite` with exactly one of
-// `--ledger-dir DIR` (an existing directory) or `--ledger-db PATH`.
-func parseArgs(args []string) (handler, bool) {
-	if len(args) == 0 || commands[args[0]] == nil {
+// broker-scenario and bench-broker-scenario take options: `--ledger sqlite`
+// with exactly one of `--ledger-dir DIR` (an existing directory) or
+// `--ledger-db PATH`.
+func parseArgs(args []string) (lineHandler, bool) {
+	if len(args) == 0 {
+		return nil, false
+	}
+	bench := args[0] == "bench-broker-scenario"
+	if commands[args[0]] == nil && !bench {
 		return nil, false
 	}
 	if len(args) == 1 {
-		return commands[args[0]], true
+		if bench {
+			return benchBrokerScenario(nil), true
+		}
+		return plain(commands[args[0]]), true
 	}
-	if args[0] != "broker-scenario" {
+	if args[0] != "broker-scenario" && !bench {
 		return nil, false
 	}
 	opts := map[string]string{}
@@ -106,12 +122,34 @@ func parseArgs(args []string) (handler, bool) {
 		}
 	}
 	store := &broker.SQLite{Dir: dir, DB: db}
-	return func(input any, jerr *sjson.Error) map[string]any {
+	if bench {
+		return benchBrokerScenario(store), true
+	}
+	return plain(func(input any, jerr *sjson.Error) map[string]any {
 		if jerr != nil {
 			return map[string]any{"input_error": "INPUT_JSON_INVALID", "json_error": jerr.Code}
 		}
 		return broker.RunWith(input, store)
-	}, true
+	}), true
+}
+
+// benchBrokerScenario (M1-06d) answers {"scenario": S, "timing": T}: S is
+// exactly the broker-scenario output for the same input and ledger (store,
+// nil for the in-memory ledger), T the per-operation timing of
+// LEDGER-SQLITE.md "Per-operation timing". The run clock starts here, just
+// after parsing.
+func benchBrokerScenario(store *broker.SQLite) lineHandler {
+	return func(input any, jerr *sjson.Error, parse time.Duration) map[string]any {
+		tm := broker.NewTiming(parse)
+		var s map[string]any
+		if jerr != nil {
+			s = map[string]any{"input_error": "INPUT_JSON_INVALID", "json_error": jerr.Code}
+			tm.Done()
+		} else {
+			s = broker.RunTimed(input, store, tm)
+		}
+		return map[string]any{"scenario": s, "timing": tm.JSON()}
+	}
 }
 
 // isBlank reports whether a line holds only JSON whitespace.
@@ -128,7 +166,7 @@ func isBlank(line string) bool {
 
 // handleLine answers one envelope line (D-021): every non-blank line gets
 // exactly one answer. Blank lines are ignored.
-func handleLine(h handler, line string, out *bufio.Writer) {
+func handleLine(h lineHandler, line string, out *bufio.Writer) {
 	for len(line) > 0 && (line[len(line)-1] == '\n' || line[len(line)-1] == '\r') {
 		line = line[:len(line)-1]
 	}
@@ -149,7 +187,11 @@ var envelopeInvalid = map[string]any{"error": "ENVELOPE_INVALID"}
 // id only when the line parsed strictly as a JSON object with exactly one
 // string `id` member (the strict parser rejects duplicate members); otherwise
 // it is nil, never an id recovered from a line that is not valid JSON.
-func answer(h handler, line string) (id any, output map[string]any) {
+//
+// The parse time passed to the handler runs from the start of the envelope
+// parse to the end of the input parse (or depth check).
+func answer(h lineHandler, line string) (id any, output map[string]any) {
+	parsing := time.Now()
 	env, perr := sjson.ParseUnlimited(line)
 	m, isObj := sjson.Obj(env)
 	if perr != nil || !isObj {
@@ -173,20 +215,20 @@ func answer(h handler, line string) (id any, output map[string]any) {
 		input = m["input"]
 		jerr = sjson.CheckDepth(input)
 	}
-	return sid, run(h, input, jerr)
+	return sid, run(h, input, jerr, time.Since(parsing))
 }
 
 // run calls the handler behind a recover boundary: no input may crash the
 // process. A recovered panic is a prototype defect, answered INTERNAL_ERROR
 // and reported on stderr.
-func run(h handler, input any, jerr *sjson.Error) (output map[string]any) {
+func run(h lineHandler, input any, jerr *sjson.Error, parse time.Duration) (output map[string]any) {
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Fprintln(os.Stderr, "internal error:", r)
 			output = map[string]any{"error": "INTERNAL_ERROR"}
 		}
 	}()
-	return h(input, jerr)
+	return h(input, jerr, parse)
 }
 
 func canonical(input any, jerr *sjson.Error) map[string]any {

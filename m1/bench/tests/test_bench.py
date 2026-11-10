@@ -117,6 +117,24 @@ class Toolchains(unittest.TestCase):
                          ["Go prototype binary was not built with -trimpath (owner decision 2026-11-10)"])
 
 
+class Timing(unittest.TestCase):
+    def test_collect_timing_flattens_steps_tx_and_concurrent(self):
+        tx = {"begin_ns": 1, "body_ns": 2, "end_ns": 3, "outcome": "commit"}
+        step = {"op": "execute", "total_ns": 10, "validate_ns": 1, "decide_ns": 2, "key_lock_wait_ns": None,
+                "tx": {"reserve": tx}}
+        timing = {"parse_ns": 5, "open_ns": None, "final_ns": 4, "run_ns": 30,
+                  "steps": [step, {"op": "concurrent", "total_ns": 20, "validate_ns": None, "decide_ns": None,
+                                   "key_lock_wait_ns": None, "tx": {}, "operations": [step]}]}
+        acc = {}
+        self.assertEqual(bench.collect_timing(timing, acc), 35)
+        self.assertEqual(acc["op.execute.total_ns"], [10])
+        self.assertEqual(acc["concurrent.op.execute.total_ns"], [10])
+        self.assertEqual(acc["concurrent.total_ns"], [20])
+        self.assertEqual(acc["tx.reserve.end_ns"], [3])
+        self.assertNotIn("op.execute.key_lock_wait_ns", acc)
+        self.assertNotIn("line.open_ns", acc)
+
+
 class Generators(unittest.TestCase):
     def test_seeded_and_deterministic(self):
         a1, a2, a3 = wl.gen_a(5, 50), wl.gen_a(5, 50), wl.gen_a(6, 50)

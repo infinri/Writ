@@ -11,13 +11,17 @@ type ledger interface {
 	// serialize is held for a whole operation: the in-memory ledger runs
 	// every operation as one transaction; SQLite relies on its own locks.
 	serialize() func()
-	reserve(r reservation) (string, error)
-	dispatch(tenant, key string) (int64, error)
-	consume(permitID string, effect bool) (replayed bool, err error)
-	observe(tenant, key, status string) error
-	addGrant(label string, g grant) (inUse bool, err error)
-	reconcile() (int64, error)
-	audit(code string) error
+	// Each transaction records its timing in t (nil: not timed).
+	reserve(t *opTiming, r reservation) (string, error)
+	dispatch(t *opTiming, tenant, key string) (int64, error)
+	// adapter is T-adapter: check (the permit's fingerprint, MAC and expiry
+	// checks) runs inside the transaction, then the replay check, then the
+	// consumed id and effect are recorded. It returns a refusal code or "".
+	adapter(t *opTiming, check func() string, permitID string, effect bool) (code string, err error)
+	observe(t *opTiming, tenant, key, status string) error
+	addGrant(t *opTiming, label string, g grant) (inUse bool, err error)
+	reconcile(t *opTiming) (int64, error)
+	audit(t *opTiming, code string) error
 	final() (map[string]any, error)
 	fork() (ledger, error) // the ledger for one concurrent worker
 	restart() error
@@ -84,68 +88,99 @@ func (m *memLedger) serialize() func() {
 	return m.mu.Unlock
 }
 
-func (m *memLedger) reserve(r reservation) (string, error) {
-	k := r.tenant + "\x00" + r.key
-	if x, ok := m.receipts[k]; ok {
-		return r.existingOutcome(x.fingerprint, x.grantLabel, x.status), nil
-	}
-	if r.crashBefore {
-		return outcomeCrashed, nil
-	}
-	if r.approval {
-		g := m.grants[r.grantLabel]
-		if code := r.check(g); code != "" {
-			return code, nil
+// Each in-memory method is the section of its logical transaction: it
+// "commits" when it changes state as the SQLite transaction would commit,
+// and "rolls back" otherwise.
+
+func (m *memLedger) reserve(t *opTiming, r reservation) (outcome string, err error) {
+	memTx(t, "reserve", func() bool {
+		k := r.tenant + "\x00" + r.key
+		if x, ok := m.receipts[k]; ok {
+			outcome = r.existingOutcome(x.fingerprint, x.grantLabel, x.status)
+			return outcome == "" // a reservation resumes: commit nothing
 		}
-		g.uses++
-	}
-	m.receipts[k] = &receipt{fingerprint: r.fingerprint, grantLabel: r.grantLabel, status: "reserved"}
-	return "", nil
+		if r.crashBefore {
+			outcome = outcomeCrashed
+			return false
+		}
+		if r.approval {
+			g := m.grants[r.grantLabel]
+			if outcome = r.check(g); outcome != "" {
+				return false
+			}
+			g.uses++
+		}
+		m.receipts[k] = &receipt{fingerprint: r.fingerprint, grantLabel: r.grantLabel, status: "reserved"}
+		return true
+	})
+	return outcome, nil
 }
 
-func (m *memLedger) dispatch(tenant, key string) (int64, error) {
-	m.permitSeq++
-	m.receipts[tenant+"\x00"+key].status = "dispatched"
-	return m.permitSeq, nil
+func (m *memLedger) dispatch(t *opTiming, tenant, key string) (seq int64, err error) {
+	memTx(t, "dispatch", func() bool {
+		m.permitSeq++
+		m.receipts[tenant+"\x00"+key].status = "dispatched"
+		seq = m.permitSeq
+		return true
+	})
+	return seq, nil
 }
 
-func (m *memLedger) consume(permitID string, effect bool) (bool, error) {
-	if m.consumed[permitID] {
-		return true, nil
-	}
-	m.consumed[permitID] = true
-	if effect {
-		m.effectsApplied++
-	}
-	return false, nil
+func (m *memLedger) adapter(t *opTiming, check func() string, permitID string, effect bool) (code string, err error) {
+	memTx(t, "adapter", func() bool {
+		if code = check(); code != "" {
+			return false
+		}
+		if m.consumed[permitID] {
+			code = "PERMIT_REPLAYED"
+			return false
+		}
+		m.consumed[permitID] = true
+		if effect {
+			m.effectsApplied++
+		}
+		return true
+	})
+	return code, nil
 }
 
-func (m *memLedger) observe(tenant, key, status string) error {
-	m.receipts[tenant+"\x00"+key].status = status
+func (m *memLedger) observe(t *opTiming, tenant, key, status string) error {
+	memTx(t, "observe", func() bool {
+		m.receipts[tenant+"\x00"+key].status = status
+		return true
+	})
 	return nil
 }
 
-func (m *memLedger) addGrant(label string, g grant) (bool, error) {
-	if _, inUse := m.grants[label]; inUse {
-		return true, nil
-	}
-	m.grants[label] = &g
-	return false, nil
+func (m *memLedger) addGrant(t *opTiming, label string, g grant) (inUse bool, err error) {
+	memTx(t, "approve", func() bool {
+		if _, inUse = m.grants[label]; inUse {
+			return false
+		}
+		m.grants[label] = &g
+		return true
+	})
+	return inUse, nil
 }
 
-func (m *memLedger) reconcile() (int64, error) {
-	n := int64(0)
-	for _, r := range m.receipts {
-		if r.status == "dispatched" {
-			r.status = "unknown_reconcile"
-			n++
+func (m *memLedger) reconcile(t *opTiming) (n int64, err error) {
+	memTx(t, "reconcile", func() bool {
+		for _, r := range m.receipts {
+			if r.status == "dispatched" {
+				r.status = "unknown_reconcile"
+				n++
+			}
 		}
-	}
+		return true
+	})
 	return n, nil
 }
 
-func (m *memLedger) audit(string) error {
-	m.refusals++
+func (m *memLedger) audit(t *opTiming, _ string) error {
+	memTx(t, "audit", func() bool {
+		m.refusals++
+		return true
+	})
 	return nil
 }
 

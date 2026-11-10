@@ -4,6 +4,27 @@
 
 Each item: the assumption as it stands, current behaviour with evidence, a proposed resolution, and what accepting it would change.
 
+## Owner decision table (compact)
+
+All OPEN. "Proposed" is Claude's recommendation, not a decision.
+
+| ID | Exact assumption (short) | Proposed | Alternatives | Security implication | Tests affected |
+|---|---|---|---|---|---|
+| DEP-1 | Declared dependency absent from `initial.dependencies` starts `up` | Absent = `INPUT_MALFORMED`, no step runs | Keep default `up`; default `down` | Current default is fail-open on missing trusted configuration | New `protocol-broker` cases; no existing expectation changes |
+| C-1 | One generic external code `PROMOTION_REFUSED`; `ACCEPTANCE_BINDING_REQUIRED` hidden | Confirm | Distinct external code for binding-required | A distinct code reveals that a transition is protected (D-020) | None |
+| C-2 | Statement without `from_states` treated as any state in bypass analysis | Confirm | Treat as no state (would admit more bundles) | Alternative can admit a protected-edge bypass | None |
+| C-3 | Crash after reservation resumes on retry | Confirm for M1; M3 reservation lease/expiry | Treat as uncertain (`RECONCILIATION_REQUIRED`) | Nothing dispatched, no duplicate effect; abandoned reservation can block a key until M3 | None now |
+| C-4 | `GRANT_MALFORMED` unreachable via `approve` | Corrupt stored grant = `LEDGER_UNAVAILABLE` (rule 2), never allow; test by editing `grants.binding` | Keep `GRANT_MALFORMED` code reachable; leave untested | Untested path could mis-handle a tampered grant | 1 new `m1/ledger_tests` case |
+| C-5 | Broker compared with M0 by correspondence, not execution | Accept for M1 | Build an M0 `broker-scenario` adapter | Divergence from M0 found only by reading | None |
+| C-6 | Concurrency checked as serial-equivalent outcomes | Confirm as M1 criterion; linearizability and kills under load in M3 | Per-history linearizability checker now | Interleavings with equal outcome counts are not distinguished | None |
+| S-1 | `journal_mode=WAL` applied to an existing non-WAL file before verification changes its header | Verify schema read-only first, switch to WAL only after verification succeeds | Accept (documented limit) | A rejected foreign file is modified (integrity, not authorization) | 1 new storage test (non-WAL foreign file unchanged) |
+| S-2 | A file newly created by a run whose initialization fails is left behind | Remove the file the run created | Accept | Leftover empty files; no authorization effect | 1 new storage test |
+| S-3 | Busy timeout 5,000 ms; beyond it the operation (or open) is `LEDGER_UNAVAILABLE` | Keep 5,000 ms for M1; record contention timeouts in benchmark results | Longer timeout; retry loop | Fail closed under contention (availability cost only) | Benchmark must count `LEDGER_UNAVAILABLE` outcomes |
+| S-4 | Unreadable `final` = `{"error": "LEDGER_UNAVAILABLE"}`, untested | Accept as untested for M1 (no portable way to fail only the final read; triggers cannot fire on reads) | Test-only hook in each prototype | Reporting only; no effect | None |
+| S-5 | stderr diagnostics may contain paths and SQLite error text | Accept: stderr is the operator channel; production logging policy decided in M3 | Sanitize stderr too | Operator logs reveal local paths | None |
+| S-6 | Write-access check before open has a time-of-check gap; read-only `-wal`/`-shm` not checked | Accept for M1 (local single-user prototype) | Open with `SQLITE_OPEN_READWRITE` only and check `sqlite3_db_readonly` | A file made read-only between check and use fails later as operation failures (still fail closed) | None |
+| S-7 | Disk full and I/O errors are not injected | Accept for M1; fault-injection VFS or real device tests in M3 | Add a failing VFS now | Same rule-2 path as other errors, but unexercised | M3 tests |
+
 ## DEP-1: declared broker dependency absent from `initial.dependencies`
 
 - **Assumption (exact):** "A dependency the broker declares (`policy`, `ledger`) that is absent from a scenario's `initial.dependencies` starts `up`."

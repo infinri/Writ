@@ -10,6 +10,7 @@
 use crate::broker::{refused, replayed, result};
 use crate::json::{obj, s, Value};
 use crate::time::Instant;
+use crate::timing::{since, StepTiming, TxTime};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::fs::OpenOptions;
 use std::io::ErrorKind;
@@ -54,6 +55,50 @@ pub fn open(path: &Path) -> R<Connection> {
 
 fn begin(c: &Connection) -> R<Transaction<'_>> {
     Ok(Transaction::new_unchecked(c, TransactionBehavior::Immediate)?)
+}
+
+/// How a logical transaction ends: `COMMIT`, or `ROLLBACK` (by dropping the
+/// `Transaction`, as before timing was added).
+enum End<T> {
+    Commit(T),
+    Rollback(T),
+}
+
+/// One logical transaction named `name`, timed into `t` (LEDGER-SQLITE.md
+/// "Per-operation timing"): `begin_ns` brackets `BEGIN IMMEDIATE`, `body_ns`
+/// the body, `end_ns` `COMMIT` or `ROLLBACK`. A body error rolls back and is
+/// returned; a failed `BEGIN` is recorded with a zero body and end.
+fn transact<T>(c: &Connection, t: &mut StepTiming, name: &'static str, body: impl FnOnce(&Transaction) -> R<End<T>>) -> R<T> {
+    let started = std::time::Instant::now();
+    let tx = begin(c);
+    let begin_ns = Some(since(started));
+    let tx = match tx {
+        Ok(tx) => tx,
+        Err(e) => {
+            t.tx.push((name, TxTime { begin_ns, body_ns: 0, end_ns: Some(0), commit: false }));
+            return Err(e);
+        }
+    };
+    let started = std::time::Instant::now();
+    let out = body(&tx);
+    let body_ns = since(started);
+    let started = std::time::Instant::now();
+    let (out, commit) = match out {
+        Ok(End::Commit(v)) => match tx.commit() {
+            Ok(()) => (Ok(v), true),
+            Err(e) => (Err(DbError::from(e)), false),
+        },
+        Ok(End::Rollback(v)) => {
+            drop(tx);
+            (Ok(v), false)
+        }
+        Err(e) => {
+            drop(tx);
+            (Err(e), false)
+        }
+    };
+    t.tx.push((name, TxTime { begin_ns, body_ns, end_ns: Some(since(started)), commit }));
+    out
 }
 
 /// The tables ledger.sql creates, in schema order.
@@ -114,56 +159,57 @@ struct GrantRow {
 }
 
 /// T-reserve. `None`: the receipt is `reserved` (new or resumed) and the
-/// operation continues with T-dispatch; `Some`: the operation's result.
-pub fn reserve(c: &Connection, key: &Key, fingerprint: &str, grant: Option<&str>, binding: &str, now: Instant, crash_before: bool) -> R<Option<Value>> {
-    let tx = begin(c)?;
-    let found: Option<(String, Option<String>, String)> = tx
-        .query_row(
-            "SELECT fingerprint, grant_label, status FROM receipts WHERE tenant_id = ?1 AND idempotency_key = ?2",
-            (&key.0, &key.1),
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .optional()?;
-    if let Some((fp, label, status)) = found {
-        if fp != fingerprint || label.as_deref() != grant {
-            return Ok(Some(refused("IDEMPOTENCY_CONFLICT")));
-        }
-        return match status.as_str() {
-            "observed_success" => Ok(Some(replayed("effect_completed"))),
-            "observed_failure" => Ok(Some(replayed("effect_failed"))),
-            "dispatched" | "unknown_reconcile" => Ok(Some(refused("RECONCILIATION_REQUIRED"))),
-            "reserved" => Ok(None),
-            other => Err(DbError(format!("unknown receipt status {other}"))),
-        };
-    }
-    if crash_before {
-        return Ok(Some(result("crashed")));
-    }
-    if let Some(label) = grant {
-        let row = tx
-            .query_row("SELECT binding, expires_s, expires_ns, max_uses, uses FROM grants WHERE label = ?1", [label], |r| {
-                Ok(GrantRow { binding: r.get(0)?, expires: (r.get(1)?, r.get(2)?), max_uses: r.get(3)?, uses: r.get(4)? })
-            })
+/// operation continues with T-dispatch; `Some`: the operation's result. A
+/// resumed reservation ends with `COMMIT` of nothing ("commit nothing").
+pub fn reserve(c: &Connection, t: &mut StepTiming, key: &Key, fingerprint: &str, grant: Option<&str>, binding: &str, now: Instant, crash_before: bool) -> R<Option<Value>> {
+    transact(c, t, "reserve", |tx| {
+        let found: Option<(String, Option<String>, String)> = tx
+            .query_row(
+                "SELECT fingerprint, grant_label, status FROM receipts WHERE tenant_id = ?1 AND idempotency_key = ?2",
+                (&key.0, &key.1),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
             .optional()?;
-        let Some(g) = row else { return Ok(Some(refused("GRANT_UNKNOWN"))) };
-        if g.binding != binding {
-            return Ok(Some(refused("GRANT_MISMATCH")));
+        if let Some((fp, label, status)) = found {
+            if fp != fingerprint || label.as_deref() != grant {
+                return Ok(End::Rollback(Some(refused("IDEMPOTENCY_CONFLICT"))));
+            }
+            return match status.as_str() {
+                "observed_success" => Ok(End::Rollback(Some(replayed("effect_completed")))),
+                "observed_failure" => Ok(End::Rollback(Some(replayed("effect_failed")))),
+                "dispatched" | "unknown_reconcile" => Ok(End::Rollback(Some(refused("RECONCILIATION_REQUIRED")))),
+                "reserved" => Ok(End::Commit(None)),
+                other => Err(DbError(format!("unknown receipt status {other}"))),
+            };
         }
-        if now >= g.expires {
-            return Ok(Some(refused("GRANT_EXPIRED")));
+        if crash_before {
+            return Ok(End::Rollback(Some(result("crashed"))));
         }
-        if g.uses >= g.max_uses || tx.execute("UPDATE grants SET uses = uses + 1 WHERE label = ?1 AND uses < max_uses", [label])? != 1 {
-            return Ok(Some(refused("GRANT_EXHAUSTED")));
+        if let Some(label) = grant {
+            let row = tx
+                .query_row("SELECT binding, expires_s, expires_ns, max_uses, uses FROM grants WHERE label = ?1", [label], |r| {
+                    Ok(GrantRow { binding: r.get(0)?, expires: (r.get(1)?, r.get(2)?), max_uses: r.get(3)?, uses: r.get(4)? })
+                })
+                .optional()?;
+            let Some(g) = row else { return Ok(End::Rollback(Some(refused("GRANT_UNKNOWN")))) };
+            if g.binding != binding {
+                return Ok(End::Rollback(Some(refused("GRANT_MISMATCH"))));
+            }
+            if now >= g.expires {
+                return Ok(End::Rollback(Some(refused("GRANT_EXPIRED"))));
+            }
+            if g.uses >= g.max_uses || tx.execute("UPDATE grants SET uses = uses + 1 WHERE label = ?1 AND uses < max_uses", [label])? != 1 {
+                return Ok(End::Rollback(Some(refused("GRANT_EXHAUSTED"))));
+            }
+            tx.execute("INSERT INTO grant_uses (label, tenant_id, idempotency_key) VALUES (?1, ?2, ?3)", (label, &key.0, &key.1))?;
         }
-        tx.execute("INSERT INTO grant_uses (label, tenant_id, idempotency_key) VALUES (?1, ?2, ?3)", (label, &key.0, &key.1))?;
-    }
-    tx.execute(
-        "INSERT INTO receipts (tenant_id, idempotency_key, fingerprint, grant_label, status) VALUES (?1, ?2, ?3, ?4, 'reserved')",
-        (&key.0, &key.1, fingerprint, grant),
-    )?;
-    tx.execute("INSERT INTO receipt_events (tenant_id, idempotency_key, status, cause) VALUES (?1, ?2, 'reserved', 'reserve')", (&key.0, &key.1))?;
-    tx.commit()?;
-    Ok(None)
+        tx.execute(
+            "INSERT INTO receipts (tenant_id, idempotency_key, fingerprint, grant_label, status) VALUES (?1, ?2, ?3, ?4, 'reserved')",
+            (&key.0, &key.1, fingerprint, grant),
+        )?;
+        tx.execute("INSERT INTO receipt_events (tenant_id, idempotency_key, status, cause) VALUES (?1, ?2, 'reserved', 'reserve')", (&key.0, &key.1))?;
+        Ok(End::Commit(None))
+    })
 }
 
 /// Move a receipt from `from` to `to` (exactly one row) and append its event.
@@ -180,80 +226,81 @@ fn transition(tx: &Transaction, key: &Key, from: &str, to: &str, cause: &str) ->
 }
 
 /// T-dispatch: the new permit number.
-pub fn dispatch(c: &Connection, key: &Key) -> R<u64> {
-    let tx = begin(c)?;
-    if tx.execute("UPDATE counters SET value = value + 1 WHERE name = 'next_permit'", [])? != 1 {
-        return Err(DbError("next_permit counter missing".into()));
-    }
-    let n: i64 = tx.query_row("SELECT value FROM counters WHERE name = 'next_permit'", [], |r| r.get(0))?;
-    transition(&tx, key, "reserved", "dispatched", "dispatch")?;
-    tx.commit()?;
+pub fn dispatch(c: &Connection, t: &mut StepTiming, key: &Key) -> R<u64> {
+    let n = transact(c, t, "dispatch", |tx| {
+        if tx.execute("UPDATE counters SET value = value + 1 WHERE name = 'next_permit'", [])? != 1 {
+            return Err(DbError("next_permit counter missing".into()));
+        }
+        let n: i64 = tx.query_row("SELECT value FROM counters WHERE name = 'next_permit'", [], |r| r.get(0))?;
+        transition(tx, key, "reserved", "dispatched", "dispatch")?;
+        Ok(End::Commit(n))
+    })?;
     u64::try_from(n).map_err(|_| DbError(format!("next_permit {n}")))
 }
 
 /// T-adapter (simulated): `check` is the permit verification (fingerprint,
 /// MAC, expiry) giving the permit id. `Ok(true)` applied, `Ok(false)`
 /// consumed without effect, `Err(code)` refused with nothing written.
-pub fn adapter(c: &Connection, check: impl FnOnce() -> Result<String, &'static str>, fails: bool) -> R<Result<bool, &'static str>> {
-    let tx = begin(c)?;
-    let id = match check() {
-        Ok(id) => id,
-        Err(code) => return Ok(Err(code)),
-    };
-    let consumed: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM adapter_consumed_permits WHERE permit_id = ?1)", [&id], |r| r.get(0))?;
-    if consumed {
-        return Ok(Err("PERMIT_REPLAYED"));
-    }
-    tx.execute("INSERT INTO adapter_consumed_permits (permit_id) VALUES (?1)", [&id])?;
-    if !fails {
-        tx.execute("INSERT INTO adapter_effects (permit_id) VALUES (?1)", [&id])?;
-    }
-    tx.commit()?;
-    Ok(Ok(!fails))
+pub fn adapter(c: &Connection, t: &mut StepTiming, check: impl FnOnce() -> Result<String, &'static str>, fails: bool) -> R<Result<bool, &'static str>> {
+    transact(c, t, "adapter", |tx| {
+        let id = match check() {
+            Ok(id) => id,
+            Err(code) => return Ok(End::Rollback(Err(code))),
+        };
+        let consumed: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM adapter_consumed_permits WHERE permit_id = ?1)", [&id], |r| r.get(0))?;
+        if consumed {
+            return Ok(End::Rollback(Err("PERMIT_REPLAYED")));
+        }
+        tx.execute("INSERT INTO adapter_consumed_permits (permit_id) VALUES (?1)", [&id])?;
+        if !fails {
+            tx.execute("INSERT INTO adapter_effects (permit_id) VALUES (?1)", [&id])?;
+        }
+        Ok(End::Commit(Ok(!fails)))
+    })
 }
 
 /// T-observe.
-pub fn observe(c: &Connection, key: &Key, success: bool) -> R<()> {
-    let tx = begin(c)?;
-    transition(&tx, key, "dispatched", if success { "observed_success" } else { "observed_failure" }, "observe")?;
-    tx.commit()?;
-    Ok(())
+pub fn observe(c: &Connection, t: &mut StepTiming, key: &Key, success: bool) -> R<()> {
+    transact(c, t, "observe", |tx| {
+        transition(tx, key, "dispatched", if success { "observed_success" } else { "observed_failure" }, "observe")?;
+        Ok(End::Commit(()))
+    })
 }
 
 /// approve's transaction: `false` if the label is already in use.
-pub fn insert_grant(c: &Connection, label: &str, binding: &str, expires: Instant) -> R<bool> {
-    let tx = begin(c)?;
-    let exists: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM grants WHERE label = ?1)", [label], |r| r.get(0))?;
-    if exists {
-        return Ok(false);
-    }
-    tx.execute(
-        "INSERT INTO grants (label, binding, expires_s, expires_ns, max_uses, uses) VALUES (?1, ?2, ?3, ?4, 1, 0)",
-        (label, binding, expires.0, expires.1),
-    )?;
-    tx.commit()?;
-    Ok(true)
+pub fn insert_grant(c: &Connection, t: &mut StepTiming, label: &str, binding: &str, expires: Instant) -> R<bool> {
+    transact(c, t, "approve", |tx| {
+        let exists: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM grants WHERE label = ?1)", [label], |r| r.get(0))?;
+        if exists {
+            return Ok(End::Rollback(false));
+        }
+        tx.execute(
+            "INSERT INTO grants (label, binding, expires_s, expires_ns, max_uses, uses) VALUES (?1, ?2, ?3, ?4, 1, 0)",
+            (label, binding, expires.0, expires.1),
+        )?;
+        Ok(End::Commit(true))
+    })
 }
 
 /// reconcile: every `dispatched` receipt becomes `unknown_reconcile`.
-pub fn reconcile(c: &Connection) -> R<i64> {
-    let tx = begin(c)?;
-    tx.execute(
-        "INSERT INTO receipt_events (tenant_id, idempotency_key, status, cause) \
-         SELECT tenant_id, idempotency_key, 'unknown_reconcile', 'reconcile' FROM receipts WHERE status = 'dispatched' ORDER BY tenant_id, idempotency_key",
-        [],
-    )?;
-    let n = tx.execute("UPDATE receipts SET status = 'unknown_reconcile' WHERE status = 'dispatched'", [])?;
-    tx.commit()?;
-    Ok(n as i64)
+pub fn reconcile(c: &Connection, t: &mut StepTiming) -> R<i64> {
+    transact(c, t, "reconcile", |tx| {
+        tx.execute(
+            "INSERT INTO receipt_events (tenant_id, idempotency_key, status, cause) \
+             SELECT tenant_id, idempotency_key, 'unknown_reconcile', 'reconcile' FROM receipts WHERE status = 'dispatched' ORDER BY tenant_id, idempotency_key",
+            [],
+        )?;
+        let n = tx.execute("UPDATE receipts SET status = 'unknown_reconcile' WHERE status = 'dispatched'", [])?;
+        Ok(End::Commit(n as i64))
+    })
 }
 
 /// One audited refusal.
-pub fn refuse(c: &Connection, code: &str) -> R<()> {
-    let tx = begin(c)?;
-    tx.execute("INSERT INTO audit_refusals (code) VALUES (?1)", [code])?;
-    tx.commit()?;
-    Ok(())
+pub fn refuse(c: &Connection, t: &mut StepTiming, code: &str) -> R<()> {
+    transact(c, t, "audit", |tx| {
+        tx.execute("INSERT INTO audit_refusals (code) VALUES (?1)", [code])?;
+        Ok(End::Commit(()))
+    })
 }
 
 fn count(c: &Connection, table: &str) -> R<i64> {

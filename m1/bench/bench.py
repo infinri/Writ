@@ -162,6 +162,53 @@ class Ledger:
         return f"{base} --ledger sqlite --ledger-dir {d}"
 
 
+def collect_timing(timing: dict, acc: dict) -> int:
+    """Flatten one bench-broker-scenario timing object into sample lists
+    (LEDGER-SQLITE.md "Per-operation timing"); returns parse_ns + run_ns."""
+    def add(k, v):
+        if isinstance(v, int):
+            acc.setdefault(k, []).append(v)
+
+    def step(s, prefix):
+        op = s.get("op", "unknown")
+        if op == "concurrent":
+            add(f"{prefix}concurrent.total_ns", s.get("total_ns"))
+            for o in s.get("operations") or []:
+                step(o, "concurrent.")
+            return
+        for k in ("total_ns", "validate_ns", "decide_ns", "key_lock_wait_ns"):
+            add(f"{prefix}op.{op}.{k}", s.get(k))
+        for tname, tx in (s.get("tx") or {}).items():
+            for k in ("begin_ns", "body_ns", "end_ns"):
+                add(f"{prefix}tx.{tname}.{k}", tx.get(k))
+    for k in ("parse_ns", "open_ns", "final_ns", "run_ns"):
+        add(f"line.{k}", timing.get(k))
+    for s in timing.get("steps") or []:
+        step(s, "")
+    return (timing.get("parse_ns") or 0) + (timing.get("run_ns") or 0)
+
+
+def timed_broker_runs(name, protos, command, path, led, runs, check, ids, nulls, verify) -> dict:
+    """Runs through bench-broker-scenario; `verify(proto, scenario_outputs)` applies the
+    workload's correctness checks to the unwrapped scenario outputs. Protocol and process
+    overhead per run = process wall time minus the in-process parse_ns + run_ns of all lines."""
+    acc = {p.name: {} for p in protos}
+    for run in range(runs):
+        for p in order(protos, run):
+            r = outputs_of(p, led.cmd("bench-" + command, p), path, check, ids, nulls)
+            scen, inproc = {}, 0
+            for cid, o in r["out"].items():
+                if not isinstance(o, dict) or set(o) != {"scenario", "timing"}:
+                    check.fail(f"{name}.timed_output_shape", {"proto": p.name, "id": cid})
+                    continue
+                scen[cid] = o["scenario"]
+                inproc += collect_timing(o["timing"], acc[p.name])
+            verify(p, scen)
+            acc[p.name].setdefault("process.overhead_ns", []).append(int(r["wall_s"] * 1e9) - inproc)
+    check.ok(f"{name}.timed_output_shape")
+    return {pn: {k: stats.summarize(v) for k, v in sorted(a.items())} for pn, a in acc.items()}
+
+
 def workload_b(protos, prof, seed, tmp: Path, check: Check, samples: dict, ledger: str | None = "sqlite",
                name: str = "B") -> dict:
     command, lines, meta, cases = wl.gen_b(seed, prof["b_sessions"])
@@ -173,18 +220,22 @@ def workload_b(protos, prof, seed, tmp: Path, check: Check, samples: dict, ledge
     ids, nulls = ids_of(lines)
     res = Results("bench-B")
     walls = {p.name: [] for p in protos}
+
+    def verify_b(p, outs):
+        for c in cases:
+            out = outs.get(c["id"])
+            c_broker.check_run(res, p.name, c, out)
+            grp = out["steps"][-1] if isinstance(out, dict) and out.get("steps") else None
+            ok = isinstance(grp, dict) and grp.get("result") == "concurrent" and \
+                c_broker.serializable(c, grp.get("outcomes") or {}, out.get("final") or {})
+            if not ok:
+                check.fail(f"{name}.concurrent_group_equals_a_serialization", {"proto": p.name, "id": c["id"], "ok": ok})
     for run in range(prof["b_runs"]):
         for p in order(protos, run):
             r = outputs_of(p, led.cmd(command, p), path, check, ids, nulls)
             walls[p.name].append(r["wall_s"])
-            for c in cases:
-                out = r["out"].get(c["id"])
-                c_broker.check_run(res, p.name, c, out)
-                grp = out["steps"][-1] if isinstance(out, dict) and out.get("steps") else None
-                ok = isinstance(grp, dict) and grp.get("result") == "concurrent" and \
-                    c_broker.serializable(c, grp.get("outcomes") or {}, out.get("final") or {})
-                if not ok:
-                    check.fail(f"{name}.concurrent_group_equals_a_serialization", {"proto": p.name, "id": c["id"], "ok": ok})
+            verify_b(p, r["out"])
+    timing = timed_broker_runs(name, protos, command, path, led, prof["b_runs"], check, ids, nulls, verify_b)
     check.ok(f"{name}.concurrent_group_equals_a_serialization")
     for inv, per in res.counts.items():
         check.ok(f"{name}.{inv}")
@@ -196,7 +247,8 @@ def workload_b(protos, prof, seed, tmp: Path, check: Check, samples: dict, ledge
         samples[f"{name}.{p.name}"] = walls[p.name]
         meas[p.name] = {"batch_wall_s": stats.summarize(walls[p.name]),
                         "sessions_per_sec": (len(lines) * len(walls[p.name]) / sum(walls[p.name])) if walls[p.name] else None,
-                        "peak_rss_kb": runner.peak_rss(p, led.cmd(command, p), path, tmp)["kb"]}
+                        "peak_rss_kb": runner.peak_rss(p, led.cmd(command, p), path, tmp)["kb"],
+                        "broker_timing_ns": timing[p.name]}
     return {"command": command, "seed": seed, "runs": prof["b_runs"], "digest": wl.digest_lines(lines), "meta": meta,
             "measurements": meas,
             "method": "one broker-scenario per session, each ending in one concurrent group of 10 executes "
@@ -222,12 +274,21 @@ def workload_plain(name, gen, protos, runs, tmp: Path, check: Check, samples: di
             if r["out"] != ref[p.name]:
                 check.fail(f"{name}.repeat_identical", {"proto": p.name, "run": run})
     check.ok(f"{name}.repeat_identical")
+    timing = None
+    if command == "broker-scenario":
+        def verify_plain(p, outs):
+            if outs != ref[p.name]:
+                check.fail(f"{name}.timed_scenario_equals_plain", {"proto": p.name})
+        timing = timed_broker_runs(name, protos, command, path, led, runs, check, ids, nulls, verify_plain)
+        check.ok(f"{name}.timed_scenario_equals_plain")
     meas = {}
     for p in protos:
         samples[f"{name}.{p.name}"] = walls[p.name]
         meas[p.name] = {"batch_wall_s": stats.summarize(walls[p.name]),
                         "lines_per_sec": (len(lines) * runs / sum(walls[p.name])) if walls[p.name] else None,
                         "peak_rss_kb": runner.peak_rss(p, led.cmd(command, p), path, tmp)["kb"]}
+        if timing is not None:
+            meas[p.name]["broker_timing_ns"] = timing[p.name]
     return {"command": command, "runs": runs, "lines": len(lines), "digest": wl.digest_lines(lines), "meta": meta,
             "measurements": meas}
 
@@ -421,8 +482,9 @@ def main(argv=None) -> int:
             "E": "chaos (ledger and broker kill) not implemented in M1-06a",
             "ledgers": "B and H use the file-backed SQLite ledger (D-023, fresh database per process); B-mem and "
                        "H-mem use the in-memory model and are not substitutes for the SQLite results",
-            "broker_transaction_latency": "per-operation broker authorization and transaction latency needs "
-                                          "in-process instrumentation (not yet implemented); only batch wall time",
+            "broker_timing": "B, B-mem, H and H-mem report per-operation broker timing from bench-broker-scenario "
+                             "(validation, kernel decision, key-lock wait, each transaction's begin/body/end, "
+                             "parse and run per line, process and protocol overhead) in separate timed runs",
             "G_symlinks": "M1 kernels perform no filesystem access; symlink paths exercise string handling only",
         },
         "samples_file": None,

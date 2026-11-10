@@ -133,8 +133,8 @@ func refused(code string) map[string]any {
 // refuse audits a refusal in the ledger and returns it. A failed audit
 // insert (rolled back, so not counted) does not change the refusal
 // (LEDGER-SQLITE.md "Storage failures" rule 2).
-func (b *Broker) refuse(led ledger, code string) map[string]any {
-	if err := led.audit(code); err != nil {
+func (b *Broker) refuse(led ledger, t *opTiming, code string) map[string]any {
+	if err := led.audit(t, code); err != nil {
 		fmt.Fprintln(os.Stderr, "ledger error:", err)
 	}
 	return refused(code)
@@ -142,9 +142,9 @@ func (b *Broker) refuse(led ledger, code string) map[string]any {
 
 // ledgerFailed answers a ledger error (a busy timeout or a defect) with
 // LEDGER_UNAVAILABLE, never a success.
-func (b *Broker) ledgerFailed(led ledger, err error) map[string]any {
+func (b *Broker) ledgerFailed(led ledger, t *opTiming, err error) map[string]any {
 	fmt.Fprintln(os.Stderr, "ledger error:", err)
-	return b.refuse(led, "LEDGER_UNAVAILABLE")
+	return b.refuse(led, t, "LEDGER_UNAVAILABLE")
 }
 
 func mac(key, msg []byte) string {
@@ -234,49 +234,52 @@ func requestFingerprint(request any) string {
 	return d
 }
 
-// adapterApply is the simulated effect adapter: it verifies the permit in a
-// fixed order, records it as consumed, then applies (or fails) the effect.
-func (b *Broker) adapterApply(led ledger, v view, p *permit, request any, fail bool) (string, error) {
-	if requestFingerprint(request) != p.fingerprint {
-		return "PERMIT_REQUEST_MISMATCH", nil
-	}
-	if !hmac.Equal([]byte(mac(b.permitKey, permitBody(p))), []byte(p.mac)) {
-		return "PERMIT_INVALID", nil
-	}
-	if !v.now.Before(p.expires) {
-		return "PERMIT_EXPIRED", nil
-	}
-	replayed, err := led.consume(p.id, !fail)
-	if err != nil {
-		return "", err
-	}
-	if replayed {
-		return "PERMIT_REPLAYED", nil
-	}
-	return "", nil
+// adapterApply is the simulated effect adapter (T-adapter): inside its
+// transaction it verifies the permit in a fixed order (fingerprint, MAC,
+// expiry, replay), records it as consumed, then applies (or fails) the
+// effect.
+func (b *Broker) adapterApply(led ledger, t *opTiming, v view, p *permit, request any, fail bool) (string, error) {
+	return led.adapter(t, func() string {
+		if requestFingerprint(request) != p.fingerprint {
+			return "PERMIT_REQUEST_MISMATCH"
+		}
+		if !hmac.Equal([]byte(mac(b.permitKey, permitBody(p))), []byte(p.mac)) {
+			return "PERMIT_INVALID"
+		}
+		if !v.now.Before(p.expires) {
+			return "PERMIT_EXPIRED"
+		}
+		return ""
+	}, p.id, !fail)
 }
 
-func (b *Broker) execute(led ledger, op map[string]any, step int) map[string]any {
+func (b *Broker) execute(led ledger, t *opTiming, op map[string]any, step int) map[string]any {
 	v := b.view()
 	request := op["request"]
 	fault := sjson.StrOr(op, "fault")
 	// 1. sealed ingress
+	validating := time.Now()
 	if !b.sealValid(request, op["seal"]) {
-		return b.refuse(led, "INGRESS_UNAUTHENTICATED")
+		t.setValidate(validating)
+		return b.refuse(led, t, "INGRESS_UNAUTHENTICATED")
 	}
 	// 2. ledger availability, before any decision side effect
 	if !v.ledgerUp {
-		return b.refuse(led, "LEDGER_UNAVAILABLE")
+		t.setValidate(validating)
+		return b.refuse(led, t, "LEDGER_UNAVAILABLE")
 	}
+	t.setValidate(validating)
 	// 3. use-time kernel decision
+	deciding := time.Now()
 	d := v.decide(request)
+	t.setDecide(deciding)
 	if d.Status != "allow" && d.Status != "require_approval" {
-		return b.refuse(led, d.ReasonCode)
+		return b.refuse(led, t, d.ReasonCode)
 	}
 	grantRef, hasGrant := sjson.Str(op, "grant_ref")
 	// 4. approval required
 	if d.Status == "require_approval" && !hasGrant {
-		return b.refuse(led, "APPROVAL_REQUIRED")
+		return b.refuse(led, t, "APPROVAL_REQUIRED")
 	}
 	effective := ""
 	if d.Status == "require_approval" {
@@ -285,9 +288,14 @@ func (b *Broker) execute(led ledger, op map[string]any, step int) map[string]any
 	req, _ := sjson.Obj(request)
 	tenant, key := sjson.StrOr(req, "tenant_id"), sjson.StrOr(req, "idempotency_key")
 	fp := requestFingerprint(request)
-	defer b.keys.lock(tenant + "\x00" + key)()
+	locking := time.Now()
+	unlock := b.keys.lock(tenant + "\x00" + key)
+	if _, isSQL := led.(*sqlLedger); isSQL {
+		t.setKeyLock(locking)
+	}
+	defer unlock()
 	// 5. T-reserve
-	outcome, err := led.reserve(reservation{
+	outcome, err := led.reserve(t, reservation{
 		tenant: tenant, key: key, fingerprint: fp, grantLabel: effective,
 		approval:    d.Status == "require_approval",
 		crashBefore: fault == "crash_before_reserve",
@@ -306,7 +314,7 @@ func (b *Broker) execute(led ledger, op map[string]any, step int) map[string]any
 		},
 	})
 	if err != nil {
-		return b.ledgerFailed(led, err)
+		return b.ledgerFailed(led, t, err)
 	}
 	switch outcome {
 	case "":
@@ -317,16 +325,16 @@ func (b *Broker) execute(led ledger, op map[string]any, step int) map[string]any
 	case "observed_failure":
 		return map[string]any{"result": "effect_failed", "replayed": true}
 	default:
-		return b.refuse(led, outcome)
+		return b.refuse(led, t, outcome)
 	}
 	// 6. crash after reservation: the reservation and grant use persist
 	if fault == "crash_after_reserve" {
 		return map[string]any{"result": "crashed"}
 	}
 	// 7. T-dispatch: issue a permit and mark the receipt dispatched
-	seq, err := led.dispatch(tenant, key)
+	seq, err := led.dispatch(t, tenant, key)
 	if err != nil {
-		return b.ledgerFailed(led, err)
+		return b.ledgerFailed(led, t, err)
 	}
 	p := &permit{id: fmt.Sprintf("permit-%d", seq), fingerprint: fp, bundleSha: v.bundleSha(), expires: v.now.Add(permitTTL)}
 	if s, ok := req["deadline_at"].(string); ok {
@@ -341,14 +349,14 @@ func (b *Broker) execute(led ledger, op map[string]any, step int) map[string]any
 		b.mu.Unlock()
 	}
 	// T-adapter
-	code, err := b.adapterApply(led, v, p, request, fault == "effect_fails")
+	code, err := b.adapterApply(led, t, v, p, request, fault == "effect_fails")
 	if err != nil {
-		return b.ledgerFailed(led, err)
+		return b.ledgerFailed(led, t, err)
 	}
 	if code != "" {
 		// Unreachable for a freshly issued permit; fail closed and leave the
 		// receipt dispatched so it needs reconciliation.
-		return b.refuse(led, code)
+		return b.refuse(led, t, code)
 	}
 	// 8. injected faults
 	if fault == "crash_after_dispatch" {
@@ -359,29 +367,35 @@ func (b *Broker) execute(led ledger, op map[string]any, step int) map[string]any
 	if fault == "effect_fails" {
 		status, result = "observed_failure", "effect_failed"
 	}
-	if err := led.observe(tenant, key, status); err != nil {
-		return b.ledgerFailed(led, err)
+	if err := led.observe(t, tenant, key, status); err != nil {
+		return b.ledgerFailed(led, t, err)
 	}
 	return map[string]any{"result": result}
 }
 
-func (b *Broker) approve(led ledger, op map[string]any) map[string]any {
+func (b *Broker) approve(led ledger, t *opTiming, op map[string]any) map[string]any {
 	v := b.view()
+	validating := time.Now()
 	creds, known := b.channels[sjson.StrOr(op, "channel")]
 	human := sjson.StrOr(op, "human")
 	cred, okC := sjson.Str(op, "credential")
 	stored, okH := creds[human]
-	if !known || !okC || !okH || !hmac.Equal([]byte(stored), []byte(cred)) {
-		return b.refuse(led, "HUMAN_UNAUTHENTICATED")
+	authenticated := known && okC && okH && hmac.Equal([]byte(stored), []byte(cred))
+	t.setValidate(validating)
+	if !authenticated {
+		return b.refuse(led, t, "HUMAN_UNAUTHENTICATED")
 	}
 	request := op["for_request"]
-	if v.decide(request).Status != "require_approval" {
-		return b.refuse(led, "NOT_APPROVABLE")
+	deciding := time.Now()
+	approvable := v.decide(request).Status == "require_approval"
+	t.setDecide(deciding)
+	if !approvable {
+		return b.refuse(led, t, "NOT_APPROVABLE")
 	}
 	req, _ := sjson.Obj(request)
 	principal, _ := sjson.Obj(req["principal"])
 	if agent, ok := req["agent_id"].(string); human == sjson.StrOr(principal, "id") || (ok && human == agent) {
-		return b.refuse(led, "SELF_APPROVAL_FORBIDDEN")
+		return b.refuse(led, t, "SELF_APPROVAL_FORBIDDEN")
 	}
 	ttl := int64(defaultGrantTTL)
 	if t, ok := sjson.Int(op, "ttl_seconds"); ok {
@@ -389,28 +403,28 @@ func (b *Broker) approve(led ledger, op map[string]any) map[string]any {
 	}
 	// A label names one grant for the whole scenario: re-approving it would
 	// reset its uses, so it is refused (protocol clarifications, M1-05).
-	inUse, err := led.addGrant(sjson.StrOr(op, "grant_ref"), grant{
+	inUse, err := led.addGrant(t, sjson.StrOr(op, "grant_ref"), grant{
 		binding: v.grantBinding(request, sjson.StrOr(op, "verdict")),
 		expires: v.now.Add(time.Duration(ttl) * time.Second),
 		maxUses: 1,
 	})
 	if err != nil {
-		return b.ledgerFailed(led, err)
+		return b.ledgerFailed(led, t, err)
 	}
 	if inUse {
-		return b.refuse(led, "GRANT_REF_IN_USE")
+		return b.refuse(led, t, "GRANT_REF_IN_USE")
 	}
 	return map[string]any{"result": "grant_issued"}
 }
 
-func (b *Broker) presentPermit(led ledger, op map[string]any) map[string]any {
+func (b *Broker) presentPermit(led ledger, t *opTiming, op map[string]any) map[string]any {
 	v := b.view()
 	of, okOf := sjson.Int(op, "of_step")
 	b.mu.Lock()
 	orig, ok := b.permits[int(of)]
 	b.mu.Unlock()
 	if !okOf || !ok {
-		return b.refuse(led, "PERMIT_MISSING")
+		return b.refuse(led, t, "PERMIT_MISSING")
 	}
 	p := *orig
 	switch sjson.StrOr(op, "tamper") {
@@ -425,20 +439,20 @@ func (b *Broker) presentPermit(led ledger, op map[string]any) map[string]any {
 	case "expiry":
 		p.expires = p.expires.Add(time.Hour) // extended without re-signing
 	}
-	code, err := b.adapterApply(led, v, &p, op["request"], false)
+	code, err := b.adapterApply(led, t, v, &p, op["request"], false)
 	if err != nil {
-		return b.ledgerFailed(led, err)
+		return b.ledgerFailed(led, t, err)
 	}
 	if code != "" {
-		return b.refuse(led, code)
+		return b.refuse(led, t, code)
 	}
 	return map[string]any{"result": "effect_applied"}
 }
 
-func (b *Broker) simple(led ledger, op map[string]any) map[string]any {
+func (b *Broker) simple(led ledger, t *opTiming, op map[string]any) map[string]any {
 	switch sjson.StrOr(op, "op") {
 	case "apply_without_permit":
-		return b.refuse(led, "PERMIT_MISSING")
+		return b.refuse(led, t, "PERMIT_MISSING")
 	case "activate_bundle":
 		b.mu.Lock()
 		b.bundleDoc = op["bundle"]
@@ -447,7 +461,7 @@ func (b *Broker) simple(led ledger, op map[string]any) map[string]any {
 		return map[string]any{"result": "bundle_activated"}
 	case "restart_broker":
 		if err := b.restart(led); err != nil {
-			return b.ledgerFailed(led, err)
+			return b.ledgerFailed(led, t, err)
 		}
 		return map[string]any{"result": "restarted"}
 	case "advance_time":
@@ -463,13 +477,13 @@ func (b *Broker) simple(led ledger, op map[string]any) map[string]any {
 		b.mu.Unlock()
 		return map[string]any{"result": "dependency_set"}
 	case "reconcile":
-		n, err := led.reconcile()
+		n, err := led.reconcile(t)
 		if err != nil {
-			return b.ledgerFailed(led, err)
+			return b.ledgerFailed(led, t, err)
 		}
 		return map[string]any{"result": "reconciled", "count": n}
 	}
-	return b.refuse(led, "OPERATION_UNKNOWN")
+	return b.refuse(led, t, "OPERATION_UNKNOWN")
 }
 
 // restart simulates a broker process restart (D-020). Volatile state is
@@ -489,36 +503,52 @@ func (b *Broker) restart(led ledger) error {
 }
 
 func (b *Broker) apply(op map[string]any, step int) map[string]any {
-	return b.applyOn(b.led, op, step)
+	return b.applyOn(b.led, nil, op, step)
 }
 
-func (b *Broker) applyOn(led ledger, op map[string]any, step int) map[string]any {
+// applyOn runs one operation, recording its parts in t (nil: not timed).
+func (b *Broker) applyOn(led ledger, t *opTiming, op map[string]any, step int) map[string]any {
 	name := sjson.StrOr(op, "op")
 	if name == "concurrent" {
-		return b.concurrent(led, op)
+		return b.concurrent(led, t, op)
 	}
 	defer led.serialize()()
 	switch name {
 	case "execute":
-		return b.execute(led, op, step)
+		return b.execute(led, t, op, step)
 	case "approve":
-		return b.approve(led, op)
+		return b.approve(led, t, op)
 	case "present_permit":
-		return b.presentPermit(led, op)
+		return b.presentPermit(led, t, op)
 	}
-	return b.simple(led, op)
+	return b.simple(led, t, op)
 }
 
 // concurrent submits operations on real goroutines, each with its own ledger
 // connection opened for the group and closed afterwards; all start together.
 // The ledger's transactions and key locks make the outcome equal some serial
 // order.
-func (b *Broker) concurrent(led ledger, op map[string]any) map[string]any {
+//
+// Timing: each operation's total_ns is its connection setup (fork) plus its
+// run from dispatch on its goroutine to its result; the start barrier wait
+// is in neither.
+func (b *Broker) concurrent(led ledger, t *opTiming, op map[string]any) map[string]any {
 	ops, _ := sjson.Arr(op["operations"])
 	results := make([]map[string]any, len(ops))
 	workers := make([]ledger, len(ops))
+	timings := make([]*opTiming, len(ops))
+	setups := make([]time.Duration, len(ops))
+	if t != nil {
+		t.concurrent = true
+		for i, o := range ops {
+			m, _ := sjson.Obj(o)
+			timings[i] = t.worker(m)
+		}
+	}
 	for i := range ops {
+		opening := time.Now()
 		w, err := led.fork()
+		setups[i] = time.Since(opening)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "ledger error:", err)
 			continue
@@ -535,11 +565,14 @@ func (b *Broker) concurrent(led ledger, op map[string]any) map[string]any {
 			defer wg.Done()
 			defer panics.capture()
 			<-start
+			running := time.Now()
 			if workers[i] == nil {
 				results[i] = refused("LEDGER_UNAVAILABLE")
+				timings[i].setTotal(setups[i] + time.Since(running))
 				return
 			}
-			results[i] = b.applyOn(workers[i], m, -1)
+			results[i] = b.applyOn(workers[i], timings[i], m, -1)
+			timings[i].setTotal(setups[i] + time.Since(running))
 		}(i, m)
 	}
 	close(start)
@@ -582,17 +615,30 @@ func Run(input any) map[string]any {
 // RunWith executes one broker scenario on the SQLite ledger store selects, or
 // on the in-memory ledger when store is nil.
 func RunWith(input any, store *SQLite) map[string]any {
+	return RunTimed(input, store, nil)
+}
+
+// RunTimed is RunWith recording per-operation timing in tm (nil: not timed;
+// the output is the same either way). tm.Done is called when the output
+// value is complete, before the ledger closes.
+func RunTimed(input any, store *SQLite, tm *Timing) map[string]any {
 	in, ok := sjson.Obj(input)
 	initial, okI := sjson.Obj(in["initial"])
 	steps, okS := sjson.Arr(in["steps"])
 	if !ok || !okI || !okS || !wellFormed(initial, steps) {
+		tm.Done()
 		return map[string]any{"input_error": "INPUT_MALFORMED"}
 	}
 	b := newBroker(initial)
 	if store != nil {
+		opening := time.Now()
 		led, err := store.open()
+		if tm != nil {
+			tm.open = since(opening)
+		}
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "ledger error:", err)
+			tm.Done()
 			return map[string]any{"error": "LEDGER_UNAVAILABLE"}
 		}
 		b.led = led
@@ -601,7 +647,17 @@ func RunWith(input any, store *SQLite) map[string]any {
 	results := make([]any, 0, len(steps))
 	for i, s := range steps {
 		op, _ := sjson.Obj(s)
-		results = append(results, b.apply(op, i))
+		st := tm.step(op)
+		started := time.Now()
+		results = append(results, b.applyOn(b.led, st, op, i))
+		st.setTotal(time.Since(started))
 	}
-	return map[string]any{"steps": results, "final": b.final()}
+	finalizing := time.Now()
+	f := b.final()
+	if tm != nil {
+		tm.final = since(finalizing)
+	}
+	out := map[string]any{"steps": results, "final": f}
+	tm.Done()
+	return out
 }

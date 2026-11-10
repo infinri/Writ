@@ -33,7 +33,7 @@ Runs alternate which prototype goes first. Peak RSS is a separate full run of ea
 
 - Workload E (chaos): not implemented.
 - Every run first checks that both prototypes report the identical SQLite engine (3.54.1, source id, compile options) and the D-023 settings (`proto sqlite-info`); a difference fails the run.
-- Per-operation broker authorization and transaction latency needs in-process instrumentation (not yet implemented); B and H report batch wall time only.
+- **Broker timing (M1-06d):** B, B-mem, H and H-mem also run through `bench-broker-scenario` in separate timed runs (same correctness checks on the unwrapped scenario output; H requires byte equality with the plain run). Reported per prototype under `broker_timing_ns`: per operation `total_ns` (end to end), `validate_ns` (broker request validation), `decide_ns` (kernel authorization), `key_lock_wait_ns`; per transaction `begin_ns` (lock acquisition and busy waits), `body_ns`, `end_ns` (commit or rollback); per line `parse_ns`, `open_ns`, `final_ns`, `run_ns`; and `process.overhead_ns` (process wall time minus in-process parse and run: process start, pipes, serialization). Concurrent-group operations are reported under the `concurrent.` prefix. Definitions: LEDGER-SQLITE.md "Per-operation timing".
 - G symlinks: M1 kernels do no filesystem access, so symlink paths exercise string handling only.
 
 ## Result format

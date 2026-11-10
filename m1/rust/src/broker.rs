@@ -19,6 +19,7 @@ use crate::json::{self, obj, s, Value};
 use crate::kernel::{self, Bundle, Decision, Policy};
 use crate::sqlite::{self, DbError};
 use crate::time::{self, Instant};
+use crate::timing::{since, ScenarioTiming, StepTiming};
 use hmac::{Hmac, Mac};
 use rusqlite::Connection;
 use sha2::Sha256;
@@ -26,6 +27,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Barrier, Mutex, MutexGuard, RwLock};
 use std::thread;
+use std::time::Instant as Clock;
 
 type HmacSha256 = Hmac<Sha256>;
 type Key = (String, String);
@@ -246,133 +248,139 @@ fn conn(c: Option<&Connection>) -> R<&Connection> {
 impl Store<'_> {
     /// Receipt lookup, grant checks and use, reservation. `None`: continue
     /// with dispatch (new or resumed reservation); `Some`: the result.
-    fn reserve(&self, key: &Key, fingerprint: &str, grant: Option<&str>, expected: &Value, now: Instant, crash_before: bool) -> R<Option<Value>> {
+    fn reserve(&self, t: &mut StepTiming, key: &Key, fingerprint: &str, grant: Option<&str>, expected: &Value, now: Instant, crash_before: bool) -> R<Option<Value>> {
         let m = match self {
             Store::Sqlite(c) => {
                 let binding = json::canonical(expected).unwrap_or_default();
-                return sqlite::reserve(conn(*c)?, key, fingerprint, grant, &binding, now, crash_before);
+                return sqlite::reserve(conn(*c)?, t, key, fingerprint, grant, &binding, now, crash_before);
             }
             Store::Memory(m) => m,
         };
-        let mut l = lock(m);
-        let resume = match l.receipts.get(key) {
-            Some(r) if r.fingerprint != fingerprint || r.grant.as_deref() != grant => return Ok(Some(refused("IDEMPOTENCY_CONFLICT"))),
-            Some(r) => match r.status {
-                ReceiptStatus::ObservedSuccess => return Ok(Some(replayed("effect_completed"))),
-                ReceiptStatus::ObservedFailure => return Ok(Some(replayed("effect_failed"))),
-                ReceiptStatus::Dispatched | ReceiptStatus::UnknownReconcile => return Ok(Some(refused("RECONCILIATION_REQUIRED"))),
-                ReceiptStatus::Reserved => true,
-            },
-            None => false,
-        };
-        if !resume {
-            if crash_before {
-                return Ok(Some(result("crashed")));
+        // (kept, result) with the same outcomes as T-reserve.
+        Ok(t.memory("reserve", || {
+            let mut l = lock(m);
+            let resume = match l.receipts.get(key) {
+                Some(r) if r.fingerprint != fingerprint || r.grant.as_deref() != grant => return (false, Some(refused("IDEMPOTENCY_CONFLICT"))),
+                Some(r) => match r.status {
+                    ReceiptStatus::ObservedSuccess => return (false, Some(replayed("effect_completed"))),
+                    ReceiptStatus::ObservedFailure => return (false, Some(replayed("effect_failed"))),
+                    ReceiptStatus::Dispatched | ReceiptStatus::UnknownReconcile => return (false, Some(refused("RECONCILIATION_REQUIRED"))),
+                    ReceiptStatus::Reserved => true,
+                },
+                None => false,
+            };
+            if !resume {
+                if crash_before {
+                    return (false, Some(result("crashed")));
+                }
+                if let Some(label) = grant {
+                    let Some(g) = l.grants.get_mut(label) else { return (false, Some(refused("GRANT_UNKNOWN"))) };
+                    if g.binding != *expected {
+                        return (false, Some(refused("GRANT_MISMATCH")));
+                    }
+                    if now >= g.expires {
+                        return (false, Some(refused("GRANT_EXPIRED")));
+                    }
+                    if g.uses >= g.max_uses {
+                        return (false, Some(refused("GRANT_EXHAUSTED")));
+                    }
+                    g.uses += 1;
+                }
+                let receipt = Receipt { fingerprint: fingerprint.to_string(), grant: grant.map(str::to_string), status: ReceiptStatus::Reserved };
+                l.receipts.insert(key.clone(), receipt);
             }
-            if let Some(label) = grant {
-                let Some(g) = l.grants.get_mut(label) else { return Ok(Some(refused("GRANT_UNKNOWN"))) };
-                if g.binding != *expected {
-                    return Ok(Some(refused("GRANT_MISMATCH")));
-                }
-                if now >= g.expires {
-                    return Ok(Some(refused("GRANT_EXPIRED")));
-                }
-                if g.uses >= g.max_uses {
-                    return Ok(Some(refused("GRANT_EXHAUSTED")));
-                }
-                g.uses += 1;
-            }
-            let receipt = Receipt { fingerprint: fingerprint.to_string(), grant: grant.map(str::to_string), status: ReceiptStatus::Reserved };
-            l.receipts.insert(key.clone(), receipt);
-        }
-        Ok(None)
+            (true, None)
+        }))
     }
 
     /// Next permit number; the receipt becomes `dispatched`.
-    fn dispatch(&self, key: &Key) -> R<u64> {
+    fn dispatch(&self, t: &mut StepTiming, key: &Key) -> R<u64> {
         match self {
-            Store::Sqlite(c) => sqlite::dispatch(conn(*c)?, key),
-            Store::Memory(m) => {
+            Store::Sqlite(c) => sqlite::dispatch(conn(*c)?, t, key),
+            Store::Memory(m) => Ok(t.memory("dispatch", || {
                 let mut l = lock(m);
                 l.next_permit += 1;
                 let n = l.next_permit;
                 if let Some(r) = l.receipts.get_mut(key) {
                     r.status = ReceiptStatus::Dispatched;
                 }
-                Ok(n)
-            }
+                (true, n)
+            })),
         }
     }
 
     /// Effect adapter (simulated): verification, single use, then apply.
-    fn adapter(&self, check: impl FnOnce() -> Result<String, &'static str>, fails: bool) -> R<Result<bool, &'static str>> {
+    fn adapter(&self, t: &mut StepTiming, check: impl FnOnce() -> Result<String, &'static str>, fails: bool) -> R<Result<bool, &'static str>> {
         let m = match self {
-            Store::Sqlite(c) => return sqlite::adapter(conn(*c)?, check, fails),
+            Store::Sqlite(c) => return sqlite::adapter(conn(*c)?, t, check, fails),
             Store::Memory(m) => m,
         };
-        let id = match check() {
-            Ok(id) => id,
-            Err(code) => return Ok(Err(code)),
-        };
-        let mut l = lock(m);
-        if !l.consumed_permits.insert(id) {
-            return Ok(Err("PERMIT_REPLAYED"));
-        }
-        if fails {
-            return Ok(Ok(false));
-        }
-        l.effects_applied += 1;
-        Ok(Ok(true))
+        // The verification is inside the section, as it is inside T-adapter.
+        Ok(t.memory("adapter", || {
+            let id = match check() {
+                Ok(id) => id,
+                Err(code) => return (false, Err(code)),
+            };
+            let mut l = lock(m);
+            if !l.consumed_permits.insert(id) {
+                return (false, Err("PERMIT_REPLAYED"));
+            }
+            if fails {
+                return (true, Ok(false));
+            }
+            l.effects_applied += 1;
+            (true, Ok(true))
+        }))
     }
 
-    fn observe(&self, key: &Key, success: bool) -> R<()> {
+    fn observe(&self, t: &mut StepTiming, key: &Key, success: bool) -> R<()> {
         match self {
-            Store::Sqlite(c) => sqlite::observe(conn(*c)?, key, success),
-            Store::Memory(m) => {
+            Store::Sqlite(c) => sqlite::observe(conn(*c)?, t, key, success),
+            Store::Memory(m) => Ok(t.memory("observe", || {
                 if let Some(r) = lock(m).receipts.get_mut(key) {
                     r.status = if success { ReceiptStatus::ObservedSuccess } else { ReceiptStatus::ObservedFailure };
                 }
-                Ok(())
-            }
+                (true, ())
+            })),
         }
     }
 
     /// `false` if the label already names a grant (never reset).
-    fn insert_grant(&self, label: &str, binding: Value, expires: Instant) -> R<bool> {
+    fn insert_grant(&self, t: &mut StepTiming, label: &str, binding: Value, expires: Instant) -> R<bool> {
         match self {
-            Store::Sqlite(c) => sqlite::insert_grant(conn(*c)?, label, &json::canonical(&binding).unwrap_or_default(), expires),
-            Store::Memory(m) => {
+            Store::Sqlite(c) => sqlite::insert_grant(conn(*c)?, t, label, &json::canonical(&binding).unwrap_or_default(), expires),
+            Store::Memory(m) => Ok(t.memory("approve", || {
                 let mut l = lock(m);
                 if l.grants.contains_key(label) {
-                    return Ok(false);
+                    return (false, false);
                 }
                 l.grants.insert(label.to_string(), Grant { binding, expires, max_uses: 1, uses: 0 });
-                Ok(true)
-            }
+                (true, true)
+            })),
         }
     }
 
-    fn reconcile(&self) -> R<i64> {
+    fn reconcile(&self, t: &mut StepTiming) -> R<i64> {
         match self {
-            Store::Sqlite(c) => sqlite::reconcile(conn(*c)?),
-            Store::Memory(m) => {
+            Store::Sqlite(c) => sqlite::reconcile(conn(*c)?, t),
+            Store::Memory(m) => Ok(t.memory("reconcile", || {
                 let mut n = 0;
                 for r in lock(m).receipts.values_mut().filter(|r| r.status == ReceiptStatus::Dispatched) {
                     r.status = ReceiptStatus::UnknownReconcile;
                     n += 1;
                 }
-                Ok(n)
-            }
+                (true, n)
+            })),
         }
     }
 
-    fn refuse(&self, code: &str) -> R<()> {
+    fn refuse(&self, t: &mut StepTiming, code: &str) -> R<()> {
         match self {
-            Store::Sqlite(c) => sqlite::refuse(conn(*c)?, code),
-            Store::Memory(m) => {
+            Store::Sqlite(c) => sqlite::refuse(conn(*c)?, t, code),
+            Store::Memory(m) => Ok(t.memory("audit", || {
                 lock(m).refusals += 1;
-                Ok(())
-            }
+                (true, ())
+            })),
         }
     }
 
@@ -421,15 +429,21 @@ impl Broker {
         }
     }
 
-    fn execute(&self, cfg: &Config, store: &Store, op: &Value, step: usize) -> R<Value> {
+    fn execute(&self, cfg: &Config, store: &Store, t: &mut StepTiming, op: &Value, step: usize) -> R<Value> {
         let req = op.get("request").cloned().unwrap_or(Value::Null);
-        if !cfg.seal_valid(&req, op.get("seal")) {
+        let started = Clock::now();
+        let sealed = cfg.seal_valid(&req, op.get("seal"));
+        let ledger_up = cfg.ledger_up;
+        t.validate_ns = Some(since(started));
+        if !sealed {
             return Ok(refused("INGRESS_UNAUTHENTICATED"));
         }
-        if !cfg.ledger_up {
+        if !ledger_up {
             return Ok(refused("LEDGER_UNAVAILABLE"));
         }
+        let started = Clock::now();
         let d = cfg.decide(&req);
+        t.decide_ns = Some(since(started));
         if !matches!(d.status, "allow" | "require_approval") {
             return Ok(refused(&d.reason));
         }
@@ -441,11 +455,15 @@ impl Broker {
         let effective_grant = if d.status == "require_approval" { grant_ref } else { None };
         let fingerprint = json::digest(&req).unwrap_or_default();
         let key = (req.str_at("tenant_id").unwrap_or("").to_string(), req.str_at("idempotency_key").unwrap_or("").to_string());
+        let started = Clock::now();
         let key_lock = self.key_lock(&key);
         let _held = key_lock.as_deref().map(lock);
+        if key_lock.is_some() {
+            t.key_lock_wait_ns = Some(since(started));
+        }
 
         let expected = grant_binding(&req, &d, "approved");
-        if let Some(done) = store.reserve(&key, &fingerprint, effective_grant, &expected, cfg.now, fault == "crash_before_reserve")? {
+        if let Some(done) = store.reserve(t, &key, &fingerprint, effective_grant, &expected, cfg.now, fault == "crash_before_reserve")? {
             return Ok(done);
         }
         if fault == "crash_after_reserve" {
@@ -453,7 +471,7 @@ impl Broker {
         }
 
         // Permit bound to the whole request, the bundle and min(now + 30 s, deadline).
-        let n = store.dispatch(&key)?;
+        let n = store.dispatch(t, &key)?;
         let mut expires = time::add_seconds(cfg.now, PERMIT_TTL_SECONDS);
         if let Some(dl) = req.str_at("deadline_at").and_then(time::parse_rfc3339) {
             expires = expires.min(dl);
@@ -466,27 +484,32 @@ impl Broker {
         ]);
         let permit = Permit { mac: cfg.sign_permit(&body), body };
         lock(&self.permits).insert(step, permit.clone());
-        let applied = match store.adapter(|| cfg.permit_check(&permit, &req), fault == "effect_fails")? {
+        let applied = match store.adapter(t, || cfg.permit_check(&permit, &req), fault == "effect_fails")? {
             Ok(applied) => applied,
             Err(code) => return Ok(refused(code)),
         };
         if fault == "crash_after_dispatch" {
             return Ok(result("crashed"));
         }
-        store.observe(&key, applied)?;
+        store.observe(t, &key, applied)?;
         Ok(result(if applied { "effect_completed" } else { "effect_failed" }))
     }
 
     /// Separate trusted approval channel (simulated credential match).
-    fn approve(&self, cfg: &Config, store: &Store, op: &Value) -> R<Value> {
+    fn approve(&self, cfg: &Config, store: &Store, t: &mut StepTiming, op: &Value) -> R<Value> {
+        let started = Clock::now();
         let channel = op.str_at("channel").and_then(|c| cfg.channels.get(c));
         let human = op.str_at("human").unwrap_or("");
         let credential = op.str_at("credential");
-        if credential.is_none() || channel.and_then(|c| c.str_at(human)) != credential {
+        let authenticated = credential.is_some() && channel.and_then(|c| c.str_at(human)) == credential;
+        t.validate_ns = Some(since(started));
+        if !authenticated {
             return Ok(refused("HUMAN_UNAUTHENTICATED"));
         }
         let req = op.get("for_request").cloned().unwrap_or(Value::Null);
+        let started = Clock::now();
         let d = cfg.decide(&req);
+        t.decide_ns = Some(since(started));
         if d.status != "require_approval" {
             return Ok(refused("NOT_APPROVABLE"));
         }
@@ -499,13 +522,13 @@ impl Broker {
         let verdict = op.str_at("verdict").unwrap_or("");
         // A label names one grant for its whole life; reusing it would reset
         // the grant's uses.
-        if !store.insert_grant(label, grant_binding(&req, &d, verdict), time::add_seconds(cfg.now, ttl))? {
+        if !store.insert_grant(t, label, grant_binding(&req, &d, verdict), time::add_seconds(cfg.now, ttl))? {
             return Ok(refused("GRANT_REF_IN_USE"));
         }
         Ok(result("grant_issued"))
     }
 
-    fn present_permit(&self, cfg: &Config, store: &Store, op: &Value) -> R<Value> {
+    fn present_permit(&self, cfg: &Config, store: &Store, t: &mut StepTiming, op: &Value) -> R<Value> {
         let step = op.get("of_step").and_then(Value::as_int).unwrap_or(-1);
         let Some(mut permit) = usize::try_from(step).ok().and_then(|i| lock(&self.permits).get(&i).cloned()) else {
             return Ok(refused("PERMIT_MISSING"));
@@ -526,7 +549,7 @@ impl Broker {
             _ => {}
         }
         let req = op.get("request").cloned().unwrap_or(Value::Null);
-        Ok(match store.adapter(|| cfg.permit_check(&permit, &req), false)? {
+        Ok(match store.adapter(t, || cfg.permit_check(&permit, &req), false)? {
             Ok(_) => result("effect_applied"),
             Err(code) => refused(code),
         })
@@ -588,13 +611,13 @@ impl Broker {
         })
     }
 
-    fn operate(&self, cfg: &Config, store: &Store, op: &Value, step: usize) -> R<Value> {
+    fn operate(&self, cfg: &Config, store: &Store, t: &mut StepTiming, op: &Value, step: usize) -> R<Value> {
         match op.str_at("op").unwrap_or("") {
-            "execute" => self.execute(cfg, store, op, step),
-            "approve" => self.approve(cfg, store, op),
-            "present_permit" => self.present_permit(cfg, store, op),
+            "execute" => self.execute(cfg, store, t, op, step),
+            "approve" => self.approve(cfg, store, t, op),
+            "present_permit" => self.present_permit(cfg, store, t, op),
             "apply_without_permit" => Ok(refused("PERMIT_MISSING")),
-            "reconcile" => Ok(obj(vec![("result", s("reconciled")), ("count", Value::Int(store.reconcile()?))])),
+            "reconcile" => Ok(obj(vec![("result", s("reconciled")), ("count", Value::Int(store.reconcile(t)?))])),
             _ => Ok(refused("OPERATION_UNKNOWN")),
         }
     }
@@ -612,24 +635,24 @@ impl Broker {
         }
     }
 
-    fn apply_one(&self, op: &Value, step: usize, own: Option<&R<Connection>>) -> Value {
+    fn apply_one(&self, op: &Value, step: usize, own: Option<&R<Connection>>, t: &mut StepTiming) -> Value {
         let configures = matches!(op.str_at("op"), Some("restart_broker" | "activate_bundle" | "advance_time" | "set_dependency"));
         let attempt = if configures {
             let mut cfg = self.config.write().unwrap_or_else(|e| e.into_inner());
             self.configure(&mut cfg, op)
         } else if matches!(self.ledger, Ledger::Memory(_)) {
             let cfg = self.config.write().unwrap_or_else(|e| e.into_inner());
-            self.with_store(own, |st| self.operate(&cfg, st, op, step))
+            self.with_store(own, |st| self.operate(&cfg, st, t, op, step))
         } else {
             let cfg = self.config.read().unwrap_or_else(|e| e.into_inner());
-            self.with_store(own, |st| self.operate(&cfg, st, op, step))
+            self.with_store(own, |st| self.operate(&cfg, st, t, op, step))
         };
         let out = attempt.unwrap_or_else(|e| {
             report(&e);
             refused("LEDGER_UNAVAILABLE")
         });
         if out.str_at("result") == Some("refused") {
-            if let Err(e) = self.with_store(own, |st| st.refuse(out.str_at("code").unwrap_or(""))) {
+            if let Err(e) = self.with_store(own, |st| st.refuse(t, out.str_at("code").unwrap_or(""))) {
                 report(&e);
             }
         }
@@ -644,26 +667,48 @@ impl Broker {
         }
     }
 
-    fn apply(&self, op: &Value, step: usize, own: Option<&R<Connection>>) -> Value {
+    /// One step and its timing: `total_ns` runs from dispatch of the parsed
+    /// step to its result value.
+    fn apply(&self, op: &Value, step: usize, own: Option<&R<Connection>>) -> (Value, StepTiming) {
+        let started = Clock::now();
+        let mut t = StepTiming::new(op.str_at("op"));
+        let out = self.dispatch_step(op, step, own, &mut t);
+        t.total_ns = since(started);
+        (out, t)
+    }
+
+    fn dispatch_step(&self, op: &Value, step: usize, own: Option<&R<Connection>>, t: &mut StepTiming) -> Value {
         if op.str_at("op") != Some("concurrent") {
-            return self.apply_one(op, step, own);
+            return self.apply_one(op, step, own, t);
         }
         let ops = op.get("operations").and_then(Value::as_arr).cloned().unwrap_or_default();
         let barrier = Barrier::new(ops.len());
-        let results: Vec<Value> = thread::scope(|scope| {
+        let done: Vec<(Value, StepTiming)> = thread::scope(|scope| {
             let handles: Vec<_> = ops
                 .iter()
                 .map(|o| {
                     let barrier = &barrier;
                     scope.spawn(move || {
+                        // The worker's connection setup counts in its
+                        // operation's total_ns; the start barrier does not.
+                        let started = Clock::now();
                         let conn = self.group_connection();
+                        let setup_ns = since(started);
                         barrier.wait();
-                        self.apply(o, step, conn.as_ref())
+                        let (out, mut t) = self.apply(o, step, conn.as_ref());
+                        t.total_ns = t.total_ns.saturating_add(setup_ns);
+                        (out, t)
                     })
                 })
                 .collect();
-            handles.into_iter().map(|h| h.join().unwrap_or_else(|_| refused("INTERNAL_ERROR"))).collect()
+            handles
+                .into_iter()
+                .zip(&ops)
+                .map(|(h, o)| h.join().unwrap_or_else(|_| (refused("INTERNAL_ERROR"), StepTiming::new(o.str_at("op")))))
+                .collect()
         });
+        let (results, timings): (Vec<Value>, Vec<StepTiming>) = done.into_iter().unzip();
+        t.operations = Some(timings);
         let mut outcomes: BTreeMap<String, i64> = BTreeMap::new();
         for r in &results {
             *outcomes.entry(outcome_key(r)).or_default() += 1;
@@ -674,16 +719,19 @@ impl Broker {
         ])
     }
 
-    fn run_steps(&self, input: &Value) -> Value {
-        let steps: Vec<Value> = input
+    fn run_steps(&self, input: &Value, timing: &mut ScenarioTiming) -> Value {
+        let (steps, timings): (Vec<Value>, Vec<StepTiming>) = input
             .get("steps")
             .and_then(Value::as_arr)
-            .map(|ops| ops.iter().enumerate().map(|(i, op)| self.apply(op, i, None)).collect())
+            .map(|ops| ops.iter().enumerate().map(|(i, op)| self.apply(op, i, None)).unzip())
             .unwrap_or_default();
+        timing.steps = timings;
+        let started = Clock::now();
         let fin = self.with_store(None, |st| st.final_state()).unwrap_or_else(|e| {
             report(&e);
             obj(vec![("error", s("LEDGER_UNAVAILABLE"))])
         });
+        timing.final_ns = Some(since(started));
         obj(vec![("steps", Value::Arr(steps)), ("final", fin)])
     }
 }
@@ -757,23 +805,37 @@ fn run(input: &Value) -> Value {
 }
 
 pub fn run_with(input: &Value, choice: &LedgerChoice) -> Value {
+    run_timed(input, choice).0
+}
+
+/// `broker-scenario` output and its timing (LEDGER-SQLITE.md "Per-operation
+/// timing"): `open_ns` brackets creating the file (`--ledger-dir`), opening
+/// and initializing it; it is `null` for the in-memory ledger and when no
+/// open was attempted (`INPUT_MALFORMED`).
+pub fn run_timed(input: &Value, choice: &LedgerChoice) -> (Value, ScenarioTiming) {
+    let mut timing = ScenarioTiming::default();
     if !input_usable(input) {
-        return obj(vec![("input_error", s("INPUT_MALFORMED"))]);
+        return (obj(vec![("input_error", s("INPUT_MALFORMED"))]), timing);
     }
+    let started = Clock::now();
     let ledger = match choice {
         LedgerChoice::Memory => Ok(Ledger::Memory(Mutex::new(MemLedger::default()))),
         LedgerChoice::SqliteDir(dir) => sqlite_ledger(sqlite::new_db_in(dir)),
         LedgerChoice::SqliteDb(path) => sqlite_ledger(Ok(path.clone())),
     };
+    if !matches!(choice, LedgerChoice::Memory) {
+        timing.open_ns = Some(since(started));
+    }
     let ledger = match ledger {
         Ok(l) => l,
         Err(e) => {
             report(&e);
-            return obj(vec![("error", s("LEDGER_UNAVAILABLE"))]);
+            return (obj(vec![("error", s("LEDGER_UNAVAILABLE"))]), timing);
         }
     };
     let init = input.get("initial").cloned().unwrap_or(Value::Obj(vec![]));
-    Broker::new(&init, ledger).run_steps(input)
+    let out = Broker::new(&init, ledger).run_steps(input, &mut timing);
+    (out, timing)
 }
 
 #[cfg(test)]
@@ -1022,11 +1084,11 @@ mod tests {
         let (initial, approve) = approvable();
         let (publish, _) = requests(&approve, "idem-atomic");
         let b = sqlite_broker(&initial, &dir);
-        assert_eq!(json::to_text(&b.apply(&with_label(&approve, "g1"), 0, None)), r#"{"result":"grant_issued"}"#);
+        assert_eq!(json::to_text(&b.apply(&with_label(&approve, "g1"), 0, None).0), r#"{"result":"grant_issued"}"#);
         // The last statement of T-reserve fails after the grant use, the
         // grant_uses row and the receipt were written.
         main_conn(&b, |c| c.execute_batch("CREATE TEMP TRIGGER fail_reserve BEFORE INSERT ON receipt_events BEGIN SELECT RAISE(ABORT, 'injected'); END").unwrap());
-        let out = b.apply(&sealed(&initial, &publish, Some("g1")), 1, None);
+        let out = b.apply(&sealed(&initial, &publish, Some("g1")), 1, None).0;
         assert_eq!(json::to_text(&out), r#"{"code":"LEDGER_UNAVAILABLE","result":"refused"}"#);
         assert_eq!(count(&b, "SELECT count(*) FROM receipts"), 0);
         assert_eq!(count(&b, "SELECT count(*) FROM receipt_events"), 0);
@@ -1034,7 +1096,7 @@ mod tests {
         assert_eq!(count(&b, "SELECT uses FROM grants WHERE label = 'g1'"), 0);
         assert_eq!(count(&b, "SELECT count(*) FROM audit_refusals WHERE code = 'LEDGER_UNAVAILABLE'"), 1);
         main_conn(&b, |c| c.execute_batch("DROP TRIGGER fail_reserve").unwrap());
-        let out = b.apply(&sealed(&initial, &publish, Some("g1")), 2, None);
+        let out = b.apply(&sealed(&initial, &publish, Some("g1")), 2, None).0;
         assert_eq!(json::to_text(&out), r#"{"result":"effect_completed"}"#);
         assert_eq!(count(&b, "SELECT uses FROM grants WHERE label = 'g1'"), 1);
         drop(b);
@@ -1187,15 +1249,102 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    // ------------------------------------------- per-operation timing (M1-06d)
+
+    /// (op, {tx name: outcome}) of each top-level step.
+    fn tx_outcomes(t: &ScenarioTiming) -> Vec<(String, Vec<(&'static str, &'static str)>)> {
+        t.steps.iter().map(|st| (st.op.clone(), st.tx.iter().map(|(n, x)| (*n, if x.commit { "commit" } else { "rollback" })).collect())).collect()
+    }
+
+    #[test]
+    fn timing_names_the_transactions_that_ran() {
+        let (initial, approve) = approvable();
+        let (p1, _) = requests(&approve, "idem-t1");
+        let (p2, _) = requests(&approve, "idem-t2");
+        let (_, w) = requests(&approve, "idem-tw");
+        let mut unsealed = sealed(&initial, &w, None);
+        unsealed = with_member(&unsealed, "seal", obj(vec![("adapter_id", s("writ-host-adapter:fixture")), ("mac", s("00"))]));
+        let steps = vec![
+            with_label(&approve, "g1"),
+            sealed(&initial, &w, None),
+            sealed(&initial, &p1, Some("g1")),
+            sealed(&initial, &p2, Some("g1")),
+            unsealed,
+            sealed(&initial, &w, None),
+            with_label(&approve, "g1"),
+        ];
+        let input = obj(vec![("initial", initial), ("steps", Value::Arr(steps))]);
+        let full = vec![("reserve", "commit"), ("dispatch", "commit"), ("adapter", "commit"), ("observe", "commit")];
+        let expected = vec![
+            ("approve".to_string(), vec![("approve", "commit")]),
+            ("execute".to_string(), full.clone()),
+            ("execute".to_string(), full),
+            ("execute".to_string(), vec![("reserve", "rollback"), ("audit", "commit")]),
+            ("execute".to_string(), vec![("audit", "commit")]),
+            ("execute".to_string(), vec![("reserve", "rollback")]),
+            ("approve".to_string(), vec![("approve", "rollback"), ("audit", "commit")]),
+        ];
+        let dir = temp_dir("timing");
+        for choice in [LedgerChoice::Memory, LedgerChoice::SqliteDir(dir.clone())] {
+            let sql = !matches!(choice, LedgerChoice::Memory);
+            let (out, t) = run_timed(&input, &choice);
+            assert_eq!(json::to_text(&out), json::to_text(&run_with(&input, &choice)));
+            assert_eq!(
+                step_results(&out)[2..6],
+                [
+                    r#"{"result":"effect_completed"}"#,
+                    r#"{"code":"GRANT_EXHAUSTED","result":"refused"}"#,
+                    r#"{"code":"INGRESS_UNAUTHENTICATED","result":"refused"}"#,
+                    r#"{"replayed":true,"result":"effect_completed"}"#,
+                ]
+            );
+            assert_eq!(tx_outcomes(&t), expected);
+            assert_eq!(t.open_ns.is_some(), sql);
+            assert!(t.final_ns.is_some());
+            let unsealed = &t.steps[4];
+            assert!(unsealed.validate_ns.is_some() && unsealed.decide_ns.is_none() && unsealed.key_lock_wait_ns.is_none());
+            let exhausted = &t.steps[3];
+            assert!(exhausted.validate_ns.is_some() && exhausted.decide_ns.is_some());
+            assert_eq!(exhausted.key_lock_wait_ns.is_some(), sql);
+            for st in &t.steps {
+                let parts: i64 = st.tx.iter().map(|(_, x)| x.begin_ns.unwrap_or(0) + x.body_ns + x.end_ns.unwrap_or(0)).sum::<i64>()
+                    + st.validate_ns.unwrap_or(0)
+                    + st.decide_ns.unwrap_or(0)
+                    + st.key_lock_wait_ns.unwrap_or(0);
+                assert!(parts <= st.total_ns);
+                assert!(st.tx.iter().all(|(_, x)| x.begin_ns.is_some() == sql && x.end_ns.is_some() == sql));
+            }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn timing_of_a_concurrent_group_and_an_input_error() {
+        let (initial, approve) = approvable();
+        let (_, w) = requests(&approve, "idem-c");
+        let group = concurrent(vec![sealed(&initial, &w, None), obj(vec![("op", s("reconcile"))])]);
+        let input = obj(vec![("initial", initial), ("steps", Value::Arr(vec![group]))]);
+        let (_, t) = run_timed(&input, &LedgerChoice::Memory);
+        let v = json::to_text(&t.to_value(1, 2));
+        assert!(v.contains(r#""decide_ns":null,"key_lock_wait_ns":null,"op":"concurrent","operations":[{"#), "{v}");
+        let ops = t.steps[0].operations.as_ref().unwrap();
+        assert_eq!((ops[0].op.as_str(), ops[1].op.as_str()), ("execute", "reconcile"));
+        assert!(t.steps[0].tx.is_empty() && ops.iter().all(|o| o.total_ns <= t.steps[0].total_ns));
+
+        let (out, t) = run_timed(&obj(vec![("steps", Value::Arr(vec![]))]), &LedgerChoice::Memory);
+        assert_eq!(json::to_text(&out), r#"{"input_error":"INPUT_MALFORMED"}"#);
+        assert_eq!(json::to_text(&t.to_value(0, 0)), r#"{"final_ns":null,"open_ns":null,"parse_ns":0,"run_ns":0,"steps":[]}"#);
+    }
+
     #[test]
     fn contention_on_one_grant_and_one_key() {
         let (initial, approve) = approvable();
         for rep in 0..20 {
             let dir = temp_dir(&format!("contention-{rep}"));
             let b = sqlite_broker(&initial, &dir);
-            assert_eq!(json::to_text(&b.apply(&with_label(&approve, "g1"), 0, None)), r#"{"result":"grant_issued"}"#);
+            assert_eq!(json::to_text(&b.apply(&with_label(&approve, "g1"), 0, None).0), r#"{"result":"grant_issued"}"#);
             let ops = (0..64).map(|i| sealed(&initial, &requests(&approve, &format!("k{i}")).0, Some("g1"))).collect();
-            let out = b.apply(&concurrent(ops), 1, None);
+            let out = b.apply(&concurrent(ops), 1, None).0;
             assert_eq!(json::to_text(&out), r#"{"outcomes":{"GRANT_EXHAUSTED":63,"effect_completed":1},"result":"concurrent"}"#, "rep {rep}");
             assert_eq!(count(&b, "SELECT count(*) FROM receipts"), 1);
             assert_eq!(count(&b, "SELECT count(*) FROM receipt_events WHERE cause = 'reserve'"), 1);
@@ -1203,7 +1352,7 @@ mod tests {
             assert_eq!(count(&b, "SELECT uses FROM grants WHERE label = 'g1'"), 1);
 
             let write = requests(&approve, "same").1;
-            let out = b.apply(&concurrent((0..64).map(|_| sealed(&initial, &write, None)).collect()), 2, None);
+            let out = b.apply(&concurrent((0..64).map(|_| sealed(&initial, &write, None)).collect()), 2, None).0;
             assert_eq!(json::to_text(&out), r#"{"outcomes":{"effect_completed":1,"replayed":63},"result":"concurrent"}"#, "rep {rep}");
             assert_eq!(count(&b, "SELECT count(*) FROM receipt_events WHERE idempotency_key = 'same' AND cause = 'dispatch'"), 1);
             assert_eq!(count(&b, "SELECT count(*) FROM adapter_effects"), 2);

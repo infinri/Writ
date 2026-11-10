@@ -159,7 +159,7 @@ var tables = func() []string {
 // otherwise requires schema version 1 and every table of ledger.sql (extra
 // schema objects are not checked).
 func (l *sqlLedger) init() error {
-	return l.tx(func(tx *sql.Tx) error {
+	return l.tx(nil, "", func(tx *sql.Tx) error {
 		var n int64
 		if err := tx.QueryRow(`SELECT count(*) FROM sqlite_schema`).Scan(&n); err != nil {
 			return err
@@ -191,20 +191,32 @@ func (l *sqlLedger) init() error {
 var errRollback = errors.New("rollback")
 
 // tx runs f in one BEGIN IMMEDIATE transaction: committed if f returns nil,
-// rolled back otherwise (errRollback is a rollback without error).
-func (l *sqlLedger) tx(f func(*sql.Tx) error) error {
+// rolled back otherwise (errRollback is a rollback without error). Its
+// timing is recorded in t as transaction name: begin_ns brackets BeginTx
+// (which issues BEGIN IMMEDIATE, including busy waits), body_ns f, end_ns
+// Commit or Rollback. A BeginTx error records begin_ns with body_ns and
+// end_ns 0 and outcome rollback; a Commit error is outcome rollback.
+func (l *sqlLedger) tx(t *opTiming, name string, f func(*sql.Tx) error) error {
+	t0 := time.Now()
 	tx, err := l.conn.BeginTx(ctx, nil)
+	t1 := time.Now()
 	if err != nil {
+		t.addTx(name, txTiming{sql: true, begin: t1.Sub(t0)})
 		return err
 	}
-	if err := f(tx); err != nil {
+	err = f(tx)
+	t2 := time.Now()
+	if err != nil {
 		tx.Rollback()
+		t.addTx(name, txTiming{sql: true, begin: t1.Sub(t0), body: t2.Sub(t1), end: time.Since(t2)})
 		if err == errRollback {
 			return nil
 		}
 		return err
 	}
-	return tx.Commit()
+	err = tx.Commit()
+	t.addTx(name, txTiming{sql: true, begin: t1.Sub(t0), body: t2.Sub(t1), end: time.Since(t2), commit: err == nil})
+	return err
 }
 
 func one(res sql.Result, err error, what string) error {
@@ -230,15 +242,17 @@ func nullable(s string) any {
 	return s
 }
 
-func (l *sqlLedger) reserve(r reservation) (outcome string, err error) {
-	err = l.tx(func(tx *sql.Tx) error {
+func (l *sqlLedger) reserve(t *opTiming, r reservation) (outcome string, err error) {
+	err = l.tx(t, "reserve", func(tx *sql.Tx) error {
 		var fp, status string
 		var label sql.NullString
 		e := tx.QueryRow(`SELECT fingerprint, grant_label, status FROM receipts WHERE tenant_id = ? AND idempotency_key = ?`,
 			r.tenant, r.key).Scan(&fp, &label, &status)
 		if e == nil {
-			outcome = r.existingOutcome(fp, label.String, status)
-			return errRollback
+			if outcome = r.existingOutcome(fp, label.String, status); outcome != "" {
+				return errRollback
+			}
+			return nil // a reservation resumes: commit nothing
 		}
 		if e != sql.ErrNoRows {
 			return e
@@ -301,8 +315,8 @@ func grantRow(tx *sql.Tx, label string) (*grant, error) {
 	return &g, nil
 }
 
-func (l *sqlLedger) dispatch(tenant, key string) (seq int64, err error) {
-	err = l.tx(func(tx *sql.Tx) error {
+func (l *sqlLedger) dispatch(t *opTiming, tenant, key string) (seq int64, err error) {
+	err = l.tx(t, "dispatch", func(tx *sql.Tx) error {
 		if _, e := tx.Exec(`UPDATE counters SET value = value + 1 WHERE name = 'next_permit'`); e != nil {
 			return e
 		}
@@ -318,12 +332,15 @@ func (l *sqlLedger) dispatch(tenant, key string) (seq int64, err error) {
 	return seq, err
 }
 
-func (l *sqlLedger) consume(permitID string, effect bool) (replayed bool, err error) {
-	err = l.tx(func(tx *sql.Tx) error {
+func (l *sqlLedger) adapter(t *opTiming, check func() string, permitID string, effect bool) (code string, err error) {
+	err = l.tx(t, "adapter", func(tx *sql.Tx) error {
+		if code = check(); code != "" {
+			return errRollback
+		}
 		var x int64
 		e := tx.QueryRow(`SELECT 1 FROM adapter_consumed_permits WHERE permit_id = ?`, permitID).Scan(&x)
 		if e == nil {
-			replayed = true
+			code = "PERMIT_REPLAYED"
 			return errRollback
 		}
 		if e != sql.ErrNoRows {
@@ -339,11 +356,14 @@ func (l *sqlLedger) consume(permitID string, effect bool) (replayed bool, err er
 		}
 		return nil
 	})
-	return replayed, err
+	if err != nil {
+		code = ""
+	}
+	return code, err
 }
 
-func (l *sqlLedger) observe(tenant, key, status string) error {
-	return l.tx(func(tx *sql.Tx) error {
+func (l *sqlLedger) observe(t *opTiming, tenant, key, status string) error {
+	return l.tx(t, "observe", func(tx *sql.Tx) error {
 		res, e := tx.Exec(`UPDATE receipts SET status = ? WHERE tenant_id = ? AND idempotency_key = ? AND status = 'dispatched'`, status, tenant, key)
 		if e := one(res, e, "observe"); e != nil {
 			return e
@@ -352,8 +372,8 @@ func (l *sqlLedger) observe(tenant, key, status string) error {
 	})
 }
 
-func (l *sqlLedger) addGrant(label string, g grant) (inUse bool, err error) {
-	err = l.tx(func(tx *sql.Tx) error {
+func (l *sqlLedger) addGrant(t *opTiming, label string, g grant) (inUse bool, err error) {
+	err = l.tx(t, "approve", func(tx *sql.Tx) error {
 		var x int64
 		e := tx.QueryRow(`SELECT 1 FROM grants WHERE label = ?`, label).Scan(&x)
 		if e == nil {
@@ -370,8 +390,8 @@ func (l *sqlLedger) addGrant(label string, g grant) (inUse bool, err error) {
 	return inUse, err
 }
 
-func (l *sqlLedger) reconcile() (n int64, err error) {
-	err = l.tx(func(tx *sql.Tx) error {
+func (l *sqlLedger) reconcile(t *opTiming) (n int64, err error) {
+	err = l.tx(t, "reconcile", func(tx *sql.Tx) error {
 		if _, e := tx.Exec(`INSERT INTO receipt_events (tenant_id, idempotency_key, status, cause)
 			SELECT tenant_id, idempotency_key, 'unknown_reconcile', 'reconcile' FROM receipts WHERE status = 'dispatched'
 			ORDER BY tenant_id, idempotency_key`); e != nil {
@@ -387,15 +407,15 @@ func (l *sqlLedger) reconcile() (n int64, err error) {
 	return n, err
 }
 
-func (l *sqlLedger) audit(code string) error {
-	return l.tx(func(tx *sql.Tx) error {
+func (l *sqlLedger) audit(t *opTiming, code string) error {
+	return l.tx(t, "audit", func(tx *sql.Tx) error {
 		_, err := tx.Exec(`INSERT INTO audit_refusals (code) VALUES (?)`, code)
 		return err
 	})
 }
 
 func (l *sqlLedger) final() (f map[string]any, err error) {
-	err = l.tx(func(tx *sql.Tx) error {
+	err = l.tx(nil, "", func(tx *sql.Tx) error {
 		count := func(table string) (int64, error) {
 			var n int64
 			return n, tx.QueryRow(`SELECT count(*) FROM ` + table).Scan(&n)

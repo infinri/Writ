@@ -16,6 +16,10 @@ import (
 )
 
 func answerLine(h handler, line string) string {
+	return answerLineWith(plain(h), line)
+}
+
+func answerLineWith(h lineHandler, line string) string {
 	var buf bytes.Buffer
 	w := bufio.NewWriter(&buf)
 	handleLine(h, line, w)
@@ -126,6 +130,37 @@ func TestBenchDecideWrapsDecide(t *testing.T) {
 	}
 	if got := strings.TrimSpace(answerLine(commands["bench-decide"], `{"id":"d"}`)); got != `{"id":"d","output":{"error":"ENVELOPE_INVALID"}}` {
 		t.Errorf("got %s", got)
+	}
+}
+
+// bench-broker-scenario wraps exactly the broker-scenario output and takes
+// the same ledger options.
+func TestBenchBrokerScenario(t *testing.T) {
+	dir := t.TempDir()
+	for _, opts := range [][]string{nil, {"--ledger", "sqlite", "--ledger-dir", dir}} {
+		plainH, ok1 := parseArgs(append([]string{"broker-scenario"}, opts...))
+		benchH, ok2 := parseArgs(append([]string{"bench-broker-scenario"}, opts...))
+		if !ok1 || !ok2 {
+			t.Fatalf("%v rejected", opts)
+		}
+		for _, line := range []string{
+			`{"id":"j","input_text":"{"}`,
+			`{"id":"m","input":{}}`,
+			string(sjson.Encode(map[string]any{"id": "f", "input": fixtureInput(t, "b-15-grant-single-use")})),
+		} {
+			plain := mustDecode(t, answerLineWith(plainH, line))
+			timed, _ := sjson.Obj(mustDecode(t, answerLineWith(benchH, line))["output"])
+			if got, want := string(sjson.Encode(timed["scenario"])), string(sjson.Encode(plain["output"])); got != want || len(timed) != 2 {
+				t.Errorf("%v %s: scenario %s, want %s", opts, line, got, want)
+			}
+			tm, _ := sjson.Obj(timed["timing"])
+			if _, ok := sjson.Int(tm, "parse_ns"); !ok || len(tm) != 5 {
+				t.Errorf("%v %s: timing %v", opts, line, tm)
+			}
+		}
+	}
+	if _, ok := parseArgs([]string{"bench-broker-scenario", "--ledger", "sqlite"}); ok {
+		t.Error("incomplete ledger options accepted")
 	}
 }
 
