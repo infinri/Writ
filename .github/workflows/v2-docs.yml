@@ -136,14 +136,13 @@ jobs:
           WRIT_RUST: ${{ github.workspace }}/m1/rust/target/release/proto
           WRIT_GO: ${{ github.workspace }}/m1/go/proto
         run: python3 -m unittest discover -s m1/ledger_tests -v
-      - name: SQLite ledger broker campaign, Rust SQLite versus Go SQLite (D-023)
+      - name: D-026 concurrency-oracle negative tests
+        run: python3 -m unittest discover -s m1/props/tests -v
+      - name: SQLite ledger broker campaign with 64-way contention, Rust SQLite versus Go SQLite (D-023, D-026)
         run: |
-          for l in rust go; do
-            b="$GITHUB_WORKSPACE/m1/rust/target/release/proto"; [ "$l" = go ] && b="$GITHUB_WORKSPACE/m1/go/proto"
-            printf '#!/bin/sh\nWRIT_PROTO=%s exec %s "$@"\n' "$b" "$GITHUB_WORKSPACE/m1/tools/sqlite-ledger-proto.sh" > "$RUNNER_TEMP/$l-sqlite"
-            chmod +x "$RUNNER_TEMP/$l-sqlite"
-          done
-          python3 m1/props/run.py --campaign broker --seed 20261107 --cases 300 --repeats 2 --rust "$RUNNER_TEMP/rust-sqlite" --go "$RUNNER_TEMP/go-sqlite" --out props-sqlite-broker.json
+          python3 m1/props/run.py --campaign broker --ledger sqlite --seed 20261107 --cases 300 --repeats 2 \
+            --rust "$GITHUB_WORKSPACE/m1/rust/target/release/proto" --go "$GITHUB_WORKSPACE/m1/go/proto" --out props-sqlite-broker.json
+          python3 -c 'import json; r=json.load(open("props-sqlite-broker.json"))["campaigns"]["broker"]; print(json.dumps(r["availability_not_correctness"], indent=1)); assert any("x64" in v for v in r["availability_not_correctness"].values()), "no 64-way group ran"'
       - name: Mutation smoke test (every deliberate mutant must be caught)
         run: |
           python3 m1/props/mutants/smoke.py --real "$GITHUB_WORKSPACE/m1/rust/target/release/proto" --seed 7 --cases 300 --out props-smoke-rust.json

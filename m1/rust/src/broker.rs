@@ -1679,4 +1679,136 @@ mod tests {
             std::fs::remove_dir_all(&dir).unwrap();
         }
     }
+
+    // ------------------------------------------------------------- D-026
+
+    /// (tx name, outcome, error JSON) of one step's transactions.
+    fn tx_errors(t: &StepTiming) -> Vec<(&'static str, &'static str, String)> {
+        t.to_value().get("tx").unwrap().as_obj().unwrap().iter().map(|(n, x)| {
+            let name = t.tx.iter().find(|(m, _)| m == n).unwrap().0;
+            (name, if x.str_at("outcome") == Some("commit") { "commit" } else { "rollback" }, json::to_text(x.get("error").unwrap()))
+        }).collect()
+    }
+
+    const BUSY_BEGIN: &str = r#"{"at":"begin","code":"busy"}"#;
+
+    /// D-026: a `BEGIN IMMEDIATE` that times out on SQLITE_BUSY (another
+    /// connection holds the write lock beyond a short test busy timeout) is
+    /// `{"code":"busy","at":"begin"}` with outcome rollback.
+    #[test]
+    fn d026_busy_begin_is_busy_at_begin() {
+        let dir = temp_dir("d026-busy");
+        let (initial, approve) = approvable();
+        let (_, w) = requests(&approve, "idem-busy");
+        let b = sqlite_broker(&initial, &dir);
+        main_conn(&b, |c| c.execute_batch("PRAGMA busy_timeout = 50").unwrap());
+        let holder = Connection::open(ledger_path(&b)).unwrap();
+        holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let (out, t) = b.apply(&sealed(&initial, &w, None), 0, None);
+        holder.execute_batch("ROLLBACK").unwrap();
+        drop(holder);
+        assert_eq!(json::to_text(&out), LEDGER_REFUSED);
+        assert_eq!(tx_errors(&t), [("reserve", "rollback", BUSY_BEGIN.to_string()), ("audit", "rollback", BUSY_BEGIN.to_string())]);
+        let x = &t.tx[0].1;
+        assert!(x.begin_ns.is_some() && x.body_ns == 0 && x.end_ns == Some(0));
+        assert_eq!(count(&b, "SELECT count(*) FROM receipts"), 0);
+        drop(b);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// D-026: an injected statement failure inside the body (TEMP trigger
+    /// RAISE) and a self-raised integrity failure (C-4) are
+    /// `{"code":"other","at":"body"}`; the audit row after it has no error.
+    #[test]
+    fn d026_body_failure_is_other_at_body() {
+        let dir = temp_dir("d026-body");
+        let (initial, approve) = approvable();
+        let (publish, _) = requests(&approve, "idem-c4b");
+        let (_, w) = requests(&approve, "idem-body");
+        let b = sqlite_broker(&initial, &dir);
+        let body = r#"{"at":"body","code":"other"}"#.to_string();
+        main_conn(&b, |c| c.execute_batch("CREATE TEMP TRIGGER fail_reserve BEFORE INSERT ON receipts BEGIN SELECT RAISE(ABORT, 'x'); END").unwrap());
+        let (out, t) = b.apply(&sealed(&initial, &w, None), 0, None);
+        assert_eq!(json::to_text(&out), LEDGER_REFUSED);
+        assert_eq!(tx_errors(&t), [("reserve", "rollback", body.clone()), ("audit", "commit", "null".to_string())]);
+        main_conn(&b, |c| c.execute_batch("DROP TRIGGER temp.fail_reserve").unwrap());
+
+        assert_eq!(json::to_text(&b.apply(&with_label(&approve, "g1"), 1, None).0), r#"{"result":"grant_issued"}"#);
+        main_conn(&b, |c| c.execute("UPDATE grants SET binding = '[]' WHERE label = 'g1'", []).unwrap());
+        let (out, t) = b.apply(&sealed(&initial, &publish, Some("g1")), 2, None);
+        assert_eq!(json::to_text(&out), LEDGER_REFUSED);
+        assert_eq!(tx_errors(&t), [("reserve", "rollback", body), ("audit", "commit", "null".to_string())]);
+        drop(b);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// D-026: a failing COMMIT (deferred foreign key violation) is
+    /// `{"code":"other","at":"end"}` with outcome rollback; the committed
+    /// transactions before it have no error.
+    #[test]
+    fn d026_commit_failure_is_other_at_end() {
+        let dir = temp_dir("d026-end");
+        let (initial, approve) = approvable();
+        let (_, w) = requests(&approve, "idem-end");
+        let b = sqlite_broker(&initial, &dir);
+        main_conn(&b, |c| {
+            c.execute_batch(
+                "CREATE TEMP TABLE fk_parent (id TEXT PRIMARY KEY);
+                 CREATE TEMP TABLE fk_child (id TEXT REFERENCES fk_parent (id) DEFERRABLE INITIALLY DEFERRED);
+                 CREATE TEMP TRIGGER fail_commit AFTER INSERT ON adapter_effects BEGIN INSERT INTO fk_child VALUES (NEW.permit_id); END",
+            )
+            .unwrap()
+        });
+        let (out, t) = b.apply(&sealed(&initial, &w, None), 0, None);
+        assert_eq!(json::to_text(&out), LEDGER_REFUSED);
+        let null = || "null".to_string();
+        assert_eq!(
+            tx_errors(&t),
+            [
+                ("reserve", "commit", null()),
+                ("dispatch", "commit", null()),
+                ("adapter", "rollback", r#"{"at":"end","code":"other"}"#.to_string()),
+                ("audit", "commit", null()),
+            ]
+        );
+        drop(b);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// D-026: successes and ordinary refusals (including ones that roll
+    /// back) have `error: null`, on both ledgers; the member is always
+    /// present.
+    #[test]
+    fn d026_ordinary_outcomes_have_null_error() {
+        let (initial, approve) = approvable();
+        let (p1, _) = requests(&approve, "idem-n1");
+        let (p2, _) = requests(&approve, "idem-n2");
+        let (_, w) = requests(&approve, "idem-nw");
+        let steps = vec![
+            with_label(&approve, "g1"),
+            sealed(&initial, &w, None),
+            sealed(&initial, &p1, Some("g1")),
+            sealed(&initial, &p2, Some("g1")),
+            sealed(&initial, &w, None),
+            with_label(&approve, "g1"),
+            present(&w, Some("mac")),
+            present(&w, None),
+            obj(vec![("op", s("reconcile"))]),
+        ];
+        let input = obj(vec![("initial", initial), ("steps", Value::Arr(steps))]);
+        let dir = temp_dir("d026-null");
+        for choice in [LedgerChoice::Memory, LedgerChoice::SqliteDir(dir.clone())] {
+            let (_, t) = run_timed(&input, &choice);
+            let mut rollbacks = 0;
+            for st in &t.steps {
+                for (name, outcome, error) in tx_errors(st) {
+                    assert_eq!(error, "null", "{name}");
+                    rollbacks += usize::from(outcome == "rollback");
+                }
+                assert!(st.tx.iter().all(|(_, x)| x.error.is_none()));
+            }
+            assert!(rollbacks >= 3, "{rollbacks}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

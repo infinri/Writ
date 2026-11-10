@@ -1,13 +1,13 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-10 (D-025 published) · **Branch:** v2/architecture-rebuild · **Milestone:** M1 active (development only, D-014); M1-00..M1-05, M1-06a, D-022 and D-023 DONE; M1-07 in progress; M1-06 measurements blocked by environment. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md).
+**Last updated:** 2026-11-10 (D-026) · **Branch:** v2/architecture-rebuild · **Milestone:** M1 active (development only, D-014); M1-00..M1-05, M1-06a, D-022 and D-023 DONE; M1-07 in progress; M1-06 measurements blocked by environment. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md).
 
 ## Current
 
-- **Published:** `68f4593` (D-025), CI run 42887453309 green, all 5 jobs (E-032).
-- **Prototypes:** both 447/447 with both ledgers; 30 language-neutral ledger tests each; Rust-SQLite vs Go-SQLite 0 mismatches.
-- **Benchmark readiness:** instrumentation verified; guard refuses (governor `powersave`, load 1.81) ([M1-06-READINESS](M1-06-READINESS.md)).
-- **Next:** owner sets the `performance` governor and quiets the machine; then M1-06 measurements and M1-07 build timings.
+- **Published:** `1994b67` (docs); code at `d9815f8` (CI failed on busy timeouts, E-034). D-026 correction committed after it (verify CI on its SHA).
+- **Prototypes:** 447/447 both ledgers; 30 ledger tests; D-026 oracle: SQLite 64-way campaigns pass (0 mismatches over 52,920 checks), `masked-effect` mutant caught.
+- **Benchmark readiness:** guard refuses (discharging battery, load, temperature) ([M1-06-READINESS](M1-06-READINESS.md)).
+- **Next:** owner decision on concurrent-group start equivalence (E-035); environment; then M1-06 and M1-07 timings.
 
 ## Security findings
 

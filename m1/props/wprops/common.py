@@ -141,7 +141,8 @@ class Proto:
         self.invocations += 1
         problems = []
         try:
-            proc = subprocess.run([*self.argv, command], input=payload, capture_output=True, timeout=self.timeout)
+            proc = subprocess.run([*self.argv, *command.split(" ")], input=payload, capture_output=True,
+                                  timeout=self.timeout)
         except subprocess.TimeoutExpired:
             return {}, [f"timeout after {self.timeout}s"]
         if proc.returncode != 0:

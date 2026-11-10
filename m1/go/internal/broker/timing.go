@@ -1,7 +1,10 @@
 package broker
 
 import (
+	"errors"
 	"time"
+
+	"github.com/mattn/go-sqlite3"
 
 	"writ.dev/m1/proto/internal/sjson"
 )
@@ -75,6 +78,23 @@ type txTiming struct {
 	sql              bool
 	begin, body, end time.Duration
 	commit           bool
+	err              *txError // D-026: nil when no database error was raised
+}
+
+// txError is the D-026 `error` member of a transaction: code is busy (SQLite
+// primary result code SQLITE_BUSY) or other; at is begin, body or end.
+type txError struct {
+	code, at string
+}
+
+// newTxError classifies a database or integrity error err raised at at.
+func newTxError(at string, err error) *txError {
+	code := "other"
+	var se sqlite3.Error
+	if errors.As(err, &se) && se.Code == sqlite3.ErrBusy {
+		code = "busy"
+	}
+	return &txError{code: code, at: at}
 }
 
 func newOpTiming(op map[string]any) *opTiming {
@@ -141,7 +161,11 @@ func (o *opTiming) json() map[string]any {
 		if tx.commit {
 			outcome = "commit"
 		}
-		txs[name] = map[string]any{"begin_ns": begin, "body_ns": tx.body.Nanoseconds(), "end_ns": end, "outcome": outcome}
+		txErr := any(nil)
+		if tx.err != nil {
+			txErr = map[string]any{"code": tx.err.code, "at": tx.err.at}
+		}
+		txs[name] = map[string]any{"begin_ns": begin, "body_ns": tx.body.Nanoseconds(), "end_ns": end, "outcome": outcome, "error": txErr}
 	}
 	m := map[string]any{
 		"op":               o.op,

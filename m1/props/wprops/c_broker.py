@@ -285,7 +285,18 @@ def check_ops(res, pname, case, out):
                       case=None if ok else case)
 
 
-def check_run(res, pname, case, out):
+def audit_failures(timing) -> int:
+    """Refusals whose audit row could not be written (D-024 rule 2), from timing evidence."""
+    n = 0
+    for s in (timing or {}).get("steps") or []:
+        for o in [s] + list(s.get("operations") or []):
+            a = (o.get("tx") or {}).get("audit") if isinstance(o, dict) else None
+            if isinstance(a, dict) and a.get("error") is not None:
+                n += 1
+    return n
+
+
+def check_run(res, pname, case, out, timing=None):
     cid = case["id"]
     if not isinstance(out, dict) or not isinstance(out.get("steps"), list) or \
             len(out["steps"]) != len(case["input"]["steps"]):
@@ -301,8 +312,10 @@ def check_run(res, pname, case, out):
             refusals += 1
         if r.get("result") == "concurrent":
             refusals += sum(n for k, n in (r.get("outcomes") or {}).items() if k not in NON_REFUSAL)
-    ok = fin.get("refusals") == refusals
-    res.check("broker.refusals_counted_exactly", pname, ok, cid, {"final": fin.get("refusals"), "counted": refusals},
+    unaudited = audit_failures(timing)
+    ok = fin.get("refusals") == refusals - unaudited
+    res.check("broker.refusals_counted_exactly", pname, ok, cid,
+              {"final": fin.get("refusals"), "counted": refusals, "audit_failures": unaudited},
               case=None if ok else case)
     gu = fin.get("grant_uses") or {}
     ok = all(isinstance(n, int) and 0 <= n <= 1 for n in gu.values())
@@ -419,6 +432,10 @@ def model_step(state, t, fps):
     policy up, grants issued with max_uses 1 and unexpired. key None = a key used by
     this operation only (its receipt is counted, never looked up again)."""
     v, p, trace, g, fault, key = t
+    override, base_fault = None, fault
+    if isinstance(fault, str) and ":" in fault:  # D-026 category 4: "<override>:<generated fault>"
+        override, base_fault = fault.split(":", 1)
+        base_fault = base_fault or None
     receipts, uniq, uses, eff, perm = state
     cls = VARIANTS[v][2]
     if cls == "require_approval" and g is None:
@@ -426,15 +443,18 @@ def model_step(state, t, fps):
     fp = (v, p, trace, key)
     egrant = g if cls == "require_approval" else None
     rec = dict(receipts)
+    resume = False
     if key is not None and key in rec:
         rfp, rg, status = rec[key]
         if rfp != fp or rg != egrant:
             return state, "IDEMPOTENCY_CONFLICT"
         if status in ("observed_success", "observed_failure"):
             return state, "replayed"
-        return state, "RECONCILIATION_REQUIRED"  # dispatched (no reserved-only states without crash_after_reserve)
+        if status != "reserved":
+            return state, "RECONCILIATION_REQUIRED"  # dispatched or uncertain
+        resume = True  # a durable reservation from a dispatch that never began (C-3)
     uses = dict(uses)
-    if cls == "require_approval":
+    if cls == "require_approval" and not resume:
         bound = BOUND_GRANTS.get(g)
         if bound is None:
             return state, "GRANT_UNKNOWN"
@@ -443,13 +463,23 @@ def model_step(state, t, fps):
         if uses.get(g, 0) >= 1:
             return state, "GRANT_EXHAUSTED"
         uses[g] = uses.get(g, 0) + 1
-    perm += 1
-    if fault == "crash_after_dispatch":
-        status, out, eff = "dispatched", "crashed", eff + 1
-    elif fault == "effect_fails":
-        status, out = "observed_failure", "effect_failed"
+    if override == "after_reserve":  # T-dispatch could not begin: reservation and grant use persist
+        status, out = "reserved", "LEDGER_UNAVAILABLE"
+    elif override == "adapter_unavailable":  # dispatched, T-adapter could not begin: no permit, no effect
+        status, out = "dispatched", "LEDGER_UNAVAILABLE"
+    elif override == "observe_unavailable":  # adapter committed, T-observe could not begin: uncertain
+        perm += 1
+        status, out = "dispatched", "LEDGER_UNAVAILABLE"
+        if base_fault != "effect_fails":
+            eff += 1
     else:
-        status, out, eff = "observed_success", "effect_completed", eff + 1
+        perm += 1
+        if base_fault == "crash_after_dispatch":
+            status, out, eff = "dispatched", "crashed", eff + 1
+        elif base_fault == "effect_fails":
+            status, out = "observed_failure", "effect_failed"
+        else:
+            status, out, eff = "observed_success", "effect_completed", eff + 1
     u = dict(uniq)
     if key is None:
         u[status] = u.get(status, 0) + 1
@@ -460,18 +490,110 @@ def model_step(state, t, fps):
 
 BOUND_GRANTS = {}
 
+# ------------------------------------------------------- D-026 contention evidence
 
-def serializable(case, observed: dict, final: dict) -> bool:
+LEDGER_TX = ("reserve", "dispatch", "adapter", "observe")
+BUSY_BEGIN = {"code": "busy", "at": "begin"}
+PARTIAL = {"dispatch": "after_reserve", "adapter": "adapter_unavailable", "observe": "observe_unavailable"}
+
+
+def classify_op(step) -> dict:
+    """D-026 category of one execute operation from its own transaction evidence
+    (LEDGER-SQLITE.md "Contention and the concurrency oracle"): 1/2 no database error;
+    3 verified lock-contention abort (first transaction busy at BEGIN, nothing else but
+    an audit); 4 busy at BEGIN after earlier transactions committed (crash state);
+    5 anything else. `audit_failed`: the refusal audit itself could not be written."""
+    tx = step.get("tx") if isinstance(step, dict) else None
+    if not isinstance(tx, dict):
+        return {"category": 5, "reason": "no transaction evidence"}
+    errs = {n: x.get("error") for n, x in tx.items() if isinstance(x, dict) and x.get("error") is not None}
+    audit_err = errs.pop("audit", None)
+    if audit_err is not None and audit_err != BUSY_BEGIN:
+        return {"category": 5, "reason": f"audit error {audit_err}"}
+    base = {"audit_failed": audit_err is not None}
+    if not errs:
+        return {"category": 1, **base}
+    if len(errs) != 1:
+        return {"category": 5, "reason": f"several failing transactions {sorted(errs)}"}
+    (name, err), = errs.items()
+    if name not in LEDGER_TX or err != BUSY_BEGIN:
+        return {"category": 5, "reason": f"{name} error {err}"}
+    chain = list(LEDGER_TX[:LEDGER_TX.index(name)])
+    present = [n for n in LEDGER_TX if n in tx]
+    committed = [n for n in chain if tx.get(n, {}).get("outcome") == "commit"]
+    if present != chain + [name] or committed != chain or set(tx) - set(present) - {"audit"}:
+        return {"category": 5, "reason": f"inconsistent transactions {sorted(tx)} after {name} busy"}
+    if name == "reserve":
+        return {"category": 3, "stage": "reserve", **base}
+    return {"category": 4, "stage": name, "override": PARTIAL[name], **base}
+
+
+def key_rows(db, key: str) -> int:
+    """Rows in the ledger file that only an operation with this idempotency key can write."""
+    import sqlite3
+    c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        return sum(c.execute(f"SELECT count(*) FROM {tab} WHERE idempotency_key = ?", (key,)).fetchone()[0]
+                   for tab in ("receipts", "receipt_events", "grant_uses"))
+    finally:
+        c.close()
+
+
+def classify_group(case, group_timing, db=None) -> dict:
+    """Per-operation D-026 categories for a concurrent group, with the database check for
+    category 3 operations whose idempotency key no other operation in the group uses."""
+    ops = (group_timing or {}).get("operations") if isinstance(group_timing, dict) else None
+    types = case["meta"]["op_types"]
+    if not isinstance(ops, list) or len(ops) != len(types):
+        return {"ok": False, "reason": "missing per-operation evidence", "ops": []}
+    keycount = Counter(t[5] for t in types)
+    cls = []
+    for t, step in zip(types, ops):
+        c = classify_op(step)
+        if c["category"] == 3 and db is not None and keycount[t[5]] == 1 and key_rows(db, t[5]):
+            c = {"category": 5, "reason": f"aborted operation left ledger rows for key {t[5]}"}
+        cls.append(c)
+    bad = [c["reason"] for c in cls if c["category"] == 5]
+    return {"ok": not bad, "reason": bad[0] if bad else None, "ops": cls}
+
+
+def serializable(case, observed: dict, final: dict, evidence=None, db=None) -> bool:
     """Is there a serial order of the group's operations producing exactly the observed
-    outcome counts and final counters? Exhaustive DFS over operation types, memoized."""
+    outcome counts and final counters? Exhaustive DFS over operation types, memoized.
+    With `evidence` (the group's bench-broker-scenario timing step), D-026 applies:
+    verified lock-contention aborts are removed as no-ops, failures after partial
+    progress are modelled as their crash state, anything else fails."""
     BOUND_GRANTS.clear()
     for k, g in case["meta"]["grants"].items():
         v, p = k.split("|")
         BOUND_GRANTS[g] = (v, int(p))
-    keycount = Counter(t[5] for t in case["meta"]["op_types"])
-    types = Counter(tuple(t[:5]) + ((t[5] if keycount[t[5]] > 1 else None),) for t in case["meta"]["op_types"])
-    tlist = sorted(types, key=repr)
+    op_types = [list(t) for t in case["meta"]["op_types"]]
     obs = {k: v for k, v in observed.items() if v}
+    if evidence is not None:
+        cg = classify_group(case, evidence, db)
+        if not cg["ok"]:
+            return False
+        kept = []
+        aborted = 0
+        for t, c in zip(op_types, cg["ops"]):
+            if c["category"] == 3:
+                aborted += 1
+                continue
+            if c["category"] == 4:
+                t = t[:4] + [f"{c['override']}:{t[4] or ''}"] + t[5:]
+            kept.append(t)
+        partial = sum(1 for c in cg["ops"] if c["category"] == 4)
+        if obs.get("LEDGER_UNAVAILABLE", 0) != aborted + partial:
+            return False  # every LEDGER_UNAVAILABLE must be matched to a category 3 or 4 operation
+        if aborted:
+            obs["LEDGER_UNAVAILABLE"] -= aborted
+            obs = {k: v for k, v in obs.items() if v}
+        op_types = kept
+    elif obs.get("LEDGER_UNAVAILABLE"):
+        return False  # without evidence a storage refusal is never assumed harmless
+    keycount = Counter(t[5] for t in op_types)
+    types = Counter(tuple(t[:5]) + ((t[5] if keycount[t[5]] > 1 else None),) for t in op_types)
+    tlist = sorted(types, key=repr)
     total = sum(types.values())
     if sum(obs.values()) != total:
         return False
@@ -622,11 +744,85 @@ def gen_cases(rng, n):
     return cases
 
 
+LEDGER = None  # None: in-memory ledger; "sqlite": file-backed (run.py --ledger sqlite)
+
+
+def _fresh_dir():
+    import tempfile
+    return tempfile.mkdtemp(prefix="writ-props-ledger-")
+
+
+def bench_command(db=None) -> str:
+    """bench-broker-scenario with this campaign's ledger; timing is the D-026 evidence."""
+    if LEDGER != "sqlite":
+        return "bench-broker-scenario"
+    if db is not None:
+        return f"bench-broker-scenario --ledger sqlite --ledger-db {db}"
+    return f"bench-broker-scenario --ledger sqlite --ledger-dir {_fresh_dir()}"
+
+
+def unwrap(outs: dict) -> tuple[dict, dict]:
+    scen, timing = {}, {}
+    for cid, o in outs.items():
+        if isinstance(o, dict) and set(o) == {"scenario", "timing"}:
+            scen[cid], timing[cid] = o["scenario"], o["timing"]
+        else:
+            scen[cid] = o
+    return scen, timing
+
+
+def run_groups(protos, conc, res):
+    """Concurrent groups with evidence. SQLite: one process and one ledger file per group,
+    so the file can be inspected afterwards (D-026 operation-specific check)."""
+    if LEDGER != "sqlite":
+        outs = run_both(protos, bench_command(), conc, res)
+        return {p: unwrap(o) + ({},) for p, o in outs.items()}
+    result = {}
+    for p in protos:
+        scen, timing, dbs = {}, {}, {}
+        d = _fresh_dir()
+        for c in conc:
+            db = f"{d}/{c['id']}.db"
+            o, probs = p.run(bench_command(db), [c])
+            res.protocol[p.name].extend(f"bench-broker-scenario: {x}" for x in probs)
+            s, tm = unwrap(o)
+            scen.update(s)
+            timing.update(tm)
+            dbs[c["id"]] = db
+        result[p.name] = (scen, timing, dbs)
+    return result
+
+
+def availability_add(av: dict, case, out, group_timing):
+    """D-026 availability evidence for one concurrent group (never part of correctness)."""
+    grp = out["steps"][-1] if isinstance(out, dict) and out.get("steps") else {}
+    outcomes = grp.get("outcomes") or {}
+    n = case["meta"]["n"]
+    a = av.setdefault(f"x{n}", {"groups": 0, "operations": 0, "successful": 0, "lock_timeout_refusals": 0,
+                                "lock_timeout_by_stage": {}, "other_storage_refusals": 0, "reserve_wait_ns": []})
+    a["groups"] += 1
+    a["operations"] += sum(outcomes.values())
+    a["successful"] += sum(v for k, v in outcomes.items() if k in ("effect_completed", "effect_failed", "replayed"))
+    for op in (group_timing or {}).get("operations") or []:
+        c = classify_op(op)
+        if c["category"] in (3, 4):
+            a["lock_timeout_refusals"] += 1
+            a["lock_timeout_by_stage"][c["stage"]] = a["lock_timeout_by_stage"].get(c["stage"], 0) + 1
+        elif c["category"] == 5:
+            a["other_storage_refusals"] += 1
+        r = (op.get("tx") or {}).get("reserve")
+        if isinstance(r, dict) and isinstance(r.get("begin_ns"), int):
+            a["reserve_wait_ns"].append(r["begin_ns"])
+
+
 def run(protos, rng, n, res: Results, repeats: int = 5):
     probe_cases = probes()
     run_probes(protos, probe_cases, res, "broker")
     cases = gen_cases(rng, n)
-    outs = run_both(protos, "broker-scenario", cases, res)
+    raw = run_both(protos, bench_command(), cases, res)
+    outs, timings = {}, {}
+    for pn, o in raw.items():
+        outs[pn], timings[pn] = unwrap(o)
     by_id = {c["id"]: c for c in cases}
     for p in protos:
         o = outs[p.name]
@@ -634,7 +830,7 @@ def run(protos, rng, n, res: Results, repeats: int = 5):
             out = o.get(c["id"])
             if c["meta"]["family"] == "probe":
                 continue
-            check_run(res, p.name, c, out)
+            check_run(res, p.name, c, out, timings[p.name].get(c["id"]))
             if c["meta"]["family"] == "sequence" and isinstance(out, dict) and isinstance(out.get("steps"), list) \
                     and len(out["steps"]) == len(c["input"]["steps"]):
                 check_ops(res, p.name, c, out)
@@ -673,20 +869,25 @@ def run(protos, rng, n, res: Results, repeats: int = 5):
         i += 1
         conc.append(gen_concurrent(rng, i, rng.choice([16, 32, 64])))
     dist = {}
+    av = {p.name: {} for p in protos}
     for rep in range(repeats):
-        couts = run_both(protos, "broker-scenario", conc, res)
+        couts = run_groups(protos, conc, res)
         for p in protos:
+            scen, ctim, dbs = couts[p.name]
             for c in conc:
-                out = couts[p.name].get(c["id"])
-                check_run(res, p.name, c, out)
+                out = scen.get(c["id"])
+                tm = ctim.get(c["id"])
+                check_run(res, p.name, c, out, tm)
                 if not isinstance(out, dict) or "steps" not in out:
                     continue
                 grp = out["steps"][-1]
+                gtim = (tm or {}).get("steps", [None])[-1] if isinstance(tm, dict) and tm.get("steps") else None
+                availability_add(av[p.name], c, out, gtim)
                 observed = grp.get("outcomes") if isinstance(grp, dict) else None
                 ok = isinstance(observed, dict) and grp.get("result") == "concurrent" and \
                     all(r == {"result": "grant_issued"} for r in out["steps"][:-1])
                 if ok:
-                    ok = serializable(c, observed, out.get("final") or {})
+                    ok = serializable(c, observed, out.get("final") or {}, evidence=gtim, db=dbs.get(c["id"]))
                 if ok is None:
                     res.check("broker.concurrent_serialization_search_completed", p.name, False, c["id"],
                               {"outcomes": observed})
@@ -697,6 +898,7 @@ def run(protos, rng, n, res: Results, repeats: int = 5):
                 dist.setdefault(f"{c['id']}:{p.name}", Counter())[sig] += 1
                 dist.setdefault(f"{p.name}:x{c['meta']['n']}", Counter())[sig] += 1
     res.concurrency_distribution = {k: dict(v) for k, v in dist.items()}
+    res.availability = av
     res.notes.append(f"concurrency: {len(conc)} groups x {repeats} repeats per prototype")
     return probe_cases + cases + conc, outs
 
@@ -704,6 +906,19 @@ def run(protos, rng, n, res: Results, repeats: int = 5):
 def extra_report(res):
     dist = getattr(res, "concurrency_distribution", {})
     per_group = {k: v for k, v in dist.items() if k.startswith("brc-")}
-    return {"concurrency_groups_with_multiple_outcomes": {k: v for k, v in per_group.items() if len(v) > 1},
+    avail = {}
+    for pn, levels in getattr(res, "availability", {}).items():
+        avail[pn] = {}
+        for lvl, a in levels.items():
+            w = sorted(a["reserve_wait_ns"])
+            avail[pn][lvl] = {k: v for k, v in a.items() if k != "reserve_wait_ns"}
+            avail[pn][lvl]["lock_timeout_percent"] = round(100 * a["lock_timeout_refusals"] / a["operations"], 4) \
+                if a["operations"] else None
+            avail[pn][lvl]["reserve_begin_wait_ns"] = {
+                "n": len(w), "p50": w[len(w) // 2] if w else None, "p99": w[min(len(w) - 1, int(len(w) * 0.99))] if w else None,
+                "max": w[-1] if w else None}
+    return {"ledger": LEDGER or "memory",
+            "availability_not_correctness": avail,
+            "concurrency_groups_with_multiple_outcomes": {k: v for k, v in per_group.items() if len(v) > 1},
             "concurrency_groups": len(per_group),
             "concurrency_groups_nondeterministic": sum(1 for v in per_group.values() if len(v) > 1)}

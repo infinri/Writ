@@ -283,27 +283,39 @@ var (
 // timing is recorded in t as transaction name: begin_ns brackets BeginTx
 // (which issues BEGIN IMMEDIATE, including busy waits), body_ns f, end_ns
 // Commit or Rollback. A BeginTx error records begin_ns with body_ns and
-// end_ns 0 and outcome rollback; a Commit error is outcome rollback.
+// end_ns 0 and outcome rollback; a Commit error is outcome rollback. The
+// D-026 error member records the first database or integrity error and
+// where it was raised (begin, body, end); errRollback is not an error.
 func (l *sqlLedger) tx(t *opTiming, name string, f func(*sql.Tx) error) error {
 	t0 := time.Now()
 	tx, err := l.conn.BeginTx(ctx, nil)
 	t1 := time.Now()
 	if err != nil {
-		t.addTx(name, txTiming{sql: true, begin: t1.Sub(t0)})
+		t.addTx(name, txTiming{sql: true, begin: t1.Sub(t0), err: newTxError("begin", err)})
 		return txErr(name, err)
 	}
 	err = f(tx)
 	t2 := time.Now()
 	if err != nil {
-		tx.Rollback()
-		t.addTx(name, txTiming{sql: true, begin: t1.Sub(t0), body: t2.Sub(t1), end: time.Since(t2)})
+		rbErr := tx.Rollback()
+		tt := txTiming{sql: true, begin: t1.Sub(t0), body: t2.Sub(t1), end: time.Since(t2)}
+		if err != errRollback {
+			tt.err = newTxError("body", err)
+		} else if rbErr != nil {
+			tt.err = newTxError("end", rbErr)
+		}
+		t.addTx(name, tt)
 		if err == errRollback {
 			return nil
 		}
 		return txErr(name, err)
 	}
 	err = tx.Commit()
-	t.addTx(name, txTiming{sql: true, begin: t1.Sub(t0), body: t2.Sub(t1), end: time.Since(t2), commit: err == nil})
+	tt := txTiming{sql: true, begin: t1.Sub(t0), body: t2.Sub(t1), end: time.Since(t2), commit: err == nil}
+	if err != nil {
+		tt.err = newTxError("end", err)
+	}
+	t.addTx(name, tt)
 	return txErr(name, err)
 }
 

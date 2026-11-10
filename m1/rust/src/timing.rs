@@ -11,14 +11,43 @@ pub fn since(t: Instant) -> i64 {
     i64::try_from(t.elapsed().as_nanos()).unwrap_or(i64::MAX).min(crate::json::MAX_SAFE)
 }
 
+/// Where a transaction's database error happened (D-026).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TxAt {
+    Begin,
+    Body,
+    End,
+}
+
+/// A transaction's database error (D-026): `busy` iff the SQLite primary
+/// result code is SQLITE_BUSY, `other` for any other database or integrity
+/// error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TxError {
+    pub busy: bool,
+    pub at: TxAt,
+}
+
 /// One logical transaction. `begin_ns` and `end_ns` are `None` for the
-/// in-memory ledger.
+/// in-memory ledger, and so is `error` (always).
 #[derive(Clone, Copy, Debug)]
 pub struct TxTime {
     pub begin_ns: Option<i64>,
     pub body_ns: i64,
     pub end_ns: Option<i64>,
     pub commit: bool,
+    pub error: Option<TxError>,
+}
+
+impl TxError {
+    pub fn to_value(self) -> Value {
+        let at = match self.at {
+            TxAt::Begin => "begin",
+            TxAt::Body => "body",
+            TxAt::End => "end",
+        };
+        obj(vec![("code", s(if self.busy { "busy" } else { "other" })), ("at", s(at))])
+    }
 }
 
 /// One step; `operations` is `Some` only for a `concurrent` step.
@@ -51,7 +80,7 @@ impl StepTiming {
     pub fn memory<T>(&mut self, name: &'static str, f: impl FnOnce() -> (bool, T)) -> T {
         let t = Instant::now();
         let (commit, v) = f();
-        self.tx.push((name, TxTime { begin_ns: None, body_ns: since(t), end_ns: None, commit }));
+        self.tx.push((name, TxTime { begin_ns: None, body_ns: since(t), end_ns: None, commit, error: None }));
         v
     }
 
@@ -66,6 +95,7 @@ impl StepTiming {
                     ("body_ns", Value::Int(t.body_ns)),
                     ("end_ns", opt(t.end_ns)),
                     ("outcome", s(if t.commit { "commit" } else { "rollback" })),
+                    ("error", t.error.map_or(Value::Null, TxError::to_value)),
                 ]);
                 (name.to_string(), v)
             })

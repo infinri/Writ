@@ -193,24 +193,29 @@ def timed_broker_runs(name, protos, command, path, led, runs, check, ids, nulls,
     workload's correctness checks to the unwrapped scenario outputs. Protocol and process
     overhead per run = process wall time minus the in-process parse_ns + run_ns of all lines."""
     acc = {p.name: {} for p in protos}
+    walls = {p.name: [] for p in protos}
     for run in range(runs):
         for p in order(protos, run):
             r = outputs_of(p, led.cmd("bench-" + command, p), path, check, ids, nulls)
-            scen, inproc = {}, 0
+            walls[p.name].append(r["wall_s"])
+            scen, tims, inproc = {}, {}, 0
             for cid, o in r["out"].items():
                 if not isinstance(o, dict) or set(o) != {"scenario", "timing"}:
                     check.fail(f"{name}.timed_output_shape", {"proto": p.name, "id": cid})
                     continue
-                scen[cid] = o["scenario"]
+                scen[cid], tims[cid] = o["scenario"], o["timing"]
                 inproc += collect_timing(o["timing"], acc[p.name])
-            verify(p, scen)
+            verify(p, scen, tims, run)
             acc[p.name].setdefault("process.overhead_ns", []).append(int(r["wall_s"] * 1e9) - inproc)
     check.ok(f"{name}.timed_output_shape")
-    return {pn: {k: stats.summarize(v) for k, v in sorted(a.items())} for pn, a in acc.items()}
+    return {pn: {k: stats.summarize(v) for k, v in sorted(a.items())} for pn, a in acc.items()}, walls
 
 
 def workload_b(protos, prof, seed, tmp: Path, check: Check, samples: dict, ledger: str | None = "sqlite",
                name: str = "B") -> dict:
+    """Every run goes through bench-broker-scenario: the per-operation transaction
+    evidence is required to classify storage refusals (D-026), so B has no separate
+    untimed runs; wall time includes the in-process timing reads."""
     command, lines, meta, cases = wl.gen_b(seed, prof["b_sessions"])
     led = Ledger(ledger, tmp, name)
     meta = dict(meta, ledger="sqlite (file-backed, D-023)" if ledger == "sqlite" else
@@ -219,23 +224,29 @@ def workload_b(protos, prof, seed, tmp: Path, check: Check, samples: dict, ledge
     wl.write_lines(path, lines)
     ids, nulls = ids_of(lines)
     res = Results("bench-B")
-    walls = {p.name: [] for p in protos}
+    by_id = {c["id"]: c for c in cases}
+    avail = {p.name: [] for p in protos}
 
-    def verify_b(p, outs):
+    def verify_b(p, outs, tims, run):
+        av = {}
         for c in cases:
-            out = outs.get(c["id"])
-            c_broker.check_run(res, p.name, c, out)
+            out, tm = outs.get(c["id"]), tims.get(c["id"])
+            c_broker.check_run(res, p.name, c, out, tm)
             grp = out["steps"][-1] if isinstance(out, dict) and out.get("steps") else None
+            gtim = tm["steps"][-1] if isinstance(tm, dict) and tm.get("steps") else None
+            if isinstance(out, dict) and out.get("steps"):
+                c_broker.availability_add(av, by_id[c["id"]], out, gtim)
             ok = isinstance(grp, dict) and grp.get("result") == "concurrent" and \
-                c_broker.serializable(c, grp.get("outcomes") or {}, out.get("final") or {})
+                c_broker.serializable(c, grp.get("outcomes") or {}, out.get("final") or {}, evidence=gtim)
             if not ok:
                 check.fail(f"{name}.concurrent_group_equals_a_serialization", {"proto": p.name, "id": c["id"], "ok": ok})
-    for run in range(prof["b_runs"]):
-        for p in order(protos, run):
-            r = outputs_of(p, led.cmd(command, p), path, check, ids, nulls)
-            walls[p.name].append(r["wall_s"])
-            verify_b(p, r["out"])
-    timing = timed_broker_runs(name, protos, command, path, led, prof["b_runs"], check, ids, nulls, verify_b)
+        for lvl, a in av.items():
+            a = dict(a)
+            a.pop("reserve_wait_ns")
+            avail[p.name].append({"run": run, "concurrency": lvl, **a,
+                                  "lock_timeout_percent": (100 * a["lock_timeout_refusals"] / a["operations"])
+                                  if a["operations"] else None})
+    timing, walls = timed_broker_runs(name, protos, command, path, led, prof["b_runs"], check, ids, nulls, verify_b)
     check.ok(f"{name}.concurrent_group_equals_a_serialization")
     for inv, per in res.counts.items():
         check.ok(f"{name}.{inv}")
@@ -245,14 +256,19 @@ def workload_b(protos, prof, seed, tmp: Path, check: Check, samples: dict, ledge
     meas = {}
     for p in protos:
         samples[f"{name}.{p.name}"] = walls[p.name]
+        runs_ok = [sum(x["successful"] for x in avail[p.name] if x["run"] == r) for r in range(prof["b_runs"])]
         meas[p.name] = {"batch_wall_s": stats.summarize(walls[p.name]),
                         "sessions_per_sec": (len(lines) * len(walls[p.name]) / sum(walls[p.name])) if walls[p.name] else None,
+                        "successful_operations_per_sec": (sum(runs_ok) / sum(walls[p.name])) if walls[p.name] else None,
                         "peak_rss_kb": runner.peak_rss(p, led.cmd(command, p), path, tmp)["kb"],
                         "broker_timing_ns": timing[p.name]}
-    return {"command": command, "seed": seed, "runs": prof["b_runs"], "digest": wl.digest_lines(lines), "meta": meta,
-            "measurements": meas,
+    return {"command": "bench-" + command, "seed": seed, "runs": prof["b_runs"], "digest": wl.digest_lines(lines),
+            "meta": meta, "measurements": meas,
+            "availability": {pn: a for pn, a in avail.items()},
             "method": "one broker-scenario per session, each ending in one concurrent group of 10 executes "
-                      "(in-process threads); checked against every permitted serialization"}
+                      "(in-process threads); checked against every permitted serialization with D-026 evidence; "
+                      "successful throughput counts only successful operations; refusals are reported under "
+                      "availability, never as work"}
 
 
 def workload_plain(name, gen, protos, runs, tmp: Path, check: Check, samples: dict, ledger: str | None = None) -> dict:
@@ -276,10 +292,10 @@ def workload_plain(name, gen, protos, runs, tmp: Path, check: Check, samples: di
     check.ok(f"{name}.repeat_identical")
     timing = None
     if command == "broker-scenario":
-        def verify_plain(p, outs):
+        def verify_plain(p, outs, _tims, _run):
             if outs != ref[p.name]:
                 check.fail(f"{name}.timed_scenario_equals_plain", {"proto": p.name})
-        timing = timed_broker_runs(name, protos, command, path, led, runs, check, ids, nulls, verify_plain)
+        timing, _ = timed_broker_runs(name, protos, command, path, led, runs, check, ids, nulls, verify_plain)
         check.ok(f"{name}.timed_scenario_equals_plain")
     meas = {}
     for p in protos:
@@ -386,7 +402,8 @@ def evidence(result: dict) -> list[dict]:
         for pname, m in w["measurements"].items():
             k = m.get("kernel_decision_ns")
             ms = (lambda v: v / 1e6 if isinstance(v, (int, float)) else None)
-            thr = m.get("throughput_per_sec", m.get("sessions_per_sec", m.get("lines_per_sec")))
+            thr = next((m[k] for k in ("throughput_per_sec", "successful_operations_per_sec", "lines_per_sec")
+                        if k in m), None)
             recs.append({
                 "commit": result["repository"]["commit"], "benchmark_version": BENCHMARK_VERSION,
                 "hardware": hardware, "runtime": runtime.get(pname), "prototype": pname, "workload_name": wname,

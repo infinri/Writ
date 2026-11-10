@@ -2,7 +2,7 @@
 
 Read this first after compaction or in a new session, then [WORK-STATE](WORK-STATE.md).
 
-## Current checkpoint (2026-11-10, D-025 published and green; M1-06 waiting for the benchmark environment)
+## Current checkpoint (2026-11-10, D-026 concurrency oracle done; M1-06 waiting for the benchmark environment)
 
 **This is the authoritative recovery entry point. It is not authorization to do anything; re-establish authorizations from the owner's newest message.**
 
@@ -15,8 +15,8 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 | Acceptance Gate Integrity | Protected workflow transitions need a trusted, version-bound acceptance record checked by the broker plus kernel structure checks; promotion separate from publish or deploy ([spec](../architecture/acceptance-gate-integrity.md), ADR-0008 **APPROVED IN PRINCIPLE**) |
 | Branch | `v2/architecture-rebuild` (never `main`) |
 | Published code HEAD | `68f4593a513b0ab7b6ac206ef00c8f9d067d7660` (D-025), CI https://github.com/infinri/Writ/actions/runs/42887453309 **green, all 5 jobs** (E-032). Previous: `6b7eab1` run 42857245639 green; `3012940` run 42851712662 green |
-| Published HEAD | `d9815f8ad2ed399c7a84a76a71b3b6dfcfbbf0b5` (guard refuses a discharging battery; docs). Its CI https://github.com/infinri/Writ/actions/runs/42890081319 **FAILED**: intermittent `SQLITE_BUSY` timeouts under 64-way contention (E-034); same code was green at `68f4593` |
-| Local commits not yet pushed | the docs commit recording E-034 and this checkpoint |
+| Published | `1994b67` (docs, E-034) on top of `d9815f8` (guard). CI on `d9815f8` run 42890081319 **failed** (busy timeouts under 64-way contention, E-034); fixed by D-026 |
+| D-026 commit | the commit after `1994b67` titled `m1: D-026 ...` (`git log --oneline -3`); its CI must be checked on its exact SHA |
 | Working tree | Only untracked `docs/audit/m0/hook-audit/` (never stage or publish) |
 | Milestone | **M1** under D-014 (development only). Done: M1-00..M1-05, M1-06a harness, M1-06b (D-022), M1-06c (D-023 SQLite ledger), M1-06e (D-024), M1-06d broker timing (published, CI green), M1-06f D-025 corrections (published, CI green). **M1-07 in progress** (facts collected; build times deferred). **M1-06 measurements blocked** (environment). M1-08 not started. M0 closed for development only; release and production NO-GO |
 
@@ -57,7 +57,7 @@ Independent human review of the 26 golden cases and all M1 fixtures (REL-01); 28
 
 ### F. Next tasks
 
-0. **Owner decision (E-034):** how the concurrency oracle and benchmarks treat busy-timeout refusals (`LEDGER_UNAVAILABLE`) under heavy contention. Options recorded in E-034 and the session report: (a) allow them in the serialization oracle as fail-closed no-op refusals, checked against durable state, and report their rate as an availability metric; (b) keep the oracle strict and cap CI contention; (c) change the busy timeout (D-025 says 5 s). CI stays red until decided.
+0. **D-026 done** (E-035): verified lock-contention aborts are aborted no-ops; partial progress modelled; availability reported separately. **Owner decision pending:** concurrent-group start equivalence (Rust opens worker connections before the start barrier, Go after it; this, not hold time, explains the timeout difference, E-035).
 1. **M1-06 measurements** only after every guard passes. 2026-11-10 (E-033): governor now `performance`; still refused: battery discharging on a 15 W USB-C supply (connect the full-power adapter), load 1.5 to 1.7 (owner's `java` and `clickhouse-server` processes), CPU 67 to 69 C. Owner actions in [M1-06-READINESS](M1-06-READINESS.md). Then rebuild both from the clean tree and run `m1/bench/bench.py` with a new recorded seed, followed by `m1/assess/collect.py build-times` (M1-07)
 2. Remaining M0 and security obligations unchanged (section E); fixture review pending ([M1-06-READINESS](M1-06-READINESS.md): governor `powersave` and load above 1.0 on 2026-11-10).
 3. **M1-07 remaining:** build timings when the guard passes; cross-target decision (pending owner input 5).

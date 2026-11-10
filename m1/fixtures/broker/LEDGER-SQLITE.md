@@ -99,13 +99,26 @@ Language-neutral tests: `m1/ledger_tests/test_storage_failures.py` (Python stand
 | `key_lock_wait_ns` | waiting for the per-key lock (SQLite `execute` only); `null` otherwise |
 | `tx` | one member per logical transaction that ran, named `reserve`, `dispatch`, `adapter`, `observe`, `approve`, `reconcile`, `audit`; `{}` if none |
 
-`tx = {"begin_ns": n | null, "body_ns": n, "end_ns": n | null, "outcome": "commit" | "rollback"}`: SQLite: `begin_ns` is `BEGIN IMMEDIATE` returning (lock acquisition, including busy waits), `body_ns` the statements and in-process checks between begin and end, `end_ns` `COMMIT` or `ROLLBACK` returning. In-memory ledger: `begin_ns` and `end_ns` are `null` and `body_ns` times the corresponding in-memory section.
+`tx = {"begin_ns": n | null, "body_ns": n, "end_ns": n | null, "outcome": "commit" | "rollback", "error": null | {"code": "busy" | "other", "at": "begin" | "body" | "end"}}` (`error` added by D-026: `null` when the transaction raised no database error, including ordinary refusals that roll back; otherwise `code` is `busy` when the SQLite primary result code is `SQLITE_BUSY` and `other` for any other database or integrity error, and `at` says whether `BEGIN IMMEDIATE`, the body, or `COMMIT`/`ROLLBACK` failed; an error always has outcome `rollback`; the in-memory ledger never reports an error): SQLite: `begin_ns` is `BEGIN IMMEDIATE` returning (lock acquisition, including busy waits), `body_ns` the statements and in-process checks between begin and end, `end_ns` `COMMIT` or `ROLLBACK` returning. In-memory ledger: `begin_ns` and `end_ns` are `null` and `body_ns` times the corresponding in-memory section.
 
 A failed `BEGIN IMMEDIATE` (busy timeout or error) is still recorded as that transaction with outcome `rollback`, the measured `begin_ns`, and `body_ns` and `end_ns` 0; a failed `COMMIT` is recorded as `rollback`. `open_ns` is a number whenever an open was attempted (also when it failed) and `null` when none was (input error). For a `concurrent` worker, `total_ns` is its connection setup plus its operation (the start-barrier wait is excluded).
 
 A `concurrent` step is `{"op": "concurrent", "total_ns": n, "validate_ns": null, "decide_ns": null, "key_lock_wait_ns": null, "tx": {}, "operations": [step, ...]}` with one entry per operation in input order (per-worker connection setup is inside that operation's `total_ns`).
 
 **Integrity rules** (checked by `m1/ledger_tests/test_timing_integrity.py`): every value is a non-negative integer or `null` exactly as specified; for each step `validate_ns + decide_ns + key_lock_wait_ns + sum(begin_ns + body_ns + end_ns)` (nulls as 0) is at most `total_ns`; the sum of top-level step `total_ns` plus `open_ns` and `final_ns` is at most `run_ns`; `tx` names and outcomes match the specification for the operation's result (for example a successful allow `execute` has exactly `reserve`, `dispatch`, `adapter`, `observe`, all `commit`; a refused operation adds `audit`; `GRANT_EXHAUSTED` has `reserve` with `rollback`).
+
+## Contention and the concurrency oracle (D-026)
+
+A `concurrent` group's outcome counts and `final` must equal a serial order of whole operations (M1-05), with these per-operation exceptions derived from each operation's `bench-broker-scenario` transaction evidence (input order) and, where its idempotency key is used by no other operation in the group, its rows in the ledger file:
+
+| Category | Evidence | Treatment |
+|---|---|---|
+| 1 successful, 2 ordinary refusal | no transaction has an `error` | modelled as written (strict) |
+| 3 verified lock-contention abort | the operation's first ledger transaction (`reserve` for `execute`) has `error: {"code": "busy", "at": "begin"}`; no other transaction except `audit`; for an operation-unique key, no receipt, receipt event or grant-use row for it | removed from the model as an aborted no-op; its `LEDGER_UNAVAILABLE` outcome is matched to it |
+| 4 failure after partial durable progress | `reserve` committed and a later transaction failed at `begin` with `busy` | modelled as the crash state the committed transactions imply: `dispatch` failed: reserved (grant use kept, a later same-key operation resumes); `adapter` failed: dispatched with no consumed permit and no effect (uncertain); `observe` failed: dispatched with the consumed permit and the effect (or no effect for `effect_fails`) (uncertain) |
+| 5 unexpected | any other `error` (`other`, or failure `at` body or end) | always a failed check |
+
+Every `LEDGER_UNAVAILABLE` outcome must be matched to a category 3 or 4 operation (counts equal). An `audit` transaction with an error removes that refusal from `final.refusals` (D-024 rule 2); all other refusal accounting is exact. Availability is reported separately from correctness.
 
 ## Required tests (each prototype, own code)
 

@@ -167,8 +167,15 @@ class TimingIntegrity(unittest.TestCase):
         inside = nn(step["validate_ns"]) + nn(step["decide_ns"]) + nn(step["key_lock_wait_ns"])
         self.assertTrue(set(step["tx"]) <= TX_NAMES, step["tx"])
         for tname, tx in step["tx"].items():
-            self.assertEqual(set(tx), {"begin_ns", "body_ns", "end_ns", "outcome"}, tname)
+            self.assertEqual(set(tx), {"begin_ns", "body_ns", "end_ns", "outcome", "error"}, tname)
             self.assertIn(tx["outcome"], ("commit", "rollback"))
+            err = tx["error"]
+            if err is not None:  # D-026: database error evidence; always a rollback
+                self.assertEqual(set(err), {"code", "at"})
+                self.assertIn(err["code"], ("busy", "other"))
+                self.assertIn(err["at"], ("begin", "body", "end"))
+                self.assertEqual(tx["outcome"], "rollback")
+                self.assertNotEqual(ledger, "memory", "the in-memory ledger never reports a database error")
             self.assertTrue(is_ns(tx["body_ns"]))
             if ledger == "memory":
                 self.assertEqual((tx["begin_ns"], tx["end_ns"]), (None, None))
@@ -209,6 +216,8 @@ class TimingIntegrity(unittest.TestCase):
                     continue
                 with self.subTest(prototype=name, ledger=ledger, case=c["id"], step=i, op=op.get("op"), result=res):
                     self.assertEqual({k: v["outcome"] for k, v in step["tx"].items()}, exp)
+                    self.assertTrue(all(v["error"] is None for v in step["tx"].values()),
+                                    "fixtures run without contention or injected faults")
                     if op.get("op") == "execute" and res.get("code") == "INGRESS_UNAUTHENTICATED":
                         self.assertIsNone(step["decide_ns"])
                     checked += 1

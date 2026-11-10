@@ -10,8 +10,8 @@
 use crate::broker::{refused, replayed, result};
 use crate::json::{obj, s, Value};
 use crate::time::Instant;
-use crate::timing::{since, StepTiming, TxTime};
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
+use crate::timing::{since, StepTiming, TxAt, TxError, TxTime};
+use rusqlite::{Connection, DropBehavior, OptionalExtension, Transaction, TransactionBehavior};
 use std::fs::OpenOptions;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -171,15 +171,17 @@ enum End<T> {
 /// "Per-operation timing"): `begin_ns` brackets `BEGIN IMMEDIATE`, `body_ns`
 /// the body, `end_ns` `COMMIT` or `ROLLBACK`. A body error rolls back and is
 /// returned; a failed `BEGIN` is recorded with a zero body and end. Every
-/// error is categorized as `transaction <name>`.
+/// error is categorized as `transaction <name>` and recorded as the
+/// transaction's `error` with where it happened (D-026).
 fn transact<T>(c: &Connection, t: &mut StepTiming, name: &'static str, body: impl FnOnce(&Transaction) -> R<End<T>>) -> R<T> {
+    let error = |e: &DbError, at: TxAt| Some(TxError { busy: e.code == "SQLITE_BUSY", at });
     let started = std::time::Instant::now();
     let tx = begin(c);
     let begin_ns = Some(since(started));
     let tx = match tx {
         Ok(tx) => tx,
         Err(e) => {
-            t.tx.push((name, TxTime { begin_ns, body_ns: 0, end_ns: Some(0), commit: false }));
+            t.tx.push((name, TxTime { begin_ns, body_ns: 0, end_ns: Some(0), commit: false, error: error(&e, TxAt::Begin) }));
             return Err(e.within(Category::Transaction(name)));
         }
     };
@@ -187,22 +189,37 @@ fn transact<T>(c: &Connection, t: &mut StepTiming, name: &'static str, body: imp
     let out = body(&tx);
     let body_ns = since(started);
     let started = std::time::Instant::now();
-    let (out, commit) = match out {
+    let (out, commit, err) = match out {
         Ok(End::Commit(v)) => match tx.commit() {
-            Ok(()) => (Ok(v), true),
-            Err(e) => (Err(DbError::from(e)), false),
+            Ok(()) => (Ok(v), true, None),
+            Err(e) => {
+                let e = DbError::from(e);
+                (Err(e), false, error(&e, TxAt::End))
+            }
         },
         Ok(End::Rollback(v)) => {
-            drop(tx);
-            (Ok(v), false)
+            let failed = rollback(c, tx);
+            (Ok(v), false, failed.and_then(|e| error(&e, TxAt::End)))
         }
         Err(e) => {
-            drop(tx);
-            (Err(e), false)
+            rollback(c, tx);
+            (Err(e), false, error(&e, TxAt::Body))
         }
     };
-    t.tx.push((name, TxTime { begin_ns, body_ns, end_ns: Some(since(started)), commit }));
+    t.tx.push((name, TxTime { begin_ns, body_ns, end_ns: Some(since(started)), commit, error: err }));
     out.map_err(|e| e.within(Category::Transaction(name)))
+}
+
+/// `ROLLBACK` exactly as dropping the `Transaction` does it (only when a
+/// transaction is still active), but returning its error, if any, so that it
+/// can be observed (D-026). The result of the operation is not changed.
+fn rollback(c: &Connection, mut tx: Transaction) -> Option<DbError> {
+    if c.is_autocommit() {
+        drop(tx);
+        return None;
+    }
+    tx.set_drop_behavior(DropBehavior::Ignore);
+    tx.rollback().err().map(DbError::from)
 }
 
 /// The tables ledger.sql creates, in schema order.

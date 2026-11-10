@@ -15,7 +15,7 @@
 
 ## Owner actions before M1-06
 
-- **Decision first (E-034):** both prototypes refuse some operations `LEDGER_UNAVAILABLE` (busy timeout) under 64-way contention (Rust 89, Go 6 of 12,800 locally); decide how the oracle and the benchmark treat them before measuring workload B. Load sources seen 2026-11-10 (no process was stopped): IntelliJ IDEA (`java`, bursts of several cores), Docker containers (22 running: Langfuse with ClickHouse, MinIO, Redis, Postgres, worker and web; n8n with Postgres and runners; OpenSearch; Dependency-Track; Neo4j `writ-neo4j`; MySQL; MongoDB; fitting-engine; foundry-agent), Chrome, Claude Code sessions.
+- **D-026 (decided):** busy-timeout refusals are verified aborted no-ops in the oracle and are reported as availability (B reports successful operations per second and refusal counts separately). **Still open:** concurrent-group start equivalence (E-035): Rust opens worker connections before the start barrier, Go after; decide before comparing availability. Load sources seen 2026-11-10 (no process was stopped): IntelliJ IDEA (`java`, bursts of several cores), Docker containers (22 running: Langfuse with ClickHouse, MinIO, Redis, Postgres, worker and web; n8n with Postgres and runners; OpenSearch; Dependency-Track; Neo4j `writ-neo4j`; MySQL; MongoDB; fitting-engine; foundry-agent), Chrome, Claude Code sessions.
 
 0. Connect the full-power AC adapter (the battery must not be discharging; the guard refuses a discharging battery since 2026-11-10).
 1. `sudo cpupower frequency-set -g performance` (done 2026-11-10; privileged; Claude does not change global CPU settings).

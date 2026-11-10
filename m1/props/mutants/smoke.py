@@ -17,7 +17,7 @@ import run as harness  # noqa: E402
 
 MUTATIONS = {"dup-accept": "json", "ignore-artifact": "acceptance", "double-grant": "broker",
              "redispatch": "broker", "leak-codes": "refusal", "scope-allow": "decide",
-             "forbid-ignored": "decide", "replay-commit": "transition"}
+             "forbid-ignored": "decide", "replay-commit": "transition", "masked-effect": "broker"}
 
 
 def main():

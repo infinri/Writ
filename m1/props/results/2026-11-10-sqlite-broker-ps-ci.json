@@ -1,0 +1,291 @@
+{
+ "note": "D-026 availability evidence (uncontrolled environment, not a benchmark)",
+ "seed": 20261107,
+ "ledger": "sqlite",
+ "repository_commit": "1994b67718786a1a0b3b63034cda801f230dbcfe-dirty",
+ "protos": {
+  "rust": {
+   "argv": [
+    "m1/rust/target/release/proto"
+   ],
+   "executable_sha256": "sha256:fe52952a41c503cd79613b57cf6561ddcecbce15bbcfe91e654ba10c84ac5a3b"
+  },
+  "go": {
+   "argv": [
+    "m1/go/proto"
+   ],
+   "executable_sha256": "sha256:16225b32237d291bcd887de0ff0116db01cb086cbe1fd174163fa7184b069d63"
+  }
+ },
+ "ok": true,
+ "availability": {
+  "rust": {
+   "x64": {
+    "groups": 22,
+    "operations": 1408,
+    "successful": 615,
+    "lock_timeout_refusals": 0,
+    "lock_timeout_by_stage": {},
+    "other_storage_refusals": 0,
+    "lock_timeout_percent": 0.0,
+    "reserve_begin_wait_ns": {
+     "n": 1408,
+     "p50": 1078081,
+     "p99": 4133493060,
+     "max": 4934540122
+    }
+   },
+   "x16": {
+    "groups": 26,
+    "operations": 416,
+    "successful": 192,
+    "lock_timeout_refusals": 0,
+    "lock_timeout_by_stage": {},
+    "other_storage_refusals": 0,
+    "lock_timeout_percent": 0.0,
+    "reserve_begin_wait_ns": {
+     "n": 416,
+     "p50": 1083471,
+     "p99": 729787892,
+     "max": 1029851918
+    }
+   },
+   "x32": {
+    "groups": 12,
+    "operations": 384,
+    "successful": 171,
+    "lock_timeout_refusals": 0,
+    "lock_timeout_by_stage": {},
+    "other_storage_refusals": 0,
+    "lock_timeout_percent": 0.0,
+    "reserve_begin_wait_ns": {
+     "n": 384,
+     "p50": 1083872,
+     "p99": 2231553026,
+     "max": 2331912820
+    }
+   }
+  },
+  "go": {
+   "x64": {
+    "groups": 22,
+    "operations": 1408,
+    "successful": 598,
+    "lock_timeout_refusals": 0,
+    "lock_timeout_by_stage": {},
+    "other_storage_refusals": 0,
+    "lock_timeout_percent": 0.0,
+    "reserve_begin_wait_ns": {
+     "n": 1408,
+     "p50": 12123,
+     "p99": 1530418275,
+     "max": 2430172753
+    }
+   },
+   "x16": {
+    "groups": 26,
+    "operations": 416,
+    "successful": 193,
+    "lock_timeout_refusals": 0,
+    "lock_timeout_by_stage": {},
+    "other_storage_refusals": 0,
+    "lock_timeout_percent": 0.0,
+    "reserve_begin_wait_ns": {
+     "n": 416,
+     "p50": 20248,
+     "p99": 429026182,
+     "max": 629431309
+    }
+   },
+   "x32": {
+    "groups": 12,
+    "operations": 384,
+    "successful": 164,
+    "lock_timeout_refusals": 0,
+    "lock_timeout_by_stage": {},
+    "other_storage_refusals": 0,
+    "lock_timeout_percent": 0.0,
+    "reserve_begin_wait_ns": {
+     "n": 384,
+     "p50": 12514,
+     "p99": 1930133616,
+     "max": 2030424353
+    }
+   }
+  }
+ },
+ "invariants": {
+  "broker.concurrent_group_equals_a_serialization": {
+   "rust": {
+    "pass": 60,
+    "fail": 0
+   },
+   "go": {
+    "pass": 60,
+    "fail": 0
+   }
+  },
+  "broker.consumed_permits_equal_dispatches": {
+   "rust": {
+    "pass": 290,
+    "fail": 0
+   },
+   "go": {
+    "pass": 290,
+    "fail": 0
+   }
+  },
+  "broker.effects_applied_equal_dispatches": {
+   "rust": {
+    "pass": 290,
+    "fail": 0
+   },
+   "go": {
+    "pass": 290,
+    "fail": 0
+   }
+  },
+  "broker.effects_applied_le_consumed_permits": {
+   "rust": {
+    "pass": 361,
+    "fail": 0
+   },
+   "go": {
+    "pass": 361,
+    "fail": 0
+   }
+  },
+  "broker.grant_uses_equal_first_reservations_refusals_consume_nothing": {
+   "rust": {
+    "pass": 290,
+    "fail": 0
+   },
+   "go": {
+    "pass": 290,
+    "fail": 0
+   }
+  },
+  "broker.grant_uses_never_exceed_max_uses": {
+   "rust": {
+    "pass": 361,
+    "fail": 0
+   },
+   "go": {
+    "pass": 361,
+    "fail": 0
+   }
+  },
+  "broker.inserted_refusal_changes_nothing_else": {
+   "rust": {
+    "pass": 74,
+    "fail": 0
+   },
+   "go": {
+    "pass": 74,
+    "fail": 0
+   }
+  },
+  "broker.op.apply_without_permit": {
+   "rust": {
+    "pass": 48,
+    "fail": 0
+   },
+   "go": {
+    "pass": 48,
+    "fail": 0
+   }
+  },
+  "broker.op.approve": {
+   "rust": {
+    "pass": 49,
+    "fail": 0
+   },
+   "go": {
+    "pass": 49,
+    "fail": 0
+   }
+  },
+  "broker.op.execute": {
+   "rust": {
+    "pass": 268,
+    "fail": 0
+   },
+   "go": {
+    "pass": 268,
+    "fail": 0
+   }
+  },
+  "broker.op.present": {
+   "rust": {
+    "pass": 108,
+    "fail": 0
+   },
+   "go": {
+    "pass": 108,
+    "fail": 0
+   }
+  },
+  "broker.probe_answered_without_crash": {
+   "rust": {
+    "pass": 17,
+    "fail": 0
+   },
+   "go": {
+    "pass": 17,
+    "fail": 0
+   }
+  },
+  "broker.receipts_equal_distinct_reserved_keys": {
+   "rust": {
+    "pass": 290,
+    "fail": 0
+   },
+   "go": {
+    "pass": 290,
+    "fail": 0
+   }
+  },
+  "broker.refusals_counted_exactly": {
+   "rust": {
+    "pass": 361,
+    "fail": 0
+   },
+   "go": {
+    "pass": 361,
+    "fail": 0
+   }
+  },
+  "broker.restart_is_transparent": {
+   "rust": {
+    "pass": 74,
+    "fail": 0
+   },
+   "go": {
+    "pass": 74,
+    "fail": 0
+   }
+  },
+  "broker.uncertain_effect_never_redispatched": {
+   "rust": {
+    "pass": 290,
+    "fail": 0
+   },
+   "go": {
+    "pass": 290,
+    "fail": 0
+   }
+  },
+  "differential.deterministic_prefix_before_concurrency": {
+   "both": {
+    "pass": 11,
+    "fail": 0
+   }
+  },
+  "differential.exact_output": {
+   "both": {
+    "pass": 307,
+    "fail": 0
+   }
+  }
+ }
+}
