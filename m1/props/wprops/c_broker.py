@@ -745,6 +745,7 @@ def gen_cases(rng, n):
 
 
 LEDGER = None  # None: in-memory ledger; "sqlite": file-backed (run.py --ledger sqlite)
+PROFILE = "primary"  # D-027 concurrency profile (run.py --concurrency-profile)
 
 
 def _fresh_dir():
@@ -754,11 +755,12 @@ def _fresh_dir():
 
 def bench_command(db=None) -> str:
     """bench-broker-scenario with this campaign's ledger; timing is the D-026 evidence."""
+    base = f"bench-broker-scenario --concurrency-profile {PROFILE}"
     if LEDGER != "sqlite":
-        return "bench-broker-scenario"
+        return base
     if db is not None:
-        return f"bench-broker-scenario --ledger sqlite --ledger-db {db}"
-    return f"bench-broker-scenario --ledger sqlite --ledger-dir {_fresh_dir()}"
+        return f"{base} --ledger sqlite --ledger-db {db}"
+    return f"{base} --ledger sqlite --ledger-dir {_fresh_dir()}"
 
 
 def unwrap(outs: dict) -> tuple[dict, dict]:

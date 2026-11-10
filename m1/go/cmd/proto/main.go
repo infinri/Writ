@@ -42,7 +42,8 @@ var commands = map[string]handler{
 }
 
 const usage = "usage: proto canonical|decide|decide-batch|bench-decide|check-acceptance|external-refusal|transition-scenario|sqlite-info\n" +
-	"       proto broker-scenario|bench-broker-scenario [--ledger sqlite (--ledger-dir DIR | --ledger-db PATH)]"
+	"       proto broker-scenario|bench-broker-scenario [--ledger sqlite (--ledger-dir DIR | --ledger-db PATH)]\n" +
+	"             [--concurrency-profile primary|cold]"
 
 func main() {
 	if len(os.Args) == 2 && os.Args[1] == "sqlite-info" {
@@ -79,9 +80,11 @@ func main() {
 }
 
 // parseArgs selects the handler for `<command> [options]`. Only
-// broker-scenario and bench-broker-scenario take options: `--ledger sqlite`
-// with exactly one of `--ledger-dir DIR` (an existing directory) or
-// `--ledger-db PATH`.
+// broker-scenario and bench-broker-scenario take options, each at most once
+// and in any order: `--ledger sqlite` with exactly one of `--ledger-dir DIR`
+// (an existing directory) or `--ledger-db PATH` (no ledger option: the
+// in-memory ledger), and `--concurrency-profile primary|cold` (default
+// primary, D-027) with either ledger.
 func parseArgs(args []string) (lineHandler, bool) {
 	if len(args) == 0 {
 		return nil, false
@@ -90,19 +93,13 @@ func parseArgs(args []string) (lineHandler, bool) {
 	if commands[args[0]] == nil && !bench {
 		return nil, false
 	}
-	if len(args) == 1 {
-		if bench {
-			return benchBrokerScenario(nil), true
-		}
-		return plain(commands[args[0]]), true
-	}
-	if args[0] != "broker-scenario" && !bench {
+	if len(args) > 1 && args[0] != "broker-scenario" && !bench {
 		return nil, false
 	}
 	opts := map[string]string{}
 	for rest := args[1:]; len(rest) > 0; rest = rest[2:] {
 		switch rest[0] {
-		case "--ledger", "--ledger-dir", "--ledger-db":
+		case "--ledger", "--ledger-dir", "--ledger-db", "--concurrency-profile":
 		default:
 			return nil, false
 		}
@@ -111,34 +108,47 @@ func parseArgs(args []string) (lineHandler, bool) {
 		}
 		opts[rest[0]] = rest[1]
 	}
-	dir, hasDir := opts["--ledger-dir"]
-	db, hasDB := opts["--ledger-db"]
-	if opts["--ledger"] != "sqlite" || hasDir == hasDB {
-		return nil, false
+	if len(args) == 1 && !bench {
+		return plain(commands[args[0]]), true
 	}
-	if hasDir {
-		if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+	prof := broker.Primary
+	if v, ok := opts["--concurrency-profile"]; ok {
+		if prof, ok = broker.ParseProfile(v); !ok {
 			return nil, false
 		}
 	}
-	store := &broker.SQLite{Dir: dir, DB: db}
+	ledger, hasLedger := opts["--ledger"]
+	dir, hasDir := opts["--ledger-dir"]
+	db, hasDB := opts["--ledger-db"]
+	var store *broker.SQLite
+	if hasLedger || hasDir || hasDB {
+		if ledger != "sqlite" || hasDir == hasDB {
+			return nil, false
+		}
+		if hasDir {
+			if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+				return nil, false
+			}
+		}
+		store = &broker.SQLite{Dir: dir, DB: db}
+	}
 	if bench {
-		return benchBrokerScenario(store), true
+		return benchBrokerScenario(store, prof), true
 	}
 	return plain(func(input any, jerr *sjson.Error) map[string]any {
 		if jerr != nil {
 			return map[string]any{"input_error": "INPUT_JSON_INVALID", "json_error": jerr.Code}
 		}
-		return broker.RunWith(input, store)
+		return broker.RunProfile(input, store, prof, nil)
 	}), true
 }
 
 // benchBrokerScenario (M1-06d) answers {"scenario": S, "timing": T}: S is
-// exactly the broker-scenario output for the same input and ledger (store,
-// nil for the in-memory ledger), T the per-operation timing of
-// LEDGER-SQLITE.md "Per-operation timing". The run clock starts here, just
-// after parsing.
-func benchBrokerScenario(store *broker.SQLite) lineHandler {
+// exactly the broker-scenario output for the same input, ledger (store, nil
+// for the in-memory ledger) and concurrency profile, T the per-operation
+// timing of LEDGER-SQLITE.md "Per-operation timing". The run clock starts
+// here, just after parsing.
+func benchBrokerScenario(store *broker.SQLite, prof broker.Profile) lineHandler {
 	return func(input any, jerr *sjson.Error, parse time.Duration) map[string]any {
 		tm := broker.NewTiming(parse)
 		var s map[string]any
@@ -146,7 +156,7 @@ func benchBrokerScenario(store *broker.SQLite) lineHandler {
 			s = map[string]any{"input_error": "INPUT_JSON_INVALID", "json_error": jerr.Code}
 			tm.Done()
 		} else {
-			s = broker.RunTimed(input, store, tm)
+			s = broker.RunProfile(input, store, prof, tm)
 		}
 		return map[string]any{"scenario": s, "timing": tm.JSON()}
 	}

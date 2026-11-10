@@ -57,6 +57,42 @@ type Broker struct {
 
 	led  ledger
 	keys keyLocks
+
+	profile Profile // concurrency profile of every concurrent group (D-027)
+	// trace, when set (tests only), observes a concurrent group: "setup"
+	// (worker i begins its connection setup), "ready" (worker i's setup
+	// finished), "release" (i is -1) and "begin" (worker i begins a
+	// transaction). It may be called from several goroutines.
+	trace func(event string, worker int)
+}
+
+// Profile is the concurrency profile (LEDGER-SQLITE.md "Concurrency
+// profiles", D-027): when a concurrent worker's connection is set up.
+type Profile int
+
+const (
+	// Primary sets up every worker connection before the start barrier is
+	// released.
+	Primary Profile = iota
+	// Cold sets up each worker connection after release, inside its worker.
+	Cold
+)
+
+// ParseProfile is the value of `--concurrency-profile`.
+func ParseProfile(s string) (Profile, bool) {
+	switch s {
+	case "primary":
+		return Primary, true
+	case "cold":
+		return Cold, true
+	}
+	return Primary, false
+}
+
+func (b *Broker) traced(event string, worker int) {
+	if b.trace != nil {
+		b.trace(event, worker)
+	}
 }
 
 // view is the configuration one operation runs against.
@@ -523,19 +559,27 @@ func (b *Broker) applyOn(led ledger, t *opTiming, op map[string]any, step int) m
 }
 
 // concurrent submits operations on real goroutines, each with its own ledger
-// connection opened for the group and closed afterwards; all start together.
-// The ledger's transactions and key locks make the outcome equal some serial
-// order.
+// connection set up for the group and closed afterwards; all start together
+// when close(start) releases them. The ledger's transactions and key locks
+// make the outcome equal some serial order.
 //
-// Timing: each operation's total_ns is its connection setup (fork) plus its
-// run from dispatch on its goroutine to its result; the start barrier wait
-// is in neither.
+// Concurrency profiles (D-027): Primary sets up every worker connection
+// (sequentially, in this goroutine) before the goroutines are created and
+// released; Cold creates the goroutines, releases them, and each sets up its
+// own connection. A worker whose setup failed answers LEDGER_UNAVAILABLE with
+// no transaction and no audit.
+//
+// Timing: ready_ns is taken before close(start): in Primary the latest setup
+// end, in Cold (and for the in-memory ledger) the latest instant a worker's
+// goroutine was created with its operation. Each worker's start_ns is read
+// after it passed the barrier, so start_ns >= ready_ns. A worker's total_ns
+// runs from passing the barrier to its result (in Cold it includes the
+// setup); the barrier wait is in neither.
 func (b *Broker) concurrent(led ledger, t *opTiming, op map[string]any) map[string]any {
 	ops, _ := sjson.Arr(op["operations"])
 	results := make([]map[string]any, len(ops))
 	workers := make([]ledger, len(ops))
 	timings := make([]*opTiming, len(ops))
-	setups := make([]time.Duration, len(ops))
 	if t != nil {
 		t.concurrent = true
 		for i, o := range ops {
@@ -543,15 +587,35 @@ func (b *Broker) concurrent(led ledger, t *opTiming, op map[string]any) map[stri
 			timings[i] = t.worker(m)
 		}
 	}
-	for i := range ops {
+	_, isSQL := led.(*sqlLedger)
+	cold := b.profile == Cold && isSQL
+	// setup is worker i's connection setup: on success workers[i] is set.
+	setup := func(i int) time.Time {
+		b.traced("setup", i)
 		opening := time.Now()
 		w, err := led.fork()
-		setups[i] = time.Since(opening)
+		done := time.Now()
+		if isSQL {
+			timings[i].setSetup(done.Sub(opening))
+		}
 		if err != nil {
 			diagnose(err)
-			continue
+		} else {
+			if s, ok := w.(*sqlLedger); ok && b.trace != nil {
+				s.onBegin = func() { b.traced("begin", i) }
+			}
+			workers[i] = w
 		}
-		workers[i] = w
+		b.traced("ready", i)
+		return done
+	}
+	var ready time.Time
+	if !cold {
+		for i := range ops {
+			if done := setup(i); isSQL {
+				ready = done
+			}
+		}
 	}
 	start := make(chan struct{})
 	var wg sync.WaitGroup
@@ -564,15 +628,26 @@ func (b *Broker) concurrent(led ledger, t *opTiming, op map[string]any) map[stri
 			defer panics.capture()
 			<-start
 			running := time.Now()
+			timings[i].setStart(t, running)
+			timings[i].setDispatch(running)
+			if cold {
+				setup(i)
+			}
 			if workers[i] == nil {
 				results[i] = refused("LEDGER_UNAVAILABLE")
-				timings[i].setTotal(setups[i] + time.Since(running))
-				return
+			} else {
+				results[i] = b.applyOn(workers[i], timings[i], m, -1)
 			}
-			results[i] = b.applyOn(workers[i], timings[i], m, -1)
-			timings[i].setTotal(setups[i] + time.Since(running))
+			timings[i].setTotal(time.Since(running))
 		}(i, m)
+		if cold || !isSQL {
+			ready = time.Now()
+		}
 	}
+	if len(ops) > 0 {
+		t.setReady(ready)
+	}
+	b.traced("release", -1)
 	close(start)
 	wg.Wait()
 	for _, w := range workers {
@@ -620,6 +695,11 @@ func RunWith(input any, store *SQLite) map[string]any {
 // the output is the same either way). tm.Done is called when the output
 // value is complete, before the ledger closes.
 func RunTimed(input any, store *SQLite, tm *Timing) map[string]any {
+	return RunProfile(input, store, Primary, tm)
+}
+
+// RunProfile is RunTimed with concurrency profile prof (D-027).
+func RunProfile(input any, store *SQLite, prof Profile, tm *Timing) map[string]any {
 	in, ok := sjson.Obj(input)
 	initial, okI := sjson.Obj(in["initial"])
 	steps, okS := sjson.Arr(in["steps"])
@@ -628,6 +708,7 @@ func RunTimed(input any, store *SQLite, tm *Timing) map[string]any {
 		return map[string]any{"input_error": "INPUT_MALFORMED"}
 	}
 	b := newBroker(initial)
+	b.profile = prof
 	if store != nil {
 		opening := time.Now()
 		led, err := store.open()
@@ -647,6 +728,7 @@ func RunTimed(input any, store *SQLite, tm *Timing) map[string]any {
 		op, _ := sjson.Obj(s)
 		st := tm.step(op)
 		started := time.Now()
+		st.setDispatch(started)
 		results = append(results, b.applyOn(b.led, st, op, i))
 		st.setTotal(time.Since(started))
 	}

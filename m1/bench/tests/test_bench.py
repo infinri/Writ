@@ -132,12 +132,16 @@ class Timing(unittest.TestCase):
                 "tx": {"reserve": tx}}
         timing = {"parse_ns": 5, "open_ns": None, "final_ns": 4, "run_ns": 30,
                   "steps": [step, {"op": "concurrent", "total_ns": 20, "validate_ns": None, "decide_ns": None,
-                                   "key_lock_wait_ns": None, "tx": {}, "operations": [step]}]}
+                                   "key_lock_wait_ns": None, "tx": {}, "ready_ns": 7,
+                                   "operations": [dict(step, setup_ns=3, start_ns=9)]}]}
         acc = {}
         self.assertEqual(bench.collect_timing(timing, acc), 35)
         self.assertEqual(acc["op.execute.total_ns"], [10])
         self.assertEqual(acc["concurrent.op.execute.total_ns"], [10])
         self.assertEqual(acc["concurrent.total_ns"], [20])
+        self.assertEqual(acc["concurrent.ready_ns"], [7])
+        self.assertEqual(acc["concurrent.worker.setup_ns"], [3])
+        self.assertEqual(acc["concurrent.worker.release_delay_ns"], [2])
         self.assertEqual(acc["tx.reserve.end_ns"], [3])
         self.assertNotIn("op.execute.key_lock_wait_ns", acc)
         self.assertNotIn("line.open_ns", acc)

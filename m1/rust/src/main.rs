@@ -38,29 +38,46 @@ const COMMANDS: [&str; 9] = [
 /// from the command line.
 static LEDGER: OnceLock<broker::LedgerChoice> = OnceLock::new();
 
+/// The `concurrent` worker start profile (D-027), chosen once from the
+/// command line.
+static PROFILE: OnceLock<broker::Profile> = OnceLock::new();
+
 /// `broker-scenario` options (LEDGER-SQLITE.md "Selecting the ledger"): none,
 /// or `--ledger sqlite` with exactly one of `--ledger-dir DIR` and
-/// `--ledger-db PATH`, each at most once, in any order.
-fn ledger_choice(options: &[String]) -> Option<broker::LedgerChoice> {
-    let (mut ledger, mut dir, mut db) = (None, None, None);
+/// `--ledger-db PATH`; with either ledger optionally `--concurrency-profile
+/// primary|cold` (default `primary`, D-027); each at most once, in any order.
+/// `None` is a usage error.
+fn ledger_choice(options: &[String]) -> Option<(broker::LedgerChoice, broker::Profile)> {
+    let (mut ledger, mut dir, mut db, mut profile) = (None, None, None, None);
     for pair in options.chunks(2) {
         let [name, value] = pair else { return None };
         let slot = match name.as_str() {
             "--ledger" => &mut ledger,
             "--ledger-dir" => &mut dir,
             "--ledger-db" => &mut db,
+            "--concurrency-profile" => &mut profile,
             _ => return None,
         };
         if slot.replace(value.clone()).is_some() {
             return None;
         }
     }
-    match (ledger.as_deref(), dir, db) {
-        (None, None, None) => Some(broker::LedgerChoice::Memory),
-        (Some("sqlite"), Some(d), None) => Some(broker::LedgerChoice::SqliteDir(PathBuf::from(d))),
-        (Some("sqlite"), None, Some(p)) => Some(broker::LedgerChoice::SqliteDb(PathBuf::from(p))),
-        _ => None,
-    }
+    let profile = match profile.as_deref() {
+        None | Some("primary") => broker::Profile::Primary,
+        Some("cold") => broker::Profile::Cold,
+        Some(_) => return None,
+    };
+    let choice = match (ledger.as_deref(), dir, db) {
+        (None, None, None) => broker::LedgerChoice::Memory,
+        (Some("sqlite"), Some(d), None) => broker::LedgerChoice::SqliteDir(PathBuf::from(d)),
+        (Some("sqlite"), None, Some(p)) => broker::LedgerChoice::SqliteDb(PathBuf::from(p)),
+        _ => return None,
+    };
+    Some((choice, profile))
+}
+
+fn profile() -> broker::Profile {
+    PROFILE.get().copied().unwrap_or_default()
 }
 
 fn strict_failure(command: &str, e: JsonError) -> Value {
@@ -90,7 +107,7 @@ fn run_command(command: &str, input: &Value) -> Value {
         },
         "external-refusal" => obj(vec![("external", s(refusal::external(input.str_at("internal_code").unwrap_or(""))))]),
         "transition-scenario" => promotion::run(input),
-        "broker-scenario" => broker::run_with(input, LEDGER.get().unwrap_or(&broker::LedgerChoice::Memory)),
+        "broker-scenario" => broker::run_with(input, LEDGER.get().unwrap_or(&broker::LedgerChoice::Memory), profile()),
         _ => unreachable!(),
     }
 }
@@ -160,7 +177,7 @@ fn execute(command: &str, parsed: Result<Value, JsonError>, parse_ns: i64) -> Va
         "bench-broker-scenario" => {
             let started = Instant::now();
             let (scenario, t) = match parsed {
-                Ok(input) => broker::run_timed(&input, LEDGER.get().unwrap_or(&broker::LedgerChoice::Memory)),
+                Ok(input) => broker::run_timed(&input, LEDGER.get().unwrap_or(&broker::LedgerChoice::Memory), profile()),
                 Err(e) => (strict_failure("broker-scenario", e), timing::ScenarioTiming::default()),
             };
             let run_ns = timing::since(started);
@@ -181,7 +198,7 @@ fn is_blank(line: &[u8]) -> bool {
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     let usage = || {
-        eprintln!("usage: proto <{}> | proto (broker-scenario|bench-broker-scenario) [--ledger sqlite (--ledger-dir DIR | --ledger-db PATH)] | proto sqlite-info", COMMANDS.join("|"));
+        eprintln!("usage: proto <{}> | proto (broker-scenario|bench-broker-scenario) [--ledger sqlite (--ledger-dir DIR | --ledger-db PATH)] [--concurrency-profile primary|cold] | proto sqlite-info", COMMANDS.join("|"));
         ExitCode::from(2)
     };
     let options = args.get(2..).unwrap_or_default();
@@ -200,11 +217,16 @@ fn main() -> ExitCode {
     let Some(command) = args.get(1).filter(|c| COMMANDS.contains(&c.as_str())) else {
         return usage();
     };
-    let choice = if matches!(command.as_str(), "broker-scenario" | "bench-broker-scenario") { ledger_choice(options) } else { options.is_empty().then_some(broker::LedgerChoice::Memory) };
-    let Some(choice) = choice else {
+    let choice = if matches!(command.as_str(), "broker-scenario" | "bench-broker-scenario") {
+        ledger_choice(options)
+    } else {
+        options.is_empty().then_some((broker::LedgerChoice::Memory, broker::Profile::Primary))
+    };
+    let Some((choice, profile)) = choice else {
         return usage();
     };
     let _ = LEDGER.set(choice);
+    let _ = PROFILE.set(profile);
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());
@@ -350,6 +372,34 @@ mod tests {
         assert_eq!(out("canonical", deep.as_bytes()), r#"{"id":"e","output":{"error":"DEPTH_EXCEEDED"}}"#);
         let a = answer("canonical", br#"{"input":{"b":1,"a":2},"id":"e"}"#);
         assert_eq!(a.get("output").and_then(|o| o.str_at("canonical")), Some(r#"{"a":2,"b":1}"#));
+    }
+
+    /// D-027: `--concurrency-profile primary|cold`, at most once, any
+    /// position, either ledger, default `primary`; anything else is a usage
+    /// error (as an unknown option).
+    #[test]
+    fn concurrency_profile_option() {
+        let parse = |args: &[&str]| ledger_choice(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>());
+        let profile = |args: &[&str]| parse(args).map(|(_, p)| p);
+        assert_eq!(profile(&[]), Some(broker::Profile::Primary));
+        assert_eq!(profile(&["--concurrency-profile", "primary"]), Some(broker::Profile::Primary));
+        assert_eq!(profile(&["--concurrency-profile", "cold"]), Some(broker::Profile::Cold));
+        assert_eq!(profile(&["--concurrency-profile", "cold", "--ledger", "sqlite", "--ledger-dir", "d"]), Some(broker::Profile::Cold));
+        assert_eq!(profile(&["--ledger", "sqlite", "--concurrency-profile", "cold", "--ledger-db", "p"]), Some(broker::Profile::Cold));
+        assert_eq!(profile(&["--ledger", "sqlite", "--ledger-dir", "d", "--concurrency-profile", "primary"]), Some(broker::Profile::Primary));
+        assert!(matches!(parse(&["--ledger", "sqlite", "--ledger-dir", "d", "--concurrency-profile", "cold"]), Some((broker::LedgerChoice::SqliteDir(_), _))));
+        for bad in [
+            &["--concurrency-profile", "warm"][..],
+            &["--concurrency-profile", ""],
+            &["--concurrency-profile", "Cold"],
+            &["--concurrency-profile"],
+            &["--concurrency-profile", "cold", "--concurrency-profile", "cold"],
+            &["--concurrency-profile", "primary", "--concurrency-profile", "cold"],
+            &["--ledger", "sqlite", "--ledger-dir", "d", "--concurrency-profile"],
+            &["--concurrency-profile", "cold", "--ledger", "sqlite"],
+        ] {
+            assert!(parse(bad).is_none(), "{bad:?}");
+        }
     }
 
     #[test]

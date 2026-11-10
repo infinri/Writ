@@ -150,16 +150,17 @@ class Ledger:
     """Command line per invocation: the in-memory ledger, or a fresh SQLite
     database directory for every single prototype process (D-023)."""
 
-    def __init__(self, kind: str | None, tmp: Path, name: str):
-        self.kind, self.root, self.n = kind, tmp / "ledgers" / name, 0
+    def __init__(self, kind: str | None, tmp: Path, name: str, profile: str | None = None):
+        self.kind, self.root, self.n, self.profile = kind, tmp / "ledgers" / name, 0, profile
 
     def cmd(self, base: str, proto) -> str:
+        opt = f" --concurrency-profile {self.profile}" if self.profile else ""  # D-027
         if self.kind != "sqlite":
-            return base
+            return base + opt
         self.n += 1
         d = self.root / f"{proto.name}-{self.n}"
         d.mkdir(parents=True)
-        return f"{base} --ledger sqlite --ledger-dir {d}"
+        return f"{base} --ledger sqlite --ledger-dir {d}{opt}"
 
 
 def collect_timing(timing: dict, acc: dict) -> int:
@@ -173,7 +174,12 @@ def collect_timing(timing: dict, acc: dict) -> int:
         op = s.get("op", "unknown")
         if op == "concurrent":
             add(f"{prefix}concurrent.total_ns", s.get("total_ns"))
+            add(f"{prefix}concurrent.ready_ns", s.get("ready_ns"))
+            ready = s.get("ready_ns")
             for o in s.get("operations") or []:
+                add("concurrent.worker.setup_ns", o.get("setup_ns"))  # D-027
+                if isinstance(ready, int) and isinstance(o.get("start_ns"), int):
+                    add("concurrent.worker.release_delay_ns", o["start_ns"] - ready)
                 step(o, "concurrent.")
             return
         for k in ("total_ns", "validate_ns", "decide_ns", "key_lock_wait_ns"):
@@ -212,14 +218,16 @@ def timed_broker_runs(name, protos, command, path, led, runs, check, ids, nulls,
 
 
 def workload_b(protos, prof, seed, tmp: Path, check: Check, samples: dict, ledger: str | None = "sqlite",
-               name: str = "B") -> dict:
+               name: str = "B", profile: str = "primary") -> dict:
     """Every run goes through bench-broker-scenario: the per-operation transaction
     evidence is required to classify storage refusals (D-026), so B has no separate
     untimed runs; wall time includes the in-process timing reads."""
     command, lines, meta, cases = wl.gen_b(seed, prof["b_sessions"])
-    led = Ledger(ledger, tmp, name)
+    led = Ledger(ledger, tmp, name, profile)
     meta = dict(meta, ledger="sqlite (file-backed, D-023)" if ledger == "sqlite" else
-                "in-memory model (simulated; not a substitute for the SQLite workload)")
+                "in-memory model (simulated; not a substitute for the SQLite workload)",
+                concurrency_profile=profile if profile == "primary" else
+                f"{profile} (supplemental, D-027; reported separately, never combined with primary)")
     path = tmp / f"{name.lower()}.jsonl"
     wl.write_lines(path, lines)
     ids, nulls = ids_of(lines)
@@ -457,6 +465,7 @@ def main(argv=None) -> int:
         sqlite_info = engine_check(protos, check)
         result_w = {"A": workload_a(protos, prof, a.seed, tmp, check, samples),
                     "B": workload_b(protos, prof, a.seed, tmp, check, samples, "sqlite", "B"),
+                    "B-cold": workload_b(protos, prof, a.seed, tmp, check, samples, "sqlite", "B-cold", "cold"),
                     "B-mem": workload_b(protos, prof, a.seed, tmp, check, samples, None, "B-mem")}
         gdir = tmp / "g-symlinks"
         gdir.mkdir()

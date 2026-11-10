@@ -19,12 +19,13 @@ use crate::json::{self, obj, s, Value};
 use crate::kernel::{self, Bundle, Decision, Policy};
 use crate::sqlite::{self, Category, DbError};
 use crate::time::{self, Instant};
-use crate::timing::{since, ScenarioTiming, StepTiming};
+use crate::timing::{between, since, ScenarioTiming, StepTiming};
 use hmac::{Hmac, Mac};
 use rusqlite::Connection;
 use sha2::Sha256;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Barrier, Mutex, MutexGuard, RwLock};
 use std::thread;
 use std::time::Instant as Clock;
@@ -135,6 +136,11 @@ impl SqlLedger {
     fn connect(&self) -> R<Connection> {
         sqlite::open(self.path.as_ref().ok_or_else(|| DbError::new("SQLITE_CANTOPEN").within(Category::Open))?)
     }
+
+    /// A `concurrent` worker's connection (D-027 worker connection setup).
+    fn connect_worker(&self) -> R<Connection> {
+        sqlite::open_worker(self.path.as_ref().ok_or_else(|| DbError::new("SQLITE_CANTOPEN").within(Category::Worker))?)
+    }
 }
 
 enum Ledger {
@@ -149,7 +155,18 @@ pub enum LedgerChoice {
     SqliteDb(PathBuf),
 }
 
+/// When a `concurrent` worker's connection is set up (LEDGER-SQLITE.md
+/// "Concurrency profiles", D-027): `Primary` before the start barrier is
+/// released, `Cold` after it, inside the worker's measured operation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Profile {
+    #[default]
+    Primary,
+    Cold,
+}
+
 struct Broker {
+    profile: Profile,
     config: RwLock<Config>,
     permits: Mutex<HashMap<usize, Permit>>,
     ledger: Ledger,
@@ -420,7 +437,7 @@ impl Broker {
             policy_up: deps.and_then(|d| d.str_at("policy")) != Some("down"),
             ledger_up: deps.and_then(|d| d.str_at("ledger")) != Some("down"),
         };
-        Broker { config: RwLock::new(config), permits: Mutex::new(HashMap::new()), ledger }
+        Broker { profile: Profile::Primary, config: RwLock::new(config), permits: Mutex::new(HashMap::new()), ledger }
     }
 
     /// The in-process lock of one (tenant, idempotency key); SQLite only (the
@@ -662,11 +679,27 @@ impl Broker {
         out
     }
 
-    /// A connection for one operation of a concurrent group (SQLite only).
-    fn group_connection(&self) -> Option<R<Connection>> {
-        match &self.ledger {
-            Ledger::Memory(_) => None,
-            Ledger::Sqlite(l) => Some(l.connect().inspect_err(report)),
+    /// Worker connection setup (SQLite only, D-027): the connection (an
+    /// error is reported on stderr with category `worker`), `setup_ns` and the
+    /// instant setup finished. The in-memory ledger has no worker connection.
+    fn worker_setup(&self) -> (Option<R<Connection>>, Option<i64>, Option<Clock>) {
+        let Ledger::Sqlite(l) = &self.ledger else { return (None, None, None) };
+        #[cfg(test)]
+        let traced = |e| l.path.as_deref().inspect(|p| sqlite::trace::record(p, e));
+        #[cfg(test)]
+        traced(sqlite::trace::Event::SetupStart);
+        let started = Clock::now();
+        let c = l.connect_worker().inspect_err(report);
+        let ended = Clock::now();
+        #[cfg(test)]
+        traced(sqlite::trace::Event::SetupEnd);
+        (Some(c), Some(between(started, ended)), Some(ended))
+    }
+
+    #[cfg(test)]
+    fn trace(&self, e: sqlite::trace::Event) {
+        if let Ledger::Sqlite(SqlLedger { path: Some(p), .. }) = &self.ledger {
+            sqlite::trace::record(p, e);
         }
     }
 
@@ -675,42 +708,18 @@ impl Broker {
     fn apply(&self, op: &Value, step: usize, own: Option<&R<Connection>>) -> (Value, StepTiming) {
         let started = Clock::now();
         let mut t = StepTiming::new(op.str_at("op"));
-        let out = self.dispatch_step(op, step, own, &mut t);
+        let out = self.dispatch_step(op, step, own, &mut t, started);
         t.total_ns = since(started);
         (out, t)
     }
 
-    fn dispatch_step(&self, op: &Value, step: usize, own: Option<&R<Connection>>, t: &mut StepTiming) -> Value {
+    /// `dispatched` is the start of this step's `total_ns`.
+    fn dispatch_step(&self, op: &Value, step: usize, own: Option<&R<Connection>>, t: &mut StepTiming, dispatched: Clock) -> Value {
         if op.str_at("op") != Some("concurrent") {
             return self.apply_one(op, step, own, t);
         }
         let ops = op.get("operations").and_then(Value::as_arr).cloned().unwrap_or_default();
-        let barrier = Barrier::new(ops.len());
-        let done: Vec<(Value, StepTiming)> = thread::scope(|scope| {
-            let handles: Vec<_> = ops
-                .iter()
-                .map(|o| {
-                    let barrier = &barrier;
-                    scope.spawn(move || {
-                        // The worker's connection setup counts in its
-                        // operation's total_ns; the start barrier does not.
-                        let started = Clock::now();
-                        let conn = self.group_connection();
-                        let setup_ns = since(started);
-                        barrier.wait();
-                        let (out, mut t) = self.apply(o, step, conn.as_ref());
-                        t.total_ns = t.total_ns.saturating_add(setup_ns);
-                        (out, t)
-                    })
-                })
-                .collect();
-            handles
-                .into_iter()
-                .zip(&ops)
-                .map(|(h, o)| h.join().unwrap_or_else(|_| (refused("INTERNAL_ERROR"), StepTiming::new(o.str_at("op")))))
-                .collect()
-        });
-        let (results, timings): (Vec<Value>, Vec<StepTiming>) = done.into_iter().unzip();
+        let (results, timings) = self.group(&ops, step, t, dispatched);
         t.operations = Some(timings);
         let mut outcomes: BTreeMap<String, i64> = BTreeMap::new();
         for r in &results {
@@ -720,6 +729,73 @@ impl Broker {
             ("result", s("concurrent")),
             ("outcomes", Value::Obj(outcomes.into_iter().map(|(k, n)| (k, Value::Int(n))).collect())),
         ])
+    }
+
+    /// A `concurrent` group under the selected profile (LEDGER-SQLITE.md
+    /// "Concurrency profiles", D-027). One OS thread per operation, released
+    /// together by a `std::sync::Barrier` (the release mechanism is unchanged).
+    ///
+    /// Each worker records its ready point (`primary` SQLite: the end of its
+    /// connection setup; otherwise the instant the thread starts with its
+    /// operation) into a shared maximum before it waits at the barrier. The
+    /// barrier returns in any thread only after every thread has called
+    /// `wait`, so every ready reading is taken before release and is visible
+    /// once the threads are joined; each worker's `start_ns` is read after its
+    /// `wait` returns, hence `start_ns >= ready_ns`. A worker's `total_ns` runs
+    /// from that reading to its result; its connection is closed afterwards,
+    /// inside the group's `total_ns`.
+    fn group(&self, ops: &[Value], step: usize, t: &mut StepTiming, dispatched: Clock) -> (Vec<Value>, Vec<StepTiming>) {
+        let barrier = Barrier::new(ops.len());
+        let ready = AtomicI64::new(0);
+        let cold = self.profile == Profile::Cold;
+        let done: Vec<(Value, StepTiming)> = thread::scope(|scope| {
+            let handles: Vec<_> = ops
+                .iter()
+                .map(|o| {
+                    let (barrier, ready) = (&barrier, &ready);
+                    scope.spawn(move || {
+                        let created = Clock::now();
+                        let (mut conn, mut setup_ns, mut ready_at) = (None, None, created);
+                        if !cold {
+                            let ended;
+                            (conn, setup_ns, ended) = self.worker_setup();
+                            ready_at = ended.unwrap_or(created);
+                        }
+                        ready.fetch_max(between(dispatched, ready_at), Ordering::SeqCst);
+                        #[cfg(test)]
+                        self.trace(sqlite::trace::Event::Arrive);
+                        barrier.wait();
+                        let passed = Clock::now();
+                        #[cfg(test)]
+                        self.trace(sqlite::trace::Event::Pass);
+                        if cold {
+                            (conn, setup_ns, _) = self.worker_setup();
+                        }
+                        let mut wt = StepTiming::new(o.str_at("op"));
+                        let out = if matches!(conn, Some(Err(_))) {
+                            // Setup failed: no ledger transaction, no audit.
+                            if wt.op == "concurrent" {
+                                (wt.ready_ns, wt.operations) = (Some(0), Some(Vec::new()));
+                            }
+                            refused("LEDGER_UNAVAILABLE")
+                        } else {
+                            self.dispatch_step(o, step, conn.as_ref(), &mut wt, passed)
+                        };
+                        wt.total_ns = between(passed, Clock::now());
+                        wt.worker = Some((setup_ns, between(dispatched, passed)));
+                        drop(conn);
+                        (out, wt)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .zip(ops)
+                .map(|(h, o)| h.join().unwrap_or_else(|_| (refused("INTERNAL_ERROR"), StepTiming::new(o.str_at("op")))))
+                .collect()
+        });
+        t.ready_ns = Some(ready.into_inner());
+        done.into_iter().unzip()
     }
 
     fn run_steps(&self, input: &Value, timing: &mut ScenarioTiming) -> Value {
@@ -803,18 +879,18 @@ fn sqlite_ledger(target: sqlite::Target) -> R<Ledger> {
 
 #[cfg(test)]
 fn run(input: &Value) -> Value {
-    run_with(input, &LedgerChoice::Memory)
+    run_with(input, &LedgerChoice::Memory, Profile::Primary)
 }
 
-pub fn run_with(input: &Value, choice: &LedgerChoice) -> Value {
-    run_timed(input, choice).0
+pub fn run_with(input: &Value, choice: &LedgerChoice, profile: Profile) -> Value {
+    run_timed(input, choice, profile).0
 }
 
 /// `broker-scenario` output and its timing (LEDGER-SQLITE.md "Per-operation
 /// timing"): `open_ns` brackets creating the file (`--ledger-dir`), opening
 /// and initializing it; it is `null` for the in-memory ledger and when no
 /// open was attempted (`INPUT_MALFORMED`).
-pub fn run_timed(input: &Value, choice: &LedgerChoice) -> (Value, ScenarioTiming) {
+pub fn run_timed(input: &Value, choice: &LedgerChoice, profile: Profile) -> (Value, ScenarioTiming) {
     let mut timing = ScenarioTiming::default();
     if !input_usable(input) {
         return (obj(vec![("input_error", s("INPUT_MALFORMED"))]), timing);
@@ -836,13 +912,24 @@ pub fn run_timed(input: &Value, choice: &LedgerChoice) -> (Value, ScenarioTiming
         }
     };
     let init = input.get("initial").cloned().unwrap_or(Value::Obj(vec![]));
-    let out = Broker::new(&init, ledger).run_steps(input, &mut timing);
+    let mut broker = Broker::new(&init, ledger);
+    broker.profile = profile;
+    let out = broker.run_steps(input, &mut timing);
     (out, timing)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pre-D-027 call shape: the default (`primary`) profile.
+    fn run_with(input: &Value, choice: &LedgerChoice) -> Value {
+        super::run_with(input, choice, Profile::Primary)
+    }
+
+    fn run_timed(input: &Value, choice: &LedgerChoice) -> (Value, ScenarioTiming) {
+        super::run_timed(input, choice, Profile::Primary)
+    }
 
     const BUNDLE: &str = include_str!("../../fixtures/transition/m1-transition-transition-known-unsupported.bundle.json");
     const INGRESS_KEY: &str = "0101010101010101010101010101010101010101010101010101010101010101";
@@ -1809,6 +1896,174 @@ mod tests {
             }
             assert!(rollbacks >= 3, "{rollbacks}");
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // ------------------------------------------------------------- D-027
+
+    use sqlite::trace::Event;
+
+    /// A group of `n` allowed writes with distinct keys, plus one reconcile.
+    fn write_group(initial: &Value, approve: &Value, n: usize) -> Value {
+        let mut ops: Vec<Value> = (0..n).map(|i| sealed(initial, &requests(approve, &format!("d027-{i}")).1, None)).collect();
+        ops.push(obj(vec![("op", s("reconcile"))]));
+        concurrent(ops)
+    }
+
+    /// Run `group` as one step and return its output, timing and the trace
+    /// events of the ledger file recorded while it ran.
+    fn traced_group(b: &Broker, group: &Value) -> (String, StepTiming, Vec<Event>) {
+        let path = ledger_path(b);
+        let before = sqlite::trace::events(&path).len();
+        let (out, t) = b.apply(group, 0, None);
+        (json::to_text(&out), t, sqlite::trace::events(&path).split_off(before))
+    }
+
+    fn positions(events: &[Event], e: Event) -> Vec<usize> {
+        events.iter().enumerate().filter(|(_, x)| **x == e).map(|(i, _)| i).collect()
+    }
+
+    /// The D-027 timing members of one group: `start_ns >= ready_ns`, workers
+    /// inside the group, setup accounting per profile.
+    fn check_group_timing(t: &StepTiming, profile: Profile, file: bool) {
+        let ready = t.ready_ns.unwrap();
+        assert!(ready <= t.total_ns);
+        for w in t.operations.as_ref().unwrap() {
+            let (setup, start) = w.worker.unwrap();
+            assert!(start >= ready, "worker started before the group was ready");
+            assert!(start + w.total_ns <= t.total_ns);
+            let parts: i64 = w.validate_ns.unwrap_or(0)
+                + w.decide_ns.unwrap_or(0)
+                + w.key_lock_wait_ns.unwrap_or(0)
+                + w.tx.iter().map(|(_, x)| x.begin_ns.unwrap_or(0) + x.body_ns + x.end_ns.unwrap_or(0)).sum::<i64>();
+            match (file, profile) {
+                (false, _) => assert!(setup.is_none() && parts <= w.total_ns),
+                (true, Profile::Primary) => assert!(setup.unwrap() <= ready && parts <= w.total_ns),
+                (true, Profile::Cold) => assert!(parts + setup.unwrap() <= w.total_ns),
+            }
+        }
+    }
+
+    /// Required tests item 9, `primary`: every worker's connection setup has
+    /// finished, and every worker has reached the barrier, before any worker
+    /// passes it or begins a transaction.
+    #[test]
+    fn d027_primary_sets_up_every_connection_before_any_transaction() {
+        let (initial, approve) = approvable();
+        let dir = temp_dir("d027-primary");
+        for rep in 0..10 {
+            let b = sqlite_broker(&initial, &dir);
+            let n = 16;
+            let (out, t, ev) = traced_group(&b, &write_group(&initial, &approve, n));
+            assert_eq!(out, format!(r#"{{"outcomes":{{"effect_completed":{n},"reconciled":1}},"result":"concurrent"}}"#), "rep {rep}");
+            let (setup_end, arrive, pass, begin) = (positions(&ev, Event::SetupEnd), positions(&ev, Event::Arrive), positions(&ev, Event::Pass), positions(&ev, Event::Begin));
+            assert_eq!((setup_end.len(), arrive.len(), pass.len()), (n + 1, n + 1, n + 1));
+            assert_eq!(begin.len(), 4 * n + 1);
+            let ready_point = setup_end.iter().chain(&arrive).max().unwrap();
+            assert!(ready_point < pass.iter().min().unwrap(), "a worker passed the barrier before every setup finished: {ev:?}");
+            assert!(ready_point < begin.iter().min().unwrap(), "a transaction began before every setup finished: {ev:?}");
+            check_group_timing(&t, Profile::Primary, true);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Required tests item 9, `cold`: every worker connection is created
+    /// after release (after the last worker reached the barrier), and its
+    /// setup is inside the worker's `total_ns`.
+    #[test]
+    fn d027_cold_creates_every_connection_after_release() {
+        let (initial, approve) = approvable();
+        let dir = temp_dir("d027-cold");
+        for rep in 0..10 {
+            let mut b = sqlite_broker(&initial, &dir);
+            b.profile = Profile::Cold;
+            let n = 16;
+            let (out, t, ev) = traced_group(&b, &write_group(&initial, &approve, n));
+            assert_eq!(out, format!(r#"{{"outcomes":{{"effect_completed":{n},"reconciled":1}},"result":"concurrent"}}"#), "rep {rep}");
+            let (setup_start, arrive, begin) = (positions(&ev, Event::SetupStart), positions(&ev, Event::Arrive), positions(&ev, Event::Begin));
+            assert_eq!((setup_start.len(), arrive.len()), (n + 1, n + 1));
+            let released = arrive.iter().max().unwrap();
+            assert!(released < setup_start.iter().min().unwrap(), "a connection was created before release: {ev:?}");
+            assert!(released < begin.iter().min().unwrap());
+            check_group_timing(&t, Profile::Cold, true);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn d027_memory_ledger_timing_in_both_profiles() {
+        let (initial, approve) = approvable();
+        for profile in [Profile::Primary, Profile::Cold] {
+            let mut b = Broker::new(&initial, Ledger::Memory(Mutex::new(MemLedger::default())));
+            b.profile = profile;
+            let (out, t) = b.apply(&write_group(&initial, &approve, 8), 0, None);
+            assert_eq!(json::to_text(&out), r#"{"outcomes":{"effect_completed":8,"reconciled":1},"result":"concurrent"}"#);
+            check_group_timing(&t, profile, false);
+            let v = json::to_text(&t.to_value());
+            assert!(v.contains(r#""setup_ns":null,"start_ns":"#) && v.contains(r#""ready_ns":"#), "{v}");
+        }
+        let (_, t) = Broker::new(&initial, Ledger::Memory(Mutex::new(MemLedger::default()))).apply(&concurrent(vec![]), 0, None);
+        assert_eq!(t.ready_ns, Some(0));
+        assert!(!json::to_text(&t.to_value()).contains("start_ns"), "top-level steps carry no worker members");
+    }
+
+    /// A worker whose connection setup fails answers LEDGER_UNAVAILABLE, runs
+    /// no ledger transaction and no audit (`tx` `{}`, not counted in
+    /// `final.refusals`), in both profiles; nothing is created at the path.
+    #[test]
+    fn d027_worker_setup_failure() {
+        let (initial, approve) = approvable();
+        let dir = temp_dir("d027-setup-failure");
+        let missing = dir.join("missing").join("ledger.db");
+        for profile in [Profile::Primary, Profile::Cold] {
+            let mut b = sqlite_broker(&initial, &dir);
+            b.profile = profile;
+            let Ledger::Sqlite(l) = &mut b.ledger else { unreachable!() };
+            l.path = Some(missing.clone());
+            let mut group = write_group(&initial, &approve, 3);
+            if let Value::Obj(m) = &mut group {
+                if let Some((_, Value::Arr(ops))) = m.iter_mut().find(|(k, _)| k == "operations") {
+                    ops.push(concurrent(vec![obj(vec![("op", s("reconcile"))])]));
+                }
+            }
+            let (out, t) = b.apply(&group, 0, None);
+            assert_eq!(json::to_text(&out), r#"{"outcomes":{"LEDGER_UNAVAILABLE":5},"result":"concurrent"}"#);
+            for w in t.operations.as_ref().unwrap() {
+                assert!(w.tx.is_empty() && w.validate_ns.is_none() && w.worker.unwrap().0.is_some(), "{w:?}");
+            }
+            check_group_timing(&t, profile, true);
+            let nested = &t.operations.as_ref().unwrap()[4];
+            assert_eq!((nested.op.as_str(), nested.ready_ns, nested.operations.as_ref().map(Vec::len)), ("concurrent", Some(0), Some(0)));
+            assert_eq!(count(&b, "SELECT count(*) FROM audit_refusals"), 0);
+            assert_eq!(count(&b, "SELECT count(*) FROM receipts"), 0);
+            assert!(!missing.parent().unwrap().exists());
+        }
+        let e = sqlite::open_worker(&missing).unwrap_err();
+        assert_eq!(e.diagnostic(), "worker: SQLITE_CANTOPEN");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Worker setup verifies every setting by reading it back, and never
+    /// creates a ledger file.
+    #[test]
+    fn d027_worker_setup_verifies_the_settings() {
+        let dir = temp_dir("d027-verify");
+        let path = valid_ledger(&dir);
+        let c = sqlite::open_worker(&path).unwrap();
+        sqlite::verify_settings(&c).unwrap();
+        for (change, restore) in [
+            ("PRAGMA busy_timeout = 100", "PRAGMA busy_timeout = 5000"),
+            ("PRAGMA synchronous = NORMAL", "PRAGMA synchronous = FULL"),
+            ("PRAGMA foreign_keys = OFF", "PRAGMA foreign_keys = ON"),
+            ("PRAGMA trusted_schema = ON", "PRAGMA trusted_schema = OFF"),
+        ] {
+            c.execute_batch(change).unwrap();
+            assert_eq!(sqlite::verify_settings(&c).unwrap_err().within(Category::Worker).diagnostic(), "worker: SQLITE_ERROR", "{change}");
+            c.execute_batch(restore).unwrap();
+        }
+        drop(c);
+        let fresh = dir.join("never-created.db");
+        assert!(sqlite::open_worker(&fresh).is_err() && !fresh.exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -70,6 +70,14 @@ type opTiming struct {
 	tx                        map[string]txTiming
 	concurrent                bool
 	operations                []*opTiming
+	// dispatch is the start of total_ns; a concurrent group measures its
+	// ready_ns and its workers' start_ns as offsets from it (D-027).
+	dispatch time.Time
+	ready    time.Duration // concurrent step: the group's ready point
+	// D-027 worker members: setup is null for the in-memory ledger.
+	isWorker bool
+	setup    *time.Duration
+	start    time.Duration
 }
 
 // txTiming is one logical transaction: sql is false for the in-memory ledger
@@ -146,8 +154,38 @@ func (o *opTiming) worker(op map[string]any) *opTiming {
 		return nil
 	}
 	w := newOpTiming(op)
+	w.isWorker = true
 	o.operations = append(o.operations, w)
 	return w
+}
+
+// setDispatch records the start of this step's total_ns.
+func (o *opTiming) setDispatch(at time.Time) {
+	if o != nil {
+		o.dispatch = at
+	}
+}
+
+// setReady records the group's ready point at (a concurrent step).
+func (o *opTiming) setReady(at time.Time) {
+	if o != nil {
+		o.ready = at.Sub(o.dispatch)
+	}
+}
+
+// setSetup records a worker's connection setup duration (SQLite only).
+func (o *opTiming) setSetup(d time.Duration) {
+	if o != nil {
+		o.setup = &d
+	}
+}
+
+// setStart records the instant a worker passed the start barrier as an
+// offset from its group's dispatch.
+func (o *opTiming) setStart(group *opTiming, at time.Time) {
+	if o != nil {
+		o.start = at.Sub(group.dispatch)
+	}
 }
 
 func (o *opTiming) json() map[string]any {
@@ -181,6 +219,11 @@ func (o *opTiming) json() map[string]any {
 			ops[i] = w.json()
 		}
 		m["operations"] = ops
+		m["ready_ns"] = o.ready.Nanoseconds()
+	}
+	if o.isWorker {
+		m["setup_ns"] = nsOrNull(o.setup)
+		m["start_ns"] = o.start.Nanoseconds()
 	}
 	return m
 }

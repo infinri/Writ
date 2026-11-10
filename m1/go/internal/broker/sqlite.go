@@ -173,6 +173,9 @@ type sqlLedger struct {
 	path string
 	db   *sql.DB
 	conn *sql.Conn
+	// onBegin, when set (tests only), is called just before every BEGIN
+	// IMMEDIATE on this connection.
+	onBegin func()
 }
 
 var ctx = context.Background()
@@ -287,6 +290,9 @@ var (
 // D-026 error member records the first database or integrity error and
 // where it was raised (begin, body, end); errRollback is not an error.
 func (l *sqlLedger) tx(t *opTiming, name string, f func(*sql.Tx) error) error {
+	if l.onBegin != nil {
+		l.onBegin()
+	}
 	t0 := time.Now()
 	tx, err := l.conn.BeginTx(ctx, nil)
 	t1 := time.Now()
@@ -620,12 +626,53 @@ func pairs(tx *sql.Tx, query string) (map[string]any, error) {
 	return m, rows.Err()
 }
 
+// fork is the connection setup of one concurrent worker (LEDGER-SQLITE.md
+// "Concurrency profiles", D-027): open a new dedicated connection (the
+// connect hook applies the connection-only settings), journal_mode=WAL and
+// synchronous=FULL, then read every setting back. It begins no transaction
+// and writes nothing. A failure is reported in the worker category.
 func (l *sqlLedger) fork() (ledger, error) {
-	w, err := reopen(l.path)
+	w, err := openSQLLedger(l.path)
+	if err == nil {
+		if err = w.settle(); err == nil {
+			err = w.verifySettings()
+		}
+		if err != nil {
+			w.close()
+		}
+	}
 	if err != nil {
-		return nil, err
+		return nil, tagged("worker", err)
 	}
 	return w, nil
+}
+
+var errSettings = errors.New("connection setting read back differs")
+
+// workerSettings are the read-back values a worker connection must have.
+var workerSettings = []struct {
+	pragma string
+	want   string
+}{
+	{"journal_mode", "wal"},
+	{"synchronous", "2"},
+	{"busy_timeout", "5000"},
+	{"foreign_keys", "1"},
+	{"trusted_schema", "0"},
+}
+
+// verifySettings reads back the connection settings of l.
+func (l *sqlLedger) verifySettings() error {
+	for _, s := range workerSettings {
+		var got string
+		if err := l.conn.QueryRowContext(ctx, `PRAGMA `+s.pragma).Scan(&got); err != nil {
+			return err
+		}
+		if got != s.want {
+			return errSettings
+		}
+	}
+	return nil
 }
 
 // restart closes the connection and opens a new one to the same file.

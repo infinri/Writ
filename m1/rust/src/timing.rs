@@ -8,7 +8,14 @@ use std::time::Instant;
 
 /// Nanoseconds since `t` (saturating to the JSON integer range).
 pub fn since(t: Instant) -> i64 {
-    i64::try_from(t.elapsed().as_nanos()).unwrap_or(i64::MAX).min(crate::json::MAX_SAFE)
+    between(t, Instant::now())
+}
+
+/// Nanoseconds from `a` to `b` (0 if `b` is not later), saturating like
+/// `since`. Two readings on one clock give exact sums: `between(a, b) +
+/// between(b, c) == between(a, c)` for `a <= b <= c`.
+pub fn between(a: Instant, b: Instant) -> i64 {
+    i64::try_from(b.saturating_duration_since(a).as_nanos()).unwrap_or(i64::MAX).min(crate::json::MAX_SAFE)
 }
 
 /// Where a transaction's database error happened (D-026).
@@ -61,6 +68,11 @@ pub struct StepTiming {
     /// Transactions in the order they ran.
     pub tx: Vec<(&'static str, TxTime)>,
     pub operations: Option<Vec<StepTiming>>,
+    /// `concurrent` step only (D-027): offset of the group's ready point.
+    pub ready_ns: Option<i64>,
+    /// Worker of a `concurrent` group only (D-027): `setup_ns` (`None` for
+    /// the in-memory ledger) and `start_ns`.
+    pub worker: Option<(Option<i64>, i64)>,
 }
 
 impl StepTiming {
@@ -73,6 +85,8 @@ impl StepTiming {
             key_lock_wait_ns: None,
             tx: Vec::new(),
             operations: None,
+            ready_ns: None,
+            worker: None,
         }
     }
 
@@ -109,7 +123,12 @@ impl StepTiming {
             ("tx", Value::Obj(tx)),
         ];
         if let Some(ops) = &self.operations {
+            members.push(("ready_ns", Value::Int(self.ready_ns.unwrap_or(0))));
             members.push(("operations", Value::Arr(ops.iter().map(StepTiming::to_value).collect())));
+        }
+        if let Some((setup_ns, start_ns)) = self.worker {
+            members.push(("setup_ns", opt(setup_ns)));
+            members.push(("start_ns", Value::Int(start_ns)));
         }
         obj(members)
     }

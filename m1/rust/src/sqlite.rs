@@ -11,7 +11,7 @@ use crate::broker::{refused, replayed, result};
 use crate::json::{obj, s, Value};
 use crate::time::Instant;
 use crate::timing::{since, StepTiming, TxAt, TxError, TxTime};
-use rusqlite::{Connection, DropBehavior, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{Connection, DropBehavior, OpenFlags, OptionalExtension, Transaction, TransactionBehavior};
 use std::fs::OpenOptions;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -28,6 +28,8 @@ pub enum Category {
     Initialize,
     Transaction(&'static str),
     Final,
+    /// A `concurrent` worker's connection setup (D-027).
+    Worker,
 }
 
 /// A ledger error: its category (set where it is first known) and an SQLite
@@ -61,6 +63,7 @@ impl DbError {
             Some(Category::Initialize) => "initialize".to_string(),
             Some(Category::Transaction(name)) => format!("transaction {name}"),
             Some(Category::Final) => "final".to_string(),
+            Some(Category::Worker) => "worker".to_string(),
         };
         format!("{category}: {}", self.code)
     }
@@ -156,7 +159,95 @@ pub fn open(path: &Path) -> R<Connection> {
     Ok(c)
 }
 
+/// Connection settings in the order of LEDGER-SQLITE.md "Connection
+/// settings", as a `concurrent` worker applies them (D-027).
+const WORKER_SETTINGS: [&str; 5] = [
+    "PRAGMA journal_mode = WAL",
+    "PRAGMA synchronous = FULL",
+    "PRAGMA busy_timeout = 5000",
+    "PRAGMA foreign_keys = ON",
+    "PRAGMA trusted_schema = OFF",
+];
+
+/// Worker connection setup (LEDGER-SQLITE.md "Concurrency profiles", D-027):
+/// open the existing ledger file (never created here), apply the connection
+/// settings in their order, then verify them by reading them back. No
+/// transaction is begun and nothing is written. Errors are categorized
+/// `worker`.
+pub fn open_worker(path: &Path) -> R<Connection> {
+    let setup = || -> R<Connection> {
+        let c = Connection::open_with_flags(path, OpenFlags::default() - OpenFlags::SQLITE_OPEN_CREATE)?;
+        for sql in WORKER_SETTINGS {
+            pragma(&c, sql)?;
+        }
+        verify_settings(&c)?;
+        Ok(c)
+    };
+    setup().map_err(|e| e.within(Category::Worker))
+}
+
+/// Read back `journal_mode` = `wal`, `synchronous` = 2, `busy_timeout` =
+/// 5000, `foreign_keys` = 1, `trusted_schema` = 0; a difference is
+/// `SQLITE_ERROR`.
+pub fn verify_settings(c: &Connection) -> R<()> {
+    let mode: String = c.query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
+    let int = |sql: &str| -> R<i64> { Ok(c.query_row(sql, [], |r| r.get(0))?) };
+    let expected = [("PRAGMA synchronous", 2), ("PRAGMA busy_timeout", 5000), ("PRAGMA foreign_keys", 1), ("PRAGMA trusted_schema", 0)];
+    if mode != "wal" {
+        return Err(DbError::new("SQLITE_ERROR"));
+    }
+    for (sql, value) in expected {
+        if int(sql)? != value {
+            return Err(DbError::new("SQLITE_ERROR"));
+        }
+    }
+    Ok(())
+}
+
+/// Test-only order evidence for D-027 (Required tests item 9): events of
+/// one ledger file, in the order they happened across threads. Compiled out
+/// of the binary.
+#[cfg(test)]
+pub mod trace {
+    use std::path::Path;
+    use std::sync::Mutex;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Event {
+        /// A worker starts its connection setup.
+        SetupStart,
+        /// A worker's connection setup finished (successfully or not).
+        SetupEnd,
+        /// A worker reaches the start barrier.
+        Arrive,
+        /// A worker passed the start barrier.
+        Pass,
+        /// `BEGIN IMMEDIATE` is about to be issued.
+        Begin,
+    }
+
+    static LOG: Mutex<Vec<(String, Event)>> = Mutex::new(Vec::new());
+
+    fn name(path: &Path) -> String {
+        path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    }
+
+    pub fn record(path: &Path, e: Event) {
+        LOG.lock().unwrap_or_else(|e| e.into_inner()).push((name(path), e));
+    }
+
+    /// Events recorded so far for the ledger file `path`.
+    pub fn events(path: &Path) -> Vec<Event> {
+        let n = name(path);
+        LOG.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|(f, _)| *f == n).map(|(_, e)| *e).collect()
+    }
+}
+
 fn begin(c: &Connection) -> R<Transaction<'_>> {
+    #[cfg(test)]
+    if let Some(p) = c.path() {
+        trace::record(Path::new(p), trace::Event::Begin);
+    }
     Ok(Transaction::new_unchecked(c, TransactionBehavior::Immediate)?)
 }
 

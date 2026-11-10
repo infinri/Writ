@@ -226,6 +226,11 @@ func TestLedgerOptions(t *testing.T) {
 		{"broker-scenario", "--ledger", "sqlite", "--ledger-dir", dir},
 		{"broker-scenario", "--ledger-dir", dir, "--ledger", "sqlite"},
 		{"broker-scenario", "--ledger", "sqlite", "--ledger-db", filepath.Join(dir, "x.db")},
+		{"broker-scenario", "--concurrency-profile", "primary"},
+		{"bench-broker-scenario", "--concurrency-profile", "cold"},
+		{"broker-scenario", "--concurrency-profile", "cold", "--ledger", "sqlite", "--ledger-dir", dir},
+		{"bench-broker-scenario", "--ledger", "sqlite", "--concurrency-profile", "primary", "--ledger-dir", dir},
+		{"broker-scenario", "--ledger", "sqlite", "--ledger-db", filepath.Join(dir, "x.db"), "--concurrency-profile", "cold"},
 	} {
 		if _, ok := parseArgs(args); !ok {
 			t.Errorf("%v rejected", args)
@@ -247,6 +252,15 @@ func TestLedgerOptions(t *testing.T) {
 		{"broker-scenario", "--ledger", "sqlite", "--ledger-dir", file},
 		{"broker-scenario", "--ledger", "sqlite", "--ledger-dir", filepath.Join(dir, "missing")},
 		{"broker-scenario", "--ledger", "sqlite", "--ledger-db", "x.db", "extra"},
+		{"broker-scenario", "--concurrency-profile", "warm"},
+		{"broker-scenario", "--concurrency-profile", "Primary"},
+		{"broker-scenario", "--concurrency-profile", ""},
+		{"broker-scenario", "--concurrency-profile"},
+		{"bench-broker-scenario", "--concurrency-profile", "cold", "--concurrency-profile", "cold"},
+		{"broker-scenario", "--concurrency-profile", "cold", "--ledger", "sqlite"},
+		{"broker-scenario", "--ledger", "sqlite", "--ledger-dir", dir, "--concurrency-profile"},
+		{"decide", "--concurrency-profile", "cold"},
+		{"transition-scenario", "--concurrency-profile", "primary"},
 	} {
 		if _, ok := parseArgs(args); ok {
 			t.Errorf("%v accepted", args)
@@ -339,6 +353,44 @@ func TestSQLiteInfoCommand(t *testing.T) {
 		`"foreign_keys":1`, `"trusted_schema":0`, `"driver":"github.com/mattn/go-sqlite3 v1.14.52"`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("sqlite-info lacks %s: %s", want, out)
+		}
+	}
+}
+
+// D-027: --concurrency-profile selects when worker connections are set up;
+// the scenario output is the same in both profiles and every worker carries
+// setup_ns (null for the in-memory ledger) and start_ns.
+func TestConcurrencyProfileOption(t *testing.T) {
+	line := string(sjson.Encode(map[string]any{"id": "c", "input": fixtureInput(t, "b-34-concurrent-duplicates")}))
+	want := mustDecode(t, answerLine(brokerScenario, line))["output"]
+	for _, ledger := range [][]string{nil, {"--ledger", "sqlite", "--ledger-dir", t.TempDir()}} {
+		for _, prof := range []string{"primary", "cold"} {
+			args := append([]string{"--concurrency-profile", prof}, ledger...)
+			plainH, ok1 := parseArgs(append([]string{"broker-scenario"}, args...))
+			benchH, ok2 := parseArgs(append([]string{"bench-broker-scenario"}, args...))
+			if !ok1 || !ok2 {
+				t.Fatalf("%v rejected", args)
+			}
+			if got := mustDecode(t, answerLineWith(plainH, line))["output"]; string(sjson.Encode(got)) != string(sjson.Encode(want)) {
+				t.Errorf("%v: output %v", args, got)
+			}
+			timed, _ := sjson.Obj(mustDecode(t, answerLineWith(benchH, line))["output"])
+			if string(sjson.Encode(timed["scenario"])) != string(sjson.Encode(want)) {
+				t.Errorf("%v: scenario %v", args, timed["scenario"])
+			}
+			tm, _ := sjson.Obj(timed["timing"])
+			group := tm["steps"].([]any)[0].(map[string]any)
+			if _, ok := sjson.Int(group, "ready_ns"); !ok {
+				t.Errorf("%v: group %v", args, group)
+			}
+			for _, o := range group["operations"].([]any) {
+				w := o.(map[string]any)
+				_, hasStart := sjson.Int(w, "start_ns")
+				_, setupNum := sjson.Int(w, "setup_ns")
+				if setup, ok := w["setup_ns"]; !ok || !hasStart || (ledger == nil) != (setup == nil) || (ledger != nil) != setupNum {
+					t.Errorf("%v: worker %v", args, w)
+				}
+			}
 		}
 	}
 }

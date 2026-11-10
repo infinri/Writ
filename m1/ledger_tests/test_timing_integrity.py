@@ -147,15 +147,16 @@ class TimingIntegrity(unittest.TestCase):
                 self.assertEqual(timed["scenario"], plain)
 
     def check_step(self, step: dict, ledger: str, top: bool = True):
+        worker = set() if top else {"setup_ns", "start_ns"}  # D-027 worker members
         if step.get("op") == "concurrent":
-            self.assertEqual(set(step), STEP_KEYS | {"operations"})
+            self.assertEqual(set(step), STEP_KEYS | {"ready_ns", "operations"} | worker)
             self.assertTrue(is_ns(step["total_ns"]))
             self.assertEqual((step["validate_ns"], step["decide_ns"], step["key_lock_wait_ns"], step["tx"]),
                              (None, None, None, {}))
             for s in step["operations"]:
                 self.check_step(s, ledger, top=False)
             return
-        self.assertEqual(set(step), STEP_KEYS)
+        self.assertEqual(set(step), STEP_KEYS | worker)
         self.assertTrue(is_ns(step["total_ns"]))
         for k in ("validate_ns", "decide_ns", "key_lock_wait_ns"):
             self.assertTrue(step[k] is None or is_ns(step[k]), k)

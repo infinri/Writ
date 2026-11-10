@@ -86,8 +86,11 @@ def main(argv=None) -> int:
     ap.add_argument("--timeout", type=float, default=900.0)
     ap.add_argument("--ledger", choices=["memory", "sqlite"], default="memory",
                     help="broker campaign ledger (sqlite: file-backed, D-023/D-026 evidence)")
+    ap.add_argument("--concurrency-profile", choices=["primary", "cold"], default="primary",
+                    help="D-027 concurrent-worker start profile (cold: supplemental, report separately)")
     args = ap.parse_args(argv)
     c_broker.LEDGER = "sqlite" if args.ledger == "sqlite" else None
+    c_broker.PROFILE = args.concurrency_profile
 
     names = list(CAMPAIGNS) if args.campaign == "all" else args.campaign.split(",")
     unknown = [n for n in names if n not in CAMPAIGNS]
@@ -99,7 +102,8 @@ def main(argv=None) -> int:
     report = {"harness": "m1-props/1", "started_at": started, "repository_commit": git_head(),
               "host": {"platform": platform.platform(), "python": platform.python_version()},
               "protos": {p.name: proto_info(p.argv) for p in protos},
-              "profile": args.profile, "seed": args.seed, "ledger": args.ledger, "campaigns": {}}
+              "profile": args.profile, "seed": args.seed, "ledger": args.ledger,
+              "concurrency_profile": args.concurrency_profile, "campaigns": {}}
     all_ok = True
     for name in names:
         mod = CAMPAIGNS[name]
