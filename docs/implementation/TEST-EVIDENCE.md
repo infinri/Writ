@@ -285,6 +285,11 @@ SR-06 sandbox facts (preflight PASS, telemetry diagnostic) are recorded in `docs
 - **Availability evidence (uncontrolled environment, not a benchmark;** `m1/props/results/2026-11-10-sqlite-broker-*.json`): in these three campaigns 0 lock-timeout refusals for both prototypes (for example seed 20261107 full, 64-way: 6,144 operations each); maximum reserve `BEGIN` wait Rust 4.94 s, Go 4.14 s (limit 5 s); median reserve `BEGIN` wait Rust about 1.08 ms, Go about 0.012 ms. The earlier sample (E-034: Rust 89, Go 6 of 12,800) stays recorded; one timing-dependent sample is not a language result.
 - **Investigation (diagnostic, `m1/props/results/2026-11-10-contention-diagnostic.json`, 20 groups x 64 per prototype):** transaction hold times are equivalent (commit about 0.46 to 0.50 ms median in both, `synchronous=FULL` fsync); the difference is connection scheduling: per-operation time outside timed parts (connection setup) median Rust 10.9 ms, Go 0.2 ms, and Rust opens worker connections before the start barrier so all 64 reach `BEGIN IMMEDIATE` together (thundering herd, SQLite busy-handler back-off starves some writers towards 5 s; 10 timeouts in this run), while Go opens them after the barrier, which staggers starts (0 here). Both readings fit LEDGER-SQLITE.md ("all start together"); not tuned; owner decision recorded as pending.
 
+### E-036: `7a5a366` CI green with real lock-contention aborts
+
+- **CI run https://github.com/infinri/Writ/actions/runs/42898828550 on `7a5a366d13f0b514a9723c74343c167e54f0aebd`: SUCCESS, all 5 jobs.** Logs: engine 3.54.1 in both build jobs; 447/447 in memory and on SQLite for both; `m1/ledger_tests` 30 OK; oracle negative tests 14 OK; SQLite 64-way campaign PASS 348 cases, 6,780 checks, 0 mismatches, 0 failed checks; mutation smoke exit 0 (`masked-effect` caught for both); dry run 0 correctness failures.
+- **Availability in that run (CI runner, not a benchmark):** Rust 64-way: 1,408 operations, 619 successful, **2 lock-timeout refusals at `reserve`** (0.142%), maximum reserve wait 5.009 s, both verified as aborted no-ops by the D-026 checker; Rust 16/32-way and Go at every level: 0 (Go 64-way maximum wait 1.43 s).
+
 ## Not yet executed
 
 - SR-06 live-host experiments (0 of 69; sandbox torn down) and full SR-06 acceptance; rule semantic review (M0-01d); independent human golden review (M0-05a).

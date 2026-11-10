@@ -4,7 +4,7 @@
 
 ## Current
 
-- **Published:** `1994b67` (docs); code at `d9815f8` (CI failed on busy timeouts, E-034). D-026 correction committed after it (verify CI on its SHA).
+- **Published:** `7a5a366` (D-026), CI run 42898828550 green, all 5 jobs (E-036).
 - **Prototypes:** 447/447 both ledgers; 30 ledger tests; D-026 oracle: SQLite 64-way campaigns pass (0 mismatches over 52,920 checks), `masked-effect` mutant caught.
 - **Benchmark readiness:** guard refuses (discharging battery, load, temperature) ([M1-06-READINESS](M1-06-READINESS.md)).
 - **Next:** owner decision on concurrent-group start equivalence (E-035); environment; then M1-06 and M1-07 timings.

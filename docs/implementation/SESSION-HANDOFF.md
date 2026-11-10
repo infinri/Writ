@@ -16,7 +16,8 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 | Branch | `v2/architecture-rebuild` (never `main`) |
 | Published code HEAD | `68f4593a513b0ab7b6ac206ef00c8f9d067d7660` (D-025), CI https://github.com/infinri/Writ/actions/runs/42887453309 **green, all 5 jobs** (E-032). Previous: `6b7eab1` run 42857245639 green; `3012940` run 42851712662 green |
 | Published | `1994b67` (docs, E-034) on top of `d9815f8` (guard). CI on `d9815f8` run 42890081319 **failed** (busy timeouts under 64-way contention, E-034); fixed by D-026 |
-| D-026 commit | the commit after `1994b67` titled `m1: D-026 ...` (`git log --oneline -3`); its CI must be checked on its exact SHA |
+| Published code HEAD | `7a5a366d13f0b514a9723c74343c167e54f0aebd` (D-026), CI https://github.com/infinri/Writ/actions/runs/42898828550 **green, all 5 jobs** (E-036; 2 real Rust lock-timeout aborts verified and accepted) |
+| Local commits not yet pushed | docs commit recording E-036 |
 | Working tree | Only untracked `docs/audit/m0/hook-audit/` (never stage or publish) |
 | Milestone | **M1** under D-014 (development only). Done: M1-00..M1-05, M1-06a harness, M1-06b (D-022), M1-06c (D-023 SQLite ledger), M1-06e (D-024), M1-06d broker timing (published, CI green), M1-06f D-025 corrections (published, CI green). **M1-07 in progress** (facts collected; build times deferred). **M1-06 measurements blocked** (environment). M1-08 not started. M0 closed for development only; release and production NO-GO |
 
