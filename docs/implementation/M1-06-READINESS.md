@@ -15,6 +15,8 @@
 
 ## Owner actions before M1-06
 
+- **Decision first (E-034):** both prototypes refuse some operations `LEDGER_UNAVAILABLE` (busy timeout) under 64-way contention (Rust 89, Go 6 of 12,800 locally); decide how the oracle and the benchmark treat them before measuring workload B. Load sources seen 2026-11-10 (no process was stopped): IntelliJ IDEA (`java`, bursts of several cores), Docker containers (22 running: Langfuse with ClickHouse, MinIO, Redis, Postgres, worker and web; n8n with Postgres and runners; OpenSearch; Dependency-Track; Neo4j `writ-neo4j`; MySQL; MongoDB; fitting-engine; foundry-agent), Chrome, Claude Code sessions.
+
 0. Connect the full-power AC adapter (the battery must not be discharging; the guard refuses a discharging battery since 2026-11-10).
 1. `sudo cpupower frequency-set -g performance` (done 2026-11-10; privileged; Claude does not change global CPU settings).
 2. Stop background load (the `java` and `clickhouse-server` processes seen on 2026-11-10) until the 1-minute load average stays below 1.0; let the CPU idle below 60 C. Claude does not stop the owner's processes.

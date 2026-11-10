@@ -271,6 +271,12 @@ SR-06 sandbox facts (preflight PASS, telemetry diagnostic) are recorded in `docs
 - **Readiness run 2026-11-10 at `8d1915c`:** governor `performance` 16/16; correctness re-verified (fixtures 447/447 in memory and on SQLite for both prototypes, `m1/ledger_tests` 30 OK, dry run 0 correctness failures).
 - **Guard REFUSED** (exit 3, nothing run) for `bench.py` and for `collect.py build-times`: 1-minute load 1.51 to 1.65; CPU 67.25 to 68.6 C. Found: battery discharging while the online supply is USB-C 5 V / 3 A; the guard only checked the mains flag, so it now also refuses a discharging battery (2 new self-tests; harness self-tests 18 OK). No benchmark or build-time measurement was taken.
 
+### E-034: `d9815f8` CI red; busy timeouts under 64-way contention (owner decision needed)
+
+- **CI run https://github.com/infinri/Writ/actions/runs/42890081319 on `d9815f8ad2ed399c7a84a76a71b3b6dfcfbbf0b5`: FAILURE** (docs, M0, M1 Rust parity, M1 Go parity success; M1 property job failed). All other required checks in the logs passed (engine 3.54.1 in both jobs, 447/447 both ledgers both prototypes, 30 ledger tests). Failed step: Rust-SQLite versus Go-SQLite broker campaign, `FAIL broker: 348 cases, 6780 checks, 0 mismatches, 2 failed checks`: `broker.concurrent_group_equals_a_serialization` failed twice for Rust on group `brc-000022-x64` (64 concurrent operations): 13 and 7 operations answered `LEDGER_UNAVAILABLE`. Safety held in both (grant uses within limits; effects applied equal consumed permits). `d9815f8` changed only the guard and docs; the same code passed CI at `68f4593`, so the failure is timing dependent.
+- **Local reproduction:** 40 groups of 64 concurrent executes x 5 repetitions (12,800 operations per prototype), SQLite ledger: Rust 89 and Go 6 operations refused `LEDGER_UNAVAILABLE`; stderr in every case `transaction reserve` `SQLITE_BUSY` (the `BEGIN IMMEDIATE` of T-reserve exceeded the 5 s busy timeout). Fail-closed per D-024 rule 2 and S-3; the M1-05 serialization oracle does not model it.
+- **Not changed** (owner decision required: no oracle change, busy timeout fixed at 5 s by D-025).
+
 ## Not yet executed
 
 - SR-06 live-host experiments (0 of 69; sandbox torn down) and full SR-06 acceptance; rule semantic review (M0-01d); independent human golden review (M0-05a).
