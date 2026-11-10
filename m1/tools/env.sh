@@ -8,6 +8,7 @@ export GOTOOLCHAIN=local
 export SQLITE3_INCLUDE_DIR="$_writ_m1_prefix/sqlite-3.54.1-r2/include"
 export SQLITE3_LIB_DIR="$_writ_m1_prefix/sqlite-3.54.1-r2/lib"
 export SQLITE3_STATIC=1
+export PKG_CONFIG_LIBDIR="$SQLITE3_LIB_DIR/pkgconfig"
 export CGO_ENABLED=1
 export CGO_CFLAGS="-I$SQLITE3_INCLUDE_DIR"
 export CGO_LDFLAGS="-L$SQLITE3_LIB_DIR -lsqlite3 -lm"

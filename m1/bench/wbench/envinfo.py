@@ -116,7 +116,7 @@ def toolchains(rust_bin: str | None, go_bin: str | None) -> dict:
         "rust_env": {k: os.environ.get(k) for k in ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_PROFILE_RELEASE_OPT_LEVEL")},
         "go_version": _cmd(["go", "version"]),
         "go_env": _cmd(["go", "env", "GOOS", "GOARCH", "GOAMD64", "CGO_ENABLED", "GOFLAGS", "GOTOOLCHAIN"]),
-        "go_build": "go build -o proto ./cmd/proto (m1/go)",
+        "go_build": "go build -trimpath -tags 'libsqlite3 sqlite_omit_load_extension' -o proto ./cmd/proto (m1/go)",
         "go_binary_buildinfo": _cmd(["go", "version", "-m", go_bin]) if go_bin else None,
         "python": platform.python_version(),
         "time_v": os.path.exists("/usr/bin/time"),
@@ -144,6 +144,10 @@ def toolchain_reasons(tc: dict, pins: dict) -> list[str]:
     built = tc.get("go_binary_buildinfo") or ""
     if pins.get("GO_VERSION") and not built.split("\n")[0].endswith(f": go{pins['GO_VERSION']}"):
         reasons.append("Go prototype binary was not built with the pinned Go version")
+    if "build\t-trimpath=true" not in built:
+        reasons.append("Go prototype binary was not built with -trimpath (owner decision 2026-11-10)")
+    if "build\t-tags=libsqlite3,sqlite_omit_load_extension" not in built:
+        reasons.append("Go prototype binary was not built with tags libsqlite3,sqlite_omit_load_extension (D-023)")
     return reasons
 
 

@@ -130,11 +130,12 @@ func refused(code string) map[string]any {
 	return map[string]any{"result": "refused", "code": code}
 }
 
-// refuse audits a refusal in the ledger and returns it.
+// refuse audits a refusal in the ledger and returns it. A failed audit
+// insert (rolled back, so not counted) does not change the refusal
+// (LEDGER-SQLITE.md "Storage failures" rule 2).
 func (b *Broker) refuse(led ledger, code string) map[string]any {
 	if err := led.audit(code); err != nil {
 		fmt.Fprintln(os.Stderr, "ledger error:", err)
-		return refused("LEDGER_UNAVAILABLE")
 	}
 	return refused(code)
 }

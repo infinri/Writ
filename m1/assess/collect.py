@@ -157,7 +157,7 @@ def build_rust(src: Path) -> tuple[int, Path, str]:
 
 def build_go(src: Path, extra=(), env_over=None) -> tuple[int, Path, str]:
     env = dict(os.environ, **(env_over or {}))
-    code, _, err = sh(["go", "build", *extra, "-tags", GO_TAGS, "-o", "proto", "./cmd/proto"], cwd=src, env=env)
+    code, _, err = sh(["go", "build", *extra, "-tags", GO_TAGS, "-o", "proto", "./cmd/proto"], cwd=src, env=env)  # extra: build flags
     return code, src / "proto", err[-800:]
 
 
@@ -178,7 +178,7 @@ def reproducibility() -> dict:
     res = {}
     with tempfile.TemporaryDirectory(prefix="writ-m1-07-") as d:
         for lang in ("rust", "go"):
-            variants = {"rust": [("default", {})], "go": [("default", ()), ("trimpath", ("-trimpath",))]}[lang]
+            variants = {"rust": [("default", {})], "go": [("release -trimpath", ("-trimpath",)), ("without -trimpath", ())]}[lang]
             for name, extra in variants:
                 hashes, facts, errors = [], None, []
                 for i in (1, 2):
@@ -202,7 +202,7 @@ def cross_targets() -> dict:
         dst = Path(d, "m1", "go")
         copy_tree(REPO / "m1/go", dst)
         for goos, goarch in (("linux", "arm64"), ("darwin", "arm64"), ("windows", "amd64")):
-            code, _, err = build_go(dst, (), {"GOOS": goos, "GOARCH": goarch})
+            code, _, err = build_go(dst, ("-trimpath",), {"GOOS": goos, "GOARCH": goarch})
             out[f"go:{goos}/{goarch} (cgo, host cc)"] = {"ok": code == 0, "error_tail": None if code == 0 else err[-300:]}
         rdst = Path(d, "r", "m1", "rust")
         copy_tree(REPO / "m1/rust", rdst)
@@ -253,12 +253,12 @@ def build_times(args) -> dict | None:
                 if lang == "go":
                     sh(["go", "clean", "-cache"])
                 t = time.perf_counter()
-                code, _, err = build_rust(dst) if lang == "rust" else build_go(dst)
+                code, _, err = build_rust(dst) if lang == "rust" else build_go(dst, ("-trimpath",))
                 clean.append(time.perf_counter() - t if code == 0 else None)
                 touched = dst / ("src/kernel.rs" if lang == "rust" else "internal/kernel/schema.go")
                 touched.write_text(touched.read_text() + "\n")
                 t = time.perf_counter()
-                code, _, err = build_rust(dst) if lang == "rust" else build_go(dst)
+                code, _, err = build_rust(dst) if lang == "rust" else build_go(dst, ("-trimpath",))
                 incr.append(time.perf_counter() - t if code == 0 else None)
             res["samples"][lang] = {"clean_s": clean, "incremental_after_kernel_touch_s": incr}
     res["method"] = ("clean = fresh copy and empty target dir (Rust registry sources cached; Go build cache cleared); "

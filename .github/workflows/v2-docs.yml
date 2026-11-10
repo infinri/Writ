@@ -50,13 +50,17 @@ jobs:
         run: |
           WRIT_M1_TOOLCHAINS="$RUNNER_TEMP/m1" m1/tools/install-sqlite.sh "$RUNNER_TEMP/dl"
           d="$RUNNER_TEMP/m1/sqlite-3.54.1-r2"
-          { echo "SQLITE3_INCLUDE_DIR=$d/include"; echo "SQLITE3_LIB_DIR=$d/lib"; echo "SQLITE3_STATIC=1"; echo "CGO_ENABLED=1"
+          { echo "SQLITE3_INCLUDE_DIR=$d/include"; echo "SQLITE3_LIB_DIR=$d/lib"; echo "SQLITE3_STATIC=1"; echo "PKG_CONFIG_LIBDIR=$d/lib/pkgconfig"; echo "CGO_ENABLED=1"
             echo "CGO_CFLAGS=-I$d/include"; echo "CGO_LDFLAGS=-L$d/lib -lsqlite3 -lm"; } >> "$GITHUB_ENV"
       - name: Build and test
         working-directory: m1/rust
         run: |
           cargo +1.99.1 build --release --locked
           cargo +1.99.1 test --release --locked
+      - name: Linked SQLite is the pinned shared engine (D-023)
+        run: |
+          "$GITHUB_WORKSPACE/m1/rust/target/release/proto" sqlite-info | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["sqlite_version"], d["source_id"]); assert d["sqlite_version"] == "3.54.1" and d["source_id"].startswith("2026-10-16 14:45:20 555e07ef"), d'
+          ! ldd "$GITHUB_WORKSPACE/m1/rust/target/release/proto" | grep -i sqlite
       - name: Parity driver, all fixture sets
         run: python3 m1/driver/parity.py --proto "$GITHUB_WORKSPACE/m1/rust/target/release/proto" --manifest m1/fixtures/manifest.json --repeat 2
       - name: Parity driver, all fixture sets with the SQLite ledger
@@ -75,7 +79,7 @@ jobs:
         run: |
           WRIT_M1_TOOLCHAINS="$RUNNER_TEMP/m1" m1/tools/install-sqlite.sh "$RUNNER_TEMP/dl"
           d="$RUNNER_TEMP/m1/sqlite-3.54.1-r2"
-          { echo "SQLITE3_INCLUDE_DIR=$d/include"; echo "SQLITE3_LIB_DIR=$d/lib"; echo "SQLITE3_STATIC=1"; echo "CGO_ENABLED=1"
+          { echo "SQLITE3_INCLUDE_DIR=$d/include"; echo "SQLITE3_LIB_DIR=$d/lib"; echo "SQLITE3_STATIC=1"; echo "PKG_CONFIG_LIBDIR=$d/lib/pkgconfig"; echo "CGO_ENABLED=1"
             echo "CGO_CFLAGS=-I$d/include"; echo "CGO_LDFLAGS=-L$d/lib -lsqlite3 -lm"; } >> "$GITHUB_ENV"
       - name: Vet, build and race tests
         working-directory: m1/go
@@ -83,8 +87,12 @@ jobs:
           GOTOOLCHAIN: local
         run: |
           go vet -tags "libsqlite3 sqlite_omit_load_extension" ./...
-          go build -tags "libsqlite3 sqlite_omit_load_extension" -o proto ./cmd/proto
+          go build -trimpath -tags "libsqlite3 sqlite_omit_load_extension" -o proto ./cmd/proto
           go test -race -count=1 -tags "libsqlite3 sqlite_omit_load_extension" ./...
+      - name: Linked SQLite is the pinned shared engine (D-023)
+        run: |
+          "$GITHUB_WORKSPACE/m1/go/proto" sqlite-info | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["sqlite_version"], d["source_id"]); assert d["sqlite_version"] == "3.54.1" and d["source_id"].startswith("2026-10-16 14:45:20 555e07ef"), d'
+          ! ldd "$GITHUB_WORKSPACE/m1/go/proto" | grep -i sqlite
       - name: Parity driver, all fixture sets
         run: python3 m1/driver/parity.py --proto "$GITHUB_WORKSPACE/m1/go/proto" --manifest m1/fixtures/manifest.json --repeat 2
       - name: Parity driver, all fixture sets with the SQLite ledger
@@ -105,14 +113,14 @@ jobs:
         run: |
           WRIT_M1_TOOLCHAINS="$RUNNER_TEMP/m1" m1/tools/install-sqlite.sh "$RUNNER_TEMP/dl"
           d="$RUNNER_TEMP/m1/sqlite-3.54.1-r2"
-          { echo "SQLITE3_INCLUDE_DIR=$d/include"; echo "SQLITE3_LIB_DIR=$d/lib"; echo "SQLITE3_STATIC=1"; echo "CGO_ENABLED=1"
+          { echo "SQLITE3_INCLUDE_DIR=$d/include"; echo "SQLITE3_LIB_DIR=$d/lib"; echo "SQLITE3_STATIC=1"; echo "PKG_CONFIG_LIBDIR=$d/lib/pkgconfig"; echo "CGO_ENABLED=1"
             echo "CGO_CFLAGS=-I$d/include"; echo "CGO_LDFLAGS=-L$d/lib -lsqlite3 -lm"; } >> "$GITHUB_ENV"
       - name: Build both prototypes independently
         env:
           GOTOOLCHAIN: local
         run: |
           (cd m1/rust && cargo +1.99.1 build --release --locked)
-          (cd m1/go && go build -tags "libsqlite3 sqlite_omit_load_extension" -o proto ./cmd/proto)
+          (cd m1/go && go build -trimpath -tags "libsqlite3 sqlite_omit_load_extension" -o proto ./cmd/proto)
       - name: Property-found regression cases
         run: |
           python3 m1/driver/parity.py --proto "$GITHUB_WORKSPACE/m1/rust/target/release/proto" --manifest m1/props/regressions/manifest.json
@@ -123,6 +131,11 @@ jobs:
           for seed in 20261107 1; do
             python3 m1/props/run.py --profile ci --seed "$seed" --rust "$GITHUB_WORKSPACE/m1/rust/target/release/proto" --go "$GITHUB_WORKSPACE/m1/go/proto" --out "props-ci-$seed.json"
           done
+      - name: Language-neutral SQLite storage-failure tests, both prototypes (D-024)
+        env:
+          WRIT_RUST: ${{ github.workspace }}/m1/rust/target/release/proto
+          WRIT_GO: ${{ github.workspace }}/m1/go/proto
+        run: python3 -m unittest discover -s m1/ledger_tests -v
       - name: SQLite ledger broker campaign, Rust SQLite versus Go SQLite (D-023)
         run: |
           for l in rust go; do

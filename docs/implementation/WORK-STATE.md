@@ -1,13 +1,13 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-07 (D-022, D-023 done; M1-07 in progress) · **Branch:** v2/architecture-rebuild · **Milestone:** M1 active (development only, D-014); M1-00..M1-05, M1-06a, D-022 and D-023 DONE; M1-07 in progress; M1-06 measurements blocked by environment. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md).
+**Last updated:** 2026-11-10 (D-024 done locally) · **Branch:** v2/architecture-rebuild · **Milestone:** M1 active (development only, D-014); M1-00..M1-05, M1-06a, D-022 and D-023 DONE; M1-07 in progress; M1-06 measurements blocked by environment. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md).
 
 ## Current
 
-- **Published:** `9e6f9f1` (M1-06a), CI run 42396690120 green. **Local, unpushed:** `a44c9cc` (D-022), `935e4e3` (D-023 SQLite ledger), plus the docs commit with this file.
-- **Prototypes:** both 444/444 fixtures with the in-memory and the SQLite ledger; Rust SQLite vs Go SQLite broker campaign 0 mismatches (E-027, E-028).
-- **M1-07:** [report](M1-07-BUILD-ASSESSMENT.md) with measured facts; build times deferred (guarded).
-- **Next:** push after confirmation; M1-06d broker latency instrumentation; M1-06 measurements after the owner sets the `performance` governor.
+- **Published:** `e1dc2e1` (D-022, D-023, M1-07 report); its CI run 42836769090 **failed** (runner system SQLite linked by Rust, E-029). **Local, unpushed:** D-024 commit with the fix.
+- **Prototypes:** both 444/444 with both ledgers; storage-failure tests 13/13 each; Rust-SQLite vs Go-SQLite 0 mismatches (E-029, local).
+- **M1-07:** [report](M1-07-BUILD-ASSESSMENT.md); Go builds use `-trimpath` (reproducible); M1 is Linux x86_64 only (D-024).
+- **Next:** push after confirmation and green CI; then M1-06d broker timing.
 
 ## Security findings
 

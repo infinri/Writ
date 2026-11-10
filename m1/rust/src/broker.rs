@@ -740,17 +740,15 @@ fn input_usable(input: &Value) -> bool {
     initial_ok && steps_ok
 }
 
-/// An SQLite ledger on `path`, schema created if absent. A file that cannot
-/// be created or opened leaves no connection: every operation that needs the
-/// ledger answers LEDGER_UNAVAILABLE.
-fn sqlite_ledger(path: R<PathBuf>) -> Ledger {
-    let path = path.inspect_err(report).ok();
-    let ledger = SqlLedger { path, main: Mutex::new(None), key_locks: Mutex::new(HashMap::new()) };
-    match ledger.connect().and_then(|c| sqlite::ensure_schema(&c).map(|()| c)) {
-        Ok(c) => *lock(&ledger.main) = Some(c),
-        Err(e) => report(&e),
-    }
-    Ledger::Sqlite(ledger)
+/// An SQLite ledger on `path`, opened and initialized before any step
+/// (LEDGER-SQLITE.md "Storage failures" rule 1). `Err` (reported on stderr
+/// only): the scenario answers `{"error": "LEDGER_UNAVAILABLE"}`.
+fn sqlite_ledger(path: R<PathBuf>) -> R<Ledger> {
+    let ledger = SqlLedger { path: Some(path?), main: Mutex::new(None), key_locks: Mutex::new(HashMap::new()) };
+    let c = ledger.connect()?;
+    sqlite::initialize(&c)?;
+    *lock(&ledger.main) = Some(c);
+    Ok(Ledger::Sqlite(ledger))
 }
 
 #[cfg(test)]
@@ -763,9 +761,16 @@ pub fn run_with(input: &Value, choice: &LedgerChoice) -> Value {
         return obj(vec![("input_error", s("INPUT_MALFORMED"))]);
     }
     let ledger = match choice {
-        LedgerChoice::Memory => Ledger::Memory(Mutex::new(MemLedger::default())),
+        LedgerChoice::Memory => Ok(Ledger::Memory(Mutex::new(MemLedger::default()))),
         LedgerChoice::SqliteDir(dir) => sqlite_ledger(sqlite::new_db_in(dir)),
         LedgerChoice::SqliteDb(path) => sqlite_ledger(Ok(path.clone())),
+    };
+    let ledger = match ledger {
+        Ok(l) => l,
+        Err(e) => {
+            report(&e);
+            return obj(vec![("error", s("LEDGER_UNAVAILABLE"))]);
+        }
     };
     let init = input.get("initial").cloned().unwrap_or(Value::Obj(vec![]));
     Broker::new(&init, ledger).run_steps(input)
@@ -960,7 +965,7 @@ mod tests {
     }
 
     fn sqlite_broker(initial: &Value, dir: &std::path::Path) -> Broker {
-        Broker::new(initial, sqlite_ledger(sqlite::new_db_in(dir)))
+        Broker::new(initial, sqlite_ledger(sqlite::new_db_in(dir)).unwrap())
     }
 
     fn main_conn<T>(b: &Broker, f: impl FnOnce(&Connection) -> T) -> T {
@@ -1075,6 +1080,110 @@ mod tests {
             json::to_text(sqlite_out.get("final").unwrap()),
             r#"{"consumed_permits":3,"effects_applied":3,"grant_uses":{"g1":1},"receipts":{"observed_success":2,"unknown_reconcile":1},"refusals":2}"#
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A valid ledger file created by this prototype, closed (WAL checkpointed).
+    fn valid_ledger(dir: &std::path::Path) -> PathBuf {
+        let path = dir.join("l.db");
+        let c = sqlite::open(&path).unwrap();
+        sqlite::initialize(&c).unwrap();
+        c.close().unwrap();
+        path
+    }
+
+    fn one_write() -> Value {
+        let (initial, approve) = approvable();
+        let (_, write) = requests(&approve, "idem-open");
+        obj(vec![("initial", initial.clone()), ("steps", Value::Arr(vec![sealed(&initial, &write, None)]))])
+    }
+
+    /// Rule 1 of "Storage failures": the whole scenario answers exactly
+    /// {"error":"LEDGER_UNAVAILABLE"} and the existing file is unchanged.
+    fn assert_unavailable_unmodified(path: &std::path::Path) {
+        let before = std::fs::read(path).unwrap();
+        let out = run_with(&one_write(), &LedgerChoice::SqliteDb(path.to_path_buf()));
+        assert_eq!(json::to_text(&out), r#"{"error":"LEDGER_UNAVAILABLE"}"#);
+        assert_eq!(std::fs::read(path).unwrap(), before);
+    }
+
+    #[test]
+    fn schema_tables_are_those_of_ledger_sql() {
+        assert_eq!(
+            sqlite::schema_tables(),
+            ["meta", "grants", "receipts", "receipt_events", "grant_uses", "audit_refusals", "counters", "adapter_consumed_permits", "adapter_effects"]
+        );
+    }
+
+    #[test]
+    fn open_failures_answer_the_whole_scenario_unavailable() {
+        let dir = temp_dir("open-failures");
+        let missing = dir.join("missing").join("l.db");
+        let out = run_with(&one_write(), &LedgerChoice::SqliteDb(missing));
+        assert_eq!(json::to_text(&out), r#"{"error":"LEDGER_UNAVAILABLE"}"#);
+        assert!(!dir.join("missing").exists());
+
+        let garbage = dir.join("garbage.db");
+        std::fs::write(&garbage, b"not a database ".repeat(300)).unwrap();
+        assert_unavailable_unmodified(&garbage);
+
+        for (name, change) in [
+            ("version", "UPDATE meta SET value = '2' WHERE key = 'schema_version'"),
+            ("no-version", "DELETE FROM meta"),
+            ("no-meta", "DROP TABLE meta"),
+            ("no-table", "DROP TABLE adapter_effects"),
+        ] {
+            let sub = dir.join(name);
+            std::fs::create_dir_all(&sub).unwrap();
+            let path = valid_ledger(&sub);
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(change).unwrap();
+            c.close().unwrap();
+            assert_unavailable_unmodified(&path);
+        }
+
+        let sub = dir.join("extra");
+        std::fs::create_dir_all(&sub).unwrap();
+        let path = valid_ledger(&sub);
+        let c = Connection::open(&path).unwrap();
+        c.execute_batch("CREATE TABLE extra (x INTEGER)").unwrap();
+        c.close().unwrap();
+        let out = run_with(&one_write(), &LedgerChoice::SqliteDb(path));
+        assert_eq!(step_results(&out), [r#"{"result":"effect_completed"}"#]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn read_only_ledger_is_unavailable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("read-only");
+        let path = valid_ledger(&dir);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        assert_unavailable_unmodified(&path);
+        let ro = dir.join("ro-dir");
+        std::fs::create_dir_all(&ro).unwrap();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let out = run_with(&one_write(), &LedgerChoice::SqliteDir(ro.clone()));
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(json::to_text(&out), r#"{"error":"LEDGER_UNAVAILABLE"}"#);
+        assert_eq!(std::fs::read_dir(&ro).unwrap().count(), 0);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn lock_held_beyond_busy_timeout_is_unavailable() {
+        let dir = temp_dir("locked");
+        let path = valid_ledger(&dir);
+        let holder = Connection::open(&path).unwrap();
+        holder.execute_batch("PRAGMA journal_mode = WAL; BEGIN EXCLUSIVE").unwrap();
+        let out = run_with(&one_write(), &LedgerChoice::SqliteDb(path.clone()));
+        holder.execute_batch("ROLLBACK").unwrap();
+        holder.close().unwrap();
+        assert_eq!(json::to_text(&out), r#"{"error":"LEDGER_UNAVAILABLE"}"#);
+        let c = Connection::open(&path).unwrap();
+        assert_eq!(c.query_row("SELECT count(*) FROM receipts", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        drop(c);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

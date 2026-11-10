@@ -24,7 +24,17 @@ SQLITE_CFLAGS="-O2 -fPIC -DHAVE_USLEEP=1 -DSQLITE_THREADSAFE=1 -DSQLITE_DQS=0 -D
 
 BUILD_REV=2                     # bump when SQLITE_CFLAGS change (rev 2: HAVE_USLEEP, millisecond busy waits)
 DEST="$PREFIX/sqlite-$SQLITE_VERSION-r$BUILD_REV"
-[ ! -e "$DEST" ] || { echo "already installed: $DEST"; exit 0; }
+# pkg-config file for the pinned library only: libsqlite3-sys probes pkg-config
+# before using SQLITE3_LIB_DIR, and a system sqlite3.pc (CI runners have one)
+# would otherwise link the system SQLite. env.sh and CI set PKG_CONFIG_LIBDIR to
+# this directory so no other .pc file is visible.
+write_pc() {
+  mkdir -p "$DEST/lib/pkgconfig"
+  printf '%s\n' "prefix=$DEST" 'libdir=${prefix}/lib' 'includedir=${prefix}/include' '' \
+    'Name: SQLite' 'Description: Writ M1 pinned SQLite (m1/tools/install-sqlite.sh)' "Version: $SQLITE_VERSION" \
+    'Libs: -L${libdir} -lsqlite3' 'Libs.private: -lm' 'Cflags: -I${includedir}' > "$DEST/lib/pkgconfig/sqlite3.pc"
+}
+if [ -e "$DEST" ]; then write_pc; echo "already installed: $DEST (pkg-config file refreshed)"; exit 0; fi
 command -v cc >/dev/null || { echo "a C compiler (cc) is required" >&2; exit 2; }
 
 sha3() { python3 -c 'import hashlib,sys; print(hashlib.sha3_256(open(sys.argv[1],"rb").read()).hexdigest())' "$1"; }
@@ -45,5 +55,6 @@ cc $SQLITE_CFLAGS -c "$SRC/sqlite3.c" -o "$WORK/sqlite3.o"
 mkdir -p "$DEST/include" "$DEST/lib"
 ar rcs "$DEST/lib/libsqlite3.a" "$WORK/sqlite3.o"
 cp "$SRC/sqlite3.h" "$SRC/sqlite3ext.h" "$DEST/include/"
+write_pc
 printf '%s\n' "version=$SQLITE_VERSION" "source_id=$SQLITE_SOURCE_ID" "cflags=$SQLITE_CFLAGS" "cc=$(cc --version | head -1)" > "$DEST/BUILD-INFO"
 echo "installed: $DEST (static libsqlite3.a)"

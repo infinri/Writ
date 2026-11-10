@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime/debug"
 	"sync/atomic"
 	"time"
@@ -72,6 +73,21 @@ func newFile(dir string) (string, error) {
 	}
 }
 
+// writable refuses an existing file that cannot be opened for writing.
+// SQLite would silently open it read-only, and a BEGIN IMMEDIATE on a
+// read-only WAL database succeeds, so initialization alone would not fail.
+// Opening and closing the descriptor does not modify the file.
+func writable(p string) error {
+	f, err := os.OpenFile(p, os.O_RDWR, 0)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
 func exists(p string) bool {
 	_, err := os.Lstat(p)
 	return err == nil
@@ -84,6 +100,9 @@ func (s *SQLite) open() (*sqlLedger, error) {
 		if path, err = newFile(s.Dir); err != nil {
 			return nil, err
 		}
+	}
+	if err := writable(path); err != nil {
+		return nil, err
 	}
 	l, err := openSQLLedger(path)
 	if err != nil {
@@ -127,8 +146,18 @@ func (l *sqlLedger) connect() error {
 	return nil
 }
 
+// tables are the tables ledger.sql creates, in order.
+var tables = func() []string {
+	var t []string
+	for _, m := range regexp.MustCompile(`(?m)^CREATE TABLE (\w+)`).FindAllStringSubmatch(Schema, -1) {
+		t = append(t, m[1])
+	}
+	return t
+}()
+
 // init creates the schema in one transaction if the database is empty, and
-// otherwise requires schema version 1.
+// otherwise requires schema version 1 and every table of ledger.sql (extra
+// schema objects are not checked).
 func (l *sqlLedger) init() error {
 	return l.tx(func(tx *sql.Tx) error {
 		var n int64
@@ -145,6 +174,15 @@ func (l *sqlLedger) init() error {
 		}
 		if v != "1" {
 			return fmt.Errorf("unsupported ledger schema version %q", v)
+		}
+		for _, t := range tables {
+			var n int64
+			if err := tx.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = ?`, t).Scan(&n); err != nil {
+				return err
+			}
+			if n != 1 {
+				return fmt.Errorf("ledger table %s missing", t)
+			}
 		}
 		return nil
 	})

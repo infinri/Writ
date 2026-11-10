@@ -19,7 +19,7 @@ Compile and incremental build **times** are comparative measurements and depend 
 | Known advisories (OSV, 2026-11-07) | none for any resolved crate | none for `go-sqlite3` v1.14.52 or the go1.27.3 standard library | Measured (api.osv.dev) |
 | Dependency release age | all at least 14 days old after pinning `smallvec` 1.16.3 (cargo first resolved 1.16.5, published 1 day earlier) | `go-sqlite3` v1.14.52 published 2026-09-05 | Fact |
 | Vendored source carried by the drivers (not compiled; the shared library is used) | `libsqlite3-sys` 21 MB in the registry (bundled SQLite and bindings) | `go-sqlite3` 11 MB in the module cache (bundled SQLite) | Measured (`du`) |
-| Clean-build reproducibility (two builds, source at different absolute paths, same machine and caches) | **identical** with the default release command | **differs** with the default command (paths embedded); **identical** with `-trimpath` | Measured |
+| Clean-build reproducibility (two builds, source at different absolute paths, same machine and caches) | **identical** with the default release command | **differs** without `-trimpath` (paths embedded); **identical** with `-trimpath`, which is now the required release and benchmark build (D-024; re-verified 2026-11-10 after the D-024 changes: 5,926,944 bytes, identical) | Measured |
 | Release binary size | 2,286,176 bytes; 1,945,560 stripped | 5,947,336 bytes (5,920,400 with `-trimpath`); 4,370,392 stripped | Measured |
 | Dynamic libraries | `libgcc_s`, `libc`, loader; no `libsqlite3` | `libc`, loader; no `libsqlite3` | Measured (`ldd`) |
 | Cross-target build from this host (with the SQLite broker) | `aarch64-unknown-linux-gnu`: fails (target standard library not installed; also needs a C cross compiler for SQLite) | linux/arm64, darwin/arm64, windows/amd64: all fail (cgo needs a C cross compiler: no `clang`, aarch64 assembler, `windows.h`) | Measured |
@@ -54,5 +54,5 @@ Both prototypes were implemented by agents from the same specification; defect c
 ## Remaining M1-07 work
 
 1. Build timings (clean and incremental, 5 runs each) once the benchmark guard passes.
-2. Cross-target builds with installed cross toolchains (owner choice whether to install `rust-std` targets and C cross compilers), or a recorded decision that M1 targets Linux x86_64 only.
+2. Cross-target builds: **deferred** (D-024: M1 targets Linux x86_64; no cross toolchains installed).
 3. Owner review of the judgments above before M1-08.

@@ -103,7 +103,7 @@ class Guard(unittest.TestCase):
 class Toolchains(unittest.TestCase):
     PINS = {"RUST_VERSION": "1.99.1", "GO_VERSION": "1.27.3"}
     GOOD = {"rustc_vV": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nhost: x", "go_version": "go version go1.27.3 linux/amd64",
-            "go_binary_buildinfo": "m1/go/proto: go1.27.3\n\tpath\tx"}
+            "go_binary_buildinfo": "m1/go/proto: go1.27.3\n\tpath\tx\n\tbuild\t-tags=libsqlite3,sqlite_omit_load_extension\n\tbuild\t-trimpath=true"}
 
     def test_pins_read_from_install_script(self):
         self.assertEqual(set(envinfo.pinned_versions()), {"RUST_VERSION", "GO_VERSION"})
@@ -111,7 +111,10 @@ class Toolchains(unittest.TestCase):
     def test_pinned_toolchains_pass_and_others_refuse(self):
         self.assertEqual(envinfo.toolchain_reasons(self.GOOD, self.PINS), [])
         bad = dict(self.GOOD, rustc_vV="rustc 1.99.10 (x)", go_version=None, go_binary_buildinfo="p: go1.27.4\n")
-        self.assertEqual(len(envinfo.toolchain_reasons(bad, self.PINS)), 3)
+        self.assertEqual(len(envinfo.toolchain_reasons(bad, self.PINS)), 5)
+        untrimmed = dict(self.GOOD, go_binary_buildinfo=self.GOOD["go_binary_buildinfo"].replace("\n\tbuild\t-trimpath=true", ""))
+        self.assertEqual(envinfo.toolchain_reasons(untrimmed, self.PINS),
+                         ["Go prototype binary was not built with -trimpath (owner decision 2026-11-10)"])
 
 
 class Generators(unittest.TestCase):

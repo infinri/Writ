@@ -65,6 +65,32 @@ Every refusal, from any operation, appends one `audit_refusals` row in its own `
 
 A database error other than a busy timeout is a prototype defect: answer `{"result": "refused", "code": "LEDGER_UNAVAILABLE"}` for that operation, report it on stderr, never crash, and never return a success.
 
+## Storage failures (D-024: fail closed, one sanitized response)
+
+1. **Open and initialization happen before any step** of a scenario: open or create the file, apply the settings, then one `BEGIN IMMEDIATE` transaction that either creates the schema from [ledger.sql](ledger.sql) (new, empty database) or verifies that `meta.schema_version` is `'1'` and every table in ledger.sql exists; commit. Any failure (directory missing or not writable, file not a database, read-only file, wrong or missing schema version, missing table, lock not obtained within `busy_timeout`) makes the **whole scenario answer exactly** `{"error": "LEDGER_UNAVAILABLE"}`: no step runs, no `steps` or `final` member, and an existing file is not modified. Extra schema objects are not an error (they are not checked). Because SQLite opens a write-protected file read-only and, in WAL mode, `BEGIN IMMEDIATE` on it can still succeed, an existing ledger file must also be checked for write access before SQLite opens it (opening it for read and write and closing it changes nothing); a failure is an open failure. Connections opened later (after `restart_broker`, or per `concurrent` worker) do not re-run initialization; their failures are operation failures (rule 2). Known limits (untested, recorded 2026-11-10): applying `journal_mode=WAL` to an existing non-WAL database changes its header before verification; a file newly created by a run whose initialization then fails is left in place ("not modified" covers existing files).
+2. **Failure inside an operation** (any SQLite error in one of the operation's transactions, including a busy timeout): that transaction rolls back, the operation answers `{"result": "refused", "code": "LEDGER_UNAVAILABLE"}`, the refusal audit row is attempted in its own transaction (if that also fails, the operation still answers the same refusal and `final.refusals` does not count it), and the scenario continues with the next step. Transactions the operation committed earlier stay committed (for example a receipt already `dispatched` stays `dispatched`, so a retry is `RECONCILIATION_REQUIRED`, never a second dispatch).
+3. **`final` unreadable:** `"final": {"error": "LEDGER_UNAVAILABLE"}` with `steps` kept (not covered by the language-neutral tests).
+4. **Sanitized:** stdout carries only these codes; never a path, file name, SQLite or OS error text. Diagnostics go to stderr (operator channel). Externally `LEDGER_UNAVAILABLE` maps to `PROMOTION_REFUSED` (`external-refusal`).
+
+Language-neutral tests: `m1/ledger_tests/test_storage_failures.py` (Python standard library; runs both binaries; failures injected through the file system, a held lock, or `RAISE(ABORT)` triggers added to the ledger file; results checked in the database afterwards).
+
+## Per-operation timing (M1-06d, `bench-broker-scenario`)
+
+`proto bench-broker-scenario [--ledger sqlite (--ledger-dir DIR | --ledger-db PATH)]` takes the same input as `broker-scenario` and answers `{"scenario": S, "timing": T}` where `S` is **exactly** the `broker-scenario` output for the same input and ledger (the harness checks byte equality of `S` against a plain run). Timing never changes behaviour. All times are integers in nanoseconds from a monotonic clock, measured in-process; JSON parsing of the scenario line and output serialization are excluded.
+
+`T = {"open_ns": n | null, "steps": [step...], "final_ns": n | null}`: `open_ns` covers ledger open and initialization (rule 1 of "Storage failures"; `null` for the in-memory ledger); `final_ns` covers computing `final`. When `S` is an `input_error` or the open failed, `steps` is `[]` and `final_ns` is `null`.
+
+`step = {"op": <the op string, or "unknown">, "total_ns": n, "decide_ns": n | null, "key_lock_wait_ns": n | null, "tx_ns": {...}}`:
+
+| Field | Meaning |
+|---|---|
+| `total_ns` | the whole operation, from dispatch of the parsed step to its result value |
+| `decide_ns` | the use-time kernel decision inside `execute` or `approve`; `null` when not reached (for example an unsealed request) |
+| `key_lock_wait_ns` | waiting for the per-key lock (SQLite `execute` only); `null` otherwise |
+| `tx_ns` | one member per logical transaction that ran, named `reserve`, `dispatch`, `adapter`, `observe`, `approve`, `reconcile`, `audit`: from just before `BEGIN IMMEDIATE` to just after `COMMIT` or `ROLLBACK` returns (busy waits included). With the in-memory ledger the same names time the corresponding in-memory sections. Operations with no transaction have `{}` |
+
+A `concurrent` step is `{"op": "concurrent", "total_ns": n, "decide_ns": null, "key_lock_wait_ns": null, "tx_ns": {}, "operations": [step, ...]}` with one entry per operation in input order (including per-worker connection setup inside that operation's `total_ns`).
+
 ## Required tests (each prototype, own code)
 
 1. Every `broker-scenarios` and `protocol-broker` fixture with `--ledger sqlite` gives exactly the expected output (driver run with the flag).
@@ -73,11 +99,13 @@ A database error other than a busy timeout is a prototype defect: answer `{"resu
 4. Contention: at least 64 threads, one connection each, racing for one single-use grant with distinct keys: exactly one reservation and one grant use; racing on one idempotency key: exactly one dispatch; repeated at least 20 times.
 5. Schema drift: the embedded schema is byte-identical to `m1/fixtures/broker/ledger.sql`.
 6. `proto sqlite-info` reports 3.54.1 and the settings above.
+7. `m1/ledger_tests` (language-neutral, D-024) all pass.
+8. `bench-broker-scenario`: `scenario` equals `broker-scenario` output for every broker fixture with both ledgers; every timing value is a non-negative integer or `null` as specified; `tx_ns` names match the transactions the specification says ran (for example a successful allow `execute` has exactly `reserve`, `dispatch`, `adapter`, `observe`).
 
 ## Implementation notes (recorded 2026-11-07 after both implementations; no semantic change)
 
 - **Build revision 2:** revision 1 omitted `-DHAVE_USLEEP=1`, so SQLite's default busy handler slept in whole seconds (about 5 retries within `busy_timeout=5000`). Found by the Rust implementer; fixed for both before any measurement. `HAVE_USLEEP` is not listed by `pragma compile_options`; the linked library path is recorded in the Rust build output and the Go binary's build info.
 - **Driver-issued pragmas:** `mattn/go-sqlite3` always runs `busy_timeout=5000`, `locking_mode=NORMAL` (the default) and `synchronous=NORMAL` before the connect hook, which then applies the table above, so the effective settings are identical; `rusqlite` sets a 5000 ms busy timeout on open. `proto sqlite-info` reads back the effective values in both.
 - **Grant verdict:** stored inside the canonical `binding` JSON in both (the binding includes the verdict, BROKER.md step 5.3).
-- **Readings chosen identically by both implementers:** an `INPUT_MALFORMED` scenario creates no database file; a ledger that cannot be opened or a `final` that cannot be read is reported as `LEDGER_UNAVAILABLE` (the exact shape differs and is untested: Rust `final: {"error": ...}`, Go answers the line `{"error": ...}` when the ledger cannot open); a `restart_broker` inside a `concurrent` group reopens only that worker's connection (no fixture or generator produces it).
+- **Readings chosen identically by both implementers:** an `INPUT_MALFORMED` scenario creates no database file; a `restart_broker` inside a `concurrent` group reopens only that worker's connection (no fixture or generator produces it). The earlier divergent open-failure shapes are superseded by "Storage failures" (D-024).
 - **Go only:** the receipt key is two columns in SQLite but `tenant + NUL + key` in the in-memory map; no fixture or generator produces a tenant or idempotency key containing NUL, so this is untested, not observed.

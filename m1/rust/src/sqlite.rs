@@ -56,13 +56,36 @@ fn begin(c: &Connection) -> R<Transaction<'_>> {
     Ok(Transaction::new_unchecked(c, TransactionBehavior::Immediate)?)
 }
 
-/// Create the schema in one transaction unless it already exists (a
-/// `--ledger-db` file is never reset).
-pub fn ensure_schema(c: &Connection) -> R<()> {
+/// The tables ledger.sql creates, in schema order.
+pub fn schema_tables() -> Vec<&'static str> {
+    SCHEMA.lines().filter_map(|l| l.strip_prefix("CREATE TABLE ")).filter_map(|r| r.split_whitespace().next()).collect()
+}
+
+/// Initialization (LEDGER-SQLITE.md "Storage failures" rule 1): one
+/// `BEGIN IMMEDIATE` transaction that creates the schema in a new, empty
+/// database, or verifies `meta.schema_version = '1'` and that every table of
+/// ledger.sql exists (extra objects are not checked). Any error rolls back,
+/// so an existing file is not modified; a read-only connection is refused
+/// before the transaction.
+pub fn initialize(c: &Connection) -> R<()> {
+    if c.is_readonly("main")? {
+        return Err(DbError("ledger opened read-only".into()));
+    }
     let tx = begin(c)?;
-    let present: i64 = tx.query_row("SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'meta'", [], |r| r.get(0))?;
-    if present == 0 {
+    let objects: i64 = tx.query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0))?;
+    if objects == 0 {
         tx.execute_batch(SCHEMA)?;
+    } else {
+        let version: String = tx.query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |r| r.get(0))?;
+        if version != "1" {
+            return Err(DbError(format!("schema_version is {version:?}, not \"1\"")));
+        }
+        for table in schema_tables() {
+            let present: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1)", [table], |r| r.get(0))?;
+            if !present {
+                return Err(DbError(format!("table {table} missing")));
+            }
+        }
     }
     tx.commit()?;
     Ok(())
@@ -267,7 +290,7 @@ pub fn info() -> R<Value> {
 }
 
 fn info_at(path: &Path) -> R<Value> {
-    ensure_schema(&open(path)?)?;
+    initialize(&open(path)?)?;
     let c = open(path)?;
     let text = |sql: &str| -> R<String> { Ok(c.query_row(sql, [], |r| r.get(0))?) };
     let int = |sql: &str| -> R<Value> { Ok(Value::Int(c.query_row(sql, [], |r| r.get(0))?)) };
