@@ -1,13 +1,13 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-10 (D-026) · **Branch:** v2/architecture-rebuild · **Milestone:** M1 active (development only, D-014); M1-00..M1-05, M1-06a, D-022 and D-023 DONE; M1-07 in progress; M1-06 measurements blocked by environment. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md).
+**Last updated:** 2026-11-10 (pre-compaction checkpoint; next D-027) · **Branch:** v2/architecture-rebuild · **Milestone:** M1 active (development only, D-014); M1-00..M1-05, M1-06a, D-022 and D-023 DONE; M1-07 in progress; M1-06 measurements blocked by environment. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md).
 
 ## Current
 
-- **Published:** `7a5a366` (D-026), CI run 42898828550 green, all 5 jobs (E-036).
-- **Prototypes:** 447/447 both ledgers; 30 ledger tests; D-026 oracle: SQLite 64-way campaigns pass (0 mismatches over 52,920 checks), `masked-effect` mutant caught.
-- **Benchmark readiness:** guard refuses (discharging battery, load, temperature) ([M1-06-READINESS](M1-06-READINESS.md)).
-- **Next:** owner decision on concurrent-group start equivalence (E-035); environment; then M1-06 and M1-07 timings.
+- **Published:** remote HEAD `988a840` (docs); last code `7a5a366` (D-026), CI run 42898828550 green, all 5 jobs (E-036). Local: pre-compaction checkpoint commit (docs).
+- **Prototypes:** 447/447 both ledgers; 30 ledger tests; 14 oracle tests; SQLite 64-way campaigns pass; mutation smoke 9/9 each.
+- **Next task:** D-027 standardized concurrent-worker start (approved, not implemented); plan in [SESSION-HANDOFF](SESSION-HANDOFF.md) section F.
+- **Benchmarks:** none taken; environment not ready ([M1-06-READINESS](M1-06-READINESS.md)).
 
 ## Security findings
 
@@ -45,4 +45,4 @@ CI E-013: run [42309913797](https://github.com/infinri/Writ/actions/runs/4230991
 
 ## Next exact action
 
-See SESSION-HANDOFF section F. M1-06 runs are blocked: governor `powersave`.
+D-027 (SESSION-HANDOFF section F). M1-06 runs blocked by the environment.

@@ -8,7 +8,7 @@
 
 ## Recover state first (every new session and after every compaction)
 
-**Start here: read [SESSION-HANDOFF](docs/implementation/SESSION-HANDOFF.md) at the start of every development session and after every compaction. It is the authoritative recovery entry point.**
+**Start here: read [SESSION-HANDOFF](docs/implementation/SESSION-HANDOFF.md) at the start of every development session and after every compaction, before changing any code. It is the authoritative recovery entry point; resume the task its section F names (currently D-027) instead of restarting work.**
 
 1. `git branch --show-current`, `git status`, `git log --oneline -10`, `git fetch origin && git rev-parse HEAD origin/v2/architecture-rebuild`.
 2. Read [SESSION-HANDOFF](docs/implementation/SESSION-HANDOFF.md), then [WORK-STATE](docs/implementation/WORK-STATE.md), then active rows in [TASKS](docs/implementation/TASKS.md) and [DECISION-LOG](docs/implementation/DECISION-LOG.md).

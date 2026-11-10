@@ -290,6 +290,18 @@ SR-06 sandbox facts (preflight PASS, telemetry diagnostic) are recorded in `docs
 - **CI run https://github.com/infinri/Writ/actions/runs/42898828550 on `7a5a366d13f0b514a9723c74343c167e54f0aebd`: SUCCESS, all 5 jobs.** Logs: engine 3.54.1 in both build jobs; 447/447 in memory and on SQLite for both; `m1/ledger_tests` 30 OK; oracle negative tests 14 OK; SQLite 64-way campaign PASS 348 cases, 6,780 checks, 0 mismatches, 0 failed checks; mutation smoke exit 0 (`masked-effect` caught for both); dry run 0 correctness failures.
 - **Availability in that run (CI runner, not a benchmark):** Rust 64-way: 1,408 operations, 619 successful, **2 lock-timeout refusals at `reserve`** (0.142%), maximum reserve wait 5.009 s, both verified as aborted no-ops by the D-026 checker; Rust 16/32-way and Go at every level: 0 (Go 64-way maximum wait 1.43 s).
 
+### E-037: `988a840` CI green (docs-only commit, same code as `7a5a366`)
+
+- CI run https://github.com/infinri/Writ/actions/runs/42902590125 on `988a840c2d69de2a371f13e07363845067b67282`: SUCCESS, all 5 jobs; SQLite 64-way campaign PASS 348 cases, 6,780 checks, 0 mismatches, 0 failed checks.
+
+### Correction to E-035 (2026-11-10, found during the pre-compaction recovery check)
+
+E-035 stated that Go opens concurrent-worker connections after the start barrier. **That is wrong.** The code shows: **Go** (`m1/go/internal/broker/scenario.go`, `concurrent`): the main goroutine opens all worker connections sequentially with `led.fork()` (about 0.2 ms each in the diagnostic), then spawns one goroutine per operation, then releases them with `close(start)`; **Rust** (`m1/rust/src/broker.rs`, `dispatch_step`): each of the worker OS threads opens its own connection in parallel (`group_connection`, about 11 ms each under that contention), then all wait on a `std::sync::Barrier` and are released together. **Both open before release and both add connection setup to the operation's `total_ns`.** The measured timing figures in E-035 stand; the explanation does not. Remaining hypothesis (not verified): Rust's barrier releases all OS threads at once, while released goroutines are scheduled by the Go runtime onto a bounded number of threads, which staggers the first `BEGIN IMMEDIATE`. The owner's D-027 decision was based on the incorrect explanation; its rule (open, configure and verify before release; no write before release; cold profile separate) remains valid, and whether release simultaneity must also be equivalent is an open question.
+
+### Note on E-034 to E-036 (D-027, 2026-11-10)
+
+The timeout and lock-wait figures in E-034, E-035 and E-036 are **preliminary and not directly comparable** between the prototypes: Rust opened concurrent-worker connections before the start barrier and Go after it. D-027 (approved, not implemented) standardizes the primary profile; the figures are kept unchanged as recorded.
+
 ## Not yet executed
 
 - SR-06 live-host experiments (0 of 69; sandbox torn down) and full SR-06 acceptance; rule semantic review (M0-01d); independent human golden review (M0-05a).

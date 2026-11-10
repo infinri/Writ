@@ -2,84 +2,119 @@
 
 Read this first after compaction or in a new session, then [WORK-STATE](WORK-STATE.md).
 
-## Current checkpoint (2026-11-10, D-026 concurrency oracle done; M1-06 waiting for the benchmark environment)
+## Current checkpoint (2026-11-10, pre-compaction; next task D-027)
 
-**This is the authoritative recovery entry point. It is not authorization to do anything; re-establish authorizations from the owner's newest message.**
+**This is the authoritative recovery entry point. It is not authorization to do anything beyond what is listed under "Authorized next task"; re-establish other authorizations from the owner's newest message.**
 
-### A. Project status
+**After compaction: resume D-027 (section F). Do not restart M1 development or repeat any completed task in section C.**
+
+### A. Repository state (verify with the commands in section H)
 
 | Item | State |
 |---|---|
-| Objective | Writ V2: model- and domain-agnostic governance, retrieval and memory platform. A small pure **kernel** decides; a separate **broker** is the only path to governed effects (permits, grants, receipts); the AI proposes and never authorizes itself ([V2-ARCHITECTURE](../../V2-ARCHITECTURE.md), [master plan](MASTER-IMPLEMENTATION-PLAN.md)) |
-| Why kernel and broker are separate | The kernel is pure and key-free (no I/O, injected time) so decisions are deterministic and testable; the broker holds keys and the ledger, re-decides at use time and binds every effect to the exact request (D-008, D-010, D-012) |
-| Acceptance Gate Integrity | Protected workflow transitions need a trusted, version-bound acceptance record checked by the broker plus kernel structure checks; promotion separate from publish or deploy ([spec](../architecture/acceptance-gate-integrity.md), ADR-0008 **APPROVED IN PRINCIPLE**) |
 | Branch | `v2/architecture-rebuild` (never `main`) |
-| Published code HEAD | `68f4593a513b0ab7b6ac206ef00c8f9d067d7660` (D-025), CI https://github.com/infinri/Writ/actions/runs/42887453309 **green, all 5 jobs** (E-032). Previous: `6b7eab1` run 42857245639 green; `3012940` run 42851712662 green |
-| Published | `1994b67` (docs, E-034) on top of `d9815f8` (guard). CI on `d9815f8` run 42890081319 **failed** (busy timeouts under 64-way contention, E-034); fixed by D-026 |
-| Published code HEAD | `7a5a366d13f0b514a9723c74343c167e54f0aebd` (D-026), CI https://github.com/infinri/Writ/actions/runs/42898828550 **green, all 5 jobs** (E-036; 2 real Rust lock-timeout aborts verified and accepted) |
-| Local commits not yet pushed | docs commit recording E-036 |
-| Working tree | Only untracked `docs/audit/m0/hook-audit/` (never stage or publish) |
-| Milestone | **M1** under D-014 (development only). Done: M1-00..M1-05, M1-06a harness, M1-06b (D-022), M1-06c (D-023 SQLite ledger), M1-06e (D-024), M1-06d broker timing (published, CI green), M1-06f D-025 corrections (published, CI green). **M1-07 in progress** (facts collected; build times deferred). **M1-06 measurements blocked** (environment). M1-08 not started. M0 closed for development only; release and production NO-GO |
+| Published remote HEAD | `988a840c2d69de2a371f13e07363845067b67282` (docs: E-036). CI https://github.com/infinri/Writ/actions/runs/42902590125 **success, all 5 jobs** (same code as `7a5a366`; SQLite 64-way campaign PASS 348 cases, 6,780 checks, 0 mismatches) |
+| Last code commit | `7a5a366d13f0b514a9723c74343c167e54f0aebd` (D-026), CI https://github.com/infinri/Writ/actions/runs/42898828550 **success, all 5 jobs** |
+| Local, unpushed | the pre-compaction checkpoint commit on top of `988a840` (docs only: D-027 record, this handoff); push needs owner confirmation |
+| Working tree | only untracked `docs/audit/m0/hook-audit/` (owner material: never stage, publish or summarize) |
+| Milestone | **M1** under D-014 (development only). M0 closed for development only. Release and production **NO-GO** |
 
-### B. Owner decisions in force
+Commit chain since M1-05 (all published): `9e6f9f1` M1-06a harness; `a44c9cc` D-022; `935e4e3` D-023 SQLite ledger; `e1dc2e1` M1-07 report (CI failed: system SQLite linked); `3012940` D-024 plus CI fix; `6b7eab1` M1-06d broker timing; `68f4593` D-025; `8d1915c` docs; `d9815f8` guard refuses discharging battery (CI failed: busy timeouts, E-034); `1994b67` docs; `7a5a366` D-026; `988a840` docs.
 
-D-001..D-013; **D-014** M0 development GO (16 risks open); D-015 Control Center; D-016 Acceptance Gate Integrity (ADR-0008 APPROVED IN PRINCIPLE, not ACCEPTED); **D-017..D-021** M1 semantics; **D-022** decide input validation (three-field `REQUEST_SCHEMA_INVALID` for malformed `now`, `state_revision` (0..2^53-1) or absent `request`; strict `YYYY-MM-DDTHH:MM:SSZ`; D-017 spelling failures stay `REQUEST_JSON_INVALID`); **D-023** SQLite-backed ledger required for official workload B (same schema, transactions, engine and settings in both; in-memory kept but never a substitute); **D-024** (2026-11-10) D-022 approved; Go `-trimpath`; M1 is Linux x86_64 only; storage failures fail closed with one sanitized response; `ReadID` removed; DEP-1 and C-1..C-6 stay open ([M1-OPEN-ASSUMPTIONS](M1-OPEN-ASSUMPTIONS.md)); independent fixture review preserved. ADR-0002 Rust vs Go: **OPEN** until M1-08. Fixture amendments 1..6.
+### B. Architecture in one page
 
-**D-025** (2026-11-10): resumed-retry `COMMIT` and adapter-transaction precedence approved; DEP-1 adopted; C-1..C-6 resolved; S-1, S-2, stderr sanitization required ([M1-OPEN-ASSUMPTIONS](M1-OPEN-ASSUMPTIONS.md) marked resolved). Pending owner input: (1) independent human review of all fixtures (PENDING INDEPENDENT REVIEW); (2) benchmark environment (owner actions in [M1-06-READINESS](M1-06-READINESS.md)).
+- **Kernel:** pure, deterministic, key-free authorization (no I/O, injected time); strict JSON (D-017), D-006 canonical form; decides allow, deny, require_approval, invalid or unavailable with matched rule ids ([V2-ARCHITECTURE](../../V2-ARCHITECTURE.md)).
+- **Broker:** the only path to governed effects. Adapter-sealed ingress (D-010), use-time re-decision, approval grants from authenticated humans on a separate channel (single use, bound to the full request, D-009), permits bound to the full request fingerprint and bundle (D-012), idempotency receipts and reconciliation; effect adapter simulated in M1.
+- **SQLite ledger (D-023..D-027):** one pinned SQLite 3.54.1 static library linked by both prototypes; WAL, `synchronous=FULL`, `busy_timeout=5000`, `BEGIN IMMEDIATE` logical transactions (reserve, dispatch, adapter, observe, approve, reconcile, audit), per-key locks, durable receipts, grant uses, refusal audit, simulated adapter tables; fail closed on storage failures with one sanitized response ([LEDGER-SQLITE](../../m1/fixtures/broker/LEDGER-SQLITE.md), [BROKER](../../m1/fixtures/broker/BROKER.md)).
+- **Acceptance Gate Integrity:** protected workflow transitions need a trusted, version-bound acceptance record bound to tenant, project, task, workflow, transition, artifact snapshot id and digest, policy version and state revision, checked by the broker plus kernel structure checks; promotion separate from publish or deploy; model-assisted findings advisory only ([spec](../architecture/acceptance-gate-integrity.md), ADR-0008 **APPROVED IN PRINCIPLE**).
+- **Model independence:** model output is untrusted; kernel and broker import no model SDK; packs never grant permissions.
+- **Bake-off:** equivalent Rust and Go prototypes from shared language-neutral specifications, implemented by separate agents that never read each other's code; ADR-0002 **OPEN** until M1-08; no winner chosen.
+- **Writ Control Center:** roadmap (D-015, ADR-0007, `docs/control-center/`); not started.
 
-### C. Current implementation
+### C. Completed work (do not repeat)
 
-| Component | Location | Build and test |
-|---|---|---|
-| Toolchains and SQLite | `m1/tools/` | `install-toolchains.sh` (Rust 1.99.1, Go 1.27.3), `install-sqlite.sh` (SQLite 3.54.1 static, revision 2, SHA3-256 verified); `source m1/tools/env.sh` |
-| Rust prototype | `m1/rust/` (`sha2`, `hmac`, `rusqlite =0.40.2`; `smallvec` pinned 1.16.3) | `cd m1/rust && cargo build --release --locked && cargo test --release --locked` |
-| Go prototype | `m1/go/` (standard library plus `mattn/go-sqlite3 v1.14.52`; tags mandatory) | `cd m1/go && T="libsqlite3 sqlite_omit_load_extension" && go vet -tags "$T" ./... && go build -trimpath -tags "$T" -o proto ./cmd/proto && go test -race -count=1 -tags "$T" ./...` |
-| SQLite ledger spec | `m1/fixtures/broker/LEDGER-SQLITE.md`, `ledger.sql` | `proto broker-scenario --ledger sqlite --ledger-dir DIR` or `--ledger-db PATH`; `proto sqlite-info` |
-| Storage-failure and timing-integrity tests | `m1/ledger_tests/` (language-neutral, D-024, M1-06d) | `WRIT_RUST=<bin> WRIT_GO=<bin> python3 -m unittest discover -s m1/ledger_tests -v` |
-| Broker timing | `proto bench-broker-scenario [ledger flags]` (both) | definitions in LEDGER-SQLITE.md "Per-operation timing"; harness reports `broker_timing_ns` for B, B-mem, H, H-mem |
-| Fixtures | `m1/fixtures/` (12 sets, 447 cases; amendments 1..7) | `python3 m1/driver/parity.py --proto <bin> --manifest m1/fixtures/manifest.json --repeat 2`; SQLite: `WRIT_PROTO=<bin> python3 m1/driver/parity.py --proto m1/tools/sqlite-ledger-proto.sh --manifest m1/fixtures/manifest.json --repeat 2`; drift `python3 m1/fixtures/export_m0_fixtures.py --check` |
-| Property harness | `m1/props/` | `python3 m1/props/run.py --profile ci --seed 20261107 --rust <bin> --go <bin> --out r.json`; SQLite broker: wrappers setting `WRIT_PROTO` around `m1/tools/sqlite-ledger-proto.sh` (see CI) |
-| Benchmark harness | `m1/bench/` | dry run `python3 m1/bench/bench.py --dry-run --seed 20261107 --rust ... --go ... --out dry.json`; measurement without `--dry-run` (guarded); self-tests `python3 -m unittest discover -s m1/bench/tests` |
-| M1-07 assessment | `m1/assess/collect.py`, [report](M1-07-BUILD-ASSESSMENT.md) | `python3 m1/assess/collect.py facts --out ...`; `build-times` (guarded) |
-| CI | `.github/workflows/v2-docs.yml` | docs-v2, m0-harness, m1-rust and m1-go (each also runs all fixtures on SQLite), m1-props (CI profile seeds 20261107 and 1, SQLite broker campaign Rust vs Go, mutation smoke, harness self-tests and dry run) |
+M1-00 toolchains; M1-01 parity driver; M1-02 fixtures (amendments 1..7, 12 sets, **447 cases**, all PENDING INDEPENDENT REVIEW); M1-03 Rust and M1-04 Go prototypes; M1-05 property, metamorphic, concurrency and differential harness; M1-06a benchmark harness (guarded; dry run only); M1-06b D-022; M1-06c D-023 SQLite ledger; M1-06e D-024 storage failures; M1-06d broker timing (`bench-broker-scenario`); M1-06f D-025 corrections; M1-06g D-026 concurrency oracle. M1-07 facts collected ([report](M1-07-BUILD-ASSESSMENT.md)); M1-07 build timings **not** done (guarded).
 
-### D. Verified evidence ([TEST-EVIDENCE](TEST-EVIDENCE.md) E-016..E-028)
+### D. Decisions in force ([DECISION-LOG](DECISION-LOG.md))
 
-- E-032: CI of `68f4593` green: engine 3.54.1 asserted in both jobs; 447/447 in memory and on SQLite for both; 30 ledger tests; Rust-vs-Go SQLite 0 mismatches over 6,780 checks; Rust 54 + 3 tests; dry run 0 failures.
-- E-031: CI of `6b7eab1` green (444/444 both ledgers, 16 ledger tests, 0 mismatches); timing changed no governed output (982 outputs byte-identical against `3012940`). D-025 done locally: 447/447 both ledgers, 30 ledger tests, 0 mismatches over 23,089 checks.
-- E-030: CI of `3012940` green (engine 3.54.1 asserted in both jobs, 444/444 both ledgers, 13 storage tests, Rust-vs-Go SQLite 0 mismatches). M1-06d done locally: 16 language-neutral ledger tests, 0 mismatches over 23,089 SQLite differential checks, dry run 0 failures over 28 check kinds.
-- E-029: CI of `e1dc2e1` failed (system SQLite linked by Rust on the runner); fix local. D-024: before Rust 7 and Go 3 of 13 storage tests failed (Rust executed an effect on a schema-version-2 ledger); after 13/13 each; full re-verification green locally.
-- E-026 M1-06a harness (published, CI green). E-027 D-022: before Rust 5 and Go 22 of 30 new fixtures failed; after both 444/444. E-028 D-023: both 444/444 in memory and on SQLite; Rust SQLite vs Go SQLite broker campaign 0 mismatches over 23,089 checks; own persistence, second-process, atomicity and 64-way contention tests pass in each; mutation smoke, regressions, M0 281, docs checks pass. **The local commits `a44c9cc` and `935e4e3` have not run in CI yet.**
-- Guarantee level: **Tested (unit or reference)** only. No benchmark measurement exists; dry runs are not measurements.
+| Decision | Status |
+|---|---|
+| D-001..D-013 | accepted (M0) |
+| D-014 | M0 development GO (16 risks open) |
+| D-015 Control Center, D-016 Acceptance Gate Integrity | accepted; ADR-0008 APPROVED IN PRINCIPLE (not ACCEPTED) |
+| D-017 strict JSON, identifiers, exact transitions, permits, completeness | implemented, tested |
+| D-018 final semantics A1..A8; D-019 protection in bundle, effect prerequisites; D-020 refusal mapping, transition support | implemented, tested |
+| D-021 strict protocol responses | implemented, tested |
+| D-022 decide input validation | implemented, tested, approved (D-024) |
+| D-023 SQLite ledger required for workload B | implemented, tested |
+| D-024 trimpath, Linux x86_64 only, storage failures fail closed, `ReadID` removed | implemented, tested |
+| D-025 DEP-1, C-1..C-6, C-4 grant integrity, adapter precedence, S-1, S-2, sanitized stderr | implemented, tested |
+| D-026 verified lock-contention aborts, availability separate from correctness | implemented, tested, CI green at `7a5a366` |
+| **D-027 standardized concurrent-worker start** | **APPROVED, NOT IMPLEMENTED** (next task); premise corrected after approval (both prototypes already open before release; see DECISION-LOG D-027 correction) |
 
-### E. Unverified security obligations (never claim otherwise)
+### E. Verified evidence ([TEST-EVIDENCE](TEST-EVIDENCE.md), latest E-037)
 
-Independent human review of the 26 golden cases and all M1 fixtures (REL-01); 288 V1 rules (M6-RULES); SR-06 live-host verification (M5-SR06); 16 D-014 risks open; real evaluator issuance, attestation and signatures; real snapshot immutability and credential isolation; durable production storage, process isolation and crash recovery (the SQLite ledger tests early-return crashes only, not process kills or power loss); trusted production clock; real external exactly-once effects (adapter simulated); real-host enforcement.
+At `7a5a366` (CI run 42898828550, success, all 5 jobs; and locally, E-035): Rust 58 unit + 3 integration tests; Go vet clean, race tests ok in 6 packages; both link SQLite 3.54.1 (source id `2026-10-16 14:45:20 555e07ef...`), identical settings; fixtures **447/447** in memory and on SQLite for each prototype; regressions 11/11; `m1/ledger_tests` **30** OK (13 storage failures, 3 timing integrity, 14 D-025); D-026 oracle negative tests **14** OK; memory property CI profile seeds 20261107 and 1; Rust-SQLite versus Go-SQLite broker campaigns with 64-way groups PASS (CI 348 cases, 6,780 checks; local 2,584 cases, 52,920 checks; 0 mismatches); mutation smoke 9 of 9 mutants caught for each (including `masked-effect`); harness self-tests 18 OK; benchmark dry run 0 correctness failures; M0 281 passed; drift, driver and docs checks OK. Availability (preliminary, not comparable before D-027): E-034 Rust 89 / Go 6 timeouts of 12,800; E-036 CI Rust 2 of 1,408 at 64-way. Guarantee level: **Tested (unit or reference) only**; no test result is a real-host security certification. **No official benchmark measurement exists.**
 
-### F. Next tasks
+### F. Authorized next task: D-027 (M1-06h)
 
-0. **D-026 done** (E-035): verified lock-contention aborts are aborted no-ops; partial progress modelled; availability reported separately. **Owner decision pending:** concurrent-group start equivalence (Rust opens worker connections before the start barrier, Go after it; this, not hold time, explains the timeout difference, E-035).
-1. **M1-06 measurements** only after every guard passes. 2026-11-10 (E-033): governor now `performance`; still refused: battery discharging on a 15 W USB-C supply (connect the full-power adapter), load 1.5 to 1.7 (owner's `java` and `clickhouse-server` processes), CPU 67 to 69 C. Owner actions in [M1-06-READINESS](M1-06-READINESS.md). Then rebuild both from the clean tree and run `m1/bench/bench.py` with a new recorded seed, followed by `m1/assess/collect.py build-times` (M1-07)
-2. Remaining M0 and security obligations unchanged (section E); fixture review pending ([M1-06-READINESS](M1-06-READINESS.md): governor `powersave` and load above 1.0 on 2026-11-10).
-3. **M1-07 remaining:** build timings when the guard passes; cross-target decision (pending owner input 5).
-4. **M1-06 measurements: BLOCKED.** Governor `powersave` (verified 2026-11-07; mains online). Owner: `sudo cpupower frequency-set -g performance`, idle and cool machine, then from a clean tree with pinned toolchains and SQLite: rebuild both, `python3 m1/bench/bench.py --seed <new recorded seed> --rust ... --go ... --out m1/bench/results/<date>.json` (guard must pass; exit 4 invalidates).
-5. M1-08 scorecard and ADR-0002 recommendation after M1-06 and M1-07 (owner decides).
+**Requirements (DECISION-LOG D-027):** primary profile: for every `concurrent` group, open, configure and verify every dedicated worker connection before releasing the common start barrier; release only when all are ready; no write transaction (`BEGIN IMMEDIATE`) before release; connection setup excluded from operation `total_ns` and reported separately. Supplemental cold-connection profile: worker connections created after release (setup inside the operation), selected explicitly and reported separately. Keep busy timeout 5 s, 64-way stress tests, D-026 checks. Do not tune either prototype beyond this rule.
 
-### Claude must not (without new explicit owner instruction)
+**Plan:**
 
-Choose Rust or Go; run comparative benchmarks or build timings outside the guard; change global CPU settings; mark ADR-0008 or ADR-0002 ACCEPTED; change frozen expectations without a recorded decision; claim verified security, durability or host enforcement; modify V1 or the M0 harness; stage `hook-audit/`; push without confirmation; force-push; touch `main`.
+1. Spec first (Claude): amend LEDGER-SQLITE.md "concurrent" and "Per-operation timing": name the profiles (proposal: default primary; supplemental via an explicit flag such as `--concurrency-profile cold`, plus a `concurrent` step timing member for connection setup, for example `setup_ns` per operation and `barrier_release_ns` per group); record exact field names before any code.
+2. Language-neutral tests (Claude): extend `m1/ledger_tests/test_timing_integrity.py` (or add `test_d027.py`): in the primary profile every worker's first transaction `begin_ns` starts after the barrier (setup outside `total_ns`, setup field present for every operation); the cold profile reports setup inside `total_ns`; outputs unchanged on all broker fixtures; D-026 categories unchanged.
+3. Prototypes (two separate agents, each blind to the other, briefs as for D-026). **Current code (verified 2026-11-10; corrects E-035):** Rust `m1/rust/src/broker.rs` `dispatch_step` (line 683) spawns one OS thread per operation; each thread calls `group_connection` (line 666, `l.connect()`) in parallel, then `barrier.wait()` (`std::sync::Barrier`, line 688), and adds setup to `total_ns`. Go `m1/go/internal/broker/scenario.go` `concurrent` (line 533) opens every worker with `led.fork()` (line 548; `sqlite.go` `fork` line 623, `reopen`) sequentially in the calling goroutine, then spawns goroutines that wait on `<-start` (line 565), releases with `close(start)`, and adds setup to `total_ns`. **Both already open before release.** Remaining D-027 work in each: verify each worker connection (settings read back) before release; exclude setup from `total_ns` and report it in the new setup field; implement the cold-connection profile; tests proving no `BEGIN` before release.
+4. Harness: `m1/props/wprops/c_broker.py` (run groups in the primary profile; optionally record cold-profile availability separately) and `m1/bench/bench.py` (workload B primary profile; supplemental cold profile reported separately); keep availability evidence separate from correctness.
+5. Verify (all must pass): Rust `cargo test`; Go vet and race tests; fixtures 447/447 both ledgers both prototypes; regressions; `m1/ledger_tests` all; `m1/props/tests`; memory property CI profile seeds 20261107 and 1; SQLite campaign `python3 m1/props/run.py --campaign broker --ledger sqlite --seed 20261107 --cases 1000 --repeats 3 --rust ... --go ...` and seed 2; mutation smoke both; bench self-tests and dry run; M0; drift, driver, docs checks. Record timeout counts per profile as availability evidence (not a benchmark).
+6. Record E-038 in TEST-EVIDENCE, mark D-027 IMPLEMENTED only after CI is green; commit (separate from docs), ask the owner before pushing, verify CI on the exact SHA.
 
-### First commands in a new session
+**Acceptance:** both profiles implemented in both prototypes; spec-derived tests prove the primary profile's start rule; all suites above green locally and in CI; earlier timeout evidence kept and labelled preliminary.
+
+**Open question for the owner (raise before or with the D-027 report):** release simultaneity differs (Rust OS-thread barrier releases all at once; Go goroutines released by `close(start)` are scheduled by the runtime); the earlier explanation of the timeout difference was wrong (TEST-EVIDENCE "Correction to E-035"). Do not change release mechanics without a decision.
+
+**Known risks:** busy timeouts still possible in the primary profile (all 64 writers start together; D-026 accepts verified aborts); Go `database/sql` connection reuse must stay one dedicated `*sql.Conn` per worker; per-group connection setup time differs between prototypes (report, do not tune).
+
+**After D-027:** controlled M1-06 measurements and M1-07 build timings, only when every guard passes; then M1-08 scorecard for owner review. Never choose Rust or Go.
+
+### G. Unverified security obligations and blockers (never claim otherwise)
+
+Independent human review of the 26 golden cases and all M1 fixtures (REL-01); review of the 288 V1 rules (M6-RULES); SR-06 real-host verification (M5-SR06; adversarial trials only on a VM or separate machine); 16 D-014 risks open; authenticated approval service and evaluator issuance, attestation and signatures; real snapshot immutability and credential isolation; trusted production clock and key management; real process-kill and power-loss recovery (ledger crash tests are early returns); real external exactly-once effects (adapter simulated); remaining adversarial and host-bypass tests; real-host enforcement. ADR-0002 OPEN; ADR-0008 APPROVED IN PRINCIPLE; release and production NO-GO.
+
+**Benchmark environment ([M1-06-READINESS](M1-06-READINESS.md)): NOT READY.** Last reading 2026-11-10: full-power charger not connected (battery discharging on a 5 V / 3 A USB-C supply, about 15 W); governor back to `powersave` (owner restored it); 1-minute load 3.52 (IntelliJ, 22 Docker containers, Chrome, Claude sessions); CPU 60 C (needs a fresh check). The guard (`m1/bench/wbench/envinfo.py`) must pass; never bypass or relax it; never change CPU settings or stop the owner's processes.
+
+### H. Commands
 
 ```bash
+# state
 git branch --show-current && git fetch -q origin && git status --short
 git log --oneline -8 && git rev-parse HEAD origin/v2/architecture-rebuild
 gh run list --branch v2/architecture-rebuild --workflow v2-docs.yml --limit 3
-source m1/tools/env.sh && (cd m1/rust && cargo build --release --locked && cargo test --release --locked) && (cd m1/go && T="libsqlite3 sqlite_omit_load_extension" && go build -trimpath -tags "$T" -o proto ./cmd/proto && go test -race -count=1 -tags "$T" ./...)
-python3 m1/driver/parity.py --proto "$PWD/m1/rust/target/release/proto" --manifest m1/fixtures/manifest.json && python3 m1/driver/parity.py --proto "$PWD/m1/go/proto" --manifest m1/fixtures/manifest.json
-python3 -m unittest discover -s m1/bench/tests
-cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor /sys/class/power_supply/ACAD/online
+# build and unit tests
+source m1/tools/env.sh
+(cd m1/rust && cargo build --release --locked && cargo test --release --locked)
+(cd m1/go && T="libsqlite3 sqlite_omit_load_extension" && go vet -tags "$T" ./... && go build -trimpath -tags "$T" -o proto ./cmd/proto && go test -race -count=1 -tags "$T" ./...)
+R=$PWD/m1/rust/target/release/proto; G=$PWD/m1/go/proto
+# fixtures, both ledgers
+for b in $R $G; do python3 m1/driver/parity.py --proto $b --manifest m1/fixtures/manifest.json --repeat 2; WRIT_PROTO=$b python3 m1/driver/parity.py --proto $PWD/m1/tools/sqlite-ledger-proto.sh --manifest m1/fixtures/manifest.json --repeat 2; python3 m1/driver/parity.py --proto $b --manifest m1/props/regressions/manifest.json; done
+# language-neutral and oracle tests
+WRIT_RUST=$R WRIT_GO=$G python3 -m unittest discover -s m1/ledger_tests -v
+python3 -m unittest discover -s m1/props/tests -v
+# properties (memory and SQLite) and mutation smoke
+python3 m1/props/run.py --profile ci --seed 20261107 --rust $R --go $G --out /tmp/p.json
+python3 m1/props/run.py --campaign broker --ledger sqlite --seed 20261107 --cases 300 --repeats 2 --rust $R --go $G --out /tmp/ps.json
+python3 m1/props/mutants/smoke.py --real $R --seed 7 --cases 300 --out /tmp/sr.json; python3 m1/props/mutants/smoke.py --real $G --seed 7 --cases 300 --out /tmp/sg.json
+# harness and other checks
+WRIT_BENCH_RUST=$R WRIT_BENCH_GO=$G python3 -m unittest discover -s m1/bench/tests
+python3 m1/bench/bench.py --dry-run --seed 20261107 --rust $R --go $G --out /tmp/dry.json
+(cd m0 && .venv/bin/python -m pytest -q); python3 m1/fixtures/export_m0_fixtures.py --check; python3 -m unittest discover -s m1/driver/tests; python3 scripts/check-v2-docs.py
+# environment (read only)
+cat /sys/devices/system/cpu/cpufreq/policy*/scaling_governor | sort | uniq -c; cat /sys/class/power_supply/ACAD/online /sys/class/power_supply/BAT1/status /proc/loadavg
 ```
+
+### I. Requires owner approval
+
+Every push (fast-forward only, never force); deleting files; changing frozen fixture expectations; any new decision or change to D-017..D-027; benchmark or build-time measurement runs (guard must also pass); CPU or system settings; stopping the owner's processes; choosing Rust or Go; marking ADR-0002 or ADR-0008 ACCEPTED; anything touching `main`, V1 trees, the M0 harness or `hook-audit/`.
 
 ## Standing facts
 
