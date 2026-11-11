@@ -68,11 +68,11 @@ Not an OS-level sandbox; not a mandatory all-purpose autonomous agent (an option
 
 | Component | Decision | Reason / exit gate |
 |---|---|---|
-| Runtime language | **OPEN** Rust vs Go | Run identical security, startup, memory, concurrency and operational workloads in M1 |
+| Runtime language | **OPEN** ADR-0002; Rust is the owner's provisional leader and preferred direction | Complete targeted M1-08 confirmation and final owner review; no restart of the full bake-off |
 | Policy authorization | **DECIDED** Cedar-like scoped authorization via versioned bundles | Never accept model-supplied permissions; test deny precedence and unknown behavior |
 | Additional expression language | **DEFERRED** CEL | Only if validated nonauthorization use cases warrant another DSL |
 | Graph intelligence | **DECIDED** Neo4j behind explicit GraphPort | Graph is not in synchronous permission hot path |
-| Operational state | **PROVISIONAL** PostgreSQL in enterprise; SQLite for local offline | Verify atomic approval consume, effect idempotency and migration behavior |
+| Operational state | **TARGET** PostgreSQL in enterprise; SQLite for local offline | Future PostgreSQL acceptance must verify atomic approval consume, durable cross-process coordination, effect uncertainty, migrations and recovery; SQLite benchmarks do not establish PostgreSQL behavior |
 | Retrieval implementation | **OPEN** retain/port/adapt V1 ONNX-HNSW-Tantivy | Compare quality and memory before replacement |
 | Module isolation | **DEFERRED** WASM | Introduce after stable plugin API and capability limits |
 | Distributed workflows | **DEFERRED** Temporal or Restate | Needed for long-running distributed jobs, not local decisions |
@@ -251,3 +251,11 @@ Owner direction 2026-11-06 ([D-016](DECISION-LOG.md)): Writ makes authorization 
 | M12 | Adversarial, integration and failure testing before production enforcement claims |
 
 Sequencing changes are listed in section 13 of the specification. Nothing in this section is implemented.
+
+## 19. Enterprise security and SOC 2 readiness
+
+Owner-authorized direction (2026-11-10, America/Chicago): [enterprise readiness](../security/ENTERPRISE-READINESS.md), tracked as ENT-00..ENT-08 in [TASKS](TASKS.md). Controls are planned across M2..M12; this is not a new prerequisite for completing M1. Build identity, tenant isolation, audit integrity, secure releases, recovery and operational evidence into the existing milestones. PostgreSQL is the enterprise operational-state target, while SQLite remains the local/offline profile.
+
+Self-hosted release requires the applicable security gates and a documented customer assurance package. A hosted/managed offering additionally needs a defined service boundary, assigned operational controls and an owner-approved assurance plan informed by a qualified CPA and customer commitments. Type I and Type II reports concern the defined organization's service controls; customers do not inherit or complete a Writ-operated service's examination. No SOC 2 report or certification claim is authorized by this plan.
+
+Detailed acceptance evidence, responsibility allocation, control-register requirements and staged release gates are in the readiness plan. ADR-0002 remains OPEN, ADR-0008 APPROVED IN PRINCIPLE, and production/release NO-GO. Documentation is not implementation or attestation.

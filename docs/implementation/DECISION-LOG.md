@@ -2,6 +2,14 @@
 
 Implementation-level decisions. Architectural decisions belong in [ADRs](../decisions/). Do not reverse an entry without new evidence; add a superseding entry instead.
 
+## ENT-OWNER-01: Enterprise security and assurance planning direction
+
+- **Date:** 2026-11-10 (America/Chicago). **Authority:** owner delegated the readiness approach in session after discussing Rust, PostgreSQL and SOC 2. This is planning authorization, not an audit opinion or release approval.
+- **Direction:** Rust remains the provisional leader and preferred kernel/broker direction; ADR-0002 stays OPEN until targeted M1-08 evidence and final owner decision. PostgreSQL targets enterprise state with its own future concurrency/recovery gate; SQLite stays local/offline. Preserve current M1 verification and benchmark evidence rather than restarting the bake-off.
+- **Readiness:** adopt [ENTERPRISE-READINESS](../security/ENTERPRISE-READINESS.md), ENT-R01..R09 and tasks ENT-00..ENT-08. Design controls into existing milestones and retain actual operational evidence. Self-hosted customers own their deployment controls and examination scope; Writ owns product/release evidence and any controls or services it operates.
+- **Assurance scope:** do not label software Type I/II merely because controls are designed. Before a hosted/managed enterprise offering, scope the service, assign operators and obtain CPA/customer input on examination and assurance milestones. Type II for our service is not transferred to customers. No spending, auditor engagement or compliance claim is authorized here.
+- **Unchanged gates:** ADR-0008 APPROVED IN PRINCIPLE; production/release NO-GO; independent review and real-host obligations remain. ENT control implementation, operational effectiveness and independent examination are not complete.
+
 ## D-001: M0 harness is a Python reference oracle, not the production kernel
 
 - **Date:** 2026-11-05

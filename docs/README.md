@@ -17,7 +17,7 @@ This documentation replaces the prior V1 docs (including old ADRs, reference pag
 4. [Retrieval & memory](architecture/retrieval-and-memory.md), [data contracts](architecture/data-model.md), and [host adapters](architecture/host-adapters.md).
 5. [Model-agnostic runtime](architecture/model-agnostic-runtime.md), [Capability Packs](architecture/capability-packs.md), and [Agent orchestration](architecture/agent-orchestration.md).
 6. [Pack examples](packs/README.md) and [model/domain contracts](contracts/README.md).
-7. [Security invariants](security/invariants.md) and [threat model](security/threat-model.md).
+7. [Security invariants](security/invariants.md), [threat model](security/threat-model.md) and [enterprise security / SOC 2 readiness](security/ENTERPRISE-READINESS.md) (planned controls and deployment responsibilities).
 6. [Testing, benchmarks & acceptance](testing/verification-and-benchmarks.md).
 7. [V1 disposition and migration](audit/V1-ARCHITECTURE-BASELINE.md), [migration strategy](migration/v1-to-v2.md).
 8. [Operations](operations/deployment.md), [extensions](architecture/extensibility.md), [observability](architecture/observability.md).
@@ -37,7 +37,7 @@ This documentation replaces the prior V1 docs (including old ADRs, reference pag
 
 **DECIDED:** model-provider neutrality, external-host and optional managed-agent execution, domain-independent Capability Packs and typed task/artifact/evidence/evaluation contracts; one enforceable authority for privileged side effects; host-agnostic normalized actions; typed immutable events; identity-bound human approvals; independently versioned policies; tenant-scoped retrieval and memory; bounded graph working sets; local-first permission path; operational state separate from knowledge graph; granular ports/adapters.
 
-**PROVISIONAL:** Rust versus Go kernel. Preserve the ability to use either during M0/M1; choose with benchmarks, not aesthetics.
+**PROVISIONAL:** Rust is the owner's preferred kernel/broker direction and M1-08 provisional leader; ADR-0002 remains OPEN pending targeted confirmation and final owner review. PostgreSQL targets enterprise operational state; SQLite remains the local/offline profile, with separate acceptance gates.
 
 **DEFERRED:** WASM plugins, remote workflow engine, message broker and Kubernetes until an acceptance test demonstrates a need.
 

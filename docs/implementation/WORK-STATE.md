@@ -1,13 +1,15 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-10 (M1-06 and M1-07 measured; M1-08 scorecard drafted for owner review) · **Branch:** v2/architecture-rebuild · **Milestone:** M1 active (development only, D-014); M1-00..M1-05, M1-06a, D-022 and D-023 DONE; M1-07 in progress; M1-06 measurements blocked by environment. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md).
+**Last updated:** 2026-11-10 (America/Chicago; enterprise readiness planning; M1 measurements recorded under UTC date 2026-11-11) · **Branch:** v2/architecture-rebuild · **Milestone:** M1 active (development only, D-014). Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md).
 
 ## Current
 
-- **Published:** remote HEAD `988a840` (docs); last published code `7a5a366` (D-026), CI run 42898828550 green, all 5 jobs (E-036). Local, unpushed: `d9054c9` (docs checkpoint), `52b31fe` (D-027 code), and the D-027 docs commit.
-- **Prototypes:** 447/447 both ledgers; 37 ledger tests; 14 oracle tests; SQLite campaigns pass in both D-027 profiles; mutation smoke 9/9 each (E-038).
-- **Next task:** owner review of [M1-08-SCORECARD](M1-08-SCORECARD.md) and the M1-07 judgments; owner decides ADR-0002 or requests more evidence. Never choose Rust or Go.
-- **Benchmarks:** none taken; environment not ready ([M1-06-READINESS](M1-06-READINESS.md)).
+- **Verified published baseline:** `a91af1d775d59fab932a03506ea36384642cdae0`; [CI run 42943984397](https://github.com/infinri/Writ/actions/runs/42943984397) passed all 5 jobs. This readiness change is documentation only; verify the resulting HEAD and its CI separately.
+- **Prototypes:** D-027..D-029 implemented; historical local verification E-042 and published CI above. No new runtime or benchmark results are claimed by this planning update.
+- **Language:** Rust is the owner's provisional leader and preferred trusted kernel/broker direction. ADR-0002 remains OPEN pending targeted M1-08 confirmation and final owner decision.
+- **Benchmarks:** official M1-06 and M1-07 results exist at `138163d` (E-046/E-047). Real incremental build, repeatability, Go process overhead and real interruption investigations remain pending. Complete raw M1-06 evidence is reported local/ignored and is not available in this checkout; preservation must be completed on the original measurement host.
+- **Next task:** the already authorized targeted M1-08 work; see SESSION-HANDOFF section F. No full bake-off restart. Each official measurement requires a fresh passing environment guard.
+- **Enterprise direction:** [readiness plan](../security/ENTERPRISE-READINESS.md), ENT-OWNER-01 and ENT-00..ENT-08. PostgreSQL targets enterprise operational state, SQLite remains local/offline; durable multi-worker coordination requires separate future acceptance. Controls, SOC 2 scope and any examination remain planned, not implemented or attested.
 
 ## Security findings
 
@@ -36,13 +38,13 @@ SANDBOX PREPARED / LIVE VERIFICATION NOT EXECUTED; sandbox **torn down** 2026-11
 
 ## Known blockers
 
-- Gates G1-G3 need human reviewers or a credential and live trials; PROPOSED D-014 would replace or defer them for M1 development only.
+- Gates G1-G3 remain release obligations; D-014 accepted development-only deferral. This plan does not waive them.
 - Pages deploy blocked by repository environment protection (pre-existing).
 
-## Last tests
+## Last verification
 
-CI E-013: run [42309913797](https://github.com/infinri/Writ/actions/runs/42309913797) at `e8aa771`, 281 passed; audit 8 files current; docs and schema checks pass. Signoff-package evidence baseline: `6007d09`, run 42308217716.
+Published baseline CI: [42943984397](https://github.com/infinri/Writ/actions/runs/42943984397), all 5 jobs success on `a91af1d`. Documentation-only readiness checks are recorded separately as ENT-E01 in [TEST-EVIDENCE](TEST-EVIDENCE.md); they do not validate controls or create SOC 2 assurance.
 
 ## Next exact action
 
-Push (owner approval) and CI verification for D-027 (SESSION-HANDOFF section F). M1-06 runs blocked by the environment.
+On the original measurement/development host, inspect the current tree and local evidence, preserve the complete M1-06/M1-07 evidence, and perform only the targeted M1-08 checks under the owner's existing authorization and full per-run environmental guards. Reconcile any unpublished local changes before integrating this documentation update. Do not accept ADR-0002/ADR-0008 or release to production.

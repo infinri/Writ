@@ -4,6 +4,22 @@ Statuses: NOT STARTED, IN PROGRESS, BLOCKED, IN REVIEW, DONE. A task is DONE onl
 
 Source checklists: [M0-START-HERE](M0-START-HERE.md), [master plan](MASTER-IMPLEMENTATION-PLAN.md), [invariants](../security/invariants.md).
 
+## Enterprise security and assurance readiness (planned across M2..M12)
+
+Owner direction: ENT-OWNER-01 in [DECISION-LOG](DECISION-LOG.md); requirements and deployment responsibilities: [ENTERPRISE-READINESS](../security/ENTERPRISE-READINESS.md). These tasks do not restart or block the current M1-08 targeted validation. Priorities below apply at the stated milestone/release, not as new M1 gates. All control implementation and examination remain open.
+
+| ID | Task | Pri | Deps | Status | Acceptance criteria | Refs | Tests | Evidence |
+|---|---|---|---|---|---|---|---|---|
+| ENT-00 | Record scoped enterprise readiness direction, milestone allocation and recovery handoff | P1 | owner direction | DONE (planning only) | Plan, decision, tasks and handoff linked; implementation distinguished from assurance | ENT-OWNER-01, ENT-R09 | docs integrity and diff review | ENT-E01 in TEST-EVIDENCE |
+| ENT-01 | Define service boundary, data inventory, control register, TSC mapping and accountable humans | P0 at enterprise service readiness | ENT-00 | NOT STARTED | Deployment-specific owner/operator, procedure, evidence/frequency/retention, gaps and exact criteria edition recorded; CPA scope review before any examination commitment | ENT-R05, R08, R09 | scope and responsibility review | none |
+| ENT-02 | Identity, approval and tenant-isolation controls in M2..M10 | P0 at applicable release | ENT-01; M2..M4 | NOT STARTED | SSO/privileged MFA, role separation/revocation and isolation implemented for supported profile with negative evidence | ENT-R01, R02; INV-05..07, INV-10, INV-28 | forgery, escalation, revocation, cross-tenant tests | none |
+| ENT-03 | Protected audit, data/key lifecycle and evidence exports in M3..M10 | P0 at applicable release | ENT-01; M3 | NOT STARTED | Authorized tamper-detecting audit/export, standard encryption/key lifecycle, minimization and retention/deletion verified; privileged-admin limits documented | ENT-R04, R05; INV-08, INV-12 | corruption, unauthorized export, redaction, key rotation and retention drills | none |
+| ENT-04 | Release provenance, SBOM/dependencies and vulnerability response in M2..M12 | P0 at release | ENT-01 | NOT STARTED | Reviewed protected releases; verifiable provenance/signatures; dependency/license inventory; vulnerability triage and patch/rollback procedure | ENT-R06 | release verification, dependency/secret scans, rollback drill | none |
+| ENT-05 | Operational controls, recovery and evidence collection in M9..M12 | P0 before service operation | ENT-01; M9 | NOT STARTED | Accountable operators; actual access/change/vendor reviews; incident/restore/upgrade drills; RPO/RTO/SLO and retention recorded | ENT-R07, R08 | restore, failure, incident and access-review exercises | none |
+| ENT-06 | PostgreSQL enterprise profile and durable multi-worker coordination at M10 | P0 before multi-worker support | M3; M10 | NOT STARTED | Transaction model, fencing/coordination, retries/migrations and recovery verified; no grant overuse or duplicate dispatch under uncertainty; local process gate limitation not claimed solved | ENT-R02, R03, R07; INV-01, INV-07..09, INV-15 | process kills, stale workers, contention, storage/network failures, restore | none |
+| ENT-07 | Self-hosted enterprise assurance package and independent security review at M9/M12 | P0 before enterprise enforcement claims | ENT-02..ENT-06 as applicable to supported profile | NOT STARTED | Hardened deployment/roles/coverage limits, responsibility matrix, recovery and evidence instructions; independent findings remediated/dispositioned; existing release gates met | ENT-R09; INV-13, INV-16 | security review, deployment and claims review | none |
+| ENT-08 | Hosted/managed assurance scoping and examination plan before commercial commitments | P0 before hosted/managed enterprise launch | ENT-01, ENT-05, ENT-07 | NOT STARTED | CPA-informed scope/readiness and owner-approved buyer assurance gates; promised Type I report obtained before claim; Type II evidence plan owned by Writ for its service | ENT-R08, R09 | independent scope/gap review; examination only when separately commissioned | none |
+
 ## M0-00 Continuity and harness
 
 | ID | Task | Pri | Deps | Status | Acceptance criteria | Refs | Tests | Evidence |

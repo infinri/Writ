@@ -2,24 +2,26 @@
 
 Read this first after compaction or in a new session, then [WORK-STATE](WORK-STATE.md).
 
-## Current checkpoint (2026-11-10; D-027 implemented locally, push and CI pending)
+## Current checkpoint (2026-11-10 America/Chicago; after M1 measurements and enterprise readiness direction)
 
 **This is the authoritative recovery entry point. It is not authorization to do anything beyond what is listed under "Authorized next task"; re-establish other authorizations from the owner's newest message.**
 
-**After compaction (state 2026-11-11, after measurement):** D-027, D-028, D-029 implemented (CI green). **Official M1-06 measured** (E-046, seed 20261111, guard passed, 0 correctness failures) and **M1-07 build timings measured** (E-047) at `138163d`. **M1-08 scorecard drafted for owner review** ([M1-08-SCORECARD](M1-08-SCORECARD.md)); no language chosen, no recommendation. Raw results are local under the git-ignored `m1/bench/results/` (hashes in E-046). **Next task:** wait for the owner's ADR-0002 review; do not accept ADR-0002, do not rerun measurements without a new authorization and a passing guard. Do not restart M1 development or repeat any completed task in section C.
+**After compaction:** official M1-06 and M1-07 measurements are recorded at `138163d` (E-046/E-047, UTC date 2026-11-11); M1-08 scorecard is drafted. Published baseline `a91af1d` has all 5 CI jobs green ([42943984397](https://github.com/infinri/Writ/actions/runs/42943984397)). Rust is the owner's provisional leader and preferred kernel/broker direction; ADR-0002 remains OPEN pending targeted confirmation and final owner decision. **Authorized next task:** section F, not a restart of completed development. Original raw evidence is reported on the measurement host under ignored output directories, not in this checkout; do not discard its only complete copy.
+
+**Enterprise planning update:** owner delegated the readiness approach after discussing Rust, PostgreSQL and SOC 2. [ENTERPRISE-READINESS](../security/ENTERPRISE-READINESS.md), ENT-OWNER-01 and ENT-00..ENT-08 allocate controls across M2..M12. SQLite stays local/offline; PostgreSQL targets enterprise state with a separate future coordination/recovery gate. Controls and examinations remain planned. Self-hosted customer audit responsibilities do not replace any examination of a Writ-operated service. ADR-0008 stays APPROVED IN PRINCIPLE; release and production NO-GO. No paid engagement or production action is authorized.
 
 ### A. Repository state (verify with the commands in section H)
 
 | Item | State |
 |---|---|
 | Branch | `v2/architecture-rebuild` (never `main`) |
-| Published remote HEAD | `612e1f4d081ae549fc0c769b0995b1ad2faed731` (docs: E-044, D-027..D-029 implemented); CI https://github.com/infinri/Writ/actions/runs/42938794312 **success, all 5 jobs** |
+| Verified published baseline | `a91af1d775d59fab932a03506ea36384642cdae0`; CI https://github.com/infinri/Writ/actions/runs/42943984397 **success, all 5 jobs**; verify current HEAD and any newer CI on recovery |
 | Last code commit | `c5effec` (D-028, D-029), CI https://github.com/infinri/Writ/actions/runs/42936763654 on `d99faa2` (same m1/ tree) **success, all 5 jobs** (E-044) |
-| Local, unpushed | this handoff refresh commit (docs only), if not yet pushed |
-| Working tree | only untracked `docs/audit/m0/hook-audit/` (owner material: never stage, publish or summarize) |
+| This update | enterprise readiness documentation only; use git and CI to verify publication rather than inferring it from this table |
+| Original development tree | not accessible from this planning checkout; inspect local changes before integration. `hook-audit/` remains private owner material: never stage, publish or summarize |
 | Milestone | **M1** under D-014 (development only). M0 closed for development only. Release and production **NO-GO** |
 
-Commit chain since M1-05 (all published): `9e6f9f1` M1-06a harness; `a44c9cc` D-022; `935e4e3` D-023 SQLite ledger; `e1dc2e1` M1-07 report (CI failed: system SQLite linked); `3012940` D-024 plus CI fix; `6b7eab1` M1-06d broker timing; `68f4593` D-025; `8d1915c` docs; `d9815f8` guard refuses discharging battery (CI failed: busy timeouts, E-034); `1994b67` docs; `7a5a366` D-026; `988a840` docs; `d9054c9` docs checkpoint; `52b31fe` D-027; `41529d1` docs (CI red, E-039); `a0769b6` docs (CI red, same cause); `c5effec` D-028, D-029; `d99faa2` docs (CI green, E-044); `612e1f4` docs.
+Commit chain since M1-05 (all published): `9e6f9f1` M1-06a harness; `a44c9cc` D-022; `935e4e3` D-023 SQLite ledger; `e1dc2e1` M1-07 report (CI failed: system SQLite linked); `3012940` D-024 plus CI fix; `6b7eab1` M1-06d broker timing; `68f4593` D-025; `8d1915c` docs; `d9815f8` guard refuses discharging battery (CI failed: busy timeouts, E-034); `1994b67` docs; `7a5a366` D-026; `988a840` docs; `d9054c9` docs checkpoint; `52b31fe` D-027; `41529d1` docs (CI red, E-039); `a0769b6` docs (CI red, same cause); `c5effec` D-028, D-029; `d99faa2` docs (CI green, E-044); `612e1f4` docs; `138163d` readiness docs; `a91af1d` official results and scorecard.
 
 ### B. Architecture in one page
 
@@ -28,12 +30,12 @@ Commit chain since M1-05 (all published): `9e6f9f1` M1-06a harness; `a44c9cc` D-
 - **SQLite ledger (D-023..D-027):** one pinned SQLite 3.54.1 static library linked by both prototypes; WAL, `synchronous=FULL`, `busy_timeout=5000`, `BEGIN IMMEDIATE` logical transactions (reserve, dispatch, adapter, observe, approve, reconcile, audit), per-key locks, durable receipts, grant uses, refusal audit, simulated adapter tables; fail closed on storage failures with one sanitized response ([LEDGER-SQLITE](../../m1/fixtures/broker/LEDGER-SQLITE.md), [BROKER](../../m1/fixtures/broker/BROKER.md)).
 - **Acceptance Gate Integrity:** protected workflow transitions need a trusted, version-bound acceptance record bound to tenant, project, task, workflow, transition, artifact snapshot id and digest, policy version and state revision, checked by the broker plus kernel structure checks; promotion separate from publish or deploy; model-assisted findings advisory only ([spec](../architecture/acceptance-gate-integrity.md), ADR-0008 **APPROVED IN PRINCIPLE**).
 - **Model independence:** model output is untrusted; kernel and broker import no model SDK; packs never grant permissions.
-- **Bake-off:** equivalent Rust and Go prototypes from shared language-neutral specifications, implemented by separate agents that never read each other's code; ADR-0002 **OPEN** until M1-08; no winner chosen.
+- **Bake-off:** equivalent Rust and Go prototypes from shared language-neutral specifications, implemented by separate agents that never read each other's code; ADR-0002 **OPEN** until final owner decision after targeted M1-08 confirmation; Rust is the provisional leader and preferred direction.
 - **Writ Control Center:** roadmap (D-015, ADR-0007, `docs/control-center/`); not started.
 
 ### C. Completed work (do not repeat)
 
-M1-00 toolchains; M1-01 parity driver; M1-02 fixtures (amendments 1..7, 12 sets, **447 cases**, all PENDING INDEPENDENT REVIEW); M1-03 Rust and M1-04 Go prototypes; M1-05 property, metamorphic, concurrency and differential harness; M1-06a benchmark harness (guarded; dry run only); M1-06b D-022; M1-06c D-023 SQLite ledger; M1-06e D-024 storage failures; M1-06d broker timing (`bench-broker-scenario`); M1-06f D-025 corrections; M1-06g D-026 concurrency oracle; M1-06h D-027 code and local verification (`52b31fe`, E-038; only push and CI remain). M1-07 facts collected ([report](M1-07-BUILD-ASSESSMENT.md)); M1-07 build timings **not** done (guarded).
+M1-00 toolchains; M1-01 parity driver; M1-02 fixtures (amendments 1..7, 12 sets, **447 cases**, all PENDING INDEPENDENT REVIEW); M1-03 Rust and M1-04 Go prototypes; M1-05 property, metamorphic, concurrency and differential harness; M1-06a guarded benchmark harness; M1-06b D-022; M1-06c D-023 SQLite ledger; M1-06e D-024 storage failures; M1-06d broker timing (`bench-broker-scenario`); M1-06f D-025 corrections; M1-06g D-026 concurrency oracle; D-027..D-029 implemented and CI green (E-044); official M1-06 and M1-07 measurements recorded (E-046/E-047). M1-07 facts collected ([report](M1-07-BUILD-ASSESSMENT.md)); newline-only incremental timings are invalid for comparison and require replacement.
 
 ### D. Decisions in force ([DECISION-LOG](DECISION-LOG.md))
 
@@ -54,30 +56,31 @@ M1-00 toolchains; M1-01 parity driver; M1-02 fixtures (amendments 1..7, 12 sets,
 | D-028 equivalent release protocol | implemented (`c5effec`), CI green E-044 |
 | D-029 process-local coordination gate, `STATE_CONFLICT`, verified contention acceptance | implemented (`c5effec`), CI green E-044; process-local only |
 
-### E. Verified evidence ([TEST-EVIDENCE](TEST-EVIDENCE.md), latest E-037)
+### E. Historical and current evidence ([TEST-EVIDENCE](TEST-EVIDENCE.md))
 
-At `7a5a366` (CI run 42898828550, success, all 5 jobs; and locally, E-035): Rust 58 unit + 3 integration tests; Go vet clean, race tests ok in 6 packages; both link SQLite 3.54.1 (source id `2026-10-16 14:45:20 555e07ef...`), identical settings; fixtures **447/447** in memory and on SQLite for each prototype; regressions 11/11; `m1/ledger_tests` **30** OK (13 storage failures, 3 timing integrity, 14 D-025); D-026 oracle negative tests **14** OK; memory property CI profile seeds 20261107 and 1; Rust-SQLite versus Go-SQLite broker campaigns with 64-way groups PASS (CI 348 cases, 6,780 checks; local 2,584 cases, 52,920 checks; 0 mismatches); mutation smoke 9 of 9 mutants caught for each (including `masked-effect`); harness self-tests 18 OK; benchmark dry run 0 correctness failures; M0 281 passed; drift, driver and docs checks OK. Availability (preliminary, not comparable before D-027): E-034 Rust 89 / Go 6 timeouts of 12,800; E-036 CI Rust 2 of 1,408 at 64-way. Guarantee level: **Tested (unit or reference) only**; no test result is a real-host security certification. **No official benchmark measurement exists.**
+Current runtime/measurement records: E-042..E-047; published baseline CI `a91af1d`, run 42943984397 green. ENT-E01 records only readiness documentation checks. The next paragraph is historical evidence at `7a5a366`, not a current benchmark status.
 
-### F. Next task: owner review of M1-08 (M1-06 and M1-07 measured, E-046, E-047)
+At `7a5a366` (CI run 42898828550, success, all 5 jobs; and locally, E-035): Rust 58 unit + 3 integration tests; Go vet clean, race tests ok in 6 packages; both link SQLite 3.54.1 (source id `2026-10-16 14:45:20 555e07ef...`), identical settings; fixtures **447/447** in memory and on SQLite for each prototype; regressions 11/11; `m1/ledger_tests` **30** OK (13 storage failures, 3 timing integrity, 14 D-025); D-026 oracle negative tests **14** OK; memory property CI profile seeds 20261107 and 1; Rust-SQLite versus Go-SQLite broker campaigns with 64-way groups PASS (CI 348 cases, 6,780 checks; local 2,584 cases, 52,920 checks; 0 mismatches); mutation smoke 9 of 9 mutants caught for each (including `masked-effect`); harness self-tests 18 OK; benchmark dry run 0 correctness failures; M0 281 passed; drift, driver and docs checks OK. Availability (preliminary, not comparable before D-027): E-034 Rust 89 / Go 6 timeouts of 12,800; E-036 CI Rust 2 of 1,408 at 64-way. Guarantee level: **Tested (unit or reference) only**; no test result is a real-host security certification. **At that historical checkpoint no official measurement existed; E-046/E-047 now record the official measurements.**
 
-The readiness steps below were completed on 2026-11-11 and are kept for any future measurement.
+### F. Authorized next task: targeted M1-08 confirmation
 
-**Done:** D-027 (`52b31fe`), D-028 equivalent release protocol and D-029 process-local coordination gate, `STATE_CONFLICT`, verified contention acceptance (`c5effec`); CI green (E-044). Specs: LEDGER-SQLITE.md amendments `m1-ledger-1a`, `1b`, `1c`. Limitation: the gate is process-local; multi-process reconciliation safety is not claimed (`test_d029` cross-process demonstration checks only fail-closed safety).
+The owner supplied an explicit M1-08 review directive in session, then preferred Rust and delegated enterprise readiness planning. Preserve its bounded scope:
 
-**Readiness (read only, last 2026-11-11, E-043 and later):** power met (battery Not charging at 100%, current 0, also under about 20 minutes of test load); `m1/` tree clean at `612e1f4`; binaries rebuilt from it (Go `-trimpath`); toolchain pins pass. **Guard refuses:** governor `powersave` on 16 of 16 policies; 1-minute load 1.16 (IntelliJ `java` at about 300% CPU, ClickHouse about 11%); CPU 64.4 C above the 60 C start limit.
+1. `a91af1d` is already published and all 5 jobs passed on that exact SHA; do not push it again or force-push. Inspect the original local tree and remote before any integration or later push. Preserve the full original evidence; inspect sizes/content/sensitivity and create a separate sanitized reproducibility bundle or archive/manifest while keeping raw local output ignored. Retain seed 20261111, raw samples/distributions, commit/binary/input/fixture hashes, toolchains/flags, environment, commands, run order, correctness and refusal counts. Never discard the only complete original copy.
+2. Repeat the controlled comparison with at least two additional recorded seeds and independent run sets, alternating Rust/Go order. Retain raw data and run-to-run variation for kernel latency/throughput, memory, cold start, process throughput and SQLite broker metrics. Useful throughput counts successful operations separately from refusals.
+3. Investigate the Go duplicates-workload process overhead with equivalent instrumentation and unchanged workloads. Distinguish serialization/buffering, startup/shutdown, instrumentation boundaries, GC, connection cleanup, defects and harness cost; report a verified cause or explicit unresolved limitation.
+4. Replace newline-only build timings with a reproducible behavior-preserving, compiler-relevant edit in disposable clean source trees and isolated caches. Verify actual recompilation/relinking and retain repeated timings and commands.
+5. Implement targeted M1 chaos/interruption coverage using disposable resources and real child-process termination/restart where feasible. Verify no grant overuse, unauthorized effect or duplicate dispatch after uncertainty; durable receipt/reconciliation and fail-closed storage behavior. A simulated early return is not a process kill. Keep the process-local reconciliation limitation unresolved and do not claim real-host certification.
+6. Every new official comparative run requires full environmental readiness at its start: temperature, clocks/throttling indicators, load, power/battery and governor, plus clean recorded source/toolchains/binaries. Stop if any guard fails. Never bypass safeguards, change privileged settings or stop user applications. The existing owner directive authorizes these bounded runs conditional on the guard; no repeated permission request is needed within that scope. Do not run them on a replacement cloud host as if they reproduced the original environment.
+7. Update the scorecard with correctness/security, repeated measurements, resources, dependencies, reproducibility, maintenance, broker behavior and explicit limitations. Separate measurements, facts and judgments; recommend Rust versus Go once targeted evidence is complete. Await the final owner decision before accepting ADR-0002. ADR-0008 remains APPROVED IN PRINCIPLE and production/release NO-GO.
 
-**Steps:**
-
-1. Wait for the owner to confirm governor `performance` and a cooled CPU. Never change CPU settings, run sudo, or stop processes.
-2. Rerun every readiness check read only (section H environment commands, and the guard: `cd m1/bench && python3 -c "from wbench import envinfo as e; env=e.capture(); print(e.guard(env, e.repository(), 1.0, 60.0))"` plus toolchain pins); confirm the battery is not discharging; clean committed tree; binaries built from the recorded commit.
-3. If every guard passes, report readiness and **wait for the owner's explicit authorization** before official M1-06 (`python3 m1/bench/bench.py --seed <new recorded seed> ...`, M1-06-READINESS step 4) and M1-07 build timings. Correctness tests and `--dry-run` are allowed at any time; they are not measurements.
-4. After measurements: M1-08 scorecard for owner review. Never choose Rust or Go.
+Enterprise control implementation (ENT-01..ENT-08) belongs to later milestones and does not replace these investigations. Update handoff/evidence before compaction. This documentation checkout has not performed new comparative measurements, real process kills or preservation of the original ignored evidence.
 
 ### G. Unverified security obligations and blockers (never claim otherwise)
 
 Independent human review of the 26 golden cases and all M1 fixtures (REL-01); review of the 288 V1 rules (M6-RULES); SR-06 real-host verification (M5-SR06; adversarial trials only on a VM or separate machine); 16 D-014 risks open; authenticated approval service and evaluator issuance, attestation and signatures; real snapshot immutability and credential isolation; trusted production clock and key management; real process-kill and power-loss recovery (ledger crash tests are early returns); real external exactly-once effects (adapter simulated); remaining adversarial and host-bypass tests; real-host enforcement. ADR-0002 OPEN; ADR-0008 APPROVED IN PRINCIPLE; release and production NO-GO.
 
-**Benchmark environment ([M1-06-READINESS](M1-06-READINESS.md)): NOT READY.** Last reading 2026-11-10: full-power charger not connected (battery discharging on a 5 V / 3 A USB-C supply, about 15 W); governor back to `powersave` (owner restored it); 1-minute load 3.52 (IntelliJ, 22 Docker containers, Chrome, Claude sessions); CPU 60 C (needs a fresh check). The guard (`m1/bench/wbench/envinfo.py`) must pass; never bypass or relax it; never change CPU settings or stop the owner's processes.
+**Historical pre-measurement environment ([M1-06-READINESS](M1-06-READINESS.md)), not current readiness:** reading 2026-11-10: full-power charger not connected (battery discharging on a 5 V / 3 A USB-C supply, about 15 W); governor back to `powersave` (owner restored it); 1-minute load 3.52 (IntelliJ, 22 Docker containers, Chrome, Claude sessions); CPU 60 C (needs a fresh check). The guard (`m1/bench/wbench/envinfo.py`) must pass; never bypass or relax it; never change CPU settings or stop the owner's processes.
 
 ### H. Commands
 
@@ -110,7 +113,7 @@ cat /sys/devices/system/cpu/cpufreq/policy*/scaling_governor | sort | uniq -c; c
 
 ### I. Requires owner approval
 
-Every push (fast-forward only, never force); deleting files; changing frozen fixture expectations; any new decision or change to D-017..D-027; benchmark or build-time measurement runs (guard must also pass); CPU or system settings; stopping the owner's processes; choosing Rust or Go; marking ADR-0002 or ADR-0008 ACCEPTED; anything touching `main`, V1 trees, the M0 harness or `hook-audit/`.
+Every push (fast-forward only, never force); deleting files; changing frozen fixture expectations; any new decision or change to D-017..D-027; benchmark or build-time measurement runs outside the bounded M1-08 directive (guard must always pass); CPU or system settings; stopping the owner's processes; choosing Rust or Go; marking ADR-0002 or ADR-0008 ACCEPTED; anything touching `main`, V1 trees, the M0 harness or `hook-audit/`.
 
 ## Standing facts
 

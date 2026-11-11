@@ -366,7 +366,16 @@ The timeout and lock-wait figures in E-034, E-035 and E-036 are **preliminary an
 - `python3 m1/assess/collect.py build-times --runs 5 --out m1/assess/results/2026-11-11-build-times.json` (guard passed inside the command: CPU 55.75 C, load 0.67, governor `performance`, battery Not charging, clean tree at `138163d`). `GOCACHE` was set to a dedicated scratch directory so the command's `go clean -cache` did not clear the owner's global Go cache.
 - Clean build (median of 5): Rust 2.65 s (2.62 to 2.77), Go 3.69 s (3.67 to 3.87). Incremental after appending a newline to a kernel source: Rust 1.42 s (1.40 to 1.70), Go 0.08 s; the Go figure reflects an unchanged compiled package and a cached link, so the incremental case is not comparable (methodology limitation recorded in the scorecard).
 
+### ENT-E01: enterprise readiness documentation verification (2026-11-10 America/Chicago)
+
+- **Scope:** ENT-00 planning only; ENT-OWNER-01, readiness plan, master plan/index/task links and recovery state. Runtime, schemas, fixtures, original ignored benchmark evidence and ADR acceptance statuses unchanged.
+- **Baseline:** fresh checkout `a91af1d775d59fab932a03506ea36384642cdae0`; exact-SHA CI run https://github.com/infinri/Writ/actions/runs/42943984397 verified all 5 jobs success. This does not establish CI for the new documentation commit.
+- **Executed before changes:** `python3 scripts/check-v2-docs.py`: OK (90 Markdown, 15 HTML, 17 schemas, 3 packs, 3 tasks, 2 negative fixtures).
+- **Executed after changes:** `python3 scripts/check-v2-docs.py`: OK (91 Markdown, 15 HTML, 17 schemas, 3 packs, 3 tasks, 2 negative fixtures); link and schema checks passed. `git diff --check`: exit 0. Documentation scope and additions reviewed for secrets, personal paths and accidental build/audit artifacts.
+- **Limit:** no control implementation, original-host measurements, evidence preservation, security examination or certification occurred in this documentation session.
+
 ## Not yet executed
 
 - SR-06 live-host experiments (0 of 69; sandbox torn down) and full SR-06 acceptance; rule semantic review (M0-01d); independent human golden review (M0-05a).
-- Any performance benchmark (M1-06 harness exists, E-026; no measurement taken).
+- Targeted M1-08 repeatability, Go-overhead investigation, compiler-relevant incremental builds and real interruption workload; official first measurements already recorded in E-046/E-047.
+- Enterprise control implementation, operational-effectiveness evidence and independent SOC 2 examination (ENT-01..ENT-08).
