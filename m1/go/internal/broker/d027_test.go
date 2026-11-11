@@ -2,20 +2,27 @@ package broker
 
 import (
 	"bytes"
+	"database/sql"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
-// D-027 (LEDGER-SQLITE.md "Concurrency profiles"), Go unit tests: in primary
-// every worker connection is set up before release and no transaction begins
-// before release; in cold each connection is set up after release; a failed
-// setup refuses only that worker.
+// D-027 and D-028 (LEDGER-SQLITE.md "Concurrency profiles and release
+// protocol"), Go unit tests with an event trace and a bounded wait: every
+// worker exists and has signalled ready before release; in primary every
+// connection setup (read-back included) finished before release and no
+// transaction began or is open before release; in cold every setup and
+// every BEGIN follows release; a failing setup in either profile neither
+// deadlocks the group nor affects the other workers.
+
+const groupDeadline = 60 * time.Second
 
 type traceLog struct {
 	mu     sync.Mutex
@@ -31,57 +38,106 @@ func (l *traceLog) add(event string, worker int) {
 // split returns the events before and after "release -1".
 func (l *traceLog) split(t *testing.T) (before, after []string) {
 	t.Helper()
-	for i, e := range l.events {
-		if e == "release -1" {
-			return l.events[:i], l.events[i+1:]
-		}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	i := slices.Index(l.events, "release -1")
+	if i < 0 {
+		t.Fatalf("no release in %v", l.events)
 	}
-	t.Fatalf("no release in %v", l.events)
-	return nil, nil
+	return l.events[:i], l.events[i+1:]
 }
 
-func nEvents(events []string, kind string) int {
-	n := 0
-	for _, e := range events {
-		if strings.HasPrefix(e, kind+" ") {
-			n++
+// each reports whether events hold kind for every worker 0..n-1.
+func each(events []string, kind string, n int) bool {
+	for i := 0; i < n; i++ {
+		if !slices.Contains(events, fmt.Sprintf("%s %d", kind, i)) {
+			return false
 		}
 	}
-	return n
+	return true
+}
+
+func none(events []string, kind string) bool {
+	for _, e := range events {
+		if strings.HasPrefix(e, kind+" ") {
+			return false
+		}
+	}
+	return true
 }
 
 func groupOp(t *testing.T, n int) map[string]any {
 	ops := make([]any, n)
 	for i := range ops {
-		key := fmt.Sprintf("k%d", i%3) // shared keys: replays and key-lock waits too
-		ops[i] = rtExecute(t, key, "")
+		ops[i] = rtExecute(t, fmt.Sprintf("k%d", i%3), "") // shared keys: replays and key-lock waits too
 	}
 	return map[string]any{"op": "concurrent", "operations": ops}
 }
 
-// runGroup runs one timed concurrent group on b and returns its timing.
-func runGroup(t *testing.T, b *Broker, op map[string]any) (map[string]any, map[string]any) {
+// runGroup runs one timed concurrent group on b within groupDeadline and
+// returns its result, its timing and any panic it raised.
+func runGroup(t *testing.T, b *Broker, op map[string]any) (map[string]any, map[string]any, any) {
 	t.Helper()
-	tm := newOpTiming(op)
-	started := time.Now()
-	tm.setDispatch(started)
-	res := b.applyOn(b.led, tm, op, 0)
-	tm.setTotal(time.Since(started))
-	return res, tm.json()
+	type out struct {
+		res, timing map[string]any
+		panicked    any
+	}
+	ch := make(chan out, 1)
+	go func() {
+		var o out
+		defer func() { o.panicked = recover(); ch <- o }()
+		tm := newOpTiming(op)
+		started := time.Now()
+		tm.setDispatch(started)
+		o.res = b.applyOn(b.led, tm, op, 0)
+		tm.setTotal(time.Since(started))
+		o.timing = tm.json()
+	}()
+	select {
+	case o := <-ch:
+		return o.res, o.timing, o.panicked
+	case <-time.After(groupDeadline):
+		t.Fatal("concurrent group did not finish (deadlock)")
+		return nil, nil, nil
+	}
 }
 
-// checkStartRule is the D-027 integrity rule for one group.
-func checkStartRule(t *testing.T, g map[string]any, sqlite, cold bool) {
+func mustRun(t *testing.T, b *Broker, op map[string]any) (map[string]any, map[string]any) {
 	t.Helper()
-	ready, total := g["ready_ns"].(int64), g["total_ns"].(int64)
-	if ready < 0 || ready > total {
-		t.Fatalf("ready_ns %d, total_ns %d", ready, total)
+	res, g, p := runGroup(t, b, op)
+	if p != nil {
+		t.Fatalf("panic %v", p)
 	}
+	return res, g
+}
+
+func i64(t *testing.T, m map[string]any, k string) int64 {
+	t.Helper()
+	v, ok := m[k].(int64)
+	if !ok {
+		t.Fatalf("%s is %v", k, m[k])
+	}
+	return v
+}
+
+// checkTiming is the D-028 integrity rule for one group, including the
+// reported release_delay_ns and start_skew_ns.
+func checkTiming(t *testing.T, g map[string]any, sqlite, cold bool) {
+	t.Helper()
+	ready, release, total := i64(t, g, "ready_ns"), i64(t, g, "release_ns"), i64(t, g, "total_ns")
+	if !(0 <= ready && ready <= release && release <= total) {
+		t.Fatalf("ready %d release %d total %d", ready, release, total)
+	}
+	var starts []int64
 	for _, o := range g["operations"].([]any) {
 		w := o.(map[string]any)
-		start, wt := w["start_ns"].(int64), w["total_ns"].(int64)
-		if start < ready || start+wt > total {
-			t.Errorf("worker start %d total %d, group ready %d total %d", start, wt, ready, total)
+		at, start, wt := i64(t, w, "ready_at_ns"), i64(t, w, "start_ns"), i64(t, w, "total_ns")
+		starts = append(starts, start)
+		if at > ready || start < release || start+wt > total {
+			t.Errorf("worker ready_at %d start %d total %d; group ready %d release %d total %d", at, start, wt, ready, release, total)
+		}
+		if d := i64(t, w, "release_delay_ns"); d != start-release {
+			t.Errorf("release_delay_ns %d, start %d release %d", d, start, release)
 		}
 		if !sqlite {
 			if w["setup_ns"] != nil {
@@ -89,7 +145,7 @@ func checkStartRule(t *testing.T, g map[string]any, sqlite, cold bool) {
 			}
 			continue
 		}
-		setup := w["setup_ns"].(int64)
+		setup := i64(t, w, "setup_ns")
 		parts := int64(0)
 		for _, v := range w["tx"].(map[string]any) {
 			tx := v.(map[string]any)
@@ -100,79 +156,132 @@ func checkStartRule(t *testing.T, g map[string]any, sqlite, cold bool) {
 				parts += v
 			}
 		}
-		if cold && parts+setup > wt || !cold && (setup > ready || parts > wt) {
-			t.Errorf("cold %v: setup %d parts %d total %d ready %d", cold, setup, parts, wt, ready)
+		if cold && parts+setup > wt || !cold && (setup > at || parts > wt) {
+			t.Errorf("cold %v: setup %d parts %d total %d ready_at %d", cold, setup, parts, wt, at)
 		}
+	}
+	skew := int64(0)
+	if len(starts) > 1 {
+		skew = slices.Max(starts) - slices.Min(starts)
+	}
+	if got := i64(t, g, "start_skew_ns"); got != skew {
+		t.Errorf("start_skew_ns %d, want %d", got, skew)
 	}
 }
 
-func TestPrimarySetsUpEveryWorkerBeforeAnyTransaction(t *testing.T) {
-	const n = 16
-	for run := 0; run < 5; run++ {
-		b, _ := sqlRT(t, filepath.Join(t.TempDir(), "l.db"))
+// noTransactionHeld checks from an outside connection, without waiting, that
+// no connection holds the write lock and none pins the WAL (a read
+// transaction would block a truncating checkpoint).
+func noTransactionHeld(t *testing.T, path string) error {
+	db, err := sql.Open("sqlite3", path+"?_busy_timeout=0")
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	c, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	if _, err := c.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return fmt.Errorf("write lock held at release: %w", err)
+	}
+	if _, err := c.ExecContext(ctx, `ROLLBACK`); err != nil {
+		return err
+	}
+	var busy, logN, ckpt int64
+	if err := c.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &logN, &ckpt); err != nil {
+		return err
+	}
+	if busy != 0 {
+		return fmt.Errorf("a transaction is open at release")
+	}
+	return nil
+}
+
+func TestPrimaryReleaseProtocol(t *testing.T) {
+	for _, n := range []int{16, 16, 16, 64} {
+		path := filepath.Join(t.TempDir(), "l.db")
+		b, _ := sqlRT(t, path)
 		var log traceLog
-		b.trace = log.add
-		res, g := runGroup(t, b, groupOp(t, n))
-		rtWant(t, res, `{"outcomes":{"effect_completed":3,"replayed":13},"result":"concurrent"}`)
-		before, after := log.split(t)
-		if nEvents(before, "setup") != n || nEvents(before, "ready") != n || nEvents(before, "begin") != 0 {
-			t.Fatalf("before release: %v", before)
+		var probe error
+		b.trace = func(event string, worker int) {
+			log.add(event, worker)
+			if event == "release" {
+				probe = noTransactionHeld(t, path)
+			}
 		}
-		if nEvents(after, "setup") != 0 || nEvents(after, "ready") != 0 || nEvents(after, "begin") < n {
+		res, g := mustRun(t, b, groupOp(t, n))
+		rtWant(t, res, fmt.Sprintf(`{"outcomes":{"effect_completed":3,"replayed":%d},"result":"concurrent"}`, n-3))
+		if probe != nil {
+			t.Fatal(probe)
+		}
+		before, after := log.split(t)
+		for _, k := range []string{"created", "setup", "setup_done", "ready"} {
+			if !each(before, k, n) {
+				t.Fatalf("%d workers: not every %q before release: %v", n, k, before)
+			}
+		}
+		if !none(before, "begin") || !none(before, "start") {
+			t.Fatalf("operation before release: %v", before)
+		}
+		if !none(after, "setup") || !each(after, "start", n) || !each(after, "begin", n) {
 			t.Fatalf("after release: %v", after)
 		}
-		checkStartRule(t, g, true, false)
+		checkTiming(t, g, true, false)
 	}
 }
 
-func TestColdSetsUpEachWorkerAfterRelease(t *testing.T) {
-	const n = 16
-	for run := 0; run < 5; run++ {
-		b, _ := sqlRT(t, filepath.Join(t.TempDir(), "l.db"))
+func TestColdReleaseProtocol(t *testing.T) {
+	for _, n := range []int{16, 16, 16, 64} {
+		path := filepath.Join(t.TempDir(), "l.db")
+		b, _ := sqlRT(t, path)
 		b.profile = Cold
 		var log traceLog
 		b.trace = log.add
-		res, g := runGroup(t, b, groupOp(t, n))
-		rtWant(t, res, `{"outcomes":{"effect_completed":3,"replayed":13},"result":"concurrent"}`)
+		res, g := mustRun(t, b, groupOp(t, n))
+		rtWant(t, res, fmt.Sprintf(`{"outcomes":{"effect_completed":3,"replayed":%d},"result":"concurrent"}`, n-3))
 		before, after := log.split(t)
-		if len(before) != 0 {
-			t.Fatalf("before release: %v", before)
+		if !each(before, "created", n) || !each(before, "ready", n) {
+			t.Fatalf("not every worker ready before release: %v", before)
 		}
-		if nEvents(after, "setup") != n || nEvents(after, "ready") != n {
+		if !none(before, "setup") || !none(before, "begin") || !none(before, "start") {
+			t.Fatalf("setup or operation before release: %v", before)
+		}
+		if !each(after, "setup_done", n) {
 			t.Fatalf("after release: %v", after)
 		}
-		// Each worker's first transaction follows its own setup.
+		// Each worker passes the gate, then sets up, then begins.
 		for i := 0; i < n; i++ {
-			ready, begin := -1, -1
-			for j, e := range after {
-				if e == fmt.Sprintf("ready %d", i) && ready < 0 {
-					ready = j
-				}
-				if e == fmt.Sprintf("begin %d", i) && begin < 0 {
-					begin = j
-				}
-			}
-			if ready < 0 || begin < ready {
-				t.Fatalf("worker %d: ready at %d, first begin at %d", i, ready, begin)
+			s := slices.Index(after, fmt.Sprintf("start %d", i))
+			d := slices.Index(after, fmt.Sprintf("setup_done %d", i))
+			bg := slices.Index(after, fmt.Sprintf("begin %d", i))
+			if s < 0 || d < s || bg < d {
+				t.Fatalf("worker %d: start %d setup_done %d begin %d", i, s, d, bg)
 			}
 		}
-		checkStartRule(t, g, true, true)
+		checkTiming(t, g, true, true)
 	}
 }
 
-// The in-memory ledger has no worker connections: setup_ns is null and the
-// output is the same in both profiles.
-func TestProfilesMemoryLedger(t *testing.T) {
+// The in-memory ledger has no worker connections but the same protocol.
+func TestReleaseProtocolMemoryLedger(t *testing.T) {
 	for _, p := range []Profile{Primary, Cold} {
 		b := rtBroker(t)
 		b.profile = p
-		res, g := runGroup(t, b, groupOp(t, 8))
+		var log traceLog
+		b.trace = log.add
+		res, g := mustRun(t, b, groupOp(t, 8))
 		rtWant(t, res, `{"outcomes":{"effect_completed":3,"replayed":5},"result":"concurrent"}`)
-		checkStartRule(t, g, false, p == Cold)
+		before, after := log.split(t)
+		if !each(before, "ready", 8) || !none(before, "start") || !each(after, "start", 8) || !none(before, "setup") {
+			t.Fatalf("trace %v | %v", before, after)
+		}
+		checkTiming(t, g, false, p == Cold)
 	}
-	_, g := runGroup(t, rtBroker(t), map[string]any{"op": "concurrent", "operations": []any{}})
-	if g["ready_ns"] != int64(0) {
-		t.Fatalf("empty group ready_ns %v", g["ready_ns"])
+	_, g := mustRun(t, rtBroker(t), map[string]any{"op": "concurrent", "operations": []any{}})
+	if g["ready_ns"] != int64(0) || g["release_ns"] != int64(0) || g["start_skew_ns"] != int64(0) {
+		t.Fatalf("empty group %v", g)
 	}
 }
 
@@ -195,64 +304,99 @@ func stderrOf(t *testing.T, f func()) string {
 	return buf.String()
 }
 
+func noTx(t *testing.T, w any) {
+	t.Helper()
+	if tx := w.(map[string]any)["tx"].(map[string]any); len(tx) != 0 {
+		t.Errorf("failed worker tx %v", tx)
+	}
+}
+
 // A worker whose connection cannot be opened answers LEDGER_UNAVAILABLE with
-// no transaction and no audit; the other workers run normally; stderr has
-// only the worker category and the code.
+// no transaction and no audit, still reports ready and passes the gate; the
+// group finishes and the other workers run normally; stderr has only the
+// worker category and the code.
 func TestWorkerSetupFailure(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("file permissions do not stop root")
 	}
-	// primary: only worker 0's setup fails (the file is unreadable during it).
-	path := filepath.Join(t.TempDir(), "l.db")
-	b, _ := sqlRT(t, path)
-	b.trace = func(event string, worker int) {
-		if worker != 0 {
-			return
+	op := map[string]any{"op": "concurrent", "operations": []any{rtExecute(t, "a", ""), rtExecute(t, "b", ""), rtExecute(t, "c", "")}}
+	line := "ledger error: worker SQLITE_CANTOPEN\n"
+	for _, p := range []Profile{Primary, Cold} {
+		// Only worker 0's setup fails: the test serializes setups through the
+		// trace and makes the file unreadable during worker 0's.
+		path := filepath.Join(t.TempDir(), "l.db")
+		b, _ := sqlRT(t, path)
+		b.profile = p
+		var mu sync.Mutex
+		var log traceLog
+		b.trace = func(event string, worker int) {
+			log.add(event, worker)
+			switch event {
+			case "setup":
+				mu.Lock()
+				if worker == 0 {
+					os.Chmod(path, 0)
+				}
+			case "setup_done":
+				if worker == 0 {
+					os.Chmod(path, 0o600)
+				}
+				mu.Unlock()
+			}
 		}
-		switch event {
-		case "setup":
-			os.Chmod(path, 0)
-		case "ready":
-			os.Chmod(path, 0o600)
+		var res, g map[string]any
+		errs := stderrOf(t, func() { res, g = mustRun(t, b, op) })
+		rtWant(t, res, `{"outcomes":{"LEDGER_UNAVAILABLE":1,"effect_completed":2},"result":"concurrent"}`)
+		ws := g["operations"].([]any)
+		noTx(t, ws[0])
+		for _, w := range ws[1:] {
+			if tx := w.(map[string]any)["tx"].(map[string]any); len(tx) != 4 {
+				t.Errorf("profile %d: other worker tx %v", p, tx)
+			}
 		}
-	}
-	op := map[string]any{"op": "concurrent", "operations": []any{rtExecute(t, "a", ""), rtExecute(t, "b", "")}}
-	var res, g map[string]any
-	errs := stderrOf(t, func() { res, g = runGroup(t, b, op) })
-	rtWant(t, res, `{"outcomes":{"LEDGER_UNAVAILABLE":1,"effect_completed":1},"result":"concurrent"}`)
-	ws := g["operations"].([]any)
-	if tx := ws[0].(map[string]any)["tx"].(map[string]any); len(tx) != 0 {
-		t.Errorf("failed worker tx %v", tx)
-	}
-	if tx := ws[1].(map[string]any)["tx"].(map[string]any); len(tx) != 4 {
-		t.Errorf("other worker tx %v", tx)
-	}
-	checkStartRule(t, g, true, false)
-	if errs != "ledger error: worker SQLITE_CANTOPEN\n" {
-		t.Errorf("stderr %q", errs)
-	}
-	rtWant(t, b.final(), `{"consumed_permits":1,"effects_applied":1,"grant_uses":{},"receipts":{"observed_success":1},"refusals":0}`)
+		before, after := log.split(t)
+		if !each(before, "ready", 3) || !each(after, "start", 3) {
+			t.Errorf("profile %d: trace %v | %v", p, before, after)
+		}
+		checkTiming(t, g, true, p == Cold)
+		if errs != line {
+			t.Errorf("profile %d: stderr %q", p, errs)
+		}
+		rtWant(t, b.final(), `{"consumed_permits":2,"effects_applied":2,"grant_uses":{},"receipts":{"observed_success":2},"refusals":0}`)
 
-	// cold: every setup fails after release.
-	path = filepath.Join(t.TempDir(), "l.db")
-	b, _ = sqlRT(t, path)
-	b.profile = Cold
-	if err := os.Chmod(path, 0); err != nil {
-		t.Fatal(err)
+		// Every setup fails.
+		path = filepath.Join(t.TempDir(), "l.db")
+		b, _ = sqlRT(t, path)
+		b.profile = p
+		if err := os.Chmod(path, 0); err != nil {
+			t.Fatal(err)
+		}
+		errs = stderrOf(t, func() { res, g = mustRun(t, b, op) })
+		os.Chmod(path, 0o600)
+		rtWant(t, res, `{"outcomes":{"LEDGER_UNAVAILABLE":3},"result":"concurrent"}`)
+		for _, w := range g["operations"].([]any) {
+			noTx(t, w)
+		}
+		checkTiming(t, g, true, p == Cold)
+		if errs != strings.Repeat(line, 3) {
+			t.Errorf("profile %d: stderr %q", p, errs)
+		}
+		rtWant(t, b.final(), `{"consumed_permits":0,"effects_applied":0,"grant_uses":{},"receipts":{},"refusals":0}`)
 	}
-	errs = stderrOf(t, func() { res, g = runGroup(t, b, op) })
-	os.Chmod(path, 0o600)
-	rtWant(t, res, `{"outcomes":{"LEDGER_UNAVAILABLE":2},"result":"concurrent"}`)
-	for _, w := range g["operations"].([]any) {
-		if tx := w.(map[string]any)["tx"].(map[string]any); len(tx) != 0 {
-			t.Errorf("failed worker tx %v", tx)
+}
+
+// A worker that panics before signalling ready never blocks the group: the
+// panic reaches the coordinator after every worker finished.
+func TestWorkerPanicBeforeReadyDoesNotDeadlock(t *testing.T) {
+	b, _ := sqlRT(t, filepath.Join(t.TempDir(), "l.db"))
+	b.trace = func(event string, worker int) {
+		if event == "setup" && worker == 0 {
+			panic("injected")
 		}
 	}
-	checkStartRule(t, g, true, true)
-	if errs != strings.Repeat("ledger error: worker SQLITE_CANTOPEN\n", 2) {
-		t.Errorf("stderr %q", errs)
+	if _, _, p := runGroup(t, b, groupOp(t, 4)); p != "injected" {
+		t.Fatalf("panic %v", p)
 	}
-	rtWant(t, b.final(), `{"consumed_permits":0,"effects_applied":0,"grant_uses":{},"receipts":{},"refusals":0}`)
 }
 
 // Setup verifies every setting by reading it back.
@@ -282,5 +426,31 @@ func TestWorkerSettingsReadBack(t *testing.T) {
 	}
 	if err := s.verifySettings(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The release-time probe detects a held write lock and an open read
+// transaction.
+func TestNoTransactionHeldProbe(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "l.db")
+	_, l := sqlRT(t, path)
+	if err := noTransactionHeld(t, path); err != nil {
+		t.Fatal(err)
+	}
+	release := holdLock(t, path)
+	if noTransactionHeld(t, path) == nil {
+		t.Error("held write lock not detected")
+	}
+	release()
+	if _, err := l.conn.ExecContext(ctx, `INSERT INTO audit_refusals (code) VALUES ('X')`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := l.conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if noTransactionHeld(t, path) == nil {
+		t.Error("open transaction not detected")
 	}
 }

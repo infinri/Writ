@@ -19,14 +19,13 @@ use crate::json::{self, obj, s, Value};
 use crate::kernel::{self, Bundle, Decision, Policy};
 use crate::sqlite::{self, Category, DbError};
 use crate::time::{self, Instant};
-use crate::timing::{between, since, ScenarioTiming, StepTiming};
+use crate::timing::{between, since, GroupTiming, ScenarioTiming, StepTiming, WorkerTiming};
 use hmac::{Hmac, Mac};
 use rusqlite::Connection;
 use sha2::Sha256;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Barrier, Mutex, MutexGuard, RwLock};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::thread;
 use std::time::Instant as Clock;
 
@@ -130,6 +129,9 @@ struct SqlLedger {
     path: Option<PathBuf>,
     main: Mutex<Option<Connection>>,
     key_locks: Mutex<HashMap<Key, Arc<Mutex<()>>>>,
+    /// Test fault: the next this many worker setups fail.
+    #[cfg(test)]
+    fail_setups: std::sync::atomic::AtomicUsize,
 }
 
 impl SqlLedger {
@@ -139,6 +141,10 @@ impl SqlLedger {
 
     /// A `concurrent` worker's connection (D-027 worker connection setup).
     fn connect_worker(&self) -> R<Connection> {
+        #[cfg(test)]
+        if self.fail_setups.try_update(std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {
+            return Err(DbError::new("SQLITE_CANTOPEN").within(Category::Worker));
+        }
         sqlite::open_worker(self.path.as_ref().ok_or_else(|| DbError::new("SQLITE_CANTOPEN").within(Category::Worker))?)
     }
 }
@@ -165,8 +171,19 @@ pub enum Profile {
     Cold,
 }
 
+/// A held coordination gate (D-029); dropping it releases the gate.
+enum GateHold<'a> {
+    Shared(#[allow(dead_code)] RwLockReadGuard<'a, ()>),
+    Exclusive(#[allow(dead_code)] RwLockWriteGuard<'a, ()>),
+}
+
 struct Broker {
     profile: Profile,
+    /// The process-local coordination gate (LEDGER-SQLITE.md "Broker
+    /// coordination gate and state conflicts", D-029): `execute` and
+    /// `present_permit` hold it shared, `reconcile` exclusive. Created with
+    /// the broker and never replaced (`restart_broker` keeps it).
+    gate: RwLock<()>,
     config: RwLock<Config>,
     permits: Mutex<HashMap<usize, Permit>>,
     ledger: Ledger,
@@ -437,7 +454,7 @@ impl Broker {
             policy_up: deps.and_then(|d| d.str_at("policy")) != Some("down"),
             ledger_up: deps.and_then(|d| d.str_at("ledger")) != Some("down"),
         };
-        Broker { profile: Profile::Primary, config: RwLock::new(config), permits: Mutex::new(HashMap::new()), ledger }
+        Broker { profile: Profile::Primary, gate: RwLock::new(()), config: RwLock::new(config), permits: Mutex::new(HashMap::new()), ledger }
     }
 
     /// The in-process lock of one (tenant, idempotency key); SQLite only (the
@@ -449,7 +466,20 @@ impl Broker {
         }
     }
 
-    fn execute(&self, cfg: &Config, store: &Store, t: &mut StepTiming, op: &Value, step: usize) -> R<Value> {
+    /// Acquire the coordination gate into `hold`, once per operation (never
+    /// re-entrant). Callers hold no per-key lock and no open transaction.
+    fn enter_gate<'a>(&'a self, hold: &mut Option<GateHold<'a>>, exclusive: bool) {
+        debug_assert!(hold.is_none(), "the gate is never acquired re-entrantly");
+        *hold = Some(if exclusive {
+            GateHold::Exclusive(self.gate.write().unwrap_or_else(|e| e.into_inner()))
+        } else {
+            GateHold::Shared(self.gate.read().unwrap_or_else(|e| e.into_inner()))
+        });
+        #[cfg(test)]
+        self.trace(if exclusive { sqlite::trace::Event::GateExclusive } else { sqlite::trace::Event::GateShared });
+    }
+
+    fn execute<'a>(&'a self, cfg: &Config, store: &Store, t: &mut StepTiming, op: &Value, step: usize, hold: &mut Option<GateHold<'a>>) -> R<Value> {
         let req = op.get("request").cloned().unwrap_or(Value::Null);
         let started = Clock::now();
         let sealed = cfg.seal_valid(&req, op.get("seal"));
@@ -475,11 +505,16 @@ impl Broker {
         let effective_grant = if d.status == "require_approval" { grant_ref } else { None };
         let fingerprint = json::digest(&req).unwrap_or_default();
         let key = (req.str_at("tenant_id").unwrap_or("").to_string(), req.str_at("idempotency_key").unwrap_or("").to_string());
+        // Lock order (D-029): gate (shared, held until the operation returns,
+        // after its audit), then the per-key lock, then SQLite transactions.
+        self.enter_gate(hold, false);
         let started = Clock::now();
         let key_lock = self.key_lock(&key);
         let _held = key_lock.as_deref().map(lock);
         if key_lock.is_some() {
             t.key_lock_wait_ns = Some(since(started));
+            #[cfg(test)]
+            self.trace(sqlite::trace::Event::KeyLock);
         }
 
         let expected = grant_binding(&req, &d, "approved");
@@ -488,6 +523,10 @@ impl Broker {
         }
         if fault == "crash_after_reserve" {
             return Ok(result("crashed"));
+        }
+        #[cfg(test)]
+        if fault == "test_panic_after_reserve" {
+            panic!("test fault: panic with the gate and the key lock held");
         }
 
         // Permit bound to the whole request, the bundle and min(now + 30 s, deadline).
@@ -548,7 +587,7 @@ impl Broker {
         Ok(result("grant_issued"))
     }
 
-    fn present_permit(&self, cfg: &Config, store: &Store, t: &mut StepTiming, op: &Value) -> R<Value> {
+    fn present_permit<'a>(&'a self, cfg: &Config, store: &Store, t: &mut StepTiming, op: &Value, hold: &mut Option<GateHold<'a>>) -> R<Value> {
         let step = op.get("of_step").and_then(Value::as_int).unwrap_or(-1);
         let Some(mut permit) = usize::try_from(step).ok().and_then(|i| lock(&self.permits).get(&i).cloned()) else {
             return Ok(refused("PERMIT_MISSING"));
@@ -569,6 +608,7 @@ impl Broker {
             _ => {}
         }
         let req = op.get("request").cloned().unwrap_or(Value::Null);
+        self.enter_gate(hold, false);
         Ok(match store.adapter(t, || cfg.permit_check(&permit, &req), false)? {
             Ok(_) => result("effect_applied"),
             Err(code) => refused(code),
@@ -631,13 +671,20 @@ impl Broker {
         })
     }
 
-    fn operate(&self, cfg: &Config, store: &Store, t: &mut StepTiming, op: &Value, step: usize) -> R<Value> {
+    /// `hold` receives the coordination gate if the operation takes it; the
+    /// caller keeps it until the operation has returned and been audited.
+    fn operate<'a>(&'a self, cfg: &Config, store: &Store, t: &mut StepTiming, op: &Value, step: usize, hold: &mut Option<GateHold<'a>>) -> R<Value> {
         match op.str_at("op").unwrap_or("") {
-            "execute" => self.execute(cfg, store, t, op, step),
+            "execute" => self.execute(cfg, store, t, op, step, hold),
             "approve" => self.approve(cfg, store, t, op),
-            "present_permit" => self.present_permit(cfg, store, t, op),
+            "present_permit" => self.present_permit(cfg, store, t, op, hold),
             "apply_without_permit" => Ok(refused("PERMIT_MISSING")),
-            "reconcile" => Ok(obj(vec![("result", s("reconciled")), ("count", Value::Int(store.reconcile(t)?))])),
+            "reconcile" => {
+                // Exclusive before BEGIN IMMEDIATE: no in-flight execute of
+                // this process is between T-reserve and its return (D-029).
+                self.enter_gate(hold, true);
+                Ok(obj(vec![("result", s("reconciled")), ("count", Value::Int(store.reconcile(t)?))]))
+            }
             _ => Ok(refused("OPERATION_UNKNOWN")),
         }
     }
@@ -657,15 +704,18 @@ impl Broker {
 
     fn apply_one(&self, op: &Value, step: usize, own: Option<&R<Connection>>, t: &mut StepTiming) -> Value {
         let configures = matches!(op.str_at("op"), Some("restart_broker" | "activate_bundle" | "advance_time" | "set_dependency"));
+        // Declared before the attempt so that it outlives the audit below and
+        // is released on every path, including unwinding (D-029).
+        let mut hold: Option<GateHold> = None;
         let attempt = if configures {
             let mut cfg = self.config.write().unwrap_or_else(|e| e.into_inner());
             self.configure(&mut cfg, op)
         } else if matches!(self.ledger, Ledger::Memory(_)) {
             let cfg = self.config.write().unwrap_or_else(|e| e.into_inner());
-            self.with_store(own, |st| self.operate(&cfg, st, t, op, step))
+            self.with_store(own, |st| self.operate(&cfg, st, t, op, step, &mut hold))
         } else {
             let cfg = self.config.read().unwrap_or_else(|e| e.into_inner());
-            self.with_store(own, |st| self.operate(&cfg, st, t, op, step))
+            self.with_store(own, |st| self.operate(&cfg, st, t, op, step, &mut hold))
         };
         let out = attempt.unwrap_or_else(|e| {
             report(&e);
@@ -676,6 +726,9 @@ impl Broker {
                 report(&e);
             }
         }
+        drop(hold);
+        #[cfg(test)]
+        self.trace(sqlite::trace::Event::Returned);
         out
     }
 
@@ -731,40 +784,66 @@ impl Broker {
         ])
     }
 
-    /// A `concurrent` group under the selected profile (LEDGER-SQLITE.md
-    /// "Concurrency profiles", D-027). One OS thread per operation, released
-    /// together by a `std::sync::Barrier` (the release mechanism is unchanged).
+    /// A `concurrent` group under the selected profile and the D-028 release
+    /// protocol (LEDGER-SQLITE.md "Concurrency profiles and release
+    /// protocol"). The calling thread is the coordinator; there is one OS
+    /// thread per operation.
     ///
-    /// Each worker records its ready point (`primary` SQLite: the end of its
-    /// connection setup; otherwise the instant the thread starts with its
-    /// operation) into a shared maximum before it waits at the barrier. The
-    /// barrier returns in any thread only after every thread has called
-    /// `wait`, so every ready reading is taken before release and is visible
-    /// once the threads are joined; each worker's `start_ns` is read after its
-    /// `wait` returns, hence `start_ns >= ready_ns`. A worker's `total_ns` runs
-    /// from that reading to its result; its connection is closed afterwards,
-    /// inside the group's `total_ns`.
+    /// 1. The coordinator spawns every worker before anything is released.
+    /// 2. Each worker (`primary` SQLite: after its own connection setup,
+    ///    concurrently with the others) records `ready_at`, then, under the
+    ///    gate mutex, counts itself ready, wakes the coordinator and waits on
+    ///    the gate condition variable; the wait releases the mutex
+    ///    atomically, so nothing happens between signalling ready and
+    ///    waiting. A failed setup still counts as ready.
+    /// 3. The coordinator waits until every worker is ready, reads `ready_ns`,
+    ///    then `release_ns`, opens the gate and wakes every worker with one
+    ///    `notify_all`.
+    /// 4. Each worker reads its start instant after it sees the gate open;
+    ///    `cold` SQLite then sets up its connection; then it runs its operation.
+    /// 5. The coordinator joins every worker, then closes the worker
+    ///    connections.
+    ///
+    /// Hence `ready_at_ns <= ready_ns <= release_ns <= start_ns` for every
+    /// worker, on one monotonic clock.
     fn group(&self, ops: &[Value], step: usize, t: &mut StepTiming, dispatched: Clock) -> (Vec<Value>, Vec<StepTiming>) {
-        let barrier = Barrier::new(ops.len());
-        let ready = AtomicI64::new(0);
+        struct Gate {
+            ready: usize,
+            open: bool,
+        }
+        let gate = Mutex::new(Gate { ready: 0, open: false });
+        let (ready_cv, open_cv) = (Condvar::new(), Condvar::new());
         let cold = self.profile == Profile::Cold;
-        let done: Vec<(Value, StepTiming)> = thread::scope(|scope| {
+        let mut release = None;
+        let done: Vec<(Value, StepTiming, Option<R<Connection>>)> = thread::scope(|scope| {
             let handles: Vec<_> = ops
                 .iter()
                 .map(|o| {
-                    let (barrier, ready) = (&barrier, &ready);
+                    let (gate, ready_cv, open_cv) = (&gate, &ready_cv, &open_cv);
                     scope.spawn(move || {
                         let created = Clock::now();
+                        #[cfg(test)]
+                        self.trace(sqlite::trace::Event::Spawned);
                         let (mut conn, mut setup_ns, mut ready_at) = (None, None, created);
                         if !cold {
                             let ended;
                             (conn, setup_ns, ended) = self.worker_setup();
                             ready_at = ended.unwrap_or(created);
                         }
-                        ready.fetch_max(between(dispatched, ready_at), Ordering::SeqCst);
                         #[cfg(test)]
-                        self.trace(sqlite::trace::Event::Arrive);
-                        barrier.wait();
+                        {
+                            if matches!(&conn, Some(Ok(c)) if !c.is_autocommit()) {
+                                self.trace(sqlite::trace::Event::TxOpenAtReady);
+                            }
+                            self.trace(sqlite::trace::Event::Ready);
+                        }
+                        let mut g = lock(gate);
+                        g.ready += 1;
+                        ready_cv.notify_one();
+                        while !g.open {
+                            g = open_cv.wait(g).unwrap_or_else(|e| e.into_inner());
+                        }
+                        drop(g);
                         let passed = Clock::now();
                         #[cfg(test)]
                         self.trace(sqlite::trace::Event::Pass);
@@ -775,27 +854,58 @@ impl Broker {
                         let out = if matches!(conn, Some(Err(_))) {
                             // Setup failed: no ledger transaction, no audit.
                             if wt.op == "concurrent" {
-                                (wt.ready_ns, wt.operations) = (Some(0), Some(Vec::new()));
+                                wt.operations = Some(Vec::new());
                             }
                             refused("LEDGER_UNAVAILABLE")
                         } else {
                             self.dispatch_step(o, step, conn.as_ref(), &mut wt, passed)
                         };
                         wt.total_ns = between(passed, Clock::now());
-                        wt.worker = Some((setup_ns, between(dispatched, passed)));
-                        drop(conn);
-                        (out, wt)
+                        let start_ns = between(dispatched, passed);
+                        wt.worker = Some(WorkerTiming { setup_ns, ready_at_ns: between(dispatched, ready_at), start_ns, release_delay_ns: 0 });
+                        (out, wt, conn)
                     })
                 })
                 .collect();
+            if !ops.is_empty() {
+                let mut g = lock(&gate);
+                while g.ready < ops.len() {
+                    g = ready_cv.wait(g).unwrap_or_else(|e| e.into_inner());
+                }
+                let ready_ns = since(dispatched);
+                let release_ns = since(dispatched);
+                #[cfg(test)]
+                self.trace(sqlite::trace::Event::Release);
+                g.open = true;
+                drop(g);
+                open_cv.notify_all();
+                release = Some((ready_ns, release_ns));
+            }
             handles
                 .into_iter()
                 .zip(ops)
-                .map(|(h, o)| h.join().unwrap_or_else(|_| (refused("INTERNAL_ERROR"), StepTiming::new(o.str_at("op")))))
+                .map(|(h, o)| h.join().unwrap_or_else(|_| (refused("INTERNAL_ERROR"), StepTiming::new(o.str_at("op")), None)))
                 .collect()
         });
-        t.ready_ns = Some(ready.into_inner());
-        done.into_iter().unzip()
+        let (mut results, mut timings) = (Vec::with_capacity(ops.len()), Vec::with_capacity(ops.len()));
+        let mut conns = Vec::with_capacity(ops.len());
+        for (out, wt, conn) in done {
+            results.push(out);
+            timings.push(wt);
+            conns.push(conn);
+        }
+        drop(conns);
+        let (ready_ns, release_ns) = release.unwrap_or((0, 0));
+        let starts: Vec<i64> = timings.iter().filter_map(|w| w.worker.map(|x| x.start_ns)).collect();
+        for w in timings.iter_mut().filter_map(|w| w.worker.as_mut()) {
+            w.release_delay_ns = w.start_ns - release_ns;
+        }
+        let start_skew_ns = match (starts.iter().max(), starts.iter().min()) {
+            (Some(max), Some(min)) if starts.len() > 1 => max - min,
+            _ => 0,
+        };
+        t.group = GroupTiming { ready_ns, release_ns, start_skew_ns };
+        (results, timings)
     }
 
     fn run_steps(&self, input: &Value, timing: &mut ScenarioTiming) -> Value {
@@ -874,7 +984,11 @@ fn input_usable(input: &Value) -> bool {
 /// answers `{"error": "LEDGER_UNAVAILABLE"}`.
 fn sqlite_ledger(target: sqlite::Target) -> R<Ledger> {
     let (path, c) = sqlite::open_ledger(target)?;
-    Ok(Ledger::Sqlite(SqlLedger { path: Some(path), main: Mutex::new(Some(c)), key_locks: Mutex::new(HashMap::new()) }))
+    Ok(Ledger::Sqlite(SqlLedger { path: Some(path), main: Mutex::new(Some(c)),
+        key_locks: Mutex::new(HashMap::new()),
+        #[cfg(test)]
+        fail_setups: Default::default(),
+    }))
 }
 
 #[cfg(test)]
@@ -1741,30 +1855,323 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    use crate::timing::{TxAt, TxError, TxTime};
+    use rusqlite::OptionalExtension;
+
+    /// Ledger rows of one idempotency key (D-029 decision B evidence).
+    #[derive(Clone, Debug, Default)]
+    struct KeyRows {
+        receipts: i64,
+        events: i64,
+        grant_uses: i64,
+        status: Option<String>,
+        dispatch_events: i64,
+        observe_events: i64,
+    }
+
+    fn key_rows(b: &Broker, idem: &str) -> KeyRows {
+        main_conn(b, |c| {
+            let n = |sql: &str| -> i64 { c.query_row(sql, [idem], |r| r.get(0)).unwrap() };
+            KeyRows {
+                receipts: n("SELECT count(*) FROM receipts WHERE idempotency_key = ?1"),
+                events: n("SELECT count(*) FROM receipt_events WHERE idempotency_key = ?1"),
+                grant_uses: n("SELECT count(*) FROM grant_uses WHERE idempotency_key = ?1"),
+                status: c.query_row("SELECT status FROM receipts WHERE idempotency_key = ?1", [idem], |r| r.get(0)).optional().unwrap(),
+                dispatch_events: n("SELECT count(*) FROM receipt_events WHERE idempotency_key = ?1 AND cause = 'dispatch'"),
+                observe_events: n("SELECT count(*) FROM receipt_events WHERE idempotency_key = ?1 AND cause = 'observe'"),
+            }
+        })
+    }
+
+    /// How a failed `execute` is accepted (D-026 categories, D-029 B).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Accepted {
+        /// Category 3: verified lock-contention abort (an aborted no-op).
+        Abort,
+        /// Category 4: busy at the begin of this later transaction after the
+        /// earlier ones committed; modelled as the implied crash state.
+        Partial(&'static str),
+    }
+
+    const LEDGER_CHAIN: [&str; 4] = ["reserve", "dispatch", "adapter", "observe"];
+
+    /// A refusal audit may itself fail only busy at begin (D-026: the
+    /// refusal is then not counted in `final.refusals`).
+    fn audit_error_allowed(x: &TxTime) -> bool {
+        x.error.is_none() || x.error == Some(TxError { busy: true, at: TxAt::Begin })
+    }
+
+    /// Accept a failed `execute` only with matching evidence (LEDGER-SQLITE.md
+    /// "Contention and the concurrency oracle"). Its ledger transactions must
+    /// be a prefix of reserve, dispatch, adapter, observe whose last one
+    /// failed busy at begin and whose earlier ones committed without error,
+    /// plus at most an `audit` (error none or busy at begin). When its key is
+    /// used by no other operation (`rows` is `Some`), the key's rows must be
+    /// the state implied: reserve failed: no receipt, receipt event or grant
+    /// use (category 3); dispatch failed: receipt `reserved`, no dispatch
+    /// event; adapter or observe failed: receipt `dispatched` with exactly
+    /// one dispatch event and no observe event. Consumed permits and effects
+    /// carry no key; they are checked per group by `accounting_ok`.
+    fn classify_failure(w: &StepTiming, rows: Option<&KeyRows>) -> Option<Accepted> {
+        let busy_begin = Some(TxError { busy: true, at: TxAt::Begin });
+        if w.op != "execute" || !w.tx.iter().filter(|(n, _)| *n == "audit").all(|(_, x)| audit_error_allowed(x)) {
+            return None;
+        }
+        let ledger: Vec<&(&'static str, TxTime)> = w.tx.iter().filter(|(n, _)| *n != "audit").collect();
+        let (last, earlier) = ledger.split_last()?;
+        let names: Vec<&str> = ledger.iter().map(|(n, _)| *n).collect();
+        if names != LEDGER_CHAIN[..names.len()] || last.1.commit || last.1.error != busy_begin {
+            return None;
+        }
+        if !earlier.iter().all(|(_, x)| x.commit && x.error.is_none()) {
+            return None;
+        }
+        let stage = last.0;
+        let state_ok = rows.is_none_or(|r| match stage {
+            "reserve" => r.receipts == 0 && r.events == 0 && r.grant_uses == 0,
+            "dispatch" => r.status.as_deref() == Some("reserved") && r.dispatch_events == 0,
+            _ => r.status.as_deref() == Some("dispatched") && r.dispatch_events == 1 && r.observe_events == 0,
+        });
+        state_ok.then_some(if stage == "reserve" { Accepted::Abort } else { Accepted::Partial(stage) })
+    }
+
+    /// Effects and consumed permits written by a group (database deltas)
+    /// equal those its operations' evidence implies: one per committed
+    /// adapter transaction (these groups have no `effect_fails`).
+    fn accounting_ok(ws: &[StepTiming], effects: i64, consumed: i64) -> bool {
+        let adapters = ws.iter().filter(|w| w.tx.iter().any(|(n, x)| *n == "adapter" && x.commit)).count() as i64;
+        effects == adapters && consumed == adapters
+    }
+
+    fn effects_and_permits(b: &Broker) -> (i64, i64) {
+        (count(b, "SELECT count(*) FROM adapter_effects"), count(b, "SELECT count(*) FROM adapter_consumed_permits"))
+    }
+
+    /// Classify one contention group: every operation with a failed ledger
+    /// transaction must be accepted by `classify_failure` (else the test
+    /// fails); their count must equal the LEDGER_UNAVAILABLE outcomes; and
+    /// the group's effects and consumed permits must match the evidence.
+    fn accept_group(b: &Broker, out: &Value, t: &StepTiming, keys: &[String], before: (i64, i64)) -> Vec<Option<Accepted>> {
+        let ws = t.operations.as_ref().unwrap();
+        let unique = |k: &String| keys.iter().filter(|x| *x == k).count() == 1;
+        let mut accepted = Vec::new();
+        for (w, k) in ws.iter().zip(keys) {
+            assert!(w.tx.iter().filter(|(n, _)| *n == "audit").all(|(_, x)| audit_error_allowed(x)), "audit error: {:?}", tx_errors(w));
+            if w.tx.iter().any(|(n, x)| *n != "audit" && x.error.is_some()) {
+                let rows = unique(k).then(|| key_rows(b, k));
+                let a = classify_failure(w, rows.as_ref());
+                assert!(a.is_some(), "failure without matching evidence: {:?} {rows:?}", tx_errors(w));
+                accepted.push(a);
+            } else {
+                accepted.push(None);
+            }
+        }
+        let failed = accepted.iter().filter(|a| a.is_some()).count() as i64;
+        assert_eq!(outcome(out, "LEDGER_UNAVAILABLE"), failed, "every LEDGER_UNAVAILABLE must be an accepted failure");
+        let (effects, consumed) = effects_and_permits(b);
+        assert!(accounting_ok(ws, effects - before.0, consumed - before.1), "effects or consumed permits not implied by the evidence");
+        accepted
+    }
+
+    fn outcome(out: &Value, k: &str) -> i64 {
+        out.get("outcomes").and_then(|o| o.get(k)).and_then(Value::as_int).unwrap_or(0)
+    }
+
+    fn committed_audits(t: &StepTiming) -> i64 {
+        t.operations.as_ref().unwrap().iter().filter(|w| w.tx.iter().any(|(n, x)| *n == "audit" && x.commit)).count() as i64
+    }
+
+    fn committed(t: &StepTiming, name: &str) -> i64 {
+        t.operations.as_ref().unwrap().iter().filter(|w| w.tx.iter().any(|(n, x)| *n == name && x.commit)).count() as i64
+    }
+
+    /// Required tests item 4 with D-029 decision B: 64 threads race for one
+    /// single-use grant with distinct keys, then 64 on one idempotency key, 20
+    /// times, busy timeout 5 s. Category 3 aborts and category 4 partial
+    /// failures are accepted only with matching evidence and modelled as
+    /// LEDGER-SQLITE.md defines; accepted failures are reported, not hidden.
     #[test]
     fn contention_on_one_grant_and_one_key() {
         let (initial, approve) = approvable();
+        let (mut aborts, mut partial) = (0, 0);
+        let tally = |acc: &[Option<Accepted>], aborts: &mut i64, partial: &mut i64| {
+            for a in acc.iter().flatten() {
+                if *a == Accepted::Abort { *aborts += 1 } else { *partial += 1 }
+            }
+        };
         for rep in 0..20 {
             let dir = temp_dir(&format!("contention-{rep}"));
             let b = sqlite_broker(&initial, &dir);
             assert_eq!(json::to_text(&b.apply(&with_label(&approve, "g1"), 0, None).0), r#"{"result":"grant_issued"}"#);
-            let ops = (0..64).map(|i| sealed(&initial, &requests(&approve, &format!("k{i}")).0, Some("g1"))).collect();
-            let out = b.apply(&concurrent(ops), 1, None).0;
-            assert_eq!(json::to_text(&out), r#"{"outcomes":{"GRANT_EXHAUSTED":63,"effect_completed":1},"result":"concurrent"}"#, "rep {rep}");
+
+            // Grant race: exactly one reservation and one grant use; the
+            // single winner completes, or ends in the state its partial
+            // failure implies (reserved or dispatched); at most one effect.
+            let keys: Vec<String> = (0..64).map(|i| format!("k{i}")).collect();
+            let ops = keys.iter().map(|k| sealed(&initial, &requests(&approve, k).0, Some("g1"))).collect();
+            let (out, t) = b.apply(&concurrent(ops), 1, None);
+            let acc = accept_group(&b, &out, &t, &keys, (0, 0));
+            let msg = format!("rep {rep}: {}", json::to_text(&out));
+            let c3 = acc.iter().filter(|a| **a == Some(Accepted::Abort)).count() as i64;
+            let c4: Vec<&'static str> = acc.iter().filter_map(|a| match a { Some(Accepted::Partial(s)) => Some(*s), _ => None }).collect();
+            assert_eq!(committed(&t, "reserve"), 1, "{msg}");
+            assert_eq!(outcome(&out, "effect_completed") + c4.len() as i64, 1, "{msg}");
+            assert_eq!(outcome(&out, "GRANT_EXHAUSTED"), 63 - c3, "{msg}");
             assert_eq!(count(&b, "SELECT count(*) FROM receipts"), 1);
             assert_eq!(count(&b, "SELECT count(*) FROM receipt_events WHERE cause = 'reserve'"), 1);
             assert_eq!(count(&b, "SELECT count(*) FROM grant_uses"), 1);
             assert_eq!(count(&b, "SELECT uses FROM grants WHERE label = 'g1'"), 1);
+            let expected_status = match c4.first() {
+                None => "observed_success",
+                Some(&"dispatch") => "reserved",
+                Some(_) => "dispatched",
+            };
+            assert_eq!(count(&b, &format!("SELECT count(*) FROM receipts WHERE status = '{expected_status}'")), 1, "{msg}");
+            assert!(count(&b, "SELECT count(*) FROM receipt_events WHERE cause = 'dispatch'") <= 1);
+            let (effects, consumed) = effects_and_permits(&b);
+            assert!(effects <= 1 && consumed == effects);
+            tally(&acc, &mut aborts, &mut partial);
+            let mut audits = committed_audits(&t);
 
+            // Same-key race: operations serialize on the key lock. No
+            // duplicate dispatch; at most one effect; later operations
+            // replay a completed receipt, resume a reserved one, or answer
+            // RECONCILIATION_REQUIRED for a dispatched one.
+            let before = effects_and_permits(&b);
             let write = requests(&approve, "same").1;
-            let out = b.apply(&concurrent((0..64).map(|_| sealed(&initial, &write, None)).collect()), 2, None).0;
-            assert_eq!(json::to_text(&out), r#"{"outcomes":{"effect_completed":1,"replayed":63},"result":"concurrent"}"#, "rep {rep}");
-            assert_eq!(count(&b, "SELECT count(*) FROM receipt_events WHERE idempotency_key = 'same' AND cause = 'dispatch'"), 1);
-            assert_eq!(count(&b, "SELECT count(*) FROM adapter_effects"), 2);
-            assert_eq!(count(&b, "SELECT count(*) FROM audit_refusals"), 63);
+            let same: Vec<String> = vec!["same".to_string(); 64];
+            let (out, t) = b.apply(&concurrent((0..64).map(|_| sealed(&initial, &write, None)).collect()), 2, None);
+            let acc = accept_group(&b, &out, &t, &same, before);
+            let msg = format!("rep {rep}: {}", json::to_text(&out));
+            let failed = acc.iter().flatten().count() as i64;
+            let rows = key_rows(&b, "same");
+            assert_eq!(rows.receipts, 1, "{msg}");
+            assert_eq!(count(&b, "SELECT count(*) FROM receipt_events WHERE idempotency_key = 'same' AND cause = 'reserve'"), 1, "exactly one reservation");
+            assert!(committed(&t, "dispatch") <= 1 && rows.dispatch_events == committed(&t, "dispatch"), "duplicate dispatch: {msg}");
+            assert_eq!(outcome(&out, "effect_completed"), committed(&t, "observe"), "{msg}");
+            assert_eq!(rows.observe_events, committed(&t, "observe"));
+            let (replayed, rr) = (outcome(&out, "replayed"), outcome(&out, "RECONCILIATION_REQUIRED"));
+            assert_eq!(outcome(&out, "effect_completed") + replayed + rr + failed, 64, "{msg}");
+            match rows.status.as_deref() {
+                Some("observed_success") => assert_eq!((outcome(&out, "effect_completed"), rr), (1, 0), "{msg}"),
+                Some("dispatched") => assert_eq!((outcome(&out, "effect_completed"), replayed, rows.dispatch_events), (0, 0, 1), "{msg}"),
+                Some("reserved") => assert_eq!((outcome(&out, "effect_completed"), replayed, rr, rows.dispatch_events), (0, 0, 0, 0), "{msg}"),
+                other => panic!("unexpected receipt state {other:?}: {msg}"),
+            }
+            let (effects, consumed) = effects_and_permits(&b);
+            assert!(effects - before.0 <= 1 && consumed - before.1 == effects - before.0);
+            tally(&acc, &mut aborts, &mut partial);
+            audits += committed_audits(&t);
+            assert_eq!(count(&b, "SELECT count(*) FROM audit_refusals"), audits);
             drop(b);
             std::fs::remove_dir_all(&dir).unwrap();
         }
+        eprintln!("contention: {aborts} category 3 aborts and {partial} category 4 partial failures accepted in 20 x 128 operations (availability)");
+    }
+
+    /// A real verified abort (reserve busy at begin) is accepted; fabricated
+    /// evidence that hides an unauthorized effect, a committed receipt, a
+    /// grant use or a non-busy error is rejected; category 4 evidence is
+    /// accepted only when the database rows match the implied state.
+    #[test]
+    fn d029_acceptance_rule_rejects_fabricated_evidence() {
+        let dir = temp_dir("d029-accept");
+        let (initial, approve) = approvable();
+        let b = sqlite_broker(&initial, &dir);
+        main_conn(&b, |c| c.execute_batch("PRAGMA busy_timeout = 50").unwrap());
+        let holder = Connection::open(ledger_path(&b)).unwrap();
+        holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let (out, real) = b.apply(&sealed(&initial, &requests(&approve, "busy").1, None), 0, None);
+        holder.execute_batch("ROLLBACK").unwrap();
+        assert_eq!(json::to_text(&out), LEDGER_REFUSED);
+        let clean = KeyRows::default();
+        let abort = Some(Accepted::Abort);
+        assert_eq!(classify_failure(&real, Some(&key_rows(&b, "busy"))), abort);
+        assert_eq!(classify_failure(&real, None), abort);
+
+        let tx = |commit: bool, error: Option<TxError>| TxTime { begin_ns: Some(1), body_ns: 1, end_ns: Some(1), commit, error };
+        let busy = Some(TxError { busy: true, at: TxAt::Begin });
+        let with = |extra: Vec<(&'static str, TxTime)>| {
+            let mut w = real.clone();
+            w.tx.extend(extra);
+            w
+        };
+        let rows = |status: &str, dispatch_events: i64, observe_events: i64| KeyRows {
+            receipts: 1,
+            events: 1 + dispatch_events + observe_events,
+            grant_uses: 0,
+            status: Some(status.to_string()),
+            dispatch_events,
+            observe_events,
+        };
+        // An effect hidden behind a busy reserve: dispatch, adapter, observe.
+        assert_eq!(classify_failure(&with(vec![("dispatch", tx(true, None)), ("adapter", tx(true, None)), ("observe", tx(true, None))]), Some(&clean)), None);
+        assert_eq!(classify_failure(&with(vec![("adapter", tx(true, None))]), None), None);
+        // A committed receipt, its event or a grant use for the key.
+        assert_eq!(classify_failure(&real, Some(&KeyRows { receipts: 1, ..clean.clone() })), None);
+        assert_eq!(classify_failure(&real, Some(&KeyRows { events: 1, ..clean.clone() })), None);
+        assert_eq!(classify_failure(&real, Some(&KeyRows { grant_uses: 1, ..clean.clone() })), None);
+        // A committed reserve as the failing one, or a non-busy or non-begin error.
+        let mut w = real.clone();
+        w.tx[0].1 = tx(true, None);
+        assert_eq!(classify_failure(&w, Some(&clean)), None);
+        for e in [TxError { busy: false, at: TxAt::Begin }, TxError { busy: true, at: TxAt::Body }, TxError { busy: true, at: TxAt::End }, TxError { busy: false, at: TxAt::Body }] {
+            let mut w = real.clone();
+            w.tx[0].1 = tx(false, Some(e));
+            assert_eq!(classify_failure(&w, Some(&clean)), None, "{e:?}");
+        }
+        // An audit failing with a non-busy error.
+        let mut w = real.clone();
+        w.tx.truncate(1);
+        w.tx.push(("audit", tx(false, Some(TxError { busy: false, at: TxAt::Body }))));
+        assert_eq!(classify_failure(&w, Some(&clean)), None);
+        // No transaction at all, or another operation.
+        let mut w = real.clone();
+        w.tx.clear();
+        assert_eq!(classify_failure(&w, Some(&clean)), None);
+        let mut w = real.clone();
+        w.op = "reconcile".into();
+        assert_eq!(classify_failure(&w, Some(&clean)), None);
+
+        // Category 4: accepted only with rows matching the implied state.
+        let partial = |stage: &'static str| {
+            let mut w = real.clone();
+            let k = LEDGER_CHAIN.iter().position(|s| *s == stage).unwrap();
+            w.tx = LEDGER_CHAIN[..k].iter().map(|n| (*n, tx(true, None))).collect();
+            w.tx.push((stage, tx(false, busy)));
+            w.tx.push(("audit", tx(true, None)));
+            w
+        };
+        let (d, a, o) = (partial("dispatch"), partial("adapter"), partial("observe"));
+        assert_eq!(classify_failure(&d, Some(&rows("reserved", 0, 0))), Some(Accepted::Partial("dispatch")));
+        assert_eq!(classify_failure(&a, Some(&rows("dispatched", 1, 0))), Some(Accepted::Partial("adapter")));
+        assert_eq!(classify_failure(&o, Some(&rows("dispatched", 1, 0))), Some(Accepted::Partial("observe")));
+        assert_eq!(classify_failure(&d, None), Some(Accepted::Partial("dispatch")));
+        // A claimed dispatch failure while the receipt was dispatched or completed.
+        assert_eq!(classify_failure(&d, Some(&rows("dispatched", 1, 0))), None);
+        assert_eq!(classify_failure(&d, Some(&rows("observed_success", 1, 1))), None);
+        assert_eq!(classify_failure(&d, Some(&clean)), None, "no committed receipt behind a committed reserve");
+        // A claimed adapter or observe failure with a completed receipt.
+        assert_eq!(classify_failure(&a, Some(&rows("observed_success", 1, 1))), None);
+        assert_eq!(classify_failure(&o, Some(&rows("reserved", 0, 0))), None);
+        // Inconsistent chains: a gap, or an uncommitted earlier transaction.
+        let mut gap = d.clone();
+        gap.tx[1].0 = "adapter";
+        assert_eq!(classify_failure(&gap, None), None);
+        let mut uncommitted = a.clone();
+        uncommitted.tx[1].1 = tx(false, None);
+        assert_eq!(classify_failure(&uncommitted, None), None);
+        // A claimed dispatch failure while an effect row exists: the group's
+        // effects and consumed permits must match the evidence.
+        assert!(accounting_ok(&[d.clone()], 0, 0));
+        assert!(!accounting_ok(&[d.clone()], 1, 0), "effect hidden behind a dispatch failure");
+        assert!(!accounting_ok(&[d.clone()], 1, 1));
+        assert!(!accounting_ok(&[a.clone()], 0, 1), "consumed permit hidden behind an adapter failure");
+        assert!(accounting_ok(&[o.clone()], 1, 1));
+        assert!(!accounting_ok(&[o, real.clone()], 2, 2));
+        drop(holder);
+        drop(b);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     // ------------------------------------------------------------- D-026
@@ -1899,125 +2306,179 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    // ------------------------------------------------------------- D-027
+    // ------------------------------------------------------- D-027, D-028
 
     use sqlite::trace::Event;
+    use std::sync::mpsc;
+    use std::time::Duration;
 
-    /// A group of `n` allowed writes with distinct keys, plus one reconcile.
+    /// A group of `n` allowed writes with distinct keys, plus one
+    /// `apply_without_permit` (its refusal audit is one more transaction).
+    /// Not `reconcile`: a reconcile committed between a write's T-dispatch and
+    /// T-observe makes T-observe change no row, which is a separate,
+    /// pre-existing behaviour, not part of the release protocol under test.
     fn write_group(initial: &Value, approve: &Value, n: usize) -> Value {
-        let mut ops: Vec<Value> = (0..n).map(|i| sealed(initial, &requests(approve, &format!("d027-{i}")).1, None)).collect();
-        ops.push(obj(vec![("op", s("reconcile"))]));
+        let mut ops: Vec<Value> = (0..n).map(|i| sealed(initial, &requests(approve, &format!("d028-{i}")).1, None)).collect();
+        ops.push(obj(vec![("op", s("apply_without_permit"))]));
         concurrent(ops)
     }
 
-    /// Run `group` as one step and return its output, timing and the trace
-    /// events of the ledger file recorded while it ran.
-    fn traced_group(b: &Broker, group: &Value) -> (String, StepTiming, Vec<Event>) {
+    /// Run `group` as one step on its own thread and wait at most 60 s for it
+    /// (a deadlocked release protocol fails the test instead of hanging it).
+    fn bounded(b: &Arc<Broker>, group: &Value) -> (String, StepTiming) {
+        let (tx, rx) = mpsc::channel();
+        let (b, group) = (Arc::clone(b), group.clone());
+        thread::spawn(move || {
+            let (out, t) = b.apply(&group, 0, None);
+            let _ = tx.send((json::to_text(&out), t));
+        });
+        rx.recv_timeout(Duration::from_secs(60)).expect("the concurrent group did not finish within 60 s")
+    }
+
+    /// `group` with a bounded wait, and the trace events of the ledger file
+    /// recorded while it ran.
+    fn traced_group(b: &Arc<Broker>, group: &Value) -> (String, StepTiming, Vec<Event>) {
         let path = ledger_path(b);
         let before = sqlite::trace::events(&path).len();
-        let (out, t) = b.apply(group, 0, None);
-        (json::to_text(&out), t, sqlite::trace::events(&path).split_off(before))
+        let (out, t) = bounded(b, group);
+        (out, t, sqlite::trace::events(&path).split_off(before))
     }
 
     fn positions(events: &[Event], e: Event) -> Vec<usize> {
         events.iter().enumerate().filter(|(_, x)| **x == e).map(|(i, _)| i).collect()
     }
 
-    /// The D-027 timing members of one group: `start_ns >= ready_ns`, workers
-    /// inside the group, setup accounting per profile.
-    fn check_group_timing(t: &StepTiming, profile: Profile, file: bool) {
-        let ready = t.ready_ns.unwrap();
-        assert!(ready <= t.total_ns);
-        for w in t.operations.as_ref().unwrap() {
-            let (setup, start) = w.worker.unwrap();
-            assert!(start >= ready, "worker started before the group was ready");
-            assert!(start + w.total_ns <= t.total_ns);
+    /// The single `Release` position of a traced group.
+    fn release_at(ev: &[Event]) -> usize {
+        let r = positions(ev, Event::Release);
+        assert_eq!(r.len(), 1, "one release per group: {ev:?}");
+        r[0]
+    }
+
+    /// The D-028 timing members of one group (LEDGER-SQLITE.md integrity
+    /// rules); returns (release_delay_ns of each worker, start_skew_ns).
+    fn check_group_timing(t: &StepTiming, profile: Profile, file: bool) -> (Vec<i64>, i64) {
+        let g = t.group;
+        assert!(g.ready_ns <= g.release_ns && g.release_ns <= t.total_ns, "{g:?}");
+        let ws = t.operations.as_ref().unwrap();
+        let starts: Vec<i64> = ws.iter().map(|w| w.worker.unwrap().start_ns).collect();
+        let skew = if starts.len() > 1 { starts.iter().max().unwrap() - starts.iter().min().unwrap() } else { 0 };
+        assert_eq!(g.start_skew_ns, skew);
+        let mut delays = Vec::new();
+        for w in ws {
+            let x = w.worker.unwrap();
+            assert!(x.ready_at_ns <= g.ready_ns, "a worker became ready after the group was observed ready");
+            assert!(x.start_ns >= g.release_ns, "a worker started before release");
+            assert_eq!(x.release_delay_ns, x.start_ns - g.release_ns);
+            assert!(x.start_ns + w.total_ns <= t.total_ns);
             let parts: i64 = w.validate_ns.unwrap_or(0)
                 + w.decide_ns.unwrap_or(0)
                 + w.key_lock_wait_ns.unwrap_or(0)
                 + w.tx.iter().map(|(_, x)| x.begin_ns.unwrap_or(0) + x.body_ns + x.end_ns.unwrap_or(0)).sum::<i64>();
             match (file, profile) {
-                (false, _) => assert!(setup.is_none() && parts <= w.total_ns),
-                (true, Profile::Primary) => assert!(setup.unwrap() <= ready && parts <= w.total_ns),
-                (true, Profile::Cold) => assert!(parts + setup.unwrap() <= w.total_ns),
+                (false, _) => assert!(x.setup_ns.is_none() && parts <= w.total_ns),
+                (true, Profile::Primary) => assert!(x.setup_ns.unwrap() <= x.ready_at_ns && parts <= w.total_ns),
+                (true, Profile::Cold) => assert!(parts + x.setup_ns.unwrap() <= w.total_ns),
             }
+            delays.push(x.release_delay_ns);
         }
+        (delays, g.start_skew_ns)
     }
 
-    /// Required tests item 9, `primary`: every worker's connection setup has
-    /// finished, and every worker has reached the barrier, before any worker
-    /// passes it or begins a transaction.
+    fn sqlite_broker_with(initial: &Value, dir: &std::path::Path, profile: Profile) -> Broker {
+        let mut b = sqlite_broker(initial, dir);
+        b.profile = profile;
+        b
+    }
+
+    /// Required tests item 9 (D-028), `primary`: every worker exists, has
+    /// finished its connection setup (with read-back) and has signalled ready
+    /// before the single release; no BEGIN and no open transaction before it;
+    /// release_delay_ns and start_skew_ns are reported.
     #[test]
-    fn d027_primary_sets_up_every_connection_before_any_transaction() {
+    fn d028_primary_every_worker_ready_and_set_up_before_release() {
         let (initial, approve) = approvable();
-        let dir = temp_dir("d027-primary");
+        let dir = temp_dir("d028-primary");
         for rep in 0..10 {
-            let b = sqlite_broker(&initial, &dir);
+            let b = Arc::new(sqlite_broker_with(&initial, &dir, Profile::Primary));
             let n = 16;
             let (out, t, ev) = traced_group(&b, &write_group(&initial, &approve, n));
-            assert_eq!(out, format!(r#"{{"outcomes":{{"effect_completed":{n},"reconciled":1}},"result":"concurrent"}}"#), "rep {rep}");
-            let (setup_end, arrive, pass, begin) = (positions(&ev, Event::SetupEnd), positions(&ev, Event::Arrive), positions(&ev, Event::Pass), positions(&ev, Event::Begin));
-            assert_eq!((setup_end.len(), arrive.len(), pass.len()), (n + 1, n + 1, n + 1));
+            assert_eq!(out, format!(r#"{{"outcomes":{{"PERMIT_MISSING":1,"effect_completed":{n}}},"result":"concurrent"}}"#), "rep {rep}");
+            let release = release_at(&ev);
+            for e in [Event::Spawned, Event::SetupStart, Event::SetupEnd, Event::Ready, Event::Pass] {
+                assert_eq!(positions(&ev, e).len(), n + 1, "{e:?}");
+            }
+            for e in [Event::Spawned, Event::SetupEnd, Event::Ready] {
+                assert!(positions(&ev, e).iter().all(|&p| p < release), "{e:?} after release: {ev:?}");
+            }
+            assert!(positions(&ev, Event::Pass).iter().all(|&p| p > release));
+            let begin = positions(&ev, Event::Begin);
             assert_eq!(begin.len(), 4 * n + 1);
-            let ready_point = setup_end.iter().chain(&arrive).max().unwrap();
-            assert!(ready_point < pass.iter().min().unwrap(), "a worker passed the barrier before every setup finished: {ev:?}");
-            assert!(ready_point < begin.iter().min().unwrap(), "a transaction began before every setup finished: {ev:?}");
-            check_group_timing(&t, Profile::Primary, true);
+            assert!(begin.iter().all(|&p| p > release), "a transaction began before release: {ev:?}");
+            assert!(positions(&ev, Event::TxOpenAtReady).is_empty(), "a transaction was open at ready");
+            let (delays, _skew) = check_group_timing(&t, Profile::Primary, true);
+            assert_eq!(delays.len(), n + 1);
+            let v = json::to_text(&t.to_value());
+            assert!(["\"release_ns\":", "\"start_skew_ns\":", "\"release_delay_ns\":", "\"ready_at_ns\":"].iter().all(|k| v.contains(k)), "{v}");
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Required tests item 9, `cold`: every worker connection is created
-    /// after release (after the last worker reached the barrier), and its
-    /// setup is inside the worker's `total_ns`.
+    /// Required tests item 9 (D-028), `cold`: workers still exist and signal
+    /// ready before the single release; every setup and every BEGIN follows it.
     #[test]
-    fn d027_cold_creates_every_connection_after_release() {
+    fn d028_cold_setup_and_begin_follow_release() {
         let (initial, approve) = approvable();
-        let dir = temp_dir("d027-cold");
+        let dir = temp_dir("d028-cold");
         for rep in 0..10 {
-            let mut b = sqlite_broker(&initial, &dir);
-            b.profile = Profile::Cold;
+            let b = Arc::new(sqlite_broker_with(&initial, &dir, Profile::Cold));
             let n = 16;
             let (out, t, ev) = traced_group(&b, &write_group(&initial, &approve, n));
-            assert_eq!(out, format!(r#"{{"outcomes":{{"effect_completed":{n},"reconciled":1}},"result":"concurrent"}}"#), "rep {rep}");
-            let (setup_start, arrive, begin) = (positions(&ev, Event::SetupStart), positions(&ev, Event::Arrive), positions(&ev, Event::Begin));
-            assert_eq!((setup_start.len(), arrive.len()), (n + 1, n + 1));
-            let released = arrive.iter().max().unwrap();
-            assert!(released < setup_start.iter().min().unwrap(), "a connection was created before release: {ev:?}");
-            assert!(released < begin.iter().min().unwrap());
+            assert_eq!(out, format!(r#"{{"outcomes":{{"PERMIT_MISSING":1,"effect_completed":{n}}},"result":"concurrent"}}"#), "rep {rep}");
+            let release = release_at(&ev);
+            for e in [Event::Spawned, Event::Ready] {
+                let p = positions(&ev, e);
+                assert!(p.len() == n + 1 && p.iter().all(|&p| p < release), "{e:?}: {ev:?}");
+            }
+            for e in [Event::SetupStart, Event::SetupEnd, Event::Pass, Event::Begin] {
+                assert!(positions(&ev, e).iter().all(|&p| p > release), "{e:?} before release: {ev:?}");
+            }
+            assert_eq!(positions(&ev, Event::SetupStart).len(), n + 1);
             check_group_timing(&t, Profile::Cold, true);
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn d027_memory_ledger_timing_in_both_profiles() {
+    fn d028_memory_ledger_timing_in_both_profiles() {
         let (initial, approve) = approvable();
         for profile in [Profile::Primary, Profile::Cold] {
             let mut b = Broker::new(&initial, Ledger::Memory(Mutex::new(MemLedger::default())));
             b.profile = profile;
-            let (out, t) = b.apply(&write_group(&initial, &approve, 8), 0, None);
-            assert_eq!(json::to_text(&out), r#"{"outcomes":{"effect_completed":8,"reconciled":1},"result":"concurrent"}"#);
+            let (out, t) = bounded(&Arc::new(b), &write_group(&initial, &approve, 8));
+            assert_eq!(out, r#"{"outcomes":{"PERMIT_MISSING":1,"effect_completed":8},"result":"concurrent"}"#);
             check_group_timing(&t, profile, false);
             let v = json::to_text(&t.to_value());
-            assert!(v.contains(r#""setup_ns":null,"start_ns":"#) && v.contains(r#""ready_ns":"#), "{v}");
+            assert!(v.contains(r#""setup_ns":null,"start_ns":"#) && v.contains(r#""release_ns":"#), "{v}");
         }
-        let (_, t) = Broker::new(&initial, Ledger::Memory(Mutex::new(MemLedger::default()))).apply(&concurrent(vec![]), 0, None);
-        assert_eq!(t.ready_ns, Some(0));
-        assert!(!json::to_text(&t.to_value()).contains("start_ns"), "top-level steps carry no worker members");
+        let b = Arc::new(Broker::new(&initial, Ledger::Memory(Mutex::new(MemLedger::default()))));
+        let (_, t) = bounded(&b, &concurrent(vec![]));
+        assert_eq!((t.group.ready_ns, t.group.release_ns, t.group.start_skew_ns), (0, 0, 0));
+        let (_, t) = bounded(&b, &concurrent(vec![obj(vec![("op", s("reconcile"))])]));
+        assert_eq!(t.group.start_skew_ns, 0);
+        assert!(!json::to_text(&t.to_value()).contains("\"start_ns\":0,\"tx\""), "top-level steps carry no worker members");
     }
 
     /// A worker whose connection setup fails answers LEDGER_UNAVAILABLE, runs
-    /// no ledger transaction and no audit (`tx` `{}`, not counted in
-    /// `final.refusals`), in both profiles; nothing is created at the path.
+    /// no ledger transaction and no audit, still counts as ready (no
+    /// deadlock), in both profiles; nothing is created at the path.
     #[test]
-    fn d027_worker_setup_failure() {
+    fn d028_worker_setup_failure_all_workers() {
         let (initial, approve) = approvable();
-        let dir = temp_dir("d027-setup-failure");
+        let dir = temp_dir("d028-setup-failure");
         let missing = dir.join("missing").join("ledger.db");
         for profile in [Profile::Primary, Profile::Cold] {
-            let mut b = sqlite_broker(&initial, &dir);
-            b.profile = profile;
+            let mut b = sqlite_broker_with(&initial, &dir, profile);
             let Ledger::Sqlite(l) = &mut b.ledger else { unreachable!() };
             l.path = Some(missing.clone());
             let mut group = write_group(&initial, &approve, 3);
@@ -2026,20 +2487,50 @@ mod tests {
                     ops.push(concurrent(vec![obj(vec![("op", s("reconcile"))])]));
                 }
             }
-            let (out, t) = b.apply(&group, 0, None);
-            assert_eq!(json::to_text(&out), r#"{"outcomes":{"LEDGER_UNAVAILABLE":5},"result":"concurrent"}"#);
+            let b = Arc::new(b);
+            let (out, t) = bounded(&b, &group);
+            assert_eq!(out, r#"{"outcomes":{"LEDGER_UNAVAILABLE":5},"result":"concurrent"}"#);
             for w in t.operations.as_ref().unwrap() {
-                assert!(w.tx.is_empty() && w.validate_ns.is_none() && w.worker.unwrap().0.is_some(), "{w:?}");
+                assert!(w.tx.is_empty() && w.validate_ns.is_none() && w.worker.unwrap().setup_ns.is_some(), "{w:?}");
             }
             check_group_timing(&t, profile, true);
             let nested = &t.operations.as_ref().unwrap()[4];
-            assert_eq!((nested.op.as_str(), nested.ready_ns, nested.operations.as_ref().map(Vec::len)), ("concurrent", Some(0), Some(0)));
+            assert_eq!((nested.op.as_str(), nested.group.release_ns, nested.operations.as_ref().map(Vec::len)), ("concurrent", 0, Some(0)));
             assert_eq!(count(&b, "SELECT count(*) FROM audit_refusals"), 0);
             assert_eq!(count(&b, "SELECT count(*) FROM receipts"), 0);
             assert!(!missing.parent().unwrap().exists());
         }
         let e = sqlite::open_worker(&missing).unwrap_err();
         assert_eq!(e.diagnostic(), "worker: SQLITE_CANTOPEN");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Exactly one worker's setup fails (test fault counter) among working
+    /// ones, in both profiles: the group finishes, the failing worker answers
+    /// LEDGER_UNAVAILABLE with no transaction, the others commit normally.
+    #[test]
+    fn d028_one_failing_worker_does_not_affect_the_others() {
+        let (initial, approve) = approvable();
+        let dir = temp_dir("d028-one-fails");
+        for profile in [Profile::Primary, Profile::Cold] {
+            for rep in 0..5 {
+                let b = sqlite_broker_with(&initial, &dir, profile);
+                let Ledger::Sqlite(l) = &b.ledger else { unreachable!() };
+                l.fail_setups.store(1, std::sync::atomic::Ordering::SeqCst);
+                let b = Arc::new(b);
+                let n = 8;
+                let ops = (0..n).map(|i| sealed(&initial, &requests(&approve, &format!("one-{i}")).1, None)).collect();
+                let (out, t, ev) = traced_group(&b, &concurrent(ops));
+                assert_eq!(out, format!(r#"{{"outcomes":{{"LEDGER_UNAVAILABLE":1,"effect_completed":{}}},"result":"concurrent"}}"#, n - 1), "{profile:?} rep {rep}");
+                assert_eq!(positions(&ev, Event::Ready).len(), n);
+                let ws = t.operations.as_ref().unwrap();
+                assert_eq!(ws.iter().filter(|w| w.tx.is_empty()).count(), 1);
+                assert!(ws.iter().filter(|w| !w.tx.is_empty()).all(|w| w.tx.len() == 4 && w.tx.iter().all(|(_, x)| x.commit && x.error.is_none())));
+                check_group_timing(&t, profile, true);
+                assert_eq!(count(&b, "SELECT count(*) FROM receipts"), n as i64 - 1);
+                assert_eq!(count(&b, "SELECT count(*) FROM audit_refusals"), 0);
+            }
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2064,6 +2555,232 @@ mod tests {
         drop(c);
         let fresh = dir.join("never-created.db");
         assert!(sqlite::open_worker(&fresh).is_err() && !fresh.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // ------------------------------------------------------------- D-029
+
+    /// The gate is not held by anyone (a poisoned gate after a panic is free).
+    fn gate_free(b: &Broker) -> bool {
+        !matches!(b.gate.try_write(), Err(std::sync::TryLockError::WouldBlock))
+    }
+
+    /// One top-level step with its trace events.
+    fn traced_step(b: &Broker, op: &Value, step: usize) -> (String, Vec<Event>) {
+        let path = ledger_path(b);
+        let before = sqlite::trace::events(&path).len();
+        let out = json::to_text(&b.apply(op, step, None).0);
+        (out, sqlite::trace::events(&path).split_off(before))
+    }
+
+    fn with_fault(op: &Value, fault: &str) -> Value {
+        with_member(op, "fault", s(fault))
+    }
+
+    /// Gate order: gate, then key lock, then every BEGIN; released only after
+    /// the operation (and its audit) returned.
+    fn assert_gate_order(ev: &[Event], gate: Event, key_lock: bool) {
+        let g = positions(ev, gate);
+        assert_eq!(g.len(), 1, "gate acquired exactly once: {ev:?}");
+        let begins = positions(ev, Event::Begin);
+        let returned = positions(ev, Event::Returned);
+        assert_eq!(returned.len(), 1);
+        if key_lock {
+            let k = positions(ev, Event::KeyLock);
+            assert!(k.len() == 1 && g[0] < k[0] && begins.iter().all(|&b| b > k[0]), "{ev:?}");
+        }
+        assert!(begins.iter().all(|&b| b > g[0] && b < returned[0]), "{ev:?}");
+    }
+
+    /// Required tests item 10: the gate is acquired in the stated order and
+    /// released on every path: success, refusal before and inside the ledger,
+    /// storage failure (and failing audit), every crash fault, effect failure,
+    /// present_permit, reconcile, and a panic with the gate and key lock held.
+    #[test]
+    fn d029_gate_order_and_release_on_every_path() {
+        let (initial, approve) = approvable();
+        let dir = temp_dir("d029-paths");
+        let b = sqlite_broker(&initial, &dir);
+        let w = |k: &str| sealed(&initial, &requests(&approve, k).1, None);
+        let cases: Vec<(Value, &str)> = vec![
+            (w("ok"), r#"{"result":"effect_completed"}"#),
+            (with_fault(&w("c0"), "crash_before_reserve"), r#"{"result":"crashed"}"#),
+            (with_fault(&w("c1"), "crash_after_reserve"), r#"{"result":"crashed"}"#),
+            (with_fault(&w("c2"), "crash_after_dispatch"), r#"{"result":"crashed"}"#),
+            (with_fault(&w("ef"), "effect_fails"), r#"{"result":"effect_failed"}"#),
+            (sealed(&initial, &requests(&approve, "nogrant").0, Some("missing")), r#"{"code":"GRANT_UNKNOWN","result":"refused"}"#),
+        ];
+        for (i, (op, expected)) in cases.iter().enumerate() {
+            let (out, ev) = traced_step(&b, op, i);
+            assert_eq!(&out, expected);
+            assert_gate_order(&ev, Event::GateShared, true);
+            assert!(gate_free(&b), "gate held after {expected}");
+        }
+        // Refused before the protected lifecycle: no gate at all.
+        let mut bad = w("unsealed");
+        if let Value::Obj(m) = &mut bad {
+            m.retain(|(k, _)| k != "seal");
+        }
+        let (out, ev) = traced_step(&b, &bad, 10);
+        assert_eq!(out, r#"{"code":"INGRESS_UNAUTHENTICATED","result":"refused"}"#);
+        assert!(positions(&ev, Event::GateShared).is_empty() && gate_free(&b));
+        // present_permit of the crashed dispatch (step 3): replayed, audited.
+        let present = obj(vec![("op", s("present_permit")), ("of_step", Value::Int(3)), ("request", requests(&approve, "c2").1)]);
+        let (out, ev) = traced_step(&b, &present, 11);
+        assert_eq!(out, r#"{"code":"PERMIT_REPLAYED","result":"refused"}"#);
+        assert_gate_order(&ev, Event::GateShared, false);
+        assert!(gate_free(&b));
+        // reconcile: exclusive before its BEGIN IMMEDIATE.
+        let (out, ev) = traced_step(&b, &obj(vec![("op", s("reconcile"))]), 12);
+        assert_eq!(out, r#"{"count":1,"result":"reconciled"}"#);
+        assert_gate_order(&ev, Event::GateExclusive, false);
+        assert!(gate_free(&b));
+        // Storage failure in T-reserve, then also a failing audit.
+        main_conn(&b, |c| c.execute_batch("CREATE TEMP TRIGGER fail_reserve BEFORE INSERT ON receipts BEGIN SELECT RAISE(ABORT, 'x'); END").unwrap());
+        let (out, ev) = traced_step(&b, &w("sf"), 13);
+        assert_eq!(out, LEDGER_REFUSED);
+        assert_gate_order(&ev, Event::GateShared, true);
+        assert!(gate_free(&b));
+        main_conn(&b, |c| c.execute_batch("CREATE TEMP TRIGGER fail_audit BEFORE INSERT ON audit_refusals BEGIN SELECT RAISE(ABORT, 'x'); END").unwrap());
+        let (out, ev) = traced_step(&b, &w("sf2"), 14);
+        assert_eq!(out, LEDGER_REFUSED);
+        assert_gate_order(&ev, Event::GateShared, true);
+        assert!(gate_free(&b));
+        main_conn(&b, |c| c.execute_batch("DROP TRIGGER temp.fail_reserve; DROP TRIGGER temp.fail_audit").unwrap());
+        // Panic with the gate and the key lock held: both released by unwinding.
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| b.apply(&with_fault(&w("p"), "test_panic_after_reserve"), 15, None)));
+        assert!(panicked.is_err());
+        assert!(gate_free(&b), "gate held after a panic");
+        assert_eq!(json::to_text(&b.apply(&w("after-panic"), 16, None).0), r#"{"result":"effect_completed"}"#);
+        assert_eq!(json::to_text(&b.apply(&obj(vec![("op", s("reconcile"))]), 17, None).0), r#"{"count":0,"result":"reconciled"}"#);
+        drop(b);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Run `op` as a top-level step on its own thread; the receiver gets its
+    /// output.
+    fn spawn_step(b: &Arc<Broker>, op: Value) -> mpsc::Receiver<String> {
+        let (tx, rx) = mpsc::channel();
+        let b = Arc::clone(b);
+        thread::spawn(move || {
+            let _ = tx.send(json::to_text(&b.apply(&op, 0, None).0));
+        });
+        rx
+    }
+
+    /// Shared holders do not block each other; a reconcile waits for an
+    /// in-flight shared holder; a held exclusive gate blocks a new execute
+    /// only until it is released. Every wait is bounded.
+    #[test]
+    fn d029_shared_holders_concurrent_reconcile_waits() {
+        let (initial, approve) = approvable();
+        let dir = temp_dir("d029-blocking");
+        let b = Arc::new(sqlite_broker(&initial, &dir));
+        let w = |k: &str| sealed(&initial, &requests(&approve, k).1, None);
+        let bound = Duration::from_secs(60);
+        let wait = Duration::from_millis(300);
+
+        // An in-flight execute (simulated shared holder) does not block another.
+        let shared = b.gate.read().unwrap();
+        assert_eq!(spawn_step(&b, w("s1")).recv_timeout(bound).unwrap(), r#"{"result":"effect_completed"}"#);
+        // A reconcile waits for it.
+        let rx = spawn_step(&b, obj(vec![("op", s("reconcile"))]));
+        assert!(matches!(rx.recv_timeout(wait), Err(mpsc::RecvTimeoutError::Timeout)), "reconcile ran during an in-flight execute");
+        drop(shared);
+        assert_eq!(rx.recv_timeout(bound).unwrap(), r#"{"count":0,"result":"reconciled"}"#);
+
+        // While a reconcile holds the gate, a new execute waits, then runs.
+        let exclusive = b.gate.write().unwrap();
+        let rx = spawn_step(&b, w("s2"));
+        assert!(matches!(rx.recv_timeout(wait), Err(mpsc::RecvTimeoutError::Timeout)), "execute ran while reconcile held the gate");
+        drop(exclusive);
+        assert_eq!(rx.recv_timeout(bound).unwrap(), r#"{"result":"effect_completed"}"#);
+        assert!(gate_free(&b));
+        drop(b);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `n_exec` executes, `n_crash` with crash_after_dispatch, `n_rec`
+    /// reconciles in one group; keys `{salt}e{i}` and `{salt}c{i}`.
+    fn mixed_group(initial: &Value, approve: &Value, n_exec: usize, n_crash: usize, n_rec: usize, salt: &str) -> (Value, Vec<String>) {
+        let mut ops = Vec::new();
+        let mut keys = Vec::new();
+        for i in 0..n_exec {
+            keys.push(format!("{salt}e{i}"));
+            ops.push(sealed(initial, &requests(approve, &keys[keys.len() - 1]).1, None));
+        }
+        for i in 0..n_crash {
+            keys.push(format!("{salt}c{i}"));
+            ops.push(with_fault(&sealed(initial, &requests(approve, &keys[keys.len() - 1]).1, None), "crash_after_dispatch"));
+        }
+        for _ in 0..n_rec {
+            keys.push(String::new());
+            ops.push(obj(vec![("op", s("reconcile"))]));
+        }
+        (concurrent(ops), keys)
+    }
+
+    /// No worker reports a state conflict or any non-busy error.
+    fn no_state_conflict(t: &StepTiming) {
+        for w in t.operations.as_ref().unwrap() {
+            assert!(w.tx.iter().all(|(_, x)| x.error.is_none_or(|e| e.busy)), "non-busy error: {:?}", tx_errors(w));
+        }
+    }
+
+    /// Reconcile and executes in one group, both profiles, repeated, bounded:
+    /// reconcile never changes an in-flight execute (every non-crashed
+    /// execute completes; only crashed operations' receipts are reconciled).
+    #[test]
+    fn d029_reconcile_never_touches_an_in_flight_execute() {
+        let (initial, approve) = approvable();
+        let dir = temp_dir("d029-mixed");
+        for profile in [Profile::Primary, Profile::Cold] {
+            for rep in 0..10 {
+                let b = Arc::new(sqlite_broker_with(&initial, &dir, profile));
+                let salt = format!("r{rep}");
+                let (group, _) = mixed_group(&initial, &approve, 8, 3, 8, &salt);
+                let (out, t) = bounded(&b, &group);
+                assert_eq!(out, r#"{"outcomes":{"crashed":3,"effect_completed":8,"reconciled":8},"result":"concurrent"}"#, "{profile:?} rep {rep}");
+                no_state_conflict(&t);
+                assert_eq!(count(&b, "SELECT count(*) FROM receipts WHERE status = 'observed_success'"), 8);
+                assert_eq!(count(&b, "SELECT count(*) FROM receipts WHERE status IN ('dispatched', 'unknown_reconcile')"), 3);
+                let unknown = count(&b, "SELECT count(*) FROM receipts WHERE status = 'unknown_reconcile'");
+                assert_eq!(count(&b, &format!("SELECT count(*) FROM receipts WHERE status = 'unknown_reconcile' AND idempotency_key LIKE '{salt}c%'")), unknown);
+                assert_eq!(count(&b, "SELECT count(*) FROM receipt_events WHERE cause = 'reconcile'"), unknown);
+                assert_eq!(count(&b, "SELECT count(*) FROM adapter_effects"), 11);
+            }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 64 executes and reconciles in one group, both profiles: no deadlock
+    /// (bounded wait), no state conflict, every success durable.
+    #[test]
+    fn d029_64_way_executes_and_reconciles_do_not_deadlock() {
+        let (initial, approve) = approvable();
+        let dir = temp_dir("d029-64");
+        for profile in [Profile::Primary, Profile::Cold] {
+            for rep in 0..3 {
+                let b = Arc::new(sqlite_broker_with(&initial, &dir, profile));
+                let (group, keys) = mixed_group(&initial, &approve, 48, 8, 8, &format!("x{rep}"));
+                let (out, t) = bounded(&b, &group);
+                let v = json::parse(out.as_bytes()).unwrap();
+                let total: i64 = v.get("outcomes").and_then(Value::as_obj).unwrap().iter().filter_map(|(_, n)| n.as_int()).sum();
+                assert_eq!(total, 64, "{out}");
+                no_state_conflict(&t);
+                let exec_keys: Vec<String> = keys.iter().map(|k| if k.is_empty() { "reconcile".to_string() } else { k.clone() }).collect();
+                let ws = t.operations.as_ref().unwrap();
+                for (w, k) in ws.iter().zip(&exec_keys) {
+                    if w.op == "execute" && w.tx.iter().any(|(n, x)| *n != "audit" && x.error.is_some()) {
+                        let rows = key_rows(&b, k);
+                        assert!(classify_failure(w, Some(&rows)).is_some(), "{:?} {rows:?}", tx_errors(w));
+                    }
+                }
+                assert_eq!(count(&b, "SELECT count(*) FROM receipts WHERE status = 'observed_success'"), outcome(&v, "effect_completed"));
+                assert_eq!(count(&b, "SELECT count(*) FROM adapter_effects"), count(&b, "SELECT count(*) FROM adapter_consumed_permits"));
+                assert!(gate_free(&b));
+            }
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

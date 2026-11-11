@@ -357,9 +357,11 @@ func TestSQLiteInfoCommand(t *testing.T) {
 	}
 }
 
-// D-027: --concurrency-profile selects when worker connections are set up;
-// the scenario output is the same in both profiles and every worker carries
-// setup_ns (null for the in-memory ledger) and start_ns.
+// D-027, D-028: --concurrency-profile selects when worker connections are
+// set up; the scenario output is the same in both profiles, the group
+// carries ready_ns, release_ns and start_skew_ns, and every worker setup_ns
+// (null for the in-memory ledger), ready_at_ns, start_ns and
+// release_delay_ns.
 func TestConcurrencyProfileOption(t *testing.T) {
 	line := string(sjson.Encode(map[string]any{"id": "c", "input": fixtureInput(t, "b-34-concurrent-duplicates")}))
 	want := mustDecode(t, answerLine(brokerScenario, line))["output"]
@@ -380,12 +382,19 @@ func TestConcurrencyProfileOption(t *testing.T) {
 			}
 			tm, _ := sjson.Obj(timed["timing"])
 			group := tm["steps"].([]any)[0].(map[string]any)
-			if _, ok := sjson.Int(group, "ready_ns"); !ok {
-				t.Errorf("%v: group %v", args, group)
+			for _, k := range []string{"ready_ns", "release_ns", "start_skew_ns"} {
+				if _, ok := sjson.Int(group, k); !ok {
+					t.Errorf("%v: group %s %v", args, k, group)
+				}
 			}
 			for _, o := range group["operations"].([]any) {
 				w := o.(map[string]any)
 				_, hasStart := sjson.Int(w, "start_ns")
+				for _, k := range []string{"ready_at_ns", "release_delay_ns"} {
+					if _, ok := sjson.Int(w, k); !ok {
+						t.Errorf("%v: worker %s %v", args, k, w)
+					}
+				}
 				_, setupNum := sjson.Int(w, "setup_ns")
 				if setup, ok := w["setup_ns"]; !ok || !hasStart || (ledger == nil) != (setup == nil) || (ledger != nil) != setupNum {
 					t.Errorf("%v: worker %v", args, w)

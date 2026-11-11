@@ -1,5 +1,6 @@
-"""Language-neutral tests for owner decision D-027 (LEDGER-SQLITE.md
-"Concurrency profiles"): standardized concurrent-worker start.
+"""Language-neutral tests for owner decisions D-027 and D-028 (LEDGER-SQLITE.md
+"Concurrency profiles and release protocol"): standardized concurrent-worker
+preparation and an equivalent release protocol.
 
 Expectations are written from the specification before either implementation.
 Timing values are never compared between prototypes or against thresholds; the
@@ -111,19 +112,28 @@ class Profiles(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
+    GROUP = {"op", "total_ns", "validate_ns", "decide_ns", "key_lock_wait_ns", "tx",
+             "ready_ns", "release_ns", "start_skew_ns", "operations"}
+    WORKER = {"setup_ns", "ready_at_ns", "start_ns", "release_delay_ns"}
+
     def check_group(self, g: dict, ledger: str, prof: str, nested: bool = False):
-        self.assertEqual(set(g), {"op", "total_ns", "validate_ns", "decide_ns", "key_lock_wait_ns", "tx",
-                                  "ready_ns", "operations"} | ({"setup_ns", "start_ns"} if nested else set()))
-        ready, total = g["ready_ns"], g["total_ns"]
-        self.assertTrue(type(ready) is int and 0 <= ready <= total, (ready, total))
-        if not g["operations"]:
-            self.assertEqual(ready, 0)
-        for w in g["operations"]:
-            keys = {"op", "total_ns", "validate_ns", "decide_ns", "key_lock_wait_ns", "tx", "setup_ns", "start_ns"}
-            self.assertEqual(set(w) - {"ready_ns", "operations"}, keys)
-            start, wt, setup = w["start_ns"], w["total_ns"], w["setup_ns"]
-            self.assertTrue(type(start) is int and type(wt) is int and wt >= 0)
-            self.assertGreaterEqual(start, ready, "a worker started before the group was ready")
+        self.assertEqual(set(g), self.GROUP | (self.WORKER if nested else set()))
+        ready, release, total = g["ready_ns"], g["release_ns"], g["total_ns"]
+        self.assertTrue(type(ready) is int and type(release) is int and 0 <= ready <= release <= total,
+                        (ready, release, total))
+        ws = g["operations"]
+        if not ws:
+            self.assertEqual((ready, release, g["start_skew_ns"]), (0, 0, 0))
+        starts = [w["start_ns"] for w in ws]
+        self.assertEqual(g["start_skew_ns"], max(starts) - min(starts) if len(starts) > 1 else 0)
+        for w in ws:
+            self.assertEqual(set(w) - {"ready_ns", "release_ns", "start_skew_ns", "operations"},
+                             {"op", "total_ns", "validate_ns", "decide_ns", "key_lock_wait_ns", "tx"} | self.WORKER)
+            at, start, wt, setup = w["ready_at_ns"], w["start_ns"], w["total_ns"], w["setup_ns"]
+            self.assertTrue(all(type(v) is int for v in (at, start, wt)) and wt >= 0)
+            self.assertLessEqual(at, ready, "a worker became ready after the group was observed ready")
+            self.assertGreaterEqual(start, release, "a worker started before release")
+            self.assertEqual(w["release_delay_ns"], start - release)
             self.assertLessEqual(start + wt, total, "a worker outlived its group")
             parts = nn(w["validate_ns"]) + nn(w["decide_ns"]) + nn(w["key_lock_wait_ns"])
             self.assertTrue(set(w["tx"]) <= TX_NAMES)
@@ -135,7 +145,7 @@ class Profiles(unittest.TestCase):
                 continue
             self.assertTrue(type(setup) is int and setup >= 0, setup)
             if prof == "primary":
-                self.assertLessEqual(setup, ready, "setup finished after release")
+                self.assertLessEqual(setup, at, "setup finished after the worker reported ready")
                 self.assertLessEqual(parts, wt)
             else:
                 self.assertLessEqual(parts + setup, wt, "cold setup must be inside total_ns")
@@ -161,8 +171,7 @@ class Profiles(unittest.TestCase):
             for cid, out in runs["fixtures"].items():
                 for s in out["timing"]["steps"]:
                     with self.subTest(prototype=name, ledger=ledger, profile=prof, case=cid):
-                        self.assertNotIn("setup_ns", s)
-                        self.assertNotIn("start_ns", s)
+                        self.assertFalse(self.WORKER & set(s), s)
 
     def test_outputs_do_not_depend_on_the_profile(self):
         for (name, ledger, prof), runs in self.timed.items():

@@ -3,7 +3,6 @@ package broker
 import (
 	"bufio"
 	"database/sql"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -271,52 +270,7 @@ func TestSQLiteRestartKeepsLedger(t *testing.T) {
 	}
 }
 
-// 4. Contention: 64 goroutines, one connection each.
-func TestSQLiteContention(t *testing.T) {
-	const workers, reps = 64, 20
-	f := loadRace(t)
-	for rep := 0; rep < reps; rep++ {
-		// Distinct keys racing for one single-use grant.
-		path := filepath.Join(t.TempDir(), "grant.db")
-		b := sqlBroker(t, f.initial, &SQLite{DB: path})
-		rtWant(t, b.apply(f.approve, 0), `{"result":"grant_issued"}`)
-		ops := make([]any, workers)
-		for i := range ops {
-			ops[i] = withKey(t, f.initial, f.approval, fmt.Sprintf("race-%d", i), "")
-		}
-		rtWant(t, b.apply(map[string]any{"op": "concurrent", "operations": ops}, 1),
-			fmt.Sprintf(`{"outcomes":{"GRANT_EXHAUSTED":%d,"effect_completed":1},"result":"concurrent"}`, workers-1))
-		for q, want := range map[string]int64{
-			`SELECT count(*) FROM receipts WHERE status = 'observed_success'`: 1,
-			`SELECT count(*) FROM receipt_events WHERE cause = 'reserve'`:     1,
-			`SELECT count(*) FROM grant_uses`:                                 1,
-			`SELECT uses FROM grants WHERE label = 'g1'`:                      1,
-			`SELECT count(*) FROM audit_refusals`:                             workers - 1,
-		} {
-			if got := count(t, path, q); got != want {
-				t.Fatalf("rep %d grant race: %s = %d, want %d", rep, q, got, want)
-			}
-		}
-
-		// One idempotency key: exactly one dispatch.
-		path = filepath.Join(t.TempDir(), "key.db")
-		b = sqlBroker(t, f.initial, &SQLite{DB: path})
-		for i := range ops {
-			ops[i] = withKey(t, f.initial, f.allow, "same-key", "")
-		}
-		rtWant(t, b.apply(map[string]any{"op": "concurrent", "operations": ops}, 0),
-			fmt.Sprintf(`{"outcomes":{"effect_completed":1,"replayed":%d},"result":"concurrent"}`, workers-1))
-		for q, want := range map[string]int64{
-			`SELECT count(*) FROM receipt_events WHERE cause = 'dispatch'`: 1,
-			`SELECT value FROM counters WHERE name = 'next_permit'`:        1,
-			`SELECT count(*) FROM adapter_effects`:                         1,
-		} {
-			if got := count(t, path, q); got != want {
-				t.Fatalf("rep %d same key: %s = %d, want %d", rep, q, got, want)
-			}
-		}
-	}
-}
+// 4. Contention: TestSQLiteContention in d029_test.go (D-029 decision B).
 
 // Each concurrent worker has its own connection, opened for the group.
 func TestConcurrentWorkersOwnConnections(t *testing.T) {

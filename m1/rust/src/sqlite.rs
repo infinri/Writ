@@ -118,6 +118,9 @@ impl From<rusqlite::Error> for DbError {
 const NOT_LEDGER: &str = "SQLITE_NOTADB";
 /// Stored content that violates the ledger's own invariants (C-4).
 const CORRUPT: &str = "SQLITE_CORRUPT";
+/// An application state conflict (D-029): a receipt transition that matched
+/// no row, or a receipt status outside the schema. Not SQLite corruption.
+pub const STATE_CONFLICT: &str = "STATE_CONFLICT";
 
 type R<T> = Result<T, DbError>;
 type Key = (String, String);
@@ -218,10 +221,25 @@ pub mod trace {
         SetupStart,
         /// A worker's connection setup finished (successfully or not).
         SetupEnd,
-        /// A worker reaches the start barrier.
-        Arrive,
-        /// A worker passed the start barrier.
+        /// A worker thread has started (it exists).
+        Spawned,
+        /// A worker records its ready point and is about to signal ready.
+        Ready,
+        /// A worker's connection had a transaction open when it signalled
+        /// ready (must never happen).
+        TxOpenAtReady,
+        /// The coordinator recorded `release_ns` and is about to open the gate.
+        Release,
+        /// A worker passed the start gate.
         Pass,
+        /// An operation acquired the coordination gate shared (D-029).
+        GateShared,
+        /// An operation acquired the coordination gate exclusive (D-029).
+        GateExclusive,
+        /// An `execute` acquired its per-key lock.
+        KeyLock,
+        /// An operation returned (after its audit) and released the gate.
+        Returned,
         /// `BEGIN IMMEDIATE` is about to be issued.
         Begin,
     }
@@ -515,7 +533,7 @@ pub fn reserve(c: &Connection, t: &mut StepTiming, key: &Key, fingerprint: &str,
                 "observed_failure" => Ok(End::Rollback(Some(replayed("effect_failed")))),
                 "dispatched" | "unknown_reconcile" => Ok(End::Rollback(Some(refused("RECONCILIATION_REQUIRED")))),
                 "reserved" => Ok(End::Commit(None)),
-                _ => Err(DbError::new(CORRUPT)),
+                _ => Err(DbError::new(STATE_CONFLICT)),
             };
         }
         if crash_before {
@@ -558,7 +576,7 @@ fn transition(tx: &Transaction, key: &Key, from: &str, to: &str, cause: &str) ->
         (&key.0, &key.1, to, from),
     )?;
     if n != 1 {
-        return Err(DbError::new(CORRUPT));
+        return Err(DbError::new(STATE_CONFLICT));
     }
     tx.execute("INSERT INTO receipt_events (tenant_id, idempotency_key, status, cause) VALUES (?1, ?2, ?3, ?4)", (&key.0, &key.1, to, cause))?;
     Ok(())

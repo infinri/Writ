@@ -57,12 +57,21 @@ type Broker struct {
 
 	led  ledger
 	keys keyLocks
+	// gate is the D-029 coordination gate (LEDGER-SQLITE.md "Broker
+	// coordination gate and state conflicts"): execute and present_permit
+	// hold it shared, reconcile exclusive. Process-local and volatile; it
+	// lives as long as the broker (restart_broker keeps it). Lock order:
+	// gate, per-key lock, SQLite transaction; taken at most once per
+	// operation and never while holding a key lock or a transaction.
+	gate sync.RWMutex
 
 	profile Profile // concurrency profile of every concurrent group (D-027)
-	// trace, when set (tests only), observes a concurrent group: "setup"
-	// (worker i begins its connection setup), "ready" (worker i's setup
-	// finished), "release" (i is -1) and "begin" (worker i begins a
-	// transaction). It may be called from several goroutines.
+	// trace, when set (tests only), observes a concurrent group: "created"
+	// (the coordinator created worker i), "setup" and "setup_done" (worker i
+	// begins and finishes its connection setup, read-back included), "ready"
+	// (worker i signals ready), "release" (i is -1, just before the gate
+	// opens), "start" (worker i passed the gate) and "begin" (worker i
+	// begins a transaction). It may be called from several goroutines.
 	trace func(event string, worker int)
 }
 
@@ -319,6 +328,10 @@ func (b *Broker) execute(led ledger, t *opTiming, op map[string]any, step int) m
 	if d.Status == "require_approval" {
 		effective = grantRef
 	}
+	// D-029: shared gate from here until the operation returns (after any
+	// audit), on every path; reconcile cannot run while it is held.
+	b.gate.RLock()
+	defer b.gate.RUnlock()
 	req, _ := sjson.Obj(request)
 	tenant, key := sjson.StrOr(req, "tenant_id"), sjson.StrOr(req, "idempotency_key")
 	fp := requestFingerprint(request)
@@ -460,6 +473,9 @@ func (b *Broker) presentPermit(led ledger, t *opTiming, op map[string]any) map[s
 	if !okOf || !ok {
 		return b.refuse(led, t, "PERMIT_MISSING")
 	}
+	// D-029: shared gate before T-adapter until the operation returns.
+	b.gate.RLock()
+	defer b.gate.RUnlock()
 	p := *orig
 	switch sjson.StrOr(op, "tamper") {
 	case "mac":
@@ -511,13 +527,22 @@ func (b *Broker) simple(led ledger, t *opTiming, op map[string]any) map[string]a
 		b.mu.Unlock()
 		return map[string]any{"result": "dependency_set"}
 	case "reconcile":
-		n, err := led.reconcile(t)
-		if err != nil {
-			return b.ledgerFailed(led, t, err)
-		}
-		return map[string]any{"result": "reconciled", "count": n}
+		return b.reconcile(led, t)
 	}
 	return b.refuse(led, t, "OPERATION_UNKNOWN")
+}
+
+// reconcile holds the coordination gate exclusive (D-029) from before its
+// transaction until it returns (after any audit): it never sees a receipt of
+// an execution in flight in this process.
+func (b *Broker) reconcile(led ledger, t *opTiming) map[string]any {
+	b.gate.Lock()
+	defer b.gate.Unlock()
+	n, err := led.reconcile(t)
+	if err != nil {
+		return b.ledgerFailed(led, t, err)
+	}
+	return map[string]any{"result": "reconciled", "count": n}
 }
 
 // restart simulates a broker process restart (D-020). Volatile state is
@@ -559,22 +584,22 @@ func (b *Broker) applyOn(led ledger, t *opTiming, op map[string]any, step int) m
 }
 
 // concurrent submits operations on real goroutines, each with its own ledger
-// connection set up for the group and closed afterwards; all start together
-// when close(start) releases them. The ledger's transactions and key locks
-// make the outcome equal some serial order.
+// connection set up for the group and closed afterwards, under the D-028
+// release protocol (LEDGER-SQLITE.md "Concurrency profiles and release
+// protocol"): the coordinator (this goroutine) creates every worker
+// goroutine; each worker (Primary, SQLite: after its own connection setup,
+// concurrently with the others) signals ready and waits at the gate; once
+// every worker has signalled ready (a failed setup counts), the coordinator
+// opens the gate for all of them at once with close(gate). In Cold each
+// worker sets up its connection after passing the gate. A worker whose setup
+// failed answers LEDGER_UNAVAILABLE with no transaction and no audit. The
+// ledger's transactions and key locks make the outcome equal some serial
+// order.
 //
-// Concurrency profiles (D-027): Primary sets up every worker connection
-// (sequentially, in this goroutine) before the goroutines are created and
-// released; Cold creates the goroutines, releases them, and each sets up its
-// own connection. A worker whose setup failed answers LEDGER_UNAVAILABLE with
-// no transaction and no audit.
-//
-// Timing: ready_ns is taken before close(start): in Primary the latest setup
-// end, in Cold (and for the in-memory ledger) the latest instant a worker's
-// goroutine was created with its operation. Each worker's start_ns is read
-// after it passed the barrier, so start_ns >= ready_ns. A worker's total_ns
-// runs from passing the barrier to its result (in Cold it includes the
-// setup); the barrier wait is in neither.
+// Timing: ready_at_ns is read just before a worker signals ready, ready_ns
+// when the coordinator saw every worker ready, release_ns just before the
+// gate opens, start_ns just after a worker passed it. A worker's total_ns
+// runs from passing the gate to its result (in Cold it includes the setup).
 func (b *Broker) concurrent(led ledger, t *opTiming, op map[string]any) map[string]any {
 	ops, _ := sjson.Arr(op["operations"])
 	results := make([]map[string]any, len(ops))
@@ -588,16 +613,13 @@ func (b *Broker) concurrent(led ledger, t *opTiming, op map[string]any) map[stri
 		}
 	}
 	_, isSQL := led.(*sqlLedger)
-	cold := b.profile == Cold && isSQL
+	cold := b.profile == Cold
 	// setup is worker i's connection setup: on success workers[i] is set.
-	setup := func(i int) time.Time {
+	setup := func(i int) {
 		b.traced("setup", i)
 		opening := time.Now()
 		w, err := led.fork()
-		done := time.Now()
-		if isSQL {
-			timings[i].setSetup(done.Sub(opening))
-		}
+		timings[i].setSetup(time.Since(opening))
 		if err != nil {
 			diagnose(err)
 		} else {
@@ -606,31 +628,34 @@ func (b *Broker) concurrent(led ledger, t *opTiming, op map[string]any) map[stri
 			}
 			workers[i] = w
 		}
-		b.traced("ready", i)
-		return done
+		b.traced("setup_done", i)
 	}
-	var ready time.Time
-	if !cold {
-		for i := range ops {
-			if done := setup(i); isSQL {
-				ready = done
-			}
-		}
-	}
-	start := make(chan struct{})
-	var wg sync.WaitGroup
+	gate := make(chan struct{})
+	var ready, done sync.WaitGroup
 	var panics goPanic
+	ready.Add(len(ops))
 	for i, o := range ops {
 		m, _ := sjson.Obj(o)
-		wg.Add(1)
+		done.Add(1)
 		go func(i int, m map[string]any) {
-			defer wg.Done()
+			defer done.Done()
 			defer panics.capture()
-			<-start
+			signal := sync.OnceFunc(ready.Done)
+			defer signal() // a worker that panics before signalling never blocks the group
+			if !isSQL {
+				workers[i] = led
+			} else if !cold {
+				setup(i)
+			}
+			timings[i].setReadyAt(t, time.Now())
+			b.traced("ready", i)
+			signal()
+			<-gate
 			running := time.Now()
 			timings[i].setStart(t, running)
 			timings[i].setDispatch(running)
-			if cold {
+			b.traced("start", i)
+			if isSQL && cold {
 				setup(i)
 			}
 			if workers[i] == nil {
@@ -640,16 +665,17 @@ func (b *Broker) concurrent(led ledger, t *opTiming, op map[string]any) map[stri
 			}
 			timings[i].setTotal(time.Since(running))
 		}(i, m)
-		if cold || !isSQL {
-			ready = time.Now()
-		}
+		b.traced("created", i)
 	}
+	ready.Wait()
 	if len(ops) > 0 {
-		t.setReady(ready)
+		readyAt := time.Now()
+		b.traced("release", -1)
+		t.setRelease(readyAt, time.Now())
 	}
-	b.traced("release", -1)
-	close(start)
-	wg.Wait()
+	close(gate)
+	done.Wait()
+	t.finishGroup()
 	for _, w := range workers {
 		if w != nil && w != led {
 			w.close()

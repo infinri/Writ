@@ -71,13 +71,15 @@ type opTiming struct {
 	concurrent                bool
 	operations                []*opTiming
 	// dispatch is the start of total_ns; a concurrent group measures its
-	// ready_ns and its workers' start_ns as offsets from it (D-027).
+	// members and its workers' offsets from it (D-027, D-028).
 	dispatch time.Time
-	ready    time.Duration // concurrent step: the group's ready point
-	// D-027 worker members: setup is null for the in-memory ledger.
-	isWorker bool
-	setup    *time.Duration
-	start    time.Duration
+	// concurrent step: when the coordinator observed every worker ready,
+	// when it opened the gate, and max minus min worker start.
+	ready, release, startSkew time.Duration
+	// D-028 worker members: setup is null for the in-memory ledger.
+	isWorker       bool
+	setup          *time.Duration
+	readyAt, start time.Duration
 }
 
 // txTiming is one logical transaction: sql is false for the in-memory ledger
@@ -166,13 +168,6 @@ func (o *opTiming) setDispatch(at time.Time) {
 	}
 }
 
-// setReady records the group's ready point at (a concurrent step).
-func (o *opTiming) setReady(at time.Time) {
-	if o != nil {
-		o.ready = at.Sub(o.dispatch)
-	}
-}
-
 // setSetup records a worker's connection setup duration (SQLite only).
 func (o *opTiming) setSetup(d time.Duration) {
 	if o != nil {
@@ -180,15 +175,46 @@ func (o *opTiming) setSetup(d time.Duration) {
 	}
 }
 
-// setStart records the instant a worker passed the start barrier as an
-// offset from its group's dispatch.
+// setReadyAt records the instant a worker signalled ready, as an offset
+// from its group's dispatch.
+func (o *opTiming) setReadyAt(group *opTiming, at time.Time) {
+	if o != nil {
+		o.readyAt = at.Sub(group.dispatch)
+	}
+}
+
+// setStart records the instant a worker passed the gate as an offset from
+// its group's dispatch.
 func (o *opTiming) setStart(group *opTiming, at time.Time) {
 	if o != nil {
 		o.start = at.Sub(group.dispatch)
 	}
 }
 
-func (o *opTiming) json() map[string]any {
+// setRelease records a concurrent group's ready and release instants.
+func (o *opTiming) setRelease(ready, release time.Time) {
+	if o != nil {
+		o.ready, o.release = ready.Sub(o.dispatch), release.Sub(o.dispatch)
+	}
+}
+
+// finishGroup derives start_skew_ns once every worker has finished.
+func (o *opTiming) finishGroup() {
+	if o == nil || len(o.operations) < 2 {
+		return
+	}
+	lo, hi := o.operations[0].start, o.operations[0].start
+	for _, w := range o.operations[1:] {
+		lo, hi = min(lo, w.start), max(hi, w.start)
+	}
+	o.startSkew = hi - lo
+}
+
+// json is this step's timing; a worker's D-028 members are written by its
+// group (jsonIn), since release_delay_ns needs the group's release instant.
+func (o *opTiming) json() map[string]any { return o.jsonIn(nil) }
+
+func (o *opTiming) jsonIn(group *opTiming) map[string]any {
 	txs := map[string]any{}
 	for name, tx := range o.tx {
 		begin, end := any(nil), any(nil)
@@ -216,14 +242,18 @@ func (o *opTiming) json() map[string]any {
 	if o.concurrent {
 		ops := make([]any, len(o.operations))
 		for i, w := range o.operations {
-			ops[i] = w.json()
+			ops[i] = w.jsonIn(o)
 		}
 		m["operations"] = ops
 		m["ready_ns"] = o.ready.Nanoseconds()
+		m["release_ns"] = o.release.Nanoseconds()
+		m["start_skew_ns"] = o.startSkew.Nanoseconds()
 	}
-	if o.isWorker {
+	if o.isWorker && group != nil {
 		m["setup_ns"] = nsOrNull(o.setup)
+		m["ready_at_ns"] = o.readyAt.Nanoseconds()
 		m["start_ns"] = o.start.Nanoseconds()
+		m["release_delay_ns"] = (o.start - group.release).Nanoseconds()
 	}
 	return m
 }

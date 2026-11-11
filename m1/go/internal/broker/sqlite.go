@@ -276,9 +276,17 @@ func (l *sqlLedger) init() error {
 	})
 }
 
+// receiptStatuses are the statuses ledger.sql allows.
+var receiptStatuses = map[string]bool{"reserved": true, "dispatched": true, "observed_success": true,
+	"observed_failure": true, "unknown_reconcile": true}
+
 var (
-	errRollback = errors.New("rollback")
-	errSchema   = errors.New("ledger schema version or table wrong")
+	// errStateConflict is an application state conflict (D-029): a receipt
+	// transition matched no row, or a stored status is outside the schema.
+	// Reported as STATE_CONFLICT, never as a SQLite code.
+	errStateConflict = errors.New("receipt state conflict")
+	errRollback      = errors.New("rollback")
+	errSchema        = errors.New("ledger schema version or table wrong")
 )
 
 // tx runs f in one BEGIN IMMEDIATE transaction: committed if f returns nil,
@@ -342,6 +350,9 @@ func one(res sql.Result, err error, what string) error {
 	if err != nil {
 		return err
 	}
+	if n == 0 {
+		return errStateConflict // the receipt is no longer in the expected status
+	}
 	if n != 1 {
 		return fmt.Errorf("%s: %d rows changed, want 1", what, n)
 	}
@@ -364,6 +375,9 @@ func (l *sqlLedger) reserve(t *opTiming, r reservation) (outcome string, err err
 		e := tx.QueryRow(`SELECT fingerprint, grant_label, status FROM receipts WHERE tenant_id = ? AND idempotency_key = ?`,
 			r.tenant, r.key).Scan(&fp, &label, &status)
 		if e == nil {
+			if !receiptStatuses[status] {
+				return errStateConflict
+			}
 			if outcome = r.existingOutcome(fp, label.String, status); outcome != "" {
 				return errRollback
 			}

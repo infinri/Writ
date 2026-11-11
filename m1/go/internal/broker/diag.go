@@ -10,9 +10,9 @@ import (
 
 // Ledger diagnostics (LEDGER-SQLITE.md "Storage failures" rule 4, D-025):
 // stderr carries only a fixed category (open, initialize, transaction
-// <name>, final) and the SQLite primary result code name, or io for any
-// other failure. Never a path, a file name, error text, a credential, a key
-// or a seal.
+// <name>, final, worker) and the SQLite primary result code name,
+// STATE_CONFLICT (D-029), or io for any other failure. Never a path, a file
+// name, error text, a credential, a key or a seal.
 
 // ledgerErr is a ledger failure tagged with its diagnostic category.
 type ledgerErr struct {
@@ -51,8 +51,12 @@ var primaryCodes = map[sqlite3.ErrNo]string{
 	26: "SQLITE_NOTADB", 27: "SQLITE_NOTICE", 28: "SQLITE_WARNING", 100: "SQLITE_ROW", 101: "SQLITE_DONE",
 }
 
-// codeName is the SQLite primary result code name of err, or io.
+// codeName is the SQLite primary result code name of err, STATE_CONFLICT
+// for an application state conflict (D-029), or io.
 func codeName(err error) string {
+	if errors.Is(err, errStateConflict) {
+		return "STATE_CONFLICT"
+	}
 	var se sqlite3.Error
 	if errors.As(err, &se) {
 		if n, ok := primaryCodes[se.Code]; ok {

@@ -68,11 +68,30 @@ pub struct StepTiming {
     /// Transactions in the order they ran.
     pub tx: Vec<(&'static str, TxTime)>,
     pub operations: Option<Vec<StepTiming>>,
-    /// `concurrent` step only (D-027): offset of the group's ready point.
-    pub ready_ns: Option<i64>,
-    /// Worker of a `concurrent` group only (D-027): `setup_ns` (`None` for
-    /// the in-memory ledger) and `start_ns`.
-    pub worker: Option<(Option<i64>, i64)>,
+    /// `concurrent` step only (D-028): written whenever `operations` is.
+    pub group: GroupTiming,
+    /// Worker of a `concurrent` group only (D-028).
+    pub worker: Option<WorkerTiming>,
+}
+
+/// D-028 members of a `concurrent` step (LEDGER-SQLITE.md "Concurrency
+/// profiles and release protocol"); offsets from the group's dispatch.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GroupTiming {
+    pub ready_ns: i64,
+    pub release_ns: i64,
+    pub start_skew_ns: i64,
+}
+
+/// D-028 members of a worker; `release_delay_ns` is `start_ns - release_ns`
+/// of its group.
+#[derive(Clone, Copy, Debug)]
+pub struct WorkerTiming {
+    /// `None` for the in-memory ledger.
+    pub setup_ns: Option<i64>,
+    pub ready_at_ns: i64,
+    pub start_ns: i64,
+    pub release_delay_ns: i64,
 }
 
 impl StepTiming {
@@ -85,7 +104,7 @@ impl StepTiming {
             key_lock_wait_ns: None,
             tx: Vec::new(),
             operations: None,
-            ready_ns: None,
+            group: GroupTiming::default(),
             worker: None,
         }
     }
@@ -123,12 +142,16 @@ impl StepTiming {
             ("tx", Value::Obj(tx)),
         ];
         if let Some(ops) = &self.operations {
-            members.push(("ready_ns", Value::Int(self.ready_ns.unwrap_or(0))));
+            members.push(("ready_ns", Value::Int(self.group.ready_ns)));
+            members.push(("release_ns", Value::Int(self.group.release_ns)));
+            members.push(("start_skew_ns", Value::Int(self.group.start_skew_ns)));
             members.push(("operations", Value::Arr(ops.iter().map(StepTiming::to_value).collect())));
         }
-        if let Some((setup_ns, start_ns)) = self.worker {
-            members.push(("setup_ns", opt(setup_ns)));
-            members.push(("start_ns", Value::Int(start_ns)));
+        if let Some(w) = self.worker {
+            members.push(("setup_ns", opt(w.setup_ns)));
+            members.push(("ready_at_ns", Value::Int(w.ready_at_ns)));
+            members.push(("start_ns", Value::Int(w.start_ns)));
+            members.push(("release_delay_ns", Value::Int(w.release_delay_ns)));
         }
         obj(members)
     }

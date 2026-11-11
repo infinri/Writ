@@ -174,12 +174,11 @@ def collect_timing(timing: dict, acc: dict) -> int:
         op = s.get("op", "unknown")
         if op == "concurrent":
             add(f"{prefix}concurrent.total_ns", s.get("total_ns"))
-            add(f"{prefix}concurrent.ready_ns", s.get("ready_ns"))
-            ready = s.get("ready_ns")
+            add(f"{prefix}concurrent.ready_ns", s.get("ready_ns"))  # D-028: connection-preparation wall time
+            add(f"{prefix}concurrent.start_skew_ns", s.get("start_skew_ns"))
             for o in s.get("operations") or []:
-                add("concurrent.worker.setup_ns", o.get("setup_ns"))  # D-027
-                if isinstance(ready, int) and isinstance(o.get("start_ns"), int):
-                    add("concurrent.worker.release_delay_ns", o["start_ns"] - ready)
+                add("concurrent.worker.setup_ns", o.get("setup_ns"))
+                add("concurrent.worker.release_delay_ns", o.get("release_delay_ns"))
                 step(o, "concurrent.")
             return
         for k in ("total_ns", "validate_ns", "decide_ns", "key_lock_wait_ns"):
