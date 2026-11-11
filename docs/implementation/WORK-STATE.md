@@ -1,12 +1,12 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-10 (D-027 to D-029 verified locally; push and CI pending) · **Branch:** v2/architecture-rebuild · **Milestone:** M1 active (development only, D-014); M1-00..M1-05, M1-06a, D-022 and D-023 DONE; M1-07 in progress; M1-06 measurements blocked by environment. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md).
+**Last updated:** 2026-11-10 (D-027, D-028, D-029 implemented; CI green E-044) · **Branch:** v2/architecture-rebuild · **Milestone:** M1 active (development only, D-014); M1-00..M1-05, M1-06a, D-022 and D-023 DONE; M1-07 in progress; M1-06 measurements blocked by environment. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md).
 
 ## Current
 
 - **Published:** remote HEAD `988a840` (docs); last published code `7a5a366` (D-026), CI run 42898828550 green, all 5 jobs (E-036). Local, unpushed: `d9054c9` (docs checkpoint), `52b31fe` (D-027 code), and the D-027 docs commit.
 - **Prototypes:** 447/447 both ledgers; 37 ledger tests; 14 oracle tests; SQLite campaigns pass in both D-027 profiles; mutation smoke 9/9 each (E-038).
-- **Next task:** push the D-028/D-029 implementation commit (owner-approved), verify CI on the exact SHA, then mark D-027, D-028, D-029 IMPLEMENTED. Then benchmark readiness: governor `performance` and temperature (owner).
+- **Next task:** benchmark readiness rerun once the owner sets governor `performance` and the CPU is below 60 C (E-043: power met); then controlled M1-06 and M1-07 measurements only if every guard passes; then the M1-08 scorecard. Never choose Rust or Go.
 - **Benchmarks:** none taken; environment not ready ([M1-06-READINESS](M1-06-READINESS.md)).
 
 ## Security findings

@@ -344,6 +344,10 @@ The timeout and lock-wait figures in E-034, E-035 and E-036 are **preliminary an
 - AC `ACAD` online; USB-C source 004 also online (5 V, 3 A max); battery `BAT1` **Not charging** at 100%, `current_now` 0. Sampled every 30 s for about 20 minutes under the E-042 test load (1-minute load up to 3.94, hottest sensor up to 71.6 C): 40 of 40 samples Not charging, current 0, so **not discharging under that load**. The charger wattage itself is not reported by sysfs.
 - Guard (`m1/bench/wbench/envinfo.py`, read only): **refuses**: governor `powersave` on 16 of 16 policies; CPU 63.25 C above the 60 C start limit (idle reading); uncommitted changes under `m1/` at that time. Load 0.81 passed (limit 1.0). Top consumers: `clickhouse-server` about 11% CPU, IntelliJ `java` about 10%, Chrome, Claude sessions. No setting changed, no process stopped.
 
+### E-044: `d99faa2` CI green (D-027, D-028, D-029)
+
+- CI https://github.com/infinri/Writ/actions/runs/42936763654 on `d99faa2` (m1/ tree identical to implementation commit `c5effec`): success, all 5 jobs (E-044). Rust 70 + 3 tests passed; Go parity and SQLite parity 447 fixtures; property CI profile seeds 20261107 and 1 PASS; SQLite 64-way campaign PASS 348 cases, 6,780 checks, 0 mismatches; M0 and docs success. The push contained `c5effec` and `d99faa2` together, so CI ran on the head; `git diff c5effec d99faa2` touches only `docs/`.
+
 ## Not yet executed
 
 - SR-06 live-host experiments (0 of 69; sandbox torn down) and full SR-06 acceptance; rule semantic review (M0-01d); independent human golden review (M0-05a).
