@@ -1,3 +1,5 @@
 __pycache__/
 results/
 *.samples.json.gz
+# Tracked reproducibility bundles (owner decision 2026-11-11); results/ stays ignored
+!evidence/**/*.samples.json.gz
