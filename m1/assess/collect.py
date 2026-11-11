@@ -244,11 +244,16 @@ def build_times(args) -> dict | None:
         print("collect: REFUSED to time builds (benchmark guard):", *reasons, sep="\n  - ", file=sys.stderr)
         return None
     res = {"environment": env, "repository": repo, "runs": args.runs, "samples": {}, "evidence": {}}
+    # Behaviour-preserving, compiler-relevant edit to a function on the decision path (owner 2026-11-11: an
+    # unused helper is insufficient). The first statement stores a distinctive per-run 64-bit constant into a
+    # retained sink, so the kernel must be recompiled and the executable relinked, and the constant's bytes must
+    # appear in the new executable (proof that the edited code was retained).
+    marker = 0x5752_4954_0107_0000
     edits = {
-        # Behaviour-preserving but compiler-relevant: a new private function with a per-run constant in the
-        # kernel module; the kernel crate (Rust) or package (Go) must be recompiled and the binary relinked.
-        "rust": ("src/kernel.rs", "\n#[allow(dead_code)]\n#[inline(never)]\nfn m1_07_edit_probe() -> u64 {{\n    {n}\n}}\n"),
-        "go": ("internal/kernel/schema.go", "\n//go:noinline\nfunc m107EditProbe() uint64 {{ return {n} }}\n"),
+        "rust": ("src/kernel.rs", "pub fn bundle_sha(doc: &Value) -> Option<String> {\n",
+                 "    std::hint::black_box({c}u64);\n", ""),
+        "go": ("internal/kernel/decide.go", "func LoadPolicy(doc any) *Policy {\n",
+               "\tm107Sink = {c}\n", "\n// m107Sink retains the M1-07 build-timing edit (disposable trees only).\nvar m107Sink uint64\n"),
     }
     with tempfile.TemporaryDirectory(prefix="writ-m1-07-t-") as d:
         for lang in ("rust", "go"):
@@ -261,8 +266,14 @@ def build_times(args) -> dict | None:
                 code, _, err = build_rust(dst) if lang == "rust" else build_go(dst, ("-trimpath",), env_over)
                 clean.append(time.perf_counter() - t if code == 0 else None)
                 before = sha256(dst / ("target/release/proto" if lang == "rust" else "proto")) if code == 0 else None
-                rel, snippet = edits[lang]
-                (dst / rel).write_text((dst / rel).read_text() + snippet.format(n=1000 + i))
+                rel, anchor, stmt, extra = edits[lang]
+                const = marker + i
+                src = (dst / rel).read_text()
+                assert src.count(anchor) == 1, (lang, rel)
+                (dst / rel).write_text(src.replace(anchor, anchor + stmt.format(c=const)) + extra)
+                needle = const.to_bytes(8, "little")
+                bin_path = dst / ("target/release/proto" if lang == "rust" else "proto")
+                present_before = needle in bin_path.read_bytes() if before else None
                 t = time.perf_counter()
                 if lang == "rust":
                     code, _, err = build_rust(dst)
@@ -272,14 +283,21 @@ def build_times(args) -> dict | None:
                     compiled = "writ.dev/m1/proto/internal/kernel" in err
                 incr.append(time.perf_counter() - t if code == 0 else None)
                 after = sha256(dst / ("target/release/proto" if lang == "rust" else "proto")) if code == 0 else None
-                proof.append({"recompiled_kernel": compiled, "binary_rewritten": after is not None,
-                              "binary_hash_changed": before != after, "build_log_tail": err[-300:]})
+                present_after = needle in bin_path.read_bytes() if after else None
+                proof.append({"recompiled_kernel": compiled, "binary_hash_changed": before != after,
+                              "edit_constant": hex(const), "constant_in_binary_before": present_before,
+                              "constant_in_binary_after": present_after,
+                              "edit": {"file": rel, "after": anchor.strip(), "inserted": stmt.format(c=const).strip(),
+                                       "appended": extra.strip() or None},
+                              "build_log_tail": err[-300:]})
             res["samples"][lang] = {"clean_s": clean, "incremental_real_edit_s": incr}
             res["evidence"][lang] = proof
     res["method"] = ("clean = fresh source copy, empty target directory (Rust registry sources cached in CARGO_HOME) "
                      "or empty isolated GOCACHE per run (the owner's global Go cache is never touched); "
-                     "incremental = after the clean build, append a private function with a per-run constant to the "
-                     "kernel source (src/kernel.rs, internal/kernel/schema.go) and rebuild; evidence records whether "
+                     "incremental = after the clean build, insert as the first statement of a decision-path kernel function "
+                     "(Rust kernel::bundle_sha, Go kernel.LoadPolicy) a store of a distinctive per-run constant into a "
+                     "retained sink (std::hint::black_box; a package variable), then rebuild; evidence records whether "
+                     "the constant's bytes are absent before and present after (retained, relinked code) and whether "
                      "the kernel was recompiled (cargo 'Compiling writ-m1-proto', go -v listing the kernel package)")
     return res
 
