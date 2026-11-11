@@ -42,7 +42,7 @@ Single host: AMD Ryzen 9 7940HS, 16 logical CPUs, 31,393 MiB, Ubuntu 24.04.3, Li
 | B-cold | lock-timeout refusals | 0 | 0 | equal |
 | H duplicates and uncertain receipts, SQLite (1,000 scenarios x 5) | lines/s; execute total p50 / p99 | 153; 1.05 / 7.31 ms | 156; 1.07 / 7.42 ms | within noise |
 | H | peak RSS | 4.6 MB | 17.2 MB | Go 3.7x |
-| H | process overhead per run (wall minus in-process time) p50 | 20 ms | 723 ms | see note 2 |
+| H | process overhead per run (wall minus in-process time) p50 | 20 ms | 723 ms | **withdrawn** (note 2, E-048: Go timing boundary, not extra work) |
 | B-mem, H-mem (in-memory model; simulated, not a substitute) | batch wall p50 | 63 ms; 81 ms | 56 ms; 106 ms | mixed |
 | M1-07 clean build (5 runs, median) | wall | 2.65 s | 3.69 s | Rust 28% faster (note 3) |
 | M1-07 incremental build after a kernel-file touch | wall | 1.42 s | 0.08 s | **not comparable** (note 3) |
@@ -54,6 +54,14 @@ Successful versus refused operations: in B every group mixes authorized and refu
 1. **SQLite lock wait at the median.** Rust's median `BEGIN IMMEDIATE` wait is about 1 ms, Go's about 9 µs; p95 and p99 are equal, and end-to-end execute latency is close. Rust's near-simultaneous release (start skew p50 4.7 µs versus 56 µs) makes more writers collide at `BEGIN`, and SQLite's busy handler then sleeps in millisecond steps. This is the release-simultaneity difference D-028 made measurable; it is a property of the start protocol, not of transaction cost (reserve body p50: Rust 26 µs, Go 36 µs).
 2. **Go process overhead in H: resolved (E-048).** An instrumentation boundary: Go closed the SQLite ledger after recording `run_ns`, Rust before. Not extra work (Go wall time was not higher). Fixed and verified (untimed time now 0.036 s Go versus 0.031 s Rust per 1,000 lines).
 3. **Build timings.** Rust clean builds compile 20 crates with registry sources cached; Go clean builds start from an empty dedicated build cache (`GOCACHE` pointed at a scratch directory so the owner's global cache was not cleared). The incremental case appends a newline to one kernel source file: Go's compiled output is then unchanged and the link is cached, so 0.08 s does not represent a real edit; Rust recompiles its single crate. A realistic incremental comparison needs a semantic edit (not measured).
+
+## Comparability after the timing-boundary correction (E-048, implementation `bf94cdf`)
+
+The seed 20261111 bundle (`m1/bench/evidence/2026-11-11-seed-20261111/`) stays unchanged as recorded. Go then closed the SQLite ledger after recording `run_ns`; Rust before.
+
+- **Remain comparable (unaffected):** every batch wall time and throughput (wall time always included the close); workload A kernel latency and throughput, cold start, process concurrency, G (no ledger); B, B-cold and H per-operation fields (`total_ns`, `decide_ns`, `validate_ns`, `key_lock_wait_ns`, transaction `begin_ns`/`body_ns`/`end_ns`, `ready_ns`, `setup_ns`, release delay, start skew), which end before the close; peak RSS; in-memory B-mem and H-mem.
+- **Not comparable, need the corrected measurement:** Go `line.run_ns` and `process.overhead_ns` in SQLite workloads (B, B-cold, H); the corrected repeat runs (seeds 20261121, 20261131) supply them.
+- **Withdrawn:** the "Go process overhead" disadvantage (0.7 s per 1,000-line H run).
 
 ## Sensitivity
 
