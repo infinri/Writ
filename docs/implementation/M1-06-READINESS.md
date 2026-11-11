@@ -1,6 +1,6 @@
 # M1-06 benchmark readiness (workloads B and H)
 
-**Status (2026-11-10, pre-compaction): NOT READY TO MEASURE** (environment; D-027 implemented locally in `52b31fe`, CI pending). Instrumentation verified; no official Rust versus Go measurement has been taken. Verified at published `6b7eab12a35a82d52e11493c9531268aaf697530`, CI https://github.com/infinri/Writ/actions/runs/42857245639 (all 5 jobs success).
+**Status (2026-11-10, pre-compaction): NOT READY TO MEASURE** (environment guard refuses: governor, temperature; D-027 to D-029 verified locally, CI pending; E-043). Instrumentation verified; no official Rust versus Go measurement has been taken. Verified at published `6b7eab12a35a82d52e11493c9531268aaf697530`, CI https://github.com/infinri/Writ/actions/runs/42857245639 (all 5 jobs success).
 
 | Requirement (owner, 2026-11-10) | Status | Evidence |
 |---|---|---|
@@ -11,7 +11,7 @@
 | Equivalent engine settings | met | identical SQLite 3.54.1 static library, source id, compile options and settings read back by `proto sqlite-info` in both (CI engine assertion; harness `sqlite.engine_and_settings_identical` check) |
 | Timing does not change security or transactional behaviour | met | 982 deterministic case outputs byte-identical between `3012940` and `6b7eab1` builds for both prototypes, both ledgers, every command; timing-integrity scenario equality on every broker fixture; fixtures 444/444 both ledgers |
 | Harness refuses unsuitable power, governor, load and thermal conditions | met | guard (`m1/bench/wbench/envinfo.py`) self-tests on fake sysfs trees (battery, powersave, mixed governors, load, temperature, unreadable boost, dirty tree, unpinned toolchains, Go without `-trimpath`); live refusal 2026-11-10 exit 3, nothing written |
-| Environment passes every guard | **not met** | last reading 2026-11-10: governor **`powersave`** on 16 of 16 policies; **battery discharging** with an AC supply online (`ACAD` 1; earlier identified as USB-C 5 V / 3 A, about 15 W); **1-minute load 2.24** (2026-11-10, after D-027 verification); CPU temperature not re-read |
+| Environment passes every guard | **not met** | last reading 2026-11-10: 2026-11-10 (E-043): full-power charger connected, battery **Not charging at 100%, current 0, also under about 20 minutes of test load** (power now met); governor **`powersave`** on 16 of 16 policies (not met); CPU **63.25 C** idle, above the 60 C start limit (not met); 1-minute load 0.81 (met at that reading; IntelliJ, ClickHouse, Chrome, Claude sessions running) |
 | Concurrency profiles equivalent | **met locally (CI pending)** | D-027 `primary` (default) and `cold` (`--concurrency-profile cold`, workload `B-cold`, reported separately) in both prototypes; start rule proven by `m1/ledger_tests/test_d027.py` and each prototype's own trace tests (E-038). Release mechanisms still differ (open owner question); `concurrent.worker.release_delay_ns` reports it |
 
 ## Owner actions before M1-06
