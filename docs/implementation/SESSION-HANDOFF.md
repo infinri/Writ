@@ -13,13 +13,13 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 | Item | State |
 |---|---|
 | Branch | `v2/architecture-rebuild` (never `main`) |
-| Published remote HEAD | `988a840c2d69de2a371f13e07363845067b67282` (docs: E-036). CI https://github.com/infinri/Writ/actions/runs/42902590125 **success, all 5 jobs** (same code as `7a5a366`; SQLite 64-way campaign PASS 348 cases, 6,780 checks, 0 mismatches) |
-| Last code commit | `7a5a366d13f0b514a9723c74343c167e54f0aebd` (D-026), CI https://github.com/infinri/Writ/actions/runs/42898828550 **success, all 5 jobs** |
-| Local, unpushed | `d9054c9` (docs checkpoint), `52b31fe` (D-027 code: spec `m1-ledger-1a`, tests, both prototypes, harness), then the D-027 docs commit; push needs owner confirmation |
+| Published remote HEAD | `612e1f4d081ae549fc0c769b0995b1ad2faed731` (docs: E-044, D-027..D-029 implemented); CI https://github.com/infinri/Writ/actions/runs/42938794312 **success, all 5 jobs** |
+| Last code commit | `c5effec` (D-028, D-029), CI https://github.com/infinri/Writ/actions/runs/42936763654 on `d99faa2` (same m1/ tree) **success, all 5 jobs** (E-044) |
+| Local, unpushed | this handoff refresh commit (docs only), if not yet pushed |
 | Working tree | only untracked `docs/audit/m0/hook-audit/` (owner material: never stage, publish or summarize) |
 | Milestone | **M1** under D-014 (development only). M0 closed for development only. Release and production **NO-GO** |
 
-Commit chain since M1-05 (all published): `9e6f9f1` M1-06a harness; `a44c9cc` D-022; `935e4e3` D-023 SQLite ledger; `e1dc2e1` M1-07 report (CI failed: system SQLite linked); `3012940` D-024 plus CI fix; `6b7eab1` M1-06d broker timing; `68f4593` D-025; `8d1915c` docs; `d9815f8` guard refuses discharging battery (CI failed: busy timeouts, E-034); `1994b67` docs; `7a5a366` D-026; `988a840` docs.
+Commit chain since M1-05 (all published): `9e6f9f1` M1-06a harness; `a44c9cc` D-022; `935e4e3` D-023 SQLite ledger; `e1dc2e1` M1-07 report (CI failed: system SQLite linked); `3012940` D-024 plus CI fix; `6b7eab1` M1-06d broker timing; `68f4593` D-025; `8d1915c` docs; `d9815f8` guard refuses discharging battery (CI failed: busy timeouts, E-034); `1994b67` docs; `7a5a366` D-026; `988a840` docs; `d9054c9` docs checkpoint; `52b31fe` D-027; `41529d1` docs (CI red, E-039); `a0769b6` docs (CI red, same cause); `c5effec` D-028, D-029; `d99faa2` docs (CI green, E-044); `612e1f4` docs.
 
 ### B. Architecture in one page
 
@@ -50,34 +50,26 @@ M1-00 toolchains; M1-01 parity driver; M1-02 fixtures (amendments 1..7, 12 sets,
 | D-024 trimpath, Linux x86_64 only, storage failures fail closed, `ReadID` removed | implemented, tested |
 | D-025 DEP-1, C-1..C-6, C-4 grant integrity, adapter precedence, S-1, S-2, sanitized stderr | implemented, tested |
 | D-026 verified lock-contention aborts, availability separate from correctness | implemented, tested, CI green at `7a5a366` |
-| **D-027 standardized concurrent-worker start** | **APPROVED, IMPLEMENTED LOCALLY** (`52b31fe`, E-038; CI pending); premise corrected after approval (see DECISION-LOG D-027 correction) |
+| D-027 standardized concurrent-worker start | implemented (`52b31fe`), refined by D-028 |
+| D-028 equivalent release protocol | implemented (`c5effec`), CI green E-044 |
+| D-029 process-local coordination gate, `STATE_CONFLICT`, verified contention acceptance | implemented (`c5effec`), CI green E-044; process-local only |
 
 ### E. Verified evidence ([TEST-EVIDENCE](TEST-EVIDENCE.md), latest E-037)
 
 At `7a5a366` (CI run 42898828550, success, all 5 jobs; and locally, E-035): Rust 58 unit + 3 integration tests; Go vet clean, race tests ok in 6 packages; both link SQLite 3.54.1 (source id `2026-10-16 14:45:20 555e07ef...`), identical settings; fixtures **447/447** in memory and on SQLite for each prototype; regressions 11/11; `m1/ledger_tests` **30** OK (13 storage failures, 3 timing integrity, 14 D-025); D-026 oracle negative tests **14** OK; memory property CI profile seeds 20261107 and 1; Rust-SQLite versus Go-SQLite broker campaigns with 64-way groups PASS (CI 348 cases, 6,780 checks; local 2,584 cases, 52,920 checks; 0 mismatches); mutation smoke 9 of 9 mutants caught for each (including `masked-effect`); harness self-tests 18 OK; benchmark dry run 0 correctness failures; M0 281 passed; drift, driver and docs checks OK. Availability (preliminary, not comparable before D-027): E-034 Rust 89 / Go 6 timeouts of 12,800; E-036 CI Rust 2 of 1,408 at 64-way. Guarantee level: **Tested (unit or reference) only**; no test result is a real-host security certification. **No official benchmark measurement exists.**
 
-### F. Authorized next task: D-027 (M1-06h); steps 1 to 5 DONE locally, step 6 pending
+### F. Next task: M1-06 benchmark readiness (D-027, D-028, D-029 DONE)
 
-**Requirements (DECISION-LOG D-027):** primary profile: for every `concurrent` group, open, configure and verify every dedicated worker connection before releasing the common start barrier; release only when all are ready; no write transaction (`BEGIN IMMEDIATE`) before release; connection setup excluded from operation `total_ns` and reported separately. Supplemental cold-connection profile: worker connections created after release (setup inside the operation), selected explicitly and reported separately. Keep busy timeout 5 s, 64-way stress tests, D-026 checks. Do not tune either prototype beyond this rule.
+**Done:** D-027 (`52b31fe`), D-028 equivalent release protocol and D-029 process-local coordination gate, `STATE_CONFLICT`, verified contention acceptance (`c5effec`); CI green (E-044). Specs: LEDGER-SQLITE.md amendments `m1-ledger-1a`, `1b`, `1c`. Limitation: the gate is process-local; multi-process reconciliation safety is not claimed (`test_d029` cross-process demonstration checks only fail-closed safety).
 
-**Plan:**
+**Readiness (read only, last 2026-11-11, E-043 and later):** power met (battery Not charging at 100%, current 0, also under about 20 minutes of test load); `m1/` tree clean at `612e1f4`; binaries rebuilt from it (Go `-trimpath`); toolchain pins pass. **Guard refuses:** governor `powersave` on 16 of 16 policies; 1-minute load 1.16 (IntelliJ `java` at about 300% CPU, ClickHouse about 11%); CPU 64.4 C above the 60 C start limit.
 
-1. Spec first (Claude): amend LEDGER-SQLITE.md "concurrent" and "Per-operation timing": name the profiles (proposal: default primary; supplemental via an explicit flag such as `--concurrency-profile cold`, plus a `concurrent` step timing member for connection setup, for example `setup_ns` per operation and `barrier_release_ns` per group); record exact field names before any code.
-2. Language-neutral tests (Claude): extend `m1/ledger_tests/test_timing_integrity.py` (or add `test_d027.py`): in the primary profile every worker's first transaction `begin_ns` starts after the barrier (setup outside `total_ns`, setup field present for every operation); the cold profile reports setup inside `total_ns`; outputs unchanged on all broker fixtures; D-026 categories unchanged.
-3. Prototypes (two separate agents, each blind to the other, briefs as for D-026). **Current code (verified 2026-11-10; corrects E-035):** Rust `m1/rust/src/broker.rs` `dispatch_step` (line 683) spawns one OS thread per operation; each thread calls `group_connection` (line 666, `l.connect()`) in parallel, then `barrier.wait()` (`std::sync::Barrier`, line 688), and adds setup to `total_ns`. Go `m1/go/internal/broker/scenario.go` `concurrent` (line 533) opens every worker with `led.fork()` (line 548; `sqlite.go` `fork` line 623, `reopen`) sequentially in the calling goroutine, then spawns goroutines that wait on `<-start` (line 565), releases with `close(start)`, and adds setup to `total_ns`. **Both already open before release.** Remaining D-027 work in each: verify each worker connection (settings read back) before release; exclude setup from `total_ns` and report it in the new setup field; implement the cold-connection profile; tests proving no `BEGIN` before release.
-4. Harness: `m1/props/wprops/c_broker.py` (run groups in the primary profile; optionally record cold-profile availability separately) and `m1/bench/bench.py` (workload B primary profile; supplemental cold profile reported separately); keep availability evidence separate from correctness.
-5. Verify (all must pass): Rust `cargo test`; Go vet and race tests; fixtures 447/447 both ledgers both prototypes; regressions; `m1/ledger_tests` all; `m1/props/tests`; memory property CI profile seeds 20261107 and 1; SQLite campaign `python3 m1/props/run.py --campaign broker --ledger sqlite --seed 20261107 --cases 1000 --repeats 3 --rust ... --go ...` and seed 2; mutation smoke both; bench self-tests and dry run; M0; drift, driver, docs checks. Record timeout counts per profile as availability evidence (not a benchmark).
-6. **Pending:** E-038 recorded and code committed separately (`52b31fe`); ask the owner before pushing; verify CI on the exact SHA; only then mark D-027 IMPLEMENTED in DECISION-LOG, TASKS, this handoff and WORK-STATE.
+**Steps:**
 
-**Done (2026-11-10):** steps 1 to 5. Field names as implemented: `--concurrency-profile primary|cold`; group `ready_ns`; worker `setup_ns`, `start_ns`; bench `B-cold`, `concurrent.worker.release_delay_ns`. Implementation differences (not tuned): Rust parallel setup in worker threads, Go sequential setup in the caller (LEDGER-SQLITE.md implementation notes).
-
-**Acceptance:** both profiles implemented in both prototypes; spec-derived tests prove the primary profile's start rule; all suites above green locally and in CI; earlier timeout evidence kept and labelled preliminary.
-
-**Open question for the owner (raise before or with the D-027 report):** release simultaneity differs (Rust OS-thread barrier releases all at once; Go goroutines released by `close(start)` are scheduled by the runtime); the earlier explanation of the timeout difference was wrong (TEST-EVIDENCE "Correction to E-035"). Do not change release mechanics without a decision.
-
-**Known risks:** busy timeouts still possible in the primary profile (all 64 writers start together; D-026 accepts verified aborts); Go `database/sql` connection reuse must stay one dedicated `*sql.Conn` per worker; per-group connection setup time differs between prototypes (report, do not tune).
-
-**After D-027:** controlled M1-06 measurements and M1-07 build timings, only when every guard passes; then M1-08 scorecard for owner review. Never choose Rust or Go.
+1. Wait for the owner to confirm governor `performance` and a cooled CPU. Never change CPU settings, run sudo, or stop processes.
+2. Rerun every readiness check read only (section H environment commands, and the guard: `cd m1/bench && python3 -c "from wbench import envinfo as e; env=e.capture(); print(e.guard(env, e.repository(), 1.0, 60.0))"` plus toolchain pins); confirm the battery is not discharging; clean committed tree; binaries built from the recorded commit.
+3. If every guard passes, report readiness and **wait for the owner's explicit authorization** before official M1-06 (`python3 m1/bench/bench.py --seed <new recorded seed> ...`, M1-06-READINESS step 4) and M1-07 build timings. Correctness tests and `--dry-run` are allowed at any time; they are not measurements.
+4. After measurements: M1-08 scorecard for owner review. Never choose Rust or Go.
 
 ### G. Unverified security obligations and blockers (never claim otherwise)
 

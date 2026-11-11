@@ -348,6 +348,11 @@ The timeout and lock-wait figures in E-034, E-035 and E-036 are **preliminary an
 
 - CI https://github.com/infinri/Writ/actions/runs/42936763654 on `d99faa2` (m1/ tree identical to implementation commit `c5effec`): success, all 5 jobs (E-044). Rust 70 + 3 tests passed; Go parity and SQLite parity 447 fixtures; property CI profile seeds 20261107 and 1 PASS; SQLite 64-way campaign PASS 348 cases, 6,780 checks, 0 mismatches; M0 and docs success. The push contained `c5effec` and `d99faa2` together, so CI ran on the head; `git diff c5effec d99faa2` touches only `docs/`.
 
+### E-045: `612e1f4` CI green; readiness recheck (read only, 2026-11-11)
+
+- CI https://github.com/infinri/Writ/actions/runs/42938794312 on `612e1f4d081ae549fc0c769b0995b1ad2faed731`: success, all 5 jobs.
+- Binaries rebuilt from the clean committed tree at `612e1f4` (Rust release, Go `-trimpath`). Guard (read only): power met (Not charging, 100%); `m1/` tree clean; toolchain pins pass. **Refuses:** governor `powersave` (16 of 16); 1-minute load 1.16 above 1.0 (IntelliJ `java` about 300% CPU at that moment, ClickHouse about 11%); CPU 64.4 C above the 60 C start limit. No setting changed, no process stopped, no measurement taken.
+
 ## Not yet executed
 
 - SR-06 live-host experiments (0 of 69; sandbox torn down) and full SR-06 acceptance; rule semantic review (M0-01d); independent human golden review (M0-05a).
