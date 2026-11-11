@@ -700,7 +700,15 @@ func (l *sqlLedger) restart() error {
 	return nil
 }
 
+// onClose, when set (tests only), is called after a ledger connection
+// closes.
+var onClose func()
+
+// close closes the connection; closing again does nothing.
 func (l *sqlLedger) close() {
+	if l.db != nil && onClose != nil {
+		defer onClose()
+	}
 	if l.conn != nil {
 		l.conn.Close()
 	}

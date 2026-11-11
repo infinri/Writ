@@ -719,7 +719,8 @@ func RunWith(input any, store *SQLite) map[string]any {
 
 // RunTimed is RunWith recording per-operation timing in tm (nil: not timed;
 // the output is the same either way). tm.Done is called when the output
-// value is complete, before the ledger closes.
+// value is complete and the scenario's ledger is closed (LEDGER-SQLITE.md
+// "Per-operation timing", run_ns).
 func RunTimed(input any, store *SQLite, tm *Timing) map[string]any {
 	return RunProfile(input, store, Primary, tm)
 }
@@ -748,7 +749,7 @@ func RunProfile(input any, store *SQLite, prof Profile, tm *Timing) map[string]a
 		}
 		b.led = led
 	}
-	defer b.led.close()
+	defer b.led.close() // a panicking step still closes; close is idempotent
 	results := make([]any, 0, len(steps))
 	for i, s := range steps {
 		op, _ := sjson.Obj(s)
@@ -764,6 +765,10 @@ func RunProfile(input any, store *SQLite, prof Profile, tm *Timing) map[string]a
 		tm.final = since(finalizing)
 	}
 	out := map[string]any{"steps": results, "final": f}
+	// run_ns ends only after the ledger is closed (for SQLite the final WAL
+	// checkpoint and the removal of -wal and -shm). A failed open already
+	// closed what it opened; an input error opens nothing.
+	b.led.close()
 	tm.Done()
 	return out
 }

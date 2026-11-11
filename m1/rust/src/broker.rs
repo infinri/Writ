@@ -1029,6 +1029,10 @@ pub fn run_timed(input: &Value, choice: &LedgerChoice, profile: Profile) -> (Val
     let mut broker = Broker::new(&init, ledger);
     broker.profile = profile;
     let out = broker.run_steps(input, &mut timing);
+    // Close the scenario's ledger (every connection; for SQLite the final
+    // WAL checkpoint and removal of -wal and -shm) before returning, so the
+    // caller's `run_ns` covers it (LEDGER-SQLITE.md "Per-operation timing").
+    drop(broker);
     (out, timing)
 }
 
@@ -2781,6 +2785,52 @@ mod tests {
                 assert!(gate_free(&b));
             }
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // ------------------------------------------- run_ns covers the close
+
+    fn sidecars(dir: &std::path::Path) -> Vec<String> {
+        std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with("-wal") || n.ends_with("-shm")).collect()
+    }
+
+    /// `run_ns` is read by the caller after `run_timed` returns
+    /// (main.rs `execute`); when it returns, the ledger is already closed: the
+    /// -wal and -shm files that exist while a connection is open are gone, on
+    /// the normal path (with a concurrent group), after an open failure and
+    /// for an input error.
+    #[test]
+    fn run_timed_returns_with_the_ledger_closed() {
+        let (initial, approve) = approvable();
+        let dir = temp_dir("run-ns-close");
+        let write = sealed(&initial, &requests(&approve, "close").1, None);
+        let group = concurrent((0..4).map(|i| sealed(&initial, &requests(&approve, &format!("close-{i}")).1, None)).collect());
+
+        // While a ledger connection is open, the WAL files exist.
+        let b = sqlite_broker(&initial, &dir);
+        b.apply(&write, 0, None);
+        assert_eq!(sidecars(&dir).len(), 2, "{:?}", sidecars(&dir));
+        drop(b);
+        assert!(sidecars(&dir).is_empty());
+
+        let input = obj(vec![("initial", initial.clone()), ("steps", Value::Arr(vec![write, group]))]);
+        for profile in [Profile::Primary, Profile::Cold] {
+            let (out, t) = super::run_timed(&input, &LedgerChoice::SqliteDir(dir.clone()), profile);
+            assert!(out.get("final").is_some() && t.final_ns.is_some());
+            assert!(sidecars(&dir).is_empty(), "ledger still open when run_timed returned: {:?}", sidecars(&dir));
+        }
+        // Open failure on an existing file with the wrong schema version.
+        let bad = valid_ledger(&dir);
+        let c = Connection::open(&bad).unwrap();
+        c.execute_batch("UPDATE meta SET value = '2' WHERE key = 'schema_version'").unwrap();
+        c.close().unwrap();
+        let (out, t) = run_timed(&input, &LedgerChoice::SqliteDb(bad));
+        assert_eq!(json::to_text(&out), r#"{"error":"LEDGER_UNAVAILABLE"}"#);
+        assert!(t.open_ns.is_some() && sidecars(&dir).is_empty());
+        // Input error: nothing opened.
+        let (out, t) = run_timed(&obj(vec![("steps", Value::Arr(vec![]))]), &LedgerChoice::SqliteDir(dir.clone()));
+        assert_eq!(json::to_text(&out), r#"{"input_error":"INPUT_MALFORMED"}"#);
+        assert!(t.open_ns.is_none() && sidecars(&dir).is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

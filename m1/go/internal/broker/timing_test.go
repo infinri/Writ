@@ -1,8 +1,11 @@
 package broker
 
 import (
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"writ.dev/m1/proto/internal/sjson"
 )
@@ -104,5 +107,44 @@ func TestTimingMalformed(t *testing.T) {
 	j := tm.JSON()
 	if len(j["steps"].([]any)) != 0 || j["final_ns"] != nil || j["open_ns"] != nil {
 		t.Fatalf("got %v", j)
+	}
+}
+
+// run_ns ends only after the scenario's ledger is closed, on the normal path
+// and when initialization fails (LEDGER-SQLITE.md "Per-operation timing").
+func TestRunCoversLedgerClose(t *testing.T) {
+	var closedAt time.Time
+	onClose = func() { closedAt = time.Now() }
+	defer func() { onClose = nil }()
+	dir := t.TempDir()
+	wrong := filepath.Join(t.TempDir(), "wrong.db")
+	execOn(t, wrong, `CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO meta VALUES ('schema_version', '2')`)
+	for _, c := range []struct {
+		name  string
+		store *SQLite
+		want  string
+	}{
+		{"normal", &SQLite{Dir: dir}, `"steps"`},
+		{"initialization fails", &SQLite{DB: wrong}, `{"error":"LEDGER_UNAVAILABLE"}`},
+	} {
+		closedAt = time.Time{}
+		tm := NewTiming(0)
+		var out []byte
+		stderrOf(t, func() {
+			out = sjson.Encode(RunTimed(sjson.Clone(fixtureCase(t, "b-34-concurrent-duplicates")), c.store, tm))
+		})
+		if !strings.Contains(string(out), c.want) {
+			t.Fatalf("%s: output %s", c.name, out)
+		}
+		if closedAt.IsZero() {
+			t.Fatalf("%s: no ledger connection was closed", c.name)
+		}
+		if end := tm.start.Add(tm.run); closedAt.After(end) {
+			t.Fatalf("%s: ledger closed %v after run_ns ended", c.name, closedAt.Sub(end))
+		}
+	}
+	// The normal run's WAL was checkpointed and removed within run_ns.
+	if wal, _ := filepath.Glob(filepath.Join(dir, "*-wal")); len(wal) != 0 {
+		t.Fatalf("WAL left behind: %v", wal)
 	}
 }

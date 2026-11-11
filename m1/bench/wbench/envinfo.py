@@ -60,7 +60,25 @@ def cpufreq(root: str = "/") -> dict:
         "scaling_max_khz": per("scaling_max_freq"),
         "boost": _read(os.path.join(base, "cpufreq/boost")),
         "platform_profile": _read(os.path.join(root, "sys/firmware/acpi/platform_profile")),
+        "clocks": clocks(root),
     }
+
+
+def clocks(root: str = "/") -> dict:
+    """Current clocks per policy and the throttling indicators this host exposes (read only)."""
+    base = os.path.join(root, "sys/devices/system/cpu")
+    pols = sorted(glob.glob(os.path.join(base, "cpufreq/policy*")))
+    def ints(name):
+        vals = [_read(os.path.join(p, name)) for p in pols]
+        return [int(v) for v in vals if v and v.isdigit()]
+    cur, avg, hw_max = ints("scaling_cur_freq"), ints("cpuinfo_avg_freq"), ints("cpuinfo_max_freq")
+    def stats(v):
+        return {"min": min(v), "mean": round(sum(v) / len(v)), "max": max(v)} if v else None
+    throttle = sorted(glob.glob(os.path.join(base, "cpu*/thermal_throttle/*_throttle_count")))
+    counts = {os.path.relpath(f, base): _read(f) for f in throttle}
+    return {"scaling_cur_khz": stats(cur), "cpuinfo_avg_khz": stats(avg), "cpuinfo_max_khz": max(hw_max) if hw_max else None,
+            "thermal_throttle_counts": counts or None,
+            "thermal_throttle_sysfs": "present" if counts else "not exposed on this host"}
 
 
 def thermals(root: str = "/") -> dict:

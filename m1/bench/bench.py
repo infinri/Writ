@@ -24,6 +24,8 @@ import json
 import shutil
 import sys
 import tempfile
+import threading
+import time
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -425,6 +427,27 @@ def evidence(result: dict) -> list[dict]:
     return recs
 
 
+def repo_relative(path: str) -> str:
+    """Never record a personal absolute path in a result (owner decision 2026-11-11)."""
+    try:
+        return str(Path(path).resolve().relative_to(Path(__file__).resolve().parents[2]))
+    except ValueError:
+        return Path(path).name
+
+
+def sample_environment(root: str, out: list, stop: threading.Event, every_s: float) -> None:
+    """Read-only environment samples during the run: temperature, clocks, load, power."""
+    t0 = time.monotonic()
+    while True:
+        cpu = envinfo.cpufreq(root)
+        out.append({"t_s": round(time.monotonic() - t0, 1), "cpu_c": envinfo.thermals(root)["cpu_c"],
+                    "clocks": cpu.get("clocks"), "governors": cpu.get("governors"),
+                    "load_1m": envinfo.load(root)["loadavg_1m"],
+                    "batteries": [b.get("status") for b in envinfo.power(root).get("batteries", [])]})
+        if stop.wait(every_s):
+            return
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--rust", required=True)
@@ -460,6 +483,9 @@ def main(argv=None) -> int:
               runner.Proto("go", str(Path(a.go).resolve()), a.cpu_list)]
     check, samples = Check(), {}
     tmp = Path(tempfile.mkdtemp(prefix="writ-m1-bench-"))
+    env_samples, stop = [], threading.Event()
+    sampler = threading.Thread(target=sample_environment, args=(a.sysfs_root, env_samples, stop, 5.0), daemon=True)
+    sampler.start()
     try:
         sqlite_info = engine_check(protos, check)
         result_w = {"A": workload_a(protos, prof, a.seed, tmp, check, samples),
@@ -474,6 +500,8 @@ def main(argv=None) -> int:
         cold_r = cold(protos, prof, check, samples)
         conc_r = concurrency(protos, prof, a.seed, tmp, check, samples)
     finally:
+        stop.set()
+        sampler.join(timeout=10)
         shutil.rmtree(tmp, ignore_errors=True)
     env_end = {"thermals": envinfo.thermals(a.sysfs_root), "cpufreq": envinfo.cpufreq(a.sysfs_root),
                "power": envinfo.power(a.sysfs_root), "load": envinfo.load(a.sysfs_root)}
@@ -495,10 +523,10 @@ def main(argv=None) -> int:
         "started_at": started.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "finished_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "repository": repo,
-        "prototypes": {p.name: {"argv_prefix": p.prefix, "binary": p.binary, "sha256": envinfo.sha256_file(p.binary)}
+        "prototypes": {p.name: {"argv_prefix": p.prefix, "binary": repo_relative(p.binary), "sha256": envinfo.sha256_file(p.binary)}
                        for p in protos},
         "toolchains": tc, "pinned_versions": envinfo.pinned_versions(),
-        "environment": env, "environment_end": env_end,
+        "environment": env, "environment_end": env_end, "environment_samples": env_samples,
         "guard": {"enforced": not a.dry_run, "passed": not reasons, "reasons": reasons,
                   "max_load": a.max_load, "max_start_temp_c": a.max_start_temp_c},
         "correctness": {"failed": check.failed(), "checks": dict(check.counts), "examples": check.examples},

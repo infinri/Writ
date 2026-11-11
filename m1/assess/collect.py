@@ -243,26 +243,44 @@ def build_times(args) -> dict | None:
     if reasons:
         print("collect: REFUSED to time builds (benchmark guard):", *reasons, sep="\n  - ", file=sys.stderr)
         return None
-    res = {"environment": env, "repository": repo, "runs": args.runs, "samples": {}}
+    res = {"environment": env, "repository": repo, "runs": args.runs, "samples": {}, "evidence": {}}
+    edits = {
+        # Behaviour-preserving but compiler-relevant: a new private function with a per-run constant in the
+        # kernel module; the kernel crate (Rust) or package (Go) must be recompiled and the binary relinked.
+        "rust": ("src/kernel.rs", "\n#[allow(dead_code)]\n#[inline(never)]\nfn m1_07_edit_probe() -> u64 {{\n    {n}\n}}\n"),
+        "go": ("internal/kernel/schema.go", "\n//go:noinline\nfunc m107EditProbe() uint64 {{ return {n} }}\n"),
+    }
     with tempfile.TemporaryDirectory(prefix="writ-m1-07-t-") as d:
         for lang in ("rust", "go"):
-            clean, incr = [], []
+            clean, incr, proof = [], [], []
             for i in range(args.runs):
                 dst = Path(d, f"{lang}-{i}", "m1", lang)
                 copy_tree(REPO / "m1" / lang, dst)
-                if lang == "go":
-                    sh(["go", "clean", "-cache"])
+                env_over = {"GOCACHE": str(Path(d, f"gocache-{i}"))} if lang == "go" else None  # isolated, empty
                 t = time.perf_counter()
-                code, _, err = build_rust(dst) if lang == "rust" else build_go(dst, ("-trimpath",))
+                code, _, err = build_rust(dst) if lang == "rust" else build_go(dst, ("-trimpath",), env_over)
                 clean.append(time.perf_counter() - t if code == 0 else None)
-                touched = dst / ("src/kernel.rs" if lang == "rust" else "internal/kernel/schema.go")
-                touched.write_text(touched.read_text() + "\n")
+                before = sha256(dst / ("target/release/proto" if lang == "rust" else "proto")) if code == 0 else None
+                rel, snippet = edits[lang]
+                (dst / rel).write_text((dst / rel).read_text() + snippet.format(n=1000 + i))
                 t = time.perf_counter()
-                code, _, err = build_rust(dst) if lang == "rust" else build_go(dst, ("-trimpath",))
+                if lang == "rust":
+                    code, _, err = build_rust(dst)
+                    compiled = "Compiling writ-m1-proto" in err
+                else:
+                    code, _, err = build_go(dst, ("-trimpath", "-v"), env_over)
+                    compiled = "writ.dev/m1/proto/internal/kernel" in err
                 incr.append(time.perf_counter() - t if code == 0 else None)
-            res["samples"][lang] = {"clean_s": clean, "incremental_after_kernel_touch_s": incr}
-    res["method"] = ("clean = fresh copy and empty target dir (Rust registry sources cached; Go build cache cleared); "
-                     "incremental = append a newline to the kernel source and rebuild")
+                after = sha256(dst / ("target/release/proto" if lang == "rust" else "proto")) if code == 0 else None
+                proof.append({"recompiled_kernel": compiled, "binary_rewritten": after is not None,
+                              "binary_hash_changed": before != after, "build_log_tail": err[-300:]})
+            res["samples"][lang] = {"clean_s": clean, "incremental_real_edit_s": incr}
+            res["evidence"][lang] = proof
+    res["method"] = ("clean = fresh source copy, empty target directory (Rust registry sources cached in CARGO_HOME) "
+                     "or empty isolated GOCACHE per run (the owner's global Go cache is never touched); "
+                     "incremental = after the clean build, append a private function with a per-run constant to the "
+                     "kernel source (src/kernel.rs, internal/kernel/schema.go) and rebuild; evidence records whether "
+                     "the kernel was recompiled (cargo 'Compiling writ-m1-proto', go -v listing the kernel package)")
     return res
 
 

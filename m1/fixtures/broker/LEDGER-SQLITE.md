@@ -86,7 +86,7 @@ Language-neutral tests: `m1/ledger_tests/test_storage_failures.py` (Python stand
 |---|---|
 | `parse_ns` | strict parsing of this line's envelope and scenario input (protocol overhead inside the process; output serialization cannot be measured in its own output, so the harness derives the remaining protocol and process overhead as process wall time minus the sum of `parse_ns + run_ns`) |
 | `open_ns` | ledger open and initialization (Storage failures rule 1); `null` for the in-memory ledger |
-| `run_ns` | from just after parsing to the scenario output value being complete (includes `open_ns`, all steps and `final_ns`) |
+| `run_ns` | from just after parsing to the scenario output value being complete **and the scenario's ledger closed** (includes `open_ns`, all steps, `final_ns`, and closing every connection of that line's ledger, which for SQLite includes the final WAL checkpoint and removal of the `-wal` and `-shm` files; clarified 2026-11-11 after E-048 found Go closing after `run_ns` and Rust before) |
 | `final_ns` | computing `final`; `null` when `S` is an `input_error` or the open failed (then `steps` is `[]`) |
 
 `step = {"op": <the op string, or "unknown">, "total_ns": n, "validate_ns": n | null, "decide_ns": n | null, "key_lock_wait_ns": n | null, "tx": {name: tx, ...}}`:
