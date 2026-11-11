@@ -374,6 +374,23 @@ The timeout and lock-wait figures in E-034, E-035 and E-036 are **preliminary an
 - **Executed after changes:** `python3 scripts/check-v2-docs.py`: OK (91 Markdown, 15 HTML, 17 schemas, 3 packs, 3 tasks, 2 negative fixtures); link and schema checks passed. `git diff --check`: exit 0. Documentation scope and additions reviewed for secrets, personal paths and accidental build/audit artifacts.
 - **Limit:** no control implementation, original-host measurements, evidence preservation, security examination or certification occurred in this documentation session.
 
+### E-048: Go "process overhead" explained (M1-08 confirmation B, 2026-11-11)
+
+- **Verified explanation: an instrumentation boundary, not slower Go and not a defect.** Go's `RunProfile` recorded `run_ns` (`tm.Done()`) before the deferred `b.led.close()`, so closing the SQLite ledger (final WAL checkpoint with `synchronous=FULL`, removal of `-wal`/`-shm`) fell outside `run_ns`; Rust measured `run_ns` after the broker and its connection were dropped. Only SQLite workloads showed it (H 0.72 ms per line, B about 1 ms per scenario; in-memory workloads none).
+- **Evidence (diagnostics, not measurements, governor `powersave`):** the same 1,000-line H input from a file: Go wall 6.76 s with in-process 6.09 s (untimed 0.67 s); Rust wall 7.06 s, in-process 7.04 s (untimed 0.02 s). A disposable Go copy closing before `tm.Done()`: untimed 0.032 s and 0.034 s (two runs), wall unchanged. After the fix in the repository: Go wall 6.75 s, untimed 0.036 s; Rust wall 6.92 s, untimed 0.031 s. Excluded: serialization, output buffering, process start and shutdown, garbage collection, the harness.
+- **Correction:** spec clarified (`run_ns` ends after the ledger is closed); Go fixed by its agent with `TestRunCoversLedgerClose` (fails on the old order); Rust already conformed, close made explicit with `run_timed_returns_with_the_ledger_closed`. The E-046 B and H per-operation figures are unaffected; only Go's `process.overhead_ns` and `run_ns` attribution in E-046 were inequivalent.
+
+### E-049: chaos workload E with real process kills (M1-08 confirmation D, 2026-11-11)
+
+- `m1/ledger_tests/test_chaos.py` (language-neutral): seeded SIGKILL of a prototype process running approvals, sequential and 8- to 32-way concurrent executes on a file ledger; restart in a new process on the same file; retry every request, reconcile, retry again; database invariants after the kill and after the restart; a ledger made unwritable after a kill fails closed with the file unchanged.
+- **Campaign (seed 20261111, 50 iterations per prototype):** Rust 38 killed mid-run (12 finished first), receipts at kill 4,010 observed, 9 dispatched, 4 reserved; Go 49 killed (1 finished first), 3,851 observed, 5 dispatched, 4 reserved. After restart: every dispatched receipt answered `RECONCILIATION_REQUIRED` (Rust 9, Go 5), every reserved receipt resumed without a second grant use (4 and 4), every observed one replayed. **0 invariant violations**: integrity ok, no grant overuse, no duplicate dispatch, no effect without a consumed permit, no second effect per permit, no `STATE_CONFLICT` or `CORRUPT`; fail-closed on an unwritable ledger for both.
+- **Not covered:** power loss and OS crash durability; a reconcile in another live process (D-029 gate is process-local; unresolved architectural risk); real external effects.
+
+### E-050: verification of the M1-08 confirmation code (2026-11-11, commit `16640b3`)
+
+- Rust 71 + 3 passed; Go vet clean, race tests ok in all packages; fixtures 447/447 both ledgers both prototypes; regressions 11/11; `m1/ledger_tests` 45 OK (includes chaos default 8 iterations); oracle tests 14 OK; memory property CI seeds 20261107 and 1 PASS; SQLite campaigns primary seeds 20261107 and 2 and cold PASS (1,119 / 1,117 / 1,119 cases, 0 mismatches); reconcile/execute adversarial probe 0 refusals (200 runs each); mutation smoke 9/9 each; bench self-tests and dry run OK; M0, drift, driver, docs OK.
+- Harness additions: per-run environment samples every 5 s (temperature, current and average clocks against the hardware maximum, governor, load, battery state; `thermal_throttle` sysfs is not exposed on this AMD host, recorded as such); binary paths recorded repo-relative; M1-07 incremental build now a real edit (private function with a per-run constant in the kernel source) with per-run isolated `GOCACHE` and proof of recompilation (plumbing checked with timings discarded).
+
 ## Not yet executed
 
 - SR-06 live-host experiments (0 of 69; sandbox torn down) and full SR-06 acceptance; rule semantic review (M0-01d); independent human golden review (M0-05a).
