@@ -353,6 +353,19 @@ The timeout and lock-wait figures in E-034, E-035 and E-036 are **preliminary an
 - CI https://github.com/infinri/Writ/actions/runs/42938794312 on `612e1f4d081ae549fc0c769b0995b1ad2faed731`: success, all 5 jobs.
 - Binaries rebuilt from the clean committed tree at `612e1f4` (Rust release, Go `-trimpath`). Guard (read only): power met (Not charging, 100%); `m1/` tree clean; toolchain pins pass. **Refuses:** governor `powersave` (16 of 16); 1-minute load 1.16 above 1.0 (IntelliJ `java` about 300% CPU at that moment, ClickHouse about 11%); CPU 64.4 C above the 60 C start limit. No setting changed, no process stopped, no measurement taken.
 
+### E-046: official M1-06 measurement (2026-11-11)
+
+- **Authorization and guard:** owner authorized measurement only if every guard passed. Read-only readiness at `138163d` (CI https://github.com/infinri/Writ/actions/runs/42939567262 success, all 5 jobs): governor `performance` 16 of 16, AC online, battery Not charging (current 0), load 0.57, CPU 55.9 C, clean `m1/` tree, toolchain pins and Go `-trimpath` pass. The harness re-checked and recorded `guard.passed: true`, `valid_for_comparison: true`, `mode: measure`.
+- **Command:** `python3 m1/bench/bench.py --seed 20261111 --rust m1/rust/target/release/proto --go m1/go/proto --out m1/bench/results/2026-11-11-m1-06.json` (exit 0; "correctness failures: 0" over 35 check kinds). Binaries: Rust `sha256:e7afa261ff986312a1c4e08cb9b9abfe848336b9c8ce403582ea75b1ab7a1d85`, Go `sha256:4d853d89bb06fa63e274d36b4db82b31ebc5f2e0e3a7ff9254b4ba32e6077598`.
+- **Files (local; `m1/bench/results/` is git-ignored by design, commit pending owner decision):** `2026-11-11-m1-06.json` SHA-256 `13ceb932d486d63d006709f684789a4db9cd30250a038e734c5f96536fbca93b` (two absolute binary paths replaced by repo-relative paths after the run; nothing else changed), raw samples `2026-11-11-m1-06.json.samples.json.gz` SHA-256 `c93804134e982bee3ba3d8d9e0a297c1d379da6464d35a2a9f0f069ceb9cedb8`.
+- **Environment recorded:** start CPU 52.25 C, load 0.53; end CPU 76.5 C, load 1.84; on AC, battery Not charging at start and end; background IntelliJ, ClickHouse, Chrome (not stopped).
+- **Results:** [M1-08-SCORECARD](M1-08-SCORECARD.md). Lock-timeout refusals 0 of 10,000 for each prototype in B (primary) and B-cold.
+
+### E-047: M1-07 build timings (2026-11-11)
+
+- `python3 m1/assess/collect.py build-times --runs 5 --out m1/assess/results/2026-11-11-build-times.json` (guard passed inside the command: CPU 55.75 C, load 0.67, governor `performance`, battery Not charging, clean tree at `138163d`). `GOCACHE` was set to a dedicated scratch directory so the command's `go clean -cache` did not clear the owner's global Go cache.
+- Clean build (median of 5): Rust 2.65 s (2.62 to 2.77), Go 3.69 s (3.67 to 3.87). Incremental after appending a newline to a kernel source: Rust 1.42 s (1.40 to 1.70), Go 0.08 s; the Go figure reflects an unchanged compiled package and a cached link, so the incremental case is not comparable (methodology limitation recorded in the scorecard).
+
 ## Not yet executed
 
 - SR-06 live-host experiments (0 of 69; sandbox torn down) and full SR-06 acceptance; rule semantic review (M0-01d); independent human golden review (M0-05a).

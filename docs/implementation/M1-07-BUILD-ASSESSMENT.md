@@ -53,6 +53,6 @@ Both prototypes were implemented by agents from the same specification; defect c
 
 ## Remaining M1-07 work
 
-1. Build timings (clean and incremental, 5 runs each) once the benchmark guard passes.
+1. Build timings: **done 2026-11-11** (E-047): clean median Rust 2.65 s, Go 3.69 s; the whitespace-only incremental case is not comparable (Go link cached); a semantic-edit incremental measurement is not done.
 2. Cross-target builds: **deferred** (D-024: M1 targets Linux x86_64; no cross toolchains installed).
 3. Owner review of the judgments above before M1-08.

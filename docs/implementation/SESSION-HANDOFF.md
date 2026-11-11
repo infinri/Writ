@@ -6,7 +6,7 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 
 **This is the authoritative recovery entry point. It is not authorization to do anything beyond what is listed under "Authorized next task"; re-establish other authorizations from the owner's newest message.**
 
-**After compaction (state 2026-11-11):** D-027, D-028 and D-029 are **IMPLEMENTED** (`52b31fe`, `c5effec`; CI run 42936763654 green on `d99faa2`, E-044). The coordination gate is process-local; never claim multi-process reconciliation safety. **Next task:** benchmark readiness rerun (read only) once the owner sets governor `performance` and the CPU is below the 60 C start limit (E-043: full-power charger verified, battery not discharging under load); official M1-06 and M1-07 measurements only if every guard passes and the owner confirms; then the M1-08 scorecard for owner review. Never choose Rust or Go. Do not restart M1 development or repeat any completed task in section C.
+**After compaction (state 2026-11-11, after measurement):** D-027, D-028, D-029 implemented (CI green). **Official M1-06 measured** (E-046, seed 20261111, guard passed, 0 correctness failures) and **M1-07 build timings measured** (E-047) at `138163d`. **M1-08 scorecard drafted for owner review** ([M1-08-SCORECARD](M1-08-SCORECARD.md)); no language chosen, no recommendation. Raw results are local under the git-ignored `m1/bench/results/` (hashes in E-046). **Next task:** wait for the owner's ADR-0002 review; do not accept ADR-0002, do not rerun measurements without a new authorization and a passing guard. Do not restart M1 development or repeat any completed task in section C.
 
 ### A. Repository state (verify with the commands in section H)
 
@@ -58,7 +58,9 @@ M1-00 toolchains; M1-01 parity driver; M1-02 fixtures (amendments 1..7, 12 sets,
 
 At `7a5a366` (CI run 42898828550, success, all 5 jobs; and locally, E-035): Rust 58 unit + 3 integration tests; Go vet clean, race tests ok in 6 packages; both link SQLite 3.54.1 (source id `2026-10-16 14:45:20 555e07ef...`), identical settings; fixtures **447/447** in memory and on SQLite for each prototype; regressions 11/11; `m1/ledger_tests` **30** OK (13 storage failures, 3 timing integrity, 14 D-025); D-026 oracle negative tests **14** OK; memory property CI profile seeds 20261107 and 1; Rust-SQLite versus Go-SQLite broker campaigns with 64-way groups PASS (CI 348 cases, 6,780 checks; local 2,584 cases, 52,920 checks; 0 mismatches); mutation smoke 9 of 9 mutants caught for each (including `masked-effect`); harness self-tests 18 OK; benchmark dry run 0 correctness failures; M0 281 passed; drift, driver and docs checks OK. Availability (preliminary, not comparable before D-027): E-034 Rust 89 / Go 6 timeouts of 12,800; E-036 CI Rust 2 of 1,408 at 64-way. Guarantee level: **Tested (unit or reference) only**; no test result is a real-host security certification. **No official benchmark measurement exists.**
 
-### F. Next task: M1-06 benchmark readiness (D-027, D-028, D-029 DONE)
+### F. Next task: owner review of M1-08 (M1-06 and M1-07 measured, E-046, E-047)
+
+The readiness steps below were completed on 2026-11-11 and are kept for any future measurement.
 
 **Done:** D-027 (`52b31fe`), D-028 equivalent release protocol and D-029 process-local coordination gate, `STATE_CONFLICT`, verified contention acceptance (`c5effec`); CI green (E-044). Specs: LEDGER-SQLITE.md amendments `m1-ledger-1a`, `1b`, `1c`. Limitation: the gate is process-local; multi-process reconciliation safety is not claimed (`test_d029` cross-process demonstration checks only fail-closed safety).
 

@@ -1,6 +1,6 @@
 # M1-06 benchmark readiness (workloads B and H)
 
-**Status (2026-11-10, pre-compaction): NOT READY TO MEASURE** (environment guard refuses: governor, temperature; D-027 to D-029 implemented, CI green E-044; E-043). Instrumentation verified; no official Rust versus Go measurement has been taken. Verified at published `6b7eab12a35a82d52e11493c9531268aaf697530`, CI https://github.com/infinri/Writ/actions/runs/42857245639 (all 5 jobs success).
+**Status (2026-11-11): MEASURED** (E-046; guard passed). Earlier status (2026-11-10): NOT READY TO MEASURE (environment guard refuses: governor, temperature; D-027 to D-029 implemented, CI green E-044; E-043). Instrumentation verified; no official Rust versus Go measurement has been taken. Verified at published `6b7eab12a35a82d52e11493c9531268aaf697530`, CI https://github.com/infinri/Writ/actions/runs/42857245639 (all 5 jobs success).
 
 | Requirement (owner, 2026-11-10) | Status | Evidence |
 |---|---|---|
