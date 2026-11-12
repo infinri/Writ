@@ -37,7 +37,7 @@ This documentation replaces the prior V1 docs (including old ADRs, reference pag
 
 **DECIDED:** model-provider neutrality, external-host and optional managed-agent execution, domain-independent Capability Packs and typed task/artifact/evidence/evaluation contracts; one enforceable authority for privileged side effects; host-agnostic normalized actions; typed immutable events; identity-bound human approvals; independently versioned policies; tenant-scoped retrieval and memory; bounded graph working sets; local-first permission path; operational state separate from knowledge graph; granular ports/adapters.
 
-**PROVISIONAL:** Rust is the owner's preferred kernel/broker direction and M1-08 provisional leader; ADR-0002 remains OPEN pending targeted confirmation and final owner review. PostgreSQL targets enterprise operational state; SQLite remains the local/offline profile, with separate acceptance gates.
+**ACCEPTED (2026-11-12):** Rust for the trusted kernel and broker ([ADR-0002](decisions/ADR-0002-runtime-bakeoff.md), D-030); scope excludes PostgreSQL, Neo4j, orchestration and Control Center technology choices. PostgreSQL targets enterprise operational state; SQLite remains the local/offline profile, with separate acceptance gates.
 
 **DEFERRED:** WASM plugins, remote workflow engine, message broker and Kubernetes until an acceptance test demonstrates a need.
 

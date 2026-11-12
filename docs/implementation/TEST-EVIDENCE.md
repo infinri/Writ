@@ -407,6 +407,20 @@ The timeout and lock-wait figures in E-034, E-035 and E-036 are **preliminary an
 - `python3 m1/assess/collect.py build-times --runs 5 --out m1/assess/results/2026-11-12-build-times-real-edit.json` at `bbdd092` (guard passed inside the command: CPU 48.25 C, load 0.78, governor `performance`; `GOCACHE` pointed at a scratch directory; every Go build used its own empty isolated cache).
 - Clean median: Rust 2.50 s (2.48 to 2.59), Go 3.54 s (3.47 to 3.68). Real-edit incremental median: Rust 1.31 s (1.28 to 1.38), Go 0.49 s (0.48 to 0.50). All 10 incremental runs proved recompilation and relinking (kernel recompiled, executable hash changed, edit constant absent before and present after). Supersedes the newline-only incremental figures of E-047.
 
+### E-054: order-controlled process-concurrency correction (2026-11-12)
+
+- **Finding (final evidence check):** the process-concurrency workload ran Rust first at every level, once, in all three earlier run sets; those multi-process results are **not order-controlled** (original bundles unchanged).
+- **Correction:** `992383a` (CI run 43245077338 green, all 5 jobs): two paired rounds per level on identical inputs (Rust then Go, Go then Rust), per-round order and samples recorded, regression test `ConcurrencyOrder`; sizes, levels, correctness checks and guards unchanged.
+- **Re-measurement (only this workload, `--workloads concurrency`, seeds 20261111, 20261121, 20261131; each after a full guard pass: CPU 54.3 / 54.0 / 50.3 C, load 0.81 / 0.72 / 0.57):** 0 correctness failures (Rust equals Go in every round). Medians of 6 samples: Rust/Go 1.48x (k = 1), 1.76x (10), 2.17x (100), 2.33x (1,000); every Rust sample above every Go sample at each level; order effect about 3 to 5%. Each run lasts about 5 s, so the 5 s monitor recorded only 1 or 2 in-run samples (start and end recorded; CPU reached about 80 C). Bundle with SHA-256 manifest: `m1/bench/evidence/2026-11-12-concurrency-order-corrected/` (`34450c6`). The Go binary hash differs from the `bbdd092` build only through Go's embedded VCS stamp (source diff empty; Rust byte-identical).
+
+### E-055: final evidence check before ADR-0002 acceptance (2026-11-12)
+
+- Publication: `a1b153c`, `841eabf` pushed (fast-forward from `bbdd092`); CI run 43240338281 success, all 5 jobs on `841eabf`.
+- All three run-set bundles: every file matches its manifest SHA-256; the samples hash recorded inside each result matches; seeds match; clean tree; guard enforced and passed; `valid_for_comparison` true; 0 failures in 35 check kinds; successful throughput equals successful operations divided by wall time (refusals separate). Binaries rebuilt at `bbdd092` reproduce the recorded run 2 and 3 hashes exactly.
+- Order alternation verified in code for A, B, B-cold, B-mem, G, H, H-mem and cold start; process concurrency was not (E-054, corrected).
+- Build evidence: all 10 real-edit runs recompiled and relinked (constant absent before, present after, hash changed); edited binaries re-checked: 447/447 fixtures on both ledgers for both languages.
+- Kept explicit: the E-048 Go `run_ns` boundary correction and run set 1's non-comparable Go `run_ns` and process overhead in SQLite workloads.
+
 ## Not yet executed
 
 - SR-06 live-host experiments (0 of 69; sandbox torn down) and full SR-06 acceptance; rule semantic review (M0-01d); independent human golden review (M0-05a).

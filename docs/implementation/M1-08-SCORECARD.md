@@ -1,6 +1,6 @@
-# M1-08: Rust versus Go scorecard (for owner decision)
+# M1-08: Rust versus Go scorecard
 
-**Status:** FINAL DRAFT FOR OWNER DECISION (2026-11-12). Targeted confirmation complete (owner decision 2026-11-11: A repeatability, B Go overhead, C real-edit builds, D chaos). **Recommendation: Rust** for the trusted kernel and broker (section "Recommendation"). Rust is the owner's provisional leader; [ADR-0002](../decisions/ADR-0002-runtime-bakeoff.md) stays **OPEN** until the owner's final decision. ADR-0008 APPROVED IN PRINCIPLE; release and production NO-GO.
+**Status:** FINAL (2026-11-12). Targeted confirmation complete (A repeatability, B Go overhead, C real-edit builds, D chaos) plus the order-controlled process-concurrency correction (E-054). **Owner decision 2026-11-12: Rust** for the trusted kernel and broker; [ADR-0002](../decisions/ADR-0002-runtime-bakeoff.md) ACCEPTED for that scope (D-030). ADR-0008 APPROVED IN PRINCIPLE; release and production NO-GO.
 
 Labels: **Measured** (official guarded runs or recorded command output), **Fact** (verifiable property), **Judgment** (engineering opinion for the owner to weigh).
 
@@ -40,14 +40,15 @@ Runs 2 and 3 sampled temperature, clocks, governor, load and battery every 5 s (
 | A kernel throughput | 32.3k / 32.8k / 32.6k /s | 24.5k / 24.1k / 23.6k /s | **Rust +35%** |
 | A peak RSS | 2.7 / 2.9 / 2.9 MB | 12.6 / 12.1 / 12.1 MB | **Go 4.3x** |
 | Cold start p50 | 0.75 / 0.68 / 0.71 ms | 2.09 / 1.98 / 2.00 ms | **Go 2.9x** |
-| Process concurrency, k = 10 | 152k / 151k / 151k /s | 86.0k / 86.0k / 85.7k /s | **Rust 1.8x** |
-| Process concurrency, k = 100 | 168k / 201k / 184k /s (7.4%) | 74.7k / 91.6k / 83.7k /s (8.3%) | **Rust 2.2x** |
-| Process concurrency, k = 1,000 | 49.5k / 54.4k / 51.3k /s | 21.5k / 24.8k / 22.8k /s | **Rust 2.3x** |
+| Process concurrency (order-controlled correction, E-054; median of 6 samples: 3 seeds x 2 paired rounds), k = 1 | 31,754 /s (27,377 to 31,827) | 21,494 /s (19,431 to 21,525) | **Rust 1.48x** |
+| Process concurrency, k = 10 | 150,782 /s (149,375 to 151,635) | 85,638 /s (84,938 to 132,187) | **Rust 1.76x** |
+| Process concurrency, k = 100 | 198,550 /s (193,273 to 202,382) | 91,600 /s (88,204 to 92,750) | **Rust 2.17x** |
+| Process concurrency, k = 1,000 | 55,789 /s (51,379 to 57,887) | 23,941 /s (23,696 to 24,109) | **Rust 2.33x** |
 | G hostile input | 2,837 / 2,483 / 2,673 lines/s | 1,283 / 1,202 / 1,295 lines/s | **Rust 2.1x** |
 | B approval races, SQLite, primary: successful ops/s | 95.5 / 100.7 / 95.3 | 93.0 / 101.7 / 95.8 | equal (within 3%) |
 | B execute total p50 | 5.33 / 5.28 / 5.43 ms | 4.87 / 4.38 / 4.66 ms | Go 10 to 17% lower (note 1) |
 | B execute total p99 | 180.6 / 181.1 / 179.7 ms | 181.6 / 181.4 / 179.9 ms | equal |
-| B kernel decide p99 inside execute | 16.0 / 20.5 / 21.5 µs | 239 / 256 / 271 µs | **Go 12x to 15x** (GC and scheduling under concurrency; not verified by experiment) |
+| B kernel decide p99 inside execute | 16.0 / 20.5 / 21.5 µs | 239 / 256 / 271 µs | **Go 12x to 15x** (cause not determined) |
 | B peak RSS | 7.2 / 7.3 / 7.3 MB | 23.5 / 21.9 / 23.1 MB | **Go 3.2x** |
 | B-cold (supplemental): successful ops/s | 96.6 / 104.3 / 98.9 | 98.6 / 102.9 / 97.1 | equal |
 | B-cold execute p50 | 5.94 / 5.84 / 5.96 ms | 5.26 / 4.98 / 5.17 ms | Go 12 to 15% lower (note 1) |
@@ -70,6 +71,8 @@ Runs 2 and 3 sampled temperature, clocks, governor, load and battery every 5 s (
 | Clean build (empty target directory; empty isolated `GOCACHE`) | 2.50 s (2.48 to 2.59) | 3.54 s (3.47 to 3.68) |
 | Incremental after a real, retained, behaviour-preserving kernel edit | 1.31 s (1.28 to 1.38) | 0.49 s (0.48 to 0.50) |
 
+Process-concurrency figures from the three run sets above are **not order-controlled** (Rust always ran first, one round per level) and are superseded by the correction bundle `m1/bench/evidence/2026-11-12-concurrency-order-corrected/`; the original bundles are unchanged. Order effect in the correction: about 3 to 5%.
+
 Every incremental run proved recompilation and relinking: kernel recompiled (cargo `Compiling writ-m1-proto`; `go build -v` lists the kernel package), executable hash changed, the edit's per-run 64-bit constant absent before and present in the new executable; edited binaries passed 447/447 fixtures (E-051, E-053). Rust recompiles its single crate on any edit; Go recompiles one package and relinks. The earlier newline-only figure (Go 0.08 s) is superseded.
 
 ## Comparability (E-048)
@@ -88,7 +91,7 @@ Run set 1 is kept unchanged as recorded. Comparable across all three run sets: e
 | Defect history in the bake-off | no language-attributable pattern | same | Judgment (M1-07) |
 | Iteration speed | slower incremental builds (1.3 s), steeper learning curve | faster incremental builds (0.5 s), simpler tooling, built-in race detector | Measured and judgment; **Go advantage** |
 | Fit for a small, pure, strict kernel | type system and ownership keep trusted and untrusted data apart; caught field-classification errors at compile time | adequate; more runtime checks needed | Judgment |
-| Operational resources | 3x to 5x less memory, 3x faster start | higher memory and start cost, tail latency from GC | Measured |
+| Operational resources | 3x to 5x less memory, 3x faster start, lower decision tails | higher memory and start cost, higher decision tails (cause not determined) | Measured |
 
 ## Limitations and untested scenarios
 
@@ -99,12 +102,13 @@ One host and one hardware class; three run sets (a fourth host or longer soak ru
 **Choose Rust for the trusted kernel and broker.**
 
 - Hard gates are equal, so ADR-0002's rule turns on long-term operating and maintenance cost under target workloads.
-- On the kernel, the component every governed action passes through, Rust's advantage is large and stable across three run sets: 41% lower median and 4x to 5x lower p99 decision latency, 1.8x to 2.3x multi-process throughput, 2.1x hostile-input throughput, 3x to 5x less memory, 3x faster start. Under concurrency Go's in-broker decision tail is 12x to 15x Rust's.
+- On the kernel, the component every governed action passes through, Rust's advantage is large and stable across three run sets: 41% lower median and 4x to 5x lower p99 decision latency, 1.48x to 2.33x order-controlled multi-process throughput, 2.1x hostile-input throughput, 3x to 5x less memory, 3x faster start. Under concurrency Go's in-broker decision tail is 12x to 15x Rust's (cause not determined).
 - On SQLite-backed broker workloads the languages are equal in useful throughput and tail latency (durable commits dominate); Go's lower median there comes from scheduling at start, not cheaper work.
-- Go's real advantages are a much smaller dependency surface, faster incremental builds and simpler tooling. They are maintenance conveniences, not risks to the trust boundary; the Rust dependency set is small, pinned, advisory-free and reproducible by default.
+- Go's real advantages are a much smaller dependency and supply-chain surface (1 module versus 20 crates), 2.7x faster incremental builds and simpler tooling. The dependency exposure is a genuine tradeoff: Rust's set is small, pinned, advisory-free at the last check and reproducible by default, but it must stay under continuous review (ENT-R06).
+- *Measured* advantages are resource figures on one host; the *projected* long-term operating-cost advantage is an engineering judgment, not a measured cost.
 
 **Scope of this recommendation.** It covers only the tested trusted kernel and broker (policy decision, sealed ingress, approvals, permits, receipts, local SQLite ledger). It does **not** decide the language or design for PostgreSQL enterprise state and its future coordination and recovery gate, Neo4j, orchestration, adapters, or the Control Center ([ENTERPRISE-READINESS](../security/ENTERPRISE-READINESS.md)); those need their own evidence, and ADR-0002's "no dual-language core" applies to the core only.
 
-## Owner decision needed
+## Decision
 
-Accept or reject the Rust recommendation for ADR-0002 (or request further evidence: a second host, soak runs, more seeds). Claude does not mark ADR-0002 ACCEPTED.
+Owner decision 2026-11-12: Rust selected; ADR-0002 ACCEPTED for the tested trusted kernel and broker (D-030). Limitations above are assigned to later gates in ADR-0002 (cross-process reconciliation: M3 and M10; real-host enforcement: M5; power-loss durability: M9; single-host measurements and throttle evidence: M10).

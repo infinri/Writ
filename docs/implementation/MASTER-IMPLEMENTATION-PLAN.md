@@ -68,7 +68,7 @@ Not an OS-level sandbox; not a mandatory all-purpose autonomous agent (an option
 
 | Component | Decision | Reason / exit gate |
 |---|---|---|
-| Runtime language | **OPEN** ADR-0002; Rust is the owner's provisional leader and preferred direction | Complete targeted M1-08 confirmation and final owner review; no restart of the full bake-off |
+| Runtime language | **ACCEPTED** ADR-0002 (2026-11-12, D-030): Rust for the trusted kernel and broker | Scope excludes PostgreSQL, Neo4j, orchestration and Control Center choices; Go prototype kept as comparison material only |
 | Policy authorization | **DECIDED** Cedar-like scoped authorization via versioned bundles | Never accept model-supplied permissions; test deny precedence and unknown behavior |
 | Additional expression language | **DEFERRED** CEL | Only if validated nonauthorization use cases warrant another DSL |
 | Graph intelligence | **DECIDED** Neo4j behind explicit GraphPort | Graph is not in synchronous permission hot path |
@@ -258,4 +258,4 @@ Owner-authorized direction (2026-11-10, America/Chicago): [enterprise readiness]
 
 Self-hosted release requires the applicable security gates and a documented customer assurance package. A hosted/managed offering additionally needs a defined service boundary, assigned operational controls and an owner-approved assurance plan informed by a qualified CPA and customer commitments. Type I and Type II reports concern the defined organization's service controls; customers do not inherit or complete a Writ-operated service's examination. No SOC 2 report or certification claim is authorized by this plan.
 
-Detailed acceptance evidence, responsibility allocation, control-register requirements and staged release gates are in the readiness plan. ADR-0002 remains OPEN, ADR-0008 APPROVED IN PRINCIPLE, and production/release NO-GO. Documentation is not implementation or attestation.
+Detailed acceptance evidence, responsibility allocation, control-register requirements and staged release gates are in the readiness plan. ADR-0002 ACCEPTED (Rust, trusted kernel and broker only), ADR-0008 APPROVED IN PRINCIPLE, and production/release NO-GO. Documentation is not implementation or attestation.

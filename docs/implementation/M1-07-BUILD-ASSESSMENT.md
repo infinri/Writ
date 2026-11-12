@@ -1,6 +1,6 @@
 # M1-07: build, dependency and packaging assessment (in progress)
 
-**Status:** IN PROGRESS (2026-11-07). Input to [ADR-0002](../decisions/ADR-0002-runtime-bakeoff.md) (OPEN). **No language is chosen here**; the M1-08 scorecard combines this with M1-06 measurements and the correctness gates. Every row is labelled **Measured** (reproducible from the commands below, evidence file cited), **Fact** (from documentation or metadata) or **Judgment** (engineering opinion by Claude, not evidence).
+**Status:** DONE (2026-11-12; build timings E-047 and real-edit E-053). Input to [ADR-0002](../decisions/ADR-0002-runtime-bakeoff.md), ACCEPTED 2026-11-12 (Rust, D-030). This report itself chooses no language; the M1-08 scorecard combines this with M1-06 measurements and the correctness gates. Every row is labelled **Measured** (reproducible from the commands below, evidence file cited), **Fact** (from documentation or metadata) or **Judgment** (engineering opinion by Claude, not evidence).
 
 Evidence: [`m1/assess/results/2026-11-07-facts.json`](../../m1/assess/results/2026-11-07-facts.json), produced by `source m1/tools/env.sh && python3 m1/assess/collect.py facts --out ...` at commit `935e4e336274a45e1d8661f0af537c9a2cd8841d` (clean `m1/` tree) on the workstation in [BENCHMARK-ENVIRONMENT](BENCHMARK-ENVIRONMENT.md). Both prototypes include the D-023 SQLite ledger and link the same static SQLite 3.54.1 (build revision 2).
 

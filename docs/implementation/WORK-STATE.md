@@ -1,14 +1,14 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-12 (M1-08 targeted confirmation complete; scorecard recommends Rust for the kernel and broker, pending owner decision) · **Branch:** v2/architecture-rebuild · **Milestone:** M1 active (development only, D-014). Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md).
+**Last updated:** 2026-11-12 (M1 complete: ADR-0002 ACCEPTED, Rust for the trusted kernel and broker) · **Branch:** v2/architecture-rebuild · **Milestone:** M1 done; M2 planned, not started. Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md).
 
 ## Current
 
-- **Verified published baseline:** `bbdd092e7499c1b81ff31e6d971b630d090accfe`; CI run 43085390484 passed all 5 jobs. Local commits after it: evidence bundles `a1b153c`, scorecard and evidence docs (push needs owner approval).
+- **Verified published baseline:** see SESSION-HANDOFF section A (latest exact-SHA CI recorded there).
 - **Prototypes:** D-027..D-029 implemented; `run_ns` boundary corrected (E-048); chaos workload E with real SIGKILL (E-049); verified locally E-050 and in CI at `bbdd092`.
-- **Language:** [M1-08-SCORECARD](M1-08-SCORECARD.md) recommends **Rust** for the trusted kernel and broker (Rust was the owner's provisional leader). ADR-0002 remains OPEN until the owner's final decision; Claude never marks it ACCEPTED.
-- **Benchmarks:** three official M1-06 run sets (seeds 20261111 at `138163d`, 20261121 and 20261131 at `bbdd092`; E-046, E-052) and real-edit M1-07 build timings (E-053), all guard-passed with 0 correctness failures; tracked bundles in `m1/bench/evidence/`.
-- **Next task:** owner's final ADR-0002 decision on the scorecard recommendation. No further measurement without a new authorization and a passing guard.
+- **Language:** **Rust** selected for the trusted kernel and broker (ADR-0002 ACCEPTED 2026-11-12, D-030). Go prototype kept as comparison material only.
+- **Benchmarks:** three official M1-06 run sets plus the order-controlled process-concurrency correction (E-046, E-052, E-054) and real-edit M1-07 build timings (E-053); all guard-passed, 0 correctness failures; bundles in `m1/bench/evidence/`.
+- **Next task:** owner decisions on [M2-START-PLAN](M2-START-PLAN.md) (crate layout, dependency policy, start timing). Do not begin M2 implementation before them.
 - **Enterprise direction:** [readiness plan](../security/ENTERPRISE-READINESS.md), ENT-OWNER-01 and ENT-00..ENT-08. PostgreSQL targets enterprise operational state, SQLite remains local/offline; durable multi-worker coordination requires separate future acceptance. Controls, SOC 2 scope and any examination remain planned, not implemented or attested.
 
 ## Security findings

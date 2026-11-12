@@ -267,3 +267,10 @@ Implementation-level decisions. Architectural decisions belong in [ADRs](../deci
 - **SQLITE_CORRUPT investigation (E-041):** the CI error was a synthetic code from a zero-row receipt transition (Rust `SQLITE_CORRUPT`, Go `io`), not file corruption (`integrity_check` ok). Corrected classification: application `STATE_CONFLICT` on stderr, still fail closed `LEDGER_UNAVAILABLE`, D-026 category 5. Genuine SQLite corruption is never relabelled.
 - **B. D-026 contention tests:** each prototype's 64-way tests accept `LEDGER_UNAVAILABLE` only for a proven initial-transaction busy abort (first transaction `busy` at `begin`; no grant use, receipt, dispatch, consumed permit or effect from that operation; only the refusal audit may be recorded), keep the original invariants, fail on any other error, and add negative tests showing the rule cannot hide an unauthorized effect or committed receipt. A timeout after durable progress stays in the recovery-state model. Busy timeout 5 s and 64-way concurrency unchanged; genuine timeouts recorded as availability.
 - Specification: LEDGER-SQLITE.md amendment `m1-ledger-1c`; tests `m1/ledger_tests/test_d029.py`.
+
+## D-030: Rust selected for the trusted kernel and broker; ADR-0002 ACCEPTED (owner, 2026-11-12)
+
+- **Decided by:** project owner (selection of Rust conditional on verified published evidence, CI and a bounded correction of the process-concurrency workload); recorded by Claude after those conditions were met (E-054, E-055).
+- **Decision:** [ADR-0002](../decisions/ADR-0002-runtime-bakeoff.md) ACCEPTED: Rust for the tested trusted kernel and broker. The Go prototype and benchmark evidence are kept as comparison material; no second production core.
+- **Not decided:** PostgreSQL performance or design, Neo4j, orchestration, adapters, Control Center technologies; no production security certification. ADR-0008 APPROVED IN PRINCIPLE; release and production NO-GO.
+- **Carried risks:** cross-process reconciliation (M3, M10), real-host enforcement (M5, SR-06), power-loss durability (M9), single-host measurements and no throttle counter (M10).
