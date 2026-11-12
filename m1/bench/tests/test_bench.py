@@ -5,12 +5,15 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 BENCH = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BENCH))
@@ -147,6 +150,45 @@ class Timing(unittest.TestCase):
         self.assertEqual(acc["tx.reserve.end_ns"], [3])
         self.assertNotIn("op.execute.key_lock_wait_ns", acc)
         self.assertNotIn("line.open_ns", acc)
+
+
+class ConcurrencyOrder(unittest.TestCase):
+    """Owner decision 2026-11-12: the process-concurrency workload is order-controlled."""
+
+    def test_paired_rounds_alternate_order_on_identical_inputs(self):
+        calls = []
+
+        def fake_run_concurrent(p, command, paths, d):
+            inputs = b"".join(Path(x).read_bytes() for x in paths)
+            calls.append((p.name, len(paths), hashlib.sha256(inputs).hexdigest()))
+            out = b"".join(json.dumps({"id": json.loads(ln)["id"], "output": {"ok": True}}).encode() + b"\n"
+                           for ln in inputs.splitlines() if ln.strip())
+            return {"stdout": out, "returncode": 0, "wall_s": 0.5 if p.name == "rust" else 1.0}
+
+        protos = [types.SimpleNamespace(name="rust"), types.SimpleNamespace(name="go")]
+        prof = {"conc_levels": [1, 4], "conc_total": 8, "conc_rounds": 2}
+        check, samples = bench.Check(), {}
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(bench.runner, "run_concurrent", fake_run_concurrent):
+            r = bench.concurrency(protos, prof, 7, Path(d), check, samples)
+        self.assertEqual(check.failed(), 0)
+        self.assertEqual([(n, k) for n, k, _ in calls],
+                         [("rust", 1), ("go", 1), ("go", 1), ("rust", 1), ("rust", 4), ("go", 4), ("go", 4), ("rust", 4)])
+        for k in ("1", "4"):
+            lv = r["levels"][k]
+            self.assertEqual([x["order"] for x in lv["rounds"]], [["rust", "go"], ["go", "rust"]])
+            self.assertEqual(len(lv["measurements"]["rust"]["decisions_per_sec_samples"]), 2)
+            self.assertEqual(len(lv["measurements"]["go"]["decisions_per_sec_samples"]), 2)
+            self.assertEqual(lv["measurements"]["rust"]["decisions_per_sec"], 16.0)
+            self.assertEqual(samples[f"concurrency.{k}.go"], [1.0, 1.0])
+        per_level = {}
+        for n, k, h in calls:
+            per_level.setdefault(k, set()).add(h)
+        self.assertTrue(all(len(v) == 1 for v in per_level.values()), "inputs differ within a level")
+        self.assertEqual(r["rounds_per_level"], 2)
+
+    def test_protocol_profile_keeps_sizes_and_has_two_rounds(self):
+        prof = bench.PROFILES["protocol"]
+        self.assertEqual((prof["conc_levels"], prof["conc_total"], prof["conc_rounds"]), ([1, 10, 100, 1000], 10000, 2))
 
 
 class Generators(unittest.TestCase):

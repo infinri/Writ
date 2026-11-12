@@ -22,6 +22,7 @@ import gzip
 import hashlib
 import json
 import shutil
+import statistics
 import sys
 import tempfile
 import threading
@@ -42,10 +43,10 @@ FORMAT = "writ-m1-bench/1"
 BENCHMARK_VERSION = "v2-0.1"
 PROFILES = {
     "dry-run": {"a_warmup": 5, "a_n": 20, "a_runs": 2, "b_sessions": 3, "b_runs": 2, "g_n": 12, "g_runs": 2,
-                "h_n": 8, "h_runs": 2, "cold": 3, "conc_levels": [1, 2], "conc_total": 8},
+                "h_n": 8, "h_runs": 2, "cold": 3, "conc_levels": [1, 2], "conc_total": 8, "conc_rounds": 2},
     "protocol": {"a_warmup": 1000, "a_n": 10000, "a_runs": 10, "b_sessions": 100, "b_runs": 10, "g_n": 1000,
                  "g_runs": 5, "h_n": 1000, "h_runs": 5, "cold": 30, "conc_levels": [1, 10, 100, 1000],
-                 "conc_total": 10000},
+                 "conc_total": 10000, "conc_rounds": 2},
 }
 
 
@@ -339,8 +340,12 @@ def cold(protos, prof, check: Check, samples: dict) -> dict:
 
 
 def concurrency(protos, prof, seed, tmp: Path, check: Check, samples: dict) -> dict:
+    """Decisions split across k simultaneously started processes. Order-controlled (owner decision
+    2026-11-12): at every k, `conc_rounds` paired rounds on identical inputs, round r in order(protos, r)
+    (Rust then Go, then Go then Rust, ...), so each prototype has at least two samples per k."""
     command, lines, meta = wl.gen_a(seed + 2, prof["conc_total"], prefix="c")
     ids, nulls = ids_of(lines)
+    rounds_n = max(2, prof.get("conc_rounds", 2))
     levels = {}
     for k in prof["conc_levels"]:
         d = tmp / f"conc-{k}"
@@ -349,21 +354,34 @@ def concurrency(protos, prof, seed, tmp: Path, check: Check, samples: dict) -> d
         for i, part in enumerate(wl.split(lines, k)):
             paths.append(d / f"s{i}.jsonl")
             wl.write_lines(paths[-1], part)
-        outs, meas = {}, {}
+        walls = {p.name: [] for p in protos}
+        rounds = []
+        for rnd in range(rounds_n):
+            outs, rw = {}, {}
+            for p in order(protos, rnd):
+                r = runner.run_concurrent(p, command, paths, d)
+                out, n_null, problems = runner.parse(r["stdout"])
+                if r["returncode"] != 0 or problems or set(out) != ids or n_null != nulls:
+                    check.fail("concurrency.answers", {"proto": p.name, "sessions": k, "round": rnd})
+                outs[p.name] = out
+                walls[p.name].append(r["wall_s"])
+                rw[p.name] = r["wall_s"]
+            differential(f"concurrency.{k}", *[outs[p.name] for p in protos], check)
+            rounds.append({"round": rnd, "order": [p.name for p in order(protos, rnd)], "wall_s": rw})
+        meas = {}
         for p in protos:
-            r = runner.run_concurrent(p, command, paths, d)
-            out, n_null, problems = runner.parse(r["stdout"])
-            if r["returncode"] != 0 or problems or set(out) != ids or n_null != nulls:
-                check.fail("concurrency.answers", {"proto": p.name, "sessions": k})
-            outs[p.name] = out
-            samples[f"concurrency.{k}.{p.name}"] = r["wall_s"]
-            meas[p.name] = {"wall_s": r["wall_s"], "decisions_per_sec": len(lines) / r["wall_s"] if r["wall_s"] else None}
-        differential(f"concurrency.{k}", *outs.values(), check)
-        levels[str(k)] = {"sessions": k, "decisions": len(lines), "measurements": meas}
+            w = walls[p.name]
+            samples[f"concurrency.{k}.{p.name}"] = w
+            rates = [len(lines) / x for x in w if x]
+            meas[p.name] = {"wall_s": stats.summarize(w), "decisions_per_sec_samples": rates,
+                            "decisions_per_sec": statistics.median(rates) if rates else None,
+                            "decisions_per_sec_run_to_run": stats.run_to_run(rates)}
+        levels[str(k)] = {"sessions": k, "decisions": len(lines), "rounds": rounds, "measurements": meas}
         shutil.rmtree(d)
-    return {"seed": seed + 2, "digest": wl.digest_lines(lines), "levels": levels,
+    return {"seed": seed + 2, "digest": wl.digest_lines(lines), "levels": levels, "rounds_per_level": rounds_n,
             "method": "decisions split across k simultaneously started single-threaded prototype processes "
-                      "(one per simulated session); wall time until all exit"}
+                      "(one per simulated session); wall time until all exit; at every k, paired rounds on identical "
+                      "inputs alternating which prototype goes first; decisions_per_sec is the median over rounds"}
 
 
 REQUIRED_SQLITE = {"sqlite_version": "3.54.1", "journal_mode": "wal", "synchronous": 2, "busy_timeout": 5000,
@@ -456,6 +474,8 @@ def main(argv=None) -> int:
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--cpu-list", help="pin prototypes with taskset -c (recorded)")
+    ap.add_argument("--workloads", choices=["all", "concurrency"], default="all",
+                    help="concurrency: only the process-concurrency workload (targeted correction, owner 2026-11-12)")
     ap.add_argument("--max-load", type=float, default=1.0)
     ap.add_argument("--max-start-temp-c", type=float, default=60.0)
     ap.add_argument("--sysfs-root", default="/", help=argparse.SUPPRESS)
@@ -488,16 +508,19 @@ def main(argv=None) -> int:
     sampler.start()
     try:
         sqlite_info = engine_check(protos, check)
-        result_w = {"A": workload_a(protos, prof, a.seed, tmp, check, samples),
-                    "B": workload_b(protos, prof, a.seed, tmp, check, samples, "sqlite", "B"),
-                    "B-cold": workload_b(protos, prof, a.seed, tmp, check, samples, "sqlite", "B-cold", "cold"),
-                    "B-mem": workload_b(protos, prof, a.seed, tmp, check, samples, None, "B-mem")}
-        gdir = tmp / "g-symlinks"
-        gdir.mkdir()
-        result_w["G"] = workload_plain("G", wl.gen_g(a.seed, prof["g_n"], str(gdir)), protos, prof["g_runs"], tmp, check, samples)
-        result_w["H"] = workload_plain("H", wl.gen_h(a.seed, prof["h_n"]), protos, prof["h_runs"], tmp, check, samples, "sqlite")
-        result_w["H-mem"] = workload_plain("H-mem", wl.gen_h(a.seed, prof["h_n"]), protos, prof["h_runs"], tmp, check, samples)
-        cold_r = cold(protos, prof, check, samples)
+        if a.workloads == "concurrency":
+            result_w, cold_r = {}, {"measurements": {}, "skipped": "--workloads concurrency"}
+        else:
+            result_w = {"A": workload_a(protos, prof, a.seed, tmp, check, samples),
+                        "B": workload_b(protos, prof, a.seed, tmp, check, samples, "sqlite", "B"),
+                        "B-cold": workload_b(protos, prof, a.seed, tmp, check, samples, "sqlite", "B-cold", "cold"),
+                        "B-mem": workload_b(protos, prof, a.seed, tmp, check, samples, None, "B-mem")}
+            gdir = tmp / "g-symlinks"
+            gdir.mkdir()
+            result_w["G"] = workload_plain("G", wl.gen_g(a.seed, prof["g_n"], str(gdir)), protos, prof["g_runs"], tmp, check, samples)
+            result_w["H"] = workload_plain("H", wl.gen_h(a.seed, prof["h_n"]), protos, prof["h_runs"], tmp, check, samples, "sqlite")
+            result_w["H-mem"] = workload_plain("H-mem", wl.gen_h(a.seed, prof["h_n"]), protos, prof["h_runs"], tmp, check, samples)
+            cold_r = cold(protos, prof, check, samples)
         conc_r = concurrency(protos, prof, a.seed, tmp, check, samples)
     finally:
         stop.set()
@@ -530,6 +553,7 @@ def main(argv=None) -> int:
         "guard": {"enforced": not a.dry_run, "passed": not reasons, "reasons": reasons,
                   "max_load": a.max_load, "max_start_temp_c": a.max_start_temp_c},
         "correctness": {"failed": check.failed(), "checks": dict(check.counts), "examples": check.examples},
+        "workloads_selected": a.workloads,
         "workloads": result_w, "cold_start": cold_r, "concurrency": conc_r, "sqlite": sqlite_info,
         "not_measured": {
             "E": "chaos (ledger and broker kill) not implemented in M1-06a",

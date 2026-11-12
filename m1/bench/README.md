@@ -24,7 +24,7 @@ Exit codes: 0 done and every correctness check passed; 2 usage or missing binary
 | G: hostile input | `decide-batch` | 1,000 lines, 5 runs: symlink paths (created in a disposable directory), invalid UTF-8, lone surrogates, 1 MiB content and resource, shell composition, unknown kind and capability | exact Rust and Go equality, identical across repeats |
 | H: duplicates and uncertain receipts | `broker-scenario --ledger sqlite` | 1,000 scenarios, 5 runs, 7 templates (duplicate after effect, after reserve crash, before reserve crash, after failure, uncertain receipt and reconcile, granted duplicate then exhausted, restart between) | exact Rust and Go equality, identical across repeats |
 | Cold start | `decide` | 30 launches per prototype to first answered line | answers identical |
-| Concurrency | `decide-batch` | 10,000 decisions split across 1, 10, 100, 1,000 simultaneously started processes | all answered, Rust equals Go |
+| Concurrency | `decide-batch` | 10,000 decisions split across 1, 10, 100, 1,000 simultaneously started processes; at every level two paired rounds on identical inputs, Rust then Go, then Go then Rust (order-controlled since 2026-11-12; `--workloads concurrency` runs only this workload) | all answered, Rust equals Go in every round |
 
 Runs alternate which prototype goes first. Peak RSS is a separate full run of each workload under `/usr/bin/time -v`. Percentiles are nearest-rank. Seeds: A uses `seed`, its warm-up `seed+1`, concurrency `seed+2`; B, G and H derive from `seed`; every workload's input digest is recorded.
 
