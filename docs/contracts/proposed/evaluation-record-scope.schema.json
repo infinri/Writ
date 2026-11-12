@@ -85,7 +85,8 @@
     },
     "canonical_target": {
       "type": "string",
-      "pattern": "^[a-z][a-z0-9_-]*:[a-z0-9][a-z0-9_-]{0,63}/[a-z0-9][a-z0-9_-]{0,63}(/[A-Za-z0-9._-]+)*$"
+      "pattern": "^[a-z][a-z0-9_-]*:[a-z0-9][a-z0-9_-]{0,63}/[a-z0-9][a-z0-9_-]{0,63}(/(?!\\.\\.?(/|$))[A-Za-z0-9._-]+)*$",
+      "description": "Structural only: no empty, . or .. segment. Every trusted ingestion path also checks, in broker::contracts, that it is a kernel canonical resource id equal to workflow:<tenant_id>/<project_id>/<workflow_id> of the same document."
     },
     "acceptance_policy_id": {
       "type": "string",

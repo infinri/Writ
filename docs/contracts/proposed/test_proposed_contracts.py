@@ -1,6 +1,9 @@
 """Schema-level positive and negative tests for the PROPOSED M3-06 acceptance contracts
-(D-033 item 4). Semantic rules that need state (binding equality at use time, ledger-wide
-single consumption, registry lookup, MAC verification) are specified in
+(D-033 item 4). JSON Schema is a structural check only. Every trusted ingestion path also
+performs the semantic checks in the broker's `contracts` module (broker/src/contracts.rs, Rust
+tests there): kernel canonical resource ids and target binding, strict calendar times, temporal
+order and no future observations. Semantic rules that need state (binding equality at use time,
+ledger-wide single consumption, registry lookup, MAC verification) are specified in
 docs/implementation/M3-ACCEPTANCE-CONTRACTS.md and are tested in code with M3-05 and M3-07.
 
   python3 docs/contracts/proposed/test_proposed_contracts.py
@@ -81,6 +84,29 @@ class Contracts(unittest.TestCase):
                      ("state_revision", 2 ** 53), ("canonical_target", "workflow:T1/p1/wf-1"), ("input_digests", []),
                      ("criterion_id", "Build")):
             self.assertFalse(ok(a, mutated(a, lambda d: d.__setitem__(f, v))), f"{f}={v!r}")
+
+    def test_canonical_target_dot_segments_are_rejected_structurally(self):
+        for n in ("runner-attestation", "evaluation-record-scope"):
+            for t in ("workflow:t1/p1/..", "workflow:t1/p1/.", "workflow:t1/p1/../wf-1", "workflow:t1/p1/./wf-1",
+                      "workflow:t1/p1/wf-1/..", "workflow:t1/../p1/wf-1", "workflow:t1/p1//wf-1", "workflow:t1/p1/"):
+                with self.subTest(contract=n, target=t):
+                    self.assertFalse(ok(n, mutated(n, lambda d: d.__setitem__("canonical_target", t))))
+            # Dots inside a segment stay structurally valid (the semantic binding check decides).
+            for t in ("workflow:t1/p1/wf-1", "workflow:t1/p1/...", "workflow:t1/p1/a.b"):
+                with self.subTest(contract=n, target=t):
+                    self.assertTrue(ok(n, mutated(n, lambda d: d.__setitem__("canonical_target", t))))
+
+    def test_invalid_calendar_dates_pass_json_schema_alone(self):
+        # Documented limitation: the schema pattern is structural, so these impossible times are
+        # ACCEPTED by JSON Schema alone. They are rejected by the semantic validator
+        # (broker::contracts, Timestamp::parse_strict; Rust test
+        # contracts::tests::invalid_calendar_times_are_rejected), which every trusted ingestion
+        # path runs. Python cannot call it, so this test pins the structural behaviour only.
+        for t in ("2026-02-30T00:00:00Z", "2026-13-01T00:00:00Z", "2026-11-07T24:00:00Z"):
+            with self.subTest(time=t):
+                self.assertTrue(ok("runner-attestation", mutated("runner-attestation", lambda d: d.__setitem__("finished_at", t))))
+                self.assertTrue(ok("evaluation-record-scope", mutated("evaluation-record-scope", lambda d: d.__setitem__("issued_at", t))))
+                self.assertTrue(ok("evaluator-registry-entry", mutated("evaluator-registry-entry", lambda d: d.__setitem__("published_at", t))))
 
     def test_mechanical_evaluation_needs_an_attestation(self):
         e = "evaluation-record-scope"
