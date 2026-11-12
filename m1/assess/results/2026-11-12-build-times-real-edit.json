@@ -1,0 +1,276 @@
+{
+ "collected_at": "2026-11-12T14:13:17Z",
+ "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+ "environment": {
+  "cpufreq": {
+   "boost": "1",
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5190659,
+     "mean": 2681935,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5190659,
+     "mean": 2681935,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "drivers": [
+    "amd-pstate-epp"
+   ],
+   "energy_performance_preference": [
+    "performance"
+   ],
+   "governors": [
+    "performance"
+   ],
+   "platform_profile": "balanced",
+   "policies": 16,
+   "scaling_max_khz": [
+    "5263061"
+   ],
+   "scaling_min_khz": [
+    "1100947"
+   ]
+  },
+  "hardware": {
+   "cpu_model": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics",
+   "kernel": "6.17.0-40-generic",
+   "logical_cpus": 16,
+   "machine": "x86_64",
+   "memory_mib": 31393,
+   "os": "Ubuntu 24.04.3 LTS"
+  },
+  "load": {
+   "loadavg_1m": 0.78,
+   "loadavg_5m": 1.3
+  },
+  "power": {
+   "batteries": [
+    {
+     "capacity_percent": "90",
+     "name": "BAT1",
+     "status": "Charging"
+    }
+   ],
+   "mains": [
+    {
+     "name": "ACAD",
+     "online": true
+    }
+   ],
+   "on_mains": true,
+   "usb_sources_online": [
+    {
+     "current_max_ua": "3000000",
+     "name": "ucsi-source-psy-USBC000:004",
+     "voltage_max_uv": "5000000"
+    }
+   ]
+  },
+  "thermals": {
+   "cpu_c": 48.75,
+   "cpu_sensor": "k10temp/temp1",
+   "zones_c": {
+    "thermal_zone0:acpitz": 46.8,
+    "thermal_zone1:acpitz": 45.8,
+    "thermal_zone2:acpitz": 48.8,
+    "thermal_zone3:acpitz": 47.8
+   }
+  }
+ },
+ "evidence": {
+  "go": [
+   {
+    "binary_hash_changed": true,
+    "build_log_tail": "writ.dev/m1/proto/internal/kernel\nwrit.dev/m1/proto/internal/broker\nwrit.dev/m1/proto/cmd/proto\n",
+    "constant_in_binary_after": true,
+    "constant_in_binary_before": false,
+    "edit": {
+     "after": "func LoadPolicy(doc any) *Policy {",
+     "appended": "// m107Sink retains the M1-07 build-timing edit (disposable trees only).\nvar m107Sink uint64",
+     "file": "internal/kernel/decide.go",
+     "inserted": "m107Sink = 6292172254533320704"
+    },
+    "edit_constant": "0x5752495401070000",
+    "recompiled_kernel": true
+   },
+   {
+    "binary_hash_changed": true,
+    "build_log_tail": "writ.dev/m1/proto/internal/kernel\nwrit.dev/m1/proto/internal/broker\nwrit.dev/m1/proto/cmd/proto\n",
+    "constant_in_binary_after": true,
+    "constant_in_binary_before": false,
+    "edit": {
+     "after": "func LoadPolicy(doc any) *Policy {",
+     "appended": "// m107Sink retains the M1-07 build-timing edit (disposable trees only).\nvar m107Sink uint64",
+     "file": "internal/kernel/decide.go",
+     "inserted": "m107Sink = 6292172254533320705"
+    },
+    "edit_constant": "0x5752495401070001",
+    "recompiled_kernel": true
+   },
+   {
+    "binary_hash_changed": true,
+    "build_log_tail": "writ.dev/m1/proto/internal/kernel\nwrit.dev/m1/proto/internal/broker\nwrit.dev/m1/proto/cmd/proto\n",
+    "constant_in_binary_after": true,
+    "constant_in_binary_before": false,
+    "edit": {
+     "after": "func LoadPolicy(doc any) *Policy {",
+     "appended": "// m107Sink retains the M1-07 build-timing edit (disposable trees only).\nvar m107Sink uint64",
+     "file": "internal/kernel/decide.go",
+     "inserted": "m107Sink = 6292172254533320706"
+    },
+    "edit_constant": "0x5752495401070002",
+    "recompiled_kernel": true
+   },
+   {
+    "binary_hash_changed": true,
+    "build_log_tail": "writ.dev/m1/proto/internal/kernel\nwrit.dev/m1/proto/internal/broker\nwrit.dev/m1/proto/cmd/proto\n",
+    "constant_in_binary_after": true,
+    "constant_in_binary_before": false,
+    "edit": {
+     "after": "func LoadPolicy(doc any) *Policy {",
+     "appended": "// m107Sink retains the M1-07 build-timing edit (disposable trees only).\nvar m107Sink uint64",
+     "file": "internal/kernel/decide.go",
+     "inserted": "m107Sink = 6292172254533320707"
+    },
+    "edit_constant": "0x5752495401070003",
+    "recompiled_kernel": true
+   },
+   {
+    "binary_hash_changed": true,
+    "build_log_tail": "writ.dev/m1/proto/internal/kernel\nwrit.dev/m1/proto/internal/broker\nwrit.dev/m1/proto/cmd/proto\n",
+    "constant_in_binary_after": true,
+    "constant_in_binary_before": false,
+    "edit": {
+     "after": "func LoadPolicy(doc any) *Policy {",
+     "appended": "// m107Sink retains the M1-07 build-timing edit (disposable trees only).\nvar m107Sink uint64",
+     "file": "internal/kernel/decide.go",
+     "inserted": "m107Sink = 6292172254533320708"
+    },
+    "edit_constant": "0x5752495401070004",
+    "recompiled_kernel": true
+   }
+  ],
+  "rust": [
+   {
+    "binary_hash_changed": true,
+    "build_log_tail": "   Compiling writ-m1-proto v0.1.0 (/tmp/writ-m1-07-t-higq4zzx/rust-0/m1/rust)\n    Finished `release` profile [optimized] target(s) in 1.37s\n",
+    "constant_in_binary_after": true,
+    "constant_in_binary_before": false,
+    "edit": {
+     "after": "pub fn bundle_sha(doc: &Value) -> Option<String> {",
+     "appended": null,
+     "file": "src/kernel.rs",
+     "inserted": "std::hint::black_box(6292172254533320704u64);"
+    },
+    "edit_constant": "0x5752495401070000",
+    "recompiled_kernel": true
+   },
+   {
+    "binary_hash_changed": true,
+    "build_log_tail": "   Compiling writ-m1-proto v0.1.0 (/tmp/writ-m1-07-t-higq4zzx/rust-1/m1/rust)\n    Finished `release` profile [optimized] target(s) in 1.27s\n",
+    "constant_in_binary_after": true,
+    "constant_in_binary_before": false,
+    "edit": {
+     "after": "pub fn bundle_sha(doc: &Value) -> Option<String> {",
+     "appended": null,
+     "file": "src/kernel.rs",
+     "inserted": "std::hint::black_box(6292172254533320705u64);"
+    },
+    "edit_constant": "0x5752495401070001",
+    "recompiled_kernel": true
+   },
+   {
+    "binary_hash_changed": true,
+    "build_log_tail": "   Compiling writ-m1-proto v0.1.0 (/tmp/writ-m1-07-t-higq4zzx/rust-2/m1/rust)\n    Finished `release` profile [optimized] target(s) in 1.30s\n",
+    "constant_in_binary_after": true,
+    "constant_in_binary_before": false,
+    "edit": {
+     "after": "pub fn bundle_sha(doc: &Value) -> Option<String> {",
+     "appended": null,
+     "file": "src/kernel.rs",
+     "inserted": "std::hint::black_box(6292172254533320706u64);"
+    },
+    "edit_constant": "0x5752495401070002",
+    "recompiled_kernel": true
+   },
+   {
+    "binary_hash_changed": true,
+    "build_log_tail": "   Compiling writ-m1-proto v0.1.0 (/tmp/writ-m1-07-t-higq4zzx/rust-3/m1/rust)\n    Finished `release` profile [optimized] target(s) in 1.37s\n",
+    "constant_in_binary_after": true,
+    "constant_in_binary_before": false,
+    "edit": {
+     "after": "pub fn bundle_sha(doc: &Value) -> Option<String> {",
+     "appended": null,
+     "file": "src/kernel.rs",
+     "inserted": "std::hint::black_box(6292172254533320707u64);"
+    },
+    "edit_constant": "0x5752495401070003",
+    "recompiled_kernel": true
+   },
+   {
+    "binary_hash_changed": true,
+    "build_log_tail": "   Compiling writ-m1-proto v0.1.0 (/tmp/writ-m1-07-t-higq4zzx/rust-4/m1/rust)\n    Finished `release` profile [optimized] target(s) in 1.28s\n",
+    "constant_in_binary_after": true,
+    "constant_in_binary_before": false,
+    "edit": {
+     "after": "pub fn bundle_sha(doc: &Value) -> Option<String> {",
+     "appended": null,
+     "file": "src/kernel.rs",
+     "inserted": "std::hint::black_box(6292172254533320708u64);"
+    },
+    "edit_constant": "0x5752495401070004",
+    "recompiled_kernel": true
+   }
+  ]
+ },
+ "m1_tree_clean": true,
+ "method": "clean = fresh source copy, empty target directory (Rust registry sources cached in CARGO_HOME) or empty isolated GOCACHE per run (the owner's global Go cache is never touched); incremental = after the clean build, insert as the first statement of a decision-path kernel function (Rust kernel::bundle_sha, Go kernel.LoadPolicy) a store of a distinctive per-run constant into a retained sink (std::hint::black_box; a package variable), then rebuild; evidence records whether the constant's bytes are absent before and present after (retained, relinked code) and whether the kernel was recompiled (cargo 'Compiling writ-m1-proto', go -v listing the kernel package)",
+ "mode": "build-times",
+ "repository": {
+  "commit": "bbdd092e7499c1b81ff31e6d971b630d090accfe",
+  "fixture_manifest_sha256": "sha256:0aa9efe5974f85a7ed734753c7736d6fea6d5c969d90675ea139756b8100f996",
+  "m1_dirty_paths": [],
+  "m1_tree_clean": true
+ },
+ "runs": 5,
+ "samples": {
+  "go": {
+   "clean_s": [
+    3.538863972999934,
+    3.655243573000007,
+    3.5187061760000233,
+    3.4730221059999167,
+    3.6835697819999496
+   ],
+   "incremental_real_edit_s": [
+    0.4823023020001074,
+    0.4881487709999419,
+    0.5015826510000352,
+    0.48536374900004375,
+    0.49511952100010603
+   ]
+  },
+  "rust": {
+   "clean_s": [
+    2.5875800289998097,
+    2.4844395850000183,
+    2.497937383000135,
+    2.588059336000015,
+    2.491042607000054
+   ],
+   "incremental_real_edit_s": [
+    1.3771234169998934,
+    1.2817603170001348,
+    1.3056840860001557,
+    1.3845260470000085,
+    1.2907467969998834
+   ]
+  }
+ }
+}
