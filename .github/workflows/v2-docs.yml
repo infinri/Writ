@@ -31,6 +31,11 @@ jobs:
           cargo clippy --workspace --all-targets --locked -- -D warnings
           cargo build --workspace --locked
           cargo test --workspace --locked
+      - name: Kernel fixture parity through the dev-only M1 line adapter (320 kernel cases; M3 sets excluded)
+        run: |
+          cargo build --release --locked --example m1_line_adapter
+          python3 m1/driver/parity.py --proto "$GITHUB_WORKSPACE/target/release/examples/m1_line_adapter" --manifest m1/fixtures/manifest.json --repeat 2 \
+            --sets canonical-vector,strict-json,golden-decisions,transition-decisions,acceptance-binding,external-refusal,protocol-decide,protocol-acceptance
       - name: Dependency gate (allow-list, licences, OSV advisories) and SBOM
         run: |
           python3 -m unittest discover -s kernel/tools -v
@@ -153,6 +158,14 @@ jobs:
           set -o pipefail
           for seed in 20261107 1; do
             python3 m1/props/run.py --profile ci --seed "$seed" --rust "$GITHUB_WORKSPACE/m1/rust/target/release/proto" --go "$GITHUB_WORKSPACE/m1/go/proto" --out "props-ci-$seed.json"
+          done
+      - name: M2-06 differential, writ-kernel versus the M1 Rust and Go prototypes (seeds 20261107 and 1)
+        run: |
+          cargo +1.99.1 build --release --locked --example m1_line_adapter
+          for seed in 20261107 1; do
+            for ref in m1/rust/target/release/proto m1/go/proto; do
+              python3 kernel/tools/differential.py --kernel "$GITHUB_WORKSPACE/target/release/examples/m1_line_adapter" --reference "$GITHUB_WORKSPACE/$ref" --seed "$seed" --out "m2-diff-$seed-$(basename $(dirname $ref)).json"
+            done
           done
       - name: Language-neutral SQLite storage-failure tests, both prototypes (D-024)
         env:
