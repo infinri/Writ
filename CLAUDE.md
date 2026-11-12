@@ -8,7 +8,7 @@
 
 ## Recover state first (every new session and after every compaction)
 
-**Start here: read [SESSION-HANDOFF](docs/implementation/SESSION-HANDOFF.md) at the start of every development session and after every compaction, before changing any code. It is the authoritative recovery entry point; resume the task its section F names (currently D-027) instead of restarting work.**
+**Start here: read [SESSION-HANDOFF](docs/implementation/SESSION-HANDOFF.md) at the start of every development session and after every compaction, before changing any code. It is the authoritative recovery entry point; resume the task its section F names instead of restarting work.**
 
 1. `git branch --show-current`, `git status`, `git log --oneline -10`, `git fetch origin && git rev-parse HEAD origin/v2/architecture-rebuild`.
 2. Read [SESSION-HANDOFF](docs/implementation/SESSION-HANDOFF.md), then [WORK-STATE](docs/implementation/WORK-STATE.md), then active rows in [TASKS](docs/implementation/TASKS.md) and [DECISION-LOG](docs/implementation/DECISION-LOG.md).
@@ -20,7 +20,7 @@
 
 [V2-ARCHITECTURE](V2-ARCHITECTURE.md), [docs index](docs/README.md), [master plan](docs/implementation/MASTER-IMPLEMENTATION-PLAN.md), [M0 checklist](docs/implementation/M0-START-HERE.md), [security invariants](docs/security/invariants.md), [threat model](docs/security/threat-model.md), [ADRs](docs/decisions/), [contracts](docs/contracts/).
 
-Non-negotiables: model output is untrusted; packs never grant permissions; approvals come only from authenticated humans; hard deny never becomes allow; kernel and broker import no model SDK; Rust vs Go stays OPEN until the M1 bake-off (ADR-0002).
+Non-negotiables: model output is untrusted; packs never grant permissions; approvals come only from authenticated humans; hard deny never becomes allow; kernel and broker import no model SDK; Rust is selected for Writ V2’s trusted kernel and broker under ACCEPTED ADR-0002 and D-030. The Go prototype is preserved as comparison material only; Writ does not maintain two production cores.
 
 ## Working standards
 
