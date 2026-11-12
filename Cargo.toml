@@ -1,0 +1,27 @@
+# Writ V2 production Rust workspace (ADR-0002 ACCEPTED, D-030).
+# Only production crates are members. m0/ (Python reference harness) and m1/ (bake-off
+# prototypes and evidence) stay outside the workspace and are never built from here.
+[workspace]
+resolver = "2"
+members = ["kernel"]
+exclude = ["m0", "m1"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.99"
+license = "MIT"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[profile.release]
+debug = false

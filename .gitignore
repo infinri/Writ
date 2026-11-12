@@ -89,3 +89,6 @@ WRIT-DEMO-*.md
 
 # Hypothesis example database (M0 property tests)
 .hypothesis/
+
+# Production Rust workspace build output (M2)
+/target/

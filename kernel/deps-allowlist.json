@@ -1,0 +1,17 @@
+{
+  "comment": "Reviewed production dependency allow-list for writ-kernel (kernel/DEPENDENCIES.md). Every package in the workspace Cargo.lock must appear here with this exact version and checksum.",
+  "approved_licenses": ["MIT", "MIT OR Apache-2.0", "MIT/Apache-2.0", "Apache-2.0 OR MIT"],
+  "forbidden": ["hmac", "ring", "rsa", "ed25519-dalek", "p256", "rusqlite", "tokio", "reqwest", "serde_json"],
+  "packages": {
+    "sha2": {"version": "0.10.8", "checksum": "793db75ad2bcafc3ffa7c68b215fee268f537982cd901d132f89c6343f3a3dc8", "role": "direct runtime (SHA-256 for D-006 digests)"},
+    "digest": {"version": "0.10.7", "role": "transitive (sha2)"},
+    "block-buffer": {"version": "0.10.4", "role": "transitive (digest)"},
+    "crypto-common": {"version": "0.1.7", "role": "transitive (digest)"},
+    "generic-array": {"version": "0.14.7", "role": "transitive (block-buffer, crypto-common)"},
+    "typenum": {"version": "1.20.1", "role": "transitive (generic-array, crypto-common)"},
+    "version_check": {"version": "0.9.5", "role": "build-time only (generic-array build script)"},
+    "cfg-if": {"version": "1.0.5", "role": "transitive (sha2)"},
+    "cpufeatures": {"version": "0.2.17", "role": "transitive (sha2; CPU feature detection)"},
+    "libc": {"version": "0.2.191", "role": "transitive (cpufeatures, target-specific: aarch64 Linux and Android only)"}
+  }
+}

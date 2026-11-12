@@ -1,14 +1,15 @@
 # V2 repository structure and ownership
 
-**Status:** proposed target structure; not present yet. V1 files remain on the branch only as migration reference.
+**Status:** target structure; the production Rust workspace exists from M2 (root `Cargo.toml`, member `kernel/` only). Everything else below is still a proposal. V1 files remain on the branch only as migration reference; `m0/` (Python reference harness) and `m1/` (Rust and Go bake-off prototypes and benchmark evidence) are outside the production workspace and preserved as evidence and comparison material.
 
 ~~~text
 /
-├── Cargo.toml or go.mod          # SELECT AT M1, not both forever
+├── Cargo.toml                   # production Rust workspace (ADR-0002 ACCEPTED, D-030); members: kernel
+├── rust-toolchain.toml          # pinned toolchain (1.99.1)
 ├── contracts/
 │   ├── schemas/                 # versioned Action, Decision, Event, Receipt
 │   └── fixtures/                # canonical golden examples and fuzz seeds
-├── core/                        # pure transition and decision kernel
+├── kernel/                      # writ-kernel: pure, key-free decision and transition kernel (M2)
 ├── policy/
 │   ├── evaluator/               # Cedar or equivalent authorization adapter
 │   ├── registry/                # immutable bundles, verification, conflict checks
@@ -42,13 +43,15 @@
 │   ├── integration/             # real host and store adapters
 │   ├── chaos/                   # crash, outage, replay
 │   └── performance/             # reproducible workload harness
+├── m0/                          # Python reference harness (D-001), outside the workspace
+├── m1/                          # bake-off prototypes, fixtures and evidence, outside the workspace
 ├── docs/                        # normative Markdown and derived HTML
 └── legacy/                      # optional tracked V1 reference extraction later
 ~~~
 
 ## Import rules
 
-Core imports contracts and pure domain types only. Policy evaluator imports contracts plus Cedar adapter. Broker imports contracts/core policy interface and persistence port; it does not reach into prompt retrieval. Graph and retrieval may import read-only domain types but not broker internals. Adapters translate events into contracts; they do not implement a second state machine. Core, policy evaluator and broker never import `management/` or `control-center/`; the management service talks to the registry, approval service and read-only stores through their APIs (ADR-0007).
+Kernel (`kernel/`, formerly called core) imports contracts and pure domain types only. Policy evaluator imports contracts plus Cedar adapter. Broker imports contracts/core policy interface and persistence port; it does not reach into prompt retrieval. Graph and retrieval may import read-only domain types but not broker internals. Adapters translate events into contracts; they do not implement a second state machine. Core, policy evaluator and broker never import `management/` or `control-center/`; the management service talks to the registry, approval service and read-only stores through their APIs (ADR-0007).
 
 A module may implement ports in a separate package, not use package-level mutable globals to impersonate dependency injection. No single 3,000-line CLI module or 200-KB shell enforcement script. Keep files cohesive, not arbitrarily below a fixed line threshold.
 

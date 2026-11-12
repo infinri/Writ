@@ -16,6 +16,29 @@ jobs:
         run: python3 -m pip install --disable-pip-version-check -r requirements-v2-docs.txt
       - name: Check docs, HTML, schemas, packs and task fixtures
         run: python3 scripts/check-v2-docs.py
+  m2-kernel:
+    name: M2 production kernel (writ-kernel, Rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust 1.99.1 (rust-toolchain.toml) with clippy and rustfmt
+        run: rustup toolchain install 1.99.1 --profile minimal --component clippy --component rustfmt --no-self-update
+      - name: Toolchain is the pinned one
+        run: cargo --version && rustc --version | grep -q '^rustc 1.99.1 '
+      - name: Format, lint, build and test (locked)
+        run: |
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo build --workspace --locked
+          cargo test --workspace --locked
+      - name: Dependency gate (allow-list, licences, OSV advisories) and SBOM
+        run: |
+          python3 -m unittest discover -s kernel/tools -v
+          python3 kernel/tools/check_deps.py --osv --sbom kernel-sbom.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-sbom
+          path: kernel-sbom.json
   m0-harness:
     name: M0 reference harness and audit drift
     runs-on: ubuntu-latest
