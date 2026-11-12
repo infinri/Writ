@@ -1,0 +1,749 @@
+{
+ "benchmark_version": "v2-0.1",
+ "cold_start": {
+  "measurements": {},
+  "skipped": "--workloads concurrency"
+ },
+ "concurrency": {
+  "digest": "sha256:002d1c59192e9fd9c2a0c5b47d54f8bfe036390839b9f98b4b345abc0004dd45",
+  "levels": {
+   "1": {
+    "decisions": 10000,
+    "measurements": {
+     "go": {
+      "decisions_per_sec": 21502.32438884696,
+      "decisions_per_sec_run_to_run": {
+       "cv": 0.0012829343346446981,
+       "mean": 21502.32438884696,
+       "n_runs": 2,
+       "values": [
+        21521.830686175086,
+        21482.81809151883
+       ],
+       "variance": 760.9912709066205
+      },
+      "decisions_per_sec_samples": [
+       21521.830686175086,
+       21482.81809151883
+      ],
+      "wall_s": {
+       "max": 0.46548827799961146,
+       "mean": 0.46506638299979386,
+       "min": 0.46464448799997626,
+       "n": 2,
+       "p50": 0.46464448799997626,
+       "p95": 0.46548827799961146,
+       "p99": 0.46548827799961146,
+       "stdev": 0.0005966496306394384
+      }
+     },
+     "rust": {
+      "decisions_per_sec": 31754.136328103057,
+      "decisions_per_sec_run_to_run": {
+       "cv": 0.001054800541468564,
+       "mean": 31754.136328103057,
+       "n_runs": 2,
+       "values": [
+        31777.820360758313,
+        31730.4522954478
+       ],
+       "variance": 1121.8668056304252
+      },
+      "decisions_per_sec_samples": [
+       31777.820360758313,
+       31730.4522954478
+      ],
+      "wall_s": {
+       "max": 0.31515466299970285,
+       "mean": 0.3149197779998758,
+       "min": 0.31468489300004876,
+       "n": 2,
+       "p50": 0.31468489300004876,
+       "p95": 0.31515466299970285,
+       "p99": 0.31515466299970285,
+       "stdev": 0.0003321775523534095
+      }
+     }
+    },
+    "rounds": [
+     {
+      "order": [
+       "rust",
+       "go"
+      ],
+      "round": 0,
+      "wall_s": {
+       "go": 0.46464448799997626,
+       "rust": 0.31468489300004876
+      }
+     },
+     {
+      "order": [
+       "go",
+       "rust"
+      ],
+      "round": 1,
+      "wall_s": {
+       "go": 0.46548827799961146,
+       "rust": 0.31515466299970285
+      }
+     }
+    ],
+    "sessions": 1
+   },
+   "10": {
+    "decisions": 10000,
+    "measurements": {
+     "go": {
+      "decisions_per_sec": 85638.25689279076,
+      "decisions_per_sec_run_to_run": {
+       "cv": 0.003705758668922124,
+       "mean": 85638.25689279076,
+       "n_runs": 2,
+       "values": [
+        85862.66056230394,
+        85413.85322327756
+       ],
+       "variance": 100714.01378196749
+      },
+      "decisions_per_sec_samples": [
+       85862.66056230394,
+       85413.85322327756
+      ],
+      "wall_s": {
+       "max": 0.1170770270000503,
+       "mean": 0.11677104399996097,
+       "min": 0.11646506099987164,
+       "n": 2,
+       "p50": 0.11646506099987164,
+       "p95": 0.1170770270000503,
+       "p99": 0.1170770270000503,
+       "stdev": 0.0004327253085819343
+      }
+     },
+     "rust": {
+      "decisions_per_sec": 151062.98138970425,
+      "decisions_per_sec_run_to_run": {
+       "cv": 0.005353506826924443,
+       "mean": 151062.98138970425,
+       "n_runs": 2,
+       "values": [
+        151634.83045386418,
+        150491.1323255443
+       ],
+       "variance": 654022.7043611861
+      },
+      "decisions_per_sec_samples": [
+       151634.83045386418,
+       150491.1323255443
+      ],
+      "wall_s": {
+       "max": 0.0664490979997936,
+       "mean": 0.06619850349989065,
+       "min": 0.0659479089999877,
+       "n": 2,
+       "p50": 0.0659479089999877,
+       "p95": 0.0664490979997936,
+       "p99": 0.0664490979997936,
+       "stdev": 0.00035439414041884843
+      }
+     }
+    },
+    "rounds": [
+     {
+      "order": [
+       "rust",
+       "go"
+      ],
+      "round": 0,
+      "wall_s": {
+       "go": 0.11646506099987164,
+       "rust": 0.0659479089999877
+      }
+     },
+     {
+      "order": [
+       "go",
+       "rust"
+      ],
+      "round": 1,
+      "wall_s": {
+       "go": 0.1170770270000503,
+       "rust": 0.0664490979997936
+      }
+     }
+    ],
+    "sessions": 10
+   },
+   "100": {
+    "decisions": 10000,
+    "measurements": {
+     "go": {
+      "decisions_per_sec": 91599.60178562862,
+      "decisions_per_sec_run_to_run": {
+       "cv": 0.0006161505932255557,
+       "mean": 91599.60178562862,
+       "n_runs": 2,
+       "values": [
+        91559.69328066085,
+        91639.51029059637
+       ],
+       "variance": 3185.377537523394
+      },
+      "decisions_per_sec_samples": [
+       91559.69328066085,
+       91639.51029059637
+      ],
+      "wall_s": {
+       "max": 0.10921836499983328,
+       "mean": 0.10917080099989107,
+       "min": 0.10912323699994886,
+       "n": 2,
+       "p50": 0.10912323699994886,
+       "p95": 0.10921836499983328,
+       "p99": 0.10921836499983328,
+       "stdev": 6.726565379899049e-05
+      }
+     },
+     "rust": {
+      "decisions_per_sec": 201133.3633620604,
+      "decisions_per_sec_run_to_run": {
+       "cv": 0.008776157727219866,
+       "mean": 201133.3633620604,
+       "n_runs": 2,
+       "values": [
+        199885.19394264848,
+        202381.53278147228
+       ],
+       "variance": 3115853.7991101015
+      },
+      "decisions_per_sec_samples": [
+       199885.19394264848,
+       202381.53278147228
+      ],
+      "wall_s": {
+       "max": 0.05002871799933928,
+       "mean": 0.049720170499767846,
+       "min": 0.049411623000196414,
+       "n": 2,
+       "p50": 0.049411623000196414,
+       "p95": 0.05002871799933928,
+       "p99": 0.05002871799933928,
+       "stdev": 0.00043635205853022606
+      }
+     }
+    },
+    "rounds": [
+     {
+      "order": [
+       "rust",
+       "go"
+      ],
+      "round": 0,
+      "wall_s": {
+       "go": 0.10921836499983328,
+       "rust": 0.05002871799933928
+      }
+     },
+     {
+      "order": [
+       "go",
+       "rust"
+      ],
+      "round": 1,
+      "wall_s": {
+       "go": 0.10912323699994886,
+       "rust": 0.049411623000196414
+      }
+     }
+    ],
+    "sessions": 100
+   },
+   "1000": {
+    "decisions": 10000,
+    "measurements": {
+     "go": {
+      "decisions_per_sec": 23927.670526384187,
+      "decisions_per_sec_run_to_run": {
+       "cv": 0.006014004991177688,
+       "mean": 23927.670526384187,
+       "n_runs": 2,
+       "values": [
+        23825.91706155992,
+        24029.423991208452
+       ],
+       "variance": 20707.535207486028
+      },
+      "decisions_per_sec_samples": [
+       23825.91706155992,
+       24029.423991208452
+      ],
+      "wall_s": {
+       "max": 0.4197110220002287,
+       "mean": 0.4179337405003025,
+       "min": 0.41615645900037634,
+       "n": 2,
+       "p50": 0.41615645900037634,
+       "p95": 0.4197110220002287,
+       "p99": 0.4197110220002287,
+       "stdev": 0.0025134556013503943
+      }
+     },
+     "rust": {
+      "decisions_per_sec": 55198.91668549534,
+      "decisions_per_sec_run_to_run": {
+       "cv": 0.02351112385956592,
+       "mean": 55198.91668549534,
+       "n_runs": 2,
+       "values": [
+        54281.241589147925,
+        56116.59178184274
+       ],
+       "variance": 1684255.1649124485
+      },
+      "decisions_per_sec_samples": [
+       54281.241589147925,
+       56116.59178184274
+      ],
+      "wall_s": {
+       "max": 0.184225704999335,
+       "mean": 0.18121306049943087,
+       "min": 0.17820041599952674,
+       "n": 2,
+       "p50": 0.17820041599952674,
+       "p95": 0.184225704999335,
+       "p99": 0.184225704999335,
+       "stdev": 0.004260522710373127
+      }
+     }
+    },
+    "rounds": [
+     {
+      "order": [
+       "rust",
+       "go"
+      ],
+      "round": 0,
+      "wall_s": {
+       "go": 0.4197110220002287,
+       "rust": 0.184225704999335
+      }
+     },
+     {
+      "order": [
+       "go",
+       "rust"
+      ],
+      "round": 1,
+      "wall_s": {
+       "go": 0.41615645900037634,
+       "rust": 0.17820041599952674
+      }
+     }
+    ],
+    "sessions": 1000
+   }
+  },
+  "method": "decisions split across k simultaneously started single-threaded prototype processes (one per simulated session); wall time until all exit; at every k, paired rounds on identical inputs alternating which prototype goes first; decisions_per_sec is the median over rounds",
+  "rounds_per_level": 2,
+  "seed": 20261123
+ },
+ "correctness": {
+  "checks": {
+   "concurrency.1.differential": 0,
+   "concurrency.10.differential": 0,
+   "concurrency.100.differential": 0,
+   "concurrency.1000.differential": 0,
+   "sqlite.engine_and_settings_identical": 0,
+   "sqlite.info_available": 0,
+   "sqlite.required_settings": 0
+  },
+  "examples": [],
+  "failed": 0
+ },
+ "environment": {
+  "cpufreq": {
+   "boost": "1",
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5140689,
+     "mean": 3050836,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5115639,
+     "mean": 3042531,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "drivers": [
+    "amd-pstate-epp"
+   ],
+   "energy_performance_preference": [
+    "performance"
+   ],
+   "governors": [
+    "performance"
+   ],
+   "platform_profile": "balanced",
+   "policies": 16,
+   "scaling_max_khz": [
+    "5263061"
+   ],
+   "scaling_min_khz": [
+    "1100947"
+   ]
+  },
+  "hardware": {
+   "cpu_model": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics",
+   "kernel": "6.17.0-40-generic",
+   "logical_cpus": 16,
+   "machine": "x86_64",
+   "memory_mib": 31393,
+   "os": "Ubuntu 24.04.3 LTS"
+  },
+  "load": {
+   "loadavg_1m": 0.72,
+   "loadavg_5m": 1.18
+  },
+  "power": {
+   "batteries": [
+    {
+     "capacity_percent": "99",
+     "name": "BAT1",
+     "status": "Charging"
+    }
+   ],
+   "mains": [
+    {
+     "name": "ACAD",
+     "online": true
+    }
+   ],
+   "on_mains": true,
+   "usb_sources_online": [
+    {
+     "current_max_ua": "3000000",
+     "name": "ucsi-source-psy-USBC000:004",
+     "voltage_max_uv": "5000000"
+    }
+   ]
+  },
+  "thermals": {
+   "cpu_c": 54.25,
+   "cpu_sensor": "k10temp/temp1",
+   "zones_c": {
+    "thermal_zone0:acpitz": 45.8,
+    "thermal_zone1:acpitz": 45.8,
+    "thermal_zone2:acpitz": 49.8,
+    "thermal_zone3:acpitz": 55.8
+   }
+  }
+ },
+ "environment_end": {
+  "cpufreq": {
+   "boost": "1",
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5190589,
+     "mean": 2962776,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5190589,
+     "mean": 2962776,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "drivers": [
+    "amd-pstate-epp"
+   ],
+   "energy_performance_preference": [
+    "performance"
+   ],
+   "governors": [
+    "performance"
+   ],
+   "platform_profile": "balanced",
+   "policies": 16,
+   "scaling_max_khz": [
+    "5263061"
+   ],
+   "scaling_min_khz": [
+    "1100947"
+   ]
+  },
+  "load": {
+   "loadavg_1m": 1.22,
+   "loadavg_5m": 1.28
+  },
+  "power": {
+   "batteries": [
+    {
+     "capacity_percent": "99",
+     "name": "BAT1",
+     "status": "Charging"
+    }
+   ],
+   "mains": [
+    {
+     "name": "ACAD",
+     "online": true
+    }
+   ],
+   "on_mains": true,
+   "usb_sources_online": [
+    {
+     "current_max_ua": "3000000",
+     "name": "ucsi-source-psy-USBC000:004",
+     "voltage_max_uv": "5000000"
+    }
+   ]
+  },
+  "thermals": {
+   "cpu_c": 82.0,
+   "cpu_sensor": "k10temp/temp1",
+   "zones_c": {
+    "thermal_zone0:acpitz": 45.8,
+    "thermal_zone1:acpitz": 46.8,
+    "thermal_zone2:acpitz": 49.8,
+    "thermal_zone3:acpitz": 78.8
+   }
+  }
+ },
+ "environment_samples": [
+  {
+   "batteries": [
+    "Charging"
+   ],
+   "clocks": {
+    "cpuinfo_avg_khz": {
+     "max": 5144231,
+     "mean": 3365623,
+     "min": 1100947
+    },
+    "cpuinfo_max_khz": 5263061,
+    "scaling_cur_khz": {
+     "max": 5144231,
+     "mean": 3406332,
+     "min": 1100947
+    },
+    "thermal_throttle_counts": null,
+    "thermal_throttle_sysfs": "not exposed on this host"
+   },
+   "cpu_c": 54.375,
+   "governors": [
+    "performance"
+   ],
+   "load_1m": 0.72,
+   "t_s": 0.0
+  }
+ ],
+ "evidence": [],
+ "finished_at": "2026-11-12T15:22:42Z",
+ "format": "writ-m1-bench/1",
+ "guard": {
+  "enforced": true,
+  "max_load": 1.0,
+  "max_start_temp_c": 60.0,
+  "passed": true,
+  "reasons": []
+ },
+ "mode": "measure",
+ "not_a_benchmark": false,
+ "not_measured": {
+  "E": "chaos (ledger and broker kill) not implemented in M1-06a",
+  "G_symlinks": "M1 kernels perform no filesystem access; symlink paths exercise string handling only",
+  "broker_timing": "B, B-mem, H and H-mem report per-operation broker timing from bench-broker-scenario (validation, kernel decision, key-lock wait, each transaction's begin/body/end, parse and run per line, process and protocol overhead) in separate timed runs",
+  "ledgers": "B and H use the file-backed SQLite ledger (D-023, fresh database per process); B-mem and H-mem use the in-memory model and are not substitutes for the SQLite results"
+ },
+ "pinned_versions": {
+  "GO_VERSION": "1.27.3",
+  "RUST_VERSION": "1.99.1"
+ },
+ "profile": {
+  "a_n": 10000,
+  "a_runs": 10,
+  "a_warmup": 1000,
+  "b_runs": 10,
+  "b_sessions": 100,
+  "cold": 30,
+  "conc_levels": [
+   1,
+   10,
+   100,
+   1000
+  ],
+  "conc_rounds": 2,
+  "conc_total": 10000,
+  "g_n": 1000,
+  "g_runs": 5,
+  "h_n": 1000,
+  "h_runs": 5,
+  "name": "protocol"
+ },
+ "prototypes": {
+  "go": {
+   "argv_prefix": [],
+   "binary": "m1/go/proto",
+   "sha256": "sha256:024fd315adf3c24cf58821d218e76ab44b7f5ba6d9b7f37198465f8e0eca9540"
+  },
+  "rust": {
+   "argv_prefix": [],
+   "binary": "m1/rust/target/release/proto",
+   "sha256": "sha256:486a18276b0369afe964d01dc6faa988ecadf1bca8aefcf3aac4baf6c0bda387"
+  }
+ },
+ "repository": {
+  "commit": "992383a989dd5a890955461979cd947d69872129",
+  "fixture_manifest_sha256": "sha256:0aa9efe5974f85a7ed734753c7736d6fea6d5c969d90675ea139756b8100f996",
+  "m1_dirty_paths": [],
+  "m1_tree_clean": true
+ },
+ "samples_file": {
+  "path": "2026-11-12-conc-corrected-seed-20261121.json.samples.json.gz",
+  "sha256": "sha256:f2788207751b60a53d4958f86436cbb4f0211983efb2a898a5abf54a0dbc010d"
+ },
+ "seed": 20261121,
+ "sqlite": {
+  "go": {
+   "compile_options": [
+    "ATOMIC_INTRINSICS=1",
+    "COMPILER=gcc-13.3.0",
+    "DEFAULT_AUTOVACUUM",
+    "DEFAULT_CACHE_SIZE=-2000",
+    "DEFAULT_FILE_FORMAT=4",
+    "DEFAULT_JOURNAL_SIZE_LIMIT=-1",
+    "DEFAULT_MMAP_SIZE=0",
+    "DEFAULT_PAGE_SIZE=4096",
+    "DEFAULT_PCACHE_INITSZ=20",
+    "DEFAULT_RECURSIVE_TRIGGERS",
+    "DEFAULT_SECTOR_SIZE=4096",
+    "DEFAULT_SYNCHRONOUS=2",
+    "DEFAULT_WAL_AUTOCHECKPOINT=1000",
+    "DEFAULT_WAL_SYNCHRONOUS=2",
+    "DEFAULT_WORKER_THREADS=0",
+    "DIRECT_OVERFLOW_READ",
+    "DQS=0",
+    "ENABLE_COLUMN_METADATA",
+    "MALLOC_SOFT_LIMIT=1024",
+    "MAX_ATTACHED=10",
+    "MAX_COLUMN=2000",
+    "MAX_COMPOUND_SELECT=500",
+    "MAX_DEFAULT_PAGE_SIZE=8192",
+    "MAX_EXPR_DEPTH=1000",
+    "MAX_FUNCTION_ARG=1000",
+    "MAX_LENGTH=1000000000",
+    "MAX_LIKE_PATTERN_LENGTH=50000",
+    "MAX_MMAP_SIZE=0x7fff0000",
+    "MAX_PAGE_COUNT=0xfffffffe",
+    "MAX_PAGE_SIZE=65536",
+    "MAX_SCHEMA=10000000",
+    "MAX_SQL_LENGTH=1000000000",
+    "MAX_TRIGGER_DEPTH=1000",
+    "MAX_VARIABLE_NUMBER=32766",
+    "MAX_VDBE_OP=250000000",
+    "MAX_WORKER_THREADS=8",
+    "MUTEX_PTHREADS",
+    "OMIT_LOAD_EXTENSION",
+    "SYSTEM_MALLOC",
+    "TEMP_STORE=1",
+    "THREADSAFE=1"
+   ],
+   "driver": "github.com/mattn/go-sqlite3 v1.14.52",
+   "schema_version": "1",
+   "settings": {
+    "busy_timeout": 5000,
+    "foreign_keys": 1,
+    "journal_mode": "wal",
+    "synchronous": 2,
+    "trusted_schema": 0
+   },
+   "source_id": "2026-10-16 14:45:20 555e07ef33f69a0957d24d8e555b702464a131d6f1607f4c3c1e4551e8e6ca76",
+   "sqlite_version": "3.54.1"
+  },
+  "rust": {
+   "compile_options": [
+    "ATOMIC_INTRINSICS=1",
+    "COMPILER=gcc-13.3.0",
+    "DEFAULT_AUTOVACUUM",
+    "DEFAULT_CACHE_SIZE=-2000",
+    "DEFAULT_FILE_FORMAT=4",
+    "DEFAULT_JOURNAL_SIZE_LIMIT=-1",
+    "DEFAULT_MMAP_SIZE=0",
+    "DEFAULT_PAGE_SIZE=4096",
+    "DEFAULT_PCACHE_INITSZ=20",
+    "DEFAULT_RECURSIVE_TRIGGERS",
+    "DEFAULT_SECTOR_SIZE=4096",
+    "DEFAULT_SYNCHRONOUS=2",
+    "DEFAULT_WAL_AUTOCHECKPOINT=1000",
+    "DEFAULT_WAL_SYNCHRONOUS=2",
+    "DEFAULT_WORKER_THREADS=0",
+    "DIRECT_OVERFLOW_READ",
+    "DQS=0",
+    "ENABLE_COLUMN_METADATA",
+    "MALLOC_SOFT_LIMIT=1024",
+    "MAX_ATTACHED=10",
+    "MAX_COLUMN=2000",
+    "MAX_COMPOUND_SELECT=500",
+    "MAX_DEFAULT_PAGE_SIZE=8192",
+    "MAX_EXPR_DEPTH=1000",
+    "MAX_FUNCTION_ARG=1000",
+    "MAX_LENGTH=1000000000",
+    "MAX_LIKE_PATTERN_LENGTH=50000",
+    "MAX_MMAP_SIZE=0x7fff0000",
+    "MAX_PAGE_COUNT=0xfffffffe",
+    "MAX_PAGE_SIZE=65536",
+    "MAX_SCHEMA=10000000",
+    "MAX_SQL_LENGTH=1000000000",
+    "MAX_TRIGGER_DEPTH=1000",
+    "MAX_VARIABLE_NUMBER=32766",
+    "MAX_VDBE_OP=250000000",
+    "MAX_WORKER_THREADS=8",
+    "MUTEX_PTHREADS",
+    "OMIT_LOAD_EXTENSION",
+    "SYSTEM_MALLOC",
+    "TEMP_STORE=1",
+    "THREADSAFE=1"
+   ],
+   "driver": "rusqlite 0.40.2",
+   "schema_version": "1",
+   "settings": {
+    "busy_timeout": 5000,
+    "foreign_keys": 1,
+    "journal_mode": "wal",
+    "synchronous": 2,
+    "trusted_schema": 0
+   },
+   "source_id": "2026-10-16 14:45:20 555e07ef33f69a0957d24d8e555b702464a131d6f1607f4c3c1e4551e8e6ca76",
+   "sqlite_version": "3.54.1"
+  }
+ },
+ "started_at": "2026-11-12T15:22:37Z",
+ "toolchains": {
+  "cargo_V": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "go_binary_buildinfo": "m1/go/proto: go1.27.3\n\tpath\twrit.dev/m1/proto/cmd/proto\n\tmod\twrit.dev/m1/proto\t(devel)\t\n\tdep\tgithub.com/mattn/go-sqlite3\tv1.14.52\th1:wVbm2Qnf4OXkqhBTSPuCRZDRnxfbVrrmiCEroVdog8U=\n\tbuild\t-buildmode=exe\n\tbuild\t-compiler=gc\n\tbuild\t-tags=libsqlite3,sqlite_omit_load_extension\n\tbuild\t-trimpath=true\n\tbuild\tCGO_ENABLED=1\n\tbuild\tGOARCH=amd64\n\tbuild\tGOOS=linux\n\tbuild\tGOAMD64=v1\n\tbuild\tvcs=git\n\tbuild\tvcs.revision=992383a989dd5a890955461979cd947d69872129\n\tbuild\tvcs.time=2026-11-12T15:11:18Z\n\tbuild\tvcs.modified=true",
+  "go_build": "go build -trimpath -tags 'libsqlite3 sqlite_omit_load_extension' -o proto ./cmd/proto (m1/go)",
+  "go_env": "linux\namd64\nv1\n1\n\nlocal",
+  "go_version": "go version go1.27.3 linux/amd64",
+  "python": "3.12.3",
+  "rust_build": "cargo build --release --locked (m1/rust)",
+  "rust_env": {
+   "CARGO_ENCODED_RUSTFLAGS": null,
+   "CARGO_PROFILE_RELEASE_OPT_LEVEL": null,
+   "RUSTFLAGS": null
+  },
+  "rust_profile_release": "[profile.release]\ndebug = false\n",
+  "rustc_vV": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1",
+  "time_v": true
+ },
+ "valid_for_comparison": true,
+ "workloads": {},
+ "workloads_selected": "concurrency"
+}
