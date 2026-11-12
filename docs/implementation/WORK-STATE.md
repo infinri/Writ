@@ -1,14 +1,14 @@
 # Writ V2 work state
 
-**Last updated:** 2026-11-10 (America/Chicago; enterprise readiness planning; M1 measurements recorded under UTC date 2026-11-11) · **Branch:** v2/architecture-rebuild · **Milestone:** M1 active (development only, D-014). Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md).
+**Last updated:** 2026-11-12 (M1-08 targeted confirmation complete; scorecard recommends Rust for the kernel and broker, pending owner decision) · **Branch:** v2/architecture-rebuild · **Milestone:** M1 active (development only, D-014). Release and production NO-GO. Recovery entry point: [SESSION-HANDOFF](SESSION-HANDOFF.md).
 
 ## Current
 
-- **Verified published baseline:** `a91af1d775d59fab932a03506ea36384642cdae0`; [CI run 42943984397](https://github.com/infinri/Writ/actions/runs/42943984397) passed all 5 jobs. This readiness change is documentation only; verify the resulting HEAD and its CI separately.
-- **Prototypes:** D-027..D-029 implemented; historical local verification E-042 and published CI above. No new runtime or benchmark results are claimed by this planning update.
-- **Language:** Rust is the owner's provisional leader and preferred trusted kernel/broker direction. ADR-0002 remains OPEN pending targeted M1-08 confirmation and final owner decision.
-- **Benchmarks:** official M1-06 and M1-07 results exist at `138163d` (E-046/E-047). Real incremental build, repeatability, Go process overhead and real interruption investigations remain pending. Complete raw M1-06 evidence is reported local/ignored and is not available in this checkout; preservation must be completed on the original measurement host.
-- **Next task:** the already authorized targeted M1-08 work; see SESSION-HANDOFF section F. No full bake-off restart. Each official measurement requires a fresh passing environment guard.
+- **Verified published baseline:** `bbdd092e7499c1b81ff31e6d971b630d090accfe`; CI run 43085390484 passed all 5 jobs. Local commits after it: evidence bundles `a1b153c`, scorecard and evidence docs (push needs owner approval).
+- **Prototypes:** D-027..D-029 implemented; `run_ns` boundary corrected (E-048); chaos workload E with real SIGKILL (E-049); verified locally E-050 and in CI at `bbdd092`.
+- **Language:** [M1-08-SCORECARD](M1-08-SCORECARD.md) recommends **Rust** for the trusted kernel and broker (Rust was the owner's provisional leader). ADR-0002 remains OPEN until the owner's final decision; Claude never marks it ACCEPTED.
+- **Benchmarks:** three official M1-06 run sets (seeds 20261111 at `138163d`, 20261121 and 20261131 at `bbdd092`; E-046, E-052) and real-edit M1-07 build timings (E-053), all guard-passed with 0 correctness failures; tracked bundles in `m1/bench/evidence/`.
+- **Next task:** owner's final ADR-0002 decision on the scorecard recommendation. No further measurement without a new authorization and a passing guard.
 - **Enterprise direction:** [readiness plan](../security/ENTERPRISE-READINESS.md), ENT-OWNER-01 and ENT-00..ENT-08. PostgreSQL targets enterprise operational state, SQLite remains local/offline; durable multi-worker coordination requires separate future acceptance. Controls, SOC 2 scope and any examination remain planned, not implemented or attested.
 
 ## Security findings
