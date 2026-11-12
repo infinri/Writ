@@ -6,7 +6,7 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 
 **This is the authoritative recovery entry point. It is not authorization to do anything beyond what is listed under "Authorized next task"; re-establish other authorizations from the owner's newest message.**
 
-**After compaction (state 2026-11-12, M2 gate reviewed):** ADR-0002 ACCEPTED (Rust, D-030). M2-00..M2-06 DONE with evidence E-056, E-057 (320/320 kernel fixtures; D-031 readings tested; hardened differential gate 0 unreconciled problems versus M1 Rust and Go; full Decisions schema-valid and identical to M1; live M0 comparison with documented-difference probes). **Next:** confirm exact-SHA CI of the latest commits (6 jobs); then wait for the owner (M3 is not authorized). The 127 broker and promotion cases are M3 obligations. Stop for new semantic or trust-boundary decisions. Carried risks: cross-process reconciliation (M3, M10), SR-06 (M5), power-loss durability (M9), single-host measurements (M10).
+**After compaction (state 2026-11-12, M3 in progress):** M2 accepted at `eecab4d` (D-031, E-057). M3 authorized and bounded: [M3-START-PLAN](M3-START-PLAN.md) (tasks M3-00..M3-08). Broker in `broker/` (`writ-broker`), SQLite local profile in `persistence/sqlite/` (`writ-ledger-sqlite`); kernel unchanged and key-free. Coordination: single-owner SQLite profile (exclusive OS lock on `<ledger>.owner` plus fencing epoch checked in every write transaction); never present the process-local D-029 gate as cross-process protection. **Current task:** see TASKS rows M3-00, M3-01. Out of scope: PostgreSQL, enterprise services, Control Center, real-host integration. Stop for new semantic or trust-boundary decisions. Never claim exactly-once execution for external systems.
 
 **Enterprise planning update:** owner delegated the readiness approach after discussing Rust, PostgreSQL and SOC 2. [ENTERPRISE-READINESS](../security/ENTERPRISE-READINESS.md), ENT-OWNER-01 and ENT-00..ENT-08 allocate controls across M2..M12. SQLite stays local/offline; PostgreSQL targets enterprise state with a separate future coordination/recovery gate. Controls and examinations remain planned. Self-hosted customer audit responsibilities do not replace any examination of a Writ-operated service. ADR-0008 stays APPROVED IN PRINCIPLE; release and production NO-GO. No paid engagement or production action is authorized.
 
@@ -15,11 +15,11 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 | Item | State |
 |---|---|
 | Branch | `v2/architecture-rebuild` (never `main`) |
-| Verified published baseline | `992383a989dd5a890955461979cd947d69872129` (order-controlled concurrency harness); CI https://github.com/infinri/Writ/actions/runs/43245077338 **success, all 5 jobs**; later commits (correction bundle, ADR-0002 acceptance docs) are verified by their own exact-SHA CI: check `gh run list` on recovery |
-| Last code commit | `992383a` (bench harness); last prototype code `bf94cdf` (run_ns boundary, chaos tooling); real-edit tooling `8639474` |
-| This update | M1 completion: correction bundle, ADR-0002 ACCEPTED (Rust), M2 starting plan; use git and CI to verify publication rather than inferring it from this table |
+| Verified published baseline | `eecab4d7572c87abc14efd01899bc76445658a54` (M2 accepted by the owner for its documented scope); CI https://github.com/infinri/Writ/actions/runs/43262935510 **success, all 6 jobs**; check `gh run list` for later commits |
+| Last code commit | `bfef347` (M2 kernel tests and gates); kernel `2eb3b25`, workspace `80cc88d`; M1 prototypes frozen (`bf94cdf`) |
+| This update | M3 authorized (bounded); [M3-START-PLAN](M3-START-PLAN.md); use git and CI to verify publication |
 | Working tree | untracked `docs/audit/m0/hook-audit/` (private owner material: never stage, publish or summarize); backup branch `backup/m1-08-pre-rebase-567e088` is local only |
-| Milestone | **M1 DONE** (ADR-0002 ACCEPTED 2026-11-12); M2 planned, not started. Release and production **NO-GO** |
+| Milestone | **M3 in progress** (M1 DONE, ADR-0002 ACCEPTED; M2 accepted at `eecab4d`). Release and production **NO-GO** |
 
 Commit chain since M1-05 (all published): `9e6f9f1` M1-06a harness; `a44c9cc` D-022; `935e4e3` D-023 SQLite ledger; `e1dc2e1` M1-07 report (CI failed: system SQLite linked); `3012940` D-024 plus CI fix; `6b7eab1` M1-06d broker timing; `68f4593` D-025; `8d1915c` docs; `d9815f8` guard refuses discharging battery (CI failed: busy timeouts, E-034); `1994b67` docs; `7a5a366` D-026; `988a840` docs; `d9054c9` docs checkpoint; `52b31fe` D-027; `41529d1` docs (CI red, E-039); `a0769b6` docs (CI red, same cause); `c5effec` D-028, D-029; `d99faa2` docs (CI green, E-044); `612e1f4` docs; `138163d` readiness docs; `a91af1d` official results and scorecard.
 

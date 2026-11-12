@@ -444,6 +444,8 @@ The timeout and lock-wait figures in E-034, E-035 and E-036 are **preliminary an
 
 ## Not yet executed
 
+(Completed and removed from this list on 2026-11-12, evidence kept above: targeted M1-08 repeatability E-052, Go timing-boundary investigation E-048, real-edit incremental builds E-053, real interruption workload E-049, process-concurrency correction E-054.)
+
 - SR-06 live-host experiments (0 of 69; sandbox torn down) and full SR-06 acceptance; rule semantic review (M0-01d); independent human golden review (M0-05a).
-- Targeted M1-08 repeatability, Go-overhead investigation, compiler-relevant incremental builds and real interruption workload; official first measurements already recorded in E-046/E-047.
+- M3 broker, transition service and mechanical runner ([M3-START-PLAN](M3-START-PLAN.md)); the 127 broker and promotion fixture cases against production code.
 - Enterprise control implementation, operational-effectiveness evidence and independent SOC 2 examination (ENT-01..ENT-08).
