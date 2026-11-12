@@ -1,6 +1,69 @@
 {
-  "comment": "Reviewed dependency allow-list for writ-broker (broker/DEPENDENCIES.md). The closure covers normal and build dependencies; path dependencies on workspace members are not listed.",
-  "approved_licenses": ["MIT", "MIT OR Apache-2.0", "MIT/Apache-2.0", "Apache-2.0 OR MIT"],
-  "forbidden": ["rusqlite", "libsqlite3-sys", "tokio", "reqwest"],
-  "packages": {}
+  "comment": "Reviewed dependency allow-list for writ-broker (broker/DEPENDENCIES.md). The closure covers normal and build dependencies; path dependencies on workspace members are not listed. M3-02 adds hmac and sha2 (and writ-kernel by path); versions as reviewed for M1 (M1-07). BSD-3-Clause is approved for subtle 2.6.1 only (owner decision D-033), not as a general licence.",
+  "approved_licenses": [
+    "MIT",
+    "MIT OR Apache-2.0",
+    "MIT/Apache-2.0",
+    "Apache-2.0 OR MIT"
+  ],
+  "forbidden": [
+    "rusqlite",
+    "libsqlite3-sys",
+    "tokio",
+    "reqwest"
+  ],
+  "packages": {
+    "hmac": {
+      "version": "0.12.1",
+      "checksum": "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e",
+      "role": "direct runtime (HMAC-SHA256 ingress seals and permits; constant-time verification); default features off"
+    },
+    "sha2": {
+      "version": "0.10.8",
+      "checksum": "793db75ad2bcafc3ffa7c68b215fee268f537982cd901d132f89c6343f3a3dc8",
+      "role": "direct runtime (SHA-256 for HMAC); default features off; same version as writ-kernel"
+    },
+    "subtle": {
+      "version": "2.6.1",
+      "checksum": "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292",
+      "role": "transitive (digest `mac` feature, enabled by hmac; constant-time tag comparison); licence BSD-3-Clause approved for this package only (owner D-033); notice in THIRD-PARTY-NOTICES.md",
+      "licence_approved": "BSD-3-Clause"
+    },
+    "digest": {
+      "version": "0.10.7",
+      "role": "transitive (hmac, sha2)"
+    },
+    "block-buffer": {
+      "version": "0.10.4",
+      "role": "transitive (digest)"
+    },
+    "crypto-common": {
+      "version": "0.1.7",
+      "role": "transitive (digest)"
+    },
+    "generic-array": {
+      "version": "0.14.7",
+      "role": "transitive (block-buffer, crypto-common)"
+    },
+    "typenum": {
+      "version": "1.20.1",
+      "role": "transitive (generic-array, crypto-common)"
+    },
+    "version_check": {
+      "version": "0.9.5",
+      "role": "build-time only (generic-array build script)"
+    },
+    "cfg-if": {
+      "version": "1.0.5",
+      "role": "transitive (sha2)"
+    },
+    "cpufeatures": {
+      "version": "0.2.17",
+      "role": "transitive (sha2; CPU feature detection)"
+    },
+    "libc": {
+      "version": "0.2.191",
+      "role": "transitive (cpufeatures, target-specific: aarch64 Linux and Android only)"
+    }
+  }
 }

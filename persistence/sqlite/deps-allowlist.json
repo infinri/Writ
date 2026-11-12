@@ -58,5 +58,6 @@
       "bundled-sqlcipher",
       "load_extension"
     ]
-  }
+  },
+  "dev_packages": {}
 }

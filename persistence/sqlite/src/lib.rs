@@ -67,6 +67,50 @@ pub struct SqliteLedger {
     conn: Connection,
     epoch: u64,
     _lock: Option<File>,
+    #[cfg(test)]
+    fault: Option<fault::Fault>,
+}
+
+/// Test-only storage fault injection at the transaction boundary (owner decision C of
+/// 2026-11-12; S-7). Compiled only for this crate's unit tests (`#[cfg(test)]`): no
+/// production build, feature or public API can reach it, and it adds no trigger or
+/// schema object, so schema validation is unchanged.
+///
+/// A [`fault::Fault`] armed on a ledger makes the next logical transaction with the
+/// given name fail once, at begin (before `BEGIN IMMEDIATE`), in the body (after the
+/// fenced body ran its statements) or at commit (instead of `COMMIT`), with a
+/// SQLite-like primary result code that goes through the same error mapping as a real
+/// engine error. A failed transaction is rolled back when it drops. Partial-progress
+/// accounting across several transactions of one operation is demonstrated when M3-04
+/// adds the multi-transaction lifecycle.
+#[cfg(test)]
+mod fault {
+    /// Where the transaction fails.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Stage {
+        Begin,
+        Body,
+        Commit,
+    }
+
+    /// A one-shot fault for the transaction named `transaction`.
+    #[derive(Clone, Debug)]
+    pub struct Fault {
+        pub transaction: String,
+        pub stage: Stage,
+        /// SQLite primary result code (for example `rusqlite::ffi::SQLITE_IOERR`).
+        pub code: std::ffi::c_int,
+    }
+
+    /// The code to raise when `armed` fails at `stage`.
+    pub fn injected(armed: &Option<Fault>, stage: Stage) -> Option<std::ffi::c_int> {
+        armed.as_ref().filter(|f| f.stage == stage).map(|f| f.code)
+    }
+
+    /// The SQLite-like error the fault raises.
+    pub fn error(code: std::ffi::c_int) -> rusqlite::Error {
+        rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None)
+    }
 }
 
 fn unavailable(category: &str, code: &str) -> StoreError {
@@ -254,6 +298,8 @@ fn finish(mut conn: Connection, lock: File) -> Result<SqliteLedger, StoreError> 
         conn,
         epoch,
         _lock: Some(lock),
+        #[cfg(test)]
+        fault: None,
     })
 }
 
@@ -337,6 +383,12 @@ impl SqliteLedger {
         body: impl FnOnce(&Transaction<'_>) -> rusqlite::Result<T>,
     ) -> Result<T, StoreError> {
         let category = format!("transaction {name}");
+        #[cfg(test)]
+        let armed = self.take_fault(name);
+        #[cfg(test)]
+        if let Some(code) = fault::injected(&armed, fault::Stage::Begin) {
+            return Err(unavailable(&category, code_name(&fault::error(code))));
+        }
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -352,9 +404,35 @@ impl SqliteLedger {
             });
         }
         let out = body(&tx).map_err(|e| unavailable(&category, code_name(&e)))?;
+        #[cfg(test)]
+        for stage in [fault::Stage::Body, fault::Stage::Commit] {
+            if let Some(code) = fault::injected(&armed, stage) {
+                // `tx` drops here without committing: rolled back.
+                return Err(unavailable(&category, code_name(&fault::error(code))));
+            }
+        }
         tx.commit()
             .map_err(|e| unavailable(&category, code_name(&e)))?;
         Ok(out)
+    }
+
+    /// Arm a one-shot fault (test only).
+    #[cfg(test)]
+    fn inject(&mut self, transaction: &str, stage: fault::Stage, code: std::ffi::c_int) {
+        self.fault = Some(fault::Fault {
+            transaction: transaction.to_string(),
+            stage,
+            code,
+        });
+    }
+
+    /// Disarm and return the fault armed for transaction `name`, if any (test only).
+    #[cfg(test)]
+    fn take_fault(&mut self, name: &str) -> Option<fault::Fault> {
+        match &self.fault {
+            Some(f) if f.transaction == name => self.fault.take(),
+            _ => None,
+        }
     }
 
     /// Number of recorded refusals (`final.refusals`).
@@ -455,5 +533,107 @@ mod tests {
                 "{want} missing from {opts:?}"
             );
         }
+    }
+
+    fn rows_with_code(l: &SqliteLedger, code: &str) -> i64 {
+        l.conn
+            .query_row(
+                "SELECT count(*) FROM audit_refusals WHERE code = ?1",
+                [code],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    /// One injected `audit` fault at `stage`: fail closed, rolled back, ledger usable
+    /// and still fenced afterwards.
+    fn check_audit_fault(name: &str, stage: fault::Stage, code: std::ffi::c_int, want: &str) {
+        let db = tmp(name);
+        let mut a = SqliteLedger::create(&db).unwrap();
+        a.record_refusal("BEFORE").unwrap();
+        a.inject("audit", stage, code);
+        assert_eq!(
+            a.record_refusal("FAULT").err(),
+            Some(StoreError::Unavailable {
+                category: "transaction audit".into(),
+                code: want.into(),
+            }),
+            "{stage:?}"
+        );
+        assert_eq!(StoreError::EXTERNAL_CODE, "LEDGER_UNAVAILABLE");
+        // Rolled back: no row, no transaction left open.
+        assert_eq!(rows_with_code(&a, "FAULT"), 0, "{stage:?}");
+        assert_eq!(a.refusal_count().unwrap(), 1);
+        assert!(a.conn.is_autocommit(), "{stage:?}: transaction left open");
+        // One-shot: the ledger stays usable.
+        a.record_refusal("AFTER").unwrap();
+        assert_eq!(a.refusal_count().unwrap(), 2);
+        // And stays fenced: a newer owner fences this instance.
+        a._lock = None;
+        let mut b = SqliteLedger::open(&db).unwrap();
+        assert_eq!(
+            a.record_refusal("STALE").err(),
+            Some(StoreError::Fenced { mine: 1, stored: 2 })
+        );
+        assert_eq!(
+            rows_with_code(&b, "FAULT"),
+            0,
+            "nothing durable from the fault"
+        );
+        b.record_refusal("NEW_OWNER").unwrap();
+        assert_eq!(b.refusal_count().unwrap(), 3);
+    }
+
+    #[test]
+    fn injected_fault_at_begin_fails_closed() {
+        check_audit_fault(
+            "fault-begin",
+            fault::Stage::Begin,
+            rusqlite::ffi::SQLITE_BUSY,
+            "SQLITE_BUSY",
+        );
+    }
+
+    #[test]
+    fn injected_fault_in_body_rolls_back_and_fails_closed() {
+        check_audit_fault(
+            "fault-body",
+            fault::Stage::Body,
+            rusqlite::ffi::SQLITE_IOERR,
+            "SQLITE_IOERR",
+        );
+    }
+
+    #[test]
+    fn injected_fault_at_commit_rolls_back_and_fails_closed() {
+        check_audit_fault(
+            "fault-commit",
+            fault::Stage::Commit,
+            rusqlite::ffi::SQLITE_FULL,
+            "SQLITE_FULL",
+        );
+    }
+
+    #[test]
+    fn injected_fault_fires_only_for_its_named_transaction() {
+        let db = tmp("fault-name");
+        let mut l = SqliteLedger::create(&db).unwrap();
+        l.inject(
+            "dispatch",
+            fault::Stage::Commit,
+            rusqlite::ffi::SQLITE_IOERR,
+        );
+        l.record_refusal("X").unwrap();
+        assert_eq!(l.refusal_count().unwrap(), 1);
+        // Still armed for its own transaction name; the audit transaction never takes it.
+        assert!(l
+            .fault
+            .as_ref()
+            .is_some_and(|f| f.transaction == "dispatch"));
+        assert_eq!(
+            l.take_fault("dispatch").map(|f| f.stage),
+            Some(fault::Stage::Commit)
+        );
+        assert!(l.fault.is_none());
     }
 }
