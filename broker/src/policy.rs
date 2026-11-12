@@ -7,7 +7,9 @@
 //!
 //! - activating or replacing the policy ([`ActivePolicy::activate`]) takes the
 //!   gate exclusively, so it waits until every shared holder has finished;
-//! - use-time authorization ([`SharedPolicy::trusted_inputs`]), permit
+//! - use-time authorization ([`SharedPolicy::trusted_inputs`], the only way
+//!   to build [`TrustedInputs`]; its result [`Authorized`] borrows the hold;
+//!   [`ActivePolicy::execute`] acquires the gate internally), permit
 //!   verification ([`crate::permit::Permit::verify`]) and, from M3-04, dispatch
 //!   and effect authorization take it shared ([`ActivePolicy::shared`]) and hold
 //!   the one [`SharedPolicy`] across the check and the effect authorization, so a
@@ -34,7 +36,10 @@ use writ_kernel::contracts::StateRevision;
 use writ_kernel::decision::Policy;
 use writ_kernel::policy::LoadedBundle;
 
-use crate::authorize::TrustedInputs;
+use crate::authorize::{authorize, Authorized, TrustedInputs};
+use crate::clock::TrustedClock;
+use crate::ingress::VerifiedRequest;
+use crate::refusal::Refusal;
 
 /// The active authorization policy as the broker's owner resolved it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,6 +87,57 @@ impl ActivePolicy {
         }
     }
 
+    /// Execution entry point that acquires the gate internally: take the gate
+    /// shared, decide `verified` at use time under the active policy, the
+    /// trusted `state_revision` and the time read once from `clock`, and run
+    /// `effect` with the guard-bound [`Authorized`] while the hold lasts. The
+    /// gate is released when `effect` returns, on every path. `effect` cannot
+    /// return or store the capability: its result type does not depend on the
+    /// hold. Must not be called while the caller already holds the gate (the
+    /// gate is not re-entrant).
+    ///
+    /// ```compile_fail
+    /// use writ_broker::clock::FixedClock;
+    /// use writ_broker::ingress::VerifiedRequest;
+    /// use writ_broker::policy::ActivePolicy;
+    /// use writ_kernel::contracts::StateRevision;
+    /// use writ_kernel::time::Timestamp;
+    ///
+    /// fn leak(active: &ActivePolicy, verified: &VerifiedRequest) {
+    ///     let clock = FixedClock::new(Timestamp::parse_strict("2026-11-05T12:00:00Z").unwrap());
+    ///     let revision = StateRevision::new(5).unwrap();
+    ///     let _leaked = active.execute(verified, revision, &clock, |authorized| authorized);
+    /// }
+    /// ```
+    ///
+    /// Returning a value that does not borrow the hold compiles:
+    ///
+    /// ```
+    /// use writ_broker::clock::FixedClock;
+    /// use writ_broker::ingress::VerifiedRequest;
+    /// use writ_broker::policy::ActivePolicy;
+    /// use writ_kernel::contracts::StateRevision;
+    /// use writ_kernel::time::Timestamp;
+    ///
+    /// fn status(active: &ActivePolicy, verified: &VerifiedRequest) {
+    ///     let clock = FixedClock::new(Timestamp::parse_strict("2026-11-05T12:00:00Z").unwrap());
+    ///     let revision = StateRevision::new(5).unwrap();
+    ///     let _status = active.execute(verified, revision, &clock, |authorized| authorized.status());
+    /// }
+    /// ```
+    pub fn execute<R>(
+        &self,
+        verified: &VerifiedRequest,
+        state_revision: StateRevision,
+        clock: &dyn TrustedClock,
+        effect: impl for<'g> FnOnce(Authorized<'g>) -> R,
+    ) -> Result<R, Refusal> {
+        let shared = self.shared();
+        let inputs = shared.trusted_inputs(state_revision);
+        let authorized = authorize(verified, &inputs, clock)?;
+        Ok(effect(authorized))
+    }
+
     /// Activate or replace the policy. Takes the gate exclusively: waits until
     /// every [`SharedPolicy`] has been released, and holds back new shared
     /// holders until the replacement is complete. Returns the previous policy.
@@ -117,13 +173,11 @@ impl SharedPolicy<'_> {
         }
     }
 
-    /// Trusted inputs of a use-time decision under this view of the policy.
-    /// They borrow the guard, so they cannot outlive the shared hold.
+    /// Trusted inputs of a use-time decision under this view of the policy:
+    /// the only way to build [`TrustedInputs`]. They borrow the guard, so they
+    /// (and any [`Authorized`] decided from them) cannot outlive the shared hold.
     pub fn trusted_inputs(&self, state_revision: StateRevision) -> TrustedInputs<'_> {
-        TrustedInputs {
-            policy: self.policy(),
-            state_revision,
-        }
+        TrustedInputs::new(self, state_revision)
     }
 
     /// Digest of the active bundle; `None` when no verified bundle is active.
@@ -186,8 +240,8 @@ mod tests {
         assert!(matches!(shared.policy(), Policy::Loaded(b) if *b == bundle));
         assert_eq!(shared.active_bundle_sha(), Some(bundle.sha.as_str()));
         let inputs = shared.trusted_inputs(revision(5));
-        assert!(matches!(inputs.policy, Policy::Loaded(b) if *b == bundle));
-        assert_eq!(inputs.state_revision, revision(5));
+        assert!(matches!(inputs.policy(), Policy::Loaded(b) if *b == bundle));
+        assert_eq!(inputs.state_revision(), revision(5));
     }
 
     #[test]
@@ -305,6 +359,93 @@ mod tests {
             .unwrap_err();
         assert_eq!(refusal, Refusal::PermitStale);
         assert_eq!(refusal.external_code(), "PROMOTION_REFUSED");
+    }
+
+    #[test]
+    fn execute_runs_the_effect_under_one_hold_and_refuses_without_running_it() {
+        let bundle = reference_bundle();
+        let active = ActivePolicy::new(PolicyState::loaded(bundle.clone()));
+        let req = base_request();
+        let clock = FixedClock::new(now());
+        let key = permit_key(PERMIT_KEY);
+        // Allowed: the effect gets the capability and, through its hold, can
+        // verify the permit it issued under the same view of the policy.
+        let verified = active
+            .execute(&verify(&req), revision(5), &clock, |authorized| {
+                assert_eq!(authorized.status(), crate::authorize::UseTimeStatus::Allow);
+                let permit = Permit::issue(
+                    &PermitId::new("permit-1").unwrap(),
+                    &authorized,
+                    &clock,
+                    &key,
+                )
+                .unwrap();
+                permit.verify(&req, &key, &clock, authorized.hold())
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(verified.policy_bundle_sha, bundle.sha.as_str());
+        // Refused: the effect never runs and the gate is released.
+        let mut ran = false;
+        for state in [PolicyState::Absent, PolicyState::Rejected] {
+            active.activate(state);
+            let refusal = active
+                .execute(&verify(&req), revision(5), &clock, |_| ran = true)
+                .unwrap_err();
+            assert!(matches!(refusal, Refusal::Decision { .. }));
+        }
+        assert!(!ran, "a refused decision never reaches the effect");
+        let secrets = crate::test_support::with(
+            &req,
+            &["action", "resource", "canonical_resource_id"],
+            json::s("workspace:fixture-tenant/fixture-project/secrets/k"),
+        );
+        active.activate(PolicyState::loaded(bundle));
+        assert_eq!(
+            active
+                .execute(&verify(&secrets), revision(5), &clock, |_| ())
+                .unwrap_err()
+                .code(),
+            "SECRETS_PATH_FORBIDDEN"
+        );
+    }
+
+    #[test]
+    fn execute_holds_the_gate_for_the_whole_effect() {
+        let old = reference_bundle();
+        let new = other_bundle();
+        let active = ActivePolicy::new(PolicyState::loaded(old.clone()));
+        let req = base_request();
+        let clock = FixedClock::new(now());
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let done = std::sync::atomic::AtomicBool::new(false);
+        thread::scope(|s| {
+            s.spawn(|| {
+                active
+                    .execute(&verify(&req), revision(5), &clock, |authorized| {
+                        entered_tx.send(()).unwrap();
+                        // An activation attempted now must wait for this effect.
+                        thread::sleep(BLOCKED_FOR);
+                        assert!(
+                            !done.load(std::sync::atomic::Ordering::SeqCst),
+                            "no activation completed inside the effect"
+                        );
+                        assert_eq!(
+                            authorized.hold().active_bundle_sha(),
+                            Some(old.sha.as_str())
+                        );
+                    })
+                    .unwrap();
+            });
+            entered_rx.recv_timeout(COMPLETES_WITHIN).unwrap();
+            s.spawn(|| {
+                active.activate(PolicyState::loaded(new.clone()));
+                done.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+        });
+        assert!(done.load(std::sync::atomic::Ordering::SeqCst));
+        // Both finished: the gate was released when the effect returned.
+        assert_eq!(sha_of(&active.shared()), Some(new.sha.as_str().to_string()));
     }
 
     #[test]

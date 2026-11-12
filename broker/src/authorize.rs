@@ -2,8 +2,12 @@
 //!
 //! The broker never trusts a previously returned Decision: every use re-runs
 //! the pure `writ-kernel` decision on the sealed request with the policy that
-//! is active now, the trusted state revision and the trusted clock, all
-//! supplied explicitly. There is deliberately no API that accepts an earlier
+//! is active now, the trusted state revision and the trusted clock. The policy
+//! comes only from a shared hold of the ActivePolicy gate ([`TrustedInputs`] is
+//! constructible only from a [`SharedPolicy`]), and the result
+//! ([`Authorized`]) is bound to that hold, so authorization and every later
+//! use of it happen under one consistent view of the policy (owner decision of
+//! 2026-11-12: gate ownership is enforced by the API, not by convention). There is deliberately no API that accepts an earlier
 //! Decision. Composite multi-effect requests are refused exactly as the kernel
 //! decides (`COMPOSITE_NOT_SUPPORTED`, risk 11, RM-01).
 //!
@@ -12,21 +16,69 @@
 
 use crate::clock::TrustedClock;
 use crate::ingress::VerifiedRequest;
+use crate::policy::SharedPolicy;
 use crate::refusal::Refusal;
 use writ_kernel::contracts::{
     ActionRequest, Decision, DecisionStatus, KernelCode, ReasonCode, StateRevision,
 };
 use writ_kernel::decision::{self, Policy};
 
-/// Trusted inputs of one use-time decision, supplied by the broker's owner.
+/// Trusted inputs of one use-time decision: the active policy as seen through
+/// one shared hold of the ActivePolicy gate, and the trusted state revision.
+///
+/// The only constructor is [`SharedPolicy::trusted_inputs`], so use-time
+/// authorization is impossible without holding the gate shared (owner decision
+/// of 2026-11-12). The inputs borrow the guard and cannot outlive it. They
+/// cannot be built from a bare policy:
+///
+/// ```compile_fail,E0451
+/// use writ_broker::authorize::TrustedInputs;
+/// use writ_kernel::contracts::StateRevision;
+/// let _inputs = TrustedInputs {
+///     shared: todo!(),
+///     state_revision: StateRevision::new(5).unwrap(),
+/// };
+/// ```
+///
+/// The supported path goes through the guard:
+///
+/// ```
+/// use writ_broker::policy::{ActivePolicy, PolicyState};
+/// use writ_kernel::contracts::StateRevision;
+/// use writ_kernel::decision::Policy;
+/// let active = ActivePolicy::new(PolicyState::Absent);
+/// let shared = active.shared();
+/// let inputs = shared.trusted_inputs(StateRevision::new(5).unwrap());
+/// assert!(matches!(inputs.policy(), Policy::Absent));
+/// ```
 #[derive(Clone, Copy, Debug)]
-pub struct TrustedInputs<'a> {
-    /// The currently active authorization bundle: [`Policy::Loaded`], or
-    /// [`Policy::Absent`] when the policy dependency is down (the decision is
-    /// then `unavailable` / `POLICY_UNAVAILABLE`), or [`Policy::Rejected`].
-    pub policy: Policy<'a>,
+pub struct TrustedInputs<'g> {
+    shared: &'g SharedPolicy<'g>,
+    state_revision: StateRevision,
+}
+
+impl<'g> TrustedInputs<'g> {
+    /// Inputs under the shared hold `shared` (crate-private; see
+    /// [`SharedPolicy::trusted_inputs`]).
+    pub(crate) fn new(shared: &'g SharedPolicy<'g>, state_revision: StateRevision) -> Self {
+        TrustedInputs {
+            shared,
+            state_revision,
+        }
+    }
+
+    /// The currently active authorization bundle as seen through the hold:
+    /// [`Policy::Loaded`], or [`Policy::Absent`] when the policy dependency is
+    /// down or an activation was interrupted (the decision is then
+    /// `unavailable` / `POLICY_UNAVAILABLE`), or [`Policy::Rejected`].
+    pub fn policy(&self) -> Policy<'g> {
+        self.shared.policy()
+    }
+
     /// The trusted kernel state revision.
-    pub state_revision: StateRevision,
+    pub fn state_revision(&self) -> StateRevision {
+        self.state_revision
+    }
 }
 
 /// What the use-time decision allows.
@@ -38,16 +90,87 @@ pub enum UseTimeStatus {
     RequireApproval,
 }
 
-/// A sealed request together with the decision made for it at use time.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Authorized {
+/// A sealed request together with the decision made for it at use time: a
+/// capability bound to the shared hold of the ActivePolicy gate it was decided
+/// under.
+///
+/// It borrows that hold (`'g`), so it can be used only while the hold lasts and
+/// cannot be stored and reused after the gate is released or the policy is
+/// replaced. It is not `Clone`. Every consumption API (permit issue now;
+/// grant consumption and dispatch in M3-03 and M3-04) takes an `Authorized` or
+/// acquires the gate itself ([`crate::policy::ActivePolicy::execute`]).
+///
+/// It cannot outlive its guard:
+///
+/// ```compile_fail,E0515
+/// use writ_broker::authorize::{authorize, Authorized};
+/// use writ_broker::clock::TrustedClock;
+/// use writ_broker::ingress::VerifiedRequest;
+/// use writ_broker::policy::ActivePolicy;
+/// use writ_kernel::contracts::StateRevision;
+///
+/// fn escape<'a>(
+///     active: &'a ActivePolicy,
+///     verified: &VerifiedRequest,
+///     clock: &dyn TrustedClock,
+/// ) -> Option<Authorized<'a>> {
+///     let shared = active.shared();
+///     let inputs = shared.trusted_inputs(StateRevision::new(5).unwrap());
+///     authorize(verified, &inputs, clock).ok()
+/// }
+/// ```
+///
+/// The guard cannot be released while the capability is alive:
+///
+/// ```compile_fail,E0505
+/// use writ_broker::authorize::authorize;
+/// use writ_broker::clock::TrustedClock;
+/// use writ_broker::ingress::VerifiedRequest;
+/// use writ_broker::policy::ActivePolicy;
+/// use writ_kernel::contracts::StateRevision;
+///
+/// fn release_early(active: &ActivePolicy, verified: &VerifiedRequest, clock: &dyn TrustedClock) {
+///     let shared = active.shared();
+///     let inputs = shared.trusted_inputs(StateRevision::new(5).unwrap());
+///     let authorized = authorize(verified, &inputs, clock);
+///     drop(shared);
+///     let _ = authorized.map(|a| a.status());
+/// }
+/// ```
+///
+/// Within the hold it is usable (this compiles):
+///
+/// ```
+/// use writ_broker::authorize::authorize;
+/// use writ_broker::clock::TrustedClock;
+/// use writ_broker::ingress::VerifiedRequest;
+/// use writ_broker::policy::ActivePolicy;
+/// use writ_kernel::contracts::StateRevision;
+///
+/// fn within_hold(active: &ActivePolicy, verified: &VerifiedRequest, clock: &dyn TrustedClock) {
+///     let shared = active.shared();
+///     let inputs = shared.trusted_inputs(StateRevision::new(5).unwrap());
+///     let authorized = authorize(verified, &inputs, clock);
+///     let _ = authorized.map(|a| a.status());
+///     drop(shared);
+/// }
+/// ```
+#[derive(Debug)]
+pub struct Authorized<'g> {
+    hold: &'g SharedPolicy<'g>,
     verified: VerifiedRequest,
     request: ActionRequest,
     decision: Decision,
     status: UseTimeStatus,
 }
 
-impl Authorized {
+impl<'g> Authorized<'g> {
+    /// The shared hold of the gate this decision was made under (for checks
+    /// that must happen under the same hold, such as permit verification).
+    pub fn hold(&self) -> &'g SharedPolicy<'g> {
+        self.hold
+    }
+
     /// The sealed request.
     pub fn verified(&self) -> &VerifiedRequest {
         &self.verified
@@ -76,15 +199,15 @@ impl Authorized {
 
 /// Decide `verified` now, under `inputs` and the time read once from `clock`.
 /// Any status other than `allow` or `require_approval` is refused with the
-/// decision's reason code.
-pub fn authorize(
+/// decision's reason code. The result is bound to the hold `inputs` came from.
+pub fn authorize<'g>(
     verified: &VerifiedRequest,
-    inputs: &TrustedInputs<'_>,
+    inputs: &TrustedInputs<'g>,
     clock: &dyn TrustedClock,
-) -> Result<Authorized, Refusal> {
+) -> Result<Authorized<'g>, Refusal> {
     let decision = decision::decide(
         verified.request(),
-        inputs.policy,
+        inputs.policy(),
         inputs.state_revision,
         clock.now(),
     );
@@ -104,6 +227,7 @@ pub fn authorize(
         reason: ReasonCode::Kernel(KernelCode::RequestSchemaInvalid),
     })?;
     Ok(Authorized {
+        hold: inputs.shared,
         verified: verified.clone(),
         request,
         decision,
@@ -116,18 +240,25 @@ pub fn authorize(
 mod tests {
     use super::*;
     use crate::clock::FixedClock;
+    use crate::policy::{ActivePolicy, PolicyState};
     use crate::test_support::*;
     use writ_kernel::json::{self, Value};
 
-    fn decide_code(req: &Value, policy: Policy<'_>) -> Result<UseTimeStatus, String> {
+    fn decide_code(req: &Value, state: PolicyState) -> Result<UseTimeStatus, String> {
         let v = verify(req);
-        let inputs = TrustedInputs {
-            policy,
-            state_revision: revision(5),
-        };
-        authorize(&v, &inputs, &FixedClock::new(now()))
-            .map(|a| a.status())
-            .map_err(|r| r.code().to_string())
+        let active = ActivePolicy::new(state);
+        let shared = active.shared();
+        authorize(
+            &v,
+            &shared.trusted_inputs(revision(5)),
+            &FixedClock::new(now()),
+        )
+        .map(|a| a.status())
+        .map_err(|r| r.code().to_string())
+    }
+
+    fn loaded(bundle: &writ_kernel::policy::LoadedBundle) -> PolicyState {
+        PolicyState::loaded(bundle.clone())
     }
 
     #[test]
@@ -135,12 +266,11 @@ mod tests {
         let bundle = reference_bundle();
         let req = base_request();
         let v = verify(&req);
+        let active = ActivePolicy::new(loaded(&bundle));
+        let shared = active.shared();
         let a = authorize(
             &v,
-            &TrustedInputs {
-                policy: Policy::Loaded(&bundle),
-                state_revision: revision(5),
-            },
+            &shared.trusted_inputs(revision(5)),
             &FixedClock::new(now()),
         )
         .unwrap();
@@ -149,10 +279,30 @@ mod tests {
         assert_eq!(a.decision().decided_at, now());
         assert_eq!(a.request().idempotency_key, "idem-1");
         assert_eq!(a.verified(), &v);
+        assert!(
+            std::ptr::eq(a.hold(), &shared),
+            "the capability is bound to the hold it was decided under"
+        );
         assert_eq!(
-            decide_code(&publish_request(), Policy::Loaded(&bundle)),
+            decide_code(&publish_request(), loaded(&bundle)),
             Ok(UseTimeStatus::RequireApproval)
         );
+    }
+
+    #[test]
+    fn trusted_inputs_come_from_the_hold() {
+        let bundle = reference_bundle();
+        let active = ActivePolicy::new(loaded(&bundle));
+        let shared = active.shared();
+        let inputs = shared.trusted_inputs(revision(9));
+        assert!(matches!(inputs.policy(), Policy::Loaded(b) if *b == bundle));
+        assert_eq!(inputs.state_revision(), revision(9));
+        let absent = ActivePolicy::new(PolicyState::Absent);
+        let absent_shared = absent.shared();
+        assert!(matches!(
+            absent_shared.trusted_inputs(revision(9)).policy(),
+            Policy::Absent
+        ));
     }
 
     #[test]
@@ -164,25 +314,25 @@ mod tests {
             json::s("workspace:fixture-tenant/fixture-project/secrets/k"),
         );
         assert_eq!(
-            decide_code(&secrets, Policy::Loaded(&bundle)),
+            decide_code(&secrets, loaded(&bundle)),
             Err("SECRETS_PATH_FORBIDDEN".into())
         );
         assert_eq!(
-            decide_code(&base_request(), Policy::Absent),
+            decide_code(&base_request(), PolicyState::Absent),
             Err("POLICY_UNAVAILABLE".into())
         );
         assert_eq!(
-            decide_code(&base_request(), Policy::Rejected),
+            decide_code(&base_request(), PolicyState::Rejected),
             Err("POLICY_BUNDLE_REJECTED".into())
         );
         let stale = with(&base_request(), &["expected_state_revision"], Value::Int(4));
         assert_eq!(
-            decide_code(&stale, Policy::Loaded(&bundle)),
+            decide_code(&stale, loaded(&bundle)),
             Err("STATE_REVISION_CONFLICT".into())
         );
         let malformed = without(&base_request(), &["trace_id"]);
         assert_eq!(
-            decide_code(&malformed, Policy::Loaded(&bundle)),
+            decide_code(&malformed, loaded(&bundle)),
             Err("REQUEST_SCHEMA_INVALID".into())
         );
         let past = with(
@@ -191,7 +341,7 @@ mod tests {
             json::s("2026-11-05T12:00:00Z"),
         );
         assert_eq!(
-            decide_code(&past, Policy::Loaded(&bundle)),
+            decide_code(&past, loaded(&bundle)),
             Err("DEADLINE_EXCEEDED".into())
         );
     }
@@ -199,16 +349,11 @@ mod tests {
     #[test]
     fn composite_multi_effect_requests_are_refused_as_the_kernel_says() {
         // Risk 11 / RM-01: a promotion combined with another effect.
-        let bundle = transition_bundle();
+        let active = ActivePolicy::new(PolicyState::loaded(transition_bundle()));
+        let shared = active.shared();
+        let inputs = shared.trusted_inputs(revision(7));
         let base = transition_request();
-        let single = authorize(
-            &verify(&base),
-            &TrustedInputs {
-                policy: Policy::Loaded(&bundle),
-                state_revision: revision(7),
-            },
-            &FixedClock::new(transition_now()),
-        );
+        let single = authorize(&verify(&base), &inputs, &FixedClock::new(transition_now()));
         assert_eq!(
             single.map(|a| a.status()),
             Ok(UseTimeStatus::Allow),
@@ -221,15 +366,7 @@ mod tests {
                 Value::Arr(vec![json::s(extra)]),
             );
             let v = verify(&composite);
-            let refusal = authorize(
-                &v,
-                &TrustedInputs {
-                    policy: Policy::Loaded(&bundle),
-                    state_revision: revision(7),
-                },
-                &FixedClock::new(transition_now()),
-            )
-            .unwrap_err();
+            let refusal = authorize(&v, &inputs, &FixedClock::new(transition_now())).unwrap_err();
             assert_eq!(
                 refusal,
                 Refusal::Decision {
@@ -244,7 +381,6 @@ mod tests {
 
     #[test]
     fn swapped_sub_effect_of_a_composite_is_refused_at_ingress_and_by_the_kernel() {
-        let bundle = transition_bundle();
         let composite = with(
             &transition_request(),
             &["action", "requested_capabilities"],
@@ -263,12 +399,11 @@ mod tests {
         );
         // Sealed with the swapped sub-effect, it is still a composite and refused.
         let v = verify(&swapped);
+        let active = ActivePolicy::new(PolicyState::loaded(transition_bundle()));
+        let shared = active.shared();
         let refusal = authorize(
             &v,
-            &TrustedInputs {
-                policy: Policy::Loaded(&bundle),
-                state_revision: revision(7),
-            },
+            &shared.trusted_inputs(revision(7)),
             &FixedClock::new(transition_now()),
         )
         .unwrap_err();
@@ -277,17 +412,15 @@ mod tests {
 
     #[test]
     fn decision_uses_the_supplied_clock_and_revision() {
-        let bundle = reference_bundle();
         let req = with(
             &base_request(),
             &["deadline_at"],
             json::s("2026-11-05T12:00:10Z"),
         );
         let v = verify(&req);
-        let inputs = TrustedInputs {
-            policy: Policy::Loaded(&bundle),
-            state_revision: revision(5),
-        };
+        let active = ActivePolicy::new(PolicyState::loaded(reference_bundle()));
+        let shared = active.shared();
+        let inputs = shared.trusted_inputs(revision(5));
         let mut clock = FixedClock::new(now());
         assert!(authorize(&v, &inputs, &clock).is_ok());
         clock.advance(10);
@@ -299,10 +432,7 @@ mod tests {
         let v = verify(&pinned);
         let clock = FixedClock::new(now());
         assert!(authorize(&v, &inputs, &clock).is_ok());
-        let moved = TrustedInputs {
-            state_revision: revision(6),
-            ..inputs
-        };
+        let moved = shared.trusted_inputs(revision(6));
         assert_eq!(
             authorize(&v, &moved, &clock).unwrap_err().code(),
             "STATE_REVISION_CONFLICT"

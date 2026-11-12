@@ -10,13 +10,17 @@
 //! - [`keys`]: ingress keys per adapter ([`keys::KeyRing`]) and the permit key, supplied explicitly.
 //! - [`ingress`]: seal verification (D-010) and the D-012 request fingerprint.
 //! - [`clock`]: the [`clock::TrustedClock`] interface (injected clock only).
-//! - [`authorize`]: use-time re-decision through `writ-kernel`.
+//! - [`authorize`]: use-time re-decision through `writ-kernel`, bound to a
+//!   shared hold of the policy gate.
 //! - [`policy`]: the active authorization policy behind a shared/exclusive coordination gate.
 //! - [`permit`]: permit issue and verification (fingerprint, MAC, expiry, active bundle).
 //! - [`refusal`]: refusal codes and their agent-facing mapping.
+//! - [`contracts`]: semantic validation of the proposed M3-06 acceptance
+//!   contracts (registry entry, runner attestation, evaluation record scope).
 
 pub mod authorize;
 pub mod clock;
+pub mod contracts;
 pub mod ingress;
 pub mod keys;
 mod mac;

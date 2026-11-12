@@ -3,7 +3,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use crate::authorize::{authorize, Authorized, TrustedInputs, UseTimeStatus};
+use crate::authorize::{authorize, Authorized, UseTimeStatus};
 use crate::clock::FixedClock;
 use crate::ingress::verify_ingress;
 use crate::keys::MemoryKeyRing;
@@ -11,24 +11,39 @@ use crate::permit::{Permit, PermitId};
 use crate::policy::{ActivePolicy, PolicyState};
 use crate::refusal::Refusal;
 use crate::test_support::*;
-use writ_kernel::decision::Policy;
 use writ_kernel::json::{self, Value};
 use writ_kernel::policy::LoadedBundle;
 
+/// What a use-time decision produced, copied out of the hold: the
+/// [`Authorized`] capability itself cannot leave it.
+#[derive(Debug)]
+struct Decided {
+    status: UseTimeStatus,
+    bundle_sha: String,
+    approval_request_reference: bool,
+    permit: Permit,
+}
+
+/// Decide `request` now under `bundle` through the internal-gate entry point
+/// and issue a permit for it inside the hold.
 fn decide_now(
     request: &Value,
     seal: &Value,
     ring: &MemoryKeyRing,
     bundle: &LoadedBundle,
-) -> Result<Authorized, Refusal> {
+) -> Result<Decided, Refusal> {
     let verified = verify_ingress(request, Some(seal), ring)?;
-    authorize(
+    let active = ActivePolicy::new(PolicyState::loaded(bundle.clone()));
+    active.execute(
         &verified,
-        &TrustedInputs {
-            policy: Policy::Loaded(bundle),
-            state_revision: revision(5),
-        },
+        revision(5),
         &FixedClock::new(now()),
+        |authorized| Decided {
+            status: authorized.status(),
+            bundle_sha: authorized.policy_bundle_sha().to_string(),
+            approval_request_reference: authorized.decision().approval_request_reference.is_some(),
+            permit: permit_for(&authorized),
+        },
     )
 }
 
@@ -57,7 +72,7 @@ fn approve_workspace_writes() -> LoadedBundle {
     )
 }
 
-fn permit_for(authorized: &Authorized) -> Permit {
+fn permit_for(authorized: &Authorized<'_>) -> Permit {
     Permit::issue(
         &PermitId::new("permit-1").unwrap(),
         authorized,
@@ -112,8 +127,8 @@ fn toctou_bundle_changed_between_decision_and_use_is_re_decided() {
     let req = base_request();
     let seal = sealed(&req, FIXTURE_ADAPTER, &FIXTURE_KEY);
     let earlier = decide_now(&req, &seal, &ring, &old).unwrap();
-    assert_eq!(earlier.status(), UseTimeStatus::Allow);
-    assert_eq!(earlier.policy_bundle_sha(), old.sha.as_str());
+    assert_eq!(earlier.status, UseTimeStatus::Allow);
+    assert_eq!(earlier.bundle_sha, old.sha.as_str());
 
     // The active bundle now forbids the write: use is refused under the new bundle,
     // whatever the earlier decision said.
@@ -126,9 +141,9 @@ fn toctou_bundle_changed_between_decision_and_use_is_re_decided() {
     // is bound to the new bundle digest.
     let gated = approve_workspace_writes();
     let now_gated = decide_now(&req, &seal, &ring, &gated).unwrap();
-    assert_eq!(now_gated.status(), UseTimeStatus::RequireApproval);
-    assert_eq!(now_gated.policy_bundle_sha(), gated.sha.as_str());
-    assert!(now_gated.decision().approval_request_reference.is_some());
+    assert_eq!(now_gated.status, UseTimeStatus::RequireApproval);
+    assert_eq!(now_gated.bundle_sha, gated.sha.as_str());
+    assert!(now_gated.approval_request_reference);
 
     // Re-decision also works the other way: denied earlier, allowed now.
     let secrets = with(
@@ -150,7 +165,7 @@ fn toctou_bundle_changed_between_decision_and_use_is_re_decided() {
     assert_eq!(
         decide_now(&secrets, &secrets_seal, &ring, &open)
             .unwrap()
-            .status(),
+            .status,
         UseTimeStatus::Allow
     );
 }
@@ -183,15 +198,10 @@ fn toctou_policy_unavailable_at_use_is_refused() {
     let seal = sealed(&req, FIXTURE_ADAPTER, &FIXTURE_KEY);
     assert!(decide_now(&req, &seal, &ring, &reference_bundle()).is_ok());
     let verified = verify_ingress(&req, Some(&seal), &ring).unwrap();
-    let refusal = authorize(
-        &verified,
-        &TrustedInputs {
-            policy: Policy::Absent,
-            state_revision: revision(5),
-        },
-        &FixedClock::new(now()),
-    )
-    .unwrap_err();
+    let active = ActivePolicy::new(PolicyState::Absent);
+    let refusal = active
+        .execute(&verified, revision(5), &FixedClock::new(now()), |_| ())
+        .unwrap_err();
     assert_eq!(refusal.code(), "POLICY_UNAVAILABLE");
 }
 
@@ -200,8 +210,9 @@ fn toctou_permit_presented_for_a_changed_request_is_refused() {
     let ring = fixture_ring();
     let req = base_request();
     let seal = sealed(&req, FIXTURE_ADAPTER, &FIXTURE_KEY);
-    let authorized = decide_now(&req, &seal, &ring, &reference_bundle()).unwrap();
-    let permit = permit_for(&authorized);
+    let permit = decide_now(&req, &seal, &ring, &reference_bundle())
+        .unwrap()
+        .permit;
     let key = permit_key(PERMIT_KEY);
     let clock = FixedClock::new(now());
     let active = ActivePolicy::new(PolicyState::loaded(reference_bundle()));
@@ -240,13 +251,13 @@ fn toctou_permit_carries_the_bundle_of_its_use_time_decision() {
     let req = base_request();
     let seal = sealed(&req, FIXTURE_ADAPTER, &FIXTURE_KEY);
     let old = reference_bundle();
-    let first = permit_for(&decide_now(&req, &seal, &ring, &old).unwrap());
+    let first = decide_now(&req, &seal, &ring, &old).unwrap().permit;
     assert_eq!(first.policy_bundle_sha(), old.sha.as_str());
     let new = bundle_with_statements(
         "0.5.0",
         r#"[{"statement_id":"permit-writes","effect":"permit","action_kinds":["file.write"],"reason_code":"WRITES_OK"}]"#,
     );
-    let second = permit_for(&decide_now(&req, &seal, &ring, &new).unwrap());
+    let second = decide_now(&req, &seal, &ring, &new).unwrap().permit;
     assert_eq!(second.policy_bundle_sha(), new.sha.as_str());
     let key = permit_key(PERMIT_KEY);
     let clock = FixedClock::new(now());
@@ -335,8 +346,8 @@ fn rotation_new_key_works_and_old_key_seals_refuse() {
         Err(Refusal::IngressUnauthenticated)
     );
     // The new key authorizes end to end.
-    let authorized = decide_now(&req, &new_seal, &ring, &reference_bundle()).unwrap();
-    assert_eq!(authorized.status(), UseTimeStatus::Allow);
+    let decided = decide_now(&req, &new_seal, &ring, &reference_bundle()).unwrap();
+    assert_eq!(decided.status, UseTimeStatus::Allow);
 }
 
 #[test]

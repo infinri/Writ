@@ -132,7 +132,7 @@ impl Permit {
     /// `min(now + PERMIT_TTL_SECONDS, deadline)` with `now` read once from `clock`.
     pub fn issue(
         permit_id: &PermitId,
-        authorized: &Authorized,
+        authorized: &Authorized<'_>,
         clock: &dyn TrustedClock,
         key: &PermitKey,
     ) -> Result<Permit, PermitIssueError> {
@@ -260,30 +260,27 @@ impl Permit {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::authorize::{authorize, TrustedInputs};
+    use crate::authorize::authorize;
     use crate::clock::FixedClock;
     use crate::policy::{ActivePolicy, PolicyState};
     use crate::test_support::*;
-    use writ_kernel::decision::Policy;
     use writ_kernel::policy::LoadedBundle;
 
-    fn authorized(req: &Value) -> Authorized {
-        let bundle = reference_bundle();
+    fn authorized<'g>(shared: &'g SharedPolicy<'g>, req: &Value) -> Authorized<'g> {
         authorize(
             &verify(req),
-            &TrustedInputs {
-                policy: Policy::Loaded(&bundle),
-                state_revision: revision(5),
-            },
+            &shared.trusted_inputs(revision(5)),
             &FixedClock::new(now()),
         )
         .unwrap()
     }
 
     fn issue(req: &Value) -> Permit {
+        let active = reference_active();
+        let shared = active.shared();
         Permit::issue(
             &PermitId::new("permit-1").unwrap(),
-            &authorized(req),
+            &authorized(&shared, req),
             &FixedClock::new(now()),
             &permit_key(PERMIT_KEY),
         )
@@ -362,7 +359,9 @@ mod tests {
     #[test]
     fn issued_permit_binds_fingerprint_bundle_and_expiry() {
         let req = base_request();
-        let a = authorized(&req);
+        let active = reference_active();
+        let shared = active.shared();
+        let a = authorized(&shared, &req);
         let p = issue(&req);
         assert_eq!(p.permit_id(), "permit-1");
         assert_eq!(
@@ -370,6 +369,8 @@ mod tests {
             json::digest(&req).unwrap().as_str()
         );
         assert_eq!(p.policy_bundle_sha(), a.policy_bundle_sha());
+        drop(a);
+        drop(shared);
         assert_eq!(p.policy_bundle_sha(), reference_bundle().sha.as_str());
         assert_eq!(p.expires_at(), "2026-11-05T12:00:30Z");
         let body = json::canonical(&p.to_value().without("mac")).unwrap();
