@@ -48,6 +48,16 @@ class Gate(unittest.TestCase):
         self.assertTrue(any("licence" in x for x in check_deps.check(pkgs, ALLOW, lic)))
 
 
+class Licences(unittest.TestCase):
+    def test_licence_approval_is_package_specific(self):
+        allow = {"approved_licenses": ["MIT"], "forbidden": [], "packages": {
+            "subtle": {"version": "2.6.1", "licence_approved": "BSD-3-Clause"}, "other": {"version": "1.0.0"}}}
+        pkgs = [{"name": "subtle", "version": "2.6.1"}, {"name": "other", "version": "1.0.0"}]
+        lic = {("subtle", "2.6.1"): "BSD-3-Clause", ("other", "1.0.0"): "BSD-3-Clause"}
+        problems = check_deps.check(pkgs, allow, lic)
+        self.assertEqual(problems, ["other 1.0.0: licence 'BSD-3-Clause' not approved"])
+
+
 class Features(unittest.TestCase):
     def test_bundled_sqlite_feature_is_refused(self):
         allow = {"forbidden_features": {"libsqlite3-sys": ["bundled"]}}

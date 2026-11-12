@@ -81,6 +81,28 @@ def closures(meta: dict) -> dict:
     return out
 
 
+def combined(edges: str) -> dict:
+    """Effective graph of a supported combined build (all production members built together,
+    so Cargo unifies features across them): {root member: set of (name, version)} for the
+    given edge kinds (`normal,build` for release builds, `normal,build,dev` for test builds)."""
+    names = list(MEMBERS)
+    argv = ["cargo", "tree", "--locked", "--target", "all", "--no-dedupe", "-e", edges, "--prefix", "depth", "--format", "{p}"]
+    for n in names:
+        argv += ["-p", n]
+    out, root = {}, None
+    for line in subprocess.run(argv, cwd=ROOT, capture_output=True, text=True, check=True).stdout.splitlines():
+        if not line.strip():
+            continue
+        depth = len(line) - len(line.lstrip("0123456789"))
+        level, rest = int(line[:depth]), line[depth:].replace(" (*)", "").split()
+        if level == 0:
+            root = rest[0]
+            out.setdefault(root, set())
+        elif root and len(rest) >= 2 and "(" not in " ".join(rest[2:3]) and not line.rstrip().endswith(")"):
+            out[root].add((rest[0], rest[1][1:]))
+    return out
+
+
 def check(pkgs: list[dict], allow: dict, lic: dict) -> list[str]:
     allowed, problems = allow["packages"], []
     for p in pkgs:
@@ -95,8 +117,9 @@ def check(pkgs: list[dict], allow: dict, lic: dict) -> list[str]:
             problems.append(f"{name}: locked {ver}, approved {entry['version']}")
         if "checksum" in entry and entry["checksum"] != p.get("checksum"):
             problems.append(f"{name}: checksum differs from the reviewed one")
-        if lic.get((name, ver)) not in allow["approved_licenses"]:
-            problems.append(f"{name} {ver}: licence {lic.get((name, ver))!r} not approved")
+        licence = lic.get((name, ver))
+        if licence not in allow["approved_licenses"] and licence != entry.get("licence_approved"):
+            problems.append(f"{name} {ver}: licence {licence!r} not approved")
     for name in allowed:
         if name not in {p["name"] for p in pkgs}:
             problems.append(f"allow-list entry {name} is not in Cargo.lock (remove it or explain)")
@@ -137,6 +160,20 @@ def main() -> int:
     for p in pkgs:
         if (p["name"], p["version"]) not in covered:
             problems.append(f"locked package {p['name']} {p['version']} is in no member's closure")
+    # Supported combined builds (release and test configurations): every package must be approved
+    # by some member's allow-list (dev-only packages by a `dev_packages` entry), and the kernel's
+    # effective subtree is reported against its standalone closure.
+    approved, dev_approved = set(), set()
+    for allow_path in MEMBERS.values():
+        allow = json.loads((ROOT / allow_path).read_text())
+        approved |= {(n, e["version"]) for n, e in allow["packages"].items()}
+        dev_approved |= {(n, e["version"]) for n, e in allow.get("dev_packages", {}).items()}
+    release, test = combined("normal,build"), combined("normal,build,dev")
+    for p in sorted(set().union(*release.values()) - approved):
+        problems.append(f"combined release build: {p[0]} {p[1]} not approved by any member")
+    for p in sorted(set().union(*test.values()) - approved - dev_approved):
+        problems.append(f"combined test build: {p[0]} {p[1]} not approved by any member (normal or dev)")
+    kernel_extra = sorted(release.get("writ-kernel", set()) - clos.get("writ-kernel", set()))
     if a.osv:
         problems += [f"advisory: {x}" for x in osv(pkgs)]
     if a.sbom:
@@ -148,7 +185,10 @@ def main() -> int:
     for x in problems:
         print("dependency gate:", x, file=sys.stderr)
     sizes = {m: len(c) for m, c in clos.items()}
-    print(f"dependency gate: {len(pkgs)} locked packages, closures {sizes}, {len(problems)} problems{' (OSV checked)' if a.osv else ''}")
+    print(f"dependency gate: {len(pkgs)} locked packages; standalone closures {sizes}; combined release build "
+          f"{len(set().union(*release.values()))} packages, test build {len(set().union(*test.values()))}; kernel subtree in "
+          f"the combined build adds {[f'{n} {v}' for n, v in kernel_extra] or 'nothing'} (feature unification); "
+          f"{len(problems)} problems{' (OSV checked)' if a.osv else ''}")
     return 1 if problems else 0
 
 

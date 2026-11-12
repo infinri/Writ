@@ -1,0 +1,43 @@
+{
+  "contract_version": "runner-attestation/1",
+  "purpose": "writ.runner-attestation.v1",
+  "attestation_id": "att-1",
+  "tenant_id": "t1",
+  "project_id": "p1",
+  "task_id": "task-1",
+  "workflow_id": "wf-1",
+  "transition": {
+    "from_state": "verifying",
+    "to_state": "accepted"
+  },
+  "artifact_snapshot_id": "snap-1",
+  "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "canonical_target": "workflow:t1/p1/wf-1",
+  "acceptance_policy_id": "accept-code-review",
+  "acceptance_policy_version": "3",
+  "acceptance_policy_bundle_sha": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "state_revision": 7,
+  "acceptance_record_id": "acc-1",
+  "criterion_id": "build",
+  "evaluator_id": "ci-runner",
+  "evaluator_version": "1.4.0",
+  "implementation_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "environment_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "registry_revision": 12,
+  "command_id": "cargo-test",
+  "command_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "input_digests": [
+    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  ],
+  "evidence_digests": [],
+  "exit_status": 0,
+  "output_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "started_at": "2026-11-07T10:58:00Z",
+  "finished_at": "2026-11-07T10:59:00Z",
+  "fresh_until": "2026-11-07T11:30:00Z",
+  "auth": {
+    "alg": "hmac-sha256",
+    "key_id": "runner-key-1",
+    "mac": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+}

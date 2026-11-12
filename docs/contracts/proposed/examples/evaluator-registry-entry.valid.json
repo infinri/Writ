@@ -1,0 +1,29 @@
+{
+  "contract_version": "evaluator-registry-entry/1",
+  "evaluator_id": "ci-runner",
+  "evaluator_version": "1.4.0",
+  "class": "mechanical",
+  "trust": "M",
+  "implementation_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "environment_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "command": {
+    "command_id": "cargo-test",
+    "command_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "attestation": {
+    "alg": "hmac-sha256",
+    "key_id": "runner-key-1"
+  },
+  "criteria": [
+    "build"
+  ],
+  "scope": {
+    "tenant_id": "t1",
+    "project_id": "p1"
+  },
+  "owner": "platform",
+  "publisher": "alice",
+  "published_at": "2026-11-01T09:00:00Z",
+  "registry_revision": 12,
+  "status": "active"
+}

@@ -1,0 +1,33 @@
+{
+  "contract_version": "evaluation-record-scope/1",
+  "evaluation_id": "eval-1",
+  "tenant_id": "t1",
+  "project_id": "p1",
+  "task_id": "task-1",
+  "workflow_id": "wf-1",
+  "transition": {
+    "from_state": "verifying",
+    "to_state": "accepted"
+  },
+  "artifact_snapshot_id": "snap-1",
+  "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "canonical_target": "workflow:t1/p1/wf-1",
+  "acceptance_policy_id": "accept-code-review",
+  "acceptance_policy_version": "3",
+  "acceptance_policy_bundle_sha": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "state_revision": 7,
+  "acceptance_record_id": "acc-1",
+  "criterion_id": "build",
+  "evaluator_id": "ci-runner",
+  "evaluator_version": "1.4.0",
+  "implementation_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "environment_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "registry_revision": 12,
+  "evaluator_trust": "M",
+  "status": "pass",
+  "attestation_ref": "att-1",
+  "evidence_digests": [],
+  "issued_at": "2026-11-07T10:59:00Z",
+  "fresh_until": "2026-11-07T11:30:00Z",
+  "mode": "governed"
+}

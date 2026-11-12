@@ -16,6 +16,8 @@ jobs:
         run: python3 -m pip install --disable-pip-version-check -r requirements-v2-docs.txt
       - name: Check docs, HTML, schemas, packs and task fixtures
         run: python3 scripts/check-v2-docs.py
+      - name: Proposed M3-06 acceptance contracts (schema-level positive and negative tests, D-033)
+        run: python3 docs/contracts/proposed/test_proposed_contracts.py
   m2-kernel:
     name: Production Rust workspace (writ-kernel, writ-broker, writ-ledger-sqlite)
     runs-on: ubuntu-latest
