@@ -36,6 +36,14 @@ jobs:
           cargo build --release --locked --example m1_line_adapter
           python3 m1/driver/parity.py --proto "$GITHUB_WORKSPACE/target/release/examples/m1_line_adapter" --manifest m1/fixtures/manifest.json --repeat 2 \
             --sets canonical-vector,strict-json,golden-decisions,transition-decisions,acceptance-binding,external-refusal,protocol-decide,protocol-acceptance
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: M2 gate evidence (full Decisions against the contract schema; live M0 comparison with documented-difference probes)
+        run: |
+          python -m pip install --disable-pip-version-check -r m0/requirements.txt -r requirements-v2-docs.txt
+          python kernel/tools/decision_schema_check.py --kernel "$GITHUB_WORKSPACE/target/release/examples/m1_line_adapter"
+          python kernel/tools/m0_compare.py --kernel "$GITHUB_WORKSPACE/target/release/examples/m1_line_adapter"
       - name: Dependency gate (allow-list, licences, OSV advisories) and SBOM
         run: |
           python3 -m unittest discover -s kernel/tools -v

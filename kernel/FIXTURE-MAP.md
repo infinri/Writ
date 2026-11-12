@@ -46,19 +46,29 @@ No expected value was changed. Differences from the reference implementations, n
 
 The last row is unreachable from strictly parsed input (every parsed value is inside the D-006 domain); it only fixes the typed constructor's failure mode.
 
-Readings where the written specification is silent or generic, kept identical to both M1 prototypes and listed for owner confirmation:
+M0 differences, verified against the live M0 reference by `kernel/tools/m0_compare.py` (26 golden cases identical in every Decision field; targeted probes show each difference is limited to the field listed):
 
-1. `current.revoked_evaluator_ids` items must match the evaluator id pattern `^[a-z][a-z0-9_-]{0,63}$`. SEMANTICS.md says "array of ids"; Rust and Go both use the evaluator (name) pattern. Stricter reading; a non-matching entry fails closed as `CURRENT_STATE_MALFORMED`.
-2. `external-refusal` input that fails strict parsing returns `{"input_error": "INPUT_JSON_INVALID", "json_error": <code>}`; a missing or non-string `internal_code` maps to `PROMOTION_REFUSED`. The parity suite defines only `{"internal_code"}` to `{"external"}`.
-3. Extra members of the `decide` and `check-acceptance` command inputs are ignored (the inputs are harness objects, not closed contracts; D-021 closes only the line envelope).
+| Probe | Differing fields |
+|---|---|
+| `request_id` missing or `null` | `decision_id` only (row 1 above) |
+| `deadline_at` with a fraction or an offset inside the expiry window | `expires_at` only (row 2 above) |
+| `now` with a fraction or an offset | kernel `REQUEST_SCHEMA_INVALID` (D-022 strict `now`, approved); M0 predates D-022 and decides |
+
+Readings approved by the owner as **D-031** (2026-11-12; tests in `kernel/tests/readings.rs`):
+
+1. `current.revoked_evaluator_ids` entries must be valid evaluator names (`^[a-z][a-z0-9_-]{0,63}$`); any malformed entry or a non-array value is `CURRENT_STATE_MALFORMED`.
+2. `external-refusal`: strict-parse failure keeps `{"input_error": "INPUT_JSON_INVALID", "json_error": <code>}`; a missing, non-string or unknown `internal_code` maps to `PROMOTION_REFUSED`.
+3. Extra members are ignored only at the top level of the `decide` and `check-acceptance` command wrappers; ignored values must still be strict JSON; closed envelopes and nested contracts stay strict.
+
+**Protection reachability:** `PROTECTION_UNAVAILABLE` is reachable through the public `transition::check_transition` API (no classification) and tested there; it is unreachable through validated command inputs (a transition-covering bundle without `workflow_protection` is rejected at load time; tested).
 
 ## Differential harness (M2-06)
 
 `kernel/examples/m1_line_adapter.rs` (development-only Cargo example, never shipped) wraps the pure command layer in the M1 line protocol so the M1 parity driver and property generators drive `writ-kernel` unchanged. `kernel/tools/differential.py` runs the M1 campaigns `json`, `decide`, `acceptance` and `refusal` (CI profile) with the kernel against an M1 prototype and fails on any unclassified mismatch or failed kernel invariant (negative tests: `kernel/tools/test_differential.py`).
 
-Classified mismatch groups (the only ones tolerated):
+The gate (hardened 2026-11-12) requires a fresh report for the requested seed with exactly the four campaigns and positive case counts, captures the runner's exit status, and reconciles **every** failed check, mismatch cluster and protocol problem with an exact documented exception; anything else fails. Negative tests: `kernel/tools/test_differential.py`. Documented exceptions (exact):
 
-- **M3 commands:** the JSON campaign's cross-command checks on `transition-scenario` and `broker-scenario` (375 each per seed); the kernel does not implement them and the adapter refuses them.
-- **Adapter limitation, 1 case (`envelope-deep_envelope`):** an object `input` member that is itself deeper than the limit makes the whole envelope line fail strict parsing in the adapter (`ENVELOPE_INVALID` with a null id), while the M1 prototypes re-parse the raw `input` bytes and answer `DEPTH_EXCEEDED`. This is protocol handling, not kernel behaviour: the same document passed as `input_text` gives identical kernel and M1 answers at depths 64, 65, 100 and 200.
+- **M3 commands:** the JSON campaign's cross-command checks on `transition-scenario` and `broker-scenario`: for the N generated cases the kernel side answers none (adapter usage exit 2, "N ids unanswered"), the reference passes its own `json.cross_command.transition-scenario` check for all N, and each command contributes exactly N whole-output mismatches (2N `differential.exact_output` failures).
+- **Adapter limitation (json campaign, command `canonical`, case `envelope-deep_envelope`, count 1, kernel `{null: ENVELOPE_INVALID}` versus reference `{"e": DEPTH_EXCEEDED}`):** an object `input` member that is itself deeper than the limit makes the whole envelope line fail strict parsing in the adapter (`ENVELOPE_INVALID` with a null id), while the M1 prototypes re-parse the raw `input` bytes and answer `DEPTH_EXCEEDED`. This is protocol handling, not kernel behaviour: the same document passed as `input_text` gives identical kernel and M1 answers at depths 64, 65, 100 and 200.
 
-M0 is compared through its exported fixtures (golden decisions, canonical vector); it is not run live in the differential.
+M0 is not run in the generated differential; it is compared live on the golden cases and probes by `kernel/tools/m0_compare.py` (above). Full Decision fields: the `decide` campaign compares whole outputs (every Decision field) with M1 Rust and Go (0 mismatches), and `kernel/tools/decision_schema_check.py` validates every full Decision for the decide fixture inputs against `docs/contracts/decision.schema.json`.
