@@ -14,6 +14,7 @@ writ-broker = { path = "../../broker" }
 rusqlite = { version = "=0.41.1", default-features = false }
 
 [dev-dependencies]
+rusqlite = { version = "=0.41.1", default-features = false }
 
 [lints]
 workspace = true

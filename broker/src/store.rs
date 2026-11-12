@@ -46,7 +46,16 @@ impl fmt::Display for StoreError {
 }
 
 /// A ledger owned by this broker instance.
+///
+/// Every state-changing method is one fenced logical transaction: the implementation
+/// checks inside the transaction that it still owns the ledger and fails closed with
+/// [`StoreError::Fenced`] otherwise. Implementations expose no raw connection or
+/// transaction to callers. Logical transactions for M3-02..M3-05 are added here as
+/// they are implemented.
 pub trait LedgerStore {
     /// The fencing epoch this instance acquired when it took ownership.
     fn owner_epoch(&self) -> u64;
+
+    /// Append one refusal audit record (the `audit` logical transaction, D-024 rule 2).
+    fn record_refusal(&mut self, code: &str) -> Result<(), StoreError>;
 }
