@@ -274,3 +274,11 @@ Implementation-level decisions. Architectural decisions belong in [ADRs](../deci
 - **Decision:** [ADR-0002](../decisions/ADR-0002-runtime-bakeoff.md) ACCEPTED: Rust for the tested trusted kernel and broker. The Go prototype and benchmark evidence are kept as comparison material; no second production core.
 - **Not decided:** PostgreSQL performance or design, Neo4j, orchestration, adapters, Control Center technologies; no production security certification. ADR-0008 APPROVED IN PRINCIPLE; release and production NO-GO.
 - **Carried risks:** cross-process reconciliation (M3, M10), real-host enforcement (M5, SR-06), power-loss durability (M9), single-host measurements and no throttle counter (M10).
+
+## D-031: Kernel readings for unspecified inputs (owner, 2026-11-12)
+
+- **Decided by:** project owner (approval of the three M2 readings, with limits); recorded by Claude. Normative for `writ-kernel`; tested in `kernel/tests/readings.rs` without changing frozen fixture expectations.
+- **1. `current.revoked_evaluator_ids`:** every entry must be a valid evaluator name (`^[a-z][a-z0-9_-]{0,63}$`); an array with any malformed entry (empty, wrong case or leading digit, spaces, over 64 characters, a non-string), or a value that is not an array, is `CURRENT_STATE_MALFORMED`.
+- **2. `external-refusal`:** input that fails strict parsing keeps the documented response `{"input_error": "INPUT_JSON_INVALID", "json_error": <code>}`; a missing, non-string or unknown `internal_code` maps to `PROMOTION_REFUSED` (no disclosure).
+- **3. Extra members:** ignored **only** at the top level of the `decide` and `check-acceptance` command wrappers; ignored values must still pass strict JSON parsing (a duplicate key or non-integer number anywhere in the input is the command's strict-parse refusal). Closed envelopes (D-021) and every nested contract (request, bundle, record, current state, requirements) remain strict.
+- **Protection reachability (recorded with D-031):** `transition::check_transition` with no protection classification returns `PROTECTION_UNAVAILABLE` through the public library API; through validated command inputs it is unreachable, because a bundle whose statements cover `workflow.transition` without `workflow_protection` is rejected at load time and `decide` reaches the transition check only for bundles that carry a classification.
