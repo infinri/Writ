@@ -74,7 +74,7 @@ No new kernel semantics are introduced. An instance refused because another owne
 
 ## Owner decisions that may be needed
 
-0. Pending (2026-11-12): licence BSD-3-Clause for `subtle` (via `hmac`); permit verification against the active bundle (BROKER.md reading versus D-018 A3); trusted time ([M3-TRUSTED-TIME](M3-TRUSTED-TIME.md)). The M3-02 core is held on the local branch `m3-02-pending` until these are decided.
+0. Decided (D-033): `subtle` licence, `PERMIT_STALE`, contract amendments, schema strictness and fault tests. Pending: the suspend-aware monotonic clock for trusted time ([M3-TRUSTED-TIME](M3-TRUSTED-TIME.md) revision 2) and review of the amended M3-06 contracts ([M3-ACCEPTANCE-CONTRACTS](M3-ACCEPTANCE-CONTRACTS.md)).
 1. Resolved (D-032): an ownership refusal keeps `LEDGER_UNAVAILABLE`; `OWNED_ELSEWHERE` is an operator diagnostic.
 2. Contract shapes for M3-06 before the runner (M3-07).
 3. Any change to existing broker semantics found while implementing (stop and report).

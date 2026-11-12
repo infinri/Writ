@@ -1,45 +1,30 @@
 # Acceptance-gate contract carry-over (M3-06) and INV-32..INV-40 map
 
-**Status:** PROPOSED FOR OWNER REVIEW (2026-11-12). Nothing in this document is implemented except where a row says so. ADR-0008 APPROVED IN PRINCIPLE; release and production NO-GO.
+**Status:** REVISION 2, AMENDED PER OWNER DECISION D-033 item 4 (2026-11-12); schemas, examples and negative tests for review in [`docs/contracts/proposed/`](../contracts/proposed/) (`python3 docs/contracts/proposed/test_proposed_contracts.py`). Nothing is integrated: M3-05 evaluator and attestation checks and M3-07 wait for the owner's review of these amended contracts. Nothing in this document is implemented except where a row says so. ADR-0008 APPROVED IN PRINCIPLE; release and production NO-GO.
 
 ## Scope amendment (recorded as D-032)
 
 The owner accepted M2 at `eecab4d` for its **documented kernel scope** ([M2-START-PLAN](M2-START-PLAN.md), E-056, E-057). The acceptance-gate plan ([acceptance-gate-integrity](../architecture/acceptance-gate-integrity.md) section 13, M2 row) also assigned to M2: the evaluator registry entry, runner attestation and EvaluationRecord scope contracts, the workflow state machine with protected states, and INV-32..INV-40 as contract tests. **Those obligations were omitted from the M2 plan and were not delivered.** They are not described as completed anywhere; they are carried as **M3-06**, and every M3 consumer that depends on them (M3-05 transition-service use-time recomputation and evaluator checks, M3-07 mechanical runner) waits for the owner's review of the contract shapes below. What M2 did deliver for the acceptance gate: the AcceptanceRecord binding check (`check-acceptance`, 97 fixtures, D-031) and the kernel's transition structure checks.
 
-## Proposed contracts (shapes for review; not yet schemas)
+## Amended contracts (D-033 item 4)
 
-All identifiers follow the existing id patterns; digests are `sha256:` plus 64 lowercase hex; times are strict UTC whole seconds (D-022); every contract is a closed object (unknown members invalid) with a `contract_version`.
+Machine-readable drafts: [`evaluator-registry-entry.schema.json`](../contracts/proposed/evaluator-registry-entry.schema.json), [`runner-attestation.schema.json`](../contracts/proposed/runner-attestation.schema.json), [`evaluation-record-scope.schema.json`](../contracts/proposed/evaluation-record-scope.schema.json), with valid examples in `docs/contracts/proposed/examples/`. All are closed objects (unknown members invalid) with a versioned `contract_version`; ids, names, versions, digests (`sha256:` plus 64 lowercase hex), strict UTC whole-second times (D-022) and revisions (0..2^53-1) have exact patterns.
 
-### Evaluator registry entry
+**Evaluator registry entry:** identity (`evaluator_id`, `evaluator_version`), `class` and fixed `trust` (mechanical M, evidence E, model_assisted MA, human H), `implementation_digest`, `environment_digest`, **registered `command` (`command_id`, `command_digest`), required for mechanical evaluators**, `attestation` (`alg`, `key_id`), `criteria` it may satisfy, **explicit `scope` (`tenant_id`, `project_id`); the global marker is deferred until its authorization semantics exist**, publisher fields, `registry_revision`, `status` (`active` or `revoked` with `revoked_at`).
 
-| Field | Type | Rule |
-|---|---|---|
-| `evaluator_id`, `version` | name, version string | identity; a change of version is a different evaluator for INV-36 |
-| `class` | `mechanical` / `evidence` / `model_assisted` / `human` | `model_assisted` never satisfies a mandatory criterion (INV-34) |
-| `trust` | `M` / `E` / `MA` / `H` | fixed per class; packs cannot raise it |
-| `implementation_digest`, `environment_digest` | digest | bound into attestations |
-| `attestation_key_id` | id | signer identity; key material lives outside the kernel (broker or runner) |
-| `criteria` | array of criterion ids | the only criteria this evaluator may satisfy |
-| `scope` | `{tenant_id, project_id}` or a published global marker | scope check at use time |
-| `owner`, `publisher`, `published_at`, `registry_revision` | ids, time, integer | published only by an authorized human through the policy path (INV-12) |
-| `status` | `active` / `revoked` (with `revoked_at`) | revocation is a new registry revision, checked at use time |
+**Runner attestation:** `purpose` `writ.runner-attestation.v1` (domain separation), `attestation_id`; the exact acceptance context (`tenant_id`, `project_id`, `task_id`, `workflow_id`, `transition`, `artifact_snapshot_id`, `artifact_digest`, `canonical_target`, `acceptance_policy_id`, `acceptance_policy_version`, `acceptance_policy_bundle_sha`, `state_revision`, `acceptance_record_id`, `criterion_id`); evaluator binding (`evaluator_id`, `evaluator_version`, `implementation_digest`, `environment_digest`, `registry_revision`); `command_id` and `command_digest`; `input_digests`, `evidence_digests`, `exit_status`, `output_digest`; `started_at`, `finished_at`, `fresh_until`; `auth` (`alg`, `key_id`, `mac`).
 
-### Runner attestation
+**Authenticated bytes and algorithm policy:** the MAC input is the UTF-8 D-006 canonical JSON of the attestation with `auth.mac` removed (so `contract_version`, `purpose`, `alg` and `key_id` are authenticated). `alg` is a closed list, currently only `hmac-sha256`: an HMAC is a **MAC with a shared runner key, not a public-key signature**, so anyone holding the key (runner and verifier) can produce tags; a public-key scheme would be a later contract version. Unknown algorithm, unknown `key_id`, a `key_id` or `alg` different from the registry entry's `attestation` at the bound `registry_revision`, or a key of another purpose, fails closed. Key material comes only from the trusted key provider under purpose `runner` (D-033 item 1); the kernel never verifies MACs.
 
-| Field | Type | Rule |
-|---|---|---|
-| `attestation_id` | id | single use per acceptance record criterion (replay protection) |
-| `evaluator_id`, `evaluator_version`, `registry_revision` | | must match an active registry entry at use time |
-| `tenant_id`, `project_id`, `task_id`, `workflow_id` | ids | scope binding |
-| `artifact_snapshot_id`, `artifact_digest`, `input_digests` | id, digests | the snapshot the runner actually read (INV-40) |
-| `command_digest`, `environment_digest` | digests | must equal the registry entry |
-| `exit_status`, `output_digest` | integer, digest | result |
-| `started_at`, `finished_at`, `fresh_until` | times | freshness against the trusted clock |
-| `signer_key_id`, `signature` | id, bytes | verified by the broker or acceptance service against the registry key (never by the kernel; the kernel stays key-free) |
+**Use-time checks (code, M3-05 and M3-07):** every bound context field equals the protected transition being promoted; the registry entry is active at use time, its digests and command equal the attestation's, and its scope contains the tenant and project; `exit_status` and `output_digest` satisfy the criterion; `fresh_until` is after trusted effective time (M3-TRUSTED-TIME); the snapshot rule below holds.
 
-### EvaluationRecord scope fields (additions to `docs/contracts/evaluation-record.schema.json`)
+**Consumption (approved choice):** single consumption **ledger-wide per `attestation_id`**, atomic with the protected promotion in one fenced transaction; an identical retry of the same promotion is idempotent; use for another acceptance record or criterion is refused; verification alone never consumes.
 
-`tenant_id`, `project_id`, `workflow_id`, `transition` (`from_state`, `to_state`), `artifact_snapshot_id`, `artifact_digest`, `acceptance_policy_id`, `acceptance_policy_version`, `acceptance_policy_bundle_sha`, `state_revision`, `evaluator_id`, `evaluator_version`, `evaluator_trust`, `attestation_ref`, `issued_at`, `fresh_until`, `mode` (`governed` / `advisory`, INV-39). The current schema identifies the task and artifact but carries none of the policy, revision, snapshot-digest, evaluator-version or mode bindings.
+**EvaluationRecord scope:** the same context and evaluator binding, `evaluator_trust`, `status`, `attestation_ref` (required for trust M), `evidence_digests`, `issued_at`, `fresh_until`, `mode` (`governed` or `advisory`; advisory never satisfies a protected transition, INV-39). Proposed as an amendment of `docs/contracts/evaluation-record.schema.json`.
+
+**Human mandatory criteria** stay unavailable (refused) until authenticated signoff exists (M4); there is no interim bypass.
+
+**Negative tests (schema level, passing):** unknown members at every level; every context and evaluator binding missing; attestation without command, inputs, output, exit status, purpose, auth, id or freshness; unknown or wrongly cased algorithms; malformed tags; wrong purpose; missing or global scope; mechanical without a registered command or with trust MA; revoked without `revoked_at` and active with one; empty criteria; uppercase digests, fractional or offset times, out-of-range exit status and revisions, malformed targets, empty inputs, invalid criterion ids; mechanical evaluation without an attestation; unknown mode. Semantic negative tests (binding mismatch, registry mismatch, revoked evaluator, replayed attestation, stale freshness, snapshot mismatch) are written with M3-05 and M3-07.
 
 ## INV-32..INV-40 map
 
@@ -55,10 +40,8 @@ Dimensions: **I** identity, **S** scope, **A** artifact or snapshot binding, **P
 | INV-37 acceptance requirements are versioned policy; agents and packs cannot create, weaken or waive them | P I | requirements are an input contract in `check-acceptance` | M3-05 loads requirements from the trusted policy path only | pack-supplied requirements; waiver of an invariant-derived criterion | signed acceptance policies (M6); waivers as approvals (M4) |
 | INV-38 missing, failed, stale, unverifiable or malformed mandatory evidence, or an unavailable evaluator or service, refuses | F T | stale, failed and malformed refusals in `check-acceptance` (M2) | M3-05 fail closed on store, registry or verifier unavailability | evaluator timeout; malformed output; acceptance service down | none beyond M3 |
 | INV-39 advisory mode never reported as governed or verified; mode on every record | I | none | M3-06 `mode` field; M3-05 refuses advisory records for protected transitions | advisory record presented for promotion | Control Center display (M9, out of this authorization) |
-| INV-40 one content-addressed immutable snapshot in agent-unwritable storage, digest verified at creation and every consumption | A R | snapshot id and digest compared as bound fields (M2) | M3-07 runner and M3-05 recompute the digest of the bytes they read | snapshot bytes changed after acceptance; digest mismatch at consumption | agent-unwritable snapshot storage on a real host (M5) |
+| INV-40 one content-addressed immutable snapshot in agent-unwritable storage, digest verified at creation and every consumption | A R | snapshot id and digest compared as bound fields (M2) | **Corrected (D-033):** digest recomputation alone is not immutability. Governed consumers (runner, transition service, approval display) use the same service-controlled immutable snapshot; when that guarantee is unavailable they refuse with `ARTIFACT_INTEGRITY_UNAVAILABLE`; no interim mutable-path shortcut, and M5's later host verification does not authorize one | snapshot bytes changed after acceptance; digest mismatch at consumption; consumer given a mutable path; snapshot service unavailable gives `ARTIFACT_INTEGRITY_UNAVAILABLE` | a service-controlled immutable snapshot store (to be designed with M3-05/M3-07; agent-unwritable on a real host is M5) |
 
-## Review questions for the owner
+## Review status
 
-1. Approve or amend the three contract shapes (fields, closed objects, signer location outside the kernel).
-2. Confirm that M3-05 implements CAS, single-use records and audit events now, but defers evaluator-registry and attestation checks until these contracts are approved.
-3. Confirm attestation replay protection as single use per acceptance-record criterion (alternative: single use per attestation id across the ledger).
+Owner decisions applied (D-033 item 4): command identity, closed typed fields, authenticated bytes and algorithm policy, exact context binding, ledger-wide single consumption atomic with promotion, explicit registry scope, corrected INV-40, human criteria unavailable. **Awaiting owner review of the amended schemas before M3-05 evaluator and attestation integration and M3-07.**
