@@ -440,6 +440,7 @@ The timeout and lock-wait figures in E-034, E-035 and E-036 are **preliminary an
   - *Full Decision fields:* the `decide` campaign compares whole outputs (every field, including `decision_id`, `expires_at`, `approval_request_reference`) with M1 Rust and Go: 0 mismatches over about 1,500 generated cases per seed and reference; 84 full Decisions for the decide fixtures validate against `docs/contracts/decision.schema.json` (`kernel/tools/decision_schema_check.py`), the other 37 outputs are D-022 three-member refusals.
   - *M0 differences:* `kernel/tools/m0_compare.py` against the live M0 reference: 26 golden cases identical in every Decision field; probes confirm each documented difference is limited to its field (`request_id` missing or null: `decision_id`; fractional or offset `deadline_at`: `expires_at`; fractional or offset `now`: kernel `REQUEST_SCHEMA_INVALID` under approved D-022, M0 predates it).
 - **Not claimed:** the 127 broker and promotion cases (M3); real-host security; M0 is not part of the generated differential.
+- **E-057 follow-up, exact-SHA CI:** run https://github.com/infinri/Writ/actions/runs/43262144330 on `de0d6d4e0c5d51bdbdbba4ac8ac2fee7f7413562`: success, all 6 jobs; log shows kernel parity 320/320, tool tests 13 OK, dependency gate with OSV 0 problems, 84 schema-valid Decisions, M0 comparison 26/26 identical, and four differential runs (M1 Rust and Go, seeds 20261107 and 1) with 0 unreconciled problems.
 
 ## Not yet executed
 
