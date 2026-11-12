@@ -57,20 +57,27 @@ def forbidden_features(meta: dict, allow: dict) -> list[str]:
 
 
 def closures(meta: dict) -> dict:
-    """{member name: set of (name, version) registry packages it depends on (normal and build)}."""
+    """{member name: set of (name, version) registry packages}: each member's own closure of
+    normal and build dependencies, with that member's own feature resolution (`cargo tree -p`,
+    not the workspace-unified resolve, where another crate's features would leak in), and with
+    other workspace members pruned (their dependencies are gated by their own allow-lists)."""
     pkgs = {p["id"]: p for p in meta["packages"]}
     nodes = {n["id"]: n for n in meta["resolve"]["nodes"]}
+    member_ids = set(meta["workspace_members"])
     out = {}
     for mid in meta["workspace_members"]:
-        name, seen, stack = pkgs[mid]["name"], set(), [mid]
-        while stack:
-            for dep in nodes[stack.pop()]["deps"]:
-                if not any(k.get("kind") in (None, "build") for k in dep["dep_kinds"]):
-                    continue
-                if dep["pkg"] not in seen:
-                    seen.add(dep["pkg"])
-                    stack.append(dep["pkg"])
-        out[name] = {(pkgs[i]["name"], pkgs[i]["version"]) for i in seen if pkgs[i].get("source")}
+        name = pkgs[mid]["name"]
+        argv = ["cargo", "tree", "--locked", "--target", "all", "-p", name, "-e", "normal,build", "--prefix", "none", "--format", "{p}"]
+        for dep in nodes[mid]["deps"]:
+            if dep["pkg"] in member_ids:
+                argv += ["--prune", pkgs[dep["pkg"]]["name"]]
+        lines = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True, check=True).stdout.splitlines()
+        found = set()
+        for line in lines:
+            parts = line.replace(" (*)", "").split()
+            if len(parts) >= 2 and parts[1].startswith("v") and "(" not in line:
+                found.add((parts[0], parts[1][1:]))
+        out[name] = found
     return out
 
 
