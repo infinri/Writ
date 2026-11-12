@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Production dependency gate for the Rust workspace (M2-01, kernel/DEPENDENCIES.md).
+"""Production dependency gate for the Rust workspace (M2-01, M3-00).
 
-Fails if the workspace Cargo.lock contains a package that is not on the reviewed
-allow-list (name, exact version, and checksum where recorded), a forbidden crate,
-or a licence outside the approved set. Optional:
+Per crate: the dependency closure of each workspace member (normal and build
+dependencies, from `cargo metadata`) must match that crate's reviewed allow-list
+(name, exact version, checksum where recorded), contain no forbidden crate, and
+use only approved licences. The kernel closure therefore stays exactly as
+reviewed in kernel/DEPENDENCIES.md even when other crates add dependencies.
+Every registry package in Cargo.lock must belong to some member's closure. Optional:
   --osv        query api.osv.dev for known advisories of every locked package
   --sbom PATH  write a minimal CycloneDX-style JSON SBOM of the locked packages
 
@@ -27,10 +30,48 @@ def locked(lock_path: Path) -> list[dict]:
     return [p for p in lock["package"] if p.get("source")]
 
 
-def licences() -> dict:
+MEMBERS = {"writ-kernel": "kernel/deps-allowlist.json", "writ-broker": "broker/deps-allowlist.json",
+           "writ-ledger-sqlite": "persistence/sqlite/deps-allowlist.json"}
+
+
+def metadata() -> dict:
     out = subprocess.run(["cargo", "metadata", "--locked", "--format-version", "1"], cwd=ROOT,
                          capture_output=True, text=True, check=True).stdout
-    return {(p["name"], p["version"]): p.get("license") for p in json.loads(out)["packages"] if p.get("source")}
+    return json.loads(out)
+
+
+def licences(meta: dict) -> dict:
+    return {(p["name"], p["version"]): p.get("license") for p in meta["packages"] if p.get("source")}
+
+
+def forbidden_features(meta: dict, allow: dict) -> list[str]:
+    """Resolved features that the allow-list forbids (for example a bundled C library)."""
+    pkgs = {p["id"]: p for p in meta["packages"]}
+    out = []
+    for node in meta["resolve"]["nodes"]:
+        name = pkgs[node["id"]]["name"]
+        bad = set(node.get("features", [])) & set(allow.get("forbidden_features", {}).get(name, []))
+        if bad:
+            out.append(f"{name}: forbidden features enabled {sorted(bad)}")
+    return out
+
+
+def closures(meta: dict) -> dict:
+    """{member name: set of (name, version) registry packages it depends on (normal and build)}."""
+    pkgs = {p["id"]: p for p in meta["packages"]}
+    nodes = {n["id"]: n for n in meta["resolve"]["nodes"]}
+    out = {}
+    for mid in meta["workspace_members"]:
+        name, seen, stack = pkgs[mid]["name"], set(), [mid]
+        while stack:
+            for dep in nodes[stack.pop()]["deps"]:
+                if not any(k.get("kind") in (None, "build") for k in dep["dep_kinds"]):
+                    continue
+                if dep["pkg"] not in seen:
+                    seen.add(dep["pkg"])
+                    stack.append(dep["pkg"])
+        out[name] = {(pkgs[i]["name"], pkgs[i]["version"]) for i in seen if pkgs[i].get("source")}
+    return out
 
 
 def check(pkgs: list[dict], allow: dict, lic: dict) -> list[str]:
@@ -71,11 +112,24 @@ def main() -> int:
     ap.add_argument("--osv", action="store_true")
     ap.add_argument("--sbom", type=Path)
     ap.add_argument("--lock", type=Path, default=ROOT / "Cargo.lock")
-    ap.add_argument("--allowlist", type=Path, default=ROOT / "kernel/deps-allowlist.json")
     a = ap.parse_args()
-    allow = json.loads(a.allowlist.read_text())
-    pkgs, lic = locked(a.lock), licences()
-    problems = check(pkgs, allow, lic)
+    meta = metadata()
+    lic, clos = licences(meta), closures(meta)
+    pkgs = locked(a.lock)
+    by_key = {(p["name"], p["version"]): p for p in pkgs}
+    problems = []
+    if set(clos) != set(MEMBERS):
+        problems.append(f"workspace members {sorted(clos)} differ from the gated set {sorted(MEMBERS)}")
+    covered = set()
+    for member, allow_path in MEMBERS.items():
+        allow = json.loads((ROOT / allow_path).read_text())
+        member_pkgs = [by_key.get(k, {"name": k[0], "version": k[1]}) for k in sorted(clos.get(member, set()))]
+        covered |= clos.get(member, set())
+        problems += [f"{member}: {x}" for x in check(member_pkgs, allow, lic)]
+        problems += [f"{member}: {x}" for x in forbidden_features(meta, allow)]
+    for p in pkgs:
+        if (p["name"], p["version"]) not in covered:
+            problems.append(f"locked package {p['name']} {p['version']} is in no member's closure")
     if a.osv:
         problems += [f"advisory: {x}" for x in osv(pkgs)]
     if a.sbom:
@@ -86,7 +140,8 @@ def main() -> int:
             indent=2) + "\n")
     for x in problems:
         print("dependency gate:", x, file=sys.stderr)
-    print(f"dependency gate: {len(pkgs)} locked packages, {len(problems)} problems{' (OSV checked)' if a.osv else ''}")
+    sizes = {m: len(c) for m, c in clos.items()}
+    print(f"dependency gate: {len(pkgs)} locked packages, closures {sizes}, {len(problems)} problems{' (OSV checked)' if a.osv else ''}")
     return 1 if problems else 0
 
 

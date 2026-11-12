@@ -3,7 +3,7 @@
 # prototypes and evidence) stay outside the workspace and are never built from here.
 [workspace]
 resolver = "2"
-members = ["kernel"]
+members = ["kernel", "broker", "persistence/sqlite"]
 exclude = ["m0", "m1"]
 
 [workspace.package]

@@ -1,0 +1,62 @@
+{
+  "comment": "Reviewed dependency allow-list for writ-ledger-sqlite (persistence/sqlite/DEPENDENCIES.md). rusqlite 0.41.1 / libsqlite3-sys 0.39.1 adopted 2026-11-12 (RUSTSEC-2026-0459 fixed; release age at least 14 days); other packages as reviewed for M1 (M1-07).",
+  "approved_licenses": [
+    "MIT",
+    "MIT OR Apache-2.0",
+    "MIT/Apache-2.0",
+    "Apache-2.0 OR MIT"
+  ],
+  "forbidden": [
+    "hmac",
+    "tokio",
+    "reqwest"
+  ],
+  "packages": {
+    "rusqlite": {
+      "version": "0.41.1",
+      "checksum": "da9bba6f3506135e120a6586df05be18b48d18896600646a4bec8f993d91a594",
+      "role": "direct runtime (SQLite driver; default features off)"
+    },
+    "libsqlite3-sys": {
+      "version": "0.39.1",
+      "role": "transitive (links the pinned SQLite 3.54.1 static library, D-023; the bundled feature must stay off)"
+    },
+    "bitflags": {
+      "version": "2.13.2",
+      "role": "transitive (rusqlite)"
+    },
+    "fallible-iterator": {
+      "version": "0.3.0",
+      "role": "transitive (rusqlite)"
+    },
+    "fallible-streaming-iterator": {
+      "version": "0.1.9",
+      "role": "transitive (rusqlite)"
+    },
+    "smallvec": {
+      "version": "1.16.3",
+      "role": "transitive (rusqlite); pinned below 1.16.5 by the 14-day release-age rule (M1-07)"
+    },
+    "pkg-config": {
+      "version": "0.3.34",
+      "role": "build-time only (libsqlite3-sys build script)"
+    },
+    "vcpkg": {
+      "version": "0.2.15",
+      "role": "build-time only (libsqlite3-sys build script; unused on Linux)"
+    }
+  },
+  "forbidden_features": {
+    "libsqlite3-sys": [
+      "bundled",
+      "bundled-sqlcipher",
+      "bundled-sqlcipher-vendored-openssl"
+    ],
+    "rusqlite": [
+      "bundled",
+      "bundled-full",
+      "bundled-sqlcipher",
+      "load_extension"
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+[package]
+name = "writ-ledger-sqlite"
+version = "0.1.0"
+description = "Writ V2 local ledger profile on SQLite with single-owner coordination (M3)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Reviewed allow-list: persistence/sqlite/DEPENDENCIES.md. Links the pinned shared SQLite 3.54.1
+# static library (D-023; SQLITE3_LIB_DIR, SQLITE3_INCLUDE_DIR, SQLITE3_STATIC from m1/tools/env.sh).
+[dependencies]
+writ-broker = { path = "../../broker" }
+rusqlite = { version = "=0.41.1", default-features = false }
+
+[dev-dependencies]
+
+[lints]
+workspace = true

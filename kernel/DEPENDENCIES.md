@@ -7,7 +7,7 @@
 1. Runtime and development dependencies are separate (`[dependencies]` versus `[dev-dependencies]`); development dependencies never ship and are reviewed the same way.
 2. Every new dependency needs a written justification here (why the standard library is insufficient, why a maintained library beats a custom replacement), its pinned exact version (`=x.y.z`), enabled features, licence, transitive dependencies, advisory status and release age (at least 14 days old when adopted, as in M1).
 3. `Cargo.lock` is committed; every build and test runs with `--locked`.
-4. The gate `kernel/tools/check_deps.py` (CI job "M2 production kernel") fails on any locked package not on `kernel/deps-allowlist.json` (exact version; checksum for direct dependencies), a forbidden crate, or an unapproved licence; CI also queries OSV for advisories and publishes an SBOM artifact.
+4. The gate `kernel/tools/check_deps.py` checks each workspace member's own dependency closure against its allow-list (since M3-00: kernel, broker, SQLite ledger), so this kernel list stays exact; it fails on any package in the kernel closure not on `kernel/deps-allowlist.json` (exact version; checksum for direct dependencies), a forbidden crate, or an unapproved licence; CI also queries OSV for advisories and publishes an SBOM artifact.
 5. Upgrades are deliberate: change the pin, update the allow-list and this file, and record the review in TEST-EVIDENCE.
 
 ## Approved runtime dependency

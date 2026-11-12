@@ -1,0 +1,9 @@
+# writ-ledger-sqlite dependency policy (M3-00)
+
+| Crate | Version | Features | Licence | Purpose |
+|---|---|---|---|---|
+| `rusqlite` | `=0.41.1` (2026-10-28) | none (`default-features = false`; `bundled`, `bundled-full`, `bundled-sqlcipher` and `load_extension` forbidden by the gate) | MIT | SQLite driver |
+
+**Transitive (locked):** `libsqlite3-sys` 0.39.1 (MIT; links the pinned SQLite 3.54.1 static library from `m1/tools/install-sqlite.sh`, D-023; its `bundled` features are forbidden by the gate), `bitflags` 2.13.2, `fallible-iterator` 0.3.0, `fallible-streaming-iterator` 0.1.9, `smallvec` 1.16.3 (held below 1.16.5 by the release-age rule), build-time only `pkg-config` 0.3.34 and `vcpkg` 0.2.15; all MIT or MIT/Apache-2.0.
+
+**Review record (2026-11-12):** the gate's OSV query reported **RUSTSEC-2026-0459** (CVE-2026-119375, aliases GHSA-72w2-rjgg-q729, RUSTSEC-2026-0502) for `libsqlite3-sys` 0.38.2, the version first resolved (same as the M1 prototypes). The advisory concerns the SQLite source bundled with the crate before 3.54.0 (uninitialized page-cache memory with a crafted database and `-wal` pair of different page sizes); a build that links an external SQLite has the exposure of that library. Writ links the pinned 3.54.1, which is fixed, and does not enable `bundled`, so neither the M1 prototypes nor this crate are affected; the production crate was nevertheless moved to the fixed releases `rusqlite` 0.41.1 / `libsqlite3-sys` 0.39.1 (15 and 18 days old; the 2026-11-11 releases 0.42.0 / 0.40.0 fail the 14-day rule). After the upgrade OSV reports no advisories for any locked package. The linked engine is verified at runtime by `settings_are_the_d023_ones` (version 3.54.1 and the pinned build's compile options `OMIT_LOAD_EXTENSION`, `DQS=0`, `THREADSAFE=1`). The frozen M1 prototypes keep 0.38.2 (not affected, as above).

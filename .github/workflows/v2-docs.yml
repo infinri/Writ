@@ -17,12 +17,17 @@ jobs:
       - name: Check docs, HTML, schemas, packs and task fixtures
         run: python3 scripts/check-v2-docs.py
   m2-kernel:
-    name: M2 production kernel (writ-kernel, Rust)
+    name: Production Rust workspace (writ-kernel, writ-broker, writ-ledger-sqlite)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned Rust 1.99.1 (rust-toolchain.toml) with clippy and rustfmt
         run: rustup toolchain install 1.99.1 --profile minimal --component clippy --component rustfmt --no-self-update
+      - name: Shared pinned SQLite 3.54.1 (D-023) for writ-ledger-sqlite
+        run: |
+          WRIT_M1_TOOLCHAINS="$RUNNER_TEMP/m1" m1/tools/install-sqlite.sh "$RUNNER_TEMP/dl"
+          d="$RUNNER_TEMP/m1/sqlite-3.54.1-r2"
+          { echo "SQLITE3_INCLUDE_DIR=$d/include"; echo "SQLITE3_LIB_DIR=$d/lib"; echo "SQLITE3_STATIC=1"; echo "PKG_CONFIG_LIBDIR=$d/lib/pkgconfig"; } >> "$GITHUB_ENV"
       - name: Toolchain is the pinned one
         run: cargo --version && rustc --version | grep -q '^rustc 1.99.1 '
       - name: Format, lint, build and test (locked)

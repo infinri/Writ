@@ -48,5 +48,16 @@ class Gate(unittest.TestCase):
         self.assertTrue(any("licence" in x for x in check_deps.check(pkgs, ALLOW, lic)))
 
 
+class Features(unittest.TestCase):
+    def test_bundled_sqlite_feature_is_refused(self):
+        allow = {"forbidden_features": {"libsqlite3-sys": ["bundled"]}}
+        meta = {"packages": [{"id": "x", "name": "libsqlite3-sys"}],
+                "resolve": {"nodes": [{"id": "x", "features": ["bundled", "min_sqlite_version_3_14_0"]}]}}
+        self.assertEqual(len(check_deps.forbidden_features(meta, allow)), 1)
+        meta["resolve"]["nodes"][0]["features"] = []
+        self.assertEqual(check_deps.forbidden_features(meta, allow), [])
+
+
 if __name__ == "__main__":
     unittest.main()
+

@@ -1,0 +1,16 @@
+[package]
+name = "writ-broker"
+version = "0.1.0"
+description = "Writ V2 authorization broker: the only path to governed effects (M3)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Reviewed allow-list: broker/DEPENDENCIES.md. Dependencies are added only when code uses them.
+[dependencies]
+
+[dev-dependencies]
+
+[lints]
+workspace = true
