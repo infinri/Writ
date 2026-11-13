@@ -55,4 +55,4 @@ Dimensions: **I** identity, **S** scope, **A** artifact or snapshot binding, **P
 
 ## Review status
 
-Owner decisions applied (D-033 item 4): command identity, closed typed fields, authenticated bytes and algorithm policy, exact context binding, ledger-wide single consumption atomic with promotion, explicit registry scope, corrected INV-40, human criteria unavailable. **Awaiting owner review of the amended schemas before M3-05 evaluator and attestation integration and M3-07.**
+Owner decisions applied (D-033 item 4): command identity, closed typed fields, authenticated bytes and algorithm policy, exact context binding, ledger-wide single consumption atomic with promotion, explicit registry scope, corrected INV-40, human criteria unavailable. **Approved by the owner in D-034** (field layout, explicit scope, authenticated context, HMAC domain separation, registry binding, ledger-wide single consumption; semantic validation required on every trusted ingestion path). Use-time MAC, registry, revocation, replay, immutable-snapshot and atomic-consumption tests remain mandatory in M3-05 and M3-07.

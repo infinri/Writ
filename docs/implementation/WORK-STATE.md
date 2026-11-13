@@ -4,11 +4,11 @@
 
 ## Current
 
-- **Verified published baseline:** `aff6ce3` (docs checkpoint), CI run 43343727179, all 6 jobs; code `8ead392`, CI run 43340059204, all 6 jobs. The D-035 commit has CI pending until verified.
+- **Verified published baseline:** `aff6ce3` (docs checkpoint), CI run 43343727179, all 6 jobs; code `8ead392`, CI run 43340059204, all 6 jobs. D-035 `5fdcd30`, CI run 43346923290, all 6 jobs.
 - **Production crates:** `writ-kernel` (M2, accepted), `writ-broker` and `writ-ledger-sqlite` (M3-00..M3-04 and D-035: ingress, use-time authorization, policy gate, trusted time, approvals with provenance, grants, execute lifecycle with revalidation, owned and ledger-bound effect store, evidence-based reconciliation; evidence E-058..E-067; ledger `writ-ledger-4`, effects `writ-effects-2`). M1 prototypes frozen as comparison material.
 - **Language:** **Rust** selected for the trusted kernel and broker (ADR-0002 ACCEPTED 2026-11-12, D-030). Go prototype kept as comparison material only.
 - **Benchmarks:** three official M1-06 run sets plus the order-controlled process-concurrency correction (E-046, E-052, E-054) and real-edit M1-07 build timings (E-053); all guard-passed, 0 correctness failures; bundles in `m1/bench/evidence/`.
-- **Next task:** verify the D-035 commit's CI, then M3-05..M3-08; M3-07 owns the production inherited-descriptor and restart-coordination obligation (E-066). Owner item: M1 fixture b-36 exact exception for M3-08 (D-035 item 3 consequence).
+- **Next task:** M3-05 awaits the owner questions in [M3-05-TRANSITION-SERVICE](M3-05-TRANSITION-SERVICE.md); then M3-05..M3-08; M3-07 owns the production inherited-descriptor and restart-coordination obligation (E-066). Owner item: M1 fixture b-36 exact exception for M3-08 (D-035 item 3 consequence).
 - **Enterprise direction:** [readiness plan](../security/ENTERPRISE-READINESS.md), ENT-OWNER-01 and ENT-00..ENT-08. PostgreSQL targets enterprise operational state, SQLite remains local/offline; durable multi-worker coordination requires separate future acceptance. Controls, SOC 2 scope and any examination remain planned, not implemented or attested.
 
 ## Security findings

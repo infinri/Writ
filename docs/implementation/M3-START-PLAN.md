@@ -74,7 +74,7 @@ No new kernel semantics are introduced. An instance refused because another owne
 
 ## Owner decisions that may be needed
 
-0. Decided (D-033): `subtle` licence, `PERMIT_STALE`, contract amendments, schema strictness and fault tests. Pending: the suspend-aware monotonic clock for trusted time ([M3-TRUSTED-TIME](M3-TRUSTED-TIME.md) revision 2) and review of the amended M3-06 contracts ([M3-ACCEPTANCE-CONTRACTS](M3-ACCEPTANCE-CONTRACTS.md)).
+0. Decided (D-033, D-034, D-035): `subtle` licence, `PERMIT_STALE`, contract amendments, schema strictness and fault tests; the suspend-aware clock and trusted time revision 2; the M3-06 contracts (approved with semantic validation); reservation retention, effect-store ownership, permit presentation, failure precedence and approver provenance. Open: the M3-05 questions in [M3-05-TRANSITION-SERVICE](M3-05-TRANSITION-SERVICE.md).
 1. Resolved (D-032): an ownership refusal keeps `LEDGER_UNAVAILABLE`; `OWNED_ELSEWHERE` is an operator diagnostic.
 2. Contract shapes for M3-06 before the runner (M3-07).
 3. Any change to existing broker semantics found while implementing (stop and report).
