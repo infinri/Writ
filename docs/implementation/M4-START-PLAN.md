@@ -1,0 +1,164 @@
+# M4 plan: authenticated human approval and signoff (Rust broker)
+
+**Status:** PLANNED, NOT AUTHORIZED. Nothing in this document is implemented unless a row says "implemented today" and cites the code. Prepared under [D-039](DECISION-LOG.md) ("Once green: ... prepare M4-START-PLAN"). Baseline: `68c72b4` (D-039 recorded). M4 starts only after (1) M3 closes under D-039 (the `m3/closure/check.py --verify-report` fixture-revalidation correction and required CI green on the resulting SHA) and (2) the owner answers the decisions in section 10.
+
+**Scope labels.** The accepted M3 scope is **development acceptance**, not production enforcement and not 127/127 exact parity. ADR-0008 stays **APPROVED IN PRINCIPLE**. Release and production stay **NO-GO**; M4 does not change that. The broker guarantees **at most one dispatch per (tenant, idempotency key)**, with adapter-specific effect and recovery guarantees; nothing in M4 claims at-most-once (or exactly-once) arbitrary external effects.
+
+**Gate (MASTER-IMPLEMENTATION-PLAN section 10, M4):** an untrusted transcript cannot mint an approval; stale, replayed or mismatched approvals are denied. Plus section 18 (signoff provenance; waivers as approvals, AG-M4), section 17 (CC-M4 approval experience, separately authorized), [TASKS](TASKS.md) AG-M4 (AG-NEG-05, forged signoff refused) and ENT-02 (role separation, revocation, negative evidence), and the 25 carried closure cases (D-038 item 6).
+
+## 1. What exists today (verified in code at `68c72b4`)
+
+| Area | Implemented today | Not implemented (M4 or later) |
+|---|---|---|
+| Approval issuance | `GrantService::approve` in [grants.rs](../../broker/src/grants.rs): order `HUMAN_UNAUTHENTICATED`, `NOT_APPROVABLE`, `SELF_APPROVAL_FORBIDDEN`, then a single-use grant (`GRANT_MAX_USES` 1, default TTL 600 s, `GRANT_REF_IN_USE` on label reuse). The approver presents the sealed `VerifiedRequest` itself (`Approval`). | No stored approval request; no inbox; the broker never emits an approval request object. `approval_request_id` exists only inside the kernel decision and `GrantBinding`. |
+| Deny | `Verdict::Denied` stores a grant that never matches (fixture b-21). | No terminal "denied request" state; a later approval of the same request is not prevented. |
+| Revoke | Nothing. D-035 item 1 requires that a revoked approval never authorizes a fresh effect; only expiry and binding mismatch are revalidated (`Revalidation`, T-dispatch). | Grant and signoff revocation, its races and audit. |
+| Approver authentication | `ApprovalAuthority::authenticate(&ApprovalPresentation) -> AuthenticatedApprover`; broker-side checks in `grants::authenticate`: same channel, same identity, `PrincipalKind::Human` only, non-empty bounded provenance fields, evidence reference must not contain the credential (`ApproverRefusal`). | **No production `ApprovalAuthority`.** Every implementation is test-only: `ChannelAuthority` (persistence/sqlite/examples/m3_line_adapter/common.rs, D-037 item 7 C3: "tests the self-approval defense only, never human authentication"), `FixedAuthority` (grants.rs tests), `Alice`, `Channels`, `Confused`, `Partial`, `Vouches` (persistence/sqlite tests). The trait receives no tenant, request or role, so it cannot authorize an approver for a scope. |
+| Self-approval | `approve_unaudited` refuses when approver id equals `request.principal.id` or `request.agent_id`. | No role model (approver vs signoff authority vs operator); no tenant-scoped approver authorization. |
+| Approver provenance | D-035 item 5, `GrantProvenance` and table `grant_provenance` ([schema_v4.sql](../../persistence/sqlite/src/schema_v4.sql)) under `writ-provenance-1`; `provenance_intact` refuses grants without intact provenance at T-reserve and T-dispatch (`LEDGER_UNAVAILABLE`, diagnostic `provenance`). | Provenance for deny, revoke and signoff; authentication method and time (step-up freshness) are not recorded. |
+| Operator authentication | `WorkflowAuthority::authorize(presentation, AdminOperation, tenant, project) -> AuthorizedOperator` in [workflow.rs](../../broker/src/workflow.rs); `Broker::administer` checks identity and channel echo and field bounds; `admin_events` with operator provenance. | No production `WorkflowAuthority` (test-only `TestOperators`, `Operators`, `Ops`). `AuthorizedOperator` has no principal kind or role. |
+| Human acceptance criteria | `acceptance::check_use` in [acceptance.rs](../../broker/src/acceptance.rs) refuses **any** requirement set containing a `CriterionClass::Human` criterion with `AcceptanceCode::HumanUnavailable` (`ACCEPTANCE_HUMAN_UNAVAILABLE`), right after the kernel check (D-033 item 4, D-037 item 4). | Signoff issuance, storage, binding, use-time verification and consumption. The authenticated record (`authenticated-acceptance-record/1`) has no signoff reference: `attestation_id` is required for trust `M` and forbidden otherwise. |
+| Waivers | Kernel treats `CriterionStatus::Waived` as `Incomplete` (kernel/src/acceptance.rs). | Waivers as approvals (AG-M4). |
+| Acceptance records and keys | `AcceptanceRecordSource`, `AcceptanceKeyRing`, `RunnerKeyRing`, `SnapshotStore` traits; in-memory rings and test sources only (keys.rs: production key management is M5, M9). | Acceptance service, key provisioning, snapshot store. |
+| Persistence | `writ-ledger-5`; `SqliteLedger::open` accepts only that; `SqliteLedger::upgrade` is the explicit operator upgrade from exact `writ-ledger-3` or `-4`. | Approval request, decision, revocation and signoff tables (a new schema version). |
+
+## 2. Trusted identity and channel boundaries
+
+| Boundary | Today | M4 target (planned) |
+|---|---|---|
+| Agent ingress | Sealed requests (`ingress::VerifiedRequest`), agent-realm keys | Unchanged. Agent ingress never carries approval, signoff, deny or revoke operations; an approval-shaped field in an agent request is ignored as authority (AG-NEG-05). |
+| Approval channel | A string (`ApprovalPresentation::channel`) the test authority echoes; no transport | A broker listener distinct from agent ingress (separate socket or port, separate credential realm, INV-28), reachable only by the approval client; channel identity comes from the listener, not from a request field. |
+| Human authentication | Test authorities only | A production verifier behind `ApprovalAuthority` (or its successor, M4-02) per section 10 decision O-1, with step-up freshness per decision; the presented credential is consumed by the verifier and never stored. |
+| Operator channel | Test `WorkflowAuthority` | Same verifier family, management realm, role-checked; agents and models refused. |
+| Same-OS-user risk | Not addressed | On a single-user workstation the agent runs as the same OS user as the human: any secret readable by that user is readable by the agent. Approval and signoff therefore need a factor the agent process cannot exercise (user presence on an authenticator, or an external IdP session the agent cannot drive). Recorded as a carried risk until decision O-1 and O-2 are made. |
+
+What stays test-only after M4 unless separately authorized: the test identity provider used in CI, test key rings, the test acceptance-record source and the test snapshot store. Closure of the 25 cases (section 7) runs the **production verification path** with a test identity provider; that is not evidence of a deployed IdP.
+
+## 3. Role separation (planned)
+
+| Role | May | Never | Enforced where (planned) |
+|---|---|---|---|
+| Requester (principal of the sealed request) | Submit governed requests | Approve, deny, revoke or sign off its own request; author policy | `approve_unaudited` today (principal and agent id); extend to signoff |
+| Agent, model, service | Act as requester through ingress | Approve, sign off, revoke, administer as a human | `PrincipalKind::Human` check today for approvers; add kind to `AuthorizedOperator` (services may run declared automation operations only, per decision O-8) |
+| Approver | Approve or deny a stored approval request in scope; revoke its own unused grant | Approve requests outside its tenant or role; approve on the agent channel | New scoped authorization input (tenant, action kind, risk class) to the authority, M4-02 |
+| Signoff authority | Sign off a named human criterion for an exact artifact snapshot and acceptance policy | Sign off work it requested or an artifact whose workflow it administers in the same change (decision O-7) | New signoff path, M4-06 |
+| Operator | Administer workflows, policies, registry, approver enrolment | Approve or sign off through operator credentials; bypass protected transitions (D-036 item 5) | `Broker::administer`; role check M4-08 |
+| Revoker | Approver of the grant, or an operator with revocation role | Restore, extend or replenish a grant | M4-05 |
+
+Self-approval is also refused across delegation: an approver that is the agent of any session in the request's delegation chain is refused (b-18 no-subagent-inheritance is adapted coverage today).
+
+## 4. Operations (planned design)
+
+1. **Approval request (M4-03).** When the use-time decision is `require_approval`, the broker stores an immutable approval request: request id (the kernel `approval_request_id`), tenant, requester, agent, action kind, canonical resource id, action digest, sorted capabilities, policy bundle digest, request fingerprint, created and expiry times, status `pending`. The current agent refusal `APPROVAL_REQUIRED` is unchanged; it gains the request id for the human channel only. Approvers act on the stored request by id; they no longer supply the sealed request.
+2. **Approve or deny (M4-04).** On the approval channel: authenticate (step-up per decision O-3), load the request, refuse if not `pending` or expired, re-decide at use time (`authorize` with current policy and trusted time, as `approve_unaudited` does), check role and self-approval, check the presented displayed digest equals the stored action digest (CC-SEC-07, swapped target refused), then one transaction: request status `approved` or `denied`, grant insert with provenance (approve only), approval event. Deny is terminal: a denied request cannot later be approved.
+3. **Revoke (M4-05).** Marks a grant (or signoff) revoked in one transaction with provenance. Precedence with consumption: the ledger serializes them. Revoked before T-reserve: refused (`GRANT_REVOKED` internal; external mapping per decision O-6). Revoked after T-reserve, before T-dispatch: T-dispatch revalidation refuses, the receipt stays `reserved` with its use (D-035 item 1; no refund, no substitute). Revoked after dispatch: nothing is undone; the revocation is recorded as too late. Revocation never lowers a use count or revives anything.
+4. **Signoff (M4-06).** On the approval channel a signoff authority signs off one criterion. The signoff statement binds tenant, project, task, workflow, transition (from, to), artifact snapshot id and digest, acceptance policy id, version and bundle digest, criterion id, state revision and expiry. Stored with provenance (decision O-4 option A recommended). The authenticated record's evaluation for a trust `H` criterion names the signoff id (contract change, decision O-4). `check_use` replaces the blanket `HumanUnavailable` with per-criterion checks: signoff exists in scope, intact provenance, exact binding to the record and requirements, not revoked, fresh at trusted time, signer role and separation hold, never consumed; consumption is atomic with the promotion (same fenced transaction as `consumed_attestations`). Missing or unavailable signoff stays `ACCEPTANCE_HUMAN_UNAVAILABLE`; no test switch, removal or reclassification (D-037 item 4).
+5. **Waivers (M4-07).** Only for criteria the acceptance policy declares waivable, never for criteria derived from security invariants; a waiver is a human approval recorded as `waived` with the approver, never relabelled `pass` (acceptance-gate-integrity section 9). Today the kernel refuses `waived`; enabling waivers is decision O-10.
+
+## 5. Audit provenance (D-035 item 5 fields)
+
+Every approve, deny, revoke and signoff persists, from the trusted authority and the broker's own decision, never from the agent: approver stable id; issuer or realm; trusted channel; decision time (trusted time); verdict or action; authentication-evidence reference (never a password, bearer token or reusable credential; the existing `CredentialInEvidence` check extended); linkage to the immutable grant or signoff, the approval request, the request fingerprint and the policy bundle digest (signoff: artifact digest and acceptance policy binding); explicit record version (successor of `writ-provenance-1`). Planned additions for review: authentication method and authentication time (step-up freshness), role used. Legacy data is preserved; no identity is invented; a grant or signoff without intact provenance stays non-executable until an explicit reviewed migration (D-035 item 5). Refusals on the approval channel are audited like `GrantService::audited` (a failed audit write never changes the answer and is not claimed as durable).
+
+## 6. Persistence, schema migration and recovery
+
+- **Schema.** A new version (`writ-ledger-6`, tables only, following the D-035/D-036 pattern): approval requests, approval decisions, grant revocations, signoffs with provenance, consumed signoffs, approval-channel events. `SqliteLedger::open` accepts only the new version; `SqliteLedger::upgrade` extends the explicit operator upgrade to exact `writ-ledger-5`, keeping every row; existing grants keep their provenance and are not given approval requests retroactively (they remain consumable as today until expiry; owner may decide otherwise). Opening is never an implicit migration (D-037 item 8).
+- **Crash and restart.** Each operation is one fenced transaction; an issued `COMMIT` whose outcome is unknown (`TxFailure::outcome_unknown`) is never assumed to have committed nothing: a retry of approve, deny, revoke or signoff with the same idempotency key reads durable state and replays or refuses. Tests: injected faults at begin, body and commit (C5 style) and real SIGKILL (`kill_tests` style) for each operation.
+- **Revocation races.** Revoke against T-reserve, T-dispatch and promotion from concurrent threads; 16-way grant races with interleaved revocation; invariants: no grant use after a committed revocation; at most one dispatch per (tenant, idempotency key); no promotion consuming a revoked signoff; receipts never recycled.
+- **Replay.** Authentication evidence is single-use per decision (decision O-3); a replayed assertion, a replayed signoff for another record, criterion or revision, and a consumed signoff are refused. Grants stay single-use; signoffs single-consumption ledger-wide (as attestations, D-033 item 4).
+- **Time.** All decisions use `clock::observe` (floor persisted first); expiry of requests, grants and signoffs is decided on that instant; unavailable time fails closed (`TIME_UNAVAILABLE`).
+
+## 7. Closure of the 25 carried cases
+
+Common to all 25 (from [exceptions.json](../../m3/closure/exceptions.json), kind `deferred`, `carry_to` M4): **blocking dependency** "M4 authenticated human signoff: the frozen requirement set includes the required human criterion signoff, which production refuses fail-closed (`ACCEPTANCE_HUMAN_UNAVAILABLE`) until authenticated signoff is verified at use time (M4)"; **acceptance criterion prefix** "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch)". The frozen fixtures name the criterion `signoff` (`required_class` human, `evaluator_id` `approval-service`, trust `H`). Companions are in `m3/closure/companions/transition-companions.jsonl` and cover the mechanical-only invariant, not human-signoff coverage. Observed M3 refusal is `ACCEPTANCE_HUMAN_UNAVAILABLE` / refused unless stated.
+
+**Closing test (all rows):** the closure gate (`m3/closure/check.py`, required CI) runs the frozen case unchanged through the production broker with a signoff issued on the approval channel by a test-IdP-authenticated signoff authority and verified by the production `check_use`; the `exceptions.json` entry is removed or reclassified exactly as stated; the companion keeps passing; plus a production regression in a new `persistence/sqlite/src/m4_signoff_tests.rs` (planned) for the same invariant with a real signoff.
+
+| Case | Steps | Intended assertion | Companion | M4 acceptance criterion (after the common prefix) |
+|---|---|---|---|---|
+| sc-01-promote | 0 | Valid binding, matching revision, complete trusted record commits | m3c-01-promote | Frozen case matches exactly |
+| sc-02-identical-retry | 0, 1 | Idempotent retry returns the original receipt, changes nothing | m3c-02-identical-retry | Matches exactly (step 1 then replays the step-0 receipt) |
+| sc-03-same-key-different-request | 0, 1 | Key reuse with a different operation | m3c-03-same-key-different-request | Matches exactly (`IDEMPOTENCY_CONFLICT` presupposes the step-0 receipt) |
+| sc-04-record-replay-new-key | 0, 1 | A consumed record cannot authorize a second transition | m3c-04-record-replay-new-key | Matches exactly; step 1 reaches the consumed-record check (M3 step-1 `REVISION_CONFLICT` was a cascade) |
+| sc-09-kernel-did-not-allow | 0 | Changed (D-017): a transition the policy does not allow never commits | m3c-09-policy-did-not-allow | Commits at step 0; reclassified as a D-036 item 2 difference with its then-exact output |
+| sc-10-race-16 | 0 | Exactly one of 16 concurrent promotions commits (M3 observed: 0 committed, 16 refused) | m3c-10-race-16 | Matches exactly: one commits, 15 `REVISION_CONFLICT` (D-038 item 2) |
+| sc-12-refusal-is-side-effect-free | 0, 1 | A refused attempt consumes neither record id nor key | m3c-12-refusal-is-side-effect-free | Matches exactly; trusted `acc-1` stays the hand-declared record in `m3/closure/bundles/trusted-records.json`; no inline agent record is ever trusted (D-038 item 6) |
+| sc-13-refused-key-reusable | 0, 1 | Refusals store no receipt, the key may be retried | m3c-13-refused-key-reusable | Matches exactly except step 0 (null client permit) stays a D-036 item 2 difference: production commits at step 0 |
+| sc-15-workflow-already-moved | 0 | `from_state` verifying no longer matches state accepted | m3c-15-workflow-already-moved | Matches exactly (step 1 already answers `REVISION_CONFLICT`; only step 0 differs today) |
+| sc-19-permit-actor-changed | 0 | Authorization follows the presented actor | m3c-19-actor-not-authorized | Commits; reclassified as a D-036 item 2 difference with its then-exact output |
+| sc-25-record-swapped-under-permit | 0 | Inline swapped records are never authority | m3c-25-record-swapped-under-binding | Commits on the original record; reclassified as a D-036 item 2 difference |
+| sc-36-authorization-bundle-changed | 1 | Only the current authorization bundle authorizes | m3c-36-authorization-bundle-changed | Commits under the replacement bundle; reclassified as a D-036 item 2 difference |
+| sc-38-repeated-refusals-then-success | 0, 1, 2 | Refusals before reservation leave the key reusable; each refusal audited | m3c-38-repeated-refusals-then-success | Matches exactly except steps 0 and 1 (null client permits) stay D-036 item 2 differences: production commits at step 0 |
+| sc-39-crash-before-commit-then-retry | 1 | Interrupted promotion persists nothing; the retry commits once | m3c-39-crash-before-commit-then-retry | Matches exactly |
+| sc-50-protection-classification-missing | 0 | Missing protection fails closed (bundle rejected at load) | m3c-50-protection-missing | Commits; reclassified as a D-037 item 1 difference with its then-exact output |
+| sc-51-protection-from-other-bundle | 0 | Inconsistent policy view fails closed | m3c-51-protection-other-dependency | Commits; reclassified as a D-037 item 1 difference with its then-exact output |
+| sc-53-protected-edge-with-record | 0 | Protected edge with a matching record commits | m3c-53-protected-edge-with-record | Matches exactly |
+| sc-54-edge-record-reused-for-destination | 0, 1 | The edge record cannot also satisfy the protected destination | m3c-54-edge-record-reused-for-destination | Matches exactly; step 1 reaches the consumed-record check (M3 `REVISION_CONFLICT` was a cascade) |
+| sc-56-accept-a-publish-b | 0, 1 | Acceptance of artifact A does not authorize publishing B | m3c-56-accept-a-publish-b | Matches exactly (M3 step 1 `EFFECT_PREREQUISITE_UNMET` was a cascade) |
+| sc-57-accepted-artifact-modified | 0, 1, 2 | Accepted artifact changed after promotion | m3c-57-accepted-artifact-modified | Matches exactly |
+| sc-58-acceptance-policy-changed-after-promotion | 0, 2 | Promotion under an acceptance policy no longer active | m3c-58-acceptance-policy-changed-after-promotion | Matches exactly |
+| sc-59-authorization-changed-after-promotion | 0, 2 | Promotion under obsolete authorization | m3c-59-authorization-changed-after-promotion | Matches exactly |
+| sc-63-publish-after-promotion | 0, 1 | The valid path; promotion and publication are separate transactions | m3c-63-publish-after-promotion | Matches exactly |
+| sc-65-uncertain-publication | 0, 1, 2 | An uncertain effect after promotion requires reconciliation; promotion not rolled back | m3c-65-uncertain-publication | Matches exactly except the final effect status stays `dispatched`, not `unknown_reconcile` (D-037 item 5) |
+| p-16-scenario-member-order (protocol-transition) | 0 | D-021 (7) member order | m3c-16-scenario-member-order | Matches exactly |
+
+Negative obligations for the closure update: an unrelated mismatch in any of these cases still fails the gate; a case cannot be closed by removing the human criterion, by a verifier switch, or by an unauthenticated or agent-supplied signoff; stale reports and missing cases keep failing (D-037 closure rule). Target accounting after M4 (to be measured, not assumed): 25 deferred become exact passes or exact approved differences (6 reclassified: sc-09, sc-19, sc-25, sc-36, sc-50, sc-51), deferred 0.
+
+## 8. Task breakdown (tests first)
+
+| ID | Task | Deps | Tests written first | Done when |
+|---|---|---|---|---|
+| M4-00 | Start gate: M3 closed under D-039; owner decisions O-1..O-12 recorded as a D-entry; baseline SHA | D-039 | none | Decision recorded; TASKS rows added |
+| M4-01 | Contracts (proposed): approval request, approval decision, revocation, signoff statement, provenance v2; amended authenticated acceptance record (signoff reference for trust `H`) | M4-00 | contract and semantic-validation negatives (closed envelopes, scope, times, digests) | Schemas in `docs/contracts/proposed/`, code-produced examples, owner review |
+| M4-02 | Human identity verifier for the chosen protocol behind the authority interface; scoped approver authorization input (tenant, action, role); test IdP in non-shipping test code; dependency review | M4-00 | forged, wrong-issuer, wrong-audience, expired, stale step-up, replayed assertion, agent-realm credential (INV-28), non-human kinds, credential never stored | Production verifier passes negatives; no test authority reachable from release builds |
+| M4-03 | Stored approval requests and their state machine (`pending`, `approved`, `denied`, `expired`) | M4-01 | state-machine table tests; immutability; expiry on trusted time | Requests created only by the broker's decision |
+| M4-04 | Approve and deny by request id on the approval channel; displayed-digest binding; terminal deny | M4-02, M4-03 | AG-NEG-05 transcript "approved"; swapped target; changed content; approve after deny; cross-tenant approver; self-approval incl. delegation chain | Gate rows "untrusted transcript cannot mint" and "mismatched approval denied" pass |
+| M4-05 | Revocation of grants and signoffs; races with T-reserve, T-dispatch, promotion | M4-04 | revoke before reserve, between reserve and dispatch (receipt kept reserved, use kept), after dispatch (recorded too late); 16-way races; crash at commit | No use after committed revocation; at most one dispatch per (tenant, key) |
+| M4-06 | Signoff issuance, storage, use-time verification and atomic consumption in `check_use` and `Broker::promote` | M4-01, M4-02 | forged signoff (AG-M4); wrong artifact digest, snapshot, policy version, criterion, revision, tenant; expired; revoked; consumed; signer is requester or agent; source unavailable fails closed | `ACCEPTANCE_HUMAN_UNAVAILABLE` only when no valid signoff; mechanical companions unchanged |
+| M4-07 | Waivers as approvals (scope per decision O-10) | M4-06, O-10 | waiver never relabelled pass; non-waivable criterion refused | As decided |
+| M4-08 | Production operator authentication and roles for `Broker::administer`; principal kind on `AuthorizedOperator`; approver enrolment operation | M4-02 | agent or model operator refused; role escalation; cross-tenant administration | Test authorities remain test-only |
+| M4-09 | Audit provenance v2 for approve, deny, revoke, signoff; refusal audit on the approval channel | M4-04..M4-06 | every field present; no credential in any row; legacy rows non-executable | Section 5 met |
+| M4-10 | Schema `writ-ledger-6`, explicit upgrade from `writ-ledger-5`, crash and restart recovery for every new operation | M4-03..M4-09 | exact-schema refusal; upgrade preserves rows; injected faults and SIGKILL per operation; idempotent retry after unknown commit | Section 6 met |
+| M4-11 | Close the 25 cases: harness composition replacing C3 for signoff with the test IdP through the production verifier; update `exceptions.json` and the closure map | M4-06, M4-10 | section 7 negatives (unrelated mismatch, removed criterion, verifier switch, agent signoff) | Gate: deferred 0, unexplained 0, in required CI |
+| M4-12 | Property model: revocation as an invalidation; concurrent invalidation ordering (D-039 carried limitation) | M4-05, M4-06 | mutants for wrong revocation precedence and hidden consumption | Ordering checked exactly, not only allowed outcomes |
+| M4-13 | Minimal approval client (CLI or broker-served page per decision O-11); Control Center CC-M4 stays separately authorized | M4-04 | content rendered as untrusted text; digest displayed equals digest bound | Usable approve, deny, revoke, signoff |
+| M4-14 | M4 gate-review package: evidence, exact-SHA CI, remaining limitations, carried obligations | all | none | Owner review |
+
+## 9. Carried obligations (D-039) and their gates
+
+| Obligation | Gate | Notes |
+|---|---|---|
+| The 25 carried cases | M4 | Section 7; M4-11 |
+| Authenticated operators, approvers and signoff | M4 | M4-02, M4-04, M4-06, M4-08; production deployment of an IdP is an owner decision (O-1, O-12) |
+| Transition-property limitation (concurrent invalidation ordering) | M4 (proposed) | M4-12, because revocation adds another concurrent invalidation; owner may reassign |
+| Contained runner execution (production refuses every job today) | M5 | M3-07 limitation |
+| Descendant (process-tree) cleanup of runner jobs | M5 | Needs a dependency decision |
+| Host enforcement (SR-06, M5-SR06) | M5 | Real-host trials |
+| Snapshot integrity: service-controlled immutable `SnapshotStore` (INV-40) | M5 | Interface only today |
+| Production key management (ingress, permit, acceptance-record, runner keys; approval-channel keys if any) | M5, M9 | In-memory test rings today |
+| Registry publication by authorized humans; signed acceptance policies | M6 | AG-M6; operator interface today |
+| Evidence-digest resolution against a catalog | M7 | Evidence-class criteria rely on the record plus registry today |
+| Concurrent effect-store faults and stronger per-key serialization modelling | M5 (proposed, with real adapters) | Property-gate limitation listed in [M3-08-CLOSURE-MAP](M3-08-CLOSURE-MAP.md) |
+| Accepted limitations: declared provenance of `sc-12`'s trusted record; manually reviewed cascade explanations | carried | Documentation and independent review stay required |
+
+## 10. Owner decisions required
+
+| ID | Decision | Options | Recommendation |
+|---|---|---|---|
+| O-1 | Identity provider and protocol for humans | (a) WebAuthn passkeys enrolled with the broker; (b) OIDC with an external IdP (authorization code with PKCE, ID token with `auth_time` and `acr`/`amr`); (c) per-approver Ed25519 keys held by a CLI; (d) OS user or peer credentials only | One verifier interface; local profile (a) with user verification, enterprise profile (b) for SSO and MFA (ENT-02). Reject (d) as a sole factor (same OS user as the agent); (c) only with hardware-backed keys |
+| O-2 | Approval channel trust | (a) separate broker listener and realm; (b) Control Center only; (c) out-of-band messaging (chat, email links) | (a) for M4; (b) when CC-M4 is authorized; (c) never as authority, notification only |
+| O-3 | Approver session model and replay | (a) per-decision step-up assertion whose challenge is the request digest; (b) session token with max age; (c) both, sessions for read-only inbox | (c): read-only via session, every approve, deny, revoke and signoff via a fresh per-decision assertion; authentication evidence single-use |
+| O-4 | Signoff representation and credential binding | (a) broker-ledger signoff object with provenance, referenced by id from the authenticated record and verified and consumed at use time; (b) acceptance service vouches inside the record MAC; (c) reuse an approval grant on the promotion request | (a): keeps human authentication in the approval path, verifiable at use time and single-consumption; requires an amended record contract (version 2) |
+| O-5 | Revocation latency and identity lifecycle | (a) ledger revocation effective at the next T-reserve, T-dispatch or promotion, short TTLs, no IdP call at use time; (b) re-check approver status with the IdP at use time | (a) locally; enterprise target latency set by owner (for example 60 s) with fail-closed on IdP unavailability only where the owner accepts the availability cost |
+| O-6 | New refusal codes | (a) new internal codes (`GRANT_REVOKED`, `SIGNOFF_*`, `APPROVAL_REQUEST_CLOSED`) with existing generic external mapping; (b) new external codes | (a); external refusal mapping unchanged as in D-032 and D-033 |
+| O-7 | Role model and separation | (a) approver and signoff authority as separate roles, policy-declared per action kind and acceptance policy; (b) one "human reviewer" role | (a); exclude requester, agent and the delegation chain from both; owner states whether the operator who changed the artifact or acceptance policy in the same revision is excluded from signoff |
+| O-8 | Service accounts | (a) services may hold declared automation operator roles, never approver or signoff roles; (b) no services at all in M4 | (a), with principal kind recorded on every operator event |
+| O-9 | Multi-approver rules | (a) single approver (today's single-use grant); (b) N-of-M quorum; (c) two-person rule for policy-declared high-risk actions | (a) in M4 with a schema that can hold several decisions per request; (b) or (c) later when policy can declare it |
+| O-10 | Waivers | (a) no waivers in M4 (kernel keeps `waived` incomplete); (b) waivers as approvals for policy-declared waivable criteria, with a kernel reading change; (c) defer to M6 signed policies | (c), keeping AG-M4 open for waivers with an explicit note; if (b), a separate D-entry for the kernel change |
+| O-11 | Approval client in M4 | (a) CLI on the approval listener; (b) broker-served local page; (c) Control Center CC-M4 | (a) or (b) minimal, digest displayed as untrusted text; CC-M4 separately authorized |
+| O-12 | Deployment topology | (a) approval service in the broker process, same ledger, separate listener; (b) separate approval service process | (a) for the local profile (atomic with grants and promotion); (b) for the enterprise profile (M10) |
+| O-13 | Break-glass | (a) none; (b) audited emergency role with dual control and post-hoc review | (a) in M4; any break-glass can never turn a hard deny into allow and never bypasses signoff |
+| O-14 | Grants issued before the new schema | (a) remain consumable until expiry; (b) made non-executable at upgrade | (a), since they carry intact `writ-provenance-1` provenance; owner may choose (b) |
+
+## 11. References
+
+[DECISION-LOG](DECISION-LOG.md) (D-030..D-039), [MASTER-IMPLEMENTATION-PLAN](MASTER-IMPLEMENTATION-PLAN.md) (sections 8, 10, 17, 18), [TASKS](TASKS.md) (AG-M4, CC-M4, ENT-02), [M3-08-CLOSURE-MAP](M3-08-CLOSURE-MAP.md), [M3-ACCEPTANCE-CONTRACTS](M3-ACCEPTANCE-CONTRACTS.md), [invariants](../security/invariants.md) (INV-05, INV-06, INV-07, INV-28, INV-34), [threat model](../security/threat-model.md) (human approval, T-01, T-08), [acceptance gate integrity](../architecture/acceptance-gate-integrity.md), [ADR-0008](../decisions/ADR-0008-acceptance-gate-integrity.md).
