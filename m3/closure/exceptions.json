@@ -1,0 +1,120 @@
+{
+  "description": "M3-08 approved exceptions: frozen M1 cases whose production behaviour differs by an owner-approved decision. Each entry names the exact case and the exact difference; `actual` is the exact production output recorded for a driven case, or null when the adapter cannot yet drive the case (the gate then reports it as an approved exception that is not driven and fails). Frozen fixtures and their expectations are never changed; fixture_sha256 pins them. See docs/implementation/M3-08-CLOSURE-MAP.md.",
+  "sets": ["broker-scenarios", "protocol-broker", "transition-scenarios", "protocol-transition"],
+  "fixture_sha256": {
+    "broker-scenarios": "sha256:c954be1bdbfcde0c840a9cc07149725b40f7fbee11c55cc3fb07cb8aa02a731e",
+    "protocol-broker": "sha256:f88418347a894eb0d746d6fb46e0c9352a251d86ac3ebef0835e22d210404c7a",
+    "transition-scenarios": "sha256:8caa6cb959e81308d20bc270ca29d39bd1682e1e294a7fdf338426860c89bb1d",
+    "protocol-transition": "sha256:a4c32ab269a9a427e6046fd00b7b376674d84b3a16639f596e9e5239fa38f4a7"
+  },
+  "exceptions": [
+    {
+      "set": "broker-scenarios",
+      "case": "b-36-crash-after-dispatch-reconcile",
+      "decision": "D-036 item 4; D-035 item 3",
+      "difference": "After crash_after_dispatch the controlled adapter holds durable evidence that the bound effect was applied, so reconcile records observed_success (count 1, as expected) instead of unknown_reconcile; the retry then replays {replayed: true, result: effect_completed} instead of RECONCILIATION_REQUIRED. Final: receipts {observed_success: 1} instead of {unknown_reconcile: 1}, refusals 0 instead of 1; consumed_permits 1, effects_applied 1 and grant_uses {} unchanged.",
+      "actual": {
+        "final": {"consumed_permits": 1, "effects_applied": 1, "grant_uses": {}, "receipts": {"observed_success": 1}, "refusals": 0},
+        "steps": [{"result": "crashed"}, {"count": 1, "result": "reconciled"}, {"replayed": true, "result": "effect_completed"}]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-43-reconciled-applied",
+      "decision": "D-036 item 3",
+      "difference": "Step 1 reconcile {idempotency_key: k1, observed: applied} is a client assertion; production provides no client-asserted reconciliation (outcomes come only from adapter evidence, D-035 item 3), so the expected {outcome: applied, result: reconciled} and the replayed effect_completed have no production counterpart.",
+      "actual": null
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-44-reconciled-not-applied",
+      "decision": "D-036 item 3",
+      "difference": "Step 1 reconcile {idempotency_key: k1, observed: not_applied} would release an uncertain key for redispatch on a client assertion; production never does (D-036 item 3, D-035 item 3), so the expected {outcome: not_applied, result: reconciled} and the fresh effect_completed have no production counterpart.",
+      "actual": null
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-09-kernel-did-not-allow",
+      "decision": "D-036 item 2",
+      "difference": "Expected PERMIT_MISSING comes from the client-held promotion permit being null; production has no client-held promotion permit (use-time decision on the sealed request inside Broker::promote).",
+      "actual": null
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-13-refused-key-reusable",
+      "decision": "D-036 item 2",
+      "difference": "Step 0 expects PERMIT_MISSING from a null client permit; production has no client-held promotion permit.",
+      "actual": null
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-18-permit-reused-for-other-target",
+      "decision": "D-036 item 2",
+      "difference": "Expected PERMIT_REQUEST_MISMATCH comes from the client permit's request_fingerprint differing from the request; production has no client-held promotion permit.",
+      "actual": null
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-19-permit-actor-changed",
+      "decision": "D-036 item 2",
+      "difference": "Expected PERMIT_REQUEST_MISMATCH (client permit fingerprint differs); production has no client-held promotion permit.",
+      "actual": null
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-20-permit-revision-changed",
+      "decision": "D-036 item 2",
+      "difference": "Expected PERMIT_REQUEST_MISMATCH (client permit fingerprint differs); production has no client-held promotion permit.",
+      "actual": null
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-21-permit-scope-changed",
+      "decision": "D-036 item 2",
+      "difference": "Expected PERMIT_REQUEST_MISMATCH (client permit fingerprint differs); production has no client-held promotion permit.",
+      "actual": null
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-22-permit-snapshot-attribute-changed",
+      "decision": "D-036 item 2",
+      "difference": "Expected PERMIT_REQUEST_MISMATCH (client permit fingerprint differs); production has no client-held promotion permit.",
+      "actual": null
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-23-permit-digest-attribute-changed",
+      "decision": "D-036 item 2",
+      "difference": "Expected PERMIT_REQUEST_MISMATCH (client permit fingerprint differs); production has no client-held promotion permit.",
+      "actual": null
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-24-permit-record-id-attribute-changed",
+      "decision": "D-036 item 2",
+      "difference": "Expected PERMIT_REQUEST_MISMATCH (client permit fingerprint differs); production has no client-held promotion permit.",
+      "actual": null
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-25-record-swapped-under-permit",
+      "decision": "D-036 item 2 (and item 1)",
+      "difference": "Expected PERMIT_BINDING_MISMATCH comes from the client permit's record_digest differing from the inline record; production has no client permit and reads the record by id from the trusted source, so no record can be swapped under a permit.",
+      "actual": null
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-36-authorization-bundle-changed",
+      "decision": "D-036 item 2",
+      "difference": "Expected PERMIT_POLICY_STALE comes from the client permit naming the previous authorization bundle digest; production has no client-held promotion permit (the use-time decision runs under the current bundle).",
+      "actual": null
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-38-repeated-refusals-then-success",
+      "decision": "D-036 item 2",
+      "difference": "Steps 0 and 1 expect PERMIT_MISSING from null client permits; production has no client-held promotion permit.",
+      "actual": null
+    }
+  ]
+}
