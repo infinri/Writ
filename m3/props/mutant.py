@@ -28,6 +28,10 @@ Modes:
                     consumed permit, a receipt without evidence reconciled as observed; a retry of an
                     uncertain receipt answers effect_completed; one LEDGER_UNAVAILABLE of the group is
                     reported as effect_completed
+  f_status_swap     the `ledger_detail` right after a faulted group swaps the statuses of two
+                    receipts with different statuses (aggregates unchanged, per-key state wrong)
+  f_resume_conflict a retry that resumed its own reserved receipt (effect_completed) is answered
+                    IDEMPOTENCY_CONFLICT instead
 """
 from __future__ import annotations
 
@@ -40,7 +44,8 @@ import sys
 MODES = ["m1_b36", "conc_extra", "refusals", "c4_ledger_first", "c4_decision_first", "c4_reserve_code",
          "heal_on_restart", "c4_hidden_effect", "c4_hidden_consumption", "c4_hidden_dispatch",
          "c4_hidden_uncertain", "f_grant_overuse", "f_double_dispatch", "f_duplicate_effect",
-         "f_effect_without_permit", "f_unsafe_reconcile", "f_redispatch", "f_group_outcome"]
+         "f_effect_without_permit", "f_unsafe_reconcile", "f_redispatch", "f_group_outcome",
+         "f_status_swap", "f_resume_conflict"]
 LU = {"code": "LEDGER_UNAVAILABLE", "result": "refused"}
 RESERVE_CODES = [{"code": "GRANT_UNKNOWN", "result": "refused"}, {"code": "IDEMPOTENCY_CONFLICT", "result": "refused"},
                  {"code": "RECONCILIATION_REQUIRED", "result": "refused"},
@@ -178,6 +183,24 @@ def mutate(mode: str, out, inp):
                 if steps[i] == {"code": "RECONCILIATION_REQUIRED", "result": "refused"}:
                     steps[i] = {"result": "effect_completed"}
                     b["refusals"] = b.get("refusals", 0) - 1
+                    break
+        elif mode == "f_status_swap" and isinstance(steps[gi + 1], dict):
+            recs = steps[gi + 1].get("receipts", {})
+            keys = sorted(recs)
+            pair = next(((x, y) for x in keys for y in keys if recs[x]["status"] < recs[y]["status"]), None)
+            if pair:
+                x, y = pair
+                recs[x]["status"], recs[y]["status"] = recs[y]["status"], recs[x]["status"]
+        elif mode == "f_resume_conflict":
+            a = steps[gi + 1] if isinstance(steps[gi + 1], dict) else {}
+            for i in range(gi + 2, len(steps)):
+                if isteps[i].get("op") == "reconcile":
+                    break
+                key = "fixture-tenant/" + ((isteps[i].get("request") or {}).get("idempotency_key") or "")
+                if steps[i] == {"result": "effect_completed"} and \
+                        a.get("receipts", {}).get(key, {}).get("status") == "reserved":
+                    steps[i] = {"code": "IDEMPOTENCY_CONFLICT", "result": "refused"}
+                    b["refusals"] = b.get("refusals", 0) + 1
                     break
     return out
 

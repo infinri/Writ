@@ -279,31 +279,72 @@ class FaultModel(unittest.TestCase):
         return {"id": "f", "input": {"steps": [{"op": "concurrent_faults", "operations": []}]},
                 "meta": {"op_types": [list(t) for t in types], "grants": {"P1|0": "g1"}}}
 
-    def fin(self, receipts, eff=0, perm=0, g1=0):
-        return {"receipts": receipts, "effects_applied": eff, "consumed_permits": perm, "grant_uses": {"g1": g1}}
+    def fin(self, case, entries, g1=0):
+        """The tagged final of a hand-built detail; entries: key -> (variant, principal, status,
+        effect, consumed, grant)."""
+        from wprops.common import digest
+        d = {"receipts": {}, "consumed": {}, "effects": {}, "grant_uses": {"g1": g1}}
+        for key, (v, p, status, eff, cons, grant) in entries.items():
+            k = bo.TENANT + key
+            d["receipts"][k] = {"status": status, "fingerprint": digest(m1.request(v, key, p)), "grant": grant}
+            if cons:
+                d["consumed"][k + "/applied"] = 1
+            if eff:
+                d["effects"][k] = 1
+        return bo.detail_final(case, d)
 
     def test_each_fault_maps_to_its_crash_state(self):
         lu = "LEDGER_UNAVAILABLE"
-        rows = [("reserve_unavailable", {}, 0, 0, 0), ("reserve_commit_lost", {}, 0, 0, 0),
-                ("reserve_commit_unknown", {"reserved": 1}, 0, 0, 1),
-                ("dispatch_unavailable", {"reserved": 1}, 0, 0, 1), ("dispatch_commit_lost", {"reserved": 1}, 0, 0, 1),
-                ("dispatch_commit_unknown", {"dispatched": 1}, 0, 0, 1),
-                ("observe_unavailable", {"dispatched": 1}, 1, 1, 1), ("observe_commit_lost", {"dispatched": 1}, 1, 1, 1),
-                ("observe_commit_unknown", {"observed_success": 1}, 1, 1, 1)]
-        for fault, receipts, eff, perm, g in rows:
+        rows = [("reserve_unavailable", None, 0, 0, 0), ("reserve_commit_lost", None, 0, 0, 0),
+                ("reserve_commit_unknown", "reserved", 0, 0, 1),
+                ("dispatch_unavailable", "reserved", 0, 0, 1), ("dispatch_commit_lost", "reserved", 0, 0, 1),
+                ("dispatch_commit_unknown", "dispatched", 0, 0, 1),
+                ("observe_unavailable", "dispatched", 1, 1, 1), ("observe_commit_lost", "dispatched", 1, 1, 1),
+                ("observe_commit_unknown", "observed_success", 1, 1, 1)]
+        for fault, status, eff, perm, g in rows:
             case = self.group([("P1", 0, "", "g1", fault, "k1")])
-            self.assertTrue(bo.fault_serializable(case, {lu: 1}, self.fin(receipts, eff, perm, g)), fault)
-            self.assertFalse(bo.fault_serializable(case, {"effect_completed": 1},
-                                                   self.fin(receipts, eff, perm, g)), fault)
+            entries = {"k1": ("P1", 0, status, eff, perm, "g1")} if status else {}
+            self.assertTrue(bo.fault_serializable(case, {lu: 1}, self.fin(case, entries, g)), fault)
+            self.assertFalse(bo.fault_serializable(case, {"effect_completed": 1}, self.fin(case, entries, g)), fault)
             # the answer hides nothing: a different durable state is not a serialization
-            self.assertFalse(bo.fault_serializable(case, {lu: 1}, self.fin({"observed_success": 1}, 2, 2, g)), fault)
+            other = {"k1": ("P1", 0, "observed_success", 1, 1, "g1") if status != "observed_success"
+                     else ("P1", 0, "observed_success", 0, 1, "g1")}
+            self.assertFalse(bo.fault_serializable(case, {lu: 1}, self.fin(case, other, 1)), fault)
 
     def test_unfaulted_storage_refusal_is_not_serializable(self):
         case = self.group([("W1", 0, "", None, None, "k1")] * 2)
-        self.assertFalse(bo.fault_serializable(case, {"LEDGER_UNAVAILABLE": 1, "replayed": 1},
-                                               self.fin({"observed_success": 1}, 1, 1)))
-        self.assertTrue(bo.fault_serializable(case, {"effect_completed": 1, "replayed": 1},
-                                              self.fin({"observed_success": 1}, 1, 1)))
+        e = {"k1": ("W1", 0, "observed_success", 1, 1, None)}
+        self.assertFalse(bo.fault_serializable(case, {"LEDGER_UNAVAILABLE": 1, "replayed": 1}, self.fin(case, e)))
+        self.assertTrue(bo.fault_serializable(case, {"effect_completed": 1, "replayed": 1}, self.fin(case, e)))
+
+    def test_per_key_status_swap_is_not_serializable(self):
+        # review M2: aggregates equal, per-key state swapped
+        case = self.group([("W1", 0, "", None, "reserve_commit_unknown", "u1"), ("W2", 0, "", None, None, "u2")])
+        obs = {"LEDGER_UNAVAILABLE": 1, "effect_completed": 1}
+        good = {"u1": ("W1", 0, "reserved", 0, 0, None), "u2": ("W2", 0, "observed_success", 1, 1, None)}
+        swapped = {"u1": ("W1", 0, "observed_success", 0, 0, None), "u2": ("W2", 0, "reserved", 1, 1, None)}
+        moved = {"u1": ("W1", 0, "observed_success", 1, 1, None), "u2": ("W2", 0, "reserved", 0, 0, None)}
+        self.assertTrue(bo.fault_serializable(case, obs, self.fin(case, good)))
+        self.assertFalse(bo.fault_serializable(case, obs, self.fin(case, swapped)))
+        self.assertFalse(bo.fault_serializable(case, obs, self.fin(case, moved)))
+        # a receipt whose fingerprint belongs to another request is not the model's either
+        shared = self.group([("W1", 0, "", None, None, "k1"), ("W1", 1, "", None, None, "k1")])
+        mine = {"k1": ("W1", 0, "observed_success", 1, 1, None)}
+        theirs = {"k1": ("W1", 1, "observed_success", 1, 1, None)}
+        obs = {"effect_completed": 1, "IDEMPOTENCY_CONFLICT": 1}
+        self.assertTrue(bo.fault_serializable(shared, obs, self.fin(shared, mine)))
+        self.assertTrue(bo.fault_serializable(shared, obs, self.fin(shared, theirs)))
+        self.assertFalse(bo.fault_serializable(shared, obs, self.fin(shared, {
+            "k1": ("W2", 0, "observed_success", 1, 1, None)})))
+
+    def test_decision_stage_refusal_precedes_a_storage_fault(self):
+        # review L3: a deny never reaches T-reserve, so its storage fault never fires
+        for fault in ("reserve_unavailable", "reserve_commit_unknown", "dispatch_commit_unknown"):
+            case = self.group([("D1", 0, "", None, fault, "d1")])
+            self.assertTrue(bo.fault_serializable(case, {"SECRETS_PATH_FORBIDDEN": 1}, self.fin(case, {})), fault)
+            self.assertFalse(bo.fault_serializable(case, {"LEDGER_UNAVAILABLE": 1}, self.fin(case, {})), fault)
+            reserved = {"d1": ("D1", 0, "reserved", 0, 0, None)}
+            self.assertFalse(bo.fault_serializable(case, {"SECRETS_PATH_FORBIDDEN": 1}, self.fin(case, reserved)))
 
     def test_detail_safety_rejects_each_violation(self):
         k = "fixture-tenant/k1"
@@ -458,6 +499,8 @@ class EndToEnd(unittest.TestCase):
             "f_effect_without_permit": "broker.m3.fault_effect_only_with_dispatched_receipt_and_consumed_permit",
             "f_unsafe_reconcile": "broker.m3.fault_recovery_final_state",
             "f_redispatch": "broker.m3.fault_uncertain_receipt_never_redispatched",
+            "f_status_swap": "broker.m3.fault_group_equals_a_serialization",
+            "f_resume_conflict": "broker.m3.fault_recovery_retry_answer",
         }
         for mode, inv in expect.items():
             with self.subTest(mode=mode):

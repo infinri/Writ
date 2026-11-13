@@ -612,14 +612,17 @@ impl BrokerCase {
              (SELECT count(*) FROM receipt_events v WHERE v.tenant_id = r.tenant_id \
               AND v.idempotency_key = r.idempotency_key AND v.cause = 'dispatch'), \
              (SELECT p.permit_number FROM receipt_permits p WHERE p.tenant_id = r.tenant_id \
-              AND p.idempotency_key = r.idempotency_key) FROM receipts r",
-            4,
+              AND p.idempotency_key = r.idempotency_key), r.fingerprint, r.grant_label \
+             FROM receipts r",
+            6,
         )? {
-            if let [Value::Str(k), status, dispatches, permit] = r.as_slice() {
+            if let [Value::Str(k), status, dispatches, permit, fingerprint, grant] = r.as_slice() {
                 receipts.insert(
                     k.clone(),
                     json::obj([
                         ("dispatches", dispatches.clone()),
+                        ("fingerprint", fingerprint.clone()),
+                        ("grant", grant.clone()),
                         ("permit", permit.clone()),
                         ("status", status.clone()),
                     ]),

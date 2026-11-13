@@ -637,10 +637,15 @@ RESERVE_REFUSALS = {"IDEMPOTENCY_CONFLICT", "RECONCILIATION_REQUIRED", "GRANT_UN
 TENANT = "fixture-tenant/"
 
 
-def fault_model_step(orig, state, t):
-    """M1 `model_step` extended with the adapter's per-operation storage faults (the fault
-    fires only when its transaction runs; `unavailable` fails at begin, `commit_lost` reports
-    an unknown commit that committed nothing, `commit_unknown` one that committed)."""
+def _refused(code: str) -> dict:
+    return {"code": code, "result": "refused"}
+
+
+def _fault_step(orig, state, t):
+    """M1 `model_step` (untagged state) extended with the adapter's per-operation storage
+    faults (the fault fires only when its transaction runs; `unavailable` fails at begin,
+    `commit_lost` reports an unknown commit that committed nothing, `commit_unknown` one that
+    committed)."""
     fault = t[4]
     if fault not in STORAGE_FAULTS:
         return orig(state, t, None)
@@ -668,6 +673,85 @@ def fault_model_step(orig, state, t):
     return ns, FAULT_LU  # T-observe committed: observed, effect applied, answer unknown
 
 
+# Per-key identity in the serial model (review M2): every receipt status in the model state
+# is tagged `<status>|<flags>|<identity>`, flags `e` (this key's effect applied) and `p` (its
+# permit consumed); identity is `<key>|<v>,<p>,<trace>|<grant>` for a key shared by several
+# operations and `unique|<v>,<p>,<trace>|<grant>|<fault>` for a key used by one operation only
+# (M1 aggregates those; operations of one type with distinct unique keys are interchangeable).
+# The search then matches the multiset of tagged statuses, so detail A must agree with the
+# serialization per key, not only in aggregate. Owners in detail A come from the receipt's
+# fingerprint, recomputed here independently (D-012: digest of the request).
+
+def _tag(status: str, flags: str, ident: str) -> str:
+    return f"{status}|{flags}|{ident}"
+
+
+def _strip(state):
+    receipts, _uniq, uses, eff, perm = state
+    return (tuple((k, (fp, g, s.split("|", 1)[0])) for k, (fp, g, s) in receipts), (), uses, eff, perm)
+
+
+def _flags(old: str, before, after) -> str:
+    f = set(old)
+    if after[4] > before[4]:
+        f.add("p")
+    if after[3] > before[3]:
+        f.add("e")
+    return "".join(sorted(f))
+
+
+def fault_model_step(orig, state, t):
+    """Decision stage first (review L3: a deny, or require_approval without a grant, is
+    answered before any transaction, so a storage fault never fires), then `_fault_step` on
+    the untagged state, then the new status is tagged."""
+    v, p, trace, g, fault, key = t
+    cls, deny = m1.VARIANTS[v][2], m1.VARIANTS[v][3]
+    if cls == "deny":
+        return state, deny
+    if cls == "require_approval" and g is None:
+        return state, "APPROVAL_REQUIRED"
+    stripped = _strip(state)
+    ns, out = _fault_step(orig, stripped, t)
+    if ns == stripped:
+        return state, out
+    receipts, uniq = state[0], state[1]
+    egrant = g if cls == "require_approval" else None
+    if key is None:
+        (status, _), = ns[1]
+        u = Counter(dict(uniq))
+        u[_tag(status, _flags("", state, ns), f"unique|{v},{p},{trace}|{egrant}|{fault}")] += 1
+        return (receipts, tuple(sorted(u.items())), ns[2], ns[3], ns[4]), out
+    old = dict(receipts)
+    fp, rg, status = dict(ns[0])[key]
+    flags = _flags(old[key][2].split("|")[1] if key in old else "", state, ns)
+    old[key] = (fp, rg, _tag(status, flags, f"{key}|{fp[0]},{fp[1]},{fp[2]}|{rg}"))
+    return (tuple(sorted(old.items())), uniq, ns[2], ns[3], ns[4]), out
+
+
+def detail_tags(case: dict, d: dict) -> dict:
+    """Per receipt key of a detail: (tag, status, consumed, owner) in the model's tagging."""
+    types = case["meta"]["op_types"]
+    keycount = Counter(t[5] for t in types)
+    owner_of = {digest(m1.request(t[0], t[5], t[1], t[2])): (t[0], t[1], t[2]) for t in types}
+    unique = {t[5]: t for t in types if keycount[t[5]] == 1}
+    out = {}
+    for k, r in d["receipts"].items():
+        key = k[len(TENANT):]
+        cons = next((x for x in ("applied", "failed") if d["consumed"].get(f"{k}/{x}")), None)
+        flags = ("e" if d["effects"].get(k) else "") + ("p" if cons else "")
+        owner = owner_of.get(r.get("fingerprint"))
+        o = f"{owner[0]},{owner[1]},{owner[2]}" if owner else "unknown-fingerprint"
+        if keycount[key] > 1:
+            ident = f"{key}|{o}|{r.get('grant')}"
+        elif key in unique:
+            ident = f"unique|{o}|{r.get('grant')}|{unique[key][4]}"
+        else:
+            ident = f"foreign|{k}"
+        out[k] = {"tag": _tag(r["status"], flags, ident), "status": r["status"], "consumed": cons,
+                  "owner": owner + (r.get("grant"),) if owner else None}
+    return out
+
+
 def fault_serializable(case: dict, observed: dict, final: dict):
     obs = {(FAULT_LU if k == "LEDGER_UNAVAILABLE" else k): v for k, v in observed.items()}
     orig = m1.model_step
@@ -689,6 +773,11 @@ def gen_fault_group(rng, idx: int, n: int) -> dict:
     grp = steps[-1]
     gi = len(steps) - 1
     grp["op"] = "concurrent_faults"
+    if rng.random() < 0.3:  # decision-stage refusals with storage faults that must never fire
+        for j in rng.sample(range(n), max(1, n // 8)):
+            v = rng.choice(["D1", "E1", "U1"])
+            grp["operations"][j] = m1.execute(m1.request(v, f"d{j}", 0))
+            c["meta"]["op_types"][j] = [v, 0, "", None, None, f"d{j}"]
     choices = {}
     reps = {}
     for op, t in zip(grp["operations"], c["meta"]["op_types"]):
@@ -724,8 +813,8 @@ def gen_fault_group(rng, idx: int, n: int) -> dict:
     return c
 
 
-def detail_final(d: dict) -> dict:
-    return {"receipts": dict(Counter(r["status"] for r in d["receipts"].values())),
+def detail_final(case: dict, d: dict) -> dict:
+    return {"receipts": dict(Counter(x["tag"] for x in detail_tags(case, d).values())),
             "grant_uses": d["grant_uses"], "effects_applied": sum(d["effects"].values()),
             "consumed_permits": sum(d["consumed"].values())}
 
@@ -779,7 +868,7 @@ def check_fault_group(res: Results, pname: str, case: dict, out) -> str | None:
     if not ok:
         return None
     observed = grp["outcomes"]
-    ser = fault_serializable(case, observed, detail_final(a))
+    ser = fault_serializable(case, observed, detail_final(case, a))
     if ser is None:
         res.check("broker.concurrent_serialization_search_completed", pname, False, cid, {"outcomes": observed})
     else:
@@ -787,13 +876,16 @@ def check_fault_group(res: Results, pname: str, case: dict, out) -> str | None:
                   {"outcomes": observed, "detail": a}, case=None if ser else case)
     check_detail_safety(res, pname, case, a, "after group")
     check_detail_safety(res, pname, case, b, "after recovery")
+    if not ser:
+        return None  # the recovery model is seeded only from a state the serial model produced
 
-    owners = {}
-    for t in case["meta"]["op_types"]:
-        owners.setdefault(TENANT + t[5], set()).add(tuple(t[:4]))
-    state = {k: {"status": r["status"], "consumed": next((x for x in ("applied", "failed")
-                                                          if a["consumed"].get(f"{k}/{x}")), None)}
-             for k, r in a["receipts"].items()}
+    # Seed: the per-key state of the serialization found (its tagged multiset equals detail
+    # A's, so each key's status, consumption and owner are the model's; among operations of
+    # one type on distinct unique keys the model does not distinguish, see detail_tags).
+    state = {k: {"status": x["status"], "consumed": x["consumed"], "owner": x["owner"]}
+             for k, x in detail_tags(case, a).items()}
+    bound = {g: (v, int(p)) for v, p, g in ((*k.split("|"), g) for k, g in case["meta"]["grants"].items())}
+    uses = dict(a["grant_uses"])
     retries = {i: k for i, k in case["meta"]["retries"]}
     refusals = sum(n for k, n in observed.items() if k not in m1.NON_REFUSAL)
     for i in range(gi + 2, len(steps) - 1):
@@ -815,35 +907,42 @@ def check_fault_group(res: Results, pname: str, case: dict, out) -> str | None:
                 s["status"] = {"applied": "observed_success", "failed": "observed_failure"}.get(s["consumed"],
                                                                                               "unknown_reconcile")
         elif op["op"] == "execute":
-            t = retries[i]
-            key = TENANT + t[4]
+            v, p, trace, g, k = retries[i]
+            key = TENANT + k
             s = state.get(key)
-            cls = m1.VARIANTS[t[0]][2]
-            shared = owners.get(key, set()) != {tuple(t[:4])}
-            conflict = {"IDEMPOTENCY_CONFLICT"} if shared else set()
-            code = r.get("code") if isinstance(r, dict) and r.get("result") == "refused" else None
-            if s is None:
-                ok = r == {"result": "effect_completed"} or (
-                    cls == "require_approval" and code in {"GRANT_UNKNOWN", "GRANT_MISMATCH", "GRANT_EXHAUSTED"})
-                inv = "broker.m3.fault_recovery_retry_answer"
-            elif s["status"] == "reserved":
-                ok = r == {"result": "effect_completed"} or code in conflict
-                inv = "broker.m3.fault_recovery_retry_answer"
+            cls, deny = m1.VARIANTS[v][2], m1.VARIANTS[v][3]
+            me = (v, p, trace, g if cls == "require_approval" else None)
+            inv, grant_use = "broker.m3.fault_recovery_retry_answer", False
+            if cls == "deny":
+                want = _refused(deny)
+            elif cls == "require_approval" and g is None:
+                want = _refused("APPROVAL_REQUIRED")
+            elif s is not None and s["owner"] != me:  # only a different request (or grant) conflicts
+                want = _refused("IDEMPOTENCY_CONFLICT")
+            elif s is None and cls == "require_approval" and g not in bound:
+                want = _refused("GRANT_UNKNOWN")
+            elif s is None and cls == "require_approval" and bound[g] != (v, p):
+                want = _refused("GRANT_MISMATCH")
+            elif s is None and cls == "require_approval" and uses.get(g, 0) >= 1:
+                want = _refused("GRANT_EXHAUSTED")
+            elif s is None or s["status"] == "reserved":  # fresh, or resume of the owned reservation
+                want, grant_use = {"result": "effect_completed"}, s is None and cls == "require_approval"
             elif s["status"] in ("dispatched", "unknown_reconcile"):
-                ok = code in {"RECONCILIATION_REQUIRED"} | conflict
-                inv = "broker.m3.fault_uncertain_receipt_never_redispatched"
+                want, inv = _refused("RECONCILIATION_REQUIRED"), "broker.m3.fault_uncertain_receipt_never_redispatched"
             else:
-                ok = r == REPLAY["completed" if s["status"] == "observed_success" else "failed"] or code in conflict
-                inv = "broker.m3.fault_recovery_retry_answer"
-            res.check(inv, pname, ok, cid, {"step": i, "got": r, "state": s, "shared_key": shared},
+                want = REPLAY["completed" if s["status"] == "observed_success" else "failed"]
+            ok = r == want
+            res.check(inv, pname, ok, cid, {"step": i, "got": r, "want": want, "state": s},
                       case=None if ok else case)
-            if r == {"result": "effect_completed"}:
-                state[key] = {"status": "observed_success", "consumed": "applied"}
+            if ok and want == {"result": "effect_completed"}:
+                state[key] = {"status": "observed_success", "consumed": "applied", "owner": me}
+                if grant_use:
+                    uses[g] = uses.get(g, 0) + 1
     want = {k: s["status"] for k, s in state.items()}
     have = {k: r["status"] for k, r in b["receipts"].items()}
     want_c = {f"{k}/{s['consumed']}": 1 for k, s in state.items() if s["consumed"]}
     want_e = {k: 1 for k, s in state.items() if s["consumed"] == "applied"}
-    ok = have == want and b["consumed"] == want_c and b["effects"] == want_e
+    ok = have == want and b["consumed"] == want_c and b["effects"] == want_e and b["grant_uses"] == uses
     res.check("broker.m3.fault_recovery_final_state", pname, ok, cid,
               {"receipts": have, "want": want, "consumed": b["consumed"], "want_consumed": want_c},
               case=None if ok else case)
