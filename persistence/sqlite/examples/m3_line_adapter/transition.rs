@@ -109,6 +109,9 @@ const BUNDLES: [(&str, &str); 14] = [
 ];
 /// The declared per-case harness table (bindings.md).
 const CASES: &str = include_str!("../../../../m3/closure/bundles/cases.json");
+/// Declared trusted records (D-038 item 6, review M1): written by hand, never copied from
+/// an agent presentation; a case listed here issues only these.
+const TRUSTED_RECORDS: &str = include_str!("../../../../m3/closure/bundles/trusted-records.json");
 /// Sources a `records_from` override may name (read-only).
 const FIXTURE_TRANSITIONS: &str =
     include_str!("../../../../m1/fixtures/sets/transition-scenarios.jsonl");
@@ -510,10 +513,23 @@ fn setup(
             record,
         );
     }
-    for op in walk(steps) {
-        if let Some(record) = op.get("record").filter(|r| r.as_obj().is_some()) {
-            if let Some(id) = text(record, "acceptance_record_id") {
-                issued.entry(id).or_insert_with(|| record.clone());
+    let declared = json::parse(TRUSTED_RECORDS.as_bytes())
+        .map_err(|e| format!("trusted-records.json: {}", e.code()))?
+        .get("cases")
+        .and_then(|c| c.get(case_id))
+        .cloned();
+    if let Some(records) = declared {
+        // Declared records only: no inline agent record of this case is ever issued.
+        for record in records.as_arr().ok_or("trusted-records.json: records")? {
+            let id = text(record, "acceptance_record_id").ok_or("trusted record id")?;
+            issued.insert(id, record.clone());
+        }
+    } else {
+        for op in walk(steps) {
+            if let Some(record) = op.get("record").filter(|r| r.as_obj().is_some()) {
+                if let Some(id) = text(record, "acceptance_record_id") {
+                    issued.entry(id).or_insert_with(|| record.clone());
+                }
             }
         }
     }

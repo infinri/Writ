@@ -1,5 +1,5 @@
 {
-  "description": "Declared trusted acceptance records (D-038 item 6, review M1): what the test acceptance service issues for a case, written by hand from the case's workflow, acceptance policy, snapshot and revision, independent of any fixture step. Issued once at setup; inline agent records are never read for these cases. Not yet wired into the adapter (needs a transition.rs change, owned by W3). See m3/closure/bindings.md section 3.",
+  "description": "Declared trusted acceptance records (D-038 item 6, review M1): what the test acceptance service issues for a case, written by hand from the case's workflow, acceptance policy, snapshot and revision, independent of any fixture step. Issued once at setup; inline agent records are never read for these cases. See m3/closure/bindings.md section 3.",
   "cases": {
     "sc-12-refusal-is-side-effect-free": [
       {

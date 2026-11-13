@@ -964,7 +964,7 @@
           }
         ]
       },
-      "blocking_dependency": "M4 authenticated human signoff: the frozen requirement set includes the required human criterion signoff, which production refuses fail-closed (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff is verified at use time (M4); the trusted record is the step-1 record the acceptance service would issue, the agent's step-0 inline record is never trusted evidence (D-038 item 6)",
+      "blocking_dependency": "M4 authenticated human signoff: the frozen requirement set includes the required human criterion signoff, which production refuses fail-closed (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff is verified at use time (M4); the trusted acc-1 record is declared by hand in m3/closure/bundles/trusted-records.json (what the acceptance service would issue); no inline agent record of this case, step 0 or step 1, is ever issued or trusted (D-038 item 6)",
       "observed_m3_refusal": {
         "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
         "result": "refused"
