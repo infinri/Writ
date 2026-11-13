@@ -39,6 +39,53 @@
 //! are released (audit failure does not change the answer). A refusal caused
 //! by a failed lifecycle transaction is audited with its [`FailureRecord`].
 //!
+//! **Stage order and partial storage outage** (D-038 item 5, OQ-17; the
+//! M3-08 interface I-3). The first stage that refuses decides the answer:
+//!
+//! 1. *Primary refusals, before any lifecycle transaction.* Ingress is
+//!    verified before `execute` (a [`VerifiedRequest`] exists only for a
+//!    verified seal: `INGRESS_UNAUTHENTICATED`). Then trusted time and its
+//!    persisted floor (`TIME_UNAVAILABLE` when the clock or the floor fails,
+//!    before any decision; the floor write is its own `time_floor`
+//!    transaction, not a lifecycle transaction). Then the use-time decision
+//!    under the current policy: every status other than `allow` and
+//!    `require_approval` is refused with its reason code (deny reasons,
+//!    `POLICY_UNAVAILABLE`, `POLICY_BUNDLE_REJECTED`,
+//!    `POLICY_VERSION_MISMATCH`, `STATE_REVISION_CONFLICT`,
+//!    `DEADLINE_EXCEEDED`, schema and structure codes). Then
+//!    `require_approval` without a grant (`APPROVAL_REQUIRED`), then a runner
+//!    request on a broker without a runner (`REQUEST_SCOPE_MISMATCH`). None
+//!    of these reads or writes the receipt lifecycle, so an unavailable
+//!    lifecycle store never changes them, and none has durable progress.
+//! 2. *T-reserve is the first lifecycle access.* If it cannot run, the answer
+//!    is `LEDGER_UNAVAILABLE` and [`Execution::evidence`] names `reserve`
+//!    and the failed stage. A begin or body failure has no durable or possible
+//!    progress: no receipt, grant use, dispatch, permit, permit consumption or
+//!    effect. A failed commit has an unknown outcome: possible progress
+//!    `reserved` (a retry resumes or replays from durable state), never a
+//!    dispatch. Everything decided inside T-reserve (replay,
+//!    `RECONCILIATION_REQUIRED`, `GRANT_*`, `IDEMPOTENCY_CONFLICT`, effect
+//!    prerequisites) is therefore `LEDGER_UNAVAILABLE` while T-reserve cannot
+//!    run.
+//! 3. *Refusal audit, after the answer.* Once the gate and key lock are
+//!    released the refusal is audited in its own `audit` transaction, with
+//!    its [`FailureRecord`] when a lifecycle transaction failed. A failed
+//!    audit write is ignored: it never changes the answer and never
+//!    authorizes anything; that refusal then has no durable audit record.
+//! 4. *Past T-reserve*, D-035 item 4 governs: an adapter storage failure is
+//!    `LEDGER_UNAVAILABLE` even when a permit check would also refuse; a
+//!    commit with an unknown outcome is possible progress, never assumed to
+//!    have committed nothing; reconciliation is required whenever a dispatch,
+//!    a permit consumption or an effect may have committed (below).
+//!
+//! Under the documented C4 partial outage (every lifecycle transaction fails
+//! at begin; refusal audit and time floor available) a stage-1 refusal is
+//! returned unchanged and audited, and any other request is
+//! `LEDGER_UNAVAILABLE` at T-reserve with no progress. Promotions follow the
+//! same order with one addition: their durable receipt lookup (replay first)
+//! is a storage read before the decision ([`crate::workflow`]).
+//! Production tests: `persistence/sqlite/src/d038_tests.rs`.
+//!
 //! **Uncertainty is never redispatched.** Every failure after T-dispatch
 //! committed (signing, adapter refusal, adapter transaction failure at any
 //! stage, observe failure, a crash) leaves the receipt `dispatched`; a retry of

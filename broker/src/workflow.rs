@@ -8,31 +8,58 @@
 //! [`Broker::administer`]; the store exposes no other write.
 //!
 //! **Promotion** ([`Broker::promote`]), one broker operation under a shared
-//! hold of the policy gate (D-036 item 2; no client-held promotion permit):
+//! hold of the policy gate (D-036 item 2; no client-held promotion permit).
+//! Exact stage order (D-038 items 2 to 5); the first stage that refuses
+//! decides the answer:
 //!
-//! 1. Trusted time is observed (floor persisted). The request must be a
-//!    `workflow.transition` on an existing workflow (`WORKFLOW_UNKNOWN`); its
-//!    trusted revision is read and the request is re-decided at use time
-//!    through `writ-kernel` (protection classification, binding structure,
-//!    approval requirement). `require_approval` needs a grant
-//!    (`APPROVAL_REQUIRED`), consumed in the promotion transaction.
-//! 2. For a protected transition, outside any transaction: the record is
+//! 1. Trusted time is observed (floor persisted; `TIME_UNAVAILABLE`). The
+//!    request must be a `workflow.transition` (`REQUEST_SCOPE_MISMATCH`).
+//! 2. **Durable receipt lookup, replay first** (D-036 item 2, M1 promote
+//!    step 1): an existing promotion receipt for (tenant, idempotency key)
+//!    is answered before anything is re-evaluated. The identical sealed
+//!    request replays its durable receipt whatever the workflow's current
+//!    revision (so a retry after an unknown commit outcome recovers from
+//!    durable state); any other request with the key is
+//!    `IDEMPOTENCY_CONFLICT`. This is a storage read: if it fails the answer
+//!    is `LEDGER_UNAVAILABLE` (a read, so [`Promotion::failure`] is `None`),
+//!    before any decision, even for a request the policy would refuse;
+//!    nothing changes and nothing is consumed.
+//! 3. The resource must be a well-formed workflow id inside the request's own
+//!    tenant and project (`REQUEST_SCOPE_MISMATCH` otherwise, including a
+//!    resource naming another tenant or project). The stored workflow is read
+//!    keyed by the request's tenant and project (a storage failure is
+//!    `LEDGER_UNAVAILABLE`); none is `WORKFLOW_UNKNOWN`, so another tenant's
+//!    workflow is indistinguishable from a missing one and is never probed
+//!    (D-038 item 3, `sc-27`).
+//! 4. The request is re-decided at use time through `writ-kernel` at the
+//!    trusted stored revision (protection classification, binding structure,
+//!    approval requirement). A stale expected revision is `REVISION_CONFLICT`
+//!    ([`ConflictStage::UseTimeDecision`]; the kernel's
+//!    `STATE_REVISION_CONFLICT`, normalized here only, D-038 item 2); every
+//!    other decision refusal keeps its code. `require_approval` without a
+//!    grant is `APPROVAL_REQUIRED`; a grant is consumed in the promotion
+//!    transaction.
+//! 5. For a protected transition, outside any transaction: the record is
 //!    read by id from the trusted [`AcceptanceRecordSource`] (never from the
 //!    request) and verified ([`crate::acceptance::verify_record`]: MAC,
-//!    projection, mode); the request's acceptance attributes must equal the
-//!    record (`PERMIT_BINDING_MISMATCH`); each attestation the record requires
-//!    is read from the [`AttestationSource`] and verified; the
-//!    [`SnapshotStore`] must confirm the record's snapshot id and digest
-//!    (`ARTIFACT_INTEGRITY_UNAVAILABLE`, `ARTIFACT_INTEGRITY_VIOLATION`,
-//!    INV-40). These are immutable, authenticated inputs; everything mutable
-//!    is checked inside the transaction.
-//! 3. The workflow lock and the per-key lock are taken (lock order: gate,
+//!    projection, mode; the record must carry the requested id); each
+//!    attestation the record requires is read from the [`AttestationSource`]
+//!    and verified; the [`SnapshotStore`] must confirm the record's snapshot
+//!    id and digest (`ARTIFACT_INTEGRITY_UNAVAILABLE`,
+//!    `ARTIFACT_INTEGRITY_VIOLATION`, INV-40); only then must the request's
+//!    acceptance attributes equal the record (`PERMIT_BINDING_MISMATCH`), so
+//!    integrity is decided before the binding (D-038 item 4, `sc-26`). These
+//!    are immutable, authenticated inputs; everything mutable is checked
+//!    inside the transaction.
+//! 6. The workflow lock and the per-key lock are taken (lock order: gate,
 //!    workflow lock, key lock, transaction), then the fenced `promote`
 //!    transaction ([`WorkflowLedger::promote`]): an existing promotion receipt
 //!    for the key replays (same request fingerprint) or is
 //!    `IDEMPOTENCY_CONFLICT`; the stored workflow must still be in
-//!    `from_state` at the expected revision (`REVISION_CONFLICT`); for a
-//!    protected transition the project's active acceptance policy must exist
+//!    `from_state` at the expected revision (`REVISION_CONFLICT`,
+//!    [`ConflictStage::Transaction`]: a change committed between the use-time
+//!    decision and this transaction); for a protected transition the
+//!    project's active acceptance policy must exist
 //!    (`ACCEPTANCE_POLICY_UNAVAILABLE`) and be the one the authorization
 //!    bundle's protection names (`POLICY_DEPENDENCY_MISMATCH`), then
 //!    [`crate::acceptance::check_use`] runs on the stored state (kernel check,
@@ -41,6 +68,19 @@
 //!    like T-reserve. Then, atomically: state, revision + 1, last promotion,
 //!    consumed record, consumed attestations, promotion receipt
 //!    `promotion:<workflow_id>:<revision>` and a `promote` workflow event.
+//!    If the transaction cannot run the answer is `LEDGER_UNAVAILABLE` with
+//!    its [`TxFailure`]: a begin or body failure committed nothing; a failed
+//!    commit has an unknown outcome (below).
+//! 7. A refusal is audited after the answer (below); a failed audit write
+//!    never changes the answer and never authorizes.
+//!
+//! The revision-conflict code is one (`REVISION_CONFLICT`) whichever check
+//! detects it; [`Refusal::diagnostic`] names the stage for operators only.
+//! Concurrent promotions of one workflow with distinct keys commit exactly
+//! once; the others are `REVISION_CONFLICT` at either stage. Under a partial
+//! storage outage in which only transactions fail (C4), stages 1 to 5 answer
+//! as with storage up and an otherwise valid promotion is
+//! `LEDGER_UNAVAILABLE` at stage 6 with no progress.
 //!
 //! An identical retry replays the durable receipt; a changed request with the
 //! key is `IDEMPOTENCY_CONFLICT`; a consumed record or attestation can never

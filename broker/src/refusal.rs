@@ -341,6 +341,38 @@ mod tests {
     }
 
     #[test]
+    fn every_revision_conflict_stage_has_one_code_and_a_distinct_operator_diagnostic() {
+        let stages = [
+            ConflictStage::UseTimeDecision,
+            ConflictStage::Transaction,
+            ConflictStage::StoredRevision,
+        ];
+        let mut diagnostics = Vec::new();
+        for stage in stages {
+            let refusal = Refusal::RevisionConflict(stage);
+            assert_eq!(refusal.code(), "REVISION_CONFLICT");
+            assert_eq!(refusal.to_string(), "REVISION_CONFLICT");
+            // The stage is never externally visible: the generic mapping.
+            assert_eq!(
+                refusal.external_code(),
+                writ_kernel::refusal::PROMOTION_REFUSED
+            );
+            let diagnostic = refusal.diagnostic().unwrap();
+            assert!(diagnostic.starts_with("revision conflict: "));
+            assert!(!diagnostics.contains(&diagnostic));
+            diagnostics.push(diagnostic);
+        }
+        // Unrelated refusals, including the kernel's own code, are not remapped.
+        let kernel = Refusal::Decision {
+            status: DecisionStatus::Invalid,
+            reason: ReasonCode::Kernel(KernelCode::StateRevisionConflict),
+        };
+        assert_eq!(kernel.code(), "STATE_REVISION_CONFLICT");
+        assert_eq!(kernel.diagnostic(), None);
+        assert_eq!(Refusal::WorkflowUnknown.diagnostic(), None);
+    }
+
+    #[test]
     fn time_unavailable_uses_the_kernel_generic_mapping() {
         assert!(!writ_kernel::refusal::PASS_THROUGH.contains(&"TIME_UNAVAILABLE"));
         assert_eq!(
