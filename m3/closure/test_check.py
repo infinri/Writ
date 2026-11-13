@@ -344,6 +344,33 @@ class EndToEnd(unittest.TestCase):
         self.report.write_text(json.dumps(report))
         self.assertEqual(self.gate("--verify-report", str(self.report)), 1)
 
+    def test_forged_ok_on_a_failing_report_fails_verification(self):
+        os.environ["FAKE_MODE"] = "nolog"
+        self.assertEqual(self.gate(), 1)
+        os.environ.pop("FAKE_MODE")
+        report = json.loads(self.report.read_text())
+        report["ok"] = True
+        self.report.write_text(json.dumps(report))
+        self.assertEqual(self.gate("--verify-report", str(self.report)), 1)
+
+    def test_changed_adapter_script_or_repeat_fails_verification(self):
+        self.assertEqual(self.gate(), 0)
+        self.assertEqual(self.gate("--verify-report", str(self.report), "--repeat", "1"), 1)
+        self.proto.write_text(FAKE + "\n# changed\n")
+        self.assertEqual(self.gate("--verify-report", str(self.report)), 1)
+
+    def test_report_records_comparator_and_repeat(self):
+        self.assertEqual(self.gate(), 0)
+        inputs = json.loads(self.report.read_text())["inputs"]
+        self.assertTrue(inputs["comparator"].startswith("sha256:"))
+        self.assertEqual(inputs["repeat"], 2)
+
+    def test_non_object_or_unreadable_report_fails_cleanly(self):
+        self.report.write_text("[]")
+        self.assertEqual(self.gate("--verify-report", str(self.report)), 1)
+        self.report.write_text("{not json")
+        self.assertEqual(self.gate("--verify-report", str(self.report)), 1)
+
 
 class Shipped(unittest.TestCase):
     def test_shipped_entries_validate_against_the_frozen_127_cases(self):

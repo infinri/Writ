@@ -292,7 +292,10 @@ def fixture_digests(spec: dict, manifest: dict, base: Path) -> dict:
     for name in spec["fixture_sha256"]:
         s = by_name.get(name)
         path = base / s["file"] if s is not None else None
-        found[name] = sha256(path) if path is not None and path.is_file() else None
+        try:
+            found[name] = sha256(path) if path is not None and path.is_file() else None
+        except OSError:
+            found[name] = None
     return found
 
 
@@ -426,9 +429,13 @@ def coverage_problems(spec: dict, sets: dict) -> list:
 def input_digests(args, spec: dict, manifest: dict) -> dict:
     d = {"exceptions": sha256(args.exceptions), "manifest": sha256(args.manifest),
          "fixtures": fixture_digests(spec, manifest, args.manifest.parent),
-         "gate": sha256(Path(__file__).resolve())}
-    binary = Path(args.proto.split()[0])
-    d["adapter"] = sha256(binary) if binary.is_file() else None
+         "gate": sha256(Path(__file__).resolve()),
+         # the comparison logic the gate imports (review of the D-039 correction)
+         "comparator": sha256(ROOT / "m1" / "driver" / "parity.py"),
+         "repeat": args.repeat}
+    # every existing file of the adapter command line (an interpreter and its script)
+    parts = [Path(a) for a in args.proto.split()]
+    d["adapter"] = [sha256(a) if a.is_file() else None for a in parts]
     d["companions"] = {c["name"]: sha256(HERE / c["file"]) for c in spec.get("companions", [])}
     return d
 
@@ -448,7 +455,14 @@ def main(argv=None) -> int:
     spec = json.loads(args.exceptions.read_text(encoding="utf-8"))
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     if args.verify_report:
-        stored = json.loads(args.verify_report.read_text(encoding="utf-8"))
+        try:
+            stored = json.loads(args.verify_report.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            print(f"  problem: report unreadable: {type(e).__name__}")
+            stored = None
+        if not isinstance(stored, dict):
+            print("report STALE")
+            return 1
         drift = verify_fixtures(spec, manifest, args.manifest.parent)
         current = input_digests(args, spec, manifest)
         recorded = stored.get("inputs") if isinstance(stored.get("inputs"), dict) else {}
@@ -462,15 +476,24 @@ def main(argv=None) -> int:
                     names = ": " + ", ".join(n for n in sorted(set(recorded[k]) | set(current[k]))
                                              if recorded[k].get(n) != current[k].get(n))
                 print(f"  problem: report input {k} differs from the current input{names}")
-        ok = bool(stored.get("ok")) and not stale and not drift
+        # The stored verdict must be consistent with its own contents, not only its `ok` flag.
+        counts = stored.get("counts") if isinstance(stored.get("counts"), dict) else {}
+        comp = stored.get("companions") if isinstance(stored.get("companions"), dict) else {}
+        consistent = (stored.get("problems") == [] and comp.get("failing") == []
+                      and all(counts.get(c) == 0 for c in FAILING)
+                      and sum(counts.get(c, 0) for c in CATEGORIES) == stored.get("cases"))
+        if stored.get("ok") and not consistent:
+            print("  problem: report verdict inconsistent with its problems, counts or companions")
+        ok = bool(stored.get("ok")) and consistent and not stale and not drift
         print("report " + ("current and passing" if ok else "STALE" if stale or drift else "not passing"))
         return 0 if ok else 1
     base = args.manifest.parent
     problems = verify_fixtures(spec, manifest, base)
     by_name = {s["name"]: s for s in manifest["sets"]}
     # A set whose fixture is missing (already a problem above) is not run.
+    readable = fixture_digests(spec, manifest, base)
     frozen = [(n, by_name[n]["file"], by_name[n]["command"]) for n in spec["sets"]
-              if n in by_name and (base / by_name[n]["file"]).is_file()]
+              if n in by_name and readable.get(n) is not None]
     sets, outputs, logs, run_problems, compare = run(args.proto.split(), frozen, base, args.repeat, args.timeout)
     report = classify(sets, outputs, spec["exceptions"], compare, logs)
     dump = {"outputs": outputs, "adaptations": logs}
