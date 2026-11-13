@@ -64,6 +64,9 @@ KIND_KEYS = {
     "deferred": COMMON_KEYS | {"steps", "final_members", "actual", "carry_to",
                                "intended_assertion", "acceptance_criteria"},
 }
+# D-038 item 6 deferred-entry fields; accepted while the entries are drafted (lead integration
+# makes them required).
+OPTIONAL_KEYS = {"deferred": {"blocking_dependency", "observed_m3_refusal", "companions"}}
 CASE_ID = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 ENV_LOG = "WRIT_M3_ADAPTATIONS"
 
@@ -142,7 +145,7 @@ def validate_entries(sets: dict, entries: list) -> tuple[dict, list]:
         if kind not in KIND_KEYS:
             problems.append(f"{where}: unknown kind {kind!r}")
             continue
-        if set(e) != KIND_KEYS[kind]:
+        if not KIND_KEYS[kind] <= set(e) <= KIND_KEYS[kind] | OPTIONAL_KEYS.get(kind, set()):
             problems.append(f"{where}: members {sorted(set(e) ^ KIND_KEYS[kind])} wrong for kind {kind}")
             continue
         if not isinstance(e["case"], str) or not CASE_ID.match(e["case"]):
@@ -403,6 +406,8 @@ def main(argv=None) -> int:
     ap.add_argument("--timeout", type=float, default=300.0)
     ap.add_argument("--report", type=Path)
     ap.add_argument("--verify-report", type=Path, help="check a stored report against the current inputs")
+    ap.add_argument("--dump-outputs", type=Path,
+                    help="write every gated and companion case's first-run output and adaptation log")
     args = ap.parse_args(argv)
     spec = json.loads(args.exceptions.read_text(encoding="utf-8"))
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
@@ -418,12 +423,15 @@ def main(argv=None) -> int:
     frozen = [(n, by_name[n]["file"], by_name[n]["command"]) for n in spec["sets"]]
     sets, outputs, logs, run_problems, compare = run(args.proto.split(), frozen, base, args.repeat, args.timeout)
     report = classify(sets, outputs, spec["exceptions"], compare, logs)
+    dump = {"outputs": outputs, "adaptations": logs}
     report["problems"] = problems + run_problems + report["problems"] + coverage_problems(spec, sets)
     comp = [(c["name"], c["file"], c["command"]) for c in spec.get("companions", [])]
     report["companions"] = {"exact_pass": [], "failing": []}
     if comp:
         kinds = {c["name"]: c["kind"] for c in spec["companions"]}
-        csets, couts, _, cprob, _ = run(args.proto.split(), comp, HERE, args.repeat, args.timeout)
+        csets, couts, clogs, cprob, _ = run(args.proto.split(), comp, HERE, args.repeat, args.timeout)
+        dump["outputs"].update(couts)
+        dump["adaptations"].update(clogs)
         report["problems"] += cprob
         for name, cases in csets.items():
             for c in cases:
@@ -448,6 +456,8 @@ def main(argv=None) -> int:
                 report["companions"]["exact_pass" if ok else "failing"].append(item)
     report["ok"] = report["ok"] and not report["problems"] and not report["companions"]["failing"]
     report["inputs"] = input_digests(args, spec)
+    if args.dump_outputs:
+        args.dump_outputs.write_text(json.dumps(dump, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     if args.report:
         args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     c = report["counts"]
