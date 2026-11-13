@@ -564,7 +564,8 @@
       },
       "companions": [
         "m3c-01-promote"
-      ]
+      ],
+      "cascade": {}
     },
     {
       "set": "transition-scenarios",
@@ -620,7 +621,10 @@
       },
       "companions": [
         "m3c-02-identical-retry"
-      ]
+      ],
+      "cascade": {
+        "1": "step 0 was refused (ACCEPTANCE_HUMAN_UNAVAILABLE), so no promotion receipt exists for key k1; the identical retry therefore has no durable receipt to replay and is evaluated anew, reaching the same required human criterion (ACCEPTANCE_HUMAN_UNAVAILABLE) instead of the frozen replay of the step-0 commit."
+      }
     },
     {
       "set": "transition-scenarios",
@@ -676,7 +680,10 @@
       },
       "companions": [
         "m3c-03-same-key-different-request"
-      ]
+      ],
+      "cascade": {
+        "1": "step 0 was refused (ACCEPTANCE_HUMAN_UNAVAILABLE), so no promotion receipt exists for key k1; the different request with k1 is therefore not an idempotency conflict (the frozen IDEMPOTENCY_CONFLICT presupposes the step-0 receipt) and is evaluated anew: the trusted record acc-1 is for verifying to accepted, the request asks verifying to deployed, so the kernel acceptance check refuses ACCEPTANCE_TRANSITION_MISMATCH."
+      }
     },
     {
       "set": "transition-scenarios",
@@ -732,7 +739,10 @@
       },
       "companions": [
         "m3c-04-record-replay-new-key"
-      ]
+      ],
+      "cascade": {
+        "1": "step 0 did not commit, so the stored revision is still 7; step 1 was built on revision 8 (after the frozen step-0 commit), so its expected revision is stale and it is refused REVISION_CONFLICT (D-038 item 2) before the record-replay check is reached."
+      }
     },
     {
       "set": "transition-scenarios",
@@ -832,7 +842,8 @@
       },
       "companions": [
         "m3c-09-policy-did-not-allow"
-      ]
+      ],
+      "cascade": {}
     },
     {
       "set": "transition-scenarios",
@@ -889,7 +900,8 @@
       },
       "companions": [
         "m3c-10-race-16"
-      ]
+      ],
+      "cascade": {}
     },
     {
       "set": "transition-scenarios",
@@ -1084,7 +1096,8 @@
       },
       "companions": [
         "m3c-15-workflow-already-moved"
-      ]
+      ],
+      "cascade": {}
     },
     {
       "set": "transition-scenarios",
@@ -1190,7 +1203,8 @@
       },
       "companions": [
         "m3c-19-actor-not-authorized"
-      ]
+      ],
+      "cascade": {}
     },
     {
       "set": "transition-scenarios",
@@ -1402,7 +1416,8 @@
       },
       "companions": [
         "m3c-25-record-swapped-under-binding"
-      ]
+      ],
+      "cascade": {}
     },
     {
       "set": "transition-scenarios",
@@ -1666,7 +1681,8 @@
       },
       "companions": [
         "m3c-36-authorization-bundle-changed"
-      ]
+      ],
+      "cascade": {}
     },
     {
       "set": "transition-scenarios",
@@ -1795,7 +1811,8 @@
       },
       "companions": [
         "m3c-39-crash-before-commit-then-retry"
-      ]
+      ],
+      "cascade": {}
     },
     {
       "set": "transition-scenarios",
@@ -2163,7 +2180,8 @@
       },
       "companions": [
         "m3c-50-protection-missing"
-      ]
+      ],
+      "cascade": {}
     },
     {
       "set": "transition-scenarios",
@@ -2208,7 +2226,8 @@
       },
       "companions": [
         "m3c-51-protection-other-dependency"
-      ]
+      ],
+      "cascade": {}
     },
     {
       "set": "transition-scenarios",
@@ -2290,7 +2309,8 @@
       },
       "companions": [
         "m3c-53-protected-edge-with-record"
-      ]
+      ],
+      "cascade": {}
     },
     {
       "set": "transition-scenarios",
@@ -2345,7 +2365,10 @@
       },
       "companions": [
         "m3c-54-edge-record-reused-for-destination"
-      ]
+      ],
+      "cascade": {
+        "1": "step 0 (draft to verifying) did not commit, so the stored revision is still 7 and the state draft; step 1 expects revision 8 (after the frozen step-0 commit), so its expected revision is stale and it is refused REVISION_CONFLICT (D-038 item 2) before the record-replay check."
+      }
     },
     {
       "set": "transition-scenarios",
@@ -2416,7 +2439,10 @@
       },
       "companions": [
         "m3c-56-accept-a-publish-b"
-      ]
+      ],
+      "cascade": {
+        "1": "step 0 did not commit, so the workflow is still in verifying, not in a state the effect prerequisite requires (accepted, deployed or released): the publication is refused EFFECT_PREREQUISITE_UNMET before any promotion receipt or dispatch is examined (frozen: EFFECT_ARTIFACT_MISMATCH after acceptance)."
+      }
     },
     {
       "set": "transition-scenarios",
@@ -2478,7 +2504,11 @@
       },
       "companions": [
         "m3c-57-accepted-artifact-modified"
-      ]
+      ],
+      "cascade": {
+        "1": "step 0 did not commit, so the revision is still 7 and the artifact update advances it to 8, not to 9 as after the frozen step-0 commit.",
+        "2": "step 0 did not commit, so the workflow is still in verifying, not in a state the effect prerequisite requires (accepted, deployed or released): the publication is refused EFFECT_PREREQUISITE_UNMET before any promotion receipt or dispatch is examined (frozen: PROMOTION_STALE after the accepted artifact changed)."
+      }
     },
     {
       "set": "transition-scenarios",
@@ -2538,7 +2568,10 @@
       },
       "companions": [
         "m3c-58-acceptance-policy-changed-after-promotion"
-      ]
+      ],
+      "cascade": {
+        "2": "step 0 did not commit, so the workflow is still in verifying, not in a state the effect prerequisite requires (accepted, deployed or released): the publication is refused EFFECT_PREREQUISITE_UNMET before any promotion receipt or dispatch is examined (frozen: PROMOTION_STALE after the acceptance policy changed)."
+      }
     },
     {
       "set": "transition-scenarios",
@@ -2598,7 +2631,10 @@
       },
       "companions": [
         "m3c-59-authorization-changed-after-promotion"
-      ]
+      ],
+      "cascade": {
+        "2": "step 0 did not commit, so the workflow is still in verifying, not in a state the effect prerequisite requires (accepted, deployed or released): the publication is refused EFFECT_PREREQUISITE_UNMET before any promotion receipt or dispatch is examined (frozen: PROMOTION_STALE after the authorization bundle changed)."
+      }
     },
     {
       "set": "transition-scenarios",
@@ -2720,7 +2756,10 @@
       },
       "companions": [
         "m3c-63-publish-after-promotion"
-      ]
+      ],
+      "cascade": {
+        "1": "step 0 did not commit, so the workflow is still in verifying, not in a state the effect prerequisite requires (accepted, deployed or released): the publication is refused EFFECT_PREREQUISITE_UNMET before any promotion receipt or dispatch is examined (frozen: effect_completed)."
+      }
     },
     {
       "set": "transition-scenarios",
@@ -2797,7 +2836,11 @@
       },
       "companions": [
         "m3c-65-uncertain-publication"
-      ]
+      ],
+      "cascade": {
+        "1": "step 0 did not commit, so the workflow is still in verifying, not in a state the effect prerequisite requires (accepted, deployed or released): the publication is refused EFFECT_PREREQUISITE_UNMET before any promotion receipt or dispatch is examined; the injected crash_after_dispatch is therefore never reached (frozen: crashed).",
+        "2": "step 0 did not commit and, as a consequence, step 1 never dispatched (nothing is uncertain); the retry is refused for the same unmet prerequisite, EFFECT_PREREQUISITE_UNMET, instead of the frozen RECONCILIATION_REQUIRED for an uncertain dispatch."
+      }
     },
     {
       "set": "protocol-transition",
@@ -2900,7 +2943,8 @@
       },
       "companions": [
         "m3c-16-scenario-member-order"
-      ]
+      ],
+      "cascade": {}
     }
   ],
   "companions": [
