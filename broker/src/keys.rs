@@ -1,4 +1,5 @@
-//! Broker key material (M3-02): adapter ingress keys and the permit key.
+//! Broker key material (M3-02): adapter ingress keys and the permit key;
+//! since M3-05 (D-036) the acceptance-record and runner-attestation keys.
 //!
 //! Keys are only ever supplied explicitly by the caller. This module has no
 //! default keys and never reads the environment, a file or any other ambient
@@ -79,6 +80,158 @@ impl PermitKey {
 impl fmt::Debug for PermitKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("PermitKey(<redacted>)")
+    }
+}
+
+/// HMAC-SHA256 key with which the acceptance service authenticates
+/// AcceptanceRecords (purpose `writ.acceptance-record.v1`, D-036 item 1). A
+/// distinct type: it can never be used as an ingress, permit or runner key.
+pub struct AcceptanceRecordKey(Secret);
+
+impl AcceptanceRecordKey {
+    /// A key from raw bytes (at least [`MIN_KEY_BYTES`]).
+    pub fn from_bytes(bytes: Vec<u8>) -> Result<AcceptanceRecordKey, KeyError> {
+        Secret::new(bytes).map(AcceptanceRecordKey)
+    }
+
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.0 .0
+    }
+}
+
+impl fmt::Debug for AcceptanceRecordKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("AcceptanceRecordKey(<redacted>)")
+    }
+}
+
+/// HMAC-SHA256 key with which the mechanical runner authenticates its
+/// attestations (purpose `writ.runner-attestation.v1`, D-033 item 4). A
+/// distinct type from every other key.
+pub struct RunnerAttestationKey(Secret);
+
+impl RunnerAttestationKey {
+    /// A key from raw bytes (at least [`MIN_KEY_BYTES`]).
+    pub fn from_bytes(bytes: Vec<u8>) -> Result<RunnerAttestationKey, KeyError> {
+        Secret::new(bytes).map(RunnerAttestationKey)
+    }
+
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.0 .0
+    }
+}
+
+impl fmt::Debug for RunnerAttestationKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("RunnerAttestationKey(<redacted>)")
+    }
+}
+
+/// What a purpose-typed key ring holds for one key id.
+#[derive(Debug)]
+pub enum KeyStatus<'a, K> {
+    /// An active key.
+    Active(&'a K),
+    /// The key id is known and revoked: everything it authenticated refuses.
+    Revoked,
+    /// No key with this id.
+    Unknown,
+}
+
+/// The key ring could not be consulted (fail closed).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeysUnavailable;
+
+/// Key id to acceptance-record key lookup (no production implementation:
+/// key provisioning is a future obligation, D-036 item 1).
+pub trait AcceptanceKeyRing {
+    /// The status of `key_id`, or [`KeysUnavailable`].
+    fn record_key(
+        &self,
+        key_id: &str,
+    ) -> Result<KeyStatus<'_, AcceptanceRecordKey>, KeysUnavailable>;
+}
+
+/// Key id to runner attestation key lookup (no production implementation).
+pub trait RunnerKeyRing {
+    /// The status of `key_id`, or [`KeysUnavailable`].
+    fn runner_key(
+        &self,
+        key_id: &str,
+    ) -> Result<KeyStatus<'_, RunnerAttestationKey>, KeysUnavailable>;
+}
+
+/// An in-memory purpose-typed key ring for one key type, filled explicitly.
+/// Test and harness use; it does not complete production key management.
+#[derive(Debug)]
+pub struct MemoryKeys<K> {
+    keys: BTreeMap<String, K>,
+    revoked: std::collections::BTreeSet<String>,
+    unavailable: bool,
+}
+
+impl<K> Default for MemoryKeys<K> {
+    fn default() -> Self {
+        MemoryKeys {
+            keys: BTreeMap::new(),
+            revoked: std::collections::BTreeSet::new(),
+            unavailable: false,
+        }
+    }
+}
+
+impl<K> MemoryKeys<K> {
+    /// An empty ring.
+    pub fn new() -> MemoryKeys<K> {
+        MemoryKeys::default()
+    }
+
+    /// Register `key` as `key_id` (replacing a previous one, unrevoking the id).
+    pub fn register(&mut self, key_id: &str, key: K) {
+        self.revoked.remove(key_id);
+        self.keys.insert(key_id.to_string(), key);
+    }
+
+    /// Revoke `key_id`.
+    pub fn revoke(&mut self, key_id: &str) {
+        self.keys.remove(key_id);
+        self.revoked.insert(key_id.to_string());
+    }
+
+    /// Make every lookup fail as unavailable while `true`.
+    pub fn set_unavailable(&mut self, unavailable: bool) {
+        self.unavailable = unavailable;
+    }
+
+    fn status(&self, key_id: &str) -> Result<KeyStatus<'_, K>, KeysUnavailable> {
+        if self.unavailable {
+            return Err(KeysUnavailable);
+        }
+        if self.revoked.contains(key_id) {
+            return Ok(KeyStatus::Revoked);
+        }
+        Ok(self
+            .keys
+            .get(key_id)
+            .map_or(KeyStatus::Unknown, KeyStatus::Active))
+    }
+}
+
+impl AcceptanceKeyRing for MemoryKeys<AcceptanceRecordKey> {
+    fn record_key(
+        &self,
+        key_id: &str,
+    ) -> Result<KeyStatus<'_, AcceptanceRecordKey>, KeysUnavailable> {
+        self.status(key_id)
+    }
+}
+
+impl RunnerKeyRing for MemoryKeys<RunnerAttestationKey> {
+    fn runner_key(
+        &self,
+        key_id: &str,
+    ) -> Result<KeyStatus<'_, RunnerAttestationKey>, KeysUnavailable> {
+        self.status(key_id)
     }
 }
 

@@ -9,6 +9,7 @@ use std::fmt;
 use writ_kernel::contracts::{DecisionStatus, ReasonCode};
 use writ_kernel::refusal::external_code;
 
+use crate::acceptance::AcceptanceCode;
 use crate::grants::ApproverRefusal;
 use crate::store::StoreError;
 
@@ -74,6 +75,42 @@ pub enum Refusal {
     /// The ledger could not complete the operation (fail closed, D-024). The
     /// [`StoreError`] is the sanitized operator diagnostic.
     LedgerUnavailable(StoreError),
+    /// A kernel structure code reported outside a decision (M3-05).
+    Kernel(&'static str),
+    /// Acceptance-record, attestation, registry or snapshot refusal (M3-05, D-036).
+    Acceptance(AcceptanceCode),
+    /// The request is not this operation's kind or resource (M3-05).
+    RequestScopeMismatch,
+    /// No such workflow (M3-05).
+    WorkflowUnknown,
+    /// The workflow already exists (administration, M3-05).
+    WorkflowExists,
+    /// Expected revision or source state differ from the stored workflow (CAS).
+    RevisionConflict,
+    /// The project has no usable active acceptance policy (fail closed).
+    AcceptancePolicyUnavailable,
+    /// The authorization bundle's protection names another acceptance policy.
+    PolicyDependencyMismatch,
+    /// A workflow cannot be created in a protected state (D-036 item 5).
+    WorkflowInitialStateProtected,
+    /// An administrative request is malformed.
+    AdminRequestInvalid,
+    /// The operator was not authenticated (operator diagnostic).
+    OperatorUnauthenticated,
+    /// The operator is not authorized for the operation, tenant or project.
+    OperatorUnauthorized,
+    /// A registered evaluator entry must have a higher registry revision.
+    RegistryRevisionStale,
+    /// Effect prerequisite: required promotion attributes absent, or the
+    /// workflow has no matching promotion receipt (D-019 N-3).
+    PromotionReceiptInvalid,
+    /// Effect prerequisite: the workflow is not in a required state.
+    EffectPrerequisiteUnmet,
+    /// Effect prerequisite: the requested artifact is not the promoted one.
+    EffectArtifactMismatch,
+    /// Effect prerequisite: the promotion's artifact or policies are no
+    /// longer current.
+    PromotionStale,
 }
 
 impl Refusal {
@@ -100,6 +137,23 @@ impl Refusal {
             Refusal::IdempotencyConflict => "IDEMPOTENCY_CONFLICT",
             Refusal::ReconciliationRequired => "RECONCILIATION_REQUIRED",
             Refusal::LedgerUnavailable(_) => StoreError::EXTERNAL_CODE,
+            Refusal::Kernel(code) => code,
+            Refusal::Acceptance(code) => code.code(),
+            Refusal::RequestScopeMismatch => "REQUEST_SCOPE_MISMATCH",
+            Refusal::WorkflowUnknown => "WORKFLOW_UNKNOWN",
+            Refusal::WorkflowExists => "WORKFLOW_EXISTS",
+            Refusal::RevisionConflict => "REVISION_CONFLICT",
+            Refusal::AcceptancePolicyUnavailable => "ACCEPTANCE_POLICY_UNAVAILABLE",
+            Refusal::PolicyDependencyMismatch => "POLICY_DEPENDENCY_MISMATCH",
+            Refusal::WorkflowInitialStateProtected => "WORKFLOW_INITIAL_STATE_PROTECTED",
+            Refusal::AdminRequestInvalid => "ADMIN_REQUEST_INVALID",
+            Refusal::OperatorUnauthenticated => "OPERATOR_UNAUTHENTICATED",
+            Refusal::OperatorUnauthorized => "OPERATOR_UNAUTHORIZED",
+            Refusal::RegistryRevisionStale => "REGISTRY_REVISION_STALE",
+            Refusal::PromotionReceiptInvalid => "PROMOTION_RECEIPT_INVALID",
+            Refusal::EffectPrerequisiteUnmet => "EFFECT_PREREQUISITE_UNMET",
+            Refusal::EffectArtifactMismatch => "EFFECT_ARTIFACT_MISMATCH",
+            Refusal::PromotionStale => "PROMOTION_STALE",
         }
     }
 

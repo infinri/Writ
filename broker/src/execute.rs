@@ -112,8 +112,8 @@ use crate::authorize::{authorize, Authorized};
 use crate::clock::{observe, ClockError, EffectiveClock, TrustedClock};
 use crate::effects::{EffectAdapter, EffectEvidence, EffectResult, VerifiedEffect};
 use crate::grants::{
-    GrantLabel, GrantService, GrantUse, ReceiptStatus, Replay, ReserveOutcome, ReserveRequest,
-    Revalidation, StoredGrant,
+    GrantLabel, GrantService, GrantUse, KeyLocks, ReceiptStatus, Replay, ReserveOutcome,
+    ReserveRequest, Revalidation, StoredGrant,
 };
 use crate::ingress::VerifiedRequest;
 use crate::keys::PermitKey;
@@ -595,6 +595,11 @@ pub struct Broker<'a, L: ?Sized, A: ?Sized> {
     grants: GrantService<'a, L>,
     adapter: &'a A,
     permit_key: &'a PermitKey,
+    /// Per-workflow locks (M3-05): a promotion, and an execution whose
+    /// request names a workflow, hold their workflow's lock from validation
+    /// to commit (effect prerequisites, D-036). Taken after the gate and
+    /// before the per-key lock.
+    pub(crate) workflow_locks: KeyLocks,
 }
 
 impl<'a, L, A> Broker<'a, L, A>
@@ -616,6 +621,7 @@ where
             grants: GrantService::new(active, clock, ledger),
             adapter,
             permit_key,
+            workflow_locks: KeyLocks::new(),
         }
     }
 
@@ -665,6 +671,15 @@ where
         let inputs = shared.trusted_inputs(state_revision);
         let authorized = authorize(verified, &inputs, &observed)?;
         let request = ReserveRequest::new(&authorized, observed, grant)?;
+        // A request naming a workflow holds the workflow lock from its
+        // prerequisite check in T-reserve until the effect is observed, so no
+        // promotion can change the workflow in between (D-036); administrative
+        // changes wait for the shared gate.
+        let effect = request.effect();
+        let _workflow = effect.workflow_id.map(|w| {
+            self.workflow_locks
+                .lock(request.tenant_id(), &format!("{}/{w}", effect.project_id))
+        });
         let _key = self
             .grants
             .key_locks

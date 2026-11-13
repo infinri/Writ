@@ -741,7 +741,7 @@ fn the_explicit_upgrade_keeps_legacy_data_and_legacy_grants_stay_non_executable(
     let before = std::fs::read(&path).unwrap();
     assert_eq!(SqliteLedger::open(&path).err(), Some(schema()));
     assert_eq!(std::fs::read(&path).unwrap(), before);
-    let ledger = SqliteLedger::upgrade_from_v3(&path).unwrap();
+    let ledger = SqliteLedger::upgrade(&path).unwrap();
     // Everything kept, nothing invented.
     assert_eq!(one(&ledger, "SELECT count(*) FROM grants"), 2);
     assert_eq!(one(&ledger, "SELECT count(*) FROM grant_uses"), 1);
@@ -756,7 +756,7 @@ fn the_explicit_upgrade_keeps_legacy_data_and_legacy_grants_stay_non_executable(
             "schema_version"
         )
         .as_deref(),
-        Some("writ-ledger-4")
+        Some("writ-ledger-5")
     );
     let effects = SqliteEffectStore::create(&d.join("effects.db"), ledger.ledger_id()).unwrap();
     let w = World::new("d035-upgrade-policy");
@@ -798,7 +798,7 @@ fn the_explicit_upgrade_keeps_legacy_data_and_legacy_grants_stay_non_executable(
     drop(ledger);
     // The upgrade is one-way and explicit: an upgraded ledger opens normally (same
     // identity) and is refused by a second upgrade.
-    assert_eq!(SqliteLedger::upgrade_from_v3(&path).err(), Some(schema()));
+    assert_eq!(SqliteLedger::upgrade(&path).err(), Some(schema()));
     let reopened = SqliteLedger::open(&path).unwrap();
     assert_eq!(reopened.ledger_id(), &id);
     drop(reopened);
@@ -812,6 +812,6 @@ fn the_explicit_upgrade_keeps_legacy_data_and_legacy_grants_stay_non_executable(
         .unwrap();
     drop(c);
     let before = std::fs::read(&other).unwrap();
-    assert_eq!(SqliteLedger::upgrade_from_v3(&other).err(), Some(schema()));
+    assert_eq!(SqliteLedger::upgrade(&other).err(), Some(schema()));
     assert_eq!(std::fs::read(&other).unwrap(), before);
 }

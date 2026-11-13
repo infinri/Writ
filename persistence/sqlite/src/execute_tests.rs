@@ -1325,7 +1325,7 @@ fn the_effect_store_is_separate_from_the_ledger_and_verified_on_open() {
     assert!(
         !ledger_tables
             .iter()
-            .any(|t| t.contains("adapter") || t.contains("effect")),
+            .any(|t| t.contains("adapter") || t == "effects" || t == "consumed_permits"),
         "{ledger_tables:?}"
     );
     let dir = w.dir.clone();

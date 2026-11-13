@@ -740,6 +740,40 @@ pub struct ReserveRequest<'a> {
     idempotency_key: &'a str,
     fingerprint: &'a str,
     grant: Option<GrantUse>,
+    effect: EffectContext<'a>,
+}
+
+/// What an effect's prerequisites are checked against (D-019 N-3, M3-05):
+/// the request's kind, project and promotion attributes and the active
+/// authorization bundle of its use-time decision.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EffectContext<'a> {
+    /// Project.
+    pub project_id: &'a str,
+    /// Action kind.
+    pub kind: &'a str,
+    /// `workflow_id` attribute.
+    pub workflow_id: Option<&'a str>,
+    /// `artifact_snapshot_id` attribute.
+    pub artifact_snapshot_id: Option<&'a str>,
+    /// `artifact_digest` attribute.
+    pub artifact_digest: Option<&'a str>,
+    /// `promotion_receipt_id` attribute.
+    pub promotion_receipt_id: Option<&'a str>,
+    /// Active authorization bundle digest of the decision.
+    pub authorization_bundle_sha: &'a str,
+}
+
+/// The stored facts an effect prerequisite is checked against.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrerequisiteView {
+    /// Workflow states the project's active acceptance policy requires for
+    /// this effect kind.
+    pub required_states: Vec<String>,
+    /// The active acceptance policy's bundle digest.
+    pub acceptance_policy_bundle_sha: Option<String>,
+    /// The named workflow (`None`: not in this project).
+    pub workflow: Option<crate::workflow::StoredWorkflow>,
 }
 
 impl<'a> ReserveRequest<'a> {
@@ -762,12 +796,82 @@ impl<'a> ReserveRequest<'a> {
             }),
         };
         let request = authorized.request();
+        let attr = |k: &str| {
+            request
+                .action
+                .attributes
+                .as_ref()
+                .and_then(|a| a.get(k))
+                .and_then(Value::as_str)
+        };
         Ok(ReserveRequest {
             tenant_id: &request.tenant_id,
             idempotency_key: &request.idempotency_key,
             fingerprint: authorized.verified().fingerprint().as_str(),
             grant,
+            effect: EffectContext {
+                project_id: &request.project_id,
+                kind: &request.action.kind,
+                workflow_id: attr("workflow_id"),
+                artifact_snapshot_id: attr("artifact_snapshot_id"),
+                artifact_digest: attr("artifact_digest"),
+                promotion_receipt_id: attr("promotion_receipt_id"),
+                authorization_bundle_sha: authorized.policy_bundle_sha(),
+            },
         })
+    }
+
+    /// The effect context (kind, project, promotion attributes).
+    pub fn effect(&self) -> &EffectContext<'a> {
+        &self.effect
+    }
+
+    /// Check the effect prerequisites (D-019 N-3) on stored state, called by
+    /// the store inside T-reserve whenever the project's active acceptance
+    /// policy lists this kind, in the M1 order: attributes present
+    /// (`PROMOTION_RECEIPT_INVALID`), workflow in this project
+    /// (`REQUEST_SCOPE_MISMATCH`), state required (`EFFECT_PREREQUISITE_UNMET`),
+    /// latest promotion receipt (`PROMOTION_RECEIPT_INVALID`), requested
+    /// artifact equals the promoted one (`EFFECT_ARTIFACT_MISMATCH`), the
+    /// promoted artifact and both policies still current (`PROMOTION_STALE`).
+    pub fn check_prerequisite(&self, view: &PrerequisiteView) -> Result<(), Refusal> {
+        let e = &self.effect;
+        let (Some(_), Some(snapshot), Some(digest), Some(receipt)) = (
+            e.workflow_id,
+            e.artifact_snapshot_id,
+            e.artifact_digest,
+            e.promotion_receipt_id,
+        ) else {
+            return Err(Refusal::PromotionReceiptInvalid);
+        };
+        let workflow = view
+            .workflow
+            .as_ref()
+            .ok_or(Refusal::RequestScopeMismatch)?;
+        if !view.required_states.contains(&workflow.state) {
+            return Err(Refusal::EffectPrerequisiteUnmet);
+        }
+        let promotion = workflow
+            .last_promotion
+            .as_ref()
+            .filter(|p| p.receipt_id == receipt)
+            .ok_or(Refusal::PromotionReceiptInvalid)?;
+        if (
+            promotion.artifact_snapshot_id.as_str(),
+            promotion.artifact_digest.as_str(),
+        ) != (snapshot, digest)
+        {
+            return Err(Refusal::EffectArtifactMismatch);
+        }
+        if (&promotion.artifact_snapshot_id, &promotion.artifact_digest)
+            != (&workflow.artifact_snapshot_id, &workflow.artifact_digest)
+            || view.acceptance_policy_bundle_sha.as_deref()
+                != Some(promotion.acceptance_policy_bundle_sha.as_str())
+            || promotion.authorization_bundle_sha != e.authorization_bundle_sha
+        {
+            return Err(Refusal::PromotionStale);
+        }
+        Ok(())
     }
 
     /// Tenant of the idempotency key.

@@ -1,6 +1,6 @@
 # M3-05 transition service: design and owner questions
 
-**Status:** DRAFT FOR OWNER REVIEW (2026-11-12). Nothing implemented. M3-05 is authorized (M3-START-PLAN; D-034: M3-05/M3-07 integration may proceed after semantic validation, use-time MAC, registry, revocation, replay, immutable-snapshot and atomic-consumption tests remain mandatory). The questions in section 3 are trust-boundary or semantic choices that the approved documents do not settle; implementation starts after the owner answers them. ADR-0008 APPROVED IN PRINCIPLE; release and production NO-GO.
+**Status:** QUESTIONS ANSWERED by the owner in D-036 (2026-11-13; all five proposals approved, item 5 with boundaries); **implemented** (E-068): `broker::acceptance`, `broker::workflow`, `writ-ledger-sqlite` module `workflow`, schema `writ-ledger-5`. The 66 transition-scenarios and 6 protocol-transition cases are closed in M3-08 with the exact exceptions below. M3-05 is authorized (M3-START-PLAN; D-034: M3-05/M3-07 integration may proceed after semantic validation, use-time MAC, registry, revocation, replay, immutable-snapshot and atomic-consumption tests remain mandatory). The questions in section 3 are trust-boundary or semantic choices that the approved documents do not settle; implementation starts after the owner answers them. ADR-0008 APPROVED IN PRINCIPLE; release and production NO-GO.
 
 ## 1. What M3-05 delivers (from approved documents)
 

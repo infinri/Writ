@@ -34,6 +34,7 @@
 //! - [`effects`]: the controlled effect adapter interface (its own store of
 //!   consumed permits and effects, reached only through the adapter).
 
+pub mod acceptance;
 pub mod authorize;
 pub mod clock;
 pub mod contracts;
@@ -47,6 +48,7 @@ pub mod permit;
 pub mod policy;
 pub mod refusal;
 pub mod store;
+pub mod workflow;
 
 /// The kernel this broker decides with, re-exported so that store
 /// implementations and harnesses use exactly the same kernel types (requests,

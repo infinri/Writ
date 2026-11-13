@@ -80,11 +80,18 @@
 //! and effects live in the controlled effect adapter's own store, [`SqliteEffectStore`]
 //! (module `effects`), which is bound to this ledger's [`LedgerId`].
 //!
-//! **Schema versions:** a new ledger is `writ-ledger-4` (`schema.sql` then `schema_v4.sql`,
-//! plus a random `ledger_id`). [`SqliteLedger::open`] accepts only `writ-ledger-4`.
-//! [`SqliteLedger::upgrade_from_v3`] is the explicit operator upgrade of an exact
-//! `writ-ledger-3` ledger: it adds the new tables in one transaction and keeps every row;
-//! grants carried over have no provenance and stay non-executable (D-035 item 5).
+//! **Schema versions:** a new ledger is `writ-ledger-5` (`schema.sql`, `schema_v4.sql`, then
+//! `schema_v5.sql`, plus a random `ledger_id`). [`SqliteLedger::open`] accepts only
+//! `writ-ledger-5`. [`SqliteLedger::upgrade`] is the explicit operator upgrade of an exact
+//! `writ-ledger-3` or `writ-ledger-4` ledger: it adds the missing tables in one transaction
+//! and keeps every row; grants carried over from `writ-ledger-3` have no provenance and stay
+//! non-executable (D-035 item 5).
+//!
+//! **Transition service (M3-05, D-036, schema `writ-ledger-5`):** workflows, project
+//! acceptance policies and effect prerequisites, the evaluator registry, promotion
+//! receipts, ledger-wide consumed records and attestations, workflow and administrative
+//! events; the fenced `admin` and `promote` transactions and the effect-prerequisite check
+//! inside T-reserve are in module `workflow`.
 //!
 //! **Trusted time (since schema `writ-ledger-2`):** `time_floor` holds the high-water mark `H`
 //! (at most one row, raised only, in the fenced `time_floor` transaction, which returns the
@@ -118,6 +125,7 @@ use writ_broker::store::Timestamp;
 pub use writ_broker::store::{ExecuteLedger, GrantLedger, LedgerStore, StoreError};
 
 mod effects;
+mod workflow;
 pub use effects::{SqliteEffectStore, EFFECTS_SCHEMA, EFFECTS_SCHEMA_VERSION};
 use writ_broker::store::{TxFailure, TxStage};
 
@@ -126,11 +134,22 @@ pub const SCHEMA_V3: &str = include_str!("schema.sql");
 /// The tables `writ-ledger-4` adds (D-035).
 pub const SCHEMA_V4_ADDITIONS: &str = include_str!("schema_v4.sql");
 /// The production schema, applied once to a newly created ledger inside one transaction.
-pub const SCHEMA: &str = concat!(include_str!("schema.sql"), include_str!("schema_v4.sql"));
+/// The tables `writ-ledger-5` adds (M3-05, D-036).
+pub const SCHEMA_V5_ADDITIONS: &str = include_str!("schema_v5.sql");
+/// The exact `writ-ledger-4` schema.
+pub const SCHEMA_V4: &str = concat!(include_str!("schema.sql"), include_str!("schema_v4.sql"));
+/// The production schema, applied once to a newly created ledger inside one transaction.
+pub const SCHEMA: &str = concat!(
+    include_str!("schema.sql"),
+    include_str!("schema_v4.sql"),
+    include_str!("schema_v5.sql")
+);
 /// The schema version this crate writes and accepts.
-pub const SCHEMA_VERSION: &str = "writ-ledger-4";
-/// The only older version [`SqliteLedger::upgrade_from_v3`] accepts.
+pub const SCHEMA_VERSION: &str = "writ-ledger-5";
+/// Older versions [`SqliteLedger::upgrade`] accepts.
 pub const SCHEMA_VERSION_V3: &str = "writ-ledger-3";
+/// See [`SCHEMA_VERSION_V3`].
+pub const SCHEMA_VERSION_V4: &str = "writ-ledger-4";
 
 /// The random identity of one ledger (32 lowercase hexadecimal digits), fixed at creation
 /// and stored in its metadata. An effect store is bound to exactly one ledger identity.
@@ -394,8 +413,8 @@ fn verify(conn: &Connection, schema_text: &str, want: &str) -> Result<(), StoreE
     }
     let id = meta_value(conn, "ledger_id").map_err(sql)?;
     let id_ok = match want {
-        SCHEMA_VERSION => id.as_deref().and_then(LedgerId::parse).is_some(),
-        _ => id.is_none(),
+        SCHEMA_VERSION_V3 => id.is_none(),
+        _ => id.as_deref().and_then(LedgerId::parse).is_some(),
     };
     if !id_ok {
         return Err(schema(()));
@@ -640,32 +659,42 @@ impl SqliteLedger {
         finish(conn, lock)
     }
 
-    /// Explicit operator upgrade of an existing `writ-ledger-3` ledger at `path` to
-    /// `writ-ledger-4`, then take ownership of it (D-035 item 5).
+    /// Explicit operator upgrade of an existing `writ-ledger-3` or `writ-ledger-4` ledger
+    /// at `path` to the current schema, then take ownership of it (D-035 item 5, D-036).
     ///
     /// Order: canonical identity; ownership lock; read-only verification of the exact
-    /// `writ-ledger-3` schema (any other file, including a `writ-ledger-4` ledger, is
-    /// refused unchanged); in one `BEGIN IMMEDIATE` transaction the `writ-ledger-4` tables,
-    /// the new version and a new random `ledger_id`; verification as `writ-ledger-4`;
+    /// older schema (any other file, including a current ledger, is refused unchanged);
+    /// in one `BEGIN IMMEDIATE` transaction the missing tables, the new version and, from
+    /// `writ-ledger-3`, a new random `ledger_id`; verification as the current schema;
     /// owner epoch. Every existing row is kept and nothing is invented: carried-over
     /// grants get no provenance (not executable until an explicit reviewed migration or
     /// recovery), carried-over `dispatched` receipts get no permit number (their
-    /// uncertainty is retained by reconciliation).
-    pub fn upgrade_from_v3(path: &Path) -> Result<SqliteLedger, StoreError> {
+    /// uncertainty is retained by reconciliation), and there are no workflows until an
+    /// operator creates them.
+    pub fn upgrade(path: &Path) -> Result<SqliteLedger, StoreError> {
         let canonical = existing_identity(path)?;
         let lock = take_ownership(&canonical)?;
         let mut conn = connect(&canonical, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-        verify(&conn, SCHEMA_V3, SCHEMA_VERSION_V3)?;
+        let from_v3 = match verify(&conn, SCHEMA_V3, SCHEMA_VERSION_V3) {
+            Ok(()) => true,
+            Err(_) => {
+                verify(&conn, SCHEMA_V4, SCHEMA_VERSION_V4)?;
+                false
+            }
+        };
         let sql = |e: rusqlite::Error| unavailable("upgrade", code_name(&e));
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql)?;
-        tx.execute_batch(SCHEMA_V4_ADDITIONS).map_err(sql)?;
-        tx.execute(
-            "INSERT INTO meta (key, value) VALUES ('ledger_id', ?1)",
-            [LedgerId::random()?.as_str()],
-        )
-        .map_err(sql)?;
+        if from_v3 {
+            tx.execute_batch(SCHEMA_V4_ADDITIONS).map_err(sql)?;
+            tx.execute(
+                "INSERT INTO meta (key, value) VALUES ('ledger_id', ?1)",
+                [LedgerId::random()?.as_str()],
+            )
+            .map_err(sql)?;
+        }
+        tx.execute_batch(SCHEMA_V5_ADDITIONS).map_err(sql)?;
         tx.commit().map_err(sql)?;
         verify(&conn, SCHEMA, SCHEMA_VERSION)?;
         finish(conn, lock)
@@ -926,10 +955,18 @@ impl GrantLedger for SqliteLedger {
                     status,
                 };
                 return Ok(match request.existing(&stored) {
-                    // Resume from `reserved`: a write-free commit (D-025 A).
-                    Ok(ReserveOutcome::Resumed) => End::Commit(Ok(ReserveOutcome::Resumed)),
+                    // Resume from `reserved`: a write-free commit (D-025 A), after the
+                    // effect prerequisites are checked again (M3-05).
+                    Ok(ReserveOutcome::Resumed) => match workflow::check_prerequisite(tx, request)? {
+                        Ok(()) => End::Commit(Ok(ReserveOutcome::Resumed)),
+                        Err(refusal) => End::Rollback(Err(refusal)),
+                    },
                     other => End::Rollback(other),
                 });
+            }
+            // Effect prerequisites (D-019 N-3, M3-05) before anything is reserved or consumed.
+            if let Err(refusal) = workflow::check_prerequisite(tx, request)? {
+                return Ok(End::Rollback(Err(refusal)));
             }
             if let Some(label) = request.grant_label() {
                 let stored = stored_grant(tx, label)?;
@@ -1298,6 +1335,9 @@ mod kill_tests;
 mod d035_tests;
 
 #[cfg(test)]
+mod transition_tests;
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
@@ -1552,14 +1592,14 @@ mod tests {
     }
 
     #[test]
-    fn new_ledger_is_writ_ledger_4_with_an_identity_and_without_a_floor() {
+    fn new_ledger_is_writ_ledger_5_with_an_identity_and_without_a_floor() {
         let db = tmp("v4");
         let l = SqliteLedger::create(&db).unwrap();
         assert_eq!(
             meta_value(&l.db().conn, "schema_version")
                 .unwrap()
                 .as_deref(),
-            Some("writ-ledger-4")
+            Some("writ-ledger-5")
         );
         let id = meta_value(&l.db().conn, "ledger_id").unwrap().unwrap();
         assert_eq!(LedgerId::parse(&id).as_ref(), Some(l.ledger_id()));

@@ -1,6 +1,6 @@
 # Acceptance-gate contract carry-over (M3-06) and INV-32..INV-40 map
 
-**Status:** REVISION 2, AMENDED PER OWNER DECISION D-033 item 4 (2026-11-12); schemas, examples and negative tests for review in [`docs/contracts/proposed/`](../contracts/proposed/) (`python3 docs/contracts/proposed/test_proposed_contracts.py`); semantic validation in `broker::contracts` (owner decision of 2026-11-12; see "Structural schemas versus semantic validation"). Nothing is integrated: M3-05 evaluator and attestation checks and M3-07 wait for the owner's review of these amended contracts. Nothing in this document is implemented except where a row says so. ADR-0008 APPROVED IN PRINCIPLE; release and production NO-GO.
+**Status:** REVISION 2, AMENDED PER OWNER DECISION D-033 item 4 (2026-11-12); schemas, examples and negative tests for review in [`docs/contracts/proposed/`](../contracts/proposed/) (`python3 docs/contracts/proposed/test_proposed_contracts.py`); semantic validation in `broker::contracts` (owner decision of 2026-11-12; see "Structural schemas versus semantic validation"). The amended contracts were **approved by the owner in D-034**; D-036 authorizes their use-time integration in M3-05 and M3-07 and adds an authenticated AcceptanceRecord contract. Nothing in this document is implemented except where a row says so. ADR-0008 APPROVED IN PRINCIPLE; release and production NO-GO.
 
 ## Scope amendment (recorded as D-032)
 
@@ -36,6 +36,15 @@ Machine-readable drafts: [`evaluator-registry-entry.schema.json`](../contracts/p
 Not covered by `broker::contracts` (still M3-05 and M3-07): MAC verification, registry lookup, binding equality against the protected transition at use time, freshness against trusted effective time at use, and consumption.
 
 **Negative tests (schema level, passing):** unknown members at every level; every context and evaluator binding missing; attestation without command, inputs, output, exit status, purpose, auth, id or freshness; unknown or wrongly cased algorithms; malformed tags; wrong purpose; missing or global scope; mechanical without a registered command or with trust MA; revoked without `revoked_at` and active with one; empty criteria; uppercase digests, fractional or offset times, out-of-range exit status and revisions, malformed targets, empty inputs, invalid criterion ids; mechanical evaluation without an attestation; unknown mode. **Semantic negative tests (Rust, `broker::contracts`, passing):** `..` and `.` target segments and other invalid target structure; a target for another tenant, project or workflow; impossible calendar times (`2026-02-30`, month 13, hour 24, minute or second 60, non-leap 29 February); inverted execution interval; `fresh_until` before `finished_at` or `issued_at`; future `finished_at` or `issued_at`; `revoked_at` before `published_at`. Use-time semantic negative tests (binding mismatch against the transition, registry mismatch, revoked evaluator, replayed attestation, stale freshness, snapshot mismatch) are written with M3-05 and M3-07.
+
+## Authenticated AcceptanceRecord contract (D-036 item 1, implemented in `broker::acceptance`)
+
+`authenticated-acceptance-record/1` is a closed object: `contract_version`; `purpose` `writ.acceptance-record.v1`; `issuer` (acceptance service id); `mode` (`governed` or `advisory`); `record` (the kernel AcceptanceRecord contract, unchanged, including its unkeyed `record_digest`); `evaluations` (one per record criterion: `criterion_id`, `evaluation_id`, `evaluator_id` equal to the criterion's, `evaluator_version`, `implementation_digest`, `environment_digest`, `registry_revision`, `attestation_id` (required exactly when the criterion's trust is `M`, otherwise `null`), `evidence_digests`); `auth` (`alg` `hmac-sha256`, `key_id`, `mac` as 64 hex digits).
+
+- **MAC bytes:** UTF-8 of the D-006 canonical JSON of the whole document with only `auth.mac` removed; every other member, including `issuer`, `mode`, all of `record`, all evaluations and `auth.alg`/`auth.key_id`, is authenticated.
+- **Key:** an `AcceptanceRecordKey` (its own type and purpose, never usable as an ingress, permit or runner key); unknown, revoked or wrong-purpose keys refuse (`ACCEPTANCE_RECORD_UNAUTHENTICATED`), an unavailable key ring fails closed (`ACCEPTANCE_KEY_UNAVAILABLE`).
+- **Projection:** after the MAC verifies, the `record` member alone goes to the kernel contract; the evaluations are checked against it; `advisory` refuses (`ACCEPTANCE_ADVISORY`).
+- A valid MAC authenticates the issuer only; current-policy, registry, revocation, freshness, immutable-snapshot and acceptance checks still run at use time. Production key provisioning and the acceptance service are future obligations.
 
 ## INV-32..INV-40 map
 

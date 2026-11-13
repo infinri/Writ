@@ -110,6 +110,10 @@ fn kill_child() {
     };
     let parts: Vec<&str> = spec.split('|').collect();
     let dir = PathBuf::from(parts[1]);
+    if parts[0] == "promote" {
+        super::transition_tests::promote_child(&dir, stage_of(parts[2]));
+        return;
+    }
     let ledger = SqliteLedger::open(&dir.join("ledger.db")).unwrap();
     let effects = SqliteEffectStore::open(&dir.join("effects.db"), ledger.ledger_id()).unwrap();
     let active = ActivePolicy::new(PolicyState::loaded(reference()));
@@ -814,4 +818,23 @@ fn sigkill_at_seeded_random_points_never_breaks_the_invariants() {
         "kills at distinct progress points"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[ignore = "spawns and kills child processes; fork duplicates other tests' ownership-lock descriptors, so run alone: cargo test -p writ-ledger-sqlite --lib kill_tests -- --ignored --test-threads=1"]
+fn sigkill_during_a_promotion_leaves_nothing_and_the_retry_commits_once() {
+    for stage in ["Begin", "Body"] {
+        let dir =
+            std::env::temp_dir().join(format!("writ-kill-{}-promote-{stage}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        super::transition_tests::prepare_promotion(&dir);
+        let mut child = spawn_child(&format!("promote|{}|{stage}", dir.display()));
+        let rx = lines(&mut child);
+        wait_for(&rx, "READY");
+        assert_eq!(wait_for(&rx, "AT "), format!("AT promote {stage}"));
+        kill(child);
+        super::transition_tests::after_promotion_kill(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

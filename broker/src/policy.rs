@@ -179,6 +179,18 @@ pub struct ExclusiveHold<'a> {
     _guard: RwLockWriteGuard<'a, PolicyState>,
 }
 
+impl ExclusiveHold<'_> {
+    /// The active policy in the kernel's form while the gate is held
+    /// exclusively (administration reads the protection classification).
+    pub(crate) fn policy(&self) -> Policy<'_> {
+        match &*self._guard {
+            PolicyState::Absent => Policy::Absent,
+            PolicyState::Rejected => Policy::Rejected,
+            PolicyState::Loaded(bundle) => Policy::Loaded(bundle),
+        }
+    }
+}
+
 /// The gate held shared: one consistent view of the active policy for the
 /// whole critical section. Released when dropped.
 #[derive(Debug)]

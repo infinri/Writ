@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 use writ_ledger_sqlite::{LedgerStore, SqliteLedger, StoreError, SCHEMA, SCHEMA_V3};
 
-/// A complete `writ-ledger-4` ledger as `create` writes it (schema plus identity).
+/// A complete current (`writ-ledger-5`) ledger as `create` writes it (schema plus identity).
 fn valid() -> String {
     format!("{SCHEMA}INSERT INTO meta (key, value) VALUES ('ledger_id', '0123456789abcdef0123456789abcdef');")
 }
