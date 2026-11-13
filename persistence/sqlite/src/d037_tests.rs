@@ -11,7 +11,6 @@
 use std::path::PathBuf;
 
 use writ_broker::acceptance::AcceptanceCode;
-use writ_broker::effects::{EffectAdapter, VerifiedEffect};
 use writ_broker::execute::{Broker, Executed};
 use writ_broker::grants::{
     ApprovalAuthority, ApprovalPresentation, ApproverRefusal, AuthenticatedApprover, GrantService,
@@ -22,13 +21,15 @@ use writ_broker::permit::Permit;
 use writ_broker::policy::{ActivePolicy, PolicyState};
 use writ_broker::refusal::Refusal;
 use writ_broker::workflow::{AdminRequest, PromotionOutcome, Trust};
-use writ_broker::writ_kernel::json::{self, Value};
+use writ_broker::writ_kernel::contracts::SchemaError;
+use writ_broker::writ_kernel::json::{self, Digest, Value};
 use writ_broker::writ_kernel::policy::{load_bundle, BundleRejection, LoadedBundle};
 use writ_broker::writ_kernel::time::Timestamp;
 
 use super::execute_tests::World;
 use super::grant_tests::{
-    approve_as, file_write, label, publish, reference, revision, set, verify, TestClock,
+    approve_as, file_write, label, now, publish, reference, reference_v2, revision, set, verify,
+    TestClock,
 };
 use super::transition_tests::{
     alice, committed, parse, sha, transition, wf, Docs, Operators, Snapshots, RECORD_KEY,
@@ -327,10 +328,15 @@ fn a_missing_or_malformed_protection_classification_is_refused_at_policy_load() 
             "{path:?}"
         );
     }
-    assert!(matches!(
+    // A present member is always parsed as a classification (`PolicyBundle::from_value`:
+    // only an absent member means "none"), so `null` is a schema violation of the member
+    // itself, decided before the ProtectionMissing rule (which sees only an absent member).
+    assert_eq!(
         load_bundle(&set(&base, &["workflow_protection"], Value::Null)).err(),
-        Some(BundleRejection::Schema(_) | BundleRejection::ProtectionMissing)
-    ));
+        Some(BundleRejection::Schema(SchemaError {
+            path: "workflow_protection"
+        }))
+    );
 }
 
 #[test]
@@ -405,20 +411,21 @@ fn tampered(permit: &Permit, member: &str, value: &str) -> Permit {
 #[test]
 fn the_adapter_applies_no_effect_without_a_verified_internal_authorization() {
     let w = World::new("d037-absent");
-    for refusal in [
-        Refusal::PermitInvalid,
-        Refusal::PermitRequestMismatch,
-        Refusal::PermitExpired,
-        Refusal::PermitStale,
-        Refusal::TimeUnavailable,
-    ] {
-        let r = refusal.clone();
-        let mut absent = move || -> Result<VerifiedEffect, Refusal> { Err(r.clone()) };
-        assert_eq!(w.effects.apply(&mut absent), Ok(Err(refusal)));
-    }
+    let b = w.broker();
+    // An authorization the broker issued but that no longer verifies (expired at trusted
+    // time, or issued under a replaced bundle) is refused by the production verification
+    // inside the adapter transaction, and nothing is applied or consumed.
+    let req = file_write("k0");
+    w.effects
+        .inject(fault::Stage::Begin, rusqlite::ffi::SQLITE_IOERR);
+    let issued = b.execute(&verify(&req), revision(), None).permit.unwrap();
+    w.active.activate(PolicyState::loaded(reference_v2()));
+    assert_eq!(b.present_permit(&issued, &req), Refusal::PermitStale);
+    w.active.activate(PolicyState::loaded(reference()));
+    w.clock.set(now().plus_seconds(30));
+    assert_eq!(b.present_permit(&issued, &req), Refusal::PermitExpired);
     assert_eq!(effect_rows(&w.effects), 0);
     assert_eq!(consumed_rows(&w.effects), 0);
-    let b = w.broker();
     // A permit-shaped document bound to the presented request that the broker never issued.
     let req = file_write("k1");
     let never = Permit::from_value(&parse(&format!(
@@ -665,4 +672,161 @@ fn execution_outside_the_request_scope_without_policy_or_without_a_permitting_st
             .result,
         Ok(Executed::EffectCompleted)
     );
+}
+
+// ---------------------------------------------------------------------------
+// D-037 item 5 (`sc-46`, `sc-62`): a client-held permit carries no authority.
+
+fn unhex(text: &str) -> Vec<u8> {
+    (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
+        .collect()
+}
+
+/// HMAC-SHA256 from the kernel's SHA-256 (as in `transition_tests`).
+fn hmac_hex(key: &[u8], message: &[u8]) -> String {
+    let mut k = key.to_vec();
+    k.resize(64, 0);
+    let pad = |b: u8| k.iter().map(|x| x ^ b).collect::<Vec<u8>>();
+    let mut inner = pad(0x36);
+    inner.extend_from_slice(message);
+    let inner = unhex(Digest::of_bytes(&inner).hex());
+    let mut outer = pad(0x5c);
+    outer.extend_from_slice(&inner);
+    Digest::of_bytes(&outer).hex().to_string()
+}
+
+/// A permit in the M1 wire form, MACed with the broker's own permit key, bound to
+/// `request` and to the active bundle, unexpired: everything a legacy client permit would
+/// need to pass verification, but never issued by an execution.
+fn legacy_client_permit(request: &Value, bundle_sha: &str) -> Permit {
+    let fingerprint = verify(request).fingerprint().as_str().to_string();
+    let expires_at = now().plus_seconds(30).to_string();
+    let body = json::obj([
+        ("permit_id", json::s("client-permit-1")),
+        ("request_fingerprint", json::s(&fingerprint)),
+        ("policy_bundle_sha", json::s(bundle_sha)),
+        ("expires_at", json::s(&expires_at)),
+    ]);
+    let mac = hmac_hex(&[0x44; 32], json::canonical(&body).unwrap().as_bytes());
+    Permit::from_value(&set(&body, &["mac"], json::s(&mac))).unwrap()
+}
+
+#[test]
+fn a_would_be_valid_client_permit_carries_no_authority_under_a_bundle_that_does_not_permit_the_effect(
+) {
+    let w = World::new("d037-client-permit");
+    let b = w.broker();
+    // The reference bundle without its workspace-file permission: file.write is default deny.
+    let doc = parse(include_str!(
+        "../../../docs/contracts/fixtures/policy/m0-reference.bundle.json"
+    ));
+    let statements: Vec<Value> = doc
+        .get("statements")
+        .unwrap()
+        .as_arr()
+        .unwrap()
+        .iter()
+        .filter(|s| s.get("statement_id").and_then(Value::as_str) != Some("permit-workspace-files"))
+        .cloned()
+        .collect();
+    let doc = set(&doc, &["statements"], Value::Arr(statements));
+    let denying = load_bundle(&set(&doc, &["version"], json::s("0.7.0"))).unwrap();
+    let denying_sha = denying.sha.as_str().to_string();
+    w.active.activate(PolicyState::loaded(denying));
+    let req = file_write("k1");
+    let permit = legacy_client_permit(&req, &denying_sha);
+    // The permit passes every verification check; presentation still never initiates an
+    // effect (D-035 item 3: every verifiable permit belongs to a dispatched receipt).
+    for _ in 0..3 {
+        assert_eq!(
+            b.present_permit(&permit, &req),
+            Refusal::ReconciliationRequired
+        );
+    }
+    // The broker decides the request itself and refuses it; nothing is dispatched.
+    let e = b.execute(&verify(&req), revision(), None);
+    assert_eq!(
+        e.result.as_ref().map_err(Refusal::code),
+        Err("DEFAULT_DENY")
+    );
+    assert!(e.permit.is_none());
+    assert_eq!(
+        b.present_permit(&permit, &req),
+        Refusal::ReconciliationRequired
+    );
+    assert_eq!(effect_rows(&w.effects), 0);
+    assert_eq!(consumed_rows(&w.effects), 0);
+    assert_eq!(
+        w.ledger
+            .db()
+            .conn
+            .query_row("SELECT count(*) FROM receipts", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D-037 item 6 (`sc-47`): reconciliation with nothing uncertain.
+
+type Observed = (String, i64, i64, i64, i64, i64);
+
+fn observed(w: &World) -> Observed {
+    let l = |sql: &str| -> i64 { w.ledger.db().conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+    let receipts: String = w
+        .ledger
+        .db()
+        .conn
+        .query_row(
+            "SELECT group_concat(idempotency_key || ':' || status) FROM receipts",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    (
+        receipts,
+        l("SELECT count(*) FROM receipt_events"),
+        l("SELECT count(*) FROM reconciliations"),
+        l("SELECT value FROM counters WHERE name = 'next_permit'"),
+        effect_rows(&w.effects),
+        consumed_rows(&w.effects),
+    )
+}
+
+#[test]
+fn reconcile_without_an_uncertain_receipt_returns_zero_and_changes_nothing() {
+    let w = World::new("d037-empty-reconcile");
+    let b = w.broker();
+    // Settled history: one observed success and one refused request (no receipt).
+    assert_eq!(
+        b.execute(&verify(&file_write("k1")), revision(), None)
+            .result,
+        Ok(Executed::EffectCompleted)
+    );
+    let denied = set(
+        &file_write("k2"),
+        &["action", "kind"],
+        json::s("agent.dispatch"),
+    );
+    assert!(b
+        .execute(&verify(&denied), revision(), None)
+        .result
+        .is_err());
+    let before = observed(&w);
+    assert_eq!(before.0, "k1:observed_success");
+    assert_eq!((before.4, before.5), (1, 1));
+    for _ in 0..3 {
+        let r = b.reconcile().unwrap();
+        assert_eq!(
+            (r.observed_success, r.observed_failure, r.unknown),
+            (0, 0, 0)
+        );
+        assert_eq!(
+            observed(&w),
+            before,
+            "no state, dispatch or outcome written"
+        );
+    }
 }
