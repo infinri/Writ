@@ -42,6 +42,10 @@ jobs:
           m3/tools/run-with-clean-fds.sh cargo test --workspace --locked
       - name: Process-kill crash tests (M3-04), run alone and single-threaded
         run: m3/tools/run-with-clean-fds.sh cargo test -p writ-ledger-sqlite --locked --lib kill_tests -- --ignored --test-threads=1
+      - name: M3-08 oracle-only broker property gate against the production adapter (seeded CI profile)
+        run: |
+          cargo build --release --locked -p writ-ledger-sqlite --example m3_line_adapter
+          m3/tools/run-with-clean-fds.sh python3 m3/props/run.py --profile ci --proto "$GITHUB_WORKSPACE/target/release/examples/m3_line_adapter" --out m3-props.json
       - name: Kernel fixture parity through the dev-only M1 line adapter (320 kernel cases; M3 sets excluded)
         run: |
           cargo build --release --locked --example m1_line_adapter
@@ -59,6 +63,7 @@ jobs:
         run: |
           python3 -m unittest discover -s kernel/tools -v
           python3 -m unittest discover -s m3/closure -v
+          python3 -m unittest discover -s m3/props -v
           python3 kernel/tools/check_deps.py --osv --sbom kernel-sbom.json
       - uses: actions/upload-artifact@v4
         with:
