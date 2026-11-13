@@ -36,10 +36,10 @@ use super::{fault, SqliteEffectStore, SqliteLedger};
 
 const T: &str = "fixture-tenant";
 const P: &str = "fixture-project";
-const RECORD_KEY: [u8; 32] = [0x5a; 32];
+pub(crate) const RECORD_KEY: [u8; 32] = [0x5a; 32];
 const RUNNER_KEY: [u8; 32] = [0x6b; 32];
 
-fn sha(c: char) -> String {
+pub(crate) fn sha(c: char) -> String {
     format!("sha256:{}", c.to_string().repeat(64))
 }
 
@@ -51,7 +51,7 @@ fn now() -> Timestamp {
     ts("2026-11-07T11:00:00Z")
 }
 
-fn parse(text: &str) -> Value {
+pub(crate) fn parse(text: &str) -> Value {
     json::parse(text.as_bytes()).unwrap()
 }
 
@@ -77,7 +77,7 @@ fn hmac_hex(key: &[u8], message: &[u8]) -> String {
     Digest::of_bytes(&outer).hex().to_string()
 }
 
-fn sign(doc: &Value, key: &[u8]) -> Value {
+pub(crate) fn sign(doc: &Value, key: &[u8]) -> Value {
     let tag = hmac_hex(key, mac_bytes(doc).unwrap().as_bytes());
     set(doc, &["auth", "mac"], json::s(&tag))
 }
@@ -209,13 +209,13 @@ fn bundle_other_dependency() -> LoadedBundle {
 // Test sources, snapshot store and authority.
 
 #[derive(Default)]
-struct Docs {
-    docs: Mutex<BTreeMap<String, Value>>,
+pub(crate) struct Docs {
+    pub(crate) docs: Mutex<BTreeMap<String, Value>>,
     down: AtomicBool,
 }
 
 impl Docs {
-    fn put(&self, id: &str, doc: Value) {
+    pub(crate) fn put(&self, id: &str, doc: Value) {
         self.docs.lock().unwrap().insert(id.to_string(), doc);
     }
 
@@ -241,8 +241,8 @@ impl AttestationSource for Docs {
 }
 
 #[derive(Default)]
-struct Snapshots {
-    content: Mutex<BTreeMap<String, String>>,
+pub(crate) struct Snapshots {
+    pub(crate) content: Mutex<BTreeMap<String, String>>,
     down: AtomicBool,
 }
 
@@ -266,7 +266,7 @@ impl SnapshotStore for Snapshots {
 }
 
 /// `ops:alice` on `ops-console` may administer the fixture project; `ops:bob` only another.
-struct Operators;
+pub(crate) struct Operators;
 
 impl WorkflowAuthority for Operators {
     fn authorize(
@@ -293,7 +293,7 @@ impl WorkflowAuthority for Operators {
     }
 }
 
-fn alice() -> AdminPresentation<'static> {
+pub(crate) fn alice() -> AdminPresentation<'static> {
     AdminPresentation {
         channel: "ops-console",
         operator: "ops:alice",
@@ -301,7 +301,7 @@ fn alice() -> AdminPresentation<'static> {
     }
 }
 
-fn wf() -> WorkflowKey {
+pub(crate) fn wf() -> WorkflowKey {
     WorkflowKey {
         tenant_id: T.into(),
         project_id: P.into(),
@@ -484,7 +484,7 @@ impl W {
     }
 }
 
-fn committed(revision: i64) -> PromotionOutcome {
+pub(crate) fn committed(revision: i64) -> PromotionOutcome {
     PromotionOutcome::Committed {
         revision,
         receipt_id: format!("promotion:wf-1:{revision}"),
@@ -492,7 +492,7 @@ fn committed(revision: i64) -> PromotionOutcome {
 }
 
 /// A sealed transition request with idempotency key `key`.
-fn transition(
+pub(crate) fn transition(
     key: &str,
     from: &str,
     to: &str,

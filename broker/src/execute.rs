@@ -85,6 +85,13 @@
 //! changes nothing further. Process-local only: a reconciler in another
 //! process is refused by the single-owner ledger (M3-01).
 //!
+//! **Runner routing** (M3-07): a broker built with [`Broker::with_runner`]
+//! sends requests of kind [`RUNNER_EFFECT_KIND`] to the runner adapter (in
+//! T-adapter and `present_permit`) and every other kind to the controlled
+//! effect adapter; reconciliation reads the evidence of both (a permit id
+//! with a record in both is an integrity failure). Without a runner, a runner
+//! request is `REQUEST_SCOPE_MISMATCH` before anything is reserved.
+//!
 //! **Restart** (D-020): all of the above state is in the ledger and the effect
 //! store; a new broker over the reopened ledger resumes a `reserved` receipt
 //! (revalidating its grant) and never dispatches a `dispatched` or
@@ -120,10 +127,21 @@ use crate::keys::PermitKey;
 use crate::permit::{Permit, PermitId, PermitIssueError};
 use crate::policy::{ActivePolicy, SharedPolicy};
 use crate::refusal::Refusal;
+use crate::runner::RUNNER_EFFECT_KIND;
 use crate::store::{ExecuteLedger, LedgerStore, StoreError, TxFailure};
 use writ_kernel::contracts::StateRevision;
 use writ_kernel::json::Value;
 use writ_kernel::time::Timestamp;
+
+/// `true` when `request` is a runner evaluation ([`RUNNER_EFFECT_KIND`]),
+/// which only the runner adapter may apply.
+fn is_runner(request: &Value) -> bool {
+    request
+        .get("action")
+        .and_then(|a| a.get("kind"))
+        .and_then(Value::as_str)
+        == Some(RUNNER_EFFECT_KIND)
+}
 
 /// The permit id of permit number `n` (`permit-<n>`).
 pub fn permit_id_for(n: u64) -> Option<PermitId> {
@@ -594,6 +612,8 @@ where
 pub struct Broker<'a, L: ?Sized, A: ?Sized> {
     grants: GrantService<'a, L>,
     adapter: &'a A,
+    /// The runner adapter for [`RUNNER_EFFECT_KIND`] requests (M3-07), if any.
+    runner: Option<&'a dyn EffectAdapter>,
     permit_key: &'a PermitKey,
     /// Per-workflow locks (M3-05): a promotion, and an execution whose
     /// request names a workflow, hold their workflow's lock from validation
@@ -620,9 +640,19 @@ where
         Broker {
             grants: GrantService::new(active, clock, ledger),
             adapter,
+            runner: None,
             permit_key,
             workflow_locks: KeyLocks::new(),
         }
+    }
+
+    /// The same broker with `runner` as the adapter of [`RUNNER_EFFECT_KIND`]
+    /// requests (M3-07). Requests of every other kind still go to the
+    /// controlled effect adapter; without a runner, a runner request is
+    /// refused before anything is reserved (`REQUEST_SCOPE_MISMATCH`).
+    pub fn with_runner(mut self, runner: &'a dyn EffectAdapter) -> Broker<'a, L, A> {
+        self.runner = Some(runner);
+        self
     }
 
     /// Approval issuance and the per-key locks (shared with execution).
@@ -671,6 +701,9 @@ where
         let inputs = shared.trusted_inputs(state_revision);
         let authorized = authorize(verified, &inputs, &observed)?;
         let request = ReserveRequest::new(&authorized, observed, grant)?;
+        if is_runner(verified.request()) && self.runner.is_none() {
+            return Err(Refusal::RequestScopeMismatch);
+        }
         // A request naming a workflow holds the workflow lock from its
         // prerequisite check in T-reserve until the effect is observed, so no
         // promotion can change the workflow in between (D-036); administrative
@@ -764,10 +797,15 @@ where
     ) -> Result<Result<EffectResult, Refusal>, TxFailure> {
         let clock = self.floor_clock();
         let key = self.permit_key;
-        self.adapter.apply(&mut || {
+        let mut verify = || {
             let verified = permit.verify(request, key, &clock, hold)?;
             VerifiedEffect::new(verified, request)
-        })
+        };
+        match (is_runner(request), self.runner) {
+            (false, _) => self.adapter.apply(&mut verify),
+            (true, Some(runner)) => runner.apply(&mut verify),
+            (true, None) => Ok(Err(Refusal::RequestScopeMismatch)),
+        }
     }
 
     /// Present a client-held `permit` with `request` (D-035 item 3; module
@@ -783,10 +821,15 @@ where
             let shared = self.grants.active.shared();
             let clock = self.floor_clock();
             let key = self.permit_key;
-            let inspected = self.adapter.inspect(&mut || {
+            let mut verify = || {
                 let verified = permit.verify(request, key, &clock, &shared)?;
                 VerifiedEffect::new(verified, request)
-            });
+            };
+            let inspected = match (is_runner(request), self.runner) {
+                (false, _) => self.adapter.inspect(&mut verify),
+                (true, Some(runner)) => runner.inspect(&mut verify),
+                (true, None) => Ok(Err(Refusal::RequestScopeMismatch)),
+            };
             match inspected {
                 Err(f) => Refusal::LedgerUnavailable(f.error),
                 Ok(Err(refusal)) => refusal,
@@ -819,7 +862,7 @@ where
         for receipt in pending {
             let evidence = match receipt.permit_number.and_then(permit_id_for) {
                 None => None,
-                Some(id) => self.adapter.evidence(id.as_str()).map_err(unavailable)?,
+                Some(id) => self.evidence(id.as_str()).map_err(unavailable)?,
             };
             let observed = match evidence {
                 None => None,
@@ -828,6 +871,28 @@ where
             resolutions.push(Resolution { receipt, observed });
         }
         ledger.reconcile(hold, &resolutions).map_err(unavailable)
+    }
+
+    /// The evidence for `permit_id` held by the controlled effect adapter or
+    /// the runner (permit ids are unique per ledger, so at most one holds a
+    /// record; a record in both is an integrity failure).
+    fn evidence(&self, permit_id: &str) -> Result<Option<EffectEvidence>, TxFailure> {
+        let controlled = self.adapter.evidence(permit_id)?;
+        let runner = match self.runner {
+            Some(runner) => runner.evidence(permit_id)?,
+            None => None,
+        };
+        match (controlled, runner) {
+            (Some(_), Some(_)) => Err(TxFailure::new(
+                crate::store::TxStage::Body,
+                StoreError::Unavailable {
+                    category: "reconcile evidence".into(),
+                    code: "integrity".into(),
+                },
+            )),
+            (Some(e), None) | (None, Some(e)) => Ok(Some(e)),
+            (None, None) => Ok(None),
+        }
     }
 
     /// The observed status `evidence` establishes for `receipt`; evidence

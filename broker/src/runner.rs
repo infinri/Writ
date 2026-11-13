@@ -333,3 +333,14 @@ pub fn output_digest(output: &JobOutput) -> Option<String> {
     ]);
     json::digest(&doc).ok().map(|d| d.as_str().to_string())
 }
+
+mod adapter;
+pub use adapter::{
+    attestation_id_for, LedgerClock, ProducedAttestation, RunOutcome, RunRecord, RunState,
+    RunnerAdapter, RunnerConfig, RunnerDiagnostic, RunnerSources, RunnerState, RunnerStore,
+    PROGRAM_NAME,
+};
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests;

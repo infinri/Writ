@@ -96,6 +96,12 @@
 //! events; the fenced `admin` and `promote` transactions and the effect-prerequisite check
 //! inside T-reserve are in module `workflow`.
 //!
+//! **Mechanical runner (M3-07):** the runner's consumed permits, run outcomes and
+//! attestations live in its own store, [`SqliteRunnerStore`] (module `runner_store`, schema
+//! `writ-runner-1`), bound to this ledger's [`LedgerId`] with the effect store's identity
+//! and ownership rules; the ledger reads the runner needs are `RunnerState` for
+//! [`SqliteLedger`].
+//!
 //! **Trusted time (since schema `writ-ledger-2`):** `time_floor` holds the high-water mark `H`
 //! (at most one row, raised only, in the fenced `time_floor` transaction, which returns the
 //! stored maximum); `clock_events` holds startup, drift and acknowledgement records (fenced
@@ -129,8 +135,10 @@ use writ_broker::store::Timestamp;
 pub use writ_broker::store::{ExecuteLedger, GrantLedger, LedgerStore, StoreError};
 
 mod effects;
+mod runner_store;
 mod workflow;
 pub use effects::{SqliteEffectStore, EFFECTS_SCHEMA, EFFECTS_SCHEMA_VERSION};
+pub use runner_store::{SqliteRunnerStore, RUNNER_SCHEMA, RUNNER_SCHEMA_VERSION};
 use writ_broker::store::{TxFailure, TxStage};
 
 /// The exact `writ-ledger-3` schema (the base objects of every ledger).
@@ -1338,6 +1346,9 @@ mod d035_tests;
 
 #[cfg(test)]
 mod transition_tests;
+
+#[cfg(test)]
+mod runner_tests;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
