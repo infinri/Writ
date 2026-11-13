@@ -91,9 +91,12 @@
 //! stage, observe failure, a crash) leaves the receipt `dispatched`; a retry of
 //! the same request then answers `RECONCILIATION_REQUIRED` at T-reserve and
 //! starts no second dispatch. The broker guarantees **at most one dispatch per
-//! (tenant, idempotency key)** and, through the adapter's consumed permit ids,
-//! at most one effect per permit. It does **not** claim exactly-once execution
-//! for external systems.
+//! (tenant, idempotency key)** (D-039). Effect and recovery guarantees are
+//! adapter-specific: the controlled adapter consumes each permit id with its
+//! effect record in one transaction of its own store, so it records at most one
+//! effect per permit; a real external adapter needs its own effect, replay and
+//! recovery contract (D-035 item 2). The broker does **not** claim at-most-once
+//! or exactly-once execution of arbitrary external effects.
 //!
 //! **Partial progress (D-026, D-035 item 4).** [`Execution::evidence`] records,
 //! for each lifecycle transaction that ran, whether it committed and, if it

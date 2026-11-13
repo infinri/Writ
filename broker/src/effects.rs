@@ -23,12 +23,14 @@
 //!    applied (or recorded as failed) in the same transaction, then committed.
 //!    A failing commit is `LEDGER_UNAVAILABLE` and leaves neither.
 //!
-//! An adapter therefore applies at most one effect per permit id, and never an
-//! effect without a consumed permit. It does not make an external system
-//! exactly-once: after a failure the broker cannot know whether the commit
-//! happened, so the receipt stays `dispatched` and only reconciliation may
-//! proceed. At-most-once dispatch is distinct from exactly-once external
-//! effects (D-035 item 2).
+//! An adapter that keeps this contract therefore records at most one effect per
+//! permit id in its own durable store, and never an effect without a consumed
+//! permit; what that means for a real external system depends on that adapter's
+//! own effect, replay and recovery contract (D-035 item 2). It does not make an
+//! external system at-most-once or exactly-once: after a failure the broker
+//! cannot know whether the commit happened, so the receipt stays `dispatched`
+//! and only reconciliation may proceed. The broker's own guarantee is at most
+//! one dispatch per (tenant, idempotency key) (D-039).
 //!
 //! **Inspection** ([`EffectAdapter::inspect`], D-035 item 3): a client-held
 //! permit is verified in a read-only adapter transaction (same precedence:
