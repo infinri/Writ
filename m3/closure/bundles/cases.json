@@ -1,0 +1,323 @@
+{
+ "description": "Declared harness table (D-037 items 2 and 3; m3/closure/bindings.md): per case id the active harness bundle, the bundle activate_authorization_bundle activates, the trusted-record source override and the runner outcome override. A case not listed is refused at setup. Default records: the first inline presentation of each record id, issued once at setup; default runner outcome: exit_status 0, started 2026-11-07T10:58:00Z, finished 10:59:00Z, fresh until 11:30:00Z.",
+ "runner_default": {
+  "exit_status": 0,
+  "started_at": "2026-11-07T10:58:00Z",
+  "finished_at": "2026-11-07T10:59:00Z",
+  "fresh_until": "2026-11-07T11:30:00Z"
+ },
+ "cases": {
+  "m3c-01-promote": {
+   "active": "accept"
+  },
+  "m3c-02-identical-retry": {
+   "active": "accept"
+  },
+  "m3c-03-same-key-different-request": {
+   "active": "accept-deploy"
+  },
+  "m3c-04-record-replay-new-key": {
+   "active": "accept-deploy"
+  },
+  "m3c-09-policy-did-not-allow": {
+   "active": "protection-only"
+  },
+  "m3c-12-refusal-is-side-effect-free": {
+   "active": "accept"
+  },
+  "m3c-13-refused-key-reusable": {
+   "active": "accept"
+  },
+  "m3c-15-workflow-already-moved": {
+   "active": "accept"
+  },
+  "m3c-16-scenario-member-order": {
+   "active": "accept"
+  },
+  "m3c-19-actor-not-authorized": {
+   "active": "accept-release-manager"
+  },
+  "m3c-25-record-swapped-under-binding": {
+   "active": "accept",
+   "records_from": {
+    "set": "companions",
+    "case": "m3c-01-promote",
+    "step": 0
+   }
+  },
+  "m3c-36-authorization-bundle-changed": {
+   "active": "accept",
+   "activate": "protection-only"
+  },
+  "m3c-38-repeated-refusals-then-success": {
+   "active": "accept"
+  },
+  "m3c-39-crash-before-commit-then-retry": {
+   "active": "accept"
+  },
+  "m3c-50-protection-missing": {
+   "active": "protection-missing"
+  },
+  "m3c-51-protection-other-dependency": {
+   "active": "accept-e"
+  },
+  "m3c-53-protected-edge-with-record": {
+   "active": "start-verification"
+  },
+  "m3c-54-edge-record-reused-for-destination": {
+   "active": "edge-then-accept"
+  },
+  "m3c-56-accept-a-publish-b": {
+   "active": "accept-publish"
+  },
+  "m3c-57-accepted-artifact-modified": {
+   "active": "accept-publish"
+  },
+  "m3c-58-acceptance-policy-changed-after-promotion": {
+   "active": "accept-publish"
+  },
+  "m3c-59-authorization-changed-after-promotion": {
+   "active": "accept-publish",
+   "activate": "accept-publish-e"
+  },
+  "m3c-63-publish-after-promotion": {
+   "active": "accept-publish"
+  },
+  "m3c-65-uncertain-publication": {
+   "active": "accept-publish"
+  },
+  "m3n-01-state-not-in-bundle": {
+   "active": "publish"
+  },
+  "m3n-02-last-promotion-after-revision": {
+   "active": "publish"
+  },
+  "m3n-03-last-promotion-other-workflow": {
+   "active": "publish"
+  },
+  "m3n-04-last-promotion-record-not-consumed": {
+   "active": "publish"
+  },
+  "m3n-05-seed-consumes-presented-record": {
+   "active": "accept"
+  },
+  "m3n-06-revision-zero": {
+   "active": "publish"
+  },
+  "p-05-transition-initial-missing-state": {
+   "active": "accept"
+  },
+  "p-06-transition-count-zero": {
+   "active": "accept"
+  },
+  "p-07-transition-unknown-fault": {
+   "active": "accept"
+  },
+  "p-08-transition-unknown-op": {
+   "active": "protection-only"
+  },
+  "p-16-scenario-member-order": {
+   "active": "accept"
+  },
+  "sc-01-promote": {
+   "active": "accept"
+  },
+  "sc-02-identical-retry": {
+   "active": "accept"
+  },
+  "sc-03-same-key-different-request": {
+   "active": "accept-deploy"
+  },
+  "sc-04-record-replay-new-key": {
+   "active": "accept-deploy"
+  },
+  "sc-05-artifact-replaced-before-promotion": {
+   "active": "accept"
+  },
+  "sc-06-stale-cas": {
+   "active": "accept"
+  },
+  "sc-07-snapshot-swapped-same-digest": {
+   "active": "accept"
+  },
+  "sc-08-policy-changed": {
+   "active": "accept"
+  },
+  "sc-08b-policy-changed-compatible": {
+   "active": "accept",
+   "activate": "accept-e"
+  },
+  "sc-09-kernel-did-not-allow": {
+   "active": "accept"
+  },
+  "sc-10-race-16": {
+   "active": "accept"
+  },
+  "sc-11-expired": {
+   "active": "accept"
+  },
+  "sc-12-refusal-is-side-effect-free": {
+   "active": "accept"
+  },
+  "sc-13-refused-key-reusable": {
+   "active": "accept"
+  },
+  "sc-14-malformed-record": {
+   "active": "accept"
+  },
+  "sc-15-workflow-already-moved": {
+   "active": "accept"
+  },
+  "sc-16-cross-project-record": {
+   "active": "accept"
+  },
+  "sc-17-transition-not-evaluated": {
+   "active": "accept-deploy"
+  },
+  "sc-18-permit-reused-for-other-target": {
+   "active": "accept"
+  },
+  "sc-19-permit-actor-changed": {
+   "active": "accept"
+  },
+  "sc-20-permit-revision-changed": {
+   "active": "accept"
+  },
+  "sc-21-permit-scope-changed": {
+   "active": "accept"
+  },
+  "sc-22-permit-snapshot-attribute-changed": {
+   "active": "accept"
+  },
+  "sc-23-permit-digest-attribute-changed": {
+   "active": "accept"
+  },
+  "sc-24-permit-record-id-attribute-changed": {
+   "active": "accept"
+  },
+  "sc-25-record-swapped-under-permit": {
+   "active": "accept",
+   "records_from": {
+    "set": "transition-scenarios",
+    "case": "sc-01-promote",
+    "step": 0
+   }
+  },
+  "sc-26-attributes-disagree-with-record": {
+   "active": "accept"
+  },
+  "sc-27-other-workflow": {
+   "active": "accept"
+  },
+  "sc-28-composite-at-broker": {
+   "active": "accept"
+  },
+  "sc-29-incomplete-record": {
+   "active": "accept"
+  },
+  "sc-30-evaluator-revoked": {
+   "active": "accept"
+  },
+  "sc-31-unprotected-without-acceptance": {
+   "active": "start-verification"
+  },
+  "sc-32-protected-without-acceptance": {
+   "active": "accept"
+  },
+  "sc-33-alternate-route-to-protected-state": {
+   "active": "review"
+  },
+  "sc-34-alternate-route-with-old-record": {
+   "active": "review"
+  },
+  "sc-35-unprotected-with-acceptance-binding": {
+   "active": "start-verification"
+  },
+  "sc-36-authorization-bundle-changed": {
+   "active": "accept",
+   "activate": "accept-v2"
+  },
+  "sc-37-own-kind-in-capabilities": {
+   "active": "accept"
+  },
+  "sc-38-repeated-refusals-then-success": {
+   "active": "accept"
+  },
+  "sc-39-crash-before-commit-then-retry": {
+   "active": "accept"
+  },
+  "sc-40-effect-retry": {
+   "active": "publish"
+  },
+  "sc-41-interrupted-dispatch-retry": {
+   "active": "publish"
+  },
+  "sc-42-interrupted-dispatch-other-request": {
+   "active": "publish-other"
+  },
+  "sc-43-reconciled-applied": {
+   "active": "publish"
+  },
+  "sc-44-reconciled-not-applied": {
+   "active": "publish"
+  },
+  "sc-45-crash-before-reserve": {
+   "active": "publish-other"
+  },
+  "sc-46-effect-refused-then-valid": {
+   "active": "publish"
+  },
+  "sc-47-reconcile-nothing": {
+   "active": "protection-only"
+  },
+  "sc-50-protection-classification-missing": {
+   "active": "accept"
+  },
+  "sc-51-protection-from-other-bundle": {
+   "active": "accept"
+  },
+  "sc-52-protected-edge-without-record": {
+   "active": "start-verification"
+  },
+  "sc-53-protected-edge-with-record": {
+   "active": "start-verification"
+  },
+  "sc-54-edge-record-reused-for-destination": {
+   "active": "edge-then-accept"
+  },
+  "sc-55-publish-before-acceptance": {
+   "active": "publish"
+  },
+  "sc-56-accept-a-publish-b": {
+   "active": "accept-publish"
+  },
+  "sc-57-accepted-artifact-modified": {
+   "active": "accept-publish"
+  },
+  "sc-58-acceptance-policy-changed-after-promotion": {
+   "active": "accept-publish"
+  },
+  "sc-59-authorization-changed-after-promotion": {
+   "active": "accept-publish",
+   "activate": "accept-publish-e"
+  },
+  "sc-60-missing-promotion-receipt": {
+   "active": "publish"
+  },
+  "sc-61-forged-promotion-receipt": {
+   "active": "publish"
+  },
+  "sc-62-publication-permit-other-target": {
+   "active": "publish"
+  },
+  "sc-63-publish-after-promotion": {
+   "active": "accept-publish"
+  },
+  "sc-64-concurrent-invalidation-and-publication": {
+   "active": "publish"
+  },
+  "sc-65-uncertain-publication": {
+   "active": "accept-publish"
+  }
+ }
+}

@@ -18,8 +18,8 @@ use writ_broker::writ_kernel::policy::load_bundle;
 
 use crate::common::{
     adapter_error, int, malformed, pairs, production_difference, refused, result, text, unhex,
-    unsupported, ChannelAuthority, Labels, Point, ProdBroker, World, C1, C2, C6, C7, C8,
-    DIFFERENCE,
+    unsupported, ChannelAuthority, Labels, Point, ProdBroker, World, ADAPTER_SEALED, C1, C2, C6,
+    C7, C8, DIFFERENCE,
 };
 
 const BROKER_STATE: [&str; 7] = [
@@ -261,6 +261,7 @@ impl BrokerCase {
             );
         };
         self.world.labels.add(C2);
+        self.world.labels.add(ADAPTER_SEALED);
         let verdict = match op.get("verdict").and_then(Value::as_str) {
             Some("approved") => Verdict::Approved,
             Some("denied") => Verdict::Denied,

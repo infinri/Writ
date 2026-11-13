@@ -55,6 +55,8 @@ pub const HARNESS_BUNDLE: &str = "harness-authorization-bundle";
 pub const TEST_EVIDENCE: &str = "test-authenticated-evidence";
 pub const SEALED_EFFECT: &str = "sealed-execute-effect";
 pub const DIFFERENCE: &str = "production-difference";
+pub const PERMIT_DROPPED: &str = "client-permit-dropped";
+pub const ADAPTER_SEALED: &str = "adapter-sealed";
 
 /// The adaptations one case actually exercised.
 #[derive(Default)]

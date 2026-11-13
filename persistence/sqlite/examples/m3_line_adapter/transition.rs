@@ -43,21 +43,77 @@ use writ_broker::writ_kernel::policy::{load_bundle, LoadedBundle};
 use crate::broker::{executed, Step};
 use crate::common::{
     adapter_error, count, int, malformed, production_difference, refused, refused_setup, result,
-    strings, text, unsupported, with, Labels, Point, TestOperators, World, ADMIN, C1, C5, C7, C8,
-    DIFFERENCE, HARNESS_BUNDLE, SEALED_EFFECT, SEEDED,
+    strings, text, unsupported, with, Labels, Point, TestOperators, World, ADAPTER_SEALED, ADMIN,
+    C1, C5, C7, C8, DIFFERENCE, HARNESS_BUNDLE, PERMIT_DROPPED, SEALED_EFFECT, SEEDED,
 };
 use crate::evidence::{record_keys, registry_entries, runner_keys, Docs};
 
-const BUNDLE_BASE: &str =
-    include_str!("../../../../m3/closure/bundles/t1p1-transition.bundle.json");
-const BUNDLE_PUBLISH_OTHER: &str =
-    include_str!("../../../../m3/closure/bundles/t1p1-transition-publish-other.bundle.json");
-/// Replacement bundles for `activate_authorization_bundle`, chosen by protection.
-const ACTIVATION_BUNDLES: [&str; 2] = [
-    include_str!("../../../../m3/closure/bundles/t1p1-transition-v2.bundle.json"),
-    include_str!("../../../../m3/closure/bundles/t1p1-transition-v2-accept-e.bundle.json"),
+/// The harness bundles by name (m3/closure/bundles, D-037 item 2).
+const BUNDLES: [(&str, &str); 14] = [
+    (
+        "accept",
+        include_str!("../../../../m3/closure/bundles/accept.bundle.json"),
+    ),
+    (
+        "accept-deploy",
+        include_str!("../../../../m3/closure/bundles/accept-deploy.bundle.json"),
+    ),
+    (
+        "accept-e",
+        include_str!("../../../../m3/closure/bundles/accept-e.bundle.json"),
+    ),
+    (
+        "accept-publish",
+        include_str!("../../../../m3/closure/bundles/accept-publish.bundle.json"),
+    ),
+    (
+        "accept-publish-e",
+        include_str!("../../../../m3/closure/bundles/accept-publish-e.bundle.json"),
+    ),
+    (
+        "accept-release-manager",
+        include_str!("../../../../m3/closure/bundles/accept-release-manager.bundle.json"),
+    ),
+    (
+        "accept-v2",
+        include_str!("../../../../m3/closure/bundles/accept-v2.bundle.json"),
+    ),
+    (
+        "edge-then-accept",
+        include_str!("../../../../m3/closure/bundles/edge-then-accept.bundle.json"),
+    ),
+    (
+        "protection-missing",
+        include_str!("../../../../m3/closure/bundles/protection-missing.bundle.json"),
+    ),
+    (
+        "protection-only",
+        include_str!("../../../../m3/closure/bundles/protection-only.bundle.json"),
+    ),
+    (
+        "publish",
+        include_str!("../../../../m3/closure/bundles/publish.bundle.json"),
+    ),
+    (
+        "publish-other",
+        include_str!("../../../../m3/closure/bundles/publish-other.bundle.json"),
+    ),
+    (
+        "review",
+        include_str!("../../../../m3/closure/bundles/review.bundle.json"),
+    ),
+    (
+        "start-verification",
+        include_str!("../../../../m3/closure/bundles/start-verification.bundle.json"),
+    ),
 ];
-const OTHER_TARGET: &str = "repository:t1/p1/other";
+/// The declared per-case harness table (bindings.md).
+const CASES: &str = include_str!("../../../../m3/closure/bundles/cases.json");
+/// Sources a `records_from` override may name (read-only).
+const FIXTURE_TRANSITIONS: &str =
+    include_str!("../../../../m1/fixtures/sets/transition-scenarios.jsonl");
+const COMPANIONS: &str =
+    include_str!("../../../../m3/closure/companions/transition-companions.jsonl");
 /// The ingress adapter the fixture requests name, with a fixed test key.
 const INGRESS_ADAPTER: &str = "writ-host-adapter:fixture";
 const INGRESS_KEY: [u8; 32] = [0x5a; 32];
@@ -197,40 +253,54 @@ fn strs(v: Option<&Value>) -> Vec<String> {
 
 struct Harness {
     doc: Value,
-    loaded: LoadedBundle,
+    /// `None`: production `load_bundle` rejects the bundle.
+    loaded: Option<LoadedBundle>,
 }
 
-fn harness(text: &str) -> Result<Harness, String> {
+fn harness(name: &str) -> Result<Harness, String> {
+    let text = BUNDLES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, t)| *t)
+        .ok_or_else(|| format!("unknown harness bundle {name}"))?;
     let doc = json::parse(text.as_bytes()).map_err(|e| format!("harness bundle: {}", e.code()))?;
-    let loaded = load_bundle(&doc).map_err(|e| format!("harness bundle rejected: {e}"))?;
+    let loaded = load_bundle(&doc).ok();
     Ok(Harness { doc, loaded })
 }
 
-/// The harness bundle of a case: `publish-other` exactly when the case holds a
-/// fingerprint-valid fixture permit for publication to `repository:t1/p1/other`.
-fn choose_bundle(steps: &[Value]) -> &'static str {
-    let authorizes_other = walk(steps).iter().any(|s| {
-        let Some(req) = s.get("request") else {
-            return false;
+/// The declared harness table (cases.json).
+fn table() -> Result<Value, String> {
+    json::parse(CASES.as_bytes()).map_err(|e| format!("cases.json: {}", e.code()))
+}
+
+/// The inline record a `records_from` override names: `{set, case, step}`.
+fn record_from(spec: &Value) -> Option<Value> {
+    let file = match spec.get("set").and_then(Value::as_str) {
+        Some("transition-scenarios") => FIXTURE_TRANSITIONS,
+        Some("companions") => COMPANIONS,
+        _ => return None,
+    };
+    let case = text(spec, "case")?;
+    let step = usize::try_from(spec.get("step")?.as_int()?).ok()?;
+    for line in file.lines().filter(|l| !l.trim().is_empty()) {
+        let v = json::parse(line.as_bytes()).ok()?;
+        if text(&v, "id").as_deref() != Some(case.as_str()) {
+            continue;
+        }
+        let input = match (v.get("input"), v.get("input_text")) {
+            (Some(i), _) => i.clone(),
+            (None, Some(Value::Str(t))) => json::parse(t.as_bytes()).ok()?,
+            _ => return None,
         };
-        let target = req
-            .get("action")
-            .and_then(|a| a.get("resource"))
-            .and_then(|r| r.get("canonical_resource_id"))
-            .and_then(Value::as_str);
-        let fingerprint = s
-            .get("permit")
-            .and_then(|p| p.get("request_fingerprint"))
-            .and_then(Value::as_str);
-        s.get("op").and_then(Value::as_str) == Some("effect")
-            && target == Some(OTHER_TARGET)
-            && fingerprint.is_some_and(|f| json::digest(req).is_ok_and(|d| d.as_str() == f))
-    });
-    if authorizes_other {
-        BUNDLE_PUBLISH_OTHER
-    } else {
-        BUNDLE_BASE
+        return input
+            .get("steps")?
+            .as_arr()?
+            .get(step)?
+            .get("record")
+            .filter(|r| r.as_obj().is_some())
+            .cloned();
     }
+    None
 }
 
 /// Every workflow state a bundle names (statements and protection).
@@ -320,6 +390,8 @@ struct TransitionCase {
     runner_keys: MemoryKeys<RunnerAttestationKey>,
     prerequisites: Vec<(String, Vec<String>)>,
     active_sha: Mutex<String>,
+    /// The bundle `activate_authorization_bundle` activates (declared per case).
+    activate: Option<String>,
     seeded_receipts: u64,
 }
 
@@ -349,13 +421,16 @@ fn setup(
     steps: &[Value],
     labels: Arc<Labels>,
 ) -> Result<Setup, String> {
-    let active = harness(choose_bundle(steps))?;
+    let table = table()?;
+    let Some(entry) = table.get("cases").and_then(|c| c.get(case_id)).cloned() else {
+        return Ok(Setup::Refused(refused_setup(
+            case_id,
+            "no declared harness bundle for this case (m3/closure/bundles/cases.json)",
+        )));
+    };
+    let active = harness(&text(&entry, "active").unwrap_or_default())?;
     labels.add(HARNESS_BUNDLE);
-    let protection = active
-        .loaded
-        .protection()
-        .cloned()
-        .ok_or("harness bundle without protection")?;
+    let protection = active.loaded.as_ref().and_then(|b| b.protection().cloned());
     let now = initial
         .get("now")
         .and_then(Value::as_str)
@@ -367,13 +442,11 @@ fn setup(
         IngressKey::from_bytes(INGRESS_KEY.to_vec()).map_err(|e| e.to_string())?,
     );
     let permit_key = PermitKey::from_bytes(PERMIT_KEY.to_vec()).map_err(|e| e.to_string())?;
-    let world = World::create(
-        PolicyState::loaded(active.loaded.clone()),
-        now,
-        permit_key,
-        ring,
-        labels.clone(),
-    )?;
+    let policy = match &active.loaded {
+        Some(b) => PolicyState::loaded(b.clone()),
+        None => PolicyState::Rejected,
+    };
+    let world = World::create(policy, now, permit_key, ring, labels.clone())?;
     let field = |k: &str| text(initial, k).unwrap_or_default();
     let key = WorkflowKey {
         tenant_id: field("tenant_id"),
@@ -408,9 +481,45 @@ fn setup(
         record_keys: record_keys(),
         runner_keys: runner_keys(),
         prerequisites,
-        active_sha: Mutex::new(active.loaded.sha.as_str().to_string()),
+        active_sha: Mutex::new(
+            active
+                .loaded
+                .as_ref()
+                .map_or_else(String::new, |b| b.sha.as_str().to_string()),
+        ),
+        activate: text(&entry, "activate"),
         seeded_receipts: 0,
     };
+    // Trusted records, issued once here: the declared override, then the first inline
+    // presentation of each record id; later presentations are never issued.
+    let runner = entry
+        .get("runner")
+        .or_else(|| table.get("runner_default"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let mut issued: BTreeMap<String, Value> = BTreeMap::new();
+    if let Some(spec) = entry.get("records_from") {
+        let Some(record) = record_from(spec) else {
+            return Ok(Setup::Refused(refused_setup(
+                case_id,
+                "records_from names no inline record",
+            )));
+        };
+        issued.insert(
+            text(&record, "acceptance_record_id").unwrap_or_default(),
+            record,
+        );
+    }
+    for op in walk(steps) {
+        if let Some(record) = op.get("record").filter(|r| r.as_obj().is_some()) {
+            if let Some(id) = text(record, "acceptance_record_id") {
+                issued.entry(id).or_insert_with(|| record.clone());
+            }
+        }
+    }
+    for record in issued.values() {
+        case.docs.issue(record, &runner);
+    }
     // Production administration for everything it can express.
     let mut admin = vec![];
     for entry in registry_entries(&key.tenant_id, &key.project_id) {
@@ -446,12 +555,10 @@ fn setup(
         .get("revision")
         .and_then(Value::as_int)
         .unwrap_or(-1);
-    let protected = protection.protected_to_states.contains(&state)
-        || protection
-            .protected_transitions
-            .iter()
-            .any(|e| e.to_state == state);
-    let creatable = !protected && last.is_none();
+    let creatable = protection.as_ref().is_some_and(|p| {
+        !p.protected_to_states.contains(&state)
+            && !p.protected_transitions.iter().any(|e| e.to_state == state)
+    }) && last.is_none();
     if creatable {
         admin.push((
             "create_workflow",
@@ -484,7 +591,11 @@ fn setup(
     }
     // The test seeder: only what production cannot express, while no store is open.
     case.world.close();
-    let rows = case.seed(initial, creatable, active.loaded.sha.as_str())?;
+    let sha = active
+        .loaded
+        .as_ref()
+        .map_or_else(String::new, |b| b.sha.as_str().to_string());
+    let rows = case.seed(initial, creatable, &sha)?;
     if rows > 0 {
         labels.add(SEEDED);
     }
@@ -765,17 +876,15 @@ impl TransitionCase {
     }
 
     fn sealed(&self, op: &Value, key: &str) -> Result<VerifiedRequest, Value> {
+        self.world.labels.add(ADAPTER_SEALED);
+        if op.get("permit").is_some() {
+            self.world.labels.add(PERMIT_DROPPED);
+        }
         self.seal(&Self::request(op, key)).map_err(|r| {
             self.world.labels.add(C1);
             self.world.audit(r.code());
             refused(r.code())
         })
-    }
-
-    fn issue(&self, op: &Value) {
-        if let Some(record) = op.get("record").filter(|r| r.as_obj().is_some()) {
-            self.docs.issue(record);
-        }
     }
 
     fn promote_once(&self, op: &Value, key: &str) -> Result<Value, String> {
@@ -873,22 +982,24 @@ impl TransitionCase {
     fn activate_bundle(&self, op: &Value) -> Result<Step, String> {
         let wanted = op.get("protection").cloned().unwrap_or(Value::Null);
         let mut active = self.active_sha.lock().map_err(|_| "active bundle")?;
-        for text in ACTIVATION_BUNDLES {
-            let h = harness(text)?;
-            let matches = h
-                .loaded
-                .protection()
-                .is_some_and(|p| protection_equals(p, &wanted));
-            if matches && h.loaded.sha.as_str() != active.as_str() {
-                *active = h.loaded.sha.as_str().to_string();
-                self.world.active.activate(PolicyState::loaded(h.loaded));
-                return Ok(Step::Done(result("authorization_bundle_activated")));
+        let next = match &self.activate {
+            Some(name) => harness(name)?.loaded,
+            None => None,
+        };
+        match next {
+            Some(b)
+                if b.protection().is_some_and(|p| protection_equals(p, &wanted))
+                    && b.sha.as_str() != active.as_str() =>
+            {
+                *active = b.sha.as_str().to_string();
+                self.world.active.activate(PolicyState::loaded(b));
+                Ok(Step::Done(result("authorization_bundle_activated")))
             }
+            _ => Ok(Step::Unsupported(
+                "NO_HARNESS_BUNDLE_FOR_PROTECTION",
+                "the declared activation bundle is missing, not distinct or carries another protection".into(),
+            )),
         }
-        Ok(Step::Unsupported(
-            "NO_HARNESS_BUNDLE_FOR_PROTECTION",
-            "no distinct harness bundle carries the step's protection".into(),
-        ))
     }
 
     /// Client-asserted reconciliation has no production counterpart (D-036 item 3, D-037
@@ -911,7 +1022,6 @@ impl TransitionCase {
                 "faults inside promote_concurrent".into(),
             ));
         }
-        self.issue(&promote);
         let base = text(&promote, "idempotency_key").unwrap_or_default();
         let n = op.get("count").and_then(Value::as_int).unwrap_or(0);
         let keys: Vec<String> = (1..=n).map(|i| format!("{base}-{i}")).collect();
@@ -976,9 +1086,6 @@ impl TransitionCase {
                 "faults inside concurrent".into(),
             ));
         }
-        for o in ops {
-            self.issue(o);
-        }
         let barrier = Barrier::new(ops.len());
         let outcomes: Vec<Result<Value, String>> = std::thread::scope(|scope| {
             let handles: Vec<_> = ops
@@ -1025,7 +1132,6 @@ impl TransitionCase {
         let fault = op.get("fault").and_then(Value::as_str);
         match op.get("op").and_then(Value::as_str).unwrap_or("") {
             "promote" => {
-                self.issue(op);
                 let point = (fault == Some("crash_before_commit")).then_some(Point::Promote);
                 let key = text(op, "idempotency_key").unwrap_or_default();
                 self.faulted(point, |c| c.promote_once(op, &key))

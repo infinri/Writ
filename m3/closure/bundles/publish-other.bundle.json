@@ -1,0 +1,53 @@
+{
+  "contract_version": "2.0",
+  "bundle_id": "m3c-t1p1-publish-other",
+  "version": "0.4.0-m3c.1",
+  "publisher": "writ-m3-closure-harness",
+  "description": "M3-08 closure harness bundle (D-037 item 2; test only, never a production policy, not signed). Derived from m1/fixtures/transition/m1-transition.bundle.json with scope t1/p1 and only the actions the scenarios listed for it in m3/closure/bundles/cases.json need; see m3/closure/bindings.md. publication to repository:t1/p1/releases and repository:t1/p1/other.",
+  "known_capabilities": [
+    "repository.publish",
+    "workflow.transition"
+  ],
+  "trusted_principal_issuers": [
+    "writ-host-adapter:fixture"
+  ],
+  "statements": [
+    {
+      "statement_id": "permit-publish-releases",
+      "effect": "permit",
+      "action_kinds": [
+        "repository.publish"
+      ],
+      "resource_prefixes": [
+        "repository:t1/p1/releases"
+      ],
+      "reason_code": "PUBLISH_PERMITTED"
+    },
+    {
+      "statement_id": "permit-publish-other",
+      "effect": "permit",
+      "action_kinds": [
+        "repository.publish"
+      ],
+      "resource_prefixes": [
+        "repository:t1/p1/other"
+      ],
+      "reason_code": "PUBLISH_PERMITTED"
+    }
+  ],
+  "publisher_signature": null,
+  "workflow_protection": {
+    "acceptance_policy_bundle_sha": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "protected_to_states": [
+      "accepted",
+      "deployed",
+      "released"
+    ],
+    "protected_transitions": [
+      {
+        "from_state": "draft",
+        "to_state": "verifying"
+      }
+    ]
+  }
+}

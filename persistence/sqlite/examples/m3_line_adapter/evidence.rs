@@ -243,11 +243,12 @@ pub fn authenticated_record(record: &Value) -> Option<Value> {
     sign(&doc, &RECORD_KEY)
 }
 
-/// Synthetic runner attestations for the record's trust-`M` criteria, bound to the record's
-/// own context fields (never to the expected result): exit status 0 exactly when the
-/// criterion's status is `pass`, freshness the criterion's `fresh_until`, run times the
-/// record's `issued_at`. A criterion whose record lacks a needed field gets none.
-pub fn attestations(record: &Value) -> Vec<(String, Value)> {
+/// Synthetic runner attestations for the record's trust-`M` criteria. They are bound to the
+/// record's context fields (the binding under test), but the run outcome (exit status, run
+/// times, freshness) is the declared harness runner outcome `runner` (cases.json), never
+/// read from the record's own criterion status or times. A criterion whose record lacks a
+/// needed binding field gets none.
+pub fn attestations(record: &Value, runner: &Value) -> Vec<(String, Value)> {
     let mut out = Vec::new();
     let s = |k: &str| record.get(k).filter(|v| v.as_str().is_some()).cloned();
     let record_id = text(record, "acceptance_record_id").unwrap_or_default();
@@ -282,25 +283,34 @@ pub fn attestations(record: &Value) -> Vec<(String, Value)> {
             "acceptance_policy_id",
             "acceptance_policy_version",
             "acceptance_policy_bundle_sha",
-            "issued_at",
         ];
         let Some(values) = fields.iter().map(|k| s(k)).collect::<Option<Vec<Value>>>() else {
             continue;
         };
-        let (Some(transition), Some(revision), Some(fresh)) = (
+        let outcome = |k: &str| runner.get(k).cloned();
+        let (
+            Some(transition),
+            Some(revision),
+            Some(exit),
+            Some(started),
+            Some(finished),
+            Some(fresh),
+        ) = (
             record.get("transition").cloned(),
             record.get("state_revision").cloned(),
-            c.get("fresh_until").cloned(),
-        ) else {
+            outcome("exit_status"),
+            outcome("started_at"),
+            outcome("finished_at"),
+            outcome("fresh_until"),
+        )
+        else {
             continue;
         };
         let id = attestation_id(&record_id, &criterion);
         let mut m = json::Map::new();
-        for (k, v) in fields.iter().zip(values.iter()).take(9) {
+        for (k, v) in fields.iter().zip(values.iter()) {
             m.insert((*k).to_string(), v.clone());
         }
-        let issued = values[9].clone();
-        let exit = i64::from(c.get("status").and_then(Value::as_str) != Some("pass"));
         let mut put = |k: &str, v: Value| {
             m.insert(k.to_string(), v);
         };
@@ -321,10 +331,10 @@ pub fn attestations(record: &Value) -> Vec<(String, Value)> {
         put("command_digest", json::s(&sha('3')));
         put("input_digests", Value::Arr(vec![values[5].clone()]));
         put("evidence_digests", Value::Arr(Vec::new()));
-        put("exit_status", Value::Int(exit));
+        put("exit_status", exit);
         put("output_digest", json::s(&sha('4')));
-        put("started_at", issued.clone());
-        put("finished_at", issued);
+        put("started_at", started);
+        put("finished_at", finished);
         put("fresh_until", fresh);
         put(
             "auth",
@@ -360,8 +370,9 @@ impl Docs {
     }
 
     /// Issue the authenticated translation of a fixture inline record (an object with a
-    /// string `acceptance_record_id`; anything else issues nothing).
-    pub fn issue(&self, record: &Value) {
+    /// string `acceptance_record_id`; anything else issues nothing) and the attestations
+    /// of the declared runner outcome. Called once per record id at setup.
+    pub fn issue(&self, record: &Value, runner: &Value) {
         let Some(id) = text(record, "acceptance_record_id") else {
             return;
         };
@@ -372,7 +383,7 @@ impl Docs {
             r.insert(id, doc);
         }
         if let Ok(mut a) = self.attestations.lock() {
-            for (id, doc) in attestations(record) {
+            for (id, doc) in attestations(record, runner) {
                 a.insert(id, doc);
             }
         }
