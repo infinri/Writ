@@ -546,6 +546,12 @@ The timeout and lock-wait figures in E-034, E-035 and E-036 are **preliminary an
 - **Promotion-permit cases (D-036 item 2), identified mechanically:** sc-09, sc-13, sc-18, sc-19, sc-20, sc-21, sc-22, sc-23, sc-24, sc-25, sc-36, sc-38.
 - **Owner questions:** OQ-1..OQ-12 in the closure map (protected starting states, human criteria before M4, authenticated test inputs for inline records, a harness authorization bundle, sc-52, b-08 and p-11, client-permit effects, sc-47, harness choices some passes depend on, two ledger-test differences outside D-032). Not decided.
 
+### E-071: CI failure on `7eb995f` (inherited descriptor on the CI host), fixed (2026-11-13)
+
+- **Failure:** run https://github.com/infinri/Writ/actions/runs/43474169870 on `7eb995f`: the production workspace job failed (other 5 jobs success); 9 `process::tests` failed, starting with `guarantees_are_honest_and_the_profile_digest_binds_them` (`g.bounded && g.descriptors_closed`); every later failure was a job refused as `Unavailable`.
+- **Cause (diagnosed by Claude):** the CI runner starts the test process with a descriptor above 2 that lacks close-on-exec, so `LocalProcessSandbox` correctly reports `descriptors_closed` false and refuses every job (fail closed). Reproduced locally by starting the tests with an inherited `exec 7</dev/null`: 10 of 15 process tests fail; under the wrapper all 15 pass.
+- **Fix (no check weakened):** `m3/tools/run-with-clean-fds.sh` closes and reports inherited descriptors above 2 in a fresh shell, then executes the command; CI runs the workspace tests and the isolated kill tests through it. Host precondition documented in M3-ACCEPTANCE-CONTRACTS "Mechanical runner". Verified locally under the wrapper: workspace 360 passed, 0 failed, 4 ignored; kill tests 4 passed.
+
 ## Not yet executed
 
 (Completed and removed from this list on 2026-11-12, evidence kept above: targeted M1-08 repeatability E-052, Go timing-boundary investigation E-048, real-edit incremental builds E-053, real interruption workload E-049, process-concurrency correction E-054.)

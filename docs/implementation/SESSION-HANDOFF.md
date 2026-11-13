@@ -11,7 +11,7 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 | Branch | `v2/architecture-rebuild` only; never `main`; fast-forward pushes only, never force |
 | Verified code baseline | `6be251c89c7c52484b89f6dc14bb663c315d436c` (M3-05 transition service, D-036): CI https://github.com/infinri/Writ/actions/runs/43465393620 **success, all 6 jobs** (including the isolated process-kill step) |
 | Earlier verified commits | D-035 `5fdcd30` run 43346923290 (6/6 success); docs `154be77` run 43347554447 (6/6 success); M3-04 code `8ead392` run 43340059204 (6/6 success) |
-| M3-07 commit | the commit that records this text (M3-07 runner, process lifecycle, M3-08 gate preparation, CI adds the closure self-tests); exact-SHA CI pending until verified and recorded by the next documentation commit |
+| M3-07 commits | `e52e6ca`..`7eb995f` (runner, process lifecycle, review fixes and tests, M3-08 gate preparation). CI on `7eb995f` (run 43474169870) **failed** in the production workspace job: the CI host leaks a descriptor without close-on-exec, so the sandbox refused every job (E-071). The fix (tests and kill tests run through `m3/tools/run-with-clean-fds.sh`) is in the commit that records this text; its exact-SHA CI is pending until verified and recorded |
 | Previous checkpoint | `82971fd` (docs) passed run https://github.com/infinri/Writ/actions/runs/43466394626, 6/6 |
 | Required CI | workflow `.github/workflows/v2-docs.yml` ("V2 documentation integrity"), 6 jobs: docs and schemas; production Rust workspace (fmt, clippy, build, tests, isolated process-kill step, kernel parity, M2 evidence, dependency gate); M0 harness; M1 Rust parity; M1 Go parity; M1 properties and differential |
 | Not required CI | "Publish Writ V2 architecture website": the site assembly job succeeds; the Pages deploy job fails on every push with `Branch "v2/architecture-rebuild" is not allowed to deploy to github-pages due to environment protection rules`. Not a code failure; deployment protections are not to be changed |
@@ -65,8 +65,8 @@ gh run list --branch v2/architecture-rebuild --workflow v2-docs.yml --limit 5
 # production workspace (pinned toolchain and SQLite from m1/tools/env.sh)
 source m1/tools/env.sh
 cargo fmt --all --check && cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked
-cargo test -p writ-ledger-sqlite --locked --lib kill_tests -- --ignored --test-threads=1   # alone, single-threaded (E-066)
+m3/tools/run-with-clean-fds.sh cargo test --workspace --locked   # sandbox needs no inherited fd above 2 (E-071)
+m3/tools/run-with-clean-fds.sh cargo test -p writ-ledger-sqlite --locked --lib kill_tests -- --ignored --test-threads=1   # alone, single-threaded (E-066)
 python3 -m unittest discover -s m3/closure   # M3-08 gate self-tests (the gate itself currently fails, E-070)
 python3 kernel/tools/check_deps.py --osv --sbom /tmp/sbom.json
 cargo build --release --locked --example m1_line_adapter && python3 m1/driver/parity.py --proto "$PWD/target/release/examples/m1_line_adapter" --manifest m1/fixtures/manifest.json --repeat 2 --sets canonical-vector,strict-json,golden-decisions,transition-decisions,acceptance-binding,external-refusal,protocol-decide,protocol-acceptance
