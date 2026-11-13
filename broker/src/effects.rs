@@ -72,6 +72,7 @@ pub enum EffectResult {
 ///     request_fingerprint: String::new(),
 ///     tenant_id: String::new(),
 ///     idempotency_key: String::new(),
+///     request: writ_kernel::json::Value::Null,
 /// };
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,6 +81,7 @@ pub struct VerifiedEffect {
     request_fingerprint: String,
     tenant_id: String,
     idempotency_key: String,
+    request: Value,
 }
 
 impl VerifiedEffect {
@@ -99,6 +101,7 @@ impl VerifiedEffect {
             idempotency_key: text("idempotency_key")?,
             permit_id: permit.permit_id,
             request_fingerprint: permit.request_fingerprint,
+            request: request.clone(),
         })
     }
 
@@ -120,6 +123,12 @@ impl VerifiedEffect {
     /// Idempotency key of the request.
     pub fn idempotency_key(&self) -> &str {
         &self.idempotency_key
+    }
+
+    /// The presented request (its fingerprint matched the permit), from which
+    /// an adapter reads the effect's attributes.
+    pub fn request(&self) -> &Value {
+        &self.request
     }
 }
 
