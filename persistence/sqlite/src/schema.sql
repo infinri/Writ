@@ -1,4 +1,8 @@
--- Writ production SQLite ledger, schema writ-ledger-3 (M3-01, M3-02 trusted time, M3-04).
+-- Writ production SQLite ledger: base objects (schema writ-ledger-3; M3-01, M3-02 trusted
+-- time, M3-04). A new ledger applies this file and then schema_v4.sql (writ-ledger-4,
+-- D-035); this file alone is the exact writ-ledger-3 schema that the explicit upgrade
+-- verifies before adding the writ-ledger-4 tables. Do not change it: upgraded ledgers
+-- must keep the same definitions.
 -- Tables as in the M1 ledger (m1/fixtures/broker/ledger.sql, D-023), plus the single-owner
 -- fencing epoch (M3-START-PLAN "Coordination boundary") and, since writ-ledger-2, the
 -- trusted-time high-water mark and clock audit records (M3-TRUSTED-TIME revision 2).

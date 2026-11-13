@@ -8,7 +8,9 @@
 use std::fmt;
 
 use crate::clock::ClockEvent;
-use crate::execute::{DispatchIntent, Observation};
+use crate::execute::{
+    DispatchIntent, Dispatched, FailureRecord, Observation, PendingReceipt, Reconciled, Resolution,
+};
 use crate::grants::{GrantInsert, NewGrant, ReserveOutcome, ReserveRequest};
 use crate::policy::ExclusiveHold;
 use crate::refusal::Refusal;
@@ -81,18 +83,38 @@ impl TxStage {
 
 /// A failed logical transaction: the stage it failed at and the sanitized
 /// store error (fail closed; externally `LEDGER_UNAVAILABLE`).
+///
+/// `outcome_unknown` is `true` when a `COMMIT` was issued and did not report
+/// success: the transaction may or may not be durable (D-035 item 4: an
+/// ambiguous commit is never assumed to have committed nothing). A failure
+/// at begin, in the body, or of a `ROLLBACK` never committed anything.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TxFailure {
     /// Where it failed.
     pub stage: TxStage,
     /// The sanitized error (category and code only).
     pub error: StoreError,
+    /// `true` when the outcome of an issued `COMMIT` is unknown.
+    pub outcome_unknown: bool,
 }
 
 impl TxFailure {
-    /// A failure of `error` at `stage`.
+    /// A failure of `error` at `stage` that committed nothing.
     pub fn new(stage: TxStage, error: StoreError) -> TxFailure {
-        TxFailure { stage, error }
+        TxFailure {
+            stage,
+            error,
+            outcome_unknown: false,
+        }
+    }
+
+    /// A `COMMIT` that was issued and failed: the outcome is unknown.
+    pub fn commit_unknown(error: StoreError) -> TxFailure {
+        TxFailure {
+            stage: TxStage::Commit,
+            error,
+            outcome_unknown: true,
+        }
     }
 
     /// `true` when the store reported SQLite busy (lock contention, D-026 `busy`).
@@ -109,7 +131,11 @@ impl From<TxFailure> for StoreError {
 
 impl fmt::Display for TxFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} at {}", self.error, self.stage.as_str())
+        write!(f, "{} at {}", self.error, self.stage.as_str())?;
+        if self.outcome_unknown {
+            write!(f, " outcome unknown")?;
+        }
+        Ok(())
     }
 }
 
@@ -191,32 +217,66 @@ pub trait GrantLedger: Sync {
     ) -> Result<Result<ReserveOutcome, Refusal>, TxFailure>;
 }
 
-/// The execute lifecycle after T-reserve (M3-04; LEDGER-SQLITE.md T-dispatch,
-/// T-observe, reconcile), on the same shared ledger as [`GrantLedger`].
+/// The execute lifecycle after T-reserve (M3-04, D-035; LEDGER-SQLITE.md
+/// T-dispatch, T-observe, reconcile), on the same shared ledger as
+/// [`GrantLedger`].
 ///
 /// Each method is one fenced `BEGIN IMMEDIATE` logical transaction. A receipt
 /// transition that matches no row (the receipt is not in the expected status
 /// or binds another fingerprint) rolls back and fails at [`TxStage::Body`]
 /// with the code [`StoreError::STATE_CONFLICT`] (D-029). Arguments are built
-/// only by the broker: [`DispatchIntent`] and [`Observation`] from a
-/// guard-bound authorization, [`ExclusiveHold`] only by taking the
-/// coordination gate exclusively.
+/// only by the broker: [`DispatchIntent`] from a reservation of a guard-bound
+/// authorization, [`Observation`] from a guard-bound authorization,
+/// [`Resolution`] from the effect adapter's evidence, and [`ExclusiveHold`]
+/// only by taking the coordination gate exclusively.
 pub trait ExecuteLedger: GrantLedger {
-    /// The `dispatch` logical transaction: increment the `next_permit` counter
-    /// and read it; change the intent's receipt from `reserved` to
-    /// `dispatched` (exactly one row, same fingerprint); append its `dispatch`
-    /// event; commit. Returns the permit number. Committed before any effect
-    /// can start (C-3).
-    fn dispatch(&self, intent: &DispatchIntent<'_>) -> Result<u64, TxFailure>;
+    /// The `dispatch` logical transaction (D-035 item 1): read the intent's
+    /// receipt, which must be `reserved` with the intent's fingerprint and
+    /// effective grant label (otherwise `STATE_CONFLICT`). With an effective
+    /// grant, revalidate it with [`DispatchIntent::revalidate`] on the stored
+    /// grant row, its provenance and whether this receipt's grant use is
+    /// recorded: a refusal (`GRANT_MISMATCH`, `GRANT_EXPIRED`) rolls back and
+    /// keeps the receipt `reserved` with its grant use; integrity or
+    /// provenance failures are store errors (codes `integrity`, `provenance`).
+    /// Otherwise increment the `next_permit` counter, change the receipt to
+    /// `dispatched`, record the permit number for the receipt and append its
+    /// `dispatch` event; commit. Committed before any effect can start (C-3).
+    fn dispatch(
+        &self,
+        intent: &DispatchIntent<'_>,
+    ) -> Result<Result<Dispatched, Refusal>, TxFailure>;
 
     /// The `observe` logical transaction: change the receipt from `dispatched`
     /// to `observed_success` or `observed_failure` (exactly one row), append
     /// its `observe` event; commit.
     fn observe_effect(&self, observation: &Observation<'_>) -> Result<(), TxFailure>;
 
+    /// Read, under the exclusive coordination gate, every `dispatched` or
+    /// `unknown_reconcile` receipt with the permit number recorded at its
+    /// dispatch (`None` when none is recorded). A fenced read-only transaction
+    /// named `reconcile_scan`.
+    fn pending_receipts(&self, gate: &ExclusiveHold<'_>) -> Result<Vec<PendingReceipt>, TxFailure>;
+
     /// The `reconcile` logical transaction, under the exclusive coordination
-    /// gate: every `dispatched` receipt becomes `unknown_reconcile` with a
-    /// `reconcile` event; returns the number of receipts changed. It never
-    /// creates a receipt or marks an effect completed.
-    fn reconcile(&self, gate: &ExclusiveHold<'_>) -> Result<u64, TxFailure>;
+    /// gate (D-035 item 3). For each resolution with adapter evidence: a
+    /// checked transition of the receipt (same fingerprint, status
+    /// `dispatched` or `unknown_reconcile`, the evidence's permit number
+    /// recorded for it) to `observed_success` or `observed_failure`, a
+    /// `reconcile` event and a reconciliation record. For each resolution
+    /// without evidence: a `dispatched` receipt becomes `unknown_reconcile`
+    /// (event and record); an `unknown_reconcile` one is unchanged. Any other
+    /// `dispatched` receipt also becomes `unknown_reconcile`. It never creates
+    /// a receipt, never redispatches and never marks an effect completed
+    /// without adapter evidence.
+    fn reconcile(
+        &self,
+        gate: &ExclusiveHold<'_>,
+        resolutions: &[Resolution],
+    ) -> Result<Reconciled, TxFailure>;
+
+    /// The `audit` logical transaction for a refusal caused by a failed
+    /// lifecycle transaction: the refusal code plus the failure record (the
+    /// failed transaction, its stage, the sanitized category and code, the
+    /// durable progress and whether a commit outcome is unknown; D-035 item 4).
+    fn record_failure(&self, code: &str, record: &FailureRecord) -> Result<(), StoreError>;
 }

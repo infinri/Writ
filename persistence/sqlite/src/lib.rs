@@ -67,15 +67,24 @@
 //! unrepresentable stored expiry or an unknown stored receipt status is
 //! `transaction reserve` / `integrity` (fail closed, no grant use, no receipt).
 //!
-//! **Execute lifecycle (M3-04, schema `writ-ledger-3`):** [`ExecuteLedger`] adds the fenced
-//! `dispatch` (`next_permit` incremented, receipt `reserved` to `dispatched`, `dispatch`
-//! event), `observe` (`dispatched` to `observed_success` or `observed_failure`, `observe`
-//! event) and `reconcile` (every `dispatched` receipt to `unknown_reconcile`, one
-//! `reconcile` event each) transactions. A transition that matches no row rolls back with
-//! the diagnostic code `STATE_CONFLICT` (D-029). Every transaction failure reports its stage
-//! (begin, body, commit) for the broker's D-026 evidence. The simulated adapter tables of
-//! `writ-ledger-2` are gone from the ledger: consumed permits and effects live in the
-//! controlled effect adapter's own store, [`SqliteEffectStore`] (module `effects`).
+//! **Execute lifecycle (M3-04; D-035, schema `writ-ledger-4`):** [`ExecuteLedger`] adds the
+//! fenced `dispatch` (grant revalidation, `next_permit` incremented, receipt `reserved` to
+//! `dispatched`, permit number recorded in `receipt_permits`, `dispatch` event), `observe`
+//! (`dispatched` to `observed_success` or `observed_failure`, `observe` event),
+//! `reconcile_scan` and `reconcile` (adapter evidence recorded by checked transitions,
+//! otherwise `dispatched` to `unknown_reconcile`; `reconcile` events and `reconciliations`
+//! records) transactions, and the `audit` of a refusal with its `failure_records` row. A
+//! transition that matches no row rolls back with the diagnostic code `STATE_CONFLICT`
+//! (D-029). Every transaction failure reports its stage (begin, body, commit); a `COMMIT`
+//! that was issued and failed reports an unknown outcome (D-035 item 4). Consumed permits
+//! and effects live in the controlled effect adapter's own store, [`SqliteEffectStore`]
+//! (module `effects`), which is bound to this ledger's [`LedgerId`].
+//!
+//! **Schema versions:** a new ledger is `writ-ledger-4` (`schema.sql` then `schema_v4.sql`,
+//! plus a random `ledger_id`). [`SqliteLedger::open`] accepts only `writ-ledger-4`.
+//! [`SqliteLedger::upgrade_from_v3`] is the explicit operator upgrade of an exact
+//! `writ-ledger-3` ledger: it adds the new tables in one transaction and keeps every row;
+//! grants carried over have no provenance and stay non-executable (D-035 item 5).
 //!
 //! **Trusted time (since schema `writ-ledger-2`):** `time_floor` holds the high-water mark `H`
 //! (at most one row, raised only, in the fenced `time_floor` transaction, which returns the
@@ -87,7 +96,7 @@
 
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Read};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
@@ -96,10 +105,12 @@ use rusqlite::{
     Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
 };
 use writ_broker::clock::{timestamp_from_parts, ClockEvent};
-use writ_broker::execute::{DispatchIntent, Observation};
+use writ_broker::execute::{
+    DispatchIntent, Dispatched, FailureRecord, Observation, PendingReceipt, Reconciled, Resolution,
+};
 use writ_broker::grants::{
-    GrantCheck, GrantInsert, NewGrant, ReceiptStatus, ReserveOutcome, ReserveRequest, StoredGrant,
-    StoredReceipt,
+    GrantCheck, GrantInsert, NewGrant, ReceiptStatus, ReserveOutcome, ReserveRequest, Revalidation,
+    StoredGrant, StoredProvenance, StoredReceipt,
 };
 use writ_broker::policy::ExclusiveHold;
 use writ_broker::refusal::Refusal;
@@ -110,10 +121,43 @@ mod effects;
 pub use effects::{SqliteEffectStore, EFFECTS_SCHEMA, EFFECTS_SCHEMA_VERSION};
 use writ_broker::store::{TxFailure, TxStage};
 
+/// The exact `writ-ledger-3` schema (the base objects of every ledger).
+pub const SCHEMA_V3: &str = include_str!("schema.sql");
+/// The tables `writ-ledger-4` adds (D-035).
+pub const SCHEMA_V4_ADDITIONS: &str = include_str!("schema_v4.sql");
 /// The production schema, applied once to a newly created ledger inside one transaction.
-pub const SCHEMA: &str = include_str!("schema.sql");
+pub const SCHEMA: &str = concat!(include_str!("schema.sql"), include_str!("schema_v4.sql"));
 /// The schema version this crate writes and accepts.
-pub const SCHEMA_VERSION: &str = "writ-ledger-3";
+pub const SCHEMA_VERSION: &str = "writ-ledger-4";
+/// The only older version [`SqliteLedger::upgrade_from_v3`] accepts.
+pub const SCHEMA_VERSION_V3: &str = "writ-ledger-3";
+
+/// The random identity of one ledger (32 lowercase hexadecimal digits), fixed at creation
+/// and stored in its metadata. An effect store is bound to exactly one ledger identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LedgerId(String);
+
+impl LedgerId {
+    /// `Some` for exactly 32 lowercase hexadecimal digits.
+    pub fn parse(text: &str) -> Option<LedgerId> {
+        (text.len() == 32 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+            .then(|| LedgerId(text.to_string()))
+    }
+
+    /// A new random identity from the operating system's random source.
+    fn random() -> Result<LedgerId, StoreError> {
+        let mut bytes = [0u8; 16];
+        File::open("/dev/urandom")
+            .and_then(|mut f| f.read_exact(&mut bytes))
+            .map_err(|_| unavailable("initialize", "io"))?;
+        Ok(LedgerId(bytes.iter().map(|b| format!("{b:02x}")).collect()))
+    }
+
+    /// The identity text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 /// A SQLite ledger owned by this process; safe to share between its threads.
 pub struct SqliteLedger {
@@ -121,6 +165,7 @@ pub struct SqliteLedger {
     // connection closes before the ownership lock is released.
     inner: Mutex<Inner>,
     epoch: u64,
+    id: LedgerId,
     _lock: Option<File>,
 }
 
@@ -142,6 +187,8 @@ enum BodyError {
     Sql(rusqlite::Error),
     /// Stored content violates the ledger's own invariants (C-4).
     Integrity,
+    /// A stored grant has no intact approver provenance (D-035 item 5).
+    Provenance,
     /// A receipt transition matched no row, or a stored status is outside the schema
     /// where a transition expected one (D-029 `STATE_CONFLICT`).
     StateConflict,
@@ -319,10 +366,10 @@ fn schema_objects(conn: &Connection) -> rusqlite::Result<BTreeSet<SchemaObject>>
     rows
 }
 
-/// The exact schema objects (type, name, table, definition) a valid ledger contains.
-fn expected_objects() -> rusqlite::Result<BTreeSet<SchemaObject>> {
+/// The exact schema objects (type, name, table, definition) of a ledger with `schema`.
+fn expected_objects(schema: &str) -> rusqlite::Result<BTreeSet<SchemaObject>> {
     let mem = Connection::open_in_memory()?;
-    mem.execute_batch(SCHEMA)?;
+    mem.execute_batch(schema)?;
     schema_objects(&mem)
 }
 
@@ -334,15 +381,24 @@ fn meta_value(conn: &Connection, key: &str) -> rusqlite::Result<Option<String>> 
     }
 }
 
-/// Read-only verification of an existing ledger. Any failure is `initialize schema`
-/// (or the SQLite code) and nothing in the file is changed.
-fn verify(conn: &Connection) -> Result<(), StoreError> {
+/// Read-only verification of an existing ledger against the exact objects of `schema`
+/// and `version` (with a valid `ledger_id` for `writ-ledger-4`). Any failure is
+/// `initialize schema` (or the SQLite code) and nothing in the file is changed.
+fn verify(conn: &Connection, schema_text: &str, want: &str) -> Result<(), StoreError> {
     let schema = |_| unavailable("initialize", "schema");
     let sql = |e: rusqlite::Error| unavailable("initialize", code_name(&e));
     let found = schema_objects(conn).map_err(sql)?;
-    let expected = expected_objects().map_err(sql)?;
+    let expected = expected_objects(schema_text).map_err(sql)?;
     if found != expected {
         return Err(unavailable("initialize", "schema"));
+    }
+    let id = meta_value(conn, "ledger_id").map_err(sql)?;
+    let id_ok = match want {
+        SCHEMA_VERSION => id.as_deref().and_then(LedgerId::parse).is_some(),
+        _ => id.is_none(),
+    };
+    if !id_ok {
+        return Err(schema(()));
     }
     let version = meta_value(conn, "schema_version").map_err(sql)?;
     let epoch = meta_value(conn, "owner_epoch").map_err(sql)?;
@@ -355,7 +411,7 @@ fn verify(conn: &Connection) -> Result<(), StoreError> {
         Err(rusqlite::Error::QueryReturnedNoRows) => None,
         Err(e) => return Err(sql(e)),
     };
-    if version.as_deref() != Some(SCHEMA_VERSION)
+    if version.as_deref() != Some(want)
         || epoch.and_then(|e| e.parse::<u64>().ok()).is_none()
         || permit.is_none_or(|p| p < 0)
     {
@@ -410,6 +466,11 @@ fn bump_epoch(conn: &mut Connection) -> Result<u64, StoreError> {
 fn finish(mut conn: Connection, lock: File) -> Result<SqliteLedger, StoreError> {
     conn.execute_batch("PRAGMA synchronous = FULL;")
         .map_err(|e| unavailable("initialize", code_name(&e)))?;
+    let id = meta_value(&conn, "ledger_id")
+        .map_err(|e| unavailable("initialize", code_name(&e)))?
+        .as_deref()
+        .and_then(LedgerId::parse)
+        .ok_or_else(|| unavailable("initialize", "schema"))?;
     let epoch = bump_epoch(&mut conn)?;
     Ok(SqliteLedger {
         inner: Mutex::new(Inner {
@@ -418,6 +479,7 @@ fn finish(mut conn: Connection, lock: File) -> Result<SqliteLedger, StoreError> 
             fault: None,
         }),
         epoch,
+        id,
         _lock: Some(lock),
     })
 }
@@ -464,23 +526,33 @@ fn transact_on<T>(
     let end = body(&tx).map_err(|e| match e {
         BodyError::Sql(e) => at(TxStage::Body, code_name(&e)),
         BodyError::Integrity => at(TxStage::Body, "integrity"),
+        BodyError::Provenance => at(TxStage::Body, "provenance"),
         BodyError::StateConflict => at(TxStage::Body, StoreError::STATE_CONFLICT),
     })?;
+    // A failed `COMMIT` that was issued has an unknown outcome (D-035 item 4).
+    let commit_failed = |code: &str| TxFailure::commit_unknown(unavailable(&category, code));
     #[cfg(test)]
-    for (stage, reported) in [
-        (fault::Stage::Body, TxStage::Body),
-        (fault::Stage::Commit, TxStage::Commit),
-    ] {
-        fault::hang(&armed, stage);
-        if let Some(code) = fault::injected(&armed, stage) {
+    {
+        fault::hang(&armed, fault::Stage::Body);
+        if let Some(code) = fault::injected(&armed, fault::Stage::Body) {
             // `tx` drops here without committing: rolled back.
-            return Err(at(reported, code_name(&fault::error(code))));
+            return Err(at(TxStage::Body, code_name(&fault::error(code))));
+        }
+        fault::hang(&armed, fault::Stage::Commit);
+        if let Some(code) = fault::injected(&armed, fault::Stage::Commit) {
+            // Simulates a failed COMMIT (`tx` drops: actually rolled back). For a body that
+            // ended in commit, the caller cannot know the outcome; a rollback committed
+            // nothing.
+            let code = code_name(&fault::error(code));
+            return Err(match end {
+                End::Commit(_) => commit_failed(code),
+                End::Rollback(_) => at(TxStage::Commit, code),
+            });
         }
     }
     match end {
         End::Commit(out) => {
-            tx.commit()
-                .map_err(|e| at(TxStage::Commit, code_name(&e)))?;
+            tx.commit().map_err(|e| commit_failed(code_name(&e)))?;
             Ok(out)
         }
         End::Rollback(out) => {
@@ -524,6 +596,11 @@ impl SqliteLedger {
                 .map_err(|e| unavailable("initialize", code_name(&e)))?;
             tx.execute_batch(SCHEMA)
                 .map_err(|e| unavailable("initialize", code_name(&e)))?;
+            tx.execute(
+                "INSERT INTO meta (key, value) VALUES ('ledger_id', ?1)",
+                [LedgerId::random()?.as_str()],
+            )
+            .map_err(|e| unavailable("initialize", code_name(&e)))?;
             tx.commit()
                 .map_err(|e| unavailable("initialize", code_name(&e)))?;
             let mode: String = conn
@@ -559,8 +636,44 @@ impl SqliteLedger {
         let canonical = existing_identity(path)?;
         let lock = take_ownership(&canonical)?;
         let conn = connect(&canonical, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-        verify(&conn)?;
+        verify(&conn, SCHEMA, SCHEMA_VERSION)?;
         finish(conn, lock)
+    }
+
+    /// Explicit operator upgrade of an existing `writ-ledger-3` ledger at `path` to
+    /// `writ-ledger-4`, then take ownership of it (D-035 item 5).
+    ///
+    /// Order: canonical identity; ownership lock; read-only verification of the exact
+    /// `writ-ledger-3` schema (any other file, including a `writ-ledger-4` ledger, is
+    /// refused unchanged); in one `BEGIN IMMEDIATE` transaction the `writ-ledger-4` tables,
+    /// the new version and a new random `ledger_id`; verification as `writ-ledger-4`;
+    /// owner epoch. Every existing row is kept and nothing is invented: carried-over
+    /// grants get no provenance (not executable until an explicit reviewed migration or
+    /// recovery), carried-over `dispatched` receipts get no permit number (their
+    /// uncertainty is retained by reconciliation).
+    pub fn upgrade_from_v3(path: &Path) -> Result<SqliteLedger, StoreError> {
+        let canonical = existing_identity(path)?;
+        let lock = take_ownership(&canonical)?;
+        let mut conn = connect(&canonical, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        verify(&conn, SCHEMA_V3, SCHEMA_VERSION_V3)?;
+        let sql = |e: rusqlite::Error| unavailable("upgrade", code_name(&e));
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql)?;
+        tx.execute_batch(SCHEMA_V4_ADDITIONS).map_err(sql)?;
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES ('ledger_id', ?1)",
+            [LedgerId::random()?.as_str()],
+        )
+        .map_err(sql)?;
+        tx.commit().map_err(sql)?;
+        verify(&conn, SCHEMA, SCHEMA_VERSION)?;
+        finish(conn, lock)
+    }
+
+    /// This ledger's identity (bind its effect store to it).
+    pub fn ledger_id(&self) -> &LedgerId {
+        &self.id
     }
 
     /// The owner connection, or fail closed if a holder panicked (`category` / `poisoned`).
@@ -768,6 +881,24 @@ impl GrantLedger for SqliteLedger {
                     i64::from(grant.max_uses()),
                 ),
             )?;
+            let p = grant.provenance();
+            tx.execute(
+                "INSERT INTO grant_provenance (label, version, approver_id, approver_issuer, \
+                 channel, approved_at, verdict, auth_evidence_ref, request_fingerprint, \
+                 policy_bundle_sha) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                rusqlite::params![
+                    grant.label().as_str(),
+                    p.version(),
+                    p.approver_id(),
+                    p.issuer(),
+                    p.channel(),
+                    p.approved_at().to_string(),
+                    p.verdict().as_str(),
+                    p.evidence_ref(),
+                    p.request_fingerprint(),
+                    p.policy_bundle_sha(),
+                ],
+            )?;
             Ok(End::Commit(GrantInsert::Inserted))
         })
         .map_err(StoreError::from)
@@ -801,30 +932,12 @@ impl GrantLedger for SqliteLedger {
                 });
             }
             if let Some(label) = request.grant_label() {
-                let row: Option<(String, i64, i64, i64, i64)> = tx
-                    .query_row(
-                        "SELECT binding, expires_s, expires_ns, max_uses, uses FROM grants \
-                         WHERE label = ?1",
-                        [label],
-                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-                    )
-                    .optional()?;
-                let stored = match row {
-                    None => None,
-                    Some((binding, secs, nanos, max_uses, uses)) => Some(StoredGrant {
-                        binding,
-                        expires_at: u32::try_from(nanos)
-                            .ok()
-                            .and_then(|n| timestamp_from_parts(secs, n))
-                            .ok_or(BodyError::Integrity)?,
-                        max_uses,
-                        uses,
-                    }),
-                };
+                let stored = stored_grant(tx, label)?;
                 match request.check_grant(stored.as_ref()) {
                     GrantCheck::Consume => {}
                     GrantCheck::Refuse(refusal) => return Ok(End::Rollback(Err(refusal))),
                     GrantCheck::Integrity => return Err(BodyError::Integrity),
+                    GrantCheck::Provenance => return Err(BodyError::Provenance),
                 }
                 let used = tx.execute(
                     "UPDATE grants SET uses = uses + 1 WHERE label = ?1 AND uses < max_uses",
@@ -853,10 +966,94 @@ impl GrantLedger for SqliteLedger {
     }
 }
 
+/// The grant `label` with its provenance as read inside a transaction (`None`: no such
+/// grant). An unrepresentable stored expiry is an integrity failure.
+fn stored_grant(tx: &Transaction<'_>, label: &str) -> Result<Option<StoredGrant>, BodyError> {
+    let row: Option<(String, i64, i64, i64, i64)> = tx
+        .query_row(
+            "SELECT binding, expires_s, expires_ns, max_uses, uses FROM grants WHERE label = ?1",
+            [label],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .optional()?;
+    let Some((binding, secs, nanos, max_uses, uses)) = row else {
+        return Ok(None);
+    };
+    let provenance = tx
+        .query_row(
+            "SELECT version, approver_id, approver_issuer, channel, approved_at, verdict, \
+             auth_evidence_ref, request_fingerprint, policy_bundle_sha \
+             FROM grant_provenance WHERE label = ?1",
+            [label],
+            |r| {
+                Ok(StoredProvenance {
+                    version: r.get(0)?,
+                    approver_id: r.get(1)?,
+                    issuer: r.get(2)?,
+                    channel: r.get(3)?,
+                    approved_at: r.get(4)?,
+                    verdict: r.get(5)?,
+                    evidence_ref: r.get(6)?,
+                    request_fingerprint: r.get(7)?,
+                    policy_bundle_sha: r.get(8)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(Some(StoredGrant {
+        binding,
+        expires_at: u32::try_from(nanos)
+            .ok()
+            .and_then(|n| timestamp_from_parts(secs, n))
+            .ok_or(BodyError::Integrity)?,
+        max_uses,
+        uses,
+        provenance,
+    }))
+}
+
 impl ExecuteLedger for SqliteLedger {
-    fn dispatch(&self, intent: &DispatchIntent<'_>) -> Result<u64, TxFailure> {
+    fn dispatch(
+        &self,
+        intent: &DispatchIntent<'_>,
+    ) -> Result<Result<Dispatched, Refusal>, TxFailure> {
         let key = (intent.tenant_id(), intent.idempotency_key());
         self.transact("dispatch", |tx| {
+            let receipt: Option<(String, Option<String>, String)> = tx
+                .query_row(
+                    "SELECT fingerprint, grant_label, status FROM receipts \
+                     WHERE tenant_id = ?1 AND idempotency_key = ?2",
+                    key,
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?;
+            let Some((fingerprint, grant_label, status)) = receipt else {
+                return Err(BodyError::StateConflict);
+            };
+            if fingerprint != intent.fingerprint()
+                || status != ReceiptStatus::Reserved.as_str()
+                || grant_label.as_deref() != intent.grant_label()
+            {
+                return Err(BodyError::StateConflict);
+            }
+            let grant_expires_at = match intent.grant_label() {
+                None => None,
+                Some(label) => {
+                    let stored = stored_grant(tx, label)?;
+                    let used: bool = tx.query_row(
+                        "SELECT EXISTS (SELECT 1 FROM grant_uses \
+                         WHERE label = ?1 AND tenant_id = ?2 AND idempotency_key = ?3)",
+                        (label, key.0, key.1),
+                        |r| r.get(0),
+                    )?;
+                    match intent.revalidate(stored.as_ref(), used) {
+                        Revalidation::Valid { grant_expires_at } => Some(grant_expires_at),
+                        Revalidation::Refuse(refusal) => return Ok(End::Rollback(Err(refusal))),
+                        Revalidation::Integrity => return Err(BodyError::Integrity),
+                        Revalidation::Provenance => return Err(BodyError::Provenance),
+                    }
+                }
+            };
             let counted = tx.execute(
                 "UPDATE counters SET value = value + 1 WHERE name = 'next_permit'",
                 [],
@@ -869,7 +1066,7 @@ impl ExecuteLedger for SqliteLedger {
                 [],
                 |r| r.get(0),
             )?;
-            let number = u64::try_from(number).map_err(|_| BodyError::Integrity)?;
+            let permit_number = u64::try_from(number).map_err(|_| BodyError::Integrity)?;
             let changed = tx.execute(
                 "UPDATE receipts SET status = 'dispatched' \
                  WHERE tenant_id = ?1 AND idempotency_key = ?2 AND fingerprint = ?3 \
@@ -880,17 +1077,25 @@ impl ExecuteLedger for SqliteLedger {
                 return Err(BodyError::StateConflict);
             }
             tx.execute(
+                "INSERT INTO receipt_permits (tenant_id, idempotency_key, permit_number) \
+                 VALUES (?1, ?2, ?3)",
+                (key.0, key.1, number),
+            )?;
+            tx.execute(
                 "INSERT INTO receipt_events (tenant_id, idempotency_key, status, cause) \
                  VALUES (?1, ?2, 'dispatched', 'dispatch')",
                 key,
             )?;
-            Ok(End::Commit(number))
+            Ok(End::Commit(Ok(Dispatched {
+                permit_number,
+                grant_expires_at,
+            })))
         })
     }
 
     fn observe_effect(&self, observation: &Observation<'_>) -> Result<(), TxFailure> {
-        let intent = observation.intent();
-        let key = (intent.tenant_id(), intent.idempotency_key());
+        let receipt = observation.receipt();
+        let key = (receipt.tenant_id(), receipt.idempotency_key());
         let status = observation.status().as_str();
         self.transact("observe", |tx| {
             if !matches!(
@@ -903,7 +1108,7 @@ impl ExecuteLedger for SqliteLedger {
                 "UPDATE receipts SET status = ?4 \
                  WHERE tenant_id = ?1 AND idempotency_key = ?2 AND fingerprint = ?3 \
                  AND status = 'dispatched'",
-                (key.0, key.1, intent.fingerprint(), status),
+                (key.0, key.1, receipt.fingerprint(), status),
             )?;
             if changed != 1 {
                 return Err(BodyError::StateConflict);
@@ -917,21 +1122,157 @@ impl ExecuteLedger for SqliteLedger {
         })
     }
 
-    fn reconcile(&self, _gate: &ExclusiveHold<'_>) -> Result<u64, TxFailure> {
+    fn pending_receipts(
+        &self,
+        _gate: &ExclusiveHold<'_>,
+    ) -> Result<Vec<PendingReceipt>, TxFailure> {
+        self.transact("reconcile_scan", |tx| {
+            let mut stmt = tx.prepare(
+                "SELECT r.tenant_id, r.idempotency_key, r.fingerprint, r.status, p.permit_number \
+                 FROM receipts r LEFT JOIN receipt_permits p \
+                 ON p.tenant_id = r.tenant_id AND p.idempotency_key = r.idempotency_key \
+                 WHERE r.status IN ('dispatched', 'unknown_reconcile') \
+                 ORDER BY r.tenant_id, r.idempotency_key",
+            )?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, Option<i64>>(4)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut pending = Vec::with_capacity(rows.len());
+            for (tenant_id, idempotency_key, fingerprint, status, number) in rows {
+                pending.push(PendingReceipt {
+                    tenant_id,
+                    idempotency_key,
+                    fingerprint,
+                    status: ReceiptStatus::parse(&status).ok_or(BodyError::Integrity)?,
+                    permit_number: match number {
+                        None => None,
+                        Some(n) => Some(u64::try_from(n).map_err(|_| BodyError::Integrity)?),
+                    },
+                });
+            }
+            Ok(End::Rollback(pending))
+        })
+    }
+
+    fn reconcile(
+        &self,
+        _gate: &ExclusiveHold<'_>,
+        resolutions: &[Resolution],
+    ) -> Result<Reconciled, TxFailure> {
         self.transact("reconcile", |tx| {
+            let mut out = Reconciled::default();
+            let record = |r: &PendingReceipt, outcome: &str, evidence: &str| {
+                let number = r.permit_number.map(i64::try_from).transpose();
+                let number = number.map_err(|_| BodyError::Integrity)?;
+                tx.execute(
+                    "INSERT INTO receipt_events (tenant_id, idempotency_key, status, cause) \
+                     VALUES (?1, ?2, ?3, 'reconcile')",
+                    (&r.tenant_id, &r.idempotency_key, outcome),
+                )?;
+                tx.execute(
+                    "INSERT INTO reconciliations (tenant_id, idempotency_key, permit_number, \
+                     outcome, evidence) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    (&r.tenant_id, &r.idempotency_key, number, outcome, evidence),
+                )?;
+                Ok::<(), BodyError>(())
+            };
+            for resolution in resolutions {
+                let r = resolution.receipt();
+                match resolution.observed() {
+                    Some(status) => {
+                        let number = r
+                            .permit_number
+                            .and_then(|n| i64::try_from(n).ok())
+                            .ok_or(BodyError::StateConflict)?;
+                        let changed = tx.execute(
+                            "UPDATE receipts SET status = ?4 \
+                             WHERE tenant_id = ?1 AND idempotency_key = ?2 AND fingerprint = ?3 \
+                             AND status IN ('dispatched', 'unknown_reconcile') \
+                             AND EXISTS (SELECT 1 FROM receipt_permits p \
+                               WHERE p.tenant_id = ?1 AND p.idempotency_key = ?2 \
+                               AND p.permit_number = ?5)",
+                            (
+                                &r.tenant_id,
+                                &r.idempotency_key,
+                                &r.fingerprint,
+                                status.as_str(),
+                                number,
+                            ),
+                        )?;
+                        if changed != 1 {
+                            return Err(BodyError::StateConflict);
+                        }
+                        record(r, status.as_str(), "adapter_record")?;
+                        match status {
+                            ReceiptStatus::ObservedSuccess => out.observed_success += 1,
+                            ReceiptStatus::ObservedFailure => out.observed_failure += 1,
+                            _ => return Err(BodyError::StateConflict),
+                        }
+                    }
+                    None => {
+                        let changed = tx.execute(
+                            "UPDATE receipts SET status = 'unknown_reconcile' \
+                             WHERE tenant_id = ?1 AND idempotency_key = ?2 AND fingerprint = ?3 \
+                             AND status = 'dispatched'",
+                            (&r.tenant_id, &r.idempotency_key, &r.fingerprint),
+                        )?;
+                        if changed == 1 {
+                            record(r, "unknown_reconcile", "none")?;
+                            out.unknown += 1;
+                        }
+                    }
+                }
+            }
+            // Fail safe: no `dispatched` receipt survives reconciliation without a decision.
             tx.execute(
                 "INSERT INTO receipt_events (tenant_id, idempotency_key, status, cause) \
                  SELECT tenant_id, idempotency_key, 'unknown_reconcile', 'reconcile' \
                  FROM receipts WHERE status = 'dispatched' ORDER BY tenant_id, idempotency_key",
                 [],
             )?;
-            let changed = tx.execute(
+            tx.execute(
+                "INSERT INTO reconciliations (tenant_id, idempotency_key, permit_number, \
+                 outcome, evidence) SELECT r.tenant_id, r.idempotency_key, p.permit_number, \
+                 'unknown_reconcile', 'none' FROM receipts r LEFT JOIN receipt_permits p \
+                 ON p.tenant_id = r.tenant_id AND p.idempotency_key = r.idempotency_key \
+                 WHERE r.status = 'dispatched' ORDER BY r.tenant_id, r.idempotency_key",
+                [],
+            )?;
+            let rest = tx.execute(
                 "UPDATE receipts SET status = 'unknown_reconcile' WHERE status = 'dispatched'",
                 [],
             )?;
-            Ok(End::Commit(
-                u64::try_from(changed).map_err(|_| BodyError::Integrity)?,
-            ))
+            out.unknown += u64::try_from(rest).map_err(|_| BodyError::Integrity)?;
+            Ok(End::Commit(out))
+        })
+    }
+
+    fn record_failure(&self, code: &str, record: &FailureRecord) -> Result<(), StoreError> {
+        self.write("audit", |tx| {
+            tx.execute("INSERT INTO audit_refusals (code) VALUES (?1)", [code])?;
+            tx.execute(
+                "INSERT INTO failure_records (audit_seq, transaction_name, stage, category, \
+                 code, progress, possible_progress, outcome_unknown) \
+                 VALUES (last_insert_rowid(), ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    record.transaction(),
+                    record.stage(),
+                    record.category(),
+                    record.code(),
+                    record.progress(),
+                    record.possible_progress(),
+                    record.outcome_unknown(),
+                ],
+            )
+            .map(|_| ())
         })
     }
 }
@@ -952,6 +1293,9 @@ mod execute_tests;
 
 #[cfg(test)]
 mod kill_tests;
+
+#[cfg(test)]
+mod d035_tests;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -1208,15 +1552,19 @@ mod tests {
     }
 
     #[test]
-    fn new_ledger_is_writ_ledger_3_without_a_floor() {
-        let db = tmp("v2");
+    fn new_ledger_is_writ_ledger_4_with_an_identity_and_without_a_floor() {
+        let db = tmp("v4");
         let l = SqliteLedger::create(&db).unwrap();
         assert_eq!(
             meta_value(&l.db().conn, "schema_version")
                 .unwrap()
                 .as_deref(),
-            Some("writ-ledger-3")
+            Some("writ-ledger-4")
         );
+        let id = meta_value(&l.db().conn, "ledger_id").unwrap().unwrap();
+        assert_eq!(LedgerId::parse(&id).as_ref(), Some(l.ledger_id()));
+        let other = SqliteLedger::create(&tmp("v4-other")).unwrap();
+        assert_ne!(other.ledger_id(), l.ledger_id(), "random per ledger");
         assert_eq!(l.time_floor().unwrap(), None);
         assert_eq!(clock_event_kinds(&l), Vec::<String>::new());
     }

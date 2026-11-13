@@ -14,8 +14,8 @@ use std::sync::{mpsc, Barrier, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use writ_broker::effects::{EffectAdapter, EffectResult, Verify};
-use writ_broker::execute::{Broker, Executed, Execution, Progress, TxName};
+use writ_broker::effects::{EffectAdapter, EffectEvidence, EffectResult, Verify};
+use writ_broker::execute::{Broker, Executed, Execution, Progress, Reconciled, TxName};
 use writ_broker::grants::Replay;
 use writ_broker::keys::PermitKey;
 use writ_broker::permit::Permit;
@@ -56,9 +56,11 @@ pub(crate) struct World {
 impl World {
     pub(crate) fn new(name: &str) -> World {
         let dir = tmp(name);
+        let ledger = SqliteLedger::create(&dir.join("ledger.db")).unwrap();
         World {
-            ledger: SqliteLedger::create(&dir.join("ledger.db")).unwrap(),
-            effects: SqliteEffectStore::create(&dir.join("effects.db")).unwrap(),
+            effects: SqliteEffectStore::create(&dir.join("effects.db"), ledger.ledger_id())
+                .unwrap(),
+            ledger,
             active: ActivePolicy::new(PolicyState::loaded(reference())),
             clock: TestClock::at(now()),
             key: permit_key(),
@@ -79,6 +81,10 @@ impl World {
     fn hooked<'a>(&'a self, adapter: &'a Hooked<'a>) -> Broker<'a, SqliteLedger, Hooked<'a>> {
         Broker::new(&self.active, &self.clock, &self.ledger, adapter, &self.key)
     }
+
+    fn hooked_any<'a, A: EffectAdapter>(&'a self, adapter: &'a A) -> Broker<'a, SqliteLedger, A> {
+        Broker::new(&self.active, &self.clock, &self.ledger, adapter, &self.key)
+    }
 }
 
 /// The effect store with hooks around the adapter transaction.
@@ -94,6 +100,29 @@ impl EffectAdapter for Hooked<'_> {
         let out = self.inner.apply(verify);
         (self.after)();
         out
+    }
+
+    fn inspect(
+        &self,
+        verify: &mut Verify<'_>,
+    ) -> Result<Result<Option<EffectEvidence>, Refusal>, TxFailure> {
+        (self.before)();
+        let out = self.inner.inspect(verify);
+        (self.after)();
+        out
+    }
+
+    fn evidence(&self, permit_id: &str) -> Result<Option<EffectEvidence>, TxFailure> {
+        self.inner.evidence(permit_id)
+    }
+}
+
+/// Reconciliation result with the given counts.
+pub(crate) fn reconciled(observed_success: u64, observed_failure: u64, unknown: u64) -> Reconciled {
+    Reconciled {
+        observed_success,
+        observed_failure,
+        unknown,
     }
 }
 
@@ -338,7 +367,7 @@ fn a_failed_effect_consumes_the_permit_and_observes_failure() {
     // The consumed permit cannot be presented again for a second try.
     assert_eq!(
         b.present_permit(&e.permit.unwrap(), &file_write("k1")),
-        Err(Refusal::PermitReplayed)
+        Refusal::PermitReplayed
     );
     assert_eq!(effect_rows(&w.effects), 0);
 }
@@ -353,17 +382,55 @@ fn a_replayed_permit_is_refused_and_applies_nothing() {
     let req = file_write("k1");
     let permit = exec(&b, &req, None).permit.unwrap();
     for _ in 0..3 {
-        let refusal = b.present_permit(&permit, &req).unwrap_err();
+        let refusal = b.present_permit(&permit, &req);
         assert_eq!(refusal, Refusal::PermitReplayed);
         assert_eq!(refusal.external_code(), "PROMOTION_REFUSED");
     }
     assert_eq!(effect_rows(&w.effects), 1);
     assert_eq!(consumed_rows(&w.effects), 1);
     assert_eq!(audited(&w.ledger, "PERMIT_REPLAYED"), 3);
+    // The adapter itself refuses a second consumption of one permit id: an adapter
+    // called twice with the same verified permit applies once.
+    let twice = |verify: &mut Verify<'_>| {
+        let first = w.effects.apply(verify);
+        let second = w.effects.apply(verify);
+        (first, second)
+    };
+    let doubled = Doubled(&w.effects, &twice);
+    let b2 = w.hooked_any(&doubled);
+    let e = exec(&b2, &file_write("k2"), None);
+    assert_eq!(e.result, Ok(Executed::EffectCompleted));
+    assert_eq!(effects_for(&w.effects, "k2"), 1);
+}
+
+/// An adapter that runs the real adapter transaction twice per call and returns the
+/// first answer after asserting the second is a replay.
+type AdapterAnswer = Result<Result<EffectResult, Refusal>, TxFailure>;
+type Twice<'a> = &'a (dyn Fn(&mut Verify<'_>) -> (AdapterAnswer, AdapterAnswer) + Sync);
+
+struct Doubled<'a>(&'a SqliteEffectStore, Twice<'a>);
+
+impl EffectAdapter for Doubled<'_> {
+    fn apply(&self, verify: &mut Verify<'_>) -> Result<Result<EffectResult, Refusal>, TxFailure> {
+        let (first, second) = (self.1)(verify);
+        assert_eq!(second, Ok(Err(Refusal::PermitReplayed)));
+        first
+    }
+
+    fn inspect(
+        &self,
+        verify: &mut Verify<'_>,
+    ) -> Result<Result<Option<EffectEvidence>, Refusal>, TxFailure> {
+        self.0.inspect(verify)
+    }
+
+    fn evidence(&self, permit_id: &str) -> Result<Option<EffectEvidence>, TxFailure> {
+        self.0.evidence(permit_id)
+    }
 }
 
 #[test]
-fn a_permit_presented_with_a_changed_request_is_a_mismatch_and_stays_unconsumed() {
+fn a_presented_permit_is_verified_but_never_applies_an_effect() {
     let w = World::new("mismatch");
     let b = w.broker();
     let req = file_write("k1");
@@ -377,23 +444,33 @@ fn a_permit_presented_with_a_changed_request_is_a_mismatch_and_stays_unconsumed(
     for presented in [&changed, &other_key] {
         assert_eq!(
             b.present_permit(&permit, presented),
-            Err(Refusal::PermitRequestMismatch)
+            Refusal::PermitRequestMismatch
         );
     }
     assert_eq!(consumed_rows(&w.effects), 0, "a mismatch consumes nothing");
-    // The exact request still applies it, once.
-    assert_eq!(b.present_permit(&permit, &req), Ok(EffectResult::Applied));
-    assert_eq!(effects_for(&w.effects, "k1"), 1);
-    assert_eq!(
-        b.present_permit(&permit, &req),
-        Err(Refusal::PermitReplayed)
-    );
-    // The receipt is not touched by present_permit: still uncertain.
+    // D-035 item 3: the exact request with a valid, unconsumed permit of a `dispatched`
+    // receipt starts no effect; recovery goes through the broker.
+    for _ in 0..3 {
+        assert_eq!(
+            b.present_permit(&permit, &req),
+            Refusal::ReconciliationRequired
+        );
+    }
+    assert_eq!(consumed_rows(&w.effects), 0);
+    assert_eq!(effect_rows(&w.effects), 0);
     assert_eq!(status(&w.ledger, "k1").as_deref(), Some("dispatched"));
     assert_eq!(
         exec(&b, &req, None).result,
         Err(Refusal::ReconciliationRequired)
     );
+    // Also after reconciliation marked it uncertain.
+    assert_eq!(b.reconcile(), Ok(reconciled(0, 0, 1)));
+    assert_eq!(
+        b.present_permit(&permit, &req),
+        Refusal::ReconciliationRequired
+    );
+    assert_eq!(effect_rows(&w.effects), 0);
+    assert_eq!(audited(&w.ledger, "RECONCILIATION_REQUIRED"), 5);
 }
 
 #[test]
@@ -403,12 +480,12 @@ fn a_permit_for_another_bundle_after_activation_is_stale() {
     let req = file_write("k1");
     let permit = unconsumed_permit(&w, &b, &req);
     w.active.activate(PolicyState::loaded(reference_v2()));
-    let refusal = b.present_permit(&permit, &req).unwrap_err();
+    let refusal = b.present_permit(&permit, &req);
     assert_eq!(refusal, Refusal::PermitStale);
     assert_eq!(refusal.external_code(), "PROMOTION_REFUSED");
     for state in [PolicyState::Absent, PolicyState::Rejected] {
         w.active.activate(state);
-        assert_eq!(b.present_permit(&permit, &req), Err(Refusal::PermitStale));
+        assert_eq!(b.present_permit(&permit, &req), Refusal::PermitStale);
     }
     assert_eq!(consumed_rows(&w.effects), 0);
     // A permit issued under the new bundle is current under it.
@@ -450,36 +527,53 @@ fn adapter_verification_follows_the_d025_b_precedence() {
     let forged = tampered(&permit, "mac", &format!("{first}{}", &mac[1..]));
     let changed = set(&req, &["request_id"], json::s("req-other"));
     // A storage failure of the adapter transaction at any stage is LEDGER_UNAVAILABLE,
-    // whatever is wrong with the permit; at begin, no permit check has even run.
-    for (stage, code, name, _) in STAGES {
-        w.effects.inject(stage, code);
-        assert_eq!(
-            b.present_permit(&forged, &changed),
-            Err(unavailable("adapter", name)),
-            "{stage:?}"
-        );
+    // whatever is wrong with the permit; at begin, no permit check has even run
+    // (D-025 B, D-035 item 4). Also with an expired, stale permit.
+    w.active.activate(PolicyState::loaded(reference_v2()));
+    w.clock.set(now().plus_seconds(30));
+    for presented in [(&forged, &changed), (&permit, &req)] {
+        for (stage, code, name, _) in STAGES {
+            w.effects.inject(stage, code);
+            assert_eq!(
+                b.present_permit(presented.0, presented.1),
+                unavailable("adapter", name),
+                "{stage:?}"
+            );
+        }
     }
     assert_eq!(consumed_rows(&w.effects), 0);
     // Inside the transaction: mismatch, then MAC, then expiry, then stale, then replay.
-    w.active.activate(PolicyState::loaded(reference_v2()));
-    w.clock.set(now().plus_seconds(30));
     assert_eq!(
         b.present_permit(&forged, &changed),
-        Err(Refusal::PermitRequestMismatch)
+        Refusal::PermitRequestMismatch
     );
-    assert_eq!(b.present_permit(&forged, &req), Err(Refusal::PermitInvalid));
-    assert_eq!(b.present_permit(&permit, &req), Err(Refusal::PermitExpired));
+    assert_eq!(b.present_permit(&forged, &req), Refusal::PermitInvalid);
+    assert_eq!(b.present_permit(&permit, &req), Refusal::PermitExpired);
     // The expiry decision's time was persisted as the floor first.
     assert_eq!(w.ledger.time_floor().unwrap(), Some(now().plus_seconds(30)));
     let w2 = World::new("precedence-2");
     let b2 = w2.broker();
     let p2 = unconsumed_permit(&w2, &b2, &req);
     w2.active.activate(PolicyState::loaded(reference_v2()));
-    assert_eq!(b2.present_permit(&p2, &req), Err(Refusal::PermitStale));
+    assert_eq!(b2.present_permit(&p2, &req), Refusal::PermitStale);
     w2.active.activate(PolicyState::loaded(reference()));
-    assert_eq!(b2.present_permit(&p2, &req), Ok(EffectResult::Applied));
-    assert_eq!(b2.present_permit(&p2, &req), Err(Refusal::PermitReplayed));
-    // A valid permit whose adapter commit fails is neither consumed nor applied.
+    assert_eq!(
+        b2.present_permit(&p2, &req),
+        Refusal::ReconciliationRequired
+    );
+    // A consumed permit is a replay (after every other check passed).
+    let consumed = exec(&b2, &file_write("k9"), None).permit.unwrap();
+    let k9 = file_write("k9");
+    assert_eq!(b2.present_permit(&consumed, &k9), Refusal::PermitReplayed);
+    w2.effects
+        .inject(fault::Stage::Body, rusqlite::ffi::SQLITE_IOERR);
+    assert_eq!(
+        b2.present_permit(&consumed, &k9),
+        unavailable("adapter", "SQLITE_IOERR"),
+        "storage first, even for a replay"
+    );
+    // A valid permit inspected under a failing (read-only) adapter commit: refused, and
+    // a rollback never has an unknown outcome.
     let w3 = World::new("precedence-3");
     let b3 = w3.broker();
     let p3 = unconsumed_permit(&w3, &b3, &req);
@@ -487,11 +581,14 @@ fn adapter_verification_follows_the_d025_b_precedence() {
         .inject(fault::Stage::Commit, rusqlite::ffi::SQLITE_FULL);
     assert_eq!(
         b3.present_permit(&p3, &req),
-        Err(unavailable("adapter", "SQLITE_FULL"))
+        unavailable("adapter", "SQLITE_FULL")
     );
     assert_eq!(consumed_rows(&w3.effects), 0);
     assert_eq!(effect_rows(&w3.effects), 0);
-    assert_eq!(b3.present_permit(&p3, &req), Ok(EffectResult::Applied));
+    assert_eq!(
+        b3.present_permit(&p3, &req),
+        Refusal::ReconciliationRequired
+    );
     assert_eq!(
         consumed_rows(&w.effects),
         0,
@@ -500,7 +597,7 @@ fn adapter_verification_follows_the_d025_b_precedence() {
 }
 
 #[test]
-fn many_threads_presenting_one_permit_apply_exactly_one_effect() {
+fn many_threads_presenting_an_unconsumed_permit_apply_nothing() {
     const WORKERS: usize = 64;
     let w = World::new("permit-race");
     let b = w.broker();
@@ -519,17 +616,15 @@ fn many_threads_presenting_one_permit_apply_exactly_one_effect() {
             .collect();
         handles.into_iter().map(|h| h.join().unwrap()).collect()
     });
-    let applied = outcomes
-        .iter()
-        .filter(|o| **o == Ok(EffectResult::Applied))
-        .count();
-    let replayed = outcomes
-        .iter()
-        .filter(|o| **o == Err(Refusal::PermitReplayed))
-        .count();
-    assert_eq!((applied, replayed), (1, WORKERS - 1), "{outcomes:?}");
-    assert_eq!(effect_rows(&w.effects), 1);
-    assert_eq!(consumed_rows(&w.effects), 1);
+    assert!(
+        outcomes
+            .iter()
+            .all(|o| *o == Refusal::ReconciliationRequired),
+        "{outcomes:?}"
+    );
+    assert_eq!(effect_rows(&w.effects), 0);
+    assert_eq!(consumed_rows(&w.effects), 0);
+    assert_eq!(status(&w.ledger, "k1").as_deref(), Some("dispatched"));
 }
 
 #[test]
@@ -614,9 +709,63 @@ fn storage_failure_at_every_lifecycle_stage_fails_closed_with_the_implied_crash_
             assert_eq!(failed.as_str(), tx, "{case}");
             assert_eq!(failure.stage, at, "{case}");
             assert_eq!(failure.is_busy(), name == "SQLITE_BUSY", "{case}");
+            // A failed COMMIT of a transaction that meant to commit has an unknown outcome
+            // (D-035 item 4); begin and body failures committed nothing.
+            let unknown = at == TxStage::Commit;
+            assert_eq!(failure.outcome_unknown, unknown, "{case}");
+            let suffix = if unknown { " outcome_unknown" } else { "" };
             assert_eq!(
                 e.evidence.diagnostics(),
-                vec![format!("{tx} {} transaction {tx} {name}", at.as_str())],
+                vec![format!(
+                    "{tx} {} transaction {tx} {name}{suffix}",
+                    at.as_str()
+                )],
+                "{case}"
+            );
+            // The failure is audited with its stage and progress.
+            let possible = if unknown {
+                match tx {
+                    "reserve" => Progress::Reserved,
+                    "dispatch" => Progress::DispatchedWithoutEffect,
+                    "adapter" => Progress::DispatchedWithEffect,
+                    _ => Progress::Observed,
+                }
+            } else {
+                e.evidence.progress()
+            };
+            assert_eq!(e.evidence.possible_progress(), possible, "{case}");
+            let record: (String, String, String, String, String, i64) = w
+                .ledger
+                .db()
+                .conn
+                .query_row(
+                    "SELECT f.transaction_name, f.stage, f.code, f.progress, f.possible_progress, \
+                     f.outcome_unknown FROM failure_records f \
+                     JOIN audit_refusals a ON a.seq = f.audit_seq \
+                     WHERE a.code = 'LEDGER_UNAVAILABLE'",
+                    [],
+                    |r| {
+                        Ok((
+                            r.get(0)?,
+                            r.get(1)?,
+                            r.get(2)?,
+                            r.get(3)?,
+                            r.get(4)?,
+                            r.get(5)?,
+                        ))
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                record,
+                (
+                    tx.to_string(),
+                    at.as_str().to_string(),
+                    name.to_string(),
+                    e.evidence.progress().as_str().to_string(),
+                    possible.as_str().to_string(),
+                    i64::from(unknown)
+                ),
                 "{case}"
             );
             assert_sanitized(&e.evidence.diagnostics(), &w.dir);
@@ -682,18 +831,24 @@ fn storage_failure_in_reconcile_rolls_back_at_every_stage() {
             .inject("observe", fault::Stage::Commit, rusqlite::ffi::SQLITE_IOERR);
         assert!(exec(&b, &file_write("k1"), None).result.is_err());
         assert_eq!(status(&w.ledger, "k1").as_deref(), Some("dispatched"));
-        w.ledger.inject("reconcile", stage, code);
-        let refusal = b.reconcile().unwrap_err();
-        assert_eq!(refusal, unavailable("reconcile", name), "{stage:?}");
-        assert_sanitized(&[refusal.to_string()], &w.dir);
-        assert_eq!(status(&w.ledger, "k1").as_deref(), Some("dispatched"));
-        assert_eq!(causes(&w.ledger, "k1"), ["reserve", "dispatch"]);
-        assert!(w.ledger.db().conn.is_autocommit());
-        assert_eq!(b.reconcile(), Ok(1), "{stage:?}");
-        assert_eq!(
-            status(&w.ledger, "k1").as_deref(),
-            Some("unknown_reconcile")
-        );
+        // The scan, the adapter's evidence read and the write each fail closed.
+        for target in ["reconcile_scan", "evidence", "reconcile"] {
+            if target == "evidence" {
+                w.effects.inject_named("evidence", stage, code);
+            } else {
+                w.ledger.inject(target, stage, code);
+            }
+            let refusal = b.reconcile().unwrap_err();
+            assert_eq!(refusal, unavailable(target, name), "{target} {stage:?}");
+            assert_sanitized(&[refusal.to_string()], &w.dir);
+            assert_eq!(status(&w.ledger, "k1").as_deref(), Some("dispatched"));
+            assert_eq!(causes(&w.ledger, "k1"), ["reserve", "dispatch"]);
+            assert!(w.ledger.db().conn.is_autocommit());
+            assert!(w.effects.db().conn.is_autocommit());
+        }
+        // The effect was applied: the adapter's evidence records the outcome (D-035 item 3).
+        assert_eq!(b.reconcile(), Ok(reconciled(1, 0, 0)), "{stage:?}");
+        assert_eq!(status(&w.ledger, "k1").as_deref(), Some("observed_success"));
         assert_eq!(
             causes(&w.ledger, "k1"),
             ["reserve", "dispatch", "reconcile"]
@@ -727,7 +882,7 @@ fn a_floor_failure_inside_the_adapter_transaction_refuses_without_an_effect() {
 }
 
 #[test]
-fn an_ambiguous_outcome_then_retry_is_reconciliation_required_and_never_a_new_effect() {
+fn an_ambiguous_outcome_is_never_redispatched_and_reconciles_from_adapter_evidence() {
     let w = World::new("ambiguous");
     let b = w.broker();
     approve(b.grants(), &publish("k1"), "g1").unwrap();
@@ -743,21 +898,32 @@ fn an_ambiguous_outcome_then_retry_is_reconciliation_required_and_never_a_new_ef
             Err(Refusal::ReconciliationRequired)
         );
     }
-    // Reconciliation marks it uncertain; it never creates or completes anything.
-    assert_eq!(b.reconcile(), Ok(1));
-    assert_eq!(b.reconcile(), Ok(0));
+    // The crash between adapter commit and receipt observation: the adapter holds durable
+    // evidence for exactly this receipt's permit, so reconciliation records the outcome by
+    // a checked transition (D-035 item 3); repeating it changes nothing.
+    assert_eq!(b.reconcile(), Ok(reconciled(1, 0, 0)));
+    assert_eq!(b.reconcile(), Ok(reconciled(0, 0, 0)));
+    assert_eq!(status(&w.ledger, "k1").as_deref(), Some("observed_success"));
     assert_eq!(
-        status(&w.ledger, "k1").as_deref(),
-        Some("unknown_reconcile")
+        causes(&w.ledger, "k1"),
+        ["reserve", "dispatch", "reconcile"]
+    );
+    assert_eq!(
+        ledger_i64(
+            &w.ledger,
+            "SELECT count(*) FROM reconciliations WHERE outcome = 'observed_success' \
+             AND evidence = 'adapter_record' AND permit_number = 1"
+        ),
+        1
     );
     assert_eq!(
         exec(&b, &publish("k1"), Some("g1")).result,
-        Err(Refusal::ReconciliationRequired)
+        Ok(Executed::Replayed(Replay::EffectCompleted))
     );
     // The client-held permit cannot apply a second effect either.
     assert_eq!(
         b.present_permit(&e.permit.unwrap(), &publish("k1")),
-        Err(Refusal::PermitReplayed)
+        Refusal::PermitReplayed
     );
     assert_eq!(effect_rows(&w.effects), 1);
     assert_eq!(ledger_i64(&w.ledger, "SELECT count(*) FROM receipts"), 1);
@@ -870,13 +1036,10 @@ fn reconcile_waits_for_an_in_flight_execution_and_never_changes_it() {
     );
     assert_eq!(
         count,
-        Ok(1),
+        Ok(super::execute_tests::reconciled(1, 0, 0)),
         "only the receipt whose operation had returned"
     );
-    assert_eq!(
-        status(&w.ledger, "k0").as_deref(),
-        Some("unknown_reconcile")
-    );
+    assert_eq!(status(&w.ledger, "k0").as_deref(), Some("observed_success"));
     assert_eq!(status(&w.ledger, "k1").as_deref(), Some("observed_success"));
 }
 
@@ -910,7 +1073,7 @@ fn concurrent_executions_and_reconciles_never_interfere() {
             let (b, start, total) = (&b, &start, &total);
             s.spawn(move || {
                 start.wait();
-                let n = b.reconcile().unwrap();
+                let n = b.reconcile().unwrap().changed();
                 total.fetch_add(usize::try_from(n).unwrap(), Ordering::SeqCst);
             });
         }
@@ -919,12 +1082,11 @@ fn concurrent_executions_and_reconciles_never_interfere() {
     for r in &results {
         assert_eq!(*r, Ok(Executed::EffectCompleted));
     }
+    // c1..c3 applied their effects before observe failed: each is recorded once from
+    // the adapter's evidence, by exactly one of the concurrent reconciliations.
     assert_eq!(total.load(Ordering::SeqCst), 3);
     assert_eq!(
-        ledger_i64(
-            &w.ledger,
-            "SELECT count(*) FROM receipts WHERE status = 'unknown_reconcile'"
-        ),
+        ledger_i64(&w.ledger, "SELECT count(*) FROM reconciliations"),
         3
     );
     assert_eq!(
@@ -932,7 +1094,7 @@ fn concurrent_executions_and_reconciles_never_interfere() {
             &w.ledger,
             "SELECT count(*) FROM receipts WHERE status = 'observed_success'"
         ),
-        i64::try_from(EXECUTIONS).unwrap()
+        i64::try_from(EXECUTIONS).unwrap() + 3
     );
     assert_eq!(audited(&w.ledger, "LEDGER_UNAVAILABLE"), 3);
     assert_eq!(
@@ -994,7 +1156,7 @@ fn activation_waits_for_dispatch_and_effect_authorization_under_one_hold() {
     );
     assert_eq!(
         b.present_permit(&permit, &file_write("k1")),
-        Err(Refusal::PermitStale)
+        Refusal::PermitStale
     );
     assert_eq!(effect_rows(&w.effects), 1);
 }
@@ -1038,10 +1200,12 @@ fn activation_waits_for_present_permit_and_a_later_presentation_is_stale() {
         });
         presentation.join().unwrap()
     });
-    assert_eq!(presented, Ok(EffectResult::Applied));
+    // Verified under the old policy while the activation waited; it never applies.
+    assert_eq!(presented, Refusal::ReconciliationRequired);
     assert!(!seen.load(Ordering::SeqCst));
-    assert_eq!(b.present_permit(&p2, &req2), Err(Refusal::PermitStale));
-    assert_eq!(effect_rows(&w.effects), 1);
+    assert_eq!(b.present_permit(&p2, &req2), Refusal::PermitStale);
+    assert_eq!(b.present_permit(&p1, &req1), Refusal::PermitStale);
+    assert_eq!(effect_rows(&w.effects), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1075,7 +1239,8 @@ fn restart_resumes_reserved_and_never_redispatches_dispatched_or_reconciled() {
         w.effects
             .inject(fault::Stage::Body, rusqlite::ffi::SQLITE_IOERR);
         assert!(exec(&b, &publish("k4"), Some("g-k4")).result.is_err());
-        assert_eq!(b.reconcile(), Ok(2), "k2 and k4");
+        // k2: the adapter's evidence records its effect; k4: no evidence, uncertain.
+        assert_eq!(b.reconcile(), Ok(reconciled(1, 0, 1)), "k2 and k4");
         (k3.permit.unwrap(), k2.permit.unwrap())
     };
     let before_permits = next_permit(&w.ledger);
@@ -1092,7 +1257,7 @@ fn restart_resumes_reserved_and_never_redispatches_dispatched_or_reconciled() {
     drop(effects);
     clock.set(now().plus_seconds(5));
     let ledger = SqliteLedger::open(&dir.join("ledger.db")).unwrap();
-    let effects = SqliteEffectStore::open(&dir.join("effects.db")).unwrap();
+    let effects = SqliteEffectStore::open(&dir.join("effects.db"), ledger.ledger_id()).unwrap();
     assert_eq!(LedgerStore::owner_epoch(&ledger), 2);
     let b = Broker::new(&active, &clock, &ledger, &effects, &key);
     // k1 resumes without a second grant use and gets a new, unused permit id.
@@ -1101,13 +1266,16 @@ fn restart_resumes_reserved_and_never_redispatches_dispatched_or_reconciled() {
     assert_eq!(k1.permit.unwrap().permit_id(), "permit-4");
     assert_eq!(uses(&ledger, "g-k1"), Some(1));
     assert_eq!(causes(&ledger, "k1"), ["reserve", "dispatch", "observe"]);
-    // k2 and k4 are never dispatched again.
-    for (k, g) in [("k2", "g-k2"), ("k4", "g-k4")] {
-        assert_eq!(
-            exec(&b, &publish(k), Some(g)).result,
-            Err(Refusal::ReconciliationRequired),
-            "{k}"
-        );
+    // k2 replays its reconciled outcome; k4 stays uncertain; neither is dispatched again.
+    for (k, g, want) in [
+        (
+            "k2",
+            "g-k2",
+            Ok(Executed::Replayed(Replay::EffectCompleted)),
+        ),
+        ("k4", "g-k4", Err(Refusal::ReconciliationRequired)),
+    ] {
+        assert_eq!(exec(&b, &publish(k), Some(g)).result, want, "{k}");
         assert_eq!(
             causes(&ledger, k)
                 .iter()
@@ -1124,12 +1292,14 @@ fn restart_resumes_reserved_and_never_redispatches_dispatched_or_reconciled() {
     );
     assert_eq!(
         b.present_permit(&k3_permit, &publish("k3")),
-        Err(Refusal::PermitReplayed)
+        Refusal::PermitReplayed
     );
     assert_eq!(
         b.present_permit(&k2_permit, &publish("k2")),
-        Err(Refusal::PermitReplayed)
+        Refusal::PermitReplayed
     );
+    // Recovery after the restart changes nothing further.
+    assert_eq!(b.reconcile(), Ok(reconciled(0, 0, 0)));
     assert_eq!(effect_rows(&effects), 3, "k2, k3, k1");
     assert_eq!(next_permit(&ledger), 4);
     for k in ["k1", "k2", "k3"] {
@@ -1159,20 +1329,21 @@ fn the_effect_store_is_separate_from_the_ledger_and_verified_on_open() {
         "{ledger_tables:?}"
     );
     let dir = w.dir.clone();
+    let id = w.ledger.ledger_id().clone();
     drop(w);
     // Neither file opens as the other.
-    assert!(SqliteEffectStore::open(&dir.join("ledger.db")).is_err());
+    assert!(SqliteEffectStore::open(&dir.join("ledger.db"), &id).is_err());
     assert!(SqliteLedger::open(&dir.join("effects.db")).is_err());
-    assert!(SqliteEffectStore::open(&dir.join("missing.db")).is_err());
-    assert!(SqliteEffectStore::create(&dir.join("effects.db")).is_err());
-    assert!(SqliteEffectStore::open(&dir.join("effects.db")).is_ok());
+    assert!(SqliteEffectStore::open(&dir.join("missing.db"), &id).is_err());
+    assert!(SqliteEffectStore::create(&dir.join("effects.db"), &id).is_err());
+    assert!(SqliteEffectStore::open(&dir.join("effects.db"), &id).is_ok());
     // A tampered schema (an extra trigger) is refused.
     {
         let c = rusqlite::Connection::open(dir.join("effects.db")).unwrap();
         c.execute_batch("CREATE TRIGGER t AFTER INSERT ON effects BEGIN DELETE FROM effects; END;")
             .unwrap();
     }
-    assert!(SqliteEffectStore::open(&dir.join("effects.db")).is_err());
+    assert!(SqliteEffectStore::open(&dir.join("effects.db"), &id).is_err());
 }
 
 #[test]

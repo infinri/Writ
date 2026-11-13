@@ -55,8 +55,28 @@
 //!   seconds (M1 accepted any integer).
 //! - The C-4 integrity diagnostic code is `integrity` (M1 reported
 //!   `SQLITE_CORRUPT`, which D-029 reserves for genuine SQLite corruption).
-//! - The approver identity and channel are checked but not persisted with the
-//!   grant (the ledger's grants table has no column for them).
+//! - Approver provenance is persisted with the grant (D-035 item 5): the
+//!   approver's stable id, issuer or realm, trusted channel, approval time,
+//!   verdict, the authority's authentication-evidence reference, the approved
+//!   request's fingerprint and the policy bundle digest, under the explicit
+//!   version [`PROVENANCE_VERSION`]. All of it comes from the
+//!   [`ApprovalAuthority`] and the broker's own decision, never from the
+//!   agent; no credential is stored (an evidence reference that contains the
+//!   presented credential is refused). A stored grant without intact
+//!   provenance (for example a grant carried over from `writ-ledger-3`) is
+//!   never executable: consuming it or dispatching under it is a store error
+//!   with the diagnostic code `provenance` (externally `LEDGER_UNAVAILABLE`,
+//!   like C-4 integrity), never a grant use, until an explicit reviewed
+//!   migration or recovery. The authority interface is not completed
+//!   production human authentication (M4).
+//!
+//! **Reservation retention (D-035 item 1, C-3):** a `reserved` receipt keeps
+//! its key, fingerprint and consumed grant use; there is no automatic expiry,
+//! refund or recycling. Before dispatch the grant is revalidated inside
+//! T-dispatch ([`Revalidation`]): an expired grant, or one whose binding no
+//! longer matches the current use-time decision (for example after a policy
+//! activation), refuses without dispatch and keeps the receipt and its grant
+//! use; the grant is never substituted or replenished.
 
 use std::collections::HashSet;
 use std::sync::{Condvar, Mutex, PoisonError};
@@ -78,6 +98,10 @@ pub const DEFAULT_GRANT_TTL_SECONDS: u32 = 600;
 pub const GRANT_MAX_USES: u32 = 1;
 /// Maximum length of a grant label.
 pub const MAX_GRANT_LABEL_LEN: usize = 128;
+/// Version of the stored approver provenance record (D-035 item 5).
+pub const PROVENANCE_VERSION: &str = "writ-provenance-1";
+/// Maximum length of each authority-supplied provenance field.
+pub const MAX_PROVENANCE_FIELD_LEN: usize = 256;
 
 /// The members of a stored grant binding (LEDGER-SQLITE.md storage rule 5).
 pub const BINDING_MEMBERS: [&str; 9] = [
@@ -158,12 +182,18 @@ pub struct ApprovalPresentation<'a> {
 /// A principal the [`ApprovalAuthority`] authenticated.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthenticatedApprover {
-    /// Principal id.
+    /// Stable principal id.
     pub id: String,
     /// Principal kind.
     pub kind: PrincipalKind,
     /// The trusted channel the authority authenticated it on.
     pub channel: String,
+    /// The issuer or realm that vouches for the identity.
+    pub issuer: String,
+    /// The authority's reference to its authentication evidence (for example
+    /// an authentication event id). Never a password, bearer token or other
+    /// reusable credential.
+    pub evidence_ref: String,
 }
 
 /// Why an approver was not accepted. Every variant is `HUMAN_UNAUTHENTICATED`;
@@ -180,6 +210,12 @@ pub enum ApproverRefusal {
     IdentityMismatch,
     /// The principal is authenticated but is not a human.
     NotHuman,
+    /// The authority gave no issuer or evidence reference, or one longer
+    /// than [`MAX_PROVENANCE_FIELD_LEN`] (provenance cannot be established).
+    IncompleteProvenance,
+    /// The evidence reference contains the presented credential (it would
+    /// be stored; credentials never are).
+    CredentialInEvidence,
 }
 
 /// Authenticates approvers on trusted approval channels (D-009: an
@@ -208,6 +244,28 @@ fn authenticate(
     }
     if approver.kind != PrincipalKind::Human {
         return Err(ApproverRefusal::NotHuman);
+    }
+    let field_ok = |f: &str| !f.is_empty() && f.chars().count() <= MAX_PROVENANCE_FIELD_LEN;
+    if ![
+        &approver.id,
+        &approver.channel,
+        &approver.issuer,
+        &approver.evidence_ref,
+    ]
+    .iter()
+    .all(|f| field_ok(f))
+    {
+        return Err(ApproverRefusal::IncompleteProvenance);
+    }
+    let credential = presentation.credential;
+    if !credential.is_empty()
+        && approver
+            .evidence_ref
+            .as_bytes()
+            .windows(credential.len())
+            .any(|w| w == credential)
+    {
+        return Err(ApproverRefusal::CredentialInEvidence);
     }
     Ok(approver)
 }
@@ -318,6 +376,7 @@ pub fn binding_intact(text: &str) -> bool {
 ///     binding: String::new(),
 ///     expires_at: writ_broker::writ_kernel::time::Timestamp::parse_strict("2026-11-05T12:00:00Z").unwrap(),
 ///     max_uses: 1,
+///     provenance: todo!(),
 /// };
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -326,6 +385,81 @@ pub struct NewGrant {
     binding: String,
     expires_at: Timestamp,
     max_uses: u32,
+    provenance: GrantProvenance,
+}
+
+/// Approver provenance of a new grant (D-035 item 5), built only by the
+/// broker from the authority's answer and its own use-time decision:
+///
+/// ```compile_fail,E0451
+/// let _ = writ_broker::grants::GrantProvenance {
+///     approver_id: String::new(),
+///     issuer: String::new(),
+///     channel: String::new(),
+///     approved_at: writ_broker::writ_kernel::time::Timestamp::parse_strict("2026-11-05T12:00:00Z").unwrap(),
+///     verdict: writ_broker::grants::Verdict::Approved,
+///     evidence_ref: String::new(),
+///     request_fingerprint: String::new(),
+///     policy_bundle_sha: String::new(),
+/// };
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GrantProvenance {
+    approver_id: String,
+    issuer: String,
+    channel: String,
+    approved_at: Timestamp,
+    verdict: Verdict,
+    evidence_ref: String,
+    request_fingerprint: String,
+    policy_bundle_sha: String,
+}
+
+impl GrantProvenance {
+    /// [`PROVENANCE_VERSION`].
+    pub fn version(&self) -> &'static str {
+        PROVENANCE_VERSION
+    }
+
+    /// The approver's stable id.
+    pub fn approver_id(&self) -> &str {
+        &self.approver_id
+    }
+
+    /// The issuer or realm that vouches for the approver.
+    pub fn issuer(&self) -> &str {
+        &self.issuer
+    }
+
+    /// The trusted channel the approval arrived on.
+    pub fn channel(&self) -> &str {
+        &self.channel
+    }
+
+    /// Trusted time of the approval decision.
+    pub fn approved_at(&self) -> Timestamp {
+        self.approved_at
+    }
+
+    /// The verdict.
+    pub fn verdict(&self) -> Verdict {
+        self.verdict
+    }
+
+    /// The authority's authentication-evidence reference.
+    pub fn evidence_ref(&self) -> &str {
+        &self.evidence_ref
+    }
+
+    /// D-012 fingerprint of the approved request.
+    pub fn request_fingerprint(&self) -> &str {
+        &self.request_fingerprint
+    }
+
+    /// Digest of the policy bundle the approval was decided under.
+    pub fn policy_bundle_sha(&self) -> &str {
+        &self.policy_bundle_sha
+    }
 }
 
 impl NewGrant {
@@ -348,6 +482,11 @@ impl NewGrant {
     pub fn max_uses(&self) -> u32 {
         self.max_uses
     }
+
+    /// The approver provenance to store with the grant.
+    pub fn provenance(&self) -> &GrantProvenance {
+        &self.provenance
+    }
 }
 
 /// Result of the `approve` transaction.
@@ -359,7 +498,30 @@ pub enum GrantInsert {
     LabelInUse,
 }
 
-/// A grant as read inside T-reserve.
+/// Stored approver provenance as read with a grant (all columns as text).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredProvenance {
+    /// Record version ([`PROVENANCE_VERSION`]).
+    pub version: String,
+    /// Approver id.
+    pub approver_id: String,
+    /// Issuer or realm.
+    pub issuer: String,
+    /// Trusted channel.
+    pub channel: String,
+    /// Approval time (RFC 3339).
+    pub approved_at: String,
+    /// Verdict text.
+    pub verdict: String,
+    /// Authentication-evidence reference.
+    pub evidence_ref: String,
+    /// Fingerprint of the approved request.
+    pub request_fingerprint: String,
+    /// Policy bundle digest of the approval decision.
+    pub policy_bundle_sha: String,
+}
+
+/// A grant as read inside T-reserve or T-dispatch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredGrant {
     /// Stored binding text (checked with [`binding_intact`]).
@@ -370,6 +532,42 @@ pub struct StoredGrant {
     pub max_uses: i64,
     /// Stored uses.
     pub uses: i64,
+    /// Stored approver provenance; `None` when the grant has none (legacy).
+    pub provenance: Option<StoredProvenance>,
+}
+
+/// Provenance integrity (D-035 item 5): a record of [`PROVENANCE_VERSION`]
+/// with every field present and at most [`MAX_PROVENANCE_FIELD_LEN`]
+/// characters, an approval time no later than the grant's expiry, and the
+/// verdict and policy bundle digest of the grant's own (intact) binding.
+pub fn provenance_intact(grant: &StoredGrant) -> bool {
+    let Some(p) = &grant.provenance else {
+        return false;
+    };
+    let fields = [
+        &p.approver_id,
+        &p.issuer,
+        &p.channel,
+        &p.evidence_ref,
+        &p.request_fingerprint,
+        &p.policy_bundle_sha,
+    ];
+    if p.version != PROVENANCE_VERSION
+        || !fields
+            .iter()
+            .all(|f| !f.is_empty() && f.chars().count() <= MAX_PROVENANCE_FIELD_LEN)
+    {
+        return false;
+    }
+    if !Timestamp::parse_rfc3339(&p.approved_at).is_some_and(|t| t <= grant.expires_at) {
+        return false;
+    }
+    let Ok(binding) = json::parse(grant.binding.as_bytes()) else {
+        return false;
+    };
+    let member = |k: &str| binding.get(k).and_then(Value::as_str).map(str::to_string);
+    member("verdict").as_deref() == Some(p.verdict.as_str())
+        && member("policy_bundle_sha").as_deref() == Some(p.policy_bundle_sha.as_str())
 }
 
 /// What [`ReserveRequest::check_grant`] decided for the stored grant.
@@ -381,6 +579,28 @@ pub enum GrantCheck {
     Refuse(Refusal),
     /// The stored binding fails [`binding_intact`]: roll back, ledger-integrity failure.
     Integrity,
+    /// The stored grant has no intact provenance ([`provenance_intact`]):
+    /// roll back, not executable (diagnostic `provenance`).
+    Provenance,
+}
+
+/// What [`crate::execute::DispatchIntent::revalidate`] decided before dispatch
+/// for the reservation's grant (D-035 item 1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Revalidation {
+    /// Still valid: dispatch may proceed; permits issued under it expire no
+    /// later than the grant.
+    Valid {
+        /// The grant's expiry.
+        grant_expires_at: Timestamp,
+    },
+    /// Roll back and refuse; the receipt stays `reserved` with its grant use.
+    Refuse(Refusal),
+    /// The grant row is missing, its binding is not intact, or this
+    /// receipt's grant use is not recorded: ledger-integrity failure.
+    Integrity,
+    /// The grant has no intact provenance: not executable.
+    Provenance,
 }
 
 /// Receipt status (D-012; the `receipts.status` values).
@@ -459,10 +679,46 @@ pub enum ReserveOutcome {
 
 /// The effective grant of a reservation and what it must match.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct GrantUse {
+pub(crate) struct GrantUse {
     label: GrantLabel,
     expected: Option<String>,
     now: Timestamp,
+}
+
+impl GrantUse {
+    /// The grant label.
+    pub(crate) fn label(&self) -> &str {
+        self.label.as_str()
+    }
+
+    /// Revalidation before dispatch: integrity (row, use recorded, binding),
+    /// provenance, `GRANT_MISMATCH` against the current use-time binding,
+    /// `GRANT_EXPIRED` at the operation's observed time. Uses are not
+    /// checked: the reservation already holds its use.
+    pub(crate) fn revalidate(
+        &self,
+        stored: Option<&StoredGrant>,
+        use_recorded: bool,
+    ) -> Revalidation {
+        let Some(stored) = stored else {
+            return Revalidation::Integrity;
+        };
+        if !use_recorded || !binding_intact(&stored.binding) {
+            return Revalidation::Integrity;
+        }
+        if !provenance_intact(stored) {
+            return Revalidation::Provenance;
+        }
+        if self.expected.as_deref() != Some(stored.binding.as_str()) {
+            return Revalidation::Refuse(Refusal::GrantMismatch);
+        }
+        if self.now >= stored.expires_at {
+            return Revalidation::Refuse(Refusal::GrantExpired);
+        }
+        Revalidation::Valid {
+            grant_expires_at: stored.expires_at,
+        }
+    }
 }
 
 /// The input of one T-reserve, built only by the broker from a guard-bound
@@ -534,6 +790,11 @@ impl<'a> ReserveRequest<'a> {
         self.grant.as_ref().map(|g| g.label.as_str())
     }
 
+    /// The effective grant with its expected binding and observed time.
+    pub(crate) fn grant(&self) -> Option<&GrantUse> {
+        self.grant.as_ref()
+    }
+
     /// Outcome for an existing receipt of this key (T-reserve): another
     /// fingerprint or effective grant is `IDEMPOTENCY_CONFLICT`; otherwise by
     /// status: replay, `RECONCILIATION_REQUIRED`, or resume from `reserved`
@@ -555,16 +816,19 @@ impl<'a> ReserveRequest<'a> {
     }
 
     /// Check the effective grant's stored row (`None`: no such label), in the
-    /// order `GRANT_UNKNOWN`, integrity (C-4), `GRANT_MISMATCH` (canonical
-    /// text comparison), `GRANT_EXPIRED` (observed time at or after expiry),
-    /// `GRANT_EXHAUSTED`. Without an effective grant nothing may be consumed
-    /// (`GRANT_UNKNOWN`).
+    /// order `GRANT_UNKNOWN`, integrity (C-4), provenance (D-035 item 5),
+    /// `GRANT_MISMATCH` (canonical text comparison), `GRANT_EXPIRED`
+    /// (observed time at or after expiry), `GRANT_EXHAUSTED`. Without an
+    /// effective grant nothing may be consumed (`GRANT_UNKNOWN`).
     pub fn check_grant(&self, stored: Option<&StoredGrant>) -> GrantCheck {
         let (Some(grant), Some(stored)) = (&self.grant, stored) else {
             return GrantCheck::Refuse(Refusal::GrantUnknown);
         };
         if !binding_intact(&stored.binding) {
             return GrantCheck::Integrity;
+        }
+        if !provenance_intact(stored) {
+            return GrantCheck::Provenance;
         }
         if grant.expected.as_deref() != Some(stored.binding.as_str()) {
             return GrantCheck::Refuse(Refusal::GrantMismatch);
@@ -764,11 +1028,22 @@ where
             .and_then(|b| b.canonical_text())
             .ok_or(Refusal::NotApprovable)?;
         let ttl = approval.ttl_seconds.unwrap_or(DEFAULT_GRANT_TTL_SECONDS);
+        let provenance = GrantProvenance {
+            approver_id: approver.id,
+            issuer: approver.issuer,
+            channel: approver.channel,
+            approved_at: observed.at(),
+            verdict: approval.verdict,
+            evidence_ref: approver.evidence_ref,
+            request_fingerprint: authorized.verified().fingerprint().as_str().to_string(),
+            policy_bundle_sha: authorized.policy_bundle_sha().to_string(),
+        };
         let grant = NewGrant {
             label: approval.label.clone(),
             binding,
             expires_at: observed.at().plus_seconds(i64::from(ttl)),
             max_uses: GRANT_MAX_USES,
+            provenance,
         };
         match self
             .ledger
@@ -949,6 +1224,7 @@ mod tests {
                 expires_at: now().plus_seconds(expires),
                 max_uses: 1,
                 uses,
+                provenance: Some(provenance_for(binding)),
             };
             assert_eq!(
                 r.check_grant(None),
@@ -976,7 +1252,76 @@ mod tests {
                 r.check_grant(Some(&grant(&good, 1, 0))),
                 GrantCheck::Consume
             );
+            // Provenance (D-035 item 5): after integrity, before the mismatch.
+            let mut legacy = grant(&other, 0, 9);
+            legacy.provenance = None;
+            assert_eq!(r.check_grant(Some(&legacy)), GrantCheck::Provenance);
+            let mut bad = grant(&good, 1, 0);
+            bad.provenance.as_mut().unwrap().verdict = "denied".into();
+            assert_eq!(r.check_grant(Some(&bad)), GrantCheck::Provenance);
         });
+    }
+
+    /// Intact provenance for a stored `binding`.
+    fn provenance_for(binding: &str) -> StoredProvenance {
+        let v = json::parse(binding.as_bytes()).ok();
+        let member = |k: &str| {
+            v.as_ref()
+                .and_then(|v| v.get(k))
+                .and_then(Value::as_str)
+                .unwrap_or("x")
+                .to_string()
+        };
+        StoredProvenance {
+            version: PROVENANCE_VERSION.into(),
+            approver_id: "human:alice".into(),
+            issuer: "realm:fixture".into(),
+            channel: "approval-ui".into(),
+            approved_at: now().to_string(),
+            verdict: member("verdict"),
+            evidence_ref: "authn-event-1".into(),
+            request_fingerprint: "sha256:00".into(),
+            policy_bundle_sha: member("policy_bundle_sha"),
+        }
+    }
+
+    #[test]
+    fn provenance_integrity_rejects_every_malformation() {
+        let good = approved_binding(&publish_request()).unwrap();
+        let grant = |edit: &dyn Fn(&mut StoredProvenance)| {
+            let mut p = provenance_for(&good);
+            edit(&mut p);
+            StoredGrant {
+                binding: good.clone(),
+                expires_at: now().plus_seconds(600),
+                max_uses: 1,
+                uses: 0,
+                provenance: Some(p),
+            }
+        };
+        assert!(provenance_intact(&grant(&|_| {})));
+        let long = "x".repeat(MAX_PROVENANCE_FIELD_LEN + 1);
+        type Edit = Box<dyn Fn(&mut StoredProvenance)>;
+        let bad: Vec<Edit> = vec![
+            Box::new(|p| p.version = "writ-provenance-0".into()),
+            Box::new(|p| p.approver_id.clear()),
+            Box::new(|p| p.issuer.clear()),
+            Box::new(|p| p.channel.clear()),
+            Box::new(|p| p.evidence_ref.clear()),
+            Box::new(|p| p.request_fingerprint.clear()),
+            Box::new(|p| p.policy_bundle_sha.clear()),
+            Box::new(move |p| p.issuer = long.clone()),
+            Box::new(|p| p.approved_at = "yesterday".into()),
+            Box::new(|p| p.approved_at = now().plus_seconds(601).to_string()),
+            Box::new(|p| p.verdict = "denied".into()),
+            Box::new(|p| p.policy_bundle_sha = "sha256:other".into()),
+        ];
+        for (i, edit) in bad.iter().enumerate() {
+            assert!(!provenance_intact(&grant(edit.as_ref())), "case {i}");
+        }
+        let mut none = grant(&|_| {});
+        none.provenance = None;
+        assert!(!provenance_intact(&none), "legacy grant without provenance");
     }
 
     #[test]
@@ -1095,15 +1440,39 @@ mod tests {
             approver: "human:alice",
             credential: b"c",
         };
-        let answer = |id: &str, kind, channel: &str| {
+        let full = |id: &str, kind, channel: &str, issuer: &str, evidence: &str| {
             FixedAuthority(Ok(AuthenticatedApprover {
                 id: id.into(),
                 kind,
                 channel: channel.into(),
+                issuer: issuer.into(),
+                evidence_ref: evidence.into(),
             }))
         };
+        let answer = |id: &str, kind, channel: &str| full(id, kind, channel, "realm", "event-1");
         use PrincipalKind::*;
         assert!(authenticate(&answer("human:alice", Human, "approval-ui"), &p).is_ok());
+        let long = "e".repeat(MAX_PROVENANCE_FIELD_LEN + 1);
+        for (authority, want) in [
+            (
+                full("human:alice", Human, "approval-ui", "", "event-1"),
+                ApproverRefusal::IncompleteProvenance,
+            ),
+            (
+                full("human:alice", Human, "approval-ui", "realm", ""),
+                ApproverRefusal::IncompleteProvenance,
+            ),
+            (
+                full("human:alice", Human, "approval-ui", "realm", &long),
+                ApproverRefusal::IncompleteProvenance,
+            ),
+            (
+                full("human:alice", Human, "approval-ui", "realm", "token=c"),
+                ApproverRefusal::CredentialInEvidence,
+            ),
+        ] {
+            assert_eq!(authenticate(&authority, &p), Err(want));
+        }
         let cases = [
             (
                 answer("human:alice", Human, "other"),

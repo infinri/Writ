@@ -211,6 +211,8 @@ impl ApprovalAuthority for Channels {
                 id: e.1.to_string(),
                 kind: e.3,
                 channel: e.0.to_string(),
+                issuer: "realm:fixture".to_string(),
+                evidence_ref: format!("authn-event:{}:{}", e.0, e.1),
             })
             .ok_or(ApproverRefusal::Unauthenticated)
     }
@@ -228,6 +230,8 @@ impl ApprovalAuthority for Confused {
             id: ALICE.into(),
             kind: PrincipalKind::Human,
             channel: "ops-console".into(),
+            issuer: "realm:fixture".into(),
+            evidence_ref: "authn-event:confused".into(),
         })
     }
 }
@@ -306,7 +310,7 @@ fn assert_untouched(l: &SqliteLedger, g: &str) {
 
 pub(crate) type Svc<'a> = GrantService<'a, SqliteLedger>;
 
-fn approve_as(
+pub(crate) fn approve_as(
     svc: &Svc<'_>,
     req: &Value,
     g: &str,
@@ -334,7 +338,11 @@ pub(crate) fn approve(svc: &Svc<'_>, req: &Value, g: &str) -> Result<GrantIssued
     approve_as(svc, req, g, Verdict::Approved, None, &alice(), &channels())
 }
 
-fn reserve(svc: &Svc<'_>, req: &Value, g: Option<&str>) -> Result<ReserveOutcome, Refusal> {
+pub(crate) fn reserve(
+    svc: &Svc<'_>,
+    req: &Value,
+    g: Option<&str>,
+) -> Result<ReserveOutcome, Refusal> {
     let g = g.map(label);
     svc.reserve(&verify(req), revision(), g.as_ref())
 }

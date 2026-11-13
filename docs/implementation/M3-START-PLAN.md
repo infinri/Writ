@@ -66,7 +66,7 @@ No new kernel semantics are introduced. An instance refused because another owne
 | SQLite durability limits (risk 12) | M0 sign-off | M3-04 (crash during commit, kills); power loss M9 |
 | Use-time TOCTOU (risk 13, INV-14) | M0 sign-off | M3-02 (decision versus use); OS-level path mediation M5 |
 | Trusted clocks (risk 14) | D-018 A5, M1-02 review | M3-02 (clock interface, rollback cannot extend a grant or deadline) |
-| Reservation lease or expiry (C-3) | M1 open assumptions | M3-04 |
+| Reservation lease or expiry (C-3) | M1 open assumptions | M3-04; decided by D-035 item 1 (no expiry or refund; revalidation before dispatch; permit capped by grant expiry), implemented E-067 |
 | Linearizability and kills under load (C-6) | M1 open assumptions | M3-08 |
 | Production logging policy (S-5) | M1 open assumptions | M3-04 (sanitized operator diagnostics) |
 | Disk full and I/O fault injection (S-7) | M1 open assumptions | M3-04 |
@@ -78,3 +78,4 @@ No new kernel semantics are introduced. An instance refused because another owne
 1. Resolved (D-032): an ownership refusal keeps `LEDGER_UNAVAILABLE`; `OWNED_ELSEWHERE` is an operator diagnostic.
 2. Contract shapes for M3-06 before the runner (M3-07).
 3. Any change to existing broker semantics found while implementing (stop and report).
+4. D-035 (decided, implemented E-067): M1 fixture b-36 needs an exact M3-08 exception (reconciliation now records an observed outcome from adapter evidence); owner to confirm when M3-08 is reviewed.

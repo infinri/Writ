@@ -27,7 +27,24 @@
 //! effect without a consumed permit. It does not make an external system
 //! exactly-once: after a failure the broker cannot know whether the commit
 //! happened, so the receipt stays `dispatched` and only reconciliation may
-//! proceed.
+//! proceed. At-most-once dispatch is distinct from exactly-once external
+//! effects (D-035 item 2).
+//!
+//! **Inspection** ([`EffectAdapter::inspect`], D-035 item 3): a client-held
+//! permit is verified in a read-only adapter transaction (same precedence:
+//! storage first, then the permit checks) and its consumption looked up; it
+//! never applies an effect. **Evidence** ([`EffectAdapter::evidence`]): the
+//! adapter's durable record of what it did with one permit id, which
+//! reconciliation may use as authoritative evidence for the exact bound
+//! effect. Absence of a record is not evidence that nothing happened outside
+//! the adapter's own store.
+//!
+//! **Ownership** (D-035 item 2): an adapter's store must not be shared by two
+//! brokers or two ledgers. The local SQLite test adapter takes its own
+//! identity-safe ownership lock and is bound to one ledger; every future
+//! production adapter needs its own explicit concurrency, replay,
+//! authorization and outcome-recovery contract (OS file locks are not
+//! required for remote adapters).
 
 use crate::permit::VerifiedPermit;
 use crate::refusal::Refusal;
@@ -109,11 +126,51 @@ impl VerifiedEffect {
 /// The broker's verification, run by the adapter inside its transaction.
 pub type Verify<'v> = dyn FnMut() -> Result<VerifiedEffect, Refusal> + 'v;
 
+/// The adapter's durable record of one consumed permit: the effect it was
+/// bound to and what happened (applied, or consumed with a failed effect).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EffectEvidence {
+    /// The consumed permit id.
+    pub permit_id: String,
+    /// Tenant of the request the permit was consumed for.
+    pub tenant_id: String,
+    /// Idempotency key of that request.
+    pub idempotency_key: String,
+    /// D-012 fingerprint of that request.
+    pub request_fingerprint: String,
+    /// What the adapter did.
+    pub result: EffectResult,
+}
+
+impl EffectEvidence {
+    /// `true` when the record is for exactly this receipt: same tenant,
+    /// idempotency key and request fingerprint.
+    pub fn binds(&self, tenant_id: &str, idempotency_key: &str, fingerprint: &str) -> bool {
+        self.tenant_id == tenant_id
+            && self.idempotency_key == idempotency_key
+            && self.request_fingerprint == fingerprint
+    }
+}
+
 /// A controlled effect adapter with its own store (module documentation).
 pub trait EffectAdapter: Sync {
     /// Run the adapter transaction: begin; `verify`; replay check; record the
     /// consumed permit id and apply the effect atomically; commit. The outer
-    /// `Err` is a failed transaction (with its stage); the inner `Err` is a
-    /// permit refusal (rolled back, nothing recorded).
+    /// `Err` is a failed transaction (with its stage, and whether an issued
+    /// commit has an unknown outcome); the inner `Err` is a permit refusal
+    /// (rolled back, nothing recorded).
     fn apply(&self, verify: &mut Verify<'_>) -> Result<Result<EffectResult, Refusal>, TxFailure>;
+
+    /// Inspect a presented permit without applying anything: begin a
+    /// read-only transaction; `verify`; return the evidence recorded for the
+    /// verified permit id (`None`: not consumed); roll back. A storage
+    /// failure is the outer `Err` and takes precedence over every permit
+    /// check (D-025 B, D-035 item 4).
+    fn inspect(
+        &self,
+        verify: &mut Verify<'_>,
+    ) -> Result<Result<Option<EffectEvidence>, Refusal>, TxFailure>;
+
+    /// The evidence recorded for `permit_id`, if any (read-only transaction).
+    fn evidence(&self, permit_id: &str) -> Result<Option<EffectEvidence>, TxFailure>;
 }

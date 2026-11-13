@@ -13,9 +13,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use writ_ledger_sqlite::{LedgerStore, SqliteLedger, StoreError};
+use writ_ledger_sqlite::{LedgerId, LedgerStore, SqliteEffectStore, SqliteLedger, StoreError};
 
 const PROBE: &str = "WRIT_LEDGER_PROBE";
+/// The ledger identity an `effects-*` probe binds the effect store to.
+const PROBE_LEDGER: &str = "WRIT_EFFECTS_LEDGER";
 
 /// Serializes the tests of this binary. Each test spawns child processes, and a fork briefly
 /// duplicates every open descriptor of this process, including another test's ownership lock,
@@ -49,6 +51,24 @@ fn probe() {
         }
     }
     let out = std::io::stdout();
+    if mode.starts_with("effects") {
+        let id = LedgerId::parse(&std::env::var(PROBE_LEDGER).unwrap()).unwrap();
+        match SqliteEffectStore::open(Path::new(db), &id) {
+            Ok(store) => {
+                writeln!(out.lock(), "OWNER effects").unwrap();
+                out.lock().flush().unwrap();
+                if mode.ends_with("hold") {
+                    let mut sink = Vec::new();
+                    let _ = std::io::stdin().read_to_end(&mut sink);
+                    drop(store);
+                    writeln!(out.lock(), "WRITE ok").unwrap();
+                }
+            }
+            Err(e) => writeln!(out.lock(), "REFUSED {e}").unwrap(),
+        }
+        out.lock().flush().unwrap();
+        return;
+    }
     let opened = if mode.starts_with("create") {
         SqliteLedger::create(Path::new(db))
     } else {
@@ -84,6 +104,10 @@ fn tmp(name: &str) -> PathBuf {
 }
 
 fn spawn(mode: &str, gate: &str, db: &Path, cwd: &Path) -> Child {
+    spawn_for(mode, gate, db, cwd, "")
+}
+
+fn spawn_for(mode: &str, gate: &str, db: &Path, cwd: &Path, ledger: &str) -> Child {
     Command::new(std::env::current_exe().unwrap())
         .args([
             "probe",
@@ -93,6 +117,7 @@ fn spawn(mode: &str, gate: &str, db: &Path, cwd: &Path) -> Child {
             "--quiet",
         ])
         .env(PROBE, format!("{mode}:{gate}|{}", db.display()))
+        .env(PROBE_LEDGER, ledger)
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -127,11 +152,15 @@ fn writes(out: &mut BufReader<ChildStdout>) -> Vec<String> {
 
 /// Start all probes behind one gate, return their first statuses, then release them.
 fn race(specs: &[(&str, PathBuf)], d: &Path) -> (Vec<String>, Vec<String>) {
+    race_for(specs, d, "")
+}
+
+fn race_for(specs: &[(&str, PathBuf)], d: &Path, ledger: &str) -> (Vec<String>, Vec<String>) {
     let gate = d.join(format!("go-{}", specs.len()));
     let _ = std::fs::remove_file(&gate);
     let mut children: Vec<Child> = specs
         .iter()
-        .map(|(m, p)| spawn(m, gate.to_str().unwrap(), p, d))
+        .map(|(m, p)| spawn_for(m, gate.to_str().unwrap(), p, d, ledger))
         .collect();
     std::fs::write(&gate, b"").unwrap();
     let mut outs: Vec<BufReader<ChildStdout>> = children
@@ -313,4 +342,73 @@ fn reconciler_process_is_refused_while_a_broker_owns_the_ledger() {
         "the owner is unaffected"
     );
     assert!(broker.wait().unwrap().success());
+}
+
+/// D-035 item 2: the controlled adapter's effect store has its own identity-safe single
+/// owner across processes: concurrent startup through every alias gives exactly one
+/// owner, a SIGKILLed owner releases it to a restart, and a store bound to one ledger
+/// is refused for another.
+#[test]
+fn the_effect_store_has_exactly_one_owner_process_and_survives_owner_kill() {
+    let _serial = serial();
+    let d = tmp("effects");
+    std::fs::create_dir_all(d.join("real")).unwrap();
+    let ledger = SqliteLedger::create(&d.join("ledger.db")).unwrap();
+    let id = ledger.ledger_id().as_str().to_string();
+    let store = d.join("real/effects.db");
+    drop(SqliteEffectStore::create(&store, ledger.ledger_id()).unwrap());
+    drop(ledger);
+    symlink(&store, d.join("file-link.db")).unwrap();
+    symlink(d.join("real"), d.join("dir-link")).unwrap();
+    let aliases: Vec<PathBuf> = vec![
+        store.clone(),
+        PathBuf::from("real/effects.db"),
+        PathBuf::from("./real/../real/effects.db"),
+        d.join("file-link.db"),
+        d.join("dir-link/effects.db"),
+        store.clone(),
+        PathBuf::from("real/effects.db"),
+        d.join("file-link.db"),
+    ];
+    for round in 0..3 {
+        let specs: Vec<(&str, PathBuf)> = aliases
+            .iter()
+            .map(|p| ("effects-open-hold", p.clone()))
+            .collect();
+        let (statuses, w) = race_for(&specs, &d, &id);
+        assert_eq!(
+            statuses.iter().filter(|s| *s == "OWNER effects").count(),
+            1,
+            "round {round}: {statuses:?}"
+        );
+        assert_eq!(
+            statuses
+                .iter()
+                .filter(|s| *s == "REFUSED effects OWNED_ELSEWHERE")
+                .count(),
+            aliases.len() - 1,
+            "{statuses:?}"
+        );
+        assert_eq!(w, vec!["WRITE ok".to_string()]);
+    }
+    // SIGKILL of the owner releases the store; a restart owns it again.
+    let mut owner = spawn_for("effects-open-hold", "", &store, &d, &id);
+    let mut out = BufReader::new(owner.stdout.take().unwrap());
+    assert_eq!(first_status(&mut out), "OWNER effects");
+    let mut refused = spawn_for("effects-open", "", &d.join("dir-link/effects.db"), &d, &id);
+    let mut rout = BufReader::new(refused.stdout.take().unwrap());
+    assert_eq!(first_status(&mut rout), "REFUSED effects OWNED_ELSEWHERE");
+    refused.wait().unwrap();
+    owner.kill().unwrap();
+    owner.wait().unwrap();
+    let mut restart = spawn_for("effects-open", "", &store, &d, &id);
+    let mut rout = BufReader::new(restart.stdout.take().unwrap());
+    assert_eq!(first_status(&mut rout), "OWNER effects");
+    restart.wait().unwrap();
+    // Another ledger's broker never acquires it.
+    let other = SqliteLedger::create(&d.join("other.db")).unwrap();
+    let mut foreign = spawn_for("effects-open", "", &store, &d, other.ledger_id().as_str());
+    let mut fout = BufReader::new(foreign.stdout.take().unwrap());
+    assert_eq!(first_status(&mut fout), "REFUSED effects LEDGER_MISMATCH");
+    foreign.wait().unwrap();
 }

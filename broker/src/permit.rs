@@ -142,14 +142,28 @@ impl Permit {
         clock: &dyn TrustedClock,
         key: &PermitKey,
     ) -> Result<Permit, PermitIssueError> {
+        Permit::issue_bounded(permit_id, authorized, clock, key, None)
+    }
+
+    /// [`Permit::issue`] with an additional bound: the permit expires at
+    /// `min(now + PERMIT_TTL_SECONDS, deadline, not_after)`. A grant-backed
+    /// permit passes the grant's expiry (D-035 item 1), so a permit never
+    /// outlives the approval that authorized it.
+    pub fn issue_bounded(
+        permit_id: &PermitId,
+        authorized: &Authorized<'_>,
+        clock: &dyn TrustedClock,
+        key: &PermitKey,
+        not_after: Option<Timestamp>,
+    ) -> Result<Permit, PermitIssueError> {
         let ttl = clock
             .now()
             .map_err(|_| PermitIssueError::TimeUnavailable)?
             .plus_seconds(PERMIT_TTL_SECONDS);
-        let expires = authorized
-            .request()
-            .deadline_at
-            .map_or(ttl, |deadline| deadline.min(ttl));
+        let expires = [authorized.request().deadline_at, not_after]
+            .into_iter()
+            .flatten()
+            .fold(ttl, Timestamp::min);
         let fingerprint = authorized.verified().fingerprint().as_str();
         let bundle_sha = authorized.policy_bundle_sha();
         let expires_at = expires.to_string();

@@ -15,7 +15,10 @@
 //! grant overuse, at most one dispatch per key, no effect without a consumed permit, at
 //! most one effect per permit and per key, receipt states matching their events, and
 //! every `dispatched` or `unknown_reconcile` receipt answering `RECONCILIATION_REQUIRED`
-//! without a new effect. Only child processes started here are killed.
+//! without a new effect. Then recovery runs (D-035 item 3): reconciliation records an
+//! observed outcome exactly for the uncertain receipts whose permit the effect store
+//! holds durable evidence for, keeps every other one uncertain, never redispatches, and a
+//! repeated reconciliation changes nothing. Only child processes started here are killed.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -29,7 +32,8 @@ use std::sync::{mpsc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use writ_broker::execute::{Broker, Executed};
+use writ_broker::execute::{Broker, Executed, Reconciled};
+use writ_broker::grants::Replay;
 use writ_broker::keys::PermitKey;
 use writ_broker::permit::Permit;
 use writ_broker::policy::{ActivePolicy, PolicyState};
@@ -107,7 +111,7 @@ fn kill_child() {
     let parts: Vec<&str> = spec.split('|').collect();
     let dir = PathBuf::from(parts[1]);
     let ledger = SqliteLedger::open(&dir.join("ledger.db")).unwrap();
-    let effects = SqliteEffectStore::open(&dir.join("effects.db")).unwrap();
+    let effects = SqliteEffectStore::open(&dir.join("effects.db"), ledger.ledger_id()).unwrap();
     let active = ActivePolicy::new(PolicyState::loaded(reference()));
     let clock = TestClock::at(now());
     let key = permit_key();
@@ -241,8 +245,9 @@ fn disposable(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("writ-kill-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    drop(SqliteLedger::create(&d.join("ledger.db")).unwrap());
-    drop(SqliteEffectStore::create(&d.join("effects.db")).unwrap());
+    let ledger = SqliteLedger::create(&d.join("ledger.db")).unwrap();
+    drop(SqliteEffectStore::create(&d.join("effects.db"), ledger.ledger_id()).unwrap());
+    drop(ledger);
     d
 }
 
@@ -376,6 +381,11 @@ fn check_invariants(ledger: &SqliteLedger, effects: &SqliteEffectStore) -> Facts
                         "observe"
                     )
                     | (Some("dispatched"), "unknown_reconcile", "reconcile")
+                    | (
+                        Some("dispatched" | "unknown_reconcile"),
+                        "observed_success" | "observed_failure",
+                        "reconcile"
+                    )
             );
             assert!(allowed, "{key}: {history:?}");
             state = Some(to.clone());
@@ -453,6 +463,38 @@ fn check_invariants(ledger: &SqliteLedger, effects: &SqliteEffectStore) -> Facts
             _ => {}
         }
     }
+    // Every outcome reconciliation recorded rests on the effect store's evidence for the
+    // receipt's own permit (D-035 item 3).
+    for r in rows::<Value2>(
+        &l.conn,
+        "SELECT idempotency_key, permit_number, outcome FROM reconciliations \
+         WHERE evidence = 'adapter_record'",
+    ) {
+        let (key, number, outcome) = (r[0].text(), r[1].int(), r[2].text());
+        let recorded: i64 = l
+            .conn
+            .query_row(
+                "SELECT permit_number FROM receipt_permits WHERE idempotency_key = ?1",
+                [&key],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(recorded, number, "{key}");
+        let result: String = e
+            .conn
+            .query_row(
+                "SELECT result FROM consumed_permits WHERE permit_id = ?1 AND idempotency_key = ?2",
+                (format!("permit-{number}"), &key),
+                |r| r.get(0),
+            )
+            .unwrap();
+        let want = if result == "applied" {
+            "observed_success"
+        } else {
+            "observed_failure"
+        };
+        assert_eq!(outcome, want, "{key}");
+    }
     Facts {
         receipts,
         effects: per_key,
@@ -496,7 +538,7 @@ impl rusqlite::types::FromSql for Value2 {
 /// `RECONCILIATION_REQUIRED` and applies no new effect.
 fn uncertain_receipts_are_never_redispatched(dir: &Path, facts: &Facts) {
     let ledger = SqliteLedger::open(&dir.join("ledger.db")).unwrap();
-    let effects = SqliteEffectStore::open(&dir.join("effects.db")).unwrap();
+    let effects = SqliteEffectStore::open(&dir.join("effects.db"), ledger.ledger_id()).unwrap();
     let active = ActivePolicy::new(PolicyState::loaded(reference()));
     let clock = TestClock::at(now());
     let key = permit_key();
@@ -525,13 +567,92 @@ fn uncertain_receipts_are_never_redispatched(dir: &Path, facts: &Facts) {
     assert_eq!(before, after);
 }
 
+/// Recovery after the restart (D-035 item 3): reconciliation records an observed outcome
+/// for exactly the uncertain receipts whose permit the effect store holds evidence for,
+/// keeps the rest uncertain, applies nothing, and a second reconciliation changes nothing.
+fn recovery_uses_only_adapter_evidence(dir: &Path, facts: &Facts) {
+    let ledger = SqliteLedger::open(&dir.join("ledger.db")).unwrap();
+    let effects = SqliteEffectStore::open(&dir.join("effects.db"), ledger.ledger_id()).unwrap();
+    let active = ActivePolicy::new(PolicyState::loaded(reference()));
+    let clock = TestClock::at(now());
+    let key = permit_key();
+    let b = Broker::new(&active, &clock, &ledger, &effects, &key);
+    let count = |sql: &str| -> i64 { effects.db().conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+    let effects_before = count("SELECT count(*) FROM effects");
+    let mut want = Reconciled::default();
+    let mut expected = BTreeMap::new();
+    for (k, status) in &facts.receipts {
+        if status != "dispatched" && status != "unknown_reconcile" {
+            continue;
+        }
+        let number: Option<i64> = ledger
+            .db()
+            .conn
+            .query_row(
+                "SELECT permit_number FROM receipt_permits WHERE idempotency_key = ?1",
+                [k],
+                |r| r.get(0),
+            )
+            .ok();
+        let result: Option<String> = number.and_then(|n| {
+            effects
+                .db()
+                .conn
+                .query_row(
+                    "SELECT result FROM consumed_permits WHERE permit_id = ?1",
+                    [format!("permit-{n}")],
+                    |r| r.get(0),
+                )
+                .ok()
+        });
+        let to = match result.as_deref() {
+            Some("applied") => {
+                want.observed_success += 1;
+                "observed_success"
+            }
+            Some(_) => {
+                want.observed_failure += 1;
+                "observed_failure"
+            }
+            None => {
+                if status == "dispatched" {
+                    want.unknown += 1;
+                }
+                "unknown_reconcile"
+            }
+        };
+        expected.insert(k.clone(), to);
+    }
+    assert_eq!(b.reconcile(), Ok(want));
+    assert_eq!(
+        b.reconcile(),
+        Ok(Reconciled::default()),
+        "repeated recovery"
+    );
+    for (k, to) in &expected {
+        let now_status: String = ledger
+            .db()
+            .conn
+            .query_row(
+                "SELECT status FROM receipts WHERE idempotency_key = ?1",
+                [k],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(now_status, *to, "{k}");
+    }
+    assert_eq!(count("SELECT count(*) FROM effects"), effects_before);
+    check_invariants(&ledger, &effects);
+}
+
 fn restart(dir: &Path) -> Facts {
     let ledger = SqliteLedger::open(&dir.join("ledger.db")).unwrap();
-    let effects = SqliteEffectStore::open(&dir.join("effects.db")).unwrap();
+    let effects = SqliteEffectStore::open(&dir.join("effects.db"), ledger.ledger_id()).unwrap();
     let facts = check_invariants(&ledger, &effects);
-    drop(ledger);
     drop(effects);
+    drop(ledger);
     uncertain_receipts_are_never_redispatched(dir, &facts);
+    recovery_uses_only_adapter_evidence(dir, &facts);
     facts
 }
 
@@ -573,9 +694,9 @@ fn sigkill_at_every_lifecycle_boundary_leaves_the_implied_crash_state() {
             "{case}"
         );
         assert_eq!(facts.consumed, effect, "{case}");
-        // Retry after the restart: never a second dispatch or effect.
+        // Retry after the restart and recovery: never a second dispatch or effect.
         let ledger = SqliteLedger::open(&dir.join("ledger.db")).unwrap();
-        let effects = SqliteEffectStore::open(&dir.join("effects.db")).unwrap();
+        let effects = SqliteEffectStore::open(&dir.join("effects.db"), ledger.ledger_id()).unwrap();
         let active = ActivePolicy::new(PolicyState::loaded(reference()));
         let clock = TestClock::at(now());
         let key = permit_key();
@@ -587,17 +708,18 @@ fn sigkill_at_every_lifecycle_boundary_leaves_the_implied_crash_state() {
                 Some(&label(BOUNDARY_GRANT)),
             )
             .result;
+        // Recovery recorded the outcome where the adapter's evidence exists (the effect
+        // committed before the kill); without it the receipt stays uncertain.
         match tx {
             "reserve" | "dispatch" => assert_eq!(retry, Ok(Executed::EffectCompleted), "{case}"),
-            _ => assert_eq!(retry, Err(Refusal::ReconciliationRequired), "{case}"),
+            "adapter" => assert_eq!(retry, Err(Refusal::ReconciliationRequired), "{case}"),
+            _ => assert_eq!(
+                retry,
+                Ok(Executed::Replayed(Replay::EffectCompleted)),
+                "{case}"
+            ),
         }
-        if tx == "reconcile" {
-            assert_eq!(
-                b.reconcile(),
-                Ok(1),
-                "{case}: the killed reconcile left nothing"
-            );
-        }
+        assert_eq!(b.reconcile(), Ok(Reconciled::default()), "{case}");
         let facts = check_invariants(&ledger, &effects);
         // Completed by the retry, or applied before the kill; never applied after a
         // kill that left the adapter transaction uncommitted (uncertain, reconcile).
