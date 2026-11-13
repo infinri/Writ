@@ -1,4 +1,5 @@
-//! Broker refusals of the decision-free core (M3-02).
+//! Broker refusals of the decision-free core (M3-02) and of approvals and
+//! grant consumption (M3-03).
 //!
 //! A refusal carries the internal code that goes to the access-controlled
 //! audit record. Agents and hosts receive only [`Refusal::external_code`], the
@@ -7,6 +8,9 @@
 use std::fmt;
 use writ_kernel::contracts::{DecisionStatus, ReasonCode};
 use writ_kernel::refusal::external_code;
+
+use crate::grants::ApproverRefusal;
+use crate::store::StoreError;
 
 /// Why the broker refused a request or a permit.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,6 +43,34 @@ pub enum Refusal {
     /// failure ([`crate::clock::ClockError`]). Fail closed; externally the
     /// kernel's generic mapping.
     TimeUnavailable,
+    /// The use-time decision is `require_approval` and no grant was presented.
+    ApprovalRequired,
+    /// The approval was not presented by an authenticated human on a trusted
+    /// approval channel ([`ApproverRefusal`] says why; operator diagnostic only).
+    HumanUnauthenticated(ApproverRefusal),
+    /// The use-time decision for the request to approve is not `require_approval`.
+    NotApprovable,
+    /// The approver is the request's principal or agent.
+    SelfApprovalForbidden,
+    /// The grant label already names a grant; that grant is never reset.
+    GrantRefInUse,
+    /// No grant has the presented label.
+    GrantUnknown,
+    /// The grant's binding differs from the request and its use-time decision.
+    GrantMismatch,
+    /// The trusted time is at or after the grant's expiry.
+    GrantExpired,
+    /// The grant has no use left.
+    GrantExhausted,
+    /// A receipt for the (tenant, idempotency key) binds another request
+    /// fingerprint or another effective grant (D-012).
+    IdempotencyConflict,
+    /// The receipt's effect may have started (`dispatched` or
+    /// `unknown_reconcile`); only reconciliation may proceed.
+    ReconciliationRequired,
+    /// The ledger could not complete the operation (fail closed, D-024). The
+    /// [`StoreError`] is the sanitized operator diagnostic.
+    LedgerUnavailable(StoreError),
 }
 
 impl Refusal {
@@ -52,6 +84,18 @@ impl Refusal {
             Refusal::PermitExpired => "PERMIT_EXPIRED",
             Refusal::PermitStale => "PERMIT_STALE",
             Refusal::TimeUnavailable => "TIME_UNAVAILABLE",
+            Refusal::ApprovalRequired => "APPROVAL_REQUIRED",
+            Refusal::HumanUnauthenticated(_) => "HUMAN_UNAUTHENTICATED",
+            Refusal::NotApprovable => "NOT_APPROVABLE",
+            Refusal::SelfApprovalForbidden => "SELF_APPROVAL_FORBIDDEN",
+            Refusal::GrantRefInUse => "GRANT_REF_IN_USE",
+            Refusal::GrantUnknown => "GRANT_UNKNOWN",
+            Refusal::GrantMismatch => "GRANT_MISMATCH",
+            Refusal::GrantExpired => "GRANT_EXPIRED",
+            Refusal::GrantExhausted => "GRANT_EXHAUSTED",
+            Refusal::IdempotencyConflict => "IDEMPOTENCY_CONFLICT",
+            Refusal::ReconciliationRequired => "RECONCILIATION_REQUIRED",
+            Refusal::LedgerUnavailable(_) => StoreError::EXTERNAL_CODE,
         }
     }
 
@@ -137,6 +181,68 @@ mod tests {
             Refusal::PermitStale.external_code(),
             writ_kernel::refusal::PROMOTION_REFUSED
         );
+    }
+
+    #[test]
+    fn grant_and_idempotency_codes_and_their_external_mapping() {
+        let cases = [
+            (
+                Refusal::ApprovalRequired,
+                "APPROVAL_REQUIRED",
+                "APPROVAL_REQUIRED",
+            ),
+            (
+                Refusal::HumanUnauthenticated(ApproverRefusal::NotHuman),
+                "HUMAN_UNAUTHENTICATED",
+                "PROMOTION_REFUSED",
+            ),
+            (
+                Refusal::NotApprovable,
+                "NOT_APPROVABLE",
+                "PROMOTION_REFUSED",
+            ),
+            (
+                Refusal::SelfApprovalForbidden,
+                "SELF_APPROVAL_FORBIDDEN",
+                "PROMOTION_REFUSED",
+            ),
+            (
+                Refusal::GrantRefInUse,
+                "GRANT_REF_IN_USE",
+                "PROMOTION_REFUSED",
+            ),
+            (Refusal::GrantUnknown, "GRANT_UNKNOWN", "PROMOTION_REFUSED"),
+            (
+                Refusal::GrantMismatch,
+                "GRANT_MISMATCH",
+                "PROMOTION_REFUSED",
+            ),
+            (Refusal::GrantExpired, "GRANT_EXPIRED", "PROMOTION_REFUSED"),
+            (
+                Refusal::GrantExhausted,
+                "GRANT_EXHAUSTED",
+                "PROMOTION_REFUSED",
+            ),
+            (
+                Refusal::IdempotencyConflict,
+                "IDEMPOTENCY_CONFLICT",
+                "IDEMPOTENCY_CONFLICT",
+            ),
+            (
+                Refusal::ReconciliationRequired,
+                "RECONCILIATION_REQUIRED",
+                "RECONCILIATION_REQUIRED",
+            ),
+            (
+                Refusal::LedgerUnavailable(StoreError::OwnedElsewhere),
+                "LEDGER_UNAVAILABLE",
+                "PROMOTION_REFUSED",
+            ),
+        ];
+        for (refusal, internal, external) in cases {
+            assert_eq!(refusal.code(), internal);
+            assert_eq!(refusal.external_code(), external, "{internal}");
+        }
     }
 
     #[test]

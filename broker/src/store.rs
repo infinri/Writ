@@ -8,6 +8,8 @@
 use std::fmt;
 
 use crate::clock::ClockEvent;
+use crate::grants::{GrantInsert, NewGrant, ReserveOutcome, ReserveRequest};
+use crate::refusal::Refusal;
 /// The kernel timestamp used by the trusted-time operations.
 pub use writ_kernel::time::Timestamp;
 
@@ -73,4 +75,43 @@ pub trait LedgerStore {
 
     /// Append one clock audit record (the `clock_event` logical transaction, fenced).
     fn record_clock_event(&mut self, event: &ClockEvent) -> Result<(), StoreError>;
+}
+
+/// Approval grants and the T-reserve logical transaction (M3-03), on a ledger
+/// shared by many threads of the owning process.
+///
+/// Every method takes `&self` and is one fenced `BEGIN IMMEDIATE` logical
+/// transaction; implementations serialize or fence concurrent callers
+/// themselves and must be safe to call from many threads at once (`Sync`). The
+/// grant and comparison semantics are the broker's: the store reads the stored
+/// rows, hands them to [`ReserveRequest::existing`] and
+/// [`ReserveRequest::check_grant`] inside the transaction, and writes what they
+/// decide. Arguments ([`NewGrant`], [`ReserveRequest`]) can only be built by
+/// the broker, the latter only from a guard-bound
+/// [`crate::authorize::Authorized`], so a store cannot be driven with a
+/// detached authorization result.
+///
+/// The broker also needs the [`LedgerStore`] operations (trusted-time floor,
+/// refusal audit) on the same shared ledger: [`crate::grants::GrantService`]
+/// requires `&L: LedgerStore` for its ledger type `L`.
+pub trait GrantLedger: Sync {
+    /// The `approve` logical transaction: insert `grant` with `uses` 0, or
+    /// [`GrantInsert::LabelInUse`] (rolled back; the existing grant is never
+    /// reset or replenished).
+    fn insert_grant(&self, grant: &NewGrant) -> Result<GrantInsert, StoreError>;
+
+    /// The `reserve` logical transaction (LEDGER-SQLITE.md T-reserve): read the
+    /// receipt of `request`'s (tenant, idempotency key); if present, apply
+    /// [`ReserveRequest::existing`] (only a resumed `reserved` receipt commits,
+    /// writing nothing). Otherwise, with an effective grant, apply
+    /// [`ReserveRequest::check_grant`] to the stored grant row, consume one use
+    /// with a conditional update of exactly one row (else `GRANT_EXHAUSTED`)
+    /// and insert one `grant_uses` row; insert the receipt `reserved` and its
+    /// `reserve` event; commit. Every refusal rolls back. A stored grant that
+    /// fails [`crate::grants::binding_intact`] (C-4) is a store error with the
+    /// diagnostic code `integrity`, never a refusal and never a grant use.
+    fn reserve(
+        &self,
+        request: &ReserveRequest<'_>,
+    ) -> Result<Result<ReserveOutcome, Refusal>, StoreError>;
 }

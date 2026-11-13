@@ -19,10 +19,17 @@
 //! - [`refusal`]: refusal codes and their agent-facing mapping.
 //! - [`contracts`]: semantic validation of the proposed M3-06 acceptance
 //!   contracts (registry entry, runner attestation, evaluation record scope).
+//!
+//! Approvals and grants (M3-03):
+//! - [`grants`]: approval issuance through an [`grants::ApprovalAuthority`],
+//!   the grant binding and its C-4 integrity check, per-key locks, and atomic
+//!   single-use consumption in the T-reserve transaction of a
+//!   [`store::GrantLedger`] ([`grants::GrantService`]).
 
 pub mod authorize;
 pub mod clock;
 pub mod contracts;
+pub mod grants;
 pub mod ingress;
 pub mod keys;
 mod mac;
@@ -30,6 +37,11 @@ pub mod permit;
 pub mod policy;
 pub mod refusal;
 pub mod store;
+
+/// The kernel this broker decides with, re-exported so that store
+/// implementations and harnesses use exactly the same kernel types (requests,
+/// revisions, timestamps, JSON) without a separate dependency.
+pub use writ_kernel;
 
 #[cfg(test)]
 mod scenario_tests;

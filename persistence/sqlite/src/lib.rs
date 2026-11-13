@@ -1,4 +1,4 @@
-//! Writ V2 local ledger profile on SQLite (M3-01).
+//! Writ V2 local ledger profile on SQLite (M3-01; grants and T-reserve M3-03).
 //!
 //! **Ledger identity** (docs/implementation/M3-START-PLAN.md "Coordination boundary"):
 //! a ledger is identified by the canonical path of an existing regular file (every
@@ -40,8 +40,31 @@
 //! ```
 //!
 //! ```compile_fail
-//! fn f(l: &writ_ledger_sqlite::SqliteLedger) { let _ = &l.conn; }
+//! fn f(l: &writ_ledger_sqlite::SqliteLedger) { let _ = &l.inner; }
 //! ```
+//!
+//! **Concurrency (M3-03):** one [`SqliteLedger`] is shared by every thread of the owning
+//! process (`SqliteLedger: Sync`; share it by reference or in an `Arc`). It holds exactly
+//! one connection behind a mutex, so logical transactions of the owning process are
+//! serialized in-process: each one locks the mutex, runs `BEGIN IMMEDIATE`, checks the
+//! fencing epoch, runs its body and commits or rolls back before the mutex is released.
+//! There is no second owner connection, so in-process callers never contend inside SQLite
+//! (no `SQLITE_BUSY` between them); `busy_timeout` still applies to foreign readers. The
+//! connection mutex is the innermost lock (D-029 order: policy gate, per-key lock, then
+//! the transaction); no other lock is ever taken while it is held. A panic while it is
+//! held (never expected) poisons it and every later operation fails closed
+//! (`LEDGER_UNAVAILABLE`, code `poisoned`) until restart. The shared-reference store
+//! operations are [`LedgerStore`] for `&SqliteLedger` and [`GrantLedger`]; the
+//! `LedgerStore` implementation for `SqliteLedger` itself delegates to them.
+//!
+//! **Grants and T-reserve (M3-03):** `approve` inserts a grant (`uses` 0) unless its label
+//! exists; `reserve` is LEDGER-SQLITE.md T-reserve with the broker's semantics
+//! ([`writ_broker::grants`]): receipt lookup, grant checks, a conditional
+//! `UPDATE grants SET uses = uses + 1 WHERE label = ? AND uses < max_uses` that must change
+//! exactly one row, one `grant_uses` row, the `reserved` receipt and its `reserve` event,
+//! all in one fenced transaction. A stored grant that fails the C-4 integrity check, an
+//! unrepresentable stored expiry or an unknown stored receipt status is
+//! `transaction reserve` / `integrity` (fail closed, no grant use, no receipt).
 //!
 //! **Trusted time (schema `writ-ledger-2`):** `time_floor` holds the high-water mark `H`
 //! (at most one row, raised only, in the fenced `time_floor` transaction, which returns the
@@ -56,26 +79,69 @@ use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::ErrorKind;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
-use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, TransactionBehavior};
+use rusqlite::{
+    Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
+};
 use writ_broker::clock::{timestamp_from_parts, ClockEvent};
+use writ_broker::grants::{
+    GrantCheck, GrantInsert, NewGrant, ReceiptStatus, ReserveOutcome, ReserveRequest, StoredGrant,
+    StoredReceipt,
+};
+use writ_broker::refusal::Refusal;
 use writ_broker::store::Timestamp;
-pub use writ_broker::store::{LedgerStore, StoreError};
+pub use writ_broker::store::{GrantLedger, LedgerStore, StoreError};
 
 /// The production schema, applied once to a newly created ledger inside one transaction.
 pub const SCHEMA: &str = include_str!("schema.sql");
 /// The schema version this crate writes and accepts.
 pub const SCHEMA_VERSION: &str = "writ-ledger-2";
 
-/// A SQLite ledger owned by this process.
+/// A SQLite ledger owned by this process; safe to share between its threads.
 pub struct SqliteLedger {
     // Field order matters (no custom Drop): fields drop in declaration order, so the
     // connection closes before the ownership lock is released.
-    conn: Connection,
+    inner: Mutex<Inner>,
     epoch: u64,
     _lock: Option<File>,
+}
+
+/// The owner connection and (in unit tests) the armed fault, behind one mutex.
+struct Inner {
+    conn: Connection,
     #[cfg(test)]
     fault: Option<fault::Fault>,
+}
+
+/// How a transaction body ends when it does not fail.
+enum End<T> {
+    Commit(T),
+    Rollback(T),
+}
+
+/// Why a transaction body failed (rolled back, fail closed).
+enum BodyError {
+    Sql(rusqlite::Error),
+    /// Stored content violates the ledger's own invariants (C-4).
+    Integrity,
+}
+
+#[cfg(test)]
+impl Inner {
+    /// Disarm and return the fault armed for transaction `name`, if any (test only).
+    fn take_fault(&mut self, name: &str) -> Option<fault::Fault> {
+        match &self.fault {
+            Some(f) if f.transaction == name => self.fault.take(),
+            _ => None,
+        }
+    }
+}
+
+impl From<rusqlite::Error> for BodyError {
+    fn from(e: rusqlite::Error) -> BodyError {
+        BodyError::Sql(e)
+    }
 }
 
 /// Test-only storage fault injection at the transaction boundary (owner decision C of
@@ -302,11 +368,13 @@ fn finish(mut conn: Connection, lock: File) -> Result<SqliteLedger, StoreError> 
         .map_err(|e| unavailable("initialize", code_name(&e)))?;
     let epoch = bump_epoch(&mut conn)?;
     Ok(SqliteLedger {
-        conn,
+        inner: Mutex::new(Inner {
+            conn,
+            #[cfg(test)]
+            fault: None,
+        }),
         epoch,
         _lock: Some(lock),
-        #[cfg(test)]
-        fault: None,
     })
 }
 
@@ -382,21 +450,40 @@ impl SqliteLedger {
         finish(conn, lock)
     }
 
+    /// The owner connection, or fail closed if a holder panicked (`category` / `poisoned`).
+    fn lock(&self, category: &str) -> Result<MutexGuard<'_, Inner>, StoreError> {
+        self.inner
+            .lock()
+            .map_err(|_| unavailable(category, "poisoned"))
+    }
+
     /// Run a typed state change in one fenced `BEGIN IMMEDIATE` transaction named `name`.
     /// Crate-private: public callers only reach typed operations.
     fn write<T>(
-        &mut self,
+        &self,
         name: &str,
         body: impl FnOnce(&Transaction<'_>) -> rusqlite::Result<T>,
     ) -> Result<T, StoreError> {
+        self.transact(name, |tx| Ok(End::Commit(body(tx)?)))
+    }
+
+    /// Run one fenced `BEGIN IMMEDIATE` logical transaction named `name` whose body
+    /// decides to commit or roll back. The connection mutex is held for the whole
+    /// transaction. Any body error rolls back and fails closed.
+    fn transact<T>(
+        &self,
+        name: &str,
+        body: impl FnOnce(&Transaction<'_>) -> Result<End<T>, BodyError>,
+    ) -> Result<T, StoreError> {
         let category = format!("transaction {name}");
+        let mut inner = self.lock(&category)?;
         #[cfg(test)]
-        let armed = self.take_fault(name);
+        let armed = inner.take_fault(name);
         #[cfg(test)]
         if let Some(code) = fault::injected(&armed, fault::Stage::Begin) {
             return Err(unavailable(&category, code_name(&fault::error(code))));
         }
-        let tx = self
+        let tx = inner
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| unavailable(&category, code_name(&e)))?;
@@ -410,7 +497,10 @@ impl SqliteLedger {
                 stored,
             });
         }
-        let out = body(&tx).map_err(|e| unavailable(&category, code_name(&e)))?;
+        let end = body(&tx).map_err(|e| match e {
+            BodyError::Sql(e) => unavailable(&category, code_name(&e)),
+            BodyError::Integrity => unavailable(&category, "integrity"),
+        })?;
         #[cfg(test)]
         for stage in [fault::Stage::Body, fault::Stage::Commit] {
             if let Some(code) = fault::injected(&armed, stage) {
@@ -418,33 +508,44 @@ impl SqliteLedger {
                 return Err(unavailable(&category, code_name(&fault::error(code))));
             }
         }
-        tx.commit()
-            .map_err(|e| unavailable(&category, code_name(&e)))?;
-        Ok(out)
+        match end {
+            End::Commit(out) => {
+                tx.commit()
+                    .map_err(|e| unavailable(&category, code_name(&e)))?;
+                Ok(out)
+            }
+            End::Rollback(out) => {
+                tx.rollback()
+                    .map_err(|e| unavailable(&category, code_name(&e)))?;
+                Ok(out)
+            }
+        }
     }
 
     /// Arm a one-shot fault (test only).
     #[cfg(test)]
-    fn inject(&mut self, transaction: &str, stage: fault::Stage, code: std::ffi::c_int) {
-        self.fault = Some(fault::Fault {
-            transaction: transaction.to_string(),
-            stage,
-            code,
-        });
+    fn inject(&self, transaction: &str, stage: fault::Stage, code: std::ffi::c_int) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.fault = Some(fault::Fault {
+                transaction: transaction.to_string(),
+                stage,
+                code,
+            });
+        }
     }
 
-    /// Disarm and return the fault armed for transaction `name`, if any (test only).
+    /// The connection for direct inspection (test only).
     #[cfg(test)]
-    fn take_fault(&mut self, name: &str) -> Option<fault::Fault> {
-        match &self.fault {
-            Some(f) if f.transaction == name => self.fault.take(),
-            _ => None,
-        }
+    fn db(&self) -> MutexGuard<'_, Inner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Number of recorded refusals (`final.refusals`).
     pub fn refusal_count(&self) -> Result<u64, StoreError> {
         let n: i64 = self
+            .lock("read")?
             .conn
             .query_row("SELECT count(*) FROM audit_refusals", [], |r| r.get(0))
             .map_err(|e| unavailable("read", code_name(&e)))?;
@@ -453,26 +554,23 @@ impl SqliteLedger {
 
     /// The linked SQLite engine version (D-023 check).
     pub fn engine_version(&self) -> Result<String, StoreError> {
-        self.conn
+        self.lock("read")?
+            .conn
             .query_row("SELECT sqlite_version()", [], |r| r.get(0))
             .map_err(|e| unavailable("read", code_name(&e)))
     }
 }
 
-impl LedgerStore for SqliteLedger {
-    fn owner_epoch(&self) -> u64 {
-        self.epoch
-    }
-
-    fn record_refusal(&mut self, code: &str) -> Result<(), StoreError> {
+impl SqliteLedger {
+    fn audit(&self, code: &str) -> Result<(), StoreError> {
         self.write("audit", |tx| {
             tx.execute("INSERT INTO audit_refusals (code) VALUES (?1)", [code])
                 .map(|_| ())
         })
     }
 
-    fn time_floor(&self) -> Result<Option<Timestamp>, StoreError> {
-        let row = match self.conn.query_row(
+    fn floor(&self) -> Result<Option<Timestamp>, StoreError> {
+        let row = match self.lock("read")?.conn.query_row(
             "SELECT floor_s, floor_ns FROM time_floor WHERE id = 1",
             [],
             |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
@@ -484,7 +582,7 @@ impl LedgerStore for SqliteLedger {
         floor_timestamp(row, "read").map(Some)
     }
 
-    fn raise_time_floor(&mut self, at: Timestamp) -> Result<Timestamp, StoreError> {
+    fn raise_floor(&self, at: Timestamp) -> Result<Timestamp, StoreError> {
         let row = self.write("time_floor", |tx| {
             tx.execute(
                 "INSERT INTO time_floor (id, floor_s, floor_ns) VALUES (1, ?1, ?2) \
@@ -501,7 +599,7 @@ impl LedgerStore for SqliteLedger {
         floor_timestamp(row, "transaction time_floor")
     }
 
-    fn record_clock_event(&mut self, event: &ClockEvent) -> Result<(), StoreError> {
+    fn clock_event(&self, event: &ClockEvent) -> Result<(), StoreError> {
         let text = |t: Option<Timestamp>| t.map(|t| t.to_string());
         self.write("clock_event", |tx| {
             tx.execute(
@@ -519,6 +617,158 @@ impl LedgerStore for SqliteLedger {
     }
 }
 
+/// The store operations through a shared reference (any thread of the owner).
+impl LedgerStore for &SqliteLedger {
+    fn owner_epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    fn record_refusal(&mut self, code: &str) -> Result<(), StoreError> {
+        self.audit(code)
+    }
+
+    fn time_floor(&self) -> Result<Option<Timestamp>, StoreError> {
+        self.floor()
+    }
+
+    fn raise_time_floor(&mut self, at: Timestamp) -> Result<Timestamp, StoreError> {
+        self.raise_floor(at)
+    }
+
+    fn record_clock_event(&mut self, event: &ClockEvent) -> Result<(), StoreError> {
+        self.clock_event(event)
+    }
+}
+
+impl LedgerStore for SqliteLedger {
+    fn owner_epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    fn record_refusal(&mut self, code: &str) -> Result<(), StoreError> {
+        self.audit(code)
+    }
+
+    fn time_floor(&self) -> Result<Option<Timestamp>, StoreError> {
+        self.floor()
+    }
+
+    fn raise_time_floor(&mut self, at: Timestamp) -> Result<Timestamp, StoreError> {
+        self.raise_floor(at)
+    }
+
+    fn record_clock_event(&mut self, event: &ClockEvent) -> Result<(), StoreError> {
+        self.clock_event(event)
+    }
+}
+
+impl GrantLedger for SqliteLedger {
+    fn insert_grant(&self, grant: &NewGrant) -> Result<GrantInsert, StoreError> {
+        let expires = grant.expires_at();
+        self.transact("approve", |tx| {
+            let exists: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM grants WHERE label = ?1)",
+                [grant.label().as_str()],
+                |r| r.get(0),
+            )?;
+            if exists {
+                return Ok(End::Rollback(GrantInsert::LabelInUse));
+            }
+            tx.execute(
+                "INSERT INTO grants (label, binding, expires_s, expires_ns, max_uses, uses) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+                (
+                    grant.label().as_str(),
+                    grant.binding(),
+                    expires.unix_seconds(),
+                    i64::from(expires.subsec_nanos()),
+                    i64::from(grant.max_uses()),
+                ),
+            )?;
+            Ok(End::Commit(GrantInsert::Inserted))
+        })
+    }
+
+    fn reserve(
+        &self,
+        request: &ReserveRequest<'_>,
+    ) -> Result<Result<ReserveOutcome, Refusal>, StoreError> {
+        let key = (request.tenant_id(), request.idempotency_key());
+        self.transact("reserve", |tx| {
+            let found: Option<(String, Option<String>, String)> = tx
+                .query_row(
+                    "SELECT fingerprint, grant_label, status FROM receipts \
+                     WHERE tenant_id = ?1 AND idempotency_key = ?2",
+                    key,
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?;
+            if let Some((fingerprint, grant_label, status)) = found {
+                let status = ReceiptStatus::parse(&status).ok_or(BodyError::Integrity)?;
+                let stored = StoredReceipt {
+                    fingerprint,
+                    grant_label,
+                    status,
+                };
+                return Ok(match request.existing(&stored) {
+                    // Resume from `reserved`: a write-free commit (D-025 A).
+                    Ok(ReserveOutcome::Resumed) => End::Commit(Ok(ReserveOutcome::Resumed)),
+                    other => End::Rollback(other),
+                });
+            }
+            if let Some(label) = request.grant_label() {
+                let row: Option<(String, i64, i64, i64, i64)> = tx
+                    .query_row(
+                        "SELECT binding, expires_s, expires_ns, max_uses, uses FROM grants \
+                         WHERE label = ?1",
+                        [label],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                    )
+                    .optional()?;
+                let stored = match row {
+                    None => None,
+                    Some((binding, secs, nanos, max_uses, uses)) => Some(StoredGrant {
+                        binding,
+                        expires_at: u32::try_from(nanos)
+                            .ok()
+                            .and_then(|n| timestamp_from_parts(secs, n))
+                            .ok_or(BodyError::Integrity)?,
+                        max_uses,
+                        uses,
+                    }),
+                };
+                match request.check_grant(stored.as_ref()) {
+                    GrantCheck::Consume => {}
+                    GrantCheck::Refuse(refusal) => return Ok(End::Rollback(Err(refusal))),
+                    GrantCheck::Integrity => return Err(BodyError::Integrity),
+                }
+                let used = tx.execute(
+                    "UPDATE grants SET uses = uses + 1 WHERE label = ?1 AND uses < max_uses",
+                    [label],
+                )?;
+                if used != 1 {
+                    return Ok(End::Rollback(Err(Refusal::GrantExhausted)));
+                }
+                tx.execute(
+                    "INSERT INTO grant_uses (label, tenant_id, idempotency_key) VALUES (?1, ?2, ?3)",
+                    (label, key.0, key.1),
+                )?;
+            }
+            tx.execute(
+                "INSERT INTO receipts (tenant_id, idempotency_key, fingerprint, grant_label, status) \
+                 VALUES (?1, ?2, ?3, ?4, 'reserved')",
+                (key.0, key.1, request.fingerprint(), request.grant_label()),
+            )?;
+            tx.execute(
+                "INSERT INTO receipt_events (tenant_id, idempotency_key, status, cause) \
+                 VALUES (?1, ?2, 'reserved', 'reserve')",
+                key,
+            )?;
+            Ok(End::Commit(Ok(ReserveOutcome::Reserved)))
+        })
+    }
+}
+
 /// The stored floor as a timestamp; an unrepresentable row is a schema error.
 fn floor_timestamp((secs, nanos): (i64, i64), category: &str) -> Result<Timestamp, StoreError> {
     u32::try_from(nanos)
@@ -526,6 +776,9 @@ fn floor_timestamp((secs, nanos): (i64, i64), category: &str) -> Result<Timestam
         .and_then(|n| timestamp_from_parts(secs, n))
         .ok_or_else(|| unavailable(category, "schema"))
 }
+
+#[cfg(test)]
+mod grant_tests;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -554,7 +807,8 @@ mod tests {
     }
 
     fn clock_event_kinds(l: &SqliteLedger) -> Vec<String> {
-        let mut s = l
+        let db = l.db();
+        let mut s = db
             .conn
             .prepare("SELECT kind FROM clock_events ORDER BY seq")
             .unwrap();
@@ -637,26 +891,29 @@ mod tests {
     fn settings_and_engine_are_the_d023_ones() {
         let db = tmp("settings");
         let l = SqliteLedger::create(&db).unwrap();
+        let conn = l.db();
         let got: (String, i64, i64, i64, i64) = (
-            l.conn
+            conn.conn
                 .query_row("PRAGMA journal_mode", [], |r| r.get(0))
                 .unwrap(),
-            l.conn
+            conn.conn
                 .query_row("PRAGMA synchronous", [], |r| r.get(0))
                 .unwrap(),
-            l.conn
+            conn.conn
                 .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
                 .unwrap(),
-            l.conn
+            conn.conn
                 .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
                 .unwrap(),
-            l.conn
+            conn.conn
                 .query_row("PRAGMA trusted_schema", [], |r| r.get(0))
                 .unwrap(),
         );
+        drop(conn);
         assert_eq!(got, ("wal".to_string(), 2, 5000, 1, 0));
         assert_eq!(l.engine_version().unwrap(), "3.54.1");
-        let mut s = l.conn.prepare("PRAGMA compile_options").unwrap();
+        let db = l.db();
+        let mut s = db.conn.prepare("PRAGMA compile_options").unwrap();
         let opts: Vec<String> = s
             .query_map([], |r| r.get(0))
             .unwrap()
@@ -671,7 +928,8 @@ mod tests {
     }
 
     fn rows_with_code(l: &SqliteLedger, code: &str) -> i64 {
-        l.conn
+        l.db()
+            .conn
             .query_row(
                 "SELECT count(*) FROM audit_refusals WHERE code = ?1",
                 [code],
@@ -699,7 +957,10 @@ mod tests {
         // Rolled back: no row, no transaction left open.
         assert_eq!(rows_with_code(&a, "FAULT"), 0, "{stage:?}");
         assert_eq!(a.refusal_count().unwrap(), 1);
-        assert!(a.conn.is_autocommit(), "{stage:?}: transaction left open");
+        assert!(
+            a.db().conn.is_autocommit(),
+            "{stage:?}: transaction left open"
+        );
         // One-shot: the ledger stays usable.
         a.record_refusal("AFTER").unwrap();
         assert_eq!(a.refusal_count().unwrap(), 2);
@@ -762,14 +1023,15 @@ mod tests {
         assert_eq!(l.refusal_count().unwrap(), 1);
         // Still armed for its own transaction name; the audit transaction never takes it.
         assert!(l
+            .db()
             .fault
             .as_ref()
             .is_some_and(|f| f.transaction == "dispatch"));
         assert_eq!(
-            l.take_fault("dispatch").map(|f| f.stage),
+            l.db().take_fault("dispatch").map(|f| f.stage),
             Some(fault::Stage::Commit)
         );
-        assert!(l.fault.is_none());
+        assert!(l.db().fault.is_none());
     }
 
     #[test]
@@ -777,7 +1039,9 @@ mod tests {
         let db = tmp("v2");
         let l = SqliteLedger::create(&db).unwrap();
         assert_eq!(
-            meta_value(&l.conn, "schema_version").unwrap().as_deref(),
+            meta_value(&l.db().conn, "schema_version")
+                .unwrap()
+                .as_deref(),
             Some("writ-ledger-2")
         );
         assert_eq!(l.time_floor().unwrap(), None);
@@ -811,6 +1075,7 @@ mod tests {
         );
         assert_eq!(b.raise_time_floor(t).unwrap(), later);
         let rows: i64 = b
+            .db()
             .conn
             .query_row("SELECT count(*) FROM time_floor", [], |r| r.get(0))
             .unwrap();
@@ -821,7 +1086,8 @@ mod tests {
     fn unrepresentable_stored_floor_fails_closed() {
         let db = tmp("floor-range");
         let l = SqliteLedger::create(&db).unwrap();
-        l.conn
+        l.db()
+            .conn
             .execute(
                 "INSERT INTO time_floor (id, floor_s, floor_ns) VALUES (1, ?1, 0)",
                 [i64::MAX],
@@ -835,10 +1101,12 @@ mod tests {
             })
         );
         assert!(l
+            .db()
             .conn
             .execute("UPDATE time_floor SET floor_ns = 1000000000", [])
             .is_err());
         assert!(l
+            .db()
             .conn
             .execute(
                 "INSERT INTO time_floor (id, floor_s, floor_ns) VALUES (2, 0, 0)",
@@ -866,6 +1134,7 @@ mod tests {
             Option<String>,
             Option<String>,
         ) = l
+            .db()
             .conn
             .query_row(
                 "SELECT kind, effective, wall, floor, operator FROM clock_events",
@@ -900,6 +1169,7 @@ mod tests {
         }
         assert_eq!(clock_event_kinds(&l).len(), 11);
         assert!(l
+            .db()
             .conn
             .execute("INSERT INTO clock_events (kind) VALUES ('reset')", [])
             .is_err());
@@ -989,7 +1259,7 @@ mod tests {
                 Some(ts("2026-11-05T12:00:00Z")),
                 "{stage:?}: rolled back to the previous floor"
             );
-            assert!(l.conn.is_autocommit());
+            assert!(l.db().conn.is_autocommit());
             assert_eq!(
                 observe(&clock, &mut l).unwrap().at(),
                 ts("2026-11-05T12:00:10Z")
