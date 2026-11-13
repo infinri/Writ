@@ -971,7 +971,10 @@
       },
       "companions": [
         "m3c-12-refusal-is-side-effect-free"
-      ]
+      ],
+      "cascade": {
+        "1": "Same blocking dependency recurs (D-037 item 4, D-038 item 6): the frozen step-1 commit needs the required human signoff criterion, which production refuses fail-closed with ACCEPTANCE_HUMAN_UNAVAILABLE until M4; not a consequence of step 0, which is a refusal in the frozen case too."
+      }
     },
     {
       "set": "transition-scenarios",
@@ -1027,7 +1030,10 @@
       },
       "companions": [
         "m3c-13-refused-key-reusable"
-      ]
+      ],
+      "cascade": {
+        "1": "Same blocking dependency recurs (D-037 item 4, D-038 item 6): the frozen step-1 commit needs required human signoff, refused fail-closed with ACCEPTANCE_HUMAN_UNAVAILABLE until M4; step 0 is a refusal in the frozen case too."
+      }
     },
     {
       "set": "transition-scenarios",
@@ -1756,7 +1762,11 @@
       },
       "companions": [
         "m3c-38-repeated-refusals-then-success"
-      ]
+      ],
+      "cascade": {
+        "1": "D-036 item 2 (no client promotion permit): the frozen PERMIT_MISSING cannot occur; the step is decided at use time like step 0 and reaches the same blocking dependency, required human signoff, refused with ACCEPTANCE_HUMAN_UNAVAILABLE until M4 (D-037 item 4).",
+        "2": "Same blocking dependency recurs (D-037 item 4, D-038 item 6): the frozen step-2 commit needs required human signoff, refused fail-closed with ACCEPTANCE_HUMAN_UNAVAILABLE until M4; steps 0 and 1 are refusals in the frozen case too."
+      }
     },
     {
       "set": "transition-scenarios",
