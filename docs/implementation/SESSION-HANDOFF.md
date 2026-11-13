@@ -2,14 +2,15 @@
 
 Read this first after compaction or in a new session, then [WORK-STATE](WORK-STATE.md). This file is the authoritative recovery entry point. Only the section "Current recovery state" gives current instructions; everything under "Historical record" is preserved evidence and superseded instructions, never a current next step.
 
-## Current recovery state (checkpoint 2026-11-13, after M3-07; M3 in progress, NOT complete; M3-08 blocked on owner decisions)
+## Current recovery state (checkpoint 2026-11-13, D-037 implemented; M3 in progress, NOT complete; M3-08 gate fails on 3 cases pending owner decisions OQ-13..OQ-17)
 
 ### 1. Repository and CI (verify on recovery with the commands in section 7)
 
 | Item | State |
 |---|---|
 | Branch | `v2/architecture-rebuild` only; never `main`; fast-forward pushes only, never force |
-| Verified code baseline | `6be251c89c7c52484b89f6dc14bb663c315d436c` (M3-05 transition service, D-036): CI https://github.com/infinri/Writ/actions/runs/43465393620 **success, all 6 jobs** (including the isolated process-kill step) |
+| D-037 commits | `644b4aa` (D-037 recorded) .. this checkpoint: `67fe4d9`, `7532b5c`, `d882c86`, `43d18be`, `baf8d86`, `6620a52`, `4f8d109`, `01c40a4`, `0a7c0fe`, then the docs checkpoint (E-072). Exact-SHA CI of the pushed head is recorded in E-072 and WORK-STATE once verified |
+| Previous verified code baseline | `146260e` run 43475168083 (6/6); checkpoint `9dda1d0` run https://github.com/infinri/Writ/actions/runs/43475928301 (6/6); `6be251c` run 43465393620 (6/6) |
 | Earlier verified commits | D-035 `5fdcd30` run 43346923290 (6/6 success); docs `154be77` run 43347554447 (6/6 success); M3-04 code `8ead392` run 43340059204 (6/6 success) |
 | M3-07 commits | `e52e6ca`..`7eb995f` (runner, process lifecycle, review fixes and tests, M3-08 gate preparation). CI on `7eb995f` (run 43474169870) **failed** in the production workspace job: the CI host leaks a descriptor without close-on-exec, so the sandbox refused every job (E-071). Fixed in `146260e` (tests and kill tests run through `m3/tools/run-with-clean-fds.sh`; the CI host leaked pipe descriptors 142 and 145): run https://github.com/infinri/Writ/actions/runs/43475168083 **success, 6/6**. **Verified code baseline: `146260e485795865e4b5cc72a1b0da0cb8e48778`.** The documentation commit recording this has its own CI run |
 | Previous checkpoint | `82971fd` (docs) passed run https://github.com/infinri/Writ/actions/runs/43466394626, 6/6 |
@@ -21,14 +22,14 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 
 - **Done:** M3-PLAN, M3-00 (workspace, per-crate dependency gate), M3-01 (single-owner SQLite ledger: canonical identity, owner lock, fencing epoch, create versus open), M3-02 (sealed ingress, use-time re-decision, policy gate, permits, `PERMIT_STALE`, contract semantic validation, trusted time), M3-03 (authenticated approvals, atomic single-use grants; E-064), M3-04 (execute lifecycle, separate effect store, stage evidence, kills; E-065, E-066), D-035 (E-067).
 - **M3-05 implemented under D-036 (E-068):** verified locally (310 tests passed 3 times, kill tests 3/3, parity 320/320, gate 0 problems); exact-SHA CI on `6be251c` green (run 43465393620, 6/6). The 66 transition-scenarios and 6 protocol-transition cases are not yet run against production code (M3-08).
-- **M3-06:** contracts (evaluator registry entry, runner attestation, EvaluationRecord scope) approved in D-034 with semantic validation in `broker::contracts`; the authenticated AcceptanceRecord contract `authenticated-acceptance-record/1` added and implemented under D-036. Remaining integration obligations, each open: (a) runner attestations produced by a real runner and verified end to end (M3-07); (b) EvaluationRecord scope documents are validated but not yet ingested or bound at use time (evaluations are carried inside the authenticated record); (c) registry publication by authorized humans (M6; today an operator interface with test authorities); (d) evidence-digest resolution against a catalog (M7); (e) human criteria refused until authenticated signoff (M4); (f) the proposed schemas in `docs/contracts/proposed/` are not promoted to `docs/contracts/` and the authenticated record has no JSON Schema file yet.
+- **M3-06:** contracts (evaluator registry entry, runner attestation, EvaluationRecord scope) approved in D-034 with semantic validation in `broker::contracts`; the authenticated AcceptanceRecord contract `authenticated-acceptance-record/1` added and implemented under D-036. Remaining integration obligations, each open: (a) runner attestations produced by a real runner and verified end to end (M3-07); (b) EvaluationRecord scope ingestion BLOCKED ON OQ-13 (the scope document is unauthenticated; evaluations are carried inside the authenticated record); (c) registry publication by authorized humans (M6; today an operator interface with test authorities); (d) evidence-digest resolution against a catalog (M7); (e) human criteria refused until authenticated signoff (M4); (f) JSON Schema for the authenticated record added in `docs/contracts/proposed/` (E-072); promotion out of `proposed/` is an owner action.
 - **M3-07 implemented (E-069):** runner as a broker effect (`runner.evaluate`) producing `runner-attestation/1` under the registry-named runner key from trusted state; process-wide lifecycle gate plus unlock-before-close ownership locks (E-066 resolved in production code); `LocalProcessSandbox` (bounded, descriptors checked) is uncontained, so `RunnerRequirements::production()` refuses every job until a contained sandbox exists (M5); the uncontained profile is compiled only for tests. Reviewed by an independent subagent; findings fixed or documented (M3-ACCEPTANCE-CONTRACTS "Mechanical runner").
-- **M3-08 in progress, BLOCKED ON OWNER DECISIONS (E-070):** command layer `persistence/sqlite/examples/m3_line_adapter.rs` and gate `m3/closure/` built; GATE FAIL: 59 exact, b-36 matched, 4 unexplained (sc-31, sc-52, sc-53, sc-54), 63 not drivable; promotion-permit cases sc-09, sc-13, sc-18..sc-25, sc-36, sc-38; owner questions OQ-1..OQ-12 in [M3-08-CLOSURE-MAP](M3-08-CLOSURE-MAP.md). Differential and property gate, chaos and storage-failure suites not started.
+- **M3-08 D-037 implemented (E-072), BLOCKED ON OWNER DECISIONS OQ-14..OQ-16:** adapter `persistence/sqlite/examples/m3_line_adapter/` drives all 127 cases; gate `m3/closure/` GATE FAIL: exact 17, adapted 63, approved differences 19, deferred to M4 25, unexplained 3 (`sc-06`, `sc-26`, `sc-27`); companions 30/30. Broker property gate `m3/props/` passes (in required CI); storage-failure tests added; chaos covered by kill tests. The closure gate becomes a required CI step once it passes. Open questions OQ-13..OQ-17 in [M3-08-CLOSURE-MAP](M3-08-CLOSURE-MAP.md).
 - **M3 is not complete.**
 
 ### 3. Decisions in force (do not request again)
 
-D-030 Rust selected, **ADR-0002 ACCEPTED** (scoped to the trusted kernel and broker); D-031 kernel readings; D-032..D-034 M3 decisions; **D-035** (reservation retention, effect-store ownership, permit presentation, failure precedence, approver provenance) and **D-036** (authenticated records, no promotion permits, no client-asserted reconciliation, b-36 exception, trusted workflow inputs) approved and implemented. ADR-0008 **APPROVED IN PRINCIPLE**. Release and production **NO-GO**. Stop for any new semantic or trust-boundary decision.
+D-030 Rust selected, **ADR-0002 ACCEPTED** (scoped to the trusted kernel and broker); D-031 kernel readings; D-032..D-034 M3 decisions; **D-035** (reservation retention, effect-store ownership, permit presentation, failure precedence, approver provenance) and **D-036** (authenticated records, no promotion permits, no client-asserted reconciliation, b-36 exception, trusted workflow inputs) approved and implemented; **D-037** (M3-08 closure: test seeding, harness bundles, test evidence, M4 human-signoff carry-over, production differences, harness compositions, ledger differences) approved and implemented (E-072). ADR-0008 **APPROVED IN PRINCIPLE**. Release and production **NO-GO**. Stop for any new semantic or trust-boundary decision.
 
 ### 4. Schemas, migrations and source map
 
@@ -48,11 +49,11 @@ A contained runner sandbox (filesystem, network, process-tree and resource conta
 
 ### 6. Authorized next action and continuation checklist
 
-Authorized (no new approval needed): remaining M3-06 integration that does not need a decision, M3-08 work that does not depend on OQ-1..OQ-12, reviewed fast-forward pushes and exact-SHA CI verification. **Blocked:** M3-08 closure needs the owner's answers to OQ-1..OQ-12 ([M3-08-CLOSURE-MAP](M3-08-CLOSURE-MAP.md)).
+Authorized (no new approval needed): work not depending on OQ-13..OQ-17, reviewed fast-forward pushes and exact-SHA CI verification. **Blocked:** M3-08 closure (OQ-14..OQ-16), M3-06 (b) (OQ-13), the C4 precedence oracle (OQ-17).
 
-1. Recover: run section 7 "state" commands; confirm HEAD equals `origin/v2/architecture-rebuild`; confirm the M3-07 commit's CI by run id (record it in section 1 and E-069 if not yet recorded).
-2. If the owner answered OQ-1..OQ-12: record a decision (D-037) and implement it in the command layer and `m3/closure/exceptions.json` (exact cases and outputs, negative tests), then rerun the gate: `cargo build --release --locked -p writ-ledger-sqlite --example m3_line_adapter && python3 m3/closure/check.py --proto target/release/examples/m3_line_adapter --report <out.json>`.
-3. Independently of the answers: M3-06 (b) ingest EvaluationRecord scope documents and bind them at use time if it needs no new semantics (otherwise ask); (f) a JSON Schema for `authenticated-acceptance-record/1` in `docs/contracts/proposed/` (promotion out of `proposed/` is an owner action); the M3-08 differential and property gate (like M2-06) and chaos and storage-failure suites against the production broker.
+1. Recover: section 7 "state" commands; HEAD equals `origin/v2/architecture-rebuild`; confirm the last pushed SHA's required CI by run id (record in E-072 and WORK-STATE if not yet recorded).
+2. When the owner answers OQ-13..OQ-17: record D-038; add exact entries to `m3/closure/exceptions.json` for the approved differences (or change production and re-record dependent entries `sc-04`, `sc-15`, `sc-20`, `sc-21`, `sc-54`); replace the `sc-10` companion waiver if OQ-14 makes refusals deterministic; rerun `cargo build --release --locked -p writ-ledger-sqlite --example m3_line_adapter && python3 m3/closure/check.py --proto target/release/examples/m3_line_adapter --repeat 2 --report <out.json>`; once it passes, add it as a required CI step after the property gate, verify on the exact SHA, then present the M3 gate review (evidence, M4 carry-over, deferred obligations). M3 stays open until that review is complete.
+3. Unblocked meanwhile: the adapter carrying dependency status across restart (re-enable generated restarts while `ledger: down` in `m3/props`); faults in concurrent groups.
 4. After each step: update TEST-EVIDENCE, TASKS, this file and WORK-STATE; commit explicit paths only; fast-forward push; verify CI on the exact SHA.
 
 ### 7. Commands
@@ -67,7 +68,10 @@ source m1/tools/env.sh
 cargo fmt --all --check && cargo clippy --workspace --all-targets --locked -- -D warnings
 m3/tools/run-with-clean-fds.sh cargo test --workspace --locked   # sandbox needs no inherited fd above 2 (E-071)
 m3/tools/run-with-clean-fds.sh cargo test -p writ-ledger-sqlite --locked --lib kill_tests -- --ignored --test-threads=1   # alone, single-threaded (E-066)
-python3 -m unittest discover -s m3/closure   # M3-08 gate self-tests (the gate itself currently fails, E-070)
+python3 -m unittest discover -s m3/closure && python3 -m unittest discover -s m3/props   # gate and property self-tests (self-tests passing is not the gate passing)
+cargo build --release --locked -p writ-ledger-sqlite --example m3_line_adapter
+python3 m3/closure/check.py --proto target/release/examples/m3_line_adapter --repeat 2   # actual gate: FAILS on sc-06, sc-26, sc-27 (E-072)
+m3/tools/run-with-clean-fds.sh python3 m3/props/run.py --profile ci --proto "$PWD/target/release/examples/m3_line_adapter" --out /tmp/m3-props.json
 python3 kernel/tools/check_deps.py --osv --sbom /tmp/sbom.json
 cargo build --release --locked --example m1_line_adapter && python3 m1/driver/parity.py --proto "$PWD/target/release/examples/m1_line_adapter" --manifest m1/fixtures/manifest.json --repeat 2 --sets canonical-vector,strict-json,golden-decisions,transition-decisions,acceptance-binding,external-refusal,protocol-decide,protocol-acceptance
 python3 -m unittest discover -s kernel/tools && python3 scripts/check-v2-docs.py
