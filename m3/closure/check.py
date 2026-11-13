@@ -54,8 +54,9 @@ LABELS = frozenset({
     "C4-partial-transaction-unavailability", "C5-injected-crash-reopen",
     "C6-controlled-effect-failure", "C7-protocol-unknown-op", "C8-protocol-input-validation",
     "seeded-preconditions", "harness-authorization-bundle", "test-authenticated-evidence",
-    "sealed-execute-effect", "production-difference",
+    "sealed-execute-effect", "production-difference", "client-permit-dropped", "adapter-sealed",
 })
+HUMAN_CODE = "ACCEPTANCE_HUMAN_UNAVAILABLE"
 COMMON_KEYS = {"set", "case", "kind", "decision", "reason", "adaptations"}
 KIND_KEYS = {
     "adapted": COMMON_KEYS,
@@ -178,6 +179,19 @@ def validate_entries(sets: dict, entries: list) -> tuple[dict, list]:
                 for k in ("carry_to", "intended_assertion", "acceptance_criteria"):
                     if not isinstance(e[k], str) or not e[k].strip():
                         problems.append(f"{where}: empty {k}")
+                # The only approved carry-over is required human signoff to M4 (D-037 item 4):
+                # the first differing step must be the fail-closed human refusal.
+                if e["carry_to"] != "M4" or "D-037 item 4" not in e["decision"]:
+                    problems.append(f"{where}: a deferral must cite D-037 item 4 and carry to M4")
+                gs = actual.get("steps") if isinstance(actual, dict) else None
+                first = e["steps"][0] if e["steps"] else None
+                step = gs[first] if isinstance(gs, list) and isinstance(first, int) and 0 <= first < len(gs) else None
+                human = isinstance(step, dict) and (
+                    step.get("code") == HUMAN_CODE
+                    or (step.get("result") == "concurrent" and step.get("committed") == 0
+                        and isinstance(step.get("refused"), dict) and set(step["refused"]) == {HUMAN_CODE}))
+                if not human:
+                    problems.append(f"{where}: a deferral's first differing step must refuse {HUMAN_CODE}")
         listed[key] = e
     return listed, problems
 
@@ -339,6 +353,38 @@ def run(proto: list, sets_spec: list, base: Path, repeat: int, timeout: float):
     return sets, outputs, logs, problems, parity.compare
 
 
+def coverage_problems(spec: dict, sets: dict) -> list:
+    """Case ids are unique across the gated and companion sets (the adaptation log is keyed by
+    id); each companion set holds exactly its pinned case list; every deferred case has a
+    mechanical companion or a recorded waiver."""
+    problems, seen = [], {}
+    parity = _parity()
+    ids = [(n, c["id"]) for n, cs in sets.items() for c in cs]
+    companions_of = set()
+    for comp in spec.get("companions", []):
+        cases = parity.load_cases(HERE / comp["file"])
+        got = [c["id"] for c in cases]
+        if got != comp.get("cases"):
+            problems.append(f"companion set {comp['name']} does not hold exactly its pinned cases")
+        ids += [(comp["name"], i) for i in got]
+        if comp["kind"] == "mechanical-companion":
+            companions_of |= {c.get("meta", {}).get("companion_of") for c in cases}
+    for name, cid in ids:
+        if cid in seen:
+            problems.append(f"case id {cid} appears in {seen[cid]} and {name}")
+        seen[cid] = name
+    waivers = spec.get("companion_waivers", {})
+    for e in spec["exceptions"]:
+        if e.get("kind") == "deferred" and e.get("case") not in companions_of:
+            reason = waivers.get(e.get("case"))
+            if not isinstance(reason, str) or not reason.strip():
+                problems.append(f"deferred {e.get('case')} has no mechanical companion and no waiver")
+    for cid in waivers:
+        if cid in companions_of:
+            problems.append(f"waiver for {cid}, which has a companion")
+    return problems
+
+
 def input_digests(args, spec: dict) -> dict:
     d = {"exceptions": sha256(args.exceptions), "manifest": sha256(args.manifest),
          "fixtures": dict(spec["fixture_sha256"]), "gate": sha256(Path(__file__).resolve())}
@@ -372,7 +418,7 @@ def main(argv=None) -> int:
     frozen = [(n, by_name[n]["file"], by_name[n]["command"]) for n in spec["sets"]]
     sets, outputs, logs, run_problems, compare = run(args.proto.split(), frozen, base, args.repeat, args.timeout)
     report = classify(sets, outputs, spec["exceptions"], compare, logs)
-    report["problems"] = problems + run_problems + report["problems"]
+    report["problems"] = problems + run_problems + report["problems"] + coverage_problems(spec, sets)
     comp = [(c["name"], c["file"], c["command"]) for c in spec.get("companions", [])]
     report["companions"] = {"exact_pass": [], "failing": []}
     if comp:

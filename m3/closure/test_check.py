@@ -172,6 +172,12 @@ class EntryValidation(unittest.TestCase):
         del bad["acceptance_criteria"]
         self.assertTrue(self.problems(bad))
 
+    def test_deferral_must_be_the_m4_human_signoff_refusal(self):
+        self.assertTrue(self.problems(dict(DEFER_C, decision="D-036 item 2")))
+        self.assertTrue(self.problems(dict(DEFER_C, carry_to="M7")))
+        other = {"steps": [{"code": "DEFAULT_DENY", "result": "refused"}], "final": {"refusals": 1}}
+        self.assertTrue(self.problems(dict(DEFER_C, actual=other)))
+
     def test_adapted_entry_needs_labels_and_no_actual(self):
         self.assertTrue(self.problems(dict(ADAPT_A, adaptations=[])))
         self.assertTrue(self.problems(dict(ADAPT_A, adaptations=["allow-all"])))
@@ -200,6 +206,34 @@ for raw in sys.stdin:
         with open(log, "a") as f:
             f.write(json.dumps({"command": sys.argv[1], "case": cid, "adaptations": []}) + "\n")
 '''
+
+
+class Coverage(unittest.TestCase):
+    def spec(self, d, lines, pinned, waivers=None, deferred=True):
+        f = Path(d) / "comp.jsonl"
+        f.write_text("".join(json.dumps(x) + "\n" for x in lines))
+        return {"companions": [{"name": "comp", "file": str(f), "command": "x",
+                                "kind": "mechanical-companion", "cases": pinned}],
+                "companion_waivers": waivers or {}, "exceptions": [DEFER_C] if deferred else []}
+
+    def comp(self, cid, of):
+        return dict(case(cid, OK_STEP), meta={"companion_of": of})
+
+    def test_deferred_case_needs_a_companion_or_waiver(self):
+        with tempfile.TemporaryDirectory() as d:
+            ok = self.spec(d, [self.comp("m3c-1", "c")], ["m3c-1"])
+            self.assertEqual(check.coverage_problems(ok, SETS), [])
+            none = self.spec(d, [self.comp("m3c-1", "a")], ["m3c-1"])
+            self.assertTrue(check.coverage_problems(none, SETS))
+            waived = self.spec(d, [self.comp("m3c-1", "a")], ["m3c-1"], {"c": "documented reason"})
+            self.assertEqual(check.coverage_problems(waived, SETS), [])
+
+    def test_deleted_companion_or_duplicate_id_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            gone = self.spec(d, [self.comp("m3c-1", "c")], ["m3c-1", "m3c-2"])
+            self.assertTrue(check.coverage_problems(gone, SETS))
+            dup = self.spec(d, [self.comp("a", "c")], ["a"])
+            self.assertTrue(check.coverage_problems(dup, SETS))
 
 
 class EndToEnd(unittest.TestCase):

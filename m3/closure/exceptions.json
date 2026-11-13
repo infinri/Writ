@@ -102,7 +102,8 @@
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
         "C2-approval-sealing",
-        "C3-synthetic-human-authority"
+        "C3-synthetic-human-authority",
+        "adapter-sealed"
       ]
     },
     {
@@ -113,7 +114,8 @@
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
         "C2-approval-sealing",
-        "C3-synthetic-human-authority"
+        "C3-synthetic-human-authority",
+        "adapter-sealed"
       ]
     },
     {
@@ -124,7 +126,8 @@
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
         "C2-approval-sealing",
-        "C3-synthetic-human-authority"
+        "C3-synthetic-human-authority",
+        "adapter-sealed"
       ]
     },
     {
@@ -135,7 +138,8 @@
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
         "C2-approval-sealing",
-        "C3-synthetic-human-authority"
+        "C3-synthetic-human-authority",
+        "adapter-sealed"
       ]
     },
     {
@@ -146,7 +150,8 @@
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
         "C2-approval-sealing",
-        "C3-synthetic-human-authority"
+        "C3-synthetic-human-authority",
+        "adapter-sealed"
       ]
     },
     {
@@ -157,7 +162,8 @@
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
         "C2-approval-sealing",
-        "C3-synthetic-human-authority"
+        "C3-synthetic-human-authority",
+        "adapter-sealed"
       ]
     },
     {
@@ -168,7 +174,8 @@
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
         "C2-approval-sealing",
-        "C3-synthetic-human-authority"
+        "C3-synthetic-human-authority",
+        "adapter-sealed"
       ]
     },
     {
@@ -179,7 +186,8 @@
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
         "C2-approval-sealing",
-        "C3-synthetic-human-authority"
+        "C3-synthetic-human-authority",
+        "adapter-sealed"
       ]
     },
     {
@@ -189,7 +197,8 @@
       "decision": "D-037 item 7",
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
-        "C2-approval-sealing"
+        "C2-approval-sealing",
+        "adapter-sealed"
       ]
     },
     {
@@ -199,7 +208,8 @@
       "decision": "D-037 item 7",
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
-        "C2-approval-sealing"
+        "C2-approval-sealing",
+        "adapter-sealed"
       ]
     },
     {
@@ -210,7 +220,8 @@
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
         "C2-approval-sealing",
-        "C3-synthetic-human-authority"
+        "C3-synthetic-human-authority",
+        "adapter-sealed"
       ]
     },
     {
@@ -221,7 +232,8 @@
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
         "C2-approval-sealing",
-        "C3-synthetic-human-authority"
+        "C3-synthetic-human-authority",
+        "adapter-sealed"
       ]
     },
     {
@@ -233,7 +245,8 @@
       "adaptations": [
         "C2-approval-sealing",
         "C3-synthetic-human-authority",
-        "C4-partial-transaction-unavailability"
+        "C4-partial-transaction-unavailability",
+        "adapter-sealed"
       ]
     },
     {
@@ -245,7 +258,8 @@
       "adaptations": [
         "C2-approval-sealing",
         "C3-synthetic-human-authority",
-        "C5-injected-crash-reopen"
+        "C5-injected-crash-reopen",
+        "adapter-sealed"
       ]
     },
     {
@@ -256,7 +270,8 @@
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
         "C2-approval-sealing",
-        "C3-synthetic-human-authority"
+        "C3-synthetic-human-authority",
+        "adapter-sealed"
       ]
     },
     {
@@ -267,7 +282,8 @@
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
         "C2-approval-sealing",
-        "C3-synthetic-human-authority"
+        "C3-synthetic-human-authority",
+        "adapter-sealed"
       ]
     },
     {
@@ -279,7 +295,8 @@
       "adaptations": [
         "C2-approval-sealing",
         "C3-synthetic-human-authority",
-        "C5-injected-crash-reopen"
+        "C5-injected-crash-reopen",
+        "adapter-sealed"
       ]
     },
     {
@@ -351,7 +368,8 @@
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
         "C2-approval-sealing",
-        "C3-synthetic-human-authority"
+        "C3-synthetic-human-authority",
+        "adapter-sealed"
       ]
     },
     {
@@ -362,7 +380,8 @@
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
         "C2-approval-sealing",
-        "C3-synthetic-human-authority"
+        "C3-synthetic-human-authority",
+        "adapter-sealed"
       ]
     },
     {
@@ -393,7 +412,8 @@
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
         "C2-approval-sealing",
-        "C3-synthetic-human-authority"
+        "C3-synthetic-human-authority",
+        "adapter-sealed"
       ]
     },
     {
@@ -405,6 +425,7 @@
       "adaptations": [
         "C2-approval-sealing",
         "C3-synthetic-human-authority",
+        "adapter-sealed",
         "production-difference"
       ],
       "steps": [
@@ -499,8 +520,10 @@
       "case": "sc-01-promote",
       "kind": "deferred",
       "decision": "D-037 item 4",
-      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -540,8 +563,10 @@
       "case": "sc-02-identical-retry",
       "kind": "deferred",
       "decision": "D-037 item 4",
-      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -586,8 +611,10 @@
       "case": "sc-03-same-key-different-request",
       "kind": "deferred",
       "decision": "D-037 item 4",
-      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -632,8 +659,10 @@
       "case": "sc-04-record-replay-new-key",
       "kind": "deferred",
       "decision": "D-037 item 4",
-      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -651,7 +680,7 @@
       ],
       "carry_to": "M4",
       "intended_assertion": "a consumed record cannot authorize a second transition: the frozen expectation, unchanged.",
-      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly. Mechanical-only companion m3c-04-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly, except: step 1 is decided against the new revision first; the OQ-14 refusal-code question may apply. Mechanical-only companion m3c-04-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
       "actual": {
         "final": {
           "consumed_record_ids": [],
@@ -677,9 +706,11 @@
       "set": "transition-scenarios",
       "case": "sc-05-artifact-replaced-before-promotion",
       "kind": "adapted",
-      "decision": "D-037 item 1; D-037 item 2; D-037 item 3",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 3; D-037 item 5; D-037 item 7",
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -689,9 +720,11 @@
       "set": "transition-scenarios",
       "case": "sc-07-snapshot-swapped-same-digest",
       "kind": "adapted",
-      "decision": "D-037 item 1; D-037 item 2; D-037 item 3",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 3; D-037 item 5; D-037 item 7",
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -701,9 +734,11 @@
       "set": "transition-scenarios",
       "case": "sc-08-policy-changed",
       "kind": "adapted",
-      "decision": "D-037 item 1; D-037 item 2; D-037 item 3",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 3; D-037 item 5; D-037 item 7",
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -712,10 +747,12 @@
     {
       "set": "transition-scenarios",
       "case": "sc-09-kernel-did-not-allow",
-      "kind": "difference",
-      "decision": "D-036 item 2",
-      "reason": "null client permit: production has no client-held promotion permit (use-time decision on the sealed request inside Broker::promote); the client permit is never read, so the step reaches a later production check",
+      "kind": "deferred",
+      "decision": "D-037 item 4; D-036 item 2",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -724,6 +761,9 @@
         0
       ],
       "final_members": [],
+      "carry_to": "M4",
+      "intended_assertion": "CHANGED (D-017): no permit (kernel did not allow); was DECISION_NOT_ALLOW with a decision_status input. null client permit (kernel did not allow); companion m3c-09 covers the invariant (a transition the policy does not allow never commits)",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch) the M3 fail-closed refusal disappears; after M4 the case commits at step 0 and is re-classified as a D-036 item 2 difference (no client-held promotion permit) with its then-exact output. Mechanical-only companion m3c-09-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
       "actual": {
         "final": {
           "consumed_record_ids": [],
@@ -746,8 +786,10 @@
       "case": "sc-10-race-16",
       "kind": "deferred",
       "decision": "D-037 item 4",
-      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -764,7 +806,7 @@
       ],
       "carry_to": "M4",
       "intended_assertion": "exactly one of 16 concurrent promotions commits: the frozen expectation, unchanged.",
-      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly, except: the 15 refusal codes may split nondeterministically between STATE_REVISION_CONFLICT (use-time kernel decision) and REVISION_CONFLICT (ledger compare-and-set), the sc-06 question; for the same reason there is no exact mechanical companion (in every mechanical run production commits exactly one of 16).",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly, except: the 15 refusal codes may split nondeterministically between STATE_REVISION_CONFLICT (use-time kernel decision) and REVISION_CONFLICT (ledger compare-and-set), OQ-14; for the same reason there is no exact mechanical companion (every mechanical run commits exactly one of 16).",
       "actual": {
         "final": {
           "consumed_record_ids": [],
@@ -789,9 +831,11 @@
       "set": "transition-scenarios",
       "case": "sc-11-expired",
       "kind": "adapted",
-      "decision": "D-037 item 1; D-037 item 2; D-037 item 3",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 3; D-037 item 5; D-037 item 7",
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -802,13 +846,16 @@
       "case": "sc-12-refusal-is-side-effect-free",
       "kind": "deferred",
       "decision": "D-037 item 4",
-      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
       ],
       "steps": [
+        0,
         1
       ],
       "final_members": [
@@ -832,7 +879,7 @@
         },
         "steps": [
           {
-            "code": "ACCEPTANCE_UNTRUSTED_EVALUATOR",
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
             "result": "refused"
           },
           {
@@ -847,8 +894,10 @@
       "case": "sc-13-refused-key-reusable",
       "kind": "deferred",
       "decision": "D-037 item 4; D-036 item 2",
-      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -866,7 +915,7 @@
       ],
       "carry_to": "M4",
       "intended_assertion": "CHANGED code only (PERMIT_MISSING replaces DECISION_NOT_ALLOW): refusals store no receipt, so the same key may be retried: the frozen expectation, unchanged.",
-      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly, except: Step 0 (null client permit) stays a D-036 item 2 difference after M4: production commits at step 0. Mechanical-only companion m3c-13-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly, except: step 0 (null client permit) stays a D-036 item 2 difference: production commits at step 0. Mechanical-only companion m3c-13-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
       "actual": {
         "final": {
           "consumed_record_ids": [],
@@ -892,9 +941,11 @@
       "set": "transition-scenarios",
       "case": "sc-14-malformed-record",
       "kind": "adapted",
-      "decision": "D-037 item 1; D-037 item 2; D-037 item 3",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 3; D-037 item 5; D-037 item 7",
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -905,8 +956,10 @@
       "case": "sc-15-workflow-already-moved",
       "kind": "deferred",
       "decision": "D-037 item 4",
-      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -924,7 +977,7 @@
       ],
       "carry_to": "M4",
       "intended_assertion": "from_state verifying no longer matches state accepted: the frozen expectation, unchanged.",
-      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly. Mechanical-only companion m3c-15-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly, except: step 1 may be refused STATE_REVISION_CONFLICT (use-time kernel decision) rather than REVISION_CONFLICT, OQ-14. Mechanical-only companion m3c-15-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
       "actual": {
         "final": {
           "consumed_record_ids": [],
@@ -950,9 +1003,11 @@
       "set": "transition-scenarios",
       "case": "sc-16-cross-project-record",
       "kind": "adapted",
-      "decision": "D-037 item 1; D-037 item 2; D-037 item 3",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 3; D-037 item 5; D-037 item 7",
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -962,9 +1017,11 @@
       "set": "transition-scenarios",
       "case": "sc-17-transition-not-evaluated",
       "kind": "adapted",
-      "decision": "D-037 item 1; D-037 item 2; D-037 item 3",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 3; D-037 item 5; D-037 item 7",
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -974,12 +1031,13 @@
       "set": "transition-scenarios",
       "case": "sc-18-permit-reused-for-other-target",
       "kind": "difference",
-      "decision": "D-036 item 2",
-      "reason": "permit fingerprint differs from the request: production has no client-held promotion permit (use-time decision on the sealed request inside Broker::promote); the client permit is never read, so the step reaches a later production check (the record covers verifying to accepted: ACCEPTANCE_TRANSITION_MISMATCH)",
+      "decision": "D-036 item 2; D-037 item 2",
+      "reason": "permit fingerprint differs from the request: production has no client-held promotion permit (use-time decision on the sealed request inside Broker::promote); the client permit is never read, so the step reaches a later production check; the declared harness bundle for sc-18 authorizes only verifying to accepted (the transition its permit was issued for), so verifying to deployed is DEFAULT_DENY",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
-        "seeded-preconditions",
-        "test-authenticated-evidence"
+        "seeded-preconditions"
       ],
       "steps": [
         0
@@ -996,7 +1054,7 @@
         },
         "steps": [
           {
-            "code": "ACCEPTANCE_TRANSITION_MISMATCH",
+            "code": "DEFAULT_DENY",
             "result": "refused"
           }
         ]
@@ -1005,10 +1063,12 @@
     {
       "set": "transition-scenarios",
       "case": "sc-19-permit-actor-changed",
-      "kind": "difference",
-      "decision": "D-036 item 2",
-      "reason": "permit fingerprint differs: production has no client-held promotion permit (use-time decision on the sealed request inside Broker::promote); the client permit is never read, so the step reaches a later production check (the required human criterion is unavailable until M4)",
+      "kind": "deferred",
+      "decision": "D-037 item 4; D-036 item 2",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -1017,6 +1077,9 @@
         0
       ],
       "final_members": [],
+      "carry_to": "M4",
+      "intended_assertion": "NEW: actor changed after the permit was issued. permit fingerprint differs (actor changed); companion m3c-19 covers the invariant (authorization follows the presented actor)",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch) the M3 fail-closed refusal disappears; after M4 the case commits and is re-classified as a D-036 item 2 difference with its then-exact output. Mechanical-only companion m3c-19-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
       "actual": {
         "final": {
           "consumed_record_ids": [],
@@ -1041,6 +1104,8 @@
       "decision": "D-036 item 2",
       "reason": "permit fingerprint differs: production has no client-held promotion permit (use-time decision on the sealed request inside Broker::promote); the client permit is never read, so the step reaches a later production check (the use-time kernel decision refuses the stale expected revision)",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions"
       ],
@@ -1072,6 +1137,8 @@
       "decision": "D-036 item 2",
       "reason": "permit fingerprint differs: production has no client-held promotion permit (use-time decision on the sealed request inside Broker::promote); the client permit is never read, so the step reaches a later production check (no workflow t1/p2/wf-1 exists)",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions"
       ],
@@ -1103,6 +1170,8 @@
       "decision": "D-036 item 2",
       "reason": "permit fingerprint differs: production has no client-held promotion permit (use-time decision on the sealed request inside Broker::promote); the client permit is never read, so the step reaches a later production check (the request's acceptance attributes differ from the authenticated record)",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -1135,6 +1204,8 @@
       "decision": "D-036 item 2",
       "reason": "permit fingerprint differs: production has no client-held promotion permit (use-time decision on the sealed request inside Broker::promote); the client permit is never read, so the step reaches a later production check (the request's acceptance attributes differ from the authenticated record)",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -1167,6 +1238,8 @@
       "decision": "D-036 item 2",
       "reason": "permit fingerprint differs: production has no client-held promotion permit (use-time decision on the sealed request inside Broker::promote); the client permit is never read, so the step reaches a later production check (the trusted source holds no record acc-2)",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions"
       ],
@@ -1194,10 +1267,12 @@
     {
       "set": "transition-scenarios",
       "case": "sc-25-record-swapped-under-permit",
-      "kind": "difference",
-      "decision": "D-036 item 2 (and item 1)",
-      "reason": "permit record_digest differs from the record: production has no client-held promotion permit (use-time decision on the sealed request inside Broker::promote); the client permit is never read, so the step reaches a later production check; the swapped record is authenticated and only the required human criterion refuses (M4)",
+      "kind": "deferred",
+      "decision": "D-037 item 4; D-036 item 2",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -1206,6 +1281,9 @@
         0
       ],
       "final_members": [],
+      "carry_to": "M4",
+      "intended_assertion": "NEW: a different record (different digest) presented under a permit bound to the original record. the trusted source issues the original record (sc-01 step 0, declared records_from); the swapped inline record is never MACed or read; companion m3c-25 covers the invariant (inline records are never authority)",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch) the M3 fail-closed refusal disappears; after M4 the case commits on the original record and is re-classified as a D-036 item 2 difference with its then-exact output. Mechanical-only companion m3c-25-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
       "actual": {
         "final": {
           "consumed_record_ids": [],
@@ -1227,9 +1305,11 @@
       "set": "transition-scenarios",
       "case": "sc-28-composite-at-broker",
       "kind": "adapted",
-      "decision": "D-037 item 1; D-037 item 2",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 5; D-037 item 7",
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions"
       ]
@@ -1238,9 +1318,11 @@
       "set": "transition-scenarios",
       "case": "sc-29-incomplete-record",
       "kind": "adapted",
-      "decision": "D-037 item 1; D-037 item 2; D-037 item 3",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 3; D-037 item 5; D-037 item 7",
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -1250,9 +1332,11 @@
       "set": "transition-scenarios",
       "case": "sc-30-evaluator-revoked",
       "kind": "adapted",
-      "decision": "D-037 item 1; D-037 item 2; D-037 item 3",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 3; D-037 item 5; D-037 item 7",
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -1262,9 +1346,11 @@
       "set": "transition-scenarios",
       "case": "sc-31-unprotected-without-acceptance",
       "kind": "adapted",
-      "decision": "D-037 item 2",
+      "decision": "D-037 item 2; D-037 item 5; D-037 item 7",
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle"
       ]
     },
@@ -1275,6 +1361,8 @@
       "decision": "D-037 item 6",
       "reason": "the use-time kernel decision refuses a protected transition without its binding as ACCEPTANCE_BINDING_REQUIRED before the broker's ACCEPTANCE_REQUIRED",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions"
       ],
@@ -1306,6 +1394,8 @@
       "decision": "D-037 item 6",
       "reason": "step 1: the use-time kernel decision refuses the protected transition without binding as ACCEPTANCE_BINDING_REQUIRED (step 0 commits as expected)",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions"
       ],
@@ -1338,9 +1428,11 @@
       "set": "transition-scenarios",
       "case": "sc-34-alternate-route-with-old-record",
       "kind": "adapted",
-      "decision": "D-037 item 1; D-037 item 2; D-037 item 3",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 3; D-037 item 5; D-037 item 7",
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -1350,19 +1442,23 @@
       "set": "transition-scenarios",
       "case": "sc-35-unprotected-with-acceptance-binding",
       "kind": "adapted",
-      "decision": "D-037 item 2",
+      "decision": "D-037 item 2; D-037 item 5; D-037 item 7",
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle"
       ]
     },
     {
       "set": "transition-scenarios",
       "case": "sc-36-authorization-bundle-changed",
-      "kind": "difference",
-      "decision": "D-036 item 2; D-037 item 2",
-      "reason": "a real distinct bundle (t1p1-transition-v2) is activated; the permit naming the replaced bundle is never read (production has no client-held promotion permit (use-time decision on the sealed request inside Broker::promote); the client permit is never read, so the step reaches a later production check); the required human criterion refuses (M4)",
+      "kind": "deferred",
+      "decision": "D-037 item 4; D-036 item 2; D-037 item 2",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -1371,6 +1467,9 @@
         1
       ],
       "final_members": [],
+      "carry_to": "M4",
+      "intended_assertion": "NEW (A3): a permit issued under a superseded authorization bundle is refused. a real distinct bundle (accept-v2) is activated; the permit naming the replaced bundle is never read; companion m3c-36 covers the invariant (only the current bundle authorizes)",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch) the M3 fail-closed refusal disappears; after M4 the case commits under the replacement bundle and is re-classified as a D-036 item 2 difference with its then-exact output. Mechanical-only companion m3c-36-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
       "actual": {
         "final": {
           "consumed_record_ids": [],
@@ -1395,9 +1494,11 @@
       "set": "transition-scenarios",
       "case": "sc-37-own-kind-in-capabilities",
       "kind": "adapted",
-      "decision": "D-037 item 1; D-037 item 2",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 5; D-037 item 7",
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions"
       ]
@@ -1407,8 +1508,10 @@
       "case": "sc-38-repeated-refusals-then-success",
       "kind": "deferred",
       "decision": "D-037 item 4; D-036 item 2",
-      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -1427,7 +1530,7 @@
       ],
       "carry_to": "M4",
       "intended_assertion": "NEW (A6): refusals before reservation leave the key reusable; each refusal is audited: the frozen expectation, unchanged.",
-      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly, except: Steps 0 and 1 (null client permits) stay D-036 item 2 differences after M4: production commits at step 0. Mechanical-only companion m3c-38-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly, except: steps 0 and 1 (null client permits) stay D-036 item 2 differences: production commits at step 0. Mechanical-only companion m3c-38-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
       "actual": {
         "final": {
           "consumed_record_ids": [],
@@ -1458,9 +1561,11 @@
       "case": "sc-39-crash-before-commit-then-retry",
       "kind": "deferred",
       "decision": "D-037 item 4",
-      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
         "C5-injected-crash-reopen",
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -1502,9 +1607,11 @@
       "set": "transition-scenarios",
       "case": "sc-40-effect-retry",
       "kind": "adapted",
-      "decision": "D-037 item 1; D-037 item 2; D-037 item 5",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 5; D-037 item 7",
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "sealed-execute-effect",
         "seeded-preconditions"
@@ -1518,6 +1625,8 @@
       "reason": "after crash_after_dispatch production keeps the receipt dispatched until evidence-based reconciliation (never unknown_reconcile by assumption); the retry is refused RECONCILIATION_REQUIRED as expected",
       "adaptations": [
         "C5-injected-crash-reopen",
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "sealed-execute-effect",
         "seeded-preconditions"
@@ -1555,9 +1664,11 @@
       "case": "sc-42-interrupted-dispatch-other-request",
       "kind": "difference",
       "decision": "D-037 item 5; D-035 item 3",
-      "reason": "after crash_after_dispatch the receipt stays dispatched (not unknown_reconcile); the other request is IDEMPOTENCY_CONFLICT as expected",
+      "reason": "after crash_after_dispatch the receipt stays dispatched (not unknown_reconcile); the other request, authorized by the declared publish-other harness bundle, is IDEMPOTENCY_CONFLICT as expected",
       "adaptations": [
         "C5-injected-crash-reopen",
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "sealed-execute-effect",
         "seeded-preconditions"
@@ -1595,9 +1706,11 @@
       "case": "sc-43-reconciled-applied",
       "kind": "difference",
       "decision": "D-036 item 3; D-037 item 5",
-      "reason": "client-asserted reconcile {observed: applied} is not provided; production evidence-based reconcile resolves the dispatched receipt from the effect store (count 1) and the retry replays, which matches the expected outcome; only the reconcile step's answer differs",
+      "reason": "client-asserted reconcile {observed: applied} is not provided; production evidence-based reconcile resolves the dispatched receipt from the effect store (count 1) and the retry replays, as expected; only the reconcile step's answer differs",
       "adaptations": [
         "C5-injected-crash-reopen",
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "production-difference",
         "sealed-execute-effect",
@@ -1644,6 +1757,8 @@
       "reason": "client-asserted reconcile {observed: not_applied} is not provided and never releases the key: the effect store shows the effect was applied, so evidence-based reconcile records it (count 1) and the retry replays instead of dispatching again (no second effect)",
       "adaptations": [
         "C5-injected-crash-reopen",
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "production-difference",
         "sealed-execute-effect",
@@ -1691,6 +1806,8 @@
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
         "C5-injected-crash-reopen",
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "sealed-execute-effect",
         "seeded-preconditions"
@@ -1701,8 +1818,10 @@
       "case": "sc-46-effect-refused-then-valid",
       "kind": "difference",
       "decision": "D-037 item 5",
-      "reason": "the client effect permit is not authority: the null permit is never read and the harness policy authorizes the sealed publication, so step 0 completes through execute and step 1 replays it; exactly one effect",
+      "reason": "the client effect permit is not authority: the null permit is never read and the declared harness policy authorizes the sealed publication, so step 0 completes through execute and step 1 replays it; exactly one effect",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "sealed-execute-effect",
         "seeded-preconditions"
@@ -1797,9 +1916,11 @@
       "set": "transition-scenarios",
       "case": "sc-08b-policy-changed-compatible",
       "kind": "adapted",
-      "decision": "D-037 item 1; D-037 item 2; D-037 item 3",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 3; D-037 item 5; D-037 item 7",
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -1808,10 +1929,12 @@
     {
       "set": "transition-scenarios",
       "case": "sc-50-protection-classification-missing",
-      "kind": "difference",
-      "decision": "D-037 item 1",
-      "reason": "the scenario cannot exist in production: protection comes only from the active authorization bundle (a bundle declaring transitions without protection is rejected at load, covered by policy-load tests); with the harness bundle's protection the promotion reaches the required human criterion (M4)",
+      "kind": "deferred",
+      "decision": "D-037 item 4; D-037 item 1",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -1820,6 +1943,9 @@
         0
       ],
       "final_members": [],
+      "carry_to": "M4",
+      "intended_assertion": "NEW (N-1): no classification, fail closed. protection comes only from the active bundle, so the scenario's missing classification cannot exist in production; companion m3c-50 covers the invariant (a bundle without protection is rejected at load and the transition fails closed)",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch) the M3 fail-closed refusal disappears; after M4 the case commits and is re-classified as a D-037 item 1 difference with its then-exact output. Mechanical-only companion m3c-50-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
       "actual": {
         "final": {
           "consumed_record_ids": [],
@@ -1840,10 +1966,12 @@
     {
       "set": "transition-scenarios",
       "case": "sc-51-protection-from-other-bundle",
-      "kind": "difference",
-      "decision": "D-037 item 1",
-      "reason": "the scenario cannot exist in production: protection is never taken from another bundle (no agent- or scenario-supplied classification); with the active bundle's protection the promotion reaches the required human criterion (M4)",
+      "kind": "deferred",
+      "decision": "D-037 item 4; D-037 item 1",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -1852,6 +1980,9 @@
         0
       ],
       "final_members": [],
+      "carry_to": "M4",
+      "intended_assertion": "NEW (N-1): classification not from the active authorization bundle (inconsistent policy view). protection is never taken from another bundle, so the scenario cannot exist in production; companion m3c-51 covers the invariant (an inconsistent policy view fails closed)",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch) the M3 fail-closed refusal disappears; after M4 the case commits and is re-classified as a D-037 item 1 difference with its then-exact output. Mechanical-only companion m3c-51-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
       "actual": {
         "final": {
           "consumed_record_ids": [],
@@ -1876,6 +2007,8 @@
       "decision": "D-037 item 6",
       "reason": "the use-time kernel decision refuses the protected edge without binding as ACCEPTANCE_BINDING_REQUIRED",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle"
       ],
       "steps": [
@@ -1904,8 +2037,10 @@
       "case": "sc-53-protected-edge-with-record",
       "kind": "deferred",
       "decision": "D-037 item 4",
-      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "test-authenticated-evidence"
       ],
@@ -1944,8 +2079,10 @@
       "case": "sc-54-edge-record-reused-for-destination",
       "kind": "deferred",
       "decision": "D-037 item 4",
-      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "test-authenticated-evidence"
       ],
@@ -1962,7 +2099,7 @@
       ],
       "carry_to": "M4",
       "intended_assertion": "NEW (N-4): the record consumed for the edge cannot also satisfy the protected destination: the frozen expectation, unchanged.",
-      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly. Mechanical-only companion m3c-54-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly, except: step 1 is decided against the new revision first; the OQ-14 refusal-code question may apply. Mechanical-only companion m3c-54-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
       "actual": {
         "final": {
           "consumed_record_ids": [],
@@ -1988,9 +2125,11 @@
       "set": "transition-scenarios",
       "case": "sc-55-publish-before-acceptance",
       "kind": "adapted",
-      "decision": "D-037 item 1; D-037 item 2; D-037 item 5",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 5; D-037 item 7",
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "sealed-execute-effect",
         "seeded-preconditions"
@@ -2001,8 +2140,10 @@
       "case": "sc-56-accept-a-publish-b",
       "kind": "deferred",
       "decision": "D-037 item 4",
-      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "sealed-execute-effect",
         "seeded-preconditions",
@@ -2048,8 +2189,10 @@
       "case": "sc-57-accepted-artifact-modified",
       "kind": "deferred",
       "decision": "D-037 item 4",
-      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "sealed-execute-effect",
         "seeded-preconditions",
@@ -2100,8 +2243,10 @@
       "case": "sc-58-acceptance-policy-changed-after-promotion",
       "kind": "deferred",
       "decision": "D-037 item 4",
-      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "sealed-execute-effect",
         "seeded-preconditions",
@@ -2150,8 +2295,10 @@
       "case": "sc-59-authorization-changed-after-promotion",
       "kind": "deferred",
       "decision": "D-037 item 4",
-      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "sealed-execute-effect",
         "seeded-preconditions",
@@ -2199,9 +2346,11 @@
       "set": "transition-scenarios",
       "case": "sc-60-missing-promotion-receipt",
       "kind": "adapted",
-      "decision": "D-037 item 1; D-037 item 2; D-037 item 5",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 5; D-037 item 7",
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "sealed-execute-effect",
         "seeded-preconditions"
@@ -2211,9 +2360,11 @@
       "set": "transition-scenarios",
       "case": "sc-61-forged-promotion-receipt",
       "kind": "adapted",
-      "decision": "D-037 item 1; D-037 item 2; D-037 item 5",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 5; D-037 item 7",
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "sealed-execute-effect",
         "seeded-preconditions"
@@ -2224,8 +2375,10 @@
       "case": "sc-62-publication-permit-other-target",
       "kind": "difference",
       "decision": "D-037 item 5; D-037 item 2",
-      "reason": "the legacy permit (bound to another request) is never read and never authorizes the effect: the harness policy does not authorize repository:t1/p1/other for this case, so execute refuses DEFAULT_DENY with zero effects",
+      "reason": "the legacy permit is never read and never authorizes the effect: the declared harness bundle for sc-62 authorizes publication to repository:t1/p1/releases only, so execute refuses repository:t1/p1/other DEFAULT_DENY with zero effects",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "sealed-execute-effect",
         "seeded-preconditions"
@@ -2258,8 +2411,10 @@
       "case": "sc-63-publish-after-promotion",
       "kind": "deferred",
       "decision": "D-037 item 4",
-      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "sealed-execute-effect",
         "seeded-preconditions",
@@ -2305,9 +2460,11 @@
       "set": "transition-scenarios",
       "case": "sc-64-concurrent-invalidation-and-publication",
       "kind": "adapted",
-      "decision": "D-037 item 1; D-037 item 2; D-037 item 5",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 5; D-037 item 7",
       "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "sealed-execute-effect",
         "seeded-preconditions"
@@ -2318,8 +2475,10 @@
       "case": "sc-65-uncertain-publication",
       "kind": "deferred",
       "decision": "D-037 item 4",
-      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "sealed-execute-effect",
         "seeded-preconditions",
@@ -2340,7 +2499,7 @@
       ],
       "carry_to": "M4",
       "intended_assertion": "NEW (N-3, A6): an uncertain external effect after promotion requires reconciliation; the promotion is not rolled back: the frozen expectation, unchanged.",
-      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly, except: The final effect status stays dispatched, not unknown_reconcile (D-037 item 5). Mechanical-only companion m3c-65-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly, except: the final effect status stays dispatched, not unknown_reconcile (D-037 item 5). Mechanical-only companion m3c-65-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
       "actual": {
         "final": {
           "consumed_record_ids": [],
@@ -2423,8 +2582,10 @@
       "case": "p-16-scenario-member-order",
       "kind": "deferred",
       "decision": "D-037 item 4",
-      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
+        "adapter-sealed",
+        "client-permit-dropped",
         "harness-authorization-bundle",
         "seeded-preconditions",
         "test-authenticated-evidence"
@@ -2465,13 +2626,50 @@
       "name": "transition-companions",
       "file": "companions/transition-companions.jsonl",
       "command": "transition-scenario",
-      "kind": "mechanical-companion"
+      "kind": "mechanical-companion",
+      "cases": [
+        "m3c-01-promote",
+        "m3c-02-identical-retry",
+        "m3c-03-same-key-different-request",
+        "m3c-04-record-replay-new-key",
+        "m3c-12-refusal-is-side-effect-free",
+        "m3c-13-refused-key-reusable",
+        "m3c-15-workflow-already-moved",
+        "m3c-38-repeated-refusals-then-success",
+        "m3c-39-crash-before-commit-then-retry",
+        "m3c-53-protected-edge-with-record",
+        "m3c-54-edge-record-reused-for-destination",
+        "m3c-56-accept-a-publish-b",
+        "m3c-57-accepted-artifact-modified",
+        "m3c-58-acceptance-policy-changed-after-promotion",
+        "m3c-59-authorization-changed-after-promotion",
+        "m3c-63-publish-after-promotion",
+        "m3c-65-uncertain-publication",
+        "m3c-09-policy-did-not-allow",
+        "m3c-19-actor-not-authorized",
+        "m3c-25-record-swapped-under-binding",
+        "m3c-36-authorization-bundle-changed",
+        "m3c-50-protection-missing",
+        "m3c-51-protection-other-dependency",
+        "m3c-16-scenario-member-order"
+      ]
     },
     {
       "name": "seed-negatives",
       "file": "companions/seed-negatives.jsonl",
       "command": "transition-scenario",
-      "kind": "seed-negative"
+      "kind": "seed-negative",
+      "cases": [
+        "m3n-01-state-not-in-bundle",
+        "m3n-02-last-promotion-after-revision",
+        "m3n-03-last-promotion-other-workflow",
+        "m3n-04-last-promotion-record-not-consumed",
+        "m3n-05-seed-consumes-presented-record",
+        "m3n-06-revision-zero"
+      ]
     }
-  ]
+  ],
+  "companion_waivers": {
+    "sc-10-race-16": "No mechanical companion: with the production two-stage revision check (use-time kernel decision, then the ledger) the refusal codes of 16 concurrent promotions are not deterministic (OQ-14), so no exact companion expectation can be written until OQ-14 is decided; single-commit serialization under contention is covered by the production transition tests and the property gate's concurrent groups."
+  }
 }
