@@ -24,7 +24,8 @@
 //! **Ownership (D-035 item 2):** like the ledger, the store is identified by the canonical
 //! path of a regular file with exactly one link (every symbolic-link and `.`/`..` alias maps
 //! to one identity; a hard-linked file is refused, `effects AMBIGUOUS_IDENTITY`) and is
-//! held through an exclusive OS lock on `<canonical path>.owner` for the store's lifetime;
+//! held through an exclusive OS lock on `<canonical path>.owner` for the store's lifetime
+//! (taken and released under the process lifecycle gate, like the ledger's);
 //! a second opener in any process fails closed at once (`effects OWNED_ELSEWHERE`),
 //! and the OS releases the lock when the owner exits or is killed. The store is bound at
 //! creation to one ledger's [`LedgerId`]; opening it for another ledger is refused
@@ -39,7 +40,7 @@
 //! that record (an inconsistent record is `effects integrity`); [`EffectAdapter::inspect`]
 //! verifies a presented permit and returns its record without applying anything.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::ErrorKind;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -47,6 +48,7 @@ use std::sync::Mutex;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior};
 use writ_broker::effects::{EffectAdapter, EffectEvidence, EffectResult, Verify};
+use writ_broker::process::OwnerLock;
 use writ_broker::refusal::Refusal;
 use writ_broker::store::{StoreError, TxFailure};
 
@@ -66,7 +68,7 @@ pub struct SqliteEffectStore {
     // lock is released.
     inner: Mutex<Inner>,
     failing: AtomicBool,
-    _lock: File,
+    _lock: OwnerLock,
 }
 
 fn effects_unavailable(code: &str) -> StoreError {
@@ -117,7 +119,7 @@ fn verify_store(conn: &Connection, ledger: &LedgerId) -> Result<(), StoreError> 
     Ok(())
 }
 
-fn ready(conn: Connection, lock: File) -> Result<SqliteEffectStore, StoreError> {
+fn ready(conn: Connection, lock: OwnerLock) -> Result<SqliteEffectStore, StoreError> {
     conn.execute_batch("PRAGMA synchronous = FULL;")
         .map_err(|e| effects_unavailable(code_name(&e)))?;
     Ok(SqliteEffectStore {

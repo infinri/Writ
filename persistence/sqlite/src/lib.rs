@@ -12,7 +12,10 @@
 //! (path substitution between the identity check and the open is out of scope; M5).
 //!
 //! **Single-owner coordination:** the ownership lock is an exclusive OS lock
-//! (`File::try_lock`) on `<canonical path>.owner`, held for the lifetime of the
+//! (`File::try_lock`) on `<canonical path>.owner`, acquired and released under the
+//! exclusive guard of the process lifecycle gate ([`writ_broker::process::OwnerLock`];
+//! no child spawn of this process overlaps it, and it is unlocked before close so a
+//! child's inherited duplicate never keeps it alive, E-066), held for the lifetime of the
 //! [`SqliteLedger`]; a second instance (broker or reconciler) fails closed with
 //! [`StoreError::OwnedElsewhere`] (externally `LEDGER_UNAVAILABLE`, operator diagnostic
 //! `OWNED_ELSEWHERE`) instead of waiting; the OS releases it when the process exits or is
@@ -102,7 +105,7 @@
 //! `busy_timeout=5000`, `foreign_keys=ON`, `trusted_schema=OFF`).
 
 use std::collections::BTreeSet;
-use std::fs::{self, File, OpenOptions, TryLockError};
+use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -120,6 +123,7 @@ use writ_broker::grants::{
     StoredGrant, StoredProvenance, StoredReceipt,
 };
 use writ_broker::policy::ExclusiveHold;
+use writ_broker::process::{OwnerLock, OwnerLockError};
 use writ_broker::refusal::Refusal;
 use writ_broker::store::Timestamp;
 pub use writ_broker::store::{ExecuteLedger, GrantLedger, LedgerStore, StoreError};
@@ -185,7 +189,7 @@ pub struct SqliteLedger {
     inner: Mutex<Inner>,
     epoch: u64,
     id: LedgerId,
-    _lock: Option<File>,
+    _lock: Option<OwnerLock>,
 }
 
 /// The owner connection and (in unit tests) the armed fault, behind one mutex.
@@ -348,19 +352,17 @@ fn new_identity(path: &Path) -> Result<PathBuf, StoreError> {
     Ok(dir.join(name))
 }
 
-fn take_ownership(canonical: &Path) -> Result<File, StoreError> {
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(sidecar(canonical, ".owner"))
-        .map_err(|_| unavailable("ownership", "io"))?;
-    match lock.try_lock() {
-        Ok(()) => Ok(lock),
-        Err(TryLockError::WouldBlock) => Err(StoreError::OwnedElsewhere),
-        Err(TryLockError::Error(_)) => Err(unavailable("ownership", "io")),
-    }
+/// Take the ownership lock `<canonical>.owner` of a store identity without waiting
+/// ([`OwnerLock`]: acquired and released under the exclusive guard of the process
+/// lifecycle gate, and unlocked before close, so a duplicate held by a child spawned by
+/// this process never keeps a released lock alive, E-066).
+/// Every store of this crate (ledger, effect store, and any later one) takes its ownership
+/// through this function and keeps the returned lock as its last field.
+pub(crate) fn take_ownership(canonical: &Path) -> Result<OwnerLock, StoreError> {
+    OwnerLock::acquire(&sidecar(canonical, ".owner")).map_err(|e| match e {
+        OwnerLockError::Held => StoreError::OwnedElsewhere,
+        OwnerLockError::Io => unavailable("ownership", "io"),
+    })
 }
 
 fn connect(canonical: &Path, flags: OpenFlags) -> Result<Connection, StoreError> {
@@ -482,7 +484,7 @@ fn bump_epoch(conn: &mut Connection) -> Result<u64, StoreError> {
     Ok(next)
 }
 
-fn finish(mut conn: Connection, lock: File) -> Result<SqliteLedger, StoreError> {
+fn finish(mut conn: Connection, lock: OwnerLock) -> Result<SqliteLedger, StoreError> {
     conn.execute_batch("PRAGMA synchronous = FULL;")
         .map_err(|e| unavailable("initialize", code_name(&e)))?;
     let id = meta_value(&conn, "ledger_id")

@@ -33,6 +33,12 @@
 //!   idempotency key, never a redispatch after uncertainty.
 //! - [`effects`]: the controlled effect adapter interface (its own store of
 //!   consumed permits and effects, reached only through the adapter).
+//!
+//! Mechanical runner (M3-07):
+//! - [`runner`]: shared runner interfaces (command registry, snapshot content, sandbox).
+//! - [`process`]: the process lifecycle gate between child spawning and ownership-lock
+//!   changes ([`process::spawn`], [`process::OwnerLock`]) and the uncontained
+//!   [`process::LocalProcessSandbox`].
 
 pub mod acceptance;
 pub mod authorize;
@@ -46,6 +52,7 @@ pub mod keys;
 mod mac;
 pub mod permit;
 pub mod policy;
+pub mod process;
 pub mod refusal;
 pub mod runner;
 pub mod store;
