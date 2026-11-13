@@ -2,7 +2,7 @@
 
 Read this first after compaction or in a new session, then [WORK-STATE](WORK-STATE.md). This file is the authoritative recovery entry point. Only the section "Current recovery state" gives current instructions; everything under "Historical record" is preserved evidence and superseded instructions, never a current next step.
 
-## Current recovery state (checkpoint 2026-11-13, M3 ACCEPTED as scoped development scope under D-039; M4 planned, not authorized)
+## Current recovery state (checkpoint 2026-11-13, M3 ACCEPTED under D-039; M4 AUTHORIZED under D-040, implementation starting)
 
 ### 1. Repository and CI (verify on recovery with the commands in section 7)
 
@@ -32,7 +32,7 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 
 ### 3. Decisions in force (do not request again)
 
-D-030 Rust selected, **ADR-0002 ACCEPTED** (scoped to the trusted kernel and broker); D-031 kernel readings; D-032..D-034 M3 decisions; **D-035** (reservation retention, effect-store ownership, permit presentation, failure precedence, approver provenance) and **D-036** (authenticated records, no promotion permits, no client-asserted reconciliation, b-36 exception, trusted workflow inputs) approved and implemented; **D-037** (M3-08 closure: test seeding, harness bundles, test evidence, M4 human-signoff carry-over, production differences, harness compositions, ledger differences) approved and implemented (E-072); **D-038** (OQ-13 option A, one promotion `REVISION_CONFLICT`, `WORKFLOW_UNKNOWN` for sc-27, integrity precedence for sc-26, stage-aware C4 precedence, 25-case M4 carry-over confirmed, remaining closure work) approved and implemented (E-073); **D-039** (M3 gate review: scoped acceptance, report-verification correction, carried obligations, effect-guarantee wording) approved, conditions met (E-074). ADR-0008 **APPROVED IN PRINCIPLE**. Release and production **NO-GO**. Stop for any new semantic or trust-boundary decision.
+D-030 Rust selected, **ADR-0002 ACCEPTED** (scoped to the trusted kernel and broker); D-031 kernel readings; D-032..D-034 M3 decisions; **D-035** (reservation retention, effect-store ownership, permit presentation, failure precedence, approver provenance) and **D-036** (authenticated records, no promotion permits, no client-asserted reconciliation, b-36 exception, trusted workflow inputs) approved and implemented; **D-037** (M3-08 closure: test seeding, harness bundles, test evidence, M4 human-signoff carry-over, production differences, harness compositions, ledger differences) approved and implemented (E-072); **D-038** (OQ-13 option A, one promotion `REVISION_CONFLICT`, `WORKFLOW_UNKNOWN` for sc-27, integrity precedence for sc-26, stage-aware C4 precedence, 25-case M4 carry-over confirmed, remaining closure work) approved and implemented (E-073); **D-039** (M3 gate review: scoped acceptance, report-verification correction, carried obligations, effect-guarantee wording) approved, conditions met (E-074); **D-040** (M4 authorization: WebAuthn local profile, approval channel, challenges, signoff object, revocation, roles, services, single approver, waivers deferred, local approval page, loopback deployment, no break-glass, legacy grants non-executable) approved. ADR-0008 **APPROVED IN PRINCIPLE**. Release and production **NO-GO**. Stop for any new semantic or trust-boundary decision.
 
 ### 4. Schemas, migrations and source map
 
@@ -52,12 +52,13 @@ A contained runner sandbox (filesystem, network, process-tree and resource conta
 
 ### 6. Authorized next action and continuation checklist
 
-M3 is accepted (D-039). No M4 implementation is authorized yet.
+**M4 is authorized by D-040 (owner answers O-1..O-14; read it fully).** Plan: [M4-START-PLAN](M4-START-PLAN.md) tasks M4-00..M4-14 (M4-07 waivers deferred to M6 as CO-M6-02). M3 accepted under D-039 (code `b60bf33`, run 43518287362).
 
-1. Recover: section 7 "state" commands; HEAD equals `origin/v2/architecture-rebuild`; confirm the last pushed SHA's required CI by run id.
-2. Owner review of [M4-START-PLAN](M4-START-PLAN.md): decisions O-1..O-14 (identity provider and protocol, channel trust, session model, signoff binding, revocation latency, refusal codes, roles, service accounts, multi-approver rules, waivers, approval client, deployment topology, break-glass, pre-schema grants) and the two proposed gate assignments (CO-PROP-01 to M5, CO-PROP-02 to M4). Record the answers as a new decision before writing M4 code.
-3. Keep the carried obligations (TASKS "M3 carried obligations") open until each gate closes them with its own evidence; any change to `m3/closure/bundles/trusted-records.json` or a `cascade` reason needs an independent review (CO-HR-01).
-4. After each step: update TEST-EVIDENCE, TASKS, this file and WORK-STATE; commit explicit paths only; fast-forward push; verify CI on the exact SHA.
+1. Recover: section 7 "state" commands; check `git worktree list` and worker branches before redoing any work.
+2. M4-00: TASKS rows for M4-00..M4-14 and the baseline SHA.
+3. Lead: dependency review for the WebAuthn verification library, the test authenticator (dev-dependency only, non-shipping) and the loopback approval listener; update the dependency gate allow-list; shared interfaces (verifier trait, challenge record, approval request and decision records, signoff object, amended authenticated acceptance record version, refusal codes, schema `writ-ledger-6` table list). Contracts and the authentication boundary get an independent review before consumers are integrated.
+4. Then up to three workers on disjoint files: (1) verifier, challenges, enrollment boundary, minimal approval page; (2) approval lifecycle, persistence, provenance, revocation, migration; (3) signoff integration, the 25 carried cases, exact ordering and property tests. Separate security review before publishing.
+5. Keep the closure gate green; resolve the 25 deferrals by measured results; update TEST-EVIDENCE, TASKS, this file and WORK-STATE after each step; fast-forward pushes; exact-SHA CI; then the M4 gate-review package.
 
 ### 7. Commands
 
