@@ -1,7 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://writ.dev/contracts/proposed/evaluation-record-scope.schema.json",
-  "title": "EvaluationRecord scope binding (PROPOSED amendment of evaluation-record.schema.json, M3-06, D-033)",
+  "title": "EvaluationRecord scope binding (PROPOSED amendment of evaluation-record.schema.json, M3-06, D-033; SUPERSEDED for the authorization path by D-038 item 1)",
+  "description": "SUPERSEDED for the authorization path (D-038 item 1, OQ-13 option A): this document is not ingested, has no trusted source, key or consumer, and was never ingested. The authoritative evaluation data are the evaluations inside the authenticated AcceptanceRecord (authenticated-acceptance-record-1.schema.json), with their verified runner attestations and the current registry entries. Kept as history and structural reference only; see the enforcement map in docs/implementation/M3-ACCEPTANCE-CONTRACTS.md. A diagnostic projection, if any, is non-authoritative and never invents issued_at, trust classes, statuses or modes.",
   "type": "object",
   "additionalProperties": false,
   "required": [

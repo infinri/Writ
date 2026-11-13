@@ -26,6 +26,15 @@
 //! panics. Not covered here (M3-05 and M3-07): MAC verification, registry
 //! lookup, binding equality against the protected transition at use time,
 //! freshness at use time, and consumption.
+//!
+//! **`evaluation-record-scope/1` is superseded for the authorization path**
+//! (D-038 item 1, OQ-13 option A): [`EvaluationRecordScope`] has no ingestion
+//! path, source, key or consumer and gets none. The authoritative evaluation
+//! data are the evaluations inside the authenticated AcceptanceRecord
+//! ([`crate::acceptance::verify_record`]), with the verified attestations and
+//! current registry entries ([`crate::acceptance::check_use`]); the validator
+//! and its tests are kept as history (enforcement map:
+//! docs/implementation/M3-ACCEPTANCE-CONTRACTS.md).
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -682,6 +691,8 @@ impl RunnerAttestation {
 }
 
 /// An EvaluationRecord scope binding that passed semantic validation.
+/// Superseded for the authorization path (D-038 item 1): never ingested and
+/// never an authorization input; kept as history.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EvaluationRecordScope(Value);
 
