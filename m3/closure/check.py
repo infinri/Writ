@@ -64,7 +64,8 @@ KIND_KEYS = {
     "deferred": COMMON_KEYS | {"steps", "final_members", "actual", "carry_to",
                                "intended_assertion", "acceptance_criteria",
                                # D-038 item 6
-                               "blocking_dependency", "observed_m3_refusal", "companions"},
+                               "blocking_dependency", "observed_m3_refusal", "companions",
+                               "cascade"},
 }
 CASE_ID = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 ENV_LOG = "WRIT_M3_ADAPTATIONS"
@@ -197,6 +198,13 @@ def validate_entries(sets: dict, entries: list) -> tuple[dict, list]:
                 # D-038 item 6: the exact observed M3 refusal is the first differing step's answer.
                 if e["observed_m3_refusal"] != step:
                     problems.append(f"{where}: observed_m3_refusal is not the first differing step's answer")
+                # Every later differing step names why it follows from the deferred one (review
+                # L1): no non-human difference is carried silently.
+                cascade = e["cascade"]
+                later = [str(i) for i in e["steps"][1:]]
+                if not isinstance(cascade, dict) or sorted(cascade) != sorted(later) or not all(
+                        isinstance(v, str) and v.strip() for v in cascade.values()):
+                    problems.append(f"{where}: cascade must give a reason for exactly the later differing steps {later}")
                 comps = e["companions"]
                 if not isinstance(comps, list) or not all(isinstance(c, str) for c in comps):
                     problems.append(f"{where}: companions must be a list of case ids")

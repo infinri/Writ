@@ -37,7 +37,7 @@ DEFER_C = {"set": "s", "case": "c", "kind": "deferred", "decision": "D-037 item 
            "actual": HUMAN, "carry_to": "M4", "intended_assertion": "commits with signoff",
            "acceptance_criteria": "authenticated human signoff accepted",
            "blocking_dependency": "M4 authenticated human signoff",
-           "observed_m3_refusal": HUMAN["steps"][0], "companions": []}
+           "observed_m3_refusal": HUMAN["steps"][0], "companions": [], "cascade": {}}
 ADAPT_A = {"set": "s", "case": "a", "kind": "adapted", "decision": "D-037 item 1", "reason": "seeded",
            "adaptations": ["seeded-preconditions"]}
 NONE = {"a": [], "b": [], "c": []}
@@ -179,6 +179,12 @@ class EntryValidation(unittest.TestCase):
         self.assertFalse(self.problems(DEFER_C))
         self.assertTrue(self.problems(dict(DEFER_C, observed_m3_refusal={"result": "refused", "code": "DEFAULT_DENY"})))
         self.assertTrue(self.problems(dict(DEFER_C, companions="m3c-01")))
+
+    def test_deferral_later_differing_steps_need_a_cascade_reason(self):
+        self.assertTrue(self.problems(dict(DEFER_C, cascade={"1": "follows"})))
+        bad = dict(DEFER_C)
+        del bad["cascade"]
+        self.assertTrue(self.problems(bad))
 
     def test_deferral_must_be_the_m4_human_signoff_refusal(self):
         self.assertTrue(self.problems(dict(DEFER_C, decision="D-036 item 2")))
