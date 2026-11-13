@@ -20,7 +20,7 @@ use writ_broker::effects::{EffectAdapter, EffectEvidence, EffectResult, Verify};
 use writ_broker::execute::{Broker, Executed};
 use writ_broker::keys::{AcceptanceRecordKey, MemoryKeys, PermitKey, RunnerAttestationKey};
 use writ_broker::policy::{ActivePolicy, PolicyState};
-use writ_broker::refusal::Refusal;
+use writ_broker::refusal::{ConflictStage, Refusal};
 use writ_broker::store::TxFailure;
 use writ_broker::workflow::{
     AcceptanceRecordSource, AdminOperation, AdminPresentation, AdminRefusal, AdminRequest,
@@ -742,9 +742,10 @@ fn changed_bindings_and_stale_authorization_refuse_at_use_time() {
     })
     .unwrap();
     assert_eq!(w.state(), ("verifying".into(), 2));
-    assert!(
-        matches!(w.promote(&accept("k1", 1)), Err(Refusal::Decision { .. })),
-        "stale expected revision"
+    assert_eq!(
+        w.promote(&accept("k1", 1)),
+        Err(Refusal::RevisionConflict(ConflictStage::UseTimeDecision)),
+        "stale expected revision (D-038 item 2)"
     );
     assert_eq!(
         w.promote(&accept("k1", 2)),

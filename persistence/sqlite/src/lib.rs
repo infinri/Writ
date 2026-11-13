@@ -1351,6 +1351,12 @@ mod transition_tests;
 mod d037_tests;
 
 #[cfg(test)]
+mod d038_tests;
+
+#[cfg(test)]
+mod transition_props;
+
+#[cfg(test)]
 mod runner_tests;
 
 #[cfg(test)]

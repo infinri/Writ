@@ -99,7 +99,7 @@ use crate::execute::Broker;
 use crate::grants::{GrantLabel, ReserveRequest};
 use crate::ingress::VerifiedRequest;
 use crate::keys::{AcceptanceKeyRing, RunnerKeyRing};
-use crate::refusal::Refusal;
+use crate::refusal::{ConflictStage, Refusal};
 use crate::store::{ExecuteLedger, LedgerStore, StoreError, TxFailure};
 
 /// The action kind of a promotion.
@@ -337,12 +337,12 @@ impl<'a> PromotionIntent<'a> {
     pub fn check(&self, view: &PromotionView) -> Result<PromotionWrite, Refusal> {
         let workflow = view.workflow.as_ref().ok_or(Refusal::WorkflowUnknown)?;
         if self.expected_revision != Some(workflow.revision) || workflow.state != self.from_state {
-            return Err(Refusal::RevisionConflict);
+            return Err(Refusal::RevisionConflict(ConflictStage::Transaction));
         }
         let revision = workflow
             .revision
             .checked_add(1)
-            .ok_or(Refusal::RevisionConflict)?;
+            .ok_or(Refusal::RevisionConflict(ConflictStage::StoredRevision))?;
         let receipt_id = format!("promotion:{}:{revision}", self.key.workflow_id);
         let Some(protected) = &self.protected else {
             return Ok(PromotionWrite {
@@ -380,7 +380,7 @@ impl<'a> PromotionIntent<'a> {
             artifact_digest: workflow.artifact_digest.clone(),
             policy: requirements.policy.clone(),
             state_revision: StateRevision::new(workflow.revision)
-                .ok_or(Refusal::RevisionConflict)?,
+                .ok_or(Refusal::RevisionConflict(ConflictStage::StoredRevision))?,
             now: self.now,
             consumed_record_ids: if view.record_consumed {
                 vec![record.acceptance_record_id.clone()]
@@ -653,6 +653,19 @@ pub trait WorkflowLedger: Sync {
     ) -> Result<Result<PromotionOutcome, Refusal>, TxFailure>;
 }
 
+/// D-038 item 2: the use-time kernel decision's stale expected revision is
+/// the same condition as the transaction's compare-and-set and is answered
+/// `REVISION_CONFLICT` at the broker boundary; every other refusal passes
+/// unchanged (the kernel itself is not changed).
+fn use_time_conflict(refusal: Refusal) -> Refusal {
+    match &refusal {
+        Refusal::Decision { reason, .. } if reason.as_str() == "STATE_REVISION_CONFLICT" => {
+            Refusal::RevisionConflict(ConflictStage::UseTimeDecision)
+        }
+        _ => refusal,
+    }
+}
+
 fn acceptance(code: AcceptanceCode) -> Refusal {
     Refusal::Acceptance(code)
 }
@@ -740,9 +753,10 @@ where
             .workflow(&key)
             .map_err(Refusal::LedgerUnavailable)?
             .ok_or(Refusal::WorkflowUnknown)?;
-        let revision = StateRevision::new(stored.revision).ok_or(Refusal::RevisionConflict)?;
+        let revision = StateRevision::new(stored.revision)
+            .ok_or(Refusal::RevisionConflict(ConflictStage::StoredRevision))?;
         let inputs = shared.trusted_inputs(revision);
-        let authorized = authorize(verified, &inputs, &observed)?;
+        let authorized = authorize(verified, &inputs, &observed).map_err(use_time_conflict)?;
         let protection = match authorized.hold().policy() {
             Policy::Loaded(bundle) => bundle.protection().cloned(),
             Policy::Absent | Policy::Rejected => None,

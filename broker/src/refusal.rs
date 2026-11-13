@@ -13,6 +13,18 @@ use crate::acceptance::AcceptanceCode;
 use crate::grants::ApproverRefusal;
 use crate::store::StoreError;
 
+/// Which check detected a promotion's revision conflict (D-038 item 2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConflictStage {
+    /// The use-time kernel decision before the promotion transaction
+    /// (kernel `STATE_REVISION_CONFLICT`, normalized at the broker boundary).
+    UseTimeDecision,
+    /// The compare-and-set inside the fenced promotion transaction.
+    Transaction,
+    /// The stored revision cannot be represented or incremented.
+    StoredRevision,
+}
+
 /// Why the broker refused a request or a permit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refusal {
@@ -85,8 +97,11 @@ pub enum Refusal {
     WorkflowUnknown,
     /// The workflow already exists (administration, M3-05).
     WorkflowExists,
-    /// Expected revision or source state differ from the stored workflow (CAS).
-    RevisionConflict,
+    /// Expected revision or source state differ from the stored workflow
+    /// (D-038 item 2: one broker code for the stale expected revision and the
+    /// transactional compare-and-set). The [`ConflictStage`] records which
+    /// check detected it (operator diagnostic only; never externally visible).
+    RevisionConflict(ConflictStage),
     /// The project has no usable active acceptance policy (fail closed).
     AcceptancePolicyUnavailable,
     /// The authorization bundle's protection names another acceptance policy.
@@ -142,7 +157,7 @@ impl Refusal {
             Refusal::RequestScopeMismatch => "REQUEST_SCOPE_MISMATCH",
             Refusal::WorkflowUnknown => "WORKFLOW_UNKNOWN",
             Refusal::WorkflowExists => "WORKFLOW_EXISTS",
-            Refusal::RevisionConflict => "REVISION_CONFLICT",
+            Refusal::RevisionConflict(_) => "REVISION_CONFLICT",
             Refusal::AcceptancePolicyUnavailable => "ACCEPTANCE_POLICY_UNAVAILABLE",
             Refusal::PolicyDependencyMismatch => "POLICY_DEPENDENCY_MISMATCH",
             Refusal::WorkflowInitialStateProtected => "WORKFLOW_INITIAL_STATE_PROTECTED",
@@ -154,6 +169,23 @@ impl Refusal {
             Refusal::EffectPrerequisiteUnmet => "EFFECT_PREREQUISITE_UNMET",
             Refusal::EffectArtifactMismatch => "EFFECT_ARTIFACT_MISMATCH",
             Refusal::PromotionStale => "PROMOTION_STALE",
+        }
+    }
+
+    /// Operator diagnostic for the check that originated a normalized refusal
+    /// (D-038 item 2), `None` when the code says everything.
+    pub fn diagnostic(&self) -> Option<&'static str> {
+        match self {
+            Refusal::RevisionConflict(ConflictStage::UseTimeDecision) => {
+                Some("revision conflict: use-time decision (kernel STATE_REVISION_CONFLICT)")
+            }
+            Refusal::RevisionConflict(ConflictStage::Transaction) => {
+                Some("revision conflict: promotion transaction compare-and-set")
+            }
+            Refusal::RevisionConflict(ConflictStage::StoredRevision) => {
+                Some("revision conflict: stored revision not representable")
+            }
+            _ => None,
         }
     }
 
