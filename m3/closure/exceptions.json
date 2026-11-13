@@ -1,6 +1,11 @@
 {
-  "description": "M3-08 approved exceptions: frozen M1 cases whose production behaviour differs by an owner-approved decision. Each entry names the exact case and the exact difference; `actual` is the exact production output recorded for a driven case, or null when the adapter cannot yet drive the case (the gate then reports it as an approved exception that is not driven and fails). Frozen fixtures and their expectations are never changed; fixture_sha256 pins them. See docs/implementation/M3-08-CLOSURE-MAP.md.",
-  "sets": ["broker-scenarios", "protocol-broker", "transition-scenarios", "protocol-transition"],
+  "description": "M3-08 closure entries (D-036, D-037): every frozen case that is not a plain exact pass, by exact case id. kind adapted: exact frozen output reached through the listed approved adaptations; kind difference: approved production difference, exact actual output and exactly the differing steps and final members; kind deferred: approved carry-over (M4 human signoff) with the exact fail-closed M3 output, intended assertion and acceptance criteria. Frozen fixtures never change; fixture_sha256 pins them. See docs/implementation/M3-08-CLOSURE-MAP.md.",
+  "sets": [
+    "broker-scenarios",
+    "protocol-broker",
+    "transition-scenarios",
+    "protocol-transition"
+  ],
   "fixture_sha256": {
     "broker-scenarios": "sha256:c954be1bdbfcde0c840a9cc07149725b40f7fbee11c55cc3fb07cb8aa02a731e",
     "protocol-broker": "sha256:f88418347a894eb0d746d6fb46e0c9352a251d86ac3ebef0835e22d210404c7a",
@@ -10,111 +15,2463 @@
   "exceptions": [
     {
       "set": "broker-scenarios",
-      "case": "b-36-crash-after-dispatch-reconcile",
-      "decision": "D-036 item 4; D-035 item 3",
-      "difference": "After crash_after_dispatch the controlled adapter holds durable evidence that the bound effect was applied, so reconcile records observed_success (count 1, as expected) instead of unknown_reconcile; the retry then replays {replayed: true, result: effect_completed} instead of RECONCILIATION_REQUIRED. Final: receipts {observed_success: 1} instead of {unknown_reconcile: 1}, refusals 0 instead of 1; consumed_permits 1, effects_applied 1 and grant_uses {} unchanged.",
+      "case": "b-03-unsealed",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C1-ingress-audit"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-04-forged-seal",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C1-ingress-audit"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-05-unregistered-adapter",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C1-ingress-audit"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-06-adapter-vouches-for-other-issuer",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C1-ingress-audit"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-07-altered-after-sealing",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C1-ingress-audit"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-08-apply-without-permit",
+      "kind": "difference",
+      "decision": "D-037 item 5",
+      "reason": "apply_without_permit has no production operation (no effect path without a permit); the step answers production_difference NO_PRODUCTION_OPERATION, no broker operation runs and nothing is audited; the final state proves zero effects, receipts and permits",
+      "adaptations": [
+        "production-difference"
+      ],
+      "steps": [
+        0
+      ],
+      "final_members": [
+        "refusals"
+      ],
       "actual": {
-        "final": {"consumed_permits": 1, "effects_applied": 1, "grant_uses": {}, "receipts": {"observed_success": 1}, "refusals": 0},
-        "steps": [{"result": "crashed"}, {"count": 1, "result": "reconciled"}, {"replayed": true, "result": "effect_completed"}]
+        "final": {
+          "consumed_permits": 0,
+          "effects_applied": 0,
+          "grant_uses": {},
+          "receipts": {},
+          "refusals": 0
+        },
+        "steps": [
+          {
+            "reason": "NO_PRODUCTION_OPERATION",
+            "result": "production_difference"
+          }
+        ]
+      }
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-15-grant-single-use",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C2-approval-sealing",
+        "C3-synthetic-human-authority"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-16-grant-bound-to-resource",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C2-approval-sealing",
+        "C3-synthetic-human-authority"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-17-grant-bound-to-capabilities",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C2-approval-sealing",
+        "C3-synthetic-human-authority"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-18-no-subagent-inheritance",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C2-approval-sealing",
+        "C3-synthetic-human-authority"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-19-policy-change-invalidates-grant",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C2-approval-sealing",
+        "C3-synthetic-human-authority"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-20-expired-grant",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C2-approval-sealing",
+        "C3-synthetic-human-authority"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-21-denied-verdict",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C2-approval-sealing",
+        "C3-synthetic-human-authority"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-22-forbid-not-approvable",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C2-approval-sealing",
+        "C3-synthetic-human-authority"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-24-wrong-credential",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C2-approval-sealing"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-25-untrusted-channel",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C2-approval-sealing"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-26-self-approval",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C2-approval-sealing",
+        "C3-synthetic-human-authority"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-27-grant-race-16",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C2-approval-sealing",
+        "C3-synthetic-human-authority"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-28-refusal-before-reservation-keeps-grant",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C2-approval-sealing",
+        "C3-synthetic-human-authority",
+        "C4-partial-transaction-unavailability"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-29-crash-before-reserve",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C2-approval-sealing",
+        "C3-synthetic-human-authority",
+        "C5-injected-crash-reopen"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-32-same-key-other-grant",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C2-approval-sealing",
+        "C3-synthetic-human-authority"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-33-same-key-same-grant",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C2-approval-sealing",
+        "C3-synthetic-human-authority"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-35-crash-after-reserve-resumes",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C2-approval-sealing",
+        "C3-synthetic-human-authority",
+        "C5-injected-crash-reopen"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-36-crash-after-dispatch-reconcile",
+      "kind": "difference",
+      "decision": "D-036 item 4; D-035 item 3",
+      "reason": "authoritative effect-store evidence resolves the dispatched receipt to observed_success on reconcile; the retry replays instead of RECONCILIATION_REQUIRED",
+      "adaptations": [
+        "C5-injected-crash-reopen"
+      ],
+      "steps": [
+        2
+      ],
+      "final_members": [
+        "receipts",
+        "refusals"
+      ],
+      "actual": {
+        "final": {
+          "consumed_permits": 1,
+          "effects_applied": 1,
+          "grant_uses": {},
+          "receipts": {
+            "observed_success": 1
+          },
+          "refusals": 0
+        },
+        "steps": [
+          {
+            "result": "crashed"
+          },
+          {
+            "count": 1,
+            "result": "reconciled"
+          },
+          {
+            "replayed": true,
+            "result": "effect_completed"
+          }
+        ]
+      }
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-37-crash-after-dispatch-retry",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C5-injected-crash-reopen"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-38-effect-failure-recorded",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C6-controlled-effect-failure"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-41-grant-after-deadline",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C2-approval-sealing",
+        "C3-synthetic-human-authority"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-45-retry-after-restart",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C2-approval-sealing",
+        "C3-synthetic-human-authority"
+      ]
+    },
+    {
+      "set": "broker-scenarios",
+      "case": "b-46-reconcile-after-restart",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C5-injected-crash-reopen"
+      ]
+    },
+    {
+      "set": "protocol-broker",
+      "case": "p-09-broker-unknown-op",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C7-protocol-unknown-op"
+      ]
+    },
+    {
+      "set": "protocol-broker",
+      "case": "p-10-broker-grant-ref-reuse",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C2-approval-sealing",
+        "C3-synthetic-human-authority"
+      ]
+    },
+    {
+      "set": "protocol-broker",
+      "case": "p-11-broker-permit-never-issued",
+      "kind": "difference",
+      "decision": "D-037 item 5",
+      "reason": "step 0 issued no permit, so there is nothing to present and no production operation runs; the step answers production_difference NO_PERMIT_TO_PRESENT and is not audited; the final state proves zero effects and the unused grant g1",
+      "adaptations": [
+        "C2-approval-sealing",
+        "C3-synthetic-human-authority",
+        "production-difference"
+      ],
+      "steps": [
+        1
+      ],
+      "final_members": [
+        "refusals"
+      ],
+      "actual": {
+        "final": {
+          "consumed_permits": 0,
+          "effects_applied": 0,
+          "grant_uses": {
+            "g1": 0
+          },
+          "receipts": {},
+          "refusals": 0
+        },
+        "steps": [
+          {
+            "result": "grant_issued"
+          },
+          {
+            "reason": "NO_PERMIT_TO_PRESENT",
+            "result": "production_difference"
+          }
+        ]
+      }
+    },
+    {
+      "set": "protocol-broker",
+      "case": "p-12-broker-unknown-dependency-name",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C8-protocol-input-validation"
+      ]
+    },
+    {
+      "set": "protocol-broker",
+      "case": "p-13-broker-extra-dependency",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C8-protocol-input-validation"
+      ]
+    },
+    {
+      "set": "protocol-broker",
+      "case": "p-14-broker-unknown-fault",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C8-protocol-input-validation"
+      ]
+    },
+    {
+      "set": "protocol-broker",
+      "case": "p25-01-broker-dependency-policy-missing",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C8-protocol-input-validation"
+      ]
+    },
+    {
+      "set": "protocol-broker",
+      "case": "p25-02-broker-dependency-ledger-missing",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C8-protocol-input-validation"
+      ]
+    },
+    {
+      "set": "protocol-broker",
+      "case": "p25-03-broker-dependency-both-missing",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C8-protocol-input-validation"
+      ]
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-01-promote",
+      "kind": "deferred",
+      "decision": "D-037 item 4",
+      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        0
+      ],
+      "final_members": [
+        "consumed_record_ids",
+        "receipts",
+        "refusals",
+        "revision",
+        "state"
+      ],
+      "carry_to": "M4",
+      "intended_assertion": "valid permit bound to request and record, matching revision, complete trusted record: the frozen expectation, unchanged.",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly. Mechanical-only companion m3c-01-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 1,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-02-identical-retry",
+      "kind": "deferred",
+      "decision": "D-037 item 4",
+      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        0,
+        1
+      ],
+      "final_members": [
+        "consumed_record_ids",
+        "receipts",
+        "refusals",
+        "revision",
+        "state"
+      ],
+      "carry_to": "M4",
+      "intended_assertion": "idempotent retry returns the original receipt and changes nothing: the frozen expectation, unchanged.",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly. Mechanical-only companion m3c-02-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 2,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          },
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-03-same-key-different-request",
+      "kind": "deferred",
+      "decision": "D-037 item 4",
+      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        0,
+        1
+      ],
+      "final_members": [
+        "consumed_record_ids",
+        "receipts",
+        "refusals",
+        "revision",
+        "state"
+      ],
+      "carry_to": "M4",
+      "intended_assertion": "key reuse with a different operation: the frozen expectation, unchanged.",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly. Mechanical-only companion m3c-03-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 2,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          },
+          {
+            "code": "ACCEPTANCE_TRANSITION_MISMATCH",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-04-record-replay-new-key",
+      "kind": "deferred",
+      "decision": "D-037 item 4",
+      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        0,
+        1
+      ],
+      "final_members": [
+        "consumed_record_ids",
+        "receipts",
+        "refusals",
+        "revision",
+        "state"
+      ],
+      "carry_to": "M4",
+      "intended_assertion": "a consumed record cannot authorize a second transition: the frozen expectation, unchanged.",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly. Mechanical-only companion m3c-04-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 2,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          },
+          {
+            "code": "STATE_REVISION_CONFLICT",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-05-artifact-replaced-before-promotion",
+      "kind": "adapted",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 3",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ]
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-07-snapshot-swapped-same-digest",
+      "kind": "adapted",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 3",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ]
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-08-policy-changed",
+      "kind": "adapted",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 3",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ]
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-09-kernel-did-not-allow",
+      "kind": "difference",
+      "decision": "D-036 item 2",
+      "reason": "null client permit: production has no client-held promotion permit (use-time decision on the sealed request inside Broker::promote); the client permit is never read, so the step reaches a later production check",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        0
+      ],
+      "final_members": [],
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 1,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-10-race-16",
+      "kind": "deferred",
+      "decision": "D-037 item 4",
+      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        0
+      ],
+      "final_members": [
+        "consumed_record_ids",
+        "receipts",
+        "refusals",
+        "revision",
+        "state"
+      ],
+      "carry_to": "M4",
+      "intended_assertion": "exactly one of 16 concurrent promotions commits: the frozen expectation, unchanged.",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly, except: the 15 refusal codes may split nondeterministically between STATE_REVISION_CONFLICT (use-time kernel decision) and REVISION_CONFLICT (ledger compare-and-set), the sc-06 question; for the same reason there is no exact mechanical companion (in every mechanical run production commits exactly one of 16).",
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 16,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "committed": 0,
+            "refused": {
+              "ACCEPTANCE_HUMAN_UNAVAILABLE": 16
+            },
+            "result": "concurrent"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-11-expired",
+      "kind": "adapted",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 3",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ]
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-12-refusal-is-side-effect-free",
+      "kind": "deferred",
+      "decision": "D-037 item 4",
+      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        1
+      ],
+      "final_members": [
+        "consumed_record_ids",
+        "receipts",
+        "refusals",
+        "revision",
+        "state"
+      ],
+      "carry_to": "M4",
+      "intended_assertion": "a refused attempt consumes neither the record id nor the key: the frozen expectation, unchanged.",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly. Mechanical-only companion m3c-12-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 2,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_UNTRUSTED_EVALUATOR",
+            "result": "refused"
+          },
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-13-refused-key-reusable",
+      "kind": "deferred",
+      "decision": "D-037 item 4; D-036 item 2",
+      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        0,
+        1
+      ],
+      "final_members": [
+        "consumed_record_ids",
+        "receipts",
+        "refusals",
+        "revision",
+        "state"
+      ],
+      "carry_to": "M4",
+      "intended_assertion": "CHANGED code only (PERMIT_MISSING replaces DECISION_NOT_ALLOW): refusals store no receipt, so the same key may be retried: the frozen expectation, unchanged.",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly, except: Step 0 (null client permit) stays a D-036 item 2 difference after M4: production commits at step 0. Mechanical-only companion m3c-13-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 2,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          },
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-14-malformed-record",
+      "kind": "adapted",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 3",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ]
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-15-workflow-already-moved",
+      "kind": "deferred",
+      "decision": "D-037 item 4",
+      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        0,
+        1
+      ],
+      "final_members": [
+        "consumed_record_ids",
+        "receipts",
+        "refusals",
+        "revision",
+        "state"
+      ],
+      "carry_to": "M4",
+      "intended_assertion": "from_state verifying no longer matches state accepted: the frozen expectation, unchanged.",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly. Mechanical-only companion m3c-15-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 2,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          },
+          {
+            "code": "STATE_REVISION_CONFLICT",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-16-cross-project-record",
+      "kind": "adapted",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 3",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ]
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-17-transition-not-evaluated",
+      "kind": "adapted",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 3",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ]
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-18-permit-reused-for-other-target",
+      "kind": "difference",
+      "decision": "D-036 item 2",
+      "reason": "permit fingerprint differs from the request: production has no client-held promotion permit (use-time decision on the sealed request inside Broker::promote); the client permit is never read, so the step reaches a later production check (the record covers verifying to accepted: ACCEPTANCE_TRANSITION_MISMATCH)",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        0
+      ],
+      "final_members": [],
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 1,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_TRANSITION_MISMATCH",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-19-permit-actor-changed",
+      "kind": "difference",
+      "decision": "D-036 item 2",
+      "reason": "permit fingerprint differs: production has no client-held promotion permit (use-time decision on the sealed request inside Broker::promote); the client permit is never read, so the step reaches a later production check (the required human criterion is unavailable until M4)",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        0
+      ],
+      "final_members": [],
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 1,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-20-permit-revision-changed",
+      "kind": "difference",
+      "decision": "D-036 item 2",
+      "reason": "permit fingerprint differs: production has no client-held promotion permit (use-time decision on the sealed request inside Broker::promote); the client permit is never read, so the step reaches a later production check (the use-time kernel decision refuses the stale expected revision)",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions"
+      ],
+      "steps": [
+        0
+      ],
+      "final_members": [],
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 1,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "STATE_REVISION_CONFLICT",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-21-permit-scope-changed",
+      "kind": "difference",
+      "decision": "D-036 item 2",
+      "reason": "permit fingerprint differs: production has no client-held promotion permit (use-time decision on the sealed request inside Broker::promote); the client permit is never read, so the step reaches a later production check (no workflow t1/p2/wf-1 exists)",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions"
+      ],
+      "steps": [
+        0
+      ],
+      "final_members": [],
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 1,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "WORKFLOW_UNKNOWN",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-22-permit-snapshot-attribute-changed",
+      "kind": "difference",
+      "decision": "D-036 item 2",
+      "reason": "permit fingerprint differs: production has no client-held promotion permit (use-time decision on the sealed request inside Broker::promote); the client permit is never read, so the step reaches a later production check (the request's acceptance attributes differ from the authenticated record)",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        0
+      ],
+      "final_members": [],
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 1,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "PERMIT_BINDING_MISMATCH",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-23-permit-digest-attribute-changed",
+      "kind": "difference",
+      "decision": "D-036 item 2",
+      "reason": "permit fingerprint differs: production has no client-held promotion permit (use-time decision on the sealed request inside Broker::promote); the client permit is never read, so the step reaches a later production check (the request's acceptance attributes differ from the authenticated record)",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        0
+      ],
+      "final_members": [],
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 1,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "PERMIT_BINDING_MISMATCH",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-24-permit-record-id-attribute-changed",
+      "kind": "difference",
+      "decision": "D-036 item 2",
+      "reason": "permit fingerprint differs: production has no client-held promotion permit (use-time decision on the sealed request inside Broker::promote); the client permit is never read, so the step reaches a later production check (the trusted source holds no record acc-2)",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions"
+      ],
+      "steps": [
+        0
+      ],
+      "final_members": [],
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 1,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_RECORD_UNKNOWN",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-25-record-swapped-under-permit",
+      "kind": "difference",
+      "decision": "D-036 item 2 (and item 1)",
+      "reason": "permit record_digest differs from the record: production has no client-held promotion permit (use-time decision on the sealed request inside Broker::promote); the client permit is never read, so the step reaches a later production check; the swapped record is authenticated and only the required human criterion refuses (M4)",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        0
+      ],
+      "final_members": [],
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 1,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-28-composite-at-broker",
+      "kind": "adapted",
+      "decision": "D-037 item 1; D-037 item 2",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions"
+      ]
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-29-incomplete-record",
+      "kind": "adapted",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 3",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ]
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-30-evaluator-revoked",
+      "kind": "adapted",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 3",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ]
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-31-unprotected-without-acceptance",
+      "kind": "adapted",
+      "decision": "D-037 item 2",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "harness-authorization-bundle"
+      ]
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-32-protected-without-acceptance",
+      "kind": "difference",
+      "decision": "D-037 item 6",
+      "reason": "the use-time kernel decision refuses a protected transition without its binding as ACCEPTANCE_BINDING_REQUIRED before the broker's ACCEPTANCE_REQUIRED",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions"
+      ],
+      "steps": [
+        0
+      ],
+      "final_members": [],
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 1,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_BINDING_REQUIRED",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-33-alternate-route-to-protected-state",
+      "kind": "difference",
+      "decision": "D-037 item 6",
+      "reason": "step 1: the use-time kernel decision refuses the protected transition without binding as ACCEPTANCE_BINDING_REQUIRED (step 0 commits as expected)",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions"
+      ],
+      "steps": [
+        1
+      ],
+      "final_members": [],
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 1,
+          "refusals": 1,
+          "revision": 8,
+          "state": "reviewing"
+        },
+        "steps": [
+          {
+            "result": "committed",
+            "revision": 8
+          },
+          {
+            "code": "ACCEPTANCE_BINDING_REQUIRED",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-34-alternate-route-with-old-record",
+      "kind": "adapted",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 3",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ]
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-35-unprotected-with-acceptance-binding",
+      "kind": "adapted",
+      "decision": "D-037 item 2",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "harness-authorization-bundle"
+      ]
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-36-authorization-bundle-changed",
+      "kind": "difference",
+      "decision": "D-036 item 2; D-037 item 2",
+      "reason": "a real distinct bundle (t1p1-transition-v2) is activated; the permit naming the replaced bundle is never read (production has no client-held promotion permit (use-time decision on the sealed request inside Broker::promote); the client permit is never read, so the step reaches a later production check); the required human criterion refuses (M4)",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        1
+      ],
+      "final_members": [],
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 1,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "result": "authorization_bundle_activated"
+          },
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-37-own-kind-in-capabilities",
+      "kind": "adapted",
+      "decision": "D-037 item 1; D-037 item 2",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions"
+      ]
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-38-repeated-refusals-then-success",
+      "kind": "deferred",
+      "decision": "D-037 item 4; D-036 item 2",
+      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        0,
+        1,
+        2
+      ],
+      "final_members": [
+        "consumed_record_ids",
+        "receipts",
+        "refusals",
+        "revision",
+        "state"
+      ],
+      "carry_to": "M4",
+      "intended_assertion": "NEW (A6): refusals before reservation leave the key reusable; each refusal is audited: the frozen expectation, unchanged.",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly, except: Steps 0 and 1 (null client permits) stay D-036 item 2 differences after M4: production commits at step 0. Mechanical-only companion m3c-38-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 3,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          },
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          },
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-39-crash-before-commit-then-retry",
+      "kind": "deferred",
+      "decision": "D-037 item 4",
+      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "adaptations": [
+        "C5-injected-crash-reopen",
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        1
+      ],
+      "final_members": [
+        "consumed_record_ids",
+        "receipts",
+        "refusals",
+        "revision",
+        "state"
+      ],
+      "carry_to": "M4",
+      "intended_assertion": "NEW (A6): an interrupted promotion transaction persists nothing; the retry commits once: the frozen expectation, unchanged.",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly. Mechanical-only companion m3c-39-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 1,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "result": "crashed"
+          },
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-40-effect-retry",
+      "kind": "adapted",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 5",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "sealed-execute-effect",
+        "seeded-preconditions"
+      ]
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-41-interrupted-dispatch-retry",
+      "kind": "difference",
+      "decision": "D-037 item 5; D-035 item 3",
+      "reason": "after crash_after_dispatch production keeps the receipt dispatched until evidence-based reconciliation (never unknown_reconcile by assumption); the retry is refused RECONCILIATION_REQUIRED as expected",
+      "adaptations": [
+        "C5-injected-crash-reopen",
+        "harness-authorization-bundle",
+        "sealed-execute-effect",
+        "seeded-preconditions"
+      ],
+      "steps": [],
+      "final_members": [
+        "effects"
+      ],
+      "actual": {
+        "final": {
+          "consumed_record_ids": [
+            "acc-1"
+          ],
+          "effects": {
+            "k1": "dispatched"
+          },
+          "receipts": 0,
+          "refusals": 1,
+          "revision": 8,
+          "state": "accepted"
+        },
+        "steps": [
+          {
+            "result": "crashed"
+          },
+          {
+            "code": "RECONCILIATION_REQUIRED",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-42-interrupted-dispatch-other-request",
+      "kind": "difference",
+      "decision": "D-037 item 5; D-035 item 3",
+      "reason": "after crash_after_dispatch the receipt stays dispatched (not unknown_reconcile); the other request is IDEMPOTENCY_CONFLICT as expected",
+      "adaptations": [
+        "C5-injected-crash-reopen",
+        "harness-authorization-bundle",
+        "sealed-execute-effect",
+        "seeded-preconditions"
+      ],
+      "steps": [],
+      "final_members": [
+        "effects"
+      ],
+      "actual": {
+        "final": {
+          "consumed_record_ids": [
+            "acc-1"
+          ],
+          "effects": {
+            "k1": "dispatched"
+          },
+          "receipts": 0,
+          "refusals": 1,
+          "revision": 8,
+          "state": "accepted"
+        },
+        "steps": [
+          {
+            "result": "crashed"
+          },
+          {
+            "code": "IDEMPOTENCY_CONFLICT",
+            "result": "refused"
+          }
+        ]
       }
     },
     {
       "set": "transition-scenarios",
       "case": "sc-43-reconciled-applied",
-      "decision": "D-036 item 3",
-      "difference": "Step 1 reconcile {idempotency_key: k1, observed: applied} is a client assertion; production provides no client-asserted reconciliation (outcomes come only from adapter evidence, D-035 item 3), so the expected {outcome: applied, result: reconciled} and the replayed effect_completed have no production counterpart.",
-      "actual": null
+      "kind": "difference",
+      "decision": "D-036 item 3; D-037 item 5",
+      "reason": "client-asserted reconcile {observed: applied} is not provided; production evidence-based reconcile resolves the dispatched receipt from the effect store (count 1) and the retry replays, which matches the expected outcome; only the reconcile step's answer differs",
+      "adaptations": [
+        "C5-injected-crash-reopen",
+        "harness-authorization-bundle",
+        "production-difference",
+        "sealed-execute-effect",
+        "seeded-preconditions"
+      ],
+      "steps": [
+        1
+      ],
+      "final_members": [],
+      "actual": {
+        "final": {
+          "consumed_record_ids": [
+            "acc-1"
+          ],
+          "effects": {
+            "k1": "completed"
+          },
+          "receipts": 0,
+          "refusals": 0,
+          "revision": 8,
+          "state": "accepted"
+        },
+        "steps": [
+          {
+            "result": "crashed"
+          },
+          {
+            "evidence_reconciled": 1,
+            "reason": "CLIENT_ASSERTED_RECONCILIATION_NOT_PROVIDED",
+            "result": "production_difference"
+          },
+          {
+            "replayed": true,
+            "result": "effect_completed"
+          }
+        ]
+      }
     },
     {
       "set": "transition-scenarios",
       "case": "sc-44-reconciled-not-applied",
-      "decision": "D-036 item 3",
-      "difference": "Step 1 reconcile {idempotency_key: k1, observed: not_applied} would release an uncertain key for redispatch on a client assertion; production never does (D-036 item 3, D-035 item 3), so the expected {outcome: not_applied, result: reconciled} and the fresh effect_completed have no production counterpart.",
-      "actual": null
+      "kind": "difference",
+      "decision": "D-036 item 3; D-037 item 5",
+      "reason": "client-asserted reconcile {observed: not_applied} is not provided and never releases the key: the effect store shows the effect was applied, so evidence-based reconcile records it (count 1) and the retry replays instead of dispatching again (no second effect)",
+      "adaptations": [
+        "C5-injected-crash-reopen",
+        "harness-authorization-bundle",
+        "production-difference",
+        "sealed-execute-effect",
+        "seeded-preconditions"
+      ],
+      "steps": [
+        1,
+        2
+      ],
+      "final_members": [],
+      "actual": {
+        "final": {
+          "consumed_record_ids": [
+            "acc-1"
+          ],
+          "effects": {
+            "k1": "completed"
+          },
+          "receipts": 0,
+          "refusals": 0,
+          "revision": 8,
+          "state": "accepted"
+        },
+        "steps": [
+          {
+            "result": "crashed"
+          },
+          {
+            "evidence_reconciled": 1,
+            "reason": "CLIENT_ASSERTED_RECONCILIATION_NOT_PROVIDED",
+            "result": "production_difference"
+          },
+          {
+            "replayed": true,
+            "result": "effect_completed"
+          }
+        ]
+      }
     },
     {
       "set": "transition-scenarios",
-      "case": "sc-09-kernel-did-not-allow",
-      "decision": "D-036 item 2",
-      "difference": "Expected PERMIT_MISSING comes from the client-held promotion permit being null; production has no client-held promotion permit (use-time decision on the sealed request inside Broker::promote).",
-      "actual": null
+      "case": "sc-45-crash-before-reserve",
+      "kind": "adapted",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 5; D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C5-injected-crash-reopen",
+        "harness-authorization-bundle",
+        "sealed-execute-effect",
+        "seeded-preconditions"
+      ]
     },
     {
       "set": "transition-scenarios",
-      "case": "sc-13-refused-key-reusable",
-      "decision": "D-036 item 2",
-      "difference": "Step 0 expects PERMIT_MISSING from a null client permit; production has no client-held promotion permit.",
-      "actual": null
+      "case": "sc-46-effect-refused-then-valid",
+      "kind": "difference",
+      "decision": "D-037 item 5",
+      "reason": "the client effect permit is not authority: the null permit is never read and the harness policy authorizes the sealed publication, so step 0 completes through execute and step 1 replays it; exactly one effect",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "sealed-execute-effect",
+        "seeded-preconditions"
+      ],
+      "steps": [
+        0,
+        1
+      ],
+      "final_members": [
+        "refusals"
+      ],
+      "actual": {
+        "final": {
+          "consumed_record_ids": [
+            "acc-1"
+          ],
+          "effects": {
+            "k1": "completed"
+          },
+          "receipts": 0,
+          "refusals": 0,
+          "revision": 8,
+          "state": "accepted"
+        },
+        "steps": [
+          {
+            "result": "effect_completed"
+          },
+          {
+            "replayed": true,
+            "result": "effect_completed"
+          }
+        ]
+      }
     },
     {
       "set": "transition-scenarios",
-      "case": "sc-18-permit-reused-for-other-target",
-      "decision": "D-036 item 2",
-      "difference": "Expected PERMIT_REQUEST_MISMATCH comes from the client permit's request_fingerprint differing from the request; production has no client-held promotion permit.",
-      "actual": null
+      "case": "sc-47-reconcile-nothing",
+      "kind": "difference",
+      "decision": "D-037 item 6; D-036 item 3",
+      "reason": "no production NOTHING_TO_RECONCILE: evidence-based reconcile returns count 0, fabricates no outcome and audits nothing; the final state is unchanged with no effect receipt and no dispatch",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "production-difference",
+        "seeded-preconditions"
+      ],
+      "steps": [
+        0
+      ],
+      "final_members": [
+        "refusals"
+      ],
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 0,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "evidence_reconciled": 0,
+            "reason": "CLIENT_ASSERTED_RECONCILIATION_NOT_PROVIDED",
+            "result": "production_difference"
+          }
+        ]
+      }
     },
     {
       "set": "transition-scenarios",
-      "case": "sc-19-permit-actor-changed",
-      "decision": "D-036 item 2",
-      "difference": "Expected PERMIT_REQUEST_MISMATCH (client permit fingerprint differs); production has no client-held promotion permit.",
-      "actual": null
+      "case": "sc-48-duplicate-key-input",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C8-protocol-input-validation"
+      ]
     },
     {
       "set": "transition-scenarios",
-      "case": "sc-20-permit-revision-changed",
-      "decision": "D-036 item 2",
-      "difference": "Expected PERMIT_REQUEST_MISMATCH (client permit fingerprint differs); production has no client-held promotion permit.",
-      "actual": null
+      "case": "sc-49-decimal-revision-input",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C8-protocol-input-validation"
+      ]
     },
     {
       "set": "transition-scenarios",
-      "case": "sc-21-permit-scope-changed",
-      "decision": "D-036 item 2",
-      "difference": "Expected PERMIT_REQUEST_MISMATCH (client permit fingerprint differs); production has no client-held promotion permit.",
-      "actual": null
+      "case": "sc-08b-policy-changed-compatible",
+      "kind": "adapted",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 3",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ]
     },
     {
       "set": "transition-scenarios",
-      "case": "sc-22-permit-snapshot-attribute-changed",
-      "decision": "D-036 item 2",
-      "difference": "Expected PERMIT_REQUEST_MISMATCH (client permit fingerprint differs); production has no client-held promotion permit.",
-      "actual": null
+      "case": "sc-50-protection-classification-missing",
+      "kind": "difference",
+      "decision": "D-037 item 1",
+      "reason": "the scenario cannot exist in production: protection comes only from the active authorization bundle (a bundle declaring transitions without protection is rejected at load, covered by policy-load tests); with the harness bundle's protection the promotion reaches the required human criterion (M4)",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        0
+      ],
+      "final_members": [],
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 1,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          }
+        ]
+      }
     },
     {
       "set": "transition-scenarios",
-      "case": "sc-23-permit-digest-attribute-changed",
-      "decision": "D-036 item 2",
-      "difference": "Expected PERMIT_REQUEST_MISMATCH (client permit fingerprint differs); production has no client-held promotion permit.",
-      "actual": null
+      "case": "sc-51-protection-from-other-bundle",
+      "kind": "difference",
+      "decision": "D-037 item 1",
+      "reason": "the scenario cannot exist in production: protection is never taken from another bundle (no agent- or scenario-supplied classification); with the active bundle's protection the promotion reaches the required human criterion (M4)",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        0
+      ],
+      "final_members": [],
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 1,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          }
+        ]
+      }
     },
     {
       "set": "transition-scenarios",
-      "case": "sc-24-permit-record-id-attribute-changed",
-      "decision": "D-036 item 2",
-      "difference": "Expected PERMIT_REQUEST_MISMATCH (client permit fingerprint differs); production has no client-held promotion permit.",
-      "actual": null
+      "case": "sc-52-protected-edge-without-record",
+      "kind": "difference",
+      "decision": "D-037 item 6",
+      "reason": "the use-time kernel decision refuses the protected edge without binding as ACCEPTANCE_BINDING_REQUIRED",
+      "adaptations": [
+        "harness-authorization-bundle"
+      ],
+      "steps": [
+        0
+      ],
+      "final_members": [],
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 1,
+          "revision": 7,
+          "state": "draft"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_BINDING_REQUIRED",
+            "result": "refused"
+          }
+        ]
+      }
     },
     {
       "set": "transition-scenarios",
-      "case": "sc-25-record-swapped-under-permit",
-      "decision": "D-036 item 2 (and item 1)",
-      "difference": "Expected PERMIT_BINDING_MISMATCH comes from the client permit's record_digest differing from the inline record; production has no client permit and reads the record by id from the trusted source, so no record can be swapped under a permit.",
-      "actual": null
+      "case": "sc-53-protected-edge-with-record",
+      "kind": "deferred",
+      "decision": "D-037 item 4",
+      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        0
+      ],
+      "final_members": [
+        "consumed_record_ids",
+        "receipts",
+        "refusals",
+        "revision",
+        "state"
+      ],
+      "carry_to": "M4",
+      "intended_assertion": "NEW (N-4): protected edge with a matching record commits: the frozen expectation, unchanged.",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly. Mechanical-only companion m3c-53-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 1,
+          "revision": 7,
+          "state": "draft"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          }
+        ]
+      }
     },
     {
       "set": "transition-scenarios",
-      "case": "sc-36-authorization-bundle-changed",
-      "decision": "D-036 item 2",
-      "difference": "Expected PERMIT_POLICY_STALE comes from the client permit naming the previous authorization bundle digest; production has no client-held promotion permit (the use-time decision runs under the current bundle).",
-      "actual": null
+      "case": "sc-54-edge-record-reused-for-destination",
+      "kind": "deferred",
+      "decision": "D-037 item 4",
+      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        0,
+        1
+      ],
+      "final_members": [
+        "consumed_record_ids",
+        "receipts",
+        "refusals",
+        "revision",
+        "state"
+      ],
+      "carry_to": "M4",
+      "intended_assertion": "NEW (N-4): the record consumed for the edge cannot also satisfy the protected destination: the frozen expectation, unchanged.",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly. Mechanical-only companion m3c-54-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 2,
+          "revision": 7,
+          "state": "draft"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          },
+          {
+            "code": "STATE_REVISION_CONFLICT",
+            "result": "refused"
+          }
+        ]
+      }
     },
     {
       "set": "transition-scenarios",
-      "case": "sc-38-repeated-refusals-then-success",
-      "decision": "D-036 item 2",
-      "difference": "Steps 0 and 1 expect PERMIT_MISSING from null client permits; production has no client-held promotion permit.",
-      "actual": null
+      "case": "sc-55-publish-before-acceptance",
+      "kind": "adapted",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 5",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "sealed-execute-effect",
+        "seeded-preconditions"
+      ]
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-56-accept-a-publish-b",
+      "kind": "deferred",
+      "decision": "D-037 item 4",
+      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "sealed-execute-effect",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        0,
+        1
+      ],
+      "final_members": [
+        "consumed_record_ids",
+        "receipts",
+        "refusals",
+        "revision",
+        "state"
+      ],
+      "carry_to": "M4",
+      "intended_assertion": "NEW (N-3): acceptance of artifact A does not authorize publishing artifact B: the frozen expectation, unchanged.",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly. Mechanical-only companion m3c-56-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 2,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          },
+          {
+            "code": "EFFECT_PREREQUISITE_UNMET",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-57-accepted-artifact-modified",
+      "kind": "deferred",
+      "decision": "D-037 item 4",
+      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "sealed-execute-effect",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        0,
+        1,
+        2
+      ],
+      "final_members": [
+        "consumed_record_ids",
+        "receipts",
+        "refusals",
+        "revision",
+        "state"
+      ],
+      "carry_to": "M4",
+      "intended_assertion": "NEW (N-3): the accepted artifact changed after promotion: the frozen expectation, unchanged.",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly. Mechanical-only companion m3c-57-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 2,
+          "revision": 8,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          },
+          {
+            "result": "artifact_updated",
+            "revision": 8
+          },
+          {
+            "code": "EFFECT_PREREQUISITE_UNMET",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-58-acceptance-policy-changed-after-promotion",
+      "kind": "deferred",
+      "decision": "D-037 item 4",
+      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "sealed-execute-effect",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        0,
+        2
+      ],
+      "final_members": [
+        "consumed_record_ids",
+        "receipts",
+        "refusals",
+        "revision",
+        "state"
+      ],
+      "carry_to": "M4",
+      "intended_assertion": "NEW (N-3): promotion under an acceptance policy that is no longer active: the frozen expectation, unchanged.",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly. Mechanical-only companion m3c-58-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 2,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          },
+          {
+            "result": "policy_activated"
+          },
+          {
+            "code": "EFFECT_PREREQUISITE_UNMET",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-59-authorization-changed-after-promotion",
+      "kind": "deferred",
+      "decision": "D-037 item 4",
+      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "sealed-execute-effect",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        0,
+        2
+      ],
+      "final_members": [
+        "consumed_record_ids",
+        "receipts",
+        "refusals",
+        "revision",
+        "state"
+      ],
+      "carry_to": "M4",
+      "intended_assertion": "NEW (N-3): promotion under obsolete authorization: the frozen expectation, unchanged.",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly. Mechanical-only companion m3c-59-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 2,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          },
+          {
+            "result": "authorization_bundle_activated"
+          },
+          {
+            "code": "EFFECT_PREREQUISITE_UNMET",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-60-missing-promotion-receipt",
+      "kind": "adapted",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 5",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "sealed-execute-effect",
+        "seeded-preconditions"
+      ]
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-61-forged-promotion-receipt",
+      "kind": "adapted",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 5",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "sealed-execute-effect",
+        "seeded-preconditions"
+      ]
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-62-publication-permit-other-target",
+      "kind": "difference",
+      "decision": "D-037 item 5; D-037 item 2",
+      "reason": "the legacy permit (bound to another request) is never read and never authorizes the effect: the harness policy does not authorize repository:t1/p1/other for this case, so execute refuses DEFAULT_DENY with zero effects",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "sealed-execute-effect",
+        "seeded-preconditions"
+      ],
+      "steps": [
+        0
+      ],
+      "final_members": [],
+      "actual": {
+        "final": {
+          "consumed_record_ids": [
+            "acc-1"
+          ],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 1,
+          "revision": 8,
+          "state": "accepted"
+        },
+        "steps": [
+          {
+            "code": "DEFAULT_DENY",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-63-publish-after-promotion",
+      "kind": "deferred",
+      "decision": "D-037 item 4",
+      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "sealed-execute-effect",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        0,
+        1
+      ],
+      "final_members": [
+        "consumed_record_ids",
+        "effects",
+        "receipts",
+        "refusals",
+        "revision",
+        "state"
+      ],
+      "carry_to": "M4",
+      "intended_assertion": "NEW (N-3): the valid path; promotion and publication remain separate transactions: the frozen expectation, unchanged.",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly. Mechanical-only companion m3c-63-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 2,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          },
+          {
+            "code": "EFFECT_PREREQUISITE_UNMET",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-64-concurrent-invalidation-and-publication",
+      "kind": "adapted",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 5",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "sealed-execute-effect",
+        "seeded-preconditions"
+      ]
+    },
+    {
+      "set": "transition-scenarios",
+      "case": "sc-65-uncertain-publication",
+      "kind": "deferred",
+      "decision": "D-037 item 4",
+      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "sealed-execute-effect",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        0,
+        1,
+        2
+      ],
+      "final_members": [
+        "consumed_record_ids",
+        "effects",
+        "receipts",
+        "refusals",
+        "revision",
+        "state"
+      ],
+      "carry_to": "M4",
+      "intended_assertion": "NEW (N-3, A6): an uncertain external effect after promotion requires reconciliation; the promotion is not rolled back: the frozen expectation, unchanged.",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly, except: The final effect status stays dispatched, not unknown_reconcile (D-037 item 5). Mechanical-only companion m3c-65-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 3,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          },
+          {
+            "code": "EFFECT_PREREQUISITE_UNMET",
+            "result": "refused"
+          },
+          {
+            "code": "EFFECT_PREREQUISITE_UNMET",
+            "result": "refused"
+          }
+        ]
+      }
+    },
+    {
+      "set": "protocol-transition",
+      "case": "p-04-transition-missing-steps",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C8-protocol-input-validation"
+      ]
+    },
+    {
+      "set": "protocol-transition",
+      "case": "p-05-transition-initial-missing-state",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C8-protocol-input-validation"
+      ]
+    },
+    {
+      "set": "protocol-transition",
+      "case": "p-06-transition-count-zero",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C8-protocol-input-validation"
+      ]
+    },
+    {
+      "set": "protocol-transition",
+      "case": "p-07-transition-unknown-fault",
+      "kind": "adapted",
+      "decision": "D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C8-protocol-input-validation"
+      ]
+    },
+    {
+      "set": "protocol-transition",
+      "case": "p-08-transition-unknown-op",
+      "kind": "adapted",
+      "decision": "D-037 item 1; D-037 item 2; D-037 item 7",
+      "reason": "exact pass of the frozen expectation through production code with the listed adaptations",
+      "adaptations": [
+        "C7-protocol-unknown-op",
+        "harness-authorization-bundle",
+        "seeded-preconditions"
+      ]
+    },
+    {
+      "set": "protocol-transition",
+      "case": "p-16-scenario-member-order",
+      "kind": "deferred",
+      "decision": "D-037 item 4",
+      "reason": "every requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4); the M3 fail-closed behavior is what runs now",
+      "adaptations": [
+        "harness-authorization-bundle",
+        "seeded-preconditions",
+        "test-authenticated-evidence"
+      ],
+      "steps": [
+        0
+      ],
+      "final_members": [
+        "consumed_record_ids",
+        "receipts",
+        "refusals",
+        "revision",
+        "state"
+      ],
+      "carry_to": "M4",
+      "intended_assertion": "D-021 (7): the frozen expectation, unchanged.",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly. Mechanical-only companion m3c-16-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage).",
+      "actual": {
+        "final": {
+          "consumed_record_ids": [],
+          "effects": {},
+          "receipts": 0,
+          "refusals": 1,
+          "revision": 7,
+          "state": "verifying"
+        },
+        "steps": [
+          {
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
+            "result": "refused"
+          }
+        ]
+      }
+    }
+  ],
+  "companions": [
+    {
+      "name": "transition-companions",
+      "file": "companions/transition-companions.jsonl",
+      "command": "transition-scenario",
+      "kind": "mechanical-companion"
+    },
+    {
+      "name": "seed-negatives",
+      "file": "companions/seed-negatives.jsonl",
+      "command": "transition-scenario",
+      "kind": "seed-negative"
     }
   ]
 }
