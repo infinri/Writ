@@ -1,24 +1,85 @@
 # Session handoff
 
-Read this first after compaction or in a new session, then [WORK-STATE](WORK-STATE.md).
+Read this first after compaction or in a new session, then [WORK-STATE](WORK-STATE.md). This file is the authoritative recovery entry point. Only the section "Current recovery state" gives current instructions; everything under "Historical record" is preserved evidence and superseded instructions, never a current next step.
 
-## Current checkpoint (2026-11-10 America/Chicago; after M1 measurements and enterprise readiness direction)
+## Current recovery state (checkpoint 2026-11-13; M3 in progress, NOT complete)
 
-**This is the authoritative recovery entry point. It is not authorization to do anything beyond what is listed under "Authorized next task"; re-establish other authorizations from the owner's newest message.**
+### 1. Repository and CI (verify on recovery with the commands in section 7)
 
-**After compaction (checkpoint 2026-11-13, M3 in progress, NOT complete):**
+| Item | State |
+|---|---|
+| Branch | `v2/architecture-rebuild` only; never `main`; fast-forward pushes only, never force |
+| Verified code baseline | `6be251c89c7c52484b89f6dc14bb663c315d436c` (M3-05 transition service, D-036): CI https://github.com/infinri/Writ/actions/runs/43465393620 **success, all 6 jobs** (including the isolated process-kill step) |
+| Earlier verified commits | D-035 `5fdcd30` run 43346923290 (6/6 success); docs `154be77` run 43347554447 (6/6 success); M3-04 code `8ead392` run 43340059204 (6/6 success) |
+| Checkpoint commit | the documentation commit that records this text, published after `6be251c`; its own CI run is separate from the code baseline's and is pending until verified |
+| Required CI | workflow `.github/workflows/v2-docs.yml` ("V2 documentation integrity"), 6 jobs: docs and schemas; production Rust workspace (fmt, clippy, build, tests, isolated process-kill step, kernel parity, M2 evidence, dependency gate); M0 harness; M1 Rust parity; M1 Go parity; M1 properties and differential |
+| Not required CI | "Publish Writ V2 architecture website": the site assembly job succeeds; the Pages deploy job fails on every push with `Branch "v2/architecture-rebuild" is not allowed to deploy to github-pages due to environment protection rules`. Not a code failure; deployment protections are not to be changed |
+| Working tree | clean except untracked `docs/audit/m0/hook-audit/` (private owner material: never stage, publish, summarize or modify); no unpublished commits at checkpoint time |
 
-- **Repository:** branch `v2/architecture-rebuild`; verified published baseline `aff6ce33e2ec9543321be3224a2a92ee9e27db12` (docs checkpoint), CI https://github.com/infinri/Writ/actions/runs/43343727179 **success, all 6 jobs**; last verified code baseline `8ead392`, CI run 43340059204, all 6 jobs. D-035 commit `5fdcd306acc814bcb713d784591d189aa6f01877`, CI run https://github.com/infinri/Writ/actions/runs/43346923290 **success, all 6 jobs**. Docs commit `154be77` (M3-05 design note), CI run 43347554447 **success, all 6 jobs**. The M3-05 commit that records this text is published after it; its CI is **pending until verified** (record the run in E-068). The separate "Publish Writ V2 architecture website" workflow fails on every push: its Pages deploy job is rejected by the github-pages environment protection for this branch (not a code failure, outside the required checks; E-068). Working tree: only untracked `docs/audit/m0/hook-audit/` (private owner material: never stage, publish or summarize).
-- **Done in M3 (each CI green):** M3-PLAN; M3-00 workspace and per-crate dependency gate with standalone and combined views; M3-01 single-owner SQLite ledger (canonical identity, exclusive lock plus fencing epoch, create versus open with exact schema verification); M3-02 sealed ingress, use-time re-decision through `writ-kernel`, guard-bound policy gate (`ActivePolicy`), permits with `PERMIT_STALE`, semantic contract validation (`broker::contracts`), trusted time (`rustix` `CLOCK_BOOTTIME`, persisted floor, D-034); M3-03 authenticated approvals and atomic grant consumption (E-064); M3-04 execute lifecycle with a separate effect store, D-026 stage evidence, fault injection at every stage, real SIGKILL tests (E-065). D-035 (E-067, `5fdcd30`, CI green). M3-05 transition service per D-036 (E-068, verified locally, CI pending). Schemas: ledger `writ-ledger-5`, effects `writ-effects-2`.
-- **Fork and inherited-lock finding (E-066):** a fork duplicates every open descriptor, including `.owner` lock descriptors, until the child execs; CI failed once because a parallel test reopened its ledger during another test's spawn. **CI isolation fix (done):** process-kill tests run alone in a dedicated CI step; ownership tests serialized. **Production obligation (open, M3-07):** the broker and mechanical runner must handle inherited descriptors and coordinate broker and ledger shutdown or restart with child spawning in production code and tests; the CI fix does not resolve it.
-- **D-035 implemented (E-067, CI green at `5fdcd30`):** reservation revalidation inside T-dispatch, permit expiry capped by grant expiry, no refunds; effect store with its own identity-safe owner lock, bound to the ledger's `ledger_id`; `present_permit` never applies an effect; reconciliation records outcomes only from the adapter's evidence for the receipt's own permit; `outcome_unknown` for failed commits and `failure_records`; approver provenance (`writ-provenance-1`) in schema `writ-ledger-4`, explicit `upgrade_from_v3`, legacy grants non-executable. Effects schema `writ-effects-2`. b-36 exception approved (D-036 item 4).
-- **M3-05 implemented (D-036, E-068):** authenticated AcceptanceRecords (`authenticated-acceptance-record/1`, HMAC under a separate `AcceptanceRecordKey`) read by id from a trusted source; runner attestation verification; use-time registry, revocation, replay, freshness and immutable-snapshot checks; one-operation promotion with CAS and atomic consumption of record and attestations; replay before decision; authenticated, scoped, audited administration; effect prerequisites inside T-reserve under a workflow lock; `writ-ledger-5` with `SqliteLedger::upgrade`; real SIGKILL during promotion.
-- **Next action after recovery:** verify the M3-05 commit's CI (record it in E-068); then M3-07 (runner producing attestations, sandbox limits, inherited descriptors and restart coordination in production code) with the M3-06 integration (contracts approved with semantic validation; use-time MAC, registry, revocation, replay, immutable-snapshot and atomic-consumption tests mandatory; M3-07 inherited descriptors and restart coordination), M3-08 closure (127 cases, differential, chaos). Do not re-request these approvals.
-- **Out of scope:** PostgreSQL, enterprise services, Control Center, real-host integration (M5 real-host clock security, SR-06). ADR-0002 ACCEPTED (Rust, scoped); ADR-0008 APPROVED IN PRINCIPLE; release and production NO-GO.
+### 2. Status by task (details: [TASKS](TASKS.md), evidence [TEST-EVIDENCE](TEST-EVIDENCE.md))
 
-**Enterprise planning update:** owner delegated the readiness approach after discussing Rust, PostgreSQL and SOC 2. [ENTERPRISE-READINESS](../security/ENTERPRISE-READINESS.md), ENT-OWNER-01 and ENT-00..ENT-08 allocate controls across M2..M12. SQLite stays local/offline; PostgreSQL targets enterprise state with a separate future coordination/recovery gate. Controls and examinations remain planned. Self-hosted customer audit responsibilities do not replace any examination of a Writ-operated service. ADR-0008 stays APPROVED IN PRINCIPLE; release and production NO-GO. No paid engagement or production action is authorized.
+- **Done:** M3-PLAN, M3-00 (workspace, per-crate dependency gate), M3-01 (single-owner SQLite ledger: canonical identity, owner lock, fencing epoch, create versus open), M3-02 (sealed ingress, use-time re-decision, policy gate, permits, `PERMIT_STALE`, contract semantic validation, trusted time), M3-03 (authenticated approvals, atomic single-use grants; E-064), M3-04 (execute lifecycle, separate effect store, stage evidence, kills; E-065, E-066), D-035 (E-067).
+- **M3-05 implemented under D-036 (E-068):** verified locally (310 tests passed 3 times, kill tests 3/3, parity 320/320, gate 0 problems); exact-SHA CI on `6be251c` green (run 43465393620, 6/6). The 66 transition-scenarios and 6 protocol-transition cases are not yet run against production code (M3-08).
+- **M3-06:** contracts (evaluator registry entry, runner attestation, EvaluationRecord scope) approved in D-034 with semantic validation in `broker::contracts`; the authenticated AcceptanceRecord contract `authenticated-acceptance-record/1` added and implemented under D-036. Remaining integration obligations, each open: (a) runner attestations produced by a real runner and verified end to end (M3-07); (b) EvaluationRecord scope documents are validated but not yet ingested or bound at use time (evaluations are carried inside the authenticated record); (c) registry publication by authorized humans (M6; today an operator interface with test authorities); (d) evidence-digest resolution against a catalog (M7); (e) human criteria refused until authenticated signoff (M4); (f) the proposed schemas in `docs/contracts/proposed/` are not promoted to `docs/contracts/` and the authenticated record has no JSON Schema file yet.
+- **M3-07 open:** mechanical runner as a sandboxed broker effect producing attestations under a runner key; registered commands on digest-identified inputs; tamper refusal; sandbox limits on disposable resources; **inherited file descriptors and broker/ledger shutdown or restart coordination in production code and tests** (E-066; serializing CI tests does not resolve it).
+- **M3-08 open:** broker and transition command layer for the 127 M1 cases with exact exceptions (b-36, sc-43, sc-44, the M1 promotion-permit cases) and negative tests proving unrelated failures stay failures; differential and property gate; chaos and storage-failure suites.
+- **M3 is not complete.**
 
-### A. Repository state (verify with the commands in section H)
+### 3. Decisions in force (do not request again)
+
+D-030 Rust selected, **ADR-0002 ACCEPTED** (scoped to the trusted kernel and broker); D-031 kernel readings; D-032..D-034 M3 decisions; **D-035** (reservation retention, effect-store ownership, permit presentation, failure precedence, approver provenance) and **D-036** (authenticated records, no promotion permits, no client-asserted reconciliation, b-36 exception, trusted workflow inputs) approved and implemented. ADR-0008 **APPROVED IN PRINCIPLE**. Release and production **NO-GO**. Stop for any new semantic or trust-boundary decision.
+
+### 4. Schemas, migrations and source map
+
+| Store | Version | Entry points | Files |
+|---|---|---|---|
+| Ledger | `writ-ledger-5` | `SqliteLedger::create` (new), `SqliteLedger::open` (current version only, never initializes or upgrades), `SqliteLedger::upgrade` (explicit operator upgrade of exact `writ-ledger-3` or `writ-ledger-4`, keeps every row) | `persistence/sqlite/src/schema.sql` (frozen `writ-ledger-3` base), `schema_v4.sql`, `schema_v5.sql`, `lib.rs` |
+| Effect store (controlled test adapter) | `writ-effects-2` | `SqliteEffectStore::create`/`open` bound to a `LedgerId`; `writ-effects-1` refused | `persistence/sqlite/src/effects.sql`, `effects.rs` |
+| Approver provenance | `writ-provenance-1` | grants without it are non-executable | `broker/src/grants.rs` |
+| Authenticated record | `authenticated-acceptance-record/1`, purpose `writ.acceptance-record.v1` | `acceptance::verify_record` | `broker/src/acceptance.rs` |
+
+Broker modules (`broker/src/`): `ingress`, `authorize`, `policy` (gate), `clock` (trusted time), `permit`, `keys` (ingress, permit, acceptance-record and runner keys), `grants` (approvals, T-reserve, effect prerequisites), `execute` (lifecycle, reconcile, present_permit), `effects` (adapter interface), `acceptance` (records, attestations, use-time checks), `workflow` (promotion, administration, sources, snapshot store), `contracts` (semantic validation), `store` (ledger traits), `refusal`. SQLite crate (`persistence/sqlite/src/`): `lib.rs` (ledger, grants, execute transactions), `workflow.rs` (workflow transactions, prerequisite check), `effects.rs`; tests `grant_tests`, `execute_tests`, `d035_tests`, `transition_tests`, `kill_tests` (ignored in the parallel run), `tests/initialization.rs`, `tests/ownership.rs`.
+
+### 5. Production obligations not met (never claim otherwise)
+
+Runner sandboxing (M3-07, real-host strength M5); inherited descriptors and broker/ledger restart coordination (M3-07); acceptance service and its key provisioning (M4/M6); production key management for ingress, permit, acceptance-record and runner keys (M5, M9); a service-controlled immutable snapshot store (INV-40; interface only); authenticated operators and approvers (M4; interfaces with test authorities only); evidence catalog (M7); signed acceptance policies and registry publication (M6); real external effect adapters, each with its own concurrency, replay, authorization and recovery contract; power-loss durability (M9); multi-owner coordination (PostgreSQL profile, M10); real-host verification (M5, SR-06); independent human review of golden cases and fixtures (REL-01) and of the 288 V1 rules (M6-RULES).
+
+### 6. Authorized next action and continuation checklist
+
+Authorized (no new approval needed): **M3-07**, the remaining **M3-06 integration**, then **M3-08 closure**, with reviewed fast-forward pushes and exact-SHA CI verification.
+
+1. Recover: run section 7 "state" commands; confirm HEAD equals `origin/v2/architecture-rebuild`; confirm the checkpoint commit's CI and the code baseline's CI by run id.
+2. Read [M3-START-PLAN](M3-START-PLAN.md) (M3-07 row), [M3-ACCEPTANCE-CONTRACTS](M3-ACCEPTANCE-CONTRACTS.md) (runner attestation, INV-35, INV-40), E-066 (fork and inherited-lock finding), `broker/src/acceptance.rs` and `broker/src/workflow.rs` (attestation consumers).
+3. Design M3-07 before code: a `broker::runner` module that launches a registered command on digest-identified snapshot inputs as a broker effect (through the receipt lifecycle), closes or marks close-on-exec every descriptor not meant for the child (ownership locks included) and never spawns while the ledger is being closed or reopened in the same process (production coordination, not test serialization), and signs `runner-attestation/1` with a `RunnerAttestationKey`; stop and ask if the sandbox mechanism needs a new dependency or a trust-boundary choice.
+4. Then the M3-06 items (a)..(f) that belong to M3, then M3-08 (command layer in the style of `kernel/examples/m1_line_adapter.rs`, exact exception list, negative tests, differential like M2-06, chaos and storage-failure suites).
+5. After each step: update TEST-EVIDENCE, TASKS, this file and WORK-STATE; commit explicit paths only; fast-forward push; verify CI on the exact SHA.
+
+### 7. Commands
+
+```bash
+# state
+git branch --show-current && git fetch -q origin && git status --short
+git log --oneline -8 && git rev-parse HEAD origin/v2/architecture-rebuild
+gh run list --branch v2/architecture-rebuild --workflow v2-docs.yml --limit 5
+# production workspace (pinned toolchain and SQLite from m1/tools/env.sh)
+source m1/tools/env.sh
+cargo fmt --all --check && cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cargo test -p writ-ledger-sqlite --locked --lib kill_tests -- --ignored --test-threads=1   # alone, single-threaded (E-066)
+python3 kernel/tools/check_deps.py --osv --sbom /tmp/sbom.json
+cargo build --release --locked --example m1_line_adapter && python3 m1/driver/parity.py --proto "$PWD/target/release/examples/m1_line_adapter" --manifest m1/fixtures/manifest.json --repeat 2 --sets canonical-vector,strict-json,golden-decisions,transition-decisions,acceptance-binding,external-refusal,protocol-decide,protocol-acceptance
+python3 -m unittest discover -s kernel/tools && python3 scripts/check-v2-docs.py
+```
+
+### 8. Requires owner approval
+
+Any new semantic or trust-boundary decision; any change to D-017..D-036 or frozen fixture expectations; changing deployment or branch protections; anything touching `main`, V1 trees, the M0 harness or `hook-audit/`; marking ADR-0008 ACCEPTED; any release or production action; benchmarks or CPU and system settings; stopping the owner's processes. Reviewed fast-forward pushes within M3 are authorized.
+
+## Historical record (superseded; not current instructions)
+
+The sections below are preserved as written at earlier checkpoints (mostly 2026-11-10 and 2026-11-12). Statements such as "ADR-0002 OPEN", "Next task: M2 completion", the M1-08 directive, `a91af1d` as published baseline and "choosing Rust or Go" requiring approval are superseded by section 1 to 8 above.
+
+### Historical A. Repository state (verify with the commands in section H)
 
 | Item | State |
 |---|---|
@@ -31,7 +92,7 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 
 Commit chain since M1-05 (all published): `9e6f9f1` M1-06a harness; `a44c9cc` D-022; `935e4e3` D-023 SQLite ledger; `e1dc2e1` M1-07 report (CI failed: system SQLite linked); `3012940` D-024 plus CI fix; `6b7eab1` M1-06d broker timing; `68f4593` D-025; `8d1915c` docs; `d9815f8` guard refuses discharging battery (CI failed: busy timeouts, E-034); `1994b67` docs; `7a5a366` D-026; `988a840` docs; `d9054c9` docs checkpoint; `52b31fe` D-027; `41529d1` docs (CI red, E-039); `a0769b6` docs (CI red, same cause); `c5effec` D-028, D-029; `d99faa2` docs (CI green, E-044); `612e1f4` docs; `138163d` readiness docs; `a91af1d` official results and scorecard.
 
-### B. Architecture in one page
+### Historical B. Architecture in one page
 
 - **Kernel:** pure, deterministic, key-free authorization (no I/O, injected time); strict JSON (D-017), D-006 canonical form; decides allow, deny, require_approval, invalid or unavailable with matched rule ids ([V2-ARCHITECTURE](../../V2-ARCHITECTURE.md)).
 - **Broker:** the only path to governed effects. Adapter-sealed ingress (D-010), use-time re-decision, approval grants from authenticated humans on a separate channel (single use, bound to the full request, D-009), permits bound to the full request fingerprint and bundle (D-012), idempotency receipts and reconciliation; effect adapter simulated in M1.
@@ -41,11 +102,11 @@ Commit chain since M1-05 (all published): `9e6f9f1` M1-06a harness; `a44c9cc` D-
 - **Bake-off:** equivalent Rust and Go prototypes from shared language-neutral specifications, implemented by separate agents that never read each other's code; ADR-0002 **OPEN** until final owner decision after targeted M1-08 confirmation; Rust is the provisional leader and preferred direction.
 - **Writ Control Center:** roadmap (D-015, ADR-0007, `docs/control-center/`); not started.
 
-### C. Completed work (do not repeat)
+### Historical C. Completed work (do not repeat)
 
 M1-00 toolchains; M1-01 parity driver; M1-02 fixtures (amendments 1..7, 12 sets, **447 cases**, all PENDING INDEPENDENT REVIEW); M1-03 Rust and M1-04 Go prototypes; M1-05 property, metamorphic, concurrency and differential harness; M1-06a guarded benchmark harness; M1-06b D-022; M1-06c D-023 SQLite ledger; M1-06e D-024 storage failures; M1-06d broker timing (`bench-broker-scenario`); M1-06f D-025 corrections; M1-06g D-026 concurrency oracle; D-027..D-029 implemented and CI green (E-044); official M1-06 and M1-07 measurements recorded (E-046/E-047). M1-07 facts collected ([report](M1-07-BUILD-ASSESSMENT.md)); newline-only incremental timings are invalid for comparison and require replacement.
 
-### D. Decisions in force ([DECISION-LOG](DECISION-LOG.md))
+### Historical D. Decisions in force ([DECISION-LOG](DECISION-LOG.md))
 
 | Decision | Status |
 |---|---|
@@ -64,13 +125,13 @@ M1-00 toolchains; M1-01 parity driver; M1-02 fixtures (amendments 1..7, 12 sets,
 | D-028 equivalent release protocol | implemented (`c5effec`), CI green E-044 |
 | D-029 process-local coordination gate, `STATE_CONFLICT`, verified contention acceptance | implemented (`c5effec`), CI green E-044; process-local only |
 
-### E. Historical and current evidence ([TEST-EVIDENCE](TEST-EVIDENCE.md))
+### Historical E. Historical and current evidence ([TEST-EVIDENCE](TEST-EVIDENCE.md))
 
 Current runtime/measurement records: E-042..E-047; published baseline CI `a91af1d`, run 42943984397 green. ENT-E01 records only readiness documentation checks. The next paragraph is historical evidence at `7a5a366`, not a current benchmark status.
 
 At `7a5a366` (CI run 42898828550, success, all 5 jobs; and locally, E-035): Rust 58 unit + 3 integration tests; Go vet clean, race tests ok in 6 packages; both link SQLite 3.54.1 (source id `2026-10-16 14:45:20 555e07ef...`), identical settings; fixtures **447/447** in memory and on SQLite for each prototype; regressions 11/11; `m1/ledger_tests` **30** OK (13 storage failures, 3 timing integrity, 14 D-025); D-026 oracle negative tests **14** OK; memory property CI profile seeds 20261107 and 1; Rust-SQLite versus Go-SQLite broker campaigns with 64-way groups PASS (CI 348 cases, 6,780 checks; local 2,584 cases, 52,920 checks; 0 mismatches); mutation smoke 9 of 9 mutants caught for each (including `masked-effect`); harness self-tests 18 OK; benchmark dry run 0 correctness failures; M0 281 passed; drift, driver and docs checks OK. Availability (preliminary, not comparable before D-027): E-034 Rust 89 / Go 6 timeouts of 12,800; E-036 CI Rust 2 of 1,408 at 64-way. Guarantee level: **Tested (unit or reference) only**; no test result is a real-host security certification. **At that historical checkpoint no official measurement existed; E-046/E-047 now record the official measurements.**
 
-### F. Next task: M2 completion (see the top of this checkpoint and TASKS rows M2-00..M2-06)
+### Historical F. Next task: M2 completion (see the top of this checkpoint and TASKS rows M2-00..M2-06)
 
 Plan: [M2-START-PLAN](M2-START-PLAN.md). The completed M1-08 confirmation record follows for reference.
 
@@ -88,13 +149,13 @@ The owner supplied an explicit M1-08 review directive in session, then preferred
 
 Enterprise control implementation (ENT-01..ENT-08) belongs to later milestones and does not replace these investigations. Update handoff/evidence before compaction. This documentation checkout has not performed new comparative measurements, real process kills or preservation of the original ignored evidence.
 
-### G. Unverified security obligations and blockers (never claim otherwise)
+### Historical G. Unverified security obligations and blockers (never claim otherwise)
 
 Independent human review of the 26 golden cases and all M1 fixtures (REL-01); review of the 288 V1 rules (M6-RULES); SR-06 real-host verification (M5-SR06; adversarial trials only on a VM or separate machine); 16 D-014 risks open; authenticated approval service and evaluator issuance, attestation and signatures; real snapshot immutability and credential isolation; trusted production clock and key management; real process-kill and power-loss recovery (ledger crash tests are early returns); real external exactly-once effects (adapter simulated); remaining adversarial and host-bypass tests; real-host enforcement. ADR-0002 OPEN; ADR-0008 APPROVED IN PRINCIPLE; release and production NO-GO.
 
 **Historical pre-measurement environment ([M1-06-READINESS](M1-06-READINESS.md)), not current readiness:** reading 2026-11-10: full-power charger not connected (battery discharging on a 5 V / 3 A USB-C supply, about 15 W); governor back to `powersave` (owner restored it); 1-minute load 3.52 (IntelliJ, 22 Docker containers, Chrome, Claude sessions); CPU 60 C (needs a fresh check). The guard (`m1/bench/wbench/envinfo.py`) must pass; never bypass or relax it; never change CPU settings or stop the owner's processes.
 
-### H. Commands
+### Historical H. Commands
 
 ```bash
 # state
@@ -123,11 +184,11 @@ python3 m1/bench/bench.py --dry-run --seed 20261107 --rust $R --go $G --out /tmp
 cat /sys/devices/system/cpu/cpufreq/policy*/scaling_governor | sort | uniq -c; cat /sys/class/power_supply/ACAD/online /sys/class/power_supply/BAT1/status /proc/loadavg
 ```
 
-### I. Requires owner approval
+### Historical I. Requires owner approval
 
 Every push (fast-forward only, never force); deleting files; changing frozen fixture expectations; any new decision or change to D-017..D-027; benchmark or build-time measurement runs outside the bounded M1-08 directive (guard must always pass); CPU or system settings; stopping the owner's processes; choosing Rust or Go; marking ADR-0002 or ADR-0008 ACCEPTED; anything touching `main`, V1 trees, the M0 harness or `hook-audit/`.
 
-## Standing facts
+### Historical standing facts (2026-11-10)
 
 1. **Objective:** Writ V2, a model- and domain-agnostic governance, retrieval and memory platform ([master plan](MASTER-IMPLEMENTATION-PLAN.md)).
 2. **Key files:** [M0-GO-NO-GO](M0-GO-NO-GO.md), [M0-GO-SIGNOFF-PACKAGE](M0-GO-SIGNOFF-PACKAGE.md), [TASKS](TASKS.md), [DECISION-LOG](DECISION-LOG.md), [TEST-EVIDENCE](TEST-EVIDENCE.md), [SR-06-TRIAL-PLAN](../audit/m0/SR-06-TRIAL-PLAN.md), `m0/` harness, `docs/contracts/`.
