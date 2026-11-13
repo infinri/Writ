@@ -2,7 +2,7 @@
 
 Read this first after compaction or in a new session, then [WORK-STATE](WORK-STATE.md). This file is the authoritative recovery entry point. Only the section "Current recovery state" gives current instructions; everything under "Historical record" is preserved evidence and superseded instructions, never a current next step.
 
-## Current recovery state (checkpoint 2026-11-13, D-037 implemented; M3 in progress, NOT complete; M3-08 gate fails on 3 cases pending owner decisions OQ-13..OQ-17)
+## Current recovery state (checkpoint 2026-11-13, D-038 decided and in implementation; M3 in progress, NOT complete; M3-08 closure gate not yet passing)
 
 ### 1. Repository and CI (verify on recovery with the commands in section 7)
 
@@ -10,6 +10,8 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 |---|---|
 | Branch | `v2/architecture-rebuild` only; never `main`; fast-forward pushes only, never force |
 | D-037 commits | `644b4aa` (D-037 recorded) .. this checkpoint: `67fe4d9`, `7532b5c`, `d882c86`, `43d18be`, `baf8d86`, `6620a52`, `4f8d109`, `01c40a4`, `0a7c0fe`, then the docs checkpoint (E-072). **Verified code baseline `dd11ed179e8596a3e6be9bf577c873c53b40edb8`: run https://github.com/infinri/Writ/actions/runs/43484993389, 6/6.** The documentation commit recording this has its own CI run |
+| D-037 checkpoint | docs `a30f0898d88e1b82e03417bbafc7b436ece1982b`: run https://github.com/infinri/Writ/actions/runs/43485655070, 6/6 |
+| D-038 commits (local until reviewed) | `80fe5a9`, `4e32902`, then worker integration |
 | Previous verified code baseline | `146260e` run 43475168083 (6/6); checkpoint `9dda1d0` run https://github.com/infinri/Writ/actions/runs/43475928301 (6/6); `6be251c` run 43465393620 (6/6) |
 | Earlier verified commits | D-035 `5fdcd30` run 43346923290 (6/6 success); docs `154be77` run 43347554447 (6/6 success); M3-04 code `8ead392` run 43340059204 (6/6 success) |
 | M3-07 commits | `e52e6ca`..`7eb995f` (runner, process lifecycle, review fixes and tests, M3-08 gate preparation). CI on `7eb995f` (run 43474169870) **failed** in the production workspace job: the CI host leaks a descriptor without close-on-exec, so the sandbox refused every job (E-071). Fixed in `146260e` (tests and kill tests run through `m3/tools/run-with-clean-fds.sh`; the CI host leaked pipe descriptors 142 and 145): run https://github.com/infinri/Writ/actions/runs/43475168083 **success, 6/6**. **Verified code baseline: `146260e485795865e4b5cc72a1b0da0cb8e48778`.** The documentation commit recording this has its own CI run |
@@ -29,7 +31,7 @@ Read this first after compaction or in a new session, then [WORK-STATE](WORK-STA
 
 ### 3. Decisions in force (do not request again)
 
-D-030 Rust selected, **ADR-0002 ACCEPTED** (scoped to the trusted kernel and broker); D-031 kernel readings; D-032..D-034 M3 decisions; **D-035** (reservation retention, effect-store ownership, permit presentation, failure precedence, approver provenance) and **D-036** (authenticated records, no promotion permits, no client-asserted reconciliation, b-36 exception, trusted workflow inputs) approved and implemented; **D-037** (M3-08 closure: test seeding, harness bundles, test evidence, M4 human-signoff carry-over, production differences, harness compositions, ledger differences) approved and implemented (E-072). ADR-0008 **APPROVED IN PRINCIPLE**. Release and production **NO-GO**. Stop for any new semantic or trust-boundary decision.
+D-030 Rust selected, **ADR-0002 ACCEPTED** (scoped to the trusted kernel and broker); D-031 kernel readings; D-032..D-034 M3 decisions; **D-035** (reservation retention, effect-store ownership, permit presentation, failure precedence, approver provenance) and **D-036** (authenticated records, no promotion permits, no client-asserted reconciliation, b-36 exception, trusted workflow inputs) approved and implemented; **D-037** (M3-08 closure: test seeding, harness bundles, test evidence, M4 human-signoff carry-over, production differences, harness compositions, ledger differences) approved and implemented (E-072); **D-038** (OQ-13 option A, one promotion `REVISION_CONFLICT`, `WORKFLOW_UNKNOWN` for sc-27, integrity precedence for sc-26, stage-aware C4 precedence, 25-case M4 carry-over confirmed, remaining closure work) approved, in implementation. ADR-0008 **APPROVED IN PRINCIPLE**. Release and production **NO-GO**. Stop for any new semantic or trust-boundary decision.
 
 ### 4. Schemas, migrations and source map
 
@@ -49,12 +51,16 @@ A contained runner sandbox (filesystem, network, process-tree and resource conta
 
 ### 6. Authorized next action and continuation checklist
 
-Authorized (no new approval needed): work not depending on OQ-13..OQ-17, reviewed fast-forward pushes and exact-SHA CI verification. **Blocked:** M3-08 closure (OQ-14..OQ-16), M3-06 (b) (OQ-13), the C4 precedence oracle (OQ-17).
+**D-038 (owner answers to OQ-13..OQ-17 and the 25-case M4 carry-over) is recorded and authorized; implement it without re-requesting approval.** Last published checkpoint `a30f089` (run 43485655070, 6/6). Local, unpublished: `80fe5a9` (D-038 recorded; item 2 base: promotion revision conflicts answer `REVISION_CONFLICT` with `ConflictStage` diagnostic), `4e32902` (gate `--dump-outputs`, D-038 deferred fields accepted while drafted). Shared worker interfaces: D-038 items as in the decision; stage-aware C4 rule (I-3) is in D-038 item 5 and documented in `broker/src/execute.rs` once W1 lands.
 
-1. Recover: section 7 "state" commands; HEAD equals `origin/v2/architecture-rebuild`; confirm the last pushed SHA's required CI by run id (record in E-072 and WORK-STATE if not yet recorded).
-2. When the owner answers OQ-13..OQ-17: record D-038; add exact entries to `m3/closure/exceptions.json` for the approved differences (or change production and re-record dependent entries `sc-04`, `sc-15`, `sc-20`, `sc-21`, `sc-54`); replace the `sc-10` companion waiver if OQ-14 makes refusals deterministic; rerun `cargo build --release --locked -p writ-ledger-sqlite --example m3_line_adapter && python3 m3/closure/check.py --proto target/release/examples/m3_line_adapter --repeat 2 --report <out.json>`; once it passes, add it as a required CI step after the property gate, verify on the exact SHA, then present the M3 gate review (evidence, M4 carry-over, deferred obligations). M3 stays open until that review is complete.
-3. Unblocked meanwhile: the adapter carrying dependency status across restart (re-enable generated restarts while `ledger: down` in `m3/props`); faults in concurrent groups.
-4. After each step: update TEST-EVIDENCE, TASKS, this file and WORK-STATE; commit explicit paths only; fast-forward push; verify CI on the exact SHA.
+Bounded workers (worktrees from `4e32902`, disjoint files): **W1** conflict handling and production regressions (`persistence/sqlite/src/d038_tests.rs`, docs in `broker/src/{workflow,execute,refusal}.rs`); **W2** OQ-13 supersession and enforcement map (`docs/contracts/proposed/`, `M3-ACCEPTANCE-CONTRACTS.md`, `docs/security/invariants.md`), `m3/closure/exceptions.draft.json`, companions and bundles, `persistence/sqlite/src/transition_props.rs`; **W3** adapter restart fault persistence, concurrent fault groups, stage-aware C4 oracle (`persistence/sqlite/examples/m3_line_adapter/`, `m3/props/`). If a worker's result is lost after compaction, check `git worktree list` and the worker branches before redoing work.
+
+1. Recover: section 7 "state" commands.
+2. Integrate W1, W2, W3 (lead owns `m3/closure/exceptions.json`, `check.py` (make the D-038 deferred fields required), CI and recovery docs); rerun everything in section 7 (kill tests alone); the closure gate must pass with zero unexplained and zero unclassified.
+3. Independent reviewer: oracle independence, exact exceptions, trust boundaries (authorization never from client permits; later inline records never trusted evidence). Fix material findings.
+4. Add the actual closure gate (plus its self-tests, companions, property checks) as a required CI step; publish reviewed fast-forward commits; verify exact-SHA CI.
+5. Present the M3 gate-review package (all 127 classifications, companions, generated coverage, fault and crash evidence, exact-SHA CI, the 25 M4 obligations, production limitations). M3 stays open until that review is complete.
+6. After each step: update TEST-EVIDENCE, TASKS, this file and WORK-STATE; commit explicit paths only.
 
 ### 7. Commands
 
