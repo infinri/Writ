@@ -895,9 +895,9 @@
     {
       "set": "transition-scenarios",
       "case": "sc-12-refusal-is-side-effect-free",
-      "kind": "difference",
-      "decision": "D-037 item 3",
-      "reason": "the fixture presents two different records under the one id acc-1; the trusted test source issues a record id once, at setup, from its first presentation (the untrusted-evaluator record), and never MACs a later inline record, so step 1 is refused ACCEPTANCE_UNTRUSTED_EVALUATOR again instead of committing (this is no longer the M4 human-signoff carry-over); the invariant is covered by companion m3c-12 with distinct record ids",
+      "kind": "deferred",
+      "decision": "D-037 item 4",
+      "reason": "the requirement set includes the human criterion signoff; production refuses required human criteria (ACCEPTANCE_HUMAN_UNAVAILABLE) until authenticated signoff exists (M4), and that check is what refuses first now",
       "adaptations": [
         "adapter-sealed",
         "client-permit-dropped",
@@ -906,6 +906,7 @@
         "test-authenticated-evidence"
       ],
       "steps": [
+        0,
         1
       ],
       "final_members": [
@@ -926,15 +927,18 @@
         },
         "steps": [
           {
-            "code": "ACCEPTANCE_UNTRUSTED_EVALUATOR",
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
             "result": "refused"
           },
           {
-            "code": "ACCEPTANCE_UNTRUSTED_EVALUATOR",
+            "code": "ACCEPTANCE_HUMAN_UNAVAILABLE",
             "result": "refused"
           }
         ]
-      }
+      },
+      "carry_to": "M4",
+      "intended_assertion": "a refused attempt consumes neither the record id nor the key: the frozen expectation, unchanged.",
+      "acceptance_criteria": "With M4 authenticated human signoff verified at use time (no removal, reclassification or test switch), the frozen case run unchanged through the production broker matches its expectation exactly. Mechanical-only companion m3c-12-* in m3/closure/companions/transition-companions.jsonl covers the independently testable invariant now (not human-signoff coverage)."
     },
     {
       "set": "transition-scenarios",

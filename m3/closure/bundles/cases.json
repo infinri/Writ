@@ -157,7 +157,12 @@
    "active": "accept"
   },
   "sc-12-refusal-is-side-effect-free": {
-   "active": "accept"
+   "active": "accept",
+   "records_from": {
+    "set": "transition-scenarios",
+    "case": "sc-12-refusal-is-side-effect-free",
+    "step": 1
+   }
   },
   "sc-13-refused-key-reusable": {
    "active": "accept"
