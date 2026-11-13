@@ -285,19 +285,33 @@ def sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def fixture_digests(spec: dict, manifest: dict, base: Path) -> dict:
+    """The current digest of each pinned set's fixture file (None: not in the manifest or missing)."""
+    by_name = {s["name"]: s for s in manifest["sets"]}
+    found = {}
+    for name in spec["fixture_sha256"]:
+        s = by_name.get(name)
+        path = base / s["file"] if s is not None else None
+        found[name] = sha256(path) if path is not None and path.is_file() else None
+    return found
+
+
 def verify_fixtures(spec: dict, manifest: dict, base: Path) -> list:
-    """Problems if a set is missing from the manifest or its file digest changed."""
+    """Problems if a set is missing from the manifest, its file is missing or its digest changed."""
     problems = []
     by_name = {s["name"]: s for s in manifest["sets"]}
     if set(spec["fixture_sha256"]) != set(spec["sets"]):
         problems.append("fixture_sha256 must pin exactly the gated sets")
+    current = fixture_digests(spec, manifest, base)
     for name, want in spec["fixture_sha256"].items():
         s = by_name.get(name)
         if s is None:
             problems.append(f"set {name} not in manifest")
             continue
-        got = sha256(base / s["file"])
-        if got != want:
+        got = current[name]
+        if got is None:
+            problems.append(f"fixture {s['file']} missing")
+        elif got != want:
             problems.append(f"fixture {s['file']} changed: {got} != recorded {want}")
     return problems
 
@@ -409,9 +423,10 @@ def coverage_problems(spec: dict, sets: dict) -> list:
     return problems
 
 
-def input_digests(args, spec: dict) -> dict:
+def input_digests(args, spec: dict, manifest: dict) -> dict:
     d = {"exceptions": sha256(args.exceptions), "manifest": sha256(args.manifest),
-         "fixtures": dict(spec["fixture_sha256"]), "gate": sha256(Path(__file__).resolve())}
+         "fixtures": fixture_digests(spec, manifest, args.manifest.parent),
+         "gate": sha256(Path(__file__).resolve())}
     binary = Path(args.proto.split()[0])
     d["adapter"] = sha256(binary) if binary.is_file() else None
     d["companions"] = {c["name"]: sha256(HERE / c["file"]) for c in spec.get("companions", [])}
@@ -434,14 +449,28 @@ def main(argv=None) -> int:
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     if args.verify_report:
         stored = json.loads(args.verify_report.read_text(encoding="utf-8"))
-        stale = stored.get("inputs") != input_digests(args, spec)
-        ok = bool(stored.get("ok")) and not stale
-        print("report " + ("current and passing" if ok else "STALE" if stale else "not passing"))
+        drift = verify_fixtures(spec, manifest, args.manifest.parent)
+        current = input_digests(args, spec, manifest)
+        recorded = stored.get("inputs") if isinstance(stored.get("inputs"), dict) else {}
+        stale = stored.get("inputs") != current
+        for p in drift:
+            print(f"  problem: {p}")
+        for k in sorted(set(recorded) | set(current)):
+            if recorded.get(k) != current.get(k):
+                names = ""
+                if k == "fixtures" and isinstance(recorded.get(k), dict):
+                    names = ": " + ", ".join(n for n in sorted(set(recorded[k]) | set(current[k]))
+                                             if recorded[k].get(n) != current[k].get(n))
+                print(f"  problem: report input {k} differs from the current input{names}")
+        ok = bool(stored.get("ok")) and not stale and not drift
+        print("report " + ("current and passing" if ok else "STALE" if stale or drift else "not passing"))
         return 0 if ok else 1
     base = args.manifest.parent
     problems = verify_fixtures(spec, manifest, base)
     by_name = {s["name"]: s for s in manifest["sets"]}
-    frozen = [(n, by_name[n]["file"], by_name[n]["command"]) for n in spec["sets"]]
+    # A set whose fixture is missing (already a problem above) is not run.
+    frozen = [(n, by_name[n]["file"], by_name[n]["command"]) for n in spec["sets"]
+              if n in by_name and (base / by_name[n]["file"]).is_file()]
     sets, outputs, logs, run_problems, compare = run(args.proto.split(), frozen, base, args.repeat, args.timeout)
     report = classify(sets, outputs, spec["exceptions"], compare, logs)
     dump = {"outputs": outputs, "adaptations": logs}
@@ -476,7 +505,7 @@ def main(argv=None) -> int:
                     ok = False
                 report["companions"]["exact_pass" if ok else "failing"].append(item)
     report["ok"] = report["ok"] and not report["problems"] and not report["companions"]["failing"]
-    report["inputs"] = input_digests(args, spec)
+    report["inputs"] = input_digests(args, spec, manifest)
     if args.dump_outputs:
         args.dump_outputs.write_text(json.dumps(dump, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     if args.report:

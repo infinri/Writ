@@ -306,6 +306,43 @@ class EndToEnd(unittest.TestCase):
         d = Path(self.tmp.name)
         (d / "s.jsonl").write_text(json.dumps(case("x-0", REFUSED)) + "\n")
         self.assertEqual(self.gate(), 1)
+        # The report records the fixture bytes the run saw, not the pinned expectation.
+        report = json.loads(self.report.read_text())
+        self.assertEqual(report["inputs"]["fixtures"], {"s": check.sha256(d / "s.jsonl")})
+        self.assertTrue(any("s.jsonl changed" in p for p in report["problems"]))
+
+    def test_missing_fixture_fails_the_gate_without_a_traceback(self):
+        (Path(self.tmp.name) / "s.jsonl").unlink()
+        self.assertEqual(self.gate(), 1)
+        report = json.loads(self.report.read_text())
+        self.assertFalse(report["ok"])
+        self.assertIn("fixture s.jsonl missing", report["problems"])
+        self.assertEqual(report["inputs"]["fixtures"], {"s": None})
+
+    # D-039: --verify-report revalidates the current fixture bytes.
+    def test_unchanged_report_verifies(self):
+        self.assertEqual(self.gate(), 0)
+        self.assertEqual(self.gate("--verify-report", str(self.report)), 0)
+        self.assertEqual(self.gate("--verify-report", str(self.report)), 0)
+
+    def test_fixture_changed_after_the_report_fails_verification(self):
+        self.assertEqual(self.gate(), 0)
+        d = Path(self.tmp.name)
+        with open(d / "s.jsonl", "a") as f:
+            f.write(json.dumps(case("x-extra", OK_STEP)) + "\n")
+        self.assertEqual(self.gate("--verify-report", str(self.report)), 1)
+
+    def test_fixture_removed_after_the_report_fails_verification(self):
+        self.assertEqual(self.gate(), 0)
+        (Path(self.tmp.name) / "s.jsonl").unlink()
+        self.assertEqual(self.gate("--verify-report", str(self.report)), 1)
+
+    def test_report_with_tampered_inputs_fails_verification(self):
+        self.assertEqual(self.gate(), 0)
+        report = json.loads(self.report.read_text())
+        report["inputs"]["fixtures"]["s"] = "sha256:" + "0" * 64
+        self.report.write_text(json.dumps(report))
+        self.assertEqual(self.gate("--verify-report", str(self.report)), 1)
 
 
 class Shipped(unittest.TestCase):
