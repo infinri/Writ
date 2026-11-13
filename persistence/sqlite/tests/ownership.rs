@@ -17,6 +17,19 @@ use writ_ledger_sqlite::{LedgerStore, SqliteLedger, StoreError};
 
 const PROBE: &str = "WRIT_LEDGER_PROBE";
 
+/// Serializes the tests of this binary. Each test spawns child processes, and a fork briefly
+/// duplicates every open descriptor of this process, including another test's ownership lock,
+/// until the child execs; a parallel test that drops and reopens its ledger could then observe
+/// `OwnedElsewhere` from its own transiently duplicated lock. Running these tests one at a time
+/// removes the race without weakening any ownership check.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Probe entry point: inert unless the environment variable is set by a parent test.
 #[test]
 fn probe() {
@@ -148,6 +161,7 @@ fn next_epoch(db: &Path) -> u64 {
 
 #[test]
 fn concurrent_startup_has_exactly_one_owner_and_the_rest_fail_closed() {
+    let _serial = serial();
     for round in 0..5 {
         let d = tmp(&format!("race{round}"));
         let db = new_ledger(&d);
@@ -177,6 +191,7 @@ fn concurrent_startup_has_exactly_one_owner_and_the_rest_fail_closed() {
 
 #[test]
 fn concurrent_creation_has_exactly_one_creator() {
+    let _serial = serial();
     let d = tmp("create-race");
     let db = d.join("ledger.db");
     let specs: Vec<(&str, PathBuf)> = (0..8).map(|_| ("create-hold", db.clone())).collect();
@@ -198,6 +213,7 @@ fn concurrent_creation_has_exactly_one_creator() {
 
 #[test]
 fn every_supported_alias_shares_one_ownership() {
+    let _serial = serial();
     let d = tmp("alias");
     std::fs::create_dir_all(d.join("real/sub")).unwrap();
     let db = new_ledger(&d.join("real"));
@@ -235,6 +251,7 @@ fn every_supported_alias_shares_one_ownership() {
 
 #[test]
 fn hard_links_are_refused_as_ambiguous() {
+    let _serial = serial();
     let d = tmp("hardlink");
     let db = new_ledger(&d);
     std::fs::hard_link(&db, d.join("other-name.db")).unwrap();
@@ -258,6 +275,7 @@ fn hard_links_are_refused_as_ambiguous() {
 
 #[test]
 fn killed_owner_releases_ownership_and_a_restart_takes_a_higher_epoch() {
+    let _serial = serial();
     let d = tmp("kill");
     let db = new_ledger(&d);
     let mut owner = spawn("open-hold", "", &db, &d);
@@ -273,6 +291,7 @@ fn killed_owner_releases_ownership_and_a_restart_takes_a_higher_epoch() {
 
 #[test]
 fn reconciler_process_is_refused_while_a_broker_owns_the_ledger() {
+    let _serial = serial();
     let d = tmp("reconciler");
     let db = new_ledger(&d);
     let mut broker = spawn("open-hold", "", &db, &d);

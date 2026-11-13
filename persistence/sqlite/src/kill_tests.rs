@@ -536,6 +536,7 @@ fn restart(dir: &Path) -> Facts {
 }
 
 #[test]
+#[ignore = "spawns and kills child processes; fork duplicates other tests' ownership-lock descriptors, so run alone: cargo test -p writ-ledger-sqlite --lib kill_tests -- --ignored --test-threads=1"]
 fn sigkill_at_every_lifecycle_boundary_leaves_the_implied_crash_state() {
     let cases = [
         ("reserve", "Begin", None),
@@ -621,6 +622,7 @@ fn sigkill_at_every_lifecycle_boundary_leaves_the_implied_crash_state() {
 }
 
 #[test]
+#[ignore = "spawns and kills child processes; fork duplicates other tests' ownership-lock descriptors, so run alone: cargo test -p writ-ledger-sqlite --lib kill_tests -- --ignored --test-threads=1"]
 fn sigkill_at_seeded_random_points_never_breaks_the_invariants() {
     let dir = disposable("random");
     let mut rng = Rng::new(SEED);

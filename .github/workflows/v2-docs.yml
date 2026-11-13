@@ -38,6 +38,8 @@ jobs:
           cargo clippy --workspace --all-targets --locked -- -D warnings
           cargo build --workspace --locked
           cargo test --workspace --locked
+      - name: Process-kill crash tests (M3-04), run alone and single-threaded
+        run: cargo test -p writ-ledger-sqlite --locked --lib kill_tests -- --ignored --test-threads=1
       - name: Kernel fixture parity through the dev-only M1 line adapter (320 kernel cases; M3 sets excluded)
         run: |
           cargo build --release --locked --example m1_line_adapter
