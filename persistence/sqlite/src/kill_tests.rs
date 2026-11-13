@@ -114,6 +114,12 @@ fn kill_child() {
         super::transition_tests::promote_child(&dir, stage_of(parts[2]));
         return;
     }
+    if parts[0] == "runner" {
+        say("READY");
+        super::runner_tests::runner_kill_child(&dir);
+        say("FINISHED");
+        return;
+    }
     let ledger = SqliteLedger::open(&dir.join("ledger.db")).unwrap();
     let effects = SqliteEffectStore::open(&dir.join("effects.db"), ledger.ledger_id()).unwrap();
     let active = ActivePolicy::new(PolicyState::loaded(reference()));
@@ -837,4 +843,20 @@ fn sigkill_during_a_promotion_leaves_nothing_and_the_retry_commits_once() {
         super::transition_tests::after_promotion_kill(&dir);
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+#[test]
+#[ignore = "spawns and kills child processes; fork duplicates other tests' ownership-lock descriptors, so run alone: cargo test -p writ-ledger-sqlite --lib kill_tests -- --ignored --test-threads=1"]
+fn sigkill_during_a_runner_job_leaves_the_run_started_and_never_reruns() {
+    let dir = std::env::temp_dir().join(format!("writ-kill-{}-runner", std::process::id()));
+    super::runner_tests::prepare_runner_kill(&dir);
+    let mut child = spawn_child(&format!("runner|{}", dir.display()));
+    let rx = lines(&mut child);
+    wait_for(&rx, "READY");
+    // The real job is running inside the broker's T-adapter.
+    let job_pid = super::runner_tests::runner_job_pid(&dir);
+    assert!(child.try_wait().unwrap().is_none(), "the broker is running");
+    kill(child);
+    super::runner_tests::after_runner_kill(&dir, &job_pid);
+    let _ = std::fs::remove_dir_all(&dir);
 }

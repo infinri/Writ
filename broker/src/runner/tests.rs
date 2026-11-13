@@ -288,7 +288,12 @@ impl RunnerState for State {
     }
 }
 
-struct Commands(Mutex<Option<RegisteredCommand>>);
+struct Commands {
+    command: Mutex<Option<RegisteredCommand>>,
+    /// Answer with the stored command whatever id is asked for.
+    any_id: Mutex<bool>,
+    down: Mutex<bool>,
+}
 
 impl CommandRegistry for Commands {
     fn command(
@@ -297,18 +302,23 @@ impl CommandRegistry for Commands {
         _: &str,
         id: &str,
     ) -> Result<Option<RegisteredCommand>, SourceUnavailable> {
+        if *self.down.lock().unwrap() {
+            return Err(SourceUnavailable);
+        }
+        let any = *self.any_id.lock().unwrap();
         Ok(self
-            .0
+            .command
             .lock()
             .unwrap()
             .clone()
-            .filter(|c| c.command_id == id))
+            .filter(|c| any || c.command_id == id))
     }
 }
 
 struct Snapshots {
     files: Mutex<Option<Vec<SnapshotFile>>>,
     immutable: Mutex<bool>,
+    down: Mutex<bool>,
 }
 
 impl SnapshotContent for Snapshots {
@@ -319,6 +329,9 @@ impl SnapshotContent for Snapshots {
         id: &str,
     ) -> Result<Option<Vec<SnapshotFile>>, SourceUnavailable> {
         assert_eq!(id, "snap-1");
+        if *self.down.lock().unwrap() {
+            return Err(SourceUnavailable);
+        }
         Ok(self.files.lock().unwrap().clone())
     }
 
@@ -418,10 +431,15 @@ impl W {
         W {
             store: MemoryStore::default(),
             state: State::new(),
-            commands: Commands(Mutex::new(Some(command()))),
+            commands: Commands {
+                command: Mutex::new(Some(command())),
+                any_id: Mutex::new(false),
+                down: Mutex::new(false),
+            },
             snapshots: Snapshots {
                 files: Mutex::new(Some(files())),
                 immutable: Mutex::new(true),
+                down: Mutex::new(false),
             },
             keys,
             sandbox: FakeSandbox::new(),
@@ -568,7 +586,7 @@ fn untrusted_or_mismatched_inputs_never_run() {
             |w| {
                 let mut c = command();
                 c.program = b"#!/bin/sh\nexit 1\n".to_vec();
-                *w.commands.0.lock().unwrap() = Some(c);
+                *w.commands.command.lock().unwrap() = Some(c);
             },
             "RUNNER_COMMAND_DIGEST_MISMATCH",
         ),
@@ -577,13 +595,13 @@ fn untrusted_or_mismatched_inputs_never_run() {
             |w| {
                 let mut c = command();
                 c.args.push("--skip".into());
-                *w.commands.0.lock().unwrap() = Some(c);
+                *w.commands.command.lock().unwrap() = Some(c);
             },
             "RUNNER_COMMAND_DIGEST_MISMATCH",
         ),
         (
             "unregistered",
-            |w| *w.commands.0.lock().unwrap() = None,
+            |w| *w.commands.command.lock().unwrap() = None,
             "RUNNER_COMMAND_UNREGISTERED",
         ),
         (
@@ -730,26 +748,41 @@ fn untrusted_or_mismatched_inputs_never_run() {
             "RUNNER_WORKDIR_UNAVAILABLE",
         ),
     ];
+    refused_cases("neg", cases);
+}
+
+/// A named mutation of the world and the diagnostic it must produce.
+type Case = (&'static str, fn(&mut W), &'static str);
+
+/// Run each case on a fresh world: the mutation makes the run fail with
+/// `diagnostic`, nothing runs and no attestation is stored.
+fn refused_cases(prefix: &str, cases: Vec<Case>) {
     for (name, mutate, diagnostic) in cases {
-        let mut w = W::new(&format!("neg-{name}"));
+        let mut w = W::new(&format!("{prefix}-{name}"));
         mutate(&mut w);
-        assert_eq!(w.apply("permit-1"), Ok(Ok(EffectResult::Failed)), "{name}");
-        assert_eq!(
-            w.diagnostic("permit-1").as_deref(),
-            Some(diagnostic),
-            "{name}"
-        );
-        assert_eq!(w.runs(), 0, "{name}");
-        assert_eq!(w.store.attestations(), 0, "{name}");
-        let evidence = w.runner().evidence("permit-1").unwrap().unwrap();
-        assert_eq!(evidence.result, EffectResult::Failed, "{name}");
-        // The permit is consumed: it never runs, even after the input is fixed.
-        assert_eq!(
-            w.apply("permit-1"),
-            Ok(Err(Refusal::PermitReplayed)),
-            "{name}"
-        );
+        refused(&w, name, diagnostic);
     }
+}
+
+/// `permit-1` fails with `diagnostic`, runs nothing, stores no attestation
+/// and stays consumed.
+fn refused(w: &W, name: &str, diagnostic: &str) {
+    assert_eq!(w.apply("permit-1"), Ok(Ok(EffectResult::Failed)), "{name}");
+    assert_eq!(
+        w.diagnostic("permit-1").as_deref(),
+        Some(diagnostic),
+        "{name}"
+    );
+    assert_eq!(w.runs(), 0, "{name}");
+    assert_eq!(w.store.attestations(), 0, "{name}");
+    let evidence = w.runner().evidence("permit-1").unwrap().unwrap();
+    assert_eq!(evidence.result, EffectResult::Failed, "{name}");
+    // The permit is consumed: it never runs, even after the input is fixed.
+    assert_eq!(
+        w.apply("permit-1"),
+        Ok(Err(Refusal::PermitReplayed)),
+        "{name}"
+    );
 }
 
 #[test]
@@ -927,4 +960,231 @@ fn command_digest_refuses_ambiguous_environments() {
     ] {
         assert_eq!(with(bad).digest(), None, "{bad:?}");
     }
+}
+
+/// Each binding of the registry entry is checked on its own: one field
+/// changed at a time refuses, runs nothing and stores no attestation.
+#[test]
+fn every_registry_binding_is_checked_on_its_own() {
+    let cases: Vec<Case> = vec![
+        (
+            "evaluator-id",
+            |w| {
+                w.state
+                    .set_entry(&with(&entry(), &["evaluator_id"], json::s("other-runner")))
+            },
+            "EVALUATOR_BINDING_MISMATCH",
+        ),
+        (
+            "scope-tenant",
+            |w| {
+                w.state
+                    .set_entry(&with(&entry(), &["scope", "tenant_id"], json::s("t2")))
+            },
+            "EVALUATOR_BINDING_MISMATCH",
+        ),
+        (
+            "scope-project",
+            |w| {
+                w.state
+                    .set_entry(&with(&entry(), &["scope", "project_id"], json::s("p2")))
+            },
+            "EVALUATOR_BINDING_MISMATCH",
+        ),
+        // The contract itself ties trust to class and fixes the algorithm, so
+        // these entries are invalid before the adapter's own binding checks
+        // (which remain as defence in depth) are reached.
+        (
+            "trust-alone",
+            |w| w.state.set_entry(&with(&entry(), &["trust"], json::s("E"))),
+            "EVALUATOR_REGISTRY_UNAVAILABLE",
+        ),
+        (
+            "attestation-alg",
+            |w| {
+                w.state.set_entry(&with(
+                    &entry(),
+                    &["attestation", "alg"],
+                    json::s("hmac-sha512"),
+                ))
+            },
+            "EVALUATOR_REGISTRY_UNAVAILABLE",
+        ),
+        (
+            "status-revoked-flag-active",
+            |w| {
+                let e = with(&entry(), &["status"], json::s("revoked"));
+                w.state
+                    .set_entry(&with(&e, &["revoked_at"], json::s("2026-11-02T00:00:00Z")));
+                assert!(!w.state.entry.lock().unwrap().as_ref().unwrap().revoked);
+            },
+            "ACCEPTANCE_EVALUATOR_REVOKED",
+        ),
+        (
+            "registered-command-id",
+            |w| {
+                // The registry answers with a command whose id differs from the
+                // entry's but whose digest the entry names: only the id check
+                // can refuse it.
+                let other = RegisteredCommand {
+                    command_id: "other-command".into(),
+                    ..command()
+                };
+                w.state.set_entry(&with(
+                    &entry(),
+                    &["command", "command_digest"],
+                    json::s(&other.digest().unwrap()),
+                ));
+                *w.commands.command.lock().unwrap() = Some(other);
+                *w.commands.any_id.lock().unwrap() = true;
+            },
+            "RUNNER_COMMAND_DIGEST_MISMATCH",
+        ),
+    ];
+    refused_cases("binding", cases);
+}
+
+/// Invalid snapshot paths are refused before trusted time is read (the clock
+/// fails, so a check that let them through would report `TIME_UNAVAILABLE`)
+/// and nothing is written anywhere.
+#[test]
+fn invalid_snapshot_paths_are_refused_before_anything_is_written() {
+    let abs = std::env::temp_dir().join(format!("writ-runner-abs-{}", std::process::id()));
+    let _ = std::fs::remove_file(&abs);
+    let bad = [
+        "../escape".to_string(),
+        abs.display().to_string(),
+        "a//b".into(),
+        "a/./b".into(),
+        "./a".into(),
+        "a/".into(),
+        "src/lib.rs".into(),
+        PROGRAM_NAME.into(),
+        format!("{PROGRAM_NAME}/x"),
+    ];
+    for (i, path) in bad.into_iter().enumerate() {
+        let mut w = W::new(&format!("path-{i}"));
+        w.clock.fail(crate::clock::ClockError::Overflow);
+        let mut f = files();
+        f.push(SnapshotFile {
+            path: path.clone(),
+            bytes: b"x".to_vec(),
+        });
+        *w.snapshots.files.lock().unwrap() = Some(f);
+        refused(&w, &path, "RUNNER_SNAPSHOT_INVALID");
+        assert!(w.root_empty(), "{path}");
+        assert!(!w.root.parent().unwrap().join("escape").exists(), "{path}");
+        assert!(!abs.exists(), "{path}");
+    }
+}
+
+/// A file and a directory of the same name fail closed during
+/// materialization, whichever comes first, and the work directory is removed.
+#[test]
+fn a_file_and_directory_collision_fails_closed() {
+    let file = |p: &str| SnapshotFile {
+        path: p.into(),
+        bytes: b"x".to_vec(),
+    };
+    for (i, (order, diagnostic)) in [
+        // The file exists when its name is needed as a directory.
+        (vec![file("a"), file("a/b")], "RUNNER_SNAPSHOT_INVALID"),
+        // The directory exists when the file is created (exclusive create).
+        (vec![file("a/b"), file("a")], "RUNNER_WORKDIR_UNAVAILABLE"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(snapshot_digest(&order).is_some());
+        let w = W::new(&format!("collision-{i}"));
+        *w.snapshots.files.lock().unwrap() = Some(order);
+        refused(&w, diagnostic, diagnostic);
+        assert!(w.root_empty(), "{diagnostic}");
+    }
+}
+
+#[test]
+fn unavailable_or_invalid_sources_never_run() {
+    let cases: Vec<Case> = vec![
+        (
+            "snapshot-content-down",
+            |w| *w.snapshots.down.lock().unwrap() = true,
+            "ARTIFACT_INTEGRITY_UNAVAILABLE",
+        ),
+        (
+            "command-registry-down",
+            |w| *w.commands.down.lock().unwrap() = true,
+            "RUNNER_COMMAND_REGISTRY_UNAVAILABLE",
+        ),
+        (
+            "policy-not-json",
+            |w| {
+                w.state
+                    .policy
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .requirements = "{not json".into()
+            },
+            "ACCEPTANCE_POLICY_UNAVAILABLE",
+        ),
+        (
+            "policy-not-requirements",
+            |w| {
+                w.state
+                    .policy
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .requirements = r#"{"criteria":[]}"#.into()
+            },
+            "ACCEPTANCE_POLICY_UNAVAILABLE",
+        ),
+        (
+            "entry-not-json",
+            |w| w.state.entry.lock().unwrap().as_mut().unwrap().entry = "{not json".into(),
+            "EVALUATOR_REGISTRY_UNAVAILABLE",
+        ),
+        (
+            "entry-not-an-entry",
+            |w| {
+                let Value::Obj(mut m) = entry() else {
+                    panic!("an entry is an object")
+                };
+                m.remove("command");
+                w.state.set_entry(&Value::Obj(m))
+            },
+            "EVALUATOR_REGISTRY_UNAVAILABLE",
+        ),
+    ];
+    refused_cases("source", cases);
+}
+
+#[test]
+fn an_unusable_work_directory_never_runs() {
+    // A pre-existing run directory is never reused, and is left as it was.
+    let w = W::new("workdir-exists");
+    let existing = w.root.join("run-permit-1");
+    std::fs::create_dir(&existing).unwrap();
+    std::fs::write(existing.join("planted"), b"x").unwrap();
+    refused(&w, "exists", "RUNNER_WORKDIR_UNAVAILABLE");
+    assert_eq!(std::fs::read(existing.join("planted")).unwrap(), b"x");
+    assert_eq!(std::fs::read_dir(&existing).unwrap().count(), 1);
+    // A work root that is a symbolic link to a directory.
+    let mut w = W::new("workdir-symlink");
+    let target = w.root.join("target");
+    std::fs::create_dir(&target).unwrap();
+    let link = w.root.join("link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    w.root = link;
+    refused(&w, "symlink", "RUNNER_WORKDIR_UNAVAILABLE");
+    assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
+    // A work root that is a regular file.
+    let mut w = W::new("workdir-file");
+    let file = w.root.join("file");
+    std::fs::write(&file, b"").unwrap();
+    w.root = file;
+    refused(&w, "file", "RUNNER_WORKDIR_UNAVAILABLE");
 }

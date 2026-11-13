@@ -325,3 +325,78 @@ fn a_released_owner_lock_is_free_while_a_duplicate_descriptor_lives() {
     drop(again);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_descendant_holding_stdout_open_makes_the_job_time_out() {
+    let dir = tmp("descendant");
+    let start = Instant::now();
+    // The shell exits at once; its background child keeps stdout open past the deadline.
+    let r = run_sh(
+        &dir,
+        "/bin/sleep 3 & echo $! > pid; exit 0",
+        &[],
+        limits(500, 4096),
+    );
+    assert_eq!(r, Err(JobFailure::TimedOut));
+    assert!(start.elapsed() < Duration::from_secs(3));
+    // The descendant is not contained (documented): it outlives the job.
+    let pid = std::fs::read_to_string(dir.join("pid")).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !wait_gone(pid.trim()) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Set (only by the parent test below) when this process inherited descriptor 5 without
+/// close-on-exec.
+const FD_HELPER: &str = "WRIT_PROCESS_INHERITED_FD_HELPER";
+
+/// Helper run in a re-executed test binary that inherited a descriptor without
+/// close-on-exec; inert otherwise.
+#[test]
+fn inherited_descriptor_helper() {
+    if std::env::var_os(FD_HELPER).is_none() {
+        return;
+    }
+    let info = std::fs::read_to_string("/proc/self/fdinfo/5").unwrap();
+    assert!(info.contains("flags:"), "descriptor 5 is open");
+    let g = LocalProcessSandbox::new().guarantees().unwrap();
+    assert!(!g.descriptors_closed);
+    assert!(!g.satisfies(&RunnerRequirements::uncontained_for_disposable_tests().sandbox()));
+    let dir = tmp("inherited-fd");
+    assert_eq!(
+        run_sh(&dir, "exit 0", &[], limits(10_000, 4096)),
+        Err(JobFailure::Unavailable)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    println!("INHERITED-FD-HELPER-OK");
+}
+
+#[test]
+fn an_inherited_descriptor_without_close_on_exec_refuses_every_job() {
+    let exe = std::env::current_exe().unwrap();
+    let mut command = Command::new(SH);
+    command
+        .args([
+            "-c",
+            r#"exec 5</dev/null; exec "$0" "$@""#,
+            exe.to_str().unwrap(),
+            "process::tests::inherited_descriptor_helper",
+            "--exact",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(FD_HELPER, "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let out = spawn(&mut command).unwrap().wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("INHERITED-FD-HELPER-OK"), "{stdout}");
+}
