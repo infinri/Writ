@@ -4,11 +4,11 @@
 
 ## Current
 
-- **Verified code baseline:** `6be251c` (M3-05, D-036), CI run [43465393620](https://github.com/infinri/Writ/actions/runs/43465393620), all 6 jobs success. The documentation checkpoint after it has its own CI run, pending until verified. The separate website workflow fails at the Pages deploy (github-pages environment protection rejects this branch); it is not required CI and protections are not to be changed.
+- **Verified code baseline:** `146260e` (M3-07 and M3-08 gate preparation), CI run [43475168083](https://github.com/infinri/Writ/actions/runs/43475168083), all 6 jobs success. Previous: `6be251c` (M3-05) run 43465393620. The documentation checkpoint after it has its own CI run, pending until verified. The separate website workflow fails at the Pages deploy (github-pages environment protection rejects this branch); it is not required CI and protections are not to be changed.
 - **Production crates:** `writ-kernel` (M2, accepted, unchanged since), `writ-broker` and `writ-ledger-sqlite` (M3-00..M3-05 and D-035: ingress, use-time authorization, policy gate, trusted time, approvals with provenance, grants, execute lifecycle with revalidation, owned and ledger-bound effect store, evidence-based reconciliation, transition service with authenticated records, administration and effect prerequisites; evidence E-058..E-068). Schemas: ledger `writ-ledger-5`, effects `writ-effects-2`. M1 prototypes frozen as comparison material.
 - **Language:** **Rust** selected (ADR-0002 ACCEPTED 2026-11-12, D-030). Go prototype kept as comparison material only.
 - **Decisions:** D-035 and D-036 approved and implemented; not to be requested again. ADR-0008 APPROVED IN PRINCIPLE.
-- **M3-07 implemented (E-069):** runner, process lifecycle gate, unlock-before-close ownership locks; production configuration refuses every job until a contained sandbox exists (M5). Exact-SHA CI: see SESSION-HANDOFF section 1.
+- **M3-07 implemented (E-069):** runner, process lifecycle gate, unlock-before-close ownership locks; production configuration refuses every job until a contained sandbox exists (M5). Exact-SHA CI: `146260e` run 43475168083, 6/6 (after the E-071 CI-host fix).
 - **Open in M3:** M3-06 integration items (b)..(f); M3-08 closure gate built and failing (E-070), blocked on owner questions OQ-1..OQ-12; differential, property, chaos suites. See SESSION-HANDOFF section 2.
 - **Next task:** owner decisions on OQ-1..OQ-12; meanwhile the unblocked items in SESSION-HANDOFF section 6.
 - **Enterprise direction:** [readiness plan](../security/ENTERPRISE-READINESS.md), ENT-OWNER-01 and ENT-00..ENT-08. PostgreSQL targets enterprise operational state, SQLite remains local/offline; durable multi-worker coordination requires separate future acceptance. Controls, SOC 2 scope and any examination remain planned, not implemented or attested.
@@ -46,7 +46,7 @@ SANDBOX PREPARED / LIVE VERIFICATION NOT EXECUTED; sandbox **torn down** 2026-11
 
 ## Last verification
 
-Local (2026-11-13, integrated M3-07 tree): workspace tests 360 passed 3 times (4 ignored), kill tests 4/4 alone, process-lifecycle stress 3/3, kernel parity 320/320, dependency gate 0 problems, closure self-tests 10 OK, docs check OK (E-069, E-070). Exact-SHA CI of the M3-07 commit: SESSION-HANDOFF section 1. Previous: `82971fd` run 43466394626 and `6be251c` run 43465393620, each 6/6.
+Local (2026-11-13, integrated M3-07 tree): workspace tests 360 passed 3 times (4 ignored), kill tests 4/4 alone, process-lifecycle stress 3/3, kernel parity 320/320, dependency gate 0 problems, closure self-tests 10 OK, docs check OK (E-069, E-070). Exact-SHA CI: `146260e` run 43475168083, 6/6; `7eb995f` failed (E-071, fixed). Previous: `82971fd` run 43466394626 and `6be251c` run 43465393620, each 6/6.
 
 ## Next exact action
 
